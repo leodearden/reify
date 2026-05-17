@@ -69,5 +69,26 @@ assert "setup-dev.sh --with-orchestrator-hooks exits non-zero" \
 assert "setup-dev.sh --help exits 0 and prints output" \
     bash -c 'out=$(bash "$1/scripts/setup-dev.sh" --help 2>&1); [ $? -eq 0 ] && [ -n "$out" ]' -- "$REPO_ROOT"
 
+# ==============================================================================
+# Check 9: no in-source .taskmaster/tasks/tasks.json references
+# ==============================================================================
+# The audit skill files and the reify-audit binary source must not contain the
+# dead default path. After task 3731 made --tasks-file a required flag, any
+# re-introduction of this string would silently re-introduce the regression.
+echo ""
+echo "--- Check 9: no .taskmaster/tasks/tasks.json in audit skill files or binary source ---"
+
+assert "no .taskmaster/tasks/tasks.json reference in .claude/skills/audit/SKILL.md" \
+    bash -c '! grep -qF ".taskmaster/tasks/tasks.json" "$1/.claude/skills/audit/SKILL.md"' -- "$REPO_ROOT"
+
+assert "no .taskmaster/tasks/tasks.json reference in .claude/skills/audit/references/" \
+    bash -c '! grep -rqF ".taskmaster/tasks/tasks.json" "$1/.claude/skills/audit/references/"' -- "$REPO_ROOT"
+
+assert "no .taskmaster/tasks/tasks.json reference in crates/reify-audit/src/bin/reify-audit.rs" \
+    bash -c '! grep -qF ".taskmaster/tasks/tasks.json" "$1/crates/reify-audit/src/bin/reify-audit.rs"' -- "$REPO_ROOT"
+
+assert "no .taskmaster/tasks/tasks.json reference in scripts/reify-audit-predone-wrapper.sh" \
+    bash -c '! grep -qF ".taskmaster/tasks/tasks.json" "$1/scripts/reify-audit-predone-wrapper.sh"' -- "$REPO_ROOT"
+
 # -- Summary ------------------------------------------------------------------
 test_summary

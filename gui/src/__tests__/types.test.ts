@@ -92,6 +92,105 @@ describe('convertRawMesh', () => {
     expect(mesh.displaced_positions).toBeInstanceOf(Float32Array);
     expect(Array.from(mesh.displaced_positions!)).toHaveLength(9);
   });
+
+  // --- shell-extract fields (task 3597) ---
+
+  it('converts vector_channels number[] → Float32Array when present', () => {
+    const raw: RawMeshData = {
+      entity_path: 'Shell.body',
+      vertices: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+      indices: [0, 1, 2],
+      normals: null,
+      vector_channels: {
+        shell_normal_per_face: [0, 0, 1],
+        shell_tangent_per_vertex: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+      },
+    };
+    const mesh = convertRawMesh(raw);
+    expect(mesh.vector_channels).toBeDefined();
+    expect(mesh.vector_channels!['shell_normal_per_face']).toBeInstanceOf(Float32Array);
+    expect(Array.from(mesh.vector_channels!['shell_normal_per_face'])).toEqual([0, 0, 1]);
+    expect(mesh.vector_channels!['shell_tangent_per_vertex']).toBeInstanceOf(Float32Array);
+    expect(Array.from(mesh.vector_channels!['shell_tangent_per_vertex'])).toEqual([1, 0, 0, 0, 1, 0, 0, 0, 1]);
+  });
+
+  it('leaves vector_channels undefined when absent', () => {
+    const raw: RawMeshData = {
+      entity_path: 'Tet.body',
+      vertices: [0, 0, 0],
+      indices: [0],
+      normals: null,
+    };
+    const mesh = convertRawMesh(raw);
+    expect(mesh.vector_channels).toBeUndefined();
+  });
+
+  it('converts element_kind number[] → Uint8Array when present', () => {
+    const raw: RawMeshData = {
+      entity_path: 'Shell.body',
+      vertices: [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1],
+      indices: [0, 1, 2, 0, 2, 3],
+      normals: null,
+      element_kind: [0, 1],
+    };
+    const mesh = convertRawMesh(raw);
+    expect(mesh.element_kind).toBeInstanceOf(Uint8Array);
+    expect(Array.from(mesh.element_kind!)).toEqual([0, 1]);
+  });
+
+  it('leaves element_kind undefined when absent', () => {
+    const raw: RawMeshData = {
+      entity_path: 'Tet.body',
+      vertices: [0, 0, 0],
+      indices: [0],
+      normals: null,
+    };
+    const mesh = convertRawMesh(raw);
+    expect(mesh.element_kind).toBeUndefined();
+  });
+
+  it('converts region_tags number[] → Uint32Array when present', () => {
+    const raw: RawMeshData = {
+      entity_path: 'Shell.body',
+      vertices: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+      indices: [0, 1, 2],
+      normals: null,
+      region_tags: [42],
+    };
+    const mesh = convertRawMesh(raw);
+    expect(mesh.region_tags).toBeInstanceOf(Uint32Array);
+    expect(Array.from(mesh.region_tags!)).toEqual([42]);
+  });
+
+  it('leaves region_tags undefined when absent', () => {
+    const raw: RawMeshData = {
+      entity_path: 'Tet.body',
+      vertices: [0, 0, 0],
+      indices: [0],
+      normals: null,
+    };
+    const mesh = convertRawMesh(raw);
+    expect(mesh.region_tags).toBeUndefined();
+  });
+
+  it('converts all three new shell-extract fields together', () => {
+    const raw: RawMeshData = {
+      entity_path: 'Shell.body',
+      vertices: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+      indices: [0, 1, 2],
+      normals: null,
+      element_kind: [1],
+      region_tags: [99],
+      vector_channels: { shell_normal_per_face: [0, 0, 1] },
+    };
+    const mesh = convertRawMesh(raw);
+    expect(mesh.element_kind).toBeInstanceOf(Uint8Array);
+    expect(Array.from(mesh.element_kind!)).toEqual([1]);
+    expect(mesh.region_tags).toBeInstanceOf(Uint32Array);
+    expect(Array.from(mesh.region_tags!)).toEqual([99]);
+    expect(mesh.vector_channels!['shell_normal_per_face']).toBeInstanceOf(Float32Array);
+    expect(Array.from(mesh.vector_channels!['shell_normal_per_face'])).toEqual([0, 0, 1]);
+  });
 });
 
 describe('convertRawGuiState', () => {

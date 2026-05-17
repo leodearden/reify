@@ -40,3 +40,11 @@ reify-test-support = { workspace = true, features = ["eval-helpers"] }
 reify-kernel-occt.workspace = true
 reify-constraints.workspace = true
 reify-geometry.workspace = true
+# Task 3579 (PRD §5 B5 / I-3): T5 boundary tests in
+# `tests/node_traits_boundary.rs` need `reify_runtime::concurrent::{
+# SchedulerConfig, ConcurrentScheduler}` plus a tokio runtime. This is the
+# usual cyclic-dev-dep pattern cargo permits — reify-runtime has reify-eval
+# as a normal dep, and a dev-dep back from reify-eval applies only to
+# reify-eval's own test binaries.
+reify-runtime.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

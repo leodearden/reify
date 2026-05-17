@@ -20,7 +20,7 @@ use crate::deps::DependencyTrace;
 use crate::dispatcher::{dispatch, per_stage_tolerance_for_plan};
 use crate::geometry_ops::compile_geometry_op;
 use crate::journal::{EvalEvent, EventJournal, EventKind};
-use crate::primitive_attribute_seed::seed_primitive_attributes_for_handle;
+use crate::primitive_attribute_seed::{parse_bbox_xyz_min, seed_primitive_attributes_for_handle};
 use crate::realization_cache::{NO_OPTIONS, RealizationCache};
 use crate::sweep_classifier::{
     SweptKind, SweptKindTable, classify_swept_body, swept_kind_to_sweep_params,
@@ -243,11 +243,133 @@ fn populate_attribute_history(
     }
 }
 
+/// Build per-cap-face vertex-index-lists by position-matching cap-face vertex
+/// BoundingBox payloads against a pre-built result-vertex position table.
+///
+/// For each `cap_idx` in `cap_face_indices`:
+/// - Fetches `result_faces[cap_idx as usize]` as the cap face handle.
+/// - Calls `kernel.extract_vertices(cap_face_handle)?` to get the cap-face's
+///   vertex handles (these are freshly allocated ids — different from result
+///   vertex ids even for the same underlying `TopoDS_Vertex`).
+/// - For each cap-vertex, queries `GeometryQuery::BoundingBox` → parses
+///   `(xmin, ymin, zmin)` via [`parse_bbox_xyz_min`].
+/// - Searches `result_vertex_positions` for a position-match using EXACT f64
+///   equality: safe because OCCT's `Bnd_Box` compute on the same
+///   `gp_Pnt`-backed `TopoDS_Vertex` is byte-identical regardless of which
+///   handle invoked the query.
+/// - Pushes the matched result-vertex index (`u32`) into the inner `Vec`.
+///   If no match is found (should not occur for valid OCCT geometry), the
+///   vertex is silently skipped rather than hard-erroring, so a future kernel
+///   variant that breaks shared-vertex identity degrades to auxiliary-metadata
+///   loss rather than a geometry-regression diagnostic.
+///
+/// Returns one inner `Vec<u32>` per entry in `cap_face_indices`.
+///
+/// # Performance
+///
+/// `result_vertex_positions` is pre-built once per call-site invocation
+/// (O(`result_vertices`) kernel round-trips) so per-cap-vertex position
+/// matching is a linear scan over pre-fetched f64 triples — no additional
+/// kernel queries inside this helper.  For typical sweep results (≤100
+/// result vertices, ≤2 cap faces, ≤20 cap vertices) the comparison loop
+/// is bounded at ≤4 000 f64 triple-compares per realization.
+fn build_cap_vertex_index_lists(
+    kernel: &mut dyn GeometryKernel,
+    result_faces: &[GeometryHandleId],
+    result_vertex_positions: &[(f64, f64, f64)],
+    cap_face_indices: &[u32],
+) -> Result<Vec<Vec<u32>>, reify_types::QueryError> {
+    let mut index_lists: Vec<Vec<u32>> = Vec::with_capacity(cap_face_indices.len());
+    for &cap_idx in cap_face_indices {
+        let cap_face_handle = result_faces
+            .get(cap_idx as usize)
+            .copied()
+            .ok_or_else(|| {
+                reify_types::QueryError::QueryFailed(format!(
+                    "cap vertex index list: cap face index {cap_idx} is out of range \
+                     for result_faces of len {}",
+                    result_faces.len()
+                ))
+            })?;
+        let cap_vertices = kernel.extract_vertices(cap_face_handle)?;
+        let mut inner: Vec<u32> = Vec::with_capacity(cap_vertices.len());
+        for &cap_vertex_handle in &cap_vertices {
+            let bbox = kernel.query(&GeometryQuery::BoundingBox(cap_vertex_handle))?;
+            let (cx, cy, cz) = parse_bbox_xyz_min(&bbox)?;
+            // Linear scan over pre-built result-vertex position table.
+            // Exact f64 equality is safe: same underlying TopoDS_Vertex →
+            // same Bnd_Box compute → byte-identical xmin/ymin/zmin.
+            if let Some(result_idx) = result_vertex_positions
+                .iter()
+                .position(|&(rx, ry, rz)| rx == cx && ry == cy && rz == cz)
+            {
+                inner.push(result_idx as u32);
+            }
+            // No match: cap vertex absent from result-vertex set. Silently
+            // skip rather than hard-error so a kernel variant that breaks
+            // shared-vertex identity degrades to metadata loss (warning at
+            // the populate_attribute_history call site) rather than a
+            // Failed geometry regression.
+        }
+        index_lists.push(inner);
+    }
+    Ok(index_lists)
+}
+
+/// Attempt to extract result vertices and build per-cap-face vertex-index-lists
+/// for a single-parent sweep op. Returns `(result_vertices, start_lists, end_lists)`.
+///
+/// Any failure (e.g. `QueryFailed` from a mock kernel that inherits
+/// `GeometryKernel`'s default `extract_vertices`) is treated as auxiliary-
+/// metadata failure and silently converted to `(empty, empty, empty)` by the
+/// caller — this preserves the primary face/edge seeding path for mock kernels.
+/// For real OCCT kernels, this always succeeds.
+#[allow(clippy::type_complexity)]
+fn try_extract_sweep_cap_vertex_data(
+    kernel: &mut dyn GeometryKernel,
+    result_faces: &[GeometryHandleId],
+    result_handle: GeometryHandleId,
+    start_cap_face_indices: &[u32],
+    end_cap_face_indices: &[u32],
+) -> Result<
+    (Vec<GeometryHandleId>, Vec<Vec<u32>>, Vec<Vec<u32>>),
+    reify_types::QueryError,
+> {
+    let result_vertices = kernel.extract_vertices(result_handle)?;
+    let result_vertex_positions: Vec<(f64, f64, f64)> = result_vertices
+        .iter()
+        .map(|&vh| {
+            let bbox = kernel.query(&GeometryQuery::BoundingBox(vh))?;
+            parse_bbox_xyz_min(&bbox)
+        })
+        .collect::<Result<_, _>>()?;
+    let start_cap_vertex_index_lists = build_cap_vertex_index_lists(
+        kernel,
+        result_faces,
+        &result_vertex_positions,
+        start_cap_face_indices,
+    )?;
+    let end_cap_vertex_index_lists = build_cap_vertex_index_lists(
+        kernel,
+        result_faces,
+        &result_vertex_positions,
+        end_cap_face_indices,
+    )?;
+    Ok((result_vertices, start_cap_vertex_index_lists, end_cap_vertex_index_lists))
+}
+
 /// Shared helper for the three single-parent sweep variants (extrude,
 /// revolve, sweep). Extracts the profile and result face/edge slices
 /// from `kernel`, then dispatches to the appropriate per-op propagation
 /// helper based on `kind`. Centralised so the extract sequence +
 /// error-propagation shape stays uniform across the variants.
+///
+/// Vertex extraction and cap-vertex-index-list construction are attempted via
+/// `try_extract_sweep_cap_vertex_data`. Failure (e.g. `QueryFailed` from a
+/// mock kernel that inherits `GeometryKernel`'s default `extract_vertices`)
+/// is caught locally — empty vertex slices are passed to the propagation
+/// helper, and face/edge seeding proceeds normally. This ensures mock-kernel
+/// tests that check face/edge attributes are not broken by the vertex wire.
 fn populate_single_parent_sweep_op(
     table: &mut TopologyAttributeTable,
     kernel: &mut dyn GeometryKernel,
@@ -261,6 +383,20 @@ fn populate_single_parent_sweep_op(
     let profile_edges = kernel.extract_edges(profile_handle)?;
     let result_faces = kernel.extract_faces(result_handle)?;
     let result_edges = kernel.extract_edges(result_handle)?;
+
+    // Attempt vertex extraction + cap-vertex-index-list construction. A failure
+    // here (e.g. `QueryFailed` from a mock kernel) is auxiliary-metadata only:
+    // fall back to empty slices and continue with face/edge seeding.
+    let (result_vertices, start_cap_vertex_index_lists, end_cap_vertex_index_lists) =
+        try_extract_sweep_cap_vertex_data(
+            kernel,
+            &result_faces,
+            result_handle,
+            &history.start_cap_face_indices,
+            &history.end_cap_face_indices,
+        )
+        .unwrap_or_else(|_| (Vec::new(), Vec::new(), Vec::new()));
+
     match kind {
         SingleParentSweepKind::Extrude => populate_extrude_attributes(
             table,
@@ -270,6 +406,9 @@ fn populate_single_parent_sweep_op(
             &result_faces,
             &result_edges,
             history,
+            &result_vertices,
+            &start_cap_vertex_index_lists,
+            &end_cap_vertex_index_lists,
         ),
         SingleParentSweepKind::Revolve => populate_revolve_attributes(
             table,
@@ -279,6 +418,9 @@ fn populate_single_parent_sweep_op(
             &result_faces,
             &result_edges,
             history,
+            &result_vertices,
+            &start_cap_vertex_index_lists,
+            &end_cap_vertex_index_lists,
         ),
         SingleParentSweepKind::Sweep => populate_sweep_attributes(
             table,
@@ -288,6 +430,9 @@ fn populate_single_parent_sweep_op(
             &result_faces,
             &result_edges,
             history,
+            &result_vertices,
+            &start_cap_vertex_index_lists,
+            &end_cap_vertex_index_lists,
         ),
     }
 }
@@ -340,6 +485,20 @@ fn populate_loft_op(
     }
     let result_faces = kernel.extract_faces(result_handle)?;
     let result_edges = kernel.extract_edges(result_handle)?;
+
+    // Attempt vertex extraction + cap-vertex-index-list construction. A failure
+    // here (e.g. `QueryFailed` from a mock kernel) is auxiliary-metadata only:
+    // fall back to empty slices and continue with face/edge seeding.
+    let (result_vertices, start_cap_vertex_index_lists, end_cap_vertex_index_lists) =
+        try_extract_sweep_cap_vertex_data(
+            kernel,
+            &result_faces,
+            result_handle,
+            &history.start_cap_face_indices,
+            &history.end_cap_face_indices,
+        )
+        .unwrap_or_else(|_| (Vec::new(), Vec::new(), Vec::new()));
+
     populate_loft_attributes(
         table,
         feature_id,
@@ -348,6 +507,9 @@ fn populate_loft_op(
         &result_faces,
         &result_edges,
         history,
+        &result_vertices,
+        &start_cap_vertex_index_lists,
+        &end_cap_vertex_index_lists,
     )
 }
 
@@ -639,17 +801,12 @@ impl Engine {
                     kernel.as_ref(),
                     &mut diagnostics,
                 );
-                // Task 2324: topology-selector post-process (closest_point /
-                // is_on / angle_between_surfaces) — sibling to the conformance-
-                // query and kinematic-query wirings; runs after `named_steps`
-                // is populated so the helpers can resolve let-bound geometry
-                // names to a `GeometryHandleId` and let-bound point names to
-                // a `Value::Point`.
-                Engine::post_process_topology_selectors(
+                Engine::run_post_processes(
                     template,
                     &named_steps,
                     &mut values,
                     kernel.as_mut(),
+                    &self.topology_attribute_table,
                     &mut diagnostics,
                 );
                 // Task 3441: snapshot this template's `named_steps` so a
@@ -889,17 +1046,12 @@ impl Engine {
                     kernel.as_ref(),
                     &mut diagnostics,
                 );
-                // Task 2324: topology-selector post-process (closest_point /
-                // is_on / angle_between_surfaces) — sibling to the conformance-
-                // query and kinematic-query wirings; runs after `named_steps`
-                // is populated so the helpers can resolve let-bound geometry
-                // names to a `GeometryHandleId` and let-bound point names to
-                // a `Value::Point`.
-                Engine::post_process_topology_selectors(
+                Engine::run_post_processes(
                     template,
                     &named_steps,
                     &mut values,
                     kernel.as_mut(),
+                    &self.topology_attribute_table,
                     &mut diagnostics,
                 );
                 // Task 3441: snapshot this template's `named_steps` so a
@@ -1491,19 +1643,12 @@ impl Engine {
                 kernel.as_ref(),
                 diagnostics,
             );
-            // Task 2324: topology-selector post-process (closest_point /
-            // is_on / angle_between_surfaces) — sibling to the conformance-
-            // query and kinematic-query wirings; runs after `named_steps`
-            // is populated so the helpers can resolve let-bound geometry
-            // names to a `GeometryHandleId` and let-bound point names to
-            // a `Value::Point`. Tessellate surface exposes the same
-            // kernel-resolved values as the build surface so GUI overlays
-            // stay consistent.
-            Engine::post_process_topology_selectors(
+            Engine::run_post_processes(
                 template,
                 &named_steps,
                 values,
                 kernel.as_mut(),
+                topology_attribute_table,
                 diagnostics,
             );
             // Task 3441: snapshot this template's `named_steps` so a later
@@ -2157,6 +2302,34 @@ impl Engine {
         }
     }
 
+    /// Run all selector / AdHocSelector post-process passes for a template
+    /// after `execute_realization_ops` has populated `named_steps`.
+    ///
+    /// Calls `post_process_topology_selectors` then
+    /// `post_process_ad_hoc_selectors` in order, consolidating the identical
+    /// two-call block that previously appeared verbatim in `build`,
+    /// `build_snapshot`, and `tessellate_from_values` (task 3745).  Any future
+    /// sibling passes should be added here so all three call sites pick them up
+    /// automatically.
+    fn run_post_processes(
+        template: &reify_compiler::TopologyTemplate,
+        named_steps: &HashMap<String, GeometryHandleId>,
+        values: &mut ValueMap,
+        kernel: &mut dyn GeometryKernel,
+        table: &TopologyAttributeTable,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        Engine::post_process_topology_selectors(template, named_steps, values, kernel, diagnostics);
+        Engine::post_process_ad_hoc_selectors(
+            template,
+            named_steps,
+            values,
+            kernel,
+            table,
+            diagnostics,
+        );
+    }
+
     /// Post-process value cells for a template after `execute_realization_ops`
     /// has populated `named_steps`, dispatching the topology-selector helpers
     /// `closest_point` / `is_on` / `angle_between_surfaces` (task 2324).
@@ -2202,6 +2375,71 @@ impl Engine {
                 named_steps,
                 values,
                 kernel,
+                diagnostics,
+            ) {
+                values.insert(cell.id.clone(), value);
+            }
+        }
+    }
+
+    /// Post-process value cells for a template after `execute_realization_ops`
+    /// has populated `named_steps`, dispatching `@face("name")` and
+    /// `@edge("name")` AdHocSelector expressions (task 3463).
+    ///
+    /// Sibling to `post_process_topology_selectors`. For each
+    /// `ValueCellDecl` in `template.value_cells` whose `default_expr` is a
+    /// `CompiledExprKind::AdHocSelector` with `SelectorKind::Face` or
+    /// `SelectorKind::Edge`, this writes the kernel-resolved `Value::Frame`
+    /// into `values`, overwriting the `Value::Undef` left behind by the
+    /// pure `eval_expr` path. `@point` AdHocSelectors are handled
+    /// entirely by `eval_expr` (Layer 1) and produce `None` here, so
+    /// their cells are left untouched.
+    ///
+    /// Cells whose dispatch returns `None` (non-AdHocSelector expression,
+    /// `@point`, missing `named_steps` entry, non-string-literal arg) are
+    /// left untouched — see
+    /// [`crate::geometry_ops::try_eval_ad_hoc_selector`]'s `None`-return
+    /// contract.
+    ///
+    /// Cells that dispatch but fail to resolve (Unresolved /
+    /// AmbiguousAfterSplit / kernel error) receive `Some(Value::Undef)`:
+    /// the cell is patched to signal that the dispatch fired but produced
+    /// no geometry, and the resolver/kernel pre-emitted a Warning
+    /// diagnostic.
+    ///
+    /// Called from the same three sites as `post_process_topology_selectors`
+    /// so build / build_snapshot / tessellate paths agree on the patched
+    /// value.
+    ///
+    /// Signature takes `kernel: &mut dyn GeometryKernel` (mutable borrow)
+    /// because `extract_faces` / `extract_edges` require `&mut self` on the
+    /// `GeometryKernel` trait. The existing sibling functions take
+    /// `kernel: &dyn GeometryKernel` (immutable); this one diverges from
+    /// that convention because the attribute-lookup step needs sub-shape
+    /// extraction before the read-only resolver and kernel-query steps.
+    fn post_process_ad_hoc_selectors(
+        template: &reify_compiler::TopologyTemplate,
+        named_steps: &HashMap<String, GeometryHandleId>,
+        values: &mut ValueMap,
+        kernel: &mut dyn GeometryKernel,
+        table: &TopologyAttributeTable,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        // Iterate `values` directly without snapshotting (same discipline as
+        // `post_process_topology_selectors`). AdHocSelector cells do not chain
+        // — an `@face` cell's inputs are the `named_steps` handle and a
+        // string literal, never another AdHocSelector cell's output.
+        for cell in &template.value_cells {
+            let default_expr = match &cell.default_expr {
+                Some(e) => e,
+                None => continue,
+            };
+            if let Some(value) = crate::geometry_ops::try_eval_ad_hoc_selector(
+                default_expr,
+                named_steps,
+                kernel,
+                table,
+                cell.span,
                 diagnostics,
             ) {
                 values.insert(cell.id.clone(), value);

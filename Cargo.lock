@@ -4408,10 +4408,12 @@ name = "reify-audit"
 version = "0.1.0"
 dependencies = [
  "reify-audit",
+ "reify-test-support",
  "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
+ "ureq",
 ]
 
 [[package]]
@@ -4443,6 +4445,7 @@ name = "reify-compiler"
 version = "0.1.0"
 dependencies = [
  "indexmap 2.13.0",
+ "reify-compiler",
  "reify-expr",
  "reify-syntax",
  "reify-test-support",
@@ -4514,12 +4517,14 @@ dependencies = [
  "reify-expr",
  "reify-geometry",
  "reify-kernel-occt",
+ "reify-runtime",
  "reify-solver-elastic",
  "reify-syntax",
  "reify-test-support",
  "reify-types",
  "serde",
  "tempfile",
+ "tokio",
  "tracing",
  "xxhash-rust",
  "zstd",
@@ -4551,6 +4556,7 @@ dependencies = [
  "axum",
  "notify",
  "reify-compiler",
+ "reify-config",
  "reify-constraints",
  "reify-eval",
  "reify-geometry",
@@ -4618,6 +4624,7 @@ dependencies = [
  "cxx",
  "cxx-build",
  "inventory",
+ "reify-eval",
  "reify-kernel-occt",
  "reify-mesh-morph",
  "reify-test-support",
@@ -4678,6 +4685,7 @@ dependencies = [
  "reify-compiler",
  "reify-eval",
  "reify-solver-elastic",
+ "reify-test-support",
  "reify-types",
  "serde",
  "serde_json",
@@ -4716,6 +4724,7 @@ name = "reify-solver-elastic"
 version = "0.1.0"
 dependencies = [
  "faer",
+ "inventory",
  "reify-kernel-gmsh",
  "reify-types",
 ]
@@ -6428,6 +6437,20 @@ dependencies = [
  "mutants",
  "proc-macro2",
  "rustc-hash",
+]
+
+[[package]]
+name = "ureq"
+version = "2.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "02d1a66277ed75f640d608235660df48c8e3c19f3b4edb6a263315626cc3c01d"
+dependencies = [
+ "base64 0.22.1",
+ "log",
+ "once_cell",
+ "serde",
+ "serde_json",
+ "url",
 ]
 
 [[package]]

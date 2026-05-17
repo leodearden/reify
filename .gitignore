@@ -29,6 +29,7 @@ data/.orchestrator/queue/*.db*
 .jcodemunch.jsonc
 data/review-checkpoints/
 data/orchestrator/
+data/audit-runs/
 gui/src-tauri/gen/
 orchestrator.log*
 review/reports/

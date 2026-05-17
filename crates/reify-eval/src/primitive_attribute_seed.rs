@@ -86,8 +86,8 @@
 use std::collections::HashMap;
 
 use reify_types::{
-    CapKind, FeatureId, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, QueryError,
-    Role, TopologyAttribute, TopologyAttributeTable, Value,
+    AxisSign, CapKind, FeatureId, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery,
+    QueryError, Role, TopologyAttribute, TopologyAttributeTable, Value,
 };
 
 /// Tolerance for cylinder cap-vs-side classification by face-normal
@@ -98,18 +98,22 @@ use reify_types::{
 /// `topology_selectors` filters.
 const NORMAL_Z_EPSILON: f64 = 1.0e-6;
 
-/// Extract the primitive's faces/edges from `kernel` and seed
+/// Extract the primitive's faces/edges/vertices from `kernel` and seed
 /// `TopologyAttribute` records for each, in one call.
 ///
 /// Convenience wrapper for callers (e.g. `Engine::execute_realization_ops`)
-/// that don't already have pre-extracted face/edge handle vectors and
+/// that don't already have pre-extracted face/edge/vertex handle vectors and
 /// don't need to reuse them downstream. For seedable primitive variants
 /// (`Box`, `Cylinder`, `Sphere`), this calls `kernel.extract_faces` /
-/// `kernel.extract_edges` and then delegates to
-/// [`seed_primitive_attributes`]. For non-seedable variants, it returns
-/// `Ok(())` without calling into the kernel — the dispatch by op kind
-/// happens here so non-primitive ops (Translate / boolean / sweep / …)
-/// pay zero kernel overhead per realization op.
+/// `kernel.extract_edges` and delegates to [`seed_primitive_attributes`].
+/// For `GeometryOp::Box` specifically, it also calls
+/// `kernel.extract_vertices` and passes the resulting handles through so
+/// that `record_box_corner_vertices` populates the 8 `CornerVertex` entries.
+/// For `Cylinder` / `Sphere`, vertex extraction is skipped at zero cost
+/// (no analytic vertices per PRD §2 Q-MM2-1).
+/// For non-seedable variants, returns `Ok(())` without calling into the
+/// kernel — the dispatch by op kind happens here so non-primitive ops
+/// (Translate / boolean / sweep / …) pay zero kernel overhead per op.
 ///
 /// `Engine::execute_realization_ops` cannot use the underlying
 /// [`seed_primitive_attributes`] directly because the kernel is not
@@ -121,14 +125,14 @@ const NORMAL_Z_EPSILON: f64 = 1.0e-6;
 /// should treat any `Err(QueryError)` as auxiliary-metadata failure
 /// (warn and continue) rather than primary geometry failure.
 ///
-/// Visibility: `pub(crate)` — this wrapper exists solely to keep
-/// `Engine::execute_realization_ops`'s borrow brackets clean (see the
-/// rationale paragraph above). The module-level
-/// [`seed_primitive_attributes`] is the public entry point that
-/// integration tests in `tests/topology_attribute_primitives_direct.rs`
-/// consume directly. Re-exporting this wrapper would grow the crate's
-/// public API for a single-call-site helper.
-pub(crate) fn seed_primitive_attributes_for_handle(
+/// Visibility: `pub` — widened from `pub(crate)` in task 3633 (step-4)
+/// so that the integration test
+/// `topology_attribute_primitives_direct::seed_primitive_attributes_for_handle_box_extracts_and_seeds_vertices_too`
+/// (which lives in `tests/` and links against the crate as an external
+/// consumer) can call it directly. The function is a thin wrapper whose
+/// contract is already documented; there is no meaningful privacy boundary
+/// worth preserving here.
+pub fn seed_primitive_attributes_for_handle(
     table: &mut TopologyAttributeTable,
     kernel: &mut dyn GeometryKernel,
     result_handle: GeometryHandleId,
@@ -146,7 +150,24 @@ pub(crate) fn seed_primitive_attributes_for_handle(
     }
     let face_handles = kernel.extract_faces(result_handle)?;
     let edge_handles = kernel.extract_edges(result_handle)?;
-    seed_primitive_attributes(table, kernel, &face_handles, &edge_handles, feature_id, op)
+    // Extract vertices only for Box ops — vertex enumeration includes shape
+    // exploration and is more expensive than face/edge extraction.
+    // Cylinder/Sphere have no analytic vertices (PRD §2 Q-MM2-1), so their
+    // vertex slices stay empty at zero kernel cost.
+    let vertex_handles: Vec<GeometryHandleId> = if matches!(op, GeometryOp::Box { .. }) {
+        kernel.extract_vertices(result_handle)?
+    } else {
+        Vec::new()
+    };
+    seed_primitive_attributes(
+        table,
+        kernel,
+        &face_handles,
+        &edge_handles,
+        &vertex_handles,
+        feature_id,
+        op,
+    )
 }
 
 /// Returns `true` for `GeometryOp` variants that this seeder originates
@@ -159,18 +180,20 @@ fn is_seedable_primitive(op: &GeometryOp) -> bool {
     )
 }
 
-/// Seed per-face/per-edge `TopologyAttribute` records for a primitive
-/// constructor's result handle.
+/// Seed per-face/per-edge/per-vertex `TopologyAttribute` records for a
+/// primitive constructor's result handle.
 ///
 /// Inputs:
 /// - `table`: the table to write entries into.
 /// - `kernel`: kept on the signature for arms that need geometric queries
-///   (e.g. Cylinder uses `GeometryQuery::FaceNormal` to classify caps).
-///   Box / Sphere arms touch only `face_handles` / `edge_handles` and never
-///   call into the kernel.
-/// - `face_handles`, `edge_handles`: TopExp-ordered handle vectors the
-///   caller has pre-extracted (typically via `kernel.extract_faces(...)` /
-///   `extract_edges(...)` on the primitive's result handle, immediately
+///   (Cylinder uses `GeometryQuery::FaceNormal` to classify caps; Box uses
+///   `GeometryQuery::BoundingBox` on each vertex to classify corners).
+///   Sphere arms touch only `face_handles` / `edge_handles` and never call
+///   into the kernel.
+/// - `face_handles`, `edge_handles`, `vertex_handles`: TopExp-ordered handle
+///   vectors the caller has pre-extracted (typically via
+///   `kernel.extract_faces(...)` / `extract_edges(...)` /
+///   `extract_vertices(...)` on the primitive's result handle, immediately
 ///   after `kernel.execute(&op)` returns `Ok(handle)`). Each call to
 ///   `extract_*` allocates fresh handle ids, so callers must reuse the
 ///   same vectors for downstream lookups (tests, propagation).
@@ -180,8 +203,18 @@ fn is_seedable_primitive(op: &GeometryOp) -> bool {
 ///   `Engine::execute_realization_ops` invoke the seeder unconditionally
 ///   on every kernel-success path without per-op gating.
 ///
+/// Vertex seeding:
+/// - `GeometryOp::Box`: each vertex in `vertex_handles` is classified by
+///   the BoundingBox sign of its `(xmin, ymin, zmin)` coordinates (Pos iff
+///   coord >= 0.0). The three-axis sign triple maps to `Role::CornerVertex
+///   { x, y, z }` with `local_index = pack_sign_bits(x, y, z)` (0..7,
+///   deterministic across builds — same Role payload → same local_index).
+/// - `GeometryOp::Cylinder` / `GeometryOp::Sphere`: `vertex_handles` is
+///   ignored (no analytic vertices per PRD §2 Q-MM2-1).
+///
 /// Returns `Err(QueryError)` only when a primitive arm needs a kernel
-/// query (Cylinder's `FaceNormal`) and the kernel reports an error.
+/// query (Cylinder's `FaceNormal`, or Box's vertex `BoundingBox`) and the
+/// kernel reports an error.
 /// Callers should treat this as auxiliary-metadata failure (warn and
 /// continue) rather than a primary geometry failure.
 pub fn seed_primitive_attributes(
@@ -189,14 +222,22 @@ pub fn seed_primitive_attributes(
     kernel: &mut dyn GeometryKernel,
     face_handles: &[GeometryHandleId],
     edge_handles: &[GeometryHandleId],
+    vertex_handles: &[GeometryHandleId],
     feature_id: &FeatureId,
     op: &GeometryOp,
 ) -> Result<(), QueryError> {
     match op {
-        // Box and Sphere have byte-identical face-seeding semantics — every
-        // face gets Role::Side with construction-order local_index. The
-        // shared helper avoids per-arm drift if the invariant changes.
-        GeometryOp::Box { .. } | GeometryOp::Sphere { .. } => {
+        GeometryOp::Box { .. } => {
+            record_all_faces_as_side(table, face_handles, feature_id);
+            record_all_edges_as_new_edge(table, edge_handles, feature_id);
+            record_box_corner_vertices(table, kernel, vertex_handles, feature_id)?;
+            Ok(())
+        }
+        GeometryOp::Sphere { .. } => {
+            // Sphere has byte-identical face-seeding semantics to Box — every
+            // face gets Role::Side with construction-order local_index — but
+            // no analytic vertices per PRD §2 Q-MM2-1, so vertex_handles
+            // is intentionally ignored.
             record_all_faces_as_side(table, face_handles, feature_id);
             record_all_edges_as_new_edge(table, edge_handles, feature_id);
             Ok(())
@@ -377,6 +418,140 @@ fn parse_normal_z(value: &Value) -> Result<f64, QueryError> {
     )))
 }
 
+/// Seed `Role::CornerVertex { x, y, z }` entries for each vertex of a
+/// Box primitive.
+///
+/// Each vertex's bounding box `(xmin, ymin, zmin)` encodes its position
+/// (for a vertex `xmin == xmax`, etc.). Origin-centered box convention:
+/// `AxisSign::Pos` iff coord >= 0.0, `AxisSign::Neg` iff coord < 0.0.
+/// `local_index` = `pack_sign_bits(x, y, z)` — 0..7, deterministic across
+/// builds.
+fn record_box_corner_vertices(
+    table: &mut TopologyAttributeTable,
+    kernel: &mut dyn GeometryKernel,
+    vertex_handles: &[GeometryHandleId],
+    feature_id: &FeatureId,
+) -> Result<(), QueryError> {
+    for &vertex_id in vertex_handles {
+        let bbox_value = kernel.query(&GeometryQuery::BoundingBox(vertex_id))?;
+        let (xmin, ymin, zmin) = parse_bbox_xyz_min(&bbox_value)?;
+        let x = if xmin >= 0.0 { AxisSign::Pos } else { AxisSign::Neg };
+        let y = if ymin >= 0.0 { AxisSign::Pos } else { AxisSign::Neg };
+        let z = if zmin >= 0.0 { AxisSign::Pos } else { AxisSign::Neg };
+        table.record(
+            vertex_id,
+            TopologyAttribute {
+                feature_id: feature_id.clone(),
+                role: Role::CornerVertex { x, y, z },
+                local_index: pack_sign_bits(x, y, z),
+                user_label: None,
+                mod_history: Vec::new(),
+            },
+        );
+    }
+    Ok(())
+}
+
+/// Map a (x, y, z) AxisSign triple to a unique index in 0..7.
+///
+/// Formula: `(x_pos_bit << 2) | (y_pos_bit << 1) | z_pos_bit`
+/// where Pos=1, Neg=0. This is deterministic: same Role payload →
+/// same local_index across builds. X-major ordering matches the
+/// conventional `(x,y,z)` reading order.
+fn pack_sign_bits(x: AxisSign, y: AxisSign, z: AxisSign) -> u32 {
+    let xb = u32::from(x == AxisSign::Pos);
+    let yb = u32::from(y == AxisSign::Pos);
+    let zb = u32::from(z == AxisSign::Pos);
+    (xb << 2) | (yb << 1) | zb
+}
+
+/// Extract `(xmin, ymin, zmin)` from a `GeometryQuery::BoundingBox`
+/// response payload.
+///
+/// The kernel emits a flat JSON string of the form:
+/// `{"xmin":NUM,"ymin":NUM,"zmin":NUM,"xmax":NUM,"ymax":NUM,"zmax":NUM}`.
+/// For a vertex, `xmin == xmax` (degenerate bbox), so reading the `*min`
+/// triple is sufficient to recover the vertex position.
+///
+/// Mirrors the `parse_normal_z` pattern — strip braces, split on commas,
+/// parse each `"key":NUM` pair. Same error-wording convention for diagnostic
+/// consistency.
+pub(crate) fn parse_bbox_xyz_min(value: &Value) -> Result<(f64, f64, f64), QueryError> {
+    let s = match value {
+        Value::String(s) => s,
+        other => {
+            return Err(QueryError::QueryFailed(format!(
+                "BoundingBox returned non-string value: {other:?}"
+            )));
+        }
+    };
+    let inner = s
+        .trim()
+        .strip_prefix('{')
+        .and_then(|t| t.strip_suffix('}'))
+        .ok_or_else(|| {
+            QueryError::QueryFailed(format!("BoundingBox returned malformed JSON: {s:?}"))
+        })?;
+    let mut xmin: Option<f64> = None;
+    let mut ymin: Option<f64> = None;
+    let mut zmin: Option<f64> = None;
+    for part in inner.split(',') {
+        let mut kv = part.splitn(2, ':');
+        let key = kv
+            .next()
+            .ok_or_else(|| {
+                QueryError::QueryFailed(format!(
+                    "BoundingBox returned malformed JSON (missing key): {s:?}"
+                ))
+            })?
+            .trim()
+            .trim_matches('"');
+        let val = kv
+            .next()
+            .ok_or_else(|| {
+                QueryError::QueryFailed(format!(
+                    "BoundingBox returned malformed JSON (missing value): {s:?}"
+                ))
+            })?
+            .trim();
+        match key {
+            "xmin" => {
+                xmin = Some(val.parse::<f64>().map_err(|_| {
+                    QueryError::QueryFailed(format!(
+                        "BoundingBox xmin is not a valid f64: {val:?} (full payload {s:?})"
+                    ))
+                })?)
+            }
+            "ymin" => {
+                ymin = Some(val.parse::<f64>().map_err(|_| {
+                    QueryError::QueryFailed(format!(
+                        "BoundingBox ymin is not a valid f64: {val:?} (full payload {s:?})"
+                    ))
+                })?)
+            }
+            "zmin" => {
+                zmin = Some(val.parse::<f64>().map_err(|_| {
+                    QueryError::QueryFailed(format!(
+                        "BoundingBox zmin is not a valid f64: {val:?} (full payload {s:?})"
+                    ))
+                })?)
+            }
+            // xmax/ymax/zmax and any other keys tolerated silently
+            _ => {}
+        }
+    }
+    let xmin = xmin.ok_or_else(|| {
+        QueryError::QueryFailed(format!("BoundingBox payload missing xmin: {s:?}"))
+    })?;
+    let ymin = ymin.ok_or_else(|| {
+        QueryError::QueryFailed(format!("BoundingBox payload missing ymin: {s:?}"))
+    })?;
+    let zmin = zmin.ok_or_else(|| {
+        QueryError::QueryFailed(format!("BoundingBox payload missing zmin: {s:?}"))
+    })?;
+    Ok((xmin, ymin, zmin))
+}
+
 #[cfg(test)]
 mod tests {
     //! Pure no-OCCT unit tests for the seeder dispatch.
@@ -476,7 +651,7 @@ mod tests {
         // entries (rather than seeding garbage), but a fall-through into
         // the kernel for a Cylinder-shaped variant would still surface
         // via the kernel's `MockKernel::query` error.
-        seed_primitive_attributes(&mut table, &mut kernel, &[], &[], &feature_id(), op)
+        seed_primitive_attributes(&mut table, &mut kernel, &[], &[], &[], &feature_id(), op)
             .expect("seed_primitive_attributes must return Ok(()) for non-seedable variants");
         assert!(
             table.is_empty(),

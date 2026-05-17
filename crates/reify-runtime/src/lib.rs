@@ -2,6 +2,9 @@ pub mod commitment;
 pub mod concurrent;
 pub mod concurrent_eval;
 pub mod priority_promotion;
+pub mod warm_startable_assert;
+
+pub use warm_startable_assert::assert_warm_startable_coextensive;
 
 use std::collections::HashSet;
 

@@ -421,9 +421,7 @@ structure def Glass : Insulating {
         loop {
             match &cursor.kind {
                 CompiledExprKind::Literal(Value::Real(v)) => return Some(*v),
-                CompiledExprKind::BinOp { op, left, .. }
-                    if matches!(op, BinOp::Mul | BinOp::Div) =>
-                {
+                CompiledExprKind::BinOp { op: BinOp::Mul | BinOp::Div, left, .. } => {
                     cursor = left;
                 }
                 _ => return None,

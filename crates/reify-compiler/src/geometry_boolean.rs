@@ -61,24 +61,8 @@ fn resolve_boolean_arg(
     // outer object is an IndexAccess rather than a MemberAccess) are intentionally
     // out of scope for task 3512 and fall through to the generic diagnostic.
     // Extending boolean-arg routing to that shape is a post-3512 follow-up.
-    if let reify_syntax::ExprKind::MemberAccess {
-        object: outer_obj,
-        member,
-    } = &arg.kind
-        && let reify_syntax::ExprKind::MemberAccess {
-            object: inner_obj,
-            member: sub_name,
-        } = &outer_obj.kind
-        && let reify_syntax::ExprKind::Ident(self_name) = &inner_obj.kind
-        && self_name == "self"
-        && try_emit_cross_sub_geometry(
-            scope,
-            sub_name.as_str(),
-            member.as_str(),
-            arg.span,
-            diagnostics,
-        )
-        .is_some()
+    if let Some((sub_name, member)) = match_self_sub_member(arg)
+        && try_emit_cross_sub_geometry(scope, sub_name, member, arg.span, diagnostics).is_some()
     {
         // Specific deferred diagnostic emitted; skip generic fallback.
         return None;

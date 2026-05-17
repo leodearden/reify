@@ -20,6 +20,7 @@ import {
   AutoResolvePanel,
 } from './panels';
 import type { DiagnosticEntry } from './panels';
+import { WarmPoolDebugPanel } from './debug/WarmPoolDebugPanel';
 import { Splitter } from './components/Splitter';
 import { KeyboardHelp } from './components/KeyboardHelp';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
@@ -447,6 +448,8 @@ const App: Component = () => {
   // Keyboard help overlay state
   const [showHelp, setShowHelp] = createSignal(false);
   const [exporting, setExporting] = createSignal(false);
+  // Gate for REIFY_DEBUG=1 panels (WarmPoolDebugPanel, etc.) — set in initApp()
+  const [debugEnabled, setDebugEnabled] = createSignal(false);
 
   // Toast queue state
   const [toasts, setToasts] = createSignal<ToastMessage[]>([]);
@@ -872,6 +875,7 @@ const App: Component = () => {
     // Initialize debug bridge if REIFY_DEBUG=1 (dynamic import for tree-shaking)
     try {
       if (await isDebugEnabled()) {
+        setDebugEnabled(true);
         const { initDebugBridge } = await import('./debug');
         const unsub = await initDebugBridge({
           engine: engineStore,
@@ -1328,6 +1332,10 @@ const App: Component = () => {
                   auto-restores (unmounts) when complete — no bookkeeping needed. */}
               <Show when={engineStore.state.autoResolve.active}>
                 <AutoResolvePanel state={engineStore.state.autoResolve} />
+              </Show>
+              {/* WarmPoolDebugPanel: REIFY_DEBUG=1 only — PRD §11 Q6 resolution */}
+              <Show when={debugEnabled()}>
+                <WarmPoolDebugPanel />
               </Show>
               <Show when={mechanismStore.state.descriptors.length > 0}>
                 <MechanismPanel

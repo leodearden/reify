@@ -16,7 +16,10 @@ pub mod hex;
 pub mod tet;
 pub mod wedge;
 
-pub use global::{AssemblyElement, AssemblyMode, assemble_global_stiffness};
+pub use global::{
+    AssemblyElement, AssemblyMode, OrphanDofsSummary, assemble_global_stiffness,
+    detect_orphan_dofs,
+};
 
 #[cfg(test)]
 pub(crate) mod test_support;

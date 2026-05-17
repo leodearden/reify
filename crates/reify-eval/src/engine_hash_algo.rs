@@ -106,6 +106,15 @@ pub(crate) const CONTRIBUTORS_RELATIVE: &[&str] = &[
     "../../Cargo.lock",
 ];
 
+/// Suffix set shared by the bare dot-prefix branch and the extension branch of
+/// [`is_editor_debris`].  Kept as a single constant so both branches always
+/// test the same set — a future addition to one cannot silently diverge from
+/// the other.
+#[allow(dead_code)]
+const DEBRIS_SUFFIXES: &[&str] = &[
+    "swp", "swo", "swn", "bk", "bak", "orig", "rej", "tmp",
+];
+
 /// Returns true when `file_name` matches a known editor or OS debris pattern.
 ///
 /// Applied during directory iteration (after sorting, before recursion) so
@@ -114,13 +123,14 @@ pub(crate) const CONTRIBUTORS_RELATIVE: &[&str] = &[
 /// listed in `build.rs` are **not** passed through this filter (filtering only
 /// happens inside the directory-enumeration branch of `walk_recursive`).
 ///
-/// **Root-directory bypass:** When `walk_contributor` is called with a directory
-/// `root`, that root path itself is never filtered — only its *children* are
-/// checked.  If a caller ever passes a root directory whose final component
-/// matches a debris pattern (e.g. `/tmp/.DS_Store/`) it will still be entered
-/// and its contents walked.  This is intentional: the filter's purpose is to
-/// exclude transient files that appear *alongside* real sources, not to gate
-/// which top-level contributors the caller may name.
+/// **Root-directory bypass:** When `walk_recursive` enters a directory, the
+/// directory's own name is never tested against this filter — only the names
+/// of its children are.  A caller that names a top-level contributor whose
+/// final path component matches a debris pattern (e.g. `/tmp/.DS_Store/`)
+/// will still have the directory entered and its contents walked.  This is
+/// intentional: the filter's purpose is to exclude transient files that
+/// appear *alongside* real sources, not to gate which top-level contributors
+/// the caller may name.
 ///
 /// # Denylist rationale
 ///
@@ -137,14 +147,17 @@ pub(crate) const CONTRIBUTORS_RELATIVE: &[&str] = &[
 /// | Pattern | Examples |
 /// |---------|---------|
 /// | Extension in `{swp, swo, swn, bk, bak, orig, rej, tmp}` | `.foo.swp`, `bar.orig` |
+/// | Bare dot-prefixed name in `{swp, swo, swn, bk, bak, orig, rej, tmp}` | `.swp`, `.bak` |
 /// | Exact name (case-insensitive) `{.ds_store, thumbs.db, desktop.ini}` | `.DS_Store` |
 /// | Name ending with `~` | `foo.rs~` (Emacs backup) |
+///
+/// All four rules apply uniformly to both files and directory names encountered
+/// during enumeration.
 // Used by `walk_recursive` which is itself `#[allow(dead_code)]`.
 // See walk_contributor for inline-never workaround history (task 3429).
 #[allow(dead_code)]
 fn is_editor_debris(file_name: &OsStr) -> bool {
-    let name = file_name.to_string_lossy();
-    let name_lower = name.to_lowercase();
+    let name_lower = file_name.to_string_lossy().to_lowercase();
 
     // Emacs backup: file ends with `~`.
     if name_lower.ends_with('~') {
@@ -159,13 +172,21 @@ fn is_editor_debris(file_name: &OsStr) -> bool {
         return true;
     }
 
+    // Bare dot-prefixed name with no stem (e.g. `.swp`, `.bak`).
+    // `Path::extension()` returns `None` for these because the leading dot is
+    // treated as the beginning of the stem, not as a separator — so the
+    // extension branch below would silently miss them.  Strip the leading dot
+    // and match the remainder against DEBRIS_SUFFIXES.
+    if let Some(stripped) = name_lower.strip_prefix('.')
+        && DEBRIS_SUFFIXES.contains(&stripped)
+    {
+        return true;
+    }
+
     // Extension-based matches: extract the last `.`-delimited component.
-    if let Some(ext) = std::path::Path::new(&*name).extension() {
+    if let Some(ext) = std::path::Path::new(file_name).extension() {
         let ext_lower = ext.to_string_lossy().to_lowercase();
-        if matches!(
-            ext_lower.as_str(),
-            "swp" | "swo" | "swn" | "bk" | "bak" | "orig" | "rej" | "tmp"
-        ) {
+        if DEBRIS_SUFFIXES.contains(&ext_lower.as_str()) {
             return true;
         }
     }

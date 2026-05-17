@@ -26,6 +26,66 @@ use crate::types::{
     format_value,
 };
 
+// ── Persistent-cache startup sweep (task 3698) ────────────────────────────────
+
+/// Test-friendly seam: sweep a caller-supplied `cache_root`.
+///
+/// Thin wrapper over [`reify_eval::sweep_persistent_cache_at_startup`] exposed
+/// as a `pub(crate)` function so unit tests can drive a hermetic `TempDir`
+/// without manipulating process env (which is not thread-safe in in-process
+/// tests).  Not part of `reify_gui`'s public API.
+///
+/// Returns the [`reify_eval::persistent_cache::SweepReport`] so tests can
+/// assert on `tempfiles_removed` / `orphan_dirs_removed`.
+pub(crate) fn sweep_persistent_cache(
+    cache_root: &std::path::Path,
+) -> reify_eval::persistent_cache::SweepReport {
+    reify_eval::sweep_persistent_cache_at_startup(cache_root)
+}
+
+/// Production startup hook: resolve `cache_root` from process env and run the
+/// sweep.
+///
+/// Called once from `gui/src-tauri/src/main.rs` before `EngineSession`
+/// construction so the stale-tempfile and orphan-directory cleanup runs on
+/// every GUI launch (task 3698).
+///
+/// Resolution mirrors `reify-cli`'s `resolve_cache_root` pipeline:
+/// `REIFY_CACHE_DIR` → `REIFY_CACHE_MAX_BYTES` / `HOME` / `XDG_CACHE_HOME`.
+/// On resolver error (e.g. malformed `REIFY_CACHE_MAX_BYTES`) the sweep is
+/// skipped and the error is logged at `tracing::debug!` level — matching the
+/// CLI's policy so both entry points behave identically on bad env.
+/// The `SweepReport` is discarded.
+pub fn bootstrap_persistent_cache_sweep() {
+    use reify_config::cache::{CacheResolverInputs, resolve_cache};
+
+    let env_dir = std::env::var("REIFY_CACHE_DIR").ok();
+    let env_max_bytes = std::env::var("REIFY_CACHE_MAX_BYTES").ok();
+    let xdg_cache_home = std::env::var("XDG_CACHE_HOME").ok();
+    let home = std::env::var("HOME").unwrap_or_default();
+
+    let inputs = CacheResolverInputs {
+        cli_dir: None,
+        env_dir: env_dir.as_deref(),
+        env_max_bytes: env_max_bytes.as_deref(),
+        user_config: None,
+        project_config: None,
+        home: std::path::Path::new(&home),
+        xdg_cache_home: xdg_cache_home.as_deref(),
+    };
+
+    match resolve_cache(&inputs) {
+        Ok(r) => {
+            let _ = sweep_persistent_cache(&r.dir);
+        }
+        Err(e) => {
+            tracing::debug!("persistent-cache sweep skipped — resolver error: {e}");
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 mod core_state {
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
@@ -36,17 +96,49 @@ mod core_state {
     #[cfg(test)]
     use reify_types::{ConstraintSolver, Diagnostic};
 
+    /// Describes how `commit_state` should handle the `file_path` core field.
+    ///
+    /// Using an explicit enum instead of `Option<PathBuf>` makes the intent
+    /// unambiguous at every call site and prevents a future caller from
+    /// accidentally passing `None` while meaning "clear the path" (which is
+    /// not a supported operation — `commit_state` never clears `file_path`).
+    ///
+    /// ## Variants
+    ///
+    /// - `Set(PathBuf)` — overwrite `file_path` with the given path.  Used by
+    ///   `load_file`, which passes `FilePathUpdate::Set(path.to_path_buf())`.
+    ///   Because Rust evaluates all call arguments before entering the callee body,
+    ///   a panic in `to_path_buf()` lands in the pre-commit window: none of the
+    ///   five fields are written.
+    /// - `Preserve` — leave `file_path` unchanged.  Used by `load_from_source`
+    ///   and `update_source`, which do not change which file is loaded; passing
+    ///   `Preserve` keeps the project-root anchor set by a prior `load_file` intact.
+    pub(crate) enum FilePathUpdate {
+        /// Set `file_path` to the given `PathBuf`.
+        Set(PathBuf),
+        /// Leave `file_path` unchanged.
+        Preserve,
+    }
+
     /// The six core fields of `EngineSession` that must stay consistent across panics.
     ///
     /// Fields have **no visibility marker** — they are strictly private to this `impl`
     /// block.  Any direct field assignment from outside (e.g. `session.core.compiled = …`)
     /// fails to compile, enforcing the poison-recovery invariant at the type level.
-    /// Mutation is exposed only through the three commit methods:
-    /// - `commit_state` — four-field atomic commit after a successful compile cycle
+    /// The only commit points that touch the five invariant-bearing fields (`compiled`,
+    /// `source_map`, `module_name`, `last_check`, `file_path`) are:
+    /// - `commit_state` — five-field atomic commit after a successful compile cycle
+    ///   (`file_path` is updated when `FilePathUpdate::Set` is passed; `FilePathUpdate::Preserve`
+    ///   leaves it unchanged)
     /// - `commit_check` — single-field commit for `last_check` (used by `set_parameter`)
-    /// - `commit_file_path` — single-field commit for `file_path` (used by `load_file`)
     ///
-    /// See `engine_lock.rs:26-49` for the invariant rationale.
+    /// `engine_mut()` exposes `&mut Engine` for method dispatch and does not touch the
+    /// invariant-bearing fields.  The `#[cfg(test)]` mutators (`break_module_name`,
+    /// `break_source_map`, `inject_compiled`, `recheck`, `inject_diagnostic`, `with_solver`)
+    /// are intentional invariant-breakers — they are absent from production builds, so the
+    /// poison-recovery property holds in production.
+    ///
+    /// See `engine_lock.rs` for the invariant rationale.
     pub(crate) struct CoreState {
         engine: Engine,
         compiled: Option<CompiledModule>,
@@ -134,43 +226,38 @@ mod core_state {
         /// `engine_lock::with_engine_lock` safely recover from a poisoned mutex:
         /// a panic inside `set_parameter` between `edit_check` and `commit_check`
         /// leaves `last_check` as the previous value, not a partially-updated one.
-        ///
-        /// Visibility is `pub(crate)` (rather than `pub(super)`) so that the
-        /// structural marker assertion in `tests/engine_tests.rs` can reference
-        /// the function pointer — the type-level enforcement comes from field
-        /// privacy, not from restricting who can call commit methods.
         pub(crate) fn commit_check(&mut self, check: CheckResult) {
             self.last_check = Some(check);
         }
 
-        /// Atomically commit a resolved `PathBuf` into `file_path`.
-        ///
-        /// This is the **single** write-point for `file_path`, used by
-        /// `EngineSession::load_file` **after** `commit_state` has already succeeded.
-        /// The ordering invariant — `commit_file_path` must never run before
-        /// `commit_state` — means a failed parse/compile leaves `file_path` as `None`
-        /// (or its previous value) while the core fields remain at the last-good
-        /// committed state.  See the deferred-assignment comment in `load_file`.
-        ///
-        /// `pub(crate)` for the same reason as `commit_check`: the marker assertion
-        /// in `tests/engine_tests.rs` requires symbol visibility.
-        pub(crate) fn commit_file_path(&mut self, path: PathBuf) {
-            self.file_path = Some(path);
-        }
-
-        /// Commit the four canonical core fields after a successful
+        /// Commit the five canonical core fields after a successful
         /// parse+compile+check cycle.
         ///
         /// This is the **single** multi-field commit point.  Writes proceed in a
         /// fixed order: `source_map` is rebuilt first (clear then insert), then
-        /// `module_name`, `compiled`, `last_check`.  A panic on an intermediate
-        /// allocation (e.g. inside `source_map.insert` or a `to_string()` call) may
-        /// leave the fields in a partially-updated state.  This is tolerated: the
-        /// surrounding mutex is recovered via `PoisonError::into_inner`, and the
-        /// affected fields are either rebuilt on the next `commit_state` call or
-        /// consumed only through graceful-degrade paths (`resolve_source`,
-        /// `get_diagnostics`).  Callers must only invoke this after compilation and
-        /// `check()` have both succeeded.
+        /// `module_name`, `compiled`, `last_check`, and finally `file_path` (when
+        /// `FilePathUpdate::Set`).  This is best-effort atomic: a panic on an
+        /// intermediate allocation (e.g. inside `source_map.insert` or a
+        /// `to_string()` call) may leave the fields in a partially-updated state.
+        /// That is tolerated: the surrounding mutex is recovered via
+        /// `PoisonError::into_inner`, and the affected fields are either rebuilt on
+        /// the next `commit_state` call or consumed only through graceful-degrade
+        /// paths (`resolve_source`, `get_diagnostics`).
+        /// Callers must only invoke this after compilation and `check()` have
+        /// both succeeded.
+        ///
+        /// ## `file_path` parameter
+        ///
+        /// Pass a [`FilePathUpdate`] variant to control whether `file_path` is updated:
+        ///
+        /// - `FilePathUpdate::Set(p)` — sets `self.file_path = Some(p)`.  Pass
+        ///   `FilePathUpdate::Set(path.to_path_buf())` from `load_file`.  Because Rust
+        ///   evaluates all call arguments before entering the callee body, a panic in
+        ///   `to_path_buf()` lands in the pre-commit window: none of the five fields are
+        ///   written (stronger than best-effort — the entire commit is skipped).
+        /// - `FilePathUpdate::Preserve` — leaves the existing `file_path` unchanged.
+        ///   `load_from_source` and `update_source` pass `Preserve`; this keeps the
+        ///   project-root anchor set by a prior `load_file` intact.
         ///
         /// The five cache fields on `EngineSession` (`def_preview_cache`,
         /// `parsed_cache`, `line_offsets_cache`, `consumed_idents_cache`,
@@ -182,6 +269,7 @@ mod core_state {
             check_result: CheckResult,
             module_name: &str,
             source: &str,
+            file_path: FilePathUpdate,
         ) {
             self.source_map.clear();
             self.source_map.insert(
@@ -191,6 +279,9 @@ mod core_state {
             self.module_name = Some(module_name.to_string());
             self.compiled = Some(compiled);
             self.last_check = Some(check_result);
+            if let FilePathUpdate::Set(p) = file_path {
+                self.file_path = Some(p);
+            }
         }
 
         // ---- Test-only mutators (cfg(test)) ---------------------------------
@@ -241,7 +332,6 @@ mod core_state {
         pub(crate) fn recheck(&mut self) {
             if let Some(compiled) = self.compiled.as_ref().cloned() {
                 let check_result = self.engine.check(&compiled);
-                self.compiled = Some(compiled);
                 self.last_check = Some(check_result);
             }
         }
@@ -261,6 +351,7 @@ mod core_state {
 }
 
 pub(crate) use core_state::CoreState;
+pub(crate) use core_state::FilePathUpdate;
 
 /// Discriminant for a stored compile failure: records which execution path produced the error.
 ///
@@ -313,17 +404,22 @@ pub(crate) struct CompileFailure {
 ///
 /// **Mutation is type-enforced via `CoreState`:** the six core fields are held
 /// in a private sub-struct whose fields have no visibility marker, so any direct
-/// field assignment from outside `CoreState`'s impl fails to compile.  Mutation
-/// is exposed only through `commit_state` (four-field atomic commit after a
-/// successful compile cycle), `commit_check` (single-field for `last_check`
-/// after `set_parameter`), and `commit_file_path` (single-field for `file_path`
-/// after `load_file`).  See `engine_lock.rs` for the poison-recovery rationale.
+/// field assignment from outside `CoreState`'s impl fails to compile.  The only
+/// commit points that touch the five invariant-bearing fields are `commit_state`
+/// (five-field atomic commit, `file_path` updated via `FilePathUpdate::Set` /
+/// preserved via `FilePathUpdate::Preserve`) and `commit_check`
+/// (single-field `last_check`); `engine_mut()` does not touch those fields,
+/// and the `#[cfg(test)]` mutators are intentional invariant-breakers absent from
+/// production builds — the poison-recovery property holds in production.
+/// See `engine_lock.rs` for the rationale.
 pub struct EngineSession {
     /// The six core fields protected by the type system via `CoreState`.
     ///
     /// Fields are strictly private — direct assignment from outside `CoreState`'s
-    /// impl fails to compile.  Use `commit_state`, `commit_check`, or
-    /// `commit_file_path` for mutation.
+    /// impl fails to compile.  Use `commit_state` (five-field atomic commit,
+    /// `file_path` updated via `FilePathUpdate::Set` / preserved via `FilePathUpdate::Preserve`)
+    /// or `commit_check` (single-field
+    /// `last_check`) to commit the invariant-bearing fields atomically.
     core: CoreState,
     /// In-memory cache for `get_def_preview` results.
     ///
@@ -372,6 +468,15 @@ pub struct EngineSession {
     /// (the default), all emit paths are no-ops — existing tests that construct an
     /// EngineSession without installing an emitter are unaffected.
     auto_resolve_emitter: Option<Arc<dyn AutoResolveEmitter>>,
+    /// Optional warm-pool event sink installed by the GUI layer.
+    ///
+    /// When `Some`, `drain_and_emit_warm_pool_events` forwards each drained
+    /// [`reify_eval::warm_pool::WarmPoolEvent`] (translated to the IPC
+    /// [`crate::types::WarmPoolEvent`] shape) to the installed emitter. When
+    /// `None` (the default), the drain still records events on the journal but
+    /// no IPC emission occurs — existing tests that don't install an emitter are
+    /// unaffected.
+    warm_pool_event_emitter: Option<Arc<dyn WarmPoolEventEmitter>>,
 }
 
 /// Trait for sinking auto-resolve loop events to the GUI transport layer.
@@ -383,6 +488,17 @@ pub trait AutoResolveEmitter: Send + Sync {
     fn start(&self);
     fn iteration(&self, iter: AutoResolveIteration);
     fn complete(&self);
+}
+
+/// Trait for sinking warm-pool telemetry events to the GUI transport layer.
+///
+/// Implemented by [`crate::TauriWarmPoolEventEmitter`] in `main.rs` for the
+/// production path (calls `event_bus::emit_typed` with channel `"warm-pool-event"`),
+/// and by `RecordingWarmPoolEventEmitter` in engine tests.
+///
+/// The trait is object-safe: no method takes or returns `Self`.
+pub trait WarmPoolEventEmitter: Send + Sync {
+    fn emit(&self, event: crate::types::WarmPoolEvent);
 }
 
 /// Build the normalized source-map key for a module name: `"{name}.ri"`.
@@ -735,6 +851,7 @@ impl EngineSession {
             consumed_idents_cache: None,
             compile_failure: None,
             auto_resolve_emitter: None,
+            warm_pool_event_emitter: None,
         }
     }
 
@@ -745,6 +862,16 @@ impl EngineSession {
     /// on the emitter.  Replaces any previously installed emitter.
     pub fn set_auto_resolve_emitter(&mut self, emitter: Arc<dyn AutoResolveEmitter>) {
         self.auto_resolve_emitter = Some(emitter);
+    }
+
+    /// Install a warm-pool event emitter on this session.
+    ///
+    /// After installation, every `drain_and_emit_warm_pool_events` call
+    /// (which happens after each engine check/build/edit call) forwards
+    /// translated IPC [`crate::types::WarmPoolEvent`] values to the emitter.
+    /// Replaces any previously installed emitter.
+    pub fn set_warm_pool_event_emitter(&mut self, emitter: Arc<dyn WarmPoolEventEmitter>) {
+        self.warm_pool_event_emitter = Some(emitter);
     }
 
     /// Install a constraint solver into the underlying Engine for testing.
@@ -770,6 +897,22 @@ impl EngineSession {
     pub(crate) fn check_and_emit_for_test(&mut self, compiled: &CompiledModule) {
         let r = self.core.engine_mut().check(compiled);
         self.emit_auto_resolve_if_any(&r);
+        self.drain_and_emit_warm_pool_events();
+    }
+
+    /// Expose the engine's warm pool for test-only manipulation (e.g. pre-populating
+    /// events before asserting that `drain_and_emit_warm_pool_events` forwards them).
+    #[cfg(test)]
+    pub(crate) fn warm_pool_mut_for_test(&mut self) -> &mut reify_eval::warm_pool::WarmStatePool {
+        self.core.engine_mut().warm_pool_mut()
+    }
+
+    /// Trigger a warm-pool drain-and-emit cycle in tests without needing a full
+    /// engine check/build call. Used by step-5 tests to verify the emitter
+    /// contract in isolation.
+    #[cfg(test)]
+    pub(crate) fn drain_and_emit_warm_pool_events_for_test(&mut self) {
+        self.drain_and_emit_warm_pool_events();
     }
 
     /// Emit auto-resolve events if an emitter is installed and the check produced
@@ -780,6 +923,34 @@ impl EngineSession {
     /// - `check.resolved_params` is empty (no auto params were resolved).
     ///
     /// When both conditions are met, fires `start → iteration → complete` in order.
+    /// Drain the engine's warm-pool event buffer, record each on the journal,
+    /// and forward the translated IPC events to the installed
+    /// [`WarmPoolEventEmitter`] (if any).
+    ///
+    /// Called after each engine call site that may produce donations or
+    /// evictions (check, edit_check, build, tessellate_snapshot, etc.) — the
+    /// same sites that invoke [`Self::emit_auto_resolve_if_any`].
+    ///
+    /// When no emitter is installed, the drain still records events on the
+    /// journal (M-010 wiring) but no IPC emission occurs.
+    ///
+    /// # Design note (follow-up opportunity)
+    ///
+    /// The five call sites that pair `emit_auto_resolve_if_any` + this method
+    /// are shaping into a "post-engine-call telemetry drain" pattern.  A future
+    /// refactor could extract a single `post_engine_call_telemetry(&self, check:
+    /// &CheckResult)` helper so new engine entry points can't forget to drain
+    /// warm-pool events and silently lose telemetry.  Tracked in task review
+    /// suggestion #4 (task 3541 amendment pass).
+    fn drain_and_emit_warm_pool_events(&mut self) {
+        let raw_events = self.core.engine_mut().drain_and_record_warm_pool_events();
+        if let Some(emitter) = &self.warm_pool_event_emitter {
+            for ev in &raw_events {
+                emitter.emit(crate::types::WarmPoolEvent::from_engine_event(ev));
+            }
+        }
+    }
+
     fn emit_auto_resolve_if_any(&self, check: &CheckResult) {
         let emitter = match &self.auto_resolve_emitter {
             Some(e) => e,
@@ -807,34 +978,44 @@ impl EngineSession {
 
     /// Build the `parameters` map for an `AutoResolveIteration` payload.
     ///
-    /// Only `Value::Scalar` resolved params are included; other variants are
-    /// filtered out (auto parameters are always physical quantities, so non-scalar
-    /// resolved values indicate an unexpected state — skip rather than emit garbage).
+    /// For `Value::Scalar` resolved params, emits the engineering-unit display
+    /// value, formatted number string, and unit symbol.
+    ///
+    /// For non-Scalar resolved params (which indicate a buggy or unexpected
+    /// solver implementation — auto parameters are always physical quantities),
+    /// emits a sentinel `{ value: f64::NAN, unit: "", display: "<non-scalar>" }`
+    /// so the GUI panel can render an error chip instead of silently omitting the
+    /// cell.  The `warn!` log is kept for ops observability.
     fn build_parameters_payload(
         resolved: &HashMap<ValueCellId, Value>,
     ) -> HashMap<String, AutoResolveParameterValue> {
         let mut out = HashMap::new();
         for (cell_id, value) in resolved {
-            if let Value::Scalar { si_value, dimension } = value {
-                let (display_value, unit) = dimension.to_display_units(*si_value);
-                let display = format!(
-                    "{}{}",
-                    reify_types::value::format_display_number(display_value),
-                    unit
-                );
-                out.insert(
-                    cell_id.to_string(),
-                    AutoResolveParameterValue {
-                        value: display_value,
-                        unit: unit.to_string(),
-                        display,
-                    },
-                );
-            } else {
-                warn!(
-                    "auto-resolve: resolved param {:?} is not a Scalar; skipping",
-                    cell_id
-                );
+            match value.format_display_triple() {
+                Some((display_value, formatted, unit)) => {
+                    out.insert(
+                        cell_id.to_string(),
+                        AutoResolveParameterValue {
+                            value: display_value,
+                            display: format!("{}{}", formatted, unit),
+                            unit,
+                        },
+                    );
+                }
+                None => {
+                    warn!(
+                        "auto-resolve: resolved param {:?} is not a Scalar; emitted NaN sentinel",
+                        cell_id
+                    );
+                    out.insert(
+                        cell_id.to_string(),
+                        AutoResolveParameterValue {
+                            value: f64::NAN,
+                            unit: String::new(),
+                            display: "<non-scalar>".to_string(),
+                        },
+                    );
+                }
             }
         }
         out
@@ -917,12 +1098,21 @@ impl EngineSession {
         let check_result = self.core.engine_mut().check(&compiled);
 
         // Atomically commit all state after check() succeeds.
-        self.commit_state(parsed, compiled, check_result, module_name, source);
+        // Preserve file_path: load_from_source has no file on disk; keep any
+        // existing file_path from a prior load_file call.
+        self.commit_state(parsed, compiled, check_result, module_name, source, FilePathUpdate::Preserve);
 
-        // Emit auto-resolve events after committing state, consistent with the
-        // panic-safety ordering story: all state mutations are complete before
-        // any events fire.
-        self.emit_auto_resolve_if_any(self.core.last_check().unwrap());
+        // Emit auto-resolve events after committing state.
+        //
+        // Cross-cutting ordering invariant: all four mutating entry points
+        // (load_from_source, load_file, update_source, set_parameter) emit AFTER all
+        // session state mutations are committed.  Combined with `core.commit_state` /
+        // `core.commit_check` writing `last_check` unconditionally, a panic during state
+        // commit cannot leak phantom auto-resolve events to the GUI.
+        self.emit_auto_resolve_if_any(self.core.last_check().expect(
+            "emit_auto_resolve_if_any: last_check must be Some after commit_state — see ordering invariant",
+        ));
+        self.drain_and_emit_warm_pool_events();
 
         self.build_gui_state()
     }
@@ -958,8 +1148,13 @@ impl EngineSession {
             .edit_check(cell_id, value)
             .map_err(|e| format!("Engine error: {}", e))?;
 
-        self.emit_auto_resolve_if_any(&check_result);
+        // Commit state first; emit_auto_resolve_if_any reads back via last_check()
+        // so it fires AFTER all mutations are complete — cross-cutting ordering invariant.
         self.core.commit_check(check_result);
+        self.emit_auto_resolve_if_any(self.core.last_check().expect(
+            "emit_auto_resolve_if_any: last_check must be Some after commit_check — see ordering invariant",
+        ));
+        self.drain_and_emit_warm_pool_events();
         self.build_gui_state()
     }
 
@@ -980,19 +1175,22 @@ impl EngineSession {
             .and_then(|s| s.to_str())
             .unwrap_or("unnamed");
 
-        // Defer `self.file_path = ...` until after `commit_state` succeeds so an
-        // Err from `compile_entry_with_imports` doesn't leave file_path pointing
-        // at a file whose compiled / module_name / source_map state hasn't been
-        // committed.  Atomic-commit invariant: see engine.rs:30-44 doc block.
         let (compiled, parsed) =
             compile_entry_with_imports(path, &source, module_name).map_err(|(msg, diags)| {
                 self.record_compile_failure(diags);
                 msg
             })?;
         let check_result = self.core.engine_mut().check(&compiled);
-        self.emit_auto_resolve_if_any(&check_result);
-        self.commit_state(parsed, compiled, check_result, module_name, &source);
-        self.core.commit_file_path(path.to_path_buf());
+        // Atomically commit all five core fields in a single call.
+        // `path.to_path_buf()` is evaluated as a call argument — before the callee body
+        // runs — so a panic in `to_path_buf()` lands in the pre-commit window: none of
+        // the five fields are written.  Atomic-commit invariant: see engine.rs:30-44.
+        self.commit_state(parsed, compiled, check_result, module_name, &source, FilePathUpdate::Set(path.to_path_buf()));
+        // Emit AFTER all state is committed — cross-cutting ordering invariant.
+        self.emit_auto_resolve_if_any(self.core.last_check().expect(
+            "emit_auto_resolve_if_any: last_check must be Some after commit_state — see ordering invariant",
+        ));
+        self.drain_and_emit_warm_pool_events();
         self.build_gui_state()
     }
 
@@ -1056,10 +1254,16 @@ impl EngineSession {
         // that a panic in check() leaves the session completely unchanged.
         let check_result = self.core.engine_mut().check(&compiled);
 
-        self.emit_auto_resolve_if_any(&check_result);
-
         // Atomically commit all state after check() succeeds.
-        self.commit_state(parsed, compiled, check_result, module_name, content);
+        // Preserve file_path: update_source does not change which file is loaded;
+        // Preserve keeps the file_path set by the prior load_file call.
+        self.commit_state(parsed, compiled, check_result, module_name, content, FilePathUpdate::Preserve);
+
+        // Emit AFTER all state is committed — cross-cutting ordering invariant.
+        self.emit_auto_resolve_if_any(self.core.last_check().expect(
+            "emit_auto_resolve_if_any: last_check must be Some after commit_state — see ordering invariant",
+        ));
+        self.drain_and_emit_warm_pool_events();
 
         self.build_gui_state()
     }
@@ -1085,13 +1289,21 @@ impl EngineSession {
 
     /// Atomically commit all session state after a successful parse+compile+check cycle.
     ///
-    /// Enforces the invariant that the canonical compiled state, all derived caches,
-    /// and the failure-diagnostic field move together: either every field below is
-    /// updated/cleared in this single call, or none are.  The fields, grouped by role:
+    /// This wrapper first delegates the five-field core commit to
+    /// [`CoreState::commit_state`] (see that method's doc for the canonical-field
+    /// contract: `source_map`, `module_name`, `compiled`, `last_check`, and optionally
+    /// `file_path`), then updates the five cache/failure-tracking fields owned by
+    /// `EngineSession`:
     ///
-    /// - **Canonical compiled state**: `source_map`, `module_name`, `compiled`, `last_check`
     /// - **Derived caches**: `def_preview_cache`, `parsed_cache`, `line_offsets_cache`, `consumed_idents_cache`
     /// - **Failure-diagnostic state**: `compile_failure`
+    ///
+    /// ## `file_path` parameter
+    ///
+    /// Pass `FilePathUpdate::Set(path.to_path_buf())` from `load_file` to commit
+    /// `file_path` together with the other four fields in a single call.  Pass
+    /// `FilePathUpdate::Preserve` from `load_from_source` and `update_source` to
+    /// preserve the existing `file_path`.  See [`FilePathUpdate`] for the full contract.
     ///
     /// Callers **must** only invoke this after both compilation and `check()` have
     /// succeeded — invoking it on a partially-valid state would violate the invariant.
@@ -1106,12 +1318,13 @@ impl EngineSession {
         check_result: CheckResult,
         module_name: &str,
         source: &str,
+        file_path: FilePathUpdate,
     ) {
-        // Commit the four canonical core fields atomically via CoreState::commit_state.
+        // Commit the five canonical core fields atomically via CoreState::commit_state.
         // A panic between the core commit and the cache updates below leaves core fields
         // consistent (at new values) while caches may be stale — that is tolerated per
         // engine_lock.rs:30-34 ("other fields are caches that tolerate partial state").
-        self.core.commit_state(compiled, check_result, module_name, source);
+        self.core.commit_state(compiled, check_result, module_name, source, file_path);
         // Invalidate def preview cache — new module may have different content hashes.
         self.def_preview_cache.clear();
         // Cache the parse result so get_containing_definition can avoid re-parsing
@@ -1370,6 +1583,9 @@ impl EngineSession {
                         normals: mesh.normals,
                         scalar_channels: std::collections::HashMap::new(),
                         displaced_positions: None,
+                        element_kind: None,
+                        region_tags: None,
+                        vector_channels: std::collections::HashMap::new(),
                     })
                     .collect();
                 (meshes, tess_diags)
@@ -1871,13 +2087,9 @@ impl EngineSession {
     ///   is past the end of source.
     ///
     /// # Caching
-    /// `parsed_cache` and `line_offsets_cache` are checked via `debug_assert`
-    /// to enforce the cache invariant, but the byte-offset conversion is
-    /// performed inside `reify_eval::resolve_entity_at_source_position` by
-    /// walking the source character-by-character; the pre-built
-    /// `line_offsets_cache` is not passed through to that call.  A future
-    /// refactor could thread the cache into the eval layer to avoid the
-    /// redundant walk.
+    /// `line_offsets_cache` is populated in `commit_state` alongside `compiled`
+    /// and is threaded through to `reify_eval::resolve_entity_at_source_position`
+    /// so the byte-offset conversion is O(log M) rather than O(M).
     pub fn get_entity_at_source_location(&self, line: u32, col: u32) -> Option<String> {
         // Documented contract: zero line or column is out-of-range → None.
         if line == 0 || col == 0 {
@@ -1891,9 +2103,10 @@ impl EngineSession {
              whenever compiled is Some (i.e., whenever resolve_source succeeds)"
         );
 
+        let line_offsets = self.line_offsets_cache.as_deref()?;
         let compiled = self.core.compiled()?;
 
-        reify_eval::resolve_entity_at_source_position(compiled, source, line, col)
+        reify_eval::resolve_entity_at_source_position(compiled, source, line_offsets, line, col)
     }
 }
 
@@ -3245,6 +3458,19 @@ fn format_expr(expr: &reify_types::CompiledExpr) -> String {
             param_name,
             query_kind,
         } => format!("{}.{}", param_name, query_kind),
+        // task 3540 (SIR-α): exhaustiveness-forced adapter arm for the new
+        // shared-enum variant (step-16). Renders as the source-level
+        // constructor shape `TypeName(arg1, arg2, ...)` — same surface form
+        // as FunctionCall/UserFunctionCall for hover/debug views.
+        CompiledExprKind::StructureInstanceCtor {
+            type_name,
+            ordered_args,
+            ..
+        } => {
+            let arg_strs: Vec<String> =
+                ordered_args.iter().map(|(_, e)| format_expr(e)).collect();
+            format!("{}({})", type_name, arg_strs.join(", "))
+        }
     }
 }
 
@@ -3316,18 +3542,11 @@ fn diagnostics_to_info(
         .collect()
 }
 
-/// Pre-compute byte positions of all `\n` characters in `source` in O(M).
-///
-/// Returns a sorted `Vec<usize>` of the byte offset of each newline.
-/// Pass this to [`offset_to_line_col_fast`] to binary-search for line/col
-/// in O(log M) instead of the O(M) scan done by [`reify_types::byte_offset_to_line_col`].
-pub(crate) fn build_line_offsets(source: &str) -> Vec<usize> {
-    source
-        .bytes()
-        .enumerate()
-        .filter_map(|(i, b)| if b == b'\n' { Some(i) } else { None })
-        .collect()
-}
+// `build_line_offsets` and `line_col_to_byte_offset_with_offsets` have been
+// moved to `reify_types::source_location` so that `reify-eval` can use them
+// without depending on `reify-gui`.  Re-export here as `pub(crate)` so all
+// existing callers inside this crate (and engine_tests.rs) compile unchanged.
+pub(crate) use reify_types::{build_line_offsets, line_col_to_byte_offset_with_offsets};
 
 /// Binary-search for the (line, column) of `offset` using a pre-built newline table.
 ///
@@ -3384,49 +3603,3 @@ pub(crate) fn offset_to_line_col_fast(
     (line, col)
 }
 
-/// Convert a 1-based `(line, col)` pair to a byte offset using a pre-built
-/// newline table.
-///
-/// `line_offsets` must be the result of [`build_line_offsets`] for the same
-/// `source`.  Both `line` and `col` are 1-based and count **Unicode codepoints**.
-///
-/// - If `line` or `col` is 0, returns 0 as a safe fallback.
-/// - If `line` exceeds the number of lines, returns `source.len()`.
-/// - If `col` exceeds the line length, clamps to the end of the line.
-pub(crate) fn line_col_to_byte_offset_with_offsets(
-    source: &str,
-    line: u32,
-    col: u32,
-    line_offsets: &[usize],
-) -> usize {
-    if line == 0 || col == 0 {
-        return 0;
-    }
-    let line = line as usize;
-    let col = col as usize;
-
-    // Byte index of the first character on the target line.
-    let line_start = if line <= 1 {
-        0
-    } else {
-        match line_offsets.get(line - 2) {
-            Some(&nl) => nl + 1,         // byte after the preceding newline
-            None => return source.len(), // line is beyond end of source
-        }
-    };
-
-    // Slice to the end of the target line (not end of source) so that an
-    // out-of-bounds col clamps to the line boundary rather than counting
-    // codepoints past the '\n' into subsequent lines.
-    let line_end = source[line_start..]
-        .find('\n')
-        .map(|i| line_start + i)
-        .unwrap_or(source.len());
-    let line_text = &source[line_start..line_end];
-    line_start
-        + line_text
-            .char_indices()
-            .nth(col - 1)
-            .map(|(i, _)| i)
-            .unwrap_or(line_text.len())
-}

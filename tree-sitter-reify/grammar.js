@@ -26,6 +26,7 @@ module.exports = grammar({
     [$.minimize_declaration],
     [$.maximize_declaration],
     [$.sub_declaration],
+    [$.param_assignment],
     [$.port_declaration],
     [$.pragma],
     [$.named_argument_list, $.argument_list],
@@ -483,6 +484,9 @@ module.exports = grammar({
         optional(field('guard', $.where_clause)),
       ),
       // Collection form: sub name : List<StructName>
+      // The bare `'List'` token is reached only on exact-length matches —
+      // see the long comment on the specialization arm below for the full
+      // tree-sitter rule #1 / rule #2 reasoning and the regression lock.
       seq(
         'sub',
         field('name', $.identifier),
@@ -493,6 +497,77 @@ module.exports = grammar({
         '>',
         optional(field('guard', $.where_clause)),
       ),
+      // Specialization form: sub name : StructName <typeargs>? where? { body }?
+      //
+      // Disambiguation from the collection arm above relies on tree-sitter's
+      // documented lexer rules — NOT on choice-arm order or on `prec(...)`:
+      //
+      //   Rule #1 (longest match, evaluated FIRST): the lexer picks the token
+      //   whose match consumes the most characters. For `Listicle<Foo>`, the
+      //   $.identifier regex matches 8 chars while the bare string `'List'`
+      //   matches only 4 — so the identifier wins and this specialization arm
+      //   is taken with structure_name == "Listicle".
+      //
+      //   Rule #2 (string-vs-regex tie-break, on equal-length matches): an
+      //   anonymous string/keyword token wins over a regex token of the same
+      //   length. For `List<Foo>`, both `'List'` and $.identifier match exactly
+      //   4 chars on "List", so `'List'` wins and the collection arm above is
+      //   taken — leaving "Foo" to be matched as structure_name.
+      //
+      // Together these two rules give: `List<X>` → collection arm; everything
+      // else (`Foo<X>`, `Listicle<X>`, `MyList<X>`, …) → this specialization
+      // arm. The invariant is pinned by four tests in
+      // `crates/reify-syntax/tests/sub_decl_specialization_body_parser_tests.rs`:
+      //   - `sub_decl_collection_form_regression`: AST-level positive case —
+      //     `List<Foo>` → collection arm (rule #2 win, pre-existing regression pin)
+      //   - `sub_decl_non_list_specialization_arm`: rule #2 negative control —
+      //     `Foo<Bar>` must NOT be captured by the collection arm
+      //   - `sub_decl_listicle_longest_match`: rule #1 longest-match guard —
+      //     `Listicle<Foo>` must reach this specialization arm (not collection)
+      //   - `sub_decl_cst_shape_for_list_collection`: CST-level pin — confirms
+      //     `List` is consumed as the collection keyword (not as structure_name)
+      //
+      // History: an earlier plan proposed `token(prec(1, 'List'))` here to make
+      // the precedence "explicit" in the grammar. That mechanism does NOT
+      // respect rule #1 — `token(prec(...))` causes the lexer to emit 'List'
+      // even when 'Listicle' would be a longer match, breaking Case 3.
+      // Bare `'List'` (relying on rules #1 + #2) is the correct mechanism.
+      // See escalation esc-3712-201 for the empirical evidence.
+      seq(
+        'sub',
+        field('name', $.identifier),
+        ':',
+        field('structure_name', $.identifier),
+        optional(field('type_args', seq('<', $.type_arg_list, '>'))),
+        optional(field('guard', $.where_clause)),
+        optional(field('body', $.specialization_body)),
+      ),
+    ),
+
+    // ── Specialization body ──────────────────────────────────
+    // Body of a specialization-scope sub: `{ repeat(param_assignment | _member) }`.
+    // Accepts both permitted (let, constraint, connect, where) and forbidden
+    // (param, port, sub) member kinds — rejection is deferred to the validator
+    // (task 3571/3573) per spec §8.7 and triage-log §B3.
+    specialization_body: $ => seq(
+      '{',
+      repeat(choice($.param_assignment, $._member)),
+      '}',
+    ),
+
+    // ── Param assignment (specialization body only) ──────────
+    // Bare `name = expr where?` parameter assignments permitted in §8.7.
+    // Scoped to specialization_body only — not added to _member — because
+    // no existing _member starts with bare `identifier =`, so scoping avoids
+    // widening the general member grammar.
+    // Related: `connect_param_assignment` (below, line ~600) has the same
+    // `name = value` shape but is scoped to connect-body and has no `where`
+    // guard.  The distinct names prevent confusion between the two contexts.
+    param_assignment: $ => seq(
+      field('name', $.identifier),
+      '=',
+      field('value', $._expression),
+      optional(field('guard', $.where_clause)),
     ),
 
     // ── Port ─────────────────────────────────────────────────
@@ -737,14 +812,12 @@ module.exports = grammar({
       '_',
     ),
 
-    // ── Decl-level match block (B2, task 3563) ─────────────────────────────
+    // ── Decl-level match block (B2, tasks 3563 + 3564) ──────────────────────
     // `match <discriminant> { Pattern => sub head : StructName, ... }` reachable
     // from `_member`. Parallel to `match_expression` (grammar.js above) but the
     // arm body is a declaration (sub form), not an expression. Lowering to
-    // `MemberDecl::MatchArmDeclGroup` (crates/reify-syntax/src/lib.rs:102-117) is
-    // deferred to sibling task 3564 — for now the new CST nodes fall through
-    // `lower_member`'s default and are silently dropped, mirroring the B1
-    // auto_type_arg interim pattern (task 3526, commit a46e7d3888).
+    // `MemberDecl::MatchArmDeclGroup` is wired via `lower_match_arm_decl_group`
+    // in `crates/reify-syntax/src/ts_parser.rs` (task 3564).
     match_arm_decl_block: $ => seq(
       'match',
       field('discriminant', $._expression),

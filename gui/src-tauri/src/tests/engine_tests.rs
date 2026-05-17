@@ -4845,7 +4845,8 @@ fn build_gui_state_tessellation_diagnostics_empty_on_clean_source() {
     // "no topology extraction fixture" warning into tessellation_diagnostics.
     let kernel = MockGeometryKernel::new()
         .with_extracted_faces(reify_types::GeometryHandleId(1), vec![])
-        .with_extracted_edges(reify_types::GeometryHandleId(1), vec![]);
+        .with_extracted_edges(reify_types::GeometryHandleId(1), vec![])
+        .with_extracted_vertices(reify_types::GeometryHandleId(1), vec![]);
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
@@ -7143,21 +7144,20 @@ fn get_entity_at_source_location_thickness_cell_returns_bracket_thickness() {
     );
 }
 
-/// (e) Cursor on the `structure Bracket {` header line (line=1, col=1) → None.
+/// (e) Cursor on the `structure Bracket {` header line (line=1, col=1) →
+/// `None` or `Some("Bracket")`.
 ///
 /// The template's approximate span is derived from value-cell and constraint spans,
 /// which start on line 2. The structure keyword at (1,1) = byte 0 falls before the
-/// span start, so the position is not inside any template → None.
+/// span start under the current approximation, so the position is not inside any
+/// template and yields `None`.
 ///
-/// **Current-behavior note:** this assertion pins the result of the _current_
-/// approximate-span derivation (union of member spans starting at line 2) and is
-/// not a hard semantic contract.  If a future patch derives the span from the
-/// parsed structure declaration (which starts at byte 0), (1,1) could legitimately
-/// return `Some("Bracket")`.  Updating this assertion to match the improved
-/// approximation is safe — the real invariant is that the position maps
-/// consistently to at most one entity, not the exact `None` outcome.
+/// The real invariant is that the position maps to at most one entity and never
+/// to an inner cell name. If a future patch derives the span from the parsed
+/// structure declaration (which starts at byte 0), (1,1) could legitimately
+/// return `Some("Bracket")` — either outcome is correct.
 #[test]
-fn get_entity_at_source_location_structure_header_returns_none() {
+fn get_entity_at_source_location_structure_header_returns_none_or_template_name() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
@@ -7166,9 +7166,9 @@ fn get_entity_at_source_location_structure_header_returns_none() {
         .expect("load should succeed");
     let result = session.get_entity_at_source_location(1, 1);
     assert!(
-        result.is_none(),
-        "cursor on structure header (1,1) is outside the template's approximate span → None, \
-         got {:?}",
+        result.is_none() || result == Some("Bracket".to_string()),
+        "cursor on structure header (1,1) must resolve to either None or the enclosing \
+         template name, never a cell or other entity — got {:?}",
         result
     );
 }
@@ -7256,10 +7256,14 @@ impl crate::engine::AutoResolveEmitter for RecordingEmitter {
     }
 }
 
-/// Step-4: No auto-resolve events should fire when the loaded source has no
-/// `auto` parameters — the emit-helper must guard on empty `resolved_params`.
+/// Step-4: No auto-resolve events should fire when the loaded source declares no
+/// `auto` parameters.
+///
+/// This test pins the "source has no auto params" branch only. The complementary
+/// "source has auto params but solver returns empty Solved" branch is covered
+/// separately by `engine_session_no_auto_resolve_emission_when_solver_returns_empty_solved`.
 #[test]
-fn engine_session_no_auto_resolve_emission_when_no_auto_params() {
+fn engine_session_no_auto_resolve_emission_when_source_has_no_auto_params() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
@@ -7276,6 +7280,56 @@ fn engine_session_no_auto_resolve_emission_when_no_auto_params() {
     assert!(
         events.is_empty(),
         "no auto-resolve events should fire when bracket has no auto params, got {} events",
+        events.len()
+    );
+}
+
+/// Disambiguation test (suggestion 5): no auto-resolve events fire when the solver
+/// returns `Solved {}` with an empty values map, even when the source has auto params.
+///
+/// This explicitly pins the `if check.resolved_params.is_empty() { return; }` guard in
+/// `emit_auto_resolve_if_any` (engine.rs) — distinct from the "no auto params declared"
+/// case covered by `engine_session_no_auto_resolve_emission_when_source_has_no_auto_params`.
+///
+/// Passes immediately (guard already present).
+#[test]
+fn engine_session_no_auto_resolve_emission_when_solver_returns_empty_solved() {
+    use std::sync::Arc;
+
+    // Solver returns Solved with empty values — simulates a solver that finds
+    // no resolved auto-params for this check (e.g., constraints not tight enough).
+    let solver = MockConstraintSolver::new_solved(std::collections::HashMap::new());
+
+    // Auto-param fixture: source HAS an auto param, so the no-auto-params guard
+    // is NOT responsible for the suppression — only the empty-Solved guard is.
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "thickness", Type::length())
+        .constraint(
+            "S",
+            0,
+            None,
+            gt(value_ref("S", "thickness"), literal(mm(2.0))),
+        )
+        .build();
+
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None)
+        .with_solver_for_test(Box::new(solver));
+
+    let recorder = RecordingEmitter::new();
+    let events = Arc::clone(&recorder.events);
+    session.set_auto_resolve_emitter(Arc::new(recorder));
+
+    session.check_and_emit_for_test(&compiled);
+
+    let events = events.lock().unwrap();
+    assert!(
+        events.is_empty(),
+        "no auto-resolve events should fire when solver returns empty Solved, got {} events",
         events.len()
     );
 }
@@ -7521,6 +7575,142 @@ fn engine_session_auto_resolve_emitter_fires_on_set_parameter_when_solver_presen
     assert!(matches!(events[2], EmitEvent::Complete), "event[2] must be Complete");
 }
 
+/// Non-Scalar resolved auto-param emits NaN sentinel instead of being silently dropped.
+///
+/// When the solver returns a non-Scalar Value for a resolved auto-param (which
+/// indicates a buggy or unexpected solver implementation), `build_parameters_payload`
+/// must emit an `AutoResolveParameterValue { value: NaN, unit: "", display: "<non-scalar>" }`
+/// so the GUI panel can render an error chip rather than silently omitting the cell.
+///
+/// RED: currently fails because the silent-drop branch omits the cell entirely —
+/// the parameters HashMap won't contain the key. Step-5 impl makes it green.
+#[test]
+fn engine_session_auto_resolve_emitter_emits_nan_sentinel_for_non_scalar_resolved_param() {
+    use std::sync::Arc;
+    use reify_types::Value;
+
+    let thickness_id = ValueCellId::new("S", "thickness");
+    let mut solved = std::collections::HashMap::new();
+    // Inject a non-Scalar value to trigger the non-Scalar branch.
+    solved.insert(thickness_id.clone(), Value::Int(7));
+    let solver = MockConstraintSolver::new_solved(solved);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "thickness", Type::length())
+        .constraint(
+            "S",
+            0,
+            None,
+            gt(value_ref("S", "thickness"), literal(mm(2.0))),
+        )
+        .build();
+
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None)
+        .with_solver_for_test(Box::new(solver));
+
+    let recorder = RecordingEmitter::new();
+    let events = Arc::clone(&recorder.events);
+    session.set_auto_resolve_emitter(Arc::new(recorder));
+
+    session.check_and_emit_for_test(&compiled);
+
+    let events = events.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        3,
+        "expected [Start, Iteration, Complete] even for non-Scalar param, got {} events",
+        events.len()
+    );
+    assert!(matches!(events[0], EmitEvent::Start), "event[0] must be Start");
+    assert!(matches!(events[2], EmitEvent::Complete), "event[2] must be Complete");
+
+    if let EmitEvent::Iteration(ref iter) = events[1] {
+        let param = iter
+            .parameters
+            .get("S.thickness")
+            .expect("S.thickness must be in parameters even for non-Scalar (NaN sentinel)");
+        assert!(
+            param.value.is_nan(),
+            "non-Scalar resolved param must produce NaN sentinel value, got {}",
+            param.value
+        );
+        assert_eq!(
+            param.unit, "",
+            "non-Scalar sentinel unit must be empty string, got '{}'",
+            param.unit
+        );
+        assert_eq!(
+            param.display, "<non-scalar>",
+            "non-Scalar sentinel display must be '<non-scalar>', got '{}'",
+            param.display
+        );
+    } else {
+        panic!("events[1] must be Iteration");
+    }
+}
+
+/// Integration test (suggestion 4): auto-resolve emitter fires through the full
+/// `load_from_source` → `commit_state` → `emit_auto_resolve_if_any(last_check().unwrap())`
+/// path.
+///
+/// Pins that load_from_source emits AFTER state is committed (correct ordering).
+/// Acts as a characterization safety-net for the step-7 reorder of load_file /
+/// update_source / set_parameter.
+///
+/// Expected to pass immediately — load_from_source already has correct ordering.
+#[test]
+fn engine_session_auto_resolve_emitter_fires_through_load_from_source_real_path() {
+    use std::sync::Arc;
+
+    let source = r#"structure S {
+    param thickness: Scalar = auto
+    constraint thickness > 2mm
+}"#;
+
+    let thickness_id = ValueCellId::new("S", "thickness");
+    let mut solved = std::collections::HashMap::new();
+    solved.insert(thickness_id.clone(), mm(5.0));
+    let solver = MockConstraintSolver::new_solved(solved);
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None)
+        .with_solver_for_test(Box::new(solver));
+
+    let recorder = RecordingEmitter::new();
+    let events = Arc::clone(&recorder.events);
+    session.set_auto_resolve_emitter(Arc::new(recorder));
+
+    session
+        .load_from_source(source, "S")
+        .expect("load_from_source with auto-param source should succeed");
+
+    let events = events.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        3,
+        "load_from_source must emit [Start, Iteration, Complete], got {} events",
+        events.len()
+    );
+    assert!(matches!(events[0], EmitEvent::Start), "event[0] must be Start");
+    assert!(matches!(events[1], EmitEvent::Iteration(_)), "event[1] must be Iteration");
+    assert!(matches!(events[2], EmitEvent::Complete), "event[2] must be Complete");
+
+    if let EmitEvent::Iteration(ref iter) = events[1] {
+        assert!(
+            iter.parameters.contains_key("S.thickness"),
+            "parameters must contain 'S.thickness', got keys: {:?}",
+            iter.parameters.keys().collect::<Vec<_>>()
+        );
+    } else {
+        panic!("events[1] must be Iteration");
+    }
+}
+
 // ── Structural lock-in test ──────────────────────────────────────────────────
 
 /// Structural lock-in test: verifies that `EngineSession` exposes `CoreState`
@@ -7652,11 +7842,13 @@ fn set_parameter_updates_only_last_check_via_commit_check() {
     );
 }
 
-/// Behavioral test for `CoreState::commit_file_path`:
-/// `load_file` must set `file_path` and leave the other five core fields consistent
-/// (compiled and last_check become Some; module_name matches the file stem).
+/// Behavioral test for the five-field atomic commit via `EngineSession::commit_state`:
+/// `load_file` must commit all five core fields atomically — `file_path`, `compiled`,
+/// `last_check`, `module_name`, and the `source_map` entry keyed by the file stem.
+/// Previously `file_path` was a separate `commit_file_path` step; now it is folded
+/// into the single `commit_state` call, making this the post-refactor regression pin.
 #[test]
-fn load_file_updates_only_file_path_via_commit_file_path() {
+fn load_file_commits_file_path_atomically_via_commit_state() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
@@ -7673,7 +7865,7 @@ fn load_file_updates_only_file_path_via_commit_file_path() {
     let tmp_path = dir.path().join("bracket.ri");
     std::fs::write(&tmp_path, bracket_source()).expect("write bracket.ri to tempdir");
 
-    // load_file triggers commit_file_path internally.
+    // load_file commits all five core fields atomically via commit_state.
     session
         .load_file(&tmp_path)
         .expect("load_file should succeed");
@@ -7701,5 +7893,229 @@ fn load_file_updates_only_file_path_via_commit_file_path() {
         core.module_name(),
         Some("bracket"),
         "module_name must be 'bracket' (from file stem) after load_file"
+    );
+
+    // source_map must contain the key produced by module_key("bracket") — five-field
+    // atomic commit pin.  Using module_key() here avoids coupling to the literal
+    // key format (".ri" suffix) so that a future rename (e.g. ".reify") does not
+    // break this test for an unrelated reason.
+    assert!(
+        core.source_map().contains_key(&module_key("bracket")),
+        "source_map must contain module_key(\"bracket\") after load_file (five-field atomic commit pin)"
+    );
+}
+
+/// Regression test for the `FilePathUpdate::Preserve`-preserves-`file_path` contract
+/// in `commit_state`: when `update_source` passes `FilePathUpdate::Preserve` as the
+/// `file_path` argument to `commit_state`, the existing `file_path` must be preserved —
+/// NOT cleared to `None`.
+///
+/// This test is RED against the naive `match file_path { Set(p) => Some(p), Preserve => None }`
+/// implementation (which would clear `file_path` on every `update_source` call, breaking
+/// the multi-file edit-routing that derives `module_name` and project-root from
+/// `self.core.file_path()` in `update_source`).  It must be GREEN after the correct
+/// `Preserve => { /* leave self.file_path unchanged */ }` arm.
+#[test]
+fn update_source_preserves_file_path_when_commit_state_gets_preserve() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // Write bracket.ri to a tempdir and load it — file_path becomes Some(tmp_path).
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    let tmp_path = dir.path().join("bracket.ri");
+    std::fs::write(&tmp_path, bracket_source()).expect("write bracket.ri to tempdir");
+    session
+        .load_file(&tmp_path)
+        .expect("load_file should succeed");
+
+    // Pre-condition: file_path must be Some after load_file.
+    assert_eq!(
+        session.core_state_for_test().file_path(),
+        Some(tmp_path.as_path()),
+        "file_path must be Some(tmp_path) after load_file (pre-condition)"
+    );
+
+    // update_source passes FilePathUpdate::Preserve for file_path to commit_state — must PRESERVE, not clear.
+    let new_source = bracket_source_with_width("120mm");
+    session
+        .update_source(tmp_path.to_str().unwrap(), &new_source)
+        .expect("update_source should succeed");
+
+    // file_path must still be Some(tmp_path) — Preserve-preserves contract.
+    let core = session.core_state_for_test();
+    assert_eq!(
+        core.file_path(),
+        Some(tmp_path.as_path()),
+        "file_path must still be Some(tmp_path) after update_source (Preserve-preserves contract)"
+    );
+
+    // compiled and module_name must remain consistent after update_source.
+    assert!(
+        core.compiled().is_some(),
+        "compiled must still be Some after update_source"
+    );
+    assert_eq!(
+        core.module_name(),
+        Some("bracket"),
+        "module_name must still be 'bracket' after update_source"
+    );
+}
+
+// ── Task 3541 step-5: WarmPoolEventEmitter recording ────────────────────────
+
+/// Recording `WarmPoolEventEmitter` that captures every emitted IPC
+/// [`crate::types::WarmPoolEvent`] for test assertions.
+///
+/// Mirrors [`RecordingEmitter`] (line 7234) for the warm-pool channel.
+struct RecordingWarmPoolEventEmitter {
+    events: std::sync::Arc<std::sync::Mutex<Vec<crate::types::WarmPoolEvent>>>,
+}
+
+impl RecordingWarmPoolEventEmitter {
+    fn new() -> Self {
+        Self {
+            events: std::sync::Arc::new(std::sync::Mutex::new(vec![])),
+        }
+    }
+}
+
+impl crate::engine::WarmPoolEventEmitter for RecordingWarmPoolEventEmitter {
+    fn emit(&self, event: crate::types::WarmPoolEvent) {
+        self.events.lock().unwrap().push(event);
+    }
+}
+
+/// Step-5: `EngineSession` emits IPC `WarmPoolEvent` values through an installed
+/// `WarmPoolEventEmitter` when `drain_and_emit_warm_pool_events` is called after
+/// pool activity.
+///
+/// Test flow:
+/// (a) Construct EngineSession, install RecordingWarmPoolEventEmitter.
+/// (b) Pre-populate the warm pool with a donate (node_a) that triggers an
+///     eviction (budget=1 byte): donate(node_a), donate(node_b) → Evicted(a).
+/// (c) Call `session.drain_and_emit_warm_pool_events_for_test()`.
+/// (d) Assert recorder captured both events with correct kind/size_bytes/node_id.
+///
+/// Fails to compile: WarmPoolEventEmitter trait, set_warm_pool_event_emitter,
+/// warm_pool_mut_for_test, and drain_and_emit_warm_pool_events_for_test don't
+/// exist yet (all added in step-6).
+#[test]
+fn engine_session_warm_pool_event_emitter_captures_donated_and_evicted_events() {
+    use std::sync::Arc;
+    use reify_types::OpaqueState;
+    use reify_eval::cache::NodeId;
+    use reify_types::ValueCellId;
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    let recorder = RecordingWarmPoolEventEmitter::new();
+    let captured = Arc::clone(&recorder.events);
+    session.set_warm_pool_event_emitter(Arc::new(recorder));
+
+    // Install a 1-byte warm pool budget so donate(b) evicts donate(a).
+    {
+        let pool = session.warm_pool_mut_for_test();
+        *pool = reify_eval::warm_pool::WarmStatePool::new(1);
+    }
+
+    let node_a = NodeId::Value(ValueCellId::new("Beam", "length"));
+    let node_b = NodeId::Value(ValueCellId::new("Plate", "width"));
+
+    // Donate two nodes: node_a fits (size=1, budget=1), node_b evicts node_a.
+    session.warm_pool_mut_for_test().donate(node_a.clone(), OpaqueState::new(1i32, 1));
+    session.warm_pool_mut_for_test().donate(node_b.clone(), OpaqueState::new(2i32, 1));
+
+    // Drain and emit.
+    session.drain_and_emit_warm_pool_events_for_test();
+
+    let events = captured.lock().unwrap();
+
+    // Exactly 3 events in deterministic order: Donated(Beam.length), Evicted(Beam.length),
+    // Donated(Plate.width).  donate(node_a, size=1, budget=1) → Donated(node_a); donate(node_b,
+    // size=1) evicts node_a (LRU) → Evicted(node_a), Donated(node_b).  Loose assertions like
+    // `>= 2` allow regressions that produce 1-2 events to silently pass.
+    assert_eq!(
+        events.len(),
+        3,
+        "donate(a)+evict(a)+donate(b) must yield exactly 3 IPC events; got {}",
+        events.len()
+    );
+
+    // (a) events[0]: Donated(node_a) — "Beam.length"
+    assert_eq!(events[0].kind, "donated", "events[0] must be kind=donated");
+    assert_eq!(
+        events[0].node_id, "Beam.length",
+        "events[0].node_id must be 'Beam.length' (node_a)"
+    );
+    assert_eq!(events[0].size_bytes, 1, "events[0].size_bytes must be 1");
+
+    // (b) events[1]: Evicted(node_a) — "Beam.length" (the LRU victim)
+    assert_eq!(events[1].kind, "evicted", "events[1] must be kind=evicted");
+    assert_eq!(
+        events[1].node_id, "Beam.length",
+        "events[1].node_id must be 'Beam.length' (victim)"
+    );
+    assert_eq!(events[1].size_bytes, 1, "events[1].size_bytes must be 1");
+
+    // (c) events[2]: Donated(node_b) — "Plate.width"
+    assert_eq!(events[2].kind, "donated", "events[2] must be kind=donated");
+    assert_eq!(
+        events[2].node_id, "Plate.width",
+        "events[2].node_id must be 'Plate.width' (node_b)"
+    );
+    assert_eq!(events[2].size_bytes, 1, "events[2].size_bytes must be 1");
+}
+
+#[test]
+fn sweep_persistent_cache_removes_stale_tempfile_under_explicit_cache_root() {
+    // Parameterized-seam unit test (task 3698): calls
+    // `crate::engine::sweep_persistent_cache(cache_dir.path())` with an
+    // explicit hermetic TempDir rather than manipulating process env — which
+    // would be racy in in-process tests (std::env::set_var is not thread-safe).
+    //
+    // Asserts: stale .tmp.* file is gone, report.tempfiles_removed == 1.
+    use std::fs::{self, File, OpenOptions};
+    use std::io::Write as _;
+    use std::time::{Duration, SystemTime};
+
+    use reify_eval::persistent_cache::{ENGINE_VERSION_HASH, STALE_TEMPFILE_AGE, shard_dir};
+    use tempfile::TempDir;
+
+    let cache_dir = TempDir::new().expect("tempdir");
+
+    // 32-char hex hash whose "bb" prefix determines the shard subdirectory.
+    let input_hash = "bb00000000000000000000000000cafe";
+    let shard = shard_dir(cache_dir.path(), ENGINE_VERSION_HASH, input_hash);
+    fs::create_dir_all(&shard).expect("create shard dir");
+
+    let stale_path = shard.join(".tmp.stale_seed");
+    {
+        let mut f = File::create(&stale_path).expect("create stale tempfile");
+        f.write_all(b"stale content").expect("write stale content");
+    }
+
+    // Backdate mtime to > STALE_TEMPFILE_AGE (1 h) past; 2-min buffer for CI.
+    let stale_mtime = SystemTime::now() - (STALE_TEMPFILE_AGE + Duration::from_secs(120));
+    let times = std::fs::FileTimes::new().set_modified(stale_mtime);
+    {
+        let file = OpenOptions::new()
+            .write(true)
+            .open(&stale_path)
+            .expect("open stale file to backdate mtime");
+        file.set_times(times).expect("backdate mtime");
+    }
+
+    // Call the parameterized seam (defined in step-4).
+    let report = crate::engine::sweep_persistent_cache(cache_dir.path());
+
+    assert!(
+        !stale_path.exists(),
+        "stale .tmp.* file must be removed by sweep_persistent_cache; path={stale_path:?}"
+    );
+    assert_eq!(
+        report.tempfiles_removed, 1,
+        "SweepReport.tempfiles_removed must be 1"
     );
 }

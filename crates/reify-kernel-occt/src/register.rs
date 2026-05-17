@@ -23,15 +23,13 @@
 //! enum's section comments: Booleans×3, Primitives×4, Modify×5,
 //! Transform×4, Pattern×5, Sweep×8, Curve×6 — total 35 entries.
 //!
-//! # v0.3 forward-compat note
+//! # Convert ×1 (wired in PRD §8 task δ — task 3435)
 //!
-//! When v0.3 exposes OCCT tessellation as a first-class registered
-//! conversion, the `supports` table will gain
-//! `(Operation::Convert { from: ReprKind::BRep }, ReprKind::Mesh)`. That
-//! entry — combined with a Mesh-native kernel like Manifold — would let
-//! the dispatcher's BFS chain `BRep input → OCCT tessellate → Mesh
-//! BooleanUnion` automatically without duplicating the union logic in
-//! OCCT.
+//! `(Operation::Convert { from: ReprKind::BRep }, ReprKind::Mesh)` was
+//! added to the `supports` table in task 3435 (PRD §8 task δ). Combined
+//! with a Mesh-native kernel like Manifold, the dispatcher's BFS can now
+//! chain `BRep input → OCCT tessellate → Mesh BooleanUnion` automatically
+//! without duplicating the union logic in OCCT.
 //!
 //! # Stub-mode behavior
 //!
@@ -133,6 +131,8 @@ pub fn occt_capability_descriptor() -> CapabilityDescriptor {
         (CurveInterpCurve, ReprKind::BRep),
         (CurveBezierCurve, ReprKind::BRep),
         (CurveNurbsCurve, ReprKind::BRep),
+        // Convert ×1 — BRep→Mesh tessellation (PRD §8 task δ, task 3435)
+        (Convert { from: ReprKind::BRep }, ReprKind::Mesh),
     ];
     CapabilityDescriptor { supports }
 }

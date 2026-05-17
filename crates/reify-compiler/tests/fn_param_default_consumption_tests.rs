@@ -4,7 +4,7 @@
 //! Test E — defaulted call compiles without errors and emits UserFunctionCall.
 //! Test F — param without a default still produces the unchanged NoMatch error.
 
-use reify_types::{CompiledExprKind, ModulePath, Severity, Value};
+use reify_types::{CompiledExprKind, DiagnosticCode, ModulePath, Severity, Value};
 
 /// Test E: a call that omits all defaulted params compiles without errors
 /// and the resulting expression is a UserFunctionCall with the full arg count.
@@ -159,6 +159,115 @@ fn f(a : Real, b : Real = a) -> Real { b }
     );
 }
 
+/// Test I (regression for task 3700): a function param with a declared type of `Int`
+/// but a default expression that produces `Real` must be caught at definition time.
+///
+/// Bug (suggestion #7 gap 1 from task 3688): `compile_function` compiled the default
+/// expression in a neutral scope but never compared its `result_type` against the
+/// resolved param type. So `fn f(x: Int = 1.5) -> Int { x }` compiled silently;
+/// the divergence only surfaced at eval time.
+///
+/// The check must use strict equality (matching `resolve_function_overload` and
+/// `try_default_padding`'s prefix-check) — a definition-site check cannot be more
+/// permissive than the call-site check that the synthesized default is inserted into.
+#[test]
+fn fn_param_default_int_param_real_default_type_mismatch_errors() {
+    let source = r#"
+fn f(x : Int = 1.5) -> Int { x }
+"#;
+    let parsed = reify_syntax::parse(source, ModulePath::single("test_consume_i"));
+    // The type mismatch is a compile-time error, not a parse-time error.
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::FnParamDefaultTypeMismatch)),
+        "expected at least one FnParamDefaultTypeMismatch error, got: {:?}",
+        errors
+    );
+}
+
+/// Test J: a function param declared as `Real` but given an integer-literal default (`1`)
+/// must produce a `FnParamDefaultTypeMismatch` error under the strict-equality policy.
+///
+/// This documents the deliberate divergence from let-binding semantics: `let x: Real = 42`
+/// is accepted via Int→Real widening (see `field_codomain_compatible`), but fn-param defaults
+/// use strict equality (matching `resolve_function_overload` / `try_default_padding`'s
+/// prefix check) because a default is conceptually inserted at the padded call site, and
+/// `f(1)` is already rejected for `fn f(x: Real)`.
+#[test]
+fn fn_param_default_real_param_int_literal_default_type_mismatch_errors() {
+    let source = r#"
+fn f(x : Real = 1) -> Real { x }
+"#;
+    let parsed = reify_syntax::parse(source, ModulePath::single("test_consume_j"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::FnParamDefaultTypeMismatch)),
+        "expected a FnParamDefaultTypeMismatch error (Int literal default for Real param \
+         diverges from let-binding widening — strict policy matches call-site check), \
+         got: {:?}",
+        errors
+    );
+}
+
+/// Test K (negative control): a function param declared as `Int` with an integer-literal
+/// default (`1`) must NOT produce a `FnParamDefaultTypeMismatch` error — the types match.
+///
+/// This guards against the check over-firing on correct code.
+#[test]
+fn fn_param_default_int_param_int_literal_default_no_type_mismatch() {
+    let source = r#"
+fn f(x : Int = 1) -> Int { x }
+"#;
+    let parsed = reify_syntax::parse(source, ModulePath::single("test_consume_k"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    let mismatch_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::FnParamDefaultTypeMismatch))
+        .collect();
+    assert!(
+        mismatch_errors.is_empty(),
+        "expected no FnParamDefaultTypeMismatch for matching Int param / Int default, \
+         got: {:?}",
+        mismatch_errors
+    );
+}
+
 /// Test H (ambiguous-padding regression): when two or more same-name candidates are
 /// both satisfiable via default-padding for the same call, `try_default_padding` returns
 /// `None` and the caller falls through to the generic "no matching overload" error.
@@ -203,5 +312,110 @@ structure S {
         errors.iter().any(|e| e.message.contains("no matching overload")),
         "expected 'no matching overload' (ambiguous default-padding pins current behavior), got: {:?}",
         errors
+    );
+}
+
+/// Test L (cascade-suppression regression for task 3718): when a function param's declared
+/// type fails to resolve (e.g. `Bogus`), the root-cause "unresolved type" diagnostic must
+/// be emitted, but the fn_param default type-check must NOT also fire a spurious
+/// `FnParamDefaultTypeMismatch` against the `Type::Real` fallback type.
+///
+/// Guards the `if !type_ok { continue; }` gate in `compile_function`
+/// (crates/reify-compiler/src/functions.rs:80-82). Without the gate, the String default
+/// expression's `result_type` would mismatch the `Type::Real` fallback param type and
+/// produce a cascading diagnostic on top of the unresolved-type root cause.
+#[test]
+fn fn_param_default_unresolved_param_type_no_cascade() {
+    let source = r#"
+fn f(x : Bogus = "hi") -> Int { 0 }
+"#;
+    let parsed = reify_syntax::parse(source, ModulePath::single("test_consume_l"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // (a) Zero FnParamDefaultTypeMismatch errors — the param_type_resolved gate must
+    // suppress the cascade. Asserted via DiagnosticCode for narrowness.
+    let mismatch_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::FnParamDefaultTypeMismatch))
+        .collect();
+    assert!(
+        mismatch_errors.is_empty(),
+        "expected NO FnParamDefaultTypeMismatch errors when declared type is unresolved \
+         (param_type_resolved gate must suppress cascade), got: {:?}",
+        mismatch_errors
+    );
+
+    // (b) At least one diagnostic with DiagnosticCode::UnresolvedType must be present —
+    // this is the root-cause "unresolved type: Bogus" error from functions.rs:33-36.
+    //
+    // Asserting on the typed code (rather than severity or a message substring) pins the
+    // cascade-suppression invariant to the specific root cause: a future refactor that
+    // accidentally suppresses the unresolved-type diagnostic but emits some unrelated error
+    // would still satisfy a loose severity check but will fail this typed assertion.
+    assert!(
+        compiled
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
+        "expected at least one DiagnosticCode::UnresolvedType diagnostic (root cause for \
+         unresolved 'Bogus' type at functions.rs:33-36), got: {:?}",
+        compiled.diagnostics
+    );
+}
+
+/// Test M (cascade-suppression regression for task 3718): when a function param's default
+/// expression fails to compile (e.g. references an undefined name), the root-cause
+/// "unresolved name" diagnostic must be emitted with the default poisoned to `Type::Error`,
+/// but the fn_param default type-check must NOT also fire a spurious
+/// `FnParamDefaultTypeMismatch` on top.
+///
+/// Guards the `default_ty.is_error()` short-circuit in `fn_param_default_compatible`
+/// (crates/reify-compiler/src/type_compat.rs:265-269). Without the short-circuit,
+/// `param_ty == Type::Int` compared against `default_ty == Type::Error` would be unequal
+/// under the strict-equality policy and cascade an `Int vs Error` mismatch.
+#[test]
+fn fn_param_default_undefined_default_expr_no_cascade() {
+    let source = r#"
+fn f(x : Int = undefined_name) -> Int { x }
+"#;
+    let parsed = reify_syntax::parse(source, ModulePath::single("test_consume_m"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // (a) Zero FnParamDefaultTypeMismatch errors — the default_ty.is_error()
+    // short-circuit in fn_param_default_compatible must suppress the cascade.
+    // Asserted via DiagnosticCode for narrowness.
+    let mismatch_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::FnParamDefaultTypeMismatch))
+        .collect();
+    assert!(
+        mismatch_errors.is_empty(),
+        "expected NO FnParamDefaultTypeMismatch errors when default expression has Type::Error \
+         (is_error() short-circuit in fn_param_default_compatible must suppress cascade), \
+         got: {:?}",
+        mismatch_errors
+    );
+
+    // (b) At least one diagnostic with DiagnosticCode::UnresolvedName must be present —
+    // this is the root-cause "unresolved name: undefined_name" error from expr.rs:670-682.
+    //
+    // Asserting on the typed code (rather than severity or a message substring) pins the
+    // cascade-suppression invariant to the specific root cause: a future refactor that
+    // accidentally suppresses the unresolved-name diagnostic but emits some unrelated error
+    // would still satisfy a loose severity check but will fail this typed assertion.
+    assert!(
+        compiled
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::UnresolvedName)),
+        "expected at least one DiagnosticCode::UnresolvedName diagnostic (root cause for \
+         undefined 'undefined_name' at expr.rs:670-682), got: {:?}",
+        compiled.diagnostics
     );
 }

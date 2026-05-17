@@ -159,6 +159,22 @@ fn assert_no_unresolved(expr: &reify_types::CompiledExpr) {
         // Reflective-aggregation placeholder (task-2289): leaf, expanded by
         // activate_purpose at runtime. Treated as resolved here.
         CompiledExprKind::PurposeReflectiveAggregation { .. } => {}
+        // task 3540 (SIR-α): exhaustiveness-forced adapter arm for the new
+        // shared-enum variant (step-16). Recurse into supplied args + captured
+        // defaults so unresolved identifiers nested inside a structure ctor's
+        // argument expressions are still asserted against.
+        CompiledExprKind::StructureInstanceCtor {
+            ordered_args,
+            defaults,
+            ..
+        } => {
+            for (_, arg) in ordered_args {
+                assert_no_unresolved(arg);
+            }
+            for (_, def) in defaults {
+                assert_no_unresolved(def);
+            }
+        }
     }
 }
 

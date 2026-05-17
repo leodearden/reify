@@ -20,10 +20,12 @@ pub mod provenance;
 pub mod sampled;
 pub mod source_location;
 pub mod spanned_ident;
+pub mod structure_registry;
 pub mod traits;
 pub mod ty;
 pub mod value;
 pub mod warm;
+pub mod warm_registry;
 
 pub use annotation::{
     Annotation, AnnotationArg, DEPRECATED_ANNOTATION, OPTIMIZED_ANNOTATION, SHELL_ANNOTATION,
@@ -63,15 +65,21 @@ pub use identity::*;
 pub use kernel_validation::{
     BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE,
 };
-pub use node_traits::{NodeKind, NodeTraits};
+pub use node_traits::{HasNodeKind, NodeKind, NodeTraits, NodeTraitsMap};
 pub use persistent::PersistentMap;
 pub use provenance::{FieldImportProvenance, SnapshotProvenance};
-pub use source_location::{SourceLocationInfo, byte_offset_to_line_col};
+pub use source_location::{
+    SourceLocationInfo, build_line_offsets, byte_offset_to_line_col,
+    line_col_to_byte_offset_with_offsets,
+};
 pub use spanned_ident::SpannedIdent;
+pub use structure_registry::{StructureMeta, StructureRegistry, StructureTypeId};
 pub use traits::{EnumDef, PortDirection, TraitBound, TraitDef, TraitMember, TraitRef, TypeParam};
 pub use ty::Type;
 pub use value::{
     DeterminacyState, ErrorRef, EvalError, FieldSourceKind, Freshness, InterpolationKind,
-    ResultRef, SampledField, SampledGridKind, Satisfaction, Value, ValueMap, quaternion_is_finite,
+    ResultRef, SampledField, SampledGridKind, Satisfaction, StructureInstanceData, Value, ValueMap,
+    quaternion_is_finite,
 };
 pub use warm::{OpaqueState, WarmStartable};
+pub use warm_registry::{WarmStartableRegistration, WarmStartableRegistry};

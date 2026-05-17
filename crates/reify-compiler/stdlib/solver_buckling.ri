@@ -1,0 +1,237 @@
+// Stdlib: Buckling Eigensolver Options, Modes & Results  (`std.solver.buckling`)
+//
+// PRD: docs/prds/v0_5/buckling-eigensolver.md §4, §7, §13 task α.
+//
+// Provides the named-type surface for the v0.5 linear-buckling eigensolver:
+//   - `BucklingOptions`         — solver-input knobs (n_modes, mode, sigma, tol,
+//                                  max_iters, auto_dense)
+//   - `Mode`                    — single eigenvalue/eigenvector pair
+//   - `BucklingResult`          — single-case solver-output container
+//   - `MultiCaseBucklingResult` — multi-load-case parallel sibling of MultiCaseResult
+//
+// Module placement: `std.solver.buckling` is the sibling of `std.solver.elastic`.
+// Registered immediately after `std.solver.elastic` in `stdlib_loader.rs` so
+// `ElasticResult` is in scope when `BucklingResult.pre_stress : ElasticResult`
+// compiles.
+//
+// Encoding notes:
+//   1. Number-literal grammar is `\d+(\.\d+)?` (no scientific notation).
+//      The PRD's `1e-8` default for `tol` therefore appears here as `0.00000001`,
+//      same convention as `solver_elastic.ri`'s `cg_tolerance = 0.000001`.
+//   2. `mode` is String-typed; allowlist validation ("shift_invert" | "dense" |
+//      "lanczos_no_shift") is deferred to the `solver::buckling` trampoline
+//      (PRD §4 + §13 task ε). Reify constraint clauses cannot express
+//      string-set membership.
+//   3. `Mode.mode_shape` uses the precise `Field<Point3<Length>, Vector3<Length>>`
+//      type rather than a `Real` placeholder. Task 3117 landed; the
+//      `type_resolution.rs:1313` resolver arm accepts `Field<D, C>` in `param`
+//      positions, as confirmed by `ElasticResult.displacement` /
+//      `ElasticResult.stress` / `ElasticResult.frame`. The PRD §4 footnote
+//      about the placeholder workaround is stale.
+
+// ── BucklingOptions ──────────────────────────────────────────────────────────
+
+// `BucklingOptions` is the configuration object passed to the v0.5 buckling
+// eigensolver (`solve_buckling`, PRD §13 task ε). All six params have sensible
+// defaults so a bare `BucklingOptions()` instantiation compiles and yields the
+// standard solver setup; callers override individual fields at construction
+// (e.g., `BucklingOptions(n_modes: 20, mode: "dense")`).
+//
+// Param semantics (PRD §4):
+//   n_modes    — eigenpair count to compute. Default 10 covers the typical
+//                "first few critical loads" inspection workflow. The hard cap
+//                is bounded only by available memory; users requesting > ~50
+//                modes are usually doing something pathological.
+//   mode       — algorithm selector. `"shift_invert"` (default) is the
+//                standard Lanczos-with-Cholesky-shift-invert path (PRD §5);
+//                `"dense"` calls `faer::linalg/gevd` for tiny problems;
+//                `"lanczos_no_shift"` is the diagnostic-only bare-Lanczos path
+//                used to debug shift-invert convergence. Allowlist validation
+//                is deferred to the `solver::buckling` trampoline (PRD §4 +
+//                §13 task ε) — Reify `constraint` clauses cannot express
+//                string-set membership.
+//   sigma      — eigenvalue shift origin (in eigenvalue units; dimensionless
+//                load multiplier). Default `0.0` targets the smallest |λ|
+//                cluster (critical-load side of the spectrum). Negative values
+//                target the negative side of the spectrum (e.g., unstable
+//                eigenvalues for non-symmetric K_g). Explicitly NOT
+//                constrained: a shift can physically be anywhere on the real
+//                line.
+//   tol        — Lanczos convergence tolerance. Default `0.00000001`
+//                (= 1e-8) matches the PRD §4 spec; encoded as a decimal
+//                literal because Reify's number grammar has no scientific
+//                notation (same convention as
+//                `solver_elastic.ri::cg_tolerance = 0.000001`).
+//   max_iters  — upper bound on total Lanczos iterations across restarts.
+//                Default 1000 covers the PRD §4 "~10⁵ DOF problems" target.
+//                Exists so a pathologically conditioned problem fails loudly
+//                rather than running forever (same rationale as
+//                `ElasticOptions.max_iter`).
+//   auto_dense — if true, fall back to dense `faer::linalg/gevd` when the
+//                problem's post-BC DOF count ≤ ~200. Useful for tiny test
+//                geometries where dense GEVD beats the
+//                Cholesky-factor-plus-Lanczos overhead. Default `true`
+//                matches the PRD §4 spec.
+structure def BucklingOptions {
+    param n_modes : Int = 10
+    param mode : String = "shift_invert"
+    param sigma : Real = 0.0                  // dimensionless load-multiplier shift
+    param tol : Real = 0.00000001             // = 1e-8 (no scientific notation in Reify grammar)
+    param max_iters : Int = 1000
+    param auto_dense : Bool = true
+
+    // A non-positive `n_modes` requests zero eigenmodes — a degenerate solve.
+    // Declaring the lower bound at the structure-def level makes the contract
+    // explicit in production code rather than relying solely on test
+    // coverage (task 2544 convention; mirrors `ElasticOptions.max_iter > 0`).
+    constraint n_modes > 0
+    // `tol` is the Lanczos convergence tolerance — must be strictly positive
+    // for `||r||/||b|| < tol` to terminate. Zero or negative would silently
+    // exhaust `max_iters` on every solve. Mirrors `cg_tolerance > 0` in
+    // `solver_elastic.ri`.
+    constraint tol > 0
+    // A non-positive `max_iters` would let Lanczos exit before doing any
+    // work — same failure mode as `ElasticOptions.max_iter <= 0`. Same
+    // task-2544 rationale as above.
+    constraint max_iters > 0
+    // NOTE — explicitly NOT constrained:
+    //   sigma      : Real     — eigenvalue shift origin; any real is physically
+    //                           valid (negative shifts target the negative side
+    //                           of the spectrum).
+    //   auto_dense : Bool     — Bool, trivially constrained.
+    //   mode       : String   — allowlist validation ("shift_invert" | "dense"
+    //                           | "lanczos_no_shift") deferred to the
+    //                           `solver::buckling` trampoline per PRD §4;
+    //                           Reify `constraint` clauses can only express
+    //                           scalar predicates, not string-set membership.
+}
+
+// ── Mode ─────────────────────────────────────────────────────────────────────
+
+// `Mode` is one eigenpair returned by the buckling eigensolver: a scalar
+// load-multiplier eigenvalue paired with a displacement-field eigenvector.
+// Populated exclusively by the solver — no caller-supplied defaults are
+// meaningful, no constraints (every field is solver-determined). Mirrors
+// the `ElasticResult`-style "output container only" discipline.
+//
+// Field semantics:
+//   eigenvalue — load multiplier (dimensionless). For the standard buckling
+//                pair `(K + λ K_g) φ = 0`, this is λ; the critical load is
+//                `λ × reference_load_magnitude` (computed by the stdlib
+//                helper `critical_load`, PRD §13 task ε).
+//   mode_shape — eigenvector reshaped as a per-node displacement-shaped
+//                Field over the mesh. Precise `Field<Point3<Length>,
+//                Vector3<Length>>` type per the `ElasticResult.displacement`
+//                precedent (task 3117 landed; PRD §4's "Real-placeholder
+//                per #3117 workaround" footnote is stale — see plan.json
+//                design-decision-1).
+//
+//                ⚠ DIMENSIONALITY NOTE — `Vector3<Length>` inherits Length
+//                units by convention for parallelism with displacement
+//                fields, but a buckling eigenvector is mathematically only
+//                defined up to scalar multiplication: the linear-buckling
+//                eigenproblem `(K + λ K_g) φ = 0` determines φ only up to
+//                a scaling. The FEA convention is to normalize the
+//                eigenvector (e.g., to unit `||φ||_M = 1` or `||φ||_∞ = 1`)
+//                and treat the result as dimensionless. The Length unit
+//                here is a typing convention only, NOT a physical claim;
+//                callers must not add a `mode_shape` to a real
+//                `displacement` Field as if the two were comparable
+//                quantities. A more rigorous future encoding could retype
+//                this as `Field<Point3<Length>, Vector3<Real>>` to make
+//                the dimensionlessness explicit, but the precedent
+//                established by `ElasticResult.displacement` is followed
+//                here to keep all per-node vector-field types uniform
+//                across the solver result containers.
+//
+// PRD reference: docs/prds/v0_5/buckling-eigensolver.md §4.
+structure def Mode {
+    param eigenvalue : Real
+    param mode_shape : Field<Point3<Length>, Vector3<Length>>
+}
+
+// ── BucklingResult ───────────────────────────────────────────────────────────
+
+// `BucklingResult` is the single-load-case buckling-solver output container.
+// Populated exclusively by the `solver::buckling` trampoline (PRD §13 task ε);
+// no caller-supplied defaults are meaningful.
+//
+// Field semantics:
+//   modes       — list of computed eigenpairs in ascending |eigenvalue|
+//                 order (smallest critical load first). Length ≤
+//                 `options.n_modes`; equal to `n_modes` iff `converged ==
+//                 true`. Empty on early-cancellation; partial on non-
+//                 convergence (PRD §5 emits `W_BucklingNotConverged` in that
+//                 case).
+//   converged   — true iff all `options.n_modes` modes converged within
+//                 `options.tol`. False iff Lanczos hit `max_iters` before
+//                 reaching the tolerance for all requested modes.
+//   iterations  — total Lanczos iteration count across restarts.
+//                 Diagnostic for tuning (`solver hit cap` vs `solver
+//                 converged in 47 iters`). Mirrors
+//                 `ElasticResult.iterations`.
+//   pre_stress  — the linear-static elastic solve that produced the stress
+//                 field consumed by K_g assembly. Returned so downstream
+//                 code can inspect the same displacement/stress field
+//                 the buckling solve was based on, without re-running
+//                 `solve_elastic_static`.
+//
+// PRD reference: docs/prds/v0_5/buckling-eigensolver.md §4.
+structure def BucklingResult {
+    param modes : List<Mode>
+    param converged : Bool
+    param iterations : Int
+    param pre_stress : ElasticResult
+
+    // `iterations` is a Lanczos iteration count — a negative value is
+    // impossible. Declaring the lower bound at the structure-def level
+    // makes the contract explicit in production code rather than relying
+    // solely on test coverage (task-2544 convention; mirrors
+    // `ElasticResult.iterations >= 0` in `solver_elastic.ri`).
+    //
+    // Cross-structure invariant `iterations <= BucklingOptions.max_iters` is
+    // enforced by the runtime trampoline — Reify constraints can only
+    // reference cells in the same `structure def` scope.
+    constraint iterations >= 0
+    // NOTE — explicitly NOT constrained:
+    //   converged   : Bool          — Bool, trivially constrained.
+    //   pre_stress  : ElasticResult — output container; no scalar invariant
+    //                                  expressible per-field.
+    //   modes       : List<Mode>    — collection invariants (non-empty when
+    //                                  `converged == true`, sorted ascending
+    //                                  by |eigenvalue|) are producer-enforced
+    //                                  by the trampoline; Reify constraint
+    //                                  clauses can only express scalar
+    //                                  predicates, not collection invariants.
+}
+
+// ── MultiCaseBucklingResult ──────────────────────────────────────────────────
+
+// `MultiCaseBucklingResult` is the multi-load-case buckling-solver output
+// container — the parallel sibling of `MultiCaseResult` (`std.fea.multi_case`).
+// Each instance holds a complete set of per-case `BucklingResult` instances
+// produced by `solve_buckling_load_cases` (PRD §13 task η), keyed by the
+// corresponding `LoadCase.name`.
+//
+// PRD §7 motivates the parallel-rather-than-nested design: folding buckling
+// results into `MultiCaseResult` would compound the result-shape mismatch
+// across two analysis kinds. The parallel shape mirrors the elastic /
+// buckling split at the single-case level.
+//
+// Design constraints (mirrors `MultiCaseResult`):
+//   - No `constraint` blocks: the only meaningful invariant ("cases must be
+//     non-empty") is a collection invariant expressible only at the
+//     producer (`solve_buckling_load_cases`, task η); per-instance scalar
+//     predicates can't enforce it. Map key-uniqueness is structurally
+//     guaranteed by `BTreeMap`.
+//   - No per-field defaults: every `MultiCaseBucklingResult` instance must
+//     be populated by the solver — a bare `MultiCaseBucklingResult()`
+//     call would produce an empty Map, meaningless without a solve.
+//
+// PRD reference: docs/prds/v0_5/buckling-eigensolver.md §7, §13 task η.
+structure def MultiCaseBucklingResult {
+    // Per-case buckling-solver results keyed by `LoadCase.name`. Populated
+    // exclusively by `solve_buckling_load_cases` (PRD §13 task η).
+    // BTreeMap iteration order is lexicographic on `Value::String` keys.
+    param cases : Map<String, BucklingResult>
+}

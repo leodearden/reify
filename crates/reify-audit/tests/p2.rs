@@ -15,7 +15,7 @@ mod p2 {
 
 use reify_audit::{
     AuditContext, EvidenceRef, MockGitOps, MockJCodemunchOps, Pattern, Severity, TaskMetadata,
-    p2_consumer_stub,
+    TimeWindow, p2_consumer_stub,
 };
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -57,9 +57,11 @@ mod tests {
     ///   k) `crates/x/k.rs` — `// placeholder: TBD`          (Family 6 // placeholder)
     ///
     /// Each path has exactly one stub line → eleven findings expected.
-    /// Having all three Family 6 sub-patterns covered ensures that removing or
-    /// reordering any `// stub` / `// placeholder` / `// fixme` arm in
-    /// `line_matches_stub` would make this test fail.
+    /// Each finding's summary is structurally verified to contain
+    /// `[<non-empty label>]:` (confirming the rendering contract), and two
+    /// representative family labels are pinned byte-for-byte (Family 1 and
+    /// Family 6) to anchor label routing without hardcoding all eleven strings
+    /// (which would force two-place edits on any future label rename).
     #[test]
     fn detects_canonical_stub_patterns_on_added_lines() {
         let conn = Connection::open_in_memory().expect("open in-memory sqlite");
@@ -118,6 +120,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: None,
+            producer_branch: None,
         };
 
         let findings = p2_consumer_stub::check(&ctx);
@@ -141,6 +144,60 @@ mod tests {
             });
             assert!(found, "no finding with EvidenceRef::File for {path}");
         }
+
+        // Structural pin: every path must produce a finding whose summary uses
+        // the "line N [<non-empty label>]: snippet" format.  This guards the
+        // rendering contract without hardcoding all eleven label strings.
+        for path in &paths {
+            let has_structural_label = findings.iter().any(|f| {
+                let refs_path = f.evidence.iter().any(|e| match e {
+                    EvidenceRef::File { path: p } => p == path,
+                    _ => false,
+                });
+                if !refs_path {
+                    return false;
+                }
+                // Verify "[label]:" appears with a non-empty label between the brackets.
+                f.summary.find('[').and_then(|open| {
+                    f.summary[open + 1..].find("]:").map(|close| close > 0)
+                }).unwrap_or(false)
+            });
+            assert!(
+                has_structural_label,
+                "no finding for {path} with '[<label>]:' rendering in summary; findings: {:?}",
+                findings
+            );
+        }
+
+        // Exact label pin for two representative families anchors the label-routing
+        // contract.  A cross-family swap (e.g. Family-6 `// fixme` arm returning
+        // `"// stub"`) is caught here without requiring all eleven strings to be
+        // duplicated verbatim (reducing two-place-edit burden on future renames).
+        let family1_bracketed = "[TODO(pending)]";
+        let family1_ok = findings.iter().any(|f| {
+            f.evidence.iter().any(|e| match e {
+                EvidenceRef::File { path: p } => p == "crates/x/a.rs",
+                _ => false,
+            }) && f.summary.contains(family1_bracketed)
+        });
+        assert!(
+            family1_ok,
+            "Family-1 label 'TODO(pending)' missing from a.rs finding; findings: {:?}",
+            findings
+        );
+
+        let family6_bracketed = "[// fixme]";
+        let family6_ok = findings.iter().any(|f| {
+            f.evidence.iter().any(|e| match e {
+                EvidenceRef::File { path: p } => p == "crates/x/i.rs",
+                _ => false,
+            }) && f.summary.contains(family6_bracketed)
+        });
+        assert!(
+            family6_ok,
+            "Family-6 label '// fixme' missing from i.rs finding; findings: {:?}",
+            findings
+        );
     }
 
     /// Verify that stub patterns that were already present on `main` (i.e. NOT
@@ -189,6 +246,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: None,
+            producer_branch: None,
         };
 
         let findings = p2_consumer_stub::check(&ctx);
@@ -201,14 +259,16 @@ mod tests {
 
     /// Verify that paths whose shape indicates a test file are excluded from
     /// P2 scanning, even when they carry real stub markers on the added-lines
-    /// side.  Four test-shaped paths and one non-test path:
+    /// side.  Six test-shaped paths and one non-test path:
     ///   - `crates/foo/tests/integration_bar.rs`  — contains `/tests/`
     ///   - `src/lexer_test.rs`                    — ends with `_test.rs`
     ///   - `frontend/__tests__/foo.ts`             — contains `__tests__/`
     ///   - `tests/root_foo.rs`                    — starts with `tests/` (no leading slash)
+    ///   - `frontend/foo.test.ts`                  — contains `.test.` (JS/TS)
+    ///   - `frontend/bar.spec.ts`                  — contains `.spec.` (JS/TS)
     ///   - `src/foo.rs`                            — production file → flagged
     ///
-    /// All five carry `// TODO(impl pending)` as an added line.  Exactly one
+    /// All seven carry `// TODO(impl pending)` as an added line.  Exactly one
     /// finding must emerge and it must reference `src/foo.rs`.
     #[test]
     fn test_file_paths_excluded() {
@@ -221,6 +281,8 @@ mod tests {
             "src/lexer_test.rs",
             "frontend/__tests__/foo.ts",
             "tests/root_foo.rs",
+            "frontend/foo.test.ts",
+            "frontend/bar.spec.ts",
         ];
         let prod_path = "src/foo.rs";
         let stub_line = (1usize, "    // TODO(impl pending)".to_string());
@@ -250,6 +312,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: None,
+            producer_branch: None,
         };
 
         let findings = p2_consumer_stub::check(&ctx);
@@ -324,6 +387,7 @@ mod tests {
                 target_task_id: None,
                 window: None,
                 now: None,
+                producer_branch: None,
             };
             p2_consumer_stub::check(&ctx)
         };
@@ -406,6 +470,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: None,
+            producer_branch: None,
         };
 
         // Before the fix this panics with "byte index 60 is not a char boundary".
@@ -428,6 +493,286 @@ mod tests {
             findings[0].summary.contains("TODO(pending)"),
             "summary must include the pattern label; got: {}",
             findings[0].summary
+        );
+    }
+
+
+    /// Pins the discrimination half of `docs/architecture-audit/f-infra-design.md`
+    /// §10 acceptance-criterion: "seven canonical stub patterns detected, seven
+    /// non-stub patterns not" — this test covers the "not" side (regression-guard).
+    ///
+    /// Seven near-miss added lines, each probing the discrimination boundary of one
+    /// family:
+    ///   (a) `// TODO(refactor) // see task_123` — `task_123` outside `TODO(...)`
+    ///       parens must NOT match `TODO(task_N)` (Family 1 paren-scoping).
+    ///   (b) `panic!("bad input")` — bare panic without `not yet` must NOT match
+    ///       Family 3.
+    ///   (c) `// TODO(refactor)` — TODO with no Family-1 sub-pattern must NOT match.
+    ///   (d) `Value::Undef => { /* unhandled */ }` — Undef arm without
+    ///       pending/stub/placeholder must NOT match Family 5.
+    ///   (e) `tracing::warn!(reason="some_other_reason", "x")` — warn! without
+    ///       `task_*_pending` reason must NOT match Family 4.
+    ///   (f) `// TODO_LIST.md note about followup` — "todo" not followed by `(`
+    ///       must NOT match any family (lexical `todo(` guard in Family 1).
+    ///   (g) `let result = unimplemented_macro();` — "unimplemented" as a
+    ///       substring but WITHOUT the trailing `!(` must NOT match Family 2
+    ///       (`unimplemented!(`-exact check).
+    ///
+    /// Expected outcome: `findings.is_empty()`. If this test fails, a real
+    /// regression in `line_matches_stub`'s discrimination logic has been introduced.
+    #[test]
+    fn near_miss_lines_not_flagged() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let task_id = "9100";
+        let near_miss_paths: Vec<&str> = vec![
+            "crates/x/near_a.rs",
+            "crates/x/near_b.rs",
+            "crates/x/near_c.rs",
+            "crates/x/near_d.rs",
+            "crates/x/near_e.rs",
+            "crates/x/near_f.rs",
+            "crates/x/near_g.rs",
+        ];
+        let near_miss_lines: Vec<&str> = vec![
+            "    // TODO(refactor) // see task_123",
+            "    panic!(\"bad input\")",
+            "    // TODO(refactor)",
+            "    Value::Undef => { /* unhandled */ }",
+            "    tracing::warn!(reason=\"some_other_reason\", \"x\")",
+            "    // TODO_LIST.md note about followup",
+            "    let result = unimplemented_macro();",
+        ];
+
+        let mut git = MockGitOps::new();
+        let task_branch = format!("task/{}", task_id);
+        for (path, line) in near_miss_paths.iter().zip(near_miss_lines.iter()) {
+            git.set_diff_added_lines(
+                "main",
+                &task_branch,
+                path,
+                vec![(1, line.to_string())],
+            );
+        }
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            task_id.to_string(),
+            benign_meta(task_id, near_miss_paths.iter().map(|p| p.to_string()).collect()),
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p2_consumer_stub::check(&ctx);
+        assert!(
+            findings.is_empty(),
+            "near-miss lines must NOT produce findings; got {:?}",
+            findings
+        );
+    }
+
+    /// Pins the sweep-mode contract: `check()` must panic (via `debug_assert!`) when
+    /// called with an unbounded backlog — `target_task_id=None`, `window=None`, and
+    /// `task_metadata.len() > SWEEP_BACKLOG_WARN_THRESHOLD` (50).
+    ///
+    /// Without pre-narrowing, every in-progress task carrying a legitimate WIP
+    /// `TODO(... pending)` would silently surface as a Medium-severity finding,
+    /// because P2 has no internal status filter to suppress legitimate WIP markers.
+    /// The contract enforces that sweep-mode callers MUST narrow `ctx.task_metadata`
+    /// to closing-window tasks before calling `check()`.
+    ///
+    /// The 51-entry backlog (one above threshold) uses `files: vec![]` so no
+    /// `diff_added_lines` calls fire — the guard panics before per-task iteration.
+    ///
+    /// Reference: esc-3752-365 (reviewer-accepted sweep-mode contract suggestion).
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "unbounded backlog")]
+    fn sweep_mode_unbounded_backlog_panics_in_debug() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let jc = MockJCodemunchOps::new();
+
+        // Construct 51 entries — one more than SWEEP_BACKLOG_WARN_THRESHOLD (50).
+        // files: vec![] keeps the test hermetic — no diff calls fire because the
+        // guard panics before per-task iteration begins.
+        let mut task_metadata = HashMap::new();
+        for i in 0..51usize {
+            let id = format!("3000{i:02}");
+            task_metadata.insert(id.clone(), benign_meta(&id, vec![]));
+        }
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None, // added by task 3691 — required field
+        };
+
+        // Before the impl guard lands: check() returns Vec::new() without panicking,
+        // causing #[should_panic] to fail ("test did not panic as expected").
+        let _ = p2_consumer_stub::check(&ctx);
+    }
+
+    /// Pins the strict-`>` boundary of `SWEEP_BACKLOG_WARN_THRESHOLD` (50).
+    ///
+    /// A backlog of EXACTLY 50 tasks with `target_task_id=None` and `window=None`
+    /// must NOT trigger the guard — the threshold constant's doc says "strict `>` so
+    /// a backlog of exactly 50 does not warn".
+    ///
+    /// An off-by-one regression to `>=` would silently pass
+    /// `sweep_mode_unbounded_backlog_panics_in_debug` (which uses 51 entries) yet
+    /// would panic here, making this the sole regression-catcher for the
+    /// inclusive/exclusive boundary.
+    ///
+    /// Reference: esc-3752-365 review suggestion 2 (boundary test).
+    #[test]
+    fn sweep_mode_at_threshold_does_not_panic() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let jc = MockJCodemunchOps::new();
+
+        // Exactly 50 entries — equal to SWEEP_BACKLOG_WARN_THRESHOLD (not one above).
+        // files: vec![] keeps the test hermetic (no diff calls fire).
+        let mut task_metadata = HashMap::new();
+        for i in 0..50usize {
+            let id = format!("4000{i:02}");
+            task_metadata.insert(id.clone(), benign_meta(&id, vec![]));
+        }
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        // Must return without panicking; 50 entries does NOT exceed the strict->50
+        // threshold. Any panic here indicates an off-by-one regression (>= vs >).
+        let findings = p2_consumer_stub::check(&ctx);
+        assert!(
+            findings.is_empty(),
+            "50 benign tasks with files=vec![] should produce no findings; got {:?}",
+            findings
+        );
+    }
+
+    /// Pins the allow-path of the sweep-mode guard: a backlog of 51 tasks (one above
+    /// threshold) with `window=Some(...)` must NOT trigger the guard, because the
+    /// conjunction includes `ctx.window.is_none()`.
+    ///
+    /// A regression that drops the `window.is_none()` conjunct (reducing the predicate
+    /// to just `task_metadata.len() > 50`) would panic here and break every legitimate
+    /// large `--since` sweep.
+    ///
+    /// NOTE: As documented by the KNOWN LIMITATION comment in check(), `ctx.window` is
+    /// NOT actually consumed by P2, so window=Some does not guarantee that
+    /// task_metadata was narrowed. This test pins the CURRENT guard behavior — the
+    /// window=Some allow-path — not an ideal narrowing contract. See esc-3752-365
+    /// review suggestion 1 for the full analysis.
+    ///
+    /// Reference: esc-3752-365 review suggestion 3 (allow-path test, window variant).
+    #[test]
+    fn sweep_mode_with_window_scoping_does_not_panic() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let jc = MockJCodemunchOps::new();
+
+        // 51 entries — one above SWEEP_BACKLOG_WARN_THRESHOLD.
+        let mut task_metadata = HashMap::new();
+        for i in 0..51usize {
+            let id = format!("5000{i:02}");
+            task_metadata.insert(id.clone(), benign_meta(&id, vec![]));
+        }
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            // window=Some suppresses the guard (ctx.window.is_none() == false).
+            window: Some(TimeWindow {
+                since: Some("2026-05-01T00:00:00Z".to_string()),
+                until: None,
+            }),
+            now: None,
+            producer_branch: None,
+        };
+
+        // Must return without panicking. A regression dropping `window.is_none()`
+        // from the guard predicate would cause this to panic.
+        let findings = p2_consumer_stub::check(&ctx);
+        assert!(
+            findings.is_empty(),
+            "51 benign tasks with files=vec![] and window=Some should produce no findings; got {:?}",
+            findings
+        );
+    }
+
+    /// Pins the allow-path of the sweep-mode guard: a backlog of 51 tasks (one above
+    /// threshold) with `target_task_id=Some(...)` must NOT trigger the guard, because
+    /// the conjunction includes `ctx.target_task_id.is_none()`.
+    ///
+    /// A regression dropping the `target_task_id.is_none()` conjunct would panic here
+    /// and break every pre-done hook invocation where ctx.task_metadata happens to
+    /// hold more than 50 entries.
+    ///
+    /// Reference: esc-3752-365 review suggestion 3 (allow-path test, target_task_id variant).
+    #[test]
+    fn sweep_mode_with_target_task_id_does_not_panic() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let jc = MockJCodemunchOps::new();
+
+        // 51 entries — one above SWEEP_BACKLOG_WARN_THRESHOLD.
+        let mut task_metadata = HashMap::new();
+        for i in 0..51usize {
+            let id = format!("6000{i:02}");
+            task_metadata.insert(id.clone(), benign_meta(&id, vec![]));
+        }
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            // target_task_id=Some suppresses the guard (ctx.target_task_id.is_none() == false).
+            target_task_id: Some("600000".to_string()),
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        // Must return without panicking. A regression dropping
+        // `target_task_id.is_none()` from the guard predicate would panic here.
+        let findings = p2_consumer_stub::check(&ctx);
+        assert!(
+            findings.is_empty(),
+            "51 benign tasks with files=vec![] and target_task_id=Some should produce no findings; got {:?}",
+            findings
         );
     }
 

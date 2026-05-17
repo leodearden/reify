@@ -14,6 +14,17 @@ use faer::sparse::{SparseRowMat, Triplet};
 
 use super::ElementStiffness;
 
+/// Maximum number of `(node, axis)` pairs stored in
+/// [`OrphanDofsSummary::examples`].
+///
+/// Keeps the struct small on large meshes — production models can have 10K+
+/// tet-only nodes in a mixed tet+shell system (30K+ orphan pairs). 16 entries
+/// are enough to identify a clustered pattern in a debug log line; callers
+/// needing full enumeration can compute the orphan set directly from the
+/// element slice. [`OrphanDofsSummary::count`] always reflects the true total
+/// regardless of this cap.
+const MAX_EXAMPLES: usize = 16;
+
 /// One element's contribution to the global system.
 ///
 /// `connectivity` lists the global node IDs of the element's local nodes in
@@ -79,6 +90,183 @@ pub enum AssemblyMode {
         /// Worker thread count.
         threads: usize,
     },
+}
+
+/// Summary returned by [`detect_orphan_dofs`] describing nodes whose DOF
+/// coverage falls short of the global `D` in a mixed-element mesh.
+///
+/// An *orphan DOF* at node `n`, axis `α` is a `(D·n + α)` row/col in the
+/// global stiffness matrix `K` that receives **no nonzero contribution from
+/// any element** because `α >= d_e_max_local(n)` (the highest per-element
+/// DOF count touching that node). In a pure-tet mesh every node has
+/// `d_e_max_local = 3 = D`, so there are no orphans. In a mixed tet+shell
+/// mesh (`D = 6`) tet-only nodes have `d_e_max_local = 3 < 6`, leaving axes
+/// 3, 4, 5 as orphan zeros — the signature of a singular K unless a BC or
+/// MPC layer (task 2917 / task 3020) clamps them.
+///
+/// This is the diagnostic surface added in task 3293. Call
+/// [`detect_orphan_dofs`] before or after assembly to check whether the mesh
+/// configuration requires BC/MPC stabilisation.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct OrphanDofsSummary {
+    /// Total number of orphan `(node, axis)` pairs across the whole mesh.
+    /// This is the true count even when `examples` is truncated to
+    /// `MAX_EXAMPLES`.
+    pub count: usize,
+    /// First up to `MAX_EXAMPLES` representative orphan `(node, axis)` pairs,
+    /// sorted ascending by `(node, axis)`. When `examples.len() < count` the
+    /// list is truncated; callers that need the full set can derive it
+    /// directly from the element slice.
+    pub examples: Vec<(usize, usize)>,
+}
+
+impl std::fmt::Display for OrphanDofsSummary {
+    /// Single-line summary suitable for `eprintln!` and grep.
+    ///
+    /// Format (non-empty, no truncation — all examples listed explicitly):
+    /// `orphan DOFs: count=9, examples=[(1, 3), (1, 4), (1, 5), (2, 3), (2, 4), (2, 5), (3, 3), (3, 4), (3, 5)]`
+    ///
+    /// Format (truncated, `examples.len() < count` — all `MAX_EXAMPLES`
+    /// entries listed explicitly, then a trailing parenthetical):
+    /// `orphan DOFs: count=24, examples=[(1, 3), (1, 4), (1, 5), (2, 3), (2, 4), (2, 5), (3, 3), (3, 4), (3, 5), (4, 3), (4, 4), (4, 5), (5, 3), (5, 4), (5, 5), (6, 3)] (first 16 of 24)`
+    ///
+    /// Note: there is no `...` ellipsis inside the brackets — all stored
+    /// examples are emitted verbatim. The parenthetical `(first N of M)` only
+    /// appears when the list is truncated (`examples.len() < count`).
+    ///
+    /// Format (empty / no orphans):
+    /// `orphan DOFs: count=0, examples=[]`
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "orphan DOFs: count={}, examples=[", self.count)?;
+        for (i, &(node, axis)) in self.examples.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "({node}, {axis})")?;
+        }
+        write!(f, "]")?;
+        if self.examples.len() < self.count {
+            write!(
+                f,
+                " (first {} of {})",
+                self.examples.len(),
+                self.count,
+            )?;
+        }
+        Ok(())
+    }
+}
+
+/// Detect orphan DOFs in a mesh described by `elements`, returning a summary
+/// of all `(node, axis)` pairs whose row/col in the global stiffness matrix
+/// would be structurally zero because no touching element covers that axis.
+///
+/// ## Semantics
+///
+/// Computes, for each node `n` in `0..n_nodes`:
+///
+/// ```text
+/// d_e_max_local(n) = max(d_e_e  for elements e where n in e.connectivity)
+/// ```
+///
+/// with `d_e_e = e.k_e.n_dofs / e.connectivity.len()` (the same formula used
+/// by [`assemble_global_stiffness`] to derive the global `D`). The global
+/// `D = max(d_e_max_local)` over all elements. Empty `elements` returns an
+/// empty summary (`count=0`) without computing `D` (see early return below).
+///
+/// Node `n` carries orphan DOFs at axes `α ∈ [d_e_max_local(n)..D)` **only
+/// if the node is touched** (`d_e_max_local(n) > 0`). Completely-untouched
+/// nodes (never in any element's connectivity) have `d_e_max_local = 0`
+/// and are not reported — their empty rows/cols are a mesh-completeness
+/// issue, not a DOF-coverage violation.
+///
+/// ## In debug builds
+///
+/// [`assemble_global_stiffness`] calls this function internally under
+/// `#[cfg(debug_assertions)]` and emits an `eprintln!` warning if
+/// `count > 0`. See the design note at the assembly boundary.
+///
+/// ## Task marker
+///
+/// Diagnostic surface added per task 3293. See also task 2917 (Dirichlet BC)
+/// and task 3020 (MPC tying) for the stabilisation layers that suppress
+/// singular-K failures from orphan DOFs.
+///
+/// # Panics
+///
+/// Panics (index out of bounds) if any node index in an element's connectivity
+/// is `>= n_nodes`. Panics (divide by zero) if any element's connectivity is
+/// empty (`e.connectivity.len() == 0`). These contracts match those of
+/// [`assemble_global_stiffness`] — callers should validate the mesh before
+/// calling this function as a pre-assembly check.
+///
+/// In debug builds, two `debug_assert!`s enforce these contracts eagerly:
+/// one on non-empty connectivity and one on all node indices being in-bounds.
+pub fn detect_orphan_dofs(
+    n_nodes: usize,
+    elements: &[AssemblyElement<'_>],
+) -> OrphanDofsSummary {
+    if elements.is_empty() {
+        return OrphanDofsSummary::default();
+    }
+
+    // Validate input contracts (matches assemble_global_stiffness's implicit
+    // contract): every element must have non-empty connectivity, and every
+    // referenced node must be in-bounds for n_nodes.
+    #[cfg(debug_assertions)]
+    for e in elements {
+        debug_assert!(
+            !e.connectivity.is_empty(),
+            "detect_orphan_dofs: element {} has empty connectivity",
+            e.id
+        );
+        debug_assert!(
+            e.connectivity.iter().all(|&n| n < n_nodes),
+            "detect_orphan_dofs: element {} has a node index >= n_nodes ({})",
+            e.id,
+            n_nodes
+        );
+    }
+
+    // Global DOFs-per-node D = max(d_e_e) over all elements, mirroring the
+    // formula in assemble_global_stiffness. Derived inline with the per-node
+    // aggregation below; the early return above guarantees elements is non-empty
+    // here so d_global is always set to at least the first element's d_e.
+    let mut d_global: usize = 0;
+    // Build per-node d_e_max_local: the highest d_e of any element touching
+    // that node. Nodes never mentioned in any connectivity stay 0 (untouched).
+    let mut d_max_local = vec![0usize; n_nodes];
+    for e in elements {
+        let d_e = e.k_e.n_dofs / e.connectivity.len();
+        if d_e > d_global {
+            d_global = d_e;
+        }
+        for &node in e.connectivity {
+            if d_e > d_max_local[node] {
+                d_max_local[node] = d_e;
+            }
+        }
+    }
+
+    // Count orphan (node, axis) pairs and collect up to MAX_EXAMPLES of them.
+    // Nodes that ARE touched (d_max_local > 0) but whose best-covering
+    // element stops short of D contribute (d_global - d_local) orphan axes.
+    // Both loops are ascending so examples are naturally sorted by (node, axis).
+    // count always reflects the true total; push is gated by the cap.
+    let mut count = 0usize;
+    let mut examples: Vec<(usize, usize)> = Vec::new();
+    for (node, &d_local) in d_max_local.iter().enumerate() {
+        if d_local > 0 && d_local < d_global {
+            for axis in d_local..d_global {
+                count += 1;
+                if examples.len() < MAX_EXAMPLES {
+                    examples.push((node, axis));
+                }
+            }
+        }
+    }
+
+    OrphanDofsSummary { count, examples }
 }
 
 /// Scatter per-element stiffness matrices into a global `D·N × D·N` sparse
@@ -224,14 +412,20 @@ pub fn assemble_global_stiffness(
     // tet-only nodes carry orphan rotation rows/cols of zero, which
     // downstream BC/MPC layers handle).
     //
-    // Design note: when `D > min(d_e)` (mixed tet+shell), nodes touched
-    // only by lower-`d_e` elements end up with structurally zero
-    // rows/cols at the extra DOFs (`α >= d_e` observed at that node).
-    // Stabilisation is provided by Shells T10's MPC tying (task 3020,
-    // landed) plus the Dirichlet rotation auto-clamp (task 2917,
-    // landed); the contract owner is the BC/MPC layer. If a caller
-    // forgets to apply either, the failure surfaces deep in the linear
-    // solve as a singular K.
+    // Design note (task 3293): when `D > min(d_e)` (mixed tet+shell),
+    // nodes touched only by lower-`d_e` elements end up with structurally
+    // zero rows/cols at the extra DOFs (`α >= d_e_max_local(n)` for that
+    // node). Stabilisation is provided by Shells T10's MPC tying (task
+    // 3020, landed) plus the Dirichlet rotation auto-clamp (task 2917,
+    // landed); the contract owner is the BC/MPC layer.
+    //
+    // Diagnostic surface: `detect_orphan_dofs(n_nodes, elements)` returns
+    // an `OrphanDofsSummary { count, examples }` describing any such
+    // under-covered (node, axis) pairs. In debug builds this function
+    // calls `detect_orphan_dofs` internally and emits a single `eprintln!`
+    // warning if `count > 0`, so forgetting BC/MPC stabilisation surfaces
+    // at the assembly boundary rather than as a silent singular K in the
+    // linear solve.
     let n_dofs_per_node: usize = elements
         .iter()
         .map(|e| e.k_e.n_dofs / e.connectivity.len())
@@ -375,6 +569,22 @@ pub fn assemble_global_stiffness(
     // that sums in a `BTreeMap<(row, col), f64>` keyed by the canonical
     // `(row, col)` order. step-5's `two_p1_elements_sharing_face_*` test
     // would also surface the regression.
+    // Debug-only orphan-DOF diagnostic. Zero release-mode cost; matches the
+    // #[cfg(debug_assertions)] gating idiom in mpc.rs:172-213. Uses eprintln!
+    // rather than tracing/log because reify-solver-elastic has no logging
+    // dependency (task 3293, design decision 3).
+    #[cfg(debug_assertions)]
+    {
+        let orphans = detect_orphan_dofs(n_nodes, elements);
+        if orphans.count > 0 {
+            eprintln!(
+                "[reify-solver-elastic] assemble_global_stiffness: {orphans}; \
+                 apply Dirichlet BC (task 2917) or MPC tying (task 3020) to \
+                 stabilise these DOFs before solving",
+            );
+        }
+    }
+
     let dim = n_dofs_per_node * n_nodes;
     SparseRowMat::try_new_from_triplets(dim, dim, &triplets).expect(
         "triplets within declared n_dofs_per_node*n_nodes dims \
@@ -2140,5 +2350,387 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Empty `elements` slice → `OrphanDofsSummary` with count=0 and
+    /// examples empty.
+    ///
+    /// Pins the empty-input contract for `detect_orphan_dofs`, paralleling
+    /// `empty_elements_returns_zero_3n_by_3n_sparse_matrix` for
+    /// `assemble_global_stiffness`.
+    #[test]
+    fn detect_orphan_dofs_empty_elements_returns_zero_summary() {
+        let summary = detect_orphan_dofs(4, &[]);
+        assert_eq!(summary.count, 0);
+        assert!(summary.examples.is_empty());
+    }
+
+    /// Single P1 tet on `[0,1,2,3]` → no orphan DOFs.
+    ///
+    /// In a pure-tet mesh `D = 3` and every node has `d_e_max_local = 3 = D`,
+    /// so no axis at any node is orphaned. Pins that `detect_orphan_dofs`
+    /// reports zero orphans for a homogeneous-D mesh (no false positives).
+    #[test]
+    fn detect_orphan_dofs_pure_tet_mesh_reports_zero_orphans() {
+        let mat = dimensionless_steel_like();
+        let k_e = element_stiffness_p1(&UNIT_TET_P1, &mat);
+        let conn = [0usize, 1, 2, 3];
+        let elements = [AssemblyElement {
+            id: 0,
+            connectivity: &conn,
+            k_e: &k_e,
+        }];
+        let summary = detect_orphan_dofs(4, &elements);
+        assert_eq!(summary.count, 0);
+        assert!(summary.examples.is_empty());
+    }
+
+    /// Every reported orphan `(node, α)` has a structurally zero row and column
+    /// in the assembled global K.
+    ///
+    /// Builds the mixed tet+shell fixture, assembles K with
+    /// `assemble_global_stiffness`, then calls `detect_orphan_dofs` and
+    /// verifies that for every `(node, α)` in `examples`, the entire row
+    /// `D*node + α` and column `D*node + α` in K are zero.
+    ///
+    /// Pins that the detector's output matches the assembler's actual emission
+    /// pattern: a regression in either (e.g. wrong d_e formula, wrong axis
+    /// mapping) surfaces here rather than silently producing a wrong matrix.
+    #[test]
+    fn detect_orphan_dofs_consistent_with_assemble_global_stiffness_emission() {
+        let mat = dimensionless_steel_like();
+        let k_e_tet = element_stiffness_p1(&UNIT_TET_P1, &mat);
+        let k_e_shell = shell_element_stiffness(&UNIT_TRI, SHELL_T, &mat);
+        let conn_tet = [0usize, 1, 2, 3];
+        let conn_shell = [0usize, 4, 5];
+        let n_nodes = 6usize;
+        let elements = [
+            AssemblyElement {
+                id: 0,
+                connectivity: &conn_tet,
+                k_e: &k_e_tet,
+            },
+            AssemblyElement {
+                id: 1,
+                connectivity: &conn_shell,
+                k_e: &k_e_shell,
+            },
+        ];
+
+        let k = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+        let summary = detect_orphan_dofs(n_nodes, &elements);
+
+        // D = 6; dim = 6 * n_nodes = 36.
+        let d_global = 6usize;
+        let dim = d_global * n_nodes;
+
+        assert_eq!(k.nrows(), dim);
+        assert_eq!(k.ncols(), dim);
+
+        // Precondition: the fixture's orphan count must fit within MAX_EXAMPLES
+        // so that every orphan is covered by summary.examples. If the fixture
+        // ever grows past the cap this assert fires loudly rather than silently
+        // weakening the loop below.
+        assert!(
+            summary.examples.len() == summary.count,
+            "examples truncated: stored {} of {} total orphans — \
+             either raise MAX_EXAMPLES or use a smaller fixture",
+            summary.examples.len(),
+            summary.count,
+        );
+
+        // For every reported orphan (node, α) the entire DOF row and column
+        // must be zero.
+        for &(node, axis) in &summary.examples {
+            let dof = d_global * node + axis;
+            for j in 0..dim {
+                let row_val = read(&k, dof, j);
+                assert_eq!(
+                    row_val,
+                    0.0,
+                    "K[{dof}][{j}] (orphan row for node={node}, axis={axis}) \
+                     should be 0.0, got {row_val}",
+                );
+            }
+            for i in 0..dim {
+                let col_val = read(&k, i, dof);
+                assert_eq!(
+                    col_val,
+                    0.0,
+                    "K[{i}][{dof}] (orphan col for node={node}, axis={axis}) \
+                     should be 0.0, got {col_val}",
+                );
+            }
+        }
+    }
+
+    /// `Display` for `OrphanDofsSummary` emits a single-line diagnostic string.
+    ///
+    /// Pins:
+    /// 1. No newlines in the output (`!result.contains('\n')`).
+    /// 2. The string contains `count=9` so it is grep-able.
+    /// 3. The first three `(node, axis)` pairs `(1, 3)`, `(1, 4)`, `(1, 5)`
+    ///    appear literally so a reader can spot offending nodes.
+    /// 4. The empty summary (`count=0`) also formats correctly.
+    #[test]
+    fn orphan_dofs_summary_display_emits_single_line_diagnostic() {
+        // Non-empty case: use the mixed-mesh fixture (count=9, full examples).
+        let mat = dimensionless_steel_like();
+        let k_e_tet = element_stiffness_p1(&UNIT_TET_P1, &mat);
+        let k_e_shell = shell_element_stiffness(&UNIT_TRI, SHELL_T, &mat);
+        let conn_tet = [0usize, 1, 2, 3];
+        let conn_shell = [0usize, 4, 5];
+        let elements = [
+            AssemblyElement {
+                id: 0,
+                connectivity: &conn_tet,
+                k_e: &k_e_tet,
+            },
+            AssemblyElement {
+                id: 1,
+                connectivity: &conn_shell,
+                k_e: &k_e_shell,
+            },
+        ];
+        let summary = detect_orphan_dofs(6, &elements);
+        let s = format!("{}", summary);
+
+        // Single line.
+        assert!(!s.contains('\n'), "Display must not contain newlines; got: {s:?}");
+
+        // Must name the count.
+        assert!(
+            s.contains("count=9"),
+            "Display must contain 'count=9'; got: {s:?}",
+        );
+
+        // Must contain the first three canonical (node, axis) pairs.
+        assert!(
+            s.contains("(1, 3)"),
+            "Display must contain '(1, 3)'; got: {s:?}",
+        );
+        assert!(
+            s.contains("(1, 4)"),
+            "Display must contain '(1, 4)'; got: {s:?}",
+        );
+        assert!(
+            s.contains("(1, 5)"),
+            "Display must contain '(1, 5)'; got: {s:?}",
+        );
+
+        // Empty summary is also well-defined.
+        let empty = OrphanDofsSummary::default();
+        let se = format!("{}", empty);
+        assert!(!se.contains('\n'), "empty Display must not contain newlines");
+        assert!(
+            se.contains("count=0"),
+            "empty Display must contain 'count=0'; got: {se:?}",
+        );
+    }
+
+    /// `Display` for `OrphanDofsSummary` in the truncated regime
+    /// (`examples.len() < count`) lists all stored entries verbatim — no
+    /// `...` ellipsis — followed by a trailing parenthetical.
+    ///
+    /// Pins:
+    /// 1. Single line: `!s.contains('\n')`.
+    /// 2. Names the true (untruncated) count: `s.contains("count=24")`.
+    /// 3. Every one of the 16 stored `(node, axis)` pairs appears literally as
+    ///    a substring in the formatted output.
+    /// 4. Trailing parenthetical: `s.ends_with("] (first 16 of 24)")`.
+    #[test]
+    fn orphan_dofs_summary_display_truncated_form_lists_all_stored_examples_verbatim() {
+        // Truncating fixture: shell on [0,9,10] + two P1 tets on [1,2,3,4] and
+        // [5,6,7,8], n_nodes=11. D=6 (shell). Tet-only nodes {1..=8}: 8 nodes ×
+        // 3 orphan axes {3,4,5} = 24 total, capped to MAX_EXAMPLES=16 stored.
+        let mat = dimensionless_steel_like();
+        let k_e_tet1 = element_stiffness_p1(&UNIT_TET_P1, &mat);
+        let k_e_tet2 = element_stiffness_p1(&UNIT_TET_P1, &mat);
+        let k_e_shell = shell_element_stiffness(&UNIT_TRI, SHELL_T, &mat);
+
+        let n_nodes = 11;
+        let conn_shell = [0usize, 9, 10];
+        let conn_tet1 = [1usize, 2, 3, 4];
+        let conn_tet2 = [5usize, 6, 7, 8];
+        let elements = [
+            AssemblyElement {
+                id: 0,
+                connectivity: &conn_shell,
+                k_e: &k_e_shell,
+            },
+            AssemblyElement {
+                id: 1,
+                connectivity: &conn_tet1,
+                k_e: &k_e_tet1,
+            },
+            AssemblyElement {
+                id: 2,
+                connectivity: &conn_tet2,
+                k_e: &k_e_tet2,
+            },
+        ];
+        let summary = detect_orphan_dofs(n_nodes, &elements);
+        assert_eq!(summary.count, 24, "fixture must produce 24 orphans");
+        assert_eq!(summary.examples.len(), 16, "fixture must be truncated to 16");
+
+        let s = format!("{}", summary);
+
+        // Pin 1: single line.
+        assert!(!s.contains('\n'), "Display must not contain newlines; got: {s:?}");
+
+        // Pin 2: names the true (untruncated) count.
+        assert!(s.contains("count=24"), "Display must contain 'count=24'; got: {s:?}");
+
+        // Pin 3: every one of the 16 stored (node, axis) pairs appears literally.
+        // First 16 sorted pairs: nodes 1..=5 fully (3 axes each = 15 entries)
+        // + node 6 axis 3 (16th entry).
+        let expected_first_16: Vec<(usize, usize)> = (1usize..=6)
+            .flat_map(|n| {
+                if n < 6 {
+                    (3usize..6).map(|a| (n, a)).collect::<Vec<_>>()
+                } else {
+                    vec![(n, 3)]
+                }
+            })
+            .collect();
+        for (node, axis) in &expected_first_16 {
+            let pair = format!("({node}, {axis})");
+            assert!(
+                s.contains(&pair),
+                "Display must contain '{pair}'; got: {s:?}",
+            );
+        }
+
+        // Pin 4: trailing parenthetical indicates truncation with exact counts.
+        assert!(
+            s.ends_with("] (first 16 of 24)"),
+            "Display must end with '] (first 16 of 24)'; got: {s:?}",
+        );
+    }
+
+    /// Mesh with > MAX_EXAMPLES orphan pairs → count is the true total but
+    /// examples is capped at MAX_EXAMPLES.
+    ///
+    /// Fixture: one shell on `[0, n_nodes-2, n_nodes-1]` + 2 disjoint P1 tets
+    /// on `[1,2,3,4]` and `[5,6,7,8]`. D=6 (shell dominates). Tet-only nodes
+    /// are 1..=8 minus the shell nodes (n_nodes-2, n_nodes-1 are shell-only,
+    /// node 0 is shared). So tet-only = {1,2,3,4,5,6,7,8}: 8 nodes × 3 orphan
+    /// axes {3,4,5} = 24 orphans > MAX_EXAMPLES=16.
+    ///
+    /// Asserts `count == 24`, `examples.len() == 16`, and that examples == first
+    /// 16 entries of the full sorted list `[(1,3),(1,4),(1,5),(2,3),...,(6,3)]`.
+    #[test]
+    fn detect_orphan_dofs_caps_examples_at_max_examples_constant() {
+        let mat = dimensionless_steel_like();
+        let k_e_tet1 = element_stiffness_p1(&UNIT_TET_P1, &mat);
+        let k_e_tet2 = element_stiffness_p1(&UNIT_TET_P1, &mat);
+        let k_e_shell = shell_element_stiffness(&UNIT_TRI, SHELL_T, &mat);
+
+        // n_nodes: 0..=8 for 9 nodes (0=shared, 1..=4=tet1-only,
+        // 5..=8=tet2-only; node 7 and 8 are shell-only → but
+        // we want shell_conn=[0,7,8], tet1=[1,2,3,4], tet2=[5,6,7,8])
+        // Actually let's make it cleaner: shell on [0,9,10], tet1 on [1,2,3,4],
+        // tet2 on [5,6,7,8]. That gives tet-only={1..8}: 8 nodes × 3 axes = 24.
+        let n_nodes = 11;
+        let conn_shell = [0usize, 9, 10];
+        let conn_tet1 = [1usize, 2, 3, 4];
+        let conn_tet2 = [5usize, 6, 7, 8];
+        let elements = [
+            AssemblyElement {
+                id: 0,
+                connectivity: &conn_shell,
+                k_e: &k_e_shell,
+            },
+            AssemblyElement {
+                id: 1,
+                connectivity: &conn_tet1,
+                k_e: &k_e_tet1,
+            },
+            AssemblyElement {
+                id: 2,
+                connectivity: &conn_tet2,
+                k_e: &k_e_tet2,
+            },
+        ];
+        let summary = detect_orphan_dofs(n_nodes, &elements);
+
+        // 8 tet-only nodes × 3 orphan axes = 24 total.
+        assert_eq!(summary.count, 24, "true total should be 24");
+        // examples capped at MAX_EXAMPLES=16.
+        assert_eq!(summary.examples.len(), 16, "examples should be capped at 16");
+
+        // First 16 sorted (node, axis) pairs: nodes 1..=5 fully represented
+        // plus nodes 6 axis 3 (16th entry).
+        let expected_first_16: Vec<(usize, usize)> = (1usize..=6)
+            .flat_map(|n| {
+                if n < 6 {
+                    // nodes 1..5: all 3 axes (3,4,5) → 5 nodes × 3 = 15 entries
+                    (3usize..6).map(|a| (n, a)).collect::<Vec<_>>()
+                } else {
+                    // node 6: only axis 3 (the 16th entry)
+                    vec![(n, 3)]
+                }
+            })
+            .collect();
+        assert_eq!(
+            summary.examples,
+            expected_first_16,
+            "examples should be the first 16 (node,axis) pairs sorted ascending",
+        );
+    }
+
+    /// Mixed tet+shell mesh → tet-only nodes 1,2,3 report 3 orphan rotation
+    /// axes each; node 0 (shared) and shell-only nodes 4,5 have no orphans.
+    ///
+    /// Fixture: P1 tet on `[0,1,2,3]` + MITC3 shell on `[0,4,5]`, n_nodes=6.
+    /// D=6 (shell dominates). Nodes 1,2,3 are tet-only (d_e_max_local=3 < 6),
+    /// contributing 3 orphan axes each → count=9. Node 0 is shared (d_e_max_local=6=D,
+    /// no orphans). Nodes 4,5 are shell-only (d_e_max_local=6=D, no orphans).
+    ///
+    /// Also asserts the sorted `examples` list equals the first-9 canonical
+    /// `(node, axis)` pairs. With step-4's count logic this passes the `count`
+    /// assertion, but fails the `examples` assertion until step-6 populates them.
+    #[test]
+    fn detect_orphan_dofs_mixed_tet_shell_reports_tet_only_node_rotation_dofs() {
+        let mat = dimensionless_steel_like();
+        let k_e_tet = element_stiffness_p1(&UNIT_TET_P1, &mat);
+        let k_e_shell = shell_element_stiffness(&UNIT_TRI, SHELL_T, &mat);
+        let conn_tet = [0usize, 1, 2, 3];
+        let conn_shell = [0usize, 4, 5];
+        let elements = [
+            AssemblyElement {
+                id: 0,
+                connectivity: &conn_tet,
+                k_e: &k_e_tet,
+            },
+            AssemblyElement {
+                id: 1,
+                connectivity: &conn_shell,
+                k_e: &k_e_shell,
+            },
+        ];
+        let summary = detect_orphan_dofs(6, &elements);
+
+        // Nodes 1,2,3 are tet-only (d_e_max_local=3 < D=6), each contributing
+        // 3 orphan axes {3,4,5} → total 9.
+        assert_eq!(summary.count, 9, "expected 9 orphan (node,axis) pairs");
+
+        // Full example list (9 < MAX_EXAMPLES=16, so no truncation).
+        let expected_examples = vec![
+            (1, 3),
+            (1, 4),
+            (1, 5),
+            (2, 3),
+            (2, 4),
+            (2, 5),
+            (3, 3),
+            (3, 4),
+            (3, 5),
+        ];
+        assert_eq!(
+            summary.examples,
+            expected_examples,
+            "examples should list all 9 orphan (node,axis) pairs sorted by (node, axis)",
+        );
     }
 }

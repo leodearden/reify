@@ -86,6 +86,17 @@ fn find_node<'a>(
         }
         // Reflective-aggregation placeholder is a leaf — no children to walk.
         CompiledExprKind::PurposeReflectiveAggregation { .. } => None,
+        // task 3540 (SIR-α): exhaustiveness-forced adapter arm for the new
+        // shared-enum variant (step-16). Recurse into supplied args + captured
+        // defaults — same posture as FunctionCall/UserFunctionCall.
+        CompiledExprKind::StructureInstanceCtor {
+            ordered_args,
+            defaults,
+            ..
+        } => ordered_args
+            .iter()
+            .find_map(|(_, a)| find_node(a, pred))
+            .or_else(|| defaults.iter().find_map(|(_, d)| find_node(d, pred))),
     }
 }
 

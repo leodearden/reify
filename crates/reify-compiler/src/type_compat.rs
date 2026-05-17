@@ -240,6 +240,35 @@ pub fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
     false
 }
 
+/// Check that a function-param default expression's type is compatible with the
+/// declared parameter type.
+///
+/// **Policy: strict equality, not bidirectional `type_compatible`.**
+///
+/// Call-site overload resolution (`resolve_function_overload`) and
+/// `try_default_padding`'s prefix check both use exact type equality — `f(1)` is
+/// already rejected today for `fn f(x: Real)` because `Type::Int != Type::Real`.
+/// A default value is conceptually inserted at the padded call site, so the
+/// definition-site check must be at least as strict as the call-site check;
+/// otherwise a default could synthesize an argument that an explicit call would
+/// refuse, creating a type-system inconsistency.
+///
+/// **Anti-cascade guard.** If either type is `Type::Error` (poison sentinel from
+/// a failed `compile_expr`), silently accept — the root-cause diagnostic was
+/// already emitted. Mirrors the same short-circuit in `implicitly_converts_to`
+/// and `type_compatible` (task-448 / task-1918 cascade-safety contract).
+///
+/// Note: `param_ty` is always a concrete resolved type (never `Type::Error`) in
+/// production — `resolve_type_expr_with_aliases` always falls back to `Type::Real`
+/// on failure. The `param_ty.is_error()` branch is therefore dead code in practice
+/// but is included for symmetry and belt-and-braces safety.
+pub(crate) fn fn_param_default_compatible(param_ty: &Type, default_ty: &Type) -> bool {
+    if param_ty.is_error() || default_ty.is_error() {
+        return true;
+    }
+    param_ty == default_ty
+}
+
 /// Result of attempting to resolve a function call against user-defined functions.
 pub(crate) enum OverloadResolution<'a> {
     /// Exactly one user-defined function matches by name, arity, and exact param types.
@@ -473,6 +502,57 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
         },
         BinOp::Mod => left.clone(),
         BinOp::Pow => left.clone(), // simplified for M1
+    }
+}
+
+/// Attempt to satisfy a `NoMatch` call via default-padding.
+///
+/// Searches `named` for the UNIQUE same-name candidate where:
+/// - the candidate has more params than `provided` args,
+/// - the provided prefix `arg_types[..provided]` matches `cand.params[..provided]` exactly, and
+/// - every trailing `cand.param_defaults[provided..]` is `Some`.
+///
+/// If exactly one such candidate exists, returns it together with the cloned default
+/// `CompiledExpr`s for the trailing params. Returns `None` when zero or multiple
+/// candidates are satisfiable (caller falls through to the existing NoMatch error).
+pub(crate) fn try_default_padding<'a>(
+    named: &[&'a CompiledFunction],
+    compiled_args: &[CompiledExpr],
+    arg_types: &[Type],
+) -> Option<(&'a CompiledFunction, Vec<CompiledExpr>)> {
+    let provided = compiled_args.len();
+    let mut satisfiable: Vec<(&CompiledFunction, Vec<CompiledExpr>)> = Vec::new();
+
+    for &cand in named {
+        // Candidate must have strictly more params than provided args.
+        if cand.params.len() <= provided {
+            continue;
+        }
+        // param_defaults must be populated and length-aligned to params.
+        if cand.param_defaults.len() != cand.params.len() {
+            continue;
+        }
+        // Provided prefix types must match candidate params exactly.
+        let prefix_matches = cand.params[..provided]
+            .iter()
+            .zip(arg_types[..provided].iter())
+            .all(|((_, param_ty), arg_ty)| param_ty == arg_ty);
+        if !prefix_matches {
+            continue;
+        }
+        // All trailing params must carry Some compiled default.
+        let defaults: Option<Vec<CompiledExpr>> = cand.param_defaults[provided..]
+            .iter()
+            .cloned()
+            .collect();
+        if let Some(defaults) = defaults {
+            satisfiable.push((cand, defaults));
+        }
+    }
+
+    match satisfiable.len() {
+        1 => Some(satisfiable.into_iter().next().unwrap()),
+        _ => None,
     }
 }
 
@@ -718,56 +798,5 @@ mod tests {
                 label,
             );
         }
-    }
-}
-
-/// Attempt to satisfy a `NoMatch` call via default-padding.
-///
-/// Searches `named` for the UNIQUE same-name candidate where:
-/// - the candidate has more params than `provided` args,
-/// - the provided prefix `arg_types[..provided]` matches `cand.params[..provided]` exactly, and
-/// - every trailing `cand.param_defaults[provided..]` is `Some`.
-///
-/// If exactly one such candidate exists, returns it together with the cloned default
-/// `CompiledExpr`s for the trailing params. Returns `None` when zero or multiple
-/// candidates are satisfiable (caller falls through to the existing NoMatch error).
-pub(crate) fn try_default_padding<'a>(
-    named: &[&'a CompiledFunction],
-    compiled_args: &[CompiledExpr],
-    arg_types: &[Type],
-) -> Option<(&'a CompiledFunction, Vec<CompiledExpr>)> {
-    let provided = compiled_args.len();
-    let mut satisfiable: Vec<(&CompiledFunction, Vec<CompiledExpr>)> = Vec::new();
-
-    for &cand in named {
-        // Candidate must have strictly more params than provided args.
-        if cand.params.len() <= provided {
-            continue;
-        }
-        // param_defaults must be populated and length-aligned to params.
-        if cand.param_defaults.len() != cand.params.len() {
-            continue;
-        }
-        // Provided prefix types must match candidate params exactly.
-        let prefix_matches = cand.params[..provided]
-            .iter()
-            .zip(arg_types[..provided].iter())
-            .all(|((_, param_ty), arg_ty)| param_ty == arg_ty);
-        if !prefix_matches {
-            continue;
-        }
-        // All trailing params must carry Some compiled default.
-        let defaults: Option<Vec<CompiledExpr>> = cand.param_defaults[provided..]
-            .iter()
-            .cloned()
-            .collect();
-        if let Some(defaults) = defaults {
-            satisfiable.push((cand, defaults));
-        }
-    }
-
-    match satisfiable.len() {
-        1 => Some(satisfiable.into_iter().next().unwrap()),
-        _ => None,
     }
 }

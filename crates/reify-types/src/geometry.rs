@@ -2026,7 +2026,11 @@ pub enum Role {
     /// values per box. Emitted by per-primitive vertex seeders (task C).
     ///
     /// PRD `docs/prds/v0_3/mesh-morphing-phase-2.md` §3.1 (task α).
-    CornerVertex { x: AxisSign, y: AxisSign, z: AxisSign },
+    CornerVertex {
+        x: AxisSign,
+        y: AxisSign,
+        z: AxisSign,
+    },
     /// A corner vertex of a swept solid where a cap face meets the lateral
     /// envelope. Emitted by per-op vertex seeders for extrude / revolve /
     /// sweep / loft (task C). `face` records which cap (top/bottom for
@@ -3445,24 +3449,44 @@ mod tests {
                 }
             }
         }
-        assert_eq!(set.len(), 8, "8 sign-combo corners must be distinct Role values");
+        assert_eq!(
+            set.len(),
+            8,
+            "8 sign-combo corners must be distinct Role values"
+        );
 
         // Distinct from CapCornerVertex
         assert_ne!(
-            Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Pos },
+            Role::CornerVertex {
+                x: AxisSign::Pos,
+                y: AxisSign::Pos,
+                z: AxisSign::Pos
+            },
             Role::CapCornerVertex { face: CapKind::Top },
         );
         // Distinct from pre-existing Role variants
         assert_ne!(
-            Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Pos },
+            Role::CornerVertex {
+                x: AxisSign::Pos,
+                y: AxisSign::Pos,
+                z: AxisSign::Pos
+            },
             Role::Side,
         );
         assert_ne!(
-            Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Pos },
+            Role::CornerVertex {
+                x: AxisSign::Pos,
+                y: AxisSign::Pos,
+                z: AxisSign::Pos
+            },
             Role::NewEdge,
         );
         assert_ne!(
-            Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Pos },
+            Role::CornerVertex {
+                x: AxisSign::Pos,
+                y: AxisSign::Pos,
+                z: AxisSign::Pos
+            },
             Role::RevolvedFace,
         );
     }
@@ -3471,18 +3495,32 @@ mod tests {
     fn role_cap_corner_vertex_distinguishes_all_four_cap_faces() {
         use std::collections::HashSet;
         let cap_kinds = [CapKind::Top, CapKind::Bottom, CapKind::Start, CapKind::End];
-        let set: HashSet<Role> = cap_kinds.iter().map(|f| Role::CapCornerVertex { face: *f }).collect();
-        assert_eq!(set.len(), 4, "4 CapKind variants must yield 4 distinct CapCornerVertex roles");
+        let set: HashSet<Role> = cap_kinds
+            .iter()
+            .map(|f| Role::CapCornerVertex { face: *f })
+            .collect();
+        assert_eq!(
+            set.len(),
+            4,
+            "4 CapKind variants must yield 4 distinct CapCornerVertex roles"
+        );
 
         // Distinct from CornerVertex
         assert_ne!(
             Role::CapCornerVertex { face: CapKind::Top },
-            Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Pos },
+            Role::CornerVertex {
+                x: AxisSign::Pos,
+                y: AxisSign::Pos,
+                z: AxisSign::Pos
+            },
         );
         // Distinct from pre-existing Role variants
         assert_ne!(Role::CapCornerVertex { face: CapKind::Top }, Role::Side);
         assert_ne!(Role::CapCornerVertex { face: CapKind::Top }, Role::NewEdge);
-        assert_ne!(Role::CapCornerVertex { face: CapKind::Top }, Role::RevolvedFace);
+        assert_ne!(
+            Role::CapCornerVertex { face: CapKind::Top },
+            Role::RevolvedFace
+        );
     }
 
     #[test]

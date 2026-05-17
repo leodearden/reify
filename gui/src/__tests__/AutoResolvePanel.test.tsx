@@ -347,3 +347,195 @@ describe('AutoResolvePanel (d) per-parameter sparklines', () => {
     expect(labels.length).toBeGreaterThanOrEqual(1);
   });
 });
+
+// ── Test group (e): sparkline null-filter for non-scalar values ──────────────
+
+describe('AutoResolvePanel (e) non-scalar value sparkline null-filter', () => {
+  it('(e.1) sparkline polyline excludes a null-value iteration', () => {
+    // 4 iterations for 'thickness' with values [1.0, 2.0, null, 4.0].
+    // After null-filtering, 3 finite points survive (iterations 1, 2, 4).
+    // The x-axis uses original iteration numbers, not filtered array indices,
+    // so the gap introduced by the null at iteration 3 is preserved in x-spacing.
+    const iterations = [
+      makeIteration(1, { parameters: { thickness: { value: 1.0, unit: 'mm', display: '1mm' } } }),
+      makeIteration(2, { parameters: { thickness: { value: 2.0, unit: 'mm', display: '2mm' } } }),
+      makeIteration(3, { parameters: { thickness: { value: null, unit: '', display: '<non-scalar>' } } }),
+      makeIteration(4, { parameters: { thickness: { value: 4.0, unit: 'mm', display: '4mm' } } }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+    const sparklineSvg = screen.getByTestId('auto-resolve-sparkline');
+    const polyline = sparklineSvg.querySelector('polyline');
+    expect(polyline).toBeTruthy();
+    const points = (polyline!.getAttribute('points') ?? '').trim().split(/\s+/);
+    // Exactly 3 coordinate pairs — the null iteration is filtered out
+    expect(points).toHaveLength(3);
+    // Parse the three coordinate pairs and verify all y-values are finite and
+    // the outer y-values are distinct — guards against a filter inversion that
+    // kept the null and dropped a finite value.
+    const yValues = points.map((pair) => parseFloat(pair.split(',')[1]!));
+    expect(Number.isFinite(yValues[0]!)).toBe(true);
+    expect(Number.isFinite(yValues[1]!)).toBe(true);
+    expect(Number.isFinite(yValues[2]!)).toBe(true);
+    expect(yValues[0]).not.toBe(yValues[2]); // 1.0 and 4.0 map to different y coords
+    // Middle-point x assertion: iteration-indexed x for point[1] (iteration 2,
+    // xMin=1, xMax=4) = SPARK_PAD + (2-1)/(4-1) * (SPARK_W - 2*SPARK_PAD)
+    //   = 2 + (1/3)*76 ≈ 27.33
+    // A filtered-index regression would place it at linearScale(1,0,2,2,78) = 40.
+    // The ≈12.7-unit separation is well above toFixed(1) rounding error, so
+    // this assertion cleanly distinguishes the two implementations.
+    const xs = points.map((pair) => parseFloat(pair.split(',')[0]!));
+    expect(xs[1]).toBeCloseTo(27.333, 1);
+  });
+
+  it('(e.2) all-null sparkline draws no polyline but the sparkline SVG still renders', () => {
+    // 2 iterations, both with thickness.value = null.
+    // After null-filtering the series is empty → hasLine = false → no polyline.
+    // The SVG row itself must still render (cellId remains in the union set).
+    const iterations = [
+      makeIteration(1, { parameters: { thickness: { value: null, unit: '', display: '<non-scalar>' } } }),
+      makeIteration(2, { parameters: { thickness: { value: null, unit: '', display: '<non-scalar>' } } }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+    const sparklineSvg = screen.getByTestId('auto-resolve-sparkline');
+    expect(sparklineSvg).toBeTruthy();
+    // No polyline — after filtering, 0 finite values remain
+    expect(sparklineSvg.querySelector('polyline')).toBeNull();
+  });
+
+  it('(e.3) mixed [5.0, null] sparkline: no polyline, cellId label still renders', () => {
+    // 2 iterations with values [5.0, null] → after filter: [5.0] → length 1 → no polyline.
+    // The sparkline SVG row and its cellId label must still be present.
+    const iterations = [
+      makeIteration(1, { parameters: { thickness: { value: 5.0, unit: 'mm', display: '5mm' } } }),
+      makeIteration(2, { parameters: { thickness: { value: null, unit: '', display: '<non-scalar>' } } }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+    const sparklineSvg = screen.getByTestId('auto-resolve-sparkline');
+    // SVG exists but no polyline (only 1 finite value after filtering)
+    expect(sparklineSvg).toBeTruthy();
+    expect(sparklineSvg.querySelector('polyline')).toBeNull();
+    // cellId label still renders in the sparkline row
+    const sparklineRow = sparklineSvg.closest('div')!;
+    expect(within(sparklineRow).getByText('thickness')).toBeTruthy();
+  });
+
+  it('(e.4) sparkline polyline excludes a non-null non-finite (NaN) iteration', () => {
+    // NaN can arrive from JSON parsing or arithmetic in upstream stores;
+    // Number.isFinite rejects it where !== null would not.  The cast
+    // `as unknown as number` simulates that runtime scenario without touching
+    // the production type — this test specifically guards the NaN/Infinity case,
+    // not all possible type bypasses.
+    const iterations = [
+      makeIteration(1, { parameters: { thickness: { value: 4.2, unit: 'mm', display: '4.2mm' } } }),
+      makeIteration(2, { parameters: { thickness: { value: NaN as unknown as number, unit: 'mm', display: 'NaN' } } }),
+      makeIteration(3, { parameters: { thickness: { value: 4.8, unit: 'mm', display: '4.8mm' } } }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+    const sparklineSvg = screen.getByTestId('auto-resolve-sparkline');
+    const polyline = sparklineSvg.querySelector('polyline');
+    expect(polyline).toBeTruthy();
+    const pointsAttr = polyline!.getAttribute('points') ?? '';
+    // Exactly 2 pairs — the non-finite iteration is filtered out just like null
+    const points = pointsAttr.trim().split(/\s+/);
+    expect(points).toHaveLength(2);
+    // Parse-then-finite: mirrors the production Number.isFinite predicate and is
+    // robust to serialization changes (unlike a /NaN/ regex check).
+    for (const pair of points) {
+      const [x, y] = pair.split(',').map(parseFloat);
+      expect(Number.isFinite(x!)).toBe(true);
+      expect(Number.isFinite(y!)).toBe(true);
+    }
+  });
+
+  it('(e.5) sparkline polyline excludes a non-null Infinity iteration', () => {
+    // Parallel to (e.4): Infinity also arrives via arithmetic (e.g. divide-by-zero)
+    // and bypasses !== null.  Number.isFinite rejects both NaN and Infinity, so this
+    // test locks the full non-finite half of the contract.
+    const iterations = [
+      makeIteration(1, { parameters: { thickness: { value: 4.2, unit: 'mm', display: '4.2mm' } } }),
+      makeIteration(2, { parameters: { thickness: { value: Infinity as unknown as number, unit: 'mm', display: 'Infinity' } } }),
+      makeIteration(3, { parameters: { thickness: { value: 4.8, unit: 'mm', display: '4.8mm' } } }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+    const sparklineSvg = screen.getByTestId('auto-resolve-sparkline');
+    const polyline = sparklineSvg.querySelector('polyline');
+    expect(polyline).toBeTruthy();
+    const pointsAttr = polyline!.getAttribute('points') ?? '';
+    // Exactly 2 pairs — the Infinity iteration is filtered out
+    const points = pointsAttr.trim().split(/\s+/);
+    expect(points).toHaveLength(2);
+    // Parse-then-finite: parallels (e.4) and covers the Infinity half of the
+    // contract. Mirrors the production Number.isFinite predicate exactly.
+    for (const pair of points) {
+      const [x, y] = pair.split(',').map(parseFloat);
+      expect(Number.isFinite(x!)).toBe(true);
+      expect(Number.isFinite(y!)).toBe(true);
+    }
+  });
+});
+
+// ── Test group (f): non-scalar error chip in Parameters section ──────────────
+
+describe('AutoResolvePanel (f) non-scalar error chip in Parameters section', () => {
+  it('(f.1) non-scalar row renders display text and carries data-non-scalar="true"', () => {
+    // One iteration with thickness.value = null → display '<non-scalar>'.
+    // The value span must have data-non-scalar="true" and contain the display text.
+    const iterations = [
+      makeIteration(1, {
+        parameters: { thickness: { value: null, unit: '', display: '<non-scalar>' } },
+      }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+    const parametersSection = screen.getByTestId('auto-resolve-parameters');
+    // Display text renders inside the Parameters section
+    expect(within(parametersSection).getByText('<non-scalar>')).toBeTruthy();
+    // An element with data-non-scalar="true" exists in the Parameters section
+    const chip = parametersSection.querySelector('[data-non-scalar="true"]');
+    expect(chip).toBeTruthy();
+    // That element contains the display text
+    expect(chip!.textContent).toBe('<non-scalar>');
+  });
+
+  it('(f.2) scalar parameter row does NOT carry data-non-scalar attribute', () => {
+    // One iteration with a normal scalar value → no data-non-scalar attribute.
+    const iterations = [
+      makeIteration(1, {
+        parameters: { thickness: { value: 4.2, unit: 'mm', display: '4.2mm' } },
+      }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+    const parametersSection = screen.getByTestId('auto-resolve-parameters');
+    // Display value renders normally
+    expect(within(parametersSection).getByText('4.2mm')).toBeTruthy();
+    // No data-non-scalar attribute present
+    expect(parametersSection.querySelector('[data-non-scalar="true"]')).toBeNull();
+  });
+
+  it('(f.3) mixed rows: only the null-value row carries data-non-scalar="true"', () => {
+    // One iteration with two parameters: one scalar, one non-scalar.
+    // Exactly one element in the Parameters section must have data-non-scalar="true".
+    const iterations = [
+      makeIteration(1, {
+        parameters: {
+          thickness: { value: 4.2, unit: 'mm', display: '4.2mm' },
+          area: { value: null, unit: '', display: '<non-scalar>' },
+        },
+      }),
+    ];
+    const state: AutoResolveLoopState = { active: true, iterations };
+    render(() => <AutoResolvePanel state={state} />);
+    const parametersSection = screen.getByTestId('auto-resolve-parameters');
+    const chips = parametersSection.querySelectorAll('[data-non-scalar="true"]');
+    // Exactly one chip
+    expect(chips).toHaveLength(1);
+    // That chip's text is the non-scalar display string
+    expect(chips[0].textContent).toBe('<non-scalar>');
+  });
+});

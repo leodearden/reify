@@ -84,6 +84,34 @@ fn occt_capability_descriptor_lists_brep_primitives_and_booleans() {
     );
 }
 
+/// OCCT must declare `(Convert { from: BRep }, Mesh)` so the dispatcher's BFS
+/// can chain `BRep input → OCCT tessellate → Mesh → downstream Mesh-native
+/// kernel` automatically.
+///
+/// PRD §8 task δ / `register.rs` v0.3 forward-compat note (lines 27-34):
+/// this entry was planned from the start; this test pins that it landed.
+#[test]
+fn occt_capability_descriptor_declares_brep_to_mesh_tessellation_convert_edge() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping occt_capability_descriptor_declares_brep_to_mesh_tessellation_convert_edge: \
+             OCCT unavailable (cfg(has_occt) not set — stub-mode build)"
+        );
+        return;
+    }
+
+    let descriptor = reify_kernel_occt::register::occt_capability_descriptor();
+
+    assert!(
+        descriptor.supports(
+            Operation::Convert { from: ReprKind::BRep },
+            ReprKind::Mesh,
+        ),
+        "OCCT must declare (Convert {{ from: BRep }}, Mesh) — PRD §8 task δ; \
+         enables BFS chain BRep → OCCT tessellate → Mesh → downstream Mesh-native kernel",
+    );
+}
+
 /// OCCT submits exactly one `KernelRegistration` named `"occt"` into the
 /// `inventory::iter::<KernelRegistration>()` set. This is the inventory-
 /// plumbing pin: a missing or incorrectly-gated `inventory::submit!` would be

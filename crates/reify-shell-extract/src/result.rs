@@ -81,14 +81,12 @@ const MAX_HEADER_BYTES: u64 = 1 << 22;
 /// `with_fixint_encoding` matches the legacy `bincode::serialize_into`
 /// default (verified by the cross-format pin at
 /// `crates/reify-eval/src/persistent_cache.rs:1670`), `with_limit`
-/// is enforced on **both** encode and decode in bincode 1.3 (empirically
-/// confirmed: `shell_extraction_result_deserialize_rejects_header_above_max_header_bytes`
-/// must serialize the oversize fixture through a separate unbounded chain
-/// to reach the production deserialize path — calling `serialize_to_writer`
-/// on a header exceeding `MAX_HEADER_BYTES` fails at the encode step,
-/// which is the intended behavior for a production header that grows
-/// beyond the cap), and `allow_trailing_bytes` is required because the
-/// slab data follows the bincode header in the same stream.
+/// is enforced on **both** encode and decode in bincode 1.3 (confirmed
+/// by test `shell_extraction_result_bincode_options_enforces_limit_on_encode`
+/// for the encode side and by
+/// `shell_extraction_result_deserialize_rejects_header_above_max_header_bytes`
+/// for the decode side), and `allow_trailing_bytes` is required because
+/// the slab data follows the bincode header in the same stream.
 fn bincode_options() -> impl bincode::Options + Copy {
     use bincode::Options;
     bincode::DefaultOptions::new()
@@ -2212,7 +2210,7 @@ mod tests {
             .expect("empty header must round-trip within MAX_HEADER_BYTES");
     }
 
-    // ---- pin-cap test: empirically pins MAX_HEADER_BYTES at 4 MiB ----
+    // ---- oversize rejection test: fixture > 5 MiB is rejected by 4 MiB cap ----
 
     #[test]
     fn shell_extraction_result_deserialize_rejects_header_above_max_header_bytes() {
@@ -2260,6 +2258,15 @@ mod tests {
         unbounded_opts
             .serialize_into(&mut bincode_bytes, &oversize_header)
             .expect("unbounded serialization of 5 MiB fixture must succeed");
+        // Precondition: confirm the fixture actually exceeds MAX_HEADER_BYTES.
+        // A future bincode-options change (e.g. moving to varint) would
+        // silently shrink the encoded size and flip this test from a
+        // rejection check to a no-op accept.
+        assert!(
+            bincode_bytes.len() > (1 << 22),
+            "test fixture must exceed MAX_HEADER_BYTES — got {} bytes (fixture sizing bug)",
+            bincode_bytes.len()
+        );
 
         // zstd-wrap to match the production wire layout expected by
         // `deserialize_from_reader` (level 0, same as `encode_header`).
@@ -2289,6 +2296,86 @@ mod tests {
         // already covered by the immediately preceding test
         // `shell_extraction_result_deserialize_rejects_oversize_header_via_bincode_limit`
         // — no need to duplicate it here.
+    }
+
+    // ---- pin-cap test: brackets MAX_HEADER_BYTES to a ±200 KB window ----
+    //
+    // Uses fixtures sized just below and just above the 4 MiB constant so
+    // that raising MAX_HEADER_BYTES to 16/32/64 MiB without re-examining
+    // the security rationale fails at least one assertion.
+
+    #[test]
+    fn shell_extraction_result_max_header_bytes_pinned_at_4_mib() {
+        // Fixture sizing: a single DiagnosticOnDisk with an N-byte message.
+        // With fixint encoding the bincode overhead is ~105 bytes of headers
+        // and length prefixes, so encoded ≈ 105 + N bytes.
+        //
+        // MAX_HEADER_BYTES = 1 << 22 = 4_194_304.
+        //
+        //   N = 4_000_000 → encoded ≈ 4_000_105 bytes  (< 4_194_304 → must succeed)
+        //   N = 4_200_000 → encoded ≈ 4_200_105 bytes  (> 4_194_304 → must be rejected)
+        //
+        // Runtime assertions on `encoded_len` pin the fixture sizes and
+        // guard against a future bincode-options change (e.g. varint) that
+        // would silently shift the encoded sizes.
+        use bincode::Options;
+
+        let make_header = |msg_len: usize| ShellExtractionResultHeader {
+            solve_time_ms: 0,
+            vertices_len: 0,
+            triangles_len: 0,
+            thickness_len: 0,
+            vertex_labels_len: 0,
+            triangle_labels_len: 0,
+            regions: vec![],
+            naming: MidSurfaceAttributesOnDisk {
+                face_records: vec![],
+                edges: vec![],
+            },
+            diagnostics: vec![DiagnosticOnDisk {
+                severity: 0,
+                message: "x".repeat(msg_len),
+                labels: vec![],
+                candidates: vec![],
+            }],
+        };
+
+        let unbounded_opts = bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .allow_trailing_bytes();
+
+        // ---- just-under fixture: must be accepted by bincode_options ----
+        let under_header = make_header(4_000_000);
+        let mut under_bytes = Vec::new();
+        unbounded_opts
+            .serialize_into(&mut under_bytes, &under_header)
+            .expect("just-under fixture must serialize through unbounded opts");
+        assert!(
+            under_bytes.len() < (1 << 22),
+            "just-under fixture must encode to < MAX_HEADER_BYTES, got {} bytes",
+            under_bytes.len()
+        );
+        let _: ShellExtractionResultHeader = bincode_options()
+            .deserialize_from(&mut &under_bytes[..])
+            .expect("just-under fixture (< 4 MiB) must be accepted by bincode_options");
+
+        // ---- just-over fixture: must be rejected by bincode_options ----
+        let over_header = make_header(4_200_000);
+        let mut over_bytes = Vec::new();
+        unbounded_opts
+            .serialize_into(&mut over_bytes, &over_header)
+            .expect("just-over fixture must serialize through unbounded opts");
+        assert!(
+            over_bytes.len() > (1 << 22),
+            "just-over fixture must encode to > MAX_HEADER_BYTES — got {} bytes (fixture sizing bug)",
+            over_bytes.len()
+        );
+        assert!(
+            bincode_options()
+                .deserialize_from::<_, ShellExtractionResultHeader>(&mut &over_bytes[..])
+                .is_err(),
+            "just-over fixture (> 4 MiB) must be rejected by bincode_options"
+        );
     }
 
     // ---- producer-headroom test: realistic large fixture fits within cap ----
@@ -2402,6 +2489,45 @@ mod tests {
             header_buf.len() < (1 << 22),
             "large-legal fixture serialized to {} bytes, exceeds 4 MiB cap",
             header_buf.len()
+        );
+    }
+
+    // ---- encode-side enforcement test: bincode_options rejects oversized encode ----
+
+    #[test]
+    fn shell_extraction_result_bincode_options_enforces_limit_on_encode() {
+        // Directly confirm that `bincode_options()` enforces MAX_HEADER_BYTES
+        // on the *encode* side. This backs the doc-comment claim that
+        // `with_limit` is "enforced on both encode and decode in bincode 1.3"
+        // with an actual assertion rather than indirect inference.
+        use bincode::Options;
+
+        let oversize_header = ShellExtractionResultHeader {
+            solve_time_ms: 0,
+            vertices_len: 0,
+            triangles_len: 0,
+            thickness_len: 0,
+            vertex_labels_len: 0,
+            triangle_labels_len: 0,
+            regions: vec![],
+            naming: MidSurfaceAttributesOnDisk {
+                face_records: vec![],
+                edges: vec![],
+            },
+            diagnostics: vec![DiagnosticOnDisk {
+                severity: 0,
+                message: "x".repeat(5 * 1024 * 1024), // ~5 MiB — above MAX_HEADER_BYTES
+                labels: vec![],
+                candidates: vec![],
+            }],
+        };
+
+        let mut buf: Vec<u8> = Vec::new();
+        let result = bincode_options().serialize_into(&mut buf, &oversize_header);
+        assert!(
+            result.is_err(),
+            "bincode_options().serialize_into must fail for a header exceeding \
+             MAX_HEADER_BYTES (encode-side limit not enforced)"
         );
     }
 }

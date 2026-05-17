@@ -29,12 +29,18 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Thin wrapper around [`std::alloc::System`] that counts every `alloc` call.
+///
+/// `#[allow(dead_code)]` because shared `tests/common/*` modules are re-compiled
+/// into every test binary under `tests/`, and binaries that don't use this
+/// helper would otherwise trip the `dead_code` lint.
+#[allow(dead_code)]
 pub struct CountingAllocator;
 
 /// Global counter incremented on every allocation.
 ///
 /// Each test binary that includes this module via `mod common;` gets its own
 /// independent copy of this static — sharing only the type definition, not state.
+#[allow(dead_code)]
 pub static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 
 unsafe impl GlobalAlloc for CountingAllocator {

@@ -35,7 +35,21 @@ mesh-morph = ["dep:reify-mesh-morph"]
 cxx-build = "1"
 cc = "1"
 
+# `reify-eval` is a dev-dependency (not a normal dep) for the same reason the
+# OCCT, Manifold, and Fidget adapters exclude it from production deps: adapter
+# crates depend on `reify-types` for the dependency-inverted `GeometryKernel`
+# trait but deliberately NOT on `reify-eval` — keeping the adapter → eval dep
+# direction inverted preserves the layering that lets `reify-eval` depend on
+# adapter crates without a cycle. As a dev-dep, `reify-eval` is only pulled
+# into the link closure of the `tests/dispatcher_integration.rs` test binary;
+# the production library stays free of the eval dependency.
+#
+# The cycle with `reify-eval/Cargo.toml:40 [dev-dependencies]
+# reify-kernel-occt.workspace = true` is allowed by Cargo because dev-deps
+# do not transitively propagate to consumers — verified safe by the existing
+# openvdb/manifold/gmsh adapters which already exercise this same pattern.
 [dev-dependencies]
+reify-eval.workspace = true
 # Self-dev-dep enables `test-fixtures`-gated helpers (the `store_*_for_test`
 # methods, plus `revolve_synthesis_post_sort_for_test`) in integration tests;
 # see src/lib.rs. The gate hides the Rust wrapper only — the underlying

@@ -1,19 +1,24 @@
 //! Tests for `auto:` / `auto(free):` in `type_arg_list` position (task 3526).
 //!
 //! User-observable signal: `cargo test -p reify-syntax --test auto_type_arg_tests`
-//! passes.  The load-bearing coverage is in the CST-level bound-identifier tests
-//! (`auto_type_arg_cst_bound_identifier_strict`, `_multi_param`) and the
-//! negative-coverage test `auto_type_arg_rejects_unrecognized_modifier`.
+//! passes.  The load-bearing coverage spans three layers:
 //!
-//! A small `parse_pipeline_smoke_auto_type_arg` test pins that
-//! `reify_syntax::parse` returns without panicking on `auto: Seal` in type-arg
-//! position.  It cannot detect grammar regressions on its own — the lowering
-//! pipeline does not propagate CST ERROR nodes from return-type expressions
-//! into `module.errors`.  See the doc comment on
-//! `auto_type_arg_rejects_unrecognized_modifier` for detail.
+//! * **CST level** — `auto_type_arg_cst_bound_identifier_strict`, `_multi_param`,
+//!   `auto_type_arg_cst_strict_has_no_modifier_field`,
+//!   `auto_type_arg_cst_free_has_modifier_field_with_text_free`, and the
+//!   grammar-layer negative test `auto_type_arg_rejects_unrecognized_modifier`.
 //!
-//! AST-shape assertions (e.g. the bound identifier is surfaced in TypeExprKind)
-//! are deferred to sibling task 3477, which wires the lowering extension.
+//! * **AST level** — `auto_type_arg_lowers_to_ast_strict`, `_free`, and
+//!   `auto_type_arg_multi_param_lowers_both` (task 3665: `TypeExprKind::Auto`
+//!   variant + `lower_type_args_from_node` extension).
+//!
+//! * **Error propagation** — `auto_type_arg_cst_error_propagates_to_module_errors`
+//!   and `auto_type_arg_clean_input_has_no_spurious_errors` (task 3665: CST ERROR
+//!   nodes inside `type_arg_list` are now surfaced in `module.errors`).
+//!
+//! Task 3662 consolidated free/multi-param zero-error coverage into
+//! `auto_type_arg_clean_input_has_no_spurious_errors` (gated on task 3665; the
+//! `auto(free):` fixture was added to that test rather than kept as a separate test).
 
 use reify_types::ModulePath;
 
@@ -24,10 +29,10 @@ use common::{find_cst_node, find_outermost_cst_nodes, make_ts_parser};
 
 #[test]
 fn parse_pipeline_smoke_auto_type_arg() {
-    // No assertion beyond "does not panic": the lowering pipeline does not
-    // propagate CST ERROR nodes from return-type expressions into module.errors,
-    // so a meaningful grammar-regression check has to live at the CST level.
-    // See `auto_type_arg_rejects_unrecognized_modifier` for that load-bearing guard.
+    // Keeps the "does not panic" contract for well-formed auto type-args.
+    // Richer assertions (Auto variant, error propagation) live in the step-1 /
+    // step-3 tests below.  The grammar-layer negative test is
+    // `auto_type_arg_rejects_unrecognized_modifier`.
     let _ = reify_syntax::parse(
         "fn f() -> Bearing<auto: Seal> { 0 }",
         ModulePath::single("test"),
@@ -150,11 +155,10 @@ fn auto_type_arg_cst_bound_identifiers_multi_param() {
 // type-arg position.  If someone widens `auto_keyword` to accept arbitrary
 // identifiers, this test will fail and force an explicit decision.
 //
-// Note: this test operates at the CST level rather than via `module.errors`.
-// The `reify_syntax` lowering pipeline does not propagate CST ERROR nodes that
-// appear inside function return-type expressions to `module.errors` (that gap
-// is in `ts_parser.rs`, outside this task's scope).  Using the tree-sitter API
-// directly is the correct layer for a grammar-layer regression guard.
+// This CST-level test guards that the grammar PRODUCES an ERROR node.  The
+// higher-level test `auto_type_arg_cst_error_propagates_to_module_errors`
+// (task 3665, step-3) guards that the lowering pipeline propagates that ERROR
+// into `module.errors`.  Both layers are complementary.
 
 /// `auto(constrained): Seal` must produce a CST ERROR node in type-arg position.
 ///
@@ -190,5 +194,357 @@ fn auto_type_arg_rejects_unrecognized_modifier() {
         error_start < token_end && error_end > token_start,
         "expected ERROR node to overlap `(constrained)` \
          (bytes {token_start}..{token_end}), got error at {error_start}..{error_end}",
+    );
+}
+
+// ── Step-1/2 (task 3665): TypeExprKind::Auto variant — GREEN ────────────────
+//
+// Added in step-1 as non-compiling RED tests (TypeExprKind::Auto was absent);
+// turned GREEN in step-2 when the variant was added to lib.rs and
+// lower_type_args_from_node was extended to handle auto_type_arg children.
+
+/// Helper: parse `source`, find the single Function declaration, and return its
+/// return-type's `type_args` slice. Panics with a clear message if any step fails.
+fn get_return_type_args(source: &str) -> Vec<reify_syntax::TypeExpr> {
+    let m = reify_syntax::parse(source, ModulePath::single("t"));
+    assert!(
+        m.errors.is_empty(),
+        "parse of {:?} produced unexpected errors: {:?}",
+        source,
+        m.errors
+    );
+    let decls = &m.declarations;
+    assert_eq!(decls.len(), 1, "expected exactly one declaration in {:?}", source);
+    if let reify_syntax::Declaration::Function(f) = &decls[0] {
+        let rt = f.return_type.as_ref().expect("expected a return type");
+        if let reify_syntax::TypeExprKind::Named { type_args, .. } = &rt.kind {
+            type_args.clone()
+        } else {
+            panic!("expected outer type to be Named, got {:?}", rt.kind);
+        }
+    } else {
+        panic!("expected Function declaration, got {:?}", decls[0]);
+    }
+}
+
+/// Strict `auto: Seal` in type-arg position must lower to
+/// `TypeExprKind::Auto { free: false, bound: "Seal" }`.
+#[test]
+fn auto_type_arg_lowers_to_ast_strict() {
+    let args = get_return_type_args("fn f() -> Bearing<auto: Seal> { 0 }");
+    assert_eq!(args.len(), 1, "expected exactly one type argument");
+    match &args[0].kind {
+        reify_syntax::TypeExprKind::Auto { free, bound } => {
+            assert!(!free, "strict auto: Seal must have free=false");
+            assert_eq!(bound, "Seal", "bound must be 'Seal'");
+        }
+        other => panic!("expected TypeExprKind::Auto, got {:?}", other),
+    }
+}
+
+/// Free `auto(free): Seal` in type-arg position must lower to
+/// `TypeExprKind::Auto { free: true, bound: "Seal" }`.
+#[test]
+fn auto_type_arg_lowers_to_ast_free() {
+    let args = get_return_type_args("fn g() -> Bearing<auto(free): Seal> { 0 }");
+    assert_eq!(args.len(), 1, "expected exactly one type argument");
+    match &args[0].kind {
+        reify_syntax::TypeExprKind::Auto { free, bound } => {
+            assert!(*free, "free auto(free): Seal must have free=true");
+            assert_eq!(bound, "Seal", "bound must be 'Seal'");
+        }
+        other => panic!("expected TypeExprKind::Auto, got {:?}", other),
+    }
+}
+
+
+// ── Step-3 (task 3665): RED tests — ERROR propagation into module.errors ────────
+//
+// AC#1: a CST ERROR node inside a type_arg_list must surface in module.errors.
+// These tests drive the implementation in step-4 (lower_type_args_from_node).
+
+/// `auto(constrained): Seal` contains an unrecognised modifier; the grammar
+/// produces an ERROR node inside the `type_arg_list` subtree.  The lowering
+/// pipeline (task 3665, step-4) scans the subtree and pushes at least one
+/// entry to `module.errors`.
+#[test]
+fn auto_type_arg_cst_error_propagates_to_module_errors() {
+    let source = "fn f() -> Bearing<auto(constrained): Seal> { 0 }";
+    let m = reify_syntax::parse(source, ModulePath::single("t"));
+    assert!(
+        !m.errors.is_empty(),
+        "expected at least one parse error for `auto(constrained):` in type-arg position; \
+         module.errors was empty — the ERROR node is not being propagated from the \
+         type_arg_list subtree into module.errors"
+    );
+    // The error message must specifically describe a type-argument-list syntax problem.
+    let has_relevant_message = m.errors.iter().any(|e| {
+        e.message.contains("type arg") || e.message.contains("syntax error")
+    });
+    assert!(
+        has_relevant_message,
+        "expected an error message mentioning 'type arg' or 'syntax error'; \
+         got: {:?}",
+        m.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+/// Well-formed `auto:` / `auto(free):` type-arg inputs must produce ZERO parse errors
+/// (negative guard — the ERROR subtree scan in `lower_type_args_from_node` must not
+/// false-positive on valid inputs).  Covers strict, free, and multi-param forms;
+/// task 3662 added the `auto(free):` entry here to consolidate zero-error coverage.
+#[test]
+fn auto_type_arg_clean_input_has_no_spurious_errors() {
+    for source in &[
+        "fn f() -> Bearing<auto: Seal> { 0 }",
+        "fn g() -> Bearing<auto(free): Seal> { 0 }",
+        "fn h() -> Coupling<auto: A, auto: B> { 0 }",
+    ] {
+        let m = reify_syntax::parse(source, ModulePath::single("t"));
+        assert!(
+            m.errors.is_empty(),
+            "expected no parse errors for well-formed input {:?}; got: {:?}",
+            source,
+            m.errors,
+        );
+    }
+}
+
+// ── Step-5 (task 3665): multi-param + no-regression ─────────────────────────
+//
+// These tests cover the remaining gaps called out in the task description:
+// (1) multi-param auto type-args lower both entries correctly, and
+// (2) pre-existing Named/IntegerLiteral lowering is not broken by the new branches.
+// Both should pass after steps 2+4 with no new production code.
+
+/// Multi-param `auto: A, auto: B` in type-arg position must lower to exactly
+/// `[Auto{free:false, bound:"A"}, Auto{free:false, bound:"B"}]`.
+///
+/// Covers the task-description "multi-param `auto: A, auto: B` shape are invisible
+/// to callers/tests" gap.
+#[test]
+fn auto_type_arg_multi_param_lowers_both() {
+    let args = get_return_type_args("fn h() -> Coupling<auto: A, auto: B> { 0 }");
+    assert_eq!(args.len(), 2, "expected exactly two type arguments");
+    match &args[0].kind {
+        reify_syntax::TypeExprKind::Auto { free, bound } => {
+            assert!(!free, "first arg must have free=false");
+            assert_eq!(bound, "A", "first arg bound must be 'A'");
+        }
+        other => panic!("expected TypeExprKind::Auto for first arg, got {:?}", other),
+    }
+    match &args[1].kind {
+        reify_syntax::TypeExprKind::Auto { free, bound } => {
+            assert!(!free, "second arg must have free=false");
+            assert_eq!(bound, "B", "second arg bound must be 'B'");
+        }
+        other => panic!("expected TypeExprKind::Auto for second arg, got {:?}", other),
+    }
+}
+
+/// Pre-existing Named and IntegerLiteral type-arg lowering must be unaffected
+/// by the new auto_type_arg and ERROR-scan branches.
+///
+/// Regression guard: if the new branches accidentally change control flow for
+/// well-known arg shapes (e.g. early return from the loop), these assertions
+/// will catch it.
+#[test]
+fn mixed_type_args_unaffected() {
+    // Named type arguments (e.g. Map<String, Int>)
+    let args = get_return_type_args("fn f() -> Map<String, Int> { 0 }");
+    assert_eq!(args.len(), 2, "Map<String, Int> must have 2 type args");
+    match &args[0].kind {
+        reify_syntax::TypeExprKind::Named { name, type_args } => {
+            assert_eq!(name, "String");
+            assert!(type_args.is_empty());
+        }
+        other => panic!("expected Named for 'String', got {:?}", other),
+    }
+    match &args[1].kind {
+        reify_syntax::TypeExprKind::Named { name, type_args } => {
+            assert_eq!(name, "Int");
+            assert!(type_args.is_empty());
+        }
+        other => panic!("expected Named for 'Int', got {:?}", other),
+    }
+
+    // IntegerLiteral type arguments (e.g. Tensor<2, 3, MomentOfInertia>)
+    let args2 = get_return_type_args("fn g() -> Tensor<2, 3, MomentOfInertia> { 0 }");
+    assert_eq!(args2.len(), 3, "Tensor<2, 3, MomentOfInertia> must have 3 type args");
+    match &args2[0].kind {
+        reify_syntax::TypeExprKind::IntegerLiteral(n) => {
+            assert_eq!(*n, 2u32, "first arg must be 2");
+        }
+        other => panic!("expected IntegerLiteral(2), got {:?}", other),
+    }
+    match &args2[1].kind {
+        reify_syntax::TypeExprKind::IntegerLiteral(n) => {
+            assert_eq!(*n, 3u32, "second arg must be 3");
+        }
+        other => panic!("expected IntegerLiteral(3), got {:?}", other),
+    }
+    match &args2[2].kind {
+        reify_syntax::TypeExprKind::Named { name, type_args } => {
+            assert_eq!(name, "MomentOfInertia");
+            assert!(type_args.is_empty());
+        }
+        other => panic!("expected Named for 'MomentOfInertia', got {:?}", other),
+    }
+}
+
+// ── Display impl for TypeExprKind::Auto (task 3665 amendment) ───────────────
+//
+// The Display output is user-facing: it appears in compiler diagnostics via
+// format!("... {}", field_def.codomain_type) in functions.rs and expr.rs.
+// These tests guard against regressions in the format string without requiring
+// a full parse round-trip.
+
+/// Strict `auto: Seal` — Display must render `"auto: Seal"`.
+#[test]
+fn auto_type_expr_display_strict() {
+    use reify_types::SourceSpan;
+    let te = reify_syntax::TypeExpr {
+        kind: reify_syntax::TypeExprKind::Auto {
+            free: false,
+            bound: "Seal".to_string(),
+        },
+        span: SourceSpan::empty(0),
+    };
+    assert_eq!(
+        format!("{}", te),
+        "auto: Seal",
+        "strict Auto Display must be 'auto: Seal'"
+    );
+}
+
+/// Free `auto(free): Seal` — Display must render `"auto(free): Seal"`.
+#[test]
+fn auto_type_expr_display_free() {
+    use reify_types::SourceSpan;
+    let te = reify_syntax::TypeExpr {
+        kind: reify_syntax::TypeExprKind::Auto {
+            free: true,
+            bound: "Seal".to_string(),
+        },
+        span: SourceSpan::empty(0),
+    };
+    assert_eq!(
+        format!("{}", te),
+        "auto(free): Seal",
+        "free Auto Display must be 'auto(free): Seal'"
+    );
+}
+
+// ── Task 3725: span narrowing for malformed type_arg_list ─────────────────────
+//
+// When a `type_arg_list` has_error(), the diagnostic span must point at the
+// first ERROR/MISSING descendant node — NOT at the whole type_arg_list.  This
+// prevents the diagnostic from covering well-formed sibling arguments.
+
+/// When a nested `type_arg_list` contains a malformed interior (e.g. `Vec<,>`)
+/// alongside a well-formed sibling (e.g. `String`), the "syntax error in type
+/// argument list" diagnostics from `lower_type_args_from_node` must satisfy
+/// two invariants: ALL must end before the well-formed sibling; AT LEAST ONE
+/// must lie strictly within the malformed region.
+///
+/// Fixture: `fn f() -> Map<Vec<,>, String> { 0 }`.
+/// Malformed portion: `Vec<,>` — the inner `type_arg_list` `<,>` contains a
+/// bare comma which tree-sitter surfaces as an ERROR/MISSING descendant.
+/// Well-formed sibling: `String`.
+///
+/// # Two-assertion structure (and why a single `.any()` is not enough)
+///
+/// The inner recursive `lower_type_args_from_node` call on the inner `Vec<,>`
+/// `parameterized_type` ALSO emits its own narrow "syntax error in type
+/// argument list" diagnostic — regardless of what the OUTER call does.  So a
+/// single unfiltered `.any()` check would be trivially satisfied by the inner
+/// call's diagnostic even on the pre-fix code path (where the outer call
+/// still emits a wide span extending past `String`), making it useless as a
+/// regression guard.
+///
+/// **(a) Regression-protection (`.all()`):** every "syntax error in type
+/// argument list" diagnostic must end strictly before `String`'s byte offset.
+/// Without step-2, the outer `lower_type_args_from_node` call emits
+/// `self.span(child)` for the whole `<Vec<,>, String>` type_arg_list — whose
+/// end byte lies PAST `String` — so this assertion fails.  After step-2,
+/// `first_error_or_missing_descendant` narrows the outer span to the first
+/// ERROR/MISSING descendant, ending before `String`, and the assertion passes.
+///
+/// **(b) Positive-presence (`.any()`):** at least one such diagnostic starts
+/// at or after `Vec<`'s byte offset AND ends before `String`'s byte offset.
+/// Ensures the type-arg-list error is actually emitted and not swallowed.
+///
+/// Both assertions filter by `message == "syntax error in type argument list"`
+/// so unrelated parser-recovery diagnostics with wider spans don't trigger
+/// false failures.
+#[test]
+fn type_arg_list_error_span_narrows_to_first_error_descendant() {
+    let source = "fn f() -> Map<Vec<,>, String> { 0 }";
+    let m = reify_syntax::parse(source, ModulePath::single("t"));
+    assert!(
+        !m.errors.is_empty(),
+        "expected at least one parse error for malformed `Vec<,>` in type-arg position; \
+         module.errors was empty"
+    );
+    // Compute byte offsets via str::find — avoids hard-coded numbers that go
+    // stale when the fixture changes.  Mirrors the pattern in
+    // auto_type_arg_tests.rs:168 (`auto_type_arg_rejects_unrecognized_modifier`).
+    let malformed_start = source
+        .find("Vec<")
+        .expect("fixture must contain 'Vec<'") as u32;
+    let well_formed_start = source
+        .find("String")
+        .expect("fixture must contain 'String'") as u32;
+    // Filter to type-arg-list diagnostics only.  Unrelated parser-recovery
+    // errors may have wider spans for legitimate reasons; we don't want a
+    // future parser-recovery improvement to break this span-narrowing test.
+    let type_arg_errors: Vec<_> = m
+        .errors
+        .iter()
+        .filter(|e| e.message == "syntax error in type argument list")
+        .collect();
+    assert!(
+        !type_arg_errors.is_empty(),
+        "expected at least one 'syntax error in type argument list' diagnostic; \
+         got module errors: {:?}",
+        m.errors
+            .iter()
+            .map(|e| (&e.message, e.span.start, e.span.end))
+            .collect::<Vec<_>>(),
+    );
+    // (a) Regression-protection: ALL type-arg-list diagnostics must end before
+    // the well-formed `String` sibling.  Without step-2 (first_error_or_missing_descendant),
+    // the outer `lower_type_args_from_node` call emits self.span(child) for the
+    // whole `<Vec<,>, String>` type_arg_list — whose end byte lies PAST `String`
+    // — so this assertion fails.  After step-2, every span ends before `String`.
+    let all_end_before_sibling = type_arg_errors
+        .iter()
+        .all(|e| e.span.end <= well_formed_start);
+    assert!(
+        all_end_before_sibling,
+        "expected ALL 'syntax error in type argument list' diagnostics to end \
+         before `String` (byte {well_formed_start}); at least one extends into \
+         the well-formed sibling — the outer type_arg_list span was not narrowed; \
+         got type-arg errors: {:?}",
+        type_arg_errors
+            .iter()
+            .map(|e| (&e.message, e.span.start, e.span.end))
+            .collect::<Vec<_>>(),
+    );
+    // (b) Positive-presence: at least one type-arg-list diagnostic must lie
+    // strictly within the malformed `Vec<,>` region — starting at or after
+    // `malformed_start` AND ending before `well_formed_start`.
+    let has_narrow_span = type_arg_errors
+        .iter()
+        .any(|e| e.span.start >= malformed_start && e.span.end <= well_formed_start);
+    assert!(
+        has_narrow_span,
+        "expected at least one 'syntax error in type argument list' span to lie \
+         within the malformed `Vec<,>` region (bytes {malformed_start}..{well_formed_start}); \
+         got type-arg errors: {:?}",
+        type_arg_errors
+            .iter()
+            .map(|e| (&e.message, e.span.start, e.span.end))
+            .collect::<Vec<_>>(),
     );
 }

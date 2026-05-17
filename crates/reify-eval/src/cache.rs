@@ -72,6 +72,19 @@ impl From<&NodeId> for reify_types::NodeKind {
     }
 }
 
+/// Project a [`NodeId`] to its [`reify_types::NodeKind`] discriminant via the
+/// [`reify_types::HasNodeKind`] trait.
+///
+/// Sibling bridge to the `From<&NodeId> for NodeKind` impl above; both live in
+/// `reify-eval` for the same orphan-rule reason (`NodeId` is local to this crate,
+/// the destination trait/type is foreign). The body delegates to that existing `From`
+/// impl to avoid duplicating match arms. See PRD §5 B1.
+impl reify_types::HasNodeKind for NodeId {
+    fn node_kind(&self) -> reify_types::NodeKind {
+        reify_types::NodeKind::from(self)
+    }
+}
+
 impl fmt::Display for NodeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -733,6 +746,147 @@ impl CacheStore {
         } else {
             false
         }
+    }
+
+    /// Begin the in-flight ComputeNode dispatch lifecycle for `c_id`'s output
+    /// ValueCells — PRD §3 "Atomic completion" step 0 (begin) / §8 task δ
+    /// (`docs/prds/v0_3/compute-node-contract.md`).
+    ///
+    /// Handles both branches uniformly so the engine call site stays simple:
+    ///
+    /// - **Existing entry** (re-dispatch): routes through
+    ///   [`CacheStore::mark_pending_with_cause`] so `last_substantive` is
+    ///   captured from the prior `result_hash` (the previous best stays on
+    ///   display) and the chain root `NodeId::Compute(c_id)` is recorded.
+    /// - **Absent entry** (first-time dispatch): seeds a fresh Pending entry
+    ///   with `last_substantive: ResultRef::none()` (no prior result exists —
+    ///   the documented sentinel per `Freshness::Pending`'s field doc),
+    ///   `pending_cause = Some(NodeId::Compute(c_id))`, an empty
+    ///   `DependencyTrace`, and `basis_version: VersionId(0)`.
+    ///
+    /// `NodeId::Compute(_)` is admitted as a valid chain root by PRD §3
+    /// "Chain-root contract extension" (see task 3420/α). Every marked or
+    /// seeded output bumps `pending_transition_count`.
+    ///
+    /// Returns the count of output VCs marked or seeded Pending.
+    //
+    // `clippy::map_entry` would prefer the Entry API here, but the existing-VC
+    // branch calls `self.mark_pending_with_cause(...)` which borrows all of
+    // `self` mutably and so cannot coexist with `self.caches.entry(...)`. We
+    // could inline `mark_pending_with_cause`'s body, but that duplicates the
+    // chain-root contract logic and decouples this site from regression tests
+    // that pin `mark_pending_with_cause` directly. Allowing the lint locally
+    // is the minimal change.
+    #[allow(clippy::map_entry)]
+    pub fn begin_compute_dispatch(
+        &mut self,
+        c_id: &ComputeNodeId,
+        outputs: &[ValueCellId],
+    ) -> usize {
+        let mut marked = 0;
+        for out in outputs {
+            let node = NodeId::Value(out.clone());
+            if self.caches.contains_key(&node) {
+                // Re-dispatch: preserve the prior best as last_substantive
+                // via the chain-root helper.
+                if self.mark_pending_with_cause(&node, NodeId::Compute(c_id.clone())) {
+                    marked += 1;
+                }
+            } else {
+                // First-time dispatch: no prior result → seed Pending with
+                // the ResultRef::none() sentinel.
+                //
+                // Compute `result_hash` from the seeded `CachedResult` (rather
+                // than a `ContentHash(0)` sentinel) so this entry obeys the
+                // global invariant `result_hash == result.content_hash()` that
+                // `record_evaluation_with_freshness`'s early-cutoff path relies
+                // on. Without this, a same-hash check against the bogus 0 would
+                // happen to take the changed-path (correct by accident) and a
+                // trampoline that legitimately returned a value hashing to 0
+                // would mis-route through the early-cutoff branch.
+                let result =
+                    CachedResult::Value(Value::Undef, DeterminacyState::Determined);
+                let result_hash = result.content_hash();
+                self.caches.insert(
+                    node,
+                    NodeCache {
+                        result,
+                        result_hash,
+                        freshness: Freshness::Pending {
+                            last_substantive: ResultRef::none(),
+                        },
+                        dependency_trace: DependencyTrace::default(),
+                        basis_version: VersionId(0),
+                        warm_state: None,
+                        pending_cause: Some(NodeId::Compute(c_id.clone())),
+                    },
+                );
+                self.pending_transition_count += 1;
+                marked += 1;
+            }
+        }
+        marked
+    }
+
+    /// Complete the in-flight ComputeNode dispatch lifecycle atomically —
+    /// PRD §3 "Atomic completion" steps 1-3 / §8 task δ
+    /// (`docs/prds/v0_3/compute-node-contract.md`).
+    ///
+    /// For each `(out, value)` this performs, in a single critical section
+    /// (one function call — no public sub-step API exists in between, so no
+    /// consumer can observe an incoherent intermediate state):
+    ///
+    /// 1. **Write** the new value: `CachedResult::Value(value, Determined)`.
+    /// 2. **Flip** freshness Pending → Final.
+    /// 3. **Clear** `pending_cause` on the output entry.
+    ///
+    /// Steps 1-2 go through [`CacheStore::record_evaluation_with_freshness`]
+    /// with `Freshness::Final`, which covers both the changed-hash path
+    /// (re-insert with `pending_cause = None`) and the early-cutoff path
+    /// (same hash as the prior Pending entry — fields updated but
+    /// `pending_cause` is PRESERVED per that helper's docstring). Step 3 is
+    /// the explicit side-table clear that closes the early-cutoff gap and is
+    /// what makes the same-hash-as-prior case atomic.
+    ///
+    /// `_with_cause` is deliberately NOT called here — `Freshness::Final`
+    /// has no diagnostic chain root.
+    ///
+    /// `c_id` is accepted but unused for δ scope; it is reserved for the
+    /// warm-state donation step (PRD §5 step 4, ζ scope / task 3425) so that
+    /// future work does not have to widen this signature.
+    ///
+    /// Returns the count of output entries written.
+    pub fn complete_compute_dispatch_atomically(
+        &mut self,
+        c_id: &ComputeNodeId,
+        outputs: &[(ValueCellId, Value)],
+        version: VersionId,
+    ) -> usize {
+        // Reserved for ζ-scope warm-state donation (PRD §5 step 4 / task 3425).
+        let _ = c_id;
+        let mut updated = 0;
+        for (out, value) in outputs {
+            let node = NodeId::Value(out.clone());
+            let cached_result = CachedResult::Value(value.clone(), DeterminacyState::Determined);
+            // Steps 1-2: write value + flip freshness to Final.
+            self.record_evaluation_with_freshness(
+                node.clone(),
+                cached_result,
+                version,
+                DependencyTrace::default(),
+                Freshness::Final,
+            );
+            // Step 3: explicitly clear pending_cause. The early-cutoff path
+            // of record_evaluation_with_freshness preserves the side-table,
+            // so a same-hash-as-prior-Pending update would otherwise leak the
+            // stale Compute chain root — clearing here is the single
+            // critical-section atomicity guarantee.
+            if let Some(entry) = self.caches.get_mut(&node) {
+                entry.pending_cause = None;
+            }
+            updated += 1;
+        }
+        updated
     }
 
     /// Read the diagnostic-chain cause stored on a node's cache entry.
@@ -3946,6 +4100,192 @@ mod tests {
             Some(compute_node),
             "Pending-forwarding branch must carry NodeId::Compute(_) cause unchanged \
              (PRD §3 chain-root contract extension; cache.rs:1080-1135)"
+        );
+    }
+
+    /// RED (task 3423/δ step-2): `begin_compute_dispatch` on an EXISTING
+    /// output-VC entry routes through `mark_pending_with_cause`, capturing
+    /// `last_substantive` from the prior `result_hash` and recording the
+    /// `NodeId::Compute(c_id)` chain root. Pins the existing-entry branch of
+    /// the begin lifecycle (PRD §3 "Atomic completion" step 0 / §8 task δ).
+    #[test]
+    fn begin_compute_dispatch_marks_existing_output_pending_with_compute_cause() {
+        use reify_types::{ComputeNodeId, Freshness, ResultRef};
+
+        let mut store = CacheStore::new();
+        let b = ValueCellId::new("T", "b");
+
+        // Existing Final entry: Value::Int(42) @ VersionId(1) (via make_seed_entry).
+        store.put(NodeId::Value(b.clone()), make_seed_entry());
+        let prior_hash = store
+            .get(&NodeId::Value(b.clone()))
+            .expect("seeded entry must be present")
+            .result_hash;
+
+        let c_id = ComputeNodeId::new("T", 0);
+        let before = store.pending_transition_count();
+
+        let marked = store.begin_compute_dispatch(&c_id, &[b.clone()]);
+
+        assert_eq!(
+            marked, 1,
+            "begin_compute_dispatch must report 1 output marked"
+        );
+        assert_eq!(
+            store.freshness(&NodeId::Value(b.clone())),
+            Freshness::Pending {
+                last_substantive: ResultRef::of_hash(prior_hash),
+            },
+            "existing-entry begin must capture last_substantive from prior result_hash"
+        );
+        assert_eq!(
+            store.pending_cause(&NodeId::Value(b.clone())),
+            Some(NodeId::Compute(c_id)),
+            "begin must record NodeId::Compute(c_id) as the chain root (PRD §3)"
+        );
+        assert_eq!(
+            store.pending_transition_count(),
+            before + 1,
+            "begin_compute_dispatch must bump pending_transition_count by 1 per marked output"
+        );
+    }
+
+    /// RED (task 3423/δ step-4): `begin_compute_dispatch` on an ABSENT output
+    /// VC (first-time dispatch — no prior cache entry) seeds a fresh Pending
+    /// entry with `last_substantive: ResultRef::none()` (no prior result to
+    /// display), `pending_cause = Some(NodeId::Compute(c_id))`, and an empty
+    /// dependency trace. Pins the first-time-dispatch path that step-3's
+    /// GREEN does NOT yet handle — fails until step-5 extends the impl.
+    #[test]
+    fn begin_compute_dispatch_seeds_pending_entry_for_absent_output() {
+        use reify_types::{ComputeNodeId, Freshness, ResultRef};
+
+        let mut store = CacheStore::new();
+        let b = ValueCellId::new("T", "b");
+
+        // No entry for `b` — first-time dispatch.
+        assert!(
+            store.get(&NodeId::Value(b.clone())).is_none(),
+            "precondition: output VC must be absent"
+        );
+
+        let c_id = ComputeNodeId::new("T", 0);
+        let marked = store.begin_compute_dispatch(&c_id, &[b.clone()]);
+
+        assert_eq!(
+            marked, 1,
+            "begin_compute_dispatch must report 1 (absent VC seeded)"
+        );
+        let entry = store
+            .get(&NodeId::Value(b.clone()))
+            .expect("absent output VC must be seeded with a fresh entry");
+        assert_eq!(
+            entry.freshness,
+            Freshness::Pending {
+                last_substantive: ResultRef::none(),
+            },
+            "first-time dispatch has no prior result — last_substantive must be ResultRef::none()"
+        );
+        assert!(
+            entry.dependency_trace.reads.is_empty(),
+            "seeded entry must carry an empty dependency trace"
+        );
+        assert_eq!(
+            store.pending_cause(&NodeId::Value(b.clone())),
+            Some(NodeId::Compute(c_id)),
+            "seeded entry must record NodeId::Compute(c_id) as the chain root (PRD §3)"
+        );
+    }
+
+    /// RED (task 3423/δ step-6): the FULL begin→complete atomicity cycle.
+    /// After `begin_compute_dispatch` the cache holds (Pending, prior value,
+    /// Compute cause); the SINGLE call to
+    /// `complete_compute_dispatch_atomically` transitions it to (Final, new
+    /// value, no cause) — no public API exists to observe an incoherent
+    /// (Final, prior) or (Pending, new) intermediate (PRD §3 atomic
+    /// completion / §8 task δ).
+    #[test]
+    fn complete_compute_dispatch_atomically_writes_value_flips_freshness_clears_cause() {
+        use reify_types::{
+            ComputeNodeId, DeterminacyState, Freshness, ResultRef, Value, VersionId,
+        };
+
+        let mut store = CacheStore::new();
+        let b = ValueCellId::new("T", "b");
+        let c_id = ComputeNodeId::new("T", 0);
+
+        // (a) Existing Final entry: Value::Int(42) @ VersionId(1).
+        store.put(NodeId::Value(b.clone()), make_seed_entry());
+        let prior_hash = store
+            .get(&NodeId::Value(b.clone()))
+            .expect("seeded entry must be present")
+            .result_hash;
+
+        // (b) begin → Pending.
+        assert_eq!(store.begin_compute_dispatch(&c_id, &[b.clone()]), 1);
+
+        // (c) mid-state: (Pending{last_substantive: prior}, Compute cause,
+        //     prior value still on display).
+        assert_eq!(
+            store.freshness(&NodeId::Value(b.clone())),
+            Freshness::Pending {
+                last_substantive: ResultRef::of_hash(prior_hash),
+            },
+            "mid-dispatch freshness must be Pending with prior last_substantive"
+        );
+        assert_eq!(
+            store.pending_cause(&NodeId::Value(b.clone())),
+            Some(NodeId::Compute(c_id.clone())),
+            "mid-dispatch pending_cause must be the Compute chain root"
+        );
+        match &store.get(&NodeId::Value(b.clone())).unwrap().result {
+            CachedResult::Value(v, d) => {
+                assert_eq!(
+                    *v,
+                    Value::Int(42),
+                    "prior value must still be on display mid-dispatch"
+                );
+                assert_eq!(*d, DeterminacyState::Determined);
+            }
+            other => panic!("expected CachedResult::Value, got {other:?}"),
+        }
+
+        // (d) complete — single atomic call (does not yet exist — RED).
+        let updated = store.complete_compute_dispatch_atomically(
+            &c_id,
+            &[(b.clone(), Value::Int(99))],
+            VersionId(2),
+        );
+
+        // (e) post-state: (Final, new value, no cause).
+        assert_eq!(updated, 1, "complete must report 1 output updated");
+        assert_eq!(
+            store.freshness(&NodeId::Value(b.clone())),
+            Freshness::Final,
+            "complete must flip freshness Pending → Final"
+        );
+        assert_eq!(
+            store.pending_cause(&NodeId::Value(b.clone())),
+            None,
+            "complete must clear pending_cause (single-critical-section guarantee)"
+        );
+        let entry = store.get(&NodeId::Value(b.clone())).unwrap();
+        match &entry.result {
+            CachedResult::Value(v, d) => {
+                assert_eq!(*v, Value::Int(99), "complete must write the new value");
+                assert_eq!(*d, DeterminacyState::Determined);
+            }
+            other => panic!("expected CachedResult::Value, got {other:?}"),
+        }
+        assert_eq!(
+            entry.result_hash,
+            CachedResult::Value(Value::Int(99), DeterminacyState::Determined).content_hash(),
+            "result_hash must match the new value's content hash"
+        );
+        assert_eq!(
+            entry.basis_version,
+            VersionId(2),
+            "complete must stamp the supplied version"
         );
     }
 }

@@ -523,6 +523,35 @@ fn resolve_collection_sub_to_list(scope: &CompilationScope, sub_name: &str) -> C
     CompiledExpr::value_ref(list_id, list_type)
 }
 
+/// Build a `CompiledExpr` for a `UserFunctionCall` node.
+///
+/// Centralises the `TAG_USER_FUNCTION_CALL` ContentHash fold so both the
+/// `OverloadResolution::Resolved` arm and the default-padding branch produce
+/// identical construction logic.  Deprecation-warning emission stays at each
+/// call site: the annotation source differs between the two branches and the
+/// helper has no business taking a diagnostics sink.
+fn build_user_function_call_expr(
+    name: &str,
+    args: Vec<CompiledExpr>,
+    return_type: Type,
+) -> CompiledExpr {
+    let content_hash = {
+        let mut h = ContentHash::of(&[TAG_USER_FUNCTION_CALL]).combine(ContentHash::of_str(name));
+        for arg in &args {
+            h = h.combine(arg.content_hash);
+        }
+        h
+    };
+    CompiledExpr {
+        kind: CompiledExprKind::UserFunctionCall {
+            function_name: name.to_string(),
+            args,
+        },
+        result_type: return_type,
+        content_hash,
+    }
+}
+
 /// Compile an `Expr` from the AST into a `CompiledExpr`, with guard context.
 ///
 /// When `current_guard` is Some, references to names guarded by a different
@@ -648,6 +677,7 @@ pub(crate) fn compile_expr_guarded(
                     make_poison_literal(
                         diagnostics,
                         Diagnostic::error(msg)
+                            .with_code(DiagnosticCode::UnresolvedName)
                             .with_label(DiagnosticLabel::new(expr.span, "not found in scope")),
                     )
                 }
@@ -942,6 +972,53 @@ pub(crate) fn compile_expr_guarded(
                 .map(|a| a.result_type.clone())
                 .collect();
 
+            // ── task 3540 (SIR-α): structure-instance ctor lowering ─────────
+            // When the callee name resolves to a `structure def`
+            // `TopologyTemplate` in `scope.template_registry`, emit a
+            // `StructureInstanceCtor` instead of a stdlib `FunctionCall`
+            // (precedence over `eval_builtin` — design-decision-2). Identity
+            // is `(type_name, version)`; `type_id` is a baked
+            // `StructureTypeId(0)` placeholder re-stamped by name on any
+            // registry-keyed path (esc-3540-177 RULING 2). `version` is read
+            // from the `@version(N)` accessor `template.version()`
+            // (esc-3540-176 / RULING 3). Positional args bind to the
+            // template's `Param` cells in declaration order; uncovered params
+            // contribute their `default_expr`.
+            if let Some(registry) = scope.template_registry
+                && let Some(template) = registry.get(name.as_str())
+                && template.entity_kind == EntityKind::Structure
+            {
+                let params: Vec<(&str, Option<&CompiledExpr>)> = template
+                    .value_cells
+                    .iter()
+                    .filter(|vc| matches!(vc.kind, ValueCellKind::Param))
+                    .map(|vc| (vc.id.member.as_str(), vc.default_expr.as_ref()))
+                    .collect();
+                let mut ordered_args: Vec<(String, CompiledExpr)> =
+                    Vec::with_capacity(compiled_args.len());
+                for (i, arg) in compiled_args.iter().enumerate() {
+                    let pname = params
+                        .get(i)
+                        .map(|(n, _)| (*n).to_string())
+                        .unwrap_or_else(|| format!("__arg{}", i));
+                    ordered_args.push((pname, arg.clone()));
+                }
+                let covered = ordered_args.len();
+                let defaults: Vec<(String, CompiledExpr)> = params
+                    .iter()
+                    .skip(covered)
+                    .filter_map(|(n, d)| d.map(|e| ((*n).to_string(), e.clone())))
+                    .collect();
+                return CompiledExpr::structure_instance_ctor(
+                    reify_types::StructureTypeId(0),
+                    name.clone(),
+                    template.version(),
+                    ordered_args,
+                    defaults,
+                    Type::StructureRef(name.clone()),
+                );
+            }
+
             match resolve_function_overload(name, &arg_types, functions) {
                 OverloadResolution::Resolved(matched_fn) => {
                     // Exactly one user fn matches — emit UserFunctionCall
@@ -950,22 +1027,7 @@ pub(crate) fn compile_expr_guarded(
                         emit_deprecation_warning("function", name, msg, expr.span, diagnostics);
                     }
                     let result_type = matched_fn.return_type.clone();
-                    let content_hash = {
-                        let mut h = ContentHash::of(&[TAG_USER_FUNCTION_CALL])
-                            .combine(ContentHash::of_str(name));
-                        for arg in &compiled_args {
-                            h = h.combine(arg.content_hash);
-                        }
-                        h
-                    };
-                    CompiledExpr {
-                        kind: CompiledExprKind::UserFunctionCall {
-                            function_name: name.clone(),
-                            args: compiled_args,
-                        },
-                        result_type,
-                        content_hash,
-                    }
+                    build_user_function_call_expr(name, compiled_args, result_type)
                 }
                 OverloadResolution::Ambiguous(candidates) => {
                     // Multiple user fns match — ambiguous call
@@ -996,24 +1058,20 @@ pub(crate) fn compile_expr_guarded(
                         try_default_padding(&named_candidates, &compiled_args, &arg_types)
                     {
                         let result_type = padded_fn.return_type.clone();
+                        // Deprecation check: mirror the Resolved arm — warn if the
+                        // padded function is @deprecated.
+                        if let Some(msg) = deprecation_message(&padded_fn.annotations) {
+                            emit_deprecation_warning(
+                                "function",
+                                name,
+                                msg,
+                                expr.span,
+                                diagnostics,
+                            );
+                        }
                         let mut padded_args = compiled_args;
                         padded_args.extend(default_exprs);
-                        let content_hash = {
-                            let mut h = ContentHash::of(&[TAG_USER_FUNCTION_CALL])
-                                .combine(ContentHash::of_str(name));
-                            for arg in &padded_args {
-                                h = h.combine(arg.content_hash);
-                            }
-                            h
-                        };
-                        return CompiledExpr {
-                            kind: CompiledExprKind::UserFunctionCall {
-                                function_name: name.clone(),
-                                args: padded_args,
-                            },
-                            result_type,
-                            content_hash,
-                        };
+                        return build_user_function_call_expr(name, padded_args, result_type);
                     }
                     // User functions with this name exist, but none match — error with candidates
                     let candidate_sigs: Vec<String> = named_candidates
@@ -1842,6 +1900,49 @@ pub(crate) fn compile_expr_guarded(
             }
             // ── End purpose-subject member access ──────────────────────────────
 
+            // ── task 3540 (SIR-α): StructureInstance field projection ──────────
+            //
+            // Handler esc-3540-182 (A): when the object resolves to a
+            // structure/trait-typed value, `.member` projects the field out of
+            // the runtime `Value::StructureInstance`. This is the entity-scope
+            // member-access path for chains like
+            // `self.primary.material.youngs_modulus` — `self.primary.material`
+            // already resolves (via the `self.sub.member` branch above) to a
+            // value-ref whose runtime value is a `Value::StructureInstance`
+            // (the structure-def param/let default lowered by the
+            // StructureInstanceCtor path). Reuse `IndexAccess` with a
+            // string-literal key (handler (A)(1) — no new CompiledExprKind);
+            // the eval-side IndexAccess arm reads `fields[member]`.
+            //
+            // (A)(2) member-Type resolution: for a concrete `StructureRef`,
+            // resolve the declared field type from the structure-def template
+            // in `scope.template_registry` (esc-3540-177-threaded). For a
+            // `TraitObject` the concrete runtime type is not statically known
+            // (traits are not in `template_registry`); fall back to `Type::Real`
+            // — a permissive, non-poison type so the chain neither cascades nor
+            // is rejected. The runtime `Value` is whatever the field actually
+            // holds (e.g. a `Value::Scalar`), independent of this static type.
+            //
+            // The poison short-circuit must run first so an already-errored
+            // object propagates rather than being treated as a structure.
+            if !compiled_obj.result_type.is_error()
+                && let Type::StructureRef(struct_name) | Type::TraitObject(struct_name) =
+                    &compiled_obj.result_type
+            {
+                let member_type = scope
+                    .template_registry
+                    .and_then(|r| r.get(struct_name.as_str()))
+                    .and_then(|t| {
+                        t.value_cells
+                            .iter()
+                            .find(|vc| vc.id.member == *member)
+                            .map(|vc| vc.cell_type.clone())
+                    })
+                    .unwrap_or(Type::Real);
+                let key = CompiledExpr::literal(Value::String(member.clone()), Type::String);
+                return CompiledExpr::index_access(compiled_obj, key, member_type);
+            }
+
             if COLLECTION_AGGREGATION_MEMBERS.contains(&member.as_str()) {
                 // Anti-cascade consumer (task-448 / task-1921 S4): if the object
                 // is already poisoned, propagate via propagate_poison() (a
@@ -2271,6 +2372,9 @@ pub(crate) fn compile_expr_guarded(
                         reify_syntax::TypeExprKind::Named { name, .. } => Some(name.as_str()),
                         reify_syntax::TypeExprKind::DimensionalOp { .. } => None,
                         reify_syntax::TypeExprKind::IntegerLiteral(_) => None,
+                        // Auto type-args cannot be used as lambda param types;
+                        // resolution semantics are deferred to task 3477/3558.
+                        reify_syntax::TypeExprKind::Auto { .. } => None,
                     };
                     if let Some(name) = name_opt {
                         match resolve_type_name(name) {
@@ -2283,7 +2387,8 @@ pub(crate) fn compile_expr_guarded(
                                     Diagnostic::error(format!(
                                         "unresolved type in lambda param '{}': {}",
                                         param.name, name
-                                    )),
+                                    ))
+                                    .with_code(DiagnosticCode::UnresolvedType),
                                 )
                             }
                         }
@@ -2294,7 +2399,8 @@ pub(crate) fn compile_expr_guarded(
                             Diagnostic::error(format!(
                                 "unresolved type in lambda param '{}': {}",
                                 param.name, type_expr
-                            )),
+                            ))
+                            .with_code(DiagnosticCode::UnresolvedType),
                         )
                     }
                 } else {
@@ -3374,5 +3480,223 @@ pub structure Rack {
         }
         // (e) result_type must be Type::Geometry.
         assert_eq!(result.result_type, Type::Geometry);
+    }
+
+    // ───────────────────────────────────────────────────────────────────────
+    // task 3540 step-15: structure-instance ctor lowering (RED)
+    //
+    // When a FunctionCall callee resolves to a `structure def` template in
+    // `scope.template_registry`, the compiler must emit
+    // `CompiledExprKind::StructureInstanceCtor` instead of a stdlib
+    // `FunctionCall` (design-decision-2). type_id is a baked
+    // `StructureTypeId(0)` placeholder; (type_name, version) are authoritative
+    // (esc-3540-173 / RULING 2+3). version is read via `template.version()`
+    // (the @version(N) accessor, esc-3540-176). Builtins (e.g. `cos`) are NOT
+    // perturbed.
+    //
+    // NOTE (escalate_info, design_concern, non-blocking): plan step-15(b)
+    // posits a `Beam { length: 2.0m }` "named-arg form". There is no
+    // record/struct-literal `ExprKind` in the surface grammar
+    // (reify-syntax/src/lib.rs ExprKind has FunctionCall only) — structure
+    // construction is positional-call form exclusively. Scenario (b) is
+    // therefore covered by the positional-binding test below rather than a
+    // separate `{}` form.
+    // ───────────────────────────────────────────────────────────────────────
+
+    /// Build a minimal structure-def `TopologyTemplate` with the given
+    /// `(param_name, default)` params (mirrors scc.rs::minimal_template).
+    fn sct_template(
+        name: &str,
+        params: &[(&str, Option<CompiledExpr>)],
+    ) -> crate::types::TopologyTemplate {
+        let value_cells = params
+            .iter()
+            .map(|(pname, default)| crate::types::ValueCellDecl {
+                id: ValueCellId::new(name, *pname),
+                kind: crate::types::ValueCellKind::Param,
+                visibility: crate::types::Visibility::Public,
+                cell_type: Type::Real,
+                default_expr: default.clone(),
+                solver_hints: vec![],
+                span: SourceSpan::prelude(),
+            })
+            .collect();
+        crate::types::TopologyTemplate {
+            name: name.to_string(),
+            entity_kind: crate::types::EntityKind::Structure,
+            visibility: crate::types::Visibility::Public,
+            type_params: vec![],
+            trait_bounds: vec![],
+            value_cells,
+            constraints: vec![],
+            realizations: vec![],
+            sub_components: vec![],
+            ports: vec![],
+            connections: vec![],
+            guarded_groups: vec![],
+            structure_controlling: std::collections::HashSet::new(),
+            objective: None,
+            meta: std::collections::HashMap::new(),
+            content_hash: ContentHash(0),
+            is_recursive: false,
+            annotations: vec![],
+            pragmas: vec![],
+            match_arm_groups: vec![],
+            forall_templates: vec![],
+        }
+    }
+
+    fn call_expr(name: &str, args: Vec<reify_syntax::Expr>) -> reify_syntax::Expr {
+        reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::FunctionCall {
+                name: name.to_string(),
+                args,
+            },
+            span: SourceSpan::prelude(),
+        }
+    }
+
+    fn num_expr(v: f64) -> reify_syntax::Expr {
+        reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::NumberLiteral {
+                value: v,
+                is_real: true,
+            },
+            span: SourceSpan::prelude(),
+        }
+    }
+
+    #[test]
+    fn structure_def_zero_arg_call_lowers_to_ctor() {
+        let tmpl = sct_template(
+            "Steel_AISI_1045",
+            &[(
+                "youngs_modulus",
+                Some(CompiledExpr::literal(Value::Int(200), Type::Int)),
+            )],
+        );
+        let mut registry: std::collections::HashMap<String, &crate::types::TopologyTemplate> =
+            std::collections::HashMap::new();
+        registry.insert("Steel_AISI_1045".to_string(), &tmpl);
+
+        let mut scope = CompilationScope::new("Host");
+        scope.is_entity_scope = true;
+        scope.set_template_registry(&registry);
+
+        let mut diags: Vec<Diagnostic> = vec![];
+        let result = compile_expr(
+            &call_expr("Steel_AISI_1045", vec![]),
+            &scope,
+            &[],
+            &[],
+            &mut diags,
+        );
+
+        match &result.kind {
+            CompiledExprKind::StructureInstanceCtor {
+                type_name,
+                version,
+                ordered_args,
+                defaults,
+                ..
+            } => {
+                assert_eq!(type_name, "Steel_AISI_1045");
+                assert_eq!(*version, 1, "absent @version defaults to 1 via version()");
+                assert!(ordered_args.is_empty(), "zero-arg call → no ordered args");
+                assert!(
+                    defaults.iter().any(|(n, _)| n == "youngs_modulus"),
+                    "omitted param's default must be captured, got {:?}",
+                    defaults.iter().map(|(n, _)| n).collect::<Vec<_>>()
+                );
+            }
+            other => panic!("expected StructureInstanceCtor, got {:?}", other),
+        }
+        assert_eq!(
+            result.result_type,
+            Type::StructureRef("Steel_AISI_1045".to_string())
+        );
+    }
+
+    #[test]
+    fn structure_def_positional_args_bind_in_declaration_order() {
+        let tmpl = sct_template(
+            "PointLoad",
+            &[
+                ("target", Some(CompiledExpr::literal(Value::Undef, Type::Real))),
+                (
+                    "magnitude",
+                    Some(CompiledExpr::literal(Value::Int(0), Type::Int)),
+                ),
+            ],
+        );
+        let mut registry: std::collections::HashMap<String, &crate::types::TopologyTemplate> =
+            std::collections::HashMap::new();
+        registry.insert("PointLoad".to_string(), &tmpl);
+
+        let mut scope = CompilationScope::new("Host");
+        scope.is_entity_scope = true;
+        scope.set_template_registry(&registry);
+
+        let mut diags: Vec<Diagnostic> = vec![];
+        let result = compile_expr(
+            &call_expr("PointLoad", vec![num_expr(5.0)]),
+            &scope,
+            &[],
+            &[],
+            &mut diags,
+        );
+
+        match &result.kind {
+            CompiledExprKind::StructureInstanceCtor {
+                ordered_args,
+                defaults,
+                ..
+            } => {
+                assert_eq!(ordered_args.len(), 1, "one positional arg supplied");
+                assert_eq!(
+                    ordered_args[0].0, "target",
+                    "first positional binds to first param in declaration order"
+                );
+                assert!(
+                    defaults.iter().any(|(n, _)| n == "magnitude"),
+                    "uncovered param keeps its default"
+                );
+                assert!(
+                    !defaults.iter().any(|(n, _)| n == "target"),
+                    "covered param must NOT appear in defaults"
+                );
+            }
+            other => panic!("expected StructureInstanceCtor, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn builtin_call_not_perturbed_by_ctor_path() {
+        // Empty template registry → `cos` is not a structure-def → must stay
+        // a FunctionCall (the stdlib path), NOT a StructureInstanceCtor.
+        let registry: std::collections::HashMap<String, &crate::types::TopologyTemplate> =
+            std::collections::HashMap::new();
+        let mut scope = CompilationScope::new("Host");
+        scope.is_entity_scope = true;
+        scope.set_template_registry(&registry);
+
+        let mut diags: Vec<Diagnostic> = vec![];
+        let result = compile_expr(
+            &call_expr("cos", vec![num_expr(0.0)]),
+            &scope,
+            &[],
+            &[],
+            &mut diags,
+        );
+
+        assert!(
+            !matches!(result.kind, CompiledExprKind::StructureInstanceCtor { .. }),
+            "builtin `cos` must not lower to StructureInstanceCtor"
+        );
+        assert!(
+            matches!(result.kind, CompiledExprKind::FunctionCall { .. }),
+            "builtin `cos` must remain a FunctionCall, got {:?}",
+            result.kind
+        );
     }
 }

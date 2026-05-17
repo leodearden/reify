@@ -1,0 +1,217 @@
+; NOTE: This corpus is developer documentation for the CST shape of the
+; specialization-body sub_declaration grammar (task 3569). The expected
+; S-expressions below are NOT validated by CI (orchestrator.yaml does not run
+; `tree-sitter test`). The canonical CI regression signal is the Rust integration
+; test `sub_decl_specialization_body_parses_from_source` in
+; crates/reify-syntax/tests/sub_decl_specialization_body_parser_tests.rs.
+
+================================================================================
+specialization body — permitted members (param_assignment + let + constraint)
+================================================================================
+
+structure S {
+  sub motor : ElectricMotor {
+    shaft_diameter = 8mm
+    let m = shaft_diameter * 2
+    constraint shaft_diameter > 1mm
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (identifier)
+      body: (specialization_body
+        (param_assignment
+          name: (identifier)
+          value: (quantity_literal
+            value: (number_literal)
+            unit: (unit)))
+        (let_declaration
+          name: (identifier)
+          value: (binary_expression
+            left: (identifier)
+            right: (number_literal)))
+        (constraint_declaration
+          expr: (binary_expression
+            left: (identifier)
+            right: (quantity_literal
+              value: (number_literal)
+              unit: (unit))))))))
+
+================================================================================
+specialization body — where-guarded param_assignment
+================================================================================
+
+structure S {
+  sub motor : ElectricMotor {
+    shaft_diameter = 8mm where high_torque
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (identifier)
+      body: (specialization_body
+        (param_assignment
+          name: (identifier)
+          value: (quantity_literal
+            value: (number_literal)
+            unit: (unit))
+          guard: (where_clause
+            condition: (identifier)))))))
+
+================================================================================
+specialization body — where-guard on sub before body
+================================================================================
+
+structure S {
+  sub left : TreeBracket where depth > 0 {
+    depth = depth - 1
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (identifier)
+      guard: (where_clause
+        condition: (binary_expression
+          left: (identifier)
+          right: (number_literal)))
+      body: (specialization_body
+        (param_assignment
+          name: (identifier)
+          value: (binary_expression
+            left: (identifier)
+            right: (number_literal)))))))
+
+================================================================================
+specialization body — forbidden param member (parses; rejection deferred to validator)
+================================================================================
+
+structure S {
+  sub motor : ElectricMotor {
+    param x : Length
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (identifier)
+      body: (specialization_body
+        (param_declaration
+          name: (identifier)
+          type: (type_expr
+            (identifier)))))))
+
+================================================================================
+specialization body — forbidden port member (parses; rejection deferred to validator)
+================================================================================
+
+structure S {
+  sub motor : ElectricMotor {
+    port p : MechanicalPort
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (identifier)
+      body: (specialization_body
+        (port_declaration
+          name: (identifier)
+          type: (identifier))))))
+
+================================================================================
+specialization body — forbidden nested bodyless sub (parses; rejection deferred to validator)
+================================================================================
+
+structure S {
+  sub motor : ElectricMotor {
+    sub child : Foo
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (identifier)
+      body: (specialization_body
+        (sub_declaration
+          name: (identifier)
+          structure_name: (identifier))))))
+
+================================================================================
+specialization body — bare colon, no body
+================================================================================
+
+structure S {
+  sub a : Foo
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (identifier))))
+
+================================================================================
+specialization body — type_args + where-guard + body
+================================================================================
+
+structure S {
+  sub m : Gear<Steel> where n > 0 {
+    ratio = 2
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (identifier)
+      type_args: (type_arg_list
+        (type_expr
+          (identifier)))
+      guard: (where_clause
+        condition: (binary_expression
+          left: (identifier)
+          right: (number_literal)))
+      body: (specialization_body
+        (param_assignment
+          name: (identifier)
+          value: (number_literal))))))

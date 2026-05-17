@@ -338,11 +338,30 @@ pub(crate) fn compile_entity(
     pending_bound_checks: &mut Vec<PendingBoundCheck>,
     diagnostics: &mut Vec<Diagnostic>,
     compiled_templates: &[TopologyTemplate],
+    prelude_template_registry: &HashMap<String, &TopologyTemplate>,
 ) -> TopologyTemplate {
     let entity_name = structure.name;
+    // task 3540 (SIR-α): make `structure def` templates reachable at the
+    // expression-lowering site so `Foo()` can lower to a
+    // `StructureInstanceCtor` (esc-3540-177 RULING 1). Composition: prelude
+    // structure-defs first, then local already-compiled structure-defs
+    // (later entries shadow earlier — local definitions shadow prelude,
+    // matching Reify scoping). Declared BEFORE `scope` so it outlives the
+    // scope's borrow (drop order is reverse-declaration).
+    let entity_template_registry: HashMap<String, &TopologyTemplate> = prelude_template_registry
+        .iter()
+        .map(|(k, v)| (k.clone(), *v))
+        .chain(
+            compiled_templates
+                .iter()
+                .filter(|t| t.entity_kind == EntityKind::Structure)
+                .map(|t| (t.name.clone(), t)),
+        )
+        .collect();
     let mut scope = CompilationScope::new(entity_name);
     scope.set_unit_registry(unit_registry);
     scope.is_entity_scope = true;
+    scope.set_template_registry(&entity_template_registry);
 
     // Populate trait member index for qualified access resolution.
     for (trait_name, compiled_trait) in trait_registry {
@@ -485,6 +504,7 @@ pub(crate) fn compile_entity(
                             } else {
                                 diagnostics.push(
                                     Diagnostic::error(format!("unresolved type: {}", type_expr))
+                                        .with_code(DiagnosticCode::UnresolvedType)
                                         .with_label(DiagnosticLabel::new(
                                             type_expr.span,
                                             "unknown type name",
@@ -743,6 +763,7 @@ pub(crate) fn compile_entity(
                                             "unresolved type name '{}' in port parameter",
                                             type_expr
                                         ))
+                                        .with_code(DiagnosticCode::UnresolvedType)
                                         .with_label(
                                             DiagnosticLabel::new(type_expr.span, "unknown type"),
                                         ),

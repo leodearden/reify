@@ -10,10 +10,17 @@ pub(crate) fn compile_function(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<CompiledFunction> {
     let empty_params = HashSet::new();
-    // Resolve parameter types
-    let mut params = Vec::new();
+    // Resolve parameter types.
+    //
+    // `param_type_resolved[i]` is `true` when the i-th param's declared type resolved
+    // successfully. It is used below to gate the default-type check: if the type failed
+    // to resolve, the root-cause "unresolved type" diagnostic is already queued and
+    // emitting a secondary FnParamDefaultTypeMismatch (against the `Type::Real` fallback)
+    // would be confusing noise.
+    let mut params: Vec<(String, Type)> = Vec::new();
+    let mut param_type_resolved: Vec<bool> = Vec::new();
     for p in &fn_def.params {
-        let ty = match resolve_type_expr_with_aliases(
+        let (ty, resolved) = match resolve_type_expr_with_aliases(
             &p.type_expr,
             &empty_params,
             alias_registry,
@@ -21,20 +28,27 @@ pub(crate) fn compile_function(
             structure_names,
             trait_names,
         ) {
-            Some(t) => t,
+            Some(t) => (t, true),
             None => {
                 diagnostics.push(
                     Diagnostic::error(format!("unresolved type: {}", p.type_expr))
+                        .with_code(DiagnosticCode::UnresolvedType)
                         .with_label(DiagnosticLabel::new(p.type_expr.span, "unknown type name")),
                 );
-                Type::Real // fallback
+                (Type::Real, false) // fallback; `resolved` flag prevents cascade in default check
             }
         };
         params.push((p.name.clone(), ty));
+        param_type_resolved.push(resolved);
     }
 
     // Compile default expressions in a neutral scope (no params registered) so
-    // defaults cannot reference sibling params — definition-time semantics.
+    // defaults cannot reference sibling params and cannot recurse into the
+    // enclosing function — definition-time semantics. Rationale: keeps defaults
+    // pure-by-construction and order-independent.
+    // See `CompiledFunction::param_defaults` in `reify-types/src/expr.rs` for the
+    // field-level doc and `docs/initial-design/name-resolution-and-scoping-design-decisions.md`
+    // §2.3 for the full language-design rationale.
     let neutral_scope = CompilationScope::new(&fn_def.name);
     let param_defaults: Vec<Option<CompiledExpr>> = fn_def
         .params
@@ -45,6 +59,52 @@ pub(crate) fn compile_function(
                 .map(|d| compile_expr(d, &neutral_scope, enum_defs, functions, diagnostics))
         })
         .collect();
+
+    // Type-check default expressions against their declared param types.
+    //
+    // Uses strict equality (via `fn_param_default_compatible`) matching the policy
+    // in `resolve_function_overload` and `try_default_padding`'s prefix check —
+    // a default value is conceptually inserted at the padded call site, so the
+    // definition-site check must be at least as strict as the call-site check.
+    //
+    // The zip over three lockstep collections (fn_def.params, param_defaults, params)
+    // makes index alignment structurally obvious: all three are built from the same
+    // fn_def.params slice so they have identical length and ordering.
+    //
+    // The `type_ok` gate skips params whose declared type failed to resolve. The
+    // root-cause "unresolved type" diagnostic is already queued; emitting a
+    // secondary FnParamDefaultTypeMismatch (against the Type::Real fallback) would
+    // be confusing noise — e.g. `fn f(x: Bogus = "hi")` would otherwise show both
+    // "unresolved type: Bogus" AND "default type mismatch: Real vs String".
+    for (((p, compiled_default), (_, param_ty)), &type_ok) in fn_def
+        .params
+        .iter()
+        .zip(param_defaults.iter())
+        .zip(params.iter())
+        .zip(param_type_resolved.iter())
+    {
+        if !type_ok {
+            continue;
+        }
+        // Match on both the compiled default and the syntactic default simultaneously.
+        // `compiled_default.is_some() ↔ p.default.is_some()` (they are built in lockstep
+        // in the param_defaults map above), so both arms are always in sync — no `.expect()`.
+        if let (Some(default), Some(syntax_default)) = (compiled_default, &p.default)
+            && !fn_param_default_compatible(param_ty, &default.result_type)
+        {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "function '{}' param '{}' default type mismatch: declared param type `{}`, default expression produces `{}`",
+                    fn_def.name, p.name, param_ty, default.result_type
+                ))
+                .with_code(DiagnosticCode::FnParamDefaultTypeMismatch)
+                .with_label(DiagnosticLabel::new(
+                    syntax_default.span,
+                    "default expression type does not match declared param type",
+                )),
+            );
+        }
+    }
 
     // Resolve return type
     let return_type = match &fn_def.return_type {
@@ -61,6 +121,7 @@ pub(crate) fn compile_function(
                 None => {
                     diagnostics.push(
                         Diagnostic::error(format!("unresolved return type: {}", te))
+                            .with_code(DiagnosticCode::UnresolvedType)
                             .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
                     );
                     Type::Real
@@ -219,6 +280,7 @@ pub(crate) fn compile_field(
         reify_syntax::TypeExprKind::DimensionalOp { .. } => {
             diagnostics.push(
                 Diagnostic::error(format!("unresolved field type: {}", field_def.domain_type))
+                    .with_code(DiagnosticCode::UnresolvedType)
                     .with_label(DiagnosticLabel::new(
                         field_def.domain_type.span,
                         "unexpected dimensional expression",
@@ -229,9 +291,22 @@ pub(crate) fn compile_field(
         reify_syntax::TypeExprKind::IntegerLiteral(_) => {
             diagnostics.push(
                 Diagnostic::error(format!("unresolved field type: {}", field_def.domain_type))
+                    .with_code(DiagnosticCode::UnresolvedType)
                     .with_label(DiagnosticLabel::new(
                         field_def.domain_type.span,
                         "integer literal not allowed in this position",
+                    )),
+            );
+            Type::Real
+        }
+        // Auto type-args cannot appear as a field domain type; resolution deferred to task 3477/3558.
+        reify_syntax::TypeExprKind::Auto { .. } => {
+            diagnostics.push(
+                Diagnostic::error(format!("unresolved field type: {}", field_def.domain_type))
+                    .with_code(DiagnosticCode::UnresolvedType)
+                    .with_label(DiagnosticLabel::new(
+                        field_def.domain_type.span,
+                        "auto type-arg not allowed in this position",
                     )),
             );
             Type::Real
@@ -250,6 +325,7 @@ pub(crate) fn compile_field(
                     "unresolved field type: {}",
                     field_def.codomain_type
                 ))
+                .with_code(DiagnosticCode::UnresolvedType)
                 .with_label(DiagnosticLabel::new(
                     field_def.codomain_type.span,
                     "unexpected dimensional expression",
@@ -263,9 +339,25 @@ pub(crate) fn compile_field(
                     "unresolved field type: {}",
                     field_def.codomain_type
                 ))
+                .with_code(DiagnosticCode::UnresolvedType)
                 .with_label(DiagnosticLabel::new(
                     field_def.codomain_type.span,
                     "integer literal not allowed in this position",
+                )),
+            );
+            Type::Real
+        }
+        // Auto type-args cannot appear as a field codomain type; resolution deferred to task 3477/3558.
+        reify_syntax::TypeExprKind::Auto { .. } => {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "unresolved field type: {}",
+                    field_def.codomain_type
+                ))
+                .with_code(DiagnosticCode::UnresolvedType)
+                .with_label(DiagnosticLabel::new(
+                    field_def.codomain_type.span,
+                    "auto type-arg not allowed in this position",
                 )),
             );
             Type::Real

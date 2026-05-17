@@ -74,10 +74,10 @@ Graph-walk invariant (Q-F-6) is **not** an explicit dependency-DAG walk in slice
 
 **Invariant:** For every public symbol introduced by a `done` task's `metadata.files` diff, at least one of:
 - a non-test caller exists in the workspace (jcodemunch `find_references` filtered to non-`*/tests/*` paths), OR
-- a `pending`/`in-progress` task with `consumer_ref` referencing the producing PRD exists in fused-memory, OR
+- a `pending`, `in-progress`, or `review` task with `consumer_ref` referencing the producing PRD exists in fused-memory, OR
 - the symbol carries `#[allow(dead_code)]` or `#[cfg(test)]`.
 
-**Detector:** `get_changed_symbols(branch=main, since=<task done timestamp>)` → for each new pub symbol, `find_references` → filter to non-test → check task-graph for downstream consumer.
+**Detector:** `get_changed_symbols(branch=ctx.producer_branch.unwrap_or("main"), since=<task done timestamp>)` → for each new pub symbol, `find_references(symbol)` (scoped to the symbol's declaring file to avoid same-name conflation) → filter to non-test → check task-graph for downstream consumer.
 
 **False-positive guards:**
 - Grace window: producer-orphan flagged only if **>14 days** have passed since done-flip with no consumer landing AND no consumer task pending. Inside the window: log only (low severity).
@@ -247,10 +247,46 @@ If the pre-done hook returns Err, `set_task_status` raises an exception; the orc
 
 | ID | Description | Who lands it | Blocking? |
 |---|---|---|---|
-| D-1 | dark-factory: pre-write validator hook on `set_task_status(done)` in fused-memory MCP. Configurable per-project via env var / config: `REIFY_AUDIT_PREDONE_CMD=reify-audit --task {id} --pre-done`. On exit-code ≠ 0, the MCP call raises and the done-flip is refused. | dark-factory side; implement session queues the task. | **Non-blocking for slice 1 of F-infra.** Slice-1 detector + CLI + skill ship without it; pre-done gating activates when D-1 lands. |
+| D-1 | dark-factory: pre-write validator hook on `set_task_status(done)` in fused-memory MCP. Configurable per-project via env var: `FUSED_MEMORY_PREDONE_HOOK_REIFY=/home/leo/.cargo/bin/reify-audit --task {id} --pre-done`. On exit-code ≠ 0, the MCP call raises and the done-flip is refused. Landed upstream as `fused_memory.middleware.pre_done_hook`. | dark-factory side; implement session queues the task. | **Done 2026-05-16:** D-1 shipped upstream; activated on Reify host via T-8. Subsequently rewired 2026-05-16+ to flow through `scripts/reify-audit-predone-wrapper.sh` (task 3731) after the Taskmaster removal (2026-05-12) left the CLI's dead default pointing at a non-existent path. |
+| T-8 | Reify-side activation: set `Environment=FUSED_MEMORY_PREDONE_HOOK_REIFY=/home/leo/src/reify/scripts/reify-audit-predone-wrapper.sh --task {id} --pre-done` in `/home/leo/.config/systemd/user/fused-memory.service`; reload + restart fused-memory; verify via `bash scripts/smoke-predone-hook.sh`. Hook invocation flows through `scripts/reify-audit-predone-wrapper.sh`, which materializes a TaskMetadata snapshot from `mcp__fused-memory__get_tasks` before invoking `reify-audit --tasks-file <tempfile>`. | Reify side; this task (3675); rewired by task 3731. | **Done 2026-05-16.** Operator action required: rewire systemd env var to wrapper path (see §11.1). |
 | D-2 | jcodemunch repo index reasonably fresh (≤24h). F's invocation triggers `mcp__jcodemunch__index_repo` if stale. | F itself manages this. | Non-blocking. |
 | D-3 | Confirm `runs.db` schema (task_results, events tables) stable enough to pin SQL queries. | Verify during implementation. | Non-blocking; SQL embedded in T-1. |
 | D-4 | `/prd`-decomposed tasks already carry consumer_ref / user_observable_signal / grammar_confirmed. | Already shipped (per `procedural_prd_skill.md`). | Done. |
+
+### 11.1 Activation status (2026-05-16; updated post-task-3731)
+
+The pre-done gating loop is **active** on the Reify host as of 2026-05-16 (F-infra T-8, task 3675). The hook command was subsequently rewired to flow through a snapshot-materializer wrapper (task 3731, 2026-05-16+) after the Taskmaster removal (2026-05-12) left the direct binary invocation pointing at a non-existent default path.
+
+- **Systemd unit:** `/home/leo/.config/systemd/user/fused-memory.service`
+- **Env var:** `FUSED_MEMORY_PREDONE_HOOK_REIFY=/home/leo/src/reify/scripts/reify-audit-predone-wrapper.sh --task {id} --pre-done`
+- **Wrapper (snapshot + invoke):** `/home/leo/src/reify/scripts/reify-audit-predone-wrapper.sh` — materializes a TaskMetadata JSON snapshot from `mcp__fused-memory__get_tasks`, then invokes `reify-audit` with `--tasks-file <tempfile>` (snapshot cleaned up on EXIT). → uses `scripts/reify-audit-snapshot-filter.jq`; see §11.2 for the `done_at` proxy rationale.
+- **Binary:** `/home/leo/.cargo/bin/reify-audit` (invoked by wrapper; installed via `cargo install --path crates/reify-audit --root ~/.cargo --force`). The binary requires an explicit `--tasks-file`; there is no default path (removed in task 3731 after the Taskmaster deletion made the old default non-existent).
+- **Smoke test:** `bash scripts/smoke-predone-hook.sh` (exits 0 when wiring AND wrapper round-trip both succeed; assertion 4 catches re-introduction of the dead default).
+- **Reload command:** `systemctl --user daemon-reload && systemctl --user restart fused-memory`
+- **Operator action required:** rewire the systemd `Environment=` line to point at the wrapper: `Environment=FUSED_MEMORY_PREDONE_HOOK_REIFY=/home/leo/src/reify/scripts/reify-audit-predone-wrapper.sh --task {id} --pre-done`. Then reload and verify via `bash scripts/smoke-predone-hook.sh`.
+- **Procedural memory:** entry keyed `FUSED_MEMORY_PREDONE_HOOK_REIFY systemd activation` in fused-memory memory store
+
+#### 11.1.1 Why the snapshot wrapper? (task 3731)
+
+The `reify-audit` binary is a pure-logic library (no MCP client, no scheduler). Before task 3731, the CLI defaulted `--tasks-file` to `.taskmaster/tasks/tasks.json`, which was deleted in commit `1402b46c63` (Taskmaster removal, 2026-05-12). Any invocation without an explicit `--tasks-file` silently exited 125 ("infrastructure error") and blocked done-flips. The fix makes `--tasks-file` required (no default) and concentrates fused-memory coupling at the wrapper boundary: the wrapper materializes a fresh TaskMetadata snapshot via `mcp__fused-memory__get_tasks` before each invocation, keeping the audit crate dependency-free. See design decisions in `.task/plan.json` for the rationale for Option 1 over Options 2 (new `--from-fused-memory` flag) and 3 (auto-write snapshot on state change).
+
+### 11.2 Snapshot filter and the `updatedAt`→`done_at` proxy
+
+`scripts/reify-audit-predone-wrapper.sh` and the `/audit` skill both materialize their TaskMetadata snapshots through a single canonical jq filter at `scripts/reify-audit-snapshot-filter.jq`. The filter takes a fused-memory `tools/call get_tasks` JSON-RPC response on stdin and emits a JSON array of TaskMetadata-shaped objects (matching `crates/reify-audit/src/lib.rs:127-158`).
+
+**The `done_at` derivation.** Fused-memory MCP does NOT currently expose an explicit done-flip timestamp on its task records (probed 2026-05-16; only `updatedAt` is available). P1's orphan-export grace window (see §5 P1) compares `ctx.now - done_at` against 14 days — so without a `done_at` value P1 silently skips every done task and becomes a no-op (this was the reviewer-blocking bug uncovered in task 3731 review cycle 1).
+
+The filter uses `updatedAt` as a proxy: for tasks with `status=="done"`, it parses the ISO-8601 string (stripping the `.NNN` millisecond suffix that jq 1.7's `fromdateiso8601` rejects) and emits epoch-seconds. For non-done tasks `done_at` is always `null` (P1 skips them by status anyway — see `p1_producer_orphan.rs:79`).
+
+Priority rule: the filter checks `.metadata.done_at` first (via jq `//` fallback). If fused-memory ever exposes an explicit done-flip timestamp on the task record, the filter picks it up automatically and the `updatedAt` fallback becomes unreachable. This makes the filter forward-compatible without requiring a code change.
+
+**Approximation skew.** `updatedAt` is "when the task record was last written," which equals the done-flip time only when nothing further has been written to that task (status, metadata, etc.) after the flip. In practice this is true for most done tasks; the typical skew is hours-to-days, well inside P1's 14-day grace window.
+
+**Loud-fail mode.** The wrapper post-checks the snapshot for any task with `status=="done"` and `done_at==null` (rows where the fallback also failed, e.g. legacy entries with no `updatedAt`) and emits a WARNING line to stderr listing the affected task ids. The wrapper does NOT block in this case — the warning is observability, not gating — so legacy data flows through but the silent-skip mode of the original bug is no longer reachable.
+
+**Single point of truth.** The filter is referenced from both the wrapper and the audit-skill references (`references/cli-invocation.md` §2, `references/modes.md` §§1-4). This prevents copy-paste drift: fixing the filter in one place fixes all consumers. The regression-guard assertion (5e) in `tests/infra/test_reify_audit_predone_wrapper.sh` ensures the wrapper continues referencing the sidecar rather than an inlined copy.
+
+**Follow-up action (upstream fused-memory).** A future enhancement to the fused-memory task store can stamp an explicit `metadata.done_at` field at the moment a task flips to `status=="done"`, reading from the existing `TaskInterceptor` reconciliation event stream. Once that field is exposed by `get_tasks`, the filter's `.metadata.done_at //` precedence picks it up automatically and the `updatedAt` fallback can be deleted. Action item logged via memory (`add_memory` category `procedural_knowledge`, keyed "fused-memory done_at proxy"). Track on the Reify side until upstream lands.
 
 ## 12. Implementation cost budget
 

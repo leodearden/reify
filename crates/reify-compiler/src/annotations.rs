@@ -1,5 +1,7 @@
 use super::*;
 
+pub(crate) mod schema;
+
 /// Lower parsed syntax annotations to compiled annotation types.
 pub(crate) fn lower_annotations(
     parsed: &[reify_syntax::Annotation],
@@ -59,197 +61,16 @@ pub(crate) fn lower_annotations(
 
 /// Validate annotations against known annotation rules and context.
 ///
-/// Known annotations and their valid contexts:
-/// - `@test`: valid on structure, occurrence, function, constraint_def
-/// - `@optimized`: valid on structure, occurrence, constraint_def
-/// - `@solver_hint`: valid on structure, occurrence
-/// - `@shell`: valid on structure, occurrence (zero or one numeric thickness arg)
-/// - `@solid`: valid on structure, occurrence (bare marker — no args)
-/// - `@deprecated`: valid on any context
+/// Dispatches to [`schema::validate_via_schema`], which consults the
+/// `schema::ANNOTATION_REGISTRY` for the authoritative per-annotation
+/// valid-context lists and arg-shape rules. See
+/// `crates/reify-compiler/src/annotations/schema.rs` for the full listing.
 pub(crate) fn validate_annotations(
     annotations: &[reify_types::Annotation],
     context: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    for ann in annotations {
-        match ann.name.as_str() {
-            reify_types::DEPRECATED_ANNOTATION => {
-                // Valid on any context — no warning.
-            }
-            reify_types::TEST_ANNOTATION => {
-                if !matches!(
-                    context,
-                    "structure" | "occurrence" | "function" | "constraint_def"
-                ) {
-                    diagnostics.push(
-                        Diagnostic::warning(format!(
-                            "annotation @test is not valid on {context} declarations"
-                        ))
-                        .with_label(DiagnosticLabel::new(ann.span, "@test")),
-                    );
-                }
-            }
-            reify_types::OPTIMIZED_ANNOTATION => {
-                // @optimized is accepted on structure, occurrence, constraint_def,
-                // and function contexts. The optimized_target string is consumed
-                // in two contexts:
-                //   - constraint_def: entity.rs reads it when lowering a
-                //     ConstraintDef to a CompiledConstraint (via
-                //     CompiledConstraint::optimized_target).
-                //   - function: compile_function reads it into
-                //     CompiledFunction::optimized_target (task 3377).
-                // Structure/occurrence remain in the allow-list to avoid a
-                // breaking change; a follow-up may add a distinct
-                // 'annotation has no effect here' warning or remove them entirely.
-                if !matches!(
-                    context,
-                    "structure" | "occurrence" | "constraint_def" | "function"
-                ) {
-                    diagnostics.push(
-                        Diagnostic::warning(format!(
-                            "annotation @optimized is not valid on {context} declarations"
-                        ))
-                        .with_label(DiagnosticLabel::new(ann.span, "@optimized")),
-                    );
-                } else if matches!(context, "constraint_def" | "function")
-                    && !is_valid_optimized(ann)
-                {
-                    // @optimized without a string-literal target on a constraint_def or
-                    // function silently routes to the language-level checker, which
-                    // confuses users who think they wired up an optimized impl. Warn
-                    // explicitly in both contexts since the target is consumed by:
-                    //   - constraint_def: entity.rs → CompiledConstraint::optimized_target
-                    //   - function: compile_function → CompiledFunction::optimized_target
-                    // On structure/occurrence contexts the annotation is stored but nothing
-                    // downstream reads the target string, so warning there would tell the
-                    // user to add a string that nothing uses.
-                    diagnostics.push(
-                        Diagnostic::warning(
-                            "annotation @optimized requires a string literal target, e.g. @optimized(\"kernel::foo\")"
-                                .to_string(),
-                        )
-                        .with_label(DiagnosticLabel::new(ann.span, "@optimized missing target")),
-                    );
-                }
-            }
-            reify_types::SOLVER_HINT_ANNOTATION => {
-                if !matches!(context, "structure" | "occurrence" | "param" | "let") {
-                    diagnostics.push(
-                        Diagnostic::warning(format!(
-                            "annotation @solver_hint is not valid on {context} declarations"
-                        ))
-                        .with_label(DiagnosticLabel::new(ann.span, "@solver_hint")),
-                    );
-                }
-            }
-            reify_types::SHELL_ANNOTATION => {
-                if !matches!(context, "structure" | "occurrence") {
-                    diagnostics.push(
-                        Diagnostic::warning(format!(
-                            "annotation @shell is not valid on {context} declarations"
-                        ))
-                        .with_label(DiagnosticLabel::new(ann.span, "@shell")),
-                    );
-                } else {
-                    // Argument shape check. The annotation accepts zero or one
-                    // positional thickness arg; when omitted, T18's
-                    // auto-classification dispatcher is expected to derive
-                    // thickness from medial-axis analysis (not yet implemented).
-                    match ann.args.as_slice() {
-                        [] => {} // bare @shell — defer thickness to medial analysis.
-                        [
-                            reify_types::AnnotationArg::Int(_)
-                            | reify_types::AnnotationArg::Real(_),
-                        ] => {}
-                        [_] => {
-                            diagnostics.push(
-                                Diagnostic::warning(
-                                    "@shell thickness argument must be a numeric literal, \
-                                     e.g. @shell(0.5)"
-                                        .to_string(),
-                                )
-                                .with_label(DiagnosticLabel::new(
-                                    ann.span,
-                                    "non-numeric thickness",
-                                )),
-                            );
-                        }
-                        _ => {
-                            diagnostics.push(
-                                Diagnostic::warning(
-                                    "@shell accepts at most one argument (thickness); \
-                                     extra arguments will be ignored"
-                                        .to_string(),
-                                )
-                                .with_label(DiagnosticLabel::new(ann.span, "too many arguments")),
-                            );
-                        }
-                    }
-                }
-            }
-            reify_types::SOLID_ANNOTATION => {
-                if !matches!(context, "structure" | "occurrence") {
-                    diagnostics.push(
-                        Diagnostic::warning(format!(
-                            "annotation @solid is not valid on {context} declarations"
-                        ))
-                        .with_label(DiagnosticLabel::new(ann.span, "@solid")),
-                    );
-                } else if !ann.args.is_empty() {
-                    diagnostics.push(
-                        Diagnostic::warning(
-                            "@solid takes no arguments; force-tet is unconditional".to_string(),
-                        )
-                        .with_label(DiagnosticLabel::new(ann.span, "@solid takes no arguments")),
-                    );
-                }
-            }
-            other => {
-                diagnostics.push(
-                    Diagnostic::warning(format!("unknown annotation @{other}"))
-                        .with_label(DiagnosticLabel::new(ann.span, "unknown annotation")),
-                );
-            }
-        }
-    }
-
-    // Duplicate-annotation checks. These apply in constraint_def and function
-    // contexts because both have downstream consumers of `optimized_target`
-    // (CompiledConstraint::optimized_target and CompiledFunction::optimized_target
-    // respectively). On structure/occurrence contexts, multiple @optimized
-    // annotations have no consumer downstream, so warning that one "shadows"
-    // another would be misleading — there is nothing being shadowed.
-    //
-    // In both consuming contexts, `optimized_target` uses first-valid-wins
-    // semantics: it skips malformed @optimized entries (those without a
-    // string-literal arg) and returns the first well-formed one. Warn on every
-    // *valid* @optimized past the first valid one so the user knows their
-    // shadowed entry is ignored:
-    //   @optimized("new_target")
-    //   @optimized("legacy_target")   // ← valid but shadowed; warn here
-    //
-    // Malformed entries are intentionally excluded from the "seen" count.
-    // They already generate a separate missing-target warning, and counting
-    // them here would produce contradictory diagnostics: e.g. warning that
-    // annotation #1 is malformed and then warning that annotation #2 is
-    // shadowed by annotation #1.
-    if matches!(context, "constraint_def" | "function") {
-        let mut seen_valid_optimized = false;
-        for ann in annotations {
-            if is_valid_optimized(ann) {
-                if seen_valid_optimized {
-                    diagnostics.push(
-                        Diagnostic::warning(
-                            "multiple @optimized annotations on the same declaration — only the first well-formed one is used"
-                                .to_string(),
-                        )
-                        .with_label(DiagnosticLabel::new(ann.span, "duplicate @optimized")),
-                    );
-                }
-                seen_valid_optimized = true;
-            }
-        }
-    }
+    schema::validate_via_schema(annotations, context, diagnostics);
 }
 
 /// Return `true` if `ann` is a well-formed `@optimized("target")` annotation —
@@ -362,6 +183,27 @@ pub(crate) fn deprecation_message(annotations: &[reify_types::Annotation]) -> Op
         }
     }
     None
+}
+
+/// Extract the structure-def version from a compiled annotation list.
+///
+/// Returns the integer argument of the first well-formed `@version(N)`
+/// annotation (with `N >= 1`), or `1` when `@version` is absent or malformed.
+/// Malformed `@version` annotations are separately diagnosed by
+/// [`validate_annotations`] (`E_VERSION_ARG_TYPE_MISMATCH`); this reader is
+/// deliberately total — it never panics and always yields a usable version —
+/// so the structure registry can be populated unconditionally even in the
+/// presence of a (already-diagnosed) malformed annotation.
+pub(crate) fn annotation_version(annotations: &[reify_types::Annotation]) -> u32 {
+    for ann in annotations {
+        if ann.name == "version"
+            && let Some(reify_types::AnnotationArg::Int(n)) = ann.args.first()
+            && *n >= 1
+        {
+            return *n as u32;
+        }
+    }
+    1
 }
 
 /// Extract the optimization target from a parsed annotation list.
@@ -498,6 +340,7 @@ pub(crate) fn validate_solver_hint_collections(
         if scope.resolve(name).is_none() && !functions.iter().any(|f| f.name == *name) {
             diagnostics.push(
                 Diagnostic::error(format!("unresolved name: {}", name))
+                    .with_code(DiagnosticCode::UnresolvedName)
                     .with_label(DiagnosticLabel::new(hint.span, "not found in scope")),
             );
         }
@@ -680,84 +523,6 @@ mod tests {
         );
     }
 
-    // ── @shell annotation tests ──────────────────────────────────────────────
-
-    /// Bare `@shell` and `@shell(numeric)` on entity contexts (structure,
-    /// occurrence) validate without diagnostics. Bare form defers thickness
-    /// to T18's medial-axis fallback; numeric form supplies it explicitly.
-    #[test]
-    fn shell_valid_arg_shapes_on_entity_contexts() {
-        let cases = [
-            (vec![], "structure"),
-            (vec![reify_types::AnnotationArg::Real(0.5)], "structure"),
-            (vec![reify_types::AnnotationArg::Int(2)], "occurrence"),
-        ];
-        for (args, context) in cases {
-            let anns = vec![ann(reify_types::SHELL_ANNOTATION, args)];
-            let mut diagnostics = Vec::new();
-            validate_annotations(&anns, context, &mut diagnostics);
-            assert!(
-                diagnostics.is_empty(),
-                "context={context} produced unexpected diagnostics: {:?}",
-                diagnostics
-            );
-        }
-    }
-
-    /// `@shell` on a non-entity context (e.g. function) emits a context warning.
-    #[test]
-    fn shell_on_function_context_warns() {
-        let anns = vec![ann(reify_types::SHELL_ANNOTATION, vec![])];
-        let mut diagnostics = Vec::new();
-        validate_annotations(&anns, "function", &mut diagnostics);
-        assert_eq!(diagnostics.len(), 1);
-        assert!(
-            diagnostics[0]
-                .message
-                .contains("@shell is not valid on function"),
-            "unexpected message: {}",
-            diagnostics[0].message
-        );
-    }
-
-    /// `@shell("foo")` — non-numeric thickness — emits a single warning
-    /// pointing at the numeric-literal requirement.
-    #[test]
-    fn shell_non_numeric_thickness_warns() {
-        let anns = vec![ann(
-            reify_types::SHELL_ANNOTATION,
-            vec![reify_types::AnnotationArg::String("thick".to_string())],
-        )];
-        let mut diagnostics = Vec::new();
-        validate_annotations(&anns, "structure", &mut diagnostics);
-        assert_eq!(diagnostics.len(), 1);
-        assert!(
-            diagnostics[0].message.contains("numeric literal"),
-            "unexpected message: {}",
-            diagnostics[0].message
-        );
-    }
-
-    /// `@shell(0.5, 0.6)` — extra args — emits a single "too many" warning.
-    #[test]
-    fn shell_extra_args_warn() {
-        let anns = vec![ann(
-            reify_types::SHELL_ANNOTATION,
-            vec![
-                reify_types::AnnotationArg::Real(0.5),
-                reify_types::AnnotationArg::Real(0.6),
-            ],
-        )];
-        let mut diagnostics = Vec::new();
-        validate_annotations(&anns, "structure", &mut diagnostics);
-        assert_eq!(diagnostics.len(), 1);
-        assert!(
-            diagnostics[0].message.contains("at most one argument"),
-            "unexpected message: {}",
-            diagnostics[0].message
-        );
-    }
-
     /// An unresolvable discrete_set collection name emits an Error diagnostic.
     #[test]
     fn validate_collections_errors_on_unresolvable_name() {
@@ -892,5 +657,132 @@ mod tests {
                 diagnostics[0].message
             );
         }
+    }
+
+    // ── @version annotation tests (task 3540, step-13) ───────────────────────
+
+    /// Build a parsed `reify_syntax::Annotation` for `lower_annotations` tests.
+    fn syn_ann(name: &str, args: Vec<reify_syntax::Expr>) -> reify_syntax::Annotation {
+        reify_syntax::Annotation {
+            name: name.to_string(),
+            args,
+            span: reify_types::SourceSpan::empty(0),
+        }
+    }
+
+    /// Build a parsed integer-form numeric-literal expression.
+    fn syn_int(value: i64) -> reify_syntax::Expr {
+        reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::NumberLiteral {
+                value: value as f64,
+                is_real: false,
+            },
+            span: reify_types::SourceSpan::empty(0),
+        }
+    }
+
+    /// (a) `@version(2)` lowers to a single `AnnotationArg::Int(2)` under the
+    /// `"version"` name — exercises the generic literal-lowering path applied
+    /// to the new annotation name (no special lowering branch needed).
+    #[test]
+    fn version_annotation_lowers_int_arg() {
+        let parsed = vec![syn_ann("version", vec![syn_int(2)])];
+        let mut diagnostics = Vec::new();
+        let lowered = lower_annotations(&parsed, &mut diagnostics);
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            diagnostics
+        );
+        assert_eq!(lowered.len(), 1);
+        assert_eq!(lowered[0].name, "version");
+        assert_eq!(
+            lowered[0].args,
+            vec![reify_types::AnnotationArg::Int(2)]
+        );
+    }
+
+    /// (b) `@version("foo")` on a `structure` declaration is rejected with an
+    /// Error diagnostic whose message carries the `E_VERSION_ARG_TYPE_MISMATCH`
+    /// mnemonic. The annotations layer is message-coded (no `DiagnosticCode`
+    /// is attached anywhere in `validate_annotations`), so the mnemonic travels
+    /// in the message text.
+    #[test]
+    fn version_annotation_string_arg_rejected_on_structure() {
+        let anns = vec![ann(
+            "version",
+            vec![reify_types::AnnotationArg::String("foo".to_string())],
+        )];
+        let mut diagnostics = Vec::new();
+        validate_annotations(&anns, "structure", &mut diagnostics);
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly 1 diagnostic, got: {:?}",
+            diagnostics
+        );
+        assert_eq!(diagnostics[0].severity, reify_types::Severity::Error);
+        assert!(
+            diagnostics[0]
+                .message
+                .contains("E_VERSION_ARG_TYPE_MISMATCH"),
+            "unexpected message: {}",
+            diagnostics[0].message
+        );
+    }
+
+    /// (c) `@version(2)` on a non-structure_def context (e.g. `function`) emits
+    /// a `W_VERSION_ANNOTATION_NOT_ON_STRUCTURE_DEF` warning rather than the
+    /// generic unknown-annotation fallback.
+    #[test]
+    fn version_annotation_warns_on_non_structure_context() {
+        for context in ["function", "occurrence", "trait", "purpose"] {
+            let anns = vec![ann("version", vec![reify_types::AnnotationArg::Int(2)])];
+            let mut diagnostics = Vec::new();
+            validate_annotations(&anns, context, &mut diagnostics);
+            assert_eq!(
+                diagnostics.len(),
+                1,
+                "context={context}: expected exactly 1 diagnostic, got: {:?}",
+                diagnostics
+            );
+            assert_eq!(diagnostics[0].severity, reify_types::Severity::Warning);
+            assert!(
+                diagnostics[0]
+                    .message
+                    .contains("W_VERSION_ANNOTATION_NOT_ON_STRUCTURE_DEF"),
+                "context={context}: unexpected message: {}",
+                diagnostics[0].message
+            );
+        }
+    }
+
+    /// (c') A valid `@version(3)` on a `structure` context is accepted with no
+    /// diagnostic — pins that the structure-def special-case does not widen to
+    /// a warning.
+    #[test]
+    fn version_annotation_valid_on_structure_is_clean() {
+        let anns = vec![ann("version", vec![reify_types::AnnotationArg::Int(3)])];
+        let mut diagnostics = Vec::new();
+        validate_annotations(&anns, "structure", &mut diagnostics);
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            diagnostics
+        );
+    }
+
+    /// (d) Absent `@version` ⇒ default version `1`; a well-formed `@version(N)`
+    /// ⇒ `N`; a malformed arg falls back to the default rather than panicking.
+    #[test]
+    fn annotation_version_defaults_to_one_and_reads_int() {
+        assert_eq!(annotation_version(&[]), 1);
+        let v3 = vec![ann("version", vec![reify_types::AnnotationArg::Int(3)])];
+        assert_eq!(annotation_version(&v3), 3);
+        let bad = vec![ann(
+            "version",
+            vec![reify_types::AnnotationArg::String("x".to_string())],
+        )];
+        assert_eq!(annotation_version(&bad), 1);
     }
 }

@@ -68,19 +68,11 @@ mod tests {
     /// time — exactly what downstream crates (T-4 CLI) need from a stable API.
     #[test]
     fn api_surface_pin() {
-        // Pattern: all THREE variants must be reachable; the exhaustive
-        // `match` forces a test update on any future enum extension.
-        for p in [
-            Pattern::P5PhantomDone,
-            Pattern::P2ConsumerStub,
-            Pattern::P1ProducerOrphan,
-        ] {
-            match p {
-                Pattern::P5PhantomDone => {}
-                Pattern::P2ConsumerStub => {}
-                Pattern::P1ProducerOrphan => {}
-            }
-        }
+        // Pattern: spot-check that P1ProducerOrphan is accessible from this crate.
+        // The exhaustive all-variants match lives in tests/p5.rs::api_surface_pin
+        // (the canonical home) so future variant additions only require updating
+        // one test file rather than two.
+        let _: Pattern = Pattern::P1ProducerOrphan;
 
         // ChangedSymbol / SymbolReference: destructure every field by name.
         let ChangedSymbol {
@@ -134,6 +126,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: None,
+            producer_branch: None,
         };
 
         // Default-empty mock → no changed symbols → no findings.
@@ -168,7 +161,7 @@ mod tests {
             done_at,
             vec![changed_symbol("new_widget", "crates/reify-x/src/widget.rs")],
         );
-        jc.set_find_references("new_widget", vec![]);
+        jc.set_find_references("crates/reify-x/src/widget.rs", "new_widget", vec![]);
 
         let mut task_metadata = HashMap::new();
         task_metadata.insert(
@@ -185,6 +178,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: Some(NOW),
+            producer_branch: None,
         };
 
         let findings = p1_producer_orphan::check(&ctx);
@@ -235,6 +229,7 @@ mod tests {
         );
         // Real non-test caller → new_widget suppressed.
         jc.set_find_references(
+            "crates/reify-x/src/widget.rs",
             "new_widget",
             vec![SymbolReference {
                 file: "crates/reify-y/src/uses_widget.rs".to_string(),
@@ -243,6 +238,7 @@ mod tests {
         );
         // Only a test-path caller → test_only_widget still flagged.
         jc.set_find_references(
+            "crates/reify-x/src/other.rs",
             "test_only_widget",
             vec![SymbolReference {
                 file: "crates/reify-y/tests/it.rs".to_string(),
@@ -265,6 +261,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: Some(NOW),
+            producer_branch: None,
         };
 
         let findings = p1_producer_orphan::check(&ctx);
@@ -310,7 +307,7 @@ mod tests {
             done_at,
             vec![changed_symbol("fresh_widget", "crates/reify-x/src/fresh.rs")],
         );
-        jc.set_find_references("fresh_widget", vec![]);
+        jc.set_find_references("crates/reify-x/src/fresh.rs", "fresh_widget", vec![]);
 
         let mut task_metadata = HashMap::new();
         task_metadata.insert(
@@ -327,6 +324,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: Some(NOW),
+            producer_branch: None,
         };
 
         let findings = p1_producer_orphan::check(&ctx);
@@ -372,7 +370,7 @@ mod tests {
                 "crates/reify-x/src/scaffold.rs",
             )],
         );
-        jc.set_find_references("scaffold_widget", vec![]);
+        jc.set_find_references("crates/reify-x/src/scaffold.rs", "scaffold_widget", vec![]);
 
         // (a) Foundation task → suppressed.
         let mut tm_foundation = HashMap::new();
@@ -392,6 +390,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: Some(NOW),
+            producer_branch: None,
         };
         let findings_a = p1_producer_orphan::check(&ctx_a);
         assert!(
@@ -429,6 +428,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: Some(NOW),
+            producer_branch: None,
         };
         let findings_b = p1_producer_orphan::check(&ctx_b);
         assert!(
@@ -467,8 +467,8 @@ mod tests {
                 },
             ],
         );
-        jc.set_find_references("marked_widget", vec![]);
-        jc.set_find_references("blank_marked_widget", vec![]);
+        jc.set_find_references("crates/reify-x/src/marked.rs", "marked_widget", vec![]);
+        jc.set_find_references("crates/reify-x/src/blank.rs", "blank_marked_widget", vec![]);
 
         let mut task_metadata = HashMap::new();
         task_metadata.insert(
@@ -485,6 +485,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: Some(NOW),
+            producer_branch: None,
         };
 
         let findings = p1_producer_orphan::check(&ctx);
@@ -550,9 +551,10 @@ mod tests {
                 changed_symbol("live_widget", "crates/reify-x/src/live.rs"),
             ],
         );
-        for name in ["stdlib_widget", "dead_widget", "cfg_test_widget", "live_widget"] {
-            jc.set_find_references(name, vec![]);
-        }
+        jc.set_find_references("crates/reify-stdlib/src/prelude.rs", "stdlib_widget", vec![]);
+        jc.set_find_references("crates/reify-x/src/dead.rs", "dead_widget", vec![]);
+        jc.set_find_references("crates/reify-x/src/cfgt.rs", "cfg_test_widget", vec![]);
+        jc.set_find_references("crates/reify-x/src/live.rs", "live_widget", vec![]);
 
         let mut task_metadata = HashMap::new();
         task_metadata.insert(
@@ -569,6 +571,7 @@ mod tests {
             target_task_id: None,
             window: None,
             now: Some(NOW),
+            producer_branch: None,
         };
 
         let findings = p1_producer_orphan::check(&ctx);
@@ -615,7 +618,7 @@ mod tests {
             let done_at = NOW - age;
             let mut jc = MockJCodemunchOps::new();
             jc.set_changed_symbols("main", done_at, vec![changed_symbol(name, file)]);
-            jc.set_find_references(name, vec![]);
+            jc.set_find_references(file, name, vec![]);
 
             let mut task_metadata = HashMap::new();
             task_metadata.insert(name.to_string(), done_meta(name, done_at, Some("docs/x.md")));
@@ -629,6 +632,7 @@ mod tests {
                 target_task_id: None,
                 window: None,
                 now: Some(NOW),
+                producer_branch: None,
             };
 
             let findings = p1_producer_orphan::check(&ctx);
@@ -645,6 +649,377 @@ mod tests {
                 name, age, WINDOW, expected, findings[0].severity
             );
         }
+    }
+
+    /// Step 5 (RED→GREEN via step 6) — P1 reads the branch from
+    /// `AuditContext.producer_branch`, defaulting to `"main"` when `None`.
+    ///
+    /// Control leg: symbols registered under `"release/v0.2"` only, with
+    /// `producer_branch: None` → P1 queries `"main"` → no symbols found → 0
+    /// findings.
+    ///
+    /// Override leg: same symbols, with `producer_branch:
+    /// Some("release/v0.2")` → P1 queries `"release/v0.2"` → orphan found →
+    /// exactly 1 Medium finding.
+    ///
+    /// RED: `AuditContext` lacks the `producer_branch` field → compile error.
+    #[test]
+    fn producer_branch_override_honored_by_p1() {
+        const BRANCH: &str = "release/v0.2";
+        let done_at = NOW - 15 * DAY;
+
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let mut jc = MockJCodemunchOps::new();
+        // Symbols registered ONLY under "release/v0.2", not under "main".
+        jc.set_changed_symbols(
+            BRANCH,
+            done_at,
+            vec![changed_symbol("branch_widget", "crates/reify-x/src/branch.rs")],
+        );
+        jc.set_find_references("crates/reify-x/src/branch.rs", "branch_widget", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "6000".to_string(),
+            done_meta("6000", done_at, Some("docs/x.md")),
+        );
+
+        // Control: producer_branch=None → defaults to "main" → no symbols → 0 findings.
+        let ctx_control = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata: task_metadata.clone(),
+            target_task_id: None,
+            window: None,
+            now: Some(NOW),
+            producer_branch: None,
+        };
+        let findings_control = p1_producer_orphan::check(&ctx_control);
+        assert!(
+            findings_control.is_empty(),
+            "producer_branch=None defaults to 'main'; no symbols on 'main' → 0 findings; got {:?}",
+            findings_control
+        );
+
+        // Override: producer_branch=Some("release/v0.2") → finds the orphan.
+        let ctx_override = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: Some(NOW),
+            producer_branch: Some(BRANCH.to_string()),
+        };
+        let findings_override = p1_producer_orphan::check(&ctx_override);
+        assert_eq!(
+            findings_override.len(),
+            1,
+            "producer_branch=Some(\"release/v0.2\") must find the orphan; got {:?}",
+            findings_override
+        );
+        assert_eq!(findings_override[0].severity, Severity::Medium);
+    }
+
+    /// Step 3 (RED→GREEN via step 4) — when `target_task_id` is set, P1
+    /// restricts scanning to that single task only (mirroring p2's guard).
+    ///
+    /// Two done orphan-candidate tasks (both 15 days past grace, zero refs),
+    /// each introducing their own symbol. AuditContext built with
+    /// `target_task_id: Some("task_A")`. Expected: exactly one finding, for
+    /// task_A only; task_B's symbol is not reported.
+    ///
+    /// RED: current `check()` ignores target_task_id and scans both tasks,
+    /// producing two findings.
+    #[test]
+    fn target_task_id_scopes_p1_to_one_task() {
+        // Give the two tasks distinct done_at values so the mock can return
+        // different symbol sets for each (the mock keys on (branch, since_epoch)).
+        let done_at_a = NOW - 15 * DAY;
+        let done_at_b = NOW - 16 * DAY;
+
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let mut jc = MockJCodemunchOps::new();
+        // task_A → widget_a (keyed by done_at_a).
+        jc.set_changed_symbols(
+            "main",
+            done_at_a,
+            vec![changed_symbol("widget_a", "crates/reify-x/src/a.rs")],
+        );
+        // task_B → widget_b (keyed by done_at_b).
+        jc.set_changed_symbols(
+            "main",
+            done_at_b,
+            vec![changed_symbol("widget_b", "crates/reify-x/src/b.rs")],
+        );
+        jc.set_find_references("crates/reify-x/src/a.rs", "widget_a", vec![]);
+        jc.set_find_references("crates/reify-x/src/b.rs", "widget_b", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "task_A".to_string(),
+            done_meta("task_A", done_at_a, Some("docs/a.md")),
+        );
+        task_metadata.insert(
+            "task_B".to_string(),
+            done_meta("task_B", done_at_b, Some("docs/b.md")),
+        );
+
+        // With target_task_id pointing at task_A, only task_A is scanned.
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: Some("task_A".to_string()),
+            window: None,
+            now: Some(NOW),
+            producer_branch: None,
+        };
+
+        let findings = p1_producer_orphan::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "with target_task_id=task_A, only task_A's orphan should fire; got {:?}",
+            findings
+        );
+        assert_eq!(
+            findings[0].task_id, "task_A",
+            "finding must belong to task_A, not task_B; got {:?}",
+            findings[0]
+        );
+    }
+
+    /// Step 1 (RED→GREEN via step 2) — a consumer task with status=`review`
+    /// whose `consumer_ref` matches the producer's `prd` must suppress the
+    /// orphan finding, just like `pending`/`in-progress` consumers do.
+    ///
+    /// One done producer (15 days past grace, prd="docs/x.md", zero refs) +
+    /// one `review`-status consumer task with `consumer_ref="docs/x.md"`.
+    /// Expected: zero P1 findings.
+    ///
+    /// RED: current `has_pending_consumer` only matches `"pending"` |
+    /// `"in-progress"`, so the `review` consumer is invisible and a finding fires.
+    #[test]
+    fn review_status_consumer_suppresses_finding() {
+        let done_at = NOW - 15 * DAY;
+
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let mut jc = MockJCodemunchOps::new();
+        jc.set_changed_symbols(
+            "main",
+            done_at,
+            vec![changed_symbol("review_widget", "crates/reify-x/src/review.rs")],
+        );
+        jc.set_find_references("crates/reify-x/src/review.rs", "review_widget", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        // The done producer.
+        task_metadata.insert(
+            "9100".to_string(),
+            done_meta("9100", done_at, Some("docs/x.md")),
+        );
+        // The in-review consumer: status="review", consumer_ref matches producer's prd.
+        task_metadata.insert(
+            "9101".to_string(),
+            TaskMetadata {
+                task_id: "9101".to_string(),
+                status: "review".to_string(),
+                files: vec![],
+                done_provenance: None,
+                title: "Consume the review widget".to_string(),
+                prd: None,
+                consumer_ref: Some("docs/x.md".to_string()),
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: Some(NOW),
+            producer_branch: None,
+        };
+
+        let findings = p1_producer_orphan::check(&ctx);
+        assert!(
+            findings.is_empty(),
+            "a review-status consumer task referencing the producer PRD must \
+             suppress the orphan; got {:?}",
+            findings
+        );
+    }
+
+    /// Step 7 (RED→GREEN via step 8) — `find_references` must disambiguate
+    /// by declaration site (file + name), not just by bare name.
+    ///
+    /// One done task introduces two symbols both named "Builder" in different
+    /// files: `crates/x/src/widget.rs` and `crates/y/src/widget.rs`. A single
+    /// non-test caller is registered ONLY for the `(crates/y/..., "Builder")`
+    /// pair. Expected: exactly one finding — for `crates/x/...` (no caller) —
+    /// and the finding's evidence cites `crates/x/src/widget.rs`.
+    ///
+    /// RED: current bare-name keying in the mock (`HashMap<String, ...>`)
+    /// means `set_find_references("Builder", refs)` covers BOTH symbols,
+    /// suppressing both — the detector fires zero findings instead of one.
+    #[test]
+    fn find_references_disambiguates_by_declaration_site() {
+        let done_at = NOW - 15 * DAY;
+
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let mut jc = MockJCodemunchOps::new();
+        jc.set_changed_symbols(
+            "main",
+            done_at,
+            vec![
+                // Same name, different declaration files.
+                changed_symbol("Builder", "crates/x/src/widget.rs"),
+                changed_symbol("Builder", "crates/y/src/widget.rs"),
+            ],
+        );
+        // Register a real non-test caller ONLY for crates/y/src/widget.rs's Builder.
+        // crates/x/src/widget.rs's Builder has no callers — should be flagged.
+        jc.set_find_references(
+            "crates/y/src/widget.rs",
+            "Builder",
+            vec![SymbolReference {
+                file: "crates/z/src/uses_builder.rs".to_string(),
+                line: 5,
+            }],
+        );
+        // crates/x/src/widget.rs's Builder: no callers registered → orphan.
+        jc.set_find_references("crates/x/src/widget.rs", "Builder", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "5000".to_string(),
+            done_meta("5000", done_at, Some("docs/x.md")),
+        );
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: Some(NOW),
+            producer_branch: None,
+        };
+
+        let findings = p1_producer_orphan::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "only crates/x/src/widget.rs Builder should be flagged \
+             (crates/y has a non-test caller); got {:?}",
+            findings
+        );
+        assert!(
+            findings[0].evidence.iter().any(|e| matches!(
+                e,
+                EvidenceRef::File { path } if path == "crates/x/src/widget.rs"
+            )),
+            "surviving finding must cite crates/x/src/widget.rs; got {:?}",
+            findings[0].evidence
+        );
+    }
+
+    /// Amendment (reviewer_comprehensive) — pins the subtle interaction
+    /// between `target_task_id` scoping and `has_pending_consumer` suppression.
+    ///
+    /// The `target_task_id` guard skips non-target entries in the *producer*
+    /// loop; `has_pending_consumer` independently scans the *full*
+    /// `task_metadata` map. These are two different traversals: the first
+    /// decides which producer tasks to audit; the second decides whether any
+    /// consumer task (regardless of its own task_id) is already in-flight.
+    ///
+    /// A future refactor that moves the scoping filter earlier — e.g.
+    /// pre-filtering `task_metadata` to `{ target }` before running check —
+    /// would hide the consumer task from `has_pending_consumer` and silently
+    /// break suppression. Neither `target_task_id_scopes_p1_to_one_task` (no
+    /// consumer tasks) nor `review_status_consumer_suppresses_finding` (no
+    /// target) exercises this cross-product; this test does.
+    ///
+    /// Setup: producer `"prod_1"` (done, 15 days past grace, prd="docs/p.md",
+    /// zero refs) + `"review"`-status consumer `"cons_1"` (consumer_ref=
+    /// "docs/p.md"). AuditContext has `target_task_id: Some("prod_1")`.
+    /// Expected: zero findings — the scoped sweep still suppresses because
+    /// `has_pending_consumer` scans the unfiltered metadata map.
+    #[test]
+    fn target_task_id_does_not_hide_consumer_from_suppression() {
+        let done_at = NOW - 15 * DAY;
+
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let mut jc = MockJCodemunchOps::new();
+        jc.set_changed_symbols(
+            "main",
+            done_at,
+            vec![changed_symbol("scoped_widget", "crates/reify-x/src/scoped.rs")],
+        );
+        jc.set_find_references("crates/reify-x/src/scoped.rs", "scoped_widget", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        // The target producer — done, past grace, zero refs, orphan candidate.
+        task_metadata.insert(
+            "prod_1".to_string(),
+            done_meta("prod_1", done_at, Some("docs/p.md")),
+        );
+        // A consumer whose task_id != target_task_id. The producer loop skips
+        // it (it is not a candidate producer), but has_pending_consumer must
+        // still discover it via ctx.task_metadata.values().
+        task_metadata.insert(
+            "cons_1".to_string(),
+            TaskMetadata {
+                task_id: "cons_1".to_string(),
+                status: "review".to_string(),
+                files: vec![],
+                done_provenance: None,
+                title: "Consume the scoped widget".to_string(),
+                prd: None,
+                consumer_ref: Some("docs/p.md".to_string()),
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: Some("prod_1".to_string()),
+            window: None,
+            now: Some(NOW),
+            producer_branch: None,
+        };
+
+        let findings = p1_producer_orphan::check(&ctx);
+        assert!(
+            findings.is_empty(),
+            "scoped sweep (target_task_id=prod_1) must still see the out-of-scope \
+             review consumer and suppress the orphan finding; got {:?}",
+            findings
+        );
     }
 }
 

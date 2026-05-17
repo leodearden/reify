@@ -84,9 +84,12 @@ reify gui-debug <file>                   Alias for `gui --debug`
 reify lsp                                Start language server (stdin/stdout)
 reify mcp-server [file] [--project-dir <dir>]   Start MCP server (stdin/stdout)
 reify doc    <file> [-o <path>]          Generate documentation
+reify cache  <subcmd>                    stats / clear / gc / export / import (FEA cache)
 reify --version                          Print version
 reify --help                             Show this list
 ```
+
+See [`docs/fea-cache.md`](docs/fea-cache.md) for the FEA cache surface (directory, env vars, distribution recipes).
 
 ## Repository layout
 

@@ -159,6 +159,33 @@ pub enum CompiledExprKind {
     /// `map_value_refs` which rebuilds via `cross_sub_geometry_ref` to preserve
     /// the variant on hash-rebuild.
     CrossSubGeometryRef(ValueCellId),
+    /// Compile-time structure-instance constructor (task 3540, SIR-α).
+    ///
+    /// Emitted by the compiler's `ExprKind::FunctionCall` lowering when the
+    /// callee name resolves to a `structure def` `TopologyTemplate` (taking
+    /// precedence over the stdlib `eval_builtin` path — design-decision-2).
+    /// The eval handler builds a `Value::StructureInstance { type_id,
+    /// type_name, version, fields }` with NO registry lookup (reify-expr
+    /// stays registry-free — design-decision-2).
+    ///
+    /// - `type_id`: a baked `StructureTypeId(0)` PLACEHOLDER. The compiler
+    ///   cannot know the per-Engine id; authoritative identity is
+    ///   `(type_name, version)` (esc-3540-173). Any site needing registry
+    ///   side-table access re-stamps the real id by name (esc-3540-177
+    ///   RULING 2) — that re-stamp is NOT on SIR-α's critical path.
+    /// - `version`: read from `template.version()` (the `@version(N)`
+    ///   accessor, esc-3540-176) at lowering time.
+    /// - `ordered_args`: positionally-bound supplied args, `(param_name,
+    ///   expr)` in the template's param declaration order.
+    /// - `defaults`: `(param_name, default_expr)` for params NOT covered by
+    ///   `ordered_args`, captured once at lowering time.
+    StructureInstanceCtor {
+        type_id: crate::structure_registry::StructureTypeId,
+        type_name: String,
+        version: u32,
+        ordered_args: Vec<(String, CompiledExpr)>,
+        defaults: Vec<(String, CompiledExpr)>,
+    },
 }
 
 /// Determinacy predicate kinds.
@@ -234,6 +261,18 @@ pub struct CompiledFunction {
     /// index-aligned, as set by `compile_function`). Consumers that index into both
     /// vectors should check `param_defaults.len() == params.len()` before zipping;
     /// `try_default_padding` in `reify-compiler/src/type_compat.rs` does this defensively.
+    ///
+    /// **Compilation scope:** Default expressions are compiled in a neutral scope
+    /// containing only module-level names — they cannot reference sibling params
+    /// (e.g. `fn f(a: Real, b: Real = a)` is rejected at compile time with an
+    /// "unresolved name" diagnostic) and cannot recurse into the enclosing function.
+    /// Rationale: keeps defaults pure-by-construction and order-independent. See
+    /// `crates/reify-compiler/src/functions.rs` (`compile_function`) for the inline
+    /// implementation comment and
+    /// `docs/initial-design/name-resolution-and-scoping-design-decisions.md` §2.3
+    /// for the full language-design rationale. Locked in by the regression test
+    /// `fn_param_default_sibling_param_ref_errors` in
+    /// `crates/reify-compiler/tests/fn_param_default_consumption_tests.rs`.
     pub param_defaults: Vec<Option<CompiledExpr>>,
     pub return_type: Type,
     pub body: CompiledFnBody,
@@ -294,6 +333,9 @@ pub const TAG_META_ACCESS: u8 = 16;
 pub const TAG_DETERMINACY_PREDICATE: u8 = 17;
 pub const TAG_RANGE_CONSTRUCTOR: u8 = 18;
 pub const TAG_AD_HOC_SELECTOR: u8 = 19;
+/// task 3540: compile-time structure-instance constructor node. Tags 20–23
+/// were free (TAG_MATCH jumped to 24); 20 is the next sequential slot.
+pub const TAG_STRUCTURE_INSTANCE_CTOR: u8 = 20;
 pub const TAG_MATCH: u8 = 24;
 pub const TAG_PURPOSE_REFLECTIVE_AGGREGATION: u8 = 25;
 pub const TAG_REFLECTIVE_CELL_LIST: u8 = 26;
@@ -328,6 +370,14 @@ impl CompiledExpr {
     /// the bare-let drop site in `entity.rs` (replaced the fragile
     /// `entity.contains('.')` heuristic).
     pub fn cross_sub_geometry_ref(id: ValueCellId, result_type: Type) -> Self {
+        // The consumer at entity.rs:1140 uses `split_once('.')` to extract the
+        // sub-geometry name. This assert is the canonical chokepoint for the
+        // `<parent>.<sub>` shape invariant — any future creator routing through
+        // this constructor is protected automatically (task-3663).
+        debug_assert!(
+            id.entity.contains('.'),
+            "CrossSubGeometryRef entity must be a `<parent>.<sub>` stamp (task-3508)"
+        );
         CompiledExpr {
             content_hash: Self::hash_ref(TAG_CROSS_SUB_GEOMETRY_REF, &id),
             kind: CompiledExprKind::CrossSubGeometryRef(id),
@@ -466,6 +516,18 @@ impl CompiledExpr {
             }
             // Placeholder is a leaf — no children to traverse.
             CompiledExprKind::PurposeReflectiveAggregation { .. } => {}
+            CompiledExprKind::StructureInstanceCtor {
+                ordered_args,
+                defaults,
+                ..
+            } => {
+                for (_, arg) in ordered_args {
+                    arg.walk(f);
+                }
+                for (_, def) in defaults {
+                    def.walk(f);
+                }
+            }
         }
     }
 
@@ -683,6 +745,32 @@ impl CompiledExpr {
                 // Leaf — placeholder carries no cells until activation expands it.
                 CompiledExpr::purpose_reflective_aggregation(param_name, query_kind, result_type)
             }
+            CompiledExprKind::StructureInstanceCtor {
+                type_id,
+                type_name,
+                version,
+                ordered_args,
+                defaults,
+            } => {
+                // Rebuild via the constructor so content_hash is recomputed
+                // from the rewritten child expressions (hash-rebuild contract).
+                let new_args: Vec<(String, CompiledExpr)> = ordered_args
+                    .into_iter()
+                    .map(|(n, e)| (n, e.map_value_refs(f)))
+                    .collect();
+                let new_defaults: Vec<(String, CompiledExpr)> = defaults
+                    .into_iter()
+                    .map(|(n, e)| (n, e.map_value_refs(f)))
+                    .collect();
+                CompiledExpr::structure_instance_ctor(
+                    type_id,
+                    type_name,
+                    version,
+                    new_args,
+                    new_defaults,
+                    result_type,
+                )
+            }
         }
     }
 
@@ -826,6 +914,18 @@ impl CompiledExpr {
             // Placeholder carries no concrete cell IDs — activation will
             // expand it before any dependency-tracking pass runs.
             CompiledExprKind::PurposeReflectiveAggregation { .. } => {}
+            CompiledExprKind::StructureInstanceCtor {
+                ordered_args,
+                defaults,
+                ..
+            } => {
+                for (_, arg) in ordered_args {
+                    arg.collect_value_refs_inner(refs);
+                }
+                for (_, def) in defaults {
+                    def.collect_value_refs_inner(refs);
+                }
+            }
         }
     }
 
@@ -1145,6 +1245,18 @@ impl CompiledExpr {
             // walk in `engine_purposes::activate_purpose` resolves it against
             // the bound entity directly. No-op here.
             CompiledExprKind::PurposeReflectiveAggregation { .. } => {}
+            CompiledExprKind::StructureInstanceCtor {
+                ordered_args,
+                defaults,
+                ..
+            } => {
+                for (_, arg) in ordered_args {
+                    arg.remap_entity(from_entity, to_entity);
+                }
+                for (_, def) in defaults {
+                    def.remap_entity(from_entity, to_entity);
+                }
+            }
         }
     }
 
@@ -1287,6 +1399,18 @@ impl CompiledExpr {
             }
             // Placeholder has no cell to rewrite — activation expands it.
             CompiledExprKind::PurposeReflectiveAggregation { .. } => {}
+            CompiledExprKind::StructureInstanceCtor {
+                ordered_args,
+                defaults,
+                ..
+            } => {
+                for (_, arg) in ordered_args {
+                    arg.remap_cell(from, to);
+                }
+                for (_, def) in defaults {
+                    def.remap_cell(from, to);
+                }
+            }
         }
     }
 
@@ -1425,6 +1549,50 @@ impl CompiledExpr {
             kind: CompiledExprKind::UserFunctionCall {
                 function_name,
                 args,
+            },
+            result_type,
+            content_hash,
+        }
+    }
+
+    /// Create a structure-instance constructor expression (task 3540).
+    ///
+    /// Hash fold (cache-key stable across Engine restarts — `(name, version)`
+    /// authoritative, `type_id` is an ephemeral per-Engine placeholder and is
+    /// intentionally EXCLUDED from the hash): `TAG_STRUCTURE_INSTANCE_CTOR ||
+    /// type_name || version.to_le_bytes() || for each ordered_arg: name ||
+    /// arg.content_hash || for each default: name || default.content_hash`.
+    /// Args are folded in their stored (declaration) order — the compiler
+    /// produces them deterministically, so no re-sort is needed here (mirrors
+    /// `lambda`/`user_function_call` which also fold in stored order).
+    pub fn structure_instance_ctor(
+        type_id: crate::structure_registry::StructureTypeId,
+        type_name: String,
+        version: u32,
+        ordered_args: Vec<(String, CompiledExpr)>,
+        defaults: Vec<(String, CompiledExpr)>,
+        result_type: Type,
+    ) -> Self {
+        let mut content_hash = ContentHash::of(&[TAG_STRUCTURE_INSTANCE_CTOR])
+            .combine(ContentHash::of_str(&type_name))
+            .combine(ContentHash::of(&version.to_le_bytes()));
+        for (name, arg) in &ordered_args {
+            content_hash = content_hash
+                .combine(ContentHash::of_str(name))
+                .combine(arg.content_hash);
+        }
+        for (name, def) in &defaults {
+            content_hash = content_hash
+                .combine(ContentHash::of_str(name))
+                .combine(def.content_hash);
+        }
+        CompiledExpr {
+            kind: CompiledExprKind::StructureInstanceCtor {
+                type_id,
+                type_name,
+                version,
+                ordered_args,
+                defaults,
             },
             result_type,
             content_hash,
@@ -2470,5 +2638,84 @@ mod tests {
             a.content_hash, different_param.content_hash,
             "different param_name must change the hash"
         );
+    }
+
+    // ── task-3663 tests ───────────────────────────────────────────────────────
+
+    /// The consumer at `entity.rs:1140` uses `split_once('.')` to extract the
+    /// sub-geometry name from the entity stamp (`"<parent>.<sub>"`).  If a
+    /// caller constructs a `CrossSubGeometryRef` with a dot-free entity,
+    /// `split_once` returns `None` and the consumer silently falls back to the
+    /// full entity string as the sub name — a hard-to-diagnose bug.
+    ///
+    /// Moving the invariant into `cross_sub_geometry_ref` (step-4, task-3663)
+    /// makes `CompiledExpr::cross_sub_geometry_ref` the canonical chokepoint:
+    /// every future creator (direct or via `map_value_refs` rebuild) is
+    /// protected automatically.  The check was introduced alongside the typed
+    /// variant in task-3508 but left to the caller; this closes the gap.
+    ///
+    /// Modelled after `reflective_cell_list_panics_in_debug_when_element_is_not_value_ref`
+    /// (task-2552, above).
+    ///
+    /// RED before step-4: the constructor has no `debug_assert`, so no panic
+    /// fires and the test fails.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "CrossSubGeometryRef entity must be a `<parent>.<sub>` stamp")]
+    fn cross_sub_geometry_ref_panics_in_debug_when_entity_lacks_dot() {
+        // "NoDotEntity" contains no '.', violating the <parent>.<sub> invariant.
+        let _expr = CompiledExpr::cross_sub_geometry_ref(
+            ValueCellId::new("NoDotEntity", "member"),
+            Type::Geometry,
+        );
+    }
+
+    /// `map_value_refs` on a `CrossSubGeometryRef` preserves the `<parent>.<sub>`
+    /// entity-stamp shape.
+    ///
+    /// The `map_value_refs` arm at `expr.rs:513-518` reconstructs the variant via
+    /// `CompiledExpr::cross_sub_geometry_ref(f(id), result_type)`.  Because the
+    /// constructor contains the canonical `debug_assert!(id.entity.contains('.'))`,
+    /// any remap closure `f` that strips the dot is caught in debug builds.
+    ///
+    /// This test confirms the positive case: a closure that remaps one dotted
+    /// entity to another dotted entity round-trips without panic and yields a
+    /// `CrossSubGeometryRef` whose entity still satisfies the shape invariant.
+    /// It makes the coupling between the `map_value_refs` rebuild path and the
+    /// constructor assertion explicit and regression-guarded.
+    ///
+    /// task-3508 introduced the typed variant; task-3663 introduced the constructor
+    /// assert and this test.
+    #[test]
+    fn map_value_refs_preserves_cross_sub_geometry_ref_stamp_shape() {
+        let original_id = ValueCellId::new("Parent.sub", "body");
+        let expected_id = ValueCellId::new("OtherParent.outer", "body");
+
+        let expr = CompiledExpr::cross_sub_geometry_ref(original_id.clone(), Type::Geometry);
+
+        // Remap "Parent.sub" → "OtherParent.outer", preserving the dotted shape.
+        let remapped = expr.map_value_refs(&mut |id| {
+            if id.entity == "Parent.sub" {
+                ValueCellId::new("OtherParent.outer", id.member)
+            } else {
+                id
+            }
+        });
+
+        // Must remain a CrossSubGeometryRef after the remap.
+        match &remapped.kind {
+            CompiledExprKind::CrossSubGeometryRef(id) => {
+                assert_eq!(
+                    *id, expected_id,
+                    "entity stamp must be remapped to OtherParent.outer.body"
+                );
+                assert!(
+                    id.entity.contains('.'),
+                    "remapped entity stamp must still satisfy the <parent>.<sub> shape invariant"
+                );
+            }
+            other => panic!("expected CrossSubGeometryRef after map_value_refs, got {other:?}"),
+        }
+        assert_eq!(remapped.result_type, Type::Geometry);
     }
 }

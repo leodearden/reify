@@ -298,6 +298,20 @@ pub enum DiagnosticCode {
     /// implicitly convert to the declared codomain type. The human-readable
     /// mnemonic used in PRD prose is `E_FIELD_CODOMAIN_MISMATCH`.
     FieldCodomainMismatch,
+    /// Origin: `crates/reify-compiler/src/functions.rs::compile_function`.
+    ///
+    /// Canonical message form:
+    /// `"function '<fn>' param '<p>' default type mismatch: declared param type '<P>', default expression produces '<D>'"`.
+    ///
+    /// Emitted when the compiled default expression for a function parameter has a
+    /// `result_type` that does not exactly equal the resolved parameter type. The check
+    /// uses strict equality (matching the policy used by `resolve_function_overload` and
+    /// `try_default_padding`'s prefix check) rather than bidirectional `type_compatible`.
+    /// The diagnostic is anchored to the default expression's span so the user sees the
+    /// offending literal or sub-expression, not just the param declaration.
+    ///
+    /// The human-readable mnemonic used in task prose is `E_FN_PARAM_DEFAULT_TYPE_MISMATCH`.
+    FnParamDefaultTypeMismatch,
     /// Origin: `crates/reify-compiler/src/compile_builder/dot_chain_lint.rs`.
     /// Emitted as a Warning when a left-associative `MemberAccess` chain in
     /// the parsed AST exceeds the configured depth threshold (currently
@@ -623,7 +637,7 @@ pub enum DiagnosticCode {
     /// Origin: `crates/reify-compiler/src/auto_type_param.rs::resolve_auto_type_params_with_backtracking`.
     ///
     /// Canonical message form:
-    /// `"auto type-parameter search exceeded depth bound: <N> auto-type-params declared, max_depth = <M>; falling back to per-parameter BFS (v0.1 algorithm). NOTE: BFS-fallback soundness is contingent on Type::TypeParam → Type::StructureRef substitution remaining deferred; once the substitution pass lands, this fallback may silently pick wrong substitutions (audit: docs/architecture-audit/findings/auto-resolution-backtracking.md M-005)."`
+    /// `"auto type-parameter search exceeded depth bound: <N> auto-type-params declared, max_depth = <M>; falling back to per-parameter BFS (v0.1 algorithm). NOTE: BFS-fallback soundness is contingent on Type::TypeParam → Type::StructureRef substitution remaining deferred; once the substitution pass lands, this fallback may silently pick wrong substitutions."`
     /// where `<N>` is `params.len()` and `<M>` is the configured `max_depth`.
     ///
     /// Emitted as `Severity::Warning` when the v0.2 DFS-over-cross-product
@@ -647,7 +661,7 @@ pub enum DiagnosticCode {
     /// Origin: `crates/reify-compiler/src/auto_type_param.rs::resolve_auto_type_params_with_backtracking`.
     ///
     /// Canonical message form:
-    /// `"auto type-parameter cross-product search exceeded size cap: <N> auto-type-params declared (<P1>, <P2>, ...) with per-param candidate counts [<k1>, <k2>, ...] yielding cross-product size <S>, max_cross_product_size = <C>; falling back to per-parameter BFS (v0.1 algorithm). NOTE: BFS-fallback soundness is contingent on Type::TypeParam → Type::StructureRef substitution remaining deferred; once the substitution pass lands, this fallback may silently pick wrong substitutions (audit: docs/architecture-audit/findings/auto-resolution-backtracking.md M-006)."`
+    /// `"auto type-parameter cross-product search exceeded size cap: <N> auto-type-params declared (<P1>, <P2>, ...) with per-param candidate counts [<k1>, <k2>, ...] yielding cross-product size <S>, max_cross_product_size = <C>; falling back to per-parameter BFS (v0.1 algorithm). NOTE: BFS-fallback soundness is contingent on Type::TypeParam → Type::StructureRef substitution remaining deferred; once the substitution pass lands, this fallback may silently pick wrong substitutions."`
     /// where `<N>` is `params.len()`, `<P*>` are the param names, `<k*>` are
     /// the per-param Phase A candidate counts, `<S>` is the computed
     /// cross-product size (`per_param_candidates.iter().map(|v| v.len()).fold(1, checked_mul)`),
@@ -903,6 +917,116 @@ pub enum DiagnosticCode {
     /// wants to surface this as a harder failure (e.g. CI gate) can filter
     /// by code at the consumer side.
     LongChainRealization,
+    /// Origin: `crates/reify-eval/src/dispatcher.rs::no_kernel_chain_diagnostic`
+    /// (task 3434 — PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §8 task γ +
+    /// §2 "failing closed is the failure mode").
+    ///
+    /// Canonical message form:
+    /// `"no kernel chain found for op '<Operation:?>' to produce '<ReprKind:?>'; \
+    /// available reprs: [<ReprKind:?>, ...]"`.
+    ///
+    /// Emitted as a `Severity::Error` when the multi-kernel dispatcher's BFS
+    /// over reachable [`ReprKind`](super::ReprKind) states exhausts without
+    /// reaching the demanded repr (or no registered kernel claims `(op,
+    /// demanded)` in its supports table). Mirrors PRD §2: the dispatcher
+    /// fails closed rather than silently picking an incompatible kernel —
+    /// the user gets a typed error and can adjust their kernel set or
+    /// `#kernel(...)` pragma. Available reprs are rendered from a
+    /// [`BTreeSet`](std::collections::BTreeSet) for deterministic ordering
+    /// across runs (the underlying `HashSet<ReprKind>` iteration is
+    /// hash-seeded; see `dispatch_seeding_order_is_deterministic` at
+    /// `dispatcher.rs:1010-1080`).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_NO_KERNEL_CHAIN`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error). Consumed by
+    /// downstream tasks δ/ε (IDs 3435/3436) which wire the dispatcher None-
+    /// return into op-execution; until then this is scaffolding alongside
+    /// `LongChainRealization`'s established precedent (task 2646).
+    NoKernelChain,
+    /// Origin: `crates/reify-eval/src/dispatcher.rs::kernel_pragma_unsatisfiable_diagnostic`
+    /// (task 3434 — PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §8 task γ +
+    /// §5 "pragma steers").
+    ///
+    /// Canonical message form:
+    /// `"#kernel('<pragma_kernel>') cannot serve op '<Operation:?>' producing \
+    /// '<ReprKind:?>'; falling through to default kernel selection"`.
+    ///
+    /// Emitted as a `Severity::Warning` when a `#kernel(...)` pragma names
+    /// a kernel that does not support the demanded `(op, demanded)` pair.
+    /// Per PRD §5: "warning, not error — fall through to default lex-min
+    /// selection so the user's design still evaluates" — the realization
+    /// proceeds via the default selection path; the warning gives the author
+    /// visibility into the unmet preference. Mirrors the advisory-warning
+    /// posture established by `LongChainRealization` and
+    /// `ImportedTolerancePromiseInsufficient`.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_KERNEL_PRAGMA_UNSATISFIABLE`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error). Consumed by
+    /// downstream task ο (ID 3443) which wires the `#kernel(...)` pragma
+    /// surface into the dispatcher's preference path.
+    KernelPragmaUnsatisfiable,
+    /// Origin: `crates/reify-eval/src/dispatcher.rs::pinned_kernel_missing_diagnostic`
+    /// (task 3434 — PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §8 task γ +
+    /// §5 "Pin name not in registry").
+    ///
+    /// Canonical message form:
+    /// `"kernel '<kernel_id>' is pinned in reify.toml but not registered in \
+    /// this build; rebuild with the required kernel feature enabled"`.
+    ///
+    /// Emitted as a `Severity::Error` when `reify.toml` `[kernels]` names a
+    /// kernel that the current build did not register (typically because the
+    /// corresponding Cargo feature was not enabled). Per PRD §5: "error;
+    /// engine refuses to start" — the build's determinism contract requires
+    /// every pinned kernel to be present, so the engine fails closed at
+    /// startup rather than silently downgrading to a different kernel set.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_PINNED_KERNEL_MISSING`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error). Consumed by
+    /// downstream task π (ID 3444) which wires `reify.toml` parsing into
+    /// `Engine::with_registered_kernels`.
+    PinnedKernelMissing,
+    /// Origin: `crates/reify-eval/src/dispatcher.rs::unpinned_kernel_loaded_diagnostic`
+    /// (task 3434 — PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §8 task γ +
+    /// §5 "Registry name not pinned").
+    ///
+    /// Canonical message form:
+    /// `"kernel '<kernel_id>' is registered but not listed in reify.toml \
+    /// [kernels]; consider pinning it for build determinism"`.
+    ///
+    /// Emitted as a `Severity::Warning` when a kernel is present in the
+    /// registry but not listed in `reify.toml` `[kernels]`. Per PRD §5:
+    /// "warning; engine starts" — the realization proceeds (the kernel is
+    /// usable), but the missing pin weakens the determinism contract: a
+    /// future build that omits the same kernel feature could shift kernel
+    /// selection unexpectedly. Mirrors the advisory-warning posture of
+    /// `LongChainRealization` and `ImportedTolerancePromiseInsufficient`.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_UNPINNED_KERNEL_LOADED`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error). Consumed by
+    /// downstream task π (ID 3444) which wires `reify.toml` parsing into
+    /// `Engine::with_registered_kernels`.
+    UnpinnedKernelLoaded,
+    /// Origin: `crates/reify-eval/src/dispatcher.rs::kernel_version_mismatch_diagnostic`
+    /// (task 3434 — PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §8 task γ +
+    /// §5 "Pin version mismatch with adapter VERSION constant").
+    ///
+    /// Canonical message form:
+    /// `"kernel '<kernel_id>' version mismatch: reify.toml pins '<pinned>' \
+    /// but adapter VERSION = '<actual>'; determinism contract requires \
+    /// matching versions"`.
+    ///
+    /// Emitted as a `Severity::Error` when `reify.toml` pins a kernel
+    /// version that disagrees with the adapter's compiled-in `VERSION`
+    /// constant. Per PRD §5: "error. Determinism contract enforcement" —
+    /// matching versions is load-bearing for reproducible realization
+    /// across build hosts; the engine fails closed rather than silently
+    /// using a different adapter than the project pins.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_KERNEL_VERSION_MISMATCH`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error). Consumed by
+    /// downstream task π (ID 3444) which wires `reify.toml` parsing into
+    /// `Engine::with_registered_kernels`.
+    KernelVersionMismatch,
     /// Origin: `crates/reify-eval/src/geometry_ops.rs::gate_query_capability`
     /// (task 3623 — PRD `docs/prds/v0_3/kernel-geometry-queries.md` §5.4).
     ///
@@ -923,6 +1047,56 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_QUERY_NOT_SUPPORTED_ON_REPR`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     QueryNotSupportedOnRepr,
+    /// A declared type name failed to resolve in any compile-time context.
+    ///
+    /// Origin sites (all carry this code):
+    /// - `crates/reify-compiler/src/functions.rs:34` — function parameter type (KEY site)
+    /// - `crates/reify-compiler/src/functions.rs:122` — function return type
+    /// - `crates/reify-compiler/src/functions.rs:280,290,301` — field domain type
+    ///   (DimensionalOp / IntegerLiteral / Auto arms)
+    /// - `crates/reify-compiler/src/functions.rs:319,333,347` — field codomain type
+    ///   (DimensionalOp / IntegerLiteral / Auto arms)
+    /// - `crates/reify-compiler/src/guards.rs:155` — purpose-guard parameter type
+    /// - `crates/reify-compiler/src/entity.rs:487` — entity-member parameter type
+    /// - `crates/reify-compiler/src/entity.rs:742-743` — port parameter type
+    /// - `crates/reify-compiler/src/expr.rs:2294-2300` — lambda parameter type (Named arm)
+    /// - `crates/reify-compiler/src/expr.rs:2305-2311` — lambda parameter type (non-Named arm)
+    /// - `crates/reify-compiler/src/traits.rs:34-42` — trait member type (DimensionalOp)
+    /// - `crates/reify-compiler/src/traits.rs:87-92` — trait member type (resolve-fail)
+    /// - `crates/reify-compiler/src/conformance/checker.rs:132-138` — conformance type (DimensionalOp)
+    /// - `crates/reify-compiler/src/conformance/checker.rs:185-188` — conformance type (resolve-fail)
+    /// - `crates/reify-compiler/src/type_resolution.rs:1015-1021` — type-alias argument
+    ///
+    /// Canonical message forms (context prefix only annotates the declaration site;
+    /// the root semantic — a declared type name failed to resolve — is identical
+    /// across all forms, so they share one code rather than per-context codes):
+    /// - `"unresolved type: <name>"` (bare form)
+    /// - `"unresolved return type: <name>"`
+    /// - `"unresolved field type: <expr>"`
+    /// - `"unresolved type in lambda param '<p>': <name>"`
+    /// - `"unresolved type in trait '<t>': <name>"`
+    /// - `"unresolved type in conformance check: <name>"`
+    /// - `"unresolved type argument '<arg>' for alias '<alias>'"`
+    /// - `"unresolved type name '<n>' in port parameter"`
+    ///
+    /// The PRD-prose mnemonic for this code is `E_UNRESOLVED_TYPE`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    UnresolvedType,
+    /// An expression references an unbound identifier at compile time.
+    ///
+    /// Origin sites (all carry this code):
+    /// - `crates/reify-compiler/src/expr.rs:670-681` — unbound identifier in expression
+    ///   context (KEY site; also emits the `"did you mean \`<canonical>\`?"` hint variant)
+    /// - `crates/reify-compiler/src/annotations.rs:321` — solver-hint collection reference
+    ///   (relocated from old line 500 in a file reorganisation)
+    ///
+    /// Canonical message forms:
+    /// - `"unresolved name: <name>"`
+    /// - `"unresolved name: <name> (did you mean \`<canonical>\`?)"` (builtin-hint variant)
+    ///
+    /// The PRD-prose mnemonic for this code is `E_UNRESOLVED_NAME`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    UnresolvedName,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -1653,6 +1827,168 @@ mod tests {
             DiagnosticCode::AutoTypeParamDepthBoundExceeded,
             "deserialize must round-trip back to AutoTypeParamDepthBoundExceeded"
         );
+    }
+
+    // --- Multi-kernel dispatch failure variant tests (task 3434) ---
+    //
+    // Pairs with the five builders in
+    // `crates/reify-eval/src/dispatcher.rs` (no_kernel_chain_diagnostic,
+    // kernel_pragma_unsatisfiable_diagnostic, pinned_kernel_missing_diagnostic,
+    // unpinned_kernel_loaded_diagnostic, kernel_version_mismatch_diagnostic)
+    // per PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §8 task γ.
+    //
+    // Test surface is split deliberately:
+    //   • Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives —
+    //     already covered by `diagnostic_code_derives` above.
+    //   • Per-variant severity + code round-trip — already pinned by each
+    //     `<builder>_carries_<severity>_severity_and_code` test in
+    //     `crates/reify-eval/src/dispatcher.rs` (the builders construct
+    //     `Diagnostic::error(...).with_code(...)` /
+    //     `Diagnostic::warning(...).with_code(...)`, so the dispatcher-side
+    //     assertion `(severity, code) == (expected, Some(variant))` is the
+    //     load-bearing severity pin).
+    //   • Per-variant serde wire form — consolidated into the single
+    //     table-driven test below so adding a sixth variant under this PRD
+    //     chain is a one-line extension to the table (and so a future
+    //     reviewer-flagged rename catches all variants at once).
+
+    /// Under `feature = "serde"`, every multi-kernel-phase-3 `DiagnosticCode`
+    /// variant serializes to its PascalCase identifier (inherited from
+    /// `rename_all = "PascalCase"` on the enum) and round-trips back via
+    /// deserialization. Pins the LSP / MCP wire contract for all five new
+    /// variants in one place — a future variant rename (or accidental
+    /// `rename_all` removal) loudly fails this single test rather than
+    /// silently passing five near-identical templates.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_multi_kernel_variants_serde_pascal_case() {
+        let cases: &[(DiagnosticCode, &str)] = &[
+            (DiagnosticCode::NoKernelChain, "\"NoKernelChain\""),
+            (
+                DiagnosticCode::KernelPragmaUnsatisfiable,
+                "\"KernelPragmaUnsatisfiable\"",
+            ),
+            (
+                DiagnosticCode::PinnedKernelMissing,
+                "\"PinnedKernelMissing\"",
+            ),
+            (
+                DiagnosticCode::UnpinnedKernelLoaded,
+                "\"UnpinnedKernelLoaded\"",
+            ),
+            (
+                DiagnosticCode::KernelVersionMismatch,
+                "\"KernelVersionMismatch\"",
+            ),
+        ];
+        for (variant, expected) in cases {
+            let got = serde_json::to_string(variant).unwrap();
+            assert_eq!(
+                &got, expected,
+                "serde wire form for {variant:?} must equal PascalCase identifier",
+            );
+            let back: DiagnosticCode = serde_json::from_str(&got).unwrap();
+            assert_eq!(
+                &back, variant,
+                "deserialize must round-trip back to the original {variant:?}",
+            );
+        }
+    }
+
+    // --- UnresolvedType tests (task 3721 — E_UNRESOLVED_TYPE) ---
+    // Pairs with every "unresolved type" emit site across the compiler crate:
+    // functions.rs (param, return, field domain/codomain), guards.rs, entity.rs,
+    // expr.rs (lambda param), traits.rs, conformance/checker.rs, type_resolution.rs.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::UnresolvedType` round-trips through
+    /// `Diagnostic::error(...).with_code(...)`.
+    /// Shape mirrors `diagnostic_code_geometry_unbounded_with_code_round_trips`
+    /// (which targets a different variant); a future enum reorganisation that
+    /// drops `UnresolvedType` is caught here.
+    #[test]
+    fn diagnostic_code_unresolved_type_with_code_round_trips() {
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::UnresolvedType);
+        assert_eq!(d.code, Some(DiagnosticCode::UnresolvedType));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::UnresolvedType` serializes as
+    /// `"UnresolvedType"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_unresolved_type_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::UnresolvedType).unwrap();
+        assert_eq!(s, "\"UnresolvedType\"");
+    }
+
+    // --- UnresolvedName tests (task 3721 — E_UNRESOLVED_NAME) ---
+    // Pairs with "unresolved name" emit sites: expr.rs:679 (KEY — unbound identifier
+    // in expression context) and annotations.rs:321 (solver-hint collection reference).
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::UnresolvedName` round-trips through
+    /// `Diagnostic::error(...).with_code(...)`.
+    /// Shape mirrors `diagnostic_code_geometry_unbounded_with_code_round_trips`
+    /// (which targets a different variant); a future enum reorganisation that
+    /// drops `UnresolvedName` is caught here.
+    #[test]
+    fn diagnostic_code_unresolved_name_with_code_round_trips() {
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::UnresolvedName);
+        assert_eq!(d.code, Some(DiagnosticCode::UnresolvedName));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::UnresolvedName` serializes as
+    /// `"UnresolvedName"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_unresolved_name_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::UnresolvedName).unwrap();
+        assert_eq!(s, "\"UnresolvedName\"");
+    }
+
+    /// Pins per-variant severity + variant-existence at the reify-types layer
+    /// for all five multi-kernel-phase-3 variants in one table. Although the
+    /// dispatcher-side `<builder>_carries_<severity>_severity_and_code` tests
+    /// already exercise these end-to-end through the builders, this
+    /// reify-types-local assertion guards against severity / variant drift
+    /// when the dispatcher crate is not in the test set (e.g. a cargo check
+    /// run scoped to `-p reify-types`). Severity assignments match PRD
+    /// `docs/prds/v0_3/multi-kernel-phase-3.md` §5: errors fail the build,
+    /// warnings let realization proceed.
+    #[test]
+    fn diagnostic_code_multi_kernel_variants_with_code_round_trip() {
+        use super::Severity;
+        let error_variants = [
+            DiagnosticCode::NoKernelChain,
+            DiagnosticCode::PinnedKernelMissing,
+            DiagnosticCode::KernelVersionMismatch,
+        ];
+        for code in error_variants {
+            let d = Diagnostic::error("x").with_code(code);
+            assert_eq!(
+                d.severity,
+                Severity::Error,
+                "severity mismatch for {code:?}"
+            );
+            assert_eq!(d.code, Some(code), "code mismatch for {code:?}");
+        }
+        let warning_variants = [
+            DiagnosticCode::KernelPragmaUnsatisfiable,
+            DiagnosticCode::UnpinnedKernelLoaded,
+        ];
+        for code in warning_variants {
+            let d = Diagnostic::warning("x").with_code(code);
+            assert_eq!(
+                d.severity,
+                Severity::Warning,
+                "severity mismatch for {code:?}",
+            );
+            assert_eq!(d.code, Some(code), "code mismatch for {code:?}");
+        }
     }
 }
 

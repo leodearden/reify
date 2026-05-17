@@ -43,9 +43,16 @@ where
 
 /// Custom serializer for `HashMap<String, Vec<f32>>` that rejects non-finite values.
 ///
-/// Mirrors [`serialize_finite_f32_vec`] but operates on a map of named scalar
+/// Mirrors [`serialize_finite_f32_vec`] but operates on a map of named float
 /// channels.  Each channel's values are validated element-by-element; the
-/// channel key is included in the error message for diagnostics.
+/// channel key and the `field_label` (e.g. `"scalar channel"` or
+/// `"vector channel"`) are included in the error message for diagnostics.
+///
+/// The `field_label` parameter lets callers produce accurate error messages
+/// regardless of which struct field is being serialized — for example,
+/// `"scalar channel"` for `scalar_channels` and `"vector channel"` for
+/// `vector_channels`.  Without this parameter both would produce the same
+/// hard-coded label, which confuses operators reading wire-error logs.
 ///
 /// # Note
 ///
@@ -55,6 +62,7 @@ where
 /// error.
 fn serialize_finite_f32_map<S>(
     map: &HashMap<String, Vec<f32>>,
+    field_label: &str,
     serializer: S,
 ) -> Result<S::Ok, S::Error>
 where
@@ -67,7 +75,7 @@ where
         for &v in values {
             if !v.is_finite() {
                 return Err(S::Error::custom(format!(
-                    "non-finite f32 value ({v}) in scalar channel '{key}'"
+                    "non-finite f32 value ({v}) in {field_label} '{key}'"
                 )));
             }
         }
@@ -136,7 +144,13 @@ pub struct GuiState {
 
 struct FiniteF32Slice<'a>(&'a [f32]);
 struct FiniteF32SliceOpt<'a>(&'a Option<Vec<f32>>);
-struct FiniteF32MapRef<'a>(&'a HashMap<String, Vec<f32>>);
+/// Newtype wrapper for `serialize_finite_f32_map`.
+///
+/// The second field is the human-readable field label included in NaN/Inf error
+/// messages (e.g. `"scalar channel"` or `"vector channel"`).  This lets
+/// operators immediately identify which struct field on the wire produced a
+/// non-finite value without inspecting a stack trace.
+struct FiniteF32MapRef<'a>(&'a HashMap<String, Vec<f32>>, &'a str);
 
 impl<'a> serde::Serialize for FiniteF32Slice<'a> {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
@@ -152,9 +166,16 @@ impl<'a> serde::Serialize for FiniteF32SliceOpt<'a> {
 
 impl<'a> serde::Serialize for FiniteF32MapRef<'a> {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        serialize_finite_f32_map(self.0, s)
+        serialize_finite_f32_map(self.0, self.1, s)
     }
 }
+
+/// Channel name suffix that marks a `vector_channels` entry as per-face.
+///
+/// Names ending in this suffix must have length `3 * face_count`; all other
+/// names are treated as per-vertex and must have length `3 * vertex_count`.
+/// This is the single source of truth for the OQ-4 naming convention (PRD §11).
+pub const PER_FACE_CHANNEL_SUFFIX: &str = "_per_face";
 
 /// Tessellated mesh for 3D display.
 ///
@@ -202,6 +223,55 @@ pub struct MeshData {
     /// serialization time.
     #[serde(default)]
     pub displaced_positions: Option<Vec<f32>>,
+    /// Per-face element-kind byte values.
+    ///
+    /// When `Some`, each byte classifies the corresponding triangle face:
+    /// - `0` — tet face (from a tetrahedral solid element)
+    /// - `1` — shell triangle (from a shell/surface element)
+    ///
+    /// Future kernel variants (hex, wedge, beam) will add further byte values;
+    /// the byte-value encoding leaves room up to `u8::MAX` before a wider type
+    /// is needed.  The OQ-3 resolution (PRD §11) chose `u8` for wire compactness
+    /// (1 byte per face vs 4 for `u32`).
+    ///
+    /// **Length contract:** `len() == indices.len() / 3` (face count) when `Some`
+    /// — enforced at serialization time.  Omitted from the wire when `None` so
+    /// tet-only meshes stay compact.
+    #[serde(default)]
+    pub element_kind: Option<Vec<u8>>,
+    /// Per-face region-label tags.
+    ///
+    /// When `Some`, each `u32` assigns the corresponding triangle face to a
+    /// named region (e.g. flange vs web).  Region label values are stable within
+    /// a given mesh key — downstream consumers may cache colour mappings by label.
+    ///
+    /// **Length contract:** `len() == indices.len() / 3` (face count) when `Some`
+    /// — enforced at serialization time.  Omitted from the wire when `None`.
+    #[serde(default)]
+    pub region_tags: Option<Vec<u32>>,
+    /// Named per-vertex or per-face float vector channels.
+    ///
+    /// Each entry maps a channel name to a flat `Vec<f32>`.  The per-vertex vs
+    /// per-face mode is encoded in the channel name: names ending in `_per_face`
+    /// are per-face (`len == 3 * face_count`); all others are per-vertex
+    /// (`len == 3 * vertex_count`).  Example: `"shell_normal_per_face"`.
+    ///
+    /// OQ-4 resolution (PRD §11): a single `HashMap` (not two) keeps the wire
+    /// schema flat.  The channel name is the single source of truth for layout:
+    ///
+    /// - Names ending in `_per_face` → per-face channel; `len == 3 * face_count`
+    ///   (one XYZ triple per triangle face).
+    /// - All other names → per-vertex channel; `len == 3 * vertex_count`
+    ///   (one XYZ triple per vertex).
+    ///
+    /// Both contracts are enforced at serialization time.  This covers the
+    /// degenerate case where `vertex_count == face_count` (the two valid
+    /// lengths collapse and layout cannot be recovered from length alone).
+    ///
+    /// Non-finite f32 values are rejected at serialization time (reuses the
+    /// `FiniteF32MapRef` guard).  Omitted from the wire when empty.
+    #[serde(default)]
+    pub vector_channels: HashMap<String, Vec<f32>>,
 }
 
 impl serde::Serialize for MeshData {
@@ -210,7 +280,17 @@ impl serde::Serialize for MeshData {
     /// Returns `Err` (via `S::Error::custom`) if:
     /// - any `scalar_channels` entry length ≠ `vertices.len() / 3`, or
     /// - `displaced_positions` length ≠ `vertices.len()` (when `Some`), or
+    /// - `element_kind` length ≠ `indices.len() / 3` (when `Some`), or
+    /// - `region_tags` length ≠ `indices.len() / 3` (when `Some`), or
+    /// - any `vector_channels` entry with `_per_face` suffix has length ≠ `3*face_count`, or
+    /// - any `vector_channels` entry without `_per_face` suffix has length ≠ `3*vertex_count`, or
     /// - any f32 value is non-finite (NaN / ±Inf).
+    ///
+    /// The `_per_face` suffix convention for `vector_channels` is enforced here
+    /// (not just documented) so that mis-named or mis-sized channels are caught
+    /// before reaching the wire — including the degenerate-mesh case where
+    /// `vertex_count == face_count` and the layout cannot be recovered from
+    /// length alone.
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -218,6 +298,7 @@ impl serde::Serialize for MeshData {
         use serde::ser::SerializeStruct;
 
         let vertex_count = self.vertices.len() / 3;
+        let face_count = self.indices.len() / 3;
 
         // Contract: each scalar channel must be exactly vertex_count values long.
         for (channel, values) in &self.scalar_channels {
@@ -240,13 +321,70 @@ impl serde::Serialize for MeshData {
             )));
         }
 
+        // Contract: element_kind length must equal face_count when Some.
+        if let Some(ek) = &self.element_kind
+            && ek.len() != face_count
+        {
+            return Err(S::Error::custom(format!(
+                "element_kind has length {} but face count is {face_count}",
+                ek.len()
+            )));
+        }
+
+        // Contract: region_tags length must equal face_count when Some.
+        if let Some(rt) = &self.region_tags
+            && rt.len() != face_count
+        {
+            return Err(S::Error::custom(format!(
+                "region_tags has length {} but face count is {face_count}",
+                rt.len()
+            )));
+        }
+
+        // Contract: vector_channels length is determined by the channel name suffix.
+        // Names ending in `_per_face` must have length 3*face_count; all others
+        // must have length 3*vertex_count.  This enforces the OQ-4 naming convention
+        // (PRD §11) at the single enforcement chokepoint (the manual Serialize impl)
+        // so that mis-named or mis-sized channels are caught before reaching the wire
+        // — including the degenerate-mesh case (vertex_count == face_count) where
+        // the two valid lengths collapse and the layout cannot be recovered from
+        // length alone.
+        for (channel, values) in &self.vector_channels {
+            if channel.ends_with(PER_FACE_CHANNEL_SUFFIX) {
+                if values.len() != 3 * face_count {
+                    return Err(S::Error::custom(format!(
+                        "vector channel '{channel}' has suffix '_per_face' so expected \
+                         length {} (3*face_count) but got {}",
+                        3 * face_count,
+                        values.len()
+                    )));
+                }
+            } else if values.len() != 3 * vertex_count {
+                return Err(S::Error::custom(format!(
+                    "vector channel '{channel}' expected length {} (3*vertex_count) but got {}",
+                    3 * vertex_count,
+                    values.len()
+                )));
+            }
+        }
+
         // entity_path, vertices, indices, normals are always serialized.
-        // scalar_channels is omitted when empty; displaced_positions when None.
+        // scalar_channels, displaced_positions, element_kind, region_tags,
+        // and vector_channels are omitted when absent/empty.
         let mut field_count = 4usize;
         if !self.scalar_channels.is_empty() {
             field_count += 1;
         }
         if self.displaced_positions.is_some() {
+            field_count += 1;
+        }
+        if self.element_kind.is_some() {
+            field_count += 1;
+        }
+        if self.region_tags.is_some() {
+            field_count += 1;
+        }
+        if !self.vector_channels.is_empty() {
             field_count += 1;
         }
 
@@ -256,13 +394,22 @@ impl serde::Serialize for MeshData {
         s.serialize_field("indices", &self.indices)?;
         s.serialize_field("normals", &FiniteF32SliceOpt(&self.normals))?;
         if !self.scalar_channels.is_empty() {
-            s.serialize_field("scalar_channels", &FiniteF32MapRef(&self.scalar_channels))?;
+            s.serialize_field("scalar_channels", &FiniteF32MapRef(&self.scalar_channels, "scalar channel"))?;
         }
         if self.displaced_positions.is_some() {
             s.serialize_field(
                 "displaced_positions",
                 &FiniteF32SliceOpt(&self.displaced_positions),
             )?;
+        }
+        if let Some(ek) = &self.element_kind {
+            s.serialize_field("element_kind", ek)?;
+        }
+        if let Some(rt) = &self.region_tags {
+            s.serialize_field("region_tags", rt)?;
+        }
+        if !self.vector_channels.is_empty() {
+            s.serialize_field("vector_channels", &FiniteF32MapRef(&self.vector_channels, "vector channel"))?;
         }
         s.end()
     }
@@ -631,6 +778,48 @@ pub struct AutoResolveIteration {
     pub driving_metric: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub driving_metric_value: Option<f64>,
+}
+
+/// IPC payload for the `warm-pool-event` Tauri channel.
+///
+/// Wire format per PRD §2.2: `{"kind":"evicted"|"donated","size_bytes":<u64>,"node_id":<string>}`.
+/// Field names match the TS interface in `gui/src/types.ts` exactly — no `serde(rename_all)`.
+///
+/// Constructed from the engine-internal
+/// [`reify_eval::warm_pool::WarmPoolEvent`] enum via [`WarmPoolEvent::from_engine_event`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WarmPoolEvent {
+    /// `"evicted"` or `"donated"`.
+    pub kind: String,
+    /// Warm-state size involved in the event, in bytes.
+    pub size_bytes: u64,
+    /// Stringified [`reify_eval::cache::NodeId`] of the victim (evicted) or donor (donated) node.
+    pub node_id: String,
+}
+
+impl WarmPoolEvent {
+    /// Translate an engine-internal [`reify_eval::warm_pool::WarmPoolEvent`] to the
+    /// flat IPC shape required by the `warm-pool-event` channel wire format.
+    ///
+    /// Preserves the victim/donor `node_id` contract documented in `journal.rs:53-62`:
+    /// `WarmPoolEvent::Evicted.node_id` is the **victim** node; `Donated.node_id` is
+    /// the **donor** node.  The `to_string()` call uses `NodeId`'s `Display` impl
+    /// (`cache.rs:57`), which is stable across variant additions.
+    pub fn from_engine_event(ev: &reify_eval::warm_pool::WarmPoolEvent) -> Self {
+        use reify_eval::warm_pool::WarmPoolEvent as EngineEvent;
+        match ev {
+            EngineEvent::Evicted { node_id, size_bytes } => Self {
+                kind: "evicted".to_string(),
+                size_bytes: *size_bytes as u64,
+                node_id: node_id.to_string(),
+            },
+            EngineEvent::Donated { node_id, size_bytes } => Self {
+                kind: "donated".to_string(),
+                size_bytes: *size_bytes as u64,
+                node_id: node_id.to_string(),
+            },
+        }
+    }
 }
 
 #[cfg(test)]

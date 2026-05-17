@@ -23,53 +23,7 @@
 
 use crate::constitutive::IsotropicElastic;
 use crate::elements::{ReferenceCoord, ReferenceElement, tet_p1::TetP1};
-
-/// Conservative lower bound on `|det J|` for the debug-mode
-/// degenerate-element check inside [`element_stress_p1`].
-///
-/// Mirrors `crates/reify-solver-elastic/src/assembly/tet.rs:75`'s
-/// `MIN_JACOBIAN_DET = 1e-30` — kept in sync by convention rather than a
-/// re-export, because that constant is private to the assembly module
-/// and its containing file is not in this task's lock set. Anything at
-/// or below this threshold is treated as a malformed element and trips
-/// a `debug_assert!` rather than silently dividing by it (which would
-/// propagate `±∞` / `NaN` through the inverse Jacobian into `σ_e`).
-/// PRD task #21 (diagnostics) will replace this placeholder with a
-/// proper mesh-scale-aware degeneracy detector.
-const MIN_JACOBIAN_DET: f64 = 1.0e-30;
-
-/// Return `(M⁻¹)ᵀ = M⁻ᵀ` for a 3×3 matrix via the standard cofactor /
-/// adjugate formula.
-///
-/// Local copy of the canonical formula in
-/// `crates/reify-solver-elastic/src/assembly/tet.rs:103`; kept here so
-/// `result.rs` is self-contained, per the design decision recorded in
-/// `.task/plan.json`. If a future task adds a third consumer, the right
-/// move is to extract `inverse_transpose_3x3` to a shared `crate::math`
-/// helper then; with two consumers, preemptive extraction adds module
-/// cost without payback.
-///
-/// # Preconditions
-///
-/// `det != 0`. For a degenerate element with `det == 0` the result is
-/// non-finite (division by zero); diagnosing that condition is PRD task
-/// #21's job.
-#[allow(clippy::needless_range_loop)]
-fn inverse_transpose_3x3(m: &[[f64; 3]; 3], det: f64) -> [[f64; 3]; 3] {
-    let mut inv_t = [[0.0_f64; 3]; 3];
-    for i in 0..3 {
-        for j in 0..3 {
-            let r0 = if i == 0 { 1 } else { 0 };
-            let r1 = if i == 2 { 1 } else { 2 };
-            let c0 = if j == 0 { 1 } else { 0 };
-            let c1 = if j == 2 { 1 } else { 2 };
-            let minor = m[r0][c0] * m[r1][c1] - m[r0][c1] * m[r1][c0];
-            let sign = if (i + j) % 2 == 0 { 1.0 } else { -1.0 };
-            inv_t[i][j] = sign * minor / det;
-        }
-    }
-    inv_t
-}
+use crate::math::{MIN_JACOBIAN_DET, inverse_transpose_3x3};
 
 /// Compute the constant per-element Cauchy stress tensor for a P1
 /// tetrahedron: `σ_e = D · B(p) · u_e`.
@@ -85,7 +39,7 @@ fn inverse_transpose_3x3(m: &[[f64; 3]; 3], det: f64) -> [[f64; 3]; 3] {
 ///    grad_ref[k][j]` at the reference centroid via
 ///    [`TetP1::shape_grad_at`]. P1 gradients are constant per element
 ///    (any reference coord works).
-/// 2. Compute `J⁻ᵀ` via the local [`inverse_transpose_3x3`] helper.
+/// 2. Compute `J⁻ᵀ` via [`crate::math::inverse_transpose_3x3`].
 /// 3. Push reference gradients to physical: `∇x N_i = J⁻ᵀ · ∇ξ N_i`.
 /// 4. Build the 6×12 strain-displacement matrix `B` with the same
 ///    engineering-shear Voigt convention as
@@ -110,7 +64,7 @@ fn inverse_transpose_3x3(m: &[[f64; 3]; 3], det: f64) -> [[f64; 3]; 3] {
 /// # Preconditions
 ///
 /// The tet must be non-degenerate (`det J != 0`); see
-/// [`inverse_transpose_3x3`].
+/// [`crate::math::inverse_transpose_3x3`].
 #[allow(clippy::needless_range_loop)]
 pub fn element_stress_p1(
     phys_nodes: &[[f64; 3]; 4],

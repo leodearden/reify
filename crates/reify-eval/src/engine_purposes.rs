@@ -389,9 +389,12 @@ impl Engine {
 /// from the looked-up `ValueCellNode.cell_type` (cell-type lockstep, task-1904
 /// cross-reference); the outer list `result_type` adopts
 /// `Type::List(Box::new(first_element_type))` when populated, falling back to
-/// `Type::List(Box::new(Type::Real))` for the empty-list case (no resolved
-/// query / no scannable params — preserves today's vacuous-true behaviour for
-/// `geometric_params` / `material_params`).
+/// `Type::List(Box::new(Type::Error))` for the empty-list case (anti-cascade
+/// poison — task 3749 tightened the 3639 Shape-A G-allow carve-out).  The
+/// `Type::Error` element type is not observed before `eval_quantifier`'s
+/// vacuous-true short-circuit fires: the sole caller
+/// (`activate_purpose_constraints`) stores the rewritten expr in the constraint
+/// graph without reading the outer `result_type` for type-compatibility checks.
 ///
 /// Resolution strategy for the `params` query:
 ///   1. Prefer the compile-time `ResolvedSchemaQuery` whose `query_kind`
@@ -554,22 +557,24 @@ fn expand_purpose_reflective_placeholders(
             // The `ReflectiveCellList(_)` no-op arm below relies on this.
 
             // Outer ReflectiveCellList type: inherit first element's type when
-            // populated; default to Type::Real on empty (anti-cascade).
+            // populated; default to Type::Error on empty (anti-cascade poison).
             // task-2458: emit ReflectiveCellList (not ListLiteral) so that
             // eval_quantifier's cell-iteration trigger fires only on this
             // placeholder-derived shape, not on user-written all-ValueRef
             // ListLiterals that share the same surface structure.
-            // G-allow: empty reflective cell-list ⇒ vacuous-true forall; element type
-            // is a conservative anti-cascade default for the empty match-set case —
-            // no objectives matched the purpose, so no element type can be inferred.
-            // The Type::Real default preserves the prior behaviour for the vacuous-true
-            // path and is acceptable here because an empty ReflectiveCellList triggers
-            // eval_quantifier's vacuous-true short-circuit before the element type is
-            // used for any arithmetic (task-2458, task 3639 review).
+            // An empty ReflectiveCellList still triggers eval_quantifier's
+            // vacuous-true short-circuit before the element type is used for any
+            // arithmetic, so the Type::Error element type is never observed in the
+            // vacuous-true path; it is defense in depth for release-mode safety
+            // (task 3749 tightened the 3639 Shape-A G-allow carve-out).
+            // Verified: the sole caller (activate_purpose_constraints) stores the
+            // rewritten expr in the constraint graph without reading the outer
+            // result_type for type-compatibility — no non-eval consumer of the
+            // Type::List(Type::Error) shape exists between expansion and eval.
             let element_type = elements
                 .first()
                 .map(|e| e.result_type.clone())
-                .unwrap_or(Type::Real);
+                .unwrap_or(Type::Error);
             *expr =
                 CompiledExpr::reflective_cell_list(elements, Type::List(Box::new(element_type)));
         }
@@ -674,6 +679,23 @@ fn expand_purpose_reflective_placeholders(
                 expand_purpose_reflective_placeholders(arg, queries, entity_ref, value_cells);
             }
         }
+        // task 3540 (SIR-α): exhaustiveness-forced adapter arm for the new
+        // shared-enum variant (step-16). Recurse into the ctor's supplied
+        // args + captured defaults so nested purpose-reflective placeholders
+        // inside a structure constructor's argument expressions are still
+        // expanded — same posture as the FunctionCall/UserFunctionCall arms.
+        CompiledExprKind::StructureInstanceCtor {
+            ordered_args,
+            defaults,
+            ..
+        } => {
+            for (_, arg) in ordered_args {
+                expand_purpose_reflective_placeholders(arg, queries, entity_ref, value_cells);
+            }
+            for (_, def) in defaults {
+                expand_purpose_reflective_placeholders(def, queries, entity_ref, value_cells);
+            }
+        }
     }
 }
 
@@ -755,6 +777,57 @@ mod tests {
             vec!["z", "a"],
             "resolved-query path must preserve resolved_ids order; \
              a [a, z] result would indicate the fallback scan won precedence"
+        );
+    }
+
+    /// Pin the element-type of the outer `Type::List` when a `ResolvedSchemaQuery` with
+    /// an empty `resolved_ids` drives the empty-elements path.
+    ///
+    /// When `resolved_ids` is empty, `expand_purpose_reflective_placeholders` constructs a
+    /// `ReflectiveCellList([])` and must set `expr.result_type` to
+    /// `Type::List(Box::new(Type::Error))` — the anti-cascade element type for empty
+    /// match-sets (task 3749, tightening of the 3639 Shape-A G-allow carve-out).
+    ///
+    /// The existing integration test `activate_expands_geometric_params_placeholder_to_empty_list`
+    /// covers the same empty-elements path through `compile_purpose`, but only asserts
+    /// `elements.is_empty()` — it does not pin the outer `Type::List` element-type contract.
+    /// This unit test pins that contract independently of the integration path.
+    ///
+    /// Test fails RED before step-08 (current impl returns `Type::List(Box::new(Type::Real))`);
+    /// passes GREEN after step-08 changes the fallback to `unwrap_or(Type::Error)`.
+    #[test]
+    fn expand_empty_resolved_query_yields_list_error_element_type() {
+        let entity = "Foo";
+        let queries = vec![ResolvedSchemaQuery {
+            param_name: "subject".to_string(),
+            query_kind: "params".to_string(),
+            resolved_ids: vec![], // empty — triggers the empty-elements path
+        }];
+        let value_cells: PersistentMap<ValueCellId, ValueCellNode> = PersistentMap::default();
+        let mut expr = CompiledExpr::purpose_reflective_aggregation(
+            "subject".to_string(),
+            "params".to_string(),
+            Type::List(Box::new(Type::Real)),
+        );
+
+        expand_purpose_reflective_placeholders(&mut expr, &queries, entity, &value_cells);
+
+        let elements = match &expr.kind {
+            CompiledExprKind::ReflectiveCellList(elements) => elements,
+            other => panic!(
+                "expected ReflectiveCellList after expansion with empty resolved_ids, got {:?}",
+                other
+            ),
+        };
+        assert!(
+            elements.is_empty(),
+            "empty resolved_ids must produce an empty ReflectiveCellList"
+        );
+        // The anti-cascade element type must be Type::Error after task 3749 tightening.
+        assert_eq!(
+            expr.result_type,
+            Type::List(Box::new(Type::Error)),
+            "empty ReflectiveCellList must carry Type::Error element type (anti-cascade poison)"
         );
     }
 

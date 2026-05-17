@@ -1,0 +1,19 @@
+// Test fixture for task γ (3422): @optimized→ComputeNode lowering wire.
+//
+// Declares a user function `identity_compute_test` annotated with
+// `@optimized("test::identity")`. The body `x` is the inline fallback used
+// when no trampoline is registered; when a trampoline IS registered the engine
+// should insert a ComputeNode and invoke the trampoline instead of inlining.
+//
+// `IdentityFixture` provides the observable cell (`result`) that tests assert
+// on. `input` defaults to 42 so tests that don't override it get a known value.
+
+@optimized("test::identity")
+fn identity_compute_test(x: Int) -> Int {
+    x
+}
+
+structure IdentityFixture {
+    param input: Int = 42
+    let result = identity_compute_test(input)
+}

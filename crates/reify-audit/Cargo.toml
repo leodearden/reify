@@ -18,9 +18,18 @@ serde_json.workspace = true
 # system libsqlite3-dev — matches the workspace's `tempfile`/`zstd` posture
 # of pinning self-contained deps to keep builds deterministic across distros.
 rusqlite = { version = "0.31", features = ["bundled"] }
+# ureq: sync HTTP client for the production fused-memory MCP loader. Stays
+# behind `default-features = false` so we don't pull native-tls — the only
+# endpoint is localhost (HTTP). See `crates/reify-audit/src/fused_memory_client.rs`.
+ureq = { version = "2.10", default-features = false, features = ["json"] }
+
+[[bin]]
+name = "reify-audit"
+path = "src/bin/reify-audit.rs"
 
 [dev-dependencies]
 tempfile.workspace = true
+reify-test-support.workspace = true
 # Self-pull with the test-support feature so integration tests in tests/p5.rs
 # can construct MockGitOps. Standard Rust pattern for integration-test-visible
 # test doubles that should NOT pollute the production public API.

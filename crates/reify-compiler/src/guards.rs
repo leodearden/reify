@@ -121,6 +121,20 @@ pub(crate) fn collect_body_refs_inner(expr: &CompiledExpr, refs: &mut Vec<ValueC
         // ValueCellId — activation expands it before any dependency-tracking
         // pass runs.
         CompiledExprKind::PurposeReflectiveAggregation { .. } => {}
+        // task 3540: recurse into the ctor's supplied args + captured
+        // defaults so guarded-group ref collection stays complete.
+        CompiledExprKind::StructureInstanceCtor {
+            ordered_args,
+            defaults,
+            ..
+        } => {
+            for (_, arg) in ordered_args {
+                collect_body_refs_inner(arg, refs);
+            }
+            for (_, def) in defaults {
+                collect_body_refs_inner(def, refs);
+            }
+        }
     }
 }
 
@@ -153,6 +167,7 @@ pub(crate) fn register_guarded_names<'a>(
                     .unwrap_or_else(|| {
                         diagnostics.push(
                             Diagnostic::error(format!("unresolved type: {}", type_expr))
+                                .with_code(DiagnosticCode::UnresolvedType)
                                 .with_label(DiagnosticLabel::new(
                                     type_expr.span,
                                     "unknown type name",

@@ -172,21 +172,43 @@ fn multi_load_case_stdlib_smoke_e2e() {
          got: {miss_result:?}"
     );
 
-    // ── struct-ctor tripwire ──────────────────────────────────────────────────
-    // `MultiCaseResult(cases: map{})` is not a recognised builtin and currently
-    // falls through `reify_stdlib::eval_builtin` to `Value::Undef`. This
-    // assertion fires automatically on every `cargo test` run the moment ctor
-    // eval starts returning a non-Undef value, giving zero-effort signalling
-    // that Stage-2 has landed. When it fires, run the companion `#[ignore]`d
-    // `struct_ctor_eval_stage_2_readiness` test for full contract verification:
-    //   `cargo test --test multi_load_case_stdlib_smoke -- --ignored`
+    // ── struct-ctor tripwire: FIRED — Stage-2 landed via SIR-α (task 3540) ───
+    //
+    // This tripwire was designed to fire the moment struct-ctor eval started
+    // returning a non-Undef value. SIR-α (task 3540: `Value::StructureInstance`
+    // foundation slice) is exactly that landing: `MultiCaseResult(...)` is a
+    // `structure def` in `crates/reify-compiler/stdlib/fea_multi_case.ri`, so
+    // the function-call lowering now emits `CompiledExprKind::StructureInstanceCtor`
+    // (precedence over stdlib `eval_builtin`, design-decision-2) and the
+    // eval handler returns a `Value::StructureInstance` — NOT a `Value::Map`.
+    //
+    // The tripwire is updated here to pin the SIR-α reality (struct ctor →
+    // `Value::StructureInstance` named after the structure-def). Note this
+    // SUPERSEDES the `#[ignore]`d `struct_ctor_eval_stage_2_readiness`
+    // companion below, which still encodes the pre-SIR-α `Value::Map`
+    // expectation. Reconciling that ignored test's `Value::Map` shape with
+    // SIR-α's `Value::StructureInstance` is the multi-load-case FEA PRD
+    // owner's call (cross-PRD seam — out of SIR-α scope; flagged via
+    // escalate_info esc-3540 for steward/PRD-owner follow-up). SIR-α only
+    // updates the *active* tripwire so the suite stays green.
     let mcr_ctor = get_value(v, "mcr_ctor");
-    assert!(
-        mcr_ctor.is_undef(),
-        "MultiCaseResult(cases: map{{}}) should still evaluate to Undef (struct-ctor eval not yet \
-         implemented); got: {mcr_ctor:?} — struct-ctor eval has landed: run \
-         `cargo test --test multi_load_case_stdlib_smoke -- --ignored` to verify the Stage-2 contract"
-    );
+    match mcr_ctor {
+        Value::StructureInstance(data) => {
+            assert_eq!(
+                data.type_name, "MultiCaseResult",
+                "MultiCaseResult(...) struct-ctor must eval to a \
+                 Value::StructureInstance named \"MultiCaseResult\" (SIR-α); \
+                 got type_name={:?}",
+                data.type_name
+            );
+        }
+        other => panic!(
+            "struct-ctor eval has landed via SIR-α (task 3540): \
+             MultiCaseResult(cases: map{{}}) must now eval to \
+             Value::StructureInstance {{ type_name: \"MultiCaseResult\", .. }}, \
+             got: {other:?}"
+        ),
+    }
 }
 
 /// Reify source: a `WorstCaseFixture` structure that exercises `worst_case`

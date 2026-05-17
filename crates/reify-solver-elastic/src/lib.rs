@@ -333,6 +333,14 @@
 //!     &reify_types::VolumeMesh,
 //!     &IsotropicElastic,
 //! ) -> ZzIndicator = compute_zz_indicator;
+//!
+//! // Task 3293: orphan-DOF diagnostic surface — crate-root re-export smoke pin.
+//! // Pins that OrphanDofsSummary and detect_orphan_dofs are discoverable from
+//! // the crate root. Will fail to compile until step-14 adds the re-exports.
+//! use reify_solver_elastic::{OrphanDofsSummary, detect_orphan_dofs};
+//! let _: OrphanDofsSummary = OrphanDofsSummary::default();
+//! let s = detect_orphan_dofs(0, &[]);
+//! assert_eq!(s.count, 0);
 //! ```
 
 pub mod assembly;
@@ -341,7 +349,9 @@ pub mod constitutive;
 pub mod eigensolve;
 pub mod elements;
 pub mod error_estimator;
+pub mod geometric_stiffness;
 pub mod interpolation;
+pub mod math;
 pub mod mesher;
 pub mod mpc;
 pub mod progressive;
@@ -354,10 +364,14 @@ pub mod solver;
 pub mod sweep;
 pub mod volume_refine;
 pub mod warm_state;
+// Unconditional `WarmStartableRegistration` submission for NodeKind::Compute
+// — see module docs and PRD §5 B5 / I-3 (M-013 fix).
+mod warm_register;
 
 pub use assembly::{
-    AssemblyElement, AssemblyMode, ElementOrder, ElementStiffness, assemble_global_stiffness,
-    element_stiffness, hex::element_stiffness_hex_p1, wedge::element_stiffness_wedge_p1,
+    AssemblyElement, AssemblyMode, ElementOrder, ElementStiffness, OrphanDofsSummary,
+    assemble_global_stiffness, detect_orphan_dofs, element_stiffness,
+    hex::element_stiffness_hex_p1, wedge::element_stiffness_wedge_p1,
 };
 pub use boundary::{
     DirichletBc, FaceOrder, apply_body_force, apply_dirichlet_row_elimination, apply_point_load,
@@ -394,6 +408,12 @@ pub use error_estimator::{ZzIndicator, compute_zz_indicator};
 // Task 3451: buckling eigensolver kernel — shift-invert Lanczos + dense fallback.
 // PRD: docs/prds/v0_5/buckling-eigensolver.md §5 / §13 phase 2 task β.
 pub use eigensolve::{EigenSolverOptions, EigenSolverResult, solve_eigen_dense, solve_eigen_shift_invert};
+// Task 3452: P1-tet K_g element kernel + global assembly + shell/hex/wedge stubs.
+// PRD: docs/prds/v0_5/buckling-eigensolver.md §13 task γ.
+pub use geometric_stiffness::{
+    InitialStress3, geometric_element_stiffness_hex_p1, geometric_element_stiffness_shell,
+    geometric_element_stiffness_tet_p1, geometric_element_stiffness_wedge_p1,
+};
 pub use solver::{CgResult, CgSolverOptions, SolverMode, solve_cg, solve_cg_warm};
 pub use warm_state::{CgWarmState, solve_cg_with_warm_state};
 // Task 2987: 2D cross-section meshing surface for the hex/wedge swept-body

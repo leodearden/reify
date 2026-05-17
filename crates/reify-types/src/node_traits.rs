@@ -5,6 +5,11 @@
 //! in `reify-eval`); see `docs/reify-implementation-architecture.md` and
 //! `docs/prds/v0_3/node-traits-unification.md`.
 //!
+//! Also provides [`HasNodeKind`] and [`NodeTraitsMap`] (PRD §5 B1): a per-instance /
+//! per-kind override map with kind-derived fallback, generic over key type so that
+//! `NodeId` (which lives in `reify-eval`) can be used as the key in `reify-runtime`
+//! without violating the crate dependency order.
+//!
 //! ### Trait semantics (§7.6 table)
 //!
 //! | Flag              | Meaning |
@@ -17,6 +22,8 @@
 //! Nothing in this crate or its dependents currently dispatches on these traits.
 //! They are purely declarative scaffolding for downstream scheduler/cache tasks to adopt.
 
+use std::collections::HashMap;
+use std::hash::Hash;
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, Not};
 
 /// Composable execution-trait flags for a node kind.
@@ -170,6 +177,20 @@ pub enum NodeKind {
     ///
     /// See §2.1 "Node Taxonomy" and §7.6 "Node Traits" in
     /// `docs/reify-implementation-architecture.md`.
+    ///
+    /// **PRD §5 B5 gap (open):** Resolution declares `WARM_STARTABLE` here but
+    /// **no producer crate** currently submits a
+    /// `WarmStartableRegistration { kind: NodeKind::Resolution }`. Until a
+    /// Resolution-side `WarmStartable` producer lands (likely in
+    /// `reify-constraints` or a sibling solver-adapter crate),
+    /// `WarmStartableRegistry::from_inventory()` will fail the bidirectional
+    /// [`crate::WarmStartableRegistry`] coextension check in
+    /// `assert_warm_startable_coextensive` on the *declared-without-registered*
+    /// direction. That's why
+    /// `reify_runtime::concurrent::SchedulerConfig.warm_startable_registry`
+    /// defaults to `None`; the production wiring of `from_inventory()` is
+    /// blocked on this gap. Track via PRD §5 B5 in
+    /// `docs/prds/v0_3/node-traits-unification.md`.
     Resolution,
     /// A compute node (e.g. an @optimized FEA/solver computation). Default traits:
     /// `WARM_STARTABLE | COMMITTABLE`.
@@ -217,6 +238,294 @@ impl NodeKind {
             NodeKind::Resolution => NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE),
             NodeKind::Compute => NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE),
         }
+    }
+
+    /// Exhaustive enumeration of every [`NodeKind`] variant.
+    ///
+    /// Iterated by `reify_runtime::assert_warm_startable_coextensive` to check
+    /// that every kind whose `default_traits().contains(NodeTraits::WARM_STARTABLE)`
+    /// has a producer registered in the [`crate::WarmStartableRegistry`] (PRD §5 B5
+    /// / I-3, M-013 fix). A const array is the minimal idiomatic shape for a
+    /// closed 5-variant enum — avoids pulling in `strum` for one iteration site.
+    ///
+    /// Compile-time exhaustiveness is enforced by `_all_exhaustive_guard`
+    /// below: adding a new `NodeKind` variant fails to compile in that match
+    /// arm, prompting the author to also extend this array.
+    pub const ALL: [NodeKind; 5] = [
+        NodeKind::Value,
+        NodeKind::Constraint,
+        NodeKind::Realization,
+        NodeKind::Resolution,
+        NodeKind::Compute,
+    ];
+}
+
+/// Compile-time exhaustiveness guard for [`NodeKind::ALL`].
+///
+/// The match below is exhaustive over `NodeKind` — adding a new variant fails
+/// compilation with a non-exhaustive-match error, which is the build-time
+/// prompt to extend `NodeKind::ALL` accordingly. The function is never
+/// called; its body is type-checked at compile time regardless.
+///
+/// Paired with the `node_kind_all_covers_five_variants` length pin in the
+/// `tests` module below — the const guard catches missing or stale variants
+/// at `cargo check` time, the length pin catches any drift between the const
+/// guard and the slice literal at `cargo test` time. The earlier per-variant
+/// `contains` and duplicate-check tests were dropped after reviewer feedback
+/// noted they were belt-and-suspenders for cases already structurally
+/// prevented by the guard + length pair.
+#[allow(dead_code)]
+const fn _all_exhaustive_guard(k: NodeKind) {
+    match k {
+        NodeKind::Value
+        | NodeKind::Constraint
+        | NodeKind::Realization
+        | NodeKind::Resolution
+        | NodeKind::Compute => {}
+    }
+}
+
+/// Marker trait for keys that can be projected to a [`NodeKind`] discriminant.
+///
+/// Implemented by `reify_eval::cache::NodeId` (orphan-rule-clean host alongside
+/// the existing `From<&NodeId> for NodeKind` bridge in `reify-eval/src/cache.rs`).
+/// Test code may impl this for a local key type to exercise `NodeTraitsMap` in
+/// `reify-types` unit tests without pulling in `reify-eval`. See PRD §5 B1.
+pub trait HasNodeKind {
+    fn node_kind(&self) -> NodeKind;
+}
+
+/// Per-instance / per-kind override map for [`NodeTraits`], with kind-derived
+/// fallback. Bridges audit findings M-002 and M-005 (per-NodeId trait map).
+///
+/// Resolution precedence (see PRD §6 trait-resolution-chain): per-instance >
+/// per-kind > kind-derived `default_traits()`. Default-empty preserves
+/// the prior scheduler behaviour because every `resolve` call still returns
+/// the §7.6 architecture default for un-overridden nodes.
+///
+/// Generic over key type K so the production wiring uses
+/// `NodeTraitsMap<reify_eval::cache::NodeId>` while reify-types unit tests can
+/// substitute a local key (NodeId lives in reify-eval per PRD §11 / task α).
+#[derive(Clone, Debug)]
+pub struct NodeTraitsMap<K: Eq + Hash + HasNodeKind> {
+    instance: HashMap<K, NodeTraits>,
+    by_kind: HashMap<NodeKind, NodeTraits>,
+}
+
+impl<K: Eq + Hash + HasNodeKind> Default for NodeTraitsMap<K> {
+    /// Returns an empty map. Does not require `K: Default` (unlike `#[derive(Default)]`).
+    fn default() -> Self {
+        Self {
+            instance: HashMap::new(),
+            by_kind: HashMap::new(),
+        }
+    }
+}
+
+impl<K: Eq + Hash + HasNodeKind> NodeTraitsMap<K> {
+    /// Creates a new empty `NodeTraitsMap`.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set a per-instance trait override for `node_id`. Overwrites any prior value.
+    ///
+    /// Allows full per-instance freedom — including Constraint+IMMEDIATE per PRD §12 Q-6.
+    pub fn set_instance(&mut self, node_id: K, traits: NodeTraits) {
+        self.instance.insert(node_id, traits);
+    }
+
+    /// Set a per-kind trait override applied to all keys of that kind absent an instance entry.
+    pub fn set_type(&mut self, kind: NodeKind, traits: NodeTraits) {
+        self.by_kind.insert(kind, traits);
+    }
+
+    /// Resolve effective traits, consulting instance → by_kind → kind-derived default in turn.
+    pub fn resolve(&self, node_id: &K) -> NodeTraits {
+        if let Some(t) = self.instance.get(node_id) {
+            return *t;
+        }
+        let kind = node_id.node_kind();
+        if let Some(t) = self.by_kind.get(&kind) {
+            return *t;
+        }
+        kind.default_traits()
+    }
+}
+
+#[cfg(test)]
+mod node_traits_map_tests {
+    use super::*;
+
+    #[derive(Clone, Debug, Eq, Hash, PartialEq)]
+    struct TestKey {
+        id: u32,
+        kind: NodeKind,
+    }
+
+    impl HasNodeKind for TestKey {
+        fn node_kind(&self) -> NodeKind {
+            self.kind
+        }
+    }
+
+    fn value_key(id: u32) -> TestKey {
+        TestKey {
+            id,
+            kind: NodeKind::Value,
+        }
+    }
+    fn compute_key(id: u32) -> TestKey {
+        TestKey {
+            id,
+            kind: NodeKind::Compute,
+        }
+    }
+    fn constraint_key(id: u32) -> TestKey {
+        TestKey {
+            id,
+            kind: NodeKind::Constraint,
+        }
+    }
+
+    #[test]
+    fn empty_map_resolves_to_kind_derived_default() {
+        let m = NodeTraitsMap::<TestKey>::default();
+        assert_eq!(m.resolve(&value_key(0)), NodeTraits::IMMEDIATE);
+        assert_eq!(
+            m.resolve(&compute_key(0)),
+            NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE)
+        );
+        assert_eq!(m.resolve(&constraint_key(0)), NodeTraits::empty());
+    }
+
+    #[test]
+    fn set_type_resolves_to_type_value_for_matching_kind() {
+        let mut m = NodeTraitsMap::<TestKey>::default();
+        m.set_type(NodeKind::Compute, NodeTraits::PROGRESSIVE);
+        assert_eq!(m.resolve(&compute_key(1)), NodeTraits::PROGRESSIVE);
+    }
+
+    #[test]
+    fn set_type_isolates_other_kinds() {
+        let mut m = NodeTraitsMap::<TestKey>::default();
+        m.set_type(NodeKind::Compute, NodeTraits::PROGRESSIVE);
+        // Value default unaffected
+        assert_eq!(m.resolve(&value_key(1)), NodeTraits::IMMEDIATE);
+    }
+
+    #[test]
+    fn set_instance_resolves_to_instance_value() {
+        let mut m = NodeTraitsMap::<TestKey>::default();
+        let key = compute_key(7);
+        m.set_instance(
+            key.clone(),
+            NodeTraits::PROGRESSIVE.union(NodeTraits::COMMITTABLE),
+        );
+        assert_eq!(
+            m.resolve(&key),
+            NodeTraits::PROGRESSIVE.union(NodeTraits::COMMITTABLE)
+        );
+    }
+
+    #[test]
+    fn instance_wins_over_type_wins_over_default() {
+        let mut m = NodeTraitsMap::<TestKey>::default();
+        let x = NodeTraits::WARM_STARTABLE;
+        let y = NodeTraits::PROGRESSIVE;
+        m.set_type(NodeKind::Compute, x);
+        let key_42 = compute_key(42);
+        let key_99 = compute_key(99);
+        m.set_instance(key_42.clone(), y);
+        assert_eq!(m.resolve(&key_42), y);
+        assert_eq!(m.resolve(&key_99), x);
+        // Value kind falls back to kind default (unaffected by Compute type override)
+        assert_eq!(m.resolve(&value_key(0)), NodeTraits::IMMEDIATE);
+    }
+
+    #[test]
+    fn set_instance_isolates_other_node_ids() {
+        let mut m = NodeTraitsMap::<TestKey>::default();
+        let key_a = compute_key(1);
+        let key_b = compute_key(2);
+        m.set_instance(key_a, NodeTraits::PROGRESSIVE);
+        // key_b resolves to Compute kind default
+        assert_eq!(
+            m.resolve(&key_b),
+            NodeTraits::WARM_STARTABLE.union(NodeTraits::COMMITTABLE)
+        );
+    }
+
+    #[test]
+    fn set_type_overwrites_previous_value() {
+        let mut m = NodeTraitsMap::<TestKey>::default();
+        m.set_type(NodeKind::Compute, NodeTraits::IMMEDIATE);
+        m.set_type(NodeKind::Compute, NodeTraits::PROGRESSIVE);
+        assert_eq!(m.resolve(&compute_key(0)), NodeTraits::PROGRESSIVE);
+    }
+
+    #[test]
+    fn set_instance_overwrites_previous_value() {
+        let mut m = NodeTraitsMap::<TestKey>::default();
+        let key = compute_key(5);
+        m.set_instance(key.clone(), NodeTraits::IMMEDIATE);
+        m.set_instance(key.clone(), NodeTraits::PROGRESSIVE);
+        assert_eq!(m.resolve(&key), NodeTraits::PROGRESSIVE);
+    }
+
+    #[test]
+    fn set_instance_constraint_immediate_override_is_returned_verbatim() {
+        // Q-6 resolution: per-instance Constraint+IMMEDIATE is allowed without
+        // any code-level ceiling — resolve returns the instance value verbatim.
+        let mut m = NodeTraitsMap::<TestKey>::default();
+        let key = constraint_key(1);
+        m.set_instance(key.clone(), NodeTraits::IMMEDIATE);
+        assert_eq!(m.resolve(&key), NodeTraits::IMMEDIATE);
+    }
+
+    #[test]
+    fn default_is_empty_for_both_maps() {
+        let m = NodeTraitsMap::<TestKey>::default();
+        // Sanity: no stale entries; each kind falls back to default_traits()
+        assert_eq!(m.resolve(&value_key(0)), NodeKind::Value.default_traits());
+        assert_eq!(
+            m.resolve(&compute_key(0)),
+            NodeKind::Compute.default_traits()
+        );
+        assert_eq!(
+            m.resolve(&constraint_key(0)),
+            NodeKind::Constraint.default_traits()
+        );
+        assert_eq!(
+            m.resolve(&TestKey {
+                id: 0,
+                kind: NodeKind::Realization
+            }),
+            NodeKind::Realization.default_traits()
+        );
+        assert_eq!(
+            m.resolve(&TestKey {
+                id: 0,
+                kind: NodeKind::Resolution
+            }),
+            NodeKind::Resolution.default_traits()
+        );
+    }
+
+    #[test]
+    fn new_is_equivalent_to_default() {
+        // NodeTraitsMap::new() and ::default() must be interchangeable constructors.
+        // Covers the public `new()` method so it doesn't ship as untested surface area.
+        let m = NodeTraitsMap::<TestKey>::new();
+        assert_eq!(m.resolve(&value_key(0)), NodeKind::Value.default_traits());
+        assert_eq!(
+            m.resolve(&compute_key(0)),
+            NodeKind::Compute.default_traits()
+        );
+        assert_eq!(
+            m.resolve(&constraint_key(0)),
+            NodeKind::Constraint.default_traits()
+        );
     }
 }
 
@@ -417,5 +726,34 @@ mod tests {
             NodeKind::Compute.default_traits(),
             NodeTraits::WARM_STARTABLE | NodeTraits::COMMITTABLE
         );
+    }
+
+    // --- NodeKind::ALL exhaustive const slice (PRD §5 B5 / I-3) ---
+
+    /// Distinct-variant pin on [`NodeKind::ALL`]: paired with the compile-time
+    /// `_all_exhaustive_guard` match (in this file, above) this is sufficient
+    /// to catch every realistic drift mode — adding a new variant fails
+    /// compilation in the guard, removing-and-not-shortening-`ALL` fails
+    /// compilation in the guard, and shrinking or duplicating an entry in
+    /// `ALL` fails this distinct-set pin (a length-only check would accept
+    /// e.g. `[Value, Value, Constraint, Realization, Resolution]`, silently
+    /// dropping Compute from the assertion's iteration).
+    #[test]
+    fn node_kind_all_covers_five_distinct_variants() {
+        // ALL must enumerate the closed 5-variant universe used by the
+        // `assert_warm_startable_coextensive` iteration in reify-runtime
+        // (PRD §5 B5). Collecting into a HashSet pins both cardinality and
+        // distinctness in one step.
+        let seen: std::collections::HashSet<NodeKind> = NodeKind::ALL.iter().copied().collect();
+        assert_eq!(seen.len(), 5);
+        for expected in [
+            NodeKind::Value,
+            NodeKind::Compute,
+            NodeKind::Constraint,
+            NodeKind::Realization,
+            NodeKind::Resolution,
+        ] {
+            assert!(seen.contains(&expected), "ALL missing {expected:?}");
+        }
     }
 }

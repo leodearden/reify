@@ -16,6 +16,22 @@ use crate::{AuditContext, EvidenceRef, Finding, GitCommit, Pattern, Severity, Ta
 /// this exact string so the keys line up.
 const MAIN_BASE: &str = "main";
 
+/// Production SQL used by [`has_task_completed_event`] to corroborate a
+/// merged task's `task_completed` event in runs.db. Hoisted to a `pub const`
+/// so the integration test `p5::tests::runs_db_schema_pin` can pin the test
+/// schema against the exact string the detector executes — preventing schema
+/// and query drift.
+///
+/// # Visibility note
+/// This constant is exposed as `pub` solely to allow the integration test
+/// `p5::tests::runs_db_schema_pin` (a separate compilation unit) to reference
+/// it. It is **not** part of the stable public API of this crate;
+/// `#[doc(hidden)]` removes it from rendered rustdoc and IDE autocomplete
+/// while keeping it linkable from the separate-crate integration test.
+#[doc(hidden)]
+pub const PRODUCTION_QUERY: &str =
+    "SELECT 1 FROM events WHERE task_id = ? AND event_type = 'task_completed' LIMIT 1";
+
 /// Run the P5 detector across every `status="done"` task in
 /// `ctx.task_metadata`. Returns one [`Finding`] per phantom-done task.
 ///
@@ -33,55 +49,67 @@ const MAIN_BASE: &str = "main";
 ///    cite each contributing sibling SHA via `EvidenceRef::Commit`.
 ///
 /// Mismatches that survive both guards produce `Severity::High`.
-// G-allow: F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md — defensive; current caller count is incidental (script name-collision heuristic may shadow this via stdlib `check`)
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     check_with_target(ctx, ctx.target_task_id.as_deref())
 }
 
 /// Single-task entry point for the D-1 dark-factory pre-done hook
 /// (`docs/architecture-audit/f-infra-design.md` §3 + §11). Scopes the
-/// otherwise-identical [`check`] pass to one `task_id` so the orchestrator
-/// can call us synchronously before flipping a task to `done` without
-/// auditing its entire backlog.
+/// detector to one `task_id` so the orchestrator can call us synchronously
+/// before flipping a task to `done` without auditing its entire backlog.
 ///
-/// Hot-path note: the D-1 hook fires on every status flip, so this wrapper
-/// passes `target_task_id` through to the inner routine without cloning
-/// the `task_metadata` HashMap — at backlog sizes of hundreds of tasks the
-/// clone would dominate the per-flip cost while the inner filter already
-/// skips non-target rows in O(n) anyway.
+/// Hot path: D-1 fires on every status flip. Direct HashMap lookup keeps
+/// this wrapper O(1) rather than the O(n) linear scan that `check_with_target`
+/// does across all rows.
 ///
 /// Slice-1 ships the wrapper; T-4 will host the CLI subprocess that the
 /// hook actually invokes.
-// G-allow: F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md
 pub fn check_pre_done(ctx: &AuditContext, task_id: &str) -> Vec<Finding> {
-    check_with_target(ctx, Some(task_id))
+    let Some(meta) = ctx.task_metadata.get(task_id) else {
+        return vec![];
+    };
+    check_task(ctx, meta)
 }
 
-/// Shared inner routine for [`check`] and [`check_pre_done`]. Borrows the
-/// context (no clone of `task_metadata`) and threads the optional
-/// single-task override through the filter so both entry points share one
-/// code path for the P5 invariant.
+/// Inner loop for the [`check`] periodic-sweep entry point. Iterates all
+/// `status="done"` tasks in `ctx.task_metadata`, optionally restricted to
+/// `target_task_id` when the caller supplies a scoped sweep.
+///
+/// [`check_pre_done`] deliberately does NOT route through this function — it
+/// uses a direct O(1) `ctx.task_metadata.get(task_id)` HashMap lookup so the
+/// D-1 hot path stays constant-time rather than paying the O(n) iteration cost
+/// of this loop. Borrows the context (no clone of `task_metadata`).
 fn check_with_target(ctx: &AuditContext, target_task_id: Option<&str>) -> Vec<Finding> {
     let mut findings = Vec::new();
 
     for meta in ctx.task_metadata.values() {
-        if meta.status != "done" {
-            continue;
-        }
         if let Some(target) = target_task_id
             && meta.task_id != target
         {
             continue;
         }
 
-        if let Some(finding) = check_one(ctx, meta) {
-            findings.push(finding);
-        }
-        if let Some(finding) = check_gitignored(ctx, meta) {
-            findings.push(finding);
-        }
+        findings.extend(check_task(ctx, meta));
     }
 
+    findings
+}
+
+/// Per-task pass set shared by [`check_pre_done`] (D-1 hot path, O(1) lookup)
+/// and the inner loop of [`check_with_target`] (periodic sweep, O(n) iteration).
+/// Centralising the pass list here prevents drift when future per-task detectors
+/// join the per-task pass set — they get added in exactly one place.
+fn check_task(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Finding> {
+    if meta.status != "done" {
+        return vec![];
+    }
+    let mut findings = Vec::new();
+    if let Some(f) = check_one(ctx, meta) {
+        findings.push(f);
+    }
+    if let Some(f) = check_gitignored(ctx, meta) {
+        findings.push(f);
+    }
     findings
 }
 
@@ -102,7 +130,7 @@ fn check_gitignored(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> 
         return None;
     }
     Some(Finding {
-        pattern: Pattern::P5PhantomDone,
+        pattern: Pattern::P5MetadataFilesGitignored,
         severity: Severity::Medium,
         task_id: meta.task_id.clone(),
         summary:
@@ -179,6 +207,15 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
         }
     }
 
+    // No files claimed → no git provenance to corroborate; treat as clean for
+    // the git-diff leg only. The runs.db check above was already decisive for
+    // kind="merged" tasks: if that check passed (Ok(true)), the task is
+    // corroborated by the orchestrator record even without a file-list. Only
+    // gate the expensive git-diff work that follows.
+    if meta.files.is_empty() {
+        return None;
+    }
+
     // Corroboration (b) — primary git check. The claimed commit's diff
     // against main must cover every metadata.files entry. For
     // kind="found_on_main" with no `commit` field (the work was discovered
@@ -197,8 +234,13 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
     // Cargo.lock — and every other metadata.files path was corroborated by
     // the primary diff — main has merely absorbed an unrelated dependency
     // bump after our task wrote its lockfile. Not phantom-done.
+    // Precondition: meta.files must have more than one entry so that "every
+    // other entry corroborates" is a meaningful claim. When the task claims
+    // only Cargo.lock (no other entries), the precondition is violated and
+    // we fall through to sibling-FF rescue, then High (erring on the side of
+    // operator visibility for an unverifiable claim).
     // Memory: project_post_merge_equivalence_false_positive_cargo_lock.md.
-    if is_cargo_lock_only(&missing) {
+    if is_cargo_lock_only(&missing, meta.files.len()) {
         return Some(Finding {
             pattern: Pattern::P5PhantomDone,
             severity: Severity::Low,
@@ -276,9 +318,7 @@ fn has_task_completed_event(
     ctx: &AuditContext,
     task_id: &str,
 ) -> Result<bool, rusqlite::Error> {
-    let mut stmt = ctx.conn.prepare(
-        "SELECT 1 FROM events WHERE task_id = ? AND event_type = 'task_completed' LIMIT 1",
-    )?;
+    let mut stmt = ctx.conn.prepare(PRODUCTION_QUERY)?;
     match stmt.query_row::<i64, _, _>(rusqlite::params![task_id], |row| row.get(0)) {
         Ok(_) => Ok(true),
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
@@ -299,8 +339,15 @@ fn files_missing_from(files: &[String], covered: &[String]) -> Vec<String> {
 /// nested — e.g. `fuzz/Cargo.lock`, `examples/foo/Cargo.lock`). Matches by
 /// the path's final segment so nested lockfiles still benefit from the
 /// downgrade.
-fn is_cargo_lock_only(missing: &[String]) -> bool {
-    missing.len() == 1
+///
+/// Precondition: `total_files > 1`. At least one other `metadata.files` entry
+/// must exist for the "every other entry corroborates" justification to hold.
+/// Pass `meta.files.len()` at the call site; when the task claims only
+/// Cargo.lock, this returns `false` and the caller falls through to the
+/// sibling-FF rescue path.
+fn is_cargo_lock_only(missing: &[String], total_files: usize) -> bool {
+    total_files > 1
+        && missing.len() == 1
         && std::path::Path::new(&missing[0]).file_name()
             == Some(std::ffi::OsStr::new("Cargo.lock"))
 }
@@ -316,5 +363,77 @@ fn build_high_finding(meta: &TaskMetadata, missing: &[String], summary: &str) ->
         evidence: vec![EvidenceRef::MetadataFiles {
             entries: missing.to_vec(),
         }],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{DoneProvenance, MockGitOps, MockJCodemunchOps};
+    use rusqlite::Connection;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    /// Pins the empty-files short-circuit at `p5_phantom_done.rs:215`.
+    ///
+    /// A `done`/`merged` task whose `metadata.files` is empty has no git
+    /// provenance to corroborate beyond the runs.db `task_completed` row. The
+    /// short-circuit returns `None` from `check_one`; this test asserts that
+    /// `check_pre_done` emits zero findings (no panic, no spurious High).
+    ///
+    /// The runs.db `task_completed` row is required: without it, the runs.db
+    /// leg returns `Ok(false)` and emits a High before reaching the empty-files
+    /// guard, which would mask the invariant being pinned here.
+    #[test]
+    fn empty_files_returns_no_findings() {
+        let conn = Connection::open_in_memory().expect("open in-memory runs.db");
+        conn.execute_batch("CREATE TABLE events (task_id TEXT, event_type TEXT);")
+            .expect("create events table");
+        conn.execute(
+            "INSERT INTO events (task_id, event_type) VALUES ('9001', 'task_completed')",
+            [],
+        )
+        .expect("insert task_completed event");
+
+        let git = MockGitOps::new();
+        let jc = MockJCodemunchOps::new();
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "9001".to_string(),
+            TaskMetadata {
+                task_id: "9001".to_string(),
+                status: "done".to_string(),
+                files: vec![],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("deadbeef".to_string()),
+                    note: None,
+                }),
+                title: "empty-files done task".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = check_pre_done(&ctx, "9001");
+        assert!(
+            findings.is_empty(),
+            "empty-files done task must yield no findings; got {findings:?}"
+        );
     }
 }

@@ -78,6 +78,59 @@ pub fn parse_with_prelude_enums(
     }
 }
 
+// ── Tree-walk helpers ────────────────────────────────────────────────────────
+
+/// Walk `node`'s descendants depth-first and return the first node whose
+/// `is_error()` or `is_missing()` is true, pruning subtrees where
+/// `has_error()` is false for O(1) early-out on clean branches.
+///
+/// Uses an iterative `TreeCursor` pre-order walk (goto_first_child /
+/// goto_next_sibling / goto_parent) rather than recursion, so deeply-nested
+/// type-arg trees cannot cause a stack overflow — matching the iterative
+/// tree-walk pattern used elsewhere in this file.
+///
+/// Uses the same `is_error() || is_missing()` predicate as the test-only
+/// `count_errors` helper (ts_parser.rs test module) and the production guards
+/// in struct/connect lowering — keeping the predicate shape canonical.
+///
+/// Returns `None` only when the subtree contains no ERROR or MISSING node.
+/// Under the `has_error()` precondition at its sole call site this cannot
+/// happen, so `None` is a purely defensive fallback.
+fn first_error_or_missing_descendant(node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
+    if node.is_error() || node.is_missing() {
+        return Some(node);
+    }
+    if !node.has_error() {
+        return None; // O(1) prune — no error anywhere in this subtree
+    }
+    // Iterative pre-order DFS: descend into subtrees that contain an error,
+    // skip clean subtrees in O(1), and terminate when we ascend back to `node`.
+    let mut cursor = node.walk();
+    if !cursor.goto_first_child() {
+        return None; // defensive: has_error() true but node has no children
+    }
+    loop {
+        let cur = cursor.node();
+        if cur.is_error() || cur.is_missing() {
+            return Some(cur);
+        }
+        // Descend only into subtrees that contain an error (O(1) per node).
+        if cur.has_error() && cursor.goto_first_child() {
+            continue;
+        }
+        // No error in this subtree (or no children); advance to next sibling,
+        // ascending as needed until we find one or return to the starting node.
+        loop {
+            if cursor.goto_next_sibling() {
+                break;
+            }
+            if !cursor.goto_parent() || cursor.node() == node {
+                return None;
+            }
+        }
+    }
+}
+
 /// CST → AST lowering context.
 struct Lowering<'a> {
     source: &'a str,
@@ -582,6 +635,30 @@ impl<'a> Lowering<'a> {
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             if child.kind() == "type_arg_list" {
+                // AC#1: recursively scan the type_arg_list subtree for any ERROR
+                // or MISSING node (tree-sitter's has_error() does this in O(1)).
+                // Mirrors the "ERROR" => arm in lower_source_file (ts_parser.rs:305-313).
+                // Emit exactly ONE aggregated diagnostic per malformed type_arg_list to
+                // avoid per-ERROR-node spam when recovery produces multiple fragments.
+                // Do NOT early-return: well-formed siblings of the error node are still
+                // lowered so callers see a partial AST instead of an empty type_args list.
+                // ERROR-bearing children naturally fail to match any inner kind branch and
+                // are skipped; only the aggregated diagnostic is emitted.
+                //
+                // Task 3725: narrow the diagnostic span to the first ERROR/MISSING
+                // descendant so the span does not cover well-formed sibling arguments.
+                // first_error_or_missing_descendant prunes clean subtrees in O(1) via
+                // has_error(); the fallback to self.span(child) is purely defensive —
+                // has_error() guarantees at least one ERROR/MISSING exists.
+                if child.has_error() {
+                    let fault_span = first_error_or_missing_descendant(child)
+                        .map(|n| self.span(n))
+                        .unwrap_or_else(|| self.span(child));
+                    self.push_error(
+                        "syntax error in type argument list".to_string(),
+                        fault_span,
+                    );
+                }
                 let mut inner_cursor = child.walk();
                 for inner in child.named_children(&mut inner_cursor) {
                     if inner.kind() == "type_expr"
@@ -597,6 +674,48 @@ impl<'a> Lowering<'a> {
                         let value: u32 = text.parse().unwrap_or(0);
                         args.push(TypeExpr {
                             kind: TypeExprKind::IntegerLiteral(value),
+                            span: self.span(inner),
+                        });
+                    } else if inner.kind() == "auto_type_arg" {
+                        // Locate the auto_keyword child to check for the free modifier.
+                        // Reuses the same child_by_field_name("modifier").is_some() pattern as
+                        // lower_param (ts_parser.rs:1582-1592) — auto_keyword is shared between
+                        // param-default and type-arg positions (grammar.js:433-436, 654-657).
+                        let mut kw_cursor = inner.walk();
+                        let kw_opt = inner
+                            .named_children(&mut kw_cursor)
+                            .find(|n| n.kind() == "auto_keyword");
+                        // Grammar invariant (grammar.js:663-667): tree-sitter-reify always
+                        // inserts a MISSING `auto_keyword` child for malformed `auto_type_arg`
+                        // nodes (verified by a 15-input CST probe; task 3724), so kw_opt is
+                        // always Some under any currently-known input.  The push_error else-arm
+                        // is defense-in-depth, mirroring the sibling bound-missing guard
+                        // (lines 704-710): if a future grammar change ever weakens the
+                        // MISSING-node invariant, release users see the diagnostic instead of
+                        // a silently-dropped AST entry.
+                        let Some(kw) = kw_opt else {
+                            self.push_error(
+                                "auto type-arg missing auto keyword".to_string(),
+                                self.span(inner),
+                            );
+                            continue;
+                        };
+                        let free = kw.child_by_field_name("modifier").is_some();
+                        // The grammar guarantees a `bound` field (bare identifier) on every
+                        // well-formed auto_type_arg. Guard defensively: if error recovery
+                        // produces an auto_type_arg without a bound, emit a diagnostic and
+                        // skip the entry rather than propagating an empty string into the
+                        // AST (which would corrupt Display output and collect_type_expr_names).
+                        let Some(bound_node) = inner.child_by_field_name("bound") else {
+                            self.push_error(
+                                "auto type-arg missing bound identifier".to_string(),
+                                self.span(inner),
+                            );
+                            continue;
+                        };
+                        let bound = self.node_text(bound_node).to_string();
+                        args.push(TypeExpr {
+                            kind: TypeExprKind::Auto { free, bound },
                             span: self.span(inner),
                         });
                     }
@@ -1359,6 +1478,13 @@ impl<'a> Lowering<'a> {
                 "meta",
                 self.lower_meta_block(child).map(MemberDecl::MetaBlock)
             ),
+            "match_arm_decl_block" => check_and_lower!(
+                self,
+                child,
+                "match arm decl block",
+                self.lower_match_arm_decl_group(child)
+                    .map(MemberDecl::MatchArmDeclGroup)
+            ),
             "forall_statement" => check_and_lower!(
                 self,
                 child,
@@ -1679,7 +1805,7 @@ impl<'a> Lowering<'a> {
         })
     }
 
-    fn lower_sub(&self, node: tree_sitter::Node) -> Option<SubDecl> {
+    fn lower_sub(&mut self, node: tree_sitter::Node) -> Option<SubDecl> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
 
@@ -1725,6 +1851,43 @@ impl<'a> Lowering<'a> {
 
         let where_clause = self.lower_where_clause(node);
 
+        // Lower the optional `specialization_body` field (task 3571).
+        // The grammar (task 3569) admits `sub name : StructName { body }` where
+        // `specialization_body` contains `repeat(choice($.param_assignment, $._member))`.
+        //
+        // Dispatch strategy:
+        // - `_member` children → `lower_member` (single source of truth; inherits all
+        //   current and future variants automatically, including ERROR-node handling).
+        // - `param_assignment` children → silently skipped for now.
+        //   TODO(task 3573): lower param_assignment once a MemberDecl variant or
+        //   let-rewrite is decided for the `name = value where?` form.
+        // - Absent body field (instantiation/collection/bare-colon forms) → `None`.
+        //
+        // Note: this loop intentionally does NOT run the annotation/pragma machinery
+        // (`pending_annotations` / `pragmas`) used by `lower_members`. Pragmas or
+        // `@annotation` markers written inside a specialization body are silently
+        // dropped. This is acceptable in practice because the validator forbids
+        // `param`/`port`/`sub` (the only members that carry annotations in normal
+        // structures) and `let`/`constraint` (the permitted members) do not
+        // conventionally carry annotations. If future usage demands annotation
+        // propagation here, replace this loop with a call to `lower_members` and
+        // filter the result.
+        let body = node.child_by_field_name("body").map(|body_node| {
+            let mut members = Vec::new();
+            let mut cursor = body_node.walk();
+            for child in body_node.children(&mut cursor) {
+                if child.kind() == "param_assignment" {
+                    // TODO(task 3573): lower param_assignment once a MemberDecl variant
+                    // or let-rewrite is decided for the `name = value where?` form.
+                    continue;
+                }
+                if let Some(member) = self.lower_member(child) {
+                    members.push(member);
+                }
+            }
+            members
+        });
+
         Some(SubDecl {
             name,
             structure_name,
@@ -1732,9 +1895,7 @@ impl<'a> Lowering<'a> {
             args,
             is_collection,
             where_clause,
-            // Grammar does not yet produce specialization-scope bodies; see
-            // SubDecl docs and task 2368 plan.
-            body: None,
+            body,
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
@@ -2419,6 +2580,109 @@ impl<'a> Lowering<'a> {
         })
     }
 
+    fn lower_match_arm_decl_group(
+        &self,
+        node: tree_sitter::Node,
+    ) -> Option<MatchArmDeclGroupDecl> {
+        let discriminant_node = node.child_by_field_name("discriminant")?;
+        let discriminant = self.lower_expr(discriminant_node).or_else(|| {
+            // A well-formed discriminant node that lower_expr cannot produce an
+            // Expr for indicates a grammar/lowering mismatch.  Surface it rather
+            // than silently yielding a phantom non-exhaustive-match later.
+            self.push_error(
+                format!(
+                    "unable to lower match discriminant: {}",
+                    self.node_text(discriminant_node)
+                ),
+                self.span(discriminant_node),
+            );
+            None
+        })?;
+
+        let mut arms = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "match_arm_decl_arm" {
+                match self.lower_match_arm_decl_arm(child) {
+                    Some(arm) => arms.push(arm),
+                    None if !child.has_error() => {
+                        // Arm has no CST error but lowering failed — grammar/lowering
+                        // mismatch.  Push a diagnostic so the mismatch surfaces rather
+                        // than producing a silent non-exhaustive match.
+                        self.push_error(
+                            format!(
+                                "unable to lower match arm: {}",
+                                self.node_text(child)
+                            ),
+                            self.span(child),
+                        );
+                    }
+                    None => {} // child.has_error() — already caught by check_and_lower! at dispatch
+                }
+            }
+        }
+
+        Some(MatchArmDeclGroupDecl {
+            discriminant,
+            arms,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
+    }
+
+    fn lower_match_arm_decl_arm(
+        &self,
+        node: tree_sitter::Node,
+    ) -> Option<MatchArmDeclArmDecl> {
+        let pattern_node = node.child_by_field_name("pattern")?;
+        let member_node = node.child_by_field_name("member")?;
+
+        // Collect patterns from the match_pattern node.
+        // Pattern is either '_' (wildcard) or one or more identifiers separated by '|'.
+        let mut patterns = Vec::new();
+        let pattern_text = self.node_text(pattern_node).trim();
+
+        if pattern_text == "_" {
+            patterns.push("_".to_string());
+        } else {
+            // Iterate children (identifiers) of the match_pattern node.
+            let mut cursor = pattern_node.walk();
+            for child in pattern_node.children(&mut cursor) {
+                if child.kind() == "identifier" {
+                    patterns.push(self.node_text(child).to_string());
+                }
+            }
+        }
+
+        if patterns.is_empty() {
+            return None;
+        }
+
+        // Build a SubDecl from the match_arm_sub_decl node.
+        // The grammar restricts match_arm_sub_decl to: 'sub', name, ':', structure_name.
+        // No type_args, args, where_clause, or body are permitted.
+        let name_node = member_node.child_by_field_name("name")?;
+        let structure_name_node = member_node.child_by_field_name("structure_name")?;
+
+        let sub_decl = SubDecl {
+            name: self.node_text(name_node).to_string(),
+            structure_name: self.node_text(structure_name_node).to_string(),
+            type_args: vec![],
+            args: vec![],
+            is_collection: false,
+            where_clause: None,
+            body: None,
+            span: self.span(member_node),
+            content_hash: self.content_hash(member_node),
+        };
+
+        Some(MatchArmDeclArmDecl {
+            patterns,
+            member: Box::new(MemberDecl::Sub(sub_decl)),
+            span: self.span(node),
+        })
+    }
+
     fn lower_quantity_literal(&self, node: tree_sitter::Node) -> Option<Expr> {
         let value_node = node.child_by_field_name("value")?;
         let unit_node = node.child_by_field_name("unit")?;
@@ -2783,7 +3047,7 @@ mod tests {
                 MemberDecl::MetaBlock(_) => "meta".into(),
                 MemberDecl::ForallConnect(_) => "forall_connect".into(),
                 MemberDecl::ForallConstraint(_) => "forall_constraint".into(),
-                // Not produced by the tree-sitter parser yet (task 2372).
+                // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(_) => "match_arm_decl_group".into(),
             })
             .collect();
@@ -2969,7 +3233,7 @@ mod tests {
                 MemberDecl::MetaBlock(m) => m.span,
                 MemberDecl::ForallConnect(f) => f.span,
                 MemberDecl::ForallConstraint(f) => f.span,
-                // Not produced by the tree-sitter parser yet (task 2372).
+                // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => g.span,
             };
             assert!(span.start < span.end, "member {} span empty", i);
@@ -3101,7 +3365,7 @@ mod tests {
                         text
                     );
                 }
-                // Not produced by the tree-sitter parser yet (task 2372).
+                // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(_) => {}
             }
         }
@@ -3160,7 +3424,7 @@ mod tests {
                 MemberDecl::MetaBlock(m) => (m.span, m.content_hash),
                 MemberDecl::ForallConnect(f) => (f.span, f.content_hash),
                 MemberDecl::ForallConstraint(f) => (f.span, f.content_hash),
-                // Not produced by the tree-sitter parser yet (task 2372).
+                // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => (g.span, g.content_hash),
             };
             let text = &source[span.start as usize..span.end as usize];
@@ -3273,7 +3537,7 @@ mod tests {
                 MemberDecl::MetaBlock(m) => (m.content_hash, m.span),
                 MemberDecl::ForallConnect(f) => (f.content_hash, f.span),
                 MemberDecl::ForallConstraint(f) => (f.content_hash, f.span),
-                // Not produced by the tree-sitter parser yet (task 2372).
+                // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => (g.content_hash, g.span),
             };
             let (hash_b, span_b) = match m_b {
@@ -3292,7 +3556,7 @@ mod tests {
                 MemberDecl::MetaBlock(m) => (m.content_hash, m.span),
                 MemberDecl::ForallConnect(f) => (f.content_hash, f.span),
                 MemberDecl::ForallConstraint(f) => (f.content_hash, f.span),
-                // Not produced by the tree-sitter parser yet (task 2372).
+                // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => (g.content_hash, g.span),
             };
             assert_eq!(hash_a, hash_b, "member {} hash determinism", i);

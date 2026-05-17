@@ -4,6 +4,7 @@
 //! is referenced at a use-site (not at its definition site).
 
 use reify_test_support::{compile_source, errors_only, warnings_only};
+use reify_types::CompiledExprKind;
 
 /// Helper: filter warnings whose message contains the given substring.
 fn deprecation_warnings<'a>(
@@ -143,6 +144,119 @@ fn deprecated_function_called_emits_warning() {
         warns[0].message.contains("Use new_calc"),
         "expected warning to mention 'Use new_calc', got: {}",
         warns[0].message
+    );
+}
+
+// ── Step 3b: deprecated function called via default-padding emits warning ────
+
+#[test]
+fn deprecated_function_called_via_default_padding_emits_warning() {
+    // A zero-arg call to a fn with one defaulted param forces OverloadResolution::NoMatch →
+    // try_default_padding, which historically skipped the deprecation check.
+    let source = r#"
+        @deprecated("Use new_calc")
+        fn old_calc(x: Real = 1.0) -> Real { x }
+
+        structure S {
+            let y = old_calc()
+        }
+    "#;
+    let module = compile_source(source);
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+
+    let warns = deprecation_warnings(&module, "old_calc");
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly one deprecation warning for old_calc (via default-padding), got: {:?}",
+        warns
+    );
+    assert!(
+        warns[0].message.contains("Use new_calc"),
+        "expected warning to mention 'Use new_calc', got: {}",
+        warns[0].message
+    );
+    // Format parity with the Resolved arm (deprecation_warning_message_format_contract).
+    assert_eq!(
+        &warns[0].message,
+        "use of deprecated function 'old_calc': Use new_calc",
+        "message format must match the explicit-call path"
+    );
+
+    // ── Amendment: path-distinguishing arg-count assertion (reviewer Suggestion 1) ──
+    // The zero-arg call `old_calc()` forces OverloadResolution::NoMatch →
+    // try_default_padding, which materialises the defaulted parameter.  If
+    // overload resolution were ever changed to Resolve a zero-arg call directly
+    // against a fully-defaulted signature, `compiled_args` would be empty and
+    // the padded default would never be appended — args.len() would be 0, not 1.
+    // This assertion catches that regression silently replacing the fixed code path.
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("structure S must be present in the compiled module");
+    let y_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "y")
+        .expect("let 'y' should be a value cell in structure S");
+    let y_expr = y_cell
+        .default_expr
+        .as_ref()
+        .expect("let 'y' should have a compiled expression");
+    match &y_expr.kind {
+        CompiledExprKind::UserFunctionCall { function_name, args } => {
+            assert_eq!(function_name, "old_calc", "compiled call should target old_calc");
+            assert_eq!(
+                args.len(),
+                1,
+                "default-padding must materialise the defaulted arg x=1.0; \
+                 if this is 0, the call was resolved without padding"
+            );
+        }
+        other => panic!("expected UserFunctionCall for 'y', got {:?}", other),
+    }
+
+    // ── Amendment: span check (reviewer Suggestion 2) ─────────────────────
+    // Mirror deprecated_structure_used_as_sub_emits_warning: the warning label
+    // must be anchored at the call site, not at the function definition.
+    // The default-padding branch passes expr.span to emit_deprecation_warning;
+    // this verifies the span behaviour on this specific code path.
+    let label = warns[0]
+        .labels
+        .first()
+        .expect("expected at least one diagnostic label");
+    assert!(
+        !label.span.is_empty(),
+        "expected non-empty span in deprecation label, got: {:?}",
+        label.span
+    );
+    // `old_calc()` (with empty parens) appears exactly once — at the call site.
+    // The definition has `old_calc(x: Real = 1.0)`, never `old_calc()`.
+    let use_site_offset = source
+        .find("old_calc()")
+        .expect("test source must contain 'old_calc()'") as u32;
+    assert!(
+        label.span.start >= use_site_offset,
+        "expected span.start ({}) >= use-site offset ({}); span is anchored before the call",
+        label.span.start,
+        use_site_offset
+    );
+    assert!(
+        (label.span.end as usize) <= source.len(),
+        "expected span.end ({}) <= source.len() ({})",
+        label.span.end,
+        source.len()
+    );
+    let span_text = &source[label.span.start as usize..label.span.end as usize];
+    assert!(
+        span_text.contains("old_calc"),
+        "expected span text to contain 'old_calc', got: {:?}",
+        span_text
     );
 }
 

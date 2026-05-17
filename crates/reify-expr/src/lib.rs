@@ -19,7 +19,8 @@ use std::collections::HashMap;
 use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyPredicateKind,
     DeterminacyState, Diagnostic, DimensionVector, FIELD_ENTITY_PREFIX, FieldSourceKind,
-    PersistentMap, QuantifierKind, Type, UnOp, Value, ValueCellId, ValueMap, quaternion_is_finite,
+    PersistentMap, QuantifierKind, SelectorKind, Type, UnOp, Value, ValueCellId, ValueMap,
+    quaternion_is_finite,
 };
 
 /// Maximum recursion depth for user-defined function calls.
@@ -141,19 +142,44 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
 
         CompiledExprKind::ValueRef(id) => ctx.values.get_or_undef(id),
 
-        CompiledExprKind::CrossSubGeometryRef(id) => {
-            // This variant is consumed by entity.rs before reaching eval (task-3508).
-            // Reaching this arm is a bug — a CrossSubGeometryRef escaped the
-            // compile-time drop site. The debug_assert fires immediately in debug
-            // builds; in release we fall back to Undef (the synthetic cell
-            // `<entity>.<sub>.<member>` has no value cell, so get_or_undef is Undef
-            // regardless).
-            debug_assert!(
-                false,
-                "CrossSubGeometryRef should not reach eval; \
-                 must be consumed by entity.rs bare-let drop site (task-3508)"
-            );
-            ctx.values.get_or_undef(id)
+        CompiledExprKind::CrossSubGeometryRef(_id) => {
+            // This variant must be consumed by the bare-let drop site in
+            // entity.rs (task-3508) before eval_expr is ever invoked. Reaching
+            // this arm means a CrossSubGeometryRef escaped that drop site —
+            // a routing violation, not a normal undef-propagation case.
+            // `unreachable!()` fires identically in debug and release builds,
+            // unlike the former `debug_assert!(false, ...) + get_or_undef` which
+            // silently returned Undef in release and could mask downstream bugs.
+            //
+            // Why a nested CrossSubGeometryRef cannot reach eval_expr (task-3663):
+            //
+            // (a) `CrossSubGeometryRef` always carries `Type::Geometry`.
+            //     `Type::Geometry` values are unrepresentable as value cells —
+            //     entity.rs:1104 explicitly skips value-cell creation for them
+            //     and the runtime invariant `assert_value_cell_types_representable`
+            //     enforces this. A CrossSubGeometryRef nested inside a larger
+            //     expression (e.g. a BinOp) would make the outer expression's type
+            //     depend on `Type::Geometry`, which the type checker rejects with a
+            //     diagnostic and replaces with a poison literal long before the
+            //     compiled tree is handed to eval.
+            //
+            // (b) The sole producer is `try_resolve_cross_sub_geometry_value_ref`
+            //     (reify-compiler/src/expr.rs:256), which fires only for bare
+            //     `self.<sub>.<member>` in the MemberAccess branch — a terminal
+            //     return site. The caller does `return e;` immediately, so the
+            //     CrossSubGeometryRef is always the top-level kind of the compiled
+            //     sub-expression, never a child of a larger operator node.
+            //
+            // (c) Therefore, a CrossSubGeometryRef can only appear as the top-level
+            //     kind of a let binding's rhs. Entity.rs drops it there. If a future
+            //     refactor ever violates premises (a) or (b), this `unreachable!()`
+            //     immediately surfaces the regression in both debug and release builds.
+            // A compiler-side test pinning premise (b) would live in
+            // crates/reify-compiler (outside this task's scope); this comment
+            // is the narrative invariant documentation until that test is added.
+            unreachable!(
+                "CrossSubGeometryRef should be consumed by entity.rs bare-let drop site (task-3508)"
+            )
         }
 
         CompiledExprKind::BinOp { op, left, right } => eval_binop(*op, left, right, ctx),
@@ -567,24 +593,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             Value::Map(map)
         }
 
-        CompiledExprKind::IndexAccess { object, index } => {
-            let obj = eval_expr(object, ctx);
-            let idx = eval_expr(index, ctx);
-            if obj.is_undef() || idx.is_undef() {
-                return Value::Undef;
-            }
-            match (&obj, &idx) {
-                (Value::List(items), Value::Int(i)) => {
-                    if *i < 0 {
-                        return Value::Undef;
-                    }
-                    let i = *i as usize;
-                    items.get(i).cloned().unwrap_or(Value::Undef)
-                }
-                (Value::Map(entries), key) => entries.get(key).cloned().unwrap_or(Value::Undef),
-                _ => Value::Undef,
-            }
-        }
+        CompiledExprKind::IndexAccess { object, index } => eval_index_access(object, index, ctx),
 
         CompiledExprKind::MethodCall {
             object,
@@ -709,10 +718,21 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             ..
         } => eval_quantifier(*kind, variable_id, collection, predicate, ctx),
 
-        // Ad-hoc selector evaluation is handled by the engine (Task 250),
-        // which has access to the geometry kernel. The pure expression
-        // evaluator returns Undef as a placeholder.
-        CompiledExprKind::AdHocSelector { .. } => Value::Undef,
+        // Ad-hoc selector evaluation: @point(x,y,z) is handled here in the
+        // pure-expression evaluator (no kernel required). @face("name") and
+        // @edge("name") require the geometry kernel and are patched by
+        // Engine::post_process_ad_hoc_selectors after eval_expr completes.
+        //
+        // Body extracted into `eval_ad_hoc_selector` to keep this recursive
+        // frame small in debug builds — the [f64; 3] coord buffer and Value
+        // locals would otherwise sit on every `eval_expr` frame and risk
+        // overflowing the 2 MiB test-thread stack at MAX_RECURSION_DEPTH
+        // levels of recursive user-fn evaluation (cf. `eval_quantifier`).
+        CompiledExprKind::AdHocSelector {
+            selector_kind,
+            args,
+            ..
+        } => eval_ad_hoc_selector(selector_kind, args, ctx),
 
         // Reflective-aggregation placeholder (task-2289). This variant is
         // emitted by the compiler for `subject.params` etc. and is expected
@@ -727,7 +747,208 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             );
             Value::Undef
         }
+
+        // task 3540 step-18 (SIR-α): build the structure instance with NO
+        // registry lookup — `type_id`/`type_name`/`version` are baked at
+        // lowering time (reify-expr stays registry-free,
+        // design-decision-2; type_id is the StructureTypeId(0) placeholder,
+        // identity is (name, version) per esc-3540-177 RULING 2+3).
+        // Evaluate every supplied `ordered_arg` in declaration order, then
+        // fill each `default` whose name is NOT covered by an ordered_arg,
+        // evaluated in the SAME `EvalContext` — so a default that is itself
+        // a structure ctor recurses through `eval_expr` and yields a nested
+        // `Value::StructureInstance`. An `Undef` field value is kept in its
+        // own slot: the structure is still constructed (no
+        // `FunctionCall`-style strict whole-value short-circuit).
+        CompiledExprKind::StructureInstanceCtor {
+            type_id,
+            type_name,
+            version,
+            ordered_args,
+            defaults,
+        } => eval_structure_instance_ctor(
+            *type_id,
+            type_name,
+            *version,
+            ordered_args,
+            defaults,
+            ctx,
+        ),
     }
+}
+
+/// Build a `Value::StructureInstance` for a compile-lowered structure
+/// constructor (task 3540 step-18; the eval half of design-decision-2).
+///
+/// Extracted from `eval_expr`'s match arm and marked `#[inline(never)]` on
+/// purpose: the locals here (a `PersistentMap` plus loop temporaries) must
+/// NOT inflate `eval_expr`'s stack frame. `eval_expr` is the hot mutually-
+/// recursive evaluator, and `eval_user_fn_recursion_depth_exceeded` is a
+/// safety test that drives `MAX_RECURSION_DEPTH` (256) deep and asserts the
+/// guard trips *before* the native stack is exhausted. Inlining this body
+/// into every recursive `eval_expr` frame regressed that test into a real
+/// stack overflow; keeping it in a separate non-inlined frame (allocated
+/// only when a ctor is actually evaluated, never on the deep user-fn path)
+/// restores the lean frame the guard relies on.
+///
+/// No registry lookup — reify-expr stays registry-free (design-decision-2);
+/// `type_id` is the `StructureTypeId(0)` placeholder, identity is
+/// `(type_name, version)` per esc-3540-177 RULING 2+3. `ordered_args`
+/// evaluate in declaration order; each `default` whose name is not covered
+/// by an ordered arg fills its slot, evaluated in the SAME `EvalContext`
+/// (so a default that is itself a structure ctor recurses through
+/// `eval_expr` → nested `Value::StructureInstance`). An `Undef` field value
+/// is kept in its own slot — the structure is still constructed (no
+/// `FunctionCall`-style strict whole-value short-circuit).
+#[inline(never)]
+fn eval_structure_instance_ctor(
+    type_id: reify_types::StructureTypeId,
+    type_name: &str,
+    version: u32,
+    ordered_args: &[(String, CompiledExpr)],
+    defaults: &[(String, CompiledExpr)],
+    ctx: &EvalContext,
+) -> Value {
+    let mut fields: PersistentMap<String, Value> = PersistentMap::new();
+    for (name, arg) in ordered_args {
+        fields.insert(name.clone(), eval_expr(arg, ctx));
+    }
+    for (name, def) in defaults {
+        if !fields.contains_key(name) {
+            fields.insert(name.clone(), eval_expr(def, ctx));
+        }
+    }
+    Value::StructureInstance(Box::new(reify_types::StructureInstanceData {
+        type_id,
+        type_name: type_name.to_string(),
+        version,
+        fields,
+    }))
+}
+
+/// Evaluate `CompiledExprKind::IndexAccess`. Extracted from `eval_expr`'s
+/// match arm and marked `#[inline(never)]` for the same reason
+/// `eval_structure_instance_ctor` is hoisted out: the local `Value` slots
+/// here (`obj`, `idx`) widen `eval_expr`'s debug-mode stack frame enough to
+/// regress `eval_user_fn_recursion_depth_exceeded` (the safety test that
+/// drives `MAX_RECURSION_DEPTH=256` and asserts the runtime guard trips
+/// *before* the native stack is exhausted). Keeping this body in a separate
+/// non-inlined frame — allocated only when an index access is actually
+/// evaluated, not on every recursive `eval_expr` frame — restores the lean
+/// frame the guard relies on. The `Value::StructureInstance` arm here is the
+/// SIR-α (task 3540) field-projection path; lowering site is
+/// `CompiledExpr::index_access` in `reify-compiler/src/expr.rs`.
+#[inline(never)]
+fn eval_index_access(object: &CompiledExpr, index: &CompiledExpr, ctx: &EvalContext) -> Value {
+    let obj = eval_expr(object, ctx);
+    let idx = eval_expr(index, ctx);
+    if obj.is_undef() || idx.is_undef() {
+        return Value::Undef;
+    }
+    match (&obj, &idx) {
+        (Value::List(items), Value::Int(i)) => {
+            if *i < 0 {
+                return Value::Undef;
+            }
+            let i = *i as usize;
+            items.get(i).cloned().unwrap_or(Value::Undef)
+        }
+        (Value::Map(entries), key) => entries.get(key).cloned().unwrap_or(Value::Undef),
+        (Value::StructureInstance(data), Value::String(k)) => {
+            data.fields.get(k).cloned().unwrap_or(Value::Undef)
+        }
+        _ => Value::Undef,
+    }
+}
+
+/// Evaluate an ad-hoc selector expression (`@point(x,y,z)`, `@face("n")`, `@edge("n")`).
+///
+/// Extracted from `eval_expr` to keep that recursive function's stack frame
+/// small (the coord buffer and Value locals below would otherwise sit on every
+/// `eval_expr` frame and risk overflowing the 2 MiB test-thread stack at
+/// `MAX_RECURSION_DEPTH` levels of recursive user-fn evaluation — see the
+/// `eval_user_fn_recursion_depth_exceeded` test and the matching extraction of
+/// `eval_quantifier`).
+///
+/// - `SelectorKind::Point`: evaluates the 3 length-scalar args and builds a
+///   `Value::Frame` with identity basis. Returns `Value::Undef` if any arg is
+///   not a LENGTH-dimensioned scalar.
+/// - `SelectorKind::Face | SelectorKind::Edge`: returns `Value::Undef` as a
+///   placeholder for `Engine::post_process_ad_hoc_selectors` to overwrite.
+fn eval_ad_hoc_selector(
+    selector_kind: &SelectorKind,
+    args: &[CompiledExpr],
+    ctx: &EvalContext,
+) -> Value {
+    match selector_kind {
+        SelectorKind::Point => {
+            // @point(x, y, z): evaluate 3 coord args; if all are
+            // LENGTH-dimensioned scalars, build Frame{origin, identity_basis}.
+            if args.len() != 3 {
+                return Value::Undef;
+            }
+            let mut si_coords = [0.0_f64; 3];
+            for (i, arg) in args.iter().enumerate() {
+                match eval_expr(arg, ctx) {
+                    Value::Scalar { si_value, dimension }
+                        if dimension == DimensionVector::LENGTH =>
+                    {
+                        si_coords[i] = si_value;
+                    }
+                    _ => return Value::Undef,
+                }
+            }
+            let origin = Value::Point(
+                si_coords
+                    .iter()
+                    .map(|&v| Value::Scalar {
+                        si_value: v,
+                        dimension: DimensionVector::LENGTH,
+                    })
+                    .collect(),
+            );
+            Value::Frame {
+                origin: Box::new(origin),
+                basis: Box::new(Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                }),
+            }
+        }
+        // @face("name") and @edge("name"): the engine post-process
+        // (Engine::post_process_ad_hoc_selectors) patches these cells
+        // via kernel.extract_faces/edges + resolve_unique_by_attribute.
+        // Return Undef here as a placeholder for the engine to overwrite.
+        SelectorKind::Face | SelectorKind::Edge => Value::Undef,
+    }
+}
+
+/// Find the first compiled function matching `name`, arity, and per-parameter
+/// [`Type`] equality against the compiled arguments' result types.
+///
+/// This is the canonical first-match-wins overload-resolution helper shared by:
+/// - [`eval_user_function_call`] in this crate, and
+/// - the `@optimized` `UserFunctionCall` → `ComputeNode` lowering site in
+///   `reify-eval/src/engine_eval.rs`.
+///
+/// If the resolution rule ever grows (e.g. subtyping, coercion ranking,
+/// operator-overloading nuance), update only this function; both call sites
+/// will inherit the fix automatically.
+pub fn find_matching_compiled_function<'a>(
+    fns: &'a [CompiledFunction],
+    name: &str,
+    args: &[CompiledExpr],
+) -> Option<&'a CompiledFunction> {
+    fns.iter().find(|f| {
+        f.name == name
+            && f.params.len() == args.len()
+            && f.params
+                .iter()
+                .zip(args.iter())
+                .all(|((_, param_ty), arg)| *param_ty == arg.result_type)
+    })
 }
 
 /// Evaluate a user-defined function call.
@@ -749,16 +970,7 @@ fn eval_user_function_call(function_name: &str, args: &[CompiledExpr], ctx: &Eva
     // The compiler uses exact type matching during resolution, so the compiled args'
     // result_types exactly equal the selected overload's param types. Matching on
     // these result_types selects the same overload the compiler chose.
-    let func = ctx.functions.iter().find(|f| {
-        f.name == function_name
-            && f.params.len() == args.len()
-            && f.params
-                .iter()
-                .zip(args.iter())
-                .all(|((_, param_ty), arg)| *param_ty == arg.result_type)
-    });
-
-    let func = match func {
+    let func = match find_matching_compiled_function(ctx.functions, function_name, args) {
         Some(f) => f,
         None => return Value::Undef, // no matching function
     };
@@ -3624,6 +3836,159 @@ mod tests {
         }
     }
 
+    // ── task 3540 step-17: StructureInstanceCtor eval (RED) ─────────────────
+    //
+    // `eval_expr` on `CompiledExprKind::StructureInstanceCtor` must build a
+    // `Value::StructureInstance { type_id: StructureTypeId(0), type_name,
+    // version, fields }`. `fields` = each ordered_arg evaluated in order,
+    // PLUS each default whose name is not covered by ordered_args, evaluated
+    // in the SAME `EvalContext`. No registry lookup (reify-expr stays
+    // registry-free — design-decision-2); type_id/type_name/version are baked
+    // at lowering time. Undef field values stay Undef IN THEIR SLOT (the
+    // ctor does NOT strict-short-circuit the whole structure to Undef the
+    // way `FunctionCall` does). RED until step-18 replaces the placeholder
+    // arm (currently returns `Value::Undef`).
+
+    /// Build a `CompiledExpr::structure_instance_ctor` test fixture.
+    fn sct(
+        name: &str,
+        version: u32,
+        ordered: Vec<(&str, CompiledExpr)>,
+        defaults: Vec<(&str, CompiledExpr)>,
+    ) -> CompiledExpr {
+        CompiledExpr::structure_instance_ctor(
+            reify_types::StructureTypeId(0),
+            name.to_string(),
+            version,
+            ordered
+                .into_iter()
+                .map(|(n, e)| (n.to_string(), e))
+                .collect(),
+            defaults
+                .into_iter()
+                .map(|(n, e)| (n.to_string(), e))
+                .collect(),
+            Type::StructureRef(name.to_string()),
+        )
+    }
+
+    #[test]
+    fn structure_instance_ctor_all_args_supplied() {
+        let expr = sct(
+            "Steel_AISI_1045",
+            1,
+            vec![
+                ("youngs_modulus", lit(Value::Int(200), Type::Int)),
+                ("poisson", lit(Value::Real(0.3), Type::Real)),
+            ],
+            vec![],
+        );
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::StructureInstance(data) => {
+                assert_eq!(data.type_id, reify_types::StructureTypeId(0));
+                assert_eq!(data.type_name, "Steel_AISI_1045");
+                assert_eq!(data.version, 1);
+                assert_eq!(
+                    data.fields.get(&"youngs_modulus".to_string()),
+                    Some(&Value::Int(200))
+                );
+                assert_eq!(
+                    data.fields.get(&"poisson".to_string()),
+                    Some(&Value::Real(0.3))
+                );
+                assert_eq!(data.fields.len(), 2);
+            }
+            other => panic!("expected StructureInstance, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn structure_instance_ctor_omitted_args_use_defaults() {
+        // `target` supplied; `magnitude` omitted → its default fills the slot.
+        let expr = sct(
+            "PointLoad",
+            1,
+            vec![("target", lit(Value::Int(7), Type::Int))],
+            vec![("magnitude", lit(Value::Int(0), Type::Int))],
+        );
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::StructureInstance(data) => {
+                assert_eq!(data.fields.get(&"target".to_string()), Some(&Value::Int(7)));
+                assert_eq!(
+                    data.fields.get(&"magnitude".to_string()),
+                    Some(&Value::Int(0)),
+                    "omitted param filled from its captured default"
+                );
+                assert_eq!(data.fields.len(), 2);
+            }
+            other => panic!("expected StructureInstance, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn structure_instance_ctor_nested_default_recurses() {
+        // A default expression that is itself a structure ctor recurses
+        // through the same eval path → nested Value::StructureInstance.
+        let inner = sct(
+            "Steel_AISI_1045",
+            1,
+            vec![("youngs_modulus", lit(Value::Int(200), Type::Int))],
+            vec![],
+        );
+        let outer = sct("Beam", 2, vec![], vec![("material", inner)]);
+        let values = ValueMap::new();
+        match eval_expr(&outer, &EvalContext::simple(&values)) {
+            Value::StructureInstance(data) => {
+                assert_eq!(data.type_name, "Beam");
+                assert_eq!(data.version, 2);
+                match data.fields.get(&"material".to_string()) {
+                    Some(Value::StructureInstance(inner)) => {
+                        assert_eq!(inner.type_name, "Steel_AISI_1045");
+                        assert_eq!(
+                            inner.fields.get(&"youngs_modulus".to_string()),
+                            Some(&Value::Int(200))
+                        );
+                    }
+                    other => panic!(
+                        "expected nested StructureInstance for 'material', got {:?}",
+                        other
+                    ),
+                }
+            }
+            other => panic!("expected StructureInstance, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn structure_instance_ctor_undef_field_propagates_in_slot() {
+        // An unbound ValueRef evals to Undef. The ctor keeps the structure
+        // (does NOT strict-short-circuit to Undef like FunctionCall): the
+        // Undef stays in that one slot.
+        let expr = sct(
+            "Beam",
+            1,
+            vec![
+                ("length", lit(Value::Int(5), Type::Int)),
+                ("mystery", vref("Nowhere", "missing", Type::Real)),
+            ],
+            vec![],
+        );
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::StructureInstance(data) => {
+                assert_eq!(data.fields.get(&"length".to_string()), Some(&Value::Int(5)));
+                assert_eq!(
+                    data.fields.get(&"mystery".to_string()),
+                    Some(&Value::Undef),
+                    "Undef field value stays Undef in its own slot"
+                );
+            }
+            other => panic!("expected StructureInstance, got {:?}", other),
+        }
+    }
+
     // ── User function evaluation tests ──────────────────────────────────
 
     use reify_types::{CompiledFnBody, CompiledFunction, ContentHash};
@@ -4596,5 +4961,140 @@ mod tests {
                 result
             );
         }
+    }
+
+    // ── AdHocSelector (@point) unit tests ────────────────────────────────────
+
+    /// Build a length-dimensioned scalar for a given mm value.
+    fn mm_lit(v_mm: f64) -> CompiledExpr {
+        lit(
+            Value::Scalar {
+                si_value: v_mm * 1e-3,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        )
+    }
+
+    /// `@point(1mm, 2mm, 3mm)` should evaluate to a `Value::Frame` whose origin
+    /// is a `Value::Point` of three length-dimensioned scalars (in SI metres) and
+    /// whose basis is the identity orientation `Orientation { w: 1, x: 0, y: 0, z: 0 }`.
+    ///
+    /// RED on HEAD: current arm returns `Value::Undef` unconditionally.
+    #[test]
+    fn ad_hoc_selector_point_constructs_frame_at_world_coords() {
+        use reify_types::SelectorKind;
+        let base = lit(Value::String("ignored".into()), Type::String);
+        let args = vec![mm_lit(1.0), mm_lit(2.0), mm_lit(3.0)];
+        let expr = CompiledExpr::ad_hoc_selector(base, SelectorKind::Point, args);
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        match result {
+            Value::Frame { origin, basis } => {
+                // Check origin is a Point of three length scalars (SI metres)
+                match *origin {
+                    Value::Point(ref comps) => {
+                        assert_eq!(comps.len(), 3, "origin Point should have 3 components");
+                        let expected = [1e-3_f64, 2e-3_f64, 3e-3_f64];
+                        for (i, (comp, &exp)) in comps.iter().zip(&expected).enumerate() {
+                            match comp {
+                                Value::Scalar { si_value, dimension } => {
+                                    assert_eq!(
+                                        *dimension, DimensionVector::LENGTH,
+                                        "origin[{i}] dimension should be LENGTH"
+                                    );
+                                    assert!(
+                                        (si_value - exp).abs() < 1e-15,
+                                        "origin[{i}] si_value: expected {exp}, got {si_value}"
+                                    );
+                                }
+                                other => panic!(
+                                    "origin[{i}] should be Value::Scalar, got {:?}", other
+                                ),
+                            }
+                        }
+                    }
+                    other => panic!("origin should be Value::Point, got {:?}", other),
+                }
+                // Check basis is identity orientation
+                match *basis {
+                    Value::Orientation { w, x, y, z } => {
+                        assert!(
+                            (w - 1.0).abs() < 1e-15 && x.abs() < 1e-15
+                                && y.abs() < 1e-15 && z.abs() < 1e-15,
+                            "basis should be identity orientation (w=1,x=0,y=0,z=0), got w={w},x={x},y={y},z={z}"
+                        );
+                    }
+                    other => panic!("basis should be Value::Orientation, got {:?}", other),
+                }
+            }
+            other => panic!(
+                "ad_hoc_selector @point(1mm,2mm,3mm) should return Value::Frame, got {:?}",
+                other
+            ),
+        }
+    }
+
+    /// When one of the coordinate args is `Value::Undef`, `@point` should return
+    /// `Value::Undef` as a defensive degraded path.
+    ///
+    /// RED on HEAD: current arm already returns `Value::Undef`, but for the wrong
+    /// reason (blanket arm). After step-2 this test stays GREEN via the explicit
+    /// Undef-propagation logic.
+    #[test]
+    fn ad_hoc_selector_point_with_undef_arg_returns_undef() {
+        use reify_types::SelectorKind;
+        let base = lit(Value::String("ignored".into()), Type::String);
+        let args = vec![
+            mm_lit(1.0),
+            lit(Value::Undef, Type::length()), // <-- Undef arg
+            mm_lit(3.0),
+        ];
+        let expr = CompiledExpr::ad_hoc_selector(base, SelectorKind::Point, args);
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        assert!(
+            matches!(result, Value::Undef),
+            "@point with Undef coord arg should return Value::Undef, got {:?}",
+            result
+        );
+    }
+
+    // ── task-3663 tests ───────────────────────────────────────────────────────
+
+    /// Pins that `eval_expr` panics with the routing-violation message in every
+    /// build profile when a `CrossSubGeometryRef` reaches the eval arm.  The
+    /// entity name contains `'.'` so the constructor's `debug_assert` does not
+    /// pre-empt the eval-side `unreachable!()`.  See the invariant comment at
+    /// `eval_expr` (lib.rs:145) for the full routing-violation rationale.
+    #[test]
+    #[should_panic(expected = "CrossSubGeometryRef should be consumed by entity.rs")]
+    fn cross_sub_geometry_ref_panics_in_eval_when_not_consumed() {
+        // Entity contains '.' so the step-4 constructor debug_assert (which fires
+        // only in debug builds) does not pre-empt the eval-side unreachable!().
+        let expr = CompiledExpr::cross_sub_geometry_ref(
+            ValueCellId::new("Parent.sub", "member"),
+            Type::Geometry,
+        );
+        let values = ValueMap::new();
+        // Should always panic with the routing-violation message, in every profile.
+        eval_expr(&expr, &EvalContext::simple(&values));
+    }
+
+    /// Companion to `cross_sub_geometry_ref_panics_in_eval_when_not_consumed`:
+    /// a `ValueRef` with the same `ValueCellId` shape does NOT panic — it
+    /// returns `Value::Undef` when the cell is absent.  This pins that the
+    /// panic above is keyed on the `CrossSubGeometryRef` *variant*, not on
+    /// the id shape or the missing-value path.
+    #[test]
+    fn value_ref_with_identical_id_returns_undef_not_panics() {
+        let expr = CompiledExpr::value_ref(ValueCellId::new("Parent.sub", "member"), Type::Geometry);
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        assert!(
+            result.is_undef(),
+            "ValueRef with absent cell should return Value::Undef, got {:?}",
+            result
+        );
     }
 }

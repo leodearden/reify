@@ -28,9 +28,14 @@ pub(crate) const EARTH_GRAVITY: f64 = 9.80665;
 ///
 /// Not yet referenced by any external caller — the FEA solver (PRD task 16)
 /// will wire this up when it lands.
+///
+/// task 3540 (SIR-α wave-1, step-20): `"point_load"` retired here — the
+/// `structure def PointLoad : Load { ... }` declaration in
+/// `crates/reify-compiler/stdlib/fea_multi_case.ri` takes over via the
+/// `CompiledExprKind::StructureInstanceCtor` lowering. `eval_loads`'s arm is
+/// removed in lockstep so this list and its partition guard stay in sync.
 #[allow(dead_code)]
 pub(crate) const LOAD_KINDS: &[&str] = &[
-    "point_load",
     "pressure_load",
     "traction_load",
     "body_force",
@@ -65,21 +70,16 @@ pub(crate) fn is_load_value(v: &Value) -> bool {
 /// `Some(Value::Undef)` on validation failure), or `None` for unknown names.
 pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {
-        "point_load" => {
-            if args.len() != 2 {
-                return Some(Value::Undef);
-            }
-            if validate_selector_target(&args[0]).is_none() {
-                return Some(Value::Undef);
-            }
-            if validate_dimensioned_vec3(&args[1], DimensionVector::FORCE).is_none() {
-                return Some(Value::Undef);
-            }
-            make_kind_map(
-                "point_load",
-                vec![("force", args[1].clone()), ("point", args[0].clone())],
-            )
-        }
+        // task 3540 (SIR-α wave-1, step-20): `point_load` retired. The
+        // `structure def PointLoad : Load { ... }` in
+        // `crates/reify-compiler/stdlib/fea_multi_case.ri` takes over via the
+        // `CompiledExprKind::StructureInstanceCtor` lowering; source-level
+        // `PointLoad(...)` evals to a `Value::StructureInstance`. Returning
+        // `None` here makes `eval_builtin("point_load", ...)` fall through to
+        // `Value::Undef` (the unknown-name contract) — the swap is observable
+        // at the source level via the `PointLoad` ctor, not the snake_case
+        // builtin. The `force`/`point` field shapes are preserved by the
+        // structure-def per Q-SIR-4 (preserve-don't-redesign).
         "pressure_load" => {
             // Accept arity 2 (direction defaults to "normal") or 3 (explicit direction).
             if args.len() != 2 && args.len() != 3 {
@@ -241,160 +241,24 @@ mod tests {
         })
     }
 
-    // ── point_load constructor: happy path ───────────────────────────────────
-
-    #[test]
-    fn point_load_returns_map_with_correct_fields() {
-        let selector = selector_stub("point_stub");
-        let force = make_scalar_vec3([5000.0, 0.0, 0.0], DimensionVector::FORCE);
-
-        let result = eval_builtin("point_load", &[selector.clone(), force.clone()]);
-
-        let map = match result {
-            Value::Map(m) => m,
-            other => panic!("expected Value::Map, got {:?}", other),
-        };
-
-        assert_eq!(
-            map.get(&Value::String("kind".to_string())),
-            Some(&Value::String("point_load".to_string())),
-            "kind field should be 'point_load'"
-        );
-        assert_eq!(
-            map.get(&Value::String("point".to_string())),
-            Some(&selector),
-            "point field should round-trip the selector input"
-        );
-        assert_eq!(
-            map.get(&Value::String("force".to_string())),
-            Some(&force),
-            "force field should round-trip the force input"
-        );
-    }
-
-    // ── point_load constructor: failure modes ────────────────────────────────
-
-    #[test]
-    fn point_load_zero_args_returns_undef() {
-        assert!(
-            eval_builtin("point_load", &[]).is_undef(),
-            "zero args should return Undef"
-        );
-    }
-
-    #[test]
-    fn point_load_one_arg_returns_undef() {
-        assert!(
-            eval_builtin("point_load", &[selector_stub("point_stub")]).is_undef(),
-            "one arg should return Undef"
-        );
-    }
-
-    #[test]
-    fn point_load_three_args_returns_undef() {
-        let force = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::FORCE);
-        assert!(
-            eval_builtin(
-                "point_load",
-                &[selector_stub("point_stub"), force.clone(), force]
-            )
-            .is_undef(),
-            "three args should return Undef"
-        );
-    }
-
-    #[test]
-    fn point_load_force_with_length_dim_returns_undef() {
-        let wrong_dim_force = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::LENGTH);
-        assert!(
-            eval_builtin(
-                "point_load",
-                &[selector_stub("point_stub"), wrong_dim_force]
-            )
-            .is_undef(),
-            "force with LENGTH dimension should return Undef"
-        );
-    }
-
-    #[test]
-    fn point_load_force_with_nan_component_returns_undef() {
-        let nan_force = make_scalar_vec3([f64::NAN, 0.0, 0.0], DimensionVector::FORCE);
-        assert!(
-            eval_builtin("point_load", &[selector_stub("point_stub"), nan_force]).is_undef(),
-            "force with NaN component should return Undef"
-        );
-    }
-
-    #[test]
-    fn point_load_force_vec2_returns_undef() {
-        // Vector with only 2 components — wrong arity.
-        let vec2 = Value::Vector(vec![
-            Value::Scalar {
-                si_value: 1.0,
-                dimension: DimensionVector::FORCE,
-            },
-            Value::Scalar {
-                si_value: 0.0,
-                dimension: DimensionVector::FORCE,
-            },
-        ]);
-        assert!(
-            eval_builtin("point_load", &[selector_stub("point_stub"), vec2]).is_undef(),
-            "force Vec2 should return Undef"
-        );
-    }
-
-    #[test]
-    fn point_load_force_not_a_vector_returns_undef() {
-        let scalar = Value::Real(5.0);
-        assert!(
-            eval_builtin("point_load", &[selector_stub("point_stub"), scalar]).is_undef(),
-            "force = Real should return Undef"
-        );
-    }
-
-    #[test]
-    fn point_load_selector_real_returns_undef() {
-        let force = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::FORCE);
-        assert!(
-            eval_builtin("point_load", &[Value::Real(0.0), force]).is_undef(),
-            "selector = Real should return Undef"
-        );
-    }
-
-    #[test]
-    fn point_load_selector_bool_returns_undef() {
-        let force = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::FORCE);
-        assert!(
-            eval_builtin("point_load", &[Value::Bool(true), force]).is_undef(),
-            "selector = Bool should return Undef"
-        );
-    }
-
-    #[test]
-    fn point_load_selector_undef_returns_undef() {
-        let force = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::FORCE);
-        assert!(
-            eval_builtin("point_load", &[Value::Undef, force]).is_undef(),
-            "selector = Undef should return Undef"
-        );
-    }
-
-    #[test]
-    fn point_load_selector_force_vec_returns_undef() {
-        // Regression: a typo like `point_load(force_vec, force_vec)` (the same
-        // FORCE-dimensioned 3-vector passed as both selector and force) used to
-        // silently succeed, embedding a force-dimensioned Vector under the
-        // `point` field. Locked here so a future un-narrowing of
-        // helpers::validate_selector_target cannot quietly re-introduce the
-        // silent-typo class. See PRD `topology-selectors.md` task 5 / FEA
-        // PRD task 16 for the deadline on full topology-selector validation.
-        let force = make_scalar_vec3([5000.0, 0.0, 0.0], DimensionVector::FORCE);
-        assert!(
-            eval_builtin("point_load", &[force.clone(), force]).is_undef(),
-            "point_load with a Vector selector (force-vec typo) should return Undef"
-        );
-    }
+    // ── point_load constructor: RETIRED (SIR-α wave-1, task 3540 step-20) ────
+    //
+    // The `point_load` name-dispatched builtin was retired in favour of the
+    // `structure def PointLoad : Load { ... }` declaration in
+    // `crates/reify-compiler/stdlib/fea_multi_case.ri`. Source-level
+    // `PointLoad(...)` calls now lower to `CompiledExprKind::StructureInstanceCtor`
+    // and eval to a `Value::StructureInstance` (end-to-end coverage:
+    // `crates/reify-eval/tests/structure_instance_e2e.rs::
+    //  point_load_in_source_lowers_to_structure_instance`).
+    //
+    // The Rust API contract — `eval_builtin("point_load", ...)` returns
+    // `Value::Undef` — is pinned by
+    // `point_load_eval_builtin_returns_undef_post_retirement` above. The
+    // former happy-path + per-argument validation tests are intentionally
+    // removed: with the arm gone, every input collapses to `Undef`, so those
+    // assertions no longer exercise distinct behaviour. Selector / dimensioned-
+    // vector validation now lives on the structure-def's field contracts and
+    // is exercised by the SIR-α boundary suite, not here.
 
     // ── pressure_load constructor: 3-arg happy path ──────────────────────────
 
@@ -1154,6 +1018,34 @@ mod tests {
         assert_vector3_approx!(Vector, accel.clone(), [0.0, 0.0, -9.81]);
     }
 
+    // ── task 3540 step-19 (RED): post-retirement contract ────────────────────
+    //
+    // After step-20 (SIR-α stdlib swap), `point_load` is no longer a
+    // name-dispatched builtin — its role is taken by the
+    // `structure def PointLoad : Load { ... }` declaration in
+    // `crates/reify-compiler/stdlib/fea_multi_case.ri`. Source-level
+    // `PointLoad(...)` calls then lower to `CompiledExprKind::StructureInstanceCtor`
+    // (the precedence path landed in step-16) and eval into a
+    // `Value::StructureInstance`. The `eval_builtin("point_load", ...)` Rust API
+    // path (used by tests below) returns `Value::Undef` because the dispatch
+    // arm in `eval_loads` is removed.
+    //
+    // RED: this test currently fails because `eval_builtin("point_load", ...)`
+    // returns a `Value::Map` (the pre-retirement happy path). Step-20 retires
+    // the arm and updates `LOAD_KINDS` so the partition guard stays green.
+
+    #[test]
+    fn point_load_eval_builtin_returns_undef_post_retirement() {
+        let selector = selector_stub("point_stub");
+        let force = make_scalar_vec3([5000.0, 0.0, 0.0], DimensionVector::FORCE);
+        assert!(
+            eval_builtin("point_load", &[selector, force]).is_undef(),
+            "after step-20 retirement, eval_builtin('point_load', ...) must \
+             return Undef; the structure-instance ctor path replaces the \
+             builtin entirely (PRD §6, Q-SIR-4 — rename point_load → PointLoad)"
+        );
+    }
+
     // ── LOAD_KINDS partition test ─────────────────────────────────────────────
 
     /// Guard that every kind listed in `LOAD_KINDS` is actually dispatched by
@@ -1171,7 +1063,6 @@ mod tests {
             );
             m
         });
-        let force_vec = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::FORCE);
         let pressure_mag = Value::Scalar {
             si_value: 1e6,
             dimension: DimensionVector::PRESSURE,
@@ -1181,8 +1072,9 @@ mod tests {
         let accel_vec = make_scalar_vec3([0.0, 0.0, -9.81], DimensionVector::ACCELERATION);
 
         for kind in LOAD_KINDS {
+            // `point_load` retired in SIR-α wave-1 (step-20) — no longer in
+            // LOAD_KINDS, so no fixture arm here.
             let result = match *kind {
-                "point_load" => eval_loads(kind, &[stub_selector.clone(), force_vec.clone()]),
                 "pressure_load" => eval_loads(kind, &[stub_selector.clone(), pressure_mag.clone()]),
                 "traction_load" => eval_loads(kind, &[stub_selector.clone(), pressure_vec.clone()]),
                 "body_force" => eval_loads(kind, &[stub_selector.clone(), fd_vec.clone()]),

@@ -1,14 +1,16 @@
 //! Reify architecture audit forensics.
 //!
 //! This crate implements the F-infra detector core described in
-//! `docs/architecture-audit/f-infra-design.md`. Slice 1 (T-1) ships only the
-//! P5 phantom-done detector; P1/P2 follow in T-2/T-3.
+//! `docs/architecture-audit/f-infra-design.md`. The crate currently ships
+//! three detectors: P5 (phantom-done), P2 (consumer-stub), and P1
+//! (producer-orphan). The integration suites in
+//! `tests/{p1,p2,p5}.rs` exercise every code path through hermetic mocks.
 //!
 //! ## Design seams
 //!
 //! Per `f-infra-design.md` §3 ("pure logic; no scheduler, no MCP server")
 //! and §10 (T-1 single-crate, narrow-lock-friendly), all side effects are
-//! abstracted behind two seams:
+//! abstracted behind three seams:
 //!
 //! 1. **`&rusqlite::Connection`** — production opens
 //!    `data/orchestrator/runs.db`; tests use [`rusqlite::Connection::open_in_memory`]
@@ -16,18 +18,27 @@
 //! 2. **[`GitOps`] trait** — production uses [`RealGitOps`] which shells out
 //!    to `git`; tests use [`MockGitOps`] (gated behind the `test-support`
 //!    feature) with HashMap-backed canned answers.
+//! 3. **[`JCodemunchOps`] trait** — production uses a jcodemunch-MCP-backed
+//!    impl supplied by the T-4 CLI (#3672); tests use [`MockJCodemunchOps`]
+//!    (gated behind `feature = "test-support"`) with HashMap-backed canned
+//!    answers keyed on `(branch, since_epoch)` for changed-symbol queries and
+//!    `(file, name)` for reference queries, enabling file-level disambiguation.
+//!    Per `f-infra-design.md` §5 P1.
 //!
-//! Both seams let the integration tests in `tests/p5.rs` exercise every code
-//! path (happy path + four false-positive guards + `check_pre_done`
-//! filtering) without a real git repo or a real runs.db file.
+//! All three seams let the integration tests in `tests/{p1,p2,p5}.rs` exercise
+//! every code path (happy path + false-positive guards + `check_pre_done`
+//! filtering) without a real git repo, a real runs.db, or a real jcodemunch
+//! MCP server.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub mod p5_phantom_done;
 pub mod p2_consumer_stub;
 pub mod p1_producer_orphan;
+pub mod fused_memory_client;
 
 // -----------------------------------------------------------------------
 // Public surface — finding shape
@@ -47,8 +58,24 @@ pub enum Severity {
     High,
 }
 
-/// Detector pattern identifier. P1/P2 variants are reserved for T-2/T-3 of
-/// the F-infra rollout (`docs/architecture-audit/f-infra-design.md` §10).
+/// Detector pattern identifier. Each variant identifies one detector pattern;
+/// downstream consumers (T-4 CLI report renderer) dispatch on this field alone
+/// for severity routing.
+///
+/// - `P5PhantomDone` — phantom-done: commit provenance cannot be corroborated.
+/// - `P2ConsumerStub` — consumer task with stub markers in changed lines.
+/// - `P1ProducerOrphan` — producer with no non-test workspace callers.
+/// - `P5MetadataFilesGitignored` — metadata-hygiene: gitignored paths in
+///   `metadata.files` that should be stripped. Complement to `P5PhantomDone`
+///   (medium-severity cleanliness signal, not a phantom-done).
+///   See `project_steward_metadata_files_gitignore_falsepositive.md`.
+///
+/// ## Naming convention
+///
+/// All variants carry a `P<N>` prefix mapping to the corresponding
+/// `f-infra-design.md` §5 invariant. New detector variants must follow the
+/// same `P<N><Name>` shape so downstream dispatch (T-4 CLI report renderer)
+/// can route on prefix without an out-of-band mapping table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Pattern {
     /// P5 — phantom-done: a task marked `status=done` whose claimed
@@ -64,6 +91,10 @@ pub enum Pattern {
     /// consumer task; flagged Medium past the 14-day grace window, Low
     /// within it. See `docs/architecture-audit/f-infra-design.md` §5 P1.
     P1ProducerOrphan,
+    /// Metadata-hygiene: one or more entries in `metadata.files` are
+    /// gitignored paths that should be stripped. Distinct from `P5PhantomDone`
+    /// (medium-severity cleanliness signal, not a phantom-done).
+    P5MetadataFilesGitignored,
 }
 
 /// A pointer to forensic evidence supporting a [`Finding`]. Renders verbatim
@@ -171,9 +202,12 @@ pub struct AuditContext<'a> {
     /// P1 (source-introspection behind a mockable seam).
     pub jcodemunch: &'a dyn JCodemunchOps,
     pub task_metadata: HashMap<String, TaskMetadata>,
-    /// When `Some`, detectors restrict their work to that single task.
-    /// The D-1 pre-done hook sets this; the periodic `/audit` sweep leaves
-    /// it `None`.
+    /// When `Some`, the periodic-sweep [`p5_phantom_done::check`] entry point
+    /// restricts its work to that single task. Honored by periodic-sweep
+    /// callers; intentionally ignored by [`p5_phantom_done::check_pre_done`],
+    /// which takes `task_id` as an explicit argument for O(1) HashMap lookup
+    /// on the D-1 hot path (setting both would be confusing and the explicit
+    /// parameter is unambiguous).
     pub target_task_id: Option<String>,
     /// Reserved for periodic-sweep scoping. None of the slice-1 detector
     /// paths consume this yet — see [`TimeWindow`].
@@ -183,6 +217,12 @@ pub struct AuditContext<'a> {
     /// boundaries are deterministic. Epoch-seconds keeps the crate's dep-set
     /// minimal (no chrono/time) per `f-infra-design.md` §12.
     pub now: Option<i64>,
+    /// Branch P1 queries via `get_changed_symbols`. `None` defaults to
+    /// `"main"` inside the P1 detector (via `.as_deref().unwrap_or("main")`),
+    /// keeping all existing fixtures unchanged. The periodic-sweep CLI (T-4
+    /// #3672) sets this when running against a non-main branch. Per
+    /// `f-infra-design.md` §5 P1.
+    pub producer_branch: Option<String>,
 }
 
 // -----------------------------------------------------------------------
@@ -239,34 +279,95 @@ pub trait GitOps {
 /// slice-1 integration suite (see `MockGitOps` for the test seam) — kept
 /// minimal so the eventual T-4 CLI can construct one and call
 /// [`p5_phantom_done::check_pre_done`].
+///
+/// # Invariants
+///
+/// **Construct exactly once per `project_root`.** The private
+/// `gitignore_unavailable` field is a per-instance `AtomicBool` that
+/// short-circuits all subsequent
+/// [`is_gitignored`](GitOps::is_gitignored) calls after the first
+/// unrecoverable `git check-ignore` exit, so a task with N files against
+/// a broken git repo emits at most one
+/// `reify-audit: git check-ignore exited …` breadcrumb rather than N
+/// copies of the same line.
+///
+/// This dedup is silently defeated by constructing a fresh [`RealGitOps`]
+/// per task, per file, or per worker: each new instance starts with a
+/// cleared flag and re-emits the breadcrumb on its first failing call.
+/// The CLI binary (`bin/reify-audit.rs`) constructs exactly one
+/// [`RealGitOps`] per invocation and threads it through [`AuditContext`]
+/// for every detector; future callers MUST preserve this single-instance
+/// discipline.
+///
+/// The multi-file regression test
+/// `cli::git_check_ignore_breadcrumb_dedups_across_files`
+/// (`tests/cli.rs`) pins the user-visible signal: with N≥2 files in a
+/// non-git directory, exactly one breadcrumb appears in stderr.
 pub struct RealGitOps {
     /// Working directory passed as `git -C <dir>` to every invocation.
     pub project_root: PathBuf,
+    /// Set to `true` the first time `is_gitignored` encounters an unrecoverable
+    /// exit code (anything other than 0 or 1). Subsequent calls short-circuit
+    /// and return `false` silently, so a task with N files against a broken git
+    /// repo emits at most one breadcrumb rather than N copies of the same line.
+    ///
+    /// Invariant: per-instance — see [`RealGitOps`] doc for the
+    /// single-instance construction requirement that makes this budget
+    /// meaningful in production.
+    gitignore_unavailable: AtomicBool,
 }
 
 impl RealGitOps {
-    // G-allow: F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md
     pub fn new(project_root: impl Into<PathBuf>) -> Self {
-        Self { project_root: project_root.into() }
+        Self { project_root: project_root.into(), gitignore_unavailable: AtomicBool::new(false) }
     }
 
-    fn run(&self, args: &[&str]) -> Option<String> {
+    /// Run a git command and return its stdout as `Ok(String)`, or an error
+    /// description as `Err(String)`. Three failure modes:
+    ///   1. `Command::output()` failed (spawn error) → Err("git invocation failed: …")
+    ///   2. Non-zero exit status → Err("git exited N: <stderr>")
+    ///   3. Non-UTF-8 stdout → Err("git output not valid UTF-8")
+    fn run(&self, args: &[&str]) -> Result<String, String> {
         let out = std::process::Command::new("git")
             .arg("-C")
             .arg(&self.project_root)
             .args(args)
             .output()
-            .ok()?;
+            .map_err(|e| format!("git invocation failed: {}", e))?;
         if !out.status.success() {
-            return None;
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            return Err(format!(
+                "git exited {:?}: {}",
+                out.status.code(),
+                stderr.trim()
+            ));
         }
-        String::from_utf8(out.stdout).ok()
+        String::from_utf8(out.stdout).map_err(|_| "git output not valid UTF-8".to_string())
+    }
+
+    /// Run a git command, emitting a `reify-audit:` breadcrumb on failure and
+    /// returning `None` so callers can `else { return vec![]; }` in one line.
+    /// `label` is the human-readable git subcommand used in the breadcrumb
+    /// (e.g. `"log --grep"`, `"diff --name-only"`, `"diff"`).
+    fn run_or_warn(&self, label: &str, args: &[&str]) -> Option<String> {
+        match self.run(args) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                eprintln!(
+                    "reify-audit: git {} failed in {}: {}",
+                    label,
+                    self.project_root.display(),
+                    e
+                );
+                None
+            }
+        }
     }
 }
 
 impl GitOps for RealGitOps {
     fn log_grep(&self, branch: &str, pattern: &str) -> Vec<GitCommit> {
-        let Some(stdout) = self.run(&[
+        let Some(stdout) = self.run_or_warn("log --grep", &[
             "log",
             branch,
             &format!("--grep={}", pattern),
@@ -286,7 +387,10 @@ impl GitOps for RealGitOps {
     }
 
     fn diff_changed_paths(&self, from: &str, to: &str) -> Vec<String> {
-        let Some(stdout) = self.run(&["diff", "--name-only", &format!("{}..{}", from, to)]) else {
+        let Some(stdout) = self.run_or_warn(
+            "diff --name-only",
+            &["diff", "--name-only", &format!("{}..{}", from, to)],
+        ) else {
             return vec![];
         };
         stdout
@@ -298,17 +402,55 @@ impl GitOps for RealGitOps {
 
     fn is_gitignored(&self, path: &str) -> bool {
         // `git check-ignore` exit code 0 = ignored, 1 = not ignored.
-        std::process::Command::new("git")
+        // Any other outcome (spawn error, exit code other than 0/1) is a git
+        // failure — log a breadcrumb and default to false.
+        //
+        // Use `.output()` (not `.status()`) to capture git's own stderr so
+        // that "fatal: not a git repository" and similar diagnostics do not
+        // leak to *our* process's stderr and corrupt the machine-readable
+        // JSON output written there by the CLI dispatcher.
+        //
+        // Once an unrecoverable exit code is observed, `gitignore_unavailable`
+        // is set so that subsequent calls for this project_root short-circuit
+        // without forking git again — a task with N files in a broken repo
+        // emits at most one breadcrumb rather than N identical lines.
+        if self.gitignore_unavailable.load(Ordering::Relaxed) {
+            return false;
+        }
+        match std::process::Command::new("git")
             .arg("-C")
             .arg(&self.project_root)
             .args(["check-ignore", "--quiet", path])
-            .status()
-            .map(|s| s.code() == Some(0))
-            .unwrap_or(false)
+            .output()
+        {
+            Ok(out) if out.status.code() == Some(0) => true,
+            Ok(out) if out.status.code() == Some(1) => false,
+            Ok(out) => {
+                self.gitignore_unavailable.store(true, Ordering::Relaxed);
+                eprintln!(
+                    "reify-audit: git check-ignore exited {:?} in {}",
+                    out.status.code(),
+                    self.project_root.display()
+                );
+                false
+            }
+            Err(e) => {
+                self.gitignore_unavailable.store(true, Ordering::Relaxed);
+                eprintln!(
+                    "reify-audit: git check-ignore failed in {}: {}",
+                    self.project_root.display(),
+                    e
+                );
+                false
+            }
+        }
     }
 
     fn diff_added_lines(&self, from: &str, to: &str, path: &str) -> Vec<(usize, String)> {
-        let Some(stdout) = self.run(&["diff", &format!("{}..{}", from, to), "--", path]) else {
+        let Some(stdout) = self.run_or_warn(
+            "diff",
+            &["diff", &format!("{}..{}", from, to), "--", path],
+        ) else {
             return vec![];
         };
         let mut result = Vec::new();
@@ -364,29 +506,29 @@ pub struct MockGitOps {
 
 #[cfg(any(test, feature = "test-support"))]
 impl MockGitOps {
-    // G-allow: F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
     pub fn new() -> Self {
         Self::default()
     }
 
-    // G-allow: F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
     pub fn set_log_grep(&mut self, branch: &str, pattern: &str, commits: Vec<GitCommit>) {
         self.log_grep
             .insert((branch.to_string(), pattern.to_string()), commits);
     }
 
-    // G-allow: F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
     pub fn set_diff_changed_paths(&mut self, from: &str, to: &str, paths: Vec<String>) {
         self.diff_changed_paths
             .insert((from.to_string(), to.to_string()), paths);
     }
 
-    // G-allow: F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
     pub fn set_is_gitignored(&mut self, path: &str, ignored: bool) {
         self.is_gitignored.insert(path.to_string(), ignored);
     }
 
-    // G-allow: F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
     pub fn set_diff_added_lines(
         &mut self,
         from: &str,
@@ -484,10 +626,15 @@ pub trait JCodemunchOps {
     /// nothing changed or the branch does not exist.
     fn get_changed_symbols(&self, branch: &str, since_epoch: i64) -> Vec<ChangedSymbol>;
 
-    /// Equivalent of `mcp__jcodemunch__find_references(symbol_name)`: every
-    /// non-declaration reference of the symbol across the workspace. Returns
-    /// an empty vec when the symbol has no callers (an orphan candidate).
-    fn find_references(&self, symbol_name: &str) -> Vec<SymbolReference>;
+    /// Equivalent of `mcp__jcodemunch__find_references(symbol)`: every
+    /// non-declaration reference of the symbol across the workspace, scoped
+    /// to the symbol's declaring file so that two same-named symbols in
+    /// different files are not conflated. Production impls MUST scope the
+    /// lookup to `symbol.file` (e.g. pass the file path to jcodemunch-MCP
+    /// for module-level disambiguation); tests key on `(file, name)`.
+    /// Returns an empty vec when the symbol has no callers (an orphan
+    /// candidate). Per `f-infra-design.md` §5 P1.
+    fn find_references(&self, symbol: &ChangedSymbol) -> Vec<SymbolReference>;
 }
 
 /// HashMap-backed [`JCodemunchOps`] for tests. Gated behind
@@ -498,17 +645,17 @@ pub trait JCodemunchOps {
 #[derive(Debug, Default)]
 pub struct MockJCodemunchOps {
     get_changed_symbols: HashMap<(String, i64), Vec<ChangedSymbol>>,
-    find_references: HashMap<String, Vec<SymbolReference>>,
+    find_references: HashMap<(String, String), Vec<SymbolReference>>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
 impl MockJCodemunchOps {
-    // G-allow: F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
     pub fn new() -> Self {
         Self::default()
     }
 
-    // G-allow: F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
     pub fn set_changed_symbols(
         &mut self,
         branch: &str,
@@ -519,9 +666,9 @@ impl MockJCodemunchOps {
             .insert((branch.to_string(), since_epoch), symbols);
     }
 
-    // G-allow: F-infra T-4 CLI consumer (crates/reify-audit-cli) — design pinned in docs/architecture-audit/f-infra-design.md
-    pub fn set_find_references(&mut self, symbol_name: &str, refs: Vec<SymbolReference>) {
-        self.find_references.insert(symbol_name.to_string(), refs);
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn set_find_references(&mut self, file: &str, name: &str, refs: Vec<SymbolReference>) {
+        self.find_references.insert((file.to_string(), name.to_string()), refs);
     }
 }
 
@@ -534,9 +681,9 @@ impl JCodemunchOps for MockJCodemunchOps {
             .unwrap_or_default()
     }
 
-    fn find_references(&self, symbol_name: &str) -> Vec<SymbolReference> {
+    fn find_references(&self, symbol: &ChangedSymbol) -> Vec<SymbolReference> {
         self.find_references
-            .get(symbol_name)
+            .get(&(symbol.file.clone(), symbol.name.clone()))
             .cloned()
             .unwrap_or_default()
     }
@@ -556,10 +703,6 @@ impl JCodemunchOps for MockJCodemunchOps {
 /// (the prior P1/P2 duplication could silently diverge under a one-sided
 /// edit). Private to the crate root, so all detector submodules reach it via
 /// `crate::is_test_path`.
-///
-/// NOTE: `p2_consumer_stub` still carries an unmigrated private copy;
-/// repointing it at this fn is a trivial follow-up but touches a file
-/// outside this task's lock scope (escalated as a non-blocking cleanup).
 fn is_test_path(p: &str) -> bool {
     // `tests/` with and without a leading slash covers both repo-root paths
     // (e.g. `tests/foo.rs`) and nested paths (e.g. `crates/x/tests/foo.rs`).

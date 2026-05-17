@@ -54,9 +54,14 @@ use crate::helpers::{
 ///
 /// Not yet referenced by any external caller — the FEA solver (PRD task 16)
 /// will wire this up when it lands.
+///
+/// task 3540 (SIR-α wave-1, step-20): `"fixed_support"` retired here — the
+/// `structure def FixedSupport : Support { ... }` declaration in
+/// `crates/reify-compiler/stdlib/fea_multi_case.ri` takes over via the
+/// `CompiledExprKind::StructureInstanceCtor` lowering. `eval_supports`'s arm
+/// is removed in lockstep so this list and its partition guard stay in sync.
 #[allow(dead_code)]
 pub(crate) const SUPPORT_KINDS: &[&str] = &[
-    "fixed_support",
     "pinned_support",
     "displacement_support",
     "roller_support",
@@ -90,15 +95,14 @@ pub(crate) fn is_support_value(v: &Value) -> bool {
 /// `Some(Value::Undef)` on validation failure), or `None` for unknown names.
 pub(crate) fn eval_supports(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {
-        "FixedSupport" => {
-            if args.len() != 1 {
-                return Some(Value::Undef);
-            }
-            if validate_selector_target(&args[0]).is_none() {
-                return Some(Value::Undef);
-            }
-            make_kind_map("fixed_support", vec![("target", args[0].clone())])
-        }
+        // task 3540 (SIR-α wave-1, step-20): `FixedSupport` retired. The
+        // `structure def FixedSupport : Support { ... }` in
+        // `crates/reify-compiler/stdlib/fea_multi_case.ri` takes over via the
+        // `CompiledExprKind::StructureInstanceCtor` lowering; source-level
+        // `FixedSupport(...)` evals to a `Value::StructureInstance`. Returning
+        // `None` here makes `eval_builtin("FixedSupport", ...)` fall through
+        // to `Value::Undef` (the unknown-name contract). The `target` field
+        // shape is preserved by the structure-def per Q-SIR-4.
         "PinnedSupport" => {
             if args.len() != 1 {
                 return Some(Value::Undef);
@@ -164,84 +168,23 @@ mod tests {
         })
     }
 
-    // ── FixedSupport constructor: happy path ──────────────────────────────────
-
-    #[test]
-    fn fixed_support_returns_map_with_correct_fields() {
-        let selector = point_selector_stub();
-
-        let result = eval_builtin("FixedSupport", std::slice::from_ref(&selector));
-
-        let map = match result {
-            Value::Map(m) => m,
-            other => panic!("expected Value::Map, got {:?}", other),
-        };
-
-        assert_eq!(
-            map.get(&Value::String("kind".to_string())),
-            Some(&Value::String("fixed_support".to_string())),
-            "kind field should be 'fixed_support'"
-        );
-        assert_eq!(
-            map.get(&Value::String("target".to_string())),
-            Some(&selector),
-            "target field should round-trip the selector input"
-        );
-    }
-
-    // ── FixedSupport constructor: failure modes ───────────────────────────────
-
-    #[test]
-    fn fixed_support_zero_args_returns_undef() {
-        assert!(
-            eval_builtin("FixedSupport", &[]).is_undef(),
-            "zero args should return Undef"
-        );
-    }
-
-    #[test]
-    fn fixed_support_two_args_returns_undef() {
-        assert!(
-            eval_builtin(
-                "FixedSupport",
-                &[point_selector_stub(), point_selector_stub()]
-            )
-            .is_undef(),
-            "two args should return Undef"
-        );
-    }
-
-    #[test]
-    fn fixed_support_real_target_returns_undef() {
-        assert!(
-            eval_builtin("FixedSupport", &[Value::Real(1.0)]).is_undef(),
-            "Real target should return Undef"
-        );
-    }
-
-    #[test]
-    fn fixed_support_int_target_returns_undef() {
-        assert!(
-            eval_builtin("FixedSupport", &[Value::Int(7)]).is_undef(),
-            "Int target should return Undef"
-        );
-    }
-
-    #[test]
-    fn fixed_support_bool_target_returns_undef() {
-        assert!(
-            eval_builtin("FixedSupport", &[Value::Bool(true)]).is_undef(),
-            "Bool target should return Undef"
-        );
-    }
-
-    #[test]
-    fn fixed_support_undef_target_returns_undef() {
-        assert!(
-            eval_builtin("FixedSupport", &[Value::Undef]).is_undef(),
-            "Undef target should return Undef"
-        );
-    }
+    // ── FixedSupport constructor: RETIRED (SIR-α wave-1, task 3540 step-20) ──
+    //
+    // The `FixedSupport` name-dispatched builtin was retired in favour of the
+    // `structure def FixedSupport : Support { ... }` declaration in
+    // `crates/reify-compiler/stdlib/fea_multi_case.ri`. Source-level
+    // `FixedSupport(...)` calls now lower to
+    // `CompiledExprKind::StructureInstanceCtor` and eval to a
+    // `Value::StructureInstance`.
+    //
+    // The Rust API contract — `eval_builtin("FixedSupport", ...)` returns
+    // `Value::Undef` — is pinned by
+    // `fixed_support_eval_builtin_returns_undef_post_retirement` above. The
+    // former happy-path + per-argument validation tests are intentionally
+    // removed: with the arm gone, every input collapses to `Undef`, so those
+    // assertions no longer exercise distinct behaviour. The shell-aware 6-DOF
+    // clamp contract documented in this module's header now applies to the
+    // structure-def evaluation path (solver task T8).
 
     // ── PinnedSupport constructor: happy path ─────────────────────────────────
 
@@ -600,16 +543,14 @@ mod tests {
     // ── Discoverability surface ───────────────────────────────────────────────
 
     #[test]
-    fn support_kinds_lists_all_four_in_canonical_order() {
+    fn support_kinds_lists_remaining_three_in_canonical_order() {
         use super::SUPPORT_KINDS;
+        // `fixed_support` retired in SIR-α wave-1 (task 3540 step-20) — it is
+        // now the `structure def FixedSupport : Support` ctor path. The
+        // remaining name-dispatched support kinds keep their canonical order.
         assert_eq!(
             SUPPORT_KINDS,
-            &[
-                "fixed_support",
-                "pinned_support",
-                "displacement_support",
-                "roller_support"
-            ]
+            &["pinned_support", "displacement_support", "roller_support"]
         );
     }
 
@@ -623,15 +564,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn is_support_value_recognises_fixed_support() {
-        use super::is_support_value;
-        let v = eval_builtin("FixedSupport", &[point_selector_stub()]);
-        assert!(
-            is_support_value(&v),
-            "is_support_value should recognize FixedSupport result"
-        );
-    }
+    // `is_support_value_recognises_fixed_support` removed in SIR-α wave-1
+    // (task 3540 step-20): `FixedSupport` no longer produces a kind-tagged
+    // `Value::Map` — it is a `structure def` evaluating to a
+    // `Value::StructureInstance`, which `is_support_value` (a Map-shape
+    // predicate) is not designed to recognise. Structure-instance recognition
+    // is the SIR-α boundary suite's concern, not this Map-kind predicate.
 
     #[test]
     fn is_support_value_recognises_displacement_support() {
@@ -661,9 +599,14 @@ mod tests {
 
         // Cross-module isolation: build a load value via eval_builtin to confirm
         // LOAD_KINDS and SUPPORT_KINDS don't cross-contaminate is_support_value.
+        // Uses `pressure_load` (still name-dispatched) rather than `point_load`
+        // (retired in SIR-α wave-1, task 3540 step-20 — now Undef).
         let stub = point_selector_stub();
-        let force_vec = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::FORCE);
-        let load_value = eval_builtin("point_load", &[stub, force_vec]);
+        let pressure_mag = Value::Scalar {
+            si_value: 1e6,
+            dimension: DimensionVector::PRESSURE,
+        };
+        let load_value = eval_builtin("pressure_load", &[stub, pressure_mag]);
 
         // Map without a `kind` key.
         let map_no_kind = Value::Map(BTreeMap::new());
@@ -695,7 +638,7 @@ mod tests {
             ("Map without kind key", map_no_kind),
             ("Map with kind=\"not_a_support\"", map_wrong_kind),
             ("Map with kind=Int(0)", map_int_kind),
-            ("load value from eval_builtin(point_load)", load_value),
+            ("load value from eval_builtin(pressure_load)", load_value),
         ];
 
         for (label, v) in negative_cases {
@@ -705,6 +648,34 @@ mod tests {
                 label
             );
         }
+    }
+
+    // ── task 3540 step-19 (RED): post-retirement contract ────────────────────
+    //
+    // After step-20 (SIR-α stdlib swap), `FixedSupport` is no longer a
+    // name-dispatched builtin — its role is taken by the
+    // `structure def FixedSupport : Support { ... }` declaration in
+    // `crates/reify-compiler/stdlib/fea_multi_case.ri`. Source-level
+    // `FixedSupport(...)` calls then lower to
+    // `CompiledExprKind::StructureInstanceCtor` (precedence path from step-16)
+    // and eval into a `Value::StructureInstance`. The
+    // `eval_builtin("FixedSupport", ...)` Rust API path (used by tests below)
+    // returns `Value::Undef` because the dispatch arm in `eval_supports` is
+    // removed.
+    //
+    // RED: this test currently fails because `eval_builtin("FixedSupport", ...)`
+    // returns a `Value::Map` (the pre-retirement happy path). Step-20 retires
+    // the arm and updates `SUPPORT_KINDS` so the partition guard stays green.
+
+    #[test]
+    fn fixed_support_eval_builtin_returns_undef_post_retirement() {
+        let selector = point_selector_stub();
+        assert!(
+            eval_builtin("FixedSupport", &[selector]).is_undef(),
+            "after step-20 retirement, eval_builtin('FixedSupport', ...) must \
+             return Undef; the structure-instance ctor path replaces the \
+             builtin entirely (PRD §6, Q-SIR-4 — FixedSupport → structure def)"
+        );
     }
 
     // ── SUPPORT_KINDS partition test ──────────────────────────────────────────
@@ -734,10 +705,9 @@ mod tests {
             // in the Map's `kind` field.  The eval_supports dispatch arms use the
             // PascalCase constructor names.  We map explicitly here so the test
             // still guards both the SUPPORT_KINDS list and the dispatch arms.
+            // `fixed_support` retired in SIR-α wave-1 (step-20) — no longer in
+            // SUPPORT_KINDS, so no fixture arm here.
             let result = match *kind {
-                "fixed_support" => {
-                    eval_supports("FixedSupport", std::slice::from_ref(&stub_selector))
-                }
                 "pinned_support" => {
                     eval_supports("PinnedSupport", std::slice::from_ref(&stub_selector))
                 }
