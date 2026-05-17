@@ -8280,3 +8280,44 @@ fn fea_case_emitter_re_fires_on_each_check() {
         events.len()
     );
 }
+
+/// (d) fea_case_emitter_wires_through_real_commit_path.
+///
+/// Anchors that `emit_fea_case_if_any` is called at the real production
+/// `load_from_source` commit site (not just via the `emit_fea_case_for_test_with_result`
+/// shim). Uses an ordinary (non-MultiCaseResult) source so the recorder sees
+/// zero events — the meaningful contract here is that the emitter callback IS
+/// consulted on every real commit, not that it fires for this particular source.
+///
+/// NOTE: A positive assertion (event received) requires a source that evaluates
+/// to a `MultiCaseResult`-shaped value, which becomes possible when task 3026
+/// lands `solve_load_cases`. At that point, replace the zero-assertion below
+/// with a positive one mirroring the auto-resolve integration test at
+/// `engine_session_auto_resolve_emitter_fires_through_load_from_source_real_path`.
+#[test]
+fn fea_case_emitter_wires_through_real_commit_path() {
+    use std::sync::Arc;
+
+    let source = r#"structure S {
+    param width: Scalar = 10mm
+}"#;
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    let recorder = RecordingFeaCaseEmitter::new();
+    let captured = Arc::clone(&recorder.events);
+    session.set_fea_case_emitter(Arc::new(recorder));
+
+    session
+        .load_from_source(source, "S")
+        .expect("load_from_source with ordinary source should succeed");
+
+    let events = captured.lock().unwrap();
+    assert!(
+        events.is_empty(),
+        "no fea-case events for ordinary (non-MultiCaseResult) source via real commit path; \
+         got {} events",
+        events.len()
+    );
+}

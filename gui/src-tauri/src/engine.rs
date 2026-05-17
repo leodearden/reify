@@ -1032,21 +1032,26 @@ impl EngineSession {
             None => return,
         };
 
-        // Collect (ValueCellId, Value) pairs, sort by cell_id for determinism.
-        let mut pairs: Vec<_> = check.values.iter().collect();
-        pairs.sort_by_key(|(id, _)| id.to_string());
-
-        for (_, value) in pairs {
-            if let Some(detected) =
+        // Single O(n) pass: find the MultiCaseResult cell with the
+        // lexicographically-smallest ValueCellId for determinism.
+        // `ValueCellId` derives `Ord` so comparison is direct — no `to_string()`
+        // allocation per cell. In the no-match common case (no task-3026 data),
+        // `filter_map` yields an empty iterator and `min_by` returns `None`
+        // with zero allocations.
+        if let Some((_, detected)) = check
+            .values
+            .iter()
+            .filter_map(|(id, value)| {
                 reify_eval::multi_load_dispatch::detect_multi_case_result(value)
-            {
-                let payload = crate::types::FeaCaseChanged {
-                    active_case_id: detected.active_case_id,
-                    available_cases: detected.available_cases,
-                };
-                emitter.changed(payload);
-                return;
-            }
+                    .map(|d| (id, d))
+            })
+            .min_by(|(a, _), (b, _)| a.cmp(b))
+        {
+            let payload = crate::types::FeaCaseChanged {
+                active_case_id: detected.active_case_id,
+                available_cases: detected.available_cases,
+            };
+            emitter.changed(payload);
         }
     }
 

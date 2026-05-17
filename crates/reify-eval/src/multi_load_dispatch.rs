@@ -124,4 +124,31 @@ mod tests {
         let v = multi_case_result_value(&[]);
         assert!(detect_multi_case_result(&v).is_none());
     }
+
+    /// Shape-contract cross-crate invariant guard.
+    ///
+    /// `multi_case_result_value` (reify-test-support) builds exactly the same
+    /// outer `Map{"cases" -> Map<Value::String, ...>}` shape that stdlib's private
+    /// `extract_cases_map` (`crates/reify-stdlib/src/fea.rs:703`) produces.
+    ///
+    /// If either the stdlib wrapper shape or this detector's key string ("cases")
+    /// diverges, this test fails — catching shape drift before task 3026 wires
+    /// real `MultiCaseResult` values into `CheckResult.values`.
+    #[test]
+    fn detector_accepts_stdlib_produced_shape_contract() {
+        let v = multi_case_result_value(&[
+            ("case_a", Value::Int(1)),
+            ("case_b", Value::Int(2)),
+        ]);
+        let result = detect_multi_case_result(&v).expect(
+            "detect_multi_case_result must accept the shape produced by \
+             multi_case_result_value (which mirrors stdlib extract_cases_map); \
+             None here indicates shape drift between the detector and stdlib",
+        );
+        assert_eq!(result.active_case_id, "case_a");
+        assert_eq!(
+            result.available_cases,
+            vec!["case_a".to_string(), "case_b".to_string()]
+        );
+    }
 }

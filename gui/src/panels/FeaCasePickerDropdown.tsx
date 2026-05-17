@@ -10,7 +10,7 @@
  * Per PRD §2.2 task η and docs/gui-event-channels/fea-case-changed.md.
  */
 
-import { Show, For, type JSX } from 'solid-js';
+import { Show, For, createEffect, type JSX } from 'solid-js';
 import type { FeaModeStore } from '../stores/feaModeStore';
 import styles from './FeaCasePickerDropdown.module.css';
 
@@ -29,6 +29,18 @@ export interface FeaCasePickerDropdownProps {
  * (avoids a blank/hung select on first render).
  */
 export function FeaCasePickerDropdown(props: FeaCasePickerDropdownProps): JSX.Element {
+  // On mount and whenever availableCases/activeCaseId change: if activeCaseId is
+  // null but cases are available, sync the store to availableCases[0] so the
+  // visible dropdown default and the store source-of-truth stay consistent.
+  // Without this, the select renders availableCases[0] via the ?? fallback but
+  // store.state.activeCaseId remains null — causing a divergence when task 3026
+  // wires a consumer that reads activeCaseId to drive displayed results.
+  createEffect(() => {
+    if (props.store.state.activeCaseId === null && props.availableCases.length > 0) {
+      props.store.setActiveCaseId(props.availableCases[0]);
+    }
+  });
+
   return (
     <Show when={props.availableCases.length > 0}>
       <label class={styles.label}>

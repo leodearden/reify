@@ -62,7 +62,7 @@ describe('FeaCasePickerDropdown', () => {
     expect(store.state.activeCaseId).toBe('overload');
   });
 
-  it('(e) when activeCaseId is null, select defaults to first available case', () => {
+  it('(e) when activeCaseId is null, select defaults to first available case and store is initialized', () => {
     const store = createFeaModeStore();
     // activeCaseId defaults to null
     expect(store.state.activeCaseId).toBeNull();
@@ -73,7 +73,8 @@ describe('FeaCasePickerDropdown', () => {
       />
     ));
     const select = screen.getByTestId('fea-case-picker-dropdown') as HTMLSelectElement;
-    // Defensive default: render with first case value when activeCaseId is null
+    // createEffect syncs store to availableCases[0] on mount; select and store agree
     expect(select.value).toBe('operating');
+    expect(store.state.activeCaseId).toBe('operating');
   });
 });

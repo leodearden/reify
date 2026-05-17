@@ -72,9 +72,9 @@ Source: `gui/src/types.ts` — `FeaCaseChanged`.
 
 - **bridge.ts wrapper:** `gui/src/bridge.ts` — `onFeaCaseChanged(callback): Promise<UnlistenFn>`
   - Uses the inline structural-shape-guard idiom (`listen<unknown>` + `isPlainObject` + per-field type checks + `console.warn` drop), consistent with `onAutoResolveIteration` (bridge.ts) and `onWarmPoolEvent` (bridge.ts). Guard checks `typeof p['active_case_id'] === 'string'` and `Array.isArray(p['available_cases']) && p['available_cases'].every((s) => typeof s === 'string')`. Drops malformed payloads with `console.warn('[fea-case-changed] malformed payload; dropping event', p)`.
-- **Subscribing component:** `gui/src/panels/FeaCasePickerDropdown.tsx` — renders a `<select data-testid="fea-case-picker-dropdown">` bound to `feaModeStore.activeCaseId`; renders nothing (via `<Show>`) when `availableCases` is empty.
-- **Unlisten lifecycle owner:** Solid `onCleanup` in `FeaCasePickerDropdown` (panel unmount effect) — `unlistenPromise.then(fn => fn())`.
-- **Subscription pattern:** panel-local (not routed through `engineStore`).
+- **Subscribing component:** `gui/src/panels/FeaCasePickerDropdown.tsx` — renders a `<select data-testid="fea-case-picker-dropdown">` bound to `feaModeStore.activeCaseId`; renders nothing (via `<Show>`) when `availableCases` is empty. The component initialises `activeCaseId` to `availableCases[0]` via `createEffect` on mount.
+- **Subscription wiring (deferred to task 3026):** `FeaCasePickerDropdown` does not yet subscribe to `onFeaCaseChanged` directly — it only renders from props. The `onCleanup` / `unlistenPromise.then(fn => fn())` lifecycle plumbing will be added by task 3026 (`solve_load_cases`) when the emitter begins producing real `MultiCaseResult` values. Until then, `onFeaCaseChanged` is defined in `bridge.ts` but has no caller in the shipped UI.
+- **Subscription pattern (planned):** panel-local (not routed through `engineStore`). Task 3026 will wire `onFeaCaseChanged` inside `FeaCasePickerDropdown` and pass `availableCases` down from the event payload.
 
 ---
 
