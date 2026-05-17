@@ -549,6 +549,42 @@ mod tests {
         );
     }
 
+    // step-4 (task 3590): vertex unmapped element (disjoint feature_id)
+    #[test]
+    fn stage_b_eligible_handles_unmapped_vertex() {
+        let corner = Role::CornerVertex {
+            x: AxisSign::Pos,
+            y: AxisSign::Pos,
+            z: AxisSign::Pos,
+        };
+        // old: h(100) → (feat(), corner, 0)
+        // new: h(200) → (feat2(), corner, 0) — different feature_id → disjoint
+        let mut old_table = TopologyAttributeTable::default();
+        old_table.record(h(100), attr(corner.clone(), 0, None));
+        let mut new_table = TopologyAttributeTable::default();
+        new_table.record(h(200), attr_for_feat(feat2(), corner, 0));
+
+        let result = stage_b_eligible(
+            &old_table,
+            &new_table,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[h(100)],
+            &[h(200)],
+        );
+        assert_eq!(
+            result,
+            Err(BijectionFailure::UnmappedElement {
+                kind: SubShapeKind::Vertex,
+                side: SubShapeSide::Old,
+                handle: h(100),
+            }),
+            "disjoint feature_id: h(100) has no new counterpart → UnmappedElement Old h(100)"
+        );
+    }
+
     // step-3 (task 3590): vertex count mismatch
     #[test]
     fn stage_b_eligible_handles_count_mismatch_for_vertices() {
