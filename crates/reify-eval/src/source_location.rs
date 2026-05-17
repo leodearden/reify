@@ -493,4 +493,25 @@ mod tests {
             loc.end_column
         );
     }
+
+    // (h) cursor inside the `body` realization declaration → Some("Bracket.body").
+    //     bracket_source() line 14: "    let body = box(width, height, thickness)"
+    //     col 9 (1-based) = 'b' in "body" — inside the body realization's span.
+    //
+    //     Before step-6 (extend narrow step to realizations), this returns
+    //     Some("Bracket") because only value_cells are checked; the assert_eq
+    //     fires RED. After step-6 it returns Some("Bracket.body"), GREEN.
+    #[test]
+    fn entity_at_source_position_realization_body_returns_template_dot_realization() {
+        let compiled = bracket_compiled();
+        let source = reify_test_support::bracket_source();
+        let line_offsets = reify_types::build_line_offsets(source);
+        // line 14, col 9 = 'b' of "body" in "    let body = box(width, height, thickness)"
+        let result = resolve_entity_at_source_position(&compiled, source, &line_offsets, 14, 9);
+        assert_eq!(
+            result,
+            Some("Bracket.body".to_string()),
+            "cursor at (14, 9) inside the 'body' realization should resolve to Bracket.body"
+        );
+    }
 }
