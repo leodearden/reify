@@ -549,6 +549,52 @@ mod tests {
         );
     }
 
+    // step-3 (task 3590): vertex count mismatch
+    #[test]
+    fn stage_b_eligible_handles_count_mismatch_for_vertices() {
+        let corner = Role::CornerVertex {
+            x: AxisSign::Pos,
+            y: AxisSign::Pos,
+            z: AxisSign::Pos,
+        };
+        let mut old_table = TopologyAttributeTable::default();
+        old_table.record(h(100), attr(corner.clone(), 0, None));
+        let mut new_table = TopologyAttributeTable::default();
+        new_table.record(h(200), attr(corner.clone(), 0, None));
+        new_table.record(
+            h(201),
+            attr(
+                Role::CornerVertex {
+                    x: AxisSign::Neg,
+                    y: AxisSign::Pos,
+                    z: AxisSign::Pos,
+                },
+                0,
+                None,
+            ),
+        );
+
+        let result = stage_b_eligible(
+            &old_table,
+            &new_table,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[h(100)],
+            &[h(200), h(201)],
+        );
+        assert_eq!(
+            result,
+            Err(BijectionFailure::CountMismatch {
+                kind: SubShapeKind::Vertex,
+                old_count: 1,
+                new_count: 2,
+            }),
+            "1 old vertex vs 2 new vertices must be CountMismatch with kind: Vertex"
+        );
+    }
+
     // step-7: face count mismatch returns CountMismatch failure
     #[test]
     fn stage_b_eligible_face_total_count_mismatch_returns_count_mismatch_failure() {
