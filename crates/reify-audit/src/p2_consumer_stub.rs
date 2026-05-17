@@ -94,6 +94,16 @@ fn title_signals_stub(title: &str) -> bool {
     t.contains("stub") || t.contains("placeholder")
 }
 
+/// Threshold above which `check()` warns about an unbounded backlog
+/// when both `target_task_id` and `window` are unset (sweep mode
+/// without pre-narrowing — see the `# Callers` rustdoc on `check`).
+/// 50 is well above every existing test fixture (max 7 tasks in
+/// `seven_prepd_legacy_tasks_produce_no_false_positives` /
+/// audit_integration.rs) and well below the unbounded-backlog
+/// scenario (hundreds of tasks loaded from fused-memory). The
+/// comparison is strict `>` so a backlog of exactly 50 does not warn.
+const SWEEP_BACKLOG_WARN_THRESHOLD: usize = 50;
+
 /// Scan all tasks in `ctx.task_metadata` for canonical stub markers in their
 /// added-line diff and return [`Pattern::P2ConsumerStub`] findings.
 ///
@@ -111,6 +121,47 @@ fn title_signals_stub(title: &str) -> bool {
 ///
 /// Reference: `docs/architecture-audit/f-infra-design.md` §5 P2 and §10.
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
+    // Sweep-mode contract enforcement (esc-3752-365). The # Callers rustdoc
+    // above requires sweep-mode callers to narrow `ctx.task_metadata` to
+    // closing-window tasks before invoking check(). A caller that forgets —
+    // runs --mode sweep with no --task and no --since against the full
+    // fused-memory backlog — would silently surface every in-progress WIP
+    // `TODO(... pending)` as a Medium-severity finding. Make the contract
+    // explicit per project convention "contract in production code is made
+    // explicit rather than relying on test coverage".
+    //
+    // We use BOTH debug_assert! and eprintln!:
+    //   - debug_assert! panics in dev/test (loud fail-fast; the
+    //     `sweep_mode_unbounded_backlog_panics_in_debug` integration test
+    //     pins this signal via #[should_panic(expected = "unbounded backlog")]).
+    //   - eprintln! emits a `reify-audit:` breadcrumb so production release
+    //     builds (debug_assert compiled out) still surface the warning on
+    //     stderr alongside the spurious findings. Joins the existing breadcrumb
+    //     convention from lib.rs (git check-ignore) and p5_phantom_done.rs
+    //     (runs.db unreadable).
+    if ctx.target_task_id.is_none()
+        && ctx.window.is_none()
+        && ctx.task_metadata.len() > SWEEP_BACKLOG_WARN_THRESHOLD
+    {
+        eprintln!(
+            "reify-audit: p2::check called with unbounded backlog \
+             (target_task_id=None, window=None, {} tasks > threshold {}); \
+             callers MUST pre-narrow ctx.task_metadata to closing-window \
+             tasks per the # Callers rustdoc — else every in-progress WIP \
+             `TODO(... pending)` will surface as a Medium-severity finding",
+            ctx.task_metadata.len(),
+            SWEEP_BACKLOG_WARN_THRESHOLD,
+        );
+        debug_assert!(
+            false,
+            "p2::check called with unbounded backlog \
+             (target_task_id=None, window=None, {} tasks): callers MUST \
+             pre-narrow ctx.task_metadata to closing-window tasks per the \
+             # Callers rustdoc",
+            ctx.task_metadata.len(),
+        );
+    }
+
     let mut findings = Vec::new();
 
     // NOTE: unlike `p5_phantom_done::check_task` (which filters `meta.status != "done"`
