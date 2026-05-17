@@ -46,8 +46,8 @@ fn public_api_types_are_accessible() {
     use crate::commands::AppState;
     use crate::engine::EngineSession;
     use crate::types::{
-        ConstraintData, FileData, GuiState, JointDescriptor, MechanismDescriptor, MeshData,
-        ValueData,
+        ConstraintData, FileData, GuiState, JointBinding, JointDescriptor, MechanismDescriptor,
+        MeshData, ValueData,
     };
     use reify_mcp::{DiagnosticInfo, SourceLocationInfo};
 
@@ -63,6 +63,8 @@ fn public_api_types_are_accessible() {
     // Mechanism descriptor types introduced in task 2536
     assert_ipc_contract::<MechanismDescriptor>();
     assert_ipc_contract::<JointDescriptor>();
+    // JointBinding enum introduced in task 3783
+    assert_ipc_contract::<JointBinding>();
 
     // Verify AppState and EngineSession are usable as types
     let _ = std::any::type_name::<AppState>();

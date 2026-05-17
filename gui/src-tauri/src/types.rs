@@ -498,6 +498,41 @@ pub struct JointDescriptor {
     pub current_value_si: Option<f64>,
 }
 
+/// Describes how a kinematic joint is driven within a `snapshot()` call.
+///
+/// # Variant mapping (PRD §8.1)
+///
+/// | Variant | bind() form | Description |
+/// |---------|-------------|-------------|
+/// | `ParamBound` | `bind(j, param_ref)` | Joint driven by a named `param` cell; the param slider controls the joint position. |
+/// | `LiteralBound` | `bind(j, 100mm)` | Joint driven by a literal constant; surfaced as a scrub-virtual-param slider in the GUI. |
+/// | `CouplingDerived` | coupling joint (no bind) | Joint position is geometrically derived from another driving joint. `source_joint` detection is deferred to ζ work. |
+/// | `FixedNoMotion` | fixed joint / default | Joint has no independent motion variable; position is fully constrained. |
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum JointBinding {
+    /// Joint is driven by a named `param` cell via `bind(joint, param_ref)`.
+    /// `current_value_si` is the current evaluated SI value of the param cell.
+    ParamBound {
+        param_cell_id: String,
+        current_value_si: Option<f64>,
+    },
+    /// Joint is driven by a literal constant via `bind(joint, <literal>)`.
+    /// Surfaced as a scrubbable synth-virtual-param slider in the GUI.
+    /// `synth_param_name` is the virtual param name used internally (e.g. `__joint_y_axis_v`).
+    /// `initial_value_si` is the SI value of the literal (e.g. `0.1` for `100mm`).
+    LiteralBound {
+        synth_param_name: String,
+        initial_value_si: Option<f64>,
+        scrubbable: bool,
+    },
+    /// Joint position is derived from another driving joint (coupling joint).
+    /// `source_joint` is the cell name of the driving joint; empty string until ζ detection is implemented.
+    CouplingDerived { source_joint: String },
+    /// Joint has no independent motion variable (fixed joint or conservative default).
+    FixedNoMotion,
+}
+
 /// Current phase of the evaluation engine (mirrors frontend EvaluationStatus interface).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EvaluationStatus {
