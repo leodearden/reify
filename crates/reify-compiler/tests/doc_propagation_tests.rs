@@ -40,3 +40,21 @@ fn fn_def_doc_propagates_to_compiled_function() {
         "CompiledFunction.doc should carry the doc comment"
     );
 }
+
+// ─── step-5: trait → CompiledTrait ──────────────────────────────────────────
+
+#[test]
+fn trait_decl_doc_propagates_to_compiled_trait() {
+    let compiled =
+        compile_source("/// Rigid things\ntrait Rigid { param mass: Real }");
+    let trait_def = compiled
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "Rigid")
+        .expect("Rigid trait should exist");
+    assert_eq!(
+        trait_def.doc,
+        Some("Rigid things".to_string()),
+        "CompiledTrait.doc should carry the doc comment"
+    );
+}
