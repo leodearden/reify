@@ -468,6 +468,15 @@ pub struct EngineSession {
     /// (the default), all emit paths are no-ops — existing tests that construct an
     /// EngineSession without installing an emitter are unaffected.
     auto_resolve_emitter: Option<Arc<dyn AutoResolveEmitter>>,
+    /// Optional warm-pool event sink installed by the GUI layer.
+    ///
+    /// When `Some`, `drain_and_emit_warm_pool_events` forwards each drained
+    /// [`reify_eval::warm_pool::WarmPoolEvent`] (translated to the IPC
+    /// [`crate::types::WarmPoolEvent`] shape) to the installed emitter. When
+    /// `None` (the default), the drain still records events on the journal but
+    /// no IPC emission occurs — existing tests that don't install an emitter are
+    /// unaffected.
+    warm_pool_event_emitter: Option<Arc<dyn WarmPoolEventEmitter>>,
 }
 
 /// Trait for sinking auto-resolve loop events to the GUI transport layer.
@@ -479,6 +488,17 @@ pub trait AutoResolveEmitter: Send + Sync {
     fn start(&self);
     fn iteration(&self, iter: AutoResolveIteration);
     fn complete(&self);
+}
+
+/// Trait for sinking warm-pool telemetry events to the GUI transport layer.
+///
+/// Implemented by [`crate::TauriWarmPoolEventEmitter`] in `main.rs` for the
+/// production path (calls `event_bus::emit_typed` with channel `"warm-pool-event"`),
+/// and by `RecordingWarmPoolEventEmitter` in engine tests.
+///
+/// The trait is object-safe: no method takes or returns `Self`.
+pub trait WarmPoolEventEmitter: Send + Sync {
+    fn emit(&self, event: crate::types::WarmPoolEvent);
 }
 
 /// Build the normalized source-map key for a module name: `"{name}.ri"`.
@@ -831,6 +851,7 @@ impl EngineSession {
             consumed_idents_cache: None,
             compile_failure: None,
             auto_resolve_emitter: None,
+            warm_pool_event_emitter: None,
         }
     }
 
@@ -841,6 +862,16 @@ impl EngineSession {
     /// on the emitter.  Replaces any previously installed emitter.
     pub fn set_auto_resolve_emitter(&mut self, emitter: Arc<dyn AutoResolveEmitter>) {
         self.auto_resolve_emitter = Some(emitter);
+    }
+
+    /// Install a warm-pool event emitter on this session.
+    ///
+    /// After installation, every `drain_and_emit_warm_pool_events` call
+    /// (which happens after each engine check/build/edit call) forwards
+    /// translated IPC [`crate::types::WarmPoolEvent`] values to the emitter.
+    /// Replaces any previously installed emitter.
+    pub fn set_warm_pool_event_emitter(&mut self, emitter: Arc<dyn WarmPoolEventEmitter>) {
+        self.warm_pool_event_emitter = Some(emitter);
     }
 
     /// Install a constraint solver into the underlying Engine for testing.
@@ -866,6 +897,22 @@ impl EngineSession {
     pub(crate) fn check_and_emit_for_test(&mut self, compiled: &CompiledModule) {
         let r = self.core.engine_mut().check(compiled);
         self.emit_auto_resolve_if_any(&r);
+        self.drain_and_emit_warm_pool_events();
+    }
+
+    /// Expose the engine's warm pool for test-only manipulation (e.g. pre-populating
+    /// events before asserting that `drain_and_emit_warm_pool_events` forwards them).
+    #[cfg(test)]
+    pub(crate) fn warm_pool_mut_for_test(&mut self) -> &mut reify_eval::warm_pool::WarmStatePool {
+        self.core.engine_mut().warm_pool_mut()
+    }
+
+    /// Trigger a warm-pool drain-and-emit cycle in tests without needing a full
+    /// engine check/build call. Used by step-5 tests to verify the emitter
+    /// contract in isolation.
+    #[cfg(test)]
+    pub(crate) fn drain_and_emit_warm_pool_events_for_test(&mut self) {
+        self.drain_and_emit_warm_pool_events();
     }
 
     /// Emit auto-resolve events if an emitter is installed and the check produced
@@ -876,6 +923,34 @@ impl EngineSession {
     /// - `check.resolved_params` is empty (no auto params were resolved).
     ///
     /// When both conditions are met, fires `start → iteration → complete` in order.
+    /// Drain the engine's warm-pool event buffer, record each on the journal,
+    /// and forward the translated IPC events to the installed
+    /// [`WarmPoolEventEmitter`] (if any).
+    ///
+    /// Called after each engine call site that may produce donations or
+    /// evictions (check, edit_check, build, tessellate_snapshot, etc.) — the
+    /// same sites that invoke [`Self::emit_auto_resolve_if_any`].
+    ///
+    /// When no emitter is installed, the drain still records events on the
+    /// journal (M-010 wiring) but no IPC emission occurs.
+    ///
+    /// # Design note (follow-up opportunity)
+    ///
+    /// The five call sites that pair `emit_auto_resolve_if_any` + this method
+    /// are shaping into a "post-engine-call telemetry drain" pattern.  A future
+    /// refactor could extract a single `post_engine_call_telemetry(&self, check:
+    /// &CheckResult)` helper so new engine entry points can't forget to drain
+    /// warm-pool events and silently lose telemetry.  Tracked in task review
+    /// suggestion #4 (task 3541 amendment pass).
+    fn drain_and_emit_warm_pool_events(&mut self) {
+        let raw_events = self.core.engine_mut().drain_and_record_warm_pool_events();
+        if let Some(emitter) = &self.warm_pool_event_emitter {
+            for ev in &raw_events {
+                emitter.emit(crate::types::WarmPoolEvent::from_engine_event(ev));
+            }
+        }
+    }
+
     fn emit_auto_resolve_if_any(&self, check: &CheckResult) {
         let emitter = match &self.auto_resolve_emitter {
             Some(e) => e,
@@ -1037,6 +1112,7 @@ impl EngineSession {
         self.emit_auto_resolve_if_any(self.core.last_check().expect(
             "emit_auto_resolve_if_any: last_check must be Some after commit_state — see ordering invariant",
         ));
+        self.drain_and_emit_warm_pool_events();
 
         self.build_gui_state()
     }
@@ -1078,6 +1154,7 @@ impl EngineSession {
         self.emit_auto_resolve_if_any(self.core.last_check().expect(
             "emit_auto_resolve_if_any: last_check must be Some after commit_check — see ordering invariant",
         ));
+        self.drain_and_emit_warm_pool_events();
         self.build_gui_state()
     }
 
@@ -1113,6 +1190,7 @@ impl EngineSession {
         self.emit_auto_resolve_if_any(self.core.last_check().expect(
             "emit_auto_resolve_if_any: last_check must be Some after commit_state — see ordering invariant",
         ));
+        self.drain_and_emit_warm_pool_events();
         self.build_gui_state()
     }
 
@@ -1185,6 +1263,7 @@ impl EngineSession {
         self.emit_auto_resolve_if_any(self.core.last_check().expect(
             "emit_auto_resolve_if_any: last_check must be Some after commit_state — see ordering invariant",
         ));
+        self.drain_and_emit_warm_pool_events();
 
         self.build_gui_state()
     }

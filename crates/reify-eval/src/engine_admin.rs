@@ -1151,6 +1151,52 @@ impl Engine {
     pub fn clear_panic_on_eval(&mut self) {
         self.panic_on_eval_cells.clear();
     }
+
+    // ── Task 3541: warm-pool event drain + journal recording ─────────────────
+
+    /// Drain the warm pool's buffered telemetry events, record each as an
+    /// [`crate::journal::EvalEvent`] on the diagnostic journal, and return the
+    /// drained [`Vec<crate::warm_pool::WarmPoolEvent>`] so the GUI layer can
+    /// surface them.
+    ///
+    /// # Invariants
+    ///
+    /// - After this call, `self.warm_pool.drain_events()` returns an empty Vec.
+    /// - Each drained event is recorded on the journal with:
+    ///   - `version = VersionId(self.next_version_id.saturating_sub(1))` — the
+    ///     most recently assigned eval version (or 0 before the first eval).
+    ///   - `timestamp = Instant::now()` at drain time.
+    ///
+    /// # Drain site
+    ///
+    /// Called by `EngineSession::drain_and_emit_warm_pool_events` (engine.rs)
+    /// after each engine call site that may produce donations or evictions
+    /// (check, edit_check, build, tessellate_snapshot, etc.).  This is the
+    /// eval-boundary call site that wires the existing warm_pool event buffer
+    /// to the diagnostic journal, subsuming M-010.
+    pub fn drain_and_record_warm_pool_events(
+        &mut self,
+    ) -> Vec<crate::warm_pool::WarmPoolEvent> {
+        let events = self.warm_pool.drain_events();
+        let version = reify_types::VersionId(self.next_version_id.saturating_sub(1));
+        let timestamp = std::time::Instant::now();
+        for ev in &events {
+            let eval_event =
+                crate::journal::translate_warm_pool_event_to_eval_event(ev, version, timestamp);
+            self.journal.record(eval_event);
+        }
+        events
+    }
+
+    /// Number of events currently recorded in the engine's diagnostic journal.
+    ///
+    /// Exposed only in test and test-instrumentation builds — callers use it
+    /// to assert that `drain_and_record_warm_pool_events` correctly records
+    /// events on the journal.
+    #[cfg(test)]
+    pub fn journal_event_count(&self) -> usize {
+        self.journal.len()
+    }
 }
 
 /// Perform the full startup-sweep of `cache_root`, binding the current build's

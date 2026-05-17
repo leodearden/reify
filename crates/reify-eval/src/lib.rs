@@ -1845,4 +1845,77 @@ structure S {
              (engine and expected pool both resolve from the same env snapshot)"
         );
     }
+
+    // ── Task 3541 step-3: Engine::drain_and_record_warm_pool_events ──────────
+
+    /// `drain_and_record_warm_pool_events` drains the pool event buffer,
+    /// records each drained event on the journal, and returns the Vec.
+    ///
+    /// Assertions:
+    /// (a) The returned Vec contains both events pre-populated via donate calls.
+    /// (b) After the drain, the pool's own event buffer is empty.
+    /// (c) The journal has recorded the Donated and (any Evicted) events —
+    ///     verified via `engine.journal_event_count()`.
+    #[test]
+    fn engine_drain_and_record_warm_pool_events_drains_records_and_returns() {
+        use crate::warm_pool::WarmPoolEvent;
+        use reify_types::OpaqueState;
+        use reify_test_support::mocks::MockConstraintChecker;
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        // Pre-populate the pool with two donations using a tiny budget so
+        // the second donate triggers an eviction (budget = 1 byte).
+        *engine.warm_pool_mut() = crate::warm_pool::WarmStatePool::new(1);
+
+        let node_a = crate::cache::NodeId::Value(reify_types::ValueCellId::new("Beam", "length"));
+        let node_b = crate::cache::NodeId::Value(reify_types::ValueCellId::new("Plate", "width"));
+
+        // Donate node_a (fits in budget = 1 byte) — size_bytes=1
+        engine.warm_pool_mut().donate(node_a.clone(), OpaqueState::new(1i32, 1));
+        // Donate node_b — triggers eviction of node_a (LRU) because budget=1 byte
+        engine.warm_pool_mut().donate(node_b.clone(), OpaqueState::new(2i32, 1));
+
+        // At least two events are buffered (Donated(a), Evicted(a), Donated(b))
+        let count_before = engine.journal_event_count();
+
+        let drained = engine.drain_and_record_warm_pool_events();
+
+        // (a) Exactly 3 events in deterministic order: Donated(a), Evicted(a), Donated(b).
+        // donate(a, size=1, budget=1) → Donated(a); donate(b, size=1) evicts a → Evicted(a),
+        // Donated(b).  Loose assertions like !is_empty() would allow a regression that
+        // produces 1 or 2 events to silently pass.
+        assert_eq!(
+            drained.len(),
+            3,
+            "donate(a)+evict(a)+donate(b) must yield exactly 3 events; got {}",
+            drained.len()
+        );
+        assert!(
+            matches!(drained[0], WarmPoolEvent::Donated { .. }),
+            "drained[0] must be Donated (first donation of node_a)"
+        );
+        assert!(
+            matches!(drained[1], WarmPoolEvent::Evicted { .. }),
+            "drained[1] must be Evicted (node_a evicted when node_b donated)"
+        );
+        assert!(
+            matches!(drained[2], WarmPoolEvent::Donated { .. }),
+            "drained[2] must be Donated (donation of node_b)"
+        );
+
+        // (b) Pool event buffer is now empty
+        assert!(
+            engine.warm_pool_mut().drain_events().is_empty(),
+            "pool event buffer must be empty after drain"
+        );
+
+        // (c) Journal recorded exactly the drained events
+        let count_after = engine.journal_event_count();
+        assert_eq!(
+            count_after - count_before,
+            drained.len(),
+            "journal must record exactly as many events as were drained"
+        );
+    }
 }

@@ -7963,6 +7963,112 @@ fn update_source_preserves_file_path_when_commit_state_gets_preserve() {
     );
 }
 
+// ── Task 3541 step-5: WarmPoolEventEmitter recording ────────────────────────
+
+/// Recording `WarmPoolEventEmitter` that captures every emitted IPC
+/// [`crate::types::WarmPoolEvent`] for test assertions.
+///
+/// Mirrors [`RecordingEmitter`] (line 7234) for the warm-pool channel.
+struct RecordingWarmPoolEventEmitter {
+    events: std::sync::Arc<std::sync::Mutex<Vec<crate::types::WarmPoolEvent>>>,
+}
+
+impl RecordingWarmPoolEventEmitter {
+    fn new() -> Self {
+        Self {
+            events: std::sync::Arc::new(std::sync::Mutex::new(vec![])),
+        }
+    }
+}
+
+impl crate::engine::WarmPoolEventEmitter for RecordingWarmPoolEventEmitter {
+    fn emit(&self, event: crate::types::WarmPoolEvent) {
+        self.events.lock().unwrap().push(event);
+    }
+}
+
+/// Step-5: `EngineSession` emits IPC `WarmPoolEvent` values through an installed
+/// `WarmPoolEventEmitter` when `drain_and_emit_warm_pool_events` is called after
+/// pool activity.
+///
+/// Test flow:
+/// (a) Construct EngineSession, install RecordingWarmPoolEventEmitter.
+/// (b) Pre-populate the warm pool with a donate (node_a) that triggers an
+///     eviction (budget=1 byte): donate(node_a), donate(node_b) → Evicted(a).
+/// (c) Call `session.drain_and_emit_warm_pool_events_for_test()`.
+/// (d) Assert recorder captured both events with correct kind/size_bytes/node_id.
+///
+/// Fails to compile: WarmPoolEventEmitter trait, set_warm_pool_event_emitter,
+/// warm_pool_mut_for_test, and drain_and_emit_warm_pool_events_for_test don't
+/// exist yet (all added in step-6).
+#[test]
+fn engine_session_warm_pool_event_emitter_captures_donated_and_evicted_events() {
+    use std::sync::Arc;
+    use reify_types::OpaqueState;
+    use reify_eval::cache::NodeId;
+    use reify_types::ValueCellId;
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    let recorder = RecordingWarmPoolEventEmitter::new();
+    let captured = Arc::clone(&recorder.events);
+    session.set_warm_pool_event_emitter(Arc::new(recorder));
+
+    // Install a 1-byte warm pool budget so donate(b) evicts donate(a).
+    {
+        let pool = session.warm_pool_mut_for_test();
+        *pool = reify_eval::warm_pool::WarmStatePool::new(1);
+    }
+
+    let node_a = NodeId::Value(ValueCellId::new("Beam", "length"));
+    let node_b = NodeId::Value(ValueCellId::new("Plate", "width"));
+
+    // Donate two nodes: node_a fits (size=1, budget=1), node_b evicts node_a.
+    session.warm_pool_mut_for_test().donate(node_a.clone(), OpaqueState::new(1i32, 1));
+    session.warm_pool_mut_for_test().donate(node_b.clone(), OpaqueState::new(2i32, 1));
+
+    // Drain and emit.
+    session.drain_and_emit_warm_pool_events_for_test();
+
+    let events = captured.lock().unwrap();
+
+    // Exactly 3 events in deterministic order: Donated(Beam.length), Evicted(Beam.length),
+    // Donated(Plate.width).  donate(node_a, size=1, budget=1) → Donated(node_a); donate(node_b,
+    // size=1) evicts node_a (LRU) → Evicted(node_a), Donated(node_b).  Loose assertions like
+    // `>= 2` allow regressions that produce 1-2 events to silently pass.
+    assert_eq!(
+        events.len(),
+        3,
+        "donate(a)+evict(a)+donate(b) must yield exactly 3 IPC events; got {}",
+        events.len()
+    );
+
+    // (a) events[0]: Donated(node_a) — "Beam.length"
+    assert_eq!(events[0].kind, "donated", "events[0] must be kind=donated");
+    assert_eq!(
+        events[0].node_id, "Beam.length",
+        "events[0].node_id must be 'Beam.length' (node_a)"
+    );
+    assert_eq!(events[0].size_bytes, 1, "events[0].size_bytes must be 1");
+
+    // (b) events[1]: Evicted(node_a) — "Beam.length" (the LRU victim)
+    assert_eq!(events[1].kind, "evicted", "events[1] must be kind=evicted");
+    assert_eq!(
+        events[1].node_id, "Beam.length",
+        "events[1].node_id must be 'Beam.length' (victim)"
+    );
+    assert_eq!(events[1].size_bytes, 1, "events[1].size_bytes must be 1");
+
+    // (c) events[2]: Donated(node_b) — "Plate.width"
+    assert_eq!(events[2].kind, "donated", "events[2] must be kind=donated");
+    assert_eq!(
+        events[2].node_id, "Plate.width",
+        "events[2].node_id must be 'Plate.width' (node_b)"
+    );
+    assert_eq!(events[2].size_bytes, 1, "events[2].size_bytes must be 1");
+}
+
 #[test]
 fn sweep_persistent_cache_removes_stale_tempfile_under_explicit_cache_root() {
     // Parameterized-seam unit test (task 3698): calls

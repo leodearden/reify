@@ -22,6 +22,7 @@ import type {
   PersistentViewState,
   MechanismDescriptor,
   AutoResolveIteration,
+  WarmPoolEvent,
 } from './types';
 import { convertRawMesh, convertRawGuiState } from './types';
 import type {
@@ -639,5 +640,33 @@ export async function onAutoResolveComplete(
 ): Promise<UnlistenFn> {
   return listen<void>('auto-resolve-complete', () => {
     callback();
+  });
+}
+
+/**
+ * Subscribe to warm-pool-event channel (GR-016 ε).
+ *
+ * Fires after each engine call boundary when the warm pool donates or evicts
+ * a warm state. Payload validated with a hand-shaped guard (the numeric
+ * `size_bytes` field cannot be validated by the string-only `validatePayload`
+ * helper — follows the `onAutoResolveIteration` precedent at bridge.ts:620).
+ *
+ * Payload shape: docs/gui-event-channels/warm-pool-event.md §2.
+ */
+export async function onWarmPoolEvent(
+  callback: (event: WarmPoolEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<unknown>('warm-pool-event', (event) => {
+    const p = event.payload;
+    if (
+      !isPlainObject(p) ||
+      (p['kind'] !== 'evicted' && p['kind'] !== 'donated') ||
+      typeof p['size_bytes'] !== 'number' ||
+      typeof p['node_id'] !== 'string'
+    ) {
+      console.warn('[warm-pool-event] malformed payload; dropping event', p);
+      return;
+    }
+    callback(p as unknown as WarmPoolEvent);
   });
 }
