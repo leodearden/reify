@@ -17,6 +17,67 @@ pub struct SourceLocationInfo {
     pub end_column: u32,
 }
 
+/// Pre-compute byte positions of all `\n` characters in `source` in O(M).
+///
+/// Returns a sorted `Vec<usize>` of the byte offset of each newline.
+/// Pass this to [`line_col_to_byte_offset_with_offsets`] to binary-search for
+/// a byte offset in O(log M + line_length) instead of the O(M) scan done by
+/// the character-walking helpers.
+pub fn build_line_offsets(source: &str) -> Vec<usize> {
+    source
+        .bytes()
+        .enumerate()
+        .filter_map(|(i, b)| if b == b'\n' { Some(i) } else { None })
+        .collect()
+}
+
+/// Convert a 1-based `(line, col)` pair to a byte offset using a pre-built
+/// newline table.
+///
+/// `line_offsets` must be the result of [`build_line_offsets`] for the same
+/// `source`.  Both `line` and `col` are 1-based and count **Unicode codepoints**.
+///
+/// - If `line` or `col` is 0, returns 0 as a safe fallback.
+/// - If `line` exceeds the number of lines, returns `source.len()`.
+/// - If `col` exceeds the line length, clamps to the end of the line.
+pub fn line_col_to_byte_offset_with_offsets(
+    source: &str,
+    line: u32,
+    col: u32,
+    line_offsets: &[usize],
+) -> usize {
+    if line == 0 || col == 0 {
+        return 0;
+    }
+    let line = line as usize;
+    let col = col as usize;
+
+    // Byte index of the first character on the target line.
+    let line_start = if line <= 1 {
+        0
+    } else {
+        match line_offsets.get(line - 2) {
+            Some(&nl) => nl + 1,         // byte after the preceding newline
+            None => return source.len(), // line is beyond end of source
+        }
+    };
+
+    // Slice to the end of the target line (not end of source) so that an
+    // out-of-bounds col clamps to the line boundary rather than counting
+    // codepoints past the '\n' into subsequent lines.
+    let line_end = source[line_start..]
+        .find('\n')
+        .map(|i| line_start + i)
+        .unwrap_or(source.len());
+    let line_text = &source[line_start..line_end];
+    line_start
+        + line_text
+            .char_indices()
+            .nth(col - 1)
+            .map(|(i, _)| i)
+            .unwrap_or(line_text.len())
+}
+
 /// Convert a byte offset in `source` to a 1-based `(line, column)` pair.
 ///
 /// The function iterates over Unicode scalar values and increments the column

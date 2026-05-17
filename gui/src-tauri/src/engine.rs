@@ -3545,18 +3545,11 @@ fn diagnostics_to_info(
         .collect()
 }
 
-/// Pre-compute byte positions of all `\n` characters in `source` in O(M).
-///
-/// Returns a sorted `Vec<usize>` of the byte offset of each newline.
-/// Pass this to [`offset_to_line_col_fast`] to binary-search for line/col
-/// in O(log M) instead of the O(M) scan done by [`reify_types::byte_offset_to_line_col`].
-pub(crate) fn build_line_offsets(source: &str) -> Vec<usize> {
-    source
-        .bytes()
-        .enumerate()
-        .filter_map(|(i, b)| if b == b'\n' { Some(i) } else { None })
-        .collect()
-}
+// `build_line_offsets` and `line_col_to_byte_offset_with_offsets` have been
+// moved to `reify_types::source_location` so that `reify-eval` can use them
+// without depending on `reify-gui`.  Re-export here as `pub(crate)` so all
+// existing callers inside this crate (and engine_tests.rs) compile unchanged.
+pub(crate) use reify_types::{build_line_offsets, line_col_to_byte_offset_with_offsets};
 
 /// Binary-search for the (line, column) of `offset` using a pre-built newline table.
 ///
@@ -3613,49 +3606,3 @@ pub(crate) fn offset_to_line_col_fast(
     (line, col)
 }
 
-/// Convert a 1-based `(line, col)` pair to a byte offset using a pre-built
-/// newline table.
-///
-/// `line_offsets` must be the result of [`build_line_offsets`] for the same
-/// `source`.  Both `line` and `col` are 1-based and count **Unicode codepoints**.
-///
-/// - If `line` or `col` is 0, returns 0 as a safe fallback.
-/// - If `line` exceeds the number of lines, returns `source.len()`.
-/// - If `col` exceeds the line length, clamps to the end of the line.
-pub(crate) fn line_col_to_byte_offset_with_offsets(
-    source: &str,
-    line: u32,
-    col: u32,
-    line_offsets: &[usize],
-) -> usize {
-    if line == 0 || col == 0 {
-        return 0;
-    }
-    let line = line as usize;
-    let col = col as usize;
-
-    // Byte index of the first character on the target line.
-    let line_start = if line <= 1 {
-        0
-    } else {
-        match line_offsets.get(line - 2) {
-            Some(&nl) => nl + 1,         // byte after the preceding newline
-            None => return source.len(), // line is beyond end of source
-        }
-    };
-
-    // Slice to the end of the target line (not end of source) so that an
-    // out-of-bounds col clamps to the line boundary rather than counting
-    // codepoints past the '\n' into subsequent lines.
-    let line_end = source[line_start..]
-        .find('\n')
-        .map(|i| line_start + i)
-        .unwrap_or(source.len());
-    let line_text = &source[line_start..line_end];
-    line_start
-        + line_text
-            .char_indices()
-            .nth(col - 1)
-            .map(|(i, _)| i)
-            .unwrap_or(line_text.len())
-}
