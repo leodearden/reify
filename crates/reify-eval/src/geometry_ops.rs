@@ -1822,6 +1822,7 @@ pub(crate) fn try_eval_topology_selector(
         "edges_parallel_to" => TopologySelectorHelper::EdgesParallelTo,
         "edges_at_height" => TopologySelectorHelper::EdgesAtHeight,
         "adjacent_faces" => TopologySelectorHelper::AdjacentFaces,
+        "shared_edges" => TopologySelectorHelper::SharedEdges,
         _ => return None,
     };
 
@@ -1985,7 +1986,176 @@ pub(crate) fn try_eval_topology_selector(
                 diagnostics,
             )
         }
+        TopologySelectorHelper::SharedEdges => {
+            // args[0]: face_a ValueRef → named_steps map → GeometryHandleId.
+            let face_a = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            // args[1]: face_b ValueRef → named_steps map → GeometryHandleId.
+            let face_b = resolve_geometry_handle_arg(&args[1], named_steps)?;
+            dispatch_shared_edges(kernel, face_a, face_b, &function.name, diagnostics)
+        }
     }
+}
+
+/// Dispatch the `shared_edges(face_a, face_b)` selector per design-doc §4.3.
+///
+/// Pipeline:
+///   1. Derive each face's parent solid via `selector_vocabulary_v2::owner_body_of`
+///      (which issues `GeometryQuery::OwnerBody` and decodes the `Value::Int`
+///      reply). On query error → warning + `Value::Undef`.
+///   2. If the two parents differ → push a "different parent solids" warning
+///      and return `Value::List(vec![])` (silent degrade — empty list is
+///      structurally valid as a `List<Geometry>` cell while the warning
+///      surfaces the user-actionable issue).
+///   3. Recover each face's 0-based index in the parent via
+///      `extract_faces(parent)` + `position`. On extract error OR a face not
+///      appearing in `extract_faces` → warning + `Value::Undef`.
+///   4. Dispatch `GeometryQuery::SharedEdges { shape, face_a, face_b }`. On
+///      query error or non-`Value::List` reply → warning + `Value::Undef`.
+///   5. Map the reply integer indices back to edge handles via
+///      `extract_edges(parent)`. Skip indices that fall outside the edge
+///      enumeration (defensive against a kernel bug rather than a hard
+///      failure mode — see design-doc §4.3 for the rationale).
+///   6. Return `Value::List(Vec<Value::Int>)` of edge handle ids.
+fn dispatch_shared_edges(
+    kernel: &mut dyn reify_types::GeometryKernel,
+    face_a: GeometryHandleId,
+    face_b: GeometryHandleId,
+    helper_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_types::Value> {
+    // (1) Derive parents via OwnerBody.
+    let parent_a = match crate::selector_vocabulary_v2::owner_body_of(kernel, face_a) {
+        Ok(p) => p,
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} OwnerBody({:?}) failed: {}",
+                helper_name, face_a, err
+            )));
+            return Some(reify_types::Value::Undef);
+        }
+    };
+    let parent_b = match crate::selector_vocabulary_v2::owner_body_of(kernel, face_b) {
+        Ok(p) => p,
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} OwnerBody({:?}) failed: {}",
+                helper_name, face_b, err
+            )));
+            return Some(reify_types::Value::Undef);
+        }
+    };
+
+    // (2) Cross-solid guard rail: empty list + warning when faces span
+    //     different parents (design-doc §4.3).
+    if parent_a != parent_b {
+        diagnostics.push(Diagnostic::warning(format!(
+            "{}: faces have different parent solids ({:?} vs {:?}); returning empty list",
+            helper_name, parent_a, parent_b
+        )));
+        return Some(reify_types::Value::List(Vec::new()));
+    }
+
+    // (3) Recover 0-based face indices via extract_faces(parent).
+    let faces = match kernel.extract_faces(parent_a) {
+        Ok(f) => f,
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} extract_faces({:?}) failed: {}",
+                helper_name, parent_a, err
+            )));
+            return Some(reify_types::Value::Undef);
+        }
+    };
+    let idx_a = match faces.iter().position(|h| *h == face_a) {
+        Some(i) => i,
+        None => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{}: face_a {:?} is not a child of parent {:?} (was extract_faces called?)",
+                helper_name, face_a, parent_a
+            )));
+            return Some(reify_types::Value::Undef);
+        }
+    };
+    let idx_b = match faces.iter().position(|h| *h == face_b) {
+        Some(i) => i,
+        None => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{}: face_b {:?} is not a child of parent {:?} (was extract_faces called?)",
+                helper_name, face_b, parent_a
+            )));
+            return Some(reify_types::Value::Undef);
+        }
+    };
+
+    // (4) Dispatch SharedEdges query.
+    let reply = match kernel.query(&reify_types::GeometryQuery::SharedEdges {
+        shape: parent_a,
+        face_a: idx_a,
+        face_b: idx_b,
+    }) {
+        Ok(v) => v,
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} SharedEdges query failed: {}",
+                helper_name, err
+            )));
+            return Some(reify_types::Value::Undef);
+        }
+    };
+    let int_indices = match reply {
+        reify_types::Value::List(items) => items,
+        other => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{}: expected Value::List from SharedEdges, got {:?}",
+                helper_name, other
+            )));
+            return Some(reify_types::Value::Undef);
+        }
+    };
+
+    // (5) Map reply indices back to edge handles via extract_edges(parent).
+    let edges = match kernel.extract_edges(parent_a) {
+        Ok(e) => e,
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} extract_edges({:?}) failed: {}",
+                helper_name, parent_a, err
+            )));
+            return Some(reify_types::Value::Undef);
+        }
+    };
+    let mut out: Vec<GeometryHandleId> = Vec::with_capacity(int_indices.len());
+    for item in int_indices {
+        let idx = match item {
+            reify_types::Value::Int(i) => i,
+            other => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "{}: expected Value::Int element in SharedEdges list, got {:?}",
+                    helper_name, other
+                )));
+                return Some(reify_types::Value::Undef);
+            }
+        };
+        let usize_idx: usize = match idx.try_into() {
+            Ok(u) => u,
+            Err(_) => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "{}: SharedEdges returned negative index {}",
+                    helper_name, idx
+                )));
+                return Some(reify_types::Value::Undef);
+            }
+        };
+        // Defensive: silently skip out-of-range indices rather than failing
+        // hard — surfaces a malformed kernel reply as a smaller-than-expected
+        // list rather than total cell collapse.
+        if let Some(h) = edges.get(usize_idx) {
+            out.push(*h);
+        }
+    }
+
+    // (6) Wrap as Value::List of Int handle ids.
+    Some(handle_list_value(out))
 }
 
 /// Map a filtered-selector helper `Result<Vec<GeometryHandleId>, QueryError>`
@@ -2059,6 +2229,12 @@ enum TopologySelectorHelper {
     /// `adjacent_faces(parent, face) -> List<Geometry>` — faces of `parent`
     /// that share at least one edge with `face` (task 3560).
     AdjacentFaces,
+    /// `shared_edges(face_a, face_b) -> List<Geometry>` — edges of the
+    /// common parent solid that lie on the boundary of BOTH faces (task 3560).
+    /// Derives the parent via `OwnerBody` on both args; silently degrades to
+    /// an empty list (with a warning) when the two faces live on different
+    /// parent solids (design-doc §4.3).
+    SharedEdges,
 }
 
 impl TopologySelectorHelper {
@@ -2075,7 +2251,8 @@ impl TopologySelectorHelper {
             | TopologySelectorHelper::MomentOfInertia
             | TopologySelectorHelper::EdgesByLength
             | TopologySelectorHelper::FacesByArea
-            | TopologySelectorHelper::AdjacentFaces => 2,
+            | TopologySelectorHelper::AdjacentFaces
+            | TopologySelectorHelper::SharedEdges => 2,
             TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => 1,
             TopologySelectorHelper::FacesByNormal
             | TopologySelectorHelper::EdgesParallelTo
