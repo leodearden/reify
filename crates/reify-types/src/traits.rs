@@ -88,7 +88,15 @@ pub enum TraitMember {
 pub struct TraitDef {
     /// The name of the trait.
     pub name: String,
-    /// Doc comment extracted from the `///` lines preceding the declaration.
+    /// Doc comment from the `///` lines preceding the trait declaration.
+    ///
+    /// **Note:** `reify_types::TraitDef` has no production construction site in
+    /// the compiler pipeline — the compiler lowers trait declarations into
+    /// [`reify_compiler::CompiledTrait`], not into `TraitDef`.  This field
+    /// therefore carries `None` in any real compilation run and exists solely
+    /// for forward compatibility / tooling that constructs `TraitDef` directly
+    /// (e.g. `reify-types` test fixtures).  The authoritative runtime
+    /// observable for doc-comment propagation is `CompiledTrait::doc`.
     pub doc: Option<String>,
     /// Type parameters on the trait.
     pub type_params: Vec<TypeParam>,

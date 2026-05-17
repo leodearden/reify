@@ -58,6 +58,30 @@ fn enum_decl_doc_propagates_to_enum_def() {
     );
 }
 
+// ─── amend: occurrence → TopologyTemplate (OccurrenceDef seam) ─────────────
+//
+// The From<&StructureDef> and From<&OccurrenceDef> impls in entity.rs are two
+// separate code paths that both feed EntityDefRef::doc → TopologyTemplate::doc.
+// The step-1 test covers the StructureDef path; this test independently pins
+// the OccurrenceDef path so a regression in `doc: o.doc.clone()` cannot
+// silently pass the suite.
+
+#[test]
+fn occurrence_def_doc_propagates_to_topology_template() {
+    let compiled =
+        compile_source("/// A joint\noccurrence Weld { let duration = 5.0 }");
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Weld")
+        .expect("Weld template should exist");
+    assert_eq!(
+        template.doc,
+        Some("A joint".to_string()),
+        "TopologyTemplate.doc from an occurrence should carry the doc comment"
+    );
+}
+
 // ─── step-5: trait → CompiledTrait ──────────────────────────────────────────
 
 #[test]
