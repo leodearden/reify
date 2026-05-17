@@ -170,5 +170,29 @@ pub fn unflatten_dofs(dofs: &[f64], shapes: &[JointKind]) -> Result<Vec<JointVal
 
 #[cfg(test)]
 mod tests {
-    // Per-behaviour tests are added by subsequent step-N-test commits.
+    use super::*;
+
+    // ── JointValue::dof_count tests (step-1) ─────────────────────────────
+
+    #[test]
+    fn dof_count_scalar_is_1() {
+        assert_eq!(JointValue::Scalar(0.0).dof_count(), 1);
+    }
+
+    #[test]
+    fn dof_count_cyl_is_2() {
+        assert_eq!(JointValue::Cyl([0.0, 0.0]).dof_count(), 2);
+    }
+
+    #[test]
+    fn dof_count_planar_is_3() {
+        assert_eq!(JointValue::Planar([0.0, 0.0, 0.0]).dof_count(), 3);
+    }
+
+    #[test]
+    fn dof_count_sphere_is_3_not_4() {
+        // PRD §5.1 comment: dof_count is 1|2|3|3 (manifold DOF).  Sphere
+        // STORES 4 quaternion components but only has 3 rotational DOF.
+        assert_eq!(JointValue::Sphere([1.0, 0.0, 0.0, 0.0]).dof_count(), 3);
+    }
 }
