@@ -21,6 +21,30 @@
 //! targets but continues propagating from them to their downstream
 //! dependents.
 //!
+//! ### Chain-root variants forwarded (PRD §3 / task δ 3423)
+//!
+//! The diagnostic chain root carried in `pending_cause` and forwarded by
+//! this walk is variant-agnostic — the §9.2 helper neither inspects nor
+//! special-cases the `NodeId` variant. Both chain-root forms are valid per
+//! `docs/prds/v0_3/compute-node-contract.md` §3 ("Chain-root contract
+//! extension"):
+//!
+//! - `NodeId::Value(_)` — a Failed leaf whose error gated a downstream cell
+//!   (the original arch §9.2 case).
+//! - `NodeId::Compute(_)` — an **in-flight ComputeNode** that is itself the
+//!   chain root, set by
+//!   [`crate::cache::CacheStore::begin_compute_dispatch`] via
+//!   `mark_pending_with_cause` while a trampoline dispatch is running
+//!   (task 3420/α admitted this variant; task 3423/δ wires the dispatch
+//!   lifecycle that produces it). A downstream cell reading an in-flight
+//!   output VC therefore receives `pending_cause =
+//!   Some(NodeId::Compute(c_id))` through this walk with no walk-side change.
+//!   Pinned by `cache::tests`'
+//!   `cache_store_pending_cause_admits_compute_chain_root` and
+//!   `derive_output_freshness_with_cause_forwards_compute_chain_root`, and
+//!   end-to-end through this walk by `tests`'
+//!   `propagate_freshness_only_forwards_compute_chain_root_through_pending_output_to_downstream`.
+//!
 //! ## Implementation notes
 //!
 //! ### `visited` allocated per-call, not persisted
@@ -202,6 +226,19 @@ pub fn propagate_freshness_only(
 ///   `last_substantive` because the canonical writers replace
 ///   `last_substantive` with `ResultRef::of_hash(entry.result_hash)` —
 ///   which the §9.2 helper never returns.
+/// - Chain-root variant-agnosticism (PRD §3 / task δ 3423): the forwarded
+///   `pending_cause` may be `NodeId::Value(_)` (a Failed leaf) **or**
+///   `NodeId::Compute(_)` (an in-flight ComputeNode set by
+///   `begin_compute_dispatch`/`mark_pending_with_cause`). This function
+///   neither reads nor branches on the variant — it threads whatever the
+///   §9.2 helper returns straight through — so the in-flight ComputeNode
+///   chain root forwards onto downstream cells with no code-path change.
+///   Pinned by `cache::tests`'
+///   `cache_store_pending_cause_admits_compute_chain_root` /
+///   `derive_output_freshness_with_cause_forwards_compute_chain_root`
+///   (task 3420/α) and end-to-end by `tests`'
+///   `propagate_freshness_only_forwards_compute_chain_root_through_pending_output_to_downstream`
+///   (task 3423/δ).
 fn process_dependent_freshness(
     cache: &mut CacheStore,
     dependent: &NodeId,
