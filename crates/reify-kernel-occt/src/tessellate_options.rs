@@ -15,6 +15,76 @@
 //! the same `ToleranceBucket`, silently returning wrong cached geometry.
 //! Pinned by the unit test `default_content_hash_is_not_no_options_sentinel`.
 
+use reify_types::ContentHash;
+
+/// OCCT tessellation options for the BRep→Mesh conversion stage.
+///
+/// Fields mirror the two dominant precision parameters of OCCT's
+/// `BRepMesh_IncrementalMesh` (PRD §9 Q-2):
+/// - `angular_deflection`: maximum angular difference (radians) between the
+///   normals of adjacent mesh triangles. Controls curvature fidelity of
+///   rounded surfaces.
+/// - `linear_deflection`: maximum linear distance (metres) between a mesh
+///   edge and the underlying BRep edge. Controls coarseness of straight
+///   edges and flat faces.
+///
+/// # No `Eq` / `Hash` derives
+///
+/// `f64` does not implement `Eq` or `Hash` (NaN ≠ NaN). Use
+/// [`TessellateOptions::content_hash()`] for equality / caching comparisons.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TessellateOptions {
+    /// Maximum angular deflection in radians.
+    ///
+    /// OCCT `BRepMesh_IncrementalMesh` default: `0.5` rad (≈28.6°).
+    pub angular_deflection: f64,
+
+    /// Maximum linear deflection in metres.
+    ///
+    /// OCCT `BRepMesh_IncrementalMesh` default: `0.1` m.
+    pub linear_deflection: f64,
+}
+
+impl Default for TessellateOptions {
+    /// Returns OCCT `BRepMesh_IncrementalMesh` defaults.
+    ///
+    /// Per PRD §9 Q-2: `angular_deflection = 0.5` rad, `linear_deflection = 0.1` m.
+    fn default() -> Self {
+        Self {
+            angular_deflection: 0.5,
+            linear_deflection: 0.1,
+        }
+    }
+}
+
+impl TessellateOptions {
+    /// Produce a [`ContentHash`] of the tessellation parameters.
+    ///
+    /// # Wire-format invariant
+    ///
+    /// Encoding order is fixed and stable: domain tag →
+    /// `angular_deflection` (little-endian bytes) →
+    /// `linear_deflection` (little-endian bytes). Changing this order
+    /// invalidates any persisted hash values. The little-endian byte
+    /// encoding follows the convention established in
+    /// `crates/reify-types/src/hash.rs:27-29` (`ContentHash::of_u64`).
+    ///
+    /// # ESC-3433-117 non-zero domain tag
+    ///
+    /// Seeded with `ContentHash::of_str("TessellateOptions")` so that
+    /// `TessellateOptions::default().content_hash()` cannot equal
+    /// `ContentHash(0)` — the `NO_OPTIONS` sentinel at
+    /// `crates/reify-eval/src/realization_cache.rs:85`. A collision would
+    /// let a TessellateOptions-keyed Mesh entry alias a NO_OPTIONS-keyed
+    /// BRep entry in the same `ToleranceBucket`, silently returning wrong
+    /// cached geometry. Pinned by `default_content_hash_is_not_no_options_sentinel`.
+    pub fn content_hash(&self) -> ContentHash {
+        ContentHash::of_str("TessellateOptions")
+            .combine(ContentHash::of(&self.angular_deflection.to_le_bytes()))
+            .combine(ContentHash::of(&self.linear_deflection.to_le_bytes()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::TessellateOptions;
