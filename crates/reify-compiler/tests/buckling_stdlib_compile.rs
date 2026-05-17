@@ -189,3 +189,105 @@ fn buckling_options_struct_has_correct_param_shape() {
         );
     }
 }
+
+// ─── step-5: BucklingOptions defaults ────────────────────────────────────────
+
+/// Each `BucklingOptions` param must carry the canonical default declared in
+/// PRD §4 (with the decimal-vs-scientific encoding adjustment for `tol`):
+///
+///   n_modes    = 10
+///   mode       = "shift_invert"
+///   sigma      = 0.0
+///   tol        = 0.00000001    (= 1e-8 in PRD; decimal because Reify's
+///                                number grammar has no scientific notation)
+///   max_iters  = 1000
+///   auto_dense = true
+///
+/// Strict-equality discipline for real-valued defaults mirrors the
+/// `cg_tolerance` precedent in `solver_elastic_tests.rs:336-346`: IEEE-754
+/// round-to-nearest is deterministic on the same decimal input, so strict
+/// equality catches silent regressions (e.g., `9.999e-9`) that an absolute-
+/// tolerance check would let through.
+#[test]
+fn buckling_options_param_defaults_match_spec() {
+    let template = find_structure("BucklingOptions");
+
+    // n_modes = 10
+    let n_modes_default = require_default(template, "n_modes");
+    match &n_modes_default.kind {
+        CompiledExprKind::Literal(Value::Int(v)) => {
+            assert_eq!(*v, 10, "n_modes default should be 10, got: {}", v)
+        }
+        other => panic!(
+            "n_modes default should be Literal(Value::Int(10)), got: {:?}",
+            other
+        ),
+    }
+
+    // mode = "shift_invert"
+    let mode_default = require_default(template, "mode");
+    match &mode_default.kind {
+        CompiledExprKind::Literal(Value::String(s)) => assert_eq!(
+            s, "shift_invert",
+            "mode default should be \"shift_invert\", got: {:?}",
+            s
+        ),
+        other => panic!(
+            "mode default should be Literal(Value::String(\"shift_invert\")), got: {:?}",
+            other
+        ),
+    }
+
+    // sigma = 0.0 (strict equality, IEEE-754 round-to-nearest deterministic)
+    let sigma_default = require_default(template, "sigma");
+    match &sigma_default.kind {
+        CompiledExprKind::Literal(Value::Real(v)) => assert_eq!(
+            *v, 0.0,
+            "sigma default should be exactly 0.0, got: {}",
+            v
+        ),
+        other => panic!(
+            "sigma default should be Literal(Value::Real(0.0)), got: {:?}",
+            other
+        ),
+    }
+
+    // tol = 0.00000001 (= 1e-8 in decimal; strict-equality discipline per
+    // cg_tolerance precedent at solver_elastic_tests.rs:336-346)
+    let tol_default = require_default(template, "tol");
+    match &tol_default.kind {
+        CompiledExprKind::Literal(Value::Real(v)) => assert_eq!(
+            *v, 0.00000001,
+            "tol default should be exactly 0.00000001 (= 1e-8), got: {}",
+            v
+        ),
+        other => panic!(
+            "tol default should be Literal(Value::Real(0.00000001)), got: {:?}",
+            other
+        ),
+    }
+
+    // max_iters = 1000
+    let max_iters_default = require_default(template, "max_iters");
+    match &max_iters_default.kind {
+        CompiledExprKind::Literal(Value::Int(v)) => {
+            assert_eq!(*v, 1000, "max_iters default should be 1000, got: {}", v)
+        }
+        other => panic!(
+            "max_iters default should be Literal(Value::Int(1000)), got: {:?}",
+            other
+        ),
+    }
+
+    // auto_dense = true
+    let auto_dense_default = require_default(template, "auto_dense");
+    match &auto_dense_default.kind {
+        CompiledExprKind::Literal(Value::Bool(v)) => {
+            assert!(*v, "auto_dense default should be true, got: {}", v)
+        }
+        other => panic!(
+            "auto_dense default should be Literal(Value::Bool(true)), got: {:?}",
+            other
+        ),
+    }
+}
