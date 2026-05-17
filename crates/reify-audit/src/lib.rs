@@ -1,14 +1,16 @@
 //! Reify architecture audit forensics.
 //!
 //! This crate implements the F-infra detector core described in
-//! `docs/architecture-audit/f-infra-design.md`. Slice 1 (T-1) ships only the
-//! P5 phantom-done detector; P1/P2 follow in T-2/T-3.
+//! `docs/architecture-audit/f-infra-design.md`. The crate currently ships
+//! three detectors: P5 (phantom-done), P2 (consumer-stub), and P1
+//! (producer-orphan). The integration suites in
+//! `tests/{p1,p2,p5}.rs` exercise every code path through hermetic mocks.
 //!
 //! ## Design seams
 //!
 //! Per `f-infra-design.md` §3 ("pure logic; no scheduler, no MCP server")
 //! and §10 (T-1 single-crate, narrow-lock-friendly), all side effects are
-//! abstracted behind two seams:
+//! abstracted behind three seams:
 //!
 //! 1. **`&rusqlite::Connection`** — production opens
 //!    `data/orchestrator/runs.db`; tests use [`rusqlite::Connection::open_in_memory`]
@@ -16,10 +18,17 @@
 //! 2. **[`GitOps`] trait** — production uses [`RealGitOps`] which shells out
 //!    to `git`; tests use [`MockGitOps`] (gated behind the `test-support`
 //!    feature) with HashMap-backed canned answers.
+//! 3. **[`JCodemunchOps`] trait** — production uses a jcodemunch-MCP-backed
+//!    impl supplied by the T-4 CLI (#3672); tests use [`MockJCodemunchOps`]
+//!    (gated behind `feature = "test-support"`) with HashMap-backed canned
+//!    answers keyed on `(branch, since_epoch)` for changed-symbol queries and
+//!    `(file, name)` for reference queries, enabling file-level disambiguation.
+//!    Per `f-infra-design.md` §5 P1.
 //!
-//! Both seams let the integration tests in `tests/p5.rs` exercise every code
-//! path (happy path + four false-positive guards + `check_pre_done`
-//! filtering) without a real git repo or a real runs.db file.
+//! All three seams let the integration tests in `tests/{p1,p2,p5}.rs` exercise
+//! every code path (happy path + false-positive guards + `check_pre_done`
+//! filtering) without a real git repo, a real runs.db, or a real jcodemunch
+//! MCP server.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
