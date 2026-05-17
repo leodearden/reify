@@ -721,4 +721,139 @@ mod tests {
             );
         }
     }
+
+    // --- Task 3603 / GHR-α — geometry-query registry (PRD §1 Phase 1) ---
+    //
+    // The fifth geometry-name family, structurally parallel to the existing four
+    // (`GEOMETRY_FUNCTION_NAMES`, `GEOMETRY_QUERY_HELPER_NAMES`,
+    // `GEOMETRY_KINEMATIC_QUERY_NAMES`, `GEOMETRY_TOPOLOGY_SELECTOR_NAMES`).
+    // Per PRD §1 frozen list:
+    //   volume / area / length / perimeter / centroid / bounding_box /
+    //   distance / contains / intersects / geo_equiv / angle / curvature
+    //
+    // Phase 1 registers compile-time return types only; eval-time dispatch
+    // arrives in Phase 6 (GHR-ζ). Until then, cells hold `Value::Undef`, which
+    // `value_type_kind_matches` accepts for any type.
+    fn phase1_geometry_query_cases() -> Vec<(&'static str, reify_types::Type)> {
+        use reify_types::{DimensionVector, Type};
+        vec![
+            (
+                "volume",
+                Type::Scalar {
+                    dimension: DimensionVector::VOLUME,
+                },
+            ),
+            (
+                "area",
+                Type::Scalar {
+                    dimension: DimensionVector::AREA,
+                },
+            ),
+            (
+                "length",
+                Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                },
+            ),
+            (
+                "perimeter",
+                Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                },
+            ),
+            ("centroid", Type::point3(Type::length())),
+            (
+                "bounding_box",
+                Type::StructureRef("BoundingBox".into()),
+            ),
+            (
+                "distance",
+                Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                },
+            ),
+            ("contains", Type::Bool),
+            ("intersects", Type::Bool),
+            ("geo_equiv", Type::Bool),
+            ("angle", Type::angle()),
+            (
+                "curvature",
+                Type::Scalar {
+                    dimension: DimensionVector::CURVATURE,
+                },
+            ),
+        ]
+    }
+
+    #[test]
+    fn is_geometry_query_recognises_all_phase1_names() {
+        for (name, _) in phase1_geometry_query_cases() {
+            assert!(
+                is_geometry_query(name),
+                "is_geometry_query({name:?}) must be true (GHR-α PRD §1)"
+            );
+        }
+    }
+
+    #[test]
+    fn geometry_query_result_type_for_all_phase1_names_matches_table() {
+        for (name, expected) in phase1_geometry_query_cases() {
+            assert_eq!(
+                geometry_query_result_type(name),
+                Some(expected.clone()),
+                "geometry_query_result_type({name:?}) must equal {expected:?} (GHR-α PRD §1)"
+            );
+        }
+    }
+
+    /// Disjointness invariant: `is_geometry_query` must reject names from the
+    /// four other geometry-name families. Without this, cell classification
+    /// could double-fire when adding the fifth dispatch arm in expr.rs.
+    #[test]
+    fn is_geometry_query_rejects_other_family_names() {
+        // Constructor family (`GEOMETRY_FUNCTION_NAMES`).
+        assert!(!is_geometry_query("box"), "must reject constructor 'box'");
+        // Conformance-query family (`GEOMETRY_QUERY_HELPER_NAMES`).
+        assert!(
+            !is_geometry_query("is_watertight"),
+            "must reject conformance-query 'is_watertight'"
+        );
+        // Kinematic-query family (`GEOMETRY_KINEMATIC_QUERY_NAMES`).
+        assert!(
+            !is_geometry_query("interferes"),
+            "must reject kinematic-query 'interferes'"
+        );
+        // Topology-selector family (`GEOMETRY_TOPOLOGY_SELECTOR_NAMES`).
+        assert!(
+            !is_geometry_query("closest_point"),
+            "must reject topology-selector 'closest_point'"
+        );
+        // Empty / unrelated.
+        assert!(!is_geometry_query(""), "must reject empty name");
+        assert!(
+            !is_geometry_query("does_not_exist"),
+            "must reject unrelated name"
+        );
+    }
+
+    /// Case-sensitivity invariant: Reify function names are snake_case. The
+    /// PascalCase / camelCase form must not match (mirrors the other four
+    /// family case-sensitivity contracts).
+    #[test]
+    fn is_geometry_query_is_case_sensitive() {
+        assert!(!is_geometry_query("Volume"));
+        assert!(!is_geometry_query("BoundingBox"));
+        assert!(!is_geometry_query("boundingBox"));
+    }
+
+    /// `geometry_query_result_type` returns `None` for any name not in the
+    /// Phase-1 frozen list — matches the contract of the sibling
+    /// `topology_selector_result_type`.
+    #[test]
+    fn geometry_query_result_type_returns_none_for_unrecognised_names() {
+        assert_eq!(geometry_query_result_type("box"), None);
+        assert_eq!(geometry_query_result_type("is_watertight"), None);
+        assert_eq!(geometry_query_result_type("closest_point"), None);
+        assert_eq!(geometry_query_result_type(""), None);
+    }
 }
