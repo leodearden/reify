@@ -661,3 +661,77 @@ fn piecewise_polynomial_profile_has_correct_param_shape() {
         );
     }
 }
+
+// ─── step-19: PiecewisePolynomialProfile waypoints non-empty constraint ──────
+
+/// `PiecewisePolynomialProfile` declares the structure-level constraint
+/// `waypoints.count > 0` — the explicit-contract encoding of the PRD §11-α
+/// observable signal "empty waypoints list rejected" (the convention is
+/// "make the contract explicit in production code rather than relying on
+/// test coverage" — task #2544; same pattern `BucklingOptions.n_modes > 0`
+/// already uses in `solver_buckling.ri`).
+///
+/// SIR-α's `check_constraints_against_templates` machinery (task 3540,
+/// landed) evaluates structure-level template constraints at the eval path,
+/// so this constraint fires at construction without any further plumbing
+/// in this task — runtime rejection is verified end-to-end at β when a
+/// concrete `PiecewisePolynomialProfile(waypoints=[])` fixture lands.
+///
+/// Test pins (a) exactly one constraint (tight count, mirroring buckling's
+/// discipline), (b) the constraint is a `BinOp::Gt` shape, (c) the LHS
+/// surfaces the `("count", "waypoints")` method-call pair via the
+/// `collect_method_call_chain` helper, (d) the RHS is `Literal::Int(0)`.
+#[test]
+fn piecewise_polynomial_profile_constrains_waypoints_nonempty() {
+    let template = find_structure("PiecewisePolynomialProfile");
+
+    assert_eq!(
+        template.constraints.len(),
+        1,
+        "PiecewisePolynomialProfile should declare exactly 1 constraint \
+         (waypoints.count > 0); got: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+
+    let constraint = &template.constraints[0];
+
+    // Match BinOp::Gt at the top level.
+    let (left, right, op) = match &constraint.expr.kind {
+        CompiledExprKind::BinOp { op, left, right } => (left.as_ref(), right.as_ref(), op),
+        other => panic!(
+            "PiecewisePolynomialProfile constraint should be a BinOp; \
+             got: {:?}",
+            other
+        ),
+    };
+    assert_eq!(
+        *op,
+        BinOp::Gt,
+        "PiecewisePolynomialProfile constraint should use BinOp::Gt \
+         (waypoints.count > 0); got: {:?}",
+        op
+    );
+
+    // LHS must surface the `("count", "waypoints")` method-call pair.
+    let chain = collect_method_call_chain(left);
+    assert!(
+        chain.contains(&("count", "waypoints")),
+        "PiecewisePolynomialProfile constraint LHS should contain a \
+         `.count` MethodCall on `waypoints`; got chain: {:?}",
+        chain
+    );
+
+    // RHS must be `Literal(Value::Int(0))`.
+    match &right.kind {
+        CompiledExprKind::Literal(Value::Int(0)) => {}
+        other => panic!(
+            "PiecewisePolynomialProfile constraint RHS should be \
+             Literal(Value::Int(0)); got: {:?}",
+            other
+        ),
+    }
+}
