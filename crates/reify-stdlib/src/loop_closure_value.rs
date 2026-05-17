@@ -132,8 +132,25 @@ impl JointValue {
     /// Construct from a flat `&[f64]` slice keyed by `kind`.  Returns
     /// `Err(FlattenError::WrongLen)` if `dofs.len() != kind.flat_len()`.
     pub fn from_slice(kind: JointKind, dofs: &[f64]) -> Result<Self, FlattenError> {
-        let _ = (kind, dofs);
-        unimplemented!("step-5-impl")
+        let expected = kind.flat_len();
+        if dofs.len() != expected {
+            return Err(FlattenError::WrongLen {
+                kind,
+                expected,
+                actual: dofs.len(),
+            });
+        }
+        // Length is now guaranteed to match flat_len for each kind, so the
+        // array indexing below cannot panic.
+        Ok(match kind {
+            JointKind::Prismatic
+            | JointKind::Revolute
+            | JointKind::Coupling
+            | JointKind::Fixed => JointValue::Scalar(dofs[0]),
+            JointKind::Cylindrical => JointValue::Cyl([dofs[0], dofs[1]]),
+            JointKind::Planar => JointValue::Planar([dofs[0], dofs[1], dofs[2]]),
+            JointKind::Spherical => JointValue::Sphere([dofs[0], dofs[1], dofs[2], dofs[3]]),
+        })
     }
 
     /// Project Sphere back onto the unit-quaternion manifold (L2 normalize);
