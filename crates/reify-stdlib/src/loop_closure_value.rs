@@ -157,7 +157,21 @@ impl JointValue {
     /// no-op for Scalar / Cyl / Planar.  Resets a degenerate (near-zero-norm)
     /// quaternion to identity `[1, 0, 0, 0]` rather than producing NaN.
     pub fn renormalize_quaternion(&mut self) {
-        unimplemented!("step-7-impl")
+        // PRD §5.3 calls this after each Newton step as the unit-quaternion
+        // manifold projection.  The zero-norm guard prevents a degenerate
+        // iterate from injecting NaN into the next residual evaluation.
+        const QUAT_ZERO_NORM_EPS: f64 = 1e-12;
+        if let JointValue::Sphere(q) = self {
+            let n = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+            if n < QUAT_ZERO_NORM_EPS {
+                *q = [1.0, 0.0, 0.0, 0.0];
+            } else {
+                q[0] /= n;
+                q[1] /= n;
+                q[2] /= n;
+                q[3] /= n;
+            }
+        }
     }
 }
 
