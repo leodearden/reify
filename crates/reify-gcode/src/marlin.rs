@@ -14,9 +14,17 @@ use crate::error::{ParseError, ParseErrorKind};
 
 /// Parse a Marlin-dialect G-code source into a sequence of commands.
 ///
-/// Errors short-circuit: the first failing line aborts the whole parse.
-/// See plan design decision #8 for why partial-success recovery is out
-/// of scope at v0.3.
+/// # Error contract
+///
+/// - The 1-indexed `line` field of every [`ParseError`] is the physical
+///   source line — the counter advances on **every** line passed to the
+///   iterator, including blank lines and `;`-only comment lines, so
+///   error messages line up with editor line numbers. (Regression-pinned
+///   by `tests/parse_errors.rs::line_counter_counts_blank_and_comment_lines`.)
+/// - Errors short-circuit: the first failing line aborts the whole parse
+///   (via `?` propagation through `parse_line`). No further lines are
+///   consumed after the first failure. See plan design decision #8 for
+///   why partial-success recovery is out of scope at v0.3.
 pub fn parse_marlin(src: &str) -> Result<Vec<GcodeCommand>, ParseError> {
     let mut out = Vec::new();
     for (idx, raw) in src.split('\n').enumerate() {
