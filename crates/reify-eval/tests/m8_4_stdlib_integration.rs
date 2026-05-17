@@ -535,7 +535,14 @@ fn io_export_smoke() {
 
 /// Asserts ExportPart.mass = volume * density = 0.001 * 7850 = 7.85 (Value::Real).
 /// Steel AISI 1020: density=7850 kg/m³, volume=0.001 m³.
+///
+/// Post-GHR-α (task 3603 / PRD §8 Phase 1): spec-shape `Physical` computes
+/// `mass = volume(geometry) * material.density`, typecheck-only at Phase 1.
+/// Runtime kernel dispatch for `volume(geometry)` arrives in Phase 6 (GHR-ζ),
+/// so `mass` evaluates to `Value::Undef`. Revived once geometry-derived
+/// computation lands.
 #[test]
+#[ignore = "Phase 6 will revive — GHR-ζ (geometry-handle-runtime PRD): mass = volume(geometry) * material.density needs kernel dispatch"]
 fn io_export_mass_computed() {
     let result = eval_ri_file(PATH_IO_EXPORT, "io_export");
 
