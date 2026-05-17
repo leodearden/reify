@@ -71,21 +71,206 @@ mod tests {
     #[test]
     fn seven_prepd_legacy_tasks_produce_no_false_positives() {
         let conn = seed_db();
-        // Seed the schema but no rows — P5 will check the DB; an empty
-        // events table is valid (it just means no task_completed events).
+        // Seed the DB so fixture 1 (task 215, P5 corroborated path) can pass
+        // has_task_completed_event. Fixtures 2–7 and the paired consumer
+        // task 2358_c all have done_provenance=None or non-"merged" kind,
+        // so they early-return before any DB query.
+        insert_task_completed_event(&conn, "215");
 
-        // All seven tasks share the canonical legacy shape: status=done,
-        // files=vec![], no done_provenance, no done_at, benign title.
-        let legacy_ids = ["215", "250", "2347", "2358", "2658", "2699", "2954"];
+        // Fixture 1 (task 215, guard A3): primary diff covers the only claimed
+        // file → missing.is_empty() → P5 returns None (no phantom-done finding).
+        let mut git = MockGitOps::new();
+        git.set_diff_changed_paths(
+            "main",
+            "sha_215",
+            vec!["crates/x/215_file.rs".to_string()],
+        );
+
+        // Fixtures 3–6 (tasks 2347/2358/2658/2699) are P1 producers. Each has
+        // a distinct done_at to avoid MockJCodemunchOps key collisions on
+        // (branch, since_epoch). All four timestamps are >14 days past NOW so
+        // the absent guards would emit Medium findings if not suppressed —
+        // making each fixture's guard exercise load-bearing.
+        let mut jc = MockJCodemunchOps::new();
+
+        // Fixture 3 (task 2347, guard B3 audit_foundation=Some(true)): symbol
+        // is seeded so that without the audit_foundation guard P1 would reach
+        // per-symbol iteration; with the guard it short-circuits first.
+        jc.set_changed_symbols(
+            "main",
+            NOW - 20 * DAY,
+            vec![ChangedSymbol {
+                name: "would_be_orphan".to_string(),
+                file: "crates/reify-x/src/foo.rs".to_string(),
+                line: 10,
+                has_allow_dead_code: false,
+                has_cfg_test: false,
+                g_allow_marker: None,
+            }],
+        );
+        // Fixture 4 (task 2358, guard B4 pending-consumer-ref): symbol seeded
+        // so P1 would reach per-symbol iteration without the consumer-ref guard.
+        jc.set_changed_symbols(
+            "main",
+            NOW - 25 * DAY,
+            vec![ChangedSymbol {
+                name: "producer_fn".to_string(),
+                file: "crates/reify-y/src/bar.rs".to_string(),
+                line: 20,
+                has_allow_dead_code: false,
+                has_cfg_test: false,
+                g_allow_marker: None,
+            }],
+        );
+        // Fixture 5 (task 2658, guard B5 stdlib scope-exclude): file is in
+        // crates/reify-stdlib/ → P1 skips the symbol before checking callers.
+        jc.set_changed_symbols(
+            "main",
+            NOW - 30 * DAY,
+            vec![ChangedSymbol {
+                name: "stdlib_def".to_string(),
+                file: "crates/reify-stdlib/src/foo.ri".to_string(),
+                line: 5,
+                has_allow_dead_code: false,
+                has_cfg_test: false,
+                g_allow_marker: None,
+            }],
+        );
+        // Fixture 6 (task 2699, guard B7 G-allow marker): g_allow_marker is
+        // non-blank → is_g_allow_suppressed returns true → P1 skips the symbol.
+        jc.set_changed_symbols(
+            "main",
+            NOW - 35 * DAY,
+            vec![ChangedSymbol {
+                name: "g_allowed_fn".to_string(),
+                file: "crates/reify-z/src/baz.rs".to_string(),
+                line: 7,
+                has_allow_dead_code: false,
+                has_cfg_test: false,
+                g_allow_marker: Some("// G-allow: consumed by upcoming PRD consumer".to_string()),
+            }],
+        );
+
         let mut task_metadata = HashMap::new();
-        for id in legacy_ids {
-            task_metadata.insert(id.to_string(), legacy_meta(id));
-        }
 
-        // Default-empty mocks: no diff paths, no added lines, no changed
-        // symbols, no refs. Any unexpected call returns an empty vec.
-        let git = MockGitOps::new();
-        let jc = MockJCodemunchOps::new();
+        // Fixture 1 — task 215, guard A3 (P5 corroborated path):
+        // kind=merged + task_completed event in DB + primary diff covers
+        // the file → missing.is_empty() → P5 returns None.
+        // done_at=None → P1 early-returns (guard B2).
+        task_metadata.insert(
+            "215".to_string(),
+            TaskMetadata {
+                task_id: "215".to_string(),
+                status: "done".to_string(),
+                files: vec!["crates/x/215_file.rs".to_string()],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("sha_215".to_string()),
+                    note: None,
+                }),
+                done_at: None,
+                ..legacy_meta("215")
+            },
+        );
+
+        // Fixture 2 — task 250, guard A2 (P5 found_on_main + empty files):
+        // kind=found_on_main skips the DB check; meta.files.is_empty() fires
+        // → P5 returns None. done_at=None → P1 early-returns (guard B2).
+        task_metadata.insert(
+            "250".to_string(),
+            TaskMetadata {
+                task_id: "250".to_string(),
+                status: "done".to_string(),
+                files: vec![],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("found_on_main".to_string()),
+                    commit: None,
+                    note: None,
+                }),
+                done_at: None,
+                ..legacy_meta("250")
+            },
+        );
+
+        // Fixture 3 — task 2347, guard B3 (P1 audit_foundation=Some(true)):
+        // P1 short-circuits before iterating changed_symbols, even though
+        // set_changed_symbols was seeded for NOW-20*DAY (making the guard
+        // exercise load-bearing — without it P1 would flag the symbol).
+        // done_provenance=None (from legacy_meta) → P5 early-returns (guard A1).
+        task_metadata.insert(
+            "2347".to_string(),
+            TaskMetadata {
+                task_id: "2347".to_string(),
+                audit_foundation: Some(true),
+                done_at: Some(NOW - 20 * DAY),
+                ..legacy_meta("2347")
+            },
+        );
+
+        // Fixture 4 — task 2358, guard B4 (P1 pending-consumer-ref):
+        // has_pending_consumer matches task 2358_c's consumer_ref against this
+        // prd → P1 short-circuits before iterating changed_symbols.
+        // done_provenance=None → P5 early-returns (guard A1).
+        task_metadata.insert(
+            "2358".to_string(),
+            TaskMetadata {
+                task_id: "2358".to_string(),
+                prd: Some("docs/feature-x.md".to_string()),
+                done_at: Some(NOW - 25 * DAY),
+                ..legacy_meta("2358")
+            },
+        );
+        // 8th paired pending-consumer task (not one of the seven asserted tasks):
+        // status=pending → P5/P1 skip (status guards); files=[] → P2 sees no work.
+        task_metadata.insert(
+            "2358_c".to_string(),
+            TaskMetadata {
+                task_id: "2358_c".to_string(),
+                status: "pending".to_string(),
+                consumer_ref: Some("docs/feature-x.md".to_string()),
+                ..legacy_meta("2358_c")
+            },
+        );
+
+        // Fixture 5 — task 2658, guard B5 (P1 stdlib scope-exclude):
+        // changed_symbols file starts with crates/reify-stdlib/ → P1 skips
+        // the symbol without calling find_references.
+        // done_provenance=None → P5 early-returns (guard A1).
+        task_metadata.insert(
+            "2658".to_string(),
+            TaskMetadata {
+                task_id: "2658".to_string(),
+                done_at: Some(NOW - 30 * DAY),
+                ..legacy_meta("2658")
+            },
+        );
+
+        // Fixture 6 — task 2699, guard B7 (P1 G-allow marker):
+        // changed_symbols entry has g_allow_marker=Some("non-blank") →
+        // is_g_allow_suppressed returns true → P1 skips the symbol.
+        // done_provenance=None → P5 early-returns (guard A1).
+        task_metadata.insert(
+            "2699".to_string(),
+            TaskMetadata {
+                task_id: "2699".to_string(),
+                done_at: Some(NOW - 35 * DAY),
+                ..legacy_meta("2699")
+            },
+        );
+
+        // Fixture 7 — task 2954, guard C2 (P2 is_test_path):
+        // files=[".../tests/foo.rs"] → P2 skips the path before calling
+        // diff_added_lines → no stub-marker scan → no findings.
+        // done_provenance=None → P5 early-returns (guard A1).
+        // done_at=None → P1 early-returns (guard B2).
+        task_metadata.insert(
+            "2954".to_string(),
+            TaskMetadata {
+                task_id: "2954".to_string(),
+                files: vec!["crates/x/tests/foo.rs".to_string()],
+                ..legacy_meta("2954")
+            },
+        );
 
         let ctx = AuditContext {
             project_root: PathBuf::from("/tmp/fake-project"),
