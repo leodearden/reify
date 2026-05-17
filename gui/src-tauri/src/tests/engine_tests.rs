@@ -7144,21 +7144,20 @@ fn get_entity_at_source_location_thickness_cell_returns_bracket_thickness() {
     );
 }
 
-/// (e) Cursor on the `structure Bracket {` header line (line=1, col=1) → None.
+/// (e) Cursor on the `structure Bracket {` header line (line=1, col=1) →
+/// `None` or `Some("Bracket")`.
 ///
 /// The template's approximate span is derived from value-cell and constraint spans,
 /// which start on line 2. The structure keyword at (1,1) = byte 0 falls before the
-/// span start, so the position is not inside any template → None.
+/// span start under the current approximation, so the position is not inside any
+/// template and yields `None`.
 ///
-/// **Current-behavior note:** this assertion pins the result of the _current_
-/// approximate-span derivation (union of member spans starting at line 2) and is
-/// not a hard semantic contract.  If a future patch derives the span from the
-/// parsed structure declaration (which starts at byte 0), (1,1) could legitimately
-/// return `Some("Bracket")`.  Updating this assertion to match the improved
-/// approximation is safe — the real invariant is that the position maps
-/// consistently to at most one entity, not the exact `None` outcome.
+/// The real invariant is that the position maps to at most one entity and never
+/// to an inner cell name. If a future patch derives the span from the parsed
+/// structure declaration (which starts at byte 0), (1,1) could legitimately
+/// return `Some("Bracket")` — either outcome is correct.
 #[test]
-fn get_entity_at_source_location_structure_header_returns_none() {
+fn get_entity_at_source_location_structure_header_returns_none_or_template_name() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
@@ -7167,9 +7166,9 @@ fn get_entity_at_source_location_structure_header_returns_none() {
         .expect("load should succeed");
     let result = session.get_entity_at_source_location(1, 1);
     assert!(
-        result.is_none(),
-        "cursor on structure header (1,1) is outside the template's approximate span → None, \
-         got {:?}",
+        result.is_none() || result == Some("Bracket".to_string()),
+        "cursor on structure header (1,1) must resolve to either None or the enclosing \
+         template name, never a cell or other entity — got {:?}",
         result
     );
 }
