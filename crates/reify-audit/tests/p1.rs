@@ -639,6 +639,81 @@ mod tests {
         }
     }
 
+    /// Step 5 (RED→GREEN via step 6) — P1 reads the branch from
+    /// `AuditContext.producer_branch`, defaulting to `"main"` when `None`.
+    ///
+    /// Control leg: symbols registered under `"release/v0.2"` only, with
+    /// `producer_branch: None` → P1 queries `"main"` → no symbols found → 0
+    /// findings.
+    ///
+    /// Override leg: same symbols, with `producer_branch:
+    /// Some("release/v0.2")` → P1 queries `"release/v0.2"` → orphan found →
+    /// exactly 1 Medium finding.
+    ///
+    /// RED: `AuditContext` lacks the `producer_branch` field → compile error.
+    #[test]
+    fn producer_branch_override_honored_by_p1() {
+        const BRANCH: &str = "release/v0.2";
+        let done_at = NOW - 15 * DAY;
+
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let mut jc = MockJCodemunchOps::new();
+        // Symbols registered ONLY under "release/v0.2", not under "main".
+        jc.set_changed_symbols(
+            BRANCH,
+            done_at,
+            vec![changed_symbol("branch_widget", "crates/reify-x/src/branch.rs")],
+        );
+        jc.set_find_references("branch_widget", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "6000".to_string(),
+            done_meta("6000", done_at, Some("docs/x.md")),
+        );
+
+        // Control: producer_branch=None → defaults to "main" → no symbols → 0 findings.
+        let ctx_control = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata: task_metadata.clone(),
+            target_task_id: None,
+            window: None,
+            now: Some(NOW),
+            producer_branch: None,
+        };
+        let findings_control = p1_producer_orphan::check(&ctx_control);
+        assert!(
+            findings_control.is_empty(),
+            "producer_branch=None defaults to 'main'; no symbols on 'main' → 0 findings; got {:?}",
+            findings_control
+        );
+
+        // Override: producer_branch=Some("release/v0.2") → finds the orphan.
+        let ctx_override = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: Some(NOW),
+            producer_branch: Some(BRANCH.to_string()),
+        };
+        let findings_override = p1_producer_orphan::check(&ctx_override);
+        assert_eq!(
+            findings_override.len(),
+            1,
+            "producer_branch=Some(\"release/v0.2\") must find the orphan; got {:?}",
+            findings_override
+        );
+        assert_eq!(findings_override[0].severity, Severity::Medium);
+    }
+
     /// Step 3 (RED→GREEN via step 4) — when `target_task_id` is set, P1
     /// restricts scanning to that single task only (mirroring p2's guard).
     ///
