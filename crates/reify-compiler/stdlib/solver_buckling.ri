@@ -73,10 +73,10 @@
 //                Cholesky-factor-plus-Lanczos overhead. Default `true`
 //                matches the PRD §4 spec.
 structure def BucklingOptions {
-    param n_modes : Int
-    param mode : String
-    param sigma : Real
-    param tol : Real
-    param max_iters : Int
-    param auto_dense : Bool
+    param n_modes : Int = 10
+    param mode : String = "shift_invert"
+    param sigma : Real = 0.0                  // dimensionless load-multiplier shift
+    param tol : Real = 0.00000001             // = 1e-8 (no scientific notation in Reify grammar)
+    param max_iters : Int = 1000
+    param auto_dense : Bool = true
 }
