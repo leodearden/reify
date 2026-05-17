@@ -526,6 +526,39 @@ fn faces_by_area_let_resolves_to_filtered_list_via_helper() {
     );
 }
 
+/// `let fs = faces_by_normal(body, dir, tol)` with `let dir = vec3(0.0, 0.0, 1.0)`
+/// and `let tol = 1deg` must resolve to the normal-filtered `Value::List`. The
+/// single staged face's normal is exactly `+z` (matching `dir`), so it survives
+/// the 1° tolerance. Pins the Vec3-arg + angle-arg resolution + delegation to
+/// `topology_selectors::faces_by_normal`.
+#[test]
+fn faces_by_normal_let_resolves_to_filtered_list_via_helper() {
+    let source = "structure def Bracket {\n    \
+        let body = box(10mm, 10mm, 10mm)\n    \
+        let dir = vec3(0.0, 0.0, 1.0)\n    \
+        let tol = 1deg\n    \
+        let fs = faces_by_normal(body, dir, tol)\n}";
+    let compiled = compile_no_errors(source);
+    let mut engine = engine_with_mock_kernel(|k| {
+        k.with_extracted_faces(GeometryHandleId(1), vec![GeometryHandleId(2)])
+            .with_face_normal_result(
+                GeometryHandleId(2),
+                Value::String("{\"x\":0.0,\"y\":0.0,\"z\":1.0}".to_string()),
+            )
+    });
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("Bracket", "fs");
+    assert_eq!(
+        result.values.get(&cell),
+        Some(&Value::List(vec![Value::Int(2)])),
+        "Bracket.fs must resolve to the normal-filtered Value::List via \
+         topology_selectors::faces_by_normal, got {:?}",
+        result.values.get(&cell),
+    );
+}
+
 // ── Tessellate-path parity test ─────────────────────────────────────────────
 
 /// The post-process must run on the `tessellate_realizations` path too, so
