@@ -6,8 +6,10 @@
 //! `Cargo.toml` activates it for all integration test binaries automatically.
 #![cfg(feature = "mesh-morph")]
 
-use reify_kernel_gmsh::mesh_boundary::{BoundaryAttributionInput, compute_boundary_association};
-use reify_types::{GeometryHandleId, Mesh, NodeAttachment};
+use reify_kernel_gmsh::mesh_boundary::{
+    BoundaryAttributionInput, compute_boundary_association, validate_attribution_length,
+};
+use reify_types::{GeometryError, GeometryHandleId, Mesh, NodeAttachment};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -139,5 +141,60 @@ fn compute_boundary_association_with_zero_snap_tolerance_disables_override() {
         result.get(0),
         Some(NodeAttachment::OnFace(h(100))),
         "snap_tolerance=0.0 must disable all snap overrides, even for exact coincidence"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Step-5 (RED): validate_attribution_length
+// ---------------------------------------------------------------------------
+
+fn make_attribution(per_vertex_len: usize) -> BoundaryAttributionInput {
+    BoundaryAttributionInput {
+        per_vertex: vec![NodeAttachment::OnFace(h(1)); per_vertex_len],
+        vertex_candidates: vec![],
+        snap_tolerance: 0.0,
+    }
+}
+
+#[test]
+fn validate_attribution_length_matching_returns_ok() {
+    let surface = mesh_with_n_vertices(3);
+    let attribution = make_attribution(3);
+    let result = validate_attribution_length(&surface, &attribution);
+    assert!(result.is_ok(), "matching lengths should return Ok(())");
+}
+
+#[test]
+fn validate_attribution_length_mismatch_returns_operation_failed_with_counts() {
+    let surface = mesh_with_n_vertices(3); // 3 surface vertices
+    let attribution = make_attribution(4); // 4 per_vertex entries
+    let result = validate_attribution_length(&surface, &attribution);
+    match result {
+        Err(GeometryError::OperationFailed(msg)) => {
+            assert!(
+                msg.contains("3"),
+                "error message should contain expected count (3): got: {msg}"
+            );
+            assert!(
+                msg.contains("4"),
+                "error message should contain actual count (4): got: {msg}"
+            );
+            assert!(
+                msg.contains("attribution per_vertex length"),
+                "error message should contain 'attribution per_vertex length': got: {msg}"
+            );
+        }
+        other => panic!("expected Err(OperationFailed(...)), got: {other:?}"),
+    }
+}
+
+#[test]
+fn validate_attribution_length_empty_attribution_against_non_empty_surface_returns_error() {
+    let surface = mesh_with_n_vertices(5); // 5 surface vertices
+    let attribution = make_attribution(0); // empty
+    let result = validate_attribution_length(&surface, &attribution);
+    assert!(
+        result.is_err(),
+        "empty attribution against non-empty surface must be rejected"
     );
 }
