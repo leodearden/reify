@@ -241,9 +241,13 @@ fn material_struct_call_is_valid_param_default() {
 /// regressions before step-10 updates the example file itself.
 #[test]
 fn boltflange_compiles_with_material_default() {
-    // Source intentionally mirrors the example layout one-for-one so that, if
-    // the example evolves, a diff against this string makes the divergence
-    // visible. The only change versus the on-disk example is line 22.
+    // Source intentionally mirrors `examples/m5_geometry_flange.ri`
+    // one-for-one so that, if the example evolves, a diff against this string
+    // makes the divergence visible. Post-GHR-α (task 3603 / PRD §8 Phase 1)
+    // the example is spec-shape `Rigid : Physical` — geometry + material
+    // struct slots; the legacy flat `density/name/volume/centroid_x/y/z`
+    // params are gone (`material : Material` now carries density via the
+    // struct, `geometry : Solid` feeds the trait's `volume(geometry)` let).
     let source = r#"
         structure def BoltFlange : Rigid {
             param outer_radius : Length = 60mm
@@ -252,20 +256,12 @@ fn boltflange_compiles_with_material_default() {
             param bolt_circle_radius : Length = 45mm
             param hole_radius : Length = 4mm
 
-            // MaterialSpec trait requirements (density + name, inherited via Physical)
-            param density : Real = 7850
-            param name : String = "steel"
-
-            // Physical trait requirements
-            param volume : Real = 0.0001
-            param centroid_x : Real = 0.0
-            param centroid_y : Real = 0.0
-            param centroid_z : Real = 0.0
-
-            // Rigid trait requirements
+            // Rigid trait requirement (Rigid's own param; Physical's geometry +
+            // material slots are below)
             param moment_of_inertia : Real = 0.000001
 
-            // Material reference (canonical struct default — task 1876 payoff)
+            // Canonical Material struct default — the task-1876 payoff this
+            // test pins (recorded StructureInstanceCtor with 3 bound args).
             param material : Material = Material(name: "steel", density: 7850.0, youngs_modulus: 200000000000.0)
 
             constraint outer_radius > bolt_circle_radius
