@@ -1820,6 +1820,7 @@ pub(crate) fn try_eval_topology_selector(
         "faces_by_area" => TopologySelectorHelper::FacesByArea,
         "faces_by_normal" => TopologySelectorHelper::FacesByNormal,
         "edges_parallel_to" => TopologySelectorHelper::EdgesParallelTo,
+        "edges_at_height" => TopologySelectorHelper::EdgesAtHeight,
         _ => return None,
     };
 
@@ -1955,6 +1956,19 @@ pub(crate) fn try_eval_topology_selector(
                 diagnostics,
             )
         }
+        TopologySelectorHelper::EdgesAtHeight => {
+            // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
+            let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            // args[1]: z plane ValueRef → values map → LENGTH Scalar (SI metres).
+            let z_m = resolve_length_scalar_arg(&args[1], values)?;
+            // args[2]: tolerance ValueRef → values map → LENGTH Scalar (SI metres).
+            let tol_m = resolve_length_scalar_arg(&args[2], values)?;
+            dispatch_filtered_list(
+                crate::topology_selectors::edges_at_height(kernel, handle, z_m, tol_m),
+                &function.name,
+                diagnostics,
+            )
+        }
     }
 }
 
@@ -2022,6 +2036,10 @@ enum TopologySelectorHelper {
     /// whose midpoint tangent is (anti-)parallel to an axis within an
     /// angular tolerance (task 3560).
     EdgesParallelTo,
+    /// `edges_at_height(geometry, Length, Length) -> List<Geometry>` — edges
+    /// lying entirely within a tolerance of a horizontal `z = z0` plane
+    /// (task 3560).
+    EdgesAtHeight,
 }
 
 impl TopologySelectorHelper {
@@ -2039,7 +2057,9 @@ impl TopologySelectorHelper {
             | TopologySelectorHelper::EdgesByLength
             | TopologySelectorHelper::FacesByArea => 2,
             TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => 1,
-            TopologySelectorHelper::FacesByNormal | TopologySelectorHelper::EdgesParallelTo => 3,
+            TopologySelectorHelper::FacesByNormal
+            | TopologySelectorHelper::EdgesParallelTo
+            | TopologySelectorHelper::EdgesAtHeight => 3,
         }
     }
 }
@@ -2220,6 +2240,20 @@ fn resolve_angle_scalar_arg(
     values: &reify_types::ValueMap,
 ) -> Option<f64> {
     resolve_scalar_bound_expr(expr, values, reify_types::DimensionVector::ANGLE)
+}
+
+/// Resolve a LENGTH-dimensioned scalar arg to its SI value (metres).
+/// Accepts `Literal(Value::Scalar { dimension: LENGTH, .. })` or the common
+/// `ValueRef → LENGTH Scalar` (let-bound `let z = 0mm`). Returns `None` for
+/// any other shape (wrong dimension, non-Scalar) — caller maps to the
+/// "unsupported arg shape → fall through" behaviour. Mirrors
+/// `resolve_angle_scalar_arg` but pins the LENGTH dimension for the
+/// z-plane / tolerance args of `edges_at_height`.
+fn resolve_length_scalar_arg(
+    expr: &reify_types::CompiledExpr,
+    values: &reify_types::ValueMap,
+) -> Option<f64> {
+    resolve_scalar_bound_expr(expr, values, reify_types::DimensionVector::LENGTH)
 }
 
 /// Read a `Value::Scalar` whose `dimension` is `expected_dim` and return its
