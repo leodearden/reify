@@ -173,3 +173,77 @@ structure def Bracket : Physical {
             .collect::<Vec<_>>()
     );
 }
+
+// ─── precedence pin: user fns shadow the geometry-query family ───────────────
+
+/// **Dispatch-precedence regression** (reviewer #5 follow-up). The
+/// geometry-query family added by GHR-α (PRD §1 — `volume` / `area` /
+/// `length` / `contains` / `distance` / `angle` / `curvature` / …) overlaps
+/// with names that are perfectly valid user-function identifiers. A user
+/// `fn length(s: String) -> Int { … }` in scope MUST resolve to the
+/// user-defined fn — not to the stdlib `length(curve) -> Scalar<Length>`
+/// registration — and its return type MUST be the user's declared return,
+/// not `Scalar<Length>`.
+///
+/// The precedence is enforced structurally by `resolve_function_overload`:
+/// when any user fn matches the name, it returns `Resolved` / `Ambiguous` /
+/// `NoMatch` before the `NoUserFunctions` arm where `is_geometry_query` is
+/// consulted. This test pins that contract end-to-end.
+///
+/// Cross-reference: dispatch-precedence note in `expr.rs::infer_type`
+/// (immediately before the `is_geometry_query_helper` chain in the
+/// `NoUserFunctions` arm).
+#[test]
+fn user_defined_length_shadows_stdlib_geometry_query() {
+    // User defines `length(s) -> Int` — a wholly different signature and
+    // return type from the stdlib `length(curve) -> Scalar<Length>`. The
+    // call `length("hello")` must dispatch to the user fn.
+    let source = r#"
+fn length(s: Real) -> Int {
+    42
+}
+
+structure def StringHolder {
+    param raw : Real = 3.14
+    let measured = length(raw)
+}
+"#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "user-defined `fn length(Real) -> Int` should shadow stdlib geometry-query \
+         `length` cleanly; got errors: {:?}",
+        errors
+    );
+
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "StringHolder")
+        .expect("StringHolder template should be compiled");
+
+    let measured = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "measured")
+        .expect("expected 'measured' value cell from `let measured = length(raw)`");
+
+    // The user fn returns `Int`. The stdlib geometry-query `length` would
+    // have returned `Scalar<Length>`. If the dispatch ordering ever inverted
+    // (e.g. by moving the geometry-query arm above the user-fn resolution
+    // step), this assertion would catch it: `measured` would be Scalar<Length>
+    // instead of Int.
+    assert_eq!(
+        measured.cell_type,
+        Type::Int,
+        "`length(raw)` must resolve to the user-defined `fn length(Real) -> Int`, \
+         NOT the stdlib geometry-query `length(curve) -> Scalar<Length>`; got cell_type {:?}",
+        measured.cell_type
+    );
+}

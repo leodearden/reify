@@ -1153,7 +1153,29 @@ pub(crate) fn compile_expr_guarded(
                         }
                     }
 
-                    // No user fn with this name — fall through to stdlib FunctionCall
+                    // No user fn with this name — fall through to stdlib FunctionCall.
+                    //
+                    // **Dispatch precedence note (GHR-α / task 3603).** The stdlib
+                    // geometry-query family (`is_geometry_query` arm below, names like
+                    // `length` / `volume` / `area` / `contains` / `distance` / `angle` /
+                    // …) is consulted ONLY in this `NoUserFunctions` arm of
+                    // `resolve_function_overload`. A user-defined `fn length(...)` in
+                    // scope produces an `OverloadResolution::Resolved` (or `Ambiguous`
+                    // / `NoMatch`) outcome above and shadows the geometry-query arm —
+                    // the user's return type wins. This shadow-by-user-fns precedence
+                    // is intentional and pinned by the
+                    // `user_defined_length_shadows_stdlib_geometry_query` regression
+                    // test in `crates/reify-compiler/tests/structural_physical_spec_shape.rs`.
+                    //
+                    // **Internal-arm precedence (within `NoUserFunctions`).** The arms
+                    // below are checked in order: `is_geometry_query_helper` →
+                    // `is_geometry_kinematic_query` → `is_geometry_topology_selector` →
+                    // `is_geometry_query` → `is_geometry_function` →
+                    // `infer_list_helper_return_type` → first-arg fallback. The four
+                    // geometry-name families are pinned disjoint in
+                    // `units.rs::tests::geometry_query_names_are_disjoint_from_other_families`,
+                    // so within this arm the ordering is unobservable — no name can
+                    // satisfy two predicates.
                     let resolved = ResolvedFunction {
                         name: name.clone(),
                         qualified_name: format!("std::{}", name),
