@@ -186,8 +186,12 @@ impl JointKind {
 /// Round-trip law: `unflatten_dofs(&flatten_dofs(v), shapes) == Ok(v.to_vec())`
 /// when `shapes[i]` matches each `v[i]`'s variant.
 pub fn flatten_dofs(values: &[JointValue]) -> Vec<f64> {
-    let _ = values;
-    unimplemented!("step-4-impl")
+    let total: usize = values.iter().map(|v| v.as_f64_slice().len()).sum();
+    let mut out = Vec::with_capacity(total);
+    for v in values {
+        out.extend_from_slice(v.as_f64_slice());
+    }
+    out
 }
 
 /// Walk `shapes` in order and consume `kind.flat_len()` f64s from `dofs`
