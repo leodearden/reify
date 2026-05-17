@@ -127,3 +127,13 @@ structure def Waypoint {
     param vels : Option<List<JointValue>>
     param accels : Option<List<JointValue>>
 }
+
+// ── BoundaryCondition variants ────────────────────────────────────────────
+
+// NaturalSpline — zero-DOF "natural" boundary marker (PRD §4.1).
+// Semantic invariant: "zero second derivative at the endpoints" — enforced
+// by the β-phase evaluator when it builds the spline coefficients, NOT as
+// an authoring-time param. The structure exists only to give the β
+// evaluator a nominal type-tag to dispatch on; the dispatch shape mirrors
+// `PointLoad` / `FixedSupport` in `solve_elastic_static`.
+structure def NaturalSpline : BoundaryCondition { }
