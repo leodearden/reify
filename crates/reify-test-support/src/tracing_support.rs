@@ -1991,6 +1991,58 @@ mod tests {
         );
     }
 
+    /// A non-matching-target / matching-level event must be rejected at
+    /// `enabled()`, not reach `event()`.
+    ///
+    /// Builds a `CapturingSubscriberBuilder` with `target_prefix("reify_constraints")`
+    /// and wraps it in `ForwardingSubscriber` so we can count how many times
+    /// the tracing dispatcher actually calls `event()`.  The `enabled_fn`
+    /// delegates to the inner subscriber so its filter is exercised; the
+    /// `event_fn` bumps `dispatch_count` before delegating.
+    ///
+    /// Emits one `INFO` event with a non-matching target (`"argmin::core"`).
+    /// Before the fix, `LevelCapturingSubscriber::enabled()` only checks level
+    /// and returns `true`, so the dispatcher calls `event()` and
+    /// `dispatch_count` becomes 1 (RED).  After moving the target-prefix check
+    /// into `enabled()`, `dispatch_count` stays 0 (GREEN).
+    #[test]
+    fn capturing_subscriber_target_prefix_rejected_at_enabled() {
+        use crate::prime_tracing_callsite_cache;
+        use crate::CapturingSubscriberBuilder;
+
+        prime_tracing_callsite_cache();
+
+        let (inner, _capture) = CapturingSubscriberBuilder::new(tracing::Level::INFO)
+            .target_prefix("reify_constraints")
+            .build();
+        let dispatch_count = Arc::new(AtomicUsize::new(0));
+        let dispatch_count_clone = Arc::clone(&dispatch_count);
+
+        // ForwardingSubscriber delegates enabled() to the inner subscriber so
+        // its filter is exercised.  The event_fn increments dispatch_count
+        // before delegating — it is only reached when enabled() returned true.
+        let subscriber = ForwardingSubscriber {
+            inner,
+            enabled_fn: |s: &_, meta| s.enabled(meta),
+            event_fn: move |s: &_, event| {
+                dispatch_count_clone.fetch_add(1, Ordering::Relaxed);
+                s.event(event);
+            },
+        };
+
+        tracing::subscriber::with_default(subscriber, || {
+            // Matching level (INFO) but non-matching target — must be rejected
+            // at enabled(), not reach event().
+            tracing::info!(target: "argmin::core", "skip");
+        });
+
+        assert_eq!(
+            dispatch_count.load(Ordering::Relaxed),
+            0,
+            "a non-matching-target event must be rejected at enabled(), not reach event()"
+        );
+    }
+
     // ── WarnCapture::assert_any_event_field_contains tests ────────────────────
 
     /// `assert_any_event_field_contains` succeeds when a captured field value
