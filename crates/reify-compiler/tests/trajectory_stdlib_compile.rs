@@ -443,3 +443,84 @@ fn natural_spline_refines_boundary_condition_with_no_params() {
             .collect::<Vec<_>>()
     );
 }
+
+// ─── step-13: ClampedSpline refines BoundaryCondition w/ velocity tangents ───
+
+/// `ClampedSpline` is the "clamped" boundary marker for a piecewise-
+/// polynomial profile — semantically "specified tangent vectors at the
+/// first and last waypoint" (PRD §4.1). The first / last q̇ values are
+/// authoring-time data because they are an explicit caller intent, not a
+/// derivable evaluator invariant.
+///
+/// Test pins four invariants: (a) the structure refines `BoundaryCondition`
+/// (via `template.trait_bounds`), (b) it declares exactly two params with
+/// the canonical `List<JointValue>` (= `List<Real>`) shape, (c) the params
+/// are caller-supplied (no defaults), (d) it declares no structure-level
+/// constraints (the only meaningful invariant — `start_velocity.len() ==
+/// end_velocity.len() == waypoint.values.len()` — is profile-level and
+/// owned by the β-phase profile builder).
+#[test]
+fn clamped_spline_refines_boundary_condition_with_velocity_tangents() {
+    let template = find_structure("ClampedSpline");
+
+    assert_eq!(
+        template.trait_bounds,
+        vec!["BoundaryCondition".to_string()],
+        "ClampedSpline must refine BoundaryCondition; got trait_bounds: {:?}",
+        template.trait_bounds
+    );
+
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    assert_eq!(
+        params.len(),
+        2,
+        "ClampedSpline should declare exactly 2 params (start_velocity, \
+         end_velocity); got: {:?}",
+        names
+    );
+
+    let expected: &[(&str, Type)] = &[
+        ("start_velocity", Type::List(Box::new(Type::Real))),
+        ("end_velocity", Type::List(Box::new(Type::Real))),
+    ];
+
+    for (member, expected_ty) in expected {
+        let cell = params
+            .iter()
+            .find(|vc| vc.id.member == *member)
+            .unwrap_or_else(|| {
+                panic!(
+                    "ClampedSpline missing required param '{}'; got: {:?}",
+                    member, names
+                )
+            });
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "ClampedSpline.{} should be {:?}, got {:?}",
+            member, expected_ty, cell.cell_type
+        );
+    }
+
+    for cell in &params {
+        assert!(
+            cell.default_expr.is_none(),
+            "ClampedSpline.{} should have no default_expr (caller-supplied), \
+             but got: {:?}",
+            cell.id.member,
+            cell.default_expr
+        );
+    }
+
+    assert!(
+        template.constraints.is_empty(),
+        "ClampedSpline should declare no structure-level constraints \
+         (collection-shape invariants are profile-level); got: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+}
