@@ -545,3 +545,71 @@ fn buckling_result_constrains_iterations_nonneg() {
             .collect::<Vec<_>>()
     );
 }
+
+// ─── step-15: MultiCaseBucklingResult param shape ────────────────────────────
+
+/// `MultiCaseBucklingResult` is the multi-load-case buckling-solver output
+/// container — the parallel sibling of `MultiCaseResult` (PRD §7). It must
+/// declare exactly one param with the canonical name and type:
+///
+///   - `cases : Map<String, BucklingResult>`   (keyed by LoadCase.name)
+///
+/// And exactly zero constraints: the only meaningful invariant ("cases must be
+/// non-empty") is a collection invariant expressible only at the producer
+/// (`solve_buckling_load_cases`, PRD §13 task η); per-instance scalar
+/// predicates can't enforce it. Map key-uniqueness is structurally guaranteed
+/// by `BTreeMap`. Mirrors the `MultiCaseResult` discipline at
+/// `fea_multi_case.ri:243-251`.
+#[test]
+fn multi_case_buckling_result_struct_has_cases_field() {
+    let template = find_structure("MultiCaseBucklingResult");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    assert_eq!(
+        params.len(),
+        1,
+        "MultiCaseBucklingResult should have exactly 1 param cell (cases), got: {:?}",
+        names
+    );
+
+    let cases_cell = params
+        .iter()
+        .find(|vc| vc.id.member == "cases")
+        .unwrap_or_else(|| {
+            panic!(
+                "MultiCaseBucklingResult missing required param 'cases'; got: {:?}",
+                names
+            )
+        });
+
+    assert_eq!(
+        cases_cell.cell_type,
+        Type::Map(
+            Box::new(Type::String),
+            Box::new(Type::StructureRef("BucklingResult".to_string())),
+        ),
+        "MultiCaseBucklingResult.cases should be Map<String, BucklingResult>, got {:?}",
+        cases_cell.cell_type
+    );
+
+    // No default — every instance must be produced by solve_buckling_load_cases
+    assert!(
+        cases_cell.default_expr.is_none(),
+        "MultiCaseBucklingResult.cases should have no default_expr \
+         (solver-only-produced), but got: {:?}",
+        cases_cell.default_expr
+    );
+
+    // Producer-enforced collection invariants: no constraints expected.
+    assert!(
+        template.constraints.is_empty(),
+        "MultiCaseBucklingResult should declare no constraints (collection \
+         invariants are producer-enforced, mirroring MultiCaseResult); got: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+}
