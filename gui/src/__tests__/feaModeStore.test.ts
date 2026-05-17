@@ -226,6 +226,41 @@ describe('feaModeStore', () => {
     });
   });
 
+  describe('activeCaseId', () => {
+    it('(a) activeCaseId defaults to null', () => {
+      withRoot(() => {
+        const store = createFeaModeStore();
+        expect(store.state.activeCaseId).toBeNull();
+      });
+    });
+
+    it("(b) setActiveCaseId('operating') sets store.state.activeCaseId to 'operating'", () => {
+      withRoot(() => {
+        const store = createFeaModeStore();
+        store.setActiveCaseId('operating');
+        expect(store.state.activeCaseId).toBe('operating');
+      });
+    });
+
+    it('(c) setActiveCaseId(null) clears activeCaseId back to null', () => {
+      withRoot(() => {
+        const store = createFeaModeStore();
+        store.setActiveCaseId('operating');
+        store.setActiveCaseId(null);
+        expect(store.state.activeCaseId).toBeNull();
+      });
+    });
+
+    it('(d) setActiveCaseId does not mutate other fields', () => {
+      withRoot(() => {
+        const store = createFeaModeStore();
+        const enabledBefore = store.state.enabled;
+        store.setActiveCaseId('overload');
+        expect(store.state.enabled).toBe(enabledBefore);
+      });
+    });
+  });
+
   describe('simple setters', () => {
     it('setEnabled toggles state.enabled', () => {
       withRoot(() => {

@@ -8119,3 +8119,205 @@ fn sweep_persistent_cache_removes_stale_tempfile_under_explicit_cache_root() {
         "SweepReport.tempfiles_removed must be 1"
     );
 }
+
+// ── FeaCaseEmitter tests ─────────────────────────────────────────────────────
+
+/// Mirrors [`RecordingEmitter`] (line 7234) and [`RecordingWarmPoolEventEmitter`] (line 7971)
+/// for the fea-case-changed channel.
+///
+/// Compile-fails in step-5 because `crate::engine::FeaCaseEmitter` does not exist yet.
+struct RecordingFeaCaseEmitter {
+    events: std::sync::Arc<std::sync::Mutex<Vec<crate::types::FeaCaseChanged>>>,
+}
+
+impl RecordingFeaCaseEmitter {
+    fn new() -> Self {
+        Self {
+            events: std::sync::Arc::new(std::sync::Mutex::new(vec![])),
+        }
+    }
+}
+
+impl crate::engine::FeaCaseEmitter for RecordingFeaCaseEmitter {
+    fn changed(&self, payload: crate::types::FeaCaseChanged) {
+        self.events.lock().unwrap().push(payload);
+    }
+}
+
+/// (a) fea_case_emitter_fires_when_multi_case_value_present.
+///
+/// Constructs a `CheckResult` with a `multi_case_result_value`-shaped cell and
+/// drives it through `emit_fea_case_for_test_with_result`. Asserts exactly one
+/// event with the expected active_case_id and available_cases.
+///
+/// Compile-fails because `FeaCaseEmitter`, `set_fea_case_emitter`, and
+/// `emit_fea_case_for_test_with_result` do not exist yet.
+#[test]
+fn fea_case_emitter_fires_when_multi_case_value_present() {
+    use std::sync::Arc;
+    use reify_eval::CheckResult;
+    use reify_types::{ValueCellId, ValueMap};
+    use reify_test_support::multi_case_result_value;
+    use reify_types::Value;
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    let recorder = RecordingFeaCaseEmitter::new();
+    let captured = Arc::clone(&recorder.events);
+    session.set_fea_case_emitter(Arc::new(recorder));
+
+    // Build a hand-crafted CheckResult whose values map contains one MultiCaseResult cell.
+    let mut values = ValueMap::new();
+    let cell_id = ValueCellId::new("S", "result");
+    values.insert(cell_id, multi_case_result_value(&[("A", Value::Int(1)), ("B", Value::Int(2))]));
+
+    let check = CheckResult {
+        values,
+        constraint_results: vec![],
+        diagnostics: vec![],
+        resolved_params: std::collections::HashMap::new(),
+    };
+
+    session.emit_fea_case_for_test_with_result(&check);
+
+    let events = captured.lock().unwrap();
+    assert_eq!(events.len(), 1, "expected exactly one fea-case-changed event, got {}", events.len());
+    assert_eq!(events[0].active_case_id, "A", "active_case_id must be lex-smallest 'A'");
+    assert_eq!(
+        events[0].available_cases,
+        vec!["A".to_string(), "B".to_string()],
+        "available_cases must be sorted"
+    );
+}
+
+/// (b) fea_case_emitter_no_fire_when_no_multi_case.
+///
+/// A CheckResult with no MultiCaseResult-shaped cell produces zero events.
+///
+/// Compile-fails because `FeaCaseEmitter`, `set_fea_case_emitter`, and
+/// `emit_fea_case_for_test_with_result` do not exist yet.
+#[test]
+fn fea_case_emitter_no_fire_when_no_multi_case() {
+    use std::sync::Arc;
+    use reify_eval::CheckResult;
+    use reify_types::{ValueCellId, ValueMap};
+    use reify_types::Value;
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    let recorder = RecordingFeaCaseEmitter::new();
+    let captured = Arc::clone(&recorder.events);
+    session.set_fea_case_emitter(Arc::new(recorder));
+
+    // Ordinary (non-MultiCaseResult) value — should not trigger the emitter.
+    let mut values = ValueMap::new();
+    values.insert(ValueCellId::new("S", "width"), Value::Int(42));
+
+    let check = CheckResult {
+        values,
+        constraint_results: vec![],
+        diagnostics: vec![],
+        resolved_params: std::collections::HashMap::new(),
+    };
+
+    session.emit_fea_case_for_test_with_result(&check);
+
+    let events = captured.lock().unwrap();
+    assert!(events.is_empty(), "no events should fire for a non-MultiCaseResult cell");
+}
+
+/// (c) fea_case_emitter_re_fires_on_each_check.
+///
+/// Calling `emit_fea_case_for_test_with_result` twice with the same case set records
+/// TWO events — pins the fire-every-commit / no-engine-side-dedup contract that
+/// mirrors `emit_auto_resolve_if_any`.
+///
+/// NOTE: No duplicate-suppression test is included — engine-side dedup is
+/// intentionally absent (design decision: mirror established &self fire-every-commit).
+///
+/// Compile-fails because `FeaCaseEmitter`, `set_fea_case_emitter`, and
+/// `emit_fea_case_for_test_with_result` do not exist yet.
+#[test]
+fn fea_case_emitter_re_fires_on_each_check() {
+    use std::sync::Arc;
+    use reify_eval::CheckResult;
+    use reify_types::{ValueCellId, ValueMap};
+    use reify_test_support::multi_case_result_value;
+    use reify_types::Value;
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    let recorder = RecordingFeaCaseEmitter::new();
+    let captured = Arc::clone(&recorder.events);
+    session.set_fea_case_emitter(Arc::new(recorder));
+
+    let mut values = ValueMap::new();
+    values.insert(
+        ValueCellId::new("S", "result"),
+        multi_case_result_value(&[("A", Value::Int(1)), ("B", Value::Int(2))]),
+    );
+
+    let check = CheckResult {
+        values,
+        constraint_results: vec![],
+        diagnostics: vec![],
+        resolved_params: std::collections::HashMap::new(),
+    };
+
+    // First emission
+    session.emit_fea_case_for_test_with_result(&check);
+    // Second emission — same case set, must fire again (no dedup)
+    session.emit_fea_case_for_test_with_result(&check);
+
+    let events = captured.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        2,
+        "must record TWO events on two calls — no engine-side dedup; got {}",
+        events.len()
+    );
+}
+
+/// (d) fea_case_emitter_wires_through_real_commit_path.
+///
+/// Anchors that `emit_fea_case_if_any` is called at the real production
+/// `load_from_source` commit site (not just via the `emit_fea_case_for_test_with_result`
+/// shim). Uses an ordinary (non-MultiCaseResult) source so the recorder sees
+/// zero events — the meaningful contract here is that the emitter callback IS
+/// consulted on every real commit, not that it fires for this particular source.
+///
+/// NOTE: A positive assertion (event received) requires a source that evaluates
+/// to a `MultiCaseResult`-shaped value, which becomes possible when task 3026
+/// lands `solve_load_cases`. At that point, replace the zero-assertion below
+/// with a positive one mirroring the auto-resolve integration test at
+/// `engine_session_auto_resolve_emitter_fires_through_load_from_source_real_path`.
+#[test]
+fn fea_case_emitter_wires_through_real_commit_path() {
+    use std::sync::Arc;
+
+    let source = r#"structure S {
+    param width: Scalar = 10mm
+}"#;
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    let recorder = RecordingFeaCaseEmitter::new();
+    let captured = Arc::clone(&recorder.events);
+    session.set_fea_case_emitter(Arc::new(recorder));
+
+    session
+        .load_from_source(source, "S")
+        .expect("load_from_source with ordinary source should succeed");
+
+    let events = captured.lock().unwrap();
+    assert!(
+        events.is_empty(),
+        "no fea-case events for ordinary (non-MultiCaseResult) source via real commit path; \
+         got {} events",
+        events.len()
+    );
+}

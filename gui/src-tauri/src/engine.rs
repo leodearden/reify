@@ -477,6 +477,13 @@ pub struct EngineSession {
     /// no IPC emission occurs — existing tests that don't install an emitter are
     /// unaffected.
     warm_pool_event_emitter: Option<Arc<dyn WarmPoolEventEmitter>>,
+    /// Optional fea-case event sink installed by the GUI layer.
+    ///
+    /// When `Some`, `emit_fea_case_if_any` scans `CheckResult.values` for a
+    /// `MultiCaseResult`-shaped cell and fires `changed(FeaCaseChanged)` on the
+    /// first match. When `None` (the default), all emit paths are no-ops.
+    /// Fire-every-commit semantics: no engine-side dedup (mirrors `emit_auto_resolve_if_any`).
+    fea_case_emitter: Option<Arc<dyn FeaCaseEmitter>>,
 }
 
 /// Trait for sinking auto-resolve loop events to the GUI transport layer.
@@ -499,6 +506,17 @@ pub trait AutoResolveEmitter: Send + Sync {
 /// The trait is object-safe: no method takes or returns `Self`.
 pub trait WarmPoolEventEmitter: Send + Sync {
     fn emit(&self, event: crate::types::WarmPoolEvent);
+}
+
+/// Trait for sinking fea-case-changed events to the GUI transport layer.
+///
+/// Implemented by `TauriFeaCaseEmitter` in `main.rs` for the production path
+/// (calls `event_bus::emit_typed` with channel `"fea-case-changed"`), and by
+/// `RecordingFeaCaseEmitter` in engine tests.
+///
+/// The trait is object-safe: no method takes or returns `Self`.
+pub trait FeaCaseEmitter: Send + Sync {
+    fn changed(&self, payload: crate::types::FeaCaseChanged);
 }
 
 /// Build the normalized source-map key for a module name: `"{name}.ri"`.
@@ -852,6 +870,7 @@ impl EngineSession {
             compile_failure: None,
             auto_resolve_emitter: None,
             warm_pool_event_emitter: None,
+            fea_case_emitter: None,
         }
     }
 
@@ -872,6 +891,16 @@ impl EngineSession {
     /// Replaces any previously installed emitter.
     pub fn set_warm_pool_event_emitter(&mut self, emitter: Arc<dyn WarmPoolEventEmitter>) {
         self.warm_pool_event_emitter = Some(emitter);
+    }
+
+    /// Install a fea-case-changed event emitter on this session.
+    ///
+    /// After installation, every `emit_fea_case_if_any` call (co-located with
+    /// `emit_auto_resolve_if_any` at all 4 production sites + the test helper)
+    /// fires `changed(FeaCaseChanged)` when a `MultiCaseResult`-shaped value is
+    /// detected in `CheckResult.values`. Replaces any previously installed emitter.
+    pub fn set_fea_case_emitter(&mut self, emitter: Arc<dyn FeaCaseEmitter>) {
+        self.fea_case_emitter = Some(emitter);
     }
 
     /// Install a constraint solver into the underlying Engine for testing.
@@ -897,7 +926,18 @@ impl EngineSession {
     pub(crate) fn check_and_emit_for_test(&mut self, compiled: &CompiledModule) {
         let r = self.core.engine_mut().check(compiled);
         self.emit_auto_resolve_if_any(&r);
+        self.emit_fea_case_if_any(&r);
         self.drain_and_emit_warm_pool_events();
+    }
+
+    /// Drive `emit_fea_case_if_any` with a pre-built `CheckResult` in tests.
+    ///
+    /// Mirrors `drain_and_emit_warm_pool_events_for_test`: lets tests inject a
+    /// hand-constructed `CheckResult` (including a `multi_case_result_value`-shaped
+    /// cell) without needing a full engine eval. Not callable from production code.
+    #[cfg(test)]
+    pub(crate) fn emit_fea_case_for_test_with_result(&self, check: &CheckResult) {
+        self.emit_fea_case_if_any(check);
     }
 
     /// Expose the engine's warm pool for test-only manipulation (e.g. pre-populating
@@ -974,6 +1014,45 @@ impl EngineSession {
         emitter.start();
         emitter.iteration(iter);
         emitter.complete();
+    }
+
+    /// Detect a `MultiCaseResult`-shaped value in `check.values` and emit a
+    /// `fea-case-changed` event on the first match.
+    ///
+    /// Fire-every-commit semantics (mirrors `emit_auto_resolve_if_any`): fires on
+    /// every check that contains a matching cell — NO engine-side dedup.
+    /// Values are iterated in sorted `ValueCellId` order for determinism.
+    /// Returns after the first matching cell (one event per check, at most).
+    ///
+    /// Early-returns silently when no emitter is installed or when no cell in
+    /// `check.values` matches the `MultiCaseResult` shape.
+    fn emit_fea_case_if_any(&self, check: &CheckResult) {
+        let emitter = match &self.fea_case_emitter {
+            Some(e) => e,
+            None => return,
+        };
+
+        // Single O(n) pass: find the MultiCaseResult cell with the
+        // lexicographically-smallest ValueCellId for determinism.
+        // `ValueCellId` derives `Ord` so comparison is direct — no `to_string()`
+        // allocation per cell. In the no-match common case (no task-3026 data),
+        // `filter_map` yields an empty iterator and `min_by` returns `None`
+        // with zero allocations.
+        if let Some((_, detected)) = check
+            .values
+            .iter()
+            .filter_map(|(id, value)| {
+                reify_eval::multi_load_dispatch::detect_multi_case_result(value)
+                    .map(|d| (id, d))
+            })
+            .min_by(|(a, _), (b, _)| a.cmp(b))
+        {
+            let payload = crate::types::FeaCaseChanged {
+                active_case_id: detected.active_case_id,
+                available_cases: detected.available_cases,
+            };
+            emitter.changed(payload);
+        }
     }
 
     /// Build the `parameters` map for an `AutoResolveIteration` payload.
@@ -1112,6 +1191,9 @@ impl EngineSession {
         self.emit_auto_resolve_if_any(self.core.last_check().expect(
             "emit_auto_resolve_if_any: last_check must be Some after commit_state — see ordering invariant",
         ));
+        self.emit_fea_case_if_any(self.core.last_check().expect(
+            "emit_fea_case_if_any: last_check must be Some after commit_state — see ordering invariant",
+        ));
         self.drain_and_emit_warm_pool_events();
 
         self.build_gui_state()
@@ -1154,6 +1236,9 @@ impl EngineSession {
         self.emit_auto_resolve_if_any(self.core.last_check().expect(
             "emit_auto_resolve_if_any: last_check must be Some after commit_check — see ordering invariant",
         ));
+        self.emit_fea_case_if_any(self.core.last_check().expect(
+            "emit_fea_case_if_any: last_check must be Some after commit_check — see ordering invariant",
+        ));
         self.drain_and_emit_warm_pool_events();
         self.build_gui_state()
     }
@@ -1189,6 +1274,9 @@ impl EngineSession {
         // Emit AFTER all state is committed — cross-cutting ordering invariant.
         self.emit_auto_resolve_if_any(self.core.last_check().expect(
             "emit_auto_resolve_if_any: last_check must be Some after commit_state — see ordering invariant",
+        ));
+        self.emit_fea_case_if_any(self.core.last_check().expect(
+            "emit_fea_case_if_any: last_check must be Some after commit_state — see ordering invariant",
         ));
         self.drain_and_emit_warm_pool_events();
         self.build_gui_state()
@@ -1262,6 +1350,9 @@ impl EngineSession {
         // Emit AFTER all state is committed — cross-cutting ordering invariant.
         self.emit_auto_resolve_if_any(self.core.last_check().expect(
             "emit_auto_resolve_if_any: last_check must be Some after commit_state — see ordering invariant",
+        ));
+        self.emit_fea_case_if_any(self.core.last_check().expect(
+            "emit_fea_case_if_any: last_check must be Some after commit_state — see ordering invariant",
         ));
         self.drain_and_emit_warm_pool_events();
 

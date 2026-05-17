@@ -822,6 +822,22 @@ impl WarmPoolEvent {
     }
 }
 
+/// IPC payload for the `fea-case-changed` Tauri channel per PRD §2.2 task η.
+///
+/// Emitted once per check that observes a `MultiCaseResult`-shaped value in
+/// `CheckResult.values`. Mirrors fire-every-commit semantics of `emit_auto_resolve_if_any`
+/// (no engine-side dedup).
+///
+/// Field names match the TypeScript `FeaCaseChanged` interface in `gui/src/types.ts`
+/// exactly — no `serde(rename_all)`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FeaCaseChanged {
+    /// Lexicographically-smallest case name (deterministic BTreeMap key order).
+    pub active_case_id: String,
+    /// All available case names, sorted (BTreeMap iteration order from the inner map).
+    pub available_cases: Vec<String>,
+}
+
 #[cfg(test)]
 mod format_value_range_tests {
     use super::*;
