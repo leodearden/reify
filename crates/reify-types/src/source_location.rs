@@ -65,7 +65,45 @@ pub fn byte_offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::byte_offset_to_line_col;
+    use super::{build_line_offsets, byte_offset_to_line_col, line_col_to_byte_offset_with_offsets};
+
+    /// Smoke test that verifies `build_line_offsets` and `line_col_to_byte_offset_with_offsets`
+    /// round-trip correctly for a simple three-line source.
+    ///
+    /// Source: "abc\ndef\nghi"
+    /// Byte layout:
+    ///   0:'a' 1:'b' 2:'c' 3:'\n' 4:'d' 5:'e' 6:'f' 7:'\n' 8:'g' 9:'h' 10:'i'
+    ///
+    /// Newlines are at offsets 3 and 7, so `build_line_offsets` must return `[3, 7]`.
+    ///
+    /// Round-trip checks:
+    ///   (a) `build_line_offsets("abc\ndef\nghi")` == `[3, 7]`
+    ///   (b) `line_col_to_byte_offset_with_offsets(source, 2, 1, &offsets)` == 4  (start of 'd')
+    ///   (c) `line_col_to_byte_offset_with_offsets(source, 1, 0, &offsets)` == 0  (zero-col fallback)
+    ///   (d) `line_col_to_byte_offset_with_offsets(source, 99, 1, &offsets)` == source.len()  (past-end clamp)
+    #[test]
+    fn build_line_offsets_and_line_col_round_trip() {
+        let source = "abc\ndef\nghi";
+        // (a) newlines are at byte offsets 3 and 7.
+        let offsets = build_line_offsets(source);
+        assert_eq!(offsets, vec![3usize, 7usize]);
+
+        // (b) line 2, col 1 is the first byte of "def" — byte offset 4.
+        let byte = line_col_to_byte_offset_with_offsets(source, 2, 1, &offsets);
+        assert_eq!(byte, 4, "line 2, col 1 should be offset 4 (start of 'd')");
+
+        // (c) col = 0 is the zero-input fallback; must return 0.
+        let byte = line_col_to_byte_offset_with_offsets(source, 1, 0, &offsets);
+        assert_eq!(byte, 0, "col=0 zero-input fallback must return 0");
+
+        // (d) line = 99 is past the end of source; must clamp to source.len().
+        let byte = line_col_to_byte_offset_with_offsets(source, 99, 1, &offsets);
+        assert_eq!(
+            byte,
+            source.len(),
+            "line=99 (past end) must clamp to source.len()"
+        );
+    }
 
     #[test]
     fn byte_offset_to_line_col_basic_conversion() {
