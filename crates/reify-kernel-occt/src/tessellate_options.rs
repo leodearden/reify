@@ -69,6 +69,13 @@ impl TessellateOptions {
     /// encoding follows the convention established in
     /// `crates/reify-types/src/hash.rs:27-29` (`ContentHash::of_u64`).
     ///
+    /// This hash is **bit-exact on `f64`**: `0.0` and `-0.0` are
+    /// `PartialEq`-equal but produce different hashes, and two NaN values
+    /// with the same bit pattern produce equal hashes despite being
+    /// `PartialEq`-unequal. In practice, OCCT deflection parameters are
+    /// always positive finite values, so callers **must not** pass `-0.0`
+    /// or NaN deflections.
+    ///
     /// # ESC-3433-117 non-zero domain tag
     ///
     /// Seeded with `ContentHash::of_str("TessellateOptions")` so that
@@ -88,25 +95,25 @@ impl TessellateOptions {
 #[cfg(test)]
 mod tests {
     use super::TessellateOptions;
-    use reify_types::ContentHash;
-
-    /// `NO_OPTIONS` sentinel from `crates/reify-eval/src/realization_cache.rs:85`.
-    const NO_OPTIONS_SENTINEL: ContentHash = ContentHash(0);
+    // Import the authoritative sentinel — not a hand-copied literal — so this
+    // test fails loudly if reify_eval::NO_OPTIONS ever drifts (ESC-3433-117).
+    use reify_eval::NO_OPTIONS;
 
     /// ESC-3433-117 carry-forward: a default `TessellateOptions` must NOT hash to
-    /// `ContentHash(0)` = `NO_OPTIONS`. A collision would let two semantically-
-    /// distinct cache entries alias into the same `ToleranceBucket`, returning
-    /// wrong geometry silently. Sealed by the domain-tag seed in `content_hash()`.
+    /// `NO_OPTIONS` (the real sentinel from `reify-eval::realization_cache`). A
+    /// collision would let two semantically-distinct cache entries alias into the
+    /// same `ToleranceBucket`, returning wrong geometry silently. Sealed by the
+    /// domain-tag seed in `content_hash()`.
     #[test]
     fn default_content_hash_is_not_no_options_sentinel() {
         let hash = TessellateOptions::default().content_hash();
         assert_ne!(
             hash,
-            NO_OPTIONS_SENTINEL,
+            NO_OPTIONS,
             "TessellateOptions::default().content_hash() must not equal NO_OPTIONS \
-             (ContentHash(0)) — ESC-3433-117 non-zero domain tag invariant violated; \
+             — ESC-3433-117 non-zero domain tag invariant violated; \
              the domain-tag seed `ContentHash::of_str(\"TessellateOptions\")` must \
-             not itself hash to 0",
+             not produce the same value as reify_eval::NO_OPTIONS",
         );
     }
 
