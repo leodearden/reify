@@ -163,3 +163,12 @@ structure def ClampedSpline : BoundaryCondition {
     param start_velocity : List<JointValue>
     param end_velocity : List<JointValue>
 }
+
+// PeriodicSpline — zero-DOF "periodic" boundary marker (PRD §4.1).
+// Semantic invariant: "the first and last waypoint agree" (both position
+// and derivatives), so the resulting spline closes back on itself —
+// enforced by the β-phase evaluator when it builds the spline coefficients,
+// NOT as an authoring-time param. The structure exists only to give the β
+// evaluator a nominal type-tag to dispatch on; the dispatch shape mirrors
+// `PointLoad` / `FixedSupport` in `solve_elastic_static`.
+structure def PeriodicSpline : BoundaryCondition { }
