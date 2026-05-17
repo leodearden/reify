@@ -36,6 +36,13 @@ export interface FeaModeState {
    * are rejected by setWarpFactor to keep the slider and store in sync.
    */
   warpFactor: number;
+  /**
+   * The currently-selected FEA load case, or null when no multi-case result has
+   * been observed yet (i.e. no MultiCaseResult in CheckResult.values) or the
+   * panel has not been wired.
+   * null = no active multi-case selection (no MultiCaseResult observed yet, or panel not wired).
+   */
+  activeCaseId: string | null;
 }
 
 /** Return type of createFeaModeStore(). */
@@ -65,6 +72,8 @@ export interface FeaModeStore {
    * Mirrors the non-finite guard in setRange.
    */
   setWarpFactor(f: number): boolean;
+  /** Set the active multi-case FEA load case. Pass null to clear. */
+  setActiveCaseId(id: string | null): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -88,6 +97,7 @@ export function createFeaModeStore(): FeaModeStore {
     autoEnabledOnce: false,
     showDeformed: false,
     warpFactor: 1.0,
+    activeCaseId: null,
   });
 
   function setEnabled(b: boolean): void {
@@ -131,6 +141,10 @@ export function createFeaModeStore(): FeaModeStore {
     return true;
   }
 
+  function setActiveCaseId(id: string | null): void {
+    setState('activeCaseId', id);
+  }
+
   function tryAutoEnable(channel?: string): boolean {
     if (state.autoEnabledOnce) {
       return false;
@@ -143,5 +157,5 @@ export function createFeaModeStore(): FeaModeStore {
     return true;
   }
 
-  return { state, setEnabled, setChannel, setPalette, setRange, lockCurrent, tryAutoEnable, setShowDeformed, setWarpFactor };
+  return { state, setEnabled, setChannel, setPalette, setRange, lockCurrent, tryAutoEnable, setShowDeformed, setWarpFactor, setActiveCaseId };
 }
