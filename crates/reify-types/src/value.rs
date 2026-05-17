@@ -8300,6 +8300,44 @@ mod tests {
         );
     }
 
+    // --- SampledField::grid_metadata_eq comprehensive contract tests (task 3650) ---
+
+    /// Two NaN values with **identical** bit patterns must compare as equal via
+    /// `grid_metadata_eq`, while two NaN values with **different** bit patterns
+    /// must compare as unequal.
+    ///
+    /// Pins the bidirectional NaN bit-equality contract documented on the method:
+    /// the impl uses `f64::to_bits()` comparison, so same-bit-pattern NaNs are
+    /// equal and distinct-bit-pattern NaNs are not.
+    ///
+    /// Both halves are needed:
+    /// - Same-bits-equal: fails if a contributor replaces `to_bits()==to_bits()`
+    ///   with plain `==` (NaN != NaN always, so the result would flip to false).
+    /// - Different-bits-unequal: fails if a contributor introduces NaN
+    ///   canonicalisation (all NaNs would be treated as equal).
+    #[test]
+    fn sampled_field_grid_metadata_eq_nan_bits_equal_returns_true() {
+        // Half 1: same bit-pattern NaN → equal.
+        let mut a = sample_field_1d_fixture();
+        let mut b = sample_field_1d_fixture();
+        a.spacing[0] = f64::NAN;
+        b.spacing[0] = f64::from_bits(f64::NAN.to_bits()); // identical bit pattern
+        assert!(
+            a.grid_metadata_eq(&b),
+            "same-bit-pattern NaN values must compare as equal (NaN bit-equality contract)"
+        );
+
+        // Half 2: distinct bit-pattern NaN → not equal.
+        let mut c = sample_field_1d_fixture();
+        let mut d = sample_field_1d_fixture();
+        c.spacing[0] = f64::NAN;
+        d.spacing[0] = f64::from_bits(f64::NAN.to_bits() | 1); // different payload bit
+        assert!(
+            !c.grid_metadata_eq(&d),
+            "distinct-bit-pattern NaN values must compare as unequal (NaN bit-equality contract)"
+        );
+    }
+
     // ── format_display_triple unit tests (Task 3648) ─────────────────────────
 
     /// Scalar mm(4.2) → Some((4.2, "4.2", "mm")):
@@ -8378,29 +8416,6 @@ mod tests {
         assert!(
             Value::Int(5).format_display_triple().is_none(),
             "Int must return None — not a physical scalar"
-        );
-    }
-
-    #[test]
-    fn sampled_field_grid_metadata_eq_nan_bits_equal_returns_true() {
-        // Half 1: same bit-pattern NaN → equal.
-        let mut a = sample_field_1d_fixture();
-        let mut b = sample_field_1d_fixture();
-        a.spacing[0] = f64::NAN;
-        b.spacing[0] = f64::from_bits(f64::NAN.to_bits()); // identical bit pattern
-        assert!(
-            a.grid_metadata_eq(&b),
-            "same-bit-pattern NaN values must compare as equal (NaN bit-equality contract)"
-        );
-
-        // Half 2: distinct bit-pattern NaN → not equal.
-        let mut c = sample_field_1d_fixture();
-        let mut d = sample_field_1d_fixture();
-        c.spacing[0] = f64::NAN;
-        d.spacing[0] = f64::from_bits(f64::NAN.to_bits() | 1); // different payload bit
-        assert!(
-            !c.grid_metadata_eq(&d),
-            "distinct-bit-pattern NaN values must compare as unequal (NaN bit-equality contract)"
         );
     }
 }
