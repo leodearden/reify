@@ -264,12 +264,23 @@ pub(crate) fn topology_selector_result_type(name: &str) -> Option<reify_types::T
 ///
 /// **Disjointness contract**: this list MUST remain disjoint from the four
 /// other families. Cell classification could double-fire if a name appeared
-/// in two families. Pinned by the
-/// `is_geometry_query_rejects_other_family_names` test.
+/// in two families (the geometry-query arm in `expr.rs::infer_type` is
+/// dispatched AFTER the topology-selector / kinematic-query / conformance-
+/// query arms — a name living in both would silently win at the earlier
+/// arm). Pinned by both directions: the
+/// `is_geometry_query_rejects_other_family_names` test (other → not in
+/// geometry-query) AND the `geometry_query_names_are_disjoint_from_other_families`
+/// test (every entry of `GEOMETRY_QUERY_NAMES` is absent from the four
+/// sibling slices).
 ///
 /// **Maintenance contract**: adding a name here REQUIRES a parallel entry
 /// in [`geometry_query_result_type`]. Mirrors the documented contract on
-/// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES`.
+/// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES`. Pinned by the
+/// `geometry_query_names_each_have_a_result_type` test, which iterates this
+/// slice directly (not a hand-maintained fixture vec) so a new entry
+/// without a parallel result-type arm fails at test time rather than
+/// `.expect()`-panicking in production (`expr.rs::infer_type` calls
+/// `geometry_query_result_type(name).expect("is_geometry_query implies …")`).
 ///
 /// **Phase 1 trade**: compile-time return-type wiring only. Eval-time
 /// dispatch arrives in Phase 6 (GHR-ζ). Until then, cells hold
@@ -979,5 +990,60 @@ mod tests {
         assert_eq!(geometry_query_result_type("is_watertight"), None);
         assert_eq!(geometry_query_result_type("closest_point"), None);
         assert_eq!(geometry_query_result_type(""), None);
+    }
+
+    /// Disjointness invariant — forward direction (each `GEOMETRY_QUERY_NAMES`
+    /// entry must NOT appear in any of the four sibling family slices).
+    /// Complements `is_geometry_query_rejects_other_family_names` (the inverse
+    /// direction); together they pin the doc-comment disjointness contract.
+    /// Without this, a name added to `GEOMETRY_QUERY_NAMES` that also lived in
+    /// e.g. `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` would silently route through
+    /// the topology-selector arm (dispatched first in `expr.rs::infer_type`)
+    /// and the geometry-query arm would be dead code.
+    #[test]
+    fn geometry_query_names_are_disjoint_from_other_families() {
+        for name in GEOMETRY_QUERY_NAMES {
+            assert!(
+                !GEOMETRY_FUNCTION_NAMES.contains(name),
+                "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_FUNCTION_NAMES (constructor family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_HELPER_NAMES.contains(name),
+                "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_HELPER_NAMES (conformance-query family)"
+            );
+            assert!(
+                !GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name),
+                "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_KINEMATIC_QUERY_NAMES (kinematic-query family)"
+            );
+            assert!(
+                !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
+                "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_TOPOLOGY_SELECTOR_NAMES (topology-selector family)"
+            );
+        }
+    }
+
+    /// Maintenance invariant — iterates `GEOMETRY_QUERY_NAMES` *directly*
+    /// (not a hand-maintained fixture vec) and asserts every entry has a
+    /// corresponding result-type arm in `geometry_query_result_type`. Without
+    /// this, a 13th name added to the slice but missing a result-type arm
+    /// would pass the table-driven test (which iterates the fixture, not the
+    /// slice) and `.expect()`-panic in production when first called via the
+    /// `expr.rs::infer_type` dispatch
+    /// (`geometry_query_result_type(name).expect("is_geometry_query implies result type")`).
+    #[test]
+    fn geometry_query_names_each_have_a_result_type() {
+        for name in GEOMETRY_QUERY_NAMES {
+            assert!(
+                geometry_query_result_type(name).is_some(),
+                "GEOMETRY_QUERY_NAMES entry {name:?} has no matching arm in \
+                 geometry_query_result_type — adding a name to the slice \
+                 REQUIRES adding a parallel arm (or expr.rs will panic at \
+                 runtime)"
+            );
+        }
     }
 }
