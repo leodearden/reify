@@ -1,0 +1,56 @@
+// Stdlib: Trajectory Input Shaping  (`std.trajectory`)
+//
+// PRD: docs/prds/v0_3/trajectory-input-shaping.md §4.1, §11 task α.
+//
+// Provides the named-type substrate for the v0.3 trajectory-input-shaping
+// PRD — every consumer task (β / δ / η / ι / ξ) depends on the trait, enum,
+// and structure_def names declared here. Scope is the type surface only —
+// no Rust evaluator and no constructor side effects (that is β).
+//
+// Surface (PRD §4.1):
+//   - trait Profile                     (marker for all motion-profile variants)
+//   - trait BoundaryCondition           (marker for all spline boundary kinds)
+//   - enum  SplineKind                  (CubicSpline | QuinticSpline)
+//   - structure def Waypoint            (t, values, vels?, accels?)
+//   - structure def NaturalSpline       (zero-DOF marker : BoundaryCondition)
+//   - structure def ClampedSpline       (start_velocity, end_velocity : BoundaryCondition)
+//   - structure def PeriodicSpline      (zero-DOF marker : BoundaryCondition)
+//   - structure def PiecewisePolynomialProfile : Profile
+//                                       (mechanism, waypoints, boundary, spline_kind;
+//                                        constraint waypoints.count > 0)
+//
+// Module placement: registered last in `stdlib_loader.rs` — `std.trajectory`
+// has no compile-time dependency on any other stdlib module (every type it
+// references is a primitive, builtin parametric container, the `Time`
+// dimension from `std.units`, or a name declared in this file). The trailing
+// position keeps the v0.3 trajectory cluster visually grouped at the end of
+// the loader, ready for the planned `std.modal` / `std.dynamics` siblings.
+//
+// Encoding notes:
+//   1. `JointValue` is declared as a `pub type JointValue = Real` alias at
+//      the top of the file so call sites read `List<JointValue>` exactly
+//      matching the PRD §4.1 declaration. The kinematic-constraints
+//      completion PRD (sibling, not yet landed) will replace the underlying
+//      `Real` with a proper kinematic-scalar type; that single alias line
+//      retargets every consumer in this file without touching any
+//      structure_def body. Same posture as `analysis.ri::pub type Stress =
+//      Pressure` and `pub type Strain = Dimensionless`.
+//   2. `mechanism` on `PiecewisePolynomialProfile` uses bare `Real` with a
+//      `TODO(mechanism-type)` note pointing at the same sibling PRD. No
+//      analogous alias makes sense (Mechanism is a structural type, not a
+//      scalar dimension) — same pattern as `LoadCase.loads : List<Real>`'s
+//      `TODO(load-trait)` annotation in `fea_multi_case.ri`.
+
+// ── Type aliases ──────────────────────────────────────────────────────────
+
+// JointValue: per-joint scalar — position / velocity / acceleration depending
+// on the call-site. Currently aliased to `Real` as the kinematic-completion
+// PRD (which owns the proper kinematic-scalar type) has not landed yet.
+// Same placeholder convention as `fea_multi_case.ri::LoadCase.loads :
+// List<Real>` with its `TODO(load-trait)` annotation. Retargeting this line
+// when the kinematic PRD lands propagates the type tightening to every
+// consumer in this file without touching any structure_def body.
+//
+// TODO(joint-value-type): retarget to the kinematic-completion PRD's
+// `JointValue` (likely `Scalar<...>` or a struct) when that PRD lands.
+pub type JointValue = Real
