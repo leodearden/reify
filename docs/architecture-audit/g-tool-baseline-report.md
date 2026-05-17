@@ -78,8 +78,8 @@ Public functions in `crates/reify-*/src/` whose only callers are
 tests, the defining file itself, comments, or `use`/`pub use`
 re-exports.
 
-- **Scanned:** 1426 `pub fn` declarations across 305 files
-- **Orphan candidates:** 424  (zero non-test callers, no `// G-allow:`)
+- **Scanned:** 1427 `pub fn` declarations across 306 files
+- **Orphan candidates:** 425  (zero non-test callers, no `// G-allow:`)
 - **Allow-listed:** 28  (zero callers; marked legitimate API surface)
 
 ## Orphan candidates
@@ -250,6 +250,7 @@ re-exports.
 | `reify-eval` | `crates/reify-eval/src/kernel_registry.rs:133` | `pick_lexmin_kernel` |
 | `reify-eval` | `crates/reify-eval/src/kernel_registry.rs:211` | `pick_lexmin_brep_kernel_in` |
 | `reify-eval` | `crates/reify-eval/src/kernel_registry.rs:345` | `warn_if_duplicate_op_repr_pairs` |
+| `reify-eval` | `crates/reify-eval/src/multi_load_dispatch.rs:30` | `detect_multi_case_result` |
 | `reify-eval` | `crates/reify-eval/src/persistent_cache.rs:64` | `read_sidecar_mtime` |
 | `reify-eval` | `crates/reify-eval/src/persistent_cache.rs:98` | `touch_sidecar` |
 | `reify-eval` | `crates/reify-eval/src/persistent_cache.rs:283` | `write_to` |

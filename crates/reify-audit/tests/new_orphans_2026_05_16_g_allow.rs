@@ -13,9 +13,18 @@
 //! enforces presence of a `// G-allow:` marker on the line immediately
 //! above each `pub fn`; this test additionally asserts list membership
 //! (absent from `orphans[]`, present in `allowed[]`) and that the reason
-//! string contains the expected owner-task substring.  Neither assertion
-//! implies `orphan_count == 0`; 400+ pre-existing baseline orphans in
-//! unrelated files are intentionally not in scope here.
+//! string contains the expected owner-task citation `#NNNN`.  Neither
+//! assertion implies `orphan_count == 0`; 400+ pre-existing baseline
+//! orphans in unrelated files are intentionally not in scope here.
+//!
+//! **Removal contract**: each PINS entry is owned by the cited task.
+//! Once a cited task wires its consumer the function gains a non-test
+//! caller, leaves `allowed[]`, and assertion (b) below will fail with
+//! "found 0 entries".  The owning task MUST delete its row from `PINS`
+//! as part of the consumer-wiring commit.  Delete this file entirely
+//! when all rows are removed.  The failure message includes the
+//! owner-task number — search for it in this file when
+//! `assert_eq!(matching_allowed.len(), 1)` fires unexpectedly.
 //!
 //! Graceful skip: if `python3`, `git`, or the audit script are absent
 //! from PATH/disk the test prints a note to stderr and returns without
@@ -161,19 +170,25 @@ fn new_orphans_2026_05_16_are_g_allow_marked() {
             matching_allowed.len(),
             1,
             "`{fn_name}` in {file_suffix} must appear exactly once in \
-             allowed[]; found {} entries.\nFull allowed list:\n{:#}",
+             allowed[]; found {} entries.  If you just wired a consumer \
+             for task #{expected_task_substr}, delete this fn's row from \
+             PINS in `crates/reify-audit/tests/new_orphans_2026_05_16_g_allow.rs`.\n\
+             Full allowed list:\n{:#}",
             matching_allowed.len(),
             result["allowed"]
         );
 
-        // (c) The allow_reason must cite the expected owner task.
+        // (c) The allow_reason must cite the expected owner task as `#NNNN`
+        // (anchored on the `#` prefix to avoid false matches on bare
+        // numeric substrings such as line numbers or unrelated task IDs).
         let reason = matching_allowed[0]["allow_reason"]
             .as_str()
             .unwrap_or_default();
+        let expected_task_citation = format!("#{expected_task_substr}");
         assert!(
-            reason.contains(expected_task_substr),
-            "`{fn_name}` allow_reason must cite task #{expected_task_substr}; \
-             got: {reason:?}"
+            reason.contains(&expected_task_citation),
+            "`{fn_name}` allow_reason must contain the task citation \
+             \"{expected_task_citation}\"; got: {reason:?}"
         );
     }
 }
