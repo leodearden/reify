@@ -2091,6 +2091,36 @@ fn dispatch_surface_angle(
 // precedent.
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Sub-shape kind that the kernel-aware `@face` / `@edge` dispatch path
+/// is willing to accept — a strict subset of `reify_types::SelectorKind`
+/// with `Point` excluded by construction.
+///
+/// Layer 1 (`eval_expr`) resolves `@point` selectors directly from
+/// literal coordinates and never reaches this module; Layer 2's
+/// `try_eval_ad_hoc_selector` converts the incoming `SelectorKind` via
+/// `FrameSubShapeKind::from_selector_kind` and `?`-propagates `None` for
+/// `SelectorKind::Point`, so every downstream `match` in this module
+/// only needs to handle `Face` and `Edge`. Replaces three previous
+/// `unreachable!("Point arm ...")` arms with compile-time exhaustiveness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrameSubShapeKind {
+    Face,
+    Edge,
+}
+
+impl FrameSubShapeKind {
+    /// Narrow a `SelectorKind` to a kernel-aware sub-shape kind.
+    /// Returns `None` for `SelectorKind::Point` so the caller can `?`-
+    /// propagate the early-return-None invariant established by Layer-1.
+    fn from_selector_kind(k: &reify_types::SelectorKind) -> Option<Self> {
+        match k {
+            reify_types::SelectorKind::Face => Some(FrameSubShapeKind::Face),
+            reify_types::SelectorKind::Edge => Some(FrameSubShapeKind::Edge),
+            reify_types::SelectorKind::Point => None,
+        }
+    }
+}
+
 /// Dispatch a `CompiledExprKind::AdHocSelector` expression through the engine
 /// attribute table and geometry kernel, returning the resolved `Value::Frame`
 /// (or `Some(Value::Undef)` on a diagnostic failure, or `None` if the
