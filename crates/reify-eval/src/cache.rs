@@ -748,6 +748,39 @@ impl CacheStore {
         }
     }
 
+    /// Begin the in-flight ComputeNode dispatch lifecycle for `c_id`'s output
+    /// ValueCells — PRD §3 "Atomic completion" step 0 (begin) / §8 task δ
+    /// (`docs/prds/v0_3/compute-node-contract.md`).
+    ///
+    /// For each output VC with an existing cache entry, routes through
+    /// [`CacheStore::mark_pending_with_cause`] so `last_substantive` is
+    /// captured from the prior `result_hash` and the chain root
+    /// `NodeId::Compute(c_id)` is recorded (admitted as a valid chain root by
+    /// PRD §3 "Chain-root contract extension"; see task 3420/α). Each marked
+    /// entry bumps `pending_transition_count`.
+    ///
+    /// Absent output VCs are skipped here; step-5 extends this to seed a
+    /// fresh Pending entry with `last_substantive: ResultRef::none()` for the
+    /// first-time-dispatch case.
+    ///
+    /// Returns the count of output VCs marked Pending.
+    pub fn begin_compute_dispatch(
+        &mut self,
+        c_id: &ComputeNodeId,
+        outputs: &[ValueCellId],
+    ) -> usize {
+        let mut marked = 0;
+        for out in outputs {
+            let node = NodeId::Value(out.clone());
+            if self.caches.contains_key(&node)
+                && self.mark_pending_with_cause(&node, NodeId::Compute(c_id.clone()))
+            {
+                marked += 1;
+            }
+        }
+        marked
+    }
+
     /// Read the diagnostic-chain cause stored on a node's cache entry.
     ///
     /// Returns the `Option<NodeId>` from the entry's `pending_cause`
