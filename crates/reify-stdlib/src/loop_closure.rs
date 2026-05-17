@@ -580,6 +580,7 @@ fn resolve_joint_value_si(joint: &Value, bindings: &[Value]) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
+    use crate::loop_closure_value::{JointValue, flatten_dofs};
     use crate::test_fixtures::{
         angle_range_0_to_pi, axis_x_unit, axis_y_unit, axis_z_unit, cylindrical_z_joint,
         length_range_0_to_1m, planar_xy_joint, spherical_joint,
@@ -646,7 +647,13 @@ mod tests {
     #[test]
     fn chain_transform_single_prismatic_x_at_half_metre() {
         let chain = vec![prismatic_x()];
-        let result = super::chain_transform(&chain, &[0.5]).expect("Transform");
+        // α-pre bridge: build chain motion values as `Vec<JointValue>` (all
+        // `Scalar` for this scalar-joint chain) and pass `&flatten_dofs(..)`
+        // at the still-`&[f64]` chain_transform boundary.  flatten_dofs of
+        // a single `Scalar(0.5)` is exactly `vec![0.5]`, so the test stays
+        // green while exercising the new helper end-to-end.
+        let vals = vec![JointValue::Scalar(0.5)];
+        let result = super::chain_transform(&chain, &flatten_dofs(&vals)).expect("Transform");
         let trans = translation_xyz(&result);
         assert!((trans[0] - 0.5).abs() < 1e-12);
         assert!(trans[1].abs() < 1e-12);
@@ -659,7 +666,8 @@ mod tests {
     #[test]
     fn chain_transform_two_prismatic_x_compose_left_to_right() {
         let chain = vec![prismatic_x(), prismatic_x()];
-        let result = super::chain_transform(&chain, &[0.3, 0.5]).expect("Transform");
+        let vals = vec![JointValue::Scalar(0.3), JointValue::Scalar(0.5)];
+        let result = super::chain_transform(&chain, &flatten_dofs(&vals)).expect("Transform");
         let trans = translation_xyz(&result);
         assert!(
             (trans[0] - 0.8).abs() < 1e-12,
@@ -677,8 +685,12 @@ mod tests {
         // After revolute composed: rotation = rot_z(π/2), translation
         // unchanged ([0.5,0,0]) because R1*t2 + t1 with t2=0 ⇒ t1 = [0.5,0,0].
         let chain = vec![prismatic_x(), revolute_z()];
+        let vals = vec![
+            JointValue::Scalar(0.5),
+            JointValue::Scalar(std::f64::consts::FRAC_PI_2),
+        ];
         let result =
-            super::chain_transform(&chain, &[0.5, std::f64::consts::FRAC_PI_2]).expect("Transform");
+            super::chain_transform(&chain, &flatten_dofs(&vals)).expect("Transform");
         let trans = translation_xyz(&result);
         assert!((trans[0] - 0.5).abs() < 1e-12);
         assert!(trans[1].abs() < 1e-12);
@@ -692,8 +704,14 @@ mod tests {
     #[test]
     fn chain_transform_length_mismatch_returns_none() {
         let chain = vec![prismatic_x(), prismatic_x()];
-        assert!(super::chain_transform(&chain, &[0.3]).is_none());
-        assert!(super::chain_transform(&chain, &[0.3, 0.5, 0.1]).is_none());
+        let short = vec![JointValue::Scalar(0.3)];
+        let long = vec![
+            JointValue::Scalar(0.3),
+            JointValue::Scalar(0.5),
+            JointValue::Scalar(0.1),
+        ];
+        assert!(super::chain_transform(&chain, &flatten_dofs(&short)).is_none());
+        assert!(super::chain_transform(&chain, &flatten_dofs(&long)).is_none());
     }
 
     // ── loop_residual_twist tests ────────────────────────────────────────
@@ -702,7 +720,11 @@ mod tests {
     fn loop_residual_twist_identical_chains_zero() {
         let a = vec![prismatic_x()];
         let b = vec![prismatic_x()];
-        let twist: [f64; 6] = super::loop_residual_twist(&a, &[0.5], &b, &[0.5]).expect("twist");
+        let vals_a = vec![JointValue::Scalar(0.5)];
+        let vals_b = vec![JointValue::Scalar(0.5)];
+        let twist: [f64; 6] =
+            super::loop_residual_twist(&a, &flatten_dofs(&vals_a), &b, &flatten_dofs(&vals_b))
+                .expect("twist");
         for v in twist.iter() {
             assert!(v.abs() < 1e-12, "expected zero twist, got {twist:?}");
         }
@@ -715,7 +737,11 @@ mod tests {
         // a twist with angular = 0 and linear = (-0.2, 0, 0).
         let a = vec![prismatic_x()];
         let b = vec![prismatic_x()];
-        let twist = super::loop_residual_twist(&a, &[0.5], &b, &[0.3]).expect("twist");
+        let vals_a = vec![JointValue::Scalar(0.5)];
+        let vals_b = vec![JointValue::Scalar(0.3)];
+        let twist =
+            super::loop_residual_twist(&a, &flatten_dofs(&vals_a), &b, &flatten_dofs(&vals_b))
+                .expect("twist");
         // [ω_x, ω_y, ω_z, v_x, v_y, v_z]
         assert!(twist[0].abs() < 1e-12);
         assert!(twist[1].abs() < 1e-12);
@@ -733,11 +759,19 @@ mod tests {
     fn loop_residual_twist_two_joint_identical_chains_zero() {
         let a = vec![prismatic_x(), revolute_z()];
         let b = vec![prismatic_x(), revolute_z()];
+        let vals_a = vec![
+            JointValue::Scalar(0.5),
+            JointValue::Scalar(std::f64::consts::FRAC_PI_2),
+        ];
+        let vals_b = vec![
+            JointValue::Scalar(0.5),
+            JointValue::Scalar(std::f64::consts::FRAC_PI_2),
+        ];
         let twist: [f64; 6] = super::loop_residual_twist(
             &a,
-            &[0.5, std::f64::consts::FRAC_PI_2],
+            &flatten_dofs(&vals_a),
             &b,
-            &[0.5, std::f64::consts::FRAC_PI_2],
+            &flatten_dofs(&vals_b),
         )
         .expect("twist");
         for v in twist.iter() {
@@ -749,10 +783,29 @@ mod tests {
     fn loop_residual_twist_length_mismatch_returns_none() {
         let a = vec![prismatic_x(), prismatic_x()];
         let b = vec![prismatic_x()];
+        let vals_one = vec![JointValue::Scalar(0.5)];
+        let vals_one_short = vec![JointValue::Scalar(0.3)];
+        let vals_two = vec![JointValue::Scalar(0.3), JointValue::Scalar(0.1)];
         // chain_a length mismatches vals_a
-        assert!(super::loop_residual_twist(&a, &[0.5], &b, &[0.3]).is_none());
+        assert!(
+            super::loop_residual_twist(
+                &a,
+                &flatten_dofs(&vals_one),
+                &b,
+                &flatten_dofs(&vals_one_short),
+            )
+            .is_none()
+        );
         // chain_b length mismatches vals_b
-        assert!(super::loop_residual_twist(&b, &[0.5], &b, &[0.3, 0.1]).is_none());
+        assert!(
+            super::loop_residual_twist(
+                &b,
+                &flatten_dofs(&vals_one),
+                &b,
+                &flatten_dofs(&vals_two),
+            )
+            .is_none()
+        );
     }
 
     // ── joint_range_midpoint tests ───────────────────────────────────────
@@ -977,7 +1030,8 @@ mod tests {
     fn chain_jacobian_fd_single_prismatic_matches_analytic() {
         let chain = vec![prismatic_x()];
         let analytic = super::per_joint_jacobian_local(&chain[0]).unwrap();
-        let cols = super::chain_jacobian_fd(&chain, &[0.5], &[0], 1e-6).expect("cols");
+        let vals = vec![JointValue::Scalar(0.5)];
+        let cols = super::chain_jacobian_fd(&chain, &flatten_dofs(&vals), &[0], 1e-6).expect("cols");
         assert_eq!(cols.len(), 1);
         assert_columns_close(&cols, &[analytic], 1e-7, "single_prismatic");
     }
@@ -986,7 +1040,8 @@ mod tests {
     fn chain_jacobian_fd_single_revolute_matches_analytic() {
         let chain = vec![revolute_z()];
         let analytic = super::per_joint_jacobian_local(&chain[0]).unwrap();
-        let cols = super::chain_jacobian_fd(&chain, &[0.0], &[0], 1e-6).expect("cols");
+        let vals = vec![JointValue::Scalar(0.0)];
+        let cols = super::chain_jacobian_fd(&chain, &flatten_dofs(&vals), &[0], 1e-6).expect("cols");
         assert_eq!(cols.len(), 1);
         assert_columns_close(&cols, &[analytic], 1e-7, "single_revolute");
     }
@@ -994,7 +1049,9 @@ mod tests {
     #[test]
     fn chain_jacobian_fd_two_joint_returns_two_columns() {
         let chain = vec![prismatic_x(), revolute_z()];
-        let cols = super::chain_jacobian_fd(&chain, &[0.5, 0.0], &[0, 1], 1e-6).expect("cols");
+        let vals = vec![JointValue::Scalar(0.5), JointValue::Scalar(0.0)];
+        let cols =
+            super::chain_jacobian_fd(&chain, &flatten_dofs(&vals), &[0, 1], 1e-6).expect("cols");
         assert_eq!(cols.len(), 2);
         for col in &cols {
             for v in col.iter() {
@@ -1006,13 +1063,15 @@ mod tests {
     #[test]
     fn chain_jacobian_fd_out_of_range_returns_none() {
         let chain = vec![prismatic_x()];
-        assert!(super::chain_jacobian_fd(&chain, &[0.5], &[5], 1e-6).is_none());
+        let vals = vec![JointValue::Scalar(0.5)];
+        assert!(super::chain_jacobian_fd(&chain, &flatten_dofs(&vals), &[5], 1e-6).is_none());
     }
 
     #[test]
     fn chain_jacobian_fd_zero_eps_returns_none() {
         let chain = vec![prismatic_x()];
-        assert!(super::chain_jacobian_fd(&chain, &[0.5], &[0], 0.0).is_none());
+        let vals = vec![JointValue::Scalar(0.5)];
+        assert!(super::chain_jacobian_fd(&chain, &flatten_dofs(&vals), &[0], 0.0).is_none());
     }
 
     #[test]
@@ -1023,7 +1082,8 @@ mod tests {
             Value::String("bogus".to_string()),
         );
         let chain = vec![Value::Map(bogus)];
-        assert!(super::chain_jacobian_fd(&chain, &[0.5], &[0], 1e-6).is_none());
+        let vals = vec![JointValue::Scalar(0.5)];
+        assert!(super::chain_jacobian_fd(&chain, &flatten_dofs(&vals), &[0], 1e-6).is_none());
     }
 
     #[test]
@@ -1034,7 +1094,9 @@ mod tests {
         // the SE(3) chain's left-Jacobian at the trunk; we only assert finite,
         // axis-aligned structure here).
         let chain = vec![prismatic_x(), revolute_z()];
-        let cols = super::chain_jacobian_fd(&chain, &[0.5, 0.0], &[1], 1e-6).expect("cols");
+        let vals = vec![JointValue::Scalar(0.5), JointValue::Scalar(0.0)];
+        let cols =
+            super::chain_jacobian_fd(&chain, &flatten_dofs(&vals), &[1], 1e-6).expect("cols");
         assert_eq!(cols.len(), 1);
         let col = cols[0];
         for v in col.iter() {
@@ -1063,7 +1125,11 @@ mod tests {
         );
         let a = vec![Value::Map(bogus)];
         let b = vec![prismatic_x()];
-        assert!(super::loop_residual_twist(&a, &[0.0], &b, &[0.0]).is_none());
+        let vals = vec![JointValue::Scalar(0.0)];
+        assert!(
+            super::loop_residual_twist(&a, &flatten_dofs(&vals), &b, &flatten_dofs(&vals))
+                .is_none()
+        );
     }
 
     #[test]
@@ -1075,7 +1141,8 @@ mod tests {
             Value::String("bogus".to_string()),
         );
         let chain = vec![Value::Map(m)];
-        assert!(super::chain_transform(&chain, &[0.5]).is_none());
+        let vals = vec![JointValue::Scalar(0.5)];
+        assert!(super::chain_transform(&chain, &flatten_dofs(&vals)).is_none());
     }
 
     // ── fixed-joint chain integration tests ─────────────────────────────
@@ -1089,7 +1156,8 @@ mod tests {
     #[test]
     fn chain_transform_single_fixed_joint_returns_identity() {
         let chain = vec![fixed_joint()];
-        let result = super::chain_transform(&chain, &[0.0])
+        let vals = vec![JointValue::Scalar(0.0)];
+        let result = super::chain_transform(&chain, &flatten_dofs(&vals))
             .expect("chain_transform must return Some for a fixed joint");
         let trans = translation_xyz(&result);
         assert!(
@@ -1116,7 +1184,16 @@ mod tests {
         // [prismatic_x @ 0.3m, fixed @ 1234.5 (ignored), prismatic_x @ 0.5m]
         // Expected: total translation_x ≈ 0.8m regardless of the fixed slot's value.
         let chain = vec![prismatic_x(), fixed_joint(), prismatic_x()];
-        let result = super::chain_transform(&chain, &[0.3, 1234.5, 0.5])
+        // The middle Scalar(1234.5) is the fixed joint's placeholder slot —
+        // value_for_joint discards it.  Keeping the garbage scalar after the
+        // JointValue rewrap proves the bridge preserves the same "ignored
+        // value" semantics the test originally pinned.
+        let vals = vec![
+            JointValue::Scalar(0.3),
+            JointValue::Scalar(1234.5),
+            JointValue::Scalar(0.5),
+        ];
+        let result = super::chain_transform(&chain, &flatten_dofs(&vals))
             .expect("chain_transform must return Some with fixed joint in the middle");
         let trans = translation_xyz(&result);
         assert!(
@@ -1141,7 +1218,12 @@ mod tests {
         // chain = [prismatic_x, fixed, revolute_z]
         // free_indices = [0, 2] (the two DOF joints — fixed at index 1 is not free)
         let chain = vec![prismatic_x(), fixed_joint(), revolute_z()];
-        let cols = super::chain_jacobian_fd(&chain, &[0.5, 0.0, 0.0], &[0, 2], 1e-6)
+        let vals = vec![
+            JointValue::Scalar(0.5),
+            JointValue::Scalar(0.0),
+            JointValue::Scalar(0.0),
+        ];
+        let cols = super::chain_jacobian_fd(&chain, &flatten_dofs(&vals), &[0, 2], 1e-6)
             .expect("chain_jacobian_fd must return Some when fixed joint is not in free_indices");
         assert_eq!(cols.len(), 2, "expected 2 columns for 2 free indices");
         for col in &cols {
@@ -1153,9 +1235,14 @@ mod tests {
             }
         }
         // Cross-chain reference: same joints without the fixed slot; free indices [0, 1].
-        let cols_no_fixed =
-            super::chain_jacobian_fd(&[prismatic_x(), revolute_z()], &[0.5, 0.0], &[0, 1], 1e-6)
-                .expect("chain_jacobian_fd reference (no fixed) must return Some");
+        let vals_ref = vec![JointValue::Scalar(0.5), JointValue::Scalar(0.0)];
+        let cols_no_fixed = super::chain_jacobian_fd(
+            &[prismatic_x(), revolute_z()],
+            &flatten_dofs(&vals_ref),
+            &[0, 1],
+            1e-6,
+        )
+        .expect("chain_jacobian_fd reference (no fixed) must return Some");
         assert_columns_close(
             &cols,
             &cols_no_fixed,
@@ -1172,7 +1259,8 @@ mod tests {
     #[test]
     fn chain_jacobian_fd_with_fixed_joint_in_free_indices_yields_zero_column() {
         let chain = vec![fixed_joint()];
-        let cols = super::chain_jacobian_fd(&chain, &[0.0], &[0], 1e-6)
+        let vals = vec![JointValue::Scalar(0.0)];
+        let cols = super::chain_jacobian_fd(&chain, &flatten_dofs(&vals), &[0], 1e-6)
             .expect("chain_jacobian_fd must return Some for a fixed-only chain");
         assert_eq!(cols.len(), 1, "expected 1 column");
         let col = cols[0];
@@ -1210,8 +1298,13 @@ mod tests {
     /// kinematic task 2 (taskmaster #2670).
     #[test]
     fn chain_transform_with_planar_returns_none() {
+        // Single scalar bridged through flatten_dofs — α-pre keeps the
+        // f64-per-joint chain machinery unchanged, so the planar None
+        // contract still holds (value_for_joint can't map a single f64 to
+        // planar's 3-element motion variable).
+        let vals = vec![JointValue::Scalar(0.0)];
         assert!(
-            super::chain_transform(&[planar_xy_joint()], &[0.0]).is_none(),
+            super::chain_transform(&[planar_xy_joint()], &flatten_dofs(&vals)).is_none(),
             "chain_transform must return None for a chain containing a planar joint"
         );
     }
@@ -1224,8 +1317,10 @@ mod tests {
     /// Jacobian returns None. Deferred to PRD v0.2 kinematic task 2 (#2670).
     #[test]
     fn chain_jacobian_fd_with_planar_returns_none() {
+        let vals = vec![JointValue::Scalar(0.0)];
         assert!(
-            super::chain_jacobian_fd(&[planar_xy_joint()], &[0.0], &[0], 1e-6).is_none(),
+            super::chain_jacobian_fd(&[planar_xy_joint()], &flatten_dofs(&vals), &[0], 1e-6)
+                .is_none(),
             "chain_jacobian_fd must return None for a chain containing a planar joint"
         );
     }
@@ -1240,8 +1335,10 @@ mod tests {
     /// for planar regardless of how many valid joints precede it.
     #[test]
     fn chain_transform_mixed_prismatic_planar_returns_none() {
+        let vals = vec![JointValue::Scalar(0.5), JointValue::Scalar(0.0)];
         assert!(
-            super::chain_transform(&[prismatic_x(), planar_xy_joint()], &[0.5, 0.0]).is_none(),
+            super::chain_transform(&[prismatic_x(), planar_xy_joint()], &flatten_dofs(&vals))
+                .is_none(),
             "chain_transform must return None when any joint in the chain is planar"
         );
     }
@@ -1256,10 +1353,11 @@ mod tests {
     /// Jacobian.
     #[test]
     fn chain_jacobian_fd_mixed_prismatic_planar_returns_none() {
+        let vals = vec![JointValue::Scalar(0.5), JointValue::Scalar(0.0)];
         assert!(
             super::chain_jacobian_fd(
                 &[prismatic_x(), planar_xy_joint()],
-                &[0.5, 0.0],
+                &flatten_dofs(&vals),
                 &[0, 1],
                 1e-6,
             )
@@ -1301,8 +1399,9 @@ mod tests {
     /// becomes source-visible.
     #[test]
     fn chain_transform_with_spherical_returns_none() {
+        let vals = vec![JointValue::Scalar(0.0)];
         assert!(
-            super::chain_transform(&[spherical_joint()], &[0.0]).is_none(),
+            super::chain_transform(&[spherical_joint()], &flatten_dofs(&vals)).is_none(),
             "chain_transform must return None for a chain containing a spherical joint"
         );
     }
@@ -1315,8 +1414,10 @@ mod tests {
     /// Jacobian returns None. Deferred to PRD v0.2 kinematic task 2 (#2670).
     #[test]
     fn chain_jacobian_fd_with_spherical_returns_none() {
+        let vals = vec![JointValue::Scalar(0.0)];
         assert!(
-            super::chain_jacobian_fd(&[spherical_joint()], &[0.0], &[0], 1e-6).is_none(),
+            super::chain_jacobian_fd(&[spherical_joint()], &flatten_dofs(&vals), &[0], 1e-6)
+                .is_none(),
             "chain_jacobian_fd must return None for a chain containing a spherical joint"
         );
     }
@@ -1331,8 +1432,10 @@ mod tests {
     /// for spherical regardless of how many valid joints precede it.
     #[test]
     fn chain_transform_mixed_prismatic_spherical_returns_none() {
+        let vals = vec![JointValue::Scalar(0.5), JointValue::Scalar(0.0)];
         assert!(
-            super::chain_transform(&[prismatic_x(), spherical_joint()], &[0.5, 0.0]).is_none(),
+            super::chain_transform(&[prismatic_x(), spherical_joint()], &flatten_dofs(&vals))
+                .is_none(),
             "chain_transform must return None when any joint in the chain is spherical"
         );
     }
@@ -1347,10 +1450,11 @@ mod tests {
     /// whole Jacobian.
     #[test]
     fn chain_jacobian_fd_mixed_prismatic_spherical_returns_none() {
+        let vals = vec![JointValue::Scalar(0.5), JointValue::Scalar(0.0)];
         assert!(
             super::chain_jacobian_fd(
                 &[prismatic_x(), spherical_joint()],
-                &[0.5, 0.0],
+                &flatten_dofs(&vals),
                 &[0, 1],
                 1e-6,
             )
@@ -1379,8 +1483,9 @@ mod tests {
     /// `chain_transform` returns `None` when the chain contains a cylindrical joint.
     #[test]
     fn chain_transform_with_cylindrical_returns_none() {
+        let vals = vec![JointValue::Scalar(0.0)];
         assert!(
-            super::chain_transform(&[cylindrical_z_joint()], &[0.0]).is_none(),
+            super::chain_transform(&[cylindrical_z_joint()], &flatten_dofs(&vals)).is_none(),
             "chain_transform must return None for a chain containing a cylindrical joint"
         );
     }
@@ -1388,8 +1493,10 @@ mod tests {
     /// `chain_jacobian_fd` returns `None` when the chain contains a cylindrical joint.
     #[test]
     fn chain_jacobian_fd_with_cylindrical_returns_none() {
+        let vals = vec![JointValue::Scalar(0.0)];
         assert!(
-            super::chain_jacobian_fd(&[cylindrical_z_joint()], &[0.0], &[0], 1e-6).is_none(),
+            super::chain_jacobian_fd(&[cylindrical_z_joint()], &flatten_dofs(&vals), &[0], 1e-6)
+                .is_none(),
             "chain_jacobian_fd must return None for a chain containing a cylindrical joint"
         );
     }
@@ -1398,8 +1505,10 @@ mod tests {
     /// chain — same stronger contract as the planar/spherical mixed pins.
     #[test]
     fn chain_transform_mixed_prismatic_cylindrical_returns_none() {
+        let vals = vec![JointValue::Scalar(0.5), JointValue::Scalar(0.0)];
         assert!(
-            super::chain_transform(&[prismatic_x(), cylindrical_z_joint()], &[0.5, 0.0]).is_none(),
+            super::chain_transform(&[prismatic_x(), cylindrical_z_joint()], &flatten_dofs(&vals))
+                .is_none(),
             "chain_transform must return None when any joint in the chain is cylindrical"
         );
     }
@@ -1408,10 +1517,11 @@ mod tests {
     /// cylindrical joint.
     #[test]
     fn chain_jacobian_fd_mixed_prismatic_cylindrical_returns_none() {
+        let vals = vec![JointValue::Scalar(0.5), JointValue::Scalar(0.0)];
         assert!(
             super::chain_jacobian_fd(
                 &[prismatic_x(), cylindrical_z_joint()],
-                &[0.5, 0.0],
+                &flatten_dofs(&vals),
                 &[0, 1],
                 1e-6,
             )
