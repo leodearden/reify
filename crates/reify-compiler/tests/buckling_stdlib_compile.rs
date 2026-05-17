@@ -434,3 +434,59 @@ fn mode_struct_has_eigenvalue_and_mode_shape_params() {
         );
     }
 }
+
+// ─── step-11: BucklingResult param shape ─────────────────────────────────────
+
+/// `BucklingResult` is the single-load-case buckling-solver output container.
+/// It must declare exactly the four PRD §4 params with the canonical types:
+///
+///   - `modes      : List<Mode>`        (computed eigenpairs)
+///   - `converged  : Bool`              (all n_modes met the tolerance)
+///   - `iterations : Int`               (total Lanczos iteration count)
+///   - `pre_stress : ElasticResult`     (linear-static solve feeding K_g)
+///
+/// Note `Type::StructureRef` is the variant for user-defined structure types
+/// resolved from a name (see precedent at
+/// `multi_load_case_stdlib_tests.rs:142`,
+/// `LoadCase.options : Option<ElasticOptions>`).
+#[test]
+fn buckling_result_struct_has_correct_param_shape() {
+    let template = find_structure("BucklingResult");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    assert_eq!(
+        params.len(),
+        4,
+        "BucklingResult should have exactly 4 param cells \
+         (modes, converged, iterations, pre_stress), got: {:?}",
+        names
+    );
+
+    let expected: &[(&str, Type)] = &[
+        (
+            "modes",
+            Type::List(Box::new(Type::StructureRef("Mode".to_string()))),
+        ),
+        ("converged", Type::Bool),
+        ("iterations", Type::Int),
+        ("pre_stress", Type::StructureRef("ElasticResult".to_string())),
+    ];
+
+    for (member, expected_ty) in expected {
+        let cell = params
+            .iter()
+            .find(|vc| vc.id.member == *member)
+            .unwrap_or_else(|| {
+                panic!(
+                    "BucklingResult missing required param '{}'; got: {:?}",
+                    member, names
+                )
+            });
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "BucklingResult.{} should be {:?}, got {:?}",
+            member, expected_ty, cell.cell_type
+        );
+    }
+}
