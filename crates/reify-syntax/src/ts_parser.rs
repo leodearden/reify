@@ -1805,7 +1805,7 @@ impl<'a> Lowering<'a> {
         })
     }
 
-    fn lower_sub(&self, node: tree_sitter::Node) -> Option<SubDecl> {
+    fn lower_sub(&mut self, node: tree_sitter::Node) -> Option<SubDecl> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
 
@@ -1851,6 +1851,33 @@ impl<'a> Lowering<'a> {
 
         let where_clause = self.lower_where_clause(node);
 
+        // Lower the optional `specialization_body` field (task 3571).
+        // The grammar (task 3569) admits `sub name : StructName { body }` where
+        // `specialization_body` contains `repeat(choice($.param_assignment, $._member))`.
+        //
+        // Dispatch strategy:
+        // - `_member` children → `lower_member` (single source of truth; inherits all
+        //   current and future variants automatically, including ERROR-node handling).
+        // - `param_assignment` children → silently skipped for now.
+        //   TODO(task 3573): lower param_assignment once a MemberDecl variant or
+        //   let-rewrite is decided for the `name = value where?` form.
+        // - Absent body field (instantiation/collection/bare-colon forms) → `None`.
+        let body = node.child_by_field_name("body").map(|body_node| {
+            let mut members = Vec::new();
+            let mut cursor = body_node.walk();
+            for child in body_node.children(&mut cursor) {
+                if child.kind() == "param_assignment" {
+                    // TODO(task 3573): lower param_assignment once a MemberDecl variant
+                    // or let-rewrite is decided for the `name = value where?` form.
+                    continue;
+                }
+                if let Some(member) = self.lower_member(child) {
+                    members.push(member);
+                }
+            }
+            members
+        });
+
         Some(SubDecl {
             name,
             structure_name,
@@ -1858,10 +1885,7 @@ impl<'a> Lowering<'a> {
             args,
             is_collection,
             where_clause,
-            // The tree-sitter grammar now admits `sub name : StructName { body }` (task 3569),
-            // but `lower_sub` still yields `None` here until sibling task 3571 wires the
-            // CST→AST mapping for the new `specialization_body` node.
-            body: None,
+            body,
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
