@@ -238,11 +238,9 @@ fn buckling_options_param_defaults_match_spec() {
     // sigma = 0.0 (strict equality, IEEE-754 round-to-nearest deterministic)
     let sigma_default = require_default(template, "sigma");
     match &sigma_default.kind {
-        CompiledExprKind::Literal(Value::Real(v)) => assert_eq!(
-            *v, 0.0,
-            "sigma default should be exactly 0.0, got: {}",
-            v
-        ),
+        CompiledExprKind::Literal(Value::Real(v)) => {
+            assert_eq!(*v, 0.0, "sigma default should be exactly 0.0, got: {}", v)
+        }
         other => panic!(
             "sigma default should be Literal(Value::Real(0.0)), got: {:?}",
             other
@@ -323,11 +321,24 @@ fn buckling_options_param_defaults_match_spec() {
 fn buckling_options_constrains_positivity_invariants() {
     let template = find_structure("BucklingOptions");
 
-    assert!(
-        template.constraints.len() >= 3,
-        "BucklingOptions should declare at least 3 constraints \
-         (n_modes > 0, tol > 0, max_iters > 0), got {} constraints",
-        template.constraints.len()
+    // Tight count: exactly 3 constraints. A weaker `>= 3` would let a bogus
+    // 4th constraint (e.g., an accidental `constraint sigma >= 0` that
+    // would silently exclude negative-side-of-spectrum shifts) pass. The
+    // .ri file's "explicitly NOT constrained" note (sigma, auto_dense,
+    // mode) is enforced here as a regression gate.
+    assert_eq!(
+        template.constraints.len(),
+        3,
+        "BucklingOptions should declare exactly 3 constraints \
+         (n_modes > 0, tol > 0, max_iters > 0); sigma / auto_dense / mode \
+         are explicitly NOT constrained per the .ri file. Got {} \
+         constraints: {:?}",
+        template.constraints.len(),
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
     );
 
     for required in &["n_modes", "tol", "max_iters"] {
@@ -419,10 +430,7 @@ fn mode_struct_has_eigenvalue_and_mode_shape_params() {
             .iter()
             .find(|vc| vc.id.member == *member)
             .unwrap_or_else(|| {
-                panic!(
-                    "Mode missing required param '{}'; got: {:?}",
-                    member, names
-                )
+                panic!("Mode missing required param '{}'; got: {:?}", member, names)
             });
         assert_eq!(
             cell.cell_type, *expected_ty,
@@ -430,6 +438,43 @@ fn mode_struct_has_eigenvalue_and_mode_shape_params() {
             member, expected_ty, cell.cell_type
         );
     }
+}
+
+/// `Mode` is a solver-populated output container — every field is determined
+/// by the buckling solve, so caller-supplied defaults are meaningless and no
+/// per-field scalar invariant is expressible (`eigenvalue` is any real, the
+/// FEA-normalization convention on `mode_shape` is collection-shaped, not
+/// scalar). This test pins both invariants as a regression gate so that an
+/// accidentally-added default or constraint surfaces immediately. Mirrors
+/// the discipline applied to `MultiCaseBucklingResult` further down (no
+/// defaults, no constraints).
+#[test]
+fn mode_struct_has_no_constraints_or_defaults() {
+    let template = find_structure("Mode");
+
+    // No defaults: every Mode instance must be solver-populated.
+    for cell in param_cells(template) {
+        assert!(
+            cell.default_expr.is_none(),
+            "Mode.{} should have no default_expr (solver-only-produced), \
+             but got: {:?}",
+            cell.id.member,
+            cell.default_expr
+        );
+    }
+
+    // No constraints: eigenvalue is unrestricted, mode_shape's normalization
+    // invariant is a collection invariant and is producer-enforced.
+    assert!(
+        template.constraints.is_empty(),
+        "Mode should declare no constraints (solver-only-produced output \
+         container, no scalar predicate is expressible per-field); got: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
 }
 
 // ─── step-11: BucklingResult param shape ─────────────────────────────────────
@@ -467,7 +512,10 @@ fn buckling_result_struct_has_correct_param_shape() {
         ),
         ("converged", Type::Bool),
         ("iterations", Type::Int),
-        ("pre_stress", Type::StructureRef("ElasticResult".to_string())),
+        (
+            "pre_stress",
+            Type::StructureRef("ElasticResult".to_string()),
+        ),
     ];
 
     for (member, expected_ty) in expected {
@@ -507,10 +555,23 @@ fn buckling_result_struct_has_correct_param_shape() {
 fn buckling_result_constrains_iterations_nonneg() {
     let template = find_structure("BucklingResult");
 
-    assert!(
-        !template.constraints.is_empty(),
-        "BucklingResult should declare at least 1 constraint (iterations >= 0), got {} constraints",
-        template.constraints.len()
+    // Tight count: exactly 1 constraint. A weaker `>= 1` would let a bogus
+    // extra constraint pass — e.g., an accidental `constraint converged ==
+    // true` that would forbid representing a non-converged solve in a
+    // BucklingResult. The .ri file's "explicitly NOT constrained" note
+    // (converged, pre_stress, modes) is enforced here as a regression gate.
+    assert_eq!(
+        template.constraints.len(),
+        1,
+        "BucklingResult should declare exactly 1 constraint \
+         (iterations >= 0); converged / pre_stress / modes are explicitly \
+         NOT constrained per the .ri file. Got {} constraints: {:?}",
+        template.constraints.len(),
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
     );
 
     let matched = template.constraints.iter().any(|c| {
