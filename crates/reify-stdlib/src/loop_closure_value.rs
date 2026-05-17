@@ -523,4 +523,55 @@ mod tests {
             }
         ));
     }
+
+    // ── JointValue::renormalize_quaternion tests (step-7) ────────────────
+
+    #[test]
+    fn renormalize_quaternion_sphere_normalizes_to_unit_norm() {
+        // [0, 3, 0, 4] has L2 norm 5 → expect [0, 0.6, 0, 0.8].
+        let mut v = JointValue::Sphere([0.0, 3.0, 0.0, 4.0]);
+        v.renormalize_quaternion();
+        match v {
+            JointValue::Sphere(q) => {
+                assert!((q[0] - 0.0).abs() < 1e-12);
+                assert!((q[1] - 0.6).abs() < 1e-12);
+                assert!((q[2] - 0.0).abs() < 1e-12);
+                assert!((q[3] - 0.8).abs() < 1e-12);
+                // Round-trip: post-norm should now be a unit quaternion.
+                let n = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+                assert!((n - 1.0).abs() < 1e-12);
+            }
+            other => panic!("expected Sphere, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn renormalize_quaternion_sphere_degenerate_zero_norm_resets_to_identity() {
+        // [0, 0, 0, 0] has zero norm — must NOT produce NaN; must reset to
+        // identity [1, 0, 0, 0] instead.
+        let mut v = JointValue::Sphere([0.0, 0.0, 0.0, 0.0]);
+        v.renormalize_quaternion();
+        assert_eq!(v, JointValue::Sphere([1.0, 0.0, 0.0, 0.0]));
+    }
+
+    #[test]
+    fn renormalize_quaternion_scalar_is_noop() {
+        let mut v = JointValue::Scalar(2.5);
+        v.renormalize_quaternion();
+        assert_eq!(v, JointValue::Scalar(2.5));
+    }
+
+    #[test]
+    fn renormalize_quaternion_cyl_is_noop() {
+        let mut v = JointValue::Cyl([0.5, 1.5]);
+        v.renormalize_quaternion();
+        assert_eq!(v, JointValue::Cyl([0.5, 1.5]));
+    }
+
+    #[test]
+    fn renormalize_quaternion_planar_is_noop() {
+        let mut v = JointValue::Planar([1.0, 2.0, 3.0]);
+        v.renormalize_quaternion();
+        assert_eq!(v, JointValue::Planar([1.0, 2.0, 3.0]));
+    }
 }
