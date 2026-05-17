@@ -141,22 +141,18 @@ fn find_dir(env_var: &str, candidates: &[&str], sentinel: &str) -> Option<PathBu
         }
     }
     // OCCT's snap fallback: numbered /snap/freecad/<rev>/ directories.
-    if sentinel == "Standard_Failure.hxx" {
-        if let Ok(entries) = std::fs::read_dir("/snap/freecad") {
-            for entry in entries.flatten() {
-                let candidate = entry.path().join("usr/include/opencascade");
-                if candidate.join(sentinel).exists() {
-                    return Some(candidate);
-                }
-            }
-        }
-    } else if sentinel == "libTKernel.so" {
-        if let Ok(entries) = std::fs::read_dir("/snap/freecad") {
-            for entry in entries.flatten() {
-                let candidate = entry.path().join("usr/lib");
-                if candidate.join(sentinel).exists() {
-                    return Some(candidate);
-                }
+    let snap_subdir = match sentinel {
+        "Standard_Failure.hxx" => Some("usr/include/opencascade"),
+        "libTKernel.so" => Some("usr/lib"),
+        _ => None,
+    };
+    if let Some(subdir) = snap_subdir
+        && let Ok(entries) = std::fs::read_dir("/snap/freecad")
+    {
+        for entry in entries.flatten() {
+            let candidate = entry.path().join(subdir);
+            if candidate.join(sentinel).exists() {
+                return Some(candidate);
             }
         }
     }
@@ -177,6 +173,31 @@ pub fn emit_rpath_for_bins(dep: NativeDep) -> bool {
     println!("cargo:rerun-if-env-changed={}", dep.lib_env());
     if let Some(lib_dir) = find_dir(dep.lib_env(), dep.lib_candidates(), dep.lib_sentinel()) {
         println!("cargo:rustc-link-arg-bins=-Wl,-rpath,{}", lib_dir.display());
+        true
+    } else {
+        false
+    }
+}
+
+/// Probe for `dep`; if its lib_dir is found, emit unscoped
+/// `cargo:rustc-link-arg=-Wl,-rpath,<lib_dir>` so every supported build
+/// target (bins, examples, integration tests, **and lib-unittests**) in
+/// the calling package embeds RUNPATH for that directory.
+///
+/// Needed for packages whose own test binaries transitively link a native
+/// lib — either via a normal dep (`reify-solver-elastic` → gmsh) or a
+/// dev-dep (`reify-config` → all kernels). The narrower
+/// `rustc-link-arg-tests=...` directive does **not** apply to the lib
+/// unittests binary produced by `cargo test --lib`, so we use the
+/// unscoped form which covers it.
+///
+/// For packages with bins of their own (`reify-cli`, `reify-gui`), this
+/// also applies to those bins; that's identical in effect to
+/// [`emit_rpath_for_bins`] and harmless when both are called.
+pub fn emit_rpath_for_tests(dep: NativeDep) -> bool {
+    println!("cargo:rerun-if-env-changed={}", dep.lib_env());
+    if let Some(lib_dir) = find_dir(dep.lib_env(), dep.lib_candidates(), dep.lib_sentinel()) {
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
         true
     } else {
         false

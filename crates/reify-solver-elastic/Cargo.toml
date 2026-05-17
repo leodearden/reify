@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Linear-elastostatic FEA solver kernel for Reify (PRD docs/prds/v0_3/structural-analysis-fea.md)"
+build = "build.rs"
+
+[build-dependencies]
+reify-build-utils.workspace = true
 
 [dependencies]
 reify-types = { workspace = true }
