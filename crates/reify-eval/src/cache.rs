@@ -752,18 +752,23 @@ impl CacheStore {
     /// ValueCells — PRD §3 "Atomic completion" step 0 (begin) / §8 task δ
     /// (`docs/prds/v0_3/compute-node-contract.md`).
     ///
-    /// For each output VC with an existing cache entry, routes through
-    /// [`CacheStore::mark_pending_with_cause`] so `last_substantive` is
-    /// captured from the prior `result_hash` and the chain root
-    /// `NodeId::Compute(c_id)` is recorded (admitted as a valid chain root by
-    /// PRD §3 "Chain-root contract extension"; see task 3420/α). Each marked
-    /// entry bumps `pending_transition_count`.
+    /// Handles both branches uniformly so the engine call site stays simple:
     ///
-    /// Absent output VCs are skipped here; step-5 extends this to seed a
-    /// fresh Pending entry with `last_substantive: ResultRef::none()` for the
-    /// first-time-dispatch case.
+    /// - **Existing entry** (re-dispatch): routes through
+    ///   [`CacheStore::mark_pending_with_cause`] so `last_substantive` is
+    ///   captured from the prior `result_hash` (the previous best stays on
+    ///   display) and the chain root `NodeId::Compute(c_id)` is recorded.
+    /// - **Absent entry** (first-time dispatch): seeds a fresh Pending entry
+    ///   with `last_substantive: ResultRef::none()` (no prior result exists —
+    ///   the documented sentinel per `Freshness::Pending`'s field doc),
+    ///   `pending_cause = Some(NodeId::Compute(c_id))`, an empty
+    ///   `DependencyTrace`, and `basis_version: VersionId(0)`.
     ///
-    /// Returns the count of output VCs marked Pending.
+    /// `NodeId::Compute(_)` is admitted as a valid chain root by PRD §3
+    /// "Chain-root contract extension" (see task 3420/α). Every marked or
+    /// seeded output bumps `pending_transition_count`.
+    ///
+    /// Returns the count of output VCs marked or seeded Pending.
     pub fn begin_compute_dispatch(
         &mut self,
         c_id: &ComputeNodeId,
@@ -772,9 +777,30 @@ impl CacheStore {
         let mut marked = 0;
         for out in outputs {
             let node = NodeId::Value(out.clone());
-            if self.caches.contains_key(&node)
-                && self.mark_pending_with_cause(&node, NodeId::Compute(c_id.clone()))
-            {
+            if self.caches.contains_key(&node) {
+                // Re-dispatch: preserve the prior best as last_substantive
+                // via the chain-root helper.
+                if self.mark_pending_with_cause(&node, NodeId::Compute(c_id.clone())) {
+                    marked += 1;
+                }
+            } else {
+                // First-time dispatch: no prior result → seed Pending with
+                // the ResultRef::none() sentinel.
+                self.caches.insert(
+                    node,
+                    NodeCache {
+                        result: CachedResult::Value(Value::Undef, DeterminacyState::Determined),
+                        result_hash: ContentHash(0),
+                        freshness: Freshness::Pending {
+                            last_substantive: ResultRef::none(),
+                        },
+                        dependency_trace: DependencyTrace::default(),
+                        basis_version: VersionId(0),
+                        warm_state: None,
+                        pending_cause: Some(NodeId::Compute(c_id.clone())),
+                    },
+                );
+                self.pending_transition_count += 1;
                 marked += 1;
             }
         }
