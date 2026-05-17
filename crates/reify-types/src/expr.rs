@@ -297,6 +297,34 @@ impl CompiledFunction {
         crate::annotation::has_test_annotation(&self.annotations)
     }
 
+    /// Build the canonical `param_defaults` vec for a function with no defaults.
+    ///
+    /// Returns `vec![None; params.len()]`, satisfying the strict length invariant
+    /// (`param_defaults.len() == params.len()`) while expressing "no parameter
+    /// has a default value."
+    ///
+    /// Use this helper when constructing `CompiledFunction` literals for test stubs
+    /// and any producer that does not need to supply defaults:
+    ///
+    /// ```ignore
+    /// let params = vec![("x".to_string(), Type::Real)];
+    /// CompiledFunction {
+    ///     name: "f".to_string(),
+    ///     is_pub: false,
+    ///     param_defaults: CompiledFunction::no_defaults_for(&params),
+    ///     params,
+    ///     // ...
+    /// }
+    /// ```
+    ///
+    /// For functions that carry defaults, build via `compile_function` in
+    /// `reify-compiler/src/functions.rs` instead.
+    ///
+    /// task-3760 (re-introduced for suggestion #2(a): migrate new_with_no_defaults call sites)
+    pub fn no_defaults_for(params: &[(String, Type)]) -> Vec<Option<CompiledExpr>> {
+        vec![None; params.len()]
+    }
+
     /// Construct a `CompiledFunction` where every param has no default.
     ///
     /// Sets `param_defaults` to `vec![None; params.len()]`, satisfying the
