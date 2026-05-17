@@ -100,6 +100,7 @@ use reify_types::{
 // G-allow: test-support shim (feature = "test-support"); not consumed in production builds
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
+// G-allow: task #3530 parity shim — consumed by validate_annotations parity tests during the schema-delegation migration; remove when delegation is complete
 pub fn __validate_annotations_for_parity_test(
     annotations: &[reify_types::Annotation],
     context: &str,

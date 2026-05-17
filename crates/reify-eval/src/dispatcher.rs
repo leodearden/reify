@@ -254,6 +254,7 @@ pub fn long_chain_diagnostic(
 /// - `demanded` — the [`ReprKind`] the op was required to produce.
 /// - `available` — the reprs the inputs were realised in when dispatch
 ///   failed; rendered sorted via [`ReprKind`]'s `Ord` derive.
+// G-allow: task #3434 no-kernel-chain diagnostic builder; in-tree consumer wiring follows the long_chain_diagnostic precedent
 pub fn no_kernel_chain_diagnostic(
     op: Operation,
     demanded: ReprKind,
@@ -303,6 +304,7 @@ pub fn no_kernel_chain_diagnostic(
 ///   pragma that could not be honoured.
 /// - `op` — the [`Operation`] the pragma kernel was asked to perform.
 /// - `demanded` — the [`ReprKind`] the op was required to produce.
+// G-allow: task #3434 #kernel(...) pragma diagnostic builder; consumer wiring lands in subsequent #3434 steps (multi-kernel-phase-3 PRD)
 pub fn kernel_pragma_unsatisfiable_diagnostic(
     pragma_kernel: &str,
     op: Operation,
@@ -343,6 +345,7 @@ pub fn kernel_pragma_unsatisfiable_diagnostic(
 ///
 /// - `kernel_id` — the kernel name pinned in `reify.toml` `[kernels]`
 ///   that is missing from the build's registry.
+// G-allow: task #3434 reify.toml [kernels] pinned-missing diagnostic builder; consumer wiring lands in subsequent #3434 steps (multi-kernel-phase-3 PRD)
 pub fn pinned_kernel_missing_diagnostic(kernel_id: &str) -> Diagnostic {
     let message = format!(
         "kernel '{kernel_id}' is pinned in reify.toml but not registered in \
@@ -379,6 +382,7 @@ pub fn pinned_kernel_missing_diagnostic(kernel_id: &str) -> Diagnostic {
 ///
 /// - `kernel_id` — the kernel name present in the registry but absent from
 ///   `reify.toml` `[kernels]`.
+// G-allow: task #3434 unpinned-kernel-loaded diagnostic builder; consumer wiring lands in subsequent #3434 steps (multi-kernel-phase-3 PRD)
 pub fn unpinned_kernel_loaded_diagnostic(kernel_id: &str) -> Diagnostic {
     let message = format!(
         "kernel '{kernel_id}' is registered but not listed in reify.toml \
@@ -417,6 +421,7 @@ pub fn unpinned_kernel_loaded_diagnostic(kernel_id: &str) -> Diagnostic {
 /// - `kernel_id` — the kernel name whose version disagrees.
 /// - `pinned` — the version string pinned in `reify.toml` `[kernels]`.
 /// - `actual` — the adapter's compiled-in `VERSION` constant.
+// G-allow: task #3434 kernel-version-mismatch diagnostic builder; consumer wiring lands in subsequent #3434 steps (multi-kernel-phase-3 PRD)
 pub fn kernel_version_mismatch_diagnostic(
     kernel_id: &str,
     pinned: &str,

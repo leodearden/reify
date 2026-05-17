@@ -1679,6 +1679,7 @@ pub struct SweepReport {
 ///
 /// If `cache_root` does not exist, returns `SweepReport::default()` immediately
 /// without any error — the sweep is a no-op on a first run or a clean system.
+// G-allow: task #2978 stale-tempfile sweep; called by the sweep_persistent_cache_at_startup engine-admin wrapper
 pub fn sweep_stale_tempfiles(cache_root: &Path) -> SweepReport {
     let mut report = SweepReport::default();
     let now = std::time::SystemTime::now();
@@ -1806,6 +1807,7 @@ fn sweep_stale_tempfiles_recursive(
 /// Individual metadata-read or `remove_dir_all` failures are swallowed with a
 /// `tracing::debug!` and the loop continues (best-effort). An absent
 /// `cache_root` returns `SweepReport::default()`.
+// G-allow: task #2978 orphan-engine-version pruning; called by the sweep_persistent_cache_at_startup engine-admin wrapper
 pub fn prune_orphan_engine_version_dirs(
     cache_root: &Path,
     current_engine_version: &str,

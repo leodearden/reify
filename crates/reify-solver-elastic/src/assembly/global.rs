@@ -202,6 +202,7 @@ impl std::fmt::Display for OrphanDofsSummary {
 ///
 /// In debug builds, two `debug_assert!`s enforce these contracts eagerly:
 /// one on non-empty connectivity and one on all node indices being in-bounds.
+// G-allow: task #3293 orphan-DOF detector; cfg(debug_assertions) emit consumer + detector/assembler-consistency pin (task #3293)
 pub fn detect_orphan_dofs(
     n_nodes: usize,
     elements: &[AssemblyElement<'_>],

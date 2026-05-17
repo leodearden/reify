@@ -216,6 +216,7 @@ const SCHEMAS: &[AnnotationSchema] = &[
 /// Returns `None` for names that are not registered (i.e. unknown annotations).
 /// Linear scan over the 6-entry `SCHEMAS` const slice — faster than HashMap
 /// at this scale (no hashing, no OnceLock barrier).
+// G-allow: task #3530 const-slice/OnceLock AnnotationSchema registry; consumer is the schema-delegating validate_annotations rewrite (task #3530 step-10)
 pub(crate) fn lookup_schema(name: &str) -> Option<&'static AnnotationSchema> {
     SCHEMAS.iter().find(|s| s.name == name)
 }
