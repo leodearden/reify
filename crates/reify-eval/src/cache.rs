@@ -4114,4 +4114,96 @@ mod tests {
             "seeded entry must record NodeId::Compute(c_id) as the chain root (PRD §3)"
         );
     }
+
+    /// RED (task 3423/δ step-6): the FULL begin→complete atomicity cycle.
+    /// After `begin_compute_dispatch` the cache holds (Pending, prior value,
+    /// Compute cause); the SINGLE call to
+    /// `complete_compute_dispatch_atomically` transitions it to (Final, new
+    /// value, no cause) — no public API exists to observe an incoherent
+    /// (Final, prior) or (Pending, new) intermediate (PRD §3 atomic
+    /// completion / §8 task δ).
+    #[test]
+    fn complete_compute_dispatch_atomically_writes_value_flips_freshness_clears_cause() {
+        use reify_types::{
+            ComputeNodeId, DeterminacyState, Freshness, ResultRef, Value, VersionId,
+        };
+
+        let mut store = CacheStore::new();
+        let b = ValueCellId::new("T", "b");
+        let c_id = ComputeNodeId::new("T", 0);
+
+        // (a) Existing Final entry: Value::Int(42) @ VersionId(1).
+        store.put(NodeId::Value(b.clone()), make_seed_entry());
+        let prior_hash = store
+            .get(&NodeId::Value(b.clone()))
+            .expect("seeded entry must be present")
+            .result_hash;
+
+        // (b) begin → Pending.
+        assert_eq!(store.begin_compute_dispatch(&c_id, &[b.clone()]), 1);
+
+        // (c) mid-state: (Pending{last_substantive: prior}, Compute cause,
+        //     prior value still on display).
+        assert_eq!(
+            store.freshness(&NodeId::Value(b.clone())),
+            Freshness::Pending {
+                last_substantive: ResultRef::of_hash(prior_hash),
+            },
+            "mid-dispatch freshness must be Pending with prior last_substantive"
+        );
+        assert_eq!(
+            store.pending_cause(&NodeId::Value(b.clone())),
+            Some(NodeId::Compute(c_id.clone())),
+            "mid-dispatch pending_cause must be the Compute chain root"
+        );
+        match &store.get(&NodeId::Value(b.clone())).unwrap().result {
+            CachedResult::Value(v, d) => {
+                assert_eq!(
+                    *v,
+                    Value::Int(42),
+                    "prior value must still be on display mid-dispatch"
+                );
+                assert_eq!(*d, DeterminacyState::Determined);
+            }
+            other => panic!("expected CachedResult::Value, got {other:?}"),
+        }
+
+        // (d) complete — single atomic call (does not yet exist — RED).
+        let updated = store.complete_compute_dispatch_atomically(
+            &c_id,
+            &[(b.clone(), Value::Int(99))],
+            VersionId(2),
+        );
+
+        // (e) post-state: (Final, new value, no cause).
+        assert_eq!(updated, 1, "complete must report 1 output updated");
+        assert_eq!(
+            store.freshness(&NodeId::Value(b.clone())),
+            Freshness::Final,
+            "complete must flip freshness Pending → Final"
+        );
+        assert_eq!(
+            store.pending_cause(&NodeId::Value(b.clone())),
+            None,
+            "complete must clear pending_cause (single-critical-section guarantee)"
+        );
+        let entry = store.get(&NodeId::Value(b.clone())).unwrap();
+        match &entry.result {
+            CachedResult::Value(v, d) => {
+                assert_eq!(*v, Value::Int(99), "complete must write the new value");
+                assert_eq!(*d, DeterminacyState::Determined);
+            }
+            other => panic!("expected CachedResult::Value, got {other:?}"),
+        }
+        assert_eq!(
+            entry.result_hash,
+            CachedResult::Value(Value::Int(99), DeterminacyState::Determined).content_hash(),
+            "result_hash must match the new value's content hash"
+        );
+        assert_eq!(
+            entry.basis_version,
+            VersionId(2),
+            "complete must stamp the supplied version"
+        );
+    }
 }
