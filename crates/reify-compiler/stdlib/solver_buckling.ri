@@ -163,4 +163,25 @@ structure def BucklingResult {
     param converged : Bool
     param iterations : Int
     param pre_stress : ElasticResult
+
+    // `iterations` is a Lanczos iteration count — a negative value is
+    // impossible. Declaring the lower bound at the structure-def level
+    // makes the contract explicit in production code rather than relying
+    // solely on test coverage (task-2544 convention; mirrors
+    // `ElasticResult.iterations >= 0` in `solver_elastic.ri`).
+    //
+    // Cross-structure invariant `iterations <= BucklingOptions.max_iters` is
+    // enforced by the runtime trampoline — Reify constraints can only
+    // reference cells in the same `structure def` scope.
+    constraint iterations >= 0
+    // NOTE — explicitly NOT constrained:
+    //   converged   : Bool          — Bool, trivially constrained.
+    //   pre_stress  : ElasticResult — output container; no scalar invariant
+    //                                  expressible per-field.
+    //   modes       : List<Mode>    — collection invariants (non-empty when
+    //                                  `converged == true`, sorted ascending
+    //                                  by |eigenvalue|) are producer-enforced
+    //                                  by the trampoline; Reify constraint
+    //                                  clauses can only express scalar
+    //                                  predicates, not collection invariants.
 }
