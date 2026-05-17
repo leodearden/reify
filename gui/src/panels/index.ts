@@ -21,3 +21,5 @@ export { DiagnosticsPanel } from './DiagnosticsPanel';
 export type { DiagnosticsPanelProps, DiagnosticEntry } from './DiagnosticsPanel';
 export { AutoResolvePanel } from './AutoResolvePanel';
 export type { AutoResolvePanelProps } from './AutoResolvePanel';
+export { FeaCasePickerDropdown } from './FeaCasePickerDropdown';
+export type { FeaCasePickerDropdownProps } from './FeaCasePickerDropdown';
