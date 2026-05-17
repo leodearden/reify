@@ -29,7 +29,7 @@ fn mesh_with_n_vertices(n: usize) -> Mesh {
 }
 
 // ---------------------------------------------------------------------------
-// Step-1 (RED): compute_boundary_association — no-snap path
+// Step-1: compute_boundary_association — no-snap path
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -79,4 +79,65 @@ fn compute_boundary_association_iter_yields_ascending_node_index_order() {
     let result = compute_boundary_association(&attribution, &surface);
     let keys: Vec<u32> = result.iter().map(|(k, _)| k).collect();
     assert_eq!(keys, vec![0, 1, 2], "iter must yield ascending node-index order (BTreeMap discipline)");
+}
+
+// ---------------------------------------------------------------------------
+// Step-3 (RED): compute_boundary_association — snap-to-vertex override path
+// ---------------------------------------------------------------------------
+
+/// Helper: build a Mesh where vertex `i` is at position `[i as f32, 0.0, 0.0]`.
+fn mesh_with_vertices_at(positions: &[[f32; 3]]) -> Mesh {
+    let vertices: Vec<f32> = positions.iter().flat_map(|p| p.iter().copied()).collect();
+    Mesh { vertices, indices: vec![], normals: None }
+}
+
+#[test]
+fn compute_boundary_association_overrides_per_vertex_with_on_vertex_when_input_coincides_with_candidate()
+{
+    let surface = mesh_with_vertices_at(&[[1.0, 2.0, 3.0]]);
+    let attribution = BoundaryAttributionInput {
+        per_vertex: vec![NodeAttachment::OnFace(h(100))],
+        vertex_candidates: vec![(h(7), [1.0, 2.0, 3.0])],
+        snap_tolerance: 1e-6,
+    };
+    let result = compute_boundary_association(&attribution, &surface);
+    assert_eq!(
+        result.get(0),
+        Some(NodeAttachment::OnVertex(h(7))),
+        "coincident vertex should be overridden to OnVertex"
+    );
+}
+
+#[test]
+fn compute_boundary_association_does_not_override_when_input_is_outside_snap_tolerance() {
+    let surface = mesh_with_vertices_at(&[[1.0, 2.0, 3.0]]);
+    let attribution = BoundaryAttributionInput {
+        per_vertex: vec![NodeAttachment::OnFace(h(100))],
+        // distance from [1.0,2.0,3.0] to [1.5,2.0,3.0] is 0.5 — far outside 1e-6
+        vertex_candidates: vec![(h(7), [1.5, 2.0, 3.0])],
+        snap_tolerance: 1e-6,
+    };
+    let result = compute_boundary_association(&attribution, &surface);
+    assert_eq!(
+        result.get(0),
+        Some(NodeAttachment::OnFace(h(100))),
+        "vertex outside tolerance should not be overridden"
+    );
+}
+
+#[test]
+fn compute_boundary_association_with_zero_snap_tolerance_disables_override() {
+    // Even exact coincidence must not snap when snap_tolerance == 0.0 (strict <).
+    let surface = mesh_with_vertices_at(&[[1.0, 2.0, 3.0]]);
+    let attribution = BoundaryAttributionInput {
+        per_vertex: vec![NodeAttachment::OnFace(h(100))],
+        vertex_candidates: vec![(h(7), [1.0, 2.0, 3.0])],
+        snap_tolerance: 0.0,
+    };
+    let result = compute_boundary_association(&attribution, &surface);
+    assert_eq!(
+        result.get(0),
+        Some(NodeAttachment::OnFace(h(100))),
+        "snap_tolerance=0.0 must disable all snap overrides, even for exact coincidence"
+    );
 }
