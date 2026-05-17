@@ -1818,6 +1818,7 @@ pub(crate) fn try_eval_topology_selector(
         "moment_of_inertia" => TopologySelectorHelper::MomentOfInertia,
         "edges_by_length" => TopologySelectorHelper::EdgesByLength,
         "faces_by_area" => TopologySelectorHelper::FacesByArea,
+        "faces_by_normal" => TopologySelectorHelper::FacesByNormal,
         _ => return None,
     };
 
@@ -1925,6 +1926,20 @@ pub(crate) fn try_eval_topology_selector(
                 diagnostics,
             )
         }
+        TopologySelectorHelper::FacesByNormal => {
+            // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
+            let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            // args[1]: Vec3 direction ValueRef → values map → [f64; 3].
+            let dir = resolve_vec3_arg(&args[1], values)?;
+            // args[2]: angular tolerance ValueRef → values map → ANGLE Scalar
+            // (SI radians — `topology_selectors::faces_by_normal` expects rad).
+            let tol = resolve_angle_scalar_arg(&args[2], values)?;
+            dispatch_filtered_list(
+                crate::topology_selectors::faces_by_normal(kernel, handle, dir, tol),
+                &function.name,
+                diagnostics,
+            )
+        }
     }
 }
 
@@ -1984,6 +1999,10 @@ enum TopologySelectorHelper {
     /// `faces_by_area(geometry, Range<Area>) -> List<Geometry>` — faces whose
     /// surface area falls in the range (task 3560).
     FacesByArea,
+    /// `faces_by_normal(geometry, Vec3, Angle) -> List<Geometry>` — faces
+    /// whose outward normal is within an angular tolerance of a target
+    /// direction (task 3560).
+    FacesByNormal,
 }
 
 impl TopologySelectorHelper {
@@ -2001,6 +2020,7 @@ impl TopologySelectorHelper {
             | TopologySelectorHelper::EdgesByLength
             | TopologySelectorHelper::FacesByArea => 2,
             TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => 1,
+            TopologySelectorHelper::FacesByNormal => 3,
         }
     }
 }
@@ -2122,6 +2142,65 @@ fn resolve_real_scalar_arg(
         } if *dimension == reify_types::DimensionVector::DIMENSIONLESS => Some(*si_value),
         _ => None,
     }
+}
+
+/// Read a single Vec3 component: a `Value::Real` or a dimensionless
+/// `Value::Scalar`. Returns `None` for any dimensioned Scalar or non-numeric
+/// payload — the direction/axis args of `faces_by_normal` / `edges_parallel_to`
+/// are pure unit-vector numerics in v0.1.
+fn vec3_component_si(value: &reify_types::Value) -> Option<f64> {
+    match value {
+        reify_types::Value::Real(v) => Some(*v),
+        reify_types::Value::Scalar {
+            si_value,
+            dimension,
+        } if *dimension == reify_types::DimensionVector::DIMENSIONLESS => Some(*si_value),
+        _ => None,
+    }
+}
+
+/// Resolve a 3-component vector arg to its `[f64; 3]` SI components. Accepts
+/// `Literal(Value::Vector(items))` (rare — inline vector literals) or the
+/// common `ValueRef → Value::Vector` (let-bound `let dir = vec3(0,0,1)`).
+/// Each component must be a `Value::Real` or a dimensionless `Value::Scalar`
+/// (per `vec3_component_si`); the vector must have exactly three components.
+/// Returns `None` for any other shape — caller maps to the "unsupported arg
+/// shape → fall through" behaviour. Inline `vec3(...)` FunctionCall args fall
+/// through (the dispatcher has no recursive eval context); test fixtures
+/// let-bind the direction so it lands in `values` as a `Value::Vector`.
+fn resolve_vec3_arg(
+    expr: &reify_types::CompiledExpr,
+    values: &reify_types::ValueMap,
+) -> Option<[f64; 3]> {
+    let from_vector_value = |v: &reify_types::Value| -> Option<[f64; 3]> {
+        match v {
+            reify_types::Value::Vector(items) if items.len() == 3 => Some([
+                vec3_component_si(&items[0])?,
+                vec3_component_si(&items[1])?,
+                vec3_component_si(&items[2])?,
+            ]),
+            _ => None,
+        }
+    };
+    match &expr.kind {
+        reify_types::CompiledExprKind::Literal(v) => from_vector_value(v),
+        reify_types::CompiledExprKind::ValueRef(id) => from_vector_value(values.get(id)?),
+        _ => None,
+    }
+}
+
+/// Resolve an ANGLE-dimensioned scalar arg to its SI value (radians).
+/// Accepts `Literal(Value::Scalar { dimension: ANGLE, .. })` or the common
+/// `ValueRef → ANGLE Scalar` (let-bound `let tol = 1deg`). Returns `None`
+/// for any other shape (wrong dimension, non-Scalar) — caller maps to the
+/// "unsupported arg shape → fall through" behaviour. Mirrors
+/// `resolve_scalar_bound_expr` but pins the ANGLE dimension for the angular-
+/// tolerance args of `faces_by_normal` / `edges_parallel_to`.
+fn resolve_angle_scalar_arg(
+    expr: &reify_types::CompiledExpr,
+    values: &reify_types::ValueMap,
+) -> Option<f64> {
+    resolve_scalar_bound_expr(expr, values, reify_types::DimensionVector::ANGLE)
 }
 
 /// Read a `Value::Scalar` whose `dimension` is `expected_dim` and return its
