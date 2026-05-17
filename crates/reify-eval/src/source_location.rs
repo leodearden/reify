@@ -496,10 +496,11 @@ mod tests {
         );
     }
 
-    // (g) cursor at end byte (exclusive) of the width cell span → NOT "Bracket.width".
-    //     The end byte is exclusive: the cursor sits in the gap between cells (or in
-    //     the next cell's space), but never inside the width cell itself.
-    //     Per plan: "returns the enclosing template, not the cell."
+    // (g) cursor at end byte (exclusive) of the width cell span → Some("Bracket").
+    //     The end byte is exclusive: the cursor sits in the gap between value cells.
+    //     Per the function doc-block and the half-open span contract, span.end is
+    //     outside the width cell, so the narrow step misses it and falls through to
+    //     the enclosing template name.
     #[test]
     fn entity_at_source_position_at_cell_span_end_does_not_return_that_cell() {
         let compiled = bracket_compiled();
@@ -507,7 +508,7 @@ mod tests {
         let line_offsets = reify_types::build_line_offsets(source);
         let loc = resolve_entity_source_location(&compiled, source, "bracket.ri", "Bracket.width")
             .expect("forward lookup for Bracket.width must succeed");
-        // loc.end_line and loc.end_col map to span.end (exclusive upper bound).
+        // loc.end_line and loc.end_column map to span.end (exclusive upper bound).
         let result = resolve_entity_at_source_position(
             &compiled,
             source,
@@ -515,11 +516,13 @@ mod tests {
             loc.end_line,
             loc.end_column,
         );
-        // Must NOT return the width cell — the position at span.end is outside it.
-        assert_ne!(
+        // span.end (exclusive) falls outside the width cell and outside any other
+        // named member → must resolve to the enclosing template name, not a cell.
+        assert_eq!(
             result,
-            Some("Bracket.width".to_string()),
-            "cursor at span.end (exclusive) (line={}, col={}) must NOT resolve to Bracket.width",
+            Some("Bracket".to_string()),
+            "cursor at span.end (exclusive) (line={}, col={}) must resolve to the enclosing \
+             template name, not the cell or any other entity",
             loc.end_line,
             loc.end_column
         );
