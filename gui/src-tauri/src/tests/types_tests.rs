@@ -2094,3 +2094,24 @@ fn warm_pool_event_serializes_with_expected_field_set() {
     assert_eq!(ipc2.size_bytes, 8192u64);
     assert!(ipc2.node_id.contains("width"), "node_id must contain 'width', got: {}", ipc2.node_id);
 }
+
+#[test]
+fn fea_case_changed_serializes_to_expected_json_shape() {
+    // Pins PRD §3.2 field-name-exactness: no rename_all, field names match TS exactly.
+    let payload = crate::types::FeaCaseChanged {
+        active_case_id: "operating".into(),
+        available_cases: vec![
+            "operating".into(),
+            "overload".into(),
+            "transport".into(),
+        ],
+    };
+    let v = serde_json::to_value(&payload).unwrap();
+    assert_eq!(
+        v,
+        serde_json::json!({
+            "active_case_id": "operating",
+            "available_cases": ["operating", "overload", "transport"]
+        })
+    );
+}
