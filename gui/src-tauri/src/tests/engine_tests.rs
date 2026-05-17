@@ -8033,36 +8033,38 @@ fn engine_session_warm_pool_event_emitter_captures_donated_and_evicted_events() 
 
     let events = captured.lock().unwrap();
 
-    // (a) At least two events were captured.
-    assert!(
-        events.len() >= 2,
-        "expected at least 2 warm-pool events (Donated + Evicted), got {}",
+    // Exactly 3 events in deterministic order: Donated(Beam.length), Evicted(Beam.length),
+    // Donated(Plate.width).  donate(node_a, size=1, budget=1) → Donated(node_a); donate(node_b,
+    // size=1) evicts node_a (LRU) → Evicted(node_a), Donated(node_b).  Loose assertions like
+    // `>= 2` allow regressions that produce 1-2 events to silently pass.
+    assert_eq!(
+        events.len(),
+        3,
+        "donate(a)+evict(a)+donate(b) must yield exactly 3 IPC events; got {}",
         events.len()
     );
 
-    // (b) At least one Donated event present.
-    let donated = events.iter().filter(|e| e.kind == "donated").count();
-    assert!(donated >= 1, "must have at least one 'donated' event, got {donated}");
+    // (a) events[0]: Donated(node_a) — "Beam.length"
+    assert_eq!(events[0].kind, "donated", "events[0] must be kind=donated");
+    assert_eq!(
+        events[0].node_id, "Beam.length",
+        "events[0].node_id must be 'Beam.length' (node_a)"
+    );
+    assert_eq!(events[0].size_bytes, 1, "events[0].size_bytes must be 1");
 
-    // (c) At least one Evicted event present.
-    let evicted = events.iter().filter(|e| e.kind == "evicted").count();
-    assert!(evicted >= 1, "must have at least one 'evicted' event, got {evicted}");
+    // (b) events[1]: Evicted(node_a) — "Beam.length" (the LRU victim)
+    assert_eq!(events[1].kind, "evicted", "events[1] must be kind=evicted");
+    assert_eq!(
+        events[1].node_id, "Beam.length",
+        "events[1].node_id must be 'Beam.length' (victim)"
+    );
+    assert_eq!(events[1].size_bytes, 1, "events[1].size_bytes must be 1");
 
-    // (d) node_id field is a non-empty string (NodeId Display impl used).
-    for ev in events.iter() {
-        assert!(
-            !ev.node_id.is_empty(),
-            "node_id must be non-empty for event kind={}",
-            ev.kind
-        );
-    }
-
-    // (e) size_bytes is non-zero for all events.
-    for ev in events.iter() {
-        assert!(
-            ev.size_bytes > 0,
-            "size_bytes must be > 0 for event kind={}",
-            ev.kind
-        );
-    }
+    // (c) events[2]: Donated(node_b) — "Plate.width"
+    assert_eq!(events[2].kind, "donated", "events[2] must be kind=donated");
+    assert_eq!(
+        events[2].node_id, "Plate.width",
+        "events[2].node_id must be 'Plate.width' (node_b)"
+    );
+    assert_eq!(events[2].size_bytes, 1, "events[2].size_bytes must be 1");
 }

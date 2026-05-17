@@ -1881,10 +1881,27 @@ structure S {
 
         let drained = engine.drain_and_record_warm_pool_events();
 
-        // (a) Returned Vec is non-empty
+        // (a) Exactly 3 events in deterministic order: Donated(a), Evicted(a), Donated(b).
+        // donate(a, size=1, budget=1) → Donated(a); donate(b, size=1) evicts a → Evicted(a),
+        // Donated(b).  Loose assertions like !is_empty() would allow a regression that
+        // produces 1 or 2 events to silently pass.
+        assert_eq!(
+            drained.len(),
+            3,
+            "donate(a)+evict(a)+donate(b) must yield exactly 3 events; got {}",
+            drained.len()
+        );
         assert!(
-            !drained.is_empty(),
-            "drain must return the buffered WarmPoolEvents"
+            matches!(drained[0], WarmPoolEvent::Donated { .. }),
+            "drained[0] must be Donated (first donation of node_a)"
+        );
+        assert!(
+            matches!(drained[1], WarmPoolEvent::Evicted { .. }),
+            "drained[1] must be Evicted (node_a evicted when node_b donated)"
+        );
+        assert!(
+            matches!(drained[2], WarmPoolEvent::Donated { .. }),
+            "drained[2] must be Donated (donation of node_b)"
         );
 
         // (b) Pool event buffer is now empty
@@ -1893,26 +1910,12 @@ structure S {
             "pool event buffer must be empty after drain"
         );
 
-        // (c) Journal recorded the events
+        // (c) Journal recorded exactly the drained events
         let count_after = engine.journal_event_count();
         assert_eq!(
             count_after - count_before,
             drained.len(),
             "journal must record exactly as many events as were drained"
-        );
-
-        // (d) At least one Donated and one Evicted are present in drained
-        assert!(
-            drained
-                .iter()
-                .any(|e| matches!(e, WarmPoolEvent::Donated { .. })),
-            "must include at least one Donated event"
-        );
-        assert!(
-            drained
-                .iter()
-                .any(|e| matches!(e, WarmPoolEvent::Evicted { .. })),
-            "must include at least one Evicted event"
         );
     }
 }

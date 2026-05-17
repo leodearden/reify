@@ -124,24 +124,40 @@ describe('WarmPoolDebugPanel (d) most-recent node_id', () => {
 // ── Test group (e): unlisten on unmount ──────────────────────────────────────
 
 describe('WarmPoolDebugPanel (e) unlisten on unmount', () => {
-  it('(e.1) emitting after unmount does not change counts (handler removed)', async () => {
-    const handle = mockTauriEvent<WarmPoolEvent>('warm-pool-event');
+  it('(e.1) unlisten spy is called after unmount (lifecycle contract pinned)', async () => {
+    // Directly capture the UnlistenFn returned by listen so we can assert it was
+    // invoked by onCleanup.  Using DOM-teardown alone (queryByTestId → null) does NOT
+    // prove unlisten was called — a panel that forgets onCleanup would still pass that
+    // weaker assertion.  This test pins the contract directly.
+    const unlistenSpy = vi.fn();
+    vi.mocked(listen).mockImplementation(async () => unlistenSpy);
+
     const { unmount } = render(() => <WarmPoolDebugPanel />);
 
-    // First emit is delivered while mounted
-    handle.emit({ kind: 'donated', size_bytes: 256, node_id: 'A.b' });
-    expect(screen.getByTestId('warm-pool-donated-count').textContent).toBe('1');
+    // Flush the async resolution chain.  onMount fires synchronously during render,
+    // calling onWarmPoolEvent → listen().  The chain is:
+    //   tick 1: listen()'s `async () => unlistenSpy` promise resolves to unlistenSpy
+    //   tick 2: onWarmPoolEvent()'s async-function wrapper follows listen()'s promise
+    //   tick 3: safety margin for any additional V8 promise-following ticks
+    // After these ticks, unlistenPromise (= the Promise returned by onWarmPoolEvent)
+    // is fully resolved to unlistenSpy.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
 
-    // Unmount triggers onCleanup → unlisten
+    // listen() must have been called once (component registered for the channel).
+    expect(listen).toHaveBeenCalledOnce();
+    expect(listen).toHaveBeenCalledWith('warm-pool-event', expect.any(Function));
+
     unmount();
 
-    // After unmount the handler registry is cleared; a new render below would be needed
-    // to observe state. Instead we verify no *other* mounted panel receives the events.
-    // The key invariant: mockTauriEvent.emit does NOT crash and the previous render
-    // is fully cleaned up (cleanup() is in afterEach, but unmount() fires onCleanup).
-    handle.emit({ kind: 'donated', size_bytes: 512, node_id: 'A.c' });
-    // No error means onCleanup fired properly and the handler was removed.
-    // The previous element is gone from the DOM — confirm via queryByTestId.
-    expect(screen.queryByTestId('warm-pool-donated-count')).toBeNull();
+    // Flush the cleanup chain: onCleanup fires unlistenPromise.then(fn => fn()).
+    // Since unlistenPromise is already resolved, fn() is scheduled as a microtask.
+    await Promise.resolve();
+
+    // This is the contract: onCleanup must call the UnlistenFn so the Tauri event
+    // listener is deregistered.  A panel that omitted onCleanup would leave the spy
+    // uncalled and fail here.
+    expect(unlistenSpy).toHaveBeenCalledOnce();
   });
 });

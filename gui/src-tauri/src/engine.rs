@@ -873,6 +873,15 @@ impl EngineSession {
     ///
     /// When no emitter is installed, the drain still records events on the
     /// journal (M-010 wiring) but no IPC emission occurs.
+    ///
+    /// # Design note (follow-up opportunity)
+    ///
+    /// The five call sites that pair `emit_auto_resolve_if_any` + this method
+    /// are shaping into a "post-engine-call telemetry drain" pattern.  A future
+    /// refactor could extract a single `post_engine_call_telemetry(&self, check:
+    /// &CheckResult)` helper so new engine entry points can't forget to drain
+    /// warm-pool events and silently lose telemetry.  Tracked in task review
+    /// suggestion #4 (task 3541 amendment pass).
     fn drain_and_emit_warm_pool_events(&mut self) {
         let raw_events = self.core.engine_mut().drain_and_record_warm_pool_events();
         if let Some(emitter) = &self.warm_pool_event_emitter {
