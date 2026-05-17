@@ -271,3 +271,31 @@ fn boundary_condition_trait_exists_with_no_params() {
         trait_def.refinements
     );
 }
+
+// ─── step-7: SplineKind enum ─────────────────────────────────────────────────
+
+/// `SplineKind` selects which polynomial degree the β evaluator uses when
+/// building the per-segment coefficients for a `PiecewisePolynomialProfile`
+/// (PRD §4.1):
+///
+///   - `CubicSpline`    — degree-3 polynomial per segment; the default
+///                        choice when waypoints carry only positions
+///                        (vels / accels are `none`).
+///   - `QuinticSpline`  — degree-5 polynomial per segment; selected when
+///                        waypoints carry explicit `vels` AND `accels`.
+///
+/// Test pins the variant vector exactly (order-sensitive) — the assertion
+/// shape mirrors `boundary2_producer.rs::compiled.enum_defs[0].variants`
+/// (the canonical precedent for stdlib enum-variant assertions).
+#[test]
+fn spline_kind_enum_has_cubic_and_quintic_variants() {
+    let enum_def = find_enum("SplineKind");
+
+    assert_eq!(
+        enum_def.variants,
+        vec!["CubicSpline".to_string(), "QuinticSpline".to_string()],
+        "SplineKind variants must match the PRD §4.1 spec exactly \
+         (order-sensitive: CubicSpline, QuinticSpline); got: {:?}",
+        enum_def.variants
+    );
+}
