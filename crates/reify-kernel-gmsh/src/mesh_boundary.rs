@@ -89,12 +89,34 @@ pub fn compute_boundary_association(
     let mut ba = BoundaryAssociation::default();
 
     for i in 0..n {
-        ba.associate(i as u32, attribution.per_vertex[i]);
+        // Widen surface vertex position from f32 to f64 for the snap test.
+        let x = surface.vertices[i * 3] as f64;
+        let y = surface.vertices[i * 3 + 1] as f64;
+        let z = surface.vertices[i * 3 + 2] as f64;
+
+        // Snap-to-vertex override: walk candidates and take first match.
+        // `snap_tolerance == 0.0` ⟹ `tol_sq == 0.0` ⟹ dist_sq < tol_sq is always
+        // false (dist_sq ≥ 0.0), so the override is disabled — strict-less-than
+        // is intentional per PRD §3.3 snap contract.
+        let attachment = if tol_sq > 0.0 {
+            let mut snapped = None;
+            for &(handle, [cx, cy, cz]) in &attribution.vertex_candidates {
+                let dx = x - cx;
+                let dy = y - cy;
+                let dz = z - cz;
+                let dist_sq = dx * dx + dy * dy + dz * dz;
+                if dist_sq < tol_sq {
+                    snapped = Some(NodeAttachment::OnVertex(handle));
+                    break; // first-match-wins; caller controls candidate ordering
+                }
+            }
+            snapped.unwrap_or(attribution.per_vertex[i])
+        } else {
+            attribution.per_vertex[i]
+        };
+
+        ba.associate(i as u32, attachment);
     }
-    // snap_tolerance and vertex_candidates are reserved for the snap-to-vertex
-    // override pass, which lands in step-4. Suppress unused-variable warnings
-    // in the meantime.
-    let _ = tol_sq;
 
     ba
 }
