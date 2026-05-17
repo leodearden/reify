@@ -102,9 +102,10 @@ pub enum BijectionFailure {
     /// handles, signalling imported geometry or a malformed engine state.
     ///
     /// Note: `kind` records *which match call surfaced the diagnostic* (the
-    /// first kind checked in [`stage_b_eligible`] — faces, then edges). It is
-    /// NOT a claim that attribution is missing only for that kind; imported
-    /// B-reps typically lack attributes for all kinds simultaneously.
+    /// first kind checked in [`stage_b_eligible`] — faces, then edges, then
+    /// vertices). It is NOT a claim that attribution is missing only for that
+    /// kind; imported B-reps typically lack attributes for all kinds
+    /// simultaneously.
     NamingLayerError {
         kind: SubShapeKind,
         reason: NamingLayerErrorReason,
@@ -184,7 +185,7 @@ pub fn stage_b_eligible(
 // ── Private helpers ───────────────────────────────────────────────────────────
 
 /// Attempt to build a 1-to-1 correspondence for one sub-shape kind
-/// (faces or edges).
+/// (faces, edges, or vertices).
 ///
 /// The caller supplies pre-extracted handle slices and the two attribute
 /// tables. On success the matched pairs are inserted into `out`. On
@@ -194,7 +195,8 @@ pub fn stage_b_eligible(
 ///
 /// Both `old` and `new` MUST contain distinct [`GeometryHandleId`] values
 /// (no duplicates within either slice). This mirrors the upstream kernel's
-/// `extract_faces` / `extract_edges` per-handle-once guarantee.
+/// `extract_faces` / `extract_edges` / `extract_vertices` per-handle-once
+/// guarantee.
 ///
 /// **Failure mode:** duplicates in `old` would silently overwrite earlier
 /// entries in `out` via [`HashMap::insert`] while the step-7
@@ -902,16 +904,18 @@ mod tests {
         );
     }
 
-    // amend-2: faces AND edges populated together in one call — guards against
-    // swapped slice arguments or accidental kind-only wiring.
+    // amend-2: faces AND edges AND vertices all populated together in one call —
+    // guards against swapped slice arguments or accidental kind-only wiring.
     #[test]
     fn stage_b_eligible_faces_and_edges_both_populated_in_single_call() {
         let mut old_table = TopologyAttributeTable::default();
         old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0, None));
         old_table.record(h(30), attr(Role::NewEdge, 0, None));
+        old_table.record(h(50), attr(Role::NewEdge, 1, None));
         let mut new_table = TopologyAttributeTable::default();
         new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0, None));
         new_table.record(h(40), attr(Role::NewEdge, 0, None));
+        new_table.record(h(60), attr(Role::NewEdge, 1, None));
 
         let result = stage_b_eligible(
             &old_table,
@@ -920,10 +924,10 @@ mod tests {
             &[h(20)],
             &[h(30)],
             &[h(40)],
-            &[],
-            &[],
+            &[h(50)],
+            &[h(60)],
         );
-        let map = result.expect("matching face + edge in same call must succeed");
+        let map = result.expect("matching face + edge + vertex in same call must succeed");
         assert_eq!(map.face_to_face.len(), 1, "one face pair");
         assert_eq!(
             map.face_to_face.get(&h(10)),
@@ -935,6 +939,12 @@ mod tests {
             map.edge_to_edge.get(&h(30)),
             Some(&h(40)),
             "edge: h(30) → h(40)"
+        );
+        assert_eq!(map.vertex_to_vertex.len(), 1, "one vertex pair");
+        assert_eq!(
+            map.vertex_to_vertex.get(&h(50)),
+            Some(&h(60)),
+            "vertex: h(50) → h(60)"
         );
     }
 
