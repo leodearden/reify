@@ -7962,3 +7962,107 @@ fn update_source_preserves_file_path_when_commit_state_gets_preserve() {
         "module_name must still be 'bracket' after update_source"
     );
 }
+
+// ── Task 3541 step-5: WarmPoolEventEmitter recording ────────────────────────
+
+/// Recording `WarmPoolEventEmitter` that captures every emitted IPC
+/// [`crate::types::WarmPoolEvent`] for test assertions.
+///
+/// Mirrors [`RecordingEmitter`] (line 7234) for the warm-pool channel.
+struct RecordingWarmPoolEventEmitter {
+    events: std::sync::Arc<std::sync::Mutex<Vec<crate::types::WarmPoolEvent>>>,
+}
+
+impl RecordingWarmPoolEventEmitter {
+    fn new() -> Self {
+        Self {
+            events: std::sync::Arc::new(std::sync::Mutex::new(vec![])),
+        }
+    }
+}
+
+impl crate::engine::WarmPoolEventEmitter for RecordingWarmPoolEventEmitter {
+    fn emit(&self, event: crate::types::WarmPoolEvent) {
+        self.events.lock().unwrap().push(event);
+    }
+}
+
+/// Step-5: `EngineSession` emits IPC `WarmPoolEvent` values through an installed
+/// `WarmPoolEventEmitter` when `drain_and_emit_warm_pool_events` is called after
+/// pool activity.
+///
+/// Test flow:
+/// (a) Construct EngineSession, install RecordingWarmPoolEventEmitter.
+/// (b) Pre-populate the warm pool with a donate (node_a) that triggers an
+///     eviction (budget=1 byte): donate(node_a), donate(node_b) → Evicted(a).
+/// (c) Call `session.drain_and_emit_warm_pool_events_for_test()`.
+/// (d) Assert recorder captured both events with correct kind/size_bytes/node_id.
+///
+/// Fails to compile: WarmPoolEventEmitter trait, set_warm_pool_event_emitter,
+/// warm_pool_mut_for_test, and drain_and_emit_warm_pool_events_for_test don't
+/// exist yet (all added in step-6).
+#[test]
+fn engine_session_warm_pool_event_emitter_captures_donated_and_evicted_events() {
+    use std::sync::Arc;
+    use reify_types::OpaqueState;
+    use reify_eval::cache::NodeId;
+    use reify_types::ValueCellId;
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    let recorder = RecordingWarmPoolEventEmitter::new();
+    let captured = Arc::clone(&recorder.events);
+    session.set_warm_pool_event_emitter(Arc::new(recorder));
+
+    // Install a 1-byte warm pool budget so donate(b) evicts donate(a).
+    {
+        let pool = session.warm_pool_mut_for_test();
+        *pool = reify_eval::warm_pool::WarmStatePool::new(1);
+    }
+
+    let node_a = NodeId::Value(ValueCellId::new("Beam", "length"));
+    let node_b = NodeId::Value(ValueCellId::new("Plate", "width"));
+
+    // Donate two nodes: node_a fits (size=1, budget=1), node_b evicts node_a.
+    session.warm_pool_mut_for_test().donate(node_a.clone(), OpaqueState::new(1i32, 1));
+    session.warm_pool_mut_for_test().donate(node_b.clone(), OpaqueState::new(2i32, 1));
+
+    // Drain and emit.
+    session.drain_and_emit_warm_pool_events_for_test();
+
+    let events = captured.lock().unwrap();
+
+    // (a) At least two events were captured.
+    assert!(
+        events.len() >= 2,
+        "expected at least 2 warm-pool events (Donated + Evicted), got {}",
+        events.len()
+    );
+
+    // (b) At least one Donated event present.
+    let donated = events.iter().filter(|e| e.kind == "donated").count();
+    assert!(donated >= 1, "must have at least one 'donated' event, got {donated}");
+
+    // (c) At least one Evicted event present.
+    let evicted = events.iter().filter(|e| e.kind == "evicted").count();
+    assert!(evicted >= 1, "must have at least one 'evicted' event, got {evicted}");
+
+    // (d) node_id field is a non-empty string (NodeId Display impl used).
+    for ev in events.iter() {
+        assert!(
+            !ev.node_id.is_empty(),
+            "node_id must be non-empty for event kind={}",
+            ev.kind
+        );
+    }
+
+    // (e) size_bytes is non-zero for all events.
+    for ev in events.iter() {
+        assert!(
+            ev.size_bytes > 0,
+            "size_bytes must be > 0 for event kind={}",
+            ev.kind
+        );
+    }
+}
