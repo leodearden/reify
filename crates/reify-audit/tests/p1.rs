@@ -638,6 +638,72 @@ mod tests {
             );
         }
     }
+
+    /// Step 1 (RED→GREEN via step 2) — a consumer task with status=`review`
+    /// whose `consumer_ref` matches the producer's `prd` must suppress the
+    /// orphan finding, just like `pending`/`in-progress` consumers do.
+    ///
+    /// One done producer (15 days past grace, prd="docs/x.md", zero refs) +
+    /// one `review`-status consumer task with `consumer_ref="docs/x.md"`.
+    /// Expected: zero P1 findings.
+    ///
+    /// RED: current `has_pending_consumer` only matches `"pending"` |
+    /// `"in-progress"`, so the `review` consumer is invisible and a finding fires.
+    #[test]
+    fn review_status_consumer_suppresses_finding() {
+        let done_at = NOW - 15 * DAY;
+
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let mut jc = MockJCodemunchOps::new();
+        jc.set_changed_symbols(
+            "main",
+            done_at,
+            vec![changed_symbol("review_widget", "crates/reify-x/src/review.rs")],
+        );
+        jc.set_find_references("review_widget", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        // The done producer.
+        task_metadata.insert(
+            "9100".to_string(),
+            done_meta("9100", done_at, Some("docs/x.md")),
+        );
+        // The in-review consumer: status="review", consumer_ref matches producer's prd.
+        task_metadata.insert(
+            "9101".to_string(),
+            TaskMetadata {
+                task_id: "9101".to_string(),
+                status: "review".to_string(),
+                files: vec![],
+                done_provenance: None,
+                title: "Consume the review widget".to_string(),
+                prd: None,
+                consumer_ref: Some("docs/x.md".to_string()),
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: Some(NOW),
+        };
+
+        let findings = p1_producer_orphan::check(&ctx);
+        assert!(
+            findings.is_empty(),
+            "a review-status consumer task referencing the producer PRD must \
+             suppress the orphan; got {:?}",
+            findings
+        );
+    }
 }
 
 } // mod p1
