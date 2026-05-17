@@ -49,6 +49,70 @@ fn assert_constraint_op(template: &TopologyTemplate, member: &str, expected: Bin
     );
 }
 
+/// Assert that `template.constraints` contains the spec-shape Physical
+/// `material.density > 0` constraint (post-GHR-α / task 3603), positively
+/// pinning its lowered shape:
+///
+///   `BinOp { op: Gt, left: IndexAccess { object: ValueRef(material),
+///                                        index: Literal(String("density")) },
+///            right: Literal(Int(0) | Real(~0)) }`
+///
+/// This is the shape produced by SIR-α's struct-member access lowering
+/// (`expr.rs:1948-1964`), which turns `material.density` into
+/// `IndexAccess(ValueRef(material), Literal("density"))`. Without a positive
+/// shape check, an empty-or-wrong-but-still-counted injected constraint
+/// would slip past the `constraints.len() == 2` count assertions used by
+/// the TC/EC inheritance tests and the `!constraints.is_empty()` check used
+/// by `physical_constraint_injected_into_conforming_structure`.
+fn assert_density_positive_constraint_present(template: &TopologyTemplate) {
+    let matches: Vec<_> = template
+        .constraints
+        .iter()
+        .filter(|cc| {
+            let CompiledExprKind::BinOp { op, left, right } = &cc.expr.kind else {
+                return false;
+            };
+            if *op != BinOp::Gt {
+                return false;
+            }
+            // Left side: material.density lowered as IndexAccess(ValueRef("material"), "density")
+            let CompiledExprKind::IndexAccess { object, index } = &left.kind else {
+                return false;
+            };
+            let CompiledExprKind::ValueRef(id) = &object.kind else {
+                return false;
+            };
+            if id.member != "material" {
+                return false;
+            }
+            let CompiledExprKind::Literal(Value::String(key)) = &index.kind else {
+                return false;
+            };
+            if key != "density" {
+                return false;
+            }
+            // Right side: literal 0 (Int or Real near-zero).
+            match &right.kind {
+                CompiledExprKind::Literal(Value::Int(v)) => *v == 0,
+                CompiledExprKind::Literal(Value::Real(v)) => v.abs() < 1e-9,
+                _ => false,
+            }
+        })
+        .collect();
+
+    assert!(
+        !matches.is_empty(),
+        "expected an injected `material.density > 0` constraint with shape \
+         BinOp(Gt, IndexAccess(material, \"density\"), 0); got constraint \
+         shapes: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| format!("{:?}", c.expr.kind))
+            .collect::<Vec<_>>()
+    );
+}
+
 /// Minimal structure that conforms to `Plastic` (which refines `Flexible`) and
 /// carries all four injected constraints: `plastic_strain` (≥ 0, `BinOp::Ge`),
 /// `hardening_modulus` (> 0, `BinOp::Gt`), `stiffness` (> 0, `BinOp::Gt`), and
@@ -491,9 +555,12 @@ structure def HeatSink : ThermallyConductive {
     // ThermallyConductive's own `thermal_conductivity > 0`.
     assert_constraint_op(template, "thermal_conductivity", BinOp::Gt);
     // Physical's `material.density > 0` (post-GHR-α) is injected via inheritance —
-    // its left side is a member access through `material`, so it isn't reachable
-    // via `assert_constraint_op`'s ValueRef-only matcher. The count below pins
-    // that exactly one additional inherited constraint is present.
+    // its left side is a member access through `material` (IndexAccess
+    // lowering), so it isn't reachable via `assert_constraint_op`'s ValueRef-
+    // only matcher. The positive shape check below pins that the inherited
+    // constraint IS the expected density-positivity, not an empty / wrong /
+    // count-only artefact (reviewer #1 follow-up).
+    assert_density_positive_constraint_present(template);
     assert_eq!(
         template.constraints.len(),
         2,
@@ -543,7 +610,10 @@ structure def Wire : ElectricallyConductive {
     // ElectricallyConductive's own `electrical_conductivity > 0`.
     assert_constraint_op(template, "electrical_conductivity", BinOp::Gt);
     // Physical's `material.density > 0` (post-GHR-α) is injected via inheritance;
-    // see the TC analog above for the matcher-shape rationale.
+    // see the TC analog above for the matcher-shape rationale. Positive shape
+    // pin guards against an empty / wrong injected constraint slipping past
+    // the count check below (reviewer #1 follow-up).
+    assert_density_positive_constraint_present(template);
     assert_eq!(
         template.constraints.len(),
         2,
@@ -646,6 +716,13 @@ structure def Block : Physical {
         "expected constraint from Physical trait (material.density > 0) injected \
          into Block, but constraints is empty"
     );
+    // Positive shape pin (reviewer #1 follow-up): the bare "non-empty" check
+    // above is preserved, but a regression that injected an empty / wrong /
+    // count-only constraint would silently pass. Pin the exact lowered shape
+    // of `material.density > 0` (struct-member access via IndexAccess) so the
+    // SIR-α member-access path — exactly the new/risky behavior this PRD
+    // introduces — has at least one positive test in the suite.
+    assert_density_positive_constraint_present(template);
 }
 
 // ─── missing geometry detection (post-GHR-α / task 3603) ─────────────────────
