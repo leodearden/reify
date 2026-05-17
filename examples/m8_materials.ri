@@ -1,27 +1,31 @@
-// M8.3 Materials fixture
+// M8.3 Materials fixture (post-GHR-α / task 3603)
 //
 // Exercises the stdlib materials_mechanical.ri and structural_physical.ri
-// traits through the full parse → compile_with_stdlib → eval pipeline.
+// traits through the full parse → compile_with_stdlib pipeline. Eval-time
+// numeric reads of `mass` / `centroid` defer to Phase 6 (kernel dispatch);
+// Phase 1 verifies COMPILE-TIME typing only.
 //
 // AluminumBracket conforms to three stdlib traits:
-//   Physical : MaterialSpec — name, density, volume, centroid_*, computed mass = volume*density
-//   Elastic              — youngs_modulus, poissons_ratio, shear_modulus
-//   Strong               — yield_strength, uts, compressive_strength (+ constraint uts >= yield_strength)
+//   Physical  — spec-shape body trait carrying `geometry : Solid` and
+//               `material : Material` struct slots; injects
+//               `let mass = volume(geometry) * material.density`,
+//               `let centroid = centroid(geometry)`, and
+//               `constraint material.density > 0` (PRD §8 Phase 1).
+//   Elastic   — youngs_modulus, poissons_ratio, shear_modulus
+//   Strong    — yield_strength, uts, compressive_strength
+//               (+ constraint uts >= yield_strength)
 //
-// All dimensioned fields use Real (dimensionless raw SI numerics) per the
-// stdlib convention: density in kg/m³, moduli in Pa.
-// mass = volume * density = 0.0004 * 2700 = 1.08 (exact in f64).
+// Mechanical-property fields use Real (raw SI numerics) per the stdlib
+// convention: moduli in Pa.
 
 structure def AluminumBracket : Physical + Elastic + Strong {
-    // MaterialSpec (via Physical) params
-    param name : String = "Aluminium 6061-T6"
-    param density : Real = 2700.0
-
-    // Physical params
-    param volume : Real = 0.0004
-    param centroid_x : Real = 0.0
-    param centroid_y : Real = 0.0
-    param centroid_z : Real = 0.0
+    // Physical (spec shape: geometry + material slots)
+    param geometry : Solid = box(20mm, 20mm, 10mm)
+    param material : Material = Material(
+        name: "Aluminium 6061-T6",
+        density: 2700.0,
+        youngs_modulus: 69000000000.0
+    )
 
     // Elastic params (Young's modulus, Poisson's ratio, shear modulus — all in Pa)
     param youngs_modulus : Real = 69000000000.0

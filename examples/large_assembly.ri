@@ -1,22 +1,30 @@
-// Large assembly stress test fixture
+// Large assembly stress test fixture (post-GHR-α / task 3603)
 //
 // Exercises stdlib Physical trait conformance, port declarations, sub-component
 // instantiation at scale (54 subs), and mass aggregation across the assembly.
 //
-// Structure types:
-//   SteelBeam      — Physical : MaterialSpec (density=7850, volume=0.002)
-//   AluminumPlate  — Physical : MaterialSpec (density=2700, volume=0.001)
-//   StiffenerBracket — Physical : MaterialSpec (density=7850, volume=0.0005)
-//   BoltConnector  — Physical : MaterialSpec (density=7850, volume=0.0001)
-//   MotorUnit      — Physical : MaterialSpec (density=3000, volume=0.008)
-//   GearboxUnit    — Physical : MaterialSpec (density=4000, volume=0.010)
-//   CoverPanel     — Physical : MaterialSpec (density=2700, volume=0.0005)
-//   SensorPod      — Physical : MaterialSpec (density=1500, volume=0.0003)
+// Post-GHR-α: each Physical-conforming structure carries spec-shape composition
+// slots — `param geometry : Solid` and `param material : Material` — instead of
+// the legacy flat-scalar `density / volume / centroid_*` params. Trait-injected
+// lets `mass` and `centroid` are visible on every Physical sub.
+//
+// Structure types (each `: Physical`):
+//   SteelBeam        — steel,    box(150mm, 150mm, 3m)
+//   AluminumPlate    — aluminum, box(500mm, 500mm, 4mm)
+//   StiffenerBracket — steel,    box(75mm, 50mm, 150mm)
+//   BoltConnector    — steel,    cylinder(6mm, 60mm)
+//   MotorUnit        — motor,    cylinder(90mm, 220mm)
+//   GearboxUnit      — gearbox,  box(200mm, 150mm, 250mm)
+//   CoverPanel       — aluminum, box(500mm, 400mm, 2mm)
+//   SensorPod        — sensor,   box(60mm, 40mm, 30mm)
 //
 // Assembly: 54 sub-components = 16 beams + 8 plates + 8 stiffeners + 6 bolts
 //           + 4 motors + 4 gearboxes + 4 covers + 4 sensors
 //
-// Computes total_mass = [all 54 sub masses...].sum
+// Computes total_mass = [all 54 sub masses...].sum. `mass` resolves at
+// compile time to Scalar<Mass>; eval-time numeric value defers to Phase 6
+// (kernel dispatch — GHR-ζ).
+//
 // Declares simulation_ready purpose for Physical structures.
 
 // ── Port traits ───────────────────────────────────────────────────────────────
@@ -34,14 +42,12 @@ trait ElectricalInterface {
 // ── Structure type 1: SteelBeam ───────────────────────────────────────────────
 
 structure def SteelBeam : Physical {
-    param name         : String = "Steel Beam W150x37"
-    param density      : Real   = 7850.0
-    param volume       : Real   = 0.002
-    param centroid_x   : Real   = 0.0
-    param centroid_y   : Real   = 0.0
-    param centroid_z   : Real   = 0.0
-
-    let geo = box(0.15, 0.15, 3.0)
+    param geometry : Solid = box(150mm, 150mm, 3000mm)
+    param material : Material = Material(
+        name: "Steel Beam W150x37",
+        density: 7850.0,
+        youngs_modulus: 200000000000.0
+    )
 
     port load_face : out MechanicalFace {
         param force_capacity : Real = 50000.0
@@ -52,14 +58,12 @@ structure def SteelBeam : Physical {
 // ── Structure type 2: AluminumPlate ──────────────────────────────────────────
 
 structure def AluminumPlate : Physical {
-    param name         : String = "Aluminum Plate 6061"
-    param density      : Real   = 2700.0
-    param volume       : Real   = 0.001
-    param centroid_x   : Real   = 0.0
-    param centroid_y   : Real   = 0.0
-    param centroid_z   : Real   = 0.0
-
-    let geo = box(0.5, 0.5, 0.004)
+    param geometry : Solid = box(500mm, 500mm, 4mm)
+    param material : Material = Material(
+        name: "Aluminum Plate 6061",
+        density: 2700.0,
+        youngs_modulus: 69000000000.0
+    )
 
     port mount : in MechanicalFace {
         param force_capacity : Real = 20000.0
@@ -70,40 +74,34 @@ structure def AluminumPlate : Physical {
 // ── Structure type 3: StiffenerBracket ───────────────────────────────────────
 
 structure def StiffenerBracket : Physical {
-    param name         : String = "Steel Stiffener L75x50x6"
-    param density      : Real   = 7850.0
-    param volume       : Real   = 0.0005
-    param centroid_x   : Real   = 0.0
-    param centroid_y   : Real   = 0.0
-    param centroid_z   : Real   = 0.0
-
-    let geo = box(0.075, 0.050, 0.150)
+    param geometry : Solid = box(75mm, 50mm, 150mm)
+    param material : Material = Material(
+        name: "Steel Stiffener L75x50x6",
+        density: 7850.0,
+        youngs_modulus: 200000000000.0
+    )
 }
 
 // ── Structure type 4: BoltConnector ──────────────────────────────────────────
 
 structure def BoltConnector : Physical {
-    param name         : String = "M12 Bolt Grade 8.8"
-    param density      : Real   = 7850.0
-    param volume       : Real   = 0.0001
-    param centroid_x   : Real   = 0.0
-    param centroid_y   : Real   = 0.0
-    param centroid_z   : Real   = 0.0
-
-    let geo = cylinder(0.006, 0.060)
+    param geometry : Solid = cylinder(6mm, 60mm)
+    param material : Material = Material(
+        name: "M12 Bolt Grade 8.8",
+        density: 7850.0,
+        youngs_modulus: 200000000000.0
+    )
 }
 
 // ── Structure type 5: MotorUnit ───────────────────────────────────────────────
 
 structure def MotorUnit : Physical {
-    param name         : String = "AC Induction Motor 0.75kW"
-    param density      : Real   = 3000.0
-    param volume       : Real   = 0.008
-    param centroid_x   : Real   = 0.0
-    param centroid_y   : Real   = 0.0
-    param centroid_z   : Real   = 0.0
-
-    let geo = cylinder(0.090, 0.220)
+    param geometry : Solid = cylinder(90mm, 220mm)
+    param material : Material = Material(
+        name: "AC Induction Motor 0.75kW",
+        density: 3000.0,
+        youngs_modulus: 110000000000.0
+    )
 
     port shaft : out MechanicalFace {
         param force_capacity : Real = 5000.0
@@ -119,14 +117,12 @@ structure def MotorUnit : Physical {
 // ── Structure type 6: GearboxUnit ────────────────────────────────────────────
 
 structure def GearboxUnit : Physical {
-    param name         : String = "Helical Gearbox i=3 95%"
-    param density      : Real   = 4000.0
-    param volume       : Real   = 0.010
-    param centroid_x   : Real   = 0.0
-    param centroid_y   : Real   = 0.0
-    param centroid_z   : Real   = 0.0
-
-    let geo = box(0.200, 0.150, 0.250)
+    param geometry : Solid = box(200mm, 150mm, 250mm)
+    param material : Material = Material(
+        name: "Helical Gearbox i=3 95%",
+        density: 4000.0,
+        youngs_modulus: 200000000000.0
+    )
 
     port input : in MechanicalFace {
         param force_capacity : Real = 5000.0
@@ -137,27 +133,23 @@ structure def GearboxUnit : Physical {
 // ── Structure type 7: CoverPanel ─────────────────────────────────────────────
 
 structure def CoverPanel : Physical {
-    param name         : String = "Aluminum Cover Sheet 2mm"
-    param density      : Real   = 2700.0
-    param volume       : Real   = 0.0005
-    param centroid_x   : Real   = 0.0
-    param centroid_y   : Real   = 0.0
-    param centroid_z   : Real   = 0.0
-
-    let geo = box(0.500, 0.400, 0.002)
+    param geometry : Solid = box(500mm, 400mm, 2mm)
+    param material : Material = Material(
+        name: "Aluminum Cover Sheet 2mm",
+        density: 2700.0,
+        youngs_modulus: 69000000000.0
+    )
 }
 
 // ── Structure type 8: SensorPod ───────────────────────────────────────────────
 
 structure def SensorPod : Physical {
-    param name         : String = "IMU Sensor Pod"
-    param density      : Real   = 1500.0
-    param volume       : Real   = 0.0003
-    param centroid_x   : Real   = 0.0
-    param centroid_y   : Real   = 0.0
-    param centroid_z   : Real   = 0.0
-
-    let geo = box(0.060, 0.040, 0.030)
+    param geometry : Solid = box(60mm, 40mm, 30mm)
+    param material : Material = Material(
+        name: "IMU Sensor Pod",
+        density: 1500.0,
+        youngs_modulus: 50000000000.0
+    )
 
     port data : out ElectricalInterface {
         param voltage_rating : Real = 3.3
