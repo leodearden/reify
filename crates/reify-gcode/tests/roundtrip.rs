@@ -40,3 +40,24 @@ fn linear_move_with_fractional_values_roundtrips() {
     let reparsed = parse_marlin(&rendered).expect("re-parse must succeed");
     assert_eq!(original, reparsed);
 }
+
+// The previous case uses only values with exact binary representations
+// (1.5, -2.25, 800.0) — so it doesn't actually exercise the Display
+// impl's stated contract that `f64::from_str(format!("{}", x)) == x`
+// for arbitrary finite x. This case pins that contract on
+// representative inexact values: 0.1 (repeating binary), 1/3
+// (repeating binary), and a subnormal-adjacent tiny value 1e-15.
+#[test]
+fn linear_move_with_inexact_floats_roundtrips_bit_exact() {
+    let original = vec![GcodeCommand::LinearMove(LinearMove {
+        rapid: false,
+        x: Some(0.1),
+        y: Some(1.0 / 3.0),
+        z: Some(1e-15),
+        e: None,
+        feedrate: None,
+    })];
+    let rendered = original[0].to_string();
+    let reparsed = parse_marlin(&rendered).expect("re-parse must succeed");
+    assert_eq!(original, reparsed);
+}

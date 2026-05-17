@@ -51,3 +51,34 @@ fn extra_inter_token_whitespace_tolerated() {
         })]
     );
 }
+
+// CRLF line endings are common in slicer output (Cura/PrusaSlicer on
+// Windows). The parser splits on `\n` only; the trailing `\r` is
+// consumed by `strip_comment_and_trim`'s generic `.trim()`. Pin that
+// contract so a future refactor that switches to a more restrictive
+// trim won't silently break Windows-authored G-code.
+#[test]
+fn crlf_line_endings_accepted() {
+    let got = parse_marlin("G1 X10\r\nG1 Y20\r\n").unwrap();
+    assert_eq!(
+        got,
+        vec![
+            GcodeCommand::LinearMove(LinearMove {
+                rapid: false,
+                x: Some(10.0),
+                y: None,
+                z: None,
+                e: None,
+                feedrate: None,
+            }),
+            GcodeCommand::LinearMove(LinearMove {
+                rapid: false,
+                x: None,
+                y: Some(20.0),
+                z: None,
+                e: None,
+                feedrate: None,
+            }),
+        ]
+    );
+}
