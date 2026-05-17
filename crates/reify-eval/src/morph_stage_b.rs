@@ -36,13 +36,10 @@ pub struct CorrespondenceMap {
     pub edge_to_edge: HashMap<GeometryHandleId, GeometryHandleId>,
     /// Vertex correspondence: old handle → new handle.
     ///
-    /// **Always empty in v0.2** — persistent-naming v2 does not propagate
-    /// vertex attributes (`GeometryKernel` exposes only `extract_faces` and
-    /// `extract_edges`; there is no `extract_vertices`, and `BRepKind` has no
-    /// `Vertex` variant). Reserved for the v0.3+ implementation; downstream
-    /// consumers can derive vertex correspondence from edge endpoints in the
-    /// meantime. See `docs/prds/v0_2/persistent-naming-v2.md` and the
-    /// deferred-bookmarks list.
+    /// Populated by matching `TopologyAttribute` records via the same private
+    /// helper that handles faces/edges (`match_one_kind`). See
+    /// `docs/prds/v0_3/mesh-morphing-phase-2.md` §3.2 (task β,
+    /// drift-pin retirement) for the contract retirement that introduced this.
     pub vertex_to_vertex: HashMap<GeometryHandleId, GeometryHandleId>,
 }
 
@@ -131,15 +128,16 @@ pub enum BijectionFailure {
 ///   `kernel.extract_faces(...)` on the respective B-reps.
 /// * `old_edges` / `new_edges` — edge handle slices extracted by
 ///   `kernel.extract_edges(...)` on the respective B-reps.
-/// * `old_vertices` / `new_vertices` — vertex handle slices (accepted for
-///   API forward-compatibility; not processed in v0.2).
+/// * `old_vertices` / `new_vertices` — vertex handle slices extracted by
+///   `kernel.extract_vertices(...)` on the respective B-reps.
 ///
 /// # Returns
 ///
-/// * `Ok(CorrespondenceMap)` — a complete bijection for faces and edges;
-///   `vertex_to_vertex` is always empty in v0.2.
+/// * `Ok(CorrespondenceMap)` — a complete bijection for faces, edges, and
+///   vertices.
 /// * `Err(BijectionFailure)` — the first failure encountered while checking
-///   faces, then edges (vertices are not checked in v0.2).
+///   faces, then edges, then vertices.
+///   See `docs/prds/v0_3/mesh-morphing-phase-2.md` §3.2.
 #[allow(clippy::too_many_arguments)]
 pub fn stage_b_eligible(
     old_table: &TopologyAttributeTable,
