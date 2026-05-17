@@ -1869,7 +1869,25 @@ pub(crate) fn try_eval_topology_selector(
                     };
                     dispatch_point_on_shape(kernel, &query, &function.name, diagnostics)
                 }
-                _ => unreachable!("ClosestPoint/IsOn outer match guarantees this"),
+                // Enumerate the complement explicitly (rather than `_`) so that
+                // adding a new `TopologySelectorHelper` variant and grouping it
+                // into the outer `ClosestPoint | IsOn` or-pattern forces the
+                // compiler to error here instead of silently funnelling into
+                // `unreachable!()`.
+                TopologySelectorHelper::AngleBetweenSurfaces
+                | TopologySelectorHelper::Edges
+                | TopologySelectorHelper::Faces
+                | TopologySelectorHelper::CenterOfMass
+                | TopologySelectorHelper::MomentOfInertia
+                | TopologySelectorHelper::EdgesByLength
+                | TopologySelectorHelper::FacesByArea
+                | TopologySelectorHelper::FacesByNormal
+                | TopologySelectorHelper::EdgesParallelTo
+                | TopologySelectorHelper::EdgesAtHeight
+                | TopologySelectorHelper::AdjacentFaces
+                | TopologySelectorHelper::SharedEdges => {
+                    unreachable!("ClosestPoint/IsOn outer match guarantees this")
+                }
             }
         }
         TopologySelectorHelper::AngleBetweenSurfaces => {
@@ -1885,7 +1903,25 @@ pub(crate) fn try_eval_topology_selector(
             let kind = match helper {
                 TopologySelectorHelper::Edges => ExtractKind::Edges,
                 TopologySelectorHelper::Faces => ExtractKind::Faces,
-                _ => unreachable!("Edges/Faces outer match guarantees this"),
+                // Enumerate the complement explicitly (rather than `_`) so that
+                // adding a new `TopologySelectorHelper` variant and grouping it
+                // into the outer `Edges | Faces` or-pattern forces the compiler
+                // to error here instead of silently funnelling into
+                // `unreachable!()`.
+                TopologySelectorHelper::ClosestPoint
+                | TopologySelectorHelper::IsOn
+                | TopologySelectorHelper::AngleBetweenSurfaces
+                | TopologySelectorHelper::CenterOfMass
+                | TopologySelectorHelper::MomentOfInertia
+                | TopologySelectorHelper::EdgesByLength
+                | TopologySelectorHelper::FacesByArea
+                | TopologySelectorHelper::FacesByNormal
+                | TopologySelectorHelper::EdgesParallelTo
+                | TopologySelectorHelper::EdgesAtHeight
+                | TopologySelectorHelper::AdjacentFaces
+                | TopologySelectorHelper::SharedEdges => {
+                    unreachable!("Edges/Faces outer match guarantees this")
+                }
             };
             dispatch_extract_subshapes(kernel, handle, kind, &function.name, diagnostics)
         }
