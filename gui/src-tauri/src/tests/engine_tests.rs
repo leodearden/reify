@@ -8321,3 +8321,158 @@ fn fea_case_emitter_wires_through_real_commit_path() {
         events.len()
     );
 }
+
+// ---- extract_joint_descriptor kind-based binding default tests (task 3783, step-5) ----
+
+/// Helper: build a single-body mechanism Value::Map containing a joint of the
+/// given kind.  The joint map contains only a `"kind"` key (sufficient for the
+/// kind→binding dispatch; other fields are not required by extract_joint_descriptor).
+fn make_single_body_mechanism_map(
+    joint_kind: &str,
+) -> std::collections::BTreeMap<reify_types::Value, reify_types::Value> {
+    use std::collections::BTreeMap;
+    use reify_types::Value;
+
+    let mut joint_map: BTreeMap<Value, Value> = BTreeMap::new();
+    joint_map.insert(
+        Value::String("kind".to_string()),
+        Value::String(joint_kind.to_string()),
+    );
+
+    let mut body_map: BTreeMap<Value, Value> = BTreeMap::new();
+    body_map.insert(Value::String("at".to_string()), Value::Map(joint_map));
+
+    let mut mech_map: BTreeMap<Value, Value> = BTreeMap::new();
+    mech_map.insert(
+        Value::String("kind".to_string()),
+        Value::String("mechanism".to_string()),
+    );
+    mech_map.insert(
+        Value::String("bodies".to_string()),
+        Value::List(vec![Value::Map(body_map)]),
+    );
+    mech_map
+}
+
+/// `extract_joints_from_mechanism` assigns `JointBinding::FixedNoMotion` as
+/// the default binding for a joint of kind `"fixed"`.
+#[test]
+fn extract_joint_descriptor_assigns_kind_based_binding_defaults_fixed() {
+    use crate::engine::extract_joints_from_mechanism;
+    use crate::types::JointBinding;
+
+    let mech_map = make_single_body_mechanism_map("fixed");
+    let (joints, _) = extract_joints_from_mechanism(&mech_map);
+
+    assert_eq!(joints.len(), 1, "expected 1 joint descriptor for fixed");
+    assert_eq!(
+        joints[0].binding,
+        JointBinding::FixedNoMotion,
+        "fixed joint must have binding=FixedNoMotion; got {:?}",
+        joints[0].binding
+    );
+}
+
+/// `extract_joints_from_mechanism` assigns `JointBinding::CouplingDerived { source_joint: "" }`
+/// as the default binding for a joint of kind `"coupling"`.
+#[test]
+fn extract_joint_descriptor_assigns_kind_based_binding_defaults_coupling() {
+    use crate::engine::extract_joints_from_mechanism;
+    use crate::types::JointBinding;
+
+    let mech_map = make_single_body_mechanism_map("coupling");
+    let (joints, _) = extract_joints_from_mechanism(&mech_map);
+
+    assert_eq!(joints.len(), 1, "expected 1 joint descriptor for coupling");
+    assert_eq!(
+        joints[0].binding,
+        JointBinding::CouplingDerived {
+            source_joint: "".to_string()
+        },
+        "coupling joint must have binding=CouplingDerived {{ source_joint: \"\" }}; got {:?}",
+        joints[0].binding
+    );
+}
+
+/// `extract_joints_from_mechanism` assigns a `JointBinding::LiteralBound` with
+/// `synth_param_name = "__joint_2_v"`, `initial_value_si = None`, `scrubbable = true`
+/// for a prismatic joint at joint_index 2.
+///
+/// Note: joint_index is 0-based within the mechanism. To get index=2 we add 3 bodies
+/// with 3 distinct joints and check the third one.
+#[test]
+fn extract_joint_descriptor_assigns_kind_based_binding_defaults_prismatic() {
+    use std::collections::BTreeMap;
+    use crate::engine::extract_joints_from_mechanism;
+    use crate::types::JointBinding;
+    use reify_types::Value;
+
+    // Build a mechanism with 3 distinct prismatic joints so the third has joint_index=2.
+    let make_prismatic = |tag: u8| -> Value {
+        let mut joint_map: BTreeMap<Value, Value> = BTreeMap::new();
+        joint_map.insert(
+            Value::String("kind".to_string()),
+            Value::String("prismatic".to_string()),
+        );
+        // Use a unique tag key to ensure structural inequality for deduplication.
+        joint_map.insert(
+            Value::String("_tag".to_string()),
+            Value::Int(tag as i64),
+        );
+        Value::Map(joint_map)
+    };
+
+    let bodies: Vec<Value> = (0u8..3)
+        .map(|i| {
+            let mut body_map: BTreeMap<Value, Value> = BTreeMap::new();
+            body_map.insert(Value::String("at".to_string()), make_prismatic(i));
+            Value::Map(body_map)
+        })
+        .collect();
+
+    let mut mech_map: BTreeMap<Value, Value> = BTreeMap::new();
+    mech_map.insert(
+        Value::String("kind".to_string()),
+        Value::String("mechanism".to_string()),
+    );
+    mech_map.insert(Value::String("bodies".to_string()), Value::List(bodies));
+
+    let (joints, _) = extract_joints_from_mechanism(&mech_map);
+    assert_eq!(joints.len(), 3, "expected 3 joint descriptors");
+
+    // Third joint has joint_index=2.
+    assert_eq!(
+        joints[2].binding,
+        JointBinding::LiteralBound {
+            synth_param_name: "__joint_2_v".to_string(),
+            initial_value_si: None,
+            scrubbable: true,
+        },
+        "prismatic at joint_index=2 must have synth_param_name='__joint_2_v'; got {:?}",
+        joints[2].binding
+    );
+}
+
+/// `extract_joints_from_mechanism` assigns a `JointBinding::LiteralBound` with
+/// `synth_param_name = "__joint_0_v"`, `initial_value_si = None`, `scrubbable = true`
+/// for a revolute joint at joint_index 0.
+#[test]
+fn extract_joint_descriptor_assigns_kind_based_binding_defaults_revolute() {
+    use crate::engine::extract_joints_from_mechanism;
+    use crate::types::JointBinding;
+
+    let mech_map = make_single_body_mechanism_map("revolute");
+    let (joints, _) = extract_joints_from_mechanism(&mech_map);
+
+    assert_eq!(joints.len(), 1, "expected 1 joint descriptor for revolute");
+    assert_eq!(
+        joints[0].binding,
+        JointBinding::LiteralBound {
+            synth_param_name: "__joint_0_v".to_string(),
+            initial_value_si: None,
+            scrubbable: true,
+        },
+        "revolute at joint_index=0 must have synth_param_name='__joint_0_v'; got {:?}",
+        joints[0].binding
+    );
+}
