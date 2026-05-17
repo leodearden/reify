@@ -212,4 +212,20 @@ structure def PiecewisePolynomialProfile : Profile {
     param waypoints : List<Waypoint>
     param boundary : BoundaryCondition
     param spline_kind : SplineKind
+
+    // Reject an empty waypoint list at construction.
+    //
+    // Encodes the PRD §11-α observable signal "ctor constraints fire
+    // (e.g. empty waypoints list rejected)" as an explicit contract in
+    // production code rather than relying solely on test coverage (task
+    // 2544 convention; same shape `BucklingOptions.n_modes > 0` uses in
+    // `solver_buckling.ri`). The `.count` method on `List` is recognised
+    // in constraint position (`reify-expr/src/lib.rs:1349` evaluator arm;
+    // precedent: `constraint vents.count == n` in
+    // `forall_statement_lower_tests.rs`).
+    //
+    // Fires automatically at construction via SIR-α's
+    // `check_constraints_against_templates` machinery (task 3540, landed)
+    // — no further plumbing needed in this task.
+    constraint waypoints.count > 0
 }
