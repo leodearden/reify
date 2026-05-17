@@ -639,6 +639,80 @@ mod tests {
         }
     }
 
+    /// Step 3 (RED→GREEN via step 4) — when `target_task_id` is set, P1
+    /// restricts scanning to that single task only (mirroring p2's guard).
+    ///
+    /// Two done orphan-candidate tasks (both 15 days past grace, zero refs),
+    /// each introducing their own symbol. AuditContext built with
+    /// `target_task_id: Some("task_A")`. Expected: exactly one finding, for
+    /// task_A only; task_B's symbol is not reported.
+    ///
+    /// RED: current `check()` ignores target_task_id and scans both tasks,
+    /// producing two findings.
+    #[test]
+    fn target_task_id_scopes_p1_to_one_task() {
+        let done_at = NOW - 15 * DAY;
+
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let mut jc = MockJCodemunchOps::new();
+        // task_A introduces widget_a; task_B introduces widget_b — both orphans.
+        jc.set_changed_symbols(
+            "main",
+            done_at,
+            vec![changed_symbol("widget_a", "crates/reify-x/src/a.rs")],
+        );
+        // set_changed_symbols keys on (branch, since_epoch); each task has the
+        // same done_at so we use a separate mock instance per key — but here
+        // both tasks share the same timestamp, so we set both symbols under
+        // the same key to simulate the branch scan returning both.
+        jc.set_changed_symbols(
+            "main",
+            done_at,
+            vec![
+                changed_symbol("widget_a", "crates/reify-x/src/a.rs"),
+                changed_symbol("widget_b", "crates/reify-x/src/b.rs"),
+            ],
+        );
+        jc.set_find_references("widget_a", vec![]);
+        jc.set_find_references("widget_b", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "task_A".to_string(),
+            done_meta("task_A", done_at, Some("docs/a.md")),
+        );
+        task_metadata.insert(
+            "task_B".to_string(),
+            done_meta("task_B", done_at, Some("docs/b.md")),
+        );
+
+        // With target_task_id pointing at task_A, only task_A is scanned.
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: Some("task_A".to_string()),
+            window: None,
+            now: Some(NOW),
+        };
+
+        let findings = p1_producer_orphan::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "with target_task_id=task_A, only task_A's orphan should fire; got {:?}",
+            findings
+        );
+        assert_eq!(
+            findings[0].task_id, "task_A",
+            "finding must belong to task_A, not task_B; got {:?}",
+            findings[0]
+        );
+    }
+
     /// Step 1 (RED→GREEN via step 2) — a consumer task with status=`review`
     /// whose `consumer_ref` matches the producer's `prd` must suppress the
     /// orphan finding, just like `pending`/`in-progress` consumers do.
