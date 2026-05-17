@@ -1077,31 +1077,114 @@ mod tests {
     /// Verify `NAMED_DIMENSIONS` is a complete, self-consistent table.
     ///
     /// (a) The table must be non-empty.
-    /// (b) For every `(dim, name)` entry the round-trip `dim.canonical_name() == Some(name)` holds.
-    /// (c) `DIMENSIONLESS.canonical_name()` is still `None` (intentionally excluded from the table).
+    /// (b) Every entry's `name` forward-resolves to its `dim` — i.e. scanning the
+    ///     table by name finds the row's own dim.
+    /// (c) For every entry, `dim.canonical_name()` returns SOME name that is
+    ///     itself a registered entry's name for that dim. When multiple entries
+    ///     share the same dim (e.g. `ABSORPTION_COEFF` and `CURVATURE` are both
+    ///     `1/Length`), `canonical_name` returns the first one in scan order —
+    ///     this test accepts ANY registered name for the dim, not the row's own
+    ///     name, so dim-aliasing is permitted.
+    /// (d) All entry names are unique (no two rows register the same name).
+    /// (e) `DIMENSIONLESS.canonical_name()` is still `None` (intentionally excluded).
     ///
-    /// The table length is intentionally not asserted as a magic number — the round-trip loop
-    /// and the DIMENSIONLESS check are the meaningful coverage; a length constant would just
-    /// need updating whenever a new named singleton is added.
+    /// Refactored for task 3603 / GHR-α: the original per-row
+    /// `assert_eq!(dim.canonical_name(), Some(expected_name))` could not admit
+    /// dimension aliases (Curvature and AbsorptionCoeff share `1/Length`). The
+    /// new three-part check preserves the consistency contract while allowing
+    /// aliases.
     #[test]
-    fn named_dimensions_table_round_trips_canonical_name() {
+    fn named_dimensions_table_is_complete_and_consistent() {
         assert!(
             !super::NAMED_DIMENSIONS.is_empty(),
             "NAMED_DIMENSIONS must not be empty"
         );
-        for &(dim, expected_name) in super::NAMED_DIMENSIONS {
+
+        // (b) name → dim forward-resolution: each entry's name must locate its row.
+        for &(dim, name) in super::NAMED_DIMENSIONS {
+            let found = super::NAMED_DIMENSIONS
+                .iter()
+                .find(|(_, n)| *n == name)
+                .map(|(d, _)| *d);
             assert_eq!(
-                dim.canonical_name(),
-                Some(expected_name),
-                "round-trip failed for {:?}: canonical_name() should return {:?}",
+                found,
+                Some(dim),
+                "forward name→dim lookup failed for {:?}: first match by name should return {:?}",
+                name,
                 dim,
-                expected_name,
             );
         }
+
+        // (c) canonical_name(dim) returns SOME name that is registered for that dim.
+        // Aliases are allowed: when two rows share a dim, the first scan-match wins.
+        for &(dim, _) in super::NAMED_DIMENSIONS {
+            let canon = dim.canonical_name();
+            assert!(
+                canon.is_some(),
+                "canonical_name returned None for registered dim {:?}",
+                dim,
+            );
+            let canon_name = canon.unwrap();
+            let canon_is_registered_for_dim = super::NAMED_DIMENSIONS
+                .iter()
+                .any(|(d, n)| *d == dim && *n == canon_name);
+            assert!(
+                canon_is_registered_for_dim,
+                "canonical_name({:?}) returned {:?}, which is not a registered name for that dim",
+                dim,
+                canon_name,
+            );
+        }
+
+        // (d) All entry names are unique.
+        let mut names: Vec<&'static str> =
+            super::NAMED_DIMENSIONS.iter().map(|(_, n)| *n).collect();
+        names.sort();
+        let total = names.len();
+        names.dedup();
+        assert_eq!(
+            names.len(),
+            total,
+            "NAMED_DIMENSIONS contains duplicate names — every entry must have a unique name",
+        );
+
+        // (e) DIMENSIONLESS is excluded.
         assert_eq!(
             DimensionVector::DIMENSIONLESS.canonical_name(),
             None,
             "DIMENSIONLESS must remain absent from NAMED_DIMENSIONS (canonical_name returns None)"
+        );
+    }
+
+    /// Task 3603 / GHR-α: the `Curvature` named dimension must be registered
+    /// in `NAMED_DIMENSIONS` mapping to `DimensionVector::CURVATURE`. The
+    /// entry is required so that `resolve_dimension_type` (and any other
+    /// name→dim scanner) can resolve `param k : Curvature` source syntax.
+    #[test]
+    fn curvature_name_is_registered_in_named_dimensions() {
+        let found = super::NAMED_DIMENSIONS
+            .iter()
+            .any(|(dim, name)| *name == "Curvature" && *dim == DimensionVector::CURVATURE);
+        assert!(
+            found,
+            "NAMED_DIMENSIONS must contain (DimensionVector::CURVATURE, \"Curvature\")"
+        );
+    }
+
+    /// Mirrors the `resolve_dimension_type` name→dim direction: scanning the
+    /// table by name `"Curvature"` must return `DimensionVector::CURVATURE`.
+    /// Documents the direction-of-use distinction from `canonical_name()`
+    /// (dim→name); see GHR-α design decision for why both must work.
+    #[test]
+    fn named_dimensions_curvature_resolves_via_forward_lookup() {
+        let resolved = super::NAMED_DIMENSIONS
+            .iter()
+            .find(|(_, name)| *name == "Curvature")
+            .map(|(dim, _)| *dim);
+        assert_eq!(
+            resolved,
+            Some(DimensionVector::CURVATURE),
+            "forward lookup name→dim for \"Curvature\" should resolve to CURVATURE"
         );
     }
 
