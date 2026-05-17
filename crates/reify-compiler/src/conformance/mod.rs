@@ -3932,6 +3932,7 @@ mod tests {
     fn minimal_template(name: &str, cells: Vec<ValueCellDecl>) -> TopologyTemplate {
         TopologyTemplate {
             name: name.to_string(),
+            doc: None,
             entity_kind: EntityKind::Structure,
             visibility: Visibility::Public,
             type_params: vec![],

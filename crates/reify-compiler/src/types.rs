@@ -502,6 +502,12 @@ pub enum CompiledForallBody {
 #[derive(Debug, Clone)]
 pub struct TopologyTemplate {
     pub name: String,
+    /// Documentation comment from the source `///` lines preceding the declaration.
+    ///
+    /// `None` when the entity has no doc comment.  Populated by `compile_entity`
+    /// from `EntityDefRef::doc`, which is set from `StructureDef::doc` /
+    /// `OccurrenceDef::doc` by the two `From` impls in `entity.rs`.
+    pub doc: Option<String>,
     pub entity_kind: EntityKind,
     pub visibility: Visibility,
     /// Type parameters declared on this structure (e.g., `<T: Rigid>`).
