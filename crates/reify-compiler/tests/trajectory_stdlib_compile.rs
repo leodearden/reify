@@ -299,3 +299,102 @@ fn spline_kind_enum_has_cubic_and_quintic_variants() {
         enum_def.variants
     );
 }
+
+// ─── step-9: Waypoint param shape ────────────────────────────────────────────
+
+/// `Waypoint` is the per-knot data the spline interpolates between
+/// (PRD §4.1). It must declare exactly the four params with the canonical
+/// types:
+///
+///   - `t      : Time`                          (knot time)
+///   - `values : List<JointValue>`              (per-joint positions)
+///   - `vels   : Option<List<JointValue>>`      (optional per-joint q̇)
+///   - `accels : Option<List<JointValue>>`      (optional per-joint q̈)
+///
+/// `JointValue` is the module-level alias for `Real` (see header §1), so
+/// `List<JointValue>` compiles to `Type::List(Box::new(Type::Real))`.
+/// `Time` resolves to `Type::Scalar { dimension: DimensionVector::TIME }`
+/// via the same dimensional-type path that `lead_time : Time` in
+/// `stdlib/io.ri:77` already uses.
+///
+/// `Waypoint` is caller-supplied — there are no meaningful defaults on any
+/// field (the spline path through the waypoints is entirely determined by
+/// the caller's data). `vels` / `accels` are `Option`-typed so the caller
+/// can omit per-knot derivative data when the chosen `SplineKind` does not
+/// need it (cubic interpolation works with positions alone).
+#[test]
+fn waypoint_struct_has_correct_param_shape() {
+    let template = find_structure("Waypoint");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    assert_eq!(
+        params.len(),
+        4,
+        "Waypoint should have exactly 4 param cells (t, values, vels, \
+         accels), got: {:?}",
+        names
+    );
+
+    let expected: &[(&str, Type)] = &[
+        (
+            "t",
+            Type::Scalar {
+                dimension: DimensionVector::TIME,
+            },
+        ),
+        ("values", Type::List(Box::new(Type::Real))),
+        (
+            "vels",
+            Type::Option(Box::new(Type::List(Box::new(Type::Real)))),
+        ),
+        (
+            "accels",
+            Type::Option(Box::new(Type::List(Box::new(Type::Real)))),
+        ),
+    ];
+
+    for (member, expected_ty) in expected {
+        let cell = params
+            .iter()
+            .find(|vc| vc.id.member == *member)
+            .unwrap_or_else(|| {
+                panic!(
+                    "Waypoint missing required param '{}'; got: {:?}",
+                    member, names
+                )
+            });
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "Waypoint.{} should be {:?}, got {:?}",
+            member, expected_ty, cell.cell_type
+        );
+    }
+
+    // Waypoint is caller-supplied — every param must have no default.
+    for cell in &params {
+        assert!(
+            cell.default_expr.is_none(),
+            "Waypoint.{} should have no default_expr (caller-supplied), \
+             but got: {:?}",
+            cell.id.member,
+            cell.default_expr
+        );
+    }
+
+    // Waypoint declares no structure-level constraints (the only meaningful
+    // cross-field invariant — `vels.len() == values.len()` when present —
+    // is owned by the β-phase profile builder once it sees all waypoints
+    // together).
+    assert!(
+        template.constraints.is_empty(),
+        "Waypoint should declare no structure-level constraints \
+         (collection-shape invariants are profile-level, not knot-level); \
+         got: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+}
