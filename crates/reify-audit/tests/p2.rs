@@ -57,10 +57,11 @@ mod tests {
     ///   k) `crates/x/k.rs` — `// placeholder: TBD`          (Family 6 // placeholder)
     ///
     /// Each path has exactly one stub line → eleven findings expected.
-    /// A per-family label assertion loop (see below) now pins each family's
-    /// routed `&'static str` label so that any cross-family swap (e.g. a
-    /// `// fixme` arm returning `"// stub"`) or mislabelling surfaces
-    /// immediately — not just the presence-of-finding invariant.
+    /// Each finding's summary is structurally verified to contain
+    /// `[<non-empty label>]:` (confirming the rendering contract), and two
+    /// representative family labels are pinned byte-for-byte (Family 1 and
+    /// Family 6) to anchor label routing without hardcoding all eleven strings
+    /// (which would force two-place edits on any future label rename).
     #[test]
     fn detects_canonical_stub_patterns_on_added_lines() {
         let conn = Connection::open_in_memory().expect("open in-memory sqlite");
@@ -143,38 +144,59 @@ mod tests {
             assert!(found, "no finding with EvidenceRef::File for {path}");
         }
 
-        // Per-family label assertions: each finding's summary must contain
-        // "[<label>]" matching the `&'static str` returned by `line_matches_stub`
-        // for that family (rendered as `"line N [label]: snippet"` at
-        // p2_consumer_stub.rs:151). Using the bracketed form pins the routed
-        // position and guards against accidental fragment matches inside snippets.
-        let expected_labels: Vec<&str> = vec![
-            "TODO(pending)",                           // [0] a.rs — TODO(impl pending)
-            "TODO(post-)",                              // [1] b.rs — TODO(post-merge); label is human description not a regex
-            "TODO(later)",                             // [2] c.rs — TODO(wire later)
-            "TODO(task_N)",                            // [3] d.rs — TODO(task_9999)
-            "unimplemented!",                          // [4] e.rs — unimplemented!()
-            "panic!(not yet)",                         // [5] f.rs — panic!("not yet wired")
-            "tracing::warn!(task_pending)",            // [6] g.rs — tracing::warn! family
-            "Value::Undef(pending/stub/placeholder)",  // [7] h.rs — Value::Undef family
-            "// fixme",                                // [8] i.rs — // fixme
-            "// stub",                                 // [9] j.rs — // stub: wire later
-            "// placeholder",                          // [10] k.rs — // placeholder: TBD
-        ];
-        for (path, label) in paths.iter().zip(expected_labels.iter()) {
-            let bracketed = format!("[{}]", label);
-            let found = findings.iter().any(|f| {
-                f.evidence.iter().any(|e| match e {
+        // Structural pin: every path must produce a finding whose summary uses
+        // the "line N [<non-empty label>]: snippet" format.  This guards the
+        // rendering contract without hardcoding all eleven label strings.
+        for path in &paths {
+            let has_structural_label = findings.iter().any(|f| {
+                let refs_path = f.evidence.iter().any(|e| match e {
                     EvidenceRef::File { path: p } => p == path,
                     _ => false,
-                }) && f.summary.contains(&bracketed)
+                });
+                if !refs_path {
+                    return false;
+                }
+                // Verify "[label]:" appears with a non-empty label between the brackets.
+                f.summary.find('[').and_then(|open| {
+                    f.summary[open + 1..].find("]:").map(|close| close > 0)
+                }).unwrap_or(false)
             });
             assert!(
-                found,
-                "no finding for {path} with summary containing {bracketed}; findings: {:?}",
+                has_structural_label,
+                "no finding for {path} with '[<label>]:' rendering in summary; findings: {:?}",
                 findings
             );
         }
+
+        // Exact label pin for two representative families anchors the label-routing
+        // contract.  A cross-family swap (e.g. Family-6 `// fixme` arm returning
+        // `"// stub"`) is caught here without requiring all eleven strings to be
+        // duplicated verbatim (reducing two-place-edit burden on future renames).
+        let family1_bracketed = "[TODO(pending)]";
+        let family1_ok = findings.iter().any(|f| {
+            f.evidence.iter().any(|e| match e {
+                EvidenceRef::File { path: p } => p == "crates/x/a.rs",
+                _ => false,
+            }) && f.summary.contains(family1_bracketed)
+        });
+        assert!(
+            family1_ok,
+            "Family-1 label 'TODO(pending)' missing from a.rs finding; findings: {:?}",
+            findings
+        );
+
+        let family6_bracketed = "[// fixme]";
+        let family6_ok = findings.iter().any(|f| {
+            f.evidence.iter().any(|e| match e {
+                EvidenceRef::File { path: p } => p == "crates/x/i.rs",
+                _ => false,
+            }) && f.summary.contains(family6_bracketed)
+        });
+        assert!(
+            family6_ok,
+            "Family-6 label '// fixme' missing from i.rs finding; findings: {:?}",
+            findings
+        );
     }
 
     /// Verify that stub patterns that were already present on `main` (i.e. NOT

@@ -13,8 +13,8 @@ use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
 ///
 /// Six families (hand-rolled `&str` checks — `regex` is intentionally NOT a
 /// dependency per design §12):
-/// 1. TODO variants: `TODO(…pending)`, `TODO(post-\w+)`, `TODO(…later)`,
-///    `TODO(task_\d+)` — substring scans on a lowercase copy.
+/// 1. TODO variants: `TODO(…pending)`, `TODO(post-…)`, `TODO(…later)`,
+///    `TODO(task_N)` — substring scans on a lowercase copy.
 /// 2. `unimplemented!(` — hard panic placeholder.
 /// 3. `panic!(` + later `not yet` — explicit "not yet implemented" panic.
 /// 4. `tracing::warn!(` + `reason="task_` + `_pending"` — structured warning.
@@ -94,6 +94,22 @@ fn title_signals_stub(title: &str) -> bool {
     t.contains("stub") || t.contains("placeholder")
 }
 
+/// Scan all tasks in `ctx.task_metadata` for canonical stub markers in their
+/// added-line diff and return [`Pattern::P2ConsumerStub`] findings.
+///
+/// # Callers
+///
+/// **Pre-done hook** (`check_pre_done`-style): set `ctx.target_task_id` to the
+/// single closing task.  The task's `status` will still be `"in_progress"` at
+/// call time — the orchestrator has not yet flipped it to `"done"` — so P2
+/// omits a `status != "done"` filter (see the `NOTE` comment inside the body).
+///
+/// **Periodic sweep** (`--mode sweep`): narrow `ctx.task_metadata` to the
+/// closing-window tasks **before** calling this function.  Passing the full
+/// backlog will surface every in-progress `TODO(... pending)` as a finding,
+/// because P2 has no internal status filter to suppress legitimate WIP markers.
+///
+/// Reference: `docs/architecture-audit/f-infra-design.md` §5 P2 and §10.
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     let mut findings = Vec::new();
 
