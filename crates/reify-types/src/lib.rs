@@ -6,6 +6,7 @@
 #![allow(clippy::mutable_key_type)]
 
 pub mod annotation;
+pub mod boundary_attachment;
 pub mod constraint;
 pub mod diagnostics;
 pub mod dimension;
@@ -31,6 +32,7 @@ pub use annotation::{
     Annotation, AnnotationArg, DEPRECATED_ANNOTATION, OPTIMIZED_ANNOTATION, SHELL_ANNOTATION,
     SOLID_ANNOTATION, SOLVER_HINT_ANNOTATION, TEST_ANNOTATION, has_test_annotation,
 };
+pub use boundary_attachment::{BoundaryAssociation, NodeAttachment};
 pub use constraint::{
     AutoParam, ConstraintChecker, ConstraintDiagnostics, ConstraintDomain, ConstraintInput,
     ConstraintResult, ConstraintSolver, OptimizationObjective, OptimizedImpl, OptimizedImplInput,

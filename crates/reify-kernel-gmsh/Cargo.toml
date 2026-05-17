@@ -29,24 +29,23 @@ stub_register = []
 # Compile in the `BoundaryAttributionInput` / `mesh_surface_to_volume_with_attribution`
 # impl (`src/mesh_boundary.rs`). Default-off; activated by the self-dev-dep
 # below for in-crate integration tests, and by engine wiring on its own dep
-# edge in production. Mirrors `reify-kernel-occt/Cargo.toml:26-32`.
-mesh-morph = ["dep:reify-mesh-morph"]
+# edge in production.
+#
+# Pure compile-gate (no implicit deps). The `BoundaryAssociation` /
+# `NodeAttachment` vocabulary lives in `reify-types` (already a normal dep),
+# so this feature does NOT need `["dep:reify-mesh-morph"]` — depending on
+# `reify-mesh-morph` here would form a Cargo cycle through
+# `reify-mesh-morph` → `reify-eval` → `reify-solver-elastic` → this crate.
+# Unlike `reify-kernel-occt`, which needs the `Projector` trait for
+# `OcctProjector` and therefore must depend on `reify-mesh-morph`, the gmsh
+# adapter only needs the data types and the `reify-eval → ...` chain blocks
+# the equivalent OCCT pattern here.
+mesh-morph = []
 
 [dependencies]
 reify-types.workspace = true
 inventory.workspace = true
 tracing.workspace = true
-# Optional dep behind the `mesh-morph` feature flag — gates the
-# `BoundaryAttributionInput` / `mesh_surface_to_volume_with_attribution` impl
-# in `src/mesh_boundary.rs`. Kept optional (default-off) to preserve the
-# adapter→eval dep-direction inversion documented at Cargo.toml:35-43:
-# adapter crates (occt/gmsh/manifold/fidget/openvdb) deliberately exclude
-# `reify-eval` from normal deps so `reify-eval` can depend on adapter crates
-# without a cycle. `reify-mesh-morph` deps `reify-eval` normally, so a
-# non-optional edge here would transitively pull eval into every consumer of
-# `reify-kernel-gmsh`. Engine wiring (task ε / 2947) enables this feature on
-# its own dep edge; in-crate integration tests opt in via the self-dev-dep.
-reify-mesh-morph = { workspace = true, optional = true }
 
 [build-dependencies]
 reify-build-utils.workspace = true
@@ -70,3 +69,4 @@ reify-test-support.workspace = true
 #   crates/reify-kernel-openvdb/Cargo.toml:72
 #   crates/reify-kernel-manifold/Cargo.toml:51
 reify-kernel-gmsh = { path = ".", features = ["stub_register", "mesh-morph"] }
+
