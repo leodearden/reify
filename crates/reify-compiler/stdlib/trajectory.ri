@@ -66,3 +66,18 @@ pub type JointValue = Real
 // fields (e.g. `total_duration`) land in their own phases once the design
 // has settled on a single representation.
 trait Profile { }
+
+// BoundaryCondition — marker trait for every spline boundary-mode variant
+// (PRD §4.1). The α phase declares three refining structures:
+//   - NaturalSpline   ("zero second derivative at endpoints")
+//   - ClampedSpline   ("specified tangents at first / last waypoint")
+//   - PeriodicSpline  ("first and last waypoint agree")
+//
+// Kept empty: each variant encodes its semantic invariant in the β-phase
+// evaluator (`PiecewisePolynomialProfile` coefficient construction), not as
+// an authoring-time param. The trait exists only to give the `boundary`
+// param on `PiecewisePolynomialProfile` a single nominal type so the
+// evaluator dispatches on the concrete variant via the SIR-α nominal
+// type-tag — exactly the same mechanism `solve_elastic_static` uses to
+// dispatch on `PointLoad` vs `FixedSupport`.
+trait BoundaryCondition { }
