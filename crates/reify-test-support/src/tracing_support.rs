@@ -659,8 +659,9 @@ impl CapturingSubscriberBuilder {
     }
 
     /// Set an optional target-prefix filter.  When set, only events whose
-    /// `metadata().target()` starts with `prefix` are captured inside
-    /// `event()`; all others are silently discarded.
+    /// `metadata().target()` starts with `prefix` are recorded; the filter is
+    /// applied in `enabled()` alongside the level check, so non-matching
+    /// callsites are rejected at the dispatcher gate and never reach `event()`.
     pub fn target_prefix(mut self, prefix: impl Into<String>) -> Self {
         self.target_prefix = Some(prefix.into());
         self
@@ -1306,12 +1307,14 @@ mod tests {
         );
     }
 
-    /// Calling `event()` directly on `WarnCapturingSubscriber` with a non-WARN
-    /// event — bypassing the tracing dispatcher's `enabled()` gate — must panic
-    /// loudly in debug builds rather than silently capturing the event.
+    /// Calling `event()` on the `LevelCapturingSubscriber` reached through
+    /// `warn_capturing_subscriber()` with a non-WARN event — bypassing the
+    /// tracing dispatcher's `enabled()` gate — must panic loudly in debug builds
+    /// rather than silently capturing the event.
     ///
-    /// Mirrors `event_panics_on_non_warn_when_dispatcher_contract_violated` but
-    /// exercises `WarnCapturingSubscriber::event()`'s `debug_assert_eq!`.
+    /// Mirrors `capturing_subscriber_event_panics_on_unexpected_level_when_contract_violated`
+    /// but exercises `LevelCapturingSubscriber::event()`'s `debug_assert_eq!`
+    /// on the WARN-registered path via `warn_capturing_subscriber()`.
     /// The `#[should_panic(expected = "enabled() contract violated")]` attribute
     /// uses [`CONTRACT_VIOLATION_MARKER`] as the canonical anchor substring.
     ///
@@ -1347,8 +1350,8 @@ mod tests {
     /// parameterized `debug_assert_eq!` on `self.level`.
     ///
     /// Mirrors `capturing_event_panics_on_non_warn_when_dispatcher_contract_violated`
-    /// but exercises `LevelCapturingSubscriber::event()`'s (not yet added)
-    /// level-parameterized `debug_assert_eq!` on the INFO builder path.
+    /// but exercises `LevelCapturingSubscriber::event()`'s level-parameterized
+    /// `debug_assert_eq!` on the INFO builder path.
     ///
     /// # Release-build note
     ///
