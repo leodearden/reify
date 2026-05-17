@@ -74,10 +74,10 @@ Graph-walk invariant (Q-F-6) is **not** an explicit dependency-DAG walk in slice
 
 **Invariant:** For every public symbol introduced by a `done` task's `metadata.files` diff, at least one of:
 - a non-test caller exists in the workspace (jcodemunch `find_references` filtered to non-`*/tests/*` paths), OR
-- a `pending`/`in-progress` task with `consumer_ref` referencing the producing PRD exists in fused-memory, OR
+- a `pending`, `in-progress`, or `review` task with `consumer_ref` referencing the producing PRD exists in fused-memory, OR
 - the symbol carries `#[allow(dead_code)]` or `#[cfg(test)]`.
 
-**Detector:** `get_changed_symbols(branch=main, since=<task done timestamp>)` → for each new pub symbol, `find_references` → filter to non-test → check task-graph for downstream consumer.
+**Detector:** `get_changed_symbols(branch=ctx.producer_branch.unwrap_or("main"), since=<task done timestamp>)` → for each new pub symbol, `find_references(symbol)` (scoped to the symbol's declaring file to avoid same-name conflation) → filter to non-test → check task-graph for downstream consumer.
 
 **False-positive guards:**
 - Grace window: producer-orphan flagged only if **>14 days** have passed since done-flip with no consumer landing AND no consumer task pending. Inside the window: log only (low severity).
