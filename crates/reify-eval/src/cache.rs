@@ -807,6 +807,67 @@ impl CacheStore {
         marked
     }
 
+    /// Complete the in-flight ComputeNode dispatch lifecycle atomically —
+    /// PRD §3 "Atomic completion" steps 1-3 / §8 task δ
+    /// (`docs/prds/v0_3/compute-node-contract.md`).
+    ///
+    /// For each `(out, value)` this performs, in a single critical section
+    /// (one function call — no public sub-step API exists in between, so no
+    /// consumer can observe an incoherent intermediate state):
+    ///
+    /// 1. **Write** the new value: `CachedResult::Value(value, Determined)`.
+    /// 2. **Flip** freshness Pending → Final.
+    /// 3. **Clear** `pending_cause` on the output entry.
+    ///
+    /// Steps 1-2 go through [`CacheStore::record_evaluation_with_freshness`]
+    /// with `Freshness::Final`, which covers both the changed-hash path
+    /// (re-insert with `pending_cause = None`) and the early-cutoff path
+    /// (same hash as the prior Pending entry — fields updated but
+    /// `pending_cause` is PRESERVED per that helper's docstring). Step 3 is
+    /// the explicit side-table clear that closes the early-cutoff gap and is
+    /// what makes the same-hash-as-prior case atomic.
+    ///
+    /// `_with_cause` is deliberately NOT called here — `Freshness::Final`
+    /// has no diagnostic chain root.
+    ///
+    /// `c_id` is accepted but unused for δ scope; it is reserved for the
+    /// warm-state donation step (PRD §5 step 4, ζ scope / task 3425) so that
+    /// future work does not have to widen this signature.
+    ///
+    /// Returns the count of output entries written.
+    pub fn complete_compute_dispatch_atomically(
+        &mut self,
+        c_id: &ComputeNodeId,
+        outputs: &[(ValueCellId, Value)],
+        version: VersionId,
+    ) -> usize {
+        // Reserved for ζ-scope warm-state donation (PRD §5 step 4 / task 3425).
+        let _ = c_id;
+        let mut updated = 0;
+        for (out, value) in outputs {
+            let node = NodeId::Value(out.clone());
+            let cached_result = CachedResult::Value(value.clone(), DeterminacyState::Determined);
+            // Steps 1-2: write value + flip freshness to Final.
+            self.record_evaluation_with_freshness(
+                node.clone(),
+                cached_result,
+                version,
+                DependencyTrace::default(),
+                Freshness::Final,
+            );
+            // Step 3: explicitly clear pending_cause. The early-cutoff path
+            // of record_evaluation_with_freshness preserves the side-table,
+            // so a same-hash-as-prior-Pending update would otherwise leak the
+            // stale Compute chain root — clearing here is the single
+            // critical-section atomicity guarantee.
+            if let Some(entry) = self.caches.get_mut(&node) {
+                entry.pending_cause = None;
+            }
+            updated += 1;
+        }
+        updated
+    }
+
     /// Read the diagnostic-chain cause stored on a node's cache entry.
     ///
     /// Returns the `Option<NodeId>` from the entry's `pending_cause`
