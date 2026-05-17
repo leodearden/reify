@@ -2160,10 +2160,10 @@ pub fn try_eval_ad_hoc_selector(
         _ => return None,
     };
 
-    // (2) Point arm was handled by Layer-1 (eval_expr); post-process is a no-op.
-    if *selector_kind == reify_types::SelectorKind::Point {
-        return None;
-    }
+    // (2) Convert to the narrowed FrameSubShapeKind — Point maps to None and
+    //     `?` early-returns here, keeping Point out of all downstream matches.
+    //     Layer-1 (eval_expr) already resolved @point from literal coordinates.
+    let frame_sub_shape_kind = FrameSubShapeKind::from_selector_kind(selector_kind)?;
 
     // (3) Extract the base name — must be a string literal.
     let name = resolve_string_literal_arg(base)?;
@@ -2181,8 +2181,9 @@ pub fn try_eval_ad_hoc_selector(
     };
 
     // (6) Extract sub-shape handles from the kernel.
-    let candidates: Vec<GeometryHandleId> = match selector_kind {
-        reify_types::SelectorKind::Face => match kernel.extract_faces(handle) {
+    //     Exhaustive over Face/Edge — no Point arm needed (filtered above).
+    let candidates: Vec<GeometryHandleId> = match frame_sub_shape_kind {
+        FrameSubShapeKind::Face => match kernel.extract_faces(handle) {
             Ok(faces) => faces,
             Err(err) => {
                 diagnostics.push(Diagnostic::warning(format!(
@@ -2191,7 +2192,7 @@ pub fn try_eval_ad_hoc_selector(
                 return Some(reify_types::Value::Undef);
             }
         },
-        reify_types::SelectorKind::Edge => match kernel.extract_edges(handle) {
+        FrameSubShapeKind::Edge => match kernel.extract_edges(handle) {
             Ok(edges) => edges,
             Err(err) => {
                 diagnostics.push(Diagnostic::warning(format!(
@@ -2200,7 +2201,6 @@ pub fn try_eval_ad_hoc_selector(
                 return Some(reify_types::Value::Undef);
             }
         },
-        reify_types::SelectorKind::Point => unreachable!("Point arm returned None above"),
     };
 
     // (7) Build AttributeQuery with dual user_label + canonical-name role translation.
@@ -2224,7 +2224,7 @@ pub fn try_eval_ad_hoc_selector(
     //     Warning, so we only need to patch the cell value here.
     match resolution {
         crate::topology_attribute_resolver::AttributeResolution::Resolved(target_id) => {
-            construct_frame_from_kernel(target_id, selector_kind, kernel, diagnostics)
+            construct_frame_from_kernel(target_id, frame_sub_shape_kind, kernel, diagnostics)
         }
         _ => Some(reify_types::Value::Undef),
     }
@@ -2277,23 +2277,23 @@ pub fn cap_kind_translation(label: &str) -> Option<(reify_types::Role, u32)> {
 /// Query the kernel for centroid and normal/tangent of `target_id`, then
 /// construct a `Value::Frame { origin, basis }`.
 ///
-/// **Axis convention:**
-/// - For *faces*: the face normal maps to the frame's **+Z** axis.
-///   This is the standard CAD convention (Z-up frames for planar features).
-/// - For *edges*: the edge tangent also maps to the frame's **+Z** axis.
-///   Downstream consumers (sweep ports, path-mating jigs) that expect the
-///   tangent along **+X** should apply a 90° R_Y pre-rotation. This is
-///   documented here rather than baked in so that future consumers can choose
-///   the convention that suits them without the call site growing parameters.
-///   A `quaternion_from_z_to_axis` call with the tangent vector produces a
-///   basis whose +Z column equals the tangent direction.
+/// The `sub_shape_kind` parameter selects the kernel query:
+/// - `FrameSubShapeKind::Face` → `GeometryQuery::FaceNormal` (face normal maps
+///   to the frame's **+Z** axis — standard CAD convention for planar features).
+/// - `FrameSubShapeKind::Edge` → `GeometryQuery::EdgeTangent` (edge tangent
+///   maps to the frame's **+Z** axis; downstream consumers that expect the
+///   tangent along **+X** should apply a 90° R_Y pre-rotation).
+///
+/// `FrameSubShapeKind` excludes `Point` by construction, so this function
+/// never needs to handle the Point case — the type system enforces the
+/// invariant that was previously guarded by `unreachable!()` arms.
 ///
 /// On centroid failure: push a Warning and return `Some(Value::Undef)`.
 /// On normal/tangent failure: push a Warning and use identity basis, so the
 /// Frame still has a meaningful origin.
 fn construct_frame_from_kernel(
     target_id: GeometryHandleId,
-    selector_kind: &reify_types::SelectorKind,
+    sub_shape_kind: FrameSubShapeKind,
     kernel: &mut dyn reify_types::GeometryKernel,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_types::Value> {
@@ -2324,21 +2324,15 @@ fn construct_frame_from_kernel(
     };
 
     // ── Basis via FaceNormal (face) or EdgeTangent (edge) ─────────────────
-    let basis_query = match selector_kind {
-        reify_types::SelectorKind::Face => {
-            reify_types::GeometryQuery::FaceNormal(target_id)
-        }
-        reify_types::SelectorKind::Edge => {
-            reify_types::GeometryQuery::EdgeTangent(target_id)
-        }
-        reify_types::SelectorKind::Point => {
-            unreachable!("Point arm returned None before construct_frame_from_kernel is called")
-        }
+    // Exhaustive over Face/Edge — Point is excluded by the FrameSubShapeKind
+    // type, so no unreachable!() arm is needed here.
+    let basis_query = match sub_shape_kind {
+        FrameSubShapeKind::Face => reify_types::GeometryQuery::FaceNormal(target_id),
+        FrameSubShapeKind::Edge => reify_types::GeometryQuery::EdgeTangent(target_id),
     };
-    let query_label = match selector_kind {
-        reify_types::SelectorKind::Face => "FaceNormal",
-        reify_types::SelectorKind::Edge => "EdgeTangent",
-        reify_types::SelectorKind::Point => unreachable!(),
+    let query_label = match sub_shape_kind {
+        FrameSubShapeKind::Face => "FaceNormal",
+        FrameSubShapeKind::Edge => "EdgeTangent",
     };
 
     let basis = match kernel.query(&basis_query) {
