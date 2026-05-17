@@ -409,7 +409,8 @@ mod tests {
     fn entity_at_source_position_width_cell_returns_bracket_width() {
         let compiled = bracket_compiled();
         let source = reify_test_support::bracket_source();
-        let result = resolve_entity_at_source_position(&compiled, source, 2, 11);
+        let line_offsets = reify_types::build_line_offsets(source);
+        let result = resolve_entity_at_source_position(&compiled, source, &line_offsets, 2, 11);
         assert_eq!(
             result,
             Some("Bracket.width".to_string()),
@@ -424,7 +425,8 @@ mod tests {
     fn entity_at_source_position_thickness_cell_returns_bracket_thickness() {
         let compiled = bracket_compiled();
         let source = reify_test_support::bracket_source();
-        let result = resolve_entity_at_source_position(&compiled, source, 4, 11);
+        let line_offsets = reify_types::build_line_offsets(source);
+        let result = resolve_entity_at_source_position(&compiled, source, &line_offsets, 4, 11);
         assert_eq!(
             result,
             Some("Bracket.thickness".to_string()),
@@ -441,7 +443,8 @@ mod tests {
     fn entity_at_source_position_constraint_line_returns_template_name() {
         let compiled = bracket_compiled();
         let source = reify_test_support::bracket_source();
-        let result = resolve_entity_at_source_position(&compiled, source, 10, 5);
+        let line_offsets = reify_types::build_line_offsets(source);
+        let result = resolve_entity_at_source_position(&compiled, source, &line_offsets, 10, 5);
         assert_eq!(
             result,
             Some("Bracket".to_string()),
@@ -457,7 +460,8 @@ mod tests {
     fn entity_at_source_position_past_end_of_source_returns_none() {
         let compiled = bracket_compiled();
         let source = reify_test_support::bracket_source();
-        let result = resolve_entity_at_source_position(&compiled, source, 16, 1);
+        let line_offsets = reify_types::build_line_offsets(source);
+        let result = resolve_entity_at_source_position(&compiled, source, &line_offsets, 16, 1);
         assert!(
             result.is_none(),
             "cursor past end of source at (16, 1) should return None, got {:?}",
@@ -471,16 +475,17 @@ mod tests {
     fn entity_at_source_position_zero_line_or_col_returns_none() {
         let compiled = bracket_compiled();
         let source = reify_test_support::bracket_source();
+        let line_offsets = reify_types::build_line_offsets(source);
         assert!(
-            resolve_entity_at_source_position(&compiled, source, 0, 1).is_none(),
+            resolve_entity_at_source_position(&compiled, source, &line_offsets, 0, 1).is_none(),
             "zero line should return None"
         );
         assert!(
-            resolve_entity_at_source_position(&compiled, source, 1, 0).is_none(),
+            resolve_entity_at_source_position(&compiled, source, &line_offsets, 1, 0).is_none(),
             "zero col should return None"
         );
         assert!(
-            resolve_entity_at_source_position(&compiled, source, 0, 0).is_none(),
+            resolve_entity_at_source_position(&compiled, source, &line_offsets, 0, 0).is_none(),
             "zero line and col should return None"
         );
     }
@@ -492,10 +497,12 @@ mod tests {
     fn entity_at_source_position_at_cell_span_start_returns_cell() {
         let compiled = bracket_compiled();
         let source = reify_test_support::bracket_source();
+        let line_offsets = reify_types::build_line_offsets(source);
         let loc = resolve_entity_source_location(&compiled, source, "bracket.ri", "Bracket.width")
             .expect("forward lookup for Bracket.width must succeed");
         // loc.line and loc.column are 1-based and map to span.start of width cell.
-        let result = resolve_entity_at_source_position(&compiled, source, loc.line, loc.column);
+        let result =
+            resolve_entity_at_source_position(&compiled, source, &line_offsets, loc.line, loc.column);
         assert_eq!(
             result,
             Some("Bracket.width".to_string()),
@@ -513,11 +520,17 @@ mod tests {
     fn entity_at_source_position_at_cell_span_end_does_not_return_that_cell() {
         let compiled = bracket_compiled();
         let source = reify_test_support::bracket_source();
+        let line_offsets = reify_types::build_line_offsets(source);
         let loc = resolve_entity_source_location(&compiled, source, "bracket.ri", "Bracket.width")
             .expect("forward lookup for Bracket.width must succeed");
         // loc.end_line and loc.end_col map to span.end (exclusive upper bound).
-        let result =
-            resolve_entity_at_source_position(&compiled, source, loc.end_line, loc.end_column);
+        let result = resolve_entity_at_source_position(
+            &compiled,
+            source,
+            &line_offsets,
+            loc.end_line,
+            loc.end_column,
+        );
         // Must NOT return the width cell — the position at span.end is outside it.
         assert_ne!(
             result,
