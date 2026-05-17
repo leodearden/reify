@@ -2654,6 +2654,15 @@ fn resolve_driving_params_from_ast(
                     let param_cell_id = ValueCellId::new(structure_name, &value_cell_name);
                     let param_val = check.values.get_or_undef(&param_cell_id);
                     jd.current_value_si = scalar_to_f64(&param_val);
+                    // task-3783: promote binding to ParamBound only when the
+                    // descriptor still holds the kind-based default (i.e. has not
+                    // been resolved yet by a prior bind() pair — first-wins).
+                    if matches!(jd.binding, JointBinding::LiteralBound { initial_value_si: None, .. }) {
+                        jd.binding = JointBinding::ParamBound {
+                            param_cell_id: param_cell_id_str.clone(),
+                            current_value_si: jd.current_value_si,
+                        };
+                    }
                 }
             }
         }
