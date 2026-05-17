@@ -137,3 +137,29 @@ structure def Waypoint {
 // evaluator a nominal type-tag to dispatch on; the dispatch shape mirrors
 // `PointLoad` / `FixedSupport` in `solve_elastic_static`.
 structure def NaturalSpline : BoundaryCondition { }
+
+// ClampedSpline — "clamped" boundary marker carrying explicit per-joint
+// velocity tangents at the first and last waypoint (PRD §4.1):
+//
+//   start_velocity : List<JointValue>   — q̇ at the first waypoint
+//   end_velocity   : List<JointValue>   — q̇ at the last waypoint
+//
+// Both lists are caller-supplied (no defaults): a "clamped" boundary is
+// only meaningful when the caller has a specific tangent intent. The β-
+// phase evaluator dispatches on the SIR-α nominal type-tag — exactly the
+// same mechanism `solve_elastic_static` uses to dispatch on `PointLoad`
+// vs `FixedSupport`.
+//
+// No structure-level constraint: the only meaningful cross-list invariant
+// (`start_velocity.len() == end_velocity.len() == waypoints[0].values.len()`)
+// is profile-level and owned by the β-phase profile builder once it sees
+// the waypoints together — a per-clamped-spline constraint cannot see the
+// rest of the profile, so the check belongs there.
+//
+// TODO(joint-value-type): `List<JointValue>` retargets to the kinematic-
+// completion PRD's proper `JointValue` type when that PRD lands (see the
+// header §1 type alias note).
+structure def ClampedSpline : BoundaryCondition {
+    param start_velocity : List<JointValue>
+    param end_velocity : List<JointValue>
+}
