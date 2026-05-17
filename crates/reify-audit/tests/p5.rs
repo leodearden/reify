@@ -17,7 +17,7 @@ mod common;
 
 mod p5 {
 
-use crate::common::schema::*;
+use crate::common::schema::{seed_db, insert_event, insert_task_completed_event};
 use reify_audit::{
     AuditContext, DoneProvenance, EvidenceRef, Finding, GitCommit, MockGitOps, MockJCodemunchOps,
     Pattern, Severity, TaskMetadata, p5_phantom_done,

@@ -34,11 +34,12 @@ mod common;
 
 mod audit_integration {
 
-use crate::common::schema::*;
+use crate::common::schema::{seed_db, insert_task_completed_event};
 use crate::common::fixtures::legacy_meta;
 use reify_audit::{
-    AuditContext, ChangedSymbol, DoneProvenance, EvidenceRef, MockGitOps, MockJCodemunchOps,
-    Pattern, Severity, TaskMetadata, p1_producer_orphan, p2_consumer_stub, p5_phantom_done,
+    AuditContext, ChangedSymbol, DoneProvenance, EvidenceRef, Finding, MockGitOps,
+    MockJCodemunchOps, Pattern, Severity, TaskMetadata, p1_producer_orphan, p2_consumer_stub,
+    p5_phantom_done,
 };
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -304,24 +305,30 @@ mod tests {
         };
 
         let p5_findings = p5_phantom_done::check(&ctx);
-        assert!(
-            p5_findings.is_empty(),
-            "P5: expected no findings on seven legacy tasks; got {:?}",
-            p5_findings
-        );
-
         let p1_findings = p1_producer_orphan::check(&ctx);
-        assert!(
-            p1_findings.is_empty(),
-            "P1: expected no findings on seven legacy tasks; got {:?}",
-            p1_findings
-        );
-
         let p2_findings = p2_consumer_stub::check(&ctx);
+
+        // Collect all findings keyed by task_id for precise regression
+        // diagnostics: if any fixture is falsely flagged, the error message
+        // names the offending task_id and detector directly, without requiring
+        // the reader to bisect the fixture list.
+        // Note: task 2358_c is scaffold for guard B4 (paired pending consumer),
+        // not one of the seven asserted legacy tasks. It carries status=pending
+        // + files=[] so all three detectors' first-line skip filters silence it
+        // cleanly; any finding on 2358_c would indicate a guard regression too.
+        let mut findings_by_task: HashMap<String, Vec<String>> = HashMap::new();
+        for (detector, findings) in [("P5", &p5_findings), ("P1", &p1_findings), ("P2", &p2_findings)] {
+            for f in findings {
+                findings_by_task
+                    .entry(f.task_id.clone())
+                    .or_default()
+                    .push(format!("{}: {:?}", detector, f));
+            }
+        }
         assert!(
-            p2_findings.is_empty(),
-            "P2: expected no findings on seven legacy tasks; got {:?}",
-            p2_findings
+            findings_by_task.is_empty(),
+            "unexpected findings across seven legacy tasks: {:?}",
+            findings_by_task
         );
     }
 
