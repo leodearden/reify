@@ -448,4 +448,58 @@ mod tests {
             }
         ));
     }
+
+    // ── unflatten_dofs round-trip + error tests (step-6) ─────────────────
+
+    #[test]
+    fn unflatten_dofs_round_trips_mixed_values_through_flatten() {
+        // Round-trip law: unflatten_dofs(&flatten_dofs(v), shapes) == Ok(v.to_vec()).
+        // Mixed shape covering all four variants.
+        let values = vec![
+            JointValue::Scalar(0.25),
+            JointValue::Cyl([1.0, 2.0]),
+            JointValue::Planar([3.0, 4.0, 5.0]),
+            JointValue::Sphere([1.0, 0.0, 0.0, 0.0]),
+        ];
+        let shapes = vec![
+            JointKind::Prismatic,
+            JointKind::Cylindrical,
+            JointKind::Planar,
+            JointKind::Spherical,
+        ];
+
+        let flat = flatten_dofs(&values);
+        let back = unflatten_dofs(&flat, &shapes).expect("round-trip ok");
+        assert_eq!(back, values);
+    }
+
+    #[test]
+    fn unflatten_dofs_empty_shapes_with_empty_buffer_is_ok_empty() {
+        let back = unflatten_dofs(&[], &[]).expect("empty round-trip ok");
+        assert!(back.is_empty());
+    }
+
+    #[test]
+    fn unflatten_dofs_buffer_too_short_returns_err() {
+        // Shapes ask for 1 + 4 = 5 f64s; buffer has only 3 → too short.
+        let shapes = vec![JointKind::Prismatic, JointKind::Spherical];
+        let flat = vec![1.0, 0.5, 0.0];
+        let err = unflatten_dofs(&flat, &shapes).unwrap_err();
+        assert!(matches!(err, FlattenError::BufferTooShort { .. }));
+    }
+
+    #[test]
+    fn unflatten_dofs_buffer_too_long_returns_err() {
+        // Shapes ask for 1 f64; buffer has 3 → 2 trailing leftover.
+        let shapes = vec![JointKind::Prismatic];
+        let flat = vec![1.0, 2.0, 3.0];
+        let err = unflatten_dofs(&flat, &shapes).unwrap_err();
+        assert!(matches!(
+            err,
+            FlattenError::BufferTooLong {
+                consumed: 1,
+                leftover: 2,
+            }
+        ));
+    }
 }
