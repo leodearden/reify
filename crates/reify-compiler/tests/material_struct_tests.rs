@@ -229,26 +229,17 @@ fn material_struct_call_is_valid_param_default() {
 
 // ─── step-9: end-to-end BoltFlange compiles with a Material(...) default ────
 
-/// Mirror `examples/m5_geometry_flange.ri` exactly, except replace the
-/// previously-defaultless `param material : Material` declaration with a
-/// concrete struct-call default. This is the user-visible payoff promised by
-/// task 1876: "`param material : Material = Material(...)` is meaningful" —
-/// end-to-end compilation must succeed against the full stdlib (so trait
-/// refinements like `Rigid : Physical : MaterialSpec` are exercised), the
-/// `material` member must resolve to `Type::StructureRef("Material")`, and the
-/// default expression must be recorded as a `Material(...)` call. This guards
-/// the entire pipeline (resolution + default typing + stdlib cascade) against
-/// regressions before step-10 updates the example file itself.
-#[test]
-fn boltflange_compiles_with_material_default() {
-    // Source intentionally mirrors `examples/m5_geometry_flange.ri`
-    // one-for-one so that, if the example evolves, a diff against this string
-    // makes the divergence visible. Post-GHR-α (task 3603 / PRD §8 Phase 1)
-    // the example is spec-shape `Rigid : Physical` — geometry + material
-    // struct slots; the legacy flat `density/name/volume/centroid_x/y/z`
-    // params are gone (`material : Material` now carries density via the
-    // struct, `geometry : Solid` feeds the trait's `volume(geometry)` let).
-    let source = r#"
+/// Mirror of `examples/m5_geometry_flange.ri`, used by both
+/// `boltflange_compiles_with_material_default` and the self-enforcing
+/// mirror check `boltflange_mirror_source_matches_example_file`.
+///
+/// **Mirroring contract** (reviewer #6 follow-up): this string MUST stay
+/// in lock-step with `examples/m5_geometry_flange.ri`. The mirror-check
+/// test below reads the on-disk example at test time and compares the
+/// structural-body lines, so divergence between the embedded source and
+/// the example is caught at `cargo test` time rather than via human
+/// diffing.
+const BOLTFLANGE_MIRROR_SOURCE: &str = r#"
         structure def BoltFlange : Rigid {
             param outer_radius : Length = 60mm
             param height : Length = 12mm
@@ -273,6 +264,87 @@ fn boltflange_compiles_with_material_default() {
             param geometry : Solid = difference(body, holes)
         }
     "#;
+
+/// **Self-enforcing mirror contract** (reviewer #6 follow-up). Reads
+/// `examples/m5_geometry_flange.ri` at test time and asserts that every
+/// distinctive param/let/constraint line of `BOLTFLANGE_MIRROR_SOURCE` is
+/// present in the example file. Without this check, the doc-comment on
+/// `boltflange_compiles_with_material_default` claimed the embedded source
+/// "mirrors the example one-for-one" but enforcement was manual — a
+/// divergence in the example would silently outdate the test fixture.
+///
+/// Comparison strategy: trim leading whitespace on each line, drop empty
+/// lines and pure comment lines, and require each non-trivial line of the
+/// embedded source to appear as a substring of the on-disk file. Tolerates
+/// whitespace / comment / surrounding-text differences while still
+/// catching any structural divergence (param renames, value changes,
+/// trait-bound changes, etc.).
+#[test]
+fn boltflange_mirror_source_matches_example_file() {
+    const EXAMPLE_PATH: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/m5_geometry_flange.ri"
+    );
+    let example_src = std::fs::read_to_string(EXAMPLE_PATH).expect(
+        "failed to read examples/m5_geometry_flange.ri — check CARGO_MANIFEST_DIR resolution",
+    );
+
+    // Each distinctive line of the embedded source must appear (after
+    // leading-whitespace trim) somewhere in the on-disk example.
+    let mut missing: Vec<String> = Vec::new();
+    for line in BOLTFLANGE_MIRROR_SOURCE.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Skip pure-comment lines and the bracketing braces — those don't
+        // carry structural-body content.
+        if trimmed.starts_with("//") || trimmed == "{" || trimmed == "}" {
+            continue;
+        }
+        if !example_src.contains(trimmed) {
+            missing.push(trimmed.to_string());
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "BOLTFLANGE_MIRROR_SOURCE has diverged from examples/m5_geometry_flange.ri \
+         — the following lines from the embedded mirror are not present in the on-disk \
+         example: {:#?}. Either update the example to match the mirror, or update the \
+         mirror (and the boltflange_compiles_with_material_default test) to match the \
+         example. Mirror contract is documented at \
+         `boltflange_compiles_with_material_default`.",
+        missing
+    );
+}
+
+/// Mirror `examples/m5_geometry_flange.ri` exactly, except replace the
+/// previously-defaultless `param material : Material` declaration with a
+/// concrete struct-call default. This is the user-visible payoff promised by
+/// task 1876: "`param material : Material = Material(...)` is meaningful" —
+/// end-to-end compilation must succeed against the full stdlib (so trait
+/// refinements like `Rigid : Physical : MaterialSpec` are exercised), the
+/// `material` member must resolve to `Type::StructureRef("Material")`, and the
+/// default expression must be recorded as a `Material(...)` call. This guards
+/// the entire pipeline (resolution + default typing + stdlib cascade) against
+/// regressions before step-10 updates the example file itself.
+#[test]
+fn boltflange_compiles_with_material_default() {
+    // Source intentionally mirrors `examples/m5_geometry_flange.ri`
+    // one-for-one. Post-GHR-α (task 3603 / PRD §8 Phase 1) the example is
+    // spec-shape `Rigid : Physical` — geometry + material struct slots; the
+    // legacy flat `density/name/volume/centroid_x/y/z` params are gone
+    // (`material : Material` now carries density via the struct,
+    // `geometry : Solid` feeds the trait's `volume(geometry)` let).
+    //
+    // The mirroring contract is SELF-ENFORCING (reviewer #6 follow-up): the
+    // `boltflange_mirror_source_matches_example_file` assertion below reads
+    // the on-disk example at test time and verifies every distinctive
+    // param/let line of `BOLTFLANGE_MIRROR_SOURCE` is present in the
+    // example file. If the example evolves, this test fails — humans no
+    // longer need to diff manually.
+    let source = BOLTFLANGE_MIRROR_SOURCE;
     let module = compile_source_with_stdlib(source);
 
     let errors: Vec<_> = module
