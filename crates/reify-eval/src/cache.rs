@@ -3961,4 +3961,51 @@ mod tests {
              (PRD §3 chain-root contract extension; cache.rs:1080-1135)"
         );
     }
+
+    /// RED (task 3423/δ step-2): `begin_compute_dispatch` on an EXISTING
+    /// output-VC entry routes through `mark_pending_with_cause`, capturing
+    /// `last_substantive` from the prior `result_hash` and recording the
+    /// `NodeId::Compute(c_id)` chain root. Pins the existing-entry branch of
+    /// the begin lifecycle (PRD §3 "Atomic completion" step 0 / §8 task δ).
+    #[test]
+    fn begin_compute_dispatch_marks_existing_output_pending_with_compute_cause() {
+        use reify_types::{ComputeNodeId, Freshness, ResultRef};
+
+        let mut store = CacheStore::new();
+        let b = ValueCellId::new("T", "b");
+
+        // Existing Final entry: Value::Int(42) @ VersionId(1) (via make_seed_entry).
+        store.put(NodeId::Value(b.clone()), make_seed_entry());
+        let prior_hash = store
+            .get(&NodeId::Value(b.clone()))
+            .expect("seeded entry must be present")
+            .result_hash;
+
+        let c_id = ComputeNodeId::new("T", 0);
+        let before = store.pending_transition_count();
+
+        let marked = store.begin_compute_dispatch(&c_id, &[b.clone()]);
+
+        assert_eq!(
+            marked, 1,
+            "begin_compute_dispatch must report 1 output marked"
+        );
+        assert_eq!(
+            store.freshness(&NodeId::Value(b.clone())),
+            Freshness::Pending {
+                last_substantive: ResultRef::of_hash(prior_hash),
+            },
+            "existing-entry begin must capture last_substantive from prior result_hash"
+        );
+        assert_eq!(
+            store.pending_cause(&NodeId::Value(b.clone())),
+            Some(NodeId::Compute(c_id)),
+            "begin must record NodeId::Compute(c_id) as the chain root (PRD §3)"
+        );
+        assert_eq!(
+            store.pending_transition_count(),
+            before + 1,
+            "begin_compute_dispatch must bump pending_transition_count by 1 per marked output"
+        );
+    }
 }
