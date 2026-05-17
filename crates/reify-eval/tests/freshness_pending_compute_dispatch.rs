@@ -20,12 +20,20 @@ use reify_types::{
 
 // ── step-8: RED — run_compute_dispatch begin→trampoline→complete pipeline ─────
 
-/// Number of times `observing_fn` was invoked. Only `observing_fn` (target
-/// "test::observer", used by exactly one test) touches this static, so the
-/// count is not contaminated by other tests in this binary.
+/// Number of times `observing_fn` was invoked.
+///
+/// **Single-test ownership invariant**: this static is touched exclusively by
+/// `observing_fn` (target "test::observer"), which in turn is registered only
+/// by `run_compute_dispatch_helper_invokes_begin_then_trampoline_then_atomic_complete`.
+/// Adding a second test in this binary that registers a trampoline calling
+/// `observing_fn` — directly or via "test::observer" — will silently corrupt
+/// the count. The test resets the static at entry as belt-and-suspenders
+/// against the cargo-test process being reused across runs.
 static INVOCATION_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 /// The `value_inputs[0]` the trampoline observed on its single invocation.
+/// Shares the single-test ownership invariant with `INVOCATION_COUNT` above;
+/// the test resets it on entry.
 static OBSERVED_INPUTS: OnceLock<Mutex<Option<Value>>> = OnceLock::new();
 
 /// Synthetic trampoline: records its invocation and observed input, then
@@ -61,6 +69,16 @@ fn observing_fn(
 /// yet exist — RED (compilation failure) until step-9.
 #[test]
 fn run_compute_dispatch_helper_invokes_begin_then_trampoline_then_atomic_complete() {
+    // Reset the file-scoped statics — `cargo test` may reuse a process across
+    // multiple invocations and `OBSERVED_INPUTS` is a `OnceLock`, so we have
+    // to take/clear the inner Option rather than rebuilding. The
+    // single-test ownership invariant on the static is documented at its
+    // declaration; this reset is belt-and-suspenders.
+    INVOCATION_COUNT.store(0, Ordering::SeqCst);
+    if let Some(mutex) = OBSERVED_INPUTS.get() {
+        *mutex.lock().unwrap() = None;
+    }
+
     let mut engine = make_simple_engine();
     engine.register_compute_fn("test::observer", observing_fn as ComputeFn);
 
