@@ -1056,22 +1056,12 @@ fn engine_build_topology_stale_warning_carries_nonzero_source_span() {
 // Regression pin: @point selector → None (Layer-1 / Layer-2 split)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// `try_eval_ad_hoc_selector` must return `None` for a `SelectorKind::Point`
-/// expression and emit no diagnostics.
-///
-/// # Why this pin exists
+/// Pins the Layer-1 / Layer-2 split contract: `@point` selectors must
+/// short-circuit to `None` without touching the kernel.
 ///
 /// `@point` selectors are resolved by Layer-1 (`eval_expr`) directly from
-/// literal coordinate arguments; they never reach the kernel-aware Layer-2
-/// dispatch (`try_eval_ad_hoc_selector`).  The test is GREEN both before and
-/// after the step-4 refactor — its role is to lock the dispatcher's
-/// Point→None contract so it survives any future refactor of the
-/// `FrameSubShapeKind::from_selector_kind` converter.
-///
-/// Pre-refactor: the Point→None path is implemented by the line-2133
-/// early-return `if *selector_kind == SelectorKind::Point { return None; }`.
-/// Post-refactor: the `?` on `FrameSubShapeKind::from_selector_kind` propagates
-/// `None` to the same effect.  In both cases `diagnostics` stays empty.
+/// literal coordinate arguments; Layer-2 (`try_eval_ad_hoc_selector`) must
+/// be a no-op for Point and return `None` with an empty diagnostics list.
 #[test]
 fn try_eval_ad_hoc_selector_point_returns_none() {
     // `@point(0m, 0m, 0m)` expression: base="body", kind=Point, args=[0m,0m,0m]
