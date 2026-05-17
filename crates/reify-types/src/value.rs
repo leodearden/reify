@@ -7914,16 +7914,12 @@ mod tests {
     /// `components.first()?` propagates None out of the Point arm.
     #[test]
     fn try_infer_type_empty_point_returns_none() {
-        use crate::ty::Type;
         let v = Value::Point(vec![]);
         assert_eq!(
             v.try_infer_type(),
             None,
             "empty Point has no inferable quantity type"
         );
-        // try_infer_type returning None means infer_type dispatches to the None branch;
-        // step-04 replaces the unwrap_or(Type::Real) there with debug_assert + unreachable!.
-        let _ = Type::Real; // suppress unused import lint
     }
 
     /// Empty Vector has no inferable quantity type — try_infer_type() returns None.
