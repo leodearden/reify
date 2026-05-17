@@ -921,3 +921,114 @@ fn closest_point_on_box_via_occt_returns_plus_x_face_hit() {
         );
     }
 }
+
+/// OCCT-backed end-to-end smoke test for the cluster-A 1-arg list-return
+/// selectors `edges` and `faces` (task 3560). Gated by
+/// `reify_kernel_occt::OCCT_AVAILABLE` so the file always compiles; the test
+/// is a runtime no-op when the OCCT shared lib is absent.
+///
+/// `box(10mm, 10mm, 10mm)` is the canonical reference solid: 12 edges
+/// (4 along each of the three axes) and 6 faces (one per axis-aligned
+/// half-space). The OCCT kernel's `extract_edges` / `extract_faces`
+/// canonicalises via `TopoDS_Shape::IsSame` so the counts match the
+/// well-known topology invariants for a cuboid.
+///
+/// Confirms the cluster-A dispatch arms (`Edges`, `Faces` in
+/// `try_eval_topology_selector`) compose correctly with the real OCCT
+/// kernel — the dispatch resolves the geometry-arg ValueRef against the
+/// realisation's named-step handle map, round-trips through
+/// `kernel.extract_edges` / `kernel.extract_faces`, and wraps the resulting
+/// `Vec<GeometryHandleId>` as `Value::List(Vec<Value::Int>)`. Sibling to
+/// `closest_point_on_box_via_occt_returns_plus_x_face_hit` above.
+///
+/// NOTE on kernel wrapping: the sibling closest_point test wraps the
+/// `OcctKernelHandle` in a `SingleKernelHolder` because `closest_point`
+/// flows through `GeometryKernel::query` (which SingleKernelHolder
+/// forwards). The cluster-A selectors instead call
+/// `GeometryKernel::extract_edges` / `extract_faces` directly — and
+/// `SingleKernelHolder` does NOT override the trait default for those
+/// methods (the default returns
+/// `Err(QueryError::QueryFailed("topology extraction not supported by this
+/// kernel"))`), which would downgrade the test to `Value::Undef`. So this
+/// test passes the boxed `OcctKernelHandle` directly to `Engine::new` —
+/// matching how `Engine::with_registered_kernel` boxes the factory output
+/// in production. Forwarding extract_edges/faces/vertices through
+/// SingleKernelHolder is out-of-scope for task 3560 (would touch
+/// reify-geometry/src/lib.rs).
+#[test]
+fn edges_and_faces_of_box_via_occt_return_canonical_counts() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping edges_and_faces_of_box_via_occt_return_canonical_counts: OCCT not available"
+        );
+        return;
+    }
+    let source = "structure def Bracket {\n    \
+        let body = box(10mm, 10mm, 10mm)\n    \
+        let es = edges(body)\n    \
+        let fs = faces(body)\n}";
+    let compiled = compile_no_errors(source);
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let kernel: Box<dyn reify_types::GeometryKernel> =
+        Box::new(reify_kernel_occt::OcctKernelHandle::spawn());
+    let mut engine = Engine::new(Box::new(checker), Some(kernel));
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let es_cell = ValueCellId::new("Bracket", "es");
+    let es_value = result
+        .values
+        .get(&es_cell)
+        .unwrap_or_else(|| panic!("Bracket.es must be present in BuildResult.values"));
+    let edges = match es_value {
+        Value::List(items) => items,
+        other => panic!(
+            "Bracket.es must be Value::List(...) via OCCT extract_edges, got {:?}",
+            other
+        ),
+    };
+    assert_eq!(
+        edges.len(),
+        12,
+        "Bracket.es must list exactly 12 edges (a cuboid's canonical edge \
+         count) via OCCT extract_edges, got {} edges",
+        edges.len()
+    );
+    for (i, item) in edges.iter().enumerate() {
+        assert!(
+            matches!(item, Value::Int(_)),
+            "Bracket.es[{}] must be Value::Int(handle), got {:?}",
+            i,
+            item
+        );
+    }
+
+    let fs_cell = ValueCellId::new("Bracket", "fs");
+    let fs_value = result
+        .values
+        .get(&fs_cell)
+        .unwrap_or_else(|| panic!("Bracket.fs must be present in BuildResult.values"));
+    let faces = match fs_value {
+        Value::List(items) => items,
+        other => panic!(
+            "Bracket.fs must be Value::List(...) via OCCT extract_faces, got {:?}",
+            other
+        ),
+    };
+    assert_eq!(
+        faces.len(),
+        6,
+        "Bracket.fs must list exactly 6 faces (a cuboid's canonical face \
+         count) via OCCT extract_faces, got {} faces",
+        faces.len()
+    );
+    for (i, item) in faces.iter().enumerate() {
+        assert!(
+            matches!(item, Value::Int(_)),
+            "Bracket.fs[{}] must be Value::Int(handle), got {:?}",
+            i,
+            item
+        );
+    }
+}
