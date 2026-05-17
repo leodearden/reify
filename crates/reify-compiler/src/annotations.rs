@@ -496,23 +496,22 @@ mod tests {
     fn validate_collections_accepts_name_via_functions() {
         let hints = vec![make_hint(SolverHintKind::DiscreteSet, "fn_collection")];
         let scope = CompilationScope::new("Test");
-        let stub_fn = CompiledFunction {
-            name: "fn_collection".to_string(),
-            is_pub: false,
-            params: vec![],
-            param_defaults: Vec::new(),
-            return_type: Type::Real,
-            body: CompiledFnBody {
+        let stub_fn = reify_types::CompiledFunction::new_with_no_defaults(
+            "fn_collection".to_string(),
+            false,
+            vec![],
+            Type::Real,
+            CompiledFnBody {
                 let_bindings: vec![],
                 result_expr: reify_types::CompiledExpr::literal(
                     reify_types::Value::Real(0.0),
                     Type::Real,
                 ),
             },
-            content_hash: reify_types::ContentHash::of_str("fn_collection_stub"),
-            annotations: vec![],
-            optimized_target: None,
-        };
+            reify_types::ContentHash::of_str("fn_collection_stub"),
+            vec![],
+            None,
+        );
         let functions = &[stub_fn];
         let mut diagnostics = Vec::new();
         validate_solver_hint_collections(&hints, &scope, functions, &mut diagnostics);

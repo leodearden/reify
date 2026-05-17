@@ -3995,13 +3995,12 @@ mod tests {
 
     fn make_double_fn() -> CompiledFunction {
         // fn double(x: Real) -> Real { x + x }
-        CompiledFunction {
-            name: "double".to_string(),
-            is_pub: false,
-            params: vec![("x".to_string(), Type::Real)],
-            param_defaults: Vec::new(),
-            return_type: Type::Real,
-            body: CompiledFnBody {
+        CompiledFunction::new_with_no_defaults(
+            "double".to_string(),
+            false,
+            vec![("x".to_string(), Type::Real)],
+            Type::Real,
+            CompiledFnBody {
                 let_bindings: vec![],
                 result_expr: CompiledExpr::binop(
                     BinOp::Add,
@@ -4010,21 +4009,20 @@ mod tests {
                     Type::Real,
                 ),
             },
-            content_hash: ContentHash::of(b"double"),
-            annotations: vec![],
-            optimized_target: None,
-        }
+            ContentHash::of(b"double"),
+            vec![],
+            None,
+        )
     }
 
     fn make_fn_with_let() -> CompiledFunction {
         // fn f(x: Real) -> Real { let y = x + 1; y * 2 }
-        CompiledFunction {
-            name: "f".to_string(),
-            is_pub: false,
-            params: vec![("x".to_string(), Type::Real)],
-            param_defaults: Vec::new(),
-            return_type: Type::Real,
-            body: CompiledFnBody {
+        CompiledFunction::new_with_no_defaults(
+            "f".to_string(),
+            false,
+            vec![("x".to_string(), Type::Real)],
+            Type::Real,
+            CompiledFnBody {
                 let_bindings: vec![(
                     "y".to_string(),
                     CompiledExpr::binop(
@@ -4041,10 +4039,10 @@ mod tests {
                     Type::Real,
                 ),
             },
-            content_hash: ContentHash::of(b"f_with_let"),
-            annotations: vec![],
-            optimized_target: None,
-        }
+            ContentHash::of(b"f_with_let"),
+            vec![],
+            None,
+        )
     }
 
     #[test]
@@ -4072,13 +4070,12 @@ mod tests {
         // fn factorial(n: Int) -> Int {
         //   if n <= 1 then 1 else n * factorial(n - 1)
         // }
-        CompiledFunction {
-            name: "factorial".to_string(),
-            is_pub: false,
-            params: vec![("n".to_string(), Type::Int)],
-            param_defaults: Vec::new(),
-            return_type: Type::Int,
-            body: CompiledFnBody {
+        CompiledFunction::new_with_no_defaults(
+            "factorial".to_string(),
+            false,
+            vec![("n".to_string(), Type::Int)],
+            Type::Int,
+            CompiledFnBody {
                 let_bindings: vec![],
                 result_expr: CompiledExpr {
                     content_hash: ContentHash::of(b"factorial_body"),
@@ -4112,21 +4109,20 @@ mod tests {
                     },
                 },
             },
-            content_hash: ContentHash::of(b"factorial"),
-            annotations: vec![],
-            optimized_target: None,
-        }
+            ContentHash::of(b"factorial"),
+            vec![],
+            None,
+        )
     }
 
     fn make_infinite_fn() -> CompiledFunction {
         // fn infinite(x: Int) -> Int { infinite(x) }
-        CompiledFunction {
-            name: "infinite".to_string(),
-            is_pub: false,
-            params: vec![("x".to_string(), Type::Int)],
-            param_defaults: Vec::new(),
-            return_type: Type::Int,
-            body: CompiledFnBody {
+        CompiledFunction::new_with_no_defaults(
+            "infinite".to_string(),
+            false,
+            vec![("x".to_string(), Type::Int)],
+            Type::Int,
+            CompiledFnBody {
                 let_bindings: vec![],
                 result_expr: CompiledExpr {
                     content_hash: ContentHash::of(b"infinite_body"),
@@ -4137,10 +4133,10 @@ mod tests {
                     },
                 },
             },
-            content_hash: ContentHash::of(b"infinite"),
-            annotations: vec![],
-            optimized_target: None,
-        }
+            ContentHash::of(b"infinite"),
+            vec![],
+            None,
+        )
     }
 
     #[test]
@@ -4237,18 +4233,17 @@ mod tests {
     #[test]
     fn eval_user_fn_dimension_args() {
         // fn area(w: Length, h: Length) -> Area { w * h }
-        let area_fn = CompiledFunction {
-            name: "area".to_string(),
-            is_pub: false,
-            params: vec![
+        let area_fn = CompiledFunction::new_with_no_defaults(
+            "area".to_string(),
+            false,
+            vec![
                 ("w".to_string(), Type::length()),
                 ("h".to_string(), Type::length()),
             ],
-            param_defaults: Vec::new(),
-            return_type: Type::Scalar {
+            Type::Scalar {
                 dimension: DimensionVector::AREA,
             },
-            body: CompiledFnBody {
+            CompiledFnBody {
                 let_bindings: vec![],
                 result_expr: CompiledExpr::binop(
                     BinOp::Mul,
@@ -4259,10 +4254,10 @@ mod tests {
                     },
                 ),
             },
-            content_hash: ContentHash::of(b"area"),
-            annotations: vec![],
-            optimized_target: None,
-        };
+            ContentHash::of(b"area"),
+            vec![],
+            None,
+        );
         let call_expr = CompiledExpr {
             content_hash: ContentHash::of(b"call_area"),
             result_type: Type::Scalar {
@@ -4311,13 +4306,12 @@ mod tests {
     #[test]
     fn eval_user_fn_overload_by_arity() {
         // fn process(x: Real) -> Real { x * 2 }
-        let process1 = CompiledFunction {
-            name: "process".to_string(),
-            is_pub: false,
-            params: vec![("x".to_string(), Type::Real)],
-            param_defaults: Vec::new(),
-            return_type: Type::Real,
-            body: CompiledFnBody {
+        let process1 = CompiledFunction::new_with_no_defaults(
+            "process".to_string(),
+            false,
+            vec![("x".to_string(), Type::Real)],
+            Type::Real,
+            CompiledFnBody {
                 let_bindings: vec![],
                 result_expr: CompiledExpr::binop(
                     BinOp::Mul,
@@ -4326,18 +4320,17 @@ mod tests {
                     Type::Real,
                 ),
             },
-            content_hash: ContentHash::of(b"process1"),
-            annotations: vec![],
-            optimized_target: None,
-        };
+            ContentHash::of(b"process1"),
+            vec![],
+            None,
+        );
         // fn process(x: Real, y: Real) -> Real { x + y }
-        let process2 = CompiledFunction {
-            name: "process".to_string(),
-            is_pub: false,
-            params: vec![("x".to_string(), Type::Real), ("y".to_string(), Type::Real)],
-            param_defaults: Vec::new(),
-            return_type: Type::Real,
-            body: CompiledFnBody {
+        let process2 = CompiledFunction::new_with_no_defaults(
+            "process".to_string(),
+            false,
+            vec![("x".to_string(), Type::Real), ("y".to_string(), Type::Real)],
+            Type::Real,
+            CompiledFnBody {
                 let_bindings: vec![],
                 result_expr: CompiledExpr::binop(
                     BinOp::Add,
@@ -4346,10 +4339,10 @@ mod tests {
                     Type::Real,
                 ),
             },
-            content_hash: ContentHash::of(b"process2"),
-            annotations: vec![],
-            optimized_target: None,
-        };
+            ContentHash::of(b"process2"),
+            vec![],
+            None,
+        );
 
         let functions = [process1, process2];
         let values = ValueMap::new();
