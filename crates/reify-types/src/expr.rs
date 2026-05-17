@@ -2796,7 +2796,7 @@ mod tests {
             vec![],
             Type::Real,
             stub_body(),
-            hash.clone(),
+            hash,
             vec![],
             None,
         );
@@ -2817,7 +2817,7 @@ mod tests {
             vec![("x".to_string(), Type::Real)],
             Type::Real,
             stub_body(),
-            hash.clone(),
+            hash,
             vec![],
             None,
         );
@@ -2841,7 +2841,7 @@ mod tests {
             ],
             Type::Real,
             stub_body(),
-            hash.clone(),
+            hash,
             vec![],
             None,
         );
