@@ -97,3 +97,33 @@ trait BoundaryCondition { }
 // Same module-top-level positioning as `enum HardnessScale` in
 // `materials_mechanical.ri`.
 enum SplineKind { CubicSpline, QuinticSpline }
+
+// ── Waypoint ──────────────────────────────────────────────────────────────
+
+// Waypoint — per-knot data the spline interpolates between (PRD §4.1).
+//
+//   t       : Time                          — knot time
+//   values  : List<JointValue>              — per-joint positions
+//   vels    : Option<List<JointValue>>      — optional per-joint q̇
+//   accels  : Option<List<JointValue>>      — optional per-joint q̈
+//
+// No defaults — every field is caller-supplied (the spline path through the
+// waypoints is entirely determined by the caller's data). `vels` / `accels`
+// are `Option`-typed so the caller can omit per-knot derivative data when
+// the chosen `SplineKind` does not need it (cubic interpolation works with
+// positions alone; quintic needs both).
+//
+// No structure-level constraint: the only meaningful cross-field invariant
+// (`vels.len() == values.len()` when present) is owned by the β-phase
+// profile builder once it sees all waypoints together — a per-knot constraint
+// cannot see the rest of the waypoint list, so the check belongs there.
+//
+// TODO(joint-value-type): `List<JointValue>` retargets to the kinematic-
+// completion PRD's proper `JointValue` type when that PRD lands (see the
+// header §1 type alias note).
+structure def Waypoint {
+    param t : Time
+    param values : List<JointValue>
+    param vels : Option<List<JointValue>>
+    param accels : Option<List<JointValue>>
+}
