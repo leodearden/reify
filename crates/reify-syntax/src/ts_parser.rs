@@ -2988,7 +2988,7 @@ mod tests {
                 MemberDecl::MetaBlock(_) => "meta".into(),
                 MemberDecl::ForallConnect(_) => "forall_connect".into(),
                 MemberDecl::ForallConstraint(_) => "forall_constraint".into(),
-                // Not produced by the tree-sitter parser yet (task 2372).
+                // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(_) => "match_arm_decl_group".into(),
             })
             .collect();
@@ -3174,7 +3174,7 @@ mod tests {
                 MemberDecl::MetaBlock(m) => m.span,
                 MemberDecl::ForallConnect(f) => f.span,
                 MemberDecl::ForallConstraint(f) => f.span,
-                // Not produced by the tree-sitter parser yet (task 2372).
+                // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => g.span,
             };
             assert!(span.start < span.end, "member {} span empty", i);
@@ -3306,7 +3306,7 @@ mod tests {
                         text
                     );
                 }
-                // Not produced by the tree-sitter parser yet (task 2372).
+                // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(_) => {}
             }
         }
@@ -3365,7 +3365,7 @@ mod tests {
                 MemberDecl::MetaBlock(m) => (m.span, m.content_hash),
                 MemberDecl::ForallConnect(f) => (f.span, f.content_hash),
                 MemberDecl::ForallConstraint(f) => (f.span, f.content_hash),
-                // Not produced by the tree-sitter parser yet (task 2372).
+                // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => (g.span, g.content_hash),
             };
             let text = &source[span.start as usize..span.end as usize];
@@ -3478,7 +3478,7 @@ mod tests {
                 MemberDecl::MetaBlock(m) => (m.content_hash, m.span),
                 MemberDecl::ForallConnect(f) => (f.content_hash, f.span),
                 MemberDecl::ForallConstraint(f) => (f.content_hash, f.span),
-                // Not produced by the tree-sitter parser yet (task 2372).
+                // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => (g.content_hash, g.span),
             };
             let (hash_b, span_b) = match m_b {
@@ -3497,7 +3497,7 @@ mod tests {
                 MemberDecl::MetaBlock(m) => (m.content_hash, m.span),
                 MemberDecl::ForallConnect(f) => (f.content_hash, f.span),
                 MemberDecl::ForallConstraint(f) => (f.content_hash, f.span),
-                // Not produced by the tree-sitter parser yet (task 2372).
+                // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => (g.content_hash, g.span),
             };
             assert_eq!(hash_a, hash_b, "member {} hash determinism", i);
