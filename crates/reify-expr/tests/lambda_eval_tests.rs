@@ -435,12 +435,14 @@ fn apply_lambda_with_user_function_registry() {
     use reify_types::{CompiledExprKind, CompiledFnBody, CompiledFunction, ContentHash};
 
     // Define user function: double(x) = x * 2
-    let double_fn = CompiledFunction::new_with_no_defaults(
-        "double".to_string(),
-        false,
-        vec![("x".to_string(), Type::Int)],
-        Type::Int,
-        CompiledFnBody {
+    let params = vec![("x".to_string(), Type::Int)];
+    let double_fn = CompiledFunction {
+        name: "double".to_string(),
+        is_pub: false,
+        param_defaults: CompiledFunction::no_defaults_for(&params),
+        params,
+        return_type: Type::Int,
+        body: CompiledFnBody {
             let_bindings: vec![],
             result_expr: CompiledExpr::binop(
                 BinOp::Mul,
@@ -449,10 +451,10 @@ fn apply_lambda_with_user_function_registry() {
                 Type::Int,
             ),
         },
-        ContentHash::of(b"double_fn_step1"),
-        vec![],
-        None,
-    );
+        content_hash: ContentHash::of(b"double_fn_step1"),
+        annotations: vec![],
+        optimized_target: None,
+    };
 
     // Lambda body: double(x) via UserFunctionCall
     let x_id = ValueCellId::new("$lambda_uf.S", "x");
@@ -519,12 +521,14 @@ fn nested_lambda_calls_user_function() {
     use reify_types::{CompiledExprKind, CompiledFnBody, CompiledFunction, ContentHash};
 
     // Define user function: double(x) = x * 2
-    let double_fn = CompiledFunction::new_with_no_defaults(
-        "double".to_string(),
-        false,
-        vec![("x".to_string(), Type::Int)],
-        Type::Int,
-        CompiledFnBody {
+    let params = vec![("x".to_string(), Type::Int)];
+    let double_fn = CompiledFunction {
+        name: "double".to_string(),
+        is_pub: false,
+        param_defaults: CompiledFunction::no_defaults_for(&params),
+        params,
+        return_type: Type::Int,
+        body: CompiledFnBody {
             let_bindings: vec![],
             result_expr: CompiledExpr::binop(
                 BinOp::Mul,
@@ -533,10 +537,10 @@ fn nested_lambda_calls_user_function() {
                 Type::Int,
             ),
         },
-        ContentHash::of(b"double_fn_step11"),
-        vec![],
-        None,
-    );
+        content_hash: ContentHash::of(b"double_fn_step11"),
+        annotations: vec![],
+        optimized_target: None,
+    };
 
     let x_id = ValueCellId::new("$lambda_outer.S", "x");
     let y_id = ValueCellId::new("$lambda_inner.S", "y");

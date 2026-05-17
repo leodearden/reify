@@ -259,8 +259,8 @@ pub struct CompiledFunction {
     /// **Length invariant:** always exactly `params.len()`; entry `i` is
     /// `Some(expr)` iff param `i` has a default, otherwise `None`. Built
     /// canonically by `compile_function` in `reify-compiler/src/functions.rs`
-    /// and by `CompiledFunction::new_with_no_defaults` for tests/stubs
-    /// (task-3702).
+    /// and by `CompiledFunction::no_defaults_for` for tests/stubs
+    /// (task-3760).
     ///
     /// **Compilation scope:** Default expressions are compiled in a neutral scope
     /// containing only module-level names — they cannot reference sibling params
@@ -297,53 +297,32 @@ impl CompiledFunction {
         crate::annotation::has_test_annotation(&self.annotations)
     }
 
-    /// Construct a `CompiledFunction` where every param has no default.
+    /// Build the canonical `param_defaults` vec for a function with no defaults.
     ///
-    /// Sets `param_defaults` to `vec![None; params.len()]`, satisfying the
-    /// strict length invariant (`param_defaults.len() == params.len()`) while
-    /// expressing "no parameter has a default value."
+    /// Returns `vec![None; params.len()]`, satisfying the strict length invariant
+    /// (`param_defaults.len() == params.len()`) while expressing "no parameter
+    /// has a default value."
     ///
-    /// Use this constructor for test stubs and any producer that does not need
-    /// to supply defaults. For functions that carry defaults, build via
-    /// `compile_function` in `reify-compiler/src/functions.rs` instead.
+    /// Use this helper when constructing `CompiledFunction` literals for test stubs
+    /// and any producer that does not need to supply defaults:
     ///
-    /// The invariant is enforced at construction by an internal `debug_assert!`.
-    /// Other constructors (e.g. `compile_function`) should add a similar guard
-    /// if they build `param_defaults` from an independent expression — a
-    /// post-condition check surfaces mismatches at the point of construction
-    /// rather than later in `try_default_padding`.
+    /// ```ignore
+    /// let params = vec![("x".to_string(), Type::Real)];
+    /// CompiledFunction {
+    ///     name: "f".to_string(),
+    ///     is_pub: false,
+    ///     param_defaults: CompiledFunction::no_defaults_for(&params),
+    ///     params,
+    ///     // ...
+    /// }
+    /// ```
     ///
-    /// task-3702 (canonicalize CompiledFunction.param_defaults representation)
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_with_no_defaults(
-        name: String,
-        is_pub: bool,
-        params: Vec<(String, Type)>,
-        return_type: Type,
-        body: CompiledFnBody,
-        content_hash: crate::hash::ContentHash,
-        annotations: Vec<crate::annotation::Annotation>,
-        optimized_target: Option<String>,
-    ) -> Self {
-        let n = params.len();
-        let result = CompiledFunction {
-            name,
-            is_pub,
-            params,
-            param_defaults: vec![None; n],
-            return_type,
-            body,
-            content_hash,
-            annotations,
-            optimized_target,
-        };
-        debug_assert_eq!(
-            result.param_defaults.len(),
-            result.params.len(),
-            "param_defaults.len() == params.len() invariant violated in \
-             CompiledFunction::new_with_no_defaults (task-3702)"
-        );
-        result
+    /// For functions that carry defaults, build via `compile_function` in
+    /// `reify-compiler/src/functions.rs` instead.
+    ///
+    /// task-3760 (re-introduced for suggestion #2(a): migrate new_with_no_defaults call sites)
+    pub fn no_defaults_for(params: &[(String, Type)]) -> Vec<Option<CompiledExpr>> {
+        vec![None; params.len()]
     }
 }
 
@@ -2768,90 +2747,58 @@ mod tests {
         assert_eq!(remapped.result_type, Type::Geometry);
     }
 
-    // ── task-3702 tests ───────────────────────────────────────────────────────
+    // ── task-3760 tests ───────────────────────────────────────────────────────
 
-    /// `CompiledFunction::new_with_no_defaults` produces the canonical
+    /// `CompiledFunction::no_defaults_for` produces the canonical
     /// `param_defaults` shape: length == params.len(), every entry is `None`.
     ///
     /// Tests three arities (0, 1, 2) to confirm `vec![None; n]` is produced
     /// for all sizes, including the nullary case where `vec![None; 0]` ==
     /// `Vec::new()`.
     ///
-    /// RED before step-2: the constructor does not yet exist, so this test
-    /// fails to compile.
-    ///
-    /// task-3702 (canonicalize CompiledFunction.param_defaults representation)
+    /// task-3760 (migrated from compiled_function_new_with_no_defaults_produces_canonical_shape
+    /// as part of suggestion #2(a) — replace new_with_no_defaults with no_defaults_for)
     #[test]
-    fn compiled_function_new_with_no_defaults_produces_canonical_shape() {
-        let stub_body = || CompiledFnBody {
-            let_bindings: vec![],
-            result_expr: CompiledExpr::literal(Value::Real(0.0), Type::Real),
-        };
-        let hash = ContentHash::of_str("stub");
-
+    fn no_defaults_for_produces_canonical_shape() {
         // arity 0
-        let f0 = CompiledFunction::new_with_no_defaults(
-            "f0".to_string(),
-            false,
-            vec![],
-            Type::Real,
-            stub_body(),
-            hash,
-            vec![],
-            None,
-        );
+        let params0: Vec<(String, Type)> = vec![];
+        let defaults0 = CompiledFunction::no_defaults_for(&params0);
         assert_eq!(
-            f0.param_defaults.len(),
-            f0.params.len(),
+            defaults0.len(),
+            params0.len(),
             "arity-0: param_defaults.len() must equal params.len()"
         );
         assert!(
-            f0.param_defaults.iter().all(|d| d.is_none()),
+            defaults0.iter().all(|d| d.is_none()),
             "arity-0: every param_defaults entry must be None"
         );
 
         // arity 1
-        let f1 = CompiledFunction::new_with_no_defaults(
-            "f1".to_string(),
-            false,
-            vec![("x".to_string(), Type::Real)],
-            Type::Real,
-            stub_body(),
-            hash,
-            vec![],
-            None,
-        );
+        let params1 = vec![("x".to_string(), Type::Real)];
+        let defaults1 = CompiledFunction::no_defaults_for(&params1);
         assert_eq!(
-            f1.param_defaults.len(),
-            f1.params.len(),
+            defaults1.len(),
+            params1.len(),
             "arity-1: param_defaults.len() must equal params.len()"
         );
         assert!(
-            f1.param_defaults.iter().all(|d| d.is_none()),
+            defaults1.iter().all(|d| d.is_none()),
             "arity-1: every param_defaults entry must be None"
         );
 
         // arity 2
-        let f2 = CompiledFunction::new_with_no_defaults(
-            "f2".to_string(),
-            false,
-            vec![
-                ("x".to_string(), Type::Real),
-                ("y".to_string(), Type::Real),
-            ],
-            Type::Real,
-            stub_body(),
-            hash,
-            vec![],
-            None,
-        );
+        let params2 = vec![
+            ("x".to_string(), Type::Real),
+            ("y".to_string(), Type::Real),
+        ];
+        let defaults2 = CompiledFunction::no_defaults_for(&params2);
         assert_eq!(
-            f2.param_defaults.len(),
-            f2.params.len(),
+            defaults2.len(),
+            params2.len(),
             "arity-2: param_defaults.len() must equal params.len()"
         );
         assert!(
-            f2.param_defaults.iter().all(|d| d.is_none()),
+            defaults2.iter().all(|d| d.is_none()),
             "arity-2: every param_defaults entry must be None"
         );
     }

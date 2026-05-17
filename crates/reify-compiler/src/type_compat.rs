@@ -889,11 +889,6 @@ mod tests {
     /// `params = vec![("x", Real)]` but `param_defaults = Vec::new()` —
     /// the legacy empty form that violates the invariant.
     ///
-    /// RED before step-5: the assert is not yet in the code, so calling
-    /// `try_default_padding` with this candidate returns `None` silently
-    /// instead of panicking, causing the `#[should_panic]` annotation to
-    /// make the test fail.
-    ///
     /// task-3702 (tighten try_default_padding signature)
     #[cfg(debug_assertions)]
     #[test]
