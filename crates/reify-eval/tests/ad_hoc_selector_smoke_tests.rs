@@ -26,8 +26,9 @@ use reify_constraints::SimpleConstraintChecker;
 use reify_eval::try_eval_ad_hoc_selector;
 use reify_test_support::{MockGeometryKernel, compile_source, errors_only, parse_and_compile_with_stdlib};
 use reify_types::{
-    CapKind, CompiledExpr, DiagnosticCode, ExportFormat, FeatureId, GeometryHandleId, Role,
-    SelectorKind, Severity, TopologyAttribute, TopologyAttributeTable, Type, Value, ValueCellId,
+    CapKind, CompiledExpr, DiagnosticCode, ExportFormat, FeatureId, GeometryHandleId, QueryError,
+    Role, SelectorKind, Severity, TopologyAttribute, TopologyAttributeTable, Type, Value,
+    ValueCellId,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -800,5 +801,64 @@ fn try_eval_ad_hoc_selector_face_side_resolves_via_cap_kind_translation() {
         diagnostics.is_empty(),
         "no diagnostic expected on a clean resolution; got {:?}",
         diagnostics
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 9: extract_faces kernel error → Warning + Some(Undef)
+// Characterisation test for the Err arm at geometry_ops.rs:2157-2161.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `try_eval_ad_hoc_selector` must return `Some(Value::Undef)` and emit exactly
+/// one `Severity::Warning` whose message mentions `"extract_faces"` and `"failed"`
+/// when `kernel.extract_faces` returns an error.
+///
+/// Pins the Warning+Some(Undef) wiring at geometry_ops.rs:2157-2161.
+/// Passes on HEAD — characterisation test for already-implemented behaviour.
+#[test]
+fn try_eval_ad_hoc_selector_face_kernel_error_returns_undef_with_warning() {
+    // `@face("top")` with a kernel that errors on extract_faces.
+    let expr = CompiledExpr::ad_hoc_selector(
+        CompiledExpr::literal(Value::String("body".to_string()), Type::String),
+        SelectorKind::Face,
+        vec![CompiledExpr::literal(
+            Value::String("top".to_string()),
+            Type::String,
+        )],
+    );
+
+    let named_steps = named_steps_with_body();
+    let table = seeded_cylinder_table();
+    let mut kernel = MockGeometryKernel::new()
+        .with_extract_faces_error(BODY_HANDLE, QueryError::QueryFailed("mock face extraction failure".into()));
+    let mut diagnostics = Vec::new();
+
+    let result =
+        try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, &mut diagnostics);
+
+    assert!(
+        matches!(result, Some(Value::Undef)),
+        "extract_faces error should return Some(Value::Undef), got {:?}",
+        result
+    );
+
+    let warnings: Vec<_> =
+        diagnostics.iter().filter(|d| d.severity == Severity::Warning).collect();
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected exactly one Warning diagnostic, got {} total diagnostics: {:#?}",
+        diagnostics.len(),
+        diagnostics
+    );
+    assert!(
+        warnings[0].message.contains("extract_faces"),
+        "warning message should mention 'extract_faces'; got {:?}",
+        warnings[0].message
+    );
+    assert!(
+        warnings[0].message.contains("failed"),
+        "warning message should mention 'failed'; got {:?}",
+        warnings[0].message
     );
 }
