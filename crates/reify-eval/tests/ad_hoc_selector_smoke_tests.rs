@@ -862,3 +862,62 @@ fn try_eval_ad_hoc_selector_face_kernel_error_returns_undef_with_warning() {
         warnings[0].message
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 10: extract_edges kernel error → Warning + Some(Undef)
+// Characterisation test for the Err arm at geometry_ops.rs:2166-2170.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `try_eval_ad_hoc_selector` must return `Some(Value::Undef)` and emit exactly
+/// one `Severity::Warning` whose message mentions `"extract_edges"` and `"failed"`
+/// when `kernel.extract_edges` returns an error.
+///
+/// Pins the Warning+Some(Undef) wiring at geometry_ops.rs:2166-2170.
+/// Passes on HEAD — characterisation test for already-implemented behaviour.
+#[test]
+fn try_eval_ad_hoc_selector_edge_kernel_error_returns_undef_with_warning() {
+    // `@edge("top_edge")` with a kernel that errors on extract_edges.
+    let expr = CompiledExpr::ad_hoc_selector(
+        CompiledExpr::literal(Value::String("body".to_string()), Type::String),
+        SelectorKind::Edge,
+        vec![CompiledExpr::literal(
+            Value::String("top_edge".to_string()),
+            Type::String,
+        )],
+    );
+
+    let named_steps = named_steps_with_body();
+    let table = seeded_edge_table();
+    let mut kernel = MockGeometryKernel::new()
+        .with_extract_edges_error(BODY_HANDLE, QueryError::QueryFailed("mock edge extraction failure".into()));
+    let mut diagnostics = Vec::new();
+
+    let result =
+        try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, &mut diagnostics);
+
+    assert!(
+        matches!(result, Some(Value::Undef)),
+        "extract_edges error should return Some(Value::Undef), got {:?}",
+        result
+    );
+
+    let warnings: Vec<_> =
+        diagnostics.iter().filter(|d| d.severity == Severity::Warning).collect();
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected exactly one Warning diagnostic, got {} total diagnostics: {:#?}",
+        diagnostics.len(),
+        diagnostics
+    );
+    assert!(
+        warnings[0].message.contains("extract_edges"),
+        "warning message should mention 'extract_edges'; got {:?}",
+        warnings[0].message
+    );
+    assert!(
+        warnings[0].message.contains("failed"),
+        "warning message should mention 'failed'; got {:?}",
+        warnings[0].message
+    );
+}
