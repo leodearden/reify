@@ -41,6 +41,23 @@ fn fn_def_doc_propagates_to_compiled_function() {
     );
 }
 
+// ─── step-7: enum → EnumDef ─────────────────────────────────────────────────
+
+#[test]
+fn enum_decl_doc_propagates_to_enum_def() {
+    let compiled = compile_source("/// Primary colors\nenum Color { Red, Green, Blue }");
+    let enum_def = compiled
+        .enum_defs
+        .iter()
+        .find(|e| e.name == "Color")
+        .expect("Color enum should exist");
+    assert_eq!(
+        enum_def.doc,
+        Some("Primary colors".to_string()),
+        "EnumDef.doc should carry the doc comment"
+    );
+}
+
 // ─── step-5: trait → CompiledTrait ──────────────────────────────────────────
 
 #[test]
