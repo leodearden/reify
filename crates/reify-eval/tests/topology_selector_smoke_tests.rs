@@ -85,26 +85,23 @@ fn block_inertia_compiles_with_stdlib_no_errors() {
 /// a 3×3 matrix of `MomentOfInertia`-dimensioned scalars).
 ///
 /// For a uniform-density box with side lengths W=50mm, H=30mm, D=10mm and
-/// density ρ=7850 kg/m³, the principal moments satisfy I_xx = (1/12)·m·(H²+D²),
-/// etc.  The test asserts the nested-Tensor shape rather than numeric values so
-/// it remains valid for any kernel-precision implementation.
+/// density ρ=7850 kg/m³, the principal moments satisfy
+/// I_xx = (1/12)·m·(H²+D²), I_yy = (1/12)·m·(W²+D²), I_zz = (1/12)·m·(W²+H²)
+/// where m = ρ·V = 7850·(0.05·0.03·0.01) = 0.11775 kg. Off-diagonals are zero
+/// for a principal-axes-aligned box. The test asserts the nested-Tensor shape
+/// (rank, 3×3, dimensioned scalars) rather than the numeric values directly so
+/// it remains the design-doc-bound contract irrespective of kernel precision.
 ///
-/// **Blocked by**: eval-side dispatch for `moment_of_inertia` in
-/// `crates/reify-eval/src/geometry_ops.rs::try_eval_topology_selector` — the
-/// 11 task-2699 names fall through to `_ => return None` today (see
-/// `geometry_ops.rs:1646-1661`), leaving cells at `Value::Undef`.  Tracked by
-/// PRD `docs/prds/topology-selectors.md` task 8 as task 2691's eval arms.
-/// This smoke test documents the contract and lands the gating test; remove the
-/// `#[ignore]` once the `moment_of_inertia` arm is added to
-/// `try_eval_topology_selector`.
+/// Mocks the kernel reply with the analytic principal moments — pre-computed
+/// as `f64` constants below — so the test does not depend on an OCCT kernel.
+/// The dispatch path under test is
+/// `geometry_ops::dispatch_inertia_tensor`, which decodes the kernel's
+/// nested `Value::List(List<Real>)` reply into the canonical nested-`Value::Tensor`
+/// with each leaf being a `Value::Scalar { dimension: MOMENT_OF_INERTIA, .. }`.
 #[test]
-#[ignore = "pending eval-side dispatch for moment_of_inertia in \
-            crates/reify-eval/src/geometry_ops.rs::try_eval_topology_selector — \
-            the 11 task-2699 names fall through to None today (see geometry_ops.rs:1646-1661), \
-            leaving cells at Value::Undef. Tracked by PRD docs/prds/topology-selectors.md \
-            task 8 as task 2691's eval arms; this smoke task documents the contract and \
-            lands the gating test."]
 fn block_inertia_evals_moment_of_inertia_to_tensor() {
+    use reify_types::GeometryHandleId;
+
     let source = std::fs::read_to_string(BLOCK_INERTIA_PATH)
         .expect("examples/topology_selectors/block_inertia.ri should exist");
     let compiled = parse_and_compile_with_stdlib(&source);
@@ -114,8 +111,31 @@ fn block_inertia_evals_moment_of_inertia_to_tensor() {
         errors_only(&compiled)
     );
 
+    // Analytic principal moments for a 50mm × 30mm × 10mm box at 7850 kg/m³.
+    // m = ρ·V = 7850·(0.05·0.03·0.01) = 0.11775 kg
+    // I_xx = (1/12)·m·(H² + D²)  with H=0.03, D=0.01
+    // I_yy = (1/12)·m·(W² + D²)  with W=0.05, D=0.01
+    // I_zz = (1/12)·m·(W² + H²)  with W=0.05, H=0.03
+    let w = 0.05f64;
+    let h = 0.03f64;
+    let d = 0.01f64;
+    let mass = 7850.0 * w * h * d;
+    let i_xx = (1.0 / 12.0) * mass * (h * h + d * d);
+    let i_yy = (1.0 / 12.0) * mass * (w * w + d * d);
+    let i_zz = (1.0 / 12.0) * mass * (w * w + h * h);
+    // Mock the OCCT kernel reply shape: `Value::List` of 3 rows × 3 cols,
+    // each col a dimensionless `Value::Real`. The dispatcher re-wraps each
+    // leaf as a MomentOfInertia-dimensioned `Value::Scalar`.
+    let inertia_reply = Value::List(vec![
+        Value::List(vec![Value::Real(i_xx), Value::Real(0.0), Value::Real(0.0)]),
+        Value::List(vec![Value::Real(0.0), Value::Real(i_yy), Value::Real(0.0)]),
+        Value::List(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(i_zz)]),
+    ]);
+
+    let kernel = MockGeometryKernel::new()
+        .with_inertia_tensor_result(GeometryHandleId(1), 7850.0, inertia_reply);
     let checker = SimpleConstraintChecker;
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let cell = ValueCellId::new("BlockInertia", "i");
