@@ -61,6 +61,7 @@ pub fn revolve_synthesis_post_sort_for_test(input: &[u32]) -> RevolveSynthesisPo
 mod floor_constants;
 pub use floor_constants::RUST_GUARD_MARKER;
 pub mod register;
+pub mod tessellate_options;
 // Unconditional `WarmStartableRegistration` submission for NodeKind::Realization
 // — both has_occt and stub OcctKernel impl WarmStartable. See module docs.
 mod warm_register;
