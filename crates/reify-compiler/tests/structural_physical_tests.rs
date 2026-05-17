@@ -128,13 +128,16 @@ fn all_eight_traits_present() {
     }
 }
 
-// ─── step-5: Physical trait details ──────────────────────────────────────────
+// ─── Physical trait shape (PRD §8 Phase 1 / GHR-α / task 3603) ───────────────
 
-/// Step 5: Physical trait has correct required_members (volume, centroid_x,
-/// centroid_y, centroid_z as Real params), defaults include a Let named 'mass',
-/// and refinements contains 'MaterialSpec'.
+/// Spec-shape Physical (post-GHR-α / task 3603):
+///   - `refinements` is EMPTY — `MaterialSpec` is no longer a trait edge;
+///     Material is a struct slot now (see SIR-α / task 3540).
+///   - `required_members` are exactly `geometry : Solid` (resolved to
+///     `Type::Geometry`) and `material : Material` (resolved to
+///     `Type::StructureRef("Material")`).
 #[test]
-fn physical_trait_has_correct_members_and_refinements() {
+fn physical_trait_has_geometry_and_material_params_only() {
     let module = load_stdlib_module();
 
     let physical = module
@@ -143,97 +146,127 @@ fn physical_trait_has_correct_members_and_refinements() {
         .find(|t| t.name == "Physical")
         .expect("expected 'Physical' trait in compiled module");
 
-    // Refinements should contain "MaterialSpec"
+    // (1) refinements is empty — Material is a struct slot now, not a trait edge.
     assert!(
-        physical.refinements.contains(&"MaterialSpec".to_string()),
-        "Physical should refine MaterialSpec, got refinements: {:?}",
+        physical.refinements.is_empty(),
+        "spec-shape Physical should have NO trait refinements (Material is a \
+         struct slot now, not a trait edge); got: {:?}",
         physical.refinements
     );
 
-    // Required members: volume, centroid_x, centroid_y, centroid_z
+    // (2) required_members: exactly `geometry` and `material`.
     let member_names: Vec<&str> = physical
         .required_members
         .iter()
         .map(|r| r.name.as_str())
         .collect();
+    assert_eq!(
+        physical.required_members.len(),
+        2,
+        "spec-shape Physical should have exactly 2 required members \
+         (geometry, material), got: {:?}",
+        member_names
+    );
 
-    for expected_member in &["volume", "centroid_x", "centroid_y", "centroid_z"] {
-        assert!(
-            member_names.contains(expected_member),
-            "Physical should have '{}' required member, got: {:?}",
-            expected_member,
-            member_names
-        );
+    let geometry_req = physical
+        .required_members
+        .iter()
+        .find(|r| r.name == "geometry")
+        .unwrap_or_else(|| {
+            panic!(
+                "Physical should require `geometry` member; got: {:?}",
+                member_names
+            )
+        });
+    match &geometry_req.kind {
+        RequirementKind::Param(ty) => assert_eq!(
+            *ty,
+            Type::Geometry,
+            "Physical.geometry should be Param(Geometry) (the resolved type behind \
+             the `Solid` surface alias); got {:?}",
+            ty
+        ),
+        other => panic!(
+            "Physical.geometry should be RequirementKind::Param, got {:?}",
+            other
+        ),
     }
 
-    // Physical's own params (volume, centroid_x/y/z) should be Real.
-    // Only check these four by name — not ALL required_members — to avoid
-    // false failures if the compiler ever flattens inherited members of
-    // different types (e.g., name:String from MaterialSpec) into required_members.
-    for param_name in &["volume", "centroid_x", "centroid_y", "centroid_z"] {
-        let req = physical
-            .required_members
-            .iter()
-            .find(|r| r.name == *param_name)
-            .unwrap_or_else(|| {
-                panic!(
-                    "Physical should have '{}' in required_members, got: {:?}",
-                    param_name, member_names
-                )
-            });
-        match &req.kind {
-            RequirementKind::Param(ty) => {
-                assert_eq!(
-                    *ty,
-                    Type::Real,
-                    "Physical param '{}' should be Real, got {:?}",
-                    param_name,
-                    ty
-                );
-            }
-            other => panic!(
-                "Physical member '{}' should be RequirementKind::Param, got {:?}",
-                param_name, other
-            ),
-        }
+    let material_req = physical
+        .required_members
+        .iter()
+        .find(|r| r.name == "material")
+        .unwrap_or_else(|| {
+            panic!(
+                "Physical should require `material` member; got: {:?}",
+                member_names
+            )
+        });
+    match &material_req.kind {
+        RequirementKind::Param(ty) => assert_eq!(
+            *ty,
+            Type::StructureRef("Material".to_string()),
+            "Physical.material should be Param(StructureRef(\"Material\")); got {:?}",
+            ty
+        ),
+        other => panic!(
+            "Physical.material should be RequirementKind::Param, got {:?}",
+            other
+        ),
     }
+}
 
-    // Defaults should include a Let named 'mass'
+/// Spec-shape Physical exposes two `Let` defaults — `mass = volume(geometry) *
+/// material.density` and `centroid = centroid(geometry)`. Both are typecheck-only
+/// in Phase 1 (kernel dispatch arrives in Phase 6 / GHR-ζ); this test pins their
+/// presence as Let-defaults on the trait.
+#[test]
+fn physical_trait_has_mass_and_centroid_lets() {
+    let module = load_stdlib_module();
+
+    let physical = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "Physical")
+        .expect("expected 'Physical' trait in compiled module");
+
     let let_defaults: Vec<_> = physical
         .defaults
         .iter()
         .filter(|d| matches!(d.kind, DefaultKind::Let { .. }))
         .collect();
-    assert!(
-        let_defaults
-            .iter()
-            .any(|d| d.name.as_deref() == Some("mass")),
-        "Physical trait should have a Let default named 'mass', got defaults: {:?}",
-        physical
-            .defaults
-            .iter()
-            .map(|d| &d.name)
-            .collect::<Vec<_>>()
-    );
+
+    for expected_let in &["mass", "centroid"] {
+        assert!(
+            let_defaults
+                .iter()
+                .any(|d| d.name.as_deref() == Some(*expected_let)),
+            "spec-shape Physical should have a `Let` default named '{}'; got: {:?}",
+            expected_let,
+            physical
+                .defaults
+                .iter()
+                .map(|d| &d.name)
+                .collect::<Vec<_>>()
+        );
+    }
 }
 
-// ─── step-7: Bracket : Physical conformance (mass computed) ──────────────────
+// ─── Bracket : Physical conformance (GHR-α / task 3603) ──────────────────────
 
-/// Step 7: structure def Bracket : Physical compiles with all required members
-/// provided (density, name from Material refinement; volume, centroid_x/y/z
-/// from Physical). Assert no errors, Bracket has 'Physical' in trait_bounds,
-/// and a 'mass' value cell exists (injected let default).
-/// This is the task's first explicit test case.
+/// Spec-shape `Bracket : Physical` compiles cleanly with the new struct-slot
+/// composition (geometry + material), trait_bound contains "Physical", and
+/// the injected trait Let defaults produce `mass` + `centroid` value cells.
+///
+/// `geometry` is intentionally NOT checked in `value_cells` — Solid-typed
+/// params lower to realizations (Type::Geometry is rejected by
+/// `is_representable_cell_type`; see `solid_param_tests.rs`).
 #[test]
-fn bracket_conforms_to_physical_with_mass_computed() {
+fn bracket_conforms_to_physical_with_geometry_and_material() {
     let source = r#"
 structure def Bracket : Physical {
-    param density : Real = 7850.0
-    param name : String = "steel bracket"
-    param volume : Real = 0.001
-    param centroid_x : Real = 0.0
-    param centroid_y : Real = 0.0
-    param centroid_z : Real = 0.0
+    param geometry : Solid = box(10mm, 20mm, 30mm)
+    param material : Material = Material(name: "steel", density: 7850.0, youngs_modulus: 200000000000.0)
 }
 "#;
     let compiled = compile_source_with_stdlib(source);
@@ -260,20 +293,22 @@ structure def Bracket : Physical {
         template.trait_bounds
     );
 
-    // The injected `let mass = volume * density` should create a 'mass' value cell
-    let mass_cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "mass");
-    assert!(
-        mass_cell.is_some(),
-        "expected 'mass' value cell from Physical trait's let default, got cells: {:?}",
-        template
-            .value_cells
-            .iter()
-            .map(|vc| &vc.id.member)
-            .collect::<Vec<_>>()
-    );
+    // Injected Let defaults from Physical: `mass` + `centroid`.
+    for expected_cell in &["mass", "centroid", "material"] {
+        assert!(
+            template
+                .value_cells
+                .iter()
+                .any(|vc| vc.id.member == *expected_cell),
+            "expected '{}' value cell on Bracket, got cells: {:?}",
+            expected_cell,
+            template
+                .value_cells
+                .iter()
+                .map(|vc| vc.id.member.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
 }
 
 // ─── step-9: Rigid trait refines Physical with moment_of_inertia ─────────────
@@ -423,20 +458,17 @@ fn electrically_conductive_refines_physical() {
 }
 
 /// Conformance test: a structure conforming to ThermallyConductive must satisfy
-/// Physical's requirements (volume, centroid_*, density, name) plus its own
-/// (thermal_conductivity, max_service_temp). Physical's `volume > 0` constraint
-/// must be injected via inheritance. Exercises the two-level TC→Physical chain.
+/// Physical's requirements (geometry, material) plus its own
+/// (thermal_conductivity, max_service_temp). Physical's `material.density > 0`
+/// constraint (post-GHR-α / task 3603, replacing the legacy `volume > 0`) must
+/// be injected via inheritance. Exercises the two-level TC→Physical chain.
 #[test]
 fn structure_conforms_to_thermally_conductive_with_inherited_physical_constraints() {
     let compiled = compile_structure(
         r#"
 structure def HeatSink : ThermallyConductive {
-    param density : Real = 2700.0
-    param name : String = "aluminum heat sink"
-    param volume : Real = 0.005
-    param centroid_x : Real = 0.0
-    param centroid_y : Real = 0.0
-    param centroid_z : Real = 0.0
+    param geometry : Solid = box(10mm, 20mm, 30mm)
+    param material : Material = Material(name: "aluminum", density: 2700.0, youngs_modulus: 70000000000.0)
     param thermal_conductivity : ThermalConductivity = 205.0 * 1W / (1m * 1K)
     param max_service_temp : Real = 573.0
 }
@@ -456,34 +488,39 @@ structure def HeatSink : ThermallyConductive {
         template.trait_bounds
     );
 
-    // Physical's `volume > 0` must be injected via inheritance.
-    assert_constraint_op(template, "volume", BinOp::Gt);
     // ThermallyConductive's own `thermal_conductivity > 0`.
     assert_constraint_op(template, "thermal_conductivity", BinOp::Gt);
+    // Physical's `material.density > 0` (post-GHR-α) is injected via inheritance —
+    // its left side is a member access through `material`, so it isn't reachable
+    // via `assert_constraint_op`'s ValueRef-only matcher. The count below pins
+    // that exactly one additional inherited constraint is present.
     assert_eq!(
         template.constraints.len(),
         2,
-        "expected exactly 2 constraints from chain ThermallyConductive→Physical→MaterialSpec \
-         (volume > 0, thermal_conductivity > 0), got {}",
-        template.constraints.len()
+        "expected exactly 2 constraints from chain ThermallyConductive→Physical \
+         (material.density > 0 inherited from Physical, thermal_conductivity > 0 \
+         from ThermallyConductive), got {}: {:?}",
+        template.constraints.len(),
+        template
+            .constraints
+            .iter()
+            .map(|c| format!("{:?}", c.expr.kind))
+            .collect::<Vec<_>>()
     );
 }
 
 /// Conformance test: a structure conforming to ElectricallyConductive must
-/// satisfy Physical's requirements (volume, centroid_*, density, name) plus its
-/// own (electrical_conductivity, resistivity). Physical's `volume > 0` constraint
-/// must be injected via inheritance. Exercises the two-level EC→Physical chain.
+/// satisfy Physical's requirements (geometry, material) plus its own
+/// (electrical_conductivity, resistivity). Physical's `material.density > 0`
+/// constraint (post-GHR-α / task 3603, replacing the legacy `volume > 0`) must
+/// be injected via inheritance. Exercises the two-level EC→Physical chain.
 #[test]
 fn structure_conforms_to_electrically_conductive_with_inherited_physical_constraints() {
     let compiled = compile_structure(
         r#"
 structure def Wire : ElectricallyConductive {
-    param density : Real = 8960.0
-    param name : String = "copper wire"
-    param volume : Real = 0.001
-    param centroid_x : Real = 0.0
-    param centroid_y : Real = 0.0
-    param centroid_z : Real = 0.0
+    param geometry : Solid = box(10mm, 20mm, 30mm)
+    param material : Material = Material(name: "copper", density: 8960.0, youngs_modulus: 110000000000.0)
     param electrical_conductivity : ElectricalConductivity = 1000.0 * 1S / 1m
     param resistivity : ElectricResistivity = 0.001 * 1ohm * 1m
 }
@@ -503,16 +540,22 @@ structure def Wire : ElectricallyConductive {
         template.trait_bounds
     );
 
-    // Physical's `volume > 0` must be injected via inheritance.
-    assert_constraint_op(template, "volume", BinOp::Gt);
     // ElectricallyConductive's own `electrical_conductivity > 0`.
     assert_constraint_op(template, "electrical_conductivity", BinOp::Gt);
+    // Physical's `material.density > 0` (post-GHR-α) is injected via inheritance;
+    // see the TC analog above for the matcher-shape rationale.
     assert_eq!(
         template.constraints.len(),
         2,
-        "expected exactly 2 constraints from chain ElectricallyConductive→Physical→MaterialSpec \
-         (volume > 0, electrical_conductivity > 0), got {}",
-        template.constraints.len()
+        "expected exactly 2 constraints from chain ElectricallyConductive→Physical \
+         (material.density > 0 inherited from Physical, electrical_conductivity > 0 \
+         from ElectricallyConductive), got {}: {:?}",
+        template.constraints.len(),
+        template
+            .constraints
+            .iter()
+            .map(|c| format!("{:?}", c.expr.kind))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -568,20 +611,17 @@ structure def Rubber : ElasticallyDeformable {
     );
 }
 
-// ─── step-13: constraint injection from Physical ─────────────────────────────
+// ─── constraint injection from Physical (post-GHR-α / task 3603) ────────────
 
-/// Step 13: constraints from Physical (volume > 0) are injected into a
-/// conforming structure. Assert template.constraints is non-empty.
+/// Constraints from Physical (`material.density > 0` — post-GHR-α; previously
+/// `volume > 0`) are injected into a conforming structure. The "non-empty
+/// constraints" invariant survives the spec-shape rewrite.
 #[test]
 fn physical_constraint_injected_into_conforming_structure() {
     let source = r#"
 structure def Block : Physical {
-    param density : Real = 7850.0
-    param name : String = "block"
-    param volume : Real = 0.5
-    param centroid_x : Real = 0.0
-    param centroid_y : Real = 0.0
-    param centroid_z : Real = 0.0
+    param geometry : Solid = box(10mm, 20mm, 30mm)
+    param material : Material = Material(name: "block", density: 7850.0, youngs_modulus: 200000000000.0)
 }
 "#;
     let compiled = compile_source_with_stdlib(source);
@@ -603,23 +643,21 @@ structure def Block : Physical {
         .expect("expected at least 1 template");
     assert!(
         !template.constraints.is_empty(),
-        "expected constraint from Physical trait (volume > 0) injected into Block, but constraints is empty"
+        "expected constraint from Physical trait (material.density > 0) injected \
+         into Block, but constraints is empty"
     );
 }
 
-// ─── step-15: missing member detection ───────────────────────────────────────
+// ─── missing geometry detection (post-GHR-α / task 3603) ─────────────────────
 
-/// Step 15: A structure conforming to Physical but omitting 'volume' produces
-/// an error diagnostic mentioning 'missing required member'.
+/// A structure conforming to Physical but omitting `geometry` produces an
+/// error diagnostic mentioning 'geometry' or 'missing'. Mirrors the legacy
+/// `missing_volume_produces_error_diagnostic` for the new spec-shape contract.
 #[test]
-fn missing_volume_produces_error_diagnostic() {
+fn missing_geometry_produces_error_diagnostic() {
     let source = r#"
 structure def Incomplete : Physical {
-    param density : Real = 7850.0
-    param name : String = "no volume"
-    param centroid_x : Real = 0.0
-    param centroid_y : Real = 0.0
-    param centroid_z : Real = 0.0
+    param material : Material = Material(name: "no geometry", density: 7850.0, youngs_modulus: 200000000000.0)
 }
 "#;
     let compiled = compile_source_with_stdlib(source);
@@ -631,17 +669,16 @@ structure def Incomplete : Physical {
         .collect();
     assert!(
         !errors.is_empty(),
-        "expected error for missing 'volume' member in Physical conformance, but got no errors"
+        "expected error for missing 'geometry' member in Physical conformance, but got no errors"
     );
 
-    // At least one error should mention 'volume' or 'missing'
-    let has_volume_error = errors.iter().any(|d| {
+    let has_geometry_error = errors.iter().any(|d| {
         let msg = d.message.to_lowercase();
-        msg.contains("volume") || msg.contains("missing")
+        msg.contains("geometry") || msg.contains("missing")
     });
     assert!(
-        has_volume_error,
-        "expected error mentioning 'volume' or 'missing', got: {:?}",
+        has_geometry_error,
+        "expected error mentioning 'geometry' or 'missing', got: {:?}",
         errors
     );
 }
@@ -922,27 +959,25 @@ fn load_stdlib_module_uses_production_path() {
     );
 }
 
-// ─── step-19: cross-module refinement chain via load_stdlib ──────────────────
+// ─── cross-module refinement chain via load_stdlib (post-GHR-α / task 3603) ──
 
-/// Step 19: Verify cross-module refinement chain works end-to-end through
-/// load_stdlib(). Compile a structure conforming to Rigid (which refines
-/// Physical, which refines MaterialSpec from materials_mechanical.ri — a 3-level
-/// chain spanning two stdlib modules). Assert no errors and verify requirements
-/// from ALL three levels are inherited: moment_of_inertia from Rigid,
-/// volume/centroid_x/y/z from Physical, and density/name from MaterialSpec.
+/// Verify two-level Rigid→Physical refinement chain works end-to-end through
+/// load_stdlib(). Post-GHR-α (task 3603), the chain is two levels (Rigid
+/// refines Physical), not three — Physical no longer refines MaterialSpec
+/// because Material is a struct slot now, not a trait edge.
+///
+/// Assert no errors and verify value cells exist for the inherited members:
+/// `material` (struct-slot param from Physical), `moment_of_inertia` (from
+/// Rigid), and the trait-injected lets `mass` + `centroid` from Physical.
+/// (`geometry : Solid` lowers to a realization, not a value cell — see
+/// `solid_param_tests.rs`.)
 #[test]
 fn rigid_cross_module_three_level_refinement_chain() {
     let source = r#"
 structure def Beam : Rigid {
-    // MaterialSpec requirements (from materials_mechanical.ri)
-    param density : Real = 7850.0
-    param name : String = "steel beam"
-
-    // Physical requirements (from structural_physical.ri)
-    param volume : Real = 0.01
-    param centroid_x : Real = 0.0
-    param centroid_y : Real = 0.0
-    param centroid_z : Real = 0.0
+    // Physical requirements (post-GHR-α: geometry + material struct slot)
+    param geometry : Solid = box(10mm, 20mm, 30mm)
+    param material : Material = Material(name: "steel", density: 7850.0, youngs_modulus: 200000000000.0)
 
     // Rigid requirement (from structural_physical.ri)
     param moment_of_inertia : Real = 0.00012
@@ -957,7 +992,7 @@ structure def Beam : Rigid {
         .collect();
     assert!(
         errors.is_empty(),
-        "Beam : Rigid should compile without errors (3-level cross-module chain), got: {:?}",
+        "Beam : Rigid should compile without errors (2-level Rigid→Physical chain), got: {:?}",
         errors
     );
 
@@ -973,48 +1008,51 @@ structure def Beam : Rigid {
         template.trait_bounds
     );
 
-    // Verify value cells from all three levels exist
+    // Verify value cells exist for the representable members across levels.
     let cell_names: Vec<&str> = template
         .value_cells
         .iter()
         .map(|vc| vc.id.member.as_str())
         .collect();
 
-    // From MaterialSpec (level 1, materials_mechanical.ri)
+    // From Physical: `material` is a struct-typed param (StructureRef("Material")),
+    // which IS representable, so it gets a value cell.
     assert!(
-        cell_names.contains(&"density"),
-        "missing 'density' from MaterialSpec, cells: {:?}",
-        cell_names
-    );
-    assert!(
-        cell_names.contains(&"name"),
-        "missing 'name' from MaterialSpec, cells: {:?}",
+        cell_names.contains(&"material"),
+        "missing 'material' from Physical, cells: {:?}",
         cell_names
     );
 
-    // From Physical (level 2, structural_physical.ri)
-    assert!(
-        cell_names.contains(&"volume"),
-        "missing 'volume' from Physical, cells: {:?}",
-        cell_names
-    );
-    assert!(
-        cell_names.contains(&"centroid_x"),
-        "missing 'centroid_x' from Physical, cells: {:?}",
-        cell_names
-    );
-
-    // From Rigid (level 3, structural_physical.ri)
+    // From Rigid (level 2, structural_physical.ri)
     assert!(
         cell_names.contains(&"moment_of_inertia"),
         "missing 'moment_of_inertia' from Rigid, cells: {:?}",
         cell_names
     );
 
-    // Computed default from Physical: mass = volume * density
+    // Trait-injected Let defaults from Physical: `mass` and `centroid`.
     assert!(
         cell_names.contains(&"mass"),
         "missing 'mass' computed default from Physical, cells: {:?}",
+        cell_names
+    );
+    assert!(
+        cell_names.contains(&"centroid"),
+        "missing 'centroid' computed default from Physical, cells: {:?}",
+        cell_names
+    );
+
+    // From Physical: `geometry : Solid` lowers to a realization (Type::Geometry
+    // is unrepresentable per `is_representable_cell_type`), so it does NOT
+    // appear in value_cells. Pin the realization-side presence instead.
+    assert!(
+        !template.realizations.is_empty(),
+        "expected at least one realization from `param geometry : Solid` on Beam; got none"
+    );
+    assert!(
+        !cell_names.contains(&"geometry"),
+        "geometry must NOT appear in value_cells (Solid params lower to realizations); \
+         cells: {:?}",
         cell_names
     );
 }
