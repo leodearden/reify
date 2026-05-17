@@ -2913,7 +2913,7 @@ impl Engine {
                         // (it has the diagnostic context for the ErrorRef).
                         match self.run_compute_dispatch(
                             &c_id,
-                            &[cell_id.clone()],
+                            std::slice::from_ref(cell_id),
                             &target,
                             &arg_values,
                             &[],

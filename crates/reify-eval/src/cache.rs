@@ -769,6 +769,15 @@ impl CacheStore {
     /// seeded output bumps `pending_transition_count`.
     ///
     /// Returns the count of output VCs marked or seeded Pending.
+    //
+    // `clippy::map_entry` would prefer the Entry API here, but the existing-VC
+    // branch calls `self.mark_pending_with_cause(...)` which borrows all of
+    // `self` mutably and so cannot coexist with `self.caches.entry(...)`. We
+    // could inline `mark_pending_with_cause`'s body, but that duplicates the
+    // chain-root contract logic and decouples this site from regression tests
+    // that pin `mark_pending_with_cause` directly. Allowing the lint locally
+    // is the minimal change.
+    #[allow(clippy::map_entry)]
     pub fn begin_compute_dispatch(
         &mut self,
         c_id: &ComputeNodeId,

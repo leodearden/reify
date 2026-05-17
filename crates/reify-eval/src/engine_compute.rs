@@ -124,12 +124,12 @@ impl crate::Engine {
     /// 2. [`Engine::dispatch_compute_node`](crate::Engine::dispatch_compute_node)
     ///    invokes the registered trampoline synchronously (γ helper; maps
     ///    Failed/Cancelled/unregistered → `Err`).
-    /// 3a. On `Ok((result, diagnostics))` —
+    /// 3. On `Ok((result, diagnostics))` —
     ///    [`CacheStore::complete_compute_dispatch_atomically`][crate::cache::CacheStore::complete_compute_dispatch_atomically]
     ///    writes the new value, flips Pending → Final, and clears
     ///    `pending_cause` in a single critical section. Returns
     ///    `Ok((result, diagnostics))`.
-    /// 3b. On `Err(diagnostics)` — the output VCs are deliberately LEFT
+    /// 4. On `Err(diagnostics)` — the output VCs are deliberately LEFT
     ///    Pending per PRD §2 ("Freshness::Pending persists until the next
     ///    dispatch completes successfully or fails"). The caller (the
     ///    `@optimized` lowering site in `engine_eval.rs`) owns the Failed

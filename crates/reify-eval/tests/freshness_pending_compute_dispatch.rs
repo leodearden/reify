@@ -80,7 +80,7 @@ fn run_compute_dispatch_helper_invokes_begin_then_trampoline_then_atomic_complet
 
     let outcome = engine.run_compute_dispatch(
         &c_id,
-        &[b.clone()],
+        std::slice::from_ref(&b),
         "test::observer",
         &[Value::Int(41)],
         &[],
