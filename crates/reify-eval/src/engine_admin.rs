@@ -1539,8 +1539,7 @@ mod tests {
     #[test]
     fn sweep_persistent_cache_at_startup_binds_live_engine_version() {
         use crate::persistent_cache::{
-            ENGINE_VERSION_HASH, ORPHAN_DIR_AGE, STALE_TEMPFILE_AGE, SweepReport, backdate_mtime,
-            shard_dir,
+            ENGINE_VERSION_HASH, ORPHAN_DIR_AGE, STALE_TEMPFILE_AGE, backdate_mtime, shard_dir,
         };
 
         let tmp = tempfile::TempDir::new().unwrap();

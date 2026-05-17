@@ -96,7 +96,7 @@ fn dispatch_compute_node_registered_identity_returns_input_value() {
 
     let input = Value::Int(99);
     let (result_value, diagnostics) = engine
-        .dispatch_compute_node("test::identity", &[input.clone()], &[], &Value::Undef, None)
+        .dispatch_compute_node("test::identity", std::slice::from_ref(&input), &[], &Value::Undef, None)
         .expect("expected Ok for registered trampoline");
 
     assert_eq!(

@@ -505,6 +505,57 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
     }
 }
 
+/// Attempt to satisfy a `NoMatch` call via default-padding.
+///
+/// Searches `named` for the UNIQUE same-name candidate where:
+/// - the candidate has more params than `provided` args,
+/// - the provided prefix `arg_types[..provided]` matches `cand.params[..provided]` exactly, and
+/// - every trailing `cand.param_defaults[provided..]` is `Some`.
+///
+/// If exactly one such candidate exists, returns it together with the cloned default
+/// `CompiledExpr`s for the trailing params. Returns `None` when zero or multiple
+/// candidates are satisfiable (caller falls through to the existing NoMatch error).
+pub(crate) fn try_default_padding<'a>(
+    named: &[&'a CompiledFunction],
+    compiled_args: &[CompiledExpr],
+    arg_types: &[Type],
+) -> Option<(&'a CompiledFunction, Vec<CompiledExpr>)> {
+    let provided = compiled_args.len();
+    let mut satisfiable: Vec<(&CompiledFunction, Vec<CompiledExpr>)> = Vec::new();
+
+    for &cand in named {
+        // Candidate must have strictly more params than provided args.
+        if cand.params.len() <= provided {
+            continue;
+        }
+        // param_defaults must be populated and length-aligned to params.
+        if cand.param_defaults.len() != cand.params.len() {
+            continue;
+        }
+        // Provided prefix types must match candidate params exactly.
+        let prefix_matches = cand.params[..provided]
+            .iter()
+            .zip(arg_types[..provided].iter())
+            .all(|((_, param_ty), arg_ty)| param_ty == arg_ty);
+        if !prefix_matches {
+            continue;
+        }
+        // All trailing params must carry Some compiled default.
+        let defaults: Option<Vec<CompiledExpr>> = cand.param_defaults[provided..]
+            .iter()
+            .cloned()
+            .collect();
+        if let Some(defaults) = defaults {
+            satisfiable.push((cand, defaults));
+        }
+    }
+
+    match satisfiable.len() {
+        1 => Some(satisfiable.into_iter().next().unwrap()),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Anti-cascade guard tests (task-448): `Type::Error` operands must
@@ -747,56 +798,5 @@ mod tests {
                 label,
             );
         }
-    }
-}
-
-/// Attempt to satisfy a `NoMatch` call via default-padding.
-///
-/// Searches `named` for the UNIQUE same-name candidate where:
-/// - the candidate has more params than `provided` args,
-/// - the provided prefix `arg_types[..provided]` matches `cand.params[..provided]` exactly, and
-/// - every trailing `cand.param_defaults[provided..]` is `Some`.
-///
-/// If exactly one such candidate exists, returns it together with the cloned default
-/// `CompiledExpr`s for the trailing params. Returns `None` when zero or multiple
-/// candidates are satisfiable (caller falls through to the existing NoMatch error).
-pub(crate) fn try_default_padding<'a>(
-    named: &[&'a CompiledFunction],
-    compiled_args: &[CompiledExpr],
-    arg_types: &[Type],
-) -> Option<(&'a CompiledFunction, Vec<CompiledExpr>)> {
-    let provided = compiled_args.len();
-    let mut satisfiable: Vec<(&CompiledFunction, Vec<CompiledExpr>)> = Vec::new();
-
-    for &cand in named {
-        // Candidate must have strictly more params than provided args.
-        if cand.params.len() <= provided {
-            continue;
-        }
-        // param_defaults must be populated and length-aligned to params.
-        if cand.param_defaults.len() != cand.params.len() {
-            continue;
-        }
-        // Provided prefix types must match candidate params exactly.
-        let prefix_matches = cand.params[..provided]
-            .iter()
-            .zip(arg_types[..provided].iter())
-            .all(|((_, param_ty), arg_ty)| param_ty == arg_ty);
-        if !prefix_matches {
-            continue;
-        }
-        // All trailing params must carry Some compiled default.
-        let defaults: Option<Vec<CompiledExpr>> = cand.param_defaults[provided..]
-            .iter()
-            .cloned()
-            .collect();
-        if let Some(defaults) = defaults {
-            satisfiable.push((cand, defaults));
-        }
-    }
-
-    match satisfiable.len() {
-        1 => Some(satisfiable.into_iter().next().unwrap()),
-        _ => None,
     }
 }

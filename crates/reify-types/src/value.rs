@@ -8300,21 +8300,6 @@ mod tests {
         );
     }
 
-    // --- SampledField::grid_metadata_eq comprehensive contract tests (task 3650) ---
-
-    /// Two NaN values with **identical** bit patterns must compare as equal via
-    /// `grid_metadata_eq`, while two NaN values with **different** bit patterns
-    /// must compare as unequal.
-    ///
-    /// Pins the bidirectional NaN bit-equality contract documented on the method:
-    /// the impl uses `f64::to_bits()` comparison, so same-bit-pattern NaNs are
-    /// equal and distinct-bit-pattern NaNs are not.
-    ///
-    /// Both halves are needed:
-    /// - Same-bits-equal: fails if a contributor replaces `to_bits()==to_bits()`
-    ///   with plain `==` (NaN != NaN always, so the result would flip to false).
-    /// - Different-bits-unequal: fails if a contributor introduces NaN
-    ///   canonicalisation (all NaNs would be treated as equal).
     // ── format_display_triple unit tests (Task 3648) ─────────────────────────
 
     /// Scalar mm(4.2) → Some((4.2, "4.2", "mm")):

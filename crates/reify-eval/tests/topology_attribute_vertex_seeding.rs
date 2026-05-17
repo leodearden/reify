@@ -24,8 +24,8 @@ use std::collections::{HashMap, HashSet};
 use reify_compiler::compile_with_stdlib;
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 use reify_types::{
-    AxisSign, ExportFormat, FeatureId, GeometryKernel, GeometryOp, ModulePath,
-    RealizationNodeId, Role, Severity, Value,
+    AxisSign, ExportFormat, FeatureId, GeometryOp, ModulePath, RealizationNodeId, Role, Severity,
+    Value,
 };
 
 // ─── helpers (copied from topology_attribute_primitives_e2e.rs convention) ──
@@ -89,7 +89,7 @@ fn extract_vertices_and_attribute_seeding_box() {
     }
 
     // (a) Direct kernel: extract_vertices returns 8 handles for a 10mm box.
-    let mut kernel = OcctKernelHandle::spawn();
+    let kernel = OcctKernelHandle::spawn();
     let box_id = kernel
         .execute(&GeometryOp::Box {
             width: Value::Real(10.0e-3),
