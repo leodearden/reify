@@ -1391,11 +1391,11 @@ pub fn evict_over_cap(
             // Any other I/O error propagates.
             //
             // Race site #1 — concurrent eviction: another reify process may
-            // have removed this .bin between read_dir and here (see the remove
-            // loop comment at ~line 1446 for the same race on the eviction
-            // side).  On NotFound from either metadata() or modified(), skip
-            // to the next file_entry rather than propagating the transient
-            // error.
+            // have removed this .bin between read_dir and here (see the
+            // `we_removed_bin` match in the remove loop below for the same
+            // race on the eviction side).  On NotFound from either metadata()
+            // or modified(), skip to the next file_entry rather than
+            // propagating the transient error.
             let last_access = match read_sidecar_mtime(&meta_path) {
                 Ok(t) => t,
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -1425,7 +1425,8 @@ pub fn evict_over_cap(
             // read_dir listed it but before we open it (race site #2), or in
             // the narrow window between open(2) and fstat(2) (race site #3).
             // Both cases: continue to the next file_entry.  Mirrors race site
-            // #1 and the remove-loop suppression at ~line 1446.
+            // #1 above and the `we_removed_bin` NotFound suppression in the
+            // eviction loop below.
             use std::fs::File;
             use std::io::BufReader;
             let f = match File::open(&file_path) {
@@ -4880,9 +4881,9 @@ mod tests {
     ///
     /// This complements step-1 (`evict_over_cap_tolerates_notfound_in_candidate_walker_when_bin_concurrently_removed`),
     /// which covers race site #2 (sidecar present, `File::open` returns NotFound).
-    /// Here the sidecar is intentionally absent, exercising the distinct
+    /// Here the sidecar is intentionally absent, exercising the
     /// `Err(e) if e.kind() == io::ErrorKind::NotFound => continue` arm inside
-    /// the sidecar-absent branch at ~line 1390.
+    /// the sidecar-absent fallback of `evict_over_cap`'s candidate walker.
     #[cfg(unix)]
     #[test]
     fn evict_over_cap_tolerates_notfound_when_both_meta_and_bin_concurrently_removed() {
@@ -5529,9 +5530,10 @@ mod tests {
     /// Clock-skew defensiveness: entries whose mtime is in the **future**
     /// relative to `now` cause `now.duration_since(mtime)` to return
     /// `Err(SystemTimeError)`. Both sweep functions guard this with
-    /// `Err(_) => continue` (sweep_stale_tempfiles_recursive line 1774-1776;
-    /// prune_orphan_engine_version_dirs line 1911-1913), keeping the entry
-    /// rather than treating it as stale.
+    /// `Err(_) => continue` (the `Err(_) => continue` arm in
+    /// `sweep_stale_tempfiles_recursive`; the matching `Err(_) => continue`
+    /// arm in the candidate loop of `prune_orphan_engine_version_dirs`),
+    /// keeping the entry rather than treating it as stale.
     ///
     /// This test pins that conservative-keep behavior. If either `Err(_) =>
     /// continue` branch were changed to treat the error as "stale" (e.g.
@@ -5735,8 +5737,9 @@ mod tests {
     /// skipped wholesale to avoid catastrophically deleting the live cache
     /// subdir (which would also be unidentifiable).
     ///
-    /// This test pins the early-return at lines 1823-1829. If that guard were
-    /// removed, the old subdir created below would be pruned and the
+    /// This test pins the `if current_engine_version.is_empty()` early-return
+    /// guard at the top of `prune_orphan_engine_version_dirs`. If that guard
+    /// were removed, the old subdir created below would be pruned and the
     /// `old_orphan.exists()` assertion would fail.
     #[test]
     fn prune_orphan_engine_version_dirs_with_empty_current_version_skips_all() {
