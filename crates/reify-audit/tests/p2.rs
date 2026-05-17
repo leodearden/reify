@@ -581,6 +581,53 @@ mod tests {
         );
     }
 
+    /// Pins the sweep-mode contract: `check()` must panic (via `debug_assert!`) when
+    /// called with an unbounded backlog — `target_task_id=None`, `window=None`, and
+    /// `task_metadata.len() > SWEEP_BACKLOG_WARN_THRESHOLD` (50).
+    ///
+    /// Without pre-narrowing, every in-progress task carrying a legitimate WIP
+    /// `TODO(... pending)` would silently surface as a Medium-severity finding,
+    /// because P2 has no internal status filter to suppress legitimate WIP markers.
+    /// The contract enforces that sweep-mode callers MUST narrow `ctx.task_metadata`
+    /// to closing-window tasks before calling `check()`.
+    ///
+    /// The 51-entry backlog (one above threshold) uses `files: vec![]` so no
+    /// `diff_added_lines` calls fire — the guard panics before per-task iteration.
+    ///
+    /// Reference: esc-3752-365 (reviewer-accepted sweep-mode contract suggestion).
+    #[test]
+    #[should_panic(expected = "unbounded backlog")]
+    fn sweep_mode_unbounded_backlog_panics_in_debug() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let jc = MockJCodemunchOps::new();
+
+        // Construct 51 entries — one more than SWEEP_BACKLOG_WARN_THRESHOLD (50).
+        // files: vec![] keeps the test hermetic — no diff calls fire because the
+        // guard panics before per-task iteration begins.
+        let mut task_metadata = HashMap::new();
+        for i in 0..51usize {
+            let id = format!("3000{i:02}");
+            task_metadata.insert(id.clone(), benign_meta(&id, vec![]));
+        }
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None, // added by task 3691 — required field
+        };
+
+        // Before the impl guard lands: check() returns Vec::new() without panicking,
+        // causing #[should_panic] to fail ("test did not panic as expected").
+        let _ = p2_consumer_stub::check(&ctx);
+    }
+
 } // mod tests
 
 } // mod p2
