@@ -8650,3 +8650,82 @@ fn extract_joint_descriptor_assigns_kind_based_binding_defaults_revolute() {
         joints[0].binding
     );
 }
+
+// ---- reserved __joint_* param name collision warnings (task 3783, step-11) ----
+
+/// Source with a Param cell named `__joint_y_axis_v` — collides with the
+/// synth-virtual-param naming pattern used by the η-engine literal-bind path.
+/// `get_mechanism_descriptors()` must emit exactly 1 WARN at the
+/// `reify_gui::engine::reserved_param_name` target for this structure.
+const RESERVED_PARAM_NAME_SOURCE: &str = r#"
+structure Kinematic {
+    param __joint_y_axis_v: Length = 50mm
+    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0     = mechanism()
+    let m1     = body(m0, "solid_a", y_axis)
+}
+"#;
+
+/// A user-authored `param __joint_y_axis_v` matches the `__joint_*` reserved
+/// synth-virtual-param naming pattern.  `get_mechanism_descriptors` must emit
+/// exactly 1 WARN at `reify_gui::engine::reserved_param_name`.
+#[test]
+fn get_mechanism_descriptors_emits_warn_for_user_param_matching_reserved_pattern() {
+    // Inoculate against tracing's per-callsite Interest cache — see
+    // `prime_tracing_callsite_cache` in reify-test-support for why.
+    reify_test_support::prime_tracing_callsite_cache();
+
+    let mut session = make_session();
+    session
+        .load_from_source(RESERVED_PARAM_NAME_SOURCE, "kinematic")
+        .expect("load reserved-param-name source");
+
+    let (subscriber, counters) = CountingSubscriberBuilder::new()
+        .count_level(tracing::Level::WARN)
+        .target_prefix("reify_gui::engine::reserved_param_name")
+        .build();
+
+    tracing::subscriber::with_default(subscriber, || {
+        let _ = session.get_mechanism_descriptors();
+    });
+
+    let warn_count = counters[&tracing::Level::WARN].load(Ordering::Acquire);
+    assert_eq!(
+        warn_count, 1,
+        "expected exactly 1 WARN at reify_gui::engine::reserved_param_name \
+         for structure with param __joint_y_axis_v; got {}",
+        warn_count
+    );
+}
+
+/// Normally-named params (e.g. `y_pos`) must NOT trigger the reserved-name
+/// warning — this test pins the no-false-positive contract.
+#[test]
+fn get_mechanism_descriptors_does_not_warn_for_normally_named_params() {
+    // Inoculate against tracing's per-callsite Interest cache.
+    reify_test_support::prime_tracing_callsite_cache();
+
+    // SNAPSHOT_PARAM_BIND_SOURCE has `param y_pos: Length = 100mm` — no
+    // __joint_* pattern match.
+    let mut session = make_session();
+    session
+        .load_from_source(SNAPSHOT_PARAM_BIND_SOURCE, "kinematic")
+        .expect("load snapshot+param source");
+
+    let (subscriber, counters) = CountingSubscriberBuilder::new()
+        .count_level(tracing::Level::WARN)
+        .target_prefix("reify_gui::engine::reserved_param_name")
+        .build();
+
+    tracing::subscriber::with_default(subscriber, || {
+        let _ = session.get_mechanism_descriptors();
+    });
+
+    let warn_count = counters[&tracing::Level::WARN].load(Ordering::Acquire);
+    assert_eq!(
+        warn_count, 0,
+        "expected 0 WARN events at reify_gui::engine::reserved_param_name \
+         for normally-named param y_pos; got {}",
+        warn_count
+    );
+}
