@@ -19,7 +19,7 @@ use tauri::{Emitter, Manager};
 use reify_constraints::SimpleConstraintChecker;
 use reify_gui::commands::AppState;
 use reify_gui::diff::{StateDelta, compute_delta, delta_to_events};
-use reify_gui::engine::{AutoResolveEmitter, EngineSession, WarmPoolEventEmitter};
+use reify_gui::engine::{AutoResolveEmitter, EngineSession, FeaCaseEmitter, WarmPoolEventEmitter};
 use reify_gui::event_bus::emit_typed;
 use reify_gui::lsp_bridge::LspBridge;
 use reify_gui::types::EvaluationStatus;
@@ -124,6 +124,24 @@ impl WarmPoolEventEmitter for TauriWarmPoolEventEmitter {
     fn emit(&self, event: reify_gui::types::WarmPoolEvent) {
         if let Err(e) = emit_typed(&self.app, "warm-pool-event", &event) {
             warn!("warm-pool-event emit failed: {}", e);
+        }
+    }
+}
+
+/// Emits `fea-case-changed` events to the frontend when a MultiCaseResult-shaped value
+/// is observed in `CheckResult.values` at commit time.
+///
+/// Installed during `setup()` alongside [`TauriAutoResolveEmitter`] and
+/// [`TauriWarmPoolEventEmitter`]. Per PRD §2.2 task η — fires unconditionally on every
+/// check that detects a multi-case value (no engine-side dedup, mirroring auto-resolve).
+struct TauriFeaCaseEmitter {
+    app: tauri::AppHandle,
+}
+
+impl FeaCaseEmitter for TauriFeaCaseEmitter {
+    fn changed(&self, payload: reify_gui::types::FeaCaseChanged) {
+        if let Err(e) = emit_typed(&self.app, "fea-case-changed", &payload) {
+            warn!("fea-case-changed emit failed: {}", e);
         }
     }
 }
@@ -617,6 +635,16 @@ fn main() {
             });
             if let Ok(mut session) = engine_arc.lock() {
                 session.set_warm_pool_event_emitter(warm_pool_emitter);
+            }
+
+            // Install the fea-case-changed emitter so the frontend FeaCasePickerDropdown
+            // receives the active case set whenever a MultiCaseResult is observed at commit
+            // time. The emitter is a no-op until task 3026 lands solve_load_cases.
+            let fea_case_emitter = Arc::new(TauriFeaCaseEmitter {
+                app: app.handle().clone(),
+            });
+            if let Ok(mut session) = engine_arc.lock() {
+                session.set_fea_case_emitter(fea_case_emitter);
             }
 
             // Always create DebugBridge (inert when debug disabled — no JS listener, no HTTP server)
