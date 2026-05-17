@@ -109,7 +109,13 @@ impl JointValue {
     /// Manifold DOF for this value (1 / 2 / 3 / 3).  Does **not** drive
     /// flatten/unflatten arithmetic — use [`JointKind::flat_len`] for that.
     pub fn dof_count(&self) -> usize {
-        unimplemented!("step-1-impl")
+        match self {
+            JointValue::Scalar(_) => 1,
+            JointValue::Cyl(_) => 2,
+            JointValue::Planar(_) => 3,
+            // Sphere stores 4 quaternion components but only has 3 manifold DOF.
+            JointValue::Sphere(_) => 3,
+        }
     }
 
     /// Borrow the underlying storage as a contiguous slice of f64s.  Length
