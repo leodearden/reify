@@ -362,6 +362,7 @@ mod tests {
         let trait_a = CompiledTrait {
             name: "TraitA".to_string(),
             is_pub: false,
+            doc: None,
             type_params: vec![],
             refinements: vec![],
             required_members: vec![TraitRequirement {
@@ -607,6 +608,7 @@ mod tests {
         CompiledTrait {
             name: name.to_string(),
             is_pub: false,
+            doc: None,
             type_params: vec![],
             refinements,
             required_members,
@@ -709,6 +711,7 @@ mod tests {
         let trait_a = CompiledTrait {
             name: "TraitA".to_string(),
             is_pub: false,
+            doc: None,
             type_params: vec![],
             refinements: vec![],
             required_members: vec![],
@@ -727,6 +730,7 @@ mod tests {
         let trait_b = CompiledTrait {
             name: "TraitB".to_string(),
             is_pub: false,
+            doc: None,
             type_params: vec![],
             refinements: vec![],
             required_members: vec![],
@@ -745,6 +749,7 @@ mod tests {
         let top = CompiledTrait {
             name: "Top".to_string(),
             is_pub: false,
+            doc: None,
             type_params: vec![],
             refinements: vec!["TraitA".to_string(), "TraitB".to_string()],
             required_members: vec![],
@@ -933,6 +938,7 @@ mod tests {
         let trait_a = CompiledTrait {
             name: "TraitA".to_string(),
             is_pub: false,
+            doc: None,
             type_params: vec![],
             refinements: vec![],
             required_members: vec![],
@@ -951,6 +957,7 @@ mod tests {
         let trait_b = CompiledTrait {
             name: "TraitB".to_string(),
             is_pub: false,
+            doc: None,
             type_params: vec![],
             refinements: vec![],
             required_members: vec![],
@@ -966,6 +973,7 @@ mod tests {
         let top = CompiledTrait {
             name: "Top".to_string(),
             is_pub: false,
+            doc: None,
             type_params: vec![],
             refinements: vec!["TraitA".to_string(), "TraitB".to_string()],
             required_members: vec![],

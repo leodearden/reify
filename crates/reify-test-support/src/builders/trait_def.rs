@@ -8,6 +8,7 @@ use reify_compiler::{CompiledTrait, DefaultKind, RequirementKind, TraitDefault, 
 pub struct TraitDefBuilder {
     name: String,
     is_pub: bool,
+    doc: Option<String>,
     type_params: Vec<TypeParam>,
     refinements: Vec<String>,
     required_members: Vec<TraitRequirement>,
@@ -20,12 +21,19 @@ impl TraitDefBuilder {
         Self {
             name: name.into(),
             is_pub: false,
+            doc: None,
             type_params: Vec::new(),
             refinements: Vec::new(),
             required_members: Vec::new(),
             defaults: Vec::new(),
             annotations: Vec::new(),
         }
+    }
+
+    /// Set the doc comment on this trait.
+    pub fn doc(mut self, doc: impl Into<String>) -> Self {
+        self.doc = Some(doc.into());
+        self
     }
 
     /// Push a single annotation onto this builder.
@@ -108,6 +116,7 @@ impl TraitDefBuilder {
         CompiledTrait {
             name: self.name,
             is_pub: self.is_pub,
+            doc: self.doc,
             type_params: self.type_params,
             refinements: self.refinements,
             required_members: self.required_members,
@@ -125,6 +134,7 @@ impl TraitDefBuilder {
 pub struct CompiledTraitBuilder {
     name: String,
     is_pub: bool,
+    doc: Option<String>,
     type_params: Vec<reify_types::TypeParam>,
     refinements: Vec<String>,
     required_members: Vec<TraitRequirement>,
@@ -137,12 +147,19 @@ impl CompiledTraitBuilder {
         Self {
             name: name.into(),
             is_pub: false,
+            doc: None,
             type_params: Vec::new(),
             refinements: Vec::new(),
             required_members: Vec::new(),
             defaults: Vec::new(),
             annotations: Vec::new(),
         }
+    }
+
+    /// Set the doc comment on this trait.
+    pub fn doc(mut self, doc: impl Into<String>) -> Self {
+        self.doc = Some(doc.into());
+        self
     }
 
     /// Push a single annotation onto this builder.
@@ -235,6 +252,7 @@ impl CompiledTraitBuilder {
         CompiledTrait {
             name: self.name,
             is_pub: self.is_pub,
+            doc: self.doc,
             type_params: self.type_params,
             refinements: self.refinements,
             required_members: self.required_members,

@@ -852,6 +852,7 @@ mod tests {
         let trait_dir = CompiledTrait {
             name: "TraitDir".to_string(),
             is_pub: false,
+            doc: None,
             type_params: vec![],
             refinements: vec![],
             required_members: vec![
@@ -993,6 +994,7 @@ mod tests {
         let trait_x = CompiledTrait {
             name: "TraitX".to_string(),
             is_pub: false,
+            doc: None,
             type_params: vec![],
             refinements: vec![],
             required_members: vec![TraitRequirement {
@@ -1011,6 +1013,7 @@ mod tests {
         let trait_y = CompiledTrait {
             name: "TraitY".to_string(),
             is_pub: false,
+            doc: None,
             type_params: vec![],
             refinements: vec![],
             required_members: vec![],
@@ -1042,6 +1045,7 @@ mod tests {
         let trait_z = CompiledTrait {
             name: "TraitZ".to_string(),
             is_pub: false,
+            doc: None,
             type_params: vec![],
             refinements: vec![],
             required_members: vec![],
@@ -1541,6 +1545,7 @@ mod tests {
         let trait_a = CompiledTrait {
             name: "TraitA".to_string(),
             is_pub: false,
+            doc: None,
             type_params: vec![],
             refinements: vec![],
             required_members: vec![TraitRequirement {
@@ -1561,6 +1566,7 @@ mod tests {
         let trait_b = CompiledTrait {
             name: "TraitB".to_string(),
             is_pub: false,
+            doc: None,
             type_params: vec![],
             refinements: vec![],
             required_members: vec![],
@@ -1659,6 +1665,7 @@ mod tests {
         let trait_a = CompiledTrait {
             name: "TraitA".to_string(),
             is_pub: false,
+            doc: None,
             type_params: vec![],
             refinements: vec![],
             required_members: vec![TraitRequirement {
@@ -1678,6 +1685,7 @@ mod tests {
         let trait_b = CompiledTrait {
             name: "TraitB".to_string(),
             is_pub: false,
+            doc: None,
             type_params: vec![],
             refinements: vec![],
             required_members: vec![],
@@ -1894,6 +1902,7 @@ mod tests {
         let trait_a = CompiledTrait {
             name: "TraitA".to_string(),
             is_pub: false,
+            doc: None,
             type_params: vec![],
             refinements: vec![],
             required_members: vec![TraitRequirement {
@@ -2717,6 +2726,7 @@ mod tests {
         let trait_t = CompiledTrait {
             name: "TraitT".to_string(),
             is_pub: false,
+            doc: None,
             type_params: vec![],
             refinements: vec![],
             required_members: vec![TraitRequirement {
@@ -4176,6 +4186,7 @@ mod tests {
         let material_spec = CompiledTrait {
             name: "MaterialSpec".to_string(),
             is_pub: true,
+            doc: None,
             type_params: vec![],
             refinements: vec![],
             required_members: vec![],

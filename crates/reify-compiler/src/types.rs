@@ -21,6 +21,8 @@ pub struct CompiledImport {
 pub struct CompiledTrait {
     pub name: String,
     pub is_pub: bool,
+    /// Doc comment extracted from the `///` lines preceding the declaration.
+    pub doc: Option<String>,
     /// Type parameters declared on this trait (e.g., `<T: Rigid>`).
     pub type_params: Vec<reify_types::TypeParam>,
     /// Names of traits this trait refines (parent traits).
