@@ -7,7 +7,9 @@
 //! Populated incrementally by the TDD steps in
 //! `docs/prds/v0_3/trajectory-input-shaping.md` §11 task μ.
 
-use crate::ast::{ArcDirection, ArcMove, Feedrate, GcodeCommand, LinearMove, SetPosition};
+use crate::ast::{
+    ArcDirection, ArcMove, Feedrate, GcodeCommand, IgnoredMCode, LinearMove, SetPosition,
+};
 use crate::error::{ParseError, ParseErrorKind};
 
 /// Parse a Marlin-dialect G-code source into a sequence of commands.
@@ -56,6 +58,25 @@ fn parse_line(line_no: usize, line: &str) -> Result<GcodeCommand, ParseError> {
             &params,
         )?)),
         "G92" => Ok(GcodeCommand::SetPosition(set_position(line_no, &params)?)),
+        // PRD §7.1 — these M-codes are parsed & retained but tagged as
+        // trajectory-irrelevant. `params_raw` is the post-code remainder
+        // of the line, trimmed (so `M82` yields params_raw="").
+        "M104" => Ok(GcodeCommand::IgnoredMCode(IgnoredMCode {
+            code: 104,
+            params_raw: line[cmd.len()..].trim_start().to_string(),
+        })),
+        "M109" => Ok(GcodeCommand::IgnoredMCode(IgnoredMCode {
+            code: 109,
+            params_raw: line[cmd.len()..].trim_start().to_string(),
+        })),
+        "M82" => Ok(GcodeCommand::IgnoredMCode(IgnoredMCode {
+            code: 82,
+            params_raw: line[cmd.len()..].trim_start().to_string(),
+        })),
+        "M83" => Ok(GcodeCommand::IgnoredMCode(IgnoredMCode {
+            code: 83,
+            params_raw: line[cmd.len()..].trim_start().to_string(),
+        })),
         other => {
             // Standalone feedrate: the leading token is itself an `F<number>`
             // parameter rather than a recognised G/M command code. Reject

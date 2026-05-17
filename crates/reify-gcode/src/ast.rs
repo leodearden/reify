@@ -20,6 +20,13 @@ pub enum GcodeCommand {
     SetPosition(SetPosition),
     /// Standalone `F<value>` feedrate update on its own line.
     Feedrate(Feedrate),
+    /// M-code that is parsed and preserved in the AST but contributes
+    /// nothing to trajectory planning (PRD §7.1 "ignored for trajectory":
+    /// M104/M109 extruder temp, M82/M83 extruder absolute/relative mode).
+    /// `params_raw` preserves the post-code remainder of the source line
+    /// verbatim so the round-trip contract holds without revalidating
+    /// parameters we don't otherwise care about.
+    IgnoredMCode(IgnoredMCode),
 }
 
 /// Parameters for a G0/G1 linear move.
@@ -82,4 +89,13 @@ pub struct SetPosition {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Feedrate {
     pub value: f64,
+}
+
+/// Trajectory-irrelevant M-code retained for round-trip fidelity.
+/// `params_raw` is the trimmed post-code source-line remainder (empty
+/// when the M-code has no parameters).
+#[derive(Debug, Clone, PartialEq)]
+pub struct IgnoredMCode {
+    pub code: u16,
+    pub params_raw: String,
 }
