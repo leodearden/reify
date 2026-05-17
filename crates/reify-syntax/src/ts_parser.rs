@@ -1478,6 +1478,13 @@ impl<'a> Lowering<'a> {
                 "meta",
                 self.lower_meta_block(child).map(MemberDecl::MetaBlock)
             ),
+            "match_arm_decl_block" => check_and_lower!(
+                self,
+                child,
+                "match arm decl block",
+                self.lower_match_arm_decl_group(child)
+                    .map(MemberDecl::MatchArmDeclGroup)
+            ),
             "forall_statement" => check_and_lower!(
                 self,
                 child,
@@ -2535,6 +2542,84 @@ impl<'a> Lowering<'a> {
         Some(MatchArm {
             patterns,
             body,
+            span: self.span(node),
+        })
+    }
+
+    fn lower_match_arm_decl_group(
+        &self,
+        node: tree_sitter::Node,
+    ) -> Option<MatchArmDeclGroupDecl> {
+        let discriminant_node = node.child_by_field_name("discriminant")?;
+        let discriminant = self.lower_expr(discriminant_node)?;
+
+        let mut arms = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "match_arm_decl_arm" {
+                if let Some(arm) = self.lower_match_arm_decl_arm(child) {
+                    arms.push(arm);
+                }
+            }
+        }
+
+        Some(MatchArmDeclGroupDecl {
+            discriminant,
+            arms,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
+    }
+
+    fn lower_match_arm_decl_arm(
+        &self,
+        node: tree_sitter::Node,
+    ) -> Option<MatchArmDeclArmDecl> {
+        let pattern_node = node.child_by_field_name("pattern")?;
+        let member_node = node.child_by_field_name("member")?;
+
+        // Collect patterns from the match_pattern node.
+        // Pattern is either '_' (wildcard) or one or more identifiers separated by '|'.
+        let mut patterns = Vec::new();
+        let pattern_text = self.node_text(pattern_node).trim();
+
+        if pattern_text == "_" {
+            patterns.push("_".to_string());
+        } else {
+            // Iterate children (identifiers) of the match_pattern node.
+            let mut cursor = pattern_node.walk();
+            for child in pattern_node.children(&mut cursor) {
+                if child.kind() == "identifier" {
+                    patterns.push(self.node_text(child).to_string());
+                }
+            }
+        }
+
+        if patterns.is_empty() {
+            return None;
+        }
+
+        // Build a SubDecl from the match_arm_sub_decl node.
+        // The grammar restricts match_arm_sub_decl to: 'sub', name, ':', structure_name.
+        // No type_args, args, where_clause, or body are permitted.
+        let name_node = member_node.child_by_field_name("name")?;
+        let structure_name_node = member_node.child_by_field_name("structure_name")?;
+
+        let sub_decl = SubDecl {
+            name: self.node_text(name_node).to_string(),
+            structure_name: self.node_text(structure_name_node).to_string(),
+            type_args: vec![],
+            args: vec![],
+            is_collection: false,
+            where_clause: None,
+            body: None,
+            span: self.span(member_node),
+            content_hash: self.content_hash(member_node),
+        };
+
+        Some(MatchArmDeclArmDecl {
+            patterns,
+            member: Box::new(MemberDecl::Sub(sub_decl)),
             span: self.span(node),
         })
     }
