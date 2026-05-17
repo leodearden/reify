@@ -312,4 +312,37 @@ mod tests {
         // STORAGE width, not manifold DOF — quaternion has 4 components.
         assert_eq!(JointKind::Spherical.flat_len(), 4);
     }
+
+    // ── flatten_dofs tests (step-4) ──────────────────────────────────────
+
+    #[test]
+    fn flatten_dofs_empty_input_returns_empty_vec() {
+        let out = flatten_dofs(&[]);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn flatten_dofs_two_scalars_concatenate_in_order() {
+        // Critical for the α-pre bridge shim: scalar-joint chains feed
+        // chain_transform(&[f64]) via &flatten_dofs(&[Scalar,Scalar,..]).
+        let out = flatten_dofs(&[JointValue::Scalar(0.3), JointValue::Scalar(0.5)]);
+        assert_eq!(out, vec![0.3, 0.5]);
+    }
+
+    #[test]
+    fn flatten_dofs_mixed_variants_concatenate_with_storage_widths() {
+        // 1 + 2 + 3 + 4 = 10 f64s in order; Sphere contributes 4 (storage,
+        // not dof_count=3).
+        let out = flatten_dofs(&[
+            JointValue::Scalar(1.0),
+            JointValue::Cyl([2.0, 3.0]),
+            JointValue::Planar([4.0, 5.0, 6.0]),
+            JointValue::Sphere([1.0, 0.0, 0.0, 0.0]),
+        ]);
+        assert_eq!(out.len(), 10);
+        assert_eq!(
+            out,
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 1.0, 0.0, 0.0, 0.0]
+        );
+    }
 }
