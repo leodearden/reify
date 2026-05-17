@@ -5,6 +5,62 @@
 //! (fea.rs:703): outer `Map{"cases" -> Map<Value::String, ElasticResult-Map>}`.
 //! Implements the engine-side detector for PRD §2.2 task η (`fea-case-changed`).
 
+use reify_types::Value;
+
+/// Detected multi-case result from a `Value::Map` cell.
+///
+/// `active_case_id` is the lexicographically-smallest case name (deterministic
+/// BTreeMap key order, matching stdlib `extract_cases_map`).
+/// `available_cases` is the sorted list of all case names (BTreeMap iteration order).
+pub struct DetectedCases {
+    pub active_case_id: String,
+    pub available_cases: Vec<String>,
+}
+
+/// Detect a `MultiCaseResult`-shaped value and return the set of case names.
+///
+/// Returns `None` if:
+/// - `value` is not a `Value::Map`
+/// - the map has no `"cases"` key
+/// - the `"cases"` value is not a `Value::Map`
+/// - the inner cases map is empty (nothing to switch)
+///
+/// When task 3026 (`solve_load_cases`) lands, this detector recognises real
+/// `MultiCaseResult` values automatically — no rewiring needed here.
+pub fn detect_multi_case_result(value: &Value) -> Option<DetectedCases> {
+    let outer = match value {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+
+    let cases_value = outer.get(&Value::String("cases".to_string()))?;
+
+    let inner = match cases_value {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+
+    let available_cases: Vec<String> = inner
+        .keys()
+        .filter_map(|k| match k {
+            Value::String(s) => Some(s.clone()),
+            _ => None,
+        })
+        .collect();
+
+    if available_cases.is_empty() {
+        return None;
+    }
+
+    // BTreeMap keys are already sorted; available_cases[0] is the lex-smallest.
+    let active_case_id = available_cases[0].clone();
+
+    Some(DetectedCases {
+        active_case_id,
+        available_cases,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use reify_test_support::values::multi_case_result_value;
