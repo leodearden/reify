@@ -7,7 +7,7 @@
 //! Populated incrementally by the TDD steps in
 //! `docs/prds/v0_3/trajectory-input-shaping.md` §11 task μ.
 
-use crate::ast::{ArcDirection, ArcMove, GcodeCommand, LinearMove};
+use crate::ast::{ArcDirection, ArcMove, GcodeCommand, LinearMove, SetPosition};
 use crate::error::{ParseError, ParseErrorKind};
 
 /// Parse a Marlin-dialect G-code source into a sequence of commands.
@@ -55,6 +55,7 @@ fn parse_line(line_no: usize, line: &str) -> Result<GcodeCommand, ParseError> {
             ArcDirection::Ccw,
             &params,
         )?)),
+        "G92" => Ok(GcodeCommand::SetPosition(set_position(line_no, &params)?)),
         other => Err(ParseError {
             line: line_no,
             kind: ParseErrorKind::UnknownCommand(other.to_string()),
@@ -151,6 +152,38 @@ fn arc_move(
         _ => Err(letter),
     })?;
     Ok(mv)
+}
+
+/// Materialise a `SetPosition` from the parameter slice of a G92 line.
+/// All axes default to `None`; a bare `G92` is therefore a valid all-None
+/// command per Marlin semantics.
+fn set_position(line_no: usize, params: &[&str]) -> Result<SetPosition, ParseError> {
+    let mut sp = SetPosition {
+        x: None,
+        y: None,
+        z: None,
+        e: None,
+    };
+    parse_axis_params(line_no, params, |letter, value| match letter {
+        'X' => {
+            sp.x = Some(value);
+            Ok(())
+        }
+        'Y' => {
+            sp.y = Some(value);
+            Ok(())
+        }
+        'Z' => {
+            sp.z = Some(value);
+            Ok(())
+        }
+        'E' => {
+            sp.e = Some(value);
+            Ok(())
+        }
+        _ => Err(letter),
+    })?;
+    Ok(sp)
 }
 
 /// Shared `<letter><number>` parameter walker.

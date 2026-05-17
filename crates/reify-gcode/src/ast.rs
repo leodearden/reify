@@ -14,6 +14,10 @@ pub enum GcodeCommand {
     LinearMove(LinearMove),
     /// G2 (CW) / G3 (CCW) arc move, IJK form.
     ArcMove(ArcMove),
+    /// G92 set-position. Each `Some(_)` axis is rebased to the supplied
+    /// value; `None` axes are left untouched. A bare `G92` with all-None
+    /// axes is permitted (Marlin treats it as a no-op).
+    SetPosition(SetPosition),
 }
 
 /// Parameters for a G0/G1 linear move.
@@ -58,4 +62,14 @@ pub struct ArcMove {
     pub k: Option<f64>,
     pub e: Option<f64>,
     pub feedrate: Option<f64>,
+}
+
+/// Parameters for a G92 set-position command. Each `Some(_)` axis is
+/// the new logical position; `None` axes are left untouched.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetPosition {
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+    pub z: Option<f64>,
+    pub e: Option<f64>,
 }
