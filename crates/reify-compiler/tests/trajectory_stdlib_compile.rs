@@ -117,23 +117,6 @@ fn param_cells(template: &TopologyTemplate) -> Vec<&ValueCellDecl> {
         .collect()
 }
 
-/// Recursively collect ValueRef member names from a compiled expression tree.
-/// Walks `BinOp`, `UnOp`, and `MethodCall` receivers so a chain like
-/// `waypoints.count > 0` surfaces `waypoints` from the LHS.
-fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<&str> {
-    match &expr.kind {
-        CompiledExprKind::ValueRef(cell_id) => vec![cell_id.member.as_str()],
-        CompiledExprKind::BinOp { left, right, .. } => {
-            let mut refs = collect_value_ref_members(left);
-            refs.extend(collect_value_ref_members(right));
-            refs
-        }
-        CompiledExprKind::UnOp { operand, .. } => collect_value_ref_members(operand),
-        CompiledExprKind::MethodCall { object, .. } => collect_value_ref_members(object),
-        _ => vec![],
-    }
-}
-
 /// Recursively walk an expression tree collecting `(method_name, member_name)`
 /// pairs from `MethodCall { object: ValueRef(member), method: name, .. }`
 /// nodes. The traversal also recurses into `BinOp`, `UnOp`, and nested
@@ -354,6 +337,17 @@ fn waypoint_struct_has_correct_param_shape() {
         ),
     ];
 
+    // Param declaration order is part of the contract — pin it explicitly
+    // (mirrors the order-sensitive enum-variant assertion in
+    // `spline_kind_enum_has_cubic_and_quintic_variants`).
+    let expected_names: Vec<&str> = expected.iter().map(|(m, _)| *m).collect();
+    assert_eq!(
+        names, expected_names,
+        "Waypoint params must be declared in canonical order \
+         (t, values, vels, accels); got: {:?}",
+        names
+    );
+
     for (member, expected_ty) in expected {
         let cell = params
             .iter()
@@ -485,6 +479,17 @@ fn clamped_spline_refines_boundary_condition_with_velocity_tangents() {
         ("start_velocity", Type::List(Box::new(Type::Real))),
         ("end_velocity", Type::List(Box::new(Type::Real))),
     ];
+
+    // Param declaration order is part of the contract — pin it explicitly
+    // (mirrors the order-sensitive enum-variant assertion in
+    // `spline_kind_enum_has_cubic_and_quintic_variants`).
+    let expected_names: Vec<&str> = expected.iter().map(|(m, _)| *m).collect();
+    assert_eq!(
+        names, expected_names,
+        "ClampedSpline params must be declared in canonical order \
+         (start_velocity, end_velocity); got: {:?}",
+        names
+    );
 
     for (member, expected_ty) in expected {
         let cell = params
@@ -633,6 +638,18 @@ fn piecewise_polynomial_profile_has_correct_param_shape() {
         ("spline_kind", Type::Enum("SplineKind".to_string())),
     ];
 
+    // Param declaration order is part of the contract — pin it explicitly
+    // (mirrors the order-sensitive enum-variant assertion in
+    // `spline_kind_enum_has_cubic_and_quintic_variants`). This is the
+    // assertion that makes the docstring's "in canonical order" claim true.
+    let expected_names: Vec<&str> = expected.iter().map(|(m, _)| *m).collect();
+    assert_eq!(
+        names, expected_names,
+        "PiecewisePolynomialProfile params must be declared in canonical \
+         order (mechanism, waypoints, boundary, spline_kind); got: {:?}",
+        names
+    );
+
     for (member, expected_ty) in expected {
         let cell = params
             .iter()
@@ -725,12 +742,19 @@ fn piecewise_polynomial_profile_constrains_waypoints_nonempty() {
         chain
     );
 
-    // RHS must be `Literal(Value::Int(0))`.
+    // RHS must be the literal `0`. Accept either `Int(0)` or `Real(0.0)`,
+    // mirroring the future-proofing rationale established in
+    // `buckling_stdlib_compile.rs:357-358` /
+    // `solver_elastic_tests.rs:567-579`: `waypoints.count` is `Type::Int`
+    // today so the `0` literal stays `Int`, but accepting `Real(0.0)` keeps
+    // this test robust against a future literal-coercion change and
+    // consistent with the precedent it explicitly cites.
     match &right.kind {
         CompiledExprKind::Literal(Value::Int(0)) => {}
+        CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => {}
         other => panic!(
             "PiecewisePolynomialProfile constraint RHS should be \
-             Literal(Value::Int(0)); got: {:?}",
+             Literal(Value::Int(0)) or Literal(Value::Real(0.0)); got: {:?}",
             other
         ),
     }
