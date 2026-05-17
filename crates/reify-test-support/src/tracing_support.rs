@@ -609,6 +609,8 @@ pub fn warn_capturing_subscriber() -> (impl tracing::Subscriber + Send + Sync, W
 // `warn_capturing_subscriber()` as a thin wrapper around
 // `CapturingSubscriberBuilder::new(Level::WARN)` and have `WarnCapture`
 // delegate to `Capture`, so contract changes only have one place to land.
+// Preserve the debug_assert_eq! level check by parameterizing it on the
+// builder's registered level.
 
 struct WarnCapturingSubscriber {
     count: Arc<AtomicUsize>,
@@ -689,6 +691,9 @@ impl tracing::Subscriber for WarnCapturingSubscriber {
         // Increment count *after* pushing to the vectors so that an Acquire
         // load of count() is a fence for vector contents (Release pairs with
         // WarnCapture::count()'s Acquire load and with assertion helpers).
+        // NOTE(bug-fix): Previously fetch_add was called *before* the pushes,
+        // so a concurrent Acquire load of count() == N could observe N before
+        // messages[N-1] was written — this was a latent memory-ordering bug.
         self.count.fetch_add(1, Ordering::Release);
     }
 
@@ -712,9 +717,9 @@ impl tracing::Subscriber for WarnCapturingSubscriber {
 ///         .target_prefix("reify_eval::persistent_cache::gc")
 ///         .build();
 /// tracing::subscriber::with_default(subscriber, || { /* run code */ });
-/// let msgs: Vec<String> = capture.messages();
-/// let fields: Vec<HashMap<String, String>> = capture.fields_by_event();
-/// let count: usize = capture.count();
+/// let count = capture.count();
+/// let msgs = capture.messages();
+/// let fields = capture.fields_by_event();
 /// ```
 pub struct CapturingSubscriberBuilder {
     level: tracing::Level,
@@ -1947,6 +1952,42 @@ mod tests {
             f.get("evicted_count").map(|s| s.as_str()),
             Some("2"),
             "evicted_count field: u64 via record_debug should produce bare digits"
+        );
+    }
+
+    /// `CapturingSubscriberBuilder` level filter dominates the target-prefix
+    /// filter: a WARN event whose target matches the prefix is still dropped
+    /// when the subscriber is registered for INFO only.
+    ///
+    /// Registers `CapturingSubscriberBuilder::new(Level::INFO).target_prefix("foo")`;
+    /// emits one `INFO/foo` event (expected kept) and one `WARN/foo` event
+    /// (expected dropped). Asserts count==1, pinning the documented contract that
+    /// the level gate in `enabled()` applies regardless of the target.
+    #[test]
+    fn capturing_subscriber_level_dominates_over_target_prefix() {
+        use crate::prime_tracing_callsite_cache;
+        use crate::CapturingSubscriberBuilder;
+
+        prime_tracing_callsite_cache();
+
+        let (subscriber, capture) = CapturingSubscriberBuilder::new(tracing::Level::INFO)
+            .target_prefix("foo")
+            .build();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(target: "foo::bar", "kept");
+            tracing::warn!(target: "foo::bar", "dropped");
+        });
+
+        assert_eq!(
+            capture.count(),
+            1,
+            "only the INFO/foo event should be captured; level filter dominates over target prefix"
+        );
+        assert_eq!(
+            capture.messages(),
+            vec!["kept".to_string()],
+            "only the INFO message should appear; WARN/foo must be dropped"
         );
     }
 
