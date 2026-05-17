@@ -1,0 +1,53 @@
+// SIR-β-mat: wave-2 material starter library demonstration (task 3542).
+//
+// Running
+//
+//     reify eval examples/materials_starter_library.ri
+//
+// prints every top-level value cell. The three structure constructors below
+// evaluate to inspectable `Value::StructureInstance` values —
+// a `TypeName { field: value, ... }` shape — rather than opaque `undef`.
+// This is the SIR-β-mat user-observable signal (PRD §8, GR-019 C-16).
+//
+// Materials included (all conforming to `ElasticMaterial`):
+//   - Aluminium_6061_T6  — precipitation-hardened aerospace aluminium
+//   - Titanium_Ti6Al4V   — alpha-beta titanium (aerospace, biomedical)
+//   - ABS_Plastic        — general-purpose moulded thermoplastic
+
+// ── Flat construction ───────────────────────────────────────────────────────
+//
+// All three wave-2 materials, every field defaulted. Each `let` evaluates to
+// a flat `Value::StructureInstance` carrying per-property engineering defaults
+// and `MaterialPropertyProvenance` citation records.
+structure def StarterLibrary {
+    let aluminium = Aluminium_6061_T6()
+    let titanium  = Titanium_Ti6Al4V()
+    let abs       = ABS_Plastic()
+}
+
+// ── Field-read round-trip ───────────────────────────────────────────────────
+//
+// Member-access chains exercise the consumer-side path (PRD §7.2). Each `let`
+// below reads one primary engineering property from the material instances
+// constructed above. The cells evaluate to `Value::Scalar` (dimensioned) or
+// `Value::Real` (dimensionless) — not `undef`.
+structure def MaterialFieldReads {
+    let aluminium = Aluminium_6061_T6()
+    let titanium  = Titanium_Ti6Al4V()
+    let abs       = ABS_Plastic()
+
+    // Young's modulus E (Pressure / Pa).
+    let aluminium_E   = self.aluminium.youngs_modulus
+    let titanium_E    = self.titanium.youngs_modulus
+    let abs_E         = self.abs.youngs_modulus
+
+    // Poisson's ratio ν (dimensionless Real).
+    let aluminium_nu  = self.aluminium.poisson_ratio
+    let titanium_nu   = self.titanium.poisson_ratio
+    let abs_nu        = self.abs.poisson_ratio
+
+    // Mass density ρ (Density / kg·m⁻³).
+    let aluminium_rho = self.aluminium.density
+    let titanium_rho  = self.titanium.density
+    let abs_rho       = self.abs.density
+}
