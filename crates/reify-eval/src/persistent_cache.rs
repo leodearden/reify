@@ -4854,9 +4854,10 @@ mod tests {
                     .map(|m| m.len())
             })
             .sum();
-        assert!(
-            on_disk <= cap,
-            "on-disk .bin total {} must be ≤ cap {}",
+        assert_eq!(
+            on_disk,
+            cap,
+            "on-disk .bin total {} must equal cap {} (dangling symlink filtered; exactly one real entry survives)",
             on_disk,
             cap
         );
