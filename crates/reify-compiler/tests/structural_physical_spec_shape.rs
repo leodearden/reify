@@ -127,9 +127,12 @@ structure def MyBox {
 ///      "member access not yet supported", no "unresolved type", no
 ///      "missing required member".
 ///   2. The compiled `Bracket` template carries `Physical` in `trait_bounds`.
-///   3. Value cells for `geometry` and `material` exist (from the bracket's
-///      own params).
-///   4. Value cells for `mass` and `centroid` exist (injected from the
+///   3. The `material` param produces a value cell (`Type::StructureRef` is
+///      representable per `is_representable_cell_type`).
+///   4. The `geometry` param produces a **realization** (Solid-typed params
+///      lower to realizations, not value cells — `Type::Geometry` is
+///      rejected by `is_representable_cell_type`; see `solid_param_tests.rs`).
+///   5. Value cells for `mass` and `centroid` exist (injected from the
 ///      Physical trait's `let` defaults).
 ///
 /// Pins the cross-product of:
@@ -175,14 +178,14 @@ structure def Bracket : Physical {
         bracket.trait_bounds
     );
 
-    for expected_member in &["geometry", "material", "mass", "centroid"] {
+    for expected_cell in &["material", "mass", "centroid"] {
         assert!(
             bracket
                 .value_cells
                 .iter()
-                .any(|vc| vc.id.member == *expected_member),
+                .any(|vc| vc.id.member == *expected_cell),
             "Bracket should have a value cell for '{}'; got members: {:?}",
-            expected_member,
+            expected_cell,
             bracket
                 .value_cells
                 .iter()
@@ -190,6 +193,29 @@ structure def Bracket : Physical {
                 .collect::<Vec<_>>()
         );
     }
+
+    // `geometry : Solid` lowers to a realization (not a value cell) because
+    // `Type::Geometry` is unrepresentable per `is_representable_cell_type`
+    // — mirrors `solid_param_tests::solid_param_compiles_as_realization`.
+    assert!(
+        !bracket
+            .realizations
+            .is_empty(),
+        "Bracket should have at least one realization (from `param geometry : Solid = box(...)`); got none"
+    );
+    assert!(
+        !bracket
+            .value_cells
+            .iter()
+            .any(|vc| vc.id.member == "geometry"),
+        "Bracket must NOT have a value cell for 'geometry' (Solid-typed params \
+         lower to realizations); got members: {:?}",
+        bracket
+            .value_cells
+            .iter()
+            .map(|vc| vc.id.member.as_str())
+            .collect::<Vec<_>>()
+    );
 }
 
 /// Companion to the headline test above — pins the Physical trait's own
