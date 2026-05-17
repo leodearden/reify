@@ -28,9 +28,13 @@ structure def StarterLibrary {
 // ── Field-read round-trip ───────────────────────────────────────────────────
 //
 // Member-access chains exercise the consumer-side path (PRD §7.2). Each `let`
-// below reads one primary engineering property from the material instances
-// constructed above. The cells evaluate to `Value::Scalar` (dimensioned) or
-// `Value::Real` (dimensionless) — not `undef`.
+// below reads one primary engineering property from a material instance.
+// The cells evaluate to `Value::Scalar` (dimensioned) or `Value::Real`
+// (dimensionless) — not `undef`.
+//
+// Note: the three constructors below are independent of StarterLibrary above.
+// Cross-structure cell references are not yet supported in this version of
+// Reify, so each structure def must own its own constructor bindings.
 structure def MaterialFieldReads {
     let aluminium = Aluminium_6061_T6()
     let titanium  = Titanium_Ti6Al4V()
