@@ -324,7 +324,6 @@ impl CompiledFunction {
     pub fn no_defaults_for(params: &[(String, Type)]) -> Vec<Option<CompiledExpr>> {
         vec![None; params.len()]
     }
-
 }
 
 /// A compiled function body: let bindings followed by a result expression.
