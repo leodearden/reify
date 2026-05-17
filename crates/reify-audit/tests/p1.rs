@@ -941,6 +941,86 @@ mod tests {
             findings[0].evidence
         );
     }
+
+    /// Amendment (reviewer_comprehensive) — pins the subtle interaction
+    /// between `target_task_id` scoping and `has_pending_consumer` suppression.
+    ///
+    /// The `target_task_id` guard skips non-target entries in the *producer*
+    /// loop; `has_pending_consumer` independently scans the *full*
+    /// `task_metadata` map. These are two different traversals: the first
+    /// decides which producer tasks to audit; the second decides whether any
+    /// consumer task (regardless of its own task_id) is already in-flight.
+    ///
+    /// A future refactor that moves the scoping filter earlier — e.g.
+    /// pre-filtering `task_metadata` to `{ target }` before running check —
+    /// would hide the consumer task from `has_pending_consumer` and silently
+    /// break suppression. Neither `target_task_id_scopes_p1_to_one_task` (no
+    /// consumer tasks) nor `review_status_consumer_suppresses_finding` (no
+    /// target) exercises this cross-product; this test does.
+    ///
+    /// Setup: producer `"prod_1"` (done, 15 days past grace, prd="docs/p.md",
+    /// zero refs) + `"review"`-status consumer `"cons_1"` (consumer_ref=
+    /// "docs/p.md"). AuditContext has `target_task_id: Some("prod_1")`.
+    /// Expected: zero findings — the scoped sweep still suppresses because
+    /// `has_pending_consumer` scans the unfiltered metadata map.
+    #[test]
+    fn target_task_id_does_not_hide_consumer_from_suppression() {
+        let done_at = NOW - 15 * DAY;
+
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let mut jc = MockJCodemunchOps::new();
+        jc.set_changed_symbols(
+            "main",
+            done_at,
+            vec![changed_symbol("scoped_widget", "crates/reify-x/src/scoped.rs")],
+        );
+        jc.set_find_references("crates/reify-x/src/scoped.rs", "scoped_widget", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        // The target producer — done, past grace, zero refs, orphan candidate.
+        task_metadata.insert(
+            "prod_1".to_string(),
+            done_meta("prod_1", done_at, Some("docs/p.md")),
+        );
+        // A consumer whose task_id != target_task_id. The producer loop skips
+        // it (it is not a candidate producer), but has_pending_consumer must
+        // still discover it via ctx.task_metadata.values().
+        task_metadata.insert(
+            "cons_1".to_string(),
+            TaskMetadata {
+                task_id: "cons_1".to_string(),
+                status: "review".to_string(),
+                files: vec![],
+                done_provenance: None,
+                title: "Consume the scoped widget".to_string(),
+                prd: None,
+                consumer_ref: Some("docs/p.md".to_string()),
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: Some("prod_1".to_string()),
+            window: None,
+            now: Some(NOW),
+            producer_branch: None,
+        };
+
+        let findings = p1_producer_orphan::check(&ctx);
+        assert!(
+            findings.is_empty(),
+            "scoped sweep (target_task_id=prod_1) must still see the out-of-scope \
+             review consumer and suppress the orphan finding; got {:?}",
+            findings
+        );
+    }
 }
 
 } // mod p1
