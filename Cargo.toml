@@ -6,6 +6,7 @@ members = [
     "crates/reify-syntax",
     "crates/reify-compiler",
     "crates/reify-eval",
+    "crates/reify-gcode",
     "crates/reify-mesh-morph",
     "crates/reify-constraints",
     "crates/reify-doc",
@@ -42,6 +43,7 @@ reify-expr = { path = "crates/reify-expr" }
 reify-syntax = { path = "crates/reify-syntax" }
 reify-compiler = { path = "crates/reify-compiler" }
 reify-eval = { path = "crates/reify-eval" }
+reify-gcode = { path = "crates/reify-gcode" }
 reify-mesh-morph = { path = "crates/reify-mesh-morph" }
 reify-constraints = { path = "crates/reify-constraints" }
 reify-doc = { path = "crates/reify-doc" }
