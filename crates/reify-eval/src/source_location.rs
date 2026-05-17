@@ -548,4 +548,38 @@ mod tests {
             "cursor at (14, 9) inside the 'body' realization should resolve to Bracket.body"
         );
     }
+
+    // (i) cursor with col past end of an interior line → Some("Bracket").
+    //
+    //     This pins the deliberate clamp-to-line-end behavior in
+    //     `line_col_to_byte_offset_with_offsets` (introduced when the helper was
+    //     moved from engine.rs to reify-types).
+    //
+    //     bracket_source() line 2: "    param width: Scalar = 80mm" (30 chars).
+    //     col=99 is past the end of that line.  The new helper clamps to the byte
+    //     offset of the trailing '\n', which falls in the gap between the width cell
+    //     span and the height cell span → the narrow step misses all cells and
+    //     returns the enclosing template name.
+    //
+    //     The old char-walking `line_col_to_byte_offset` (now deleted) would have
+    //     walked past the '\n' into the following line's content (height param) and
+    //     returned Some("Bracket.height") instead.  This test pins the new semantics
+    //     so a future regression is caught explicitly.
+    #[test]
+    fn entity_at_source_position_col_past_line_end_clamps_to_template_name() {
+        let compiled = bracket_compiled();
+        let source = reify_test_support::bracket_source();
+        let line_offsets = reify_types::build_line_offsets(source);
+        // line 2 = "    param width: Scalar = 80mm" (30 chars).
+        // col=99 is well past the end; new helper clamps to the trailing '\n' of line 2,
+        // which falls outside any value cell → enclosing template name.
+        let result = resolve_entity_at_source_position(&compiled, source, &line_offsets, 2, 99);
+        assert_eq!(
+            result,
+            Some("Bracket".to_string()),
+            "cursor at (2, 99) — col past end of line 2 — must clamp to '\\n' at line end \
+             and resolve to the enclosing template name, not a cell (got {:?})",
+            result
+        );
+    }
 }

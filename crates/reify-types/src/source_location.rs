@@ -166,6 +166,83 @@ mod tests {
         );
     }
 
+    /// Verify that `col` counts Unicode codepoints, not bytes.
+    ///
+    /// Source: "äbc\ndef"
+    /// Byte layout:
+    ///   0-1:'ä' (2 bytes, U+00E4)  2:'b'  3:'c'  4:'\n'  5:'d'  6:'e'  7:'f'
+    ///
+    /// `build_line_offsets` must return `[4]` (the '\n' is at byte 4).
+    /// `line_col_to_byte_offset_with_offsets(source, 1, 2, &offsets)` must return 2
+    /// (second codepoint 'b' at byte offset 2).  A byte-counting implementation would
+    /// return 1 (second byte, the tail of 'ä') — this test catches that regression.
+    #[test]
+    fn line_col_to_byte_offset_with_offsets_multibyte_char_counts_codepoints() {
+        // 'ä' encodes as 0xC3 0xA4 in UTF-8 — two bytes, one codepoint.
+        let source = "äbc\ndef";
+        assert_eq!(source.len(), 8, "sanity: ä=2 bytes + b + c + \\n + d + e + f");
+
+        let offsets = build_line_offsets(source);
+        // Newline is at byte 4 (after ä[2] + b[1] + c[1] = 4 bytes).
+        assert_eq!(
+            offsets,
+            vec![4usize],
+            "newline in 'äbc\\ndef' must be at byte 4"
+        );
+
+        // col=2 → second codepoint on line 1 = 'b' at byte offset 2.
+        let byte = line_col_to_byte_offset_with_offsets(source, 1, 2, &offsets);
+        assert_eq!(
+            byte, 2,
+            "line 1 col 2 must be byte 2 ('b'); a byte-counting impl would return 1"
+        );
+
+        // col=1 → first codepoint 'ä' at byte offset 0.
+        let byte = line_col_to_byte_offset_with_offsets(source, 1, 1, &offsets);
+        assert_eq!(byte, 0, "line 1 col 1 must be byte 0 (start of 'ä')");
+
+        // line 2, col 1 → 'd' at byte offset 5 (after '\n' at 4).
+        let byte = line_col_to_byte_offset_with_offsets(source, 2, 1, &offsets);
+        assert_eq!(byte, 5, "line 2 col 1 must be byte 5 (start of 'd')");
+    }
+
+    /// Verify that a `col` past the end of an interior line clamps to the byte
+    /// offset of that line's trailing `'\n'`, not the start of the following line.
+    ///
+    /// This pins the deliberate clamp-to-line-end behavior introduced when the
+    /// helper was moved from engine.rs to reify-types.  The old char-walking
+    /// `line_col_to_byte_offset` would walk past the `'\n'` into the next line;
+    /// the new helper slices to `line_end` before counting codepoints so an
+    /// out-of-range col returns `line_end` (the byte offset of the `'\n'`).
+    ///
+    /// Source: "ab\ncd"
+    ///   line 1 = "ab" (2 chars), '\n' at byte 2
+    ///   line 2 = "cd" (2 chars), no trailing newline
+    ///
+    /// col=99 on line 1 → clamps to byte 2 (the '\n').
+    /// col=99 on line 2 (last line, no '\n') → clamps to source.len() = 5.
+    #[test]
+    fn line_col_to_byte_offset_with_offsets_col_past_line_end_clamps_to_newline() {
+        let source = "ab\ncd";
+        let offsets = build_line_offsets(source);
+        assert_eq!(offsets, vec![2usize], "newline in 'ab\\ncd' is at byte 2");
+
+        // col=99 past end of line 1 ("ab", 2 chars) → byte offset of '\n' = 2.
+        let byte = line_col_to_byte_offset_with_offsets(source, 1, 99, &offsets);
+        assert_eq!(
+            byte, 2,
+            "col=99 past line 1 end ('ab') must clamp to byte 2 (the '\\n')"
+        );
+
+        // col=99 past end of last line ("cd", no trailing '\n') → source.len() = 5.
+        let byte = line_col_to_byte_offset_with_offsets(source, 2, 99, &offsets);
+        assert_eq!(
+            byte,
+            source.len(),
+            "col=99 past last line end ('cd', no trailing '\\n') must clamp to source.len()"
+        );
+    }
+
     #[test]
     fn byte_offset_to_line_col_basic_conversion() {
         let source = "abc\ndef";
