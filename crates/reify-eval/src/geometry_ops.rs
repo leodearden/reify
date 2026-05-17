@@ -1819,6 +1819,7 @@ pub(crate) fn try_eval_topology_selector(
         "edges_by_length" => TopologySelectorHelper::EdgesByLength,
         "faces_by_area" => TopologySelectorHelper::FacesByArea,
         "faces_by_normal" => TopologySelectorHelper::FacesByNormal,
+        "edges_parallel_to" => TopologySelectorHelper::EdgesParallelTo,
         _ => return None,
     };
 
@@ -1940,6 +1941,20 @@ pub(crate) fn try_eval_topology_selector(
                 diagnostics,
             )
         }
+        TopologySelectorHelper::EdgesParallelTo => {
+            // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
+            let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            // args[1]: Vec3 axis ValueRef → values map → [f64; 3].
+            let axis = resolve_vec3_arg(&args[1], values)?;
+            // args[2]: angular tolerance ValueRef → values map → ANGLE Scalar
+            // (SI radians — `topology_selectors::edges_parallel_to` expects rad).
+            let tol = resolve_angle_scalar_arg(&args[2], values)?;
+            dispatch_filtered_list(
+                crate::topology_selectors::edges_parallel_to(kernel, handle, axis, tol),
+                &function.name,
+                diagnostics,
+            )
+        }
     }
 }
 
@@ -2003,6 +2018,10 @@ enum TopologySelectorHelper {
     /// whose outward normal is within an angular tolerance of a target
     /// direction (task 3560).
     FacesByNormal,
+    /// `edges_parallel_to(geometry, Vec3, Angle) -> List<Geometry>` — edges
+    /// whose midpoint tangent is (anti-)parallel to an axis within an
+    /// angular tolerance (task 3560).
+    EdgesParallelTo,
 }
 
 impl TopologySelectorHelper {
@@ -2020,7 +2039,7 @@ impl TopologySelectorHelper {
             | TopologySelectorHelper::EdgesByLength
             | TopologySelectorHelper::FacesByArea => 2,
             TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => 1,
-            TopologySelectorHelper::FacesByNormal => 3,
+            TopologySelectorHelper::FacesByNormal | TopologySelectorHelper::EdgesParallelTo => 3,
         }
     }
 }
