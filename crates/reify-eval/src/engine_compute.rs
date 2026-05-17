@@ -6,7 +6,9 @@
 
 use std::collections::HashMap;
 
-use reify_types::{Diagnostic, OpaqueState, RealizationNodeId, Value};
+use reify_types::{
+    ComputeNodeId, Diagnostic, OpaqueState, RealizationNodeId, Value, ValueCellId, VersionId,
+};
 
 use crate::graph::CancellationHandle;
 
@@ -104,6 +106,75 @@ impl ComputeDispatchRegistry {
     pub fn new() -> Self {
         Self {
             fns: HashMap::new(),
+        }
+    }
+}
+
+impl crate::Engine {
+    /// Run the full in-flight ComputeNode dispatch lifecycle for `c_id` —
+    /// begin → invoke trampoline → atomic-complete-or-leave-Pending.
+    ///
+    /// PRD §3 "Atomic completion" / §8 task δ
+    /// (`docs/prds/v0_3/compute-node-contract.md`):
+    ///
+    /// 1. [`CacheStore::begin_compute_dispatch`][crate::cache::CacheStore::begin_compute_dispatch]
+    ///    pre-marks every output VC `Freshness::Pending` with
+    ///    `pending_cause = NodeId::Compute(c_id)` (the prior best stays on
+    ///    display while recomputation is in flight).
+    /// 2. [`Engine::dispatch_compute_node`](crate::Engine::dispatch_compute_node)
+    ///    invokes the registered trampoline synchronously (γ helper; maps
+    ///    Failed/Cancelled/unregistered → `Err`).
+    /// 3a. On `Ok((result, diagnostics))` —
+    ///    [`CacheStore::complete_compute_dispatch_atomically`][crate::cache::CacheStore::complete_compute_dispatch_atomically]
+    ///    writes the new value, flips Pending → Final, and clears
+    ///    `pending_cause` in a single critical section. Returns
+    ///    `Ok((result, diagnostics))`.
+    /// 3b. On `Err(diagnostics)` — the output VCs are deliberately LEFT
+    ///    Pending per PRD §2 ("Freshness::Pending persists until the next
+    ///    dispatch completes successfully or fails"). The caller (the
+    ///    `@optimized` lowering site in `engine_eval.rs`) owns the Failed
+    ///    transition via its existing `cache.mark_failed` path, which has the
+    ///    diagnostic context to build the `ErrorRef`. Returns
+    ///    `Err(diagnostics)` verbatim.
+    ///
+    /// `c_id` is forwarded to `complete_compute_dispatch_atomically`, where it
+    /// is reserved for ζ-scope warm-state donation (task 3425).
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_compute_dispatch(
+        &mut self,
+        c_id: &ComputeNodeId,
+        outputs: &[ValueCellId],
+        target: &str,
+        value_inputs: &[Value],
+        realization_inputs: &[RealizationReadHandle],
+        options: &Value,
+        prior_warm_state: Option<&OpaqueState>,
+        version: VersionId,
+    ) -> Result<(Value, Vec<Diagnostic>), Vec<Diagnostic>> {
+        // Step 1: pre-mark output VCs Pending (the in-flight state).
+        self.cache.begin_compute_dispatch(c_id, outputs);
+
+        // Step 2: invoke the trampoline synchronously (γ helper).
+        match self.dispatch_compute_node(
+            target,
+            value_inputs,
+            realization_inputs,
+            options,
+            prior_warm_state,
+        ) {
+            Ok((result, diagnostics)) => {
+                // Step 3a: atomic completion (write + flip + clear).
+                let pairs: Vec<(ValueCellId, Value)> = outputs
+                    .iter()
+                    .map(|o| (o.clone(), result.clone()))
+                    .collect();
+                self.cache
+                    .complete_compute_dispatch_atomically(c_id, &pairs, version);
+                Ok((result, diagnostics))
+            }
+            // Step 3b: leave output VCs Pending — caller owns the Failed
+            // transition (PRD §2 cancellation / Failed contract).
+            Err(diagnostics) => Err(diagnostics),
         }
     }
 }
