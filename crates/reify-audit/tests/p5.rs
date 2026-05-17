@@ -13,8 +13,11 @@
 //! All tests use in-memory rusqlite + MockGitOps so they remain hermetic
 //! (no real git repo, no real runs.db file).
 
+mod common;
+
 mod p5 {
 
+use crate::common::schema::*;
 use reify_audit::{
     AuditContext, DoneProvenance, EvidenceRef, Finding, GitCommit, MockGitOps, MockJCodemunchOps,
     Pattern, Severity, TaskMetadata, p5_phantom_done,
@@ -22,33 +25,6 @@ use reify_audit::{
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashMap;
 use std::path::PathBuf;
-
-/// Minimal schema — pin reflects only the columns the production
-/// `has_task_completed_event` query reads (`events.task_id` and
-/// `events.event_type`). P1/P2 detectors (landed via T-2/T-3) issue zero SQL,
-/// so they add no columns here; future detectors that DO query the DB will add
-/// the columns they need when those queries land.
-const RUNS_DB_SCHEMA: &str = r#"
-CREATE TABLE events (task_id TEXT, event_type TEXT);
-"#;
-
-fn seed_db() -> Connection {
-    let conn = Connection::open_in_memory().expect("open in-memory sqlite");
-    conn.execute_batch(RUNS_DB_SCHEMA).expect("create schema");
-    conn
-}
-
-fn insert_event(conn: &Connection, task_id: &str, event_type: &str) {
-    conn.execute(
-        "INSERT INTO events (task_id, event_type) VALUES (?, ?)",
-        rusqlite::params![task_id, event_type],
-    )
-    .unwrap();
-}
-
-fn insert_task_completed_event(conn: &Connection, task_id: &str) {
-    insert_event(conn, task_id, "task_completed");
-}
 
 mod tests {
     use super::*;
