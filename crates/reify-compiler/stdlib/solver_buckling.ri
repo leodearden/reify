@@ -185,3 +185,34 @@ structure def BucklingResult {
     //                                  clauses can only express scalar
     //                                  predicates, not collection invariants.
 }
+
+// ── MultiCaseBucklingResult ──────────────────────────────────────────────────
+
+// `MultiCaseBucklingResult` is the multi-load-case buckling-solver output
+// container — the parallel sibling of `MultiCaseResult` (`std.fea.multi_case`).
+// Each instance holds a complete set of per-case `BucklingResult` instances
+// produced by `solve_buckling_load_cases` (PRD §13 task η), keyed by the
+// corresponding `LoadCase.name`.
+//
+// PRD §7 motivates the parallel-rather-than-nested design: folding buckling
+// results into `MultiCaseResult` would compound the result-shape mismatch
+// across two analysis kinds. The parallel shape mirrors the elastic /
+// buckling split at the single-case level.
+//
+// Design constraints (mirrors `MultiCaseResult`):
+//   - No `constraint` blocks: the only meaningful invariant ("cases must be
+//     non-empty") is a collection invariant expressible only at the
+//     producer (`solve_buckling_load_cases`, task η); per-instance scalar
+//     predicates can't enforce it. Map key-uniqueness is structurally
+//     guaranteed by `BTreeMap`.
+//   - No per-field defaults: every `MultiCaseBucklingResult` instance must
+//     be populated by the solver — a bare `MultiCaseBucklingResult()`
+//     call would produce an empty Map, meaningless without a solve.
+//
+// PRD reference: docs/prds/v0_5/buckling-eigensolver.md §7, §13 task η.
+structure def MultiCaseBucklingResult {
+    // Per-case buckling-solver results keyed by `LoadCase.name`. Populated
+    // exclusively by `solve_buckling_load_cases` (PRD §13 task η).
+    // BTreeMap iteration order is lexicographic on `Value::String` keys.
+    param cases : Map<String, BucklingResult>
+}
