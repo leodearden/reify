@@ -27,7 +27,6 @@ pub mod display;
 pub mod error;
 pub mod marlin;
 
-// Re-exports of public crate surface (`GcodeCommand`, `ParseError`,
-// `parse_marlin`) are added by step-2 when the underlying items are
-// introduced; keeping them out of the prereq lets the scaffold pass
-// `cargo check` with empty module stubs.
+pub use ast::GcodeCommand;
+pub use error::ParseError;
+pub use marlin::parse_marlin;
