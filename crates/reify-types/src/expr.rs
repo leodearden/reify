@@ -318,27 +318,6 @@ impl CompiledFunction {
         );
         result
     }
-
-    /// Return a `Vec<Option<CompiledExpr>>` with `params.len()` `None` entries.
-    ///
-    /// This is a convenience helper for struct-literal construction in tests
-    /// where the named-field form is preferred over the positional
-    /// `new_with_no_defaults` constructor. The returned vec satisfies the strict
-    /// `param_defaults.len() == params.len()` invariant.
-    ///
-    /// ```ignore
-    /// let params = vec![("x".to_string(), Type::Real)];
-    /// let f = CompiledFunction {
-    ///     name: "f".to_string(),
-    ///     param_defaults: CompiledFunction::no_defaults_for(&params),
-    ///     ..
-    /// };
-    /// ```
-    ///
-    /// task-3702 (api_ergonomics — reviewer suggestion)
-    pub fn no_defaults_for(params: &[(String, Type)]) -> Vec<Option<CompiledExpr>> {
-        vec![None; params.len()]
-    }
 }
 
 /// A compiled function body: let bindings followed by a result expression.

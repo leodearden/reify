@@ -881,7 +881,10 @@ pub(crate) fn try_default_padding<'a>(
             continue;
         }
         // Strict invariant: param_defaults must be length-aligned to params.
-        // Violations are bugs, not recoverable conditions — surface in debug builds.
+        // Violations are bugs — surface them in debug builds. In release builds
+        // the assert is compiled out, so we also `continue` on mismatch to
+        // degrade gracefully instead of panicking on a future invariant-breaking
+        // producer (task-3702 amendment-2).
         debug_assert!(
             cand.param_defaults.len() == cand.params.len(),
             "param_defaults.len() == params.len() invariant violated for candidate `{}` (task-3702): expected {}, got {}",
@@ -889,6 +892,9 @@ pub(crate) fn try_default_padding<'a>(
             cand.params.len(),
             cand.param_defaults.len()
         );
+        if cand.param_defaults.len() != cand.params.len() {
+            continue;
+        }
         // Provided prefix types must match candidate params exactly.
         let prefix_matches = cand.params[..provided]
             .iter()
