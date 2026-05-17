@@ -79,4 +79,29 @@ structure def BucklingOptions {
     param tol : Real = 0.00000001             // = 1e-8 (no scientific notation in Reify grammar)
     param max_iters : Int = 1000
     param auto_dense : Bool = true
+
+    // A non-positive `n_modes` requests zero eigenmodes — a degenerate solve.
+    // Declaring the lower bound at the structure-def level makes the contract
+    // explicit in production code rather than relying solely on test
+    // coverage (task 2544 convention; mirrors `ElasticOptions.max_iter > 0`).
+    constraint n_modes > 0
+    // `tol` is the Lanczos convergence tolerance — must be strictly positive
+    // for `||r||/||b|| < tol` to terminate. Zero or negative would silently
+    // exhaust `max_iters` on every solve. Mirrors `cg_tolerance > 0` in
+    // `solver_elastic.ri`.
+    constraint tol > 0
+    // A non-positive `max_iters` would let Lanczos exit before doing any
+    // work — same failure mode as `ElasticOptions.max_iter <= 0`. Same
+    // task-2544 rationale as above.
+    constraint max_iters > 0
+    // NOTE — explicitly NOT constrained:
+    //   sigma      : Real     — eigenvalue shift origin; any real is physically
+    //                           valid (negative shifts target the negative side
+    //                           of the spectrum).
+    //   auto_dense : Bool     — Bool, trivially constrained.
+    //   mode       : String   — allowlist validation ("shift_invert" | "dense"
+    //                           | "lanczos_no_shift") deferred to the
+    //                           `solver::buckling` trampoline per PRD §4;
+    //                           Reify `constraint` clauses can only express
+    //                           scalar predicates, not string-set membership.
 }
