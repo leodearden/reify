@@ -291,3 +291,78 @@ fn buckling_options_param_defaults_match_spec() {
         ),
     }
 }
+
+// ─── step-7: BucklingOptions positivity constraints ──────────────────────────
+
+/// `BucklingOptions` enforces strict-positivity invariants on three params via
+/// structure-level constraint declarations:
+///
+///   constraint n_modes > 0
+///   constraint tol > 0
+///   constraint max_iters > 0
+///
+/// Rationale for each:
+///   n_modes    — a non-positive request would target zero eigenmodes — a
+///                degenerate solve. Same task-2544 explicit-contract convention
+///                as `ElasticOptions.max_iter > 0`.
+///   tol        — Lanczos convergence test `||r||/||b|| < tol` requires `tol`
+///                strictly positive; zero or negative silently exhausts
+///                `max_iters` on every solve (mirrors `cg_tolerance > 0`).
+///   max_iters  — a non-positive cap lets Lanczos exit before doing any work
+///                (mirrors `ElasticOptions.max_iter > 0`).
+///
+/// Explicitly NOT constrained: `sigma` (any real shift is physically valid),
+/// `auto_dense` (Bool — trivially constrained), `mode` (string allowlist
+/// validation deferred to the trampoline per PRD §4; Reify constraint clauses
+/// cannot express string-set membership).
+///
+/// Encoding these as first-class `constraint` declarations matches the
+/// project convention in task 2544: "the contract in production code is
+/// made explicit rather than relying on test coverage."
+///
+/// The assertion shape mirrors
+/// `solver_elastic_tests.rs::elastic_options_constrains_positivity_invariants`.
+#[test]
+fn buckling_options_constrains_positivity_invariants() {
+    let template = find_structure("BucklingOptions");
+
+    assert!(
+        template.constraints.len() >= 3,
+        "BucklingOptions should declare at least 3 constraints \
+         (n_modes > 0, tol > 0, max_iters > 0), got {} constraints",
+        template.constraints.len()
+    );
+
+    for required in &["n_modes", "tol", "max_iters"] {
+        let matched = template.constraints.iter().any(|c| {
+            // Check the constraint expression is a `>` BinOp with a ValueRef
+            // to the required member on the left side and the literal `0` on
+            // the right side. Accept either `Int(0)` or `Real(0.0)` for the
+            // RHS literal (mirrors the solver_elastic_tests.rs:567-579
+            // future-proofing rationale).
+            match &c.expr.kind {
+                CompiledExprKind::BinOp { op, left, right } => {
+                    if *op != BinOp::Gt || !collect_value_ref_members(left).contains(required) {
+                        return false;
+                    }
+                    match &right.kind {
+                        CompiledExprKind::Literal(Value::Int(0)) => true,
+                        CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
+                        _ => false,
+                    }
+                }
+                _ => false,
+            }
+        });
+        assert!(
+            matched,
+            "BucklingOptions should declare `constraint {} > 0`; got constraints: {:?}",
+            required,
+            template
+                .constraints
+                .iter()
+                .map(|c| &c.expr.kind)
+                .collect::<Vec<_>>()
+        );
+    }
+}
