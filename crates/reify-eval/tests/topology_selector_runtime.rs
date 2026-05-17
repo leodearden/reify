@@ -671,6 +671,93 @@ fn adjacent_faces_let_resolves_via_selector_vocabulary_v2() {
     );
 }
 
+/// `let es = shared_edges(body, body)` must derive a common parent solid
+/// via `GeometryQuery::OwnerBody`, recover face indices via `extract_faces`,
+/// dispatch `GeometryQuery::SharedEdges`, and map the reply integer indices
+/// back to edge handles via `extract_edges(parent)`. This exercises the full
+/// dispatch wiring (handle→OwnerBody→index→SharedEdges→index→edge_handle).
+///
+/// NOTE: like `adjacent_faces_let_resolves_via_selector_vocabulary_v2`, the
+/// natural fixture would let-bind two face handles (e.g. via `single(faces_by_normal(...))`),
+/// but `single` is out of scope (#2698) and `Type::Geometry` face cells are
+/// not directly representable. The artificial `shared_edges(body, body)` form
+/// stages `body` as its own owner (OwnerBody(1)=1), its own sole face
+/// (extract_faces(1)=[1] so face_index=0), and stages a SharedEdges reply
+/// `[0]` that maps back via extract_edges(1)=[2] → handle 2.
+#[test]
+fn shared_edges_let_resolves_to_list_via_owner_body_derivation() {
+    let source = "structure def Bracket {\n    \
+        let body = box(10mm, 10mm, 10mm)\n    \
+        let es = shared_edges(body, body)\n}";
+    let compiled = compile_no_errors(source);
+    let mut engine = engine_with_mock_kernel(|k| {
+        k.with_owner_body_result(GeometryHandleId(1), GeometryHandleId(1))
+            .with_extracted_faces(GeometryHandleId(1), vec![GeometryHandleId(1)])
+            .with_extracted_edges(GeometryHandleId(1), vec![GeometryHandleId(2)])
+            .with_shared_edges_result(
+                GeometryHandleId(1),
+                0,
+                0,
+                Value::List(vec![Value::Int(0)]),
+            )
+    });
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("Bracket", "es");
+    assert_eq!(
+        result.values.get(&cell),
+        Some(&Value::List(vec![Value::Int(2)])),
+        "Bracket.es must resolve to the SharedEdges Value::List via \
+         OwnerBody-derivation (SharedEdges index 0 → edge handle 2), got {:?}",
+        result.values.get(&cell),
+    );
+}
+
+/// `shared_edges(face_a, face_b)` where the two faces' OwnerBody replies
+/// indicate DIFFERENT parent solids must silently degrade to an empty
+/// `Value::List` AND emit a warning diagnostic mentioning "different parent
+/// solids". This pins the design-doc §4.3 cross-solid guard rail — an
+/// unhelpful but well-defined contract that prevents the dispatch from
+/// constructing a malformed SharedEdges query against a single shape when the
+/// faces span two different shapes.
+///
+/// Fixture: two distinct boxes (`body_a` = handle 1, `body_b` = handle 2),
+/// each declared as its own OwnerBody. `shared_edges(body_a, body_b)` resolves
+/// args[0]→1, args[1]→2; OwnerBody(1)=1, OwnerBody(2)=2 → parent_a != parent_b
+/// → empty list + warning.
+#[test]
+fn shared_edges_cross_solid_returns_empty_list_with_warning() {
+    let source = "structure def Bracket {\n    \
+        let body_a = box(10mm, 10mm, 10mm)\n    \
+        let body_b = box(5mm, 5mm, 5mm)\n    \
+        let es = shared_edges(body_a, body_b)\n}";
+    let compiled = compile_no_errors(source);
+    let mut engine = engine_with_mock_kernel(|k| {
+        k.with_owner_body_result(GeometryHandleId(1), GeometryHandleId(1))
+            .with_owner_body_result(GeometryHandleId(2), GeometryHandleId(2))
+    });
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("Bracket", "es");
+    assert_eq!(
+        result.values.get(&cell),
+        Some(&Value::List(vec![])),
+        "Bracket.es must silently degrade to an empty Value::List when the two \
+         faces have different parent solids, got {:?}",
+        result.values.get(&cell),
+    );
+    assert!(
+        result.diagnostics.iter().any(|d| {
+            d.severity == Severity::Warning
+                && d.message.to_lowercase().contains("different parent solids")
+        }),
+        "expected a warning diagnostic mentioning 'different parent solids', got {:?}",
+        result.diagnostics,
+    );
+}
+
 // ── Tessellate-path parity test ─────────────────────────────────────────────
 
 /// The post-process must run on the `tessellate_realizations` path too, so
