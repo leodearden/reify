@@ -27,8 +27,8 @@ use reify_eval::try_eval_ad_hoc_selector;
 use reify_test_support::{MockGeometryKernel, compile_source, errors_only, parse_and_compile_with_stdlib};
 use reify_types::{
     CapKind, CompiledExpr, DiagnosticCode, ExportFormat, FeatureId, GeometryHandleId, QueryError,
-    Role, SelectorKind, Severity, TopologyAttribute, TopologyAttributeTable, Type, Value,
-    ValueCellId,
+    Role, SelectorKind, Severity, SourceSpan, TopologyAttribute, TopologyAttributeTable, Type,
+    Value, ValueCellId,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -171,7 +171,7 @@ fn try_eval_ad_hoc_selector_face_top_resolves_to_frame_via_attribute_table() {
     let mut kernel = configured_kernel();
     let mut diagnostics = Vec::new();
 
-    let result = try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, &mut diagnostics);
+    let result = try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, SourceSpan::empty(0), &mut diagnostics);
 
     // ── Verify exact Frame contents ──────────────────────────────────────────
     // Kernel returns centroid {"x":0.0,"y":0.0,"z":0.01} → origin at (0m, 0m, 0.01m)
@@ -241,7 +241,7 @@ fn try_eval_ad_hoc_selector_face_unresolved_name_returns_undef_with_warning() {
         .with_extracted_faces(BODY_HANDLE, vec![TOP_FACE, BOTTOM_FACE, SIDE_FACE]);
     let mut diagnostics = Vec::new();
 
-    let result = try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, &mut diagnostics);
+    let result = try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, SourceSpan::empty(0), &mut diagnostics);
 
     assert!(
         matches!(result, Some(Value::Undef)),
@@ -281,7 +281,7 @@ fn try_eval_ad_hoc_selector_non_ad_hoc_expr_returns_none() {
     let bool_expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
     let mut diagnostics = Vec::new();
     let result_a =
-        try_eval_ad_hoc_selector(&bool_expr, &named_steps, &mut kernel, &table, &mut diagnostics);
+        try_eval_ad_hoc_selector(&bool_expr, &named_steps, &mut kernel, &table, SourceSpan::empty(0), &mut diagnostics);
     assert!(
         result_a.is_none(),
         "a Bool literal should return None (not applicable), got {:?}",
@@ -301,6 +301,7 @@ fn try_eval_ad_hoc_selector_non_ad_hoc_expr_returns_none() {
         &named_steps,
         &mut kernel,
         &table,
+        SourceSpan::empty(0),
         &mut diagnostics_b,
     );
     assert!(
@@ -684,7 +685,7 @@ fn try_eval_ad_hoc_selector_edge_resolves_to_frame_via_user_label() {
     let mut kernel = configured_edge_kernel();
     let mut diagnostics = Vec::new();
 
-    let result = try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, &mut diagnostics);
+    let result = try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, SourceSpan::empty(0), &mut diagnostics);
 
     // ── Verify exact Frame contents ──────────────────────────────────────────
     // Edge tangent {"x":0.0,"y":0.0,"z":1.0} → +Z → +Z = identity quaternion.
@@ -770,7 +771,7 @@ fn try_eval_ad_hoc_selector_face_side_resolves_via_cap_kind_translation() {
     let mut kernel = configured_side_kernel();
     let mut diagnostics = Vec::new();
 
-    let result = try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, &mut diagnostics);
+    let result = try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, SourceSpan::empty(0), &mut diagnostics);
 
     // ── Verify exact Frame contents ──────────────────────────────────────────
     // centroid {"x":0.0,"y":0.0,"z":0.0} → origin at world origin.
@@ -834,7 +835,7 @@ fn try_eval_ad_hoc_selector_face_kernel_error_returns_undef_with_warning() {
     let mut diagnostics = Vec::new();
 
     let result =
-        try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, &mut diagnostics);
+        try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, SourceSpan::empty(0), &mut diagnostics);
 
     assert!(
         matches!(result, Some(Value::Undef)),
@@ -893,7 +894,7 @@ fn try_eval_ad_hoc_selector_edge_kernel_error_returns_undef_with_warning() {
     let mut diagnostics = Vec::new();
 
     let result =
-        try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, &mut diagnostics);
+        try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, SourceSpan::empty(0), &mut diagnostics);
 
     assert!(
         matches!(result, Some(Value::Undef)),
@@ -957,7 +958,7 @@ fn try_eval_ad_hoc_selector_non_literal_arg_returns_none() {
     let mut diagnostics = Vec::new();
 
     let result =
-        try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, &mut diagnostics);
+        try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, SourceSpan::empty(0), &mut diagnostics);
 
     assert!(
         result.is_none(),

@@ -2117,6 +2117,7 @@ pub fn try_eval_ad_hoc_selector(
     named_steps: &HashMap<String, GeometryHandleId>,
     kernel: &mut dyn reify_types::GeometryKernel,
     table: &reify_types::TopologyAttributeTable,
+    selector_span: reify_types::SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_types::Value> {
     // (1) Must be an AdHocSelector — anything else is not applicable.
@@ -2150,7 +2151,6 @@ pub fn try_eval_ad_hoc_selector(
     };
 
     // (6) Extract sub-shape handles from the kernel.
-    let span = reify_types::SourceSpan::empty(0);
     let candidates: Vec<GeometryHandleId> = match selector_kind {
         reify_types::SelectorKind::Face => match kernel.extract_faces(handle) {
             Ok(faces) => faces,
@@ -2185,7 +2185,7 @@ pub fn try_eval_ad_hoc_selector(
         table,
         &candidates,
         &query,
-        span,
+        selector_span,
         diagnostics,
     );
 

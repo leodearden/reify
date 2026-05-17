@@ -2439,6 +2439,7 @@ impl Engine {
                 named_steps,
                 kernel,
                 table,
+                cell.span,
                 diagnostics,
             ) {
                 values.insert(cell.id.clone(), value);
