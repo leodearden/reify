@@ -1,0 +1,30 @@
+// Stdlib: Buckling Eigensolver Options, Modes & Results  (`std.solver.buckling`)
+//
+// PRD: docs/prds/v0_5/buckling-eigensolver.md §4, §7, §13 task α.
+//
+// Provides the named-type surface for the v0.5 linear-buckling eigensolver:
+//   - `BucklingOptions`         — solver-input knobs (n_modes, mode, sigma, tol,
+//                                  max_iters, auto_dense)
+//   - `Mode`                    — single eigenvalue/eigenvector pair
+//   - `BucklingResult`          — single-case solver-output container
+//   - `MultiCaseBucklingResult` — multi-load-case parallel sibling of MultiCaseResult
+//
+// Module placement: `std.solver.buckling` is the sibling of `std.solver.elastic`.
+// Registered immediately after `std.solver.elastic` in `stdlib_loader.rs` so
+// `ElasticResult` is in scope when `BucklingResult.pre_stress : ElasticResult`
+// compiles.
+//
+// Encoding notes:
+//   1. Number-literal grammar is `\d+(\.\d+)?` (no scientific notation).
+//      The PRD's `1e-8` default for `tol` therefore appears here as `0.00000001`,
+//      same convention as `solver_elastic.ri`'s `cg_tolerance = 0.000001`.
+//   2. `mode` is String-typed; allowlist validation ("shift_invert" | "dense" |
+//      "lanczos_no_shift") is deferred to the `solver::buckling` trampoline
+//      (PRD §4 + §13 task ε). Reify constraint clauses cannot express
+//      string-set membership.
+//   3. `Mode.mode_shape` uses the precise `Field<Point3<Length>, Vector3<Length>>`
+//      type rather than a `Real` placeholder. Task 3117 landed; the
+//      `type_resolution.rs:1313` resolver arm accepts `Field<D, C>` in `param`
+//      positions, as confirmed by `ElasticResult.displacement` /
+//      `ElasticResult.stress` / `ElasticResult.frame`. The PRD §4 footnote
+//      about the placeholder workaround is stale.
