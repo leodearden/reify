@@ -367,7 +367,7 @@ fn match_one_kind(
 mod tests {
     use super::*;
     use reify_types::{
-        CapKind, FeatureId, ModEntry, Role, TopologyAttribute, TopologyAttributeTable,
+        AxisSign, CapKind, FeatureId, ModEntry, Role, TopologyAttribute, TopologyAttributeTable,
     };
 
     fn feat() -> FeatureId {
@@ -504,6 +504,44 @@ mod tests {
         assert!(
             map.vertex_to_vertex.is_empty(),
             "vertex_to_vertex must be empty"
+        );
+    }
+
+    // step-1 (task 3590): vertex bijection fill — positive case
+    #[test]
+    fn stage_b_eligible_populates_vertex_to_vertex_when_vertex_attrs_present() {
+        let corner = Role::CornerVertex {
+            x: AxisSign::Pos,
+            y: AxisSign::Pos,
+            z: AxisSign::Pos,
+        };
+        let mut old_table = TopologyAttributeTable::default();
+        old_table.record(h(100), attr(corner.clone(), 0, None));
+        let mut new_table = TopologyAttributeTable::default();
+        new_table.record(h(200), attr(corner, 0, None));
+
+        let result = stage_b_eligible(
+            &old_table,
+            &new_table,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[h(100)],
+            &[h(200)],
+        );
+        let map = result.expect("single matching vertex must succeed");
+        assert!(map.face_to_face.is_empty(), "face_to_face must be empty");
+        assert!(map.edge_to_edge.is_empty(), "edge_to_edge must be empty");
+        assert_eq!(
+            map.vertex_to_vertex.len(),
+            1,
+            "vertex_to_vertex must have exactly one entry"
+        );
+        assert_eq!(
+            map.vertex_to_vertex.get(&h(100)),
+            Some(&h(200)),
+            "h(100) must map to h(200) in vertex_to_vertex"
         );
     }
 
