@@ -707,6 +707,7 @@ fn prelude_function_merging_path() {
     let params = vec![("x".to_string(), Type::Real)];
     let double_fn = CompiledFunction {
         name: "double".to_string(),
+        doc: None,
         is_pub: true,
         param_defaults: CompiledFunction::no_defaults_for(&params),
         params,

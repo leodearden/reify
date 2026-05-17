@@ -849,6 +849,7 @@ mod tests {
         let default_expr = CompiledExpr::literal(Value::Real(2.0), Type::Real);
         let cand = CompiledFunction {
             name: "f".to_string(),
+            doc: None,
             is_pub: false,
             params: vec![
                 ("x".to_string(), Type::Real),
@@ -897,6 +898,7 @@ mod tests {
         // Deliberately bad shape: params has 1 entry, param_defaults is empty.
         let bad_cand = CompiledFunction {
             name: "bad".to_string(),
+            doc: None,
             is_pub: false,
             params: vec![("x".to_string(), Type::Real)],
             param_defaults: Vec::new(), // invariant violation — intentional for this test

@@ -249,6 +249,11 @@ pub struct ResolvedFunction {
 #[derive(Debug, Clone)]
 pub struct CompiledFunction {
     pub name: String,
+    /// Documentation comment from the source `///` lines preceding the declaration.
+    ///
+    /// `None` when the function has no doc comment.  Populated by
+    /// `compile_function` from `FnDef::doc`.
+    pub doc: Option<String>,
     pub is_pub: bool,
     pub params: Vec<(String, Type)>,
     /// Compiled default-value expression for each param, by position; `None` when

@@ -1536,6 +1536,7 @@ fn eval_method_map_with_user_function() {
     let params = vec![("x".to_string(), Type::Int)];
     let double_fn = CompiledFunction {
         name: "double".to_string(),
+        doc: None,
         is_pub: false,
         param_defaults: CompiledFunction::no_defaults_for(&params),
         params,
@@ -1604,6 +1605,7 @@ fn eval_method_filter_with_user_function() {
     let params = vec![("x".to_string(), Type::Int)];
     let is_even_fn = CompiledFunction {
         name: "is_even".to_string(),
+        doc: None,
         is_pub: false,
         param_defaults: CompiledFunction::no_defaults_for(&params),
         params,
@@ -1679,6 +1681,7 @@ fn eval_method_fold_with_user_function() {
     let params = vec![("a".to_string(), Type::Int), ("b".to_string(), Type::Int)];
     let add_fn = CompiledFunction {
         name: "add".to_string(),
+        doc: None,
         is_pub: false,
         param_defaults: CompiledFunction::no_defaults_for(&params),
         params,
@@ -1756,6 +1759,7 @@ fn eval_method_all_any_with_user_function() {
     let params = vec![("x".to_string(), Type::Int)];
     let is_even_fn = CompiledFunction {
         name: "is_even".to_string(),
+        doc: None,
         is_pub: false,
         param_defaults: CompiledFunction::no_defaults_for(&params),
         params,

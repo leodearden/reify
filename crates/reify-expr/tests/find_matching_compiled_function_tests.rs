@@ -19,6 +19,7 @@ fn make_fn(name: &str, param_type: Type) -> CompiledFunction {
     let params = vec![("x".to_string(), param_type)];
     CompiledFunction {
         name: name.to_string(),
+        doc: None,
         is_pub: false,
         param_defaults: CompiledFunction::no_defaults_for(&params),
         params,
@@ -38,6 +39,7 @@ fn make_fn_nullary(name: &str) -> CompiledFunction {
     let params: Vec<(String, Type)> = vec![];
     CompiledFunction {
         name: name.to_string(),
+        doc: None,
         is_pub: false,
         param_defaults: CompiledFunction::no_defaults_for(&params),
         params,
