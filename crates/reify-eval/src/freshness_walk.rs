@@ -1502,4 +1502,104 @@ mod tests {
             "Value(b)'s freshness must be Final after edge #12 propagation from C"
         );
     }
+
+    /// task δ / 3423 (PRD §3 chain-root contract extension, §8 task δ):
+    /// regression-pin that the in-flight ComputeNode begin-dispatch state
+    /// (output VC `Pending` with `pending_cause = Some(NodeId::Compute(C))`)
+    /// forwards the Compute chain root through `propagate_freshness_only`
+    /// onto a downstream cell, variant-agnostically via the §9.2 helper.
+    ///
+    /// Setup mirrors `failed_upstream_propagates_pending_with_cause`, except
+    /// the chain root is `NodeId::Compute(c_id)` — the
+    /// `begin_compute_dispatch` in-flight state set by
+    /// `mark_pending_with_cause` — instead of a Failed `NodeId::Value`. Pins
+    /// task 3420's chain-root extension end-to-end through the walk for the δ
+    /// use case. Expected to pass on the existing impl (cause forwarding is
+    /// variant-agnostic), so this is a regression-pin, not a behaviour
+    /// change. Companion to `cache::tests`'
+    /// `cache_store_pending_cause_admits_compute_chain_root` /
+    /// `derive_output_freshness_with_cause_forwards_compute_chain_root`.
+    #[test]
+    fn propagate_freshness_only_forwards_compute_chain_root_through_pending_output_to_downstream() {
+        use reify_types::ComputeNodeId;
+
+        let e = "T";
+        let b = ValueCellId::new(e, "b");
+        let d = ValueCellId::new(e, "d");
+        let c_id = ComputeNodeId::new(e, 0);
+
+        let mut cache = CacheStore::new();
+        // (a) Output VC `b` with a concrete payload, then transitioned to the
+        //     in-flight begin_compute_dispatch state: Pending with
+        //     last_substantive captured from b's prior result_hash and
+        //     pending_cause = Some(NodeId::Compute(c_id)).
+        put_value_entry_with_payload(
+            &mut cache,
+            &b,
+            Value::Int(42),
+            Freshness::Final,
+            vec![],
+            VersionId(1),
+        );
+        assert!(
+            cache.mark_pending_with_cause(
+                &NodeId::Value(b.clone()),
+                NodeId::Compute(c_id.clone()),
+            ),
+            "mark_pending_with_cause must succeed on the seeded output VC \
+             (this is the in-flight begin_compute_dispatch state)"
+        );
+
+        // (b) Downstream cell `d`: Intermediate, reads=[b], concrete payload
+        //     so its result_hash is non-trivial for the last_substantive check.
+        put_value_entry_with_payload(
+            &mut cache,
+            &d,
+            Value::Int(7),
+            Freshness::Intermediate { generation: 1 },
+            vec![b.clone()],
+            VersionId(1),
+        );
+        let d_node = NodeId::Value(d.clone());
+        let d_prev_hash: ContentHash = cache.get(&d_node).expect("d cached").result_hash;
+
+        // (c) reverse_index: b → Value(d).
+        let mut reverse_index = ReverseDependencyIndex::new();
+        reverse_index.add(b.clone(), NodeId::Value(d.clone()));
+
+        let mut changed = HashSet::new();
+        changed.insert(b.clone());
+
+        let updated = super::propagate_freshness_only(
+            &mut cache,
+            &reverse_index,
+            &EvaluationGraph::default(),
+            &changed,
+            1,
+        );
+
+        // (i) d was updated by the walk.
+        assert!(
+            updated.contains(&d_node),
+            "updated must contain Value(d), got: {:?}",
+            updated
+        );
+        // (ii) d is now Pending with last_substantive = its prior result_hash
+        //      (the canonical Pending writer captures the current cached hash).
+        assert_eq!(
+            cache.freshness(&d_node),
+            Freshness::Pending {
+                last_substantive: ResultRef::of_hash(d_prev_hash),
+            },
+            "d must be Pending with last_substantive set to its prior result_hash"
+        );
+        // (iii) The Compute chain root forwarded through the walk
+        //       variant-agnostically (task 3420 extension, δ use case).
+        assert_eq!(
+            cache.pending_cause(&d_node),
+            Some(NodeId::Compute(c_id.clone())),
+            "d's pending_cause must forward the in-flight ComputeNode chain \
+             root Some(NodeId::Compute(c_id))"
+        );
+    }
 }
