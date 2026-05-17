@@ -1879,16 +1879,22 @@ mod tests {
     }
 
     /// `Capture::fields_by_event()` returns structured field maps per event,
-    /// using the same MessageVisitor contract as WarnCapture.
+    /// covering all three `MessageVisitor` recording branches on the
+    /// consolidated single Capture event() path:
     ///
-    /// Verifies:
-    /// - messages() == ["evict complete"]
-    /// - fields_by_event()[0] contains ("kind", "summary") — raw &str field
-    /// - fields_by_event()[0] contains ("evicted_count", "2") — u64 via
-    ///   record_debug produces bare decimal digits (no quotes)
+    /// * **`&str`-typed fields** (`kind = "summary"`) — stored verbatim via
+    ///   `record_str`, no decoration.
+    /// * **`u64` via `record_debug`** (`evicted_count = 2u64`) — stored as
+    ///   `format!("{value:?}")`, which produces bare decimal digits.
+    /// * **`%Display` fields** (`disp = %"display value"`) — tracing's newtype
+    ///   makes `Debug` delegate to `Display`, so stored value equals the Display
+    ///   output with no extra decoration.
+    /// * **`?Debug` fields** (`dbg = ?vec![1i32, 2, 3]`) — stored as
+    ///   `format!("{value:?}")`, which includes brackets: `"[1, 2, 3]"`.
     ///
-    /// This pins the field-capture contract inherited from MessageVisitor and
-    /// documents the value format expected by the persistent_cache migration.
+    /// This test is the final acceptance lock: a future reimplementation of
+    /// `Capture::event()` that broke `%Display` or `?Debug` routing through
+    /// the shared `MessageVisitor` would fail here.
     #[test]
     fn capturing_subscriber_captures_structured_fields() {
         use crate::prime_tracing_callsite_cache;
@@ -1901,27 +1907,44 @@ mod tests {
 
         tracing::subscriber::with_default(subscriber, || {
             tracing::info!(evicted_count = 2u64, kind = "summary", "evict complete");
+            tracing::info!(disp = %"display value", dbg = ?vec![1i32, 2, 3], "second event");
         });
 
         assert_eq!(
             capture.messages(),
-            vec!["evict complete".to_string()],
+            vec!["evict complete".to_string(), "second event".to_string()],
             "message text mismatch"
         );
 
         let all_fields = capture.fields_by_event();
-        assert_eq!(all_fields.len(), 1, "expected exactly one event's fields");
-        let f = &all_fields[0];
+        assert_eq!(all_fields.len(), 2, "expected exactly two events' fields");
+
+        // ── event 0: &str and u64 branches ───────────────────────────────────
+        let f0 = &all_fields[0];
 
         assert_eq!(
-            f.get("kind").map(|s| s.as_str()),
+            f0.get("kind").map(|s| s.as_str()),
             Some("summary"),
             "kind field: raw &str should be stored verbatim"
         );
         assert_eq!(
-            f.get("evicted_count").map(|s| s.as_str()),
+            f0.get("evicted_count").map(|s| s.as_str()),
             Some("2"),
             "evicted_count field: u64 via record_debug should produce bare digits"
+        );
+
+        // ── event 1: %Display and ?Debug branches ─────────────────────────────
+        let f1 = &all_fields[1];
+
+        assert_eq!(
+            f1.get("disp").map(|s| s.as_str()),
+            Some("display value"),
+            "%Display field: stored value must equal the Display output (no decoration)"
+        );
+        assert_eq!(
+            f1.get("dbg").map(|s| s.as_str()),
+            Some("[1, 2, 3]"),
+            "?Debug Vec<i32> field: stored as format!(\"{{:?}}\") — brackets included"
         );
     }
 
