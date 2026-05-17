@@ -7231,4 +7231,52 @@ mod tests {
             "+Y round-trip: expected (0,1,0), got {rotated:?}"
         );
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // FrameSubShapeKind::from_selector_kind conversion contract
+    //
+    // These tests pin the Face→Some(Face), Edge→Some(Edge), Point→None contract
+    // for the narrowed enum that eliminates `unreachable!()` arms in the
+    // kernel-aware dispatch path.  Face and Edge are the only sub-shape kinds
+    // that reach `construct_frame_from_kernel`; Point is filtered to `None` so
+    // the dispatcher's `?` early-returns without ever reaching kernel queries.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// `SelectorKind::Face` must convert to `Some(FrameSubShapeKind::Face)`.
+    /// The kernel-aware dispatch path handles @face selectors by querying the
+    /// FaceNormal; Point is the only kind excluded — Face must map to Some.
+    #[test]
+    fn frame_sub_shape_kind_from_selector_kind_face_returns_some_face() {
+        assert_eq!(
+            super::FrameSubShapeKind::from_selector_kind(&reify_types::SelectorKind::Face),
+            Some(super::FrameSubShapeKind::Face),
+            "SelectorKind::Face should convert to Some(FrameSubShapeKind::Face)"
+        );
+    }
+
+    /// `SelectorKind::Edge` must convert to `Some(FrameSubShapeKind::Edge)`.
+    /// The kernel-aware dispatch path handles @edge selectors by querying the
+    /// EdgeTangent; Point is the only kind excluded — Edge must map to Some.
+    #[test]
+    fn frame_sub_shape_kind_from_selector_kind_edge_returns_some_edge() {
+        assert_eq!(
+            super::FrameSubShapeKind::from_selector_kind(&reify_types::SelectorKind::Edge),
+            Some(super::FrameSubShapeKind::Edge),
+            "SelectorKind::Edge should convert to Some(FrameSubShapeKind::Edge)"
+        );
+    }
+
+    /// `SelectorKind::Point` must convert to `None`.
+    /// @point selectors are resolved by Layer-1 (`eval_expr`) directly from
+    /// literal coordinates; the kernel-aware Layer-2 dispatch is a no-op for
+    /// Point.  The `?` on `from_selector_kind` propagates this as an early-return
+    /// None without ever reaching kernel queries or `construct_frame_from_kernel`.
+    #[test]
+    fn frame_sub_shape_kind_from_selector_kind_point_returns_none() {
+        assert!(
+            super::FrameSubShapeKind::from_selector_kind(&reify_types::SelectorKind::Point).is_none(),
+            "SelectorKind::Point should convert to None — point selectors are \
+             handled by Layer-1 eval_expr and must not reach kernel dispatch"
+        );
+    }
 }
