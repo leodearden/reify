@@ -182,3 +182,48 @@ fn std_trajectory_module_loads_with_no_errors() {
         errors
     );
 }
+
+// ─── step-3: Profile marker trait ────────────────────────────────────────────
+
+/// `Profile` is the marker trait for every motion-profile variant declared
+/// in this module — currently only `PiecewisePolynomialProfile` (PRD §4.1),
+/// with `TrapezoidalProfile`, `SCurveProfile`, etc. queued in later phases.
+///
+/// Empty in α by design: every member shared across profile variants would
+/// force every variant to carry redundant data, defeating the marker-trait
+/// purpose. Future shared members (e.g. `total_duration`) land in their
+/// own phases when the design has settled on a single representation.
+///
+/// Test pins three invariants: (a) the trait is found, (b) it has zero
+/// required members + zero defaults (marker trait), (c) it has no
+/// refinements (top-level marker, no parent trait).
+#[test]
+fn profile_trait_exists_with_no_params() {
+    let trait_def = find_trait("Profile");
+
+    assert!(
+        trait_def.required_members.is_empty(),
+        "Profile should declare zero required members (marker trait); \
+         got: {:?}",
+        trait_def
+            .required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        trait_def.defaults.is_empty(),
+        "Profile should declare zero defaults (marker trait); got: {:?}",
+        trait_def
+            .defaults
+            .iter()
+            .map(|d| &d.name)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        trait_def.refinements.is_empty(),
+        "Profile should declare zero refinements (top-level marker, no \
+         parent trait); got: {:?}",
+        trait_def.refinements
+    );
+}
