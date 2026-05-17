@@ -648,6 +648,18 @@ fn get_mechanism_descriptors_current_value_si_updates_after_set_parameter() {
     );
 }
 
+/// Source for step-9: 1-body mechanism where y_axis is bound to a bare
+/// dimensionless number `0.5`.  `bind(y_axis, 0.5)` — NumberLiteral →
+/// initial_value_si should be Some(0.5) (no unit conversion).
+const SNAPSHOT_NUMBER_LITERAL_BIND_SOURCE: &str = r#"
+structure Kinematic {
+    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0     = mechanism()
+    let m1     = body(m0, "solid_a", y_axis)
+    let snap   = snapshot(m1, [bind(y_axis, 0.5)])
+}
+"#;
+
 // ---- JointBinding ParamBound promotion via AST resolver (task 3783, step-7) ----
 
 /// `resolve_driving_params_from_ast` must promote the joint `binding` field from
@@ -729,6 +741,82 @@ fn get_mechanism_descriptors_param_bind_binding_updates_after_set_parameter() {
             current_value_si: Some(0.15),
         },
         "after set_parameter(150mm), binding must show current_value_si=Some(0.15); got {:?}",
+        joint.binding
+    );
+}
+
+// ---- LiteralBound binding via AST resolver (task 3783, step-9) ---------------
+
+/// User-observable signal: `bind(y_axis, 50mm)` must produce
+/// `JointBinding::LiteralBound { synth_param_name: "__joint_y_axis_v",
+/// initial_value_si: Some(0.05), scrubbable: true }`.
+///
+/// This is the primary contract test for the η-engine task.
+#[test]
+fn get_mechanism_descriptors_literal_bind_produces_scrubbable_literal_bound_binding() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(SNAPSHOT_LITERAL_BIND_SOURCE, "kinematic")
+        .expect("load snapshot+literal source");
+
+    let descriptors = session.get_mechanism_descriptors();
+    let m1_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .expect("expected descriptor with bodies_count=1");
+
+    let joint = &m1_desc.joints[0];
+
+    // Must produce LiteralBound with joint cell name (not joint_index).
+    assert_eq!(
+        joint.binding,
+        crate::types::JointBinding::LiteralBound {
+            synth_param_name: "__joint_y_axis_v".to_string(),
+            initial_value_si: Some(0.05),
+            scrubbable: true,
+        },
+        "bind(y_axis, 50mm) must produce LiteralBound {{ synth_param_name: \"__joint_y_axis_v\", \
+         initial_value_si: Some(0.05), scrubbable: true }}; got {:?}",
+        joint.binding
+    );
+
+    // Legacy flat field must remain None (literal, not a param reference).
+    assert!(
+        joint.driving_param_cell_id.is_none(),
+        "literal bind must NOT set driving_param_cell_id; got {:?}",
+        joint.driving_param_cell_id
+    );
+}
+
+/// `bind(y_axis, 0.5)` (bare NumberLiteral, no unit) must produce
+/// `JointBinding::LiteralBound { initial_value_si: Some(0.5), ... }`.
+#[test]
+fn get_mechanism_descriptors_literal_bind_with_dimensionless_number_literal() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(SNAPSHOT_NUMBER_LITERAL_BIND_SOURCE, "kinematic")
+        .expect("load snapshot+number-literal source");
+
+    let descriptors = session.get_mechanism_descriptors();
+    let m1_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .expect("expected descriptor with bodies_count=1");
+
+    let joint = &m1_desc.joints[0];
+
+    assert_eq!(
+        joint.binding,
+        crate::types::JointBinding::LiteralBound {
+            synth_param_name: "__joint_y_axis_v".to_string(),
+            initial_value_si: Some(0.5),
+            scrubbable: true,
+        },
+        "bind(y_axis, 0.5) must produce LiteralBound {{ initial_value_si: Some(0.5) }}; got {:?}",
         joint.binding
     );
 }
