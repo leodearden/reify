@@ -28,3 +28,55 @@
 //      positions, as confirmed by `ElasticResult.displacement` /
 //      `ElasticResult.stress` / `ElasticResult.frame`. The PRD §4 footnote
 //      about the placeholder workaround is stale.
+
+// ── BucklingOptions ──────────────────────────────────────────────────────────
+
+// `BucklingOptions` is the configuration object passed to the v0.5 buckling
+// eigensolver (`solve_buckling`, PRD §13 task ε). All six params have sensible
+// defaults so a bare `BucklingOptions()` instantiation compiles and yields the
+// standard solver setup; callers override individual fields at construction
+// (e.g., `BucklingOptions(n_modes: 20, mode: "dense")`).
+//
+// Param semantics (PRD §4):
+//   n_modes    — eigenpair count to compute. Default 10 covers the typical
+//                "first few critical loads" inspection workflow. The hard cap
+//                is bounded only by available memory; users requesting > ~50
+//                modes are usually doing something pathological.
+//   mode       — algorithm selector. `"shift_invert"` (default) is the
+//                standard Lanczos-with-Cholesky-shift-invert path (PRD §5);
+//                `"dense"` calls `faer::linalg/gevd` for tiny problems;
+//                `"lanczos_no_shift"` is the diagnostic-only bare-Lanczos path
+//                used to debug shift-invert convergence. Allowlist validation
+//                is deferred to the `solver::buckling` trampoline (PRD §4 +
+//                §13 task ε) — Reify `constraint` clauses cannot express
+//                string-set membership.
+//   sigma      — eigenvalue shift origin (in eigenvalue units; dimensionless
+//                load multiplier). Default `0.0` targets the smallest |λ|
+//                cluster (critical-load side of the spectrum). Negative values
+//                target the negative side of the spectrum (e.g., unstable
+//                eigenvalues for non-symmetric K_g). Explicitly NOT
+//                constrained: a shift can physically be anywhere on the real
+//                line.
+//   tol        — Lanczos convergence tolerance. Default `0.00000001`
+//                (= 1e-8) matches the PRD §4 spec; encoded as a decimal
+//                literal because Reify's number grammar has no scientific
+//                notation (same convention as
+//                `solver_elastic.ri::cg_tolerance = 0.000001`).
+//   max_iters  — upper bound on total Lanczos iterations across restarts.
+//                Default 1000 covers the PRD §4 "~10⁵ DOF problems" target.
+//                Exists so a pathologically conditioned problem fails loudly
+//                rather than running forever (same rationale as
+//                `ElasticOptions.max_iter`).
+//   auto_dense — if true, fall back to dense `faer::linalg/gevd` when the
+//                problem's post-BC DOF count ≤ ~200. Useful for tiny test
+//                geometries where dense GEVD beats the
+//                Cholesky-factor-plus-Lanczos overhead. Default `true`
+//                matches the PRD §4 spec.
+structure def BucklingOptions {
+    param n_modes : Int
+    param mode : String
+    param sigma : Real
+    param tol : Real
+    param max_iters : Int
+    param auto_dense : Bool
+}
