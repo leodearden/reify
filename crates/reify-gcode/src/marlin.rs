@@ -7,7 +7,7 @@
 //! Populated incrementally by the TDD steps in
 //! `docs/prds/v0_3/trajectory-input-shaping.md` §11 task μ.
 
-use crate::ast::{ArcDirection, ArcMove, GcodeCommand, LinearMove, SetPosition};
+use crate::ast::{ArcDirection, ArcMove, Feedrate, GcodeCommand, LinearMove, SetPosition};
 use crate::error::{ParseError, ParseErrorKind};
 
 /// Parse a Marlin-dialect G-code source into a sequence of commands.
@@ -56,10 +56,37 @@ fn parse_line(line_no: usize, line: &str) -> Result<GcodeCommand, ParseError> {
             &params,
         )?)),
         "G92" => Ok(GcodeCommand::SetPosition(set_position(line_no, &params)?)),
-        other => Err(ParseError {
-            line: line_no,
-            kind: ParseErrorKind::UnknownCommand(other.to_string()),
-        }),
+        other => {
+            // Standalone feedrate: the leading token is itself an `F<number>`
+            // parameter rather than a recognised G/M command code. Reject
+            // `F` with no numeric body so the InvalidParameter diagnostic
+            // path (per plan step-8) is observable.
+            if let Some(body) = other.strip_prefix('F').or_else(|| other.strip_prefix('f')) {
+                if body.is_empty() {
+                    return Err(ParseError {
+                        line: line_no,
+                        kind: ParseErrorKind::InvalidParameter {
+                            letter: 'F',
+                            value: String::new(),
+                        },
+                    });
+                }
+                if !params.is_empty() {
+                    // Bare-F lines carry no trailing params; anything else
+                    // is malformed.
+                    return Err(ParseError {
+                        line: line_no,
+                        kind: ParseErrorKind::UnknownCommand(other.to_string()),
+                    });
+                }
+                let value = parse_value(line_no, 'F', body)?;
+                return Ok(GcodeCommand::Feedrate(Feedrate { value }));
+            }
+            Err(ParseError {
+                line: line_no,
+                kind: ParseErrorKind::UnknownCommand(other.to_string()),
+            })
+        }
     }
 }
 

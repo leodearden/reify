@@ -18,6 +18,8 @@ pub enum GcodeCommand {
     /// value; `None` axes are left untouched. A bare `G92` with all-None
     /// axes is permitted (Marlin treats it as a no-op).
     SetPosition(SetPosition),
+    /// Standalone `F<value>` feedrate update on its own line.
+    Feedrate(Feedrate),
 }
 
 /// Parameters for a G0/G1 linear move.
@@ -72,4 +74,12 @@ pub struct SetPosition {
     pub y: Option<f64>,
     pub z: Option<f64>,
     pub e: Option<f64>,
+}
+
+/// Payload for a standalone `F<value>` feedrate line. In-line feedrate
+/// overrides (e.g. `G1 X10 F1200`) are captured by the host command's
+/// `feedrate` field, not as a separate `Feedrate` AST node.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Feedrate {
+    pub value: f64,
 }
