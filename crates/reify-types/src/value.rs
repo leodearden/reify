@@ -2658,7 +2658,8 @@ pub enum Freshness {
     ///
     /// See arch §7.1 lines 716-728.
     Intermediate { generation: u64 },
-    /// Gated; not recalculated, showing previous best.
+    /// Current entry not authoritative; previous best on display (either
+    /// gated on upstream, or recomputation in flight via a ComputeNode).
     ///
     /// `last_substantive` carries the opaque identity of the last
     /// known-good result (if any); use [`ResultRef::none()`] when no
