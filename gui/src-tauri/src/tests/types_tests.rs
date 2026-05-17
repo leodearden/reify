@@ -2116,6 +2116,67 @@ fn fea_case_changed_serializes_to_expected_json_shape() {
     );
 }
 
+// ---- JointDescriptor.binding field IPC round-trip tests (task 3783, step-3) --
+
+/// The new `binding: JointBinding` field on `JointDescriptor` serializes and
+/// deserializes correctly, with the nested `kind` discriminator visible in the
+/// JSON wire format.
+#[test]
+fn joint_descriptor_binding_field_round_trips_via_serde() {
+    use crate::types::{JointBinding, JointDescriptor};
+
+    let joint = JointDescriptor {
+        joint_index: 1,
+        kind: "prismatic".to_string(),
+        dimension: "length".to_string(),
+        range_lower_si: Some(0.0),
+        range_upper_si: Some(0.8),
+        axis: Some([1.0, 0.0, 0.0]),
+        driving_param_cell_id: None,
+        current_value_si: None,
+        binding: JointBinding::LiteralBound {
+            synth_param_name: "__joint_y_axis_v".to_string(),
+            initial_value_si: Some(0.05),
+            scrubbable: true,
+        },
+    };
+
+    let v = serde_json::to_value(&joint).expect("serialize JointDescriptor with binding");
+
+    // The `binding` key must be present and contain the kind discriminator.
+    assert!(
+        v.get("binding").is_some(),
+        "expected 'binding' key in JointDescriptor wire format"
+    );
+    assert_eq!(
+        v["binding"]["kind"], "literal_bound",
+        "binding.kind must be 'literal_bound'; got {:?}",
+        v["binding"]["kind"]
+    );
+    assert_eq!(
+        v["binding"]["synth_param_name"], "__joint_y_axis_v",
+        "binding.synth_param_name must be '__joint_y_axis_v'; got {:?}",
+        v["binding"]["synth_param_name"]
+    );
+    assert_eq!(
+        v["binding"]["initial_value_si"], 0.05,
+        "binding.initial_value_si must be 0.05; got {:?}",
+        v["binding"]["initial_value_si"]
+    );
+    assert_eq!(
+        v["binding"]["scrubbable"], true,
+        "binding.scrubbable must be true; got {:?}",
+        v["binding"]["scrubbable"]
+    );
+
+    // Round-trip: must restore the full descriptor including the binding.
+    let back: JointDescriptor = serde_json::from_value(v).expect("deserialize JointDescriptor");
+    assert_eq!(
+        back, joint,
+        "JointDescriptor must round-trip through serde without data loss"
+    );
+}
+
 // ---- JointBinding enum IPC contract tests (task 3783, step-1) ----------------
 
 /// Compile-time IPC contract for `JointBinding`: Serialize + DeserializeOwned +
