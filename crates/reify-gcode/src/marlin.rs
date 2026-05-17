@@ -84,24 +84,14 @@ fn parse_line(line_no: usize, line: &str) -> Result<GcodeCommand, ParseError> {
         )?)),
         "G92" => Ok(GcodeCommand::SetPosition(set_position(line_no, &params)?)),
         // PRD §7.1 — these M-codes are parsed & retained but tagged as
-        // trajectory-irrelevant. `params_raw` is the post-code remainder
-        // of the line, trimmed (so `M82` yields params_raw="").
-        "M104" => Ok(GcodeCommand::IgnoredMCode(IgnoredMCode {
-            code: 104,
-            params_raw: line[cmd.len()..].trim_start().to_string(),
-        })),
-        "M109" => Ok(GcodeCommand::IgnoredMCode(IgnoredMCode {
-            code: 109,
-            params_raw: line[cmd.len()..].trim_start().to_string(),
-        })),
-        "M82" => Ok(GcodeCommand::IgnoredMCode(IgnoredMCode {
-            code: 82,
-            params_raw: line[cmd.len()..].trim_start().to_string(),
-        })),
-        "M83" => Ok(GcodeCommand::IgnoredMCode(IgnoredMCode {
-            code: 83,
-            params_raw: line[cmd.len()..].trim_start().to_string(),
-        })),
+        // trajectory-irrelevant. The allowlist gate is the explicit
+        // match arm; new M-codes (e.g. task ν's Klipper additions) are
+        // wired in by extending the arm rather than duplicating the
+        // `ignored_mcode` body.
+        "M104" => Ok(ignored_mcode(104, line, cmd)),
+        "M109" => Ok(ignored_mcode(109, line, cmd)),
+        "M82" => Ok(ignored_mcode(82, line, cmd)),
+        "M83" => Ok(ignored_mcode(83, line, cmd)),
         other => {
             // Standalone feedrate: the leading token is itself an `F<number>`
             // parameter rather than a recognised G/M command code. Reject
@@ -141,6 +131,19 @@ fn parse_line(line_no: usize, line: &str) -> Result<GcodeCommand, ParseError> {
             })
         }
     }
+}
+
+/// Build an `IgnoredMCode` command — `params_raw` is the post-code
+/// remainder of the source line, trimmed of leading whitespace, so a
+/// bare `M82` yields an empty `params_raw` and round-trip Display
+/// reconstructs the original. The caller (the `M104`/`M109`/`M82`/`M83`
+/// match arms in `parse_line`) supplies the literal code so the
+/// allowlist gate stays explicit at the dispatch site.
+fn ignored_mcode(code: u16, line: &str, cmd: &str) -> GcodeCommand {
+    GcodeCommand::IgnoredMCode(IgnoredMCode {
+        code,
+        params_raw: line[cmd.len()..].trim_start().to_string(),
+    })
 }
 
 /// Materialise a `LinearMove` from the parameter slice of a G0/G1 line.
