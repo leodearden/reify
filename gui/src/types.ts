@@ -526,3 +526,32 @@ export interface WarmPoolEvent {
   /** Stringified `NodeId` of the victim (evicted) or donor (donated) node. */
   node_id: string;
 }
+
+/**
+ * Placeholder type for a multi-load-case FEA result.
+ *
+ * The `unknown` case-value is a deliberate placeholder per PRD §11 Q5 —
+ * the multi-load-case-fea PRD (M-016 / task 3026) owns the fully-typed
+ * Rust IPC type; this task only references it as a prerequisite.
+ * Narrowing `unknown` to the real type is a localized lockstep edit when 3026 lands.
+ */
+export interface MultiCaseResult {
+  cases: Record<string, unknown>;
+}
+
+/**
+ * Payload for the `fea-case-changed` Tauri event channel per PRD §2.2 task η.
+ *
+ * Wire format: field names match the Rust IPC struct in
+ * `gui/src-tauri/src/types.rs::FeaCaseChanged` exactly — no `serde(rename_all)`.
+ *
+ * Emitted by `EngineSession::emit_fea_case_if_any` once per check that observes
+ * a MultiCaseResult-shaped value in `CheckResult.values`.
+ * Consumer: `FeaCasePickerDropdown`.
+ */
+export interface FeaCaseChanged {
+  /** The currently-active case name (lexicographically smallest when first emitted). */
+  active_case_id: string;
+  /** All available case names, sorted lexicographically. */
+  available_cases: string[];
+}

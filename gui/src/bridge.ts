@@ -23,6 +23,7 @@ import type {
   MechanismDescriptor,
   AutoResolveIteration,
   WarmPoolEvent,
+  FeaCaseChanged,
 } from './types';
 import { convertRawMesh, convertRawGuiState } from './types';
 import type {
@@ -668,5 +669,38 @@ export async function onWarmPoolEvent(
       return;
     }
     callback(p as unknown as WarmPoolEvent);
+  });
+}
+
+/**
+ * Subscribe to `fea-case-changed` Tauri events.
+ *
+ * Emitted by `EngineSession::emit_fea_case_if_any` once per check that
+ * observes a MultiCaseResult-shaped value in `CheckResult.values`.
+ * Consumer: `FeaCasePickerDropdown`.
+ *
+ * Uses the inline structural-shape-guard idiom (listen<unknown> +
+ * isPlainObject + per-field type checks + console.warn drop), mirroring
+ * `onAutoResolveIteration` (bridge.ts:618) and `onWarmPoolEvent` (bridge.ts:656).
+ * The guard additionally validates `available_cases` is a string[] array,
+ * which `validatePayload`'s keys-array form cannot express.
+ *
+ * Per-channel spec: docs/gui-event-channels/fea-case-changed.md
+ */
+export async function onFeaCaseChanged(
+  callback: (payload: FeaCaseChanged) => void,
+): Promise<UnlistenFn> {
+  return listen<unknown>('fea-case-changed', (event) => {
+    const p = event.payload;
+    if (
+      !isPlainObject(p) ||
+      typeof p['active_case_id'] !== 'string' ||
+      !Array.isArray(p['available_cases']) ||
+      !p['available_cases'].every((s) => typeof s === 'string')
+    ) {
+      console.warn('[fea-case-changed] malformed payload; dropping event', p);
+      return;
+    }
+    callback(p as unknown as FeaCaseChanged);
   });
 }
