@@ -2939,6 +2939,22 @@ impl Engine {
                                 // DependencyTrace; the ComputeNode's
                                 // `value_inputs` drive the cache key in P3.2,
                                 // not the output VC's trace).
+                                //
+                                // **Intermediate freshness propagation is
+                                // intentionally dropped for @optimized cells in
+                                // δ scope.** The pre-`run_compute_dispatch`
+                                // wiring threaded `take_trace(...)` into
+                                // `record_evaluation_propagating_freshness`, so
+                                // the output cell would inherit derived
+                                // freshness (e.g. Intermediate when any input
+                                // was Intermediate, §7.2). The δ contract
+                                // (PRD §3) flips the output Pending→Final on
+                                // successful completion — period. Restoring
+                                // derived-Intermediate propagation when inputs
+                                // are partial is a separate concern and is
+                                // deferred to a future slice (the upstream
+                                // Pending gate already short-circuits
+                                // Failed/Pending inputs before reaching here).
                                 let _trace = take_trace(
                                     &mut let_traces,
                                     &node_id,
@@ -2970,6 +2986,27 @@ impl Engine {
                                 // failure: the diagnostic would say "compute trampoline
                                 // failed" while the cell happily holds an unrelated
                                 // Determined value (review feedback #1, suggestion 1).
+                                //
+                                // The ComputeNode inserted above (lines ~2884-2902)
+                                // is INTENTIONALLY left in `snapshot.graph.compute_nodes`
+                                // on this arm, even though the output VC ends up
+                                // Failed and `cached_result` / `result_content_hash` /
+                                // `running` are all `None`. Rationale:
+                                //   - `pending_cause = NodeId::Compute(c_id)` resolution
+                                //     (PRD §3) requires `c_id` to be present in the
+                                //     graph so observers (debug UI, the upcoming
+                                //     P3.2 cache-key composition) can chase the chain
+                                //     root. Removing the node on failure would leave a
+                                //     dangling chain-root pointer.
+                                //   - The output VC's `Failed` state (set below via
+                                //     `cache.mark_failed`) already communicates the
+                                //     compute outcome; the live-but-result-less
+                                //     ComputeNode signals "tried, then failed" rather
+                                //     than "no such computation ever existed".
+                                //   - Adding a per-node status field is a separate
+                                //     concern; deferred to a future slice if a
+                                //     consumer ever needs to distinguish in-flight
+                                //     from completed-failed at the ComputeNode level.
                                 //
                                 // Mirror the §9.1 panic-boundary handler below
                                 // (engine_eval.rs ~L2929-2965): surface the
