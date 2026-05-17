@@ -259,8 +259,8 @@ pub struct CompiledFunction {
     /// **Length invariant:** always exactly `params.len()`; entry `i` is
     /// `Some(expr)` iff param `i` has a default, otherwise `None`. Built
     /// canonically by `compile_function` in `reify-compiler/src/functions.rs`
-    /// and by `CompiledFunction::new_with_no_defaults` for tests/stubs
-    /// (task-3702).
+    /// and by `CompiledFunction::no_defaults_for` for tests/stubs
+    /// (task-3760).
     ///
     /// **Compilation scope:** Default expressions are compiled in a neutral scope
     /// containing only module-level names — they cannot reference sibling params
@@ -325,54 +325,6 @@ impl CompiledFunction {
         vec![None; params.len()]
     }
 
-    /// Construct a `CompiledFunction` where every param has no default.
-    ///
-    /// Sets `param_defaults` to `vec![None; params.len()]`, satisfying the
-    /// strict length invariant (`param_defaults.len() == params.len()`) while
-    /// expressing "no parameter has a default value."
-    ///
-    /// Use this constructor for test stubs and any producer that does not need
-    /// to supply defaults. For functions that carry defaults, build via
-    /// `compile_function` in `reify-compiler/src/functions.rs` instead.
-    ///
-    /// The invariant is enforced at construction by an internal `debug_assert!`.
-    /// Other constructors (e.g. `compile_function`) should add a similar guard
-    /// if they build `param_defaults` from an independent expression — a
-    /// post-condition check surfaces mismatches at the point of construction
-    /// rather than later in `try_default_padding`.
-    ///
-    /// task-3702 (canonicalize CompiledFunction.param_defaults representation)
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_with_no_defaults(
-        name: String,
-        is_pub: bool,
-        params: Vec<(String, Type)>,
-        return_type: Type,
-        body: CompiledFnBody,
-        content_hash: crate::hash::ContentHash,
-        annotations: Vec<crate::annotation::Annotation>,
-        optimized_target: Option<String>,
-    ) -> Self {
-        let n = params.len();
-        let result = CompiledFunction {
-            name,
-            is_pub,
-            params,
-            param_defaults: vec![None; n],
-            return_type,
-            body,
-            content_hash,
-            annotations,
-            optimized_target,
-        };
-        debug_assert_eq!(
-            result.param_defaults.len(),
-            result.params.len(),
-            "param_defaults.len() == params.len() invariant violated in \
-             CompiledFunction::new_with_no_defaults (task-3702)"
-        );
-        result
-    }
 }
 
 /// A compiled function body: let bindings followed by a result expression.
