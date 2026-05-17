@@ -409,18 +409,12 @@ fn mode_struct_has_eigenvalue_and_mode_shape_params() {
         (
             "mode_shape",
             Type::Field {
-                domain: Box::new(Type::Point {
-                    n: 3,
-                    quantity: Box::new(Type::Scalar {
-                        dimension: DimensionVector::LENGTH,
-                    }),
-                }),
-                codomain: Box::new(Type::Vector {
-                    n: 3,
-                    quantity: Box::new(Type::Scalar {
-                        dimension: DimensionVector::LENGTH,
-                    }),
-                }),
+                domain: Box::new(Type::point3(Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                })),
+                codomain: Box::new(Type::vec3(Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                })),
             },
         ),
     ];
