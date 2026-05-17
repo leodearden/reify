@@ -82,6 +82,14 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     });
 
     for meta in ctx.task_metadata.values() {
+        // Optional single-task narrowing: mirrors p2_consumer_stub::check at
+        // lines 132-136 and p5_phantom_done::check_with_target — keeps all
+        // three detectors' scoping behaviour in lockstep.
+        if let Some(target) = ctx.target_task_id.as_deref()
+            && meta.task_id != target
+        {
+            continue;
+        }
         if meta.status != "done" {
             continue;
         }

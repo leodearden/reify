@@ -651,28 +651,25 @@ mod tests {
     /// producing two findings.
     #[test]
     fn target_task_id_scopes_p1_to_one_task() {
-        let done_at = NOW - 15 * DAY;
+        // Give the two tasks distinct done_at values so the mock can return
+        // different symbol sets for each (the mock keys on (branch, since_epoch)).
+        let done_at_a = NOW - 15 * DAY;
+        let done_at_b = NOW - 16 * DAY;
 
         let conn = Connection::open_in_memory().expect("open in-memory sqlite");
         let git = MockGitOps::new();
         let mut jc = MockJCodemunchOps::new();
-        // task_A introduces widget_a; task_B introduces widget_b — both orphans.
+        // task_A → widget_a (keyed by done_at_a).
         jc.set_changed_symbols(
             "main",
-            done_at,
+            done_at_a,
             vec![changed_symbol("widget_a", "crates/reify-x/src/a.rs")],
         );
-        // set_changed_symbols keys on (branch, since_epoch); each task has the
-        // same done_at so we use a separate mock instance per key — but here
-        // both tasks share the same timestamp, so we set both symbols under
-        // the same key to simulate the branch scan returning both.
+        // task_B → widget_b (keyed by done_at_b).
         jc.set_changed_symbols(
             "main",
-            done_at,
-            vec![
-                changed_symbol("widget_a", "crates/reify-x/src/a.rs"),
-                changed_symbol("widget_b", "crates/reify-x/src/b.rs"),
-            ],
+            done_at_b,
+            vec![changed_symbol("widget_b", "crates/reify-x/src/b.rs")],
         );
         jc.set_find_references("widget_a", vec![]);
         jc.set_find_references("widget_b", vec![]);
@@ -680,11 +677,11 @@ mod tests {
         let mut task_metadata = HashMap::new();
         task_metadata.insert(
             "task_A".to_string(),
-            done_meta("task_A", done_at, Some("docs/a.md")),
+            done_meta("task_A", done_at_a, Some("docs/a.md")),
         );
         task_metadata.insert(
             "task_B".to_string(),
-            done_meta("task_B", done_at, Some("docs/b.md")),
+            done_meta("task_B", done_at_b, Some("docs/b.md")),
         );
 
         // With target_task_id pointing at task_A, only task_A is scanned.
