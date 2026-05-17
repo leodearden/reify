@@ -19,7 +19,7 @@ use tauri::{Emitter, Manager};
 use reify_constraints::SimpleConstraintChecker;
 use reify_gui::commands::AppState;
 use reify_gui::diff::{StateDelta, compute_delta, delta_to_events};
-use reify_gui::engine::{AutoResolveEmitter, EngineSession};
+use reify_gui::engine::{AutoResolveEmitter, EngineSession, WarmPoolEventEmitter};
 use reify_gui::event_bus::emit_typed;
 use reify_gui::lsp_bridge::LspBridge;
 use reify_gui::types::EvaluationStatus;
@@ -108,6 +108,22 @@ impl AutoResolveEmitter for TauriAutoResolveEmitter {
     fn complete(&self) {
         if let Err(e) = emit_typed(&self.app, "auto-resolve-complete", &()) {
             warn!("auto-resolve emit 'auto-resolve-complete' failed: {}", e);
+        }
+    }
+}
+
+/// Emits warm-pool lifecycle events (evictions and donations) to the frontend via Tauri.
+///
+/// Installed during `setup()` alongside [`TauriAutoResolveEmitter`]. The backend emits
+/// unconditionally; the frontend panel only subscribes when `REIFY_DEBUG=1` (PRD §11 Q6).
+struct TauriWarmPoolEventEmitter {
+    app: tauri::AppHandle,
+}
+
+impl WarmPoolEventEmitter for TauriWarmPoolEventEmitter {
+    fn emit(&self, event: reify_gui::types::WarmPoolEvent) {
+        if let Err(e) = emit_typed(&self.app, "warm-pool-event", &event) {
+            warn!("warm-pool-event emit failed: {}", e);
         }
     }
 }
@@ -584,6 +600,16 @@ fn main() {
             });
             if let Ok(mut session) = engine_arc.lock() {
                 session.set_auto_resolve_emitter(emitter);
+            }
+
+            // Install the warm-pool emitter so the frontend receives eviction/donation events.
+            // The backend emits unconditionally; the WarmPoolDebugPanel only subscribes under
+            // REIFY_DEBUG=1 (PRD §11 Q6 resolution).
+            let warm_pool_emitter = Arc::new(TauriWarmPoolEventEmitter {
+                app: app.handle().clone(),
+            });
+            if let Ok(mut session) = engine_arc.lock() {
+                session.set_warm_pool_event_emitter(warm_pool_emitter);
             }
 
             // Always create DebugBridge (inert when debug disabled — no JS listener, no HTTP server)
