@@ -148,9 +148,8 @@ pub fn stage_b_eligible(
     new_faces: &[GeometryHandleId],
     old_edges: &[GeometryHandleId],
     new_edges: &[GeometryHandleId],
-    // Accepted for forward-compatibility; not processed in v0.2.
-    _old_vertices: &[GeometryHandleId],
-    _new_vertices: &[GeometryHandleId],
+    old_vertices: &[GeometryHandleId],
+    new_vertices: &[GeometryHandleId],
 ) -> Result<CorrespondenceMap, BijectionFailure> {
     let mut map = CorrespondenceMap::default();
 
@@ -172,9 +171,14 @@ pub fn stage_b_eligible(
         &mut map.edge_to_edge,
     )?;
 
-    // Vertices are intentionally not processed in v0.2 —
-    // see CorrespondenceMap::vertex_to_vertex doc-comment.
-    // map.vertex_to_vertex stays empty (HashMap::new()).
+    match_one_kind(
+        SubShapeKind::Vertex,
+        old_table,
+        new_table,
+        old_vertices,
+        new_vertices,
+        &mut map.vertex_to_vertex,
+    )?;
 
     Ok(map)
 }
@@ -1085,43 +1089,4 @@ mod tests {
         );
     }
 
-    // step-15: vertex_to_vertex is always empty in v0.2
-    /// Behaviour guard: even when old_vertices and new_vertices are non-empty and
-    /// both carry attributes in their respective tables, `vertex_to_vertex` must
-    /// remain empty. Documents the v0.2 limitation — persistent-naming v2 does not
-    /// propagate vertex attributes (see docs/prds/v0_2/persistent-naming-v2.md).
-    /// A future contributor enabling vertex_to_vertex must update this test AND the
-    /// doc-comment on `CorrespondenceMap::vertex_to_vertex`.
-    #[test]
-    fn stage_b_eligible_vertex_to_vertex_is_always_empty_in_v0_2() {
-        // Give both old and new vertex handles attributes — the function still must
-        // not populate vertex_to_vertex in v0.2.
-        let mut old_table = TopologyAttributeTable::default();
-        old_table.record(h(100), attr(Role::NewEdge, 0, None));
-        let mut new_table = TopologyAttributeTable::default();
-        new_table.record(h(200), attr(Role::NewEdge, 0, None));
-
-        // Faces and edges are empty so the only non-trivial input is the vertex slices.
-        let result = stage_b_eligible(
-            &old_table,
-            &new_table,
-            &[],
-            &[],
-            &[],
-            &[],
-            &[h(100)],
-            &[h(200)],
-        );
-        let map = result.expect(
-            "non-empty vertex slices with matching attributes must not cause failure \
-             (vertex matching is not performed in v0.2 — \
-             see docs/prds/v0_2/persistent-naming-v2.md)",
-        );
-        assert!(
-            map.vertex_to_vertex.is_empty(),
-            "vertex_to_vertex must always be empty in v0.2 — \
-             persistent-naming v2 does not propagate vertex attributes \
-             (see docs/prds/v0_2/persistent-naming-v2.md)"
-        );
-    }
 }
