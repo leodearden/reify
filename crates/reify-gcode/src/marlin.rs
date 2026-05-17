@@ -7,7 +7,7 @@
 //! Populated incrementally by the TDD steps in
 //! `docs/prds/v0_3/trajectory-input-shaping.md` §11 task μ.
 
-use crate::ast::{GcodeCommand, LinearMove};
+use crate::ast::{ArcDirection, ArcMove, GcodeCommand, LinearMove};
 use crate::error::{ParseError, ParseErrorKind};
 
 /// Parse a Marlin-dialect G-code source into a sequence of commands.
@@ -32,7 +32,6 @@ pub fn parse_marlin(src: &str) -> Result<Vec<GcodeCommand>, ParseError> {
 /// blank lines and bumping the 1-indexed line counter.
 fn parse_line(line_no: usize, line: &str) -> Result<GcodeCommand, ParseError> {
     let mut tokens = line.split_whitespace();
-    // First token is always the command code in the cases supported so far.
     let cmd = tokens.next().ok_or(ParseError {
         line: line_no,
         kind: ParseErrorKind::MissingCommand,
@@ -45,6 +44,16 @@ fn parse_line(line_no: usize, line: &str) -> Result<GcodeCommand, ParseError> {
         )?)),
         "G1" => Ok(GcodeCommand::LinearMove(linear_move(
             line_no, false, &params,
+        )?)),
+        "G2" => Ok(GcodeCommand::ArcMove(arc_move(
+            line_no,
+            ArcDirection::Cw,
+            &params,
+        )?)),
+        "G3" => Ok(GcodeCommand::ArcMove(arc_move(
+            line_no,
+            ArcDirection::Ccw,
+            &params,
         )?)),
         other => Err(ParseError {
             line: line_no,
@@ -63,27 +72,112 @@ fn linear_move(line_no: usize, rapid: bool, params: &[&str]) -> Result<LinearMov
         e: None,
         feedrate: None,
     };
+    parse_axis_params(line_no, params, |letter, value| match letter {
+        'X' => {
+            mv.x = Some(value);
+            Ok(())
+        }
+        'Y' => {
+            mv.y = Some(value);
+            Ok(())
+        }
+        'Z' => {
+            mv.z = Some(value);
+            Ok(())
+        }
+        'E' => {
+            mv.e = Some(value);
+            Ok(())
+        }
+        'F' => {
+            mv.feedrate = Some(value);
+            Ok(())
+        }
+        _ => Err(letter),
+    })?;
+    Ok(mv)
+}
+
+/// Materialise an `ArcMove` from the parameter slice of a G2/G3 line.
+fn arc_move(
+    line_no: usize,
+    direction: ArcDirection,
+    params: &[&str],
+) -> Result<ArcMove, ParseError> {
+    let mut mv = ArcMove {
+        direction,
+        x: None,
+        y: None,
+        z: None,
+        i: None,
+        j: None,
+        k: None,
+        e: None,
+        feedrate: None,
+    };
+    parse_axis_params(line_no, params, |letter, value| match letter {
+        'X' => {
+            mv.x = Some(value);
+            Ok(())
+        }
+        'Y' => {
+            mv.y = Some(value);
+            Ok(())
+        }
+        'Z' => {
+            mv.z = Some(value);
+            Ok(())
+        }
+        'I' => {
+            mv.i = Some(value);
+            Ok(())
+        }
+        'J' => {
+            mv.j = Some(value);
+            Ok(())
+        }
+        'K' => {
+            mv.k = Some(value);
+            Ok(())
+        }
+        'E' => {
+            mv.e = Some(value);
+            Ok(())
+        }
+        'F' => {
+            mv.feedrate = Some(value);
+            Ok(())
+        }
+        _ => Err(letter),
+    })?;
+    Ok(mv)
+}
+
+/// Shared `<letter><number>` parameter walker.
+///
+/// For each token, splits the leading letter from the numeric body,
+/// parses the body as `f64`, then invokes `assign(letter, value)`.
+/// `assign` returns `Err(letter)` to reject a letter it does not handle
+/// for this command; the walker maps that into an `InvalidParameter`
+/// error preserving the original raw value.
+fn parse_axis_params<F>(line_no: usize, params: &[&str], mut assign: F) -> Result<(), ParseError>
+where
+    F: FnMut(char, f64) -> Result<(), char>,
+{
     for tok in params {
-        let (letter, value) = split_param(line_no, tok)?;
-        let parsed = parse_value(line_no, letter, value)?;
-        match letter {
-            'X' => mv.x = Some(parsed),
-            'Y' => mv.y = Some(parsed),
-            'Z' => mv.z = Some(parsed),
-            'E' => mv.e = Some(parsed),
-            'F' => mv.feedrate = Some(parsed),
-            _ => {
-                return Err(ParseError {
-                    line: line_no,
-                    kind: ParseErrorKind::InvalidParameter {
-                        letter,
-                        value: value.to_string(),
-                    },
-                });
-            }
+        let (letter, raw_value) = split_param(line_no, tok)?;
+        let value = parse_value(line_no, letter, raw_value)?;
+        if let Err(bad_letter) = assign(letter, value) {
+            return Err(ParseError {
+                line: line_no,
+                kind: ParseErrorKind::InvalidParameter {
+                    letter: bad_letter,
+                    value: raw_value.to_string(),
+                },
+            });
         }
     }
-    Ok(mv)
+    Ok(())
 }
 
 /// Split a `<letter><value>` token into its parts. Errors if the letter

@@ -12,6 +12,8 @@
 pub enum GcodeCommand {
     /// G0 (rapid) / G1 (feed) linear move. `rapid` discriminates the two.
     LinearMove(LinearMove),
+    /// G2 (CW) / G3 (CCW) arc move, IJK form.
+    ArcMove(ArcMove),
 }
 
 /// Parameters for a G0/G1 linear move.
@@ -29,5 +31,31 @@ pub struct LinearMove {
     /// Extruder axis (E) — distinct from XYZ for printer dialects.
     pub e: Option<f64>,
     /// In-line `F<value>` feedrate override, if present.
+    pub feedrate: Option<f64>,
+}
+
+/// Rotation sense for an [`ArcMove`]. G2 → [`ArcDirection::Cw`],
+/// G3 → [`ArcDirection::Ccw`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum ArcDirection {
+    Cw,
+    Ccw,
+}
+
+/// Parameters for a G2/G3 arc move in IJK form.
+///
+/// `i`/`j`/`k` are the center-offset components relative to the current
+/// position (Marlin's default arc form); see the PRD §7.1 Marlin subset
+/// for the supported parameter set.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArcMove {
+    pub direction: ArcDirection,
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+    pub z: Option<f64>,
+    pub i: Option<f64>,
+    pub j: Option<f64>,
+    pub k: Option<f64>,
+    pub e: Option<f64>,
     pub feedrate: Option<f64>,
 }
