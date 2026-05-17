@@ -5060,6 +5060,25 @@ mod tests {
         );
     }
 
+    // ── task-3663 tests ───────────────────────────────────────────────────────
+
+    /// A `CrossSubGeometryRef` must be consumed by the bare-let drop site in
+    /// `entity.rs` (task-3508) before `eval_expr` is ever called.  Reaching the
+    /// eval arm for this variant is a routing violation — not a normal
+    /// undef-propagation case — and must fire identically in debug **and** release
+    /// builds.
+    ///
+    /// `unreachable!()` (added in step-2) satisfies this: unlike the former
+    /// `debug_assert!(false, ...) + get_or_undef` which silently returned `Undef`
+    /// in release builds, `unreachable!()` always panics.
+    ///
+    /// Not gated on `#[cfg(debug_assertions)]` because `unreachable!()` is active
+    /// in every build profile.
+    ///
+    /// RED before step-2: the current `debug_assert!(false,
+    /// "CrossSubGeometryRef should not reach eval; ...")` message does NOT contain
+    /// the expected substring `"should be consumed"`, so `should_panic`'s
+    /// substring check fails in debug; and in release no panic fires at all.
     #[test]
     #[should_panic(expected = "CrossSubGeometryRef should be consumed by entity.rs")]
     fn cross_sub_geometry_ref_panics_in_eval_when_not_consumed() {
