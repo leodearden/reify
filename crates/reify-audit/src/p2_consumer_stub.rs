@@ -130,6 +130,18 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     // explicit per project convention "contract in production code is made
     // explicit rather than relying on test coverage".
     //
+    // KNOWN LIMITATION (esc-3752-365 review, suggestion 1): The `window.is_none()`
+    // conjunct is intended as a proxy for "no sweep scoping was requested", but
+    // `ctx.window` is NOT consumed by P2 — the AuditContext::window rustdoc says
+    // "None of the slice-1 detector paths consume this yet". The CLI also loads the
+    // full fused-memory backlog regardless of --since (it only builds `window`,
+    // never filters `task_metadata`). Consequently, a --since-scoped sweep
+    // (window=Some but task_metadata still contains the full backlog) BYPASSES this
+    // guard and still surfaces spurious findings. This guard therefore only catches
+    // the zero-scoping-flag case (--mode sweep with neither --task nor --since).
+    // Complete protection requires the CLI or loader to narrow `ctx.task_metadata`
+    // at load time before calling check().
+    //
     // We use BOTH debug_assert! and eprintln!:
     //   - debug_assert! panics in dev/test (loud fail-fast; the
     //     `sweep_mode_unbounded_backlog_panics_in_debug` integration test

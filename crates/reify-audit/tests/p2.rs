@@ -15,7 +15,7 @@ mod p2 {
 
 use reify_audit::{
     AuditContext, EvidenceRef, MockGitOps, MockJCodemunchOps, Pattern, Severity, TaskMetadata,
-    p2_consumer_stub,
+    TimeWindow, p2_consumer_stub,
 };
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -627,6 +627,153 @@ mod tests {
         // Before the impl guard lands: check() returns Vec::new() without panicking,
         // causing #[should_panic] to fail ("test did not panic as expected").
         let _ = p2_consumer_stub::check(&ctx);
+    }
+
+    /// Pins the strict-`>` boundary of `SWEEP_BACKLOG_WARN_THRESHOLD` (50).
+    ///
+    /// A backlog of EXACTLY 50 tasks with `target_task_id=None` and `window=None`
+    /// must NOT trigger the guard — the threshold constant's doc says "strict `>` so
+    /// a backlog of exactly 50 does not warn".
+    ///
+    /// An off-by-one regression to `>=` would silently pass
+    /// `sweep_mode_unbounded_backlog_panics_in_debug` (which uses 51 entries) yet
+    /// would panic here, making this the sole regression-catcher for the
+    /// inclusive/exclusive boundary.
+    ///
+    /// Reference: esc-3752-365 review suggestion 2 (boundary test).
+    #[test]
+    fn sweep_mode_at_threshold_does_not_panic() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let jc = MockJCodemunchOps::new();
+
+        // Exactly 50 entries — equal to SWEEP_BACKLOG_WARN_THRESHOLD (not one above).
+        // files: vec![] keeps the test hermetic (no diff calls fire).
+        let mut task_metadata = HashMap::new();
+        for i in 0..50usize {
+            let id = format!("4000{i:02}");
+            task_metadata.insert(id.clone(), benign_meta(&id, vec![]));
+        }
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        // Must return without panicking; 50 entries does NOT exceed the strict->50
+        // threshold. Any panic here indicates an off-by-one regression (>= vs >).
+        let findings = p2_consumer_stub::check(&ctx);
+        assert!(
+            findings.is_empty(),
+            "50 benign tasks with files=vec![] should produce no findings; got {:?}",
+            findings
+        );
+    }
+
+    /// Pins the allow-path of the sweep-mode guard: a backlog of 51 tasks (one above
+    /// threshold) with `window=Some(...)` must NOT trigger the guard, because the
+    /// conjunction includes `ctx.window.is_none()`.
+    ///
+    /// A regression that drops the `window.is_none()` conjunct (reducing the predicate
+    /// to just `task_metadata.len() > 50`) would panic here and break every legitimate
+    /// large `--since` sweep.
+    ///
+    /// NOTE: As documented by the KNOWN LIMITATION comment in check(), `ctx.window` is
+    /// NOT actually consumed by P2, so window=Some does not guarantee that
+    /// task_metadata was narrowed. This test pins the CURRENT guard behavior — the
+    /// window=Some allow-path — not an ideal narrowing contract. See esc-3752-365
+    /// review suggestion 1 for the full analysis.
+    ///
+    /// Reference: esc-3752-365 review suggestion 3 (allow-path test, window variant).
+    #[test]
+    fn sweep_mode_with_window_scoping_does_not_panic() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let jc = MockJCodemunchOps::new();
+
+        // 51 entries — one above SWEEP_BACKLOG_WARN_THRESHOLD.
+        let mut task_metadata = HashMap::new();
+        for i in 0..51usize {
+            let id = format!("5000{i:02}");
+            task_metadata.insert(id.clone(), benign_meta(&id, vec![]));
+        }
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            // window=Some suppresses the guard (ctx.window.is_none() == false).
+            window: Some(TimeWindow {
+                since: Some("2026-05-01T00:00:00Z".to_string()),
+                until: None,
+            }),
+            now: None,
+            producer_branch: None,
+        };
+
+        // Must return without panicking. A regression dropping `window.is_none()`
+        // from the guard predicate would cause this to panic.
+        let findings = p2_consumer_stub::check(&ctx);
+        assert!(
+            findings.is_empty(),
+            "51 benign tasks with files=vec![] and window=Some should produce no findings; got {:?}",
+            findings
+        );
+    }
+
+    /// Pins the allow-path of the sweep-mode guard: a backlog of 51 tasks (one above
+    /// threshold) with `target_task_id=Some(...)` must NOT trigger the guard, because
+    /// the conjunction includes `ctx.target_task_id.is_none()`.
+    ///
+    /// A regression dropping the `target_task_id.is_none()` conjunct would panic here
+    /// and break every pre-done hook invocation where ctx.task_metadata happens to
+    /// hold more than 50 entries.
+    ///
+    /// Reference: esc-3752-365 review suggestion 3 (allow-path test, target_task_id variant).
+    #[test]
+    fn sweep_mode_with_target_task_id_does_not_panic() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let jc = MockJCodemunchOps::new();
+
+        // 51 entries — one above SWEEP_BACKLOG_WARN_THRESHOLD.
+        let mut task_metadata = HashMap::new();
+        for i in 0..51usize {
+            let id = format!("6000{i:02}");
+            task_metadata.insert(id.clone(), benign_meta(&id, vec![]));
+        }
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            // target_task_id=Some suppresses the guard (ctx.target_task_id.is_none() == false).
+            target_task_id: Some("600000".to_string()),
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        // Must return without panicking. A regression dropping
+        // `target_task_id.is_none()` from the guard predicate would panic here.
+        let findings = p2_consumer_stub::check(&ctx);
+        assert!(
+            findings.is_empty(),
+            "51 benign tasks with files=vec![] and target_task_id=Some should produce no findings; got {:?}",
+            findings
+        );
     }
 
 } // mod tests
