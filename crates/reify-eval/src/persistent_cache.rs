@@ -5534,6 +5534,21 @@ mod tests {
         // branch.
         let orphan_dir = root.join(orphan_eng);
         forward_mtime(&orphan_dir, ORPHAN_DIR_AGE.as_secs() + 60);
+        // Defensive re-stat: confirm forward_mtime actually advanced the
+        // directory's mtime into the future.  On filesystems where
+        // File::set_times silently no-ops on directories (some
+        // tmpfs/overlayfs configs), the mtime would stay at ~now and
+        // prune_orphan_engine_version_dirs would treat the dir as fresh
+        // (age <= ORPHAN_DIR_AGE → continue), passing the test for the
+        // wrong reason and masking any regression in the Err(_) branch.
+        let before = std::time::SystemTime::now();
+        assert!(
+            std::fs::metadata(&orphan_dir).unwrap().modified().unwrap() > before,
+            "forward_mtime must advance orphan_dir's mtime past `now`; \
+             if File::set_times silently no-ops on this directory \
+             (some tmpfs/overlayfs configs), the test precondition has \
+             not taken effect and any result is unreliable"
+        );
 
         // Use a current version distinct from orphan_eng so orphan_dir is
         // considered a candidate by prune_orphan_engine_version_dirs.
