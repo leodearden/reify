@@ -861,6 +861,83 @@ mod tests {
             findings
         );
     }
+
+    /// Step 7 (RED→GREEN via step 8) — `find_references` must disambiguate
+    /// by declaration site (file + name), not just by bare name.
+    ///
+    /// One done task introduces two symbols both named "Builder" in different
+    /// files: `crates/x/src/widget.rs` and `crates/y/src/widget.rs`. A single
+    /// non-test caller is registered ONLY for the `(crates/y/..., "Builder")`
+    /// pair. Expected: exactly one finding — for `crates/x/...` (no caller) —
+    /// and the finding's evidence cites `crates/x/src/widget.rs`.
+    ///
+    /// RED: current bare-name keying in the mock (`HashMap<String, ...>`)
+    /// means `set_find_references("Builder", refs)` covers BOTH symbols,
+    /// suppressing both — the detector fires zero findings instead of one.
+    #[test]
+    fn find_references_disambiguates_by_declaration_site() {
+        let done_at = NOW - 15 * DAY;
+
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let mut jc = MockJCodemunchOps::new();
+        jc.set_changed_symbols(
+            "main",
+            done_at,
+            vec![
+                // Same name, different declaration files.
+                changed_symbol("Builder", "crates/x/src/widget.rs"),
+                changed_symbol("Builder", "crates/y/src/widget.rs"),
+            ],
+        );
+        // Register a real non-test caller ONLY for crates/y/src/widget.rs's Builder.
+        // crates/x/src/widget.rs's Builder has no callers — should be flagged.
+        jc.set_find_references(
+            "crates/y/src/widget.rs",
+            "Builder",
+            vec![SymbolReference {
+                file: "crates/z/src/uses_builder.rs".to_string(),
+                line: 5,
+            }],
+        );
+        // crates/x/src/widget.rs's Builder: no callers registered → orphan.
+        jc.set_find_references("crates/x/src/widget.rs", "Builder", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "5000".to_string(),
+            done_meta("5000", done_at, Some("docs/x.md")),
+        );
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: Some(NOW),
+            producer_branch: None,
+        };
+
+        let findings = p1_producer_orphan::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "only crates/x/src/widget.rs Builder should be flagged \
+             (crates/y has a non-test caller); got {:?}",
+            findings
+        );
+        assert!(
+            findings[0].evidence.iter().any(|e| matches!(
+                e,
+                EvidenceRef::File { path } if path == "crates/x/src/widget.rs"
+            )),
+            "surviving finding must cite crates/x/src/widget.rs; got {:?}",
+            findings[0].evidence
+        );
+    }
 }
 
 } // mod p1
