@@ -1405,6 +1405,41 @@ mod tests {
         });
     }
 
+    /// Calling `event()` on a `CapturingSubscriberBuilder`-built subscriber with
+    /// a non-registered-level event — bypassing the dispatcher's `enabled()` gate
+    /// via a forced-true `enabled_fn` — must panic in debug builds via the
+    /// parameterized `debug_assert_eq!` on `self.level`.
+    ///
+    /// Mirrors `capturing_event_panics_on_non_warn_when_dispatcher_contract_violated`
+    /// but exercises `LevelCapturingSubscriber::event()`'s (not yet added)
+    /// level-parameterized `debug_assert_eq!` on the INFO builder path.
+    ///
+    /// # Release-build note
+    ///
+    /// `debug_assert_eq!` is compiled out in release builds, so no panic would
+    /// occur there.  The `#[cfg(debug_assertions)]` gate prevents this test from
+    /// incorrectly failing under `#[should_panic]` in release mode.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "enabled() contract violated")]
+    fn capturing_subscriber_event_panics_on_unexpected_level_when_contract_violated() {
+        use crate::CapturingSubscriberBuilder;
+
+        let (inner, _capture) = CapturingSubscriberBuilder::new(tracing::Level::INFO).build();
+
+        // enabled_fn always returns true, bypassing the INFO-only filter so
+        // non-INFO events (here WARN) reach inner.event() directly.
+        let subscriber = ForwardingSubscriber {
+            inner,
+            enabled_fn: |_s: &_, _meta| true,
+            event_fn: |s: &_, event| s.event(event),
+        };
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!("non-INFO event delivered directly");
+        });
+    }
+
     /// `WarnCapture::assert_count_and_any_message_contains` passes when the
     /// count matches and at least one message contains the given substring.
     #[test]
