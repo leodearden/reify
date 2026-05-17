@@ -3,7 +3,7 @@
 //! For every public symbol a `done` task introduced (via
 //! [`JCodemunchOps::get_changed_symbols`] keyed on the task's done-flip
 //! timestamp), flags a Finding when the symbol has no non-test caller in the
-//! workspace and no pending/in-progress consumer task — Medium past the
+//! workspace and no pending/in-progress/review consumer task — Medium past the
 //! 14-day grace window, Low within it.
 //!
 //! Reference: `docs/architecture-audit/f-infra-design.md` §5 P1.
@@ -11,8 +11,8 @@
 //! False-positive guards, in firing order (each short-circuits the finding):
 //!
 //! - Per task: not `done`, or no `done_at` → skipped; `audit_foundation`
-//!   (foundation/scaffold task); a pending/in-progress consumer task whose
-//!   `consumer_ref` matches this producer's `prd`.
+//!   (foundation/scaffold task); a pending/in-progress/review consumer task
+//!   whose `consumer_ref` matches this producer's `prd`.
 //! - Per symbol: `crates/reify-stdlib/` scope-exclude; `#[allow(dead_code)]`
 //!   / `#[cfg(test)]` attribute opt-out; a non-blank `// G-allow:` marker;
 //!   a non-test workspace caller.
@@ -32,21 +32,27 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// is downgraded to Low ("log only").
 const GRACE_WINDOW_SECS: i64 = 14 * 86_400;
 
-/// Returns `true` when some `pending`/`in-progress` task's `consumer_ref`
-/// points at `producer_prd` — i.e. a downstream consumer is already queued,
-/// so the producer's symbols are not truly orphaned (design §5 P1
-/// false-positive guard). Status strings follow Taskmaster's canonical form
-/// (`in-progress`, hyphenated); the T-4 CLI normalizes at the boundary.
+/// Returns `true` when some active-consumer task's `consumer_ref` points at
+/// `producer_prd` — i.e. a downstream consumer is already in flight, so the
+/// producer's symbols are not truly orphaned (design §5 P1 false-positive
+/// guard). The canonical Taskmaster pending-consumer statuses are:
+///   `"pending"`, `"in-progress"`, `"review"`.
+/// Using an explicit allow-list (rather than inverting against `{done,
+/// cancelled, deferred, blocked}`) keeps semantic intent visible and
+/// fails-safe: a future Taskmaster status won't silently suppress findings.
+/// Status strings follow Taskmaster's canonical form (`in-progress`,
+/// hyphenated); the T-4 CLI normalizes at the boundary. Per
+/// `f-infra-design.md` §5 P1.
 // TODO(perf): this rescans every task for each done producer that has a
 //   `prd`, so the producer↔consumer correlation is O(tasks²). Harmless at
 //   solo-OSS task volumes (the audit window is ~14 days of done-flips), but
 //   if `task_metadata` ever grows, precompute a `HashSet<&str>` of the
-//   `consumer_ref`s of pending/in-progress tasks once before the producer
-//   loop and do an O(1) membership check here. Not required at current
-//   scale. Reference: docs/architecture-audit/f-infra-design.md §5 P1.
+//   `consumer_ref`s of pending/in-progress/review tasks once before the
+//   producer loop and do an O(1) membership check here. Not required at
+//   current scale. Reference: docs/architecture-audit/f-infra-design.md §5 P1.
 fn has_pending_consumer(ctx: &AuditContext, producer_prd: &str) -> bool {
     ctx.task_metadata.values().any(|t| {
-        matches!(t.status.as_str(), "pending" | "in-progress")
+        matches!(t.status.as_str(), "pending" | "in-progress" | "review")
             && t.consumer_ref.as_deref() == Some(producer_prd)
     })
 }
@@ -88,7 +94,7 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         if meta.audit_foundation == Some(true) {
             continue;
         }
-        // Per-task guard: a pending/in-progress consumer task already
+        // Per-task guard: a pending/in-progress/review consumer task already
         // references this producer's PRD (design §5 P1 false-positive guard).
         if let Some(prd) = meta.prd.as_deref()
             && has_pending_consumer(ctx, prd)
