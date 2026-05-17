@@ -147,16 +147,36 @@ impl JointValue {
 impl JointKind {
     /// Map a canonical kind string from `joints::JOINT_KINDS` to a variant.
     /// Returns `None` for any string not in that set.
+    ///
+    /// The 7 accepted strings mirror `crate::joints::JOINT_KINDS` exactly —
+    /// if a new kind is added there, a variant must be added here too.
     pub fn from_str(s: &str) -> Option<JointKind> {
-        let _ = s;
-        unimplemented!("step-3-impl")
+        match s {
+            "prismatic" => Some(JointKind::Prismatic),
+            "revolute" => Some(JointKind::Revolute),
+            "coupling" => Some(JointKind::Coupling),
+            "fixed" => Some(JointKind::Fixed),
+            "cylindrical" => Some(JointKind::Cylindrical),
+            "planar" => Some(JointKind::Planar),
+            "spherical" => Some(JointKind::Spherical),
+            _ => None,
+        }
     }
 
     /// Storage width (number of f64s `JointValue` of this kind occupies in
     /// the flat buffer) — 1 for prismatic/revolute/coupling/fixed, 2 for
     /// cylindrical, 3 for planar, **4** for spherical (quaternion).
     pub fn flat_len(&self) -> usize {
-        unimplemented!("step-3-impl")
+        match self {
+            JointKind::Prismatic
+            | JointKind::Revolute
+            | JointKind::Coupling
+            | JointKind::Fixed => 1,
+            JointKind::Cylindrical => 2,
+            JointKind::Planar => 3,
+            // Quaternion storage: w, x, y, z (not the manifold-DOF 3).
+            JointKind::Spherical => 4,
+        }
     }
 }
 
