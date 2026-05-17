@@ -72,7 +72,6 @@ fn find_structure(name: &str) -> &'static TopologyTemplate {
 
 /// Collect the param-kind value cells (ignoring `let` and auto cells) from a
 /// template, returning them in the file order they were declared.
-#[allow(dead_code)]
 fn param_cells(template: &TopologyTemplate) -> Vec<&ValueCellDecl> {
     template
         .value_cells
@@ -83,7 +82,6 @@ fn param_cells(template: &TopologyTemplate) -> Vec<&ValueCellDecl> {
 
 /// Look up the named param cell on `template` and return its `default_expr`.
 /// Panics with a clear message if the cell or its default is missing.
-#[allow(dead_code)]
 fn require_default<'a>(template: &'a TopologyTemplate, member: &str) -> &'a CompiledExpr {
     let cell = template
         .value_cells
@@ -97,7 +95,6 @@ fn require_default<'a>(template: &'a TopologyTemplate, member: &str) -> &'a Comp
 
 /// Recursively collect ValueRef member names from a compiled expression tree.
 /// Mirrors `collect_value_ref_members` in `solver_elastic_tests.rs:496-507`.
-#[allow(dead_code)]
 fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<&str> {
     match &expr.kind {
         CompiledExprKind::ValueRef(cell_id) => vec![cell_id.member.as_str()],
