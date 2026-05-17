@@ -592,6 +592,44 @@ fn edges_parallel_to_let_resolves_to_filtered_list_via_helper() {
     );
 }
 
+/// `let es = edges_at_height(body, z, tol)` with `let z = 0mm` and
+/// `let tol = 0.01mm` must resolve to the height-filtered `Value::List`. The
+/// single staged edge's bbox z-extent is `[0, 0]` (exactly on the `z = 0`
+/// plane), within the 0.01 mm tolerance, so it survives. Pins the
+/// Length-scalar-arg resolution + delegation to
+/// `topology_selectors::edges_at_height`.
+#[test]
+fn edges_at_height_let_resolves_to_filtered_list_via_helper() {
+    let source = "structure def Bracket {\n    \
+        let body = box(10mm, 10mm, 10mm)\n    \
+        let z = 0mm\n    \
+        let tol = 0.01mm\n    \
+        let es = edges_at_height(body, z, tol)\n}";
+    let compiled = compile_no_errors(source);
+    let mut engine = engine_with_mock_kernel(|k| {
+        k.with_extracted_edges(GeometryHandleId(1), vec![GeometryHandleId(2)])
+            .with_bbox_result(
+                GeometryHandleId(2),
+                Value::String(
+                    "{\"xmin\":-0.005,\"ymin\":-0.005,\"zmin\":0.0,\
+                      \"xmax\":0.005,\"ymax\":0.005,\"zmax\":0.0}"
+                        .to_string(),
+                ),
+            )
+    });
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("Bracket", "es");
+    assert_eq!(
+        result.values.get(&cell),
+        Some(&Value::List(vec![Value::Int(2)])),
+        "Bracket.es must resolve to the height-filtered Value::List via \
+         topology_selectors::edges_at_height, got {:?}",
+        result.values.get(&cell),
+    );
+}
+
 // ── Tessellate-path parity test ─────────────────────────────────────────────
 
 /// The post-process must run on the `tessellate_realizations` path too, so
