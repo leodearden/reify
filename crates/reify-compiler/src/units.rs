@@ -319,8 +319,11 @@ pub(crate) fn is_geometry_query(name: &str) -> bool {
 /// - `length(curve)`         → `Scalar<Length>`
 /// - `perimeter(surface)`    → `Scalar<Length>`
 /// - `centroid(geometry)`    → `Point3<Length>`
-/// - `bounding_box(geometry)` → `StructureRef("BoundingBox")` (forward
-///   reference — the actual stdlib structure_def is GHR-ζ scope)
+/// - `bounding_box(geometry)` → `BoundingBox` (the first-class
+///   `Type::BoundingBox` variant; pairs with the existing
+///   `Value::BoundingBox { min, max }` value variant at
+///   `reify_types::value.rs:547` whose value→type inference at
+///   `value.rs:1299` returns `Type::BoundingBox`)
 /// - `distance(a, b)`        → `Scalar<Length>`
 /// - `contains(a, b)`        → `Bool`
 /// - `intersects(a, b)`      → `Bool`
@@ -348,7 +351,7 @@ pub(crate) fn geometry_query_result_type(name: &str) -> Option<reify_types::Type
             dimension: DimensionVector::LENGTH,
         },
         "centroid" => Type::point3(Type::length()),
-        "bounding_box" => Type::StructureRef("BoundingBox".into()),
+        "bounding_box" => Type::bounding_box(),
         "distance" => Type::Scalar {
             dimension: DimensionVector::LENGTH,
         },
