@@ -69,6 +69,15 @@ impl std::fmt::Display for LoadError {
 impl std::error::Error for LoadError {}
 
 /// Sync MCP streamable-HTTP client. One instance == one MCP session.
+///
+/// Note: [`TaskMetadata::done_at`] populated by this loader is an
+/// approximation derived from the wire `updatedAt` field, because
+/// fused-memory does not currently expose a dedicated done-flip timestamp.
+/// The JSON-file loader (`--tasks-file`) reads an explicit `done_at` field
+/// stored at done-flip time, so for the same task the two loaders can
+/// disagree by minutes-to-days depending on post-done edits. Time-window
+/// audits (`--since`) may therefore include/exclude the same task
+/// differently across loader paths.
 pub struct FusedMemoryClient {
     url: String,
     session_id: String,
@@ -444,12 +453,15 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
 /// time + pid LCG mix if that fails. MCP session ids are opaque tokens —
 /// uniqueness, not cryptographic strength, is the only requirement.
 fn random_hex_32() -> String {
-    use std::io::Read;
     let mut buf = [0u8; 16];
-    if let Ok(mut f) = std::fs::File::open("/dev/urandom")
-        && f.read_exact(&mut buf).is_ok()
+    #[cfg(unix)]
     {
-        return hex32(&buf);
+        use std::io::Read;
+        if let Ok(mut f) = std::fs::File::open("/dev/urandom")
+            && f.read_exact(&mut buf).is_ok()
+        {
+            return hex32(&buf);
+        }
     }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
