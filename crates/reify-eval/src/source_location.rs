@@ -21,6 +21,10 @@ use reify_types::SourceLocationInfo;
 /// Resolve the entity (and optionally member) at a given 1-based `(line, col)`
 /// source position within `source`.
 ///
+/// `line_offsets` must be the result of `reify_types::build_line_offsets(source)`.
+/// Passing a pre-built table makes the byte-offset conversion O(log M + line_length)
+/// instead of the O(M) character walk of the old local helper.
+///
 /// Uses the compiled module's value-cell spans to approximate each template's
 /// source range (`[min(cell.span.start), max(cell.span.end))`).  Within the
 /// matching template, narrows to the smallest value cell whose span contains
@@ -33,18 +37,10 @@ use reify_types::SourceLocationInfo;
 /// - `None` when `line` or `col` is 0, when the position is outside every
 ///   template's approximate span, or when the position is past the end of
 ///   `source`.
-///
-/// # Limitations (v1)
-///
-/// The cell-narrowing step only matches `value_cells`.  Cursors inside a
-/// `sub_component` or `realization` declaration body therefore fall through to
-/// the bare-template-name result (`Some("Entity")`) even though they belong to
-/// a named sub-entity.  This asymmetry is intentional for v1; extend the
-/// narrowing step to cover `realizations` / `sub_components` when those
-/// members need first-class editor selection.
 pub fn resolve_entity_at_source_position(
     compiled: &CompiledModule,
     source: &str,
+    line_offsets: &[usize],
     line: u32,
     col: u32,
 ) -> Option<String> {
@@ -53,8 +49,11 @@ pub fn resolve_entity_at_source_position(
         return None;
     }
 
-    // Convert (line, col) → byte offset using a simple newline walk.
-    let offset = line_col_to_byte_offset(source, line, col)?;
+    // Convert (line, col) → byte offset using the pre-built newline table.
+    // The helper is infallible (returns source.len() for past-end positions);
+    // the template-walk's half-open `offset < max_end` check filters those out,
+    // preserving the documented None contract for past-end positions.
+    let offset = reify_types::line_col_to_byte_offset_with_offsets(source, line, col, line_offsets);
 
     // Walk templates and find the one whose approximate span contains the offset.
     //
@@ -121,52 +120,6 @@ pub fn resolve_entity_at_source_position(
     }
 }
 
-/// Convert a 1-based `(line, col)` pair to a byte offset by walking the source
-/// character by character.
-///
-/// Returns `None` when `line` exceeds the number of lines in `source`, or when
-/// `col` exceeds the length of the target line (col is clamped to end of line).
-/// Returns `Some(source.len())` only when `line` exactly equals the number of
-/// lines + 1 (i.e., one past the end), matching the behaviour of
-/// `line_col_to_byte_offset_with_offsets`.
-///
-/// When `col` is past the end of the target line the function clamps by
-/// returning the byte offset of the **first character of the following line**
-/// (i.e. the character immediately after the `\n` that ended the target line).
-/// Callers that do arithmetic against this value (e.g. comparing with a
-/// half-open span end) should be aware of this semantics.
-fn line_col_to_byte_offset(source: &str, line: u32, col: u32) -> Option<usize> {
-    debug_assert!(line > 0 && col > 0, "caller must guard zero inputs");
-
-    let mut cur_line = 1u32;
-    let mut cur_col = 1u32;
-
-    for (i, ch) in source.char_indices() {
-        if cur_line == line && cur_col == col {
-            return Some(i);
-        }
-        if cur_line > line {
-            // We have passed the target line without matching — col was past end of line.
-            // `i` here is the byte offset of the first character of the following line.
-            return Some(i);
-        }
-        if ch == '\n' {
-            cur_line += 1;
-            cur_col = 1;
-        } else {
-            cur_col += 1;
-        }
-    }
-
-    // We reached the end of the source.  Two cases:
-    // 1. We are exactly at (line, col) at the end of source → return source.len().
-    // 2. line > cur_line → position is past end of source → return None.
-    if cur_line == line && cur_col == col {
-        Some(source.len())
-    } else {
-        None
-    }
-}
 
 /// Resolve source location for `entity_path` against `compiled`.
 ///

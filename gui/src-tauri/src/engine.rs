@@ -2087,13 +2087,9 @@ impl EngineSession {
     ///   is past the end of source.
     ///
     /// # Caching
-    /// `parsed_cache` and `line_offsets_cache` are checked via `debug_assert`
-    /// to enforce the cache invariant, but the byte-offset conversion is
-    /// performed inside `reify_eval::resolve_entity_at_source_position` by
-    /// walking the source character-by-character; the pre-built
-    /// `line_offsets_cache` is not passed through to that call.  A future
-    /// refactor could thread the cache into the eval layer to avoid the
-    /// redundant walk.
+    /// `line_offsets_cache` is populated in `commit_state` alongside `compiled`
+    /// and is threaded through to `reify_eval::resolve_entity_at_source_position`
+    /// so the byte-offset conversion is O(log M) rather than O(M).
     pub fn get_entity_at_source_location(&self, line: u32, col: u32) -> Option<String> {
         // Documented contract: zero line or column is out-of-range → None.
         if line == 0 || col == 0 {
@@ -2107,9 +2103,10 @@ impl EngineSession {
              whenever compiled is Some (i.e., whenever resolve_source succeeds)"
         );
 
+        let line_offsets = self.line_offsets_cache.as_deref()?;
         let compiled = self.core.compiled()?;
 
-        reify_eval::resolve_entity_at_source_position(compiled, source, line, col)
+        reify_eval::resolve_entity_at_source_position(compiled, source, line_offsets, line, col)
     }
 }
 
