@@ -15,20 +15,8 @@
 //!
 //! See `docs/prds/v0_3/geometry-handle-runtime.md` §1 + §8.
 
-use reify_compiler::{CompiledModule, DefaultKind, RequirementKind, stdlib_loader};
 use reify_test_support::compile_source_with_stdlib;
 use reify_types::{DimensionVector, Severity, Type};
-
-/// Return the `std/structural/physical` CompiledModule from the production
-/// stdlib loader — mirrors the helper in `structural_physical_tests.rs` so
-/// both files exercise the exact same compile path (embedded source,
-/// sequential prelude growth, OnceLock cache).
-fn load_stdlib_module() -> &'static CompiledModule {
-    stdlib_loader::load_stdlib()
-        .iter()
-        .find(|m| m.path.to_string() == "std/structural/physical")
-        .expect("stdlib should contain std/structural/physical module")
-}
 
 /// `volume(my_box)` where `my_box : Solid` typechecks to `Scalar<Volume>`.
 ///
@@ -116,37 +104,29 @@ structure def MyBox {
     );
 }
 
-// ─── headline Phase-1 integration: spec-shape Bracket compiles ───────────────
+// ─── headline Phase-1 integration: spec-shape Bracket lowering pin ───────────
 
-/// **Headline GHR-α / PRD §8 Phase 1 user-observable signal.**
+/// Spec-shape `Bracket : Physical` lowers `param geometry : Solid` to a
+/// **realization** (not a value cell), and a `value_cell` for `geometry`
+/// does NOT exist.
 ///
-/// A `structure def Bracket : Physical` with spec-shape Physical (geometry +
-/// material slots, mass/centroid as trait-injected lets) compiles cleanly:
+/// This is the unique coverage this file contributes over its sibling
+/// `structural_physical_tests.rs`, which pins clean compilation + presence
+/// of `mass` / `centroid` / `material` value cells + the `Physical` trait
+/// bound. The "Solid-typed params lower to realizations" invariant
+/// (rooted in `is_representable_cell_type` rejecting `Type::Geometry`) is
+/// not pinned anywhere else in the structural_physical test files; this
+/// test covers it as the cross-product check between SIR-α struct-member
+/// access, the geometry-query dispatch arm, and the realization-lowering
+/// path for `Solid` params.
 ///
-///   1. No error-severity diagnostics — specifically no
-///      "member access not yet supported", no "unresolved type", no
-///      "missing required member".
-///   2. The compiled `Bracket` template carries `Physical` in `trait_bounds`.
-///   3. The `material` param produces a value cell (`Type::StructureRef` is
-///      representable per `is_representable_cell_type`).
-///   4. The `geometry` param produces a **realization** (Solid-typed params
-///      lower to realizations, not value cells — `Type::Geometry` is
-///      rejected by `is_representable_cell_type`; see `solid_param_tests.rs`).
-///   5. Value cells for `mass` and `centroid` exist (injected from the
-///      Physical trait's `let` defaults).
-///
-/// Pins the cross-product of:
-///   - SIR-α (task 3540) struct-member access on `material.density`,
-///   - Step-8's geometry-query dispatch arm in `expr.rs::infer_type` for the
-///     `volume(geometry)` and `centroid(geometry)` calls inside the trait's
-///     let defaults,
-///   - Step-10's rewrite of `Physical` to the spec shape.
-///
-/// Until step-10 lands, Physical still has the legacy flat-scalar shape, so
-/// this fixture fails with "missing required member: density / volume /
-/// centroid_x / centroid_y / centroid_z".
+/// Sibling test for the redundant trait-schema + `mass`/`centroid` checks:
+/// see `physical_trait_has_geometry_and_material_params_only` +
+/// `physical_trait_has_mass_and_centroid_lets` +
+/// `bracket_conforms_to_physical_with_geometry_and_material` in
+/// `structural_physical_tests.rs`.
 #[test]
-fn spec_shape_physical_bracket_compiles_with_material_density_access() {
+fn spec_shape_physical_bracket_lowers_geometry_to_realization() {
     let source = r#"
 structure def Bracket : Physical {
     param geometry : Solid = box(10mm, 20mm, 30mm)
@@ -172,35 +152,11 @@ structure def Bracket : Physical {
         .find(|t| t.name == "Bracket")
         .expect("Bracket template should be compiled");
 
-    assert!(
-        bracket.trait_bounds.iter().any(|b| b == "Physical"),
-        "Bracket should carry `Physical` in trait_bounds; got: {:?}",
-        bracket.trait_bounds
-    );
-
-    for expected_cell in &["material", "mass", "centroid"] {
-        assert!(
-            bracket
-                .value_cells
-                .iter()
-                .any(|vc| vc.id.member == *expected_cell),
-            "Bracket should have a value cell for '{}'; got members: {:?}",
-            expected_cell,
-            bracket
-                .value_cells
-                .iter()
-                .map(|vc| vc.id.member.as_str())
-                .collect::<Vec<_>>()
-        );
-    }
-
     // `geometry : Solid` lowers to a realization (not a value cell) because
     // `Type::Geometry` is unrepresentable per `is_representable_cell_type`
     // — mirrors `solid_param_tests::solid_param_compiles_as_realization`.
     assert!(
-        !bracket
-            .realizations
-            .is_empty(),
+        !bracket.realizations.is_empty(),
         "Bracket should have at least one realization (from `param geometry : Solid = box(...)`); got none"
     );
     assert!(
@@ -216,119 +172,4 @@ structure def Bracket : Physical {
             .map(|vc| vc.id.member.as_str())
             .collect::<Vec<_>>()
     );
-}
-
-/// Companion to the headline test above — pins the Physical trait's own
-/// schema (independent of any consumer structure).
-///
-/// Asserts:
-///   - `required_members` contains `geometry : Solid` and `material : Material`.
-///   - `refinements` is EMPTY (no MaterialSpec — Material is a struct slot
-///     now, not a trait edge — see SIR-α / task 3540 + PRD §1).
-///   - `defaults` includes two `DefaultKind::Let` entries, one named `mass`
-///     and one named `centroid` (the trait's `let mass = volume(geometry) *
-///     material.density` and `let centroid = centroid(geometry)`).
-///
-/// Fails on the current flat-scalar shape: `required_members` is
-/// {volume, centroid_x, centroid_y, centroid_z}, refinements contains
-/// "MaterialSpec", and there is no `centroid` Let default.
-#[test]
-fn spec_shape_physical_trait_required_members_are_geometry_and_material() {
-    let module = load_stdlib_module();
-    let physical = module
-        .trait_defs
-        .iter()
-        .find(|t| t.name == "Physical")
-        .expect("Physical trait should be in std/structural/physical");
-
-    // (1) refinements must be empty — Material is no longer a trait edge.
-    assert!(
-        physical.refinements.is_empty(),
-        "spec-shape Physical should have NO trait refinements (Material is a \
-         struct slot now, not a trait edge); got: {:?}",
-        physical.refinements
-    );
-
-    // (2) required_members: exactly `geometry : Solid` and `material : Material`.
-    let geometry_req = physical
-        .required_members
-        .iter()
-        .find(|r| r.name == "geometry")
-        .unwrap_or_else(|| {
-            panic!(
-                "Physical should require `geometry` member; got: {:?}",
-                physical
-                    .required_members
-                    .iter()
-                    .map(|r| r.name.as_str())
-                    .collect::<Vec<_>>()
-            )
-        });
-    match &geometry_req.kind {
-        RequirementKind::Param(ty) => {
-            // `Solid` is the surface-syntax alias for `Type::Geometry` — see
-            // `type_resolution::resolve_type_name`.
-            assert_eq!(
-                *ty,
-                Type::Geometry,
-                "Physical.geometry should be RequirementKind::Param(Geometry) \
-                 (the resolved type behind the `Solid` surface alias); got {:?}",
-                ty
-            );
-        }
-        other => panic!(
-            "Physical.geometry should be RequirementKind::Param, got {:?}",
-            other
-        ),
-    }
-
-    let material_req = physical
-        .required_members
-        .iter()
-        .find(|r| r.name == "material")
-        .unwrap_or_else(|| {
-            panic!(
-                "Physical should require `material` member; got: {:?}",
-                physical
-                    .required_members
-                    .iter()
-                    .map(|r| r.name.as_str())
-                    .collect::<Vec<_>>()
-            )
-        });
-    match &material_req.kind {
-        RequirementKind::Param(ty) => {
-            assert_eq!(
-                *ty,
-                Type::StructureRef("Material".to_string()),
-                "Physical.material should be RequirementKind::Param(StructureRef(\"Material\")); got {:?}",
-                ty
-            );
-        }
-        other => panic!(
-            "Physical.material should be RequirementKind::Param, got {:?}",
-            other
-        ),
-    }
-
-    // (3) defaults: two `Let` entries named `mass` and `centroid`.
-    let let_defaults: Vec<_> = physical
-        .defaults
-        .iter()
-        .filter(|d| matches!(d.kind, DefaultKind::Let { .. }))
-        .collect();
-    for expected_let in &["mass", "centroid"] {
-        assert!(
-            let_defaults
-                .iter()
-                .any(|d| d.name.as_deref() == Some(*expected_let)),
-            "spec-shape Physical should have a `Let` default named '{}'; got: {:?}",
-            expected_let,
-            physical
-                .defaults
-                .iter()
-                .map(|d| (&d.name, std::mem::discriminant(&d.kind)))
-                .collect::<Vec<_>>()
-        );
-    }
 }
