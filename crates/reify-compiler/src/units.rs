@@ -239,6 +239,130 @@ pub(crate) fn topology_selector_result_type(name: &str) -> Option<reify_types::T
     })
 }
 
+/// The complete set of stdlib **geometry-query** helper names recognised by
+/// the compiler. Fifth geometry-name family, structurally parallel to the
+/// existing four ([`GEOMETRY_FUNCTION_NAMES`],
+/// [`GEOMETRY_QUERY_HELPER_NAMES`], [`GEOMETRY_KINEMATIC_QUERY_NAMES`],
+/// [`GEOMETRY_TOPOLOGY_SELECTOR_NAMES`]).
+///
+/// Per the PRD §1 frozen list (docs/prds/v0_3/geometry-handle-runtime.md):
+///
+/// ```text
+/// fn volume(g: Solid)                   -> Scalar<Volume>
+/// fn area(g: Surface)                   -> Scalar<Area>
+/// fn length(g: Curve)                   -> Scalar<Length>
+/// fn perimeter(g: Surface)              -> Scalar<Length>
+/// fn centroid(g: Geometry)              -> Point3<Length>
+/// fn bounding_box(g: Geometry)          -> BoundingBox
+/// fn distance(a: Geometry, b: Geometry) -> Scalar<Length>
+/// fn contains(a: Geometry, b: Geometry) -> Bool
+/// fn intersects(a: Geometry, b: Geometry) -> Bool
+/// fn geo_equiv(a: Geometry, b: Geometry) -> Bool
+/// fn angle(a: Vec3, b: Vec3)            -> Scalar<Angle>
+/// fn curvature(c: Curve, t: Real)       -> Scalar<Curvature>
+/// ```
+///
+/// **Disjointness contract**: this list MUST remain disjoint from the four
+/// other families. Cell classification could double-fire if a name appeared
+/// in two families. Pinned by the
+/// `is_geometry_query_rejects_other_family_names` test.
+///
+/// **Maintenance contract**: adding a name here REQUIRES a parallel entry
+/// in [`geometry_query_result_type`]. Mirrors the documented contract on
+/// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES`.
+///
+/// **Phase 1 trade**: compile-time return-type wiring only. Eval-time
+/// dispatch arrives in Phase 6 (GHR-ζ). Until then, cells hold
+/// `Value::Undef`, which `value_type_kind_matches` accepts for any type
+/// (`reify_eval::lib:196`), so the cell typechecks at compile-time and
+/// stays `Undef` at runtime.
+///
+/// **`curvature` overload note**: only the `Curve`→`Scalar<Curvature>`
+/// overload is registered in Phase 1. The `Surface`→`Matrix<2,2,
+/// Curvature>` overload requires arg-type-aware dispatch and is deferred
+/// to a later phase.
+///
+/// Call-site dispatch is in `expr.rs::infer_type` (the `else if
+/// is_geometry_query(name)` arm, immediately after the topology-selector
+/// arm).
+///
+/// Case-sensitive: Reify function names are snake_case.
+pub const GEOMETRY_QUERY_NAMES: &[&str] = &[
+    "volume",
+    "area",
+    "length",
+    "perimeter",
+    "centroid",
+    "bounding_box",
+    "distance",
+    "contains",
+    "intersects",
+    "geo_equiv",
+    "angle",
+    "curvature",
+];
+
+pub(crate) fn is_geometry_query(name: &str) -> bool {
+    GEOMETRY_QUERY_NAMES.contains(&name)
+}
+
+/// Result type per geometry-query helper. Sets the cell's `result_type` so
+/// that downstream `value_type_kind_matches` accepts the post-process
+/// `Value` (which is `Value::Undef` until GHR-ζ Phase 6 wires kernel
+/// dispatch). Falling through to the first-arg type would mismatch — the
+/// first arg is typically a `Geometry`, `Solid`, or `Vec3`, not the helper's
+/// actual return type.
+///
+/// Per PRD §1 frozen list (Phase 1 wiring):
+/// - `volume(solid)`         → `Scalar<Volume>`
+/// - `area(surface)`         → `Scalar<Area>`
+/// - `length(curve)`         → `Scalar<Length>`
+/// - `perimeter(surface)`    → `Scalar<Length>`
+/// - `centroid(geometry)`    → `Point3<Length>`
+/// - `bounding_box(geometry)` → `StructureRef("BoundingBox")` (forward
+///   reference — the actual stdlib structure_def is GHR-ζ scope)
+/// - `distance(a, b)`        → `Scalar<Length>`
+/// - `contains(a, b)`        → `Bool`
+/// - `intersects(a, b)`      → `Bool`
+/// - `geo_equiv(a, b)`       → `Bool`
+/// - `angle(a, b)`           → `Scalar<Angle>`
+/// - `curvature(curve, t)`   → `Scalar<Curvature>` (Curve overload only;
+///   Surface overload deferred — see [`GEOMETRY_QUERY_NAMES`])
+///
+/// Returns `None` for any other name (caller falls through to its default
+/// type-inference path). Mirrors the contract of the sibling
+/// [`topology_selector_result_type`].
+pub(crate) fn geometry_query_result_type(name: &str) -> Option<reify_types::Type> {
+    use reify_types::{DimensionVector, Type};
+    Some(match name {
+        "volume" => Type::Scalar {
+            dimension: DimensionVector::VOLUME,
+        },
+        "area" => Type::Scalar {
+            dimension: DimensionVector::AREA,
+        },
+        "length" => Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        "perimeter" => Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        "centroid" => Type::point3(Type::length()),
+        "bounding_box" => Type::StructureRef("BoundingBox".into()),
+        "distance" => Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        "contains" => Type::Bool,
+        "intersects" => Type::Bool,
+        "geo_equiv" => Type::Bool,
+        "angle" => Type::angle(),
+        "curvature" => Type::Scalar {
+            dimension: DimensionVector::CURVATURE,
+        },
+        _ => return None,
+    })
+}
+
 // --- Unit conversion ---
 
 /// Convert a unit string and value to an SI-based `Value::Scalar`.
