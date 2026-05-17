@@ -2354,7 +2354,7 @@ impl Engine {
         template: &reify_compiler::TopologyTemplate,
         named_steps: &HashMap<String, GeometryHandleId>,
         values: &mut ValueMap,
-        kernel: &dyn GeometryKernel,
+        kernel: &mut dyn GeometryKernel,
         diagnostics: &mut Vec<Diagnostic>,
     ) {
         // Iterate `values` directly without snapshotting (parallels the

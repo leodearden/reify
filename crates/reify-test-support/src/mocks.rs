@@ -1119,6 +1119,37 @@ impl MockGeometryKernel {
         self
     }
 
+    /// Configure a `SharedEdges` query result for a specific (parent shape,
+    /// face_a index, face_b index) triple.
+    ///
+    /// The `value` should be a `Value::List(Vec<Value::Int>)` of global edge
+    /// indices into the same canonical TopExp_Explorer order returned by
+    /// `extract_edges(parent)`. Decoded by the `shared_edges` topology-selector
+    /// dispatch arm (eval-side, task 3560), which maps each integer index back
+    /// to a `GeometryHandleId` via the canonical extract_edges list.
+    ///
+    /// Mirrors [`Self::with_adjacent_faces_result`] — needed for `shared_edges`
+    /// dispatch tests because the `QueryKey::SharedEdges` variant keys on three
+    /// fields (shape + face_a + face_b) and constructing it via the typed_queries
+    /// map directly would expose internal API.
+    pub fn with_shared_edges_result(
+        mut self,
+        parent: GeometryHandleId,
+        face_a: usize,
+        face_b: usize,
+        value: Value,
+    ) -> Self {
+        self.typed_queries.insert(
+            QueryKey::SharedEdges {
+                shape: parent,
+                face_a,
+                face_b,
+            },
+            value,
+        );
+        self
+    }
+
     /// Configure an `OwnerBody` query result for a specific child sub-handle,
     /// using the canonical encoding `Value::Int(parent.0 as i64)`.
     ///
