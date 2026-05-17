@@ -1403,11 +1403,7 @@ pub fn evict_over_cap(
                     // also gone (concurrent eviction hit after read_dir),
                     // continue to the next file_entry.
                     match std::fs::metadata(&file_path) {
-                        Ok(m) => match m.modified() {
-                            Ok(t) => t,
-                            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
-                            Err(e) => return Err(e),
-                        },
+                        Ok(m) => m.modified()?,
                         Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
                         Err(e) => return Err(e),
                     }
