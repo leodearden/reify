@@ -508,7 +508,7 @@ mod tests {
             z: AxisSign::Pos,
         };
         let mut old_table = TopologyAttributeTable::default();
-        old_table.record(h(100), attr(corner.clone(), 0, None));
+        old_table.record(h(100), attr(corner, 0, None));
         let mut new_table = TopologyAttributeTable::default();
         new_table.record(h(200), attr(corner, 0, None));
 
@@ -548,7 +548,7 @@ mod tests {
         // old: h(100) → (feat(), corner, 0)
         // new: h(200) → (feat2(), corner, 0) — different feature_id → disjoint
         let mut old_table = TopologyAttributeTable::default();
-        old_table.record(h(100), attr(corner.clone(), 0, None));
+        old_table.record(h(100), attr(corner, 0, None));
         let mut new_table = TopologyAttributeTable::default();
         new_table.record(h(200), attr_for_feat(feat2(), corner, 0));
 
@@ -582,9 +582,9 @@ mod tests {
             z: AxisSign::Pos,
         };
         let mut old_table = TopologyAttributeTable::default();
-        old_table.record(h(100), attr(corner.clone(), 0, None));
+        old_table.record(h(100), attr(corner, 0, None));
         let mut new_table = TopologyAttributeTable::default();
-        new_table.record(h(200), attr(corner.clone(), 0, None));
+        new_table.record(h(200), attr(corner, 0, None));
         new_table.record(
             h(201),
             attr(

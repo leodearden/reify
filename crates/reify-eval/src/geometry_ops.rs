@@ -7996,7 +7996,7 @@ mod tests {
     /// - `Face`  → `Some(Face)` — kernel path handles @face via FaceNormal query
     /// - `Edge`  → `Some(Edge)` — kernel path handles @edge via EdgeTangent query
     /// - `Point` → `None`       — @point is resolved by Layer-1; `?` propagates
-    ///                            None without ever reaching kernel dispatch
+    ///   None without ever reaching kernel dispatch
     #[test]
     fn frame_sub_shape_kind_from_selector_kind_contract() {
         assert_eq!(

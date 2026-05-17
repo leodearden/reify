@@ -4125,7 +4125,7 @@ mod tests {
         let c_id = ComputeNodeId::new("T", 0);
         let before = store.pending_transition_count();
 
-        let marked = store.begin_compute_dispatch(&c_id, &[b.clone()]);
+        let marked = store.begin_compute_dispatch(&c_id, std::slice::from_ref(&b));
 
         assert_eq!(
             marked, 1,
@@ -4170,7 +4170,7 @@ mod tests {
         );
 
         let c_id = ComputeNodeId::new("T", 0);
-        let marked = store.begin_compute_dispatch(&c_id, &[b.clone()]);
+        let marked = store.begin_compute_dispatch(&c_id, std::slice::from_ref(&b));
 
         assert_eq!(
             marked, 1,
@@ -4222,7 +4222,7 @@ mod tests {
             .result_hash;
 
         // (b) begin → Pending.
-        assert_eq!(store.begin_compute_dispatch(&c_id, &[b.clone()]), 1);
+        assert_eq!(store.begin_compute_dispatch(&c_id, std::slice::from_ref(&b)), 1);
 
         // (c) mid-state: (Pending{last_substantive: prior}, Compute cause,
         //     prior value still on display).

@@ -37,9 +37,8 @@ mod audit_integration {
 use crate::common::schema::{seed_db, insert_task_completed_event};
 use crate::common::fixtures::legacy_meta;
 use reify_audit::{
-    AuditContext, ChangedSymbol, DoneProvenance, EvidenceRef, Finding, MockGitOps,
-    MockJCodemunchOps, Pattern, Severity, TaskMetadata, p1_producer_orphan, p2_consumer_stub,
-    p5_phantom_done,
+    AuditContext, ChangedSymbol, DoneProvenance, EvidenceRef, MockGitOps, MockJCodemunchOps,
+    Pattern, Severity, TaskMetadata, p1_producer_orphan, p2_consumer_stub, p5_phantom_done,
 };
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -61,22 +60,22 @@ mod tests {
     /// Each fixture defeats a distinct false-positive guard; the guard
     /// inventory is:
     ///
-    ///  - task 215  → P5 guard A3: kind=merged + DB event + diff covers files
-    ///                → `missing.is_empty()` → P5 returns `None`.
-    ///  - task 250  → P5 guard A2: kind=found_on_main + `files=[]` → empty-files
-    ///                early-return before any git-diff call.
-    ///  - task 2347 → P1 guard B3: `audit_foundation=Some(true)` → P1
-    ///                short-circuits before per-symbol iteration (symbol mock
-    ///                seeded so the guard is demonstrably load-bearing).
-    ///  - task 2358 → P1 guard B4: `prd` + paired pending consumer (task 2358_c,
-    ///                `consumer_ref` matching 2358's `prd`) → `has_pending_consumer`
-    ///                returns true → P1 short-circuits.
-    ///  - task 2658 → P1 guard B5: changed-symbol file in `crates/reify-stdlib/`
-    ///                → stdlib scope-exclude fires → P1 skips the symbol.
-    ///  - task 2699 → P1 guard B7: `g_allow_marker=Some("non-blank")` →
-    ///                `is_g_allow_suppressed` returns true → P1 skips the symbol.
-    ///  - task 2954 → P2 guard C2: `files=["crates/x/tests/foo.rs"]` →
-    ///                `is_test_path` fires → P2 skips the diff scan entirely.
+    /// - task 215  → P5 guard A3: kind=merged + DB event + diff covers files
+    ///   → `missing.is_empty()` → P5 returns `None`.
+    /// - task 250  → P5 guard A2: kind=found_on_main + `files=[]` → empty-files
+    ///   early-return before any git-diff call.
+    /// - task 2347 → P1 guard B3: `audit_foundation=Some(true)` → P1
+    ///   short-circuits before per-symbol iteration (symbol mock
+    ///   seeded so the guard is demonstrably load-bearing).
+    /// - task 2358 → P1 guard B4: `prd` + paired pending consumer (task 2358_c,
+    ///   `consumer_ref` matching 2358's `prd`) → `has_pending_consumer`
+    ///   returns true → P1 short-circuits.
+    /// - task 2658 → P1 guard B5: changed-symbol file in `crates/reify-stdlib/`
+    ///   → stdlib scope-exclude fires → P1 skips the symbol.
+    /// - task 2699 → P1 guard B7: `g_allow_marker=Some("non-blank")` →
+    ///   `is_g_allow_suppressed` returns true → P1 skips the symbol.
+    /// - task 2954 → P2 guard C2: `files=["crates/x/tests/foo.rs"]` →
+    ///   `is_test_path` fires → P2 skips the diff scan entirely.
     ///
     /// The DB is seeded so fixture 1 (task 215) can satisfy
     /// `has_task_completed_event`; the other six fixtures and the 8th paired

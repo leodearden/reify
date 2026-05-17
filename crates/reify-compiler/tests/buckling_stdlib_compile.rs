@@ -138,7 +138,7 @@ fn std_solver_buckling_module_loads_with_no_errors() {
 ///
 ///   - `n_modes    : Int`     (eigenpair count to compute)
 ///   - `mode       : String`  (algorithm selector; allowlist validated at
-///                             trampoline per PRD §4)
+///     trampoline per PRD §4)
 ///   - `sigma      : Real`    (eigenvalue shift origin)
 ///   - `tol        : Real`    (Lanczos convergence tolerance)
 ///   - `max_iters  : Int`     (hard cap on Lanczos iterations)
