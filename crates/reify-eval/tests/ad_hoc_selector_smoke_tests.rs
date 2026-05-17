@@ -970,3 +970,85 @@ fn try_eval_ad_hoc_selector_non_literal_arg_returns_none() {
         diagnostics
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 12: engine-level TopologyAttributeStale warning carries a non-empty span
+// RED on HEAD (geometry_ops.rs:2153 hardcodes SourceSpan::empty(0)).
+// Becomes GREEN when step-5 threads cell.span through try_eval_ad_hoc_selector.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The `TopologyAttributeStale` warning emitted by `engine.build()` for an
+/// unresolved `@face` selector must carry a primary label whose source span is
+/// non-empty — i.e. it must point at a real byte range in the source, not at
+/// the synthetic empty span `{ start: 0, end: 0 }`.
+///
+/// **RED on HEAD**: `try_eval_ad_hoc_selector` passes `SourceSpan::empty(0)` to
+/// `resolve_unique_by_attribute` (geometry_ops.rs:2153), so the label span has
+/// `start == end == 0` and `is_empty()` returns `true`.
+///
+/// **GREEN after step-5**: the `cell.span` from `ValueCellDecl` (populated by
+/// the compiler from the `let`-declaration's byte range) is threaded through as
+/// `selector_span`, giving the warning a real source location.
+#[test]
+fn engine_build_topology_stale_warning_carries_nonzero_source_span() {
+    let source = r#"structure SpanCheckCylinder {
+    let body = cylinder(10mm, 20mm)
+    let mystery_frame = body @ face("nonexistent")
+}"#;
+
+    let compiled = compile_source(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "expected no compile-time Error diagnostics; got: {:#?}",
+        compile_errors
+    );
+
+    let checker = SimpleConstraintChecker;
+    let kernel = configured_engine_kernel();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    // Locate the TopologyAttributeStale warning — should be exactly one.
+    let stale_warnings: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.code == Some(DiagnosticCode::TopologyAttributeStale)
+                && d.severity == Severity::Warning
+        })
+        .collect();
+    assert_eq!(
+        stale_warnings.len(),
+        1,
+        "expected exactly one TopologyAttributeStale Warning; got: {:#?}",
+        result.diagnostics
+    );
+
+    let diag = stale_warnings[0];
+
+    // The warning must have at least one label.
+    assert!(
+        !diag.labels.is_empty(),
+        "TopologyAttributeStale warning must have at least one label; got none. \
+         Diagnostic: {:#?}",
+        diag
+    );
+
+    // The primary label must carry a real (non-empty) source span.
+    // RED on HEAD: SourceSpan::empty(0) has start == end == 0 → is_empty() == true.
+    // GREEN after step-5: cell.span from the let-decl has start < end → is_empty() == false.
+    let primary_span = diag.labels[0].span;
+    assert!(
+        !primary_span.is_empty(),
+        "TopologyAttributeStale warning's primary label should carry a real source span \
+         (from the let-decl), but got an empty span {:?}. \
+         The span-plumbing impl (step-5) must thread cell.span through \
+         try_eval_ad_hoc_selector.",
+        primary_span
+    );
+}
