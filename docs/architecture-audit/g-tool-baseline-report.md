@@ -78,8 +78,8 @@ Public functions in `crates/reify-*/src/` whose only callers are
 tests, the defining file itself, comments, or `use`/`pub use`
 re-exports.
 
-- **Scanned:** 1425 `pub fn` declarations across 305 files
-- **Orphan candidates:** 423  (zero non-test callers, no `// G-allow:`)
+- **Scanned:** 1426 `pub fn` declarations across 305 files
+- **Orphan candidates:** 424  (zero non-test callers, no `// G-allow:`)
 - **Allow-listed:** 28  (zero callers; marked legitimate API surface)
 
 ## Orphan candidates
@@ -120,7 +120,7 @@ re-exports.
 | `reify-compiler` | `crates/reify-compiler/src/guards.rs:349` | `compile_guarded_members` |
 | `reify-compiler` | `crates/reify-compiler/src/guards.rs:691` | `narrow_arms_under_guard` |
 | `reify-compiler` | `crates/reify-compiler/src/ice.rs:16` | `as_phrase` |
-| `reify-compiler` | `crates/reify-compiler/src/lib.rs:268` | `compile_with_prelude_context` |
+| `reify-compiler` | `crates/reify-compiler/src/lib.rs:267` | `compile_with_prelude_context` |
 | `reify-compiler` | `crates/reify-compiler/src/module_dag.rs:275` | `compile_module` |
 | `reify-compiler` | `crates/reify-compiler/src/module_dag.rs:618` | `compile_project_with_entry_source` |
 | `reify-compiler` | `crates/reify-compiler/src/si_units.rs:61` | `includes` |
@@ -489,8 +489,9 @@ re-exports.
 | `reify-types` | `crates/reify-types/src/dimension.rs:36` | `is_zero` |
 | `reify-types` | `crates/reify-types/src/dimension.rs:40` | `is_integer` |
 | `reify-types` | `crates/reify-types/src/dimension.rs:44` | `as_i8` |
-| `reify-types` | `crates/reify-types/src/expr.rs:1538` | `user_function_call` |
-| `reify-types` | `crates/reify-types/src/expr.rs:1608` | `match_expr` |
+| `reify-types` | `crates/reify-types/src/expr.rs:318` | `new_with_no_defaults` |
+| `reify-types` | `crates/reify-types/src/expr.rs:1587` | `user_function_call` |
+| `reify-types` | `crates/reify-types/src/expr.rs:1657` | `match_expr` |
 | `reify-types` | `crates/reify-types/src/geometry.rs:2480` | `try_nary` |
 | `reify-types` | `crates/reify-types/src/geometry.rs:2504` | `nary` |
 | `reify-types` | `crates/reify-types/src/node_traits.rs:334` | `set_instance` |
@@ -521,7 +522,7 @@ re-exports.
 | `reify-audit` | `crates/reify-audit/src/lib.rs:659` | `set_changed_symbols` | test-support fixture (feature = "test-support"); not consumed in production builds |
 | `reify-audit` | `crates/reify-audit/src/lib.rs:670` | `set_find_references` | test-support fixture (feature = "test-support"); not consumed in production builds |
 | `reify-compiler` | `crates/reify-compiler/src/annotations/schema.rs:220` | `lookup_schema` | task #3530 const-slice/OnceLock AnnotationSchema registry; consumer is the schema-delegating validate_annotations rewrite (task #3530 step-10) |
-| `reify-compiler` | `crates/reify-compiler/src/lib.rs:104` | `__validate_annotations_for_parity_test` | task #3530 parity shim — consumed by validate_annotations parity tests during the schema-delegation migration; remove when delegation is complete |
+| `reify-compiler` | `crates/reify-compiler/src/lib.rs:103` | `__validate_annotations_for_parity_test` | task #3530 parity shim — test-support-gated (feature = "test-support"), consumed by validate_annotations parity tests during schema-delegation migration; remove when delegation is complete |
 | `reify-eval` | `crates/reify-eval/src/dispatcher.rs:258` | `no_kernel_chain_diagnostic` | task #3434 no-kernel-chain diagnostic builder; in-tree consumer wiring follows the long_chain_diagnostic precedent |
 | `reify-eval` | `crates/reify-eval/src/dispatcher.rs:308` | `kernel_pragma_unsatisfiable_diagnostic` | task #3434 #kernel(...) pragma diagnostic builder; consumer wiring lands in subsequent #3434 steps (multi-kernel-phase-3 PRD) |
 | `reify-eval` | `crates/reify-eval/src/dispatcher.rs:349` | `pinned_kernel_missing_diagnostic` | task #3434 reify.toml [kernels] pinned-missing diagnostic builder; consumer wiring lands in subsequent #3434 steps (multi-kernel-phase-3 PRD) |
