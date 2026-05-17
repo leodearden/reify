@@ -811,8 +811,12 @@ fn try_eval_ad_hoc_selector_face_side_resolves_via_cap_kind_translation() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// `try_eval_ad_hoc_selector` must return `Some(Value::Undef)` and emit exactly
-/// one `Severity::Warning` whose message mentions `"extract_faces"` and `"failed"`
-/// when `kernel.extract_faces` returns an error.
+/// one `Severity::Warning` that surfaces the kernel error message when
+/// `kernel.extract_faces` returns an error.
+///
+/// Asserts on the propagated kernel error text ("mock face extraction failure")
+/// rather than the incidental function-name/verb wording, so a benign message
+/// reword won't break this test.
 ///
 /// Pins the Warning+Some(Undef) wiring at geometry_ops.rs:2157-2161.
 /// Passes on HEAD — characterisation test for already-implemented behaviour.
@@ -853,13 +857,8 @@ fn try_eval_ad_hoc_selector_face_kernel_error_returns_undef_with_warning() {
         diagnostics
     );
     assert!(
-        warnings[0].message.contains("extract_faces"),
-        "warning message should mention 'extract_faces'; got {:?}",
-        warnings[0].message
-    );
-    assert!(
-        warnings[0].message.contains("failed"),
-        "warning message should mention 'failed'; got {:?}",
+        warnings[0].message.contains("mock face extraction failure"),
+        "warning message should propagate the kernel error text; got {:?}",
         warnings[0].message
     );
 }
@@ -870,8 +869,12 @@ fn try_eval_ad_hoc_selector_face_kernel_error_returns_undef_with_warning() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// `try_eval_ad_hoc_selector` must return `Some(Value::Undef)` and emit exactly
-/// one `Severity::Warning` whose message mentions `"extract_edges"` and `"failed"`
-/// when `kernel.extract_edges` returns an error.
+/// one `Severity::Warning` that surfaces the kernel error message when
+/// `kernel.extract_edges` returns an error.
+///
+/// Asserts on the propagated kernel error text ("mock edge extraction failure")
+/// rather than the incidental function-name/verb wording, so a benign message
+/// reword won't break this test.
 ///
 /// Pins the Warning+Some(Undef) wiring at geometry_ops.rs:2166-2170.
 /// Passes on HEAD — characterisation test for already-implemented behaviour.
@@ -912,13 +915,8 @@ fn try_eval_ad_hoc_selector_edge_kernel_error_returns_undef_with_warning() {
         diagnostics
     );
     assert!(
-        warnings[0].message.contains("extract_edges"),
-        "warning message should mention 'extract_edges'; got {:?}",
-        warnings[0].message
-    );
-    assert!(
-        warnings[0].message.contains("failed"),
-        "warning message should mention 'failed'; got {:?}",
+        warnings[0].message.contains("mock edge extraction failure"),
+        "warning message should propagate the kernel error text; got {:?}",
         warnings[0].message
     );
 }
