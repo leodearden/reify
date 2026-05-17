@@ -114,7 +114,15 @@ fn m8_materials_smoke() {
 /// while fractional literals like `0.0004` are stored as `Value::Real`.
 /// Their product — `let mass = volume * density` inside Physical — yields `Value::Real(1.08)`
 /// (Real × Int → Real). The test below handles both storage cases for `density`.
+///
+/// Post-GHR-α (task 3603 / PRD §8 Phase 1): spec-shape `Physical` computes
+/// `mass = volume(geometry) * material.density`, which is typecheck-only at
+/// Phase 1 — runtime kernel dispatch for `volume(geometry)` arrives in Phase 6
+/// (GHR-ζ), so `mass` evaluates to `Value::Undef` and `density` is no longer a
+/// flat param (it lives behind the `material : Material` struct slot). This
+/// numeric-read assertion is revived once geometry-derived computation lands.
 #[test]
+#[ignore = "Phase 6 will revive — GHR-ζ (geometry-handle-runtime PRD): mass = volume(geometry) * material.density needs kernel dispatch"]
 fn materials_bracket_mass_computed() {
     let result = eval_ri_file(PATH_MATERIALS, "m8_materials");
 

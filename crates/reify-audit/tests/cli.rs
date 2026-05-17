@@ -6,8 +6,13 @@
 //! User-observable signal:
 //!   `cargo test -p reify-audit --test cli`
 
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
 use std::process::Command;
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::thread;
+use std::time::Duration;
 
 // -----------------------------------------------------------------------
 // Fixture helpers
@@ -480,14 +485,28 @@ mod cli {
         );
     }
 
-    /// Invoking the binary without `--tasks-file` must exit 125 with a clear
-    /// message naming the missing flag. The old silent default
-    /// `.taskmaster/tasks/tasks.json` must not silently replace it.
+    /// Invoking the binary without `--tasks-file` falls back to the live
+    /// fused-memory MCP loader. When the configured endpoint is unreachable,
+    /// that fallback must exit 125 so the pre-done hook's refuse-on-non-zero
+    /// contract still holds — the binary must never silently no-op when its
+    /// task source is missing.
+    ///
+    /// This is the regression-lock for the original phantom-done bug: the
+    /// removed `.taskmaster/tasks/tasks.json` default used to make the binary
+    /// silently exit 125 with a confusing "no such file" message; under the
+    /// HTTP-loader design the equivalent failure (MCP unreachable) must
+    /// surface as a clear connection error and still exit 125.
     #[test]
-    fn missing_tasks_file_exits_125_with_clear_error() {
+    fn missing_tasks_file_with_unreachable_mcp_exits_125() {
         let tmp = tempfile::tempdir().expect("create tempdir");
         let dir = tmp.path();
         let runs_db = write_empty_runs_db(dir);
+
+        // Find a closed port to guarantee connection refused.
+        let throwaway = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = throwaway.local_addr().expect("addr").port();
+        drop(throwaway);
+        let unreachable_url = format!("http://127.0.0.1:{port}/mcp");
 
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
@@ -495,6 +514,8 @@ mod cli {
                 "--task",
                 "1",
                 "--pre-done",
+                "--fused-memory-url",
+                &unreachable_url,
                 "--runs-db",
                 runs_db.to_str().unwrap(),
                 "--project-root",
@@ -507,7 +528,7 @@ mod cli {
         assert_eq!(
             out.status.code(),
             Some(125),
-            "missing --tasks-file must exit 125; got {:?}\nstdout: {}\nstderr: {}",
+            "missing --tasks-file + unreachable MCP must exit 125; got {:?}\nstdout: {}\nstderr: {}",
             out.status.code(),
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
@@ -515,10 +536,75 @@ mod cli {
 
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
-            stderr.contains("--tasks-file"),
-            "stderr must mention '--tasks-file' to identify the missing flag; \
+            stderr.contains("fused-memory"),
+            "stderr must mention 'fused-memory' to identify the MCP failure; \
              full stderr:\n{}",
             stderr
+        );
+    }
+
+    /// Pins the per-instance `AtomicBool` dedup at
+    /// `src/lib.rs:275, 375, 387, 396`. With N=3 metadata.files entries and
+    /// `git check-ignore` exiting 128 on each call (non-git tempdir), the
+    /// pre-dedup code emitted three breadcrumbs; the current short-circuit
+    /// emits exactly one.
+    ///
+    /// Distinct from `git_check_ignore_non_standard_exit_logs_breadcrumb`,
+    /// which uses N=1 — the AtomicBool dedup is never exercised there
+    /// because is_gitignored is only invoked once.
+    ///
+    /// N=3 (not N=2) catches three regression modes at once: pre-dedup
+    /// (3 breadcrumbs), partial-skip (2), and any future bug that fires
+    /// the breadcrumb twice.
+    ///
+    /// The single-instance contract that makes the per-task budget
+    /// meaningful in production is documented on `RealGitOps` in
+    /// `src/lib.rs` (Part D of task 3720).
+    ///
+    /// No `task_completed` event is inserted: `check_one` would emit a
+    /// P5 High in its absence, but `check_task` still invokes
+    /// `check_gitignored` afterwards (`p5_phantom_done.rs:102-114`), so
+    /// the breadcrumb fires regardless.
+    #[test]
+    fn git_check_ignore_breadcrumb_dedups_across_files() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+
+        let mut t = task_fixture("4201", "done", Some("merged"), Some("deadbeef"));
+        t["files"] = serde_json::json!([
+            "crates/x/a.rs",
+            "crates/x/b.rs",
+            "crates/x/c.rs",
+        ]);
+        let tasks = vec![t];
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task",
+                "4201",
+                "--pre-done",
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit --task 4201 --pre-done");
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let breadcrumb_count = stderr
+            .matches("reify-audit: git check-ignore exited Some(128)")
+            .count();
+        assert_eq!(
+            breadcrumb_count, 1,
+            "with N=3 files in a non-git dir, the AtomicBool dedup must emit \
+             exactly 1 breadcrumb (not 3); got {breadcrumb_count}\n\
+             full stderr:\n{stderr}"
         );
     }
 
@@ -619,3 +705,521 @@ mod cli {
     }
 }
 
+// -----------------------------------------------------------------------
+// HTTP-loader test harness (--fused-memory-url path)
+// -----------------------------------------------------------------------
+//
+// These tests exercise the production loader path (no --tasks-file). A tiny
+// blocking HTTP server stands in for fused-memory; it speaks just enough of
+// MCP streamable-HTTP to answer `initialize`, `notifications/initialized`,
+// and a single `tools/call get_task` per session.
+
+/// Read a complete HTTP/1.1 request from `stream` and return its body as a
+/// JSON Value. Assumes Content-Length is present (which `ureq` always sets
+/// for `send_json`). Returns `None` on EOF / parse failure.
+fn read_request_body(stream: &mut TcpStream) -> Option<serde_json::Value> {
+    let mut reader = BufReader::new(stream.try_clone().ok()?);
+    let mut content_length = 0usize;
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line).ok()? == 0 {
+            return None;
+        }
+        if line == "\r\n" || line == "\n" {
+            break;
+        }
+        if let Some(rest) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+            content_length = rest.trim().parse().ok()?;
+        }
+    }
+    if content_length == 0 {
+        return Some(serde_json::Value::Null);
+    }
+    let mut buf = vec![0u8; content_length];
+    reader.read_exact(&mut buf).ok()?;
+    serde_json::from_slice(&buf).ok()
+}
+
+fn write_response(stream: &mut TcpStream, status: u16, body: &[u8]) {
+    let status_text = match status {
+        200 => "OK",
+        202 => "Accepted",
+        _ => "OK",
+    };
+    let header = format!(
+        "HTTP/1.1 {status} {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let _ = stream.write_all(header.as_bytes());
+    let _ = stream.write_all(body);
+}
+
+/// Handle returned by [`spawn_mock_mcp`]. Carries the bound `SocketAddr`
+/// directly so the stop helper doesn't need to re-parse the URL (a brittle
+/// approach that hangs the test runner forever if the URL shape ever
+/// changes).
+struct MockServer {
+    url: String,
+    addr: SocketAddr,
+    stop: Arc<AtomicBool>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+/// Spawn a one-shot mock MCP server. `task_responder` is given the
+/// `tools/call` arguments and returns the JSON-RPC `result` value to send
+/// back (or `None` to return an error envelope). Returns a [`MockServer`]
+/// handle; the caller calls [`MockServer::stop`] (or lets it drop) to tear
+/// down. The accept loop also uses a short `set_nonblocking` poll so it
+/// wakes periodically to check the stop flag even without a wakeup
+/// connection — that way a stop request can't hang the test runner.
+fn spawn_mock_mcp<F>(task_responder: F) -> MockServer
+where
+    F: Fn(&serde_json::Value) -> Option<serde_json::Value> + Send + Sync + 'static,
+{
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let addr = listener.local_addr().expect("local_addr");
+    let url = format!("http://127.0.0.1:{}/mcp/", addr.port());
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_clone = Arc::clone(&stop);
+    let responder = Arc::new(task_responder);
+
+    // Non-blocking accept with a short poll so the accept loop wakes
+    // regularly enough to notice the stop flag even if the wakeup
+    // connection in `stop()` never lands.
+    listener
+        .set_nonblocking(true)
+        .expect("set_nonblocking on mock listener");
+
+    let handle = thread::spawn(move || {
+        loop {
+            if stop_clone.load(Ordering::Relaxed) {
+                return;
+            }
+            let mut stream = match listener.accept() {
+                Ok((s, _)) => s,
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+                Err(_) => {
+                    // Backoff for non-WouldBlock errors (e.g. EMFILE on
+                    // a constrained CI box) so the accept loop doesn't
+                    // peg a CPU until the test's overall timeout.
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+            };
+            // Restore blocking semantics on the accepted stream so the
+            // BufReader inside read_request_body() doesn't busy-loop.
+            let _ = stream.set_nonblocking(false);
+            let body = match read_request_body(&mut stream) {
+                Some(b) => b,
+                None => continue,
+            };
+            let method = body
+                .get("method")
+                .and_then(|m| m.as_str())
+                .unwrap_or("")
+                .to_string();
+            let req_id = body.get("id").cloned();
+
+            match method.as_str() {
+                "initialize" => {
+                    let resp = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": {
+                            "protocolVersion": "2024-11-05",
+                            "capabilities": {},
+                            "serverInfo": {"name": "mock-mcp", "version": "0.1"}
+                        }
+                    });
+                    write_response(&mut stream, 200, resp.to_string().as_bytes());
+                }
+                "notifications/initialized" => {
+                    write_response(&mut stream, 202, b"");
+                }
+                "tools/call" => {
+                    let args = body
+                        .get("params")
+                        .and_then(|p| p.get("arguments"))
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null);
+                    let resp_value = match responder(&args) {
+                        Some(structured) => serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": {"structuredContent": structured, "content": []}
+                        }),
+                        None => serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "error": {"code": -32000, "message": "task not found"}
+                        }),
+                    };
+                    write_response(&mut stream, 200, resp_value.to_string().as_bytes());
+                }
+                _ => {
+                    write_response(&mut stream, 200, b"{}");
+                }
+            }
+        }
+    });
+
+    MockServer {
+        url,
+        addr,
+        stop,
+        handle: Some(handle),
+    }
+}
+
+impl MockServer {
+    fn url(&self) -> &str {
+        &self.url
+    }
+
+    /// Signal the accept loop to exit and join the thread. Uses the bound
+    /// `SocketAddr` directly (no URL parsing) — a stop request will always
+    /// reach the loop, plus the loop's own non-blocking poll guarantees it
+    /// wakes even if the wakeup connection is dropped.
+    fn stop(mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        // Best-effort wakeup; the non-blocking accept poll is the safety
+        // net so this can fail without hanging the test.
+        let _ = TcpStream::connect_timeout(&self.addr, Duration::from_millis(200));
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for MockServer {
+    fn drop(&mut self) {
+        // Idempotent shutdown if the test never called `.stop()` (e.g. on
+        // panic). Mirrors `stop()` minus the join — we let the thread
+        // tear down on its own to avoid blocking the drop path.
+        self.stop.store(true, Ordering::Relaxed);
+        let _ = TcpStream::connect_timeout(&self.addr, Duration::from_millis(50));
+    }
+}
+
+mod http_loader {
+    use super::*;
+
+    /// Pre-done via HTTP loader: a corroborated done/merged task with no
+    /// files should yield zero findings and exit 0. Proves the binary
+    /// successfully (a) connects to MCP, (b) calls get_task, (c) decodes
+    /// the wire shape, (d) runs the P5 check against the decoded metadata.
+    #[test]
+    fn pre_done_via_http_loader_corroborated_exits_zero() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let runs_db = write_empty_runs_db(dir);
+        // Seed the runs.db corroboration leg.
+        insert_completed_event(&runs_db, "9999");
+
+        let mock = spawn_mock_mcp(|args| {
+            assert_eq!(args.get("id").and_then(|v| v.as_str()), Some("9999"));
+            // Files=[] → P5's git-diff check trivially passes; the runs.db
+            // task_completed event corroborates the done-flip.
+            Some(serde_json::json!({
+                "id": "9999",
+                "title": "Mock task 9999",
+                "status": "done",
+                "updatedAt": "2026-05-16T07:39:04Z",
+                "metadata": {
+                    "files": [],
+                    "done_provenance": {"kind": "merged", "commit": "cafebabe", "note": null}
+                }
+            }))
+        });
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task", "9999",
+                "--pre-done",
+                "--fused-memory-url", mock.url(),
+                "--runs-db", runs_db.to_str().unwrap(),
+                "--project-root", dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit");
+
+        mock.stop();
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "corroborated task must exit 0; stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(findings.is_empty(), "expected zero findings; got {:#}", serde_json::Value::Array(findings));
+    }
+
+    /// Pre-done via HTTP loader: a done/merged task with files but no
+    /// runs.db corroboration event should emit a P5PhantomDone High finding.
+    /// Proves the loader populates `files`/`done_provenance` correctly.
+    #[test]
+    fn pre_done_via_http_loader_phantom_finding() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let runs_db = write_empty_runs_db(dir);
+
+        let mock = spawn_mock_mcp(|_args| {
+            Some(serde_json::json!({
+                "id": 4242,
+                "title": "Mock task 4242",
+                "status": "done",
+                "updatedAt": "2026-05-16T07:39:04Z",
+                "metadata": {
+                    "files": ["crates/reify-audit/src/lib.rs"],
+                    "done_provenance": {"kind": "merged", "commit": "deadbeef", "note": null}
+                }
+            }))
+        });
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task", "4242",
+                "--pre-done",
+                "--fused-memory-url", mock.url(),
+                "--runs-db", runs_db.to_str().unwrap(),
+                "--project-root", dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit");
+
+        mock.stop();
+
+        let code = out.status.code().unwrap_or(-1);
+        assert!(code >= 1, "expected non-zero exit for phantom-done; got {code}");
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        let p5_high = findings.iter().find(|f| {
+            f["pattern"].as_str() == Some("P5PhantomDone")
+                && f["severity"].as_str() == Some("High")
+                && f["task_id"].as_str() == Some("4242")
+        });
+        assert!(
+            p5_high.is_some(),
+            "expected P5PhantomDone/High/4242 in findings; got {:#}",
+            serde_json::Value::Array(findings)
+        );
+    }
+
+    /// Pre-done via HTTP loader: server returns a JSON-RPC error envelope
+    /// → binary must exit 125 (ERROR_EXIT), preserving the
+    /// refuse-on-non-zero contract of the pre-done hook.
+    #[test]
+    fn pre_done_via_http_loader_missing_task_exits_125() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let runs_db = write_empty_runs_db(dir);
+
+        let mock = spawn_mock_mcp(|_args| None);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task", "0000",
+                "--pre-done",
+                "--fused-memory-url", mock.url(),
+                "--runs-db", runs_db.to_str().unwrap(),
+                "--project-root", dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit");
+
+        mock.stop();
+
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "missing task must exit 125; stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// Sweep path via HTTP loader: `--since` (no `--pre-done`) routes
+    /// through `get_tasks` + `collect_tasks_recursive` and must flatten
+    /// subtasks before handing them to the detectors. This guards the
+    /// parent/subtask plumbing that the pre-done tests don't exercise
+    /// (they only call `get_task` for a single id). A regression in
+    /// subtask flattening — e.g. wrong wrap key or missed recursion —
+    /// would let phantom-done subtasks slip through the sweep silently.
+    #[test]
+    fn sweep_via_http_loader_flattens_subtasks_and_detects_phantom() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let runs_db = write_empty_runs_db(dir);
+        // Corroborate the parent so only the subtask should fire P5.
+        insert_completed_event(&runs_db, "5000");
+
+        let mock = spawn_mock_mcp(|args| {
+            // Sweep path sends `get_tasks` with `with_subtasks: true`. The
+            // pre-done hot path sends `get_task` with `id`. Distinguish
+            // here so the mock can return the expected shape.
+            if args.get("id").is_some() {
+                return Some(serde_json::Value::Null);
+            }
+            Some(serde_json::json!({
+                "tasks": [
+                    {
+                        "id": 5000,
+                        "title": "Parent task",
+                        "status": "done",
+                        "updatedAt": "2026-05-16T07:39:04Z",
+                        "metadata": {
+                            "files": [],
+                            "done_provenance": {"kind": "merged", "commit": "cafe", "note": null}
+                        },
+                        "subtasks": [
+                            {
+                                "id": "5000.1",
+                                "title": "Phantom subtask",
+                                "status": "done",
+                                "updatedAt": "2026-05-16T07:39:04Z",
+                                "metadata": {
+                                    "files": ["crates/reify-audit/src/lib.rs"],
+                                    "done_provenance": {
+                                        "kind": "merged",
+                                        "commit": "deadbeef",
+                                        "note": null
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                ]
+            }))
+        });
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--since", "2026-05-01",
+                "--pattern", "P5",
+                "--fused-memory-url", mock.url(),
+                "--runs-db", runs_db.to_str().unwrap(),
+                "--project-root", dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit --since (sweep)");
+
+        mock.stop();
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+
+        // The subtask must surface — proves the flattener walks `subtasks[]`.
+        let subtask_finding = findings.iter().find(|f| {
+            f["pattern"].as_str() == Some("P5PhantomDone")
+                && f["task_id"].as_str() == Some("5000.1")
+        });
+        assert!(
+            subtask_finding.is_some(),
+            "expected P5PhantomDone for subtask 5000.1 (sweep+flatten); got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+
+        // The corroborated parent must NOT surface — proves the parent
+        // also flowed through the detector (a flatten that dropped the
+        // parent would still pass this test, but flatten dropping the
+        // subtask would not — that's the actual regression risk).
+        let parent_finding = findings
+            .iter()
+            .find(|f| f["task_id"].as_str() == Some("5000"));
+        assert!(
+            parent_finding.is_none(),
+            "corroborated parent 5000 must not appear; got:\n{:#}",
+            serde_json::Value::Array(findings)
+        );
+    }
+
+    /// Pre-done via HTTP loader: MCP endpoint refuses the connection → exit
+    /// 125. Proves the loader's connection-failure path is wired to
+    /// ERROR_EXIT rather than silently exiting 0.
+    #[test]
+    fn pre_done_via_http_loader_connection_refused_exits_125() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let runs_db = write_empty_runs_db(dir);
+
+        // Find a port that's almost certainly closed: bind, get its port,
+        // then drop the listener so subsequent connects refuse.
+        let throwaway = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = throwaway.local_addr().expect("addr").port();
+        drop(throwaway);
+        let url = format!("http://127.0.0.1:{port}/mcp/");
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task", "1234",
+                "--pre-done",
+                "--fused-memory-url", &url,
+                "--runs-db", runs_db.to_str().unwrap(),
+                "--project-root", dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit");
+
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "connection refused must exit 125; stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// Sweep path via HTTP loader: server returns a well-formed JSON-RPC
+    /// envelope but the `tools/call get_tasks` result lacks the `tasks`
+    /// array. The loader must refuse this — otherwise the sweep would
+    /// silently return zero tasks and exit 0, looking healthy while
+    /// actually masking a server-side bug. Guards the `missing or
+    /// non-array \`tasks\` field` branch in `FusedMemoryClient::get_tasks`.
+    #[test]
+    fn sweep_via_http_loader_malformed_tasks_payload_exits_125() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let runs_db = write_empty_runs_db(dir);
+
+        // Responder returns an empty object — well-formed envelope,
+        // missing `tasks` field. The mock wraps this in
+        // `result.structuredContent`, so the wire shape after the MCP
+        // adapter is `{}` (no `tasks` array).
+        let mock = spawn_mock_mcp(|_args| Some(serde_json::json!({})));
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--since", "1970-01-01",
+                "--fused-memory-url", mock.url(),
+                "--runs-db", runs_db.to_str().unwrap(),
+                "--project-root", dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit");
+
+        mock.stop();
+
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "malformed get_tasks payload must exit 125; stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("get_tasks") && stderr.contains("tasks"),
+            "stderr should breadcrumb the malformed-tasks reason; got: {stderr}"
+        );
+    }
+}

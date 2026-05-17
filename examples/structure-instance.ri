@@ -1,0 +1,39 @@
+// SIR-α: Value::StructureInstance demonstration (task 3540).
+//
+// Running
+//
+//     reify eval examples/structure-instance.ri
+//
+// prints every top-level value cell. The structure constructors below
+// evaluate to inspectable `Value::StructureInstance` values — a
+// `TypeName { field: value, ... }` shape — rather than opaque `undef`,
+// which is the SIR-α user-observable signal (PRD §7, design-decision-4).
+
+// ── Flat construction ───────────────────────────────────────────────────────
+//
+// Concrete stdlib structures, every field defaulted. Each `let` below
+// evaluates to a flat `Value::StructureInstance`.
+structure def FlatPart {
+    let steel   = Steel_AISI_1045()
+    let load    = PointLoad()
+    let support = FixedSupport()
+}
+
+// ── Nested compositional construction ───────────────────────────────────────
+//
+// `Beam`'s trait-typed params default to structure constructors, so a bare
+// `Beam()` yields a `Value::StructureInstance` whose `material` and `load`
+// fields are *themselves* nested `Value::StructureInstance` values
+// (step-18's nested-default recursion).
+structure def Beam {
+    param material : ElasticMaterial = Steel_AISI_1045()
+    param load     : Load            = PointLoad()
+}
+
+// Two `Beam` instances composed into one assembly. `primary` / `secondary`
+// each evaluate to a nested-structure value carrying the Steel/PointLoad
+// sub-instances.
+structure def NestedAssembly {
+    let primary   = Beam()
+    let secondary = Beam()
+}

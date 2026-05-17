@@ -1798,7 +1798,7 @@ pub(crate) fn try_eval_topology_selector(
     expr: &reify_types::CompiledExpr,
     named_steps: &HashMap<String, GeometryHandleId>,
     values: &reify_types::ValueMap,
-    kernel: &dyn reify_types::GeometryKernel,
+    kernel: &mut dyn reify_types::GeometryKernel,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_types::Value> {
     // (1) Must be a FunctionCall — anything else is unsupported.
@@ -1807,16 +1807,30 @@ pub(crate) fn try_eval_topology_selector(
         _ => return None,
     };
 
-    // (2) Must be one of the three recognised helper names.
+    // (2) Must be one of the recognised helper names.
     let helper = match function.name.as_str() {
         "closest_point" => TopologySelectorHelper::ClosestPoint,
         "is_on" => TopologySelectorHelper::IsOn,
         "angle_between_surfaces" => TopologySelectorHelper::AngleBetweenSurfaces,
+        "edges" => TopologySelectorHelper::Edges,
+        "faces" => TopologySelectorHelper::Faces,
+        "center_of_mass" => TopologySelectorHelper::CenterOfMass,
+        "moment_of_inertia" => TopologySelectorHelper::MomentOfInertia,
+        "edges_by_length" => TopologySelectorHelper::EdgesByLength,
+        "faces_by_area" => TopologySelectorHelper::FacesByArea,
+        "faces_by_normal" => TopologySelectorHelper::FacesByNormal,
+        "edges_parallel_to" => TopologySelectorHelper::EdgesParallelTo,
+        "edges_at_height" => TopologySelectorHelper::EdgesAtHeight,
+        "adjacent_faces" => TopologySelectorHelper::AdjacentFaces,
+        "shared_edges" => TopologySelectorHelper::SharedEdges,
         _ => return None,
     };
 
-    // (3) All v0.1 helpers are 2-arg; non-2-arg call sites fall through.
-    if args.len() != 2 {
+    // (3) Per-helper arity check. Each new selector in task 3560 carries its
+    // own arity contract; the legacy 2-arg trio (closest_point, is_on,
+    // angle_between_surfaces) shares the arity-2 branch.
+    let expected_arity = helper.expected_arity();
+    if args.len() != expected_arity {
         return None;
     }
 
@@ -1835,7 +1849,7 @@ pub(crate) fn try_eval_topology_selector(
                         py: point[1],
                         pz: point[2],
                     };
-                    dispatch_closest_point(kernel, &query, &function.name, diagnostics)
+                    dispatch_point3_length_reply(kernel, &query, &function.name, diagnostics)
                 }
                 TopologySelectorHelper::IsOn => {
                     // Use `reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` (= OCCT's
@@ -1855,8 +1869,24 @@ pub(crate) fn try_eval_topology_selector(
                     };
                     dispatch_point_on_shape(kernel, &query, &function.name, diagnostics)
                 }
-                TopologySelectorHelper::AngleBetweenSurfaces => {
-                    unreachable!("angle_between_surfaces is handled in the outer match")
+                // Enumerate the complement explicitly (rather than `_`) so that
+                // adding a new `TopologySelectorHelper` variant and grouping it
+                // into the outer `ClosestPoint | IsOn` or-pattern forces the
+                // compiler to error here instead of silently funnelling into
+                // `unreachable!()`.
+                TopologySelectorHelper::AngleBetweenSurfaces
+                | TopologySelectorHelper::Edges
+                | TopologySelectorHelper::Faces
+                | TopologySelectorHelper::CenterOfMass
+                | TopologySelectorHelper::MomentOfInertia
+                | TopologySelectorHelper::EdgesByLength
+                | TopologySelectorHelper::FacesByArea
+                | TopologySelectorHelper::FacesByNormal
+                | TopologySelectorHelper::EdgesParallelTo
+                | TopologySelectorHelper::EdgesAtHeight
+                | TopologySelectorHelper::AdjacentFaces
+                | TopologySelectorHelper::SharedEdges => {
+                    unreachable!("ClosestPoint/IsOn outer match guarantees this")
                 }
             }
         }
@@ -1867,7 +1897,334 @@ pub(crate) fn try_eval_topology_selector(
             let query = reify_types::GeometryQuery::SurfaceAngle { face_a, face_b };
             dispatch_surface_angle(kernel, &query, &function.name, diagnostics)
         }
+        TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => {
+            // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
+            let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            let kind = match helper {
+                TopologySelectorHelper::Edges => ExtractKind::Edges,
+                TopologySelectorHelper::Faces => ExtractKind::Faces,
+                // Enumerate the complement explicitly (rather than `_`) so that
+                // adding a new `TopologySelectorHelper` variant and grouping it
+                // into the outer `Edges | Faces` or-pattern forces the compiler
+                // to error here instead of silently funnelling into
+                // `unreachable!()`.
+                TopologySelectorHelper::ClosestPoint
+                | TopologySelectorHelper::IsOn
+                | TopologySelectorHelper::AngleBetweenSurfaces
+                | TopologySelectorHelper::CenterOfMass
+                | TopologySelectorHelper::MomentOfInertia
+                | TopologySelectorHelper::EdgesByLength
+                | TopologySelectorHelper::FacesByArea
+                | TopologySelectorHelper::FacesByNormal
+                | TopologySelectorHelper::EdgesParallelTo
+                | TopologySelectorHelper::EdgesAtHeight
+                | TopologySelectorHelper::AdjacentFaces
+                | TopologySelectorHelper::SharedEdges => {
+                    unreachable!("Edges/Faces outer match guarantees this")
+                }
+            };
+            dispatch_extract_subshapes(kernel, handle, kind, &function.name, diagnostics)
+        }
+        TopologySelectorHelper::CenterOfMass => {
+            // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
+            let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            // args[1]: density ValueRef → values map → Real / dimensionless Scalar.
+            let density = resolve_real_scalar_arg(&args[1], values)?;
+            let query = reify_types::GeometryQuery::CenterOfMass { handle, density };
+            dispatch_point3_length_reply(kernel, &query, &function.name, diagnostics)
+        }
+        TopologySelectorHelper::MomentOfInertia => {
+            // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
+            let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            // args[1]: density ValueRef → values map → Real / dimensionless Scalar.
+            let density = resolve_real_scalar_arg(&args[1], values)?;
+            let query = reify_types::GeometryQuery::InertiaTensor { handle, density };
+            dispatch_inertia_tensor(kernel, &query, &function.name, diagnostics)
+        }
+        TopologySelectorHelper::EdgesByLength => {
+            // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
+            let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            // args[1]: Range<Length> ValueRef/Literal → (lo_m, hi_m).
+            let (lo, hi) =
+                resolve_range_dim_arg(&args[1], values, reify_types::DimensionVector::LENGTH)?;
+            dispatch_filtered_list(
+                crate::topology_selectors::edges_by_length(kernel, handle, lo, hi),
+                &function.name,
+                diagnostics,
+            )
+        }
+        TopologySelectorHelper::FacesByArea => {
+            // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
+            let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            // args[1]: Range<Area> ValueRef/Literal → (lo_m2, hi_m2). `mm*mm`
+            // canonicalises to AREA (LENGTH² == AREA per dimension algebra).
+            let (lo, hi) =
+                resolve_range_dim_arg(&args[1], values, reify_types::DimensionVector::AREA)?;
+            dispatch_filtered_list(
+                crate::topology_selectors::faces_by_area(kernel, handle, lo, hi),
+                &function.name,
+                diagnostics,
+            )
+        }
+        TopologySelectorHelper::FacesByNormal => {
+            // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
+            let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            // args[1]: Vec3 direction ValueRef → values map → [f64; 3].
+            let dir = resolve_vec3_arg(&args[1], values)?;
+            // args[2]: angular tolerance ValueRef → values map → ANGLE Scalar
+            // (SI radians — `topology_selectors::faces_by_normal` expects rad).
+            let tol = resolve_angle_scalar_arg(&args[2], values)?;
+            dispatch_filtered_list(
+                crate::topology_selectors::faces_by_normal(kernel, handle, dir, tol),
+                &function.name,
+                diagnostics,
+            )
+        }
+        TopologySelectorHelper::EdgesParallelTo => {
+            // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
+            let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            // args[1]: Vec3 axis ValueRef → values map → [f64; 3].
+            let axis = resolve_vec3_arg(&args[1], values)?;
+            // args[2]: angular tolerance ValueRef → values map → ANGLE Scalar
+            // (SI radians — `topology_selectors::edges_parallel_to` expects rad).
+            let tol = resolve_angle_scalar_arg(&args[2], values)?;
+            dispatch_filtered_list(
+                crate::topology_selectors::edges_parallel_to(kernel, handle, axis, tol),
+                &function.name,
+                diagnostics,
+            )
+        }
+        TopologySelectorHelper::EdgesAtHeight => {
+            // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
+            let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            // args[1]: z plane ValueRef → values map → LENGTH Scalar (SI metres).
+            let z_m = resolve_length_scalar_arg(&args[1], values)?;
+            // args[2]: tolerance ValueRef → values map → LENGTH Scalar (SI metres).
+            let tol_m = resolve_length_scalar_arg(&args[2], values)?;
+            dispatch_filtered_list(
+                crate::topology_selectors::edges_at_height(kernel, handle, z_m, tol_m),
+                &function.name,
+                diagnostics,
+            )
+        }
+        TopologySelectorHelper::AdjacentFaces => {
+            // args[0]: parent solid ValueRef → named_steps map → GeometryHandleId.
+            let parent = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            // args[1]: face sub-handle ValueRef → named_steps map → GeometryHandleId.
+            let face_handle = resolve_geometry_handle_arg(&args[1], named_steps)?;
+            // `adjacent_to_face` internally recovers the 0-based face index via
+            // `extract_faces(parent)`, dispatches `GeometryQuery::AdjacentFaces`,
+            // and maps the reply indices back to face handles. Same
+            // Ok→List / Err→warning+Undef contract as the filtered helpers.
+            dispatch_filtered_list(
+                crate::selector_vocabulary_v2::adjacent_to_face(kernel, parent, face_handle),
+                &function.name,
+                diagnostics,
+            )
+        }
+        TopologySelectorHelper::SharedEdges => {
+            // args[0]: face_a ValueRef → named_steps map → GeometryHandleId.
+            let face_a = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            // args[1]: face_b ValueRef → named_steps map → GeometryHandleId.
+            let face_b = resolve_geometry_handle_arg(&args[1], named_steps)?;
+            dispatch_shared_edges(kernel, face_a, face_b, &function.name, diagnostics)
+        }
     }
+}
+
+/// Dispatch the `shared_edges(face_a, face_b)` selector per design-doc §4.3.
+///
+/// Pipeline:
+///   1. Derive each face's parent solid via `selector_vocabulary_v2::owner_body_of`
+///      (which issues `GeometryQuery::OwnerBody` and decodes the `Value::Int`
+///      reply). On query error → warning + `Value::Undef`.
+///   2. If the two parents differ → push a "different parent solids" warning
+///      and return `Value::List(vec![])` (silent degrade — empty list is
+///      structurally valid as a `List<Geometry>` cell while the warning
+///      surfaces the user-actionable issue).
+///   3. Recover each face's 0-based index in the parent via
+///      `extract_faces(parent)` + `position`. On extract error OR a face not
+///      appearing in `extract_faces` → warning + `Value::Undef`.
+///   4. Dispatch `GeometryQuery::SharedEdges { shape, face_a, face_b }`. On
+///      query error or non-`Value::List` reply → warning + `Value::Undef`.
+///   5. Map the reply integer indices back to edge handles via
+///      `extract_edges(parent)`. Skip indices that fall outside the edge
+///      enumeration (defensive against a kernel bug rather than a hard
+///      failure mode — see design-doc §4.3 for the rationale).
+///   6. Return `Value::List(Vec<Value::Int>)` of edge handle ids.
+fn dispatch_shared_edges(
+    kernel: &mut dyn reify_types::GeometryKernel,
+    face_a: GeometryHandleId,
+    face_b: GeometryHandleId,
+    helper_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_types::Value> {
+    // (1) Derive parents via OwnerBody.
+    let parent_a = match crate::selector_vocabulary_v2::owner_body_of(kernel, face_a) {
+        Ok(p) => p,
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} OwnerBody({:?}) failed: {}",
+                helper_name, face_a, err
+            )));
+            return Some(reify_types::Value::Undef);
+        }
+    };
+    let parent_b = match crate::selector_vocabulary_v2::owner_body_of(kernel, face_b) {
+        Ok(p) => p,
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} OwnerBody({:?}) failed: {}",
+                helper_name, face_b, err
+            )));
+            return Some(reify_types::Value::Undef);
+        }
+    };
+
+    // (2) Cross-solid guard rail: empty list + warning when faces span
+    //     different parents (design-doc §4.3).
+    if parent_a != parent_b {
+        diagnostics.push(Diagnostic::warning(format!(
+            "{}: faces have different parent solids ({:?} vs {:?}); returning empty list",
+            helper_name, parent_a, parent_b
+        )));
+        return Some(reify_types::Value::List(Vec::new()));
+    }
+
+    // (3) Recover 0-based face indices via extract_faces(parent).
+    let faces = match kernel.extract_faces(parent_a) {
+        Ok(f) => f,
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} extract_faces({:?}) failed: {}",
+                helper_name, parent_a, err
+            )));
+            return Some(reify_types::Value::Undef);
+        }
+    };
+    let idx_a = match faces.iter().position(|h| *h == face_a) {
+        Some(i) => i,
+        None => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{}: face_a {:?} is not a child of parent {:?} (was extract_faces called?)",
+                helper_name, face_a, parent_a
+            )));
+            return Some(reify_types::Value::Undef);
+        }
+    };
+    let idx_b = match faces.iter().position(|h| *h == face_b) {
+        Some(i) => i,
+        None => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{}: face_b {:?} is not a child of parent {:?} (was extract_faces called?)",
+                helper_name, face_b, parent_a
+            )));
+            return Some(reify_types::Value::Undef);
+        }
+    };
+
+    // (4) Dispatch SharedEdges query.
+    let reply = match kernel.query(&reify_types::GeometryQuery::SharedEdges {
+        shape: parent_a,
+        face_a: idx_a,
+        face_b: idx_b,
+    }) {
+        Ok(v) => v,
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} SharedEdges query failed: {}",
+                helper_name, err
+            )));
+            return Some(reify_types::Value::Undef);
+        }
+    };
+    let int_indices = match reply {
+        reify_types::Value::List(items) => items,
+        other => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{}: expected Value::List from SharedEdges, got {:?}",
+                helper_name, other
+            )));
+            return Some(reify_types::Value::Undef);
+        }
+    };
+
+    // (5) Map reply indices back to edge handles via extract_edges(parent).
+    let edges = match kernel.extract_edges(parent_a) {
+        Ok(e) => e,
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} extract_edges({:?}) failed: {}",
+                helper_name, parent_a, err
+            )));
+            return Some(reify_types::Value::Undef);
+        }
+    };
+    let mut out: Vec<GeometryHandleId> = Vec::with_capacity(int_indices.len());
+    for item in int_indices {
+        let idx = match item {
+            reify_types::Value::Int(i) => i,
+            other => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "{}: expected Value::Int element in SharedEdges list, got {:?}",
+                    helper_name, other
+                )));
+                return Some(reify_types::Value::Undef);
+            }
+        };
+        let usize_idx: usize = match idx.try_into() {
+            Ok(u) => u,
+            Err(_) => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "{}: SharedEdges returned negative index {}",
+                    helper_name, idx
+                )));
+                return Some(reify_types::Value::Undef);
+            }
+        };
+        // Defensive: silently skip out-of-range indices rather than failing
+        // hard — surfaces a malformed kernel reply as a smaller-than-expected
+        // list rather than total cell collapse.
+        if let Some(h) = edges.get(usize_idx) {
+            out.push(*h);
+        }
+    }
+
+    // (6) Wrap as Value::List of Int handle ids.
+    Some(handle_list_value(out))
+}
+
+/// Map a filtered-selector helper `Result<Vec<GeometryHandleId>, QueryError>`
+/// onto the dispatcher's `Option<Value>` contract: `Ok` → `Value::List` of
+/// Int handle ids; `Err` → Warning diagnostic + `Value::Undef`. Shared by all
+/// `topology_selectors::*` delegating arms (task 3560).
+fn dispatch_filtered_list(
+    result: Result<Vec<GeometryHandleId>, reify_types::QueryError>,
+    helper_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_types::Value> {
+    match result {
+        Ok(handles) => Some(handle_list_value(handles)),
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} kernel query failed: {}",
+                helper_name, err
+            )));
+            Some(reify_types::Value::Undef)
+        }
+    }
+}
+
+/// Wrap a `Vec<GeometryHandleId>` as `Value::List(Vec<Value::Int>)` whose
+/// elements are the raw u64 handle ids cast to `i64`. Shared by all
+/// list-returning topology selectors (task 3560).
+fn handle_list_value(handles: Vec<GeometryHandleId>) -> reify_types::Value {
+    reify_types::Value::List(
+        handles
+            .into_iter()
+            .map(|h| reify_types::Value::Int(h.0 as i64))
+            .collect(),
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -1875,6 +2232,109 @@ enum TopologySelectorHelper {
     ClosestPoint,
     IsOn,
     AngleBetweenSurfaces,
+    /// `edges(geometry) -> List<Geometry>` — extract the unique edges of a
+    /// shape (task 3560).
+    Edges,
+    /// `faces(geometry) -> List<Geometry>` — extract the unique faces of a
+    /// shape (task 3560).
+    Faces,
+    /// `center_of_mass(geometry, density) -> Point3<Length>` — uniform-density
+    /// center of mass (task 3560).
+    CenterOfMass,
+    /// `moment_of_inertia(geometry, density) -> Tensor<2,3,MomentOfInertia>` —
+    /// mass-weighted 3×3 inertia tensor about the centroid (task 3560).
+    MomentOfInertia,
+    /// `edges_by_length(geometry, Range<Length>) -> List<Geometry>` — edges
+    /// whose length falls in the range (task 3560).
+    EdgesByLength,
+    /// `faces_by_area(geometry, Range<Area>) -> List<Geometry>` — faces whose
+    /// surface area falls in the range (task 3560).
+    FacesByArea,
+    /// `faces_by_normal(geometry, Vec3, Angle) -> List<Geometry>` — faces
+    /// whose outward normal is within an angular tolerance of a target
+    /// direction (task 3560).
+    FacesByNormal,
+    /// `edges_parallel_to(geometry, Vec3, Angle) -> List<Geometry>` — edges
+    /// whose midpoint tangent is (anti-)parallel to an axis within an
+    /// angular tolerance (task 3560).
+    EdgesParallelTo,
+    /// `edges_at_height(geometry, Length, Length) -> List<Geometry>` — edges
+    /// lying entirely within a tolerance of a horizontal `z = z0` plane
+    /// (task 3560).
+    EdgesAtHeight,
+    /// `adjacent_faces(parent, face) -> List<Geometry>` — faces of `parent`
+    /// that share at least one edge with `face` (task 3560).
+    AdjacentFaces,
+    /// `shared_edges(face_a, face_b) -> List<Geometry>` — edges of the
+    /// common parent solid that lie on the boundary of BOTH faces (task 3560).
+    /// Derives the parent via `OwnerBody` on both args; silently degrades to
+    /// an empty list (with a warning) when the two faces live on different
+    /// parent solids (design-doc §4.3).
+    SharedEdges,
+}
+
+impl TopologySelectorHelper {
+    /// The exact number of arguments this helper takes. Used by the
+    /// per-helper arity gate in `try_eval_topology_selector` before any
+    /// arg-shape resolution runs — non-matching arities fall through to
+    /// `None` so the cell stays at the `Value::Undef` left by `eval_expr`.
+    fn expected_arity(self) -> usize {
+        match self {
+            TopologySelectorHelper::ClosestPoint
+            | TopologySelectorHelper::IsOn
+            | TopologySelectorHelper::AngleBetweenSurfaces
+            | TopologySelectorHelper::CenterOfMass
+            | TopologySelectorHelper::MomentOfInertia
+            | TopologySelectorHelper::EdgesByLength
+            | TopologySelectorHelper::FacesByArea
+            | TopologySelectorHelper::AdjacentFaces
+            | TopologySelectorHelper::SharedEdges => 2,
+            TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => 1,
+            TopologySelectorHelper::FacesByNormal
+            | TopologySelectorHelper::EdgesParallelTo
+            | TopologySelectorHelper::EdgesAtHeight => 3,
+        }
+    }
+}
+
+/// Which sub-shape kind to extract: edges or faces. Drives
+/// `dispatch_extract_subshapes` to route into `extract_edges` /
+/// `extract_faces` on the kernel while keeping a single shared
+/// kernel-error → diagnostic + `Value::Undef` downgrade path.
+#[derive(Clone, Copy)]
+enum ExtractKind {
+    Edges,
+    Faces,
+}
+
+/// Issue `extract_edges(handle)` (or `extract_faces` per `kind`) and wrap the
+/// resulting `Vec<GeometryHandleId>` as `Value::List(Vec<Value::Int>)` whose
+/// elements are the raw u64 handle ids cast to `i64`. Returns
+/// `Some(Value::Undef)` (with a Warning diagnostic) on kernel error.
+///
+/// Sibling to `dispatch_point3_length_reply` / `dispatch_point_on_shape` /
+/// `dispatch_surface_angle` — same defensive-downgrade contract.
+fn dispatch_extract_subshapes(
+    kernel: &mut dyn reify_types::GeometryKernel,
+    handle: GeometryHandleId,
+    kind: ExtractKind,
+    helper_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_types::Value> {
+    let result = match kind {
+        ExtractKind::Edges => kernel.extract_edges(handle),
+        ExtractKind::Faces => kernel.extract_faces(handle),
+    };
+    match result {
+        Ok(sub_handles) => Some(handle_list_value(sub_handles)),
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{}({:?}): kernel error: {}",
+                helper_name, handle, err
+            )));
+            Some(reify_types::Value::Undef)
+        }
+    }
 }
 
 /// Resolve a `CompiledExprKind::ValueRef` arg to a `Value::Point` of three
@@ -1931,6 +2391,182 @@ fn resolve_point3_length_arg(
     Some(out)
 }
 
+/// Resolve a `CompiledExprKind::ValueRef` arg to a raw f64 from a
+/// `Value::Real` or a dimensionless `Value::Scalar`. Used for the `density`
+/// argument of `center_of_mass` / `moment_of_inertia` (a dimensionless
+/// numeric in v0.1 — the kernel multiplies OCCT's volume-weighted result by
+/// this scalar). Returns `None` for any non-`ValueRef` shape, missing cell,
+/// or a dimensioned Scalar — caller maps to the "unsupported arg shape →
+/// fall through" behaviour.
+fn resolve_real_scalar_arg(
+    expr: &reify_types::CompiledExpr,
+    values: &reify_types::ValueMap,
+) -> Option<f64> {
+    let id = match &expr.kind {
+        reify_types::CompiledExprKind::ValueRef(id) => id,
+        _ => return None,
+    };
+    match values.get(id)? {
+        reify_types::Value::Real(v) => Some(*v),
+        reify_types::Value::Scalar {
+            si_value,
+            dimension,
+        } if *dimension == reify_types::DimensionVector::DIMENSIONLESS => Some(*si_value),
+        _ => None,
+    }
+}
+
+/// Read a single Vec3 component: a `Value::Real` or a dimensionless
+/// `Value::Scalar`. Returns `None` for any dimensioned Scalar or non-numeric
+/// payload — the direction/axis args of `faces_by_normal` / `edges_parallel_to`
+/// are pure unit-vector numerics in v0.1.
+fn vec3_component_si(value: &reify_types::Value) -> Option<f64> {
+    match value {
+        reify_types::Value::Real(v) => Some(*v),
+        reify_types::Value::Scalar {
+            si_value,
+            dimension,
+        } if *dimension == reify_types::DimensionVector::DIMENSIONLESS => Some(*si_value),
+        _ => None,
+    }
+}
+
+/// Resolve a 3-component vector arg to its `[f64; 3]` SI components. Accepts
+/// `Literal(Value::Vector(items))` (rare — inline vector literals) or the
+/// common `ValueRef → Value::Vector` (let-bound `let dir = vec3(0,0,1)`).
+/// Each component must be a `Value::Real` or a dimensionless `Value::Scalar`
+/// (per `vec3_component_si`); the vector must have exactly three components.
+/// Returns `None` for any other shape — caller maps to the "unsupported arg
+/// shape → fall through" behaviour. Inline `vec3(...)` FunctionCall args fall
+/// through (the dispatcher has no recursive eval context); test fixtures
+/// let-bind the direction so it lands in `values` as a `Value::Vector`.
+fn resolve_vec3_arg(
+    expr: &reify_types::CompiledExpr,
+    values: &reify_types::ValueMap,
+) -> Option<[f64; 3]> {
+    let from_vector_value = |v: &reify_types::Value| -> Option<[f64; 3]> {
+        match v {
+            reify_types::Value::Vector(items) if items.len() == 3 => Some([
+                vec3_component_si(&items[0])?,
+                vec3_component_si(&items[1])?,
+                vec3_component_si(&items[2])?,
+            ]),
+            _ => None,
+        }
+    };
+    match &expr.kind {
+        reify_types::CompiledExprKind::Literal(v) => from_vector_value(v),
+        reify_types::CompiledExprKind::ValueRef(id) => from_vector_value(values.get(id)?),
+        _ => None,
+    }
+}
+
+/// Resolve an ANGLE-dimensioned scalar arg to its SI value (radians).
+/// Accepts `Literal(Value::Scalar { dimension: ANGLE, .. })` or the common
+/// `ValueRef → ANGLE Scalar` (let-bound `let tol = 1deg`). Returns `None`
+/// for any other shape (wrong dimension, non-Scalar) — caller maps to the
+/// "unsupported arg shape → fall through" behaviour. Mirrors
+/// `resolve_scalar_bound_expr` but pins the ANGLE dimension for the angular-
+/// tolerance args of `faces_by_normal` / `edges_parallel_to`.
+fn resolve_angle_scalar_arg(
+    expr: &reify_types::CompiledExpr,
+    values: &reify_types::ValueMap,
+) -> Option<f64> {
+    resolve_scalar_bound_expr(expr, values, reify_types::DimensionVector::ANGLE)
+}
+
+/// Resolve a LENGTH-dimensioned scalar arg to its SI value (metres).
+/// Accepts `Literal(Value::Scalar { dimension: LENGTH, .. })` or the common
+/// `ValueRef → LENGTH Scalar` (let-bound `let z = 0mm`). Returns `None` for
+/// any other shape (wrong dimension, non-Scalar) — caller maps to the
+/// "unsupported arg shape → fall through" behaviour. Mirrors
+/// `resolve_angle_scalar_arg` but pins the LENGTH dimension for the
+/// z-plane / tolerance args of `edges_at_height`.
+fn resolve_length_scalar_arg(
+    expr: &reify_types::CompiledExpr,
+    values: &reify_types::ValueMap,
+) -> Option<f64> {
+    resolve_scalar_bound_expr(expr, values, reify_types::DimensionVector::LENGTH)
+}
+
+/// Read a `Value::Scalar` whose `dimension` is `expected_dim` and return its
+/// SI value. `None` for any other shape (wrong dimension, non-Scalar).
+fn scalar_si_with_dim(value: &reify_types::Value, expected_dim: reify_types::DimensionVector) -> Option<f64> {
+    match value {
+        reify_types::Value::Scalar {
+            si_value,
+            dimension,
+        } if *dimension == expected_dim => Some(*si_value),
+        _ => None,
+    }
+}
+
+/// Resolve a single range-bound `CompiledExpr` (the `lower`/`upper` slot of a
+/// `RangeConstructor`) to its SI value, accepting a `Literal(Value::Scalar)`
+/// or a `ValueRef → Value::Scalar`, both dimensioned `expected_dim`.
+fn resolve_scalar_bound_expr(
+    expr: &reify_types::CompiledExpr,
+    values: &reify_types::ValueMap,
+    expected_dim: reify_types::DimensionVector,
+) -> Option<f64> {
+    match &expr.kind {
+        reify_types::CompiledExprKind::Literal(v) => scalar_si_with_dim(v, expected_dim),
+        reify_types::CompiledExprKind::ValueRef(id) => {
+            scalar_si_with_dim(values.get(id)?, expected_dim)
+        }
+        _ => None,
+    }
+}
+
+/// Resolve a `Range<Quantity>` arg to its `(lower_si, upper_si)` SI bounds,
+/// both dimensioned `expected_dim`. Accepts three arg shapes:
+///
+///  (a) `Literal(Value::Range { lower: Some, upper: Some, .. })`,
+///  (b) `ValueRef → Value::Range { lower: Some, upper: Some, .. }` (the
+///      common let-bound `let r = 0mm..50mm` form — the regular eval path
+///      evaluates the `RangeConstructor` RHS into the cell as a
+///      `Value::Range`),
+///  (c) `RangeConstructor { lower: Some, upper: Some, .. }` written inline,
+///      whose bound exprs each resolve via Literal/ValueRef.
+///
+/// Both bounds must be present (a half-open range falls through to `None` —
+/// the v0.1 filtered selectors require a closed `[lo, hi]` window) and
+/// dimensioned `expected_dim`. Returns `None` for any other shape — caller
+/// maps to the "unsupported arg shape → fall through" behaviour.
+fn resolve_range_dim_arg(
+    expr: &reify_types::CompiledExpr,
+    values: &reify_types::ValueMap,
+    expected_dim: reify_types::DimensionVector,
+) -> Option<(f64, f64)> {
+    // Range-from-Value: shared by the Literal and ValueRef arms.
+    let from_range_value = |v: &reify_types::Value| -> Option<(f64, f64)> {
+        match v {
+            reify_types::Value::Range {
+                lower: Some(lo),
+                upper: Some(hi),
+                ..
+            } => Some((
+                scalar_si_with_dim(lo, expected_dim)?,
+                scalar_si_with_dim(hi, expected_dim)?,
+            )),
+            _ => None,
+        }
+    };
+    match &expr.kind {
+        reify_types::CompiledExprKind::Literal(v) => from_range_value(v),
+        reify_types::CompiledExprKind::ValueRef(id) => from_range_value(values.get(id)?),
+        reify_types::CompiledExprKind::RangeConstructor {
+            lower: Some(lo),
+            upper: Some(hi),
+            ..
+        } => Some((
+            resolve_scalar_bound_expr(lo, values, expected_dim)?,
+            resolve_scalar_bound_expr(hi, values, expected_dim)?,
+        )),
+        _ => None,
+    }
+}
+
 /// Resolve a `CompiledExprKind::ValueRef` geometry-arg to a `GeometryHandleId`
 /// via `named_steps`. Returns `None` for any non-`ValueRef` shape or missing
 /// `named_steps` entry — caller maps to the "unsupported arg shape → fall
@@ -1946,12 +2582,16 @@ fn resolve_geometry_handle_arg(
     named_steps.get(&cell_id.member).copied()
 }
 
-/// Issue a `ClosestPointOnShape` query and unwrap to a
+/// Issue a query whose kernel reply is the canonical JSON-Point3
+/// (`{"x":_,"y":_,"z":_}`) wire format and unwrap to a
 /// `Value::Point(vec![length, length, length])`. Returns
 /// `Some(Value::Undef)` (with a Warning diagnostic) on a kernel error or a
-/// malformed JSON-Point3 reply.
-fn dispatch_closest_point(
-    kernel: &dyn reify_types::GeometryKernel,
+/// malformed reply. Shared by `closest_point` (`ClosestPointOnShape`) and
+/// `center_of_mass` (`CenterOfMass`) — both return the identical JSON-Point3
+/// encoding per the `GeometryQuery` doc, so a single decode path serves
+/// both.
+fn dispatch_point3_length_reply(
+    kernel: &mut dyn reify_types::GeometryKernel,
     query: &reify_types::GeometryQuery,
     helper_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
@@ -1981,11 +2621,97 @@ fn dispatch_closest_point(
     }
 }
 
+/// Issue an `InertiaTensor` query and re-wrap the kernel's row-of-row
+/// `Value::List` reply into a nested `Value::Tensor(rows_of_tensors)` where
+/// each element is a `Value::Scalar { si_value, dimension: MOMENT_OF_INERTIA }`.
+///
+/// The kernel returns raw dimensionless `Value::Real` cell values
+/// (`[[m11,m12,m13],[m21,m22,m23],[m31,m32,m33]]`) because
+/// `GeometryQuery::InertiaTensor` predates the dimensioned-Scalar wrap; the
+/// eval-side owns the MomentOfInertia (kg·m²) tagging so the result matches
+/// the compile-time `Tensor<2,3,MomentOfInertia>` cell type from
+/// `topology_selector_result_type`.
+///
+/// Returns `Some(Value::Undef)` (with a Warning diagnostic) on a kernel
+/// error or any malformed shape (non-List reply, non-List row, non-numeric
+/// element). Same defensive-downgrade contract as
+/// `dispatch_point3_length_reply`.
+fn dispatch_inertia_tensor(
+    kernel: &mut dyn reify_types::GeometryKernel,
+    query: &reify_types::GeometryQuery,
+    helper_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_types::Value> {
+    let malformed = |diagnostics: &mut Vec<Diagnostic>, detail: String| {
+        diagnostics.push(Diagnostic::warning(format!(
+            "{} kernel reply malformed: {}",
+            helper_name, detail
+        )));
+        Some(reify_types::Value::Undef)
+    };
+    let reply = match kernel.query(query) {
+        Ok(v) => v,
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} kernel query failed: {}",
+                helper_name, err
+            )));
+            return Some(reify_types::Value::Undef);
+        }
+    };
+    let rows = match &reply {
+        reify_types::Value::List(rows) => rows,
+        other => return malformed(diagnostics, format!("expected Value::List, got {:?}", other)),
+    };
+    let mut tensor_rows = Vec::with_capacity(rows.len());
+    for row in rows {
+        let cols = match row {
+            reify_types::Value::List(cols) => cols,
+            other => {
+                return malformed(
+                    diagnostics,
+                    format!("expected Value::List row, got {:?}", other),
+                );
+            }
+        };
+        let mut tensor_cols = Vec::with_capacity(cols.len());
+        for col in cols {
+            // The kernel emits dimensionless Value::Real; accept a
+            // dimensionless Scalar too so the dispatch stays kernel-
+            // implementation agnostic (mirrors kernel_distance's
+            // Real|Scalar leniency).
+            let si = match col {
+                reify_types::Value::Real(v) => *v,
+                reify_types::Value::Scalar {
+                    si_value,
+                    dimension,
+                } if *dimension == reify_types::DimensionVector::DIMENSIONLESS
+                    || *dimension == reify_types::DimensionVector::MOMENT_OF_INERTIA =>
+                {
+                    *si_value
+                }
+                other => {
+                    return malformed(
+                        diagnostics,
+                        format!("expected numeric tensor element, got {:?}", other),
+                    );
+                }
+            };
+            tensor_cols.push(reify_types::Value::Scalar {
+                si_value: si,
+                dimension: reify_types::DimensionVector::MOMENT_OF_INERTIA,
+            });
+        }
+        tensor_rows.push(reify_types::Value::Tensor(tensor_cols));
+    }
+    Some(reify_types::Value::Tensor(tensor_rows))
+}
+
 /// Issue a `PointOnShape` query and unwrap to a `Value::Bool(_)`. Returns
 /// `Some(Value::Undef)` (with a Warning diagnostic) on a kernel error or a
 /// non-Bool reply.
 fn dispatch_point_on_shape(
-    kernel: &dyn reify_types::GeometryKernel,
+    kernel: &mut dyn reify_types::GeometryKernel,
     query: &reify_types::GeometryQuery,
     helper_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
@@ -2013,7 +2739,7 @@ fn dispatch_point_on_shape(
 /// `Some(Value::Undef)` (with a Warning diagnostic) on a kernel error or a
 /// non-numeric reply.
 fn dispatch_surface_angle(
-    kernel: &dyn reify_types::GeometryKernel,
+    kernel: &mut dyn reify_types::GeometryKernel,
     query: &reify_types::GeometryQuery,
     helper_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
@@ -2091,6 +2817,36 @@ fn dispatch_surface_angle(
 // precedent.
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Sub-shape kind that the kernel-aware `@face` / `@edge` dispatch path
+/// is willing to accept — a strict subset of `reify_types::SelectorKind`
+/// with `Point` excluded by construction.
+///
+/// Layer 1 (`eval_expr`) resolves `@point` selectors directly from
+/// literal coordinates and never reaches this module; Layer 2's
+/// `try_eval_ad_hoc_selector` converts the incoming `SelectorKind` via
+/// `FrameSubShapeKind::from_selector_kind` and `?`-propagates `None` for
+/// `SelectorKind::Point`, so every downstream `match` in this module
+/// only needs to handle `Face` and `Edge`. Replaces three previous
+/// `unreachable!("Point arm ...")` arms with compile-time exhaustiveness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrameSubShapeKind {
+    Face,
+    Edge,
+}
+
+impl FrameSubShapeKind {
+    /// Narrow a `SelectorKind` to a kernel-aware sub-shape kind.
+    /// Returns `None` for `SelectorKind::Point` so the caller can `?`-
+    /// propagate the early-return-None invariant established by Layer-1.
+    fn from_selector_kind(k: &reify_types::SelectorKind) -> Option<Self> {
+        match k {
+            reify_types::SelectorKind::Face => Some(FrameSubShapeKind::Face),
+            reify_types::SelectorKind::Edge => Some(FrameSubShapeKind::Edge),
+            reify_types::SelectorKind::Point => None,
+        }
+    }
+}
+
 /// Dispatch a `CompiledExprKind::AdHocSelector` expression through the engine
 /// attribute table and geometry kernel, returning the resolved `Value::Frame`
 /// (or `Some(Value::Undef)` on a diagnostic failure, or `None` if the
@@ -2117,6 +2873,7 @@ pub fn try_eval_ad_hoc_selector(
     named_steps: &HashMap<String, GeometryHandleId>,
     kernel: &mut dyn reify_types::GeometryKernel,
     table: &reify_types::TopologyAttributeTable,
+    selector_span: reify_types::SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_types::Value> {
     // (1) Must be an AdHocSelector — anything else is not applicable.
@@ -2129,10 +2886,10 @@ pub fn try_eval_ad_hoc_selector(
         _ => return None,
     };
 
-    // (2) Point arm was handled by Layer-1 (eval_expr); post-process is a no-op.
-    if *selector_kind == reify_types::SelectorKind::Point {
-        return None;
-    }
+    // (2) Convert to the narrowed FrameSubShapeKind — Point maps to None and
+    //     `?` early-returns here, keeping Point out of all downstream matches.
+    //     Layer-1 (eval_expr) already resolved @point from literal coordinates.
+    let frame_sub_shape_kind = FrameSubShapeKind::from_selector_kind(selector_kind)?;
 
     // (3) Extract the base name — must be a string literal.
     let name = resolve_string_literal_arg(base)?;
@@ -2150,9 +2907,9 @@ pub fn try_eval_ad_hoc_selector(
     };
 
     // (6) Extract sub-shape handles from the kernel.
-    let span = reify_types::SourceSpan::empty(0);
-    let candidates: Vec<GeometryHandleId> = match selector_kind {
-        reify_types::SelectorKind::Face => match kernel.extract_faces(handle) {
+    //     Exhaustive over Face/Edge — no Point arm needed (filtered above).
+    let candidates: Vec<GeometryHandleId> = match frame_sub_shape_kind {
+        FrameSubShapeKind::Face => match kernel.extract_faces(handle) {
             Ok(faces) => faces,
             Err(err) => {
                 diagnostics.push(Diagnostic::warning(format!(
@@ -2161,7 +2918,7 @@ pub fn try_eval_ad_hoc_selector(
                 return Some(reify_types::Value::Undef);
             }
         },
-        reify_types::SelectorKind::Edge => match kernel.extract_edges(handle) {
+        FrameSubShapeKind::Edge => match kernel.extract_edges(handle) {
             Ok(edges) => edges,
             Err(err) => {
                 diagnostics.push(Diagnostic::warning(format!(
@@ -2170,7 +2927,6 @@ pub fn try_eval_ad_hoc_selector(
                 return Some(reify_types::Value::Undef);
             }
         },
-        reify_types::SelectorKind::Point => unreachable!("Point arm returned None above"),
     };
 
     // (7) Build AttributeQuery with dual user_label + canonical-name role translation.
@@ -2185,7 +2941,7 @@ pub fn try_eval_ad_hoc_selector(
         table,
         &candidates,
         &query,
-        span,
+        selector_span,
         diagnostics,
     );
 
@@ -2194,7 +2950,7 @@ pub fn try_eval_ad_hoc_selector(
     //     Warning, so we only need to patch the cell value here.
     match resolution {
         crate::topology_attribute_resolver::AttributeResolution::Resolved(target_id) => {
-            construct_frame_from_kernel(target_id, selector_kind, kernel, diagnostics)
+            construct_frame_from_kernel(target_id, frame_sub_shape_kind, kernel, diagnostics)
         }
         _ => Some(reify_types::Value::Undef),
     }
@@ -2247,23 +3003,23 @@ pub fn cap_kind_translation(label: &str) -> Option<(reify_types::Role, u32)> {
 /// Query the kernel for centroid and normal/tangent of `target_id`, then
 /// construct a `Value::Frame { origin, basis }`.
 ///
-/// **Axis convention:**
-/// - For *faces*: the face normal maps to the frame's **+Z** axis.
-///   This is the standard CAD convention (Z-up frames for planar features).
-/// - For *edges*: the edge tangent also maps to the frame's **+Z** axis.
-///   Downstream consumers (sweep ports, path-mating jigs) that expect the
-///   tangent along **+X** should apply a 90° R_Y pre-rotation. This is
-///   documented here rather than baked in so that future consumers can choose
-///   the convention that suits them without the call site growing parameters.
-///   A `quaternion_from_z_to_axis` call with the tangent vector produces a
-///   basis whose +Z column equals the tangent direction.
+/// The `sub_shape_kind` parameter selects the kernel query:
+/// - `FrameSubShapeKind::Face` → `GeometryQuery::FaceNormal` (face normal maps
+///   to the frame's **+Z** axis — standard CAD convention for planar features).
+/// - `FrameSubShapeKind::Edge` → `GeometryQuery::EdgeTangent` (edge tangent
+///   maps to the frame's **+Z** axis; downstream consumers that expect the
+///   tangent along **+X** should apply a 90° R_Y pre-rotation).
+///
+/// `FrameSubShapeKind` excludes `Point` by construction, so this function
+/// never needs to handle the Point case — the type system enforces the
+/// invariant that was previously guarded by `unreachable!()` arms.
 ///
 /// On centroid failure: push a Warning and return `Some(Value::Undef)`.
 /// On normal/tangent failure: push a Warning and use identity basis, so the
 /// Frame still has a meaningful origin.
 fn construct_frame_from_kernel(
     target_id: GeometryHandleId,
-    selector_kind: &reify_types::SelectorKind,
+    sub_shape_kind: FrameSubShapeKind,
     kernel: &mut dyn reify_types::GeometryKernel,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_types::Value> {
@@ -2294,21 +3050,15 @@ fn construct_frame_from_kernel(
     };
 
     // ── Basis via FaceNormal (face) or EdgeTangent (edge) ─────────────────
-    let basis_query = match selector_kind {
-        reify_types::SelectorKind::Face => {
-            reify_types::GeometryQuery::FaceNormal(target_id)
-        }
-        reify_types::SelectorKind::Edge => {
-            reify_types::GeometryQuery::EdgeTangent(target_id)
-        }
-        reify_types::SelectorKind::Point => {
-            unreachable!("Point arm returned None before construct_frame_from_kernel is called")
-        }
+    // Exhaustive over Face/Edge — Point is excluded by the FrameSubShapeKind
+    // type, so no unreachable!() arm is needed here.
+    let basis_query = match sub_shape_kind {
+        FrameSubShapeKind::Face => reify_types::GeometryQuery::FaceNormal(target_id),
+        FrameSubShapeKind::Edge => reify_types::GeometryQuery::EdgeTangent(target_id),
     };
-    let query_label = match selector_kind {
-        reify_types::SelectorKind::Face => "FaceNormal",
-        reify_types::SelectorKind::Edge => "EdgeTangent",
-        reify_types::SelectorKind::Point => unreachable!(),
+    let query_label = match sub_shape_kind {
+        FrameSubShapeKind::Face => "FaceNormal",
+        FrameSubShapeKind::Edge => "EdgeTangent",
     };
 
     let basis = match kernel.query(&basis_query) {
@@ -6115,7 +6865,7 @@ mod tests {
         // `ClosestPointOnShape` (lib.rs JSON-Point3 encoding). The dispatcher
         // is expected to parse it and produce a `Value::Point(vec![length(...),
         // length(...), length(...)])`.
-        let kernel = MockGeometryKernel::new().with_closest_point_on_shape_result(
+        let mut kernel = MockGeometryKernel::new().with_closest_point_on_shape_result(
             body_handle,
             [10.0, 0.0, 0.0],
             reify_types::Value::String("{\"x\":5.0,\"y\":0.0,\"z\":0.0}".to_string()),
@@ -6145,7 +6895,7 @@ mod tests {
             &expr,
             &named_steps,
             &values,
-            &kernel,
+            &mut kernel,
             &mut diagnostics,
         );
 
@@ -6168,7 +6918,7 @@ mod tests {
         // form. Recording the mock under exactly this tolerance pins the contract —
         // if the dispatcher ever changes the default, the recorded reply would not
         // be served and the test would fail with `None`.
-        let kernel = MockGeometryKernel::new().with_point_on_shape_result(
+        let mut kernel = MockGeometryKernel::new().with_point_on_shape_result(
             body_handle,
             [5.0, 0.0, 0.0],
             reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
@@ -6199,7 +6949,7 @@ mod tests {
             &expr,
             &named_steps,
             &values,
-            &kernel,
+            &mut kernel,
             &mut diagnostics,
         );
 
@@ -6220,7 +6970,7 @@ mod tests {
         // Kernel returns a raw f64 (radians) — the dispatcher is expected to
         // wrap as `Value::angle(rad)` to match the cell type
         // `Type::angle()`.
-        let kernel = MockGeometryKernel::new().with_surface_angle_result(
+        let mut kernel = MockGeometryKernel::new().with_surface_angle_result(
             face_a,
             face_b,
             reify_types::Value::Real(std::f64::consts::FRAC_PI_2),
@@ -6247,7 +6997,7 @@ mod tests {
             &expr,
             &named_steps,
             &values,
-            &kernel,
+            &mut kernel,
             &mut diagnostics,
         );
 
@@ -6268,7 +7018,7 @@ mod tests {
         // consult the kernel, mirroring `try_eval_conformance_query`'s
         // literal-arg-fall-through contract.
         let inner = reify_test_support::mocks::MockGeometryKernel::new();
-        let kernel = CountingMockKernel::new(inner);
+        let mut kernel = CountingMockKernel::new(inner);
 
         let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
         let values = reify_types::ValueMap::new();
@@ -6280,7 +7030,7 @@ mod tests {
             &expr,
             &named_steps,
             &values,
-            &kernel,
+            &mut kernel,
             &mut diagnostics,
         );
 
@@ -6300,7 +7050,7 @@ mod tests {
     fn try_eval_topology_selector_is_on_literal_args_falls_through_to_none() {
         use reify_test_support::mocks::CountingMockKernel;
         let inner = reify_test_support::mocks::MockGeometryKernel::new();
-        let kernel = CountingMockKernel::new(inner);
+        let mut kernel = CountingMockKernel::new(inner);
 
         let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
         let values = reify_types::ValueMap::new();
@@ -6312,7 +7062,7 @@ mod tests {
             &expr,
             &named_steps,
             &values,
-            &kernel,
+            &mut kernel,
             &mut diagnostics,
         );
 
@@ -6332,7 +7082,7 @@ mod tests {
     fn try_eval_topology_selector_angle_between_surfaces_literal_args_falls_through_to_none() {
         use reify_test_support::mocks::CountingMockKernel;
         let inner = reify_test_support::mocks::MockGeometryKernel::new();
-        let kernel = CountingMockKernel::new(inner);
+        let mut kernel = CountingMockKernel::new(inner);
 
         let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
         let values = reify_types::ValueMap::new();
@@ -6344,7 +7094,7 @@ mod tests {
             &expr,
             &named_steps,
             &values,
-            &kernel,
+            &mut kernel,
             &mut diagnostics,
         );
 
@@ -6364,7 +7114,7 @@ mod tests {
     fn try_eval_topology_selector_non_helper_name_returns_none_no_kernel_call() {
         use reify_test_support::mocks::CountingMockKernel;
         let inner = reify_test_support::mocks::MockGeometryKernel::new();
-        let kernel = CountingMockKernel::new(inner);
+        let mut kernel = CountingMockKernel::new(inner);
 
         let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
         named_steps.insert("body".to_string(), reify_types::GeometryHandleId(7));
@@ -6393,7 +7143,7 @@ mod tests {
             &expr,
             &named_steps,
             &values,
-            &kernel,
+            &mut kernel,
             &mut diagnostics,
         );
 
@@ -6421,7 +7171,7 @@ mod tests {
         // dimensioned Scalar does not regress silently.
         let face_a = reify_types::GeometryHandleId(31);
         let face_b = reify_types::GeometryHandleId(37);
-        let kernel = MockGeometryKernel::new().with_surface_angle_result(
+        let mut kernel = MockGeometryKernel::new().with_surface_angle_result(
             face_a,
             face_b,
             reify_types::Value::Scalar {
@@ -6451,7 +7201,7 @@ mod tests {
             &expr,
             &named_steps,
             &values,
-            &kernel,
+            &mut kernel,
             &mut diagnostics,
         );
 
@@ -6481,7 +7231,7 @@ mod tests {
         use reify_test_support::mocks::MockGeometryKernel;
         let face_a = reify_types::GeometryHandleId(31);
         let face_b = reify_types::GeometryHandleId(37);
-        let kernel = MockGeometryKernel::new().with_surface_angle_result(
+        let mut kernel = MockGeometryKernel::new().with_surface_angle_result(
             face_a,
             face_b,
             reify_types::Value::Scalar {
@@ -6511,7 +7261,7 @@ mod tests {
             &expr,
             &named_steps,
             &values,
-            &kernel,
+            &mut kernel,
             &mut diagnostics,
         );
 
@@ -6583,14 +7333,14 @@ mod tests {
     #[test]
     fn try_eval_topology_selector_angle_between_surfaces_kernel_reply_scalar_wrong_dimension_emits_warning_and_returns_undef()
      {
-        let (expr, named_steps, values, kernel) = wrong_dim_scalar_fixture();
+        let (expr, named_steps, values, mut kernel) = wrong_dim_scalar_fixture();
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
         let result = super::try_eval_topology_selector(
             &expr,
             &named_steps,
             &values,
-            &kernel,
+            &mut kernel,
             &mut diagnostics,
         );
 
@@ -6652,13 +7402,13 @@ mod tests {
     #[should_panic(expected = "expected ANGLE")]
     fn try_eval_topology_selector_angle_between_surfaces_kernel_reply_scalar_wrong_dimension_panics_in_debug_build()
      {
-        let (expr, named_steps, values, kernel) = wrong_dim_scalar_fixture();
+        let (expr, named_steps, values, mut kernel) = wrong_dim_scalar_fixture();
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
         // The debug_assert! in dispatch_surface_angle's Scalar arm must panic
         // with a message containing "expected ANGLE". No assert_eq! after this
         // call — the #[should_panic] attribute drives the assertion.
-        super::try_eval_topology_selector(&expr, &named_steps, &values, &kernel, &mut diagnostics);
+        super::try_eval_topology_selector(&expr, &named_steps, &values, &mut kernel, &mut diagnostics);
     }
 
     #[test]
@@ -6670,7 +7420,7 @@ mod tests {
         // the contract against a future kernel that mistakenly returns the
         // wrong-typed Value.
         let body_handle = reify_types::GeometryHandleId(11);
-        let kernel = MockGeometryKernel::new().with_point_on_shape_result(
+        let mut kernel = MockGeometryKernel::new().with_point_on_shape_result(
             body_handle,
             [5.0, 0.0, 0.0],
             reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
@@ -6702,7 +7452,7 @@ mod tests {
             &expr,
             &named_steps,
             &values,
-            &kernel,
+            &mut kernel,
             &mut diagnostics,
         );
 
@@ -6742,13 +7492,13 @@ mod tests {
     fn try_eval_topology_selector_closest_point_malformed_json_reply_emits_warning_and_returns_undef()
      {
         use reify_test_support::mocks::MockGeometryKernel;
-        // Pin the `Err(err)` parse-failure arm of `dispatch_closest_point`: a
+        // Pin the `Err(err)` parse-failure arm of `dispatch_point3_length_reply`: a
         // kernel reply whose `Value::String(_)` payload is not parseable as a
         // JSON-Point3 must produce `Some(Value::Undef)` with a Warning
         // diagnostic naming the helper. Defends the contract against a future
         // kernel that emits a malformed JSON string.
         let body_handle = reify_types::GeometryHandleId(7);
-        let kernel = MockGeometryKernel::new().with_closest_point_on_shape_result(
+        let mut kernel = MockGeometryKernel::new().with_closest_point_on_shape_result(
             body_handle,
             [10.0, 0.0, 0.0],
             // Not a JSON-Point3 payload — should trigger the parse-failure
@@ -6780,7 +7530,7 @@ mod tests {
             &expr,
             &named_steps,
             &values,
-            &kernel,
+            &mut kernel,
             &mut diagnostics,
         );
 
@@ -7229,6 +7979,162 @@ mod tests {
         assert!(
             rotated[0].abs() < 1e-12 && (rotated[1] - 1.0).abs() < 1e-12 && rotated[2].abs() < 1e-12,
             "+Y round-trip: expected (0,1,0), got {rotated:?}"
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // FrameSubShapeKind::from_selector_kind conversion contract
+    //
+    // These tests pin the Face→Some(Face), Edge→Some(Edge), Point→None contract
+    // for the narrowed enum that eliminates `unreachable!()` arms in the
+    // kernel-aware dispatch path.  Face and Edge are the only sub-shape kinds
+    // that reach `construct_frame_from_kernel`; Point is filtered to `None` so
+    // the dispatcher's `?` early-returns without ever reaching kernel queries.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Pins the full `FrameSubShapeKind::from_selector_kind` conversion contract:
+    /// - `Face`  → `Some(Face)` — kernel path handles @face via FaceNormal query
+    /// - `Edge`  → `Some(Edge)` — kernel path handles @edge via EdgeTangent query
+    /// - `Point` → `None`       — @point is resolved by Layer-1; `?` propagates
+    ///   None without ever reaching kernel dispatch
+    #[test]
+    fn frame_sub_shape_kind_from_selector_kind_contract() {
+        assert_eq!(
+            super::FrameSubShapeKind::from_selector_kind(&reify_types::SelectorKind::Face),
+            Some(super::FrameSubShapeKind::Face),
+            "SelectorKind::Face should convert to Some(FrameSubShapeKind::Face)"
+        );
+        assert_eq!(
+            super::FrameSubShapeKind::from_selector_kind(&reify_types::SelectorKind::Edge),
+            Some(super::FrameSubShapeKind::Edge),
+            "SelectorKind::Edge should convert to Some(FrameSubShapeKind::Edge)"
+        );
+        assert!(
+            super::FrameSubShapeKind::from_selector_kind(&reify_types::SelectorKind::Point).is_none(),
+            "SelectorKind::Point should convert to None — point selectors are \
+             handled by Layer-1 eval_expr and must not reach kernel dispatch"
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // construct_frame_from_kernel with narrowed FrameSubShapeKind signature
+    //
+    // These tests exercise the two match arms inside construct_frame_from_kernel
+    // directly, locking the Face↔FaceNormal and Edge↔EdgeTangent dispatch.
+    // They are RED until step 4 changes the function signature from
+    // `selector_kind: &SelectorKind` to `sub_shape_kind: FrameSubShapeKind`.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// `construct_frame_from_kernel` with `FrameSubShapeKind::Face` must query
+    /// `GeometryQuery::FaceNormal` for the basis and return a `Value::Frame`
+    /// whose origin is the centroid and whose basis is the identity quaternion
+    /// when the face normal is +Z (the CAD standard orientation for a top cap).
+    ///
+    /// Pins the Face↔FaceNormal dispatch: the Face arm must use FaceNormal, not
+    /// EdgeTangent.  With centroid (0, 0, 0.01) and normal (0, 0, 1) (both +Z),
+    /// `quaternion_from_z_to_axis(0, 0, 1)` produces the identity quaternion
+    /// (w=1, x=0, y=0, z=0) — exact IEEE 754.
+    #[test]
+    fn construct_frame_from_kernel_face_returns_frame_from_centroid_and_face_normal() {
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let target = reify_types::GeometryHandleId(10);
+        let centroid_json =
+            reify_types::Value::String(r#"{"x":0.0,"y":0.0,"z":0.01}"#.to_string());
+        let normal_json =
+            reify_types::Value::String(r#"{"x":0.0,"y":0.0,"z":1.0}"#.to_string());
+        let mut kernel = MockGeometryKernel::new()
+            .with_centroid_result(target, centroid_json)
+            .with_face_normal_result(target, normal_json);
+        let mut diagnostics = Vec::new();
+
+        let result = super::construct_frame_from_kernel(
+            target,
+            super::FrameSubShapeKind::Face,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let Some(reify_types::Value::Frame { ref origin, ref basis }) = result else {
+            panic!(
+                "construct_frame_from_kernel(Face) should return Some(Value::Frame {{ .. }}); got {:?}",
+                result
+            );
+        };
+        assert_eq!(
+            **origin,
+            reify_types::Value::Point(vec![
+                reify_types::Value::length(0.0),
+                reify_types::Value::length(0.0),
+                reify_types::Value::length(0.01),
+            ]),
+            "Face: origin should be centroid (0m, 0m, 0.01m)"
+        );
+        assert_eq!(
+            **basis,
+            reify_types::Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+            "Face: basis should be identity (FaceNormal +Z → +Z = zero rotation)"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "Face: no diagnostics expected on clean kernel results; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// `construct_frame_from_kernel` with `FrameSubShapeKind::Edge` must query
+    /// `GeometryQuery::EdgeTangent` for the basis and return a `Value::Frame`
+    /// whose origin is the centroid and whose basis is the identity quaternion
+    /// when the edge tangent is +Z.
+    ///
+    /// Pins the Edge↔EdgeTangent dispatch: the Edge arm must use EdgeTangent,
+    /// not FaceNormal.  With centroid (0, 0, 0.005) and tangent (0, 0, 1),
+    /// `quaternion_from_z_to_axis(0, 0, 1)` produces identity — exact IEEE 754.
+    #[test]
+    fn construct_frame_from_kernel_edge_returns_frame_from_centroid_and_edge_tangent() {
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let target = reify_types::GeometryHandleId(20);
+        let centroid_json =
+            reify_types::Value::String(r#"{"x":0.0,"y":0.0,"z":0.005}"#.to_string());
+        let tangent_json =
+            reify_types::Value::String(r#"{"x":0.0,"y":0.0,"z":1.0}"#.to_string());
+        let mut kernel = MockGeometryKernel::new()
+            .with_centroid_result(target, centroid_json)
+            .with_edge_tangent_result(target, tangent_json);
+        let mut diagnostics = Vec::new();
+
+        let result = super::construct_frame_from_kernel(
+            target,
+            super::FrameSubShapeKind::Edge,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let Some(reify_types::Value::Frame { ref origin, ref basis }) = result else {
+            panic!(
+                "construct_frame_from_kernel(Edge) should return Some(Value::Frame {{ .. }}); got {:?}",
+                result
+            );
+        };
+        assert_eq!(
+            **origin,
+            reify_types::Value::Point(vec![
+                reify_types::Value::length(0.0),
+                reify_types::Value::length(0.0),
+                reify_types::Value::length(0.005),
+            ]),
+            "Edge: origin should be centroid (0m, 0m, 0.005m)"
+        );
+        assert_eq!(
+            **basis,
+            reify_types::Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+            "Edge: basis should be identity (EdgeTangent +Z → +Z = zero rotation)"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "Edge: no diagnostics expected on clean kernel results; got {:?}",
+            diagnostics
         );
     }
 }

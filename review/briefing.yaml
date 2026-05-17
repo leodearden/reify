@@ -4,6 +4,12 @@
 
 project: reify
 
+# /audit integration knob. /review Phase 2 invokes the project's /audit
+# skill (.claude/skills/audit/) as Step 1; this controls how far back it
+# looks. See dark-factory: skills/review-briefing/references/briefing-schema.md.
+audit:
+  window_days: 14   # default
+
 # Conventions and rules with teeth — violations are always bugs.
 conventions:
   - rule: "No latent untracked incomplete or ill-formed implementation chains may accumulate. Every public producer must have a real production consumer, OR a `// G-allow: <reason citing tracked task>` marker on the line directly above `pub fn`, OR be removed. Cross-PRD seams must have a named owner."

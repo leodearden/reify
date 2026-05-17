@@ -313,7 +313,7 @@ impl tracing::Subscriber for CountingSubscriber {
 ///
 /// # Release-mode asymmetry
 ///
-/// Both `WarnCountingSubscriber` and `WarnCapturingSubscriber` rely entirely on
+/// Both `WarnCountingSubscriber` and `LevelCapturingSubscriber` rely entirely on
 /// the dispatcher's `enabled()` contract: their `event()` implementations
 /// perform no defensive level re-check.  In debug builds the `debug_assert_eq!`
 /// that embeds this marker catches contract violations loudly.  In release
@@ -328,7 +328,7 @@ impl tracing::Subscriber for CountingSubscriber {
 /// `tests::event_panics_on_non_warn_when_dispatcher_contract_violated`
 /// (`WarnCountingSubscriber`) and
 /// `tests::capturing_event_panics_on_non_warn_when_dispatcher_contract_violated`
-/// (`WarnCapturingSubscriber`) both use the literal `"enabled() contract
+/// (`LevelCapturingSubscriber`) both use the literal `"enabled() contract
 /// violated"` — the same text as this const.  Because Rust requires a **string
 /// literal** (not a const expression) in the `expected` parameter of
 /// `#[should_panic]`, the sync cannot be enforced by the type system.  Instead
@@ -401,23 +401,23 @@ impl tracing::Subscriber for WarnCountingSubscriber {
 
 /// Captured output from [`warn_capturing_subscriber`]: event count, message
 /// text, and structured fields for all WARN events.
+///
+/// Wraps a [`Capture`] produced by [`CapturingSubscriberBuilder::new`] at
+/// `WARN` level, delegating all accessors to it and adding WARN-specific
+/// assertion helpers on top.
 pub struct WarnCapture {
-    count: Arc<AtomicUsize>,
-    messages: Arc<std::sync::Mutex<Vec<String>>>,
-    fields: Arc<std::sync::Mutex<Vec<HashMap<String, String>>>>,
+    inner: Capture,
 }
 
 impl WarnCapture {
     /// Return the number of WARN events that have been emitted so far.
     pub fn count(&self) -> usize {
-        // Acquire ordering pairs with the Release store in WarnCapturingSubscriber::event(),
-        // ensuring the count is fully visible once observed.
-        self.count.load(Ordering::Acquire)
+        self.inner.count()
     }
 
     /// Return a snapshot of all captured WARN event message strings.
     pub fn messages(&self) -> Vec<String> {
-        self.messages.lock().unwrap().clone()
+        self.inner.messages()
     }
 
     /// Assert that exactly `expected` WARN events were emitted.
@@ -472,7 +472,7 @@ impl WarnCapture {
     /// [`assert_any_event_has_fields`]: Self::assert_any_event_has_fields
     /// [`assert_any_event_field_contains`]: Self::assert_any_event_field_contains
     pub fn fields_by_event(&self) -> Vec<HashMap<String, String>> {
-        self.fields.lock().unwrap().clone()
+        self.inner.fields_by_event()
     }
 
     /// Assert that at least one captured WARN message equals `expected` exactly.
@@ -492,7 +492,7 @@ impl WarnCapture {
     /// message includes `expected` and the full list of captured messages for
     /// diagnostics.
     pub fn assert_any_message_equals(&self, expected: &str) {
-        let messages = self.messages.lock().unwrap();
+        let messages = self.messages();
         assert!(
             messages.iter().any(|m| m == expected),
             "no WARN message equaled {expected:?}; captured messages: {messages:?}"
@@ -583,30 +583,8 @@ impl WarnCapture {
 /// [`Arc`] so callers can inspect results after the subscriber has been
 /// installed and removed.
 pub fn warn_capturing_subscriber() -> (impl tracing::Subscriber + Send + Sync, WarnCapture) {
-    let count = Arc::new(AtomicUsize::new(0));
-    let messages = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-    let fields = Arc::new(std::sync::Mutex::new(Vec::<HashMap<String, String>>::new()));
-    let capture = WarnCapture {
-        count: Arc::clone(&count),
-        messages: Arc::clone(&messages),
-        fields: Arc::clone(&fields),
-    };
-    let subscriber = WarnCapturingSubscriber {
-        count,
-        messages,
-        fields,
-        span_counter: AtomicU64::new(1),
-    };
-    (subscriber, capture)
-}
-
-// ── WarnCapturingSubscriber (private) ─────────────────────────────────────────
-
-struct WarnCapturingSubscriber {
-    count: Arc<AtomicUsize>,
-    messages: Arc<std::sync::Mutex<Vec<String>>>,
-    fields: Arc<std::sync::Mutex<Vec<HashMap<String, String>>>>,
-    span_counter: AtomicU64,
+    let (subscriber, inner) = CapturingSubscriberBuilder::new(tracing::Level::WARN).build();
+    (subscriber, WarnCapture { inner })
 }
 
 /// A [`tracing::field::Visit`] implementation that extracts the formatted
@@ -647,13 +625,142 @@ impl tracing::field::Visit for MessageVisitor {
     }
 }
 
-impl tracing::Subscriber for WarnCapturingSubscriber {
+// ── CapturingSubscriberBuilder ────────────────────────────────────────────────
+
+/// Builder for a minimal [`tracing::Subscriber`] that captures events at a
+/// single registered level and optionally filters by target prefix.
+///
+/// `level` is a required constructor argument — there is no runtime panic path.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let (subscriber, capture) =
+///     CapturingSubscriberBuilder::new(tracing::Level::INFO)
+///         .target_prefix("reify_eval::persistent_cache::gc")
+///         .build();
+/// tracing::subscriber::with_default(subscriber, || { /* run code */ });
+/// let count = capture.count();
+/// let msgs = capture.messages();
+/// let fields = capture.fields_by_event();
+/// ```
+pub struct CapturingSubscriberBuilder {
+    level: tracing::Level,
+    target_prefix: Option<String>,
+}
+
+impl CapturingSubscriberBuilder {
+    /// Create a new builder for the given `level` with no target-prefix filter.
+    pub fn new(level: tracing::Level) -> Self {
+        Self {
+            level,
+            target_prefix: None,
+        }
+    }
+
+    /// Set an optional target-prefix filter.  When set, only events whose
+    /// `metadata().target()` starts with `prefix` are recorded; the filter is
+    /// applied in `enabled()` alongside the level check, so non-matching
+    /// callsites are rejected at the dispatcher gate and never reach `event()`.
+    pub fn target_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.target_prefix = Some(prefix.into());
+        self
+    }
+
+    /// Build the subscriber and return it alongside a [`Capture`] handle.
+    pub fn build(self) -> (impl tracing::Subscriber + Send + Sync, Capture) {
+        let count = Arc::new(AtomicUsize::new(0));
+        let messages = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let fields = Arc::new(std::sync::Mutex::new(Vec::<HashMap<String, String>>::new()));
+
+        let capture = Capture {
+            count: Arc::clone(&count),
+            messages: Arc::clone(&messages),
+            fields: Arc::clone(&fields),
+        };
+        let subscriber = LevelCapturingSubscriber {
+            level: self.level,
+            target_prefix: self.target_prefix,
+            count,
+            messages,
+            fields,
+            span_counter: AtomicU64::new(1),
+        };
+        (subscriber, capture)
+    }
+}
+
+// ── Capture (public) ──────────────────────────────────────────────────────────
+
+/// Captured output from [`CapturingSubscriberBuilder`]: event count, message
+/// text, and structured fields for all captured events.
+pub struct Capture {
+    count: Arc<AtomicUsize>,
+    messages: Arc<std::sync::Mutex<Vec<String>>>,
+    fields: Arc<std::sync::Mutex<Vec<HashMap<String, String>>>>,
+}
+
+impl Capture {
+    /// Return the number of events that have been captured so far.
+    ///
+    /// Uses `Acquire` ordering, pairing with the `Release` store that
+    /// finalises each event in [`LevelCapturingSubscriber::event()`].
+    /// The count is incremented only *after* the event's message and fields
+    /// have been pushed to the shared vectors, so `count() == N` implies
+    /// `messages()[N-1]` is already visible.
+    pub fn count(&self) -> usize {
+        self.count.load(Ordering::Acquire)
+    }
+
+    /// Return a snapshot of all captured event message strings.
+    pub fn messages(&self) -> Vec<String> {
+        self.messages.lock().unwrap().clone()
+    }
+
+    /// Return a snapshot of all captured event field maps, one per event.
+    ///
+    /// Each element is a [`HashMap`] of field name → field value (as a string)
+    /// for the corresponding event.  The `message` field is **not** included in
+    /// these maps — use [`messages()`](Self::messages) for the message text.
+    ///
+    /// Field value format follows the same contract as [`WarnCapture::fields_by_event`]:
+    /// `&str` fields are stored verbatim; `%Display` and `?Debug` fields are stored
+    /// as `format!("{value:?}")`.
+    pub fn fields_by_event(&self) -> Vec<HashMap<String, String>> {
+        self.fields.lock().unwrap().clone()
+    }
+}
+
+// ── LevelCapturingSubscriber (private) ───────────────────────────────────────
+
+struct LevelCapturingSubscriber {
+    level: tracing::Level,
+    target_prefix: Option<String>,
+    count: Arc<AtomicUsize>,
+    messages: Arc<std::sync::Mutex<Vec<String>>>,
+    fields: Arc<std::sync::Mutex<Vec<HashMap<String, String>>>>,
+    /// Monotonically increasing counter used to generate unique span IDs.
+    span_counter: AtomicU64,
+}
+
+impl tracing::Subscriber for LevelCapturingSubscriber {
     fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-        metadata.level() == &tracing::Level::WARN
+        // Accept only events at the registered level; all other levels are
+        // rejected at the gate so they never reach event().  The optional
+        // target-prefix filter is applied here alongside the level check so
+        // that non-matching targets are also rejected at the callsite gate
+        // rather than silently discarded inside event().
+        metadata.level() == &self.level
+            && match &self.target_prefix {
+                Some(prefix) => metadata.target().starts_with(prefix.as_str()),
+                None => true,
+            }
     }
 
     fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        // Relaxed ordering: uniqueness is all we need; no memory sync required.
         let id = self.span_counter.fetch_add(1, Ordering::Relaxed);
+        // Safety: Id::from_u64 requires non-zero; counter starts at 1.
         tracing::span::Id::from_u64(id)
     }
 
@@ -663,17 +770,18 @@ impl tracing::Subscriber for WarnCapturingSubscriber {
 
     fn event(&self, event: &tracing::Event<'_>) {
         // The tracing dispatcher only calls event() when enabled() returned true;
-        // our enabled() accepts only WARN, so only WARN events should reach here.
-        // See release-mode asymmetry note on `CONTRACT_VIOLATION_MARKER`.
+        // our enabled() accepts only events at self.level, so only events at
+        // that level should reach here.  See release-mode asymmetry note on
+        // `CONTRACT_VIOLATION_MARKER`.
         debug_assert_eq!(
             event.metadata().level(),
-            &tracing::Level::WARN,
-            "WarnCapturingSubscriber: event() reached with non-WARN — {}",
+            &self.level,
+            "LevelCapturingSubscriber: event() reached at unexpected level {:?} \
+             (registered {:?}) — {}",
+            event.metadata().level(),
+            self.level,
             CONTRACT_VIOLATION_MARKER
         );
-        // Release ordering pairs with Acquire loads in assertion helpers and
-        // WarnCapture::count(), ensuring all prior memory writes are visible.
-        self.count.fetch_add(1, Ordering::Release);
         let mut visitor = MessageVisitor {
             message: String::new(),
             fields: HashMap::new(),
@@ -681,6 +789,10 @@ impl tracing::Subscriber for WarnCapturingSubscriber {
         event.record(&mut visitor);
         self.messages.lock().unwrap().push(visitor.message);
         self.fields.lock().unwrap().push(visitor.fields);
+        // Increment count *after* pushing to the vectors so that an Acquire
+        // load of count() is a fence for the vector contents (Release pairs
+        // with Capture::count()'s Acquire load).
+        self.count.fetch_add(1, Ordering::Release);
     }
 
     fn enter(&self, _span: &tracing::span::Id) {}
@@ -1195,12 +1307,14 @@ mod tests {
         );
     }
 
-    /// Calling `event()` directly on `WarnCapturingSubscriber` with a non-WARN
-    /// event — bypassing the tracing dispatcher's `enabled()` gate — must panic
-    /// loudly in debug builds rather than silently capturing the event.
+    /// Calling `event()` on the `LevelCapturingSubscriber` reached through
+    /// `warn_capturing_subscriber()` with a non-WARN event — bypassing the
+    /// tracing dispatcher's `enabled()` gate — must panic loudly in debug builds
+    /// rather than silently capturing the event.
     ///
-    /// Mirrors `event_panics_on_non_warn_when_dispatcher_contract_violated` but
-    /// exercises `WarnCapturingSubscriber::event()`'s `debug_assert_eq!`.
+    /// Mirrors `capturing_subscriber_event_panics_on_unexpected_level_when_contract_violated`
+    /// but exercises `LevelCapturingSubscriber::event()`'s `debug_assert_eq!`
+    /// on the WARN-registered path via `warn_capturing_subscriber()`.
     /// The `#[should_panic(expected = "enabled() contract violated")]` attribute
     /// uses [`CONTRACT_VIOLATION_MARKER`] as the canonical anchor substring.
     ///
@@ -1227,6 +1341,41 @@ mod tests {
 
         tracing::subscriber::with_default(subscriber, || {
             tracing::error!("non-WARN event delivered directly");
+        });
+    }
+
+    /// Calling `event()` on a `CapturingSubscriberBuilder`-built subscriber with
+    /// a non-registered-level event — bypassing the dispatcher's `enabled()` gate
+    /// via a forced-true `enabled_fn` — must panic in debug builds via the
+    /// parameterized `debug_assert_eq!` on `self.level`.
+    ///
+    /// Mirrors `capturing_event_panics_on_non_warn_when_dispatcher_contract_violated`
+    /// but exercises `LevelCapturingSubscriber::event()`'s level-parameterized
+    /// `debug_assert_eq!` on the INFO builder path.
+    ///
+    /// # Release-build note
+    ///
+    /// `debug_assert_eq!` is compiled out in release builds, so no panic would
+    /// occur there.  The `#[cfg(debug_assertions)]` gate prevents this test from
+    /// incorrectly failing under `#[should_panic]` in release mode.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "enabled() contract violated")]
+    fn capturing_subscriber_event_panics_on_unexpected_level_when_contract_violated() {
+        use crate::CapturingSubscriberBuilder;
+
+        let (inner, _capture) = CapturingSubscriberBuilder::new(tracing::Level::INFO).build();
+
+        // enabled_fn always returns true, bypassing the INFO-only filter so
+        // non-INFO events (here WARN) reach inner.event() directly.
+        let subscriber = ForwardingSubscriber {
+            inner,
+            enabled_fn: |_s: &_, _meta| true,
+            event_fn: |s: &_, event| s.event(event),
+        };
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!("non-INFO event delivered directly");
         });
     }
 
@@ -1401,7 +1550,7 @@ mod tests {
     /// - `event_panics_on_non_warn_when_dispatcher_contract_violated`
     ///   (`WarnCountingSubscriber`)
     /// - `capturing_event_panics_on_non_warn_when_dispatcher_contract_violated`
-    ///   (`WarnCapturingSubscriber`)
+    ///   (`LevelCapturingSubscriber`)
     ///
     /// # Sync requirement
     ///
@@ -1669,6 +1818,225 @@ mod tests {
         // The emitted message contains the expected string but is not equal to
         // it; assert_any_message_equals must reject it.
         capture.assert_any_message_equals("lock poisoned, recovering");
+    }
+
+    // ── CapturingSubscriberBuilder tests ──────────────────────────────────────
+
+    /// `CapturingSubscriberBuilder` captures only events at the registered level
+    /// and rejects all other levels.
+    ///
+    /// Installs an INFO-level subscriber; emits INFO, WARN, DEBUG, and ERROR
+    /// events; asserts count==1 and messages contains only "captured".
+    #[test]
+    fn capturing_subscriber_captures_target_level_rejects_others() {
+        use crate::prime_tracing_callsite_cache;
+        use crate::CapturingSubscriberBuilder;
+
+        prime_tracing_callsite_cache();
+
+        let (subscriber, capture) =
+            CapturingSubscriberBuilder::new(tracing::Level::INFO).build();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!("captured");
+            tracing::warn!("ignored_warn");
+            tracing::debug!("ignored_debug");
+            tracing::error!("ignored_err");
+        });
+
+        assert_eq!(capture.count(), 1, "only INFO events should be captured");
+        assert_eq!(
+            capture.messages(),
+            vec!["captured".to_string()],
+            "only the INFO message should appear"
+        );
+    }
+
+    /// `CapturingSubscriberBuilder` with `target_prefix` only captures events
+    /// whose target starts with the given prefix.
+    ///
+    /// Emits two INFO events — one with a matching target and one without;
+    /// asserts count==1 and messages contains only the matching event.
+    #[test]
+    fn capturing_subscriber_filters_by_target_prefix() {
+        use crate::prime_tracing_callsite_cache;
+        use crate::CapturingSubscriberBuilder;
+
+        prime_tracing_callsite_cache();
+
+        let (subscriber, capture) = CapturingSubscriberBuilder::new(tracing::Level::INFO)
+            .target_prefix("reify_constraints")
+            .build();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(target: "reify_constraints::solver", "match");
+            tracing::info!(target: "argmin::core", "skip");
+        });
+
+        assert_eq!(capture.count(), 1, "only the matching-target event should be captured");
+        assert_eq!(
+            capture.messages(),
+            vec!["match".to_string()],
+            "only the matching-target message should appear"
+        );
+    }
+
+    /// `Capture::fields_by_event()` returns structured field maps per event,
+    /// covering all three `MessageVisitor` recording branches on the
+    /// consolidated single Capture event() path:
+    ///
+    /// * **`&str`-typed fields** (`kind = "summary"`) — stored verbatim via
+    ///   `record_str`, no decoration.
+    /// * **`u64` via `record_debug`** (`evicted_count = 2u64`) — stored as
+    ///   `format!("{value:?}")`, which produces bare decimal digits.
+    /// * **`%Display` fields** (`disp = %"display value"`) — tracing's newtype
+    ///   makes `Debug` delegate to `Display`, so stored value equals the Display
+    ///   output with no extra decoration.
+    /// * **`?Debug` fields** (`dbg = ?vec![1i32, 2, 3]`) — stored as
+    ///   `format!("{value:?}")`, which includes brackets: `"[1, 2, 3]"`.
+    ///
+    /// This test is the final acceptance lock: a future reimplementation of
+    /// `Capture::event()` that broke `%Display` or `?Debug` routing through
+    /// the shared `MessageVisitor` would fail here.
+    #[test]
+    fn capturing_subscriber_captures_structured_fields() {
+        use crate::prime_tracing_callsite_cache;
+        use crate::CapturingSubscriberBuilder;
+
+        prime_tracing_callsite_cache();
+
+        let (subscriber, capture) =
+            CapturingSubscriberBuilder::new(tracing::Level::INFO).build();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(evicted_count = 2u64, kind = "summary", "evict complete");
+            tracing::info!(disp = %"display value", dbg = ?vec![1i32, 2, 3], "second event");
+        });
+
+        assert_eq!(
+            capture.messages(),
+            vec!["evict complete".to_string(), "second event".to_string()],
+            "message text mismatch"
+        );
+
+        let all_fields = capture.fields_by_event();
+        assert_eq!(all_fields.len(), 2, "expected exactly two events' fields");
+
+        // ── event 0: &str and u64 branches ───────────────────────────────────
+        let f0 = &all_fields[0];
+
+        assert_eq!(
+            f0.get("kind").map(|s| s.as_str()),
+            Some("summary"),
+            "kind field: raw &str should be stored verbatim"
+        );
+        assert_eq!(
+            f0.get("evicted_count").map(|s| s.as_str()),
+            Some("2"),
+            "evicted_count field: u64 via record_debug should produce bare digits"
+        );
+
+        // ── event 1: %Display and ?Debug branches ─────────────────────────────
+        let f1 = &all_fields[1];
+
+        assert_eq!(
+            f1.get("disp").map(|s| s.as_str()),
+            Some("display value"),
+            "%Display field: stored value must equal the Display output (no decoration)"
+        );
+        assert_eq!(
+            f1.get("dbg").map(|s| s.as_str()),
+            Some("[1, 2, 3]"),
+            "?Debug Vec<i32> field: stored as format!(\"{{:?}}\") — brackets included"
+        );
+    }
+
+    /// `CapturingSubscriberBuilder` level filter dominates the target-prefix
+    /// filter: a WARN event whose target matches the prefix is still dropped
+    /// when the subscriber is registered for INFO only.
+    ///
+    /// Registers `CapturingSubscriberBuilder::new(Level::INFO).target_prefix("foo")`;
+    /// emits one `INFO/foo` event (expected kept) and one `WARN/foo` event
+    /// (expected dropped). Asserts count==1, pinning the documented contract that
+    /// the level gate in `enabled()` applies regardless of the target.
+    #[test]
+    fn capturing_subscriber_level_dominates_over_target_prefix() {
+        use crate::prime_tracing_callsite_cache;
+        use crate::CapturingSubscriberBuilder;
+
+        prime_tracing_callsite_cache();
+
+        let (subscriber, capture) = CapturingSubscriberBuilder::new(tracing::Level::INFO)
+            .target_prefix("foo")
+            .build();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(target: "foo::bar", "kept");
+            tracing::warn!(target: "foo::bar", "dropped");
+        });
+
+        assert_eq!(
+            capture.count(),
+            1,
+            "only the INFO/foo event should be captured; level filter dominates over target prefix"
+        );
+        assert_eq!(
+            capture.messages(),
+            vec!["kept".to_string()],
+            "only the INFO message should appear; WARN/foo must be dropped"
+        );
+    }
+
+    /// A non-matching-target / matching-level event must be rejected at
+    /// `enabled()`, not reach `event()`.
+    ///
+    /// Builds a `CapturingSubscriberBuilder` with `target_prefix("reify_constraints")`
+    /// and wraps it in `ForwardingSubscriber` so we can count how many times
+    /// the tracing dispatcher actually calls `event()`.  The `enabled_fn`
+    /// delegates to the inner subscriber so its filter is exercised; the
+    /// `event_fn` bumps `dispatch_count` before delegating.
+    ///
+    /// Emits one `INFO` event with a non-matching target (`"argmin::core"`).
+    /// Before the fix, `LevelCapturingSubscriber::enabled()` only checks level
+    /// and returns `true`, so the dispatcher calls `event()` and
+    /// `dispatch_count` becomes 1 (RED).  After moving the target-prefix check
+    /// into `enabled()`, `dispatch_count` stays 0 (GREEN).
+    #[test]
+    fn capturing_subscriber_target_prefix_rejected_at_enabled() {
+        use crate::prime_tracing_callsite_cache;
+        use crate::CapturingSubscriberBuilder;
+
+        prime_tracing_callsite_cache();
+
+        let (inner, _capture) = CapturingSubscriberBuilder::new(tracing::Level::INFO)
+            .target_prefix("reify_constraints")
+            .build();
+        let dispatch_count = Arc::new(AtomicUsize::new(0));
+        let dispatch_count_clone = Arc::clone(&dispatch_count);
+
+        // ForwardingSubscriber delegates enabled() to the inner subscriber so
+        // its filter is exercised.  The event_fn increments dispatch_count
+        // before delegating — it is only reached when enabled() returned true.
+        let subscriber = ForwardingSubscriber {
+            inner,
+            enabled_fn: |s: &_, meta| s.enabled(meta),
+            event_fn: move |s: &_, event| {
+                dispatch_count_clone.fetch_add(1, Ordering::Relaxed);
+                s.event(event);
+            },
+        };
+
+        tracing::subscriber::with_default(subscriber, || {
+            // Matching level (INFO) but non-matching target — must be rejected
+            // at enabled(), not reach event().
+            tracing::info!(target: "argmin::core", "skip");
+        });
+
+        assert_eq!(
+            dispatch_count.load(Ordering::Relaxed),
+            0,
+            "a non-matching-target event must be rejected at enabled(), not reach event()"
+        );
     }
 
     // ── WarnCapture::assert_any_event_field_contains tests ────────────────────

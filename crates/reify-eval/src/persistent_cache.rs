@@ -1391,11 +1391,11 @@ pub fn evict_over_cap(
             // Any other I/O error propagates.
             //
             // Race site #1 — concurrent eviction: another reify process may
-            // have removed this .bin between read_dir and here (see the remove
-            // loop comment at ~line 1446 for the same race on the eviction
-            // side).  On NotFound from either metadata() or modified(), skip
-            // to the next file_entry rather than propagating the transient
-            // error.
+            // have removed this .bin between read_dir and here (see the
+            // `we_removed_bin` match in the remove loop below for the same
+            // race on the eviction side).  On NotFound from metadata(),
+            // skip to the next file_entry rather than propagating the
+            // transient error.
             let last_access = match read_sidecar_mtime(&meta_path) {
                 Ok(t) => t,
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -1403,11 +1403,7 @@ pub fn evict_over_cap(
                     // also gone (concurrent eviction hit after read_dir),
                     // continue to the next file_entry.
                     match std::fs::metadata(&file_path) {
-                        Ok(m) => match m.modified() {
-                            Ok(t) => t,
-                            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
-                            Err(e) => return Err(e),
-                        },
+                        Ok(m) => m.modified()?,
                         Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
                         Err(e) => return Err(e),
                     }
@@ -1429,7 +1425,8 @@ pub fn evict_over_cap(
             // read_dir listed it but before we open it (race site #2), or in
             // the narrow window between open(2) and fstat(2) (race site #3).
             // Both cases: continue to the next file_entry.  Mirrors race site
-            // #1 and the remove-loop suppression at ~line 1446.
+            // #1 above and the `we_removed_bin` NotFound suppression in the
+            // eviction loop below.
             use std::fs::File;
             use std::io::BufReader;
             let f = match File::open(&file_path) {
@@ -4781,6 +4778,91 @@ mod tests {
         assert_eq!(report.evicted_count, 1, "exactly one entry must be evicted");
     }
 
+    // Shared fixture for both dangling-symlink race-site tests below.
+    //
+    // with_meta = true  → race site #2: sidecar present, File::open(.bin) returns NotFound
+    // with_meta = false → race site #1: sidecar absent, metadata(.bin) returns NotFound
+    //
+    // Creates a temp-dir with three hash entries for `eng`:
+    //   inp1 — phantom: shard dir + dangling .bin symlink + optional .meta
+    //   inp2, inp3 — real entries written via write_entry
+    // Sets cap = size_of(inp2) (one entry), calls evict_over_cap, and asserts
+    // the four shared invariants (a)–(d).
+    #[cfg(unix)]
+    fn run_dangling_symlink_race_scenario(
+        with_meta: bool,
+        eng: &str,
+        inp1: &str,
+        inp2: &str,
+        inp3: &str,
+    ) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+
+        let v = make_sample_result();
+        write_entry(root, eng, inp2, &v).unwrap();
+        write_entry(root, eng, inp3, &v).unwrap();
+
+        // Measure size from a real entry (all entries written with the same
+        // value, so they serialize to identical sizes).
+        let sz = std::fs::metadata(entry_bin_path(root, eng, inp2))
+            .unwrap()
+            .len();
+
+        // Plant inp1 to simulate the concurrent-removal race:
+        //   1. Create the shard dir (same layout as write_entry).
+        //   2. Conditionally create a .meta sidecar: with_meta = true plants a
+        //      real .meta so read_sidecar_mtime succeeds (race window is
+        //      File::open of .bin); with_meta = false leaves no .meta so the
+        //      sidecar-absent fallback path is exercised instead.
+        //   3. Create a dangling symlink as .bin: read_dir sees the entry, but
+        //      the subsequent open/metadata call follows the symlink and returns
+        //      ENOENT (NotFound) because the target does not exist.
+        let shard1 = shard_dir(root, eng, inp1);
+        std::fs::create_dir_all(&shard1).unwrap();
+        if with_meta {
+            std::fs::write(entry_meta_path(root, eng, inp1), b"").unwrap();
+        }
+        let bin1 = entry_bin_path(root, eng, inp1);
+        std::os::unix::fs::symlink("/nonexistent/reify-race-simulation", &bin1).unwrap();
+
+        // cap = sz (one entry): walker skips the dangling-symlink inp1 and
+        // observes two real candidates (inp2, inp3) summing to 2*sz > cap,
+        // so exactly one must be evicted to bring remaining ≤ cap.
+        let cap = sz;
+
+        // (a) Must not propagate Err(NotFound).
+        let report = evict_over_cap(root, eng, cap)
+            .expect("evict_over_cap must not propagate NotFound on dangling-symlink phantom entry");
+
+        // (b) Exactly one eviction — the phantom inp1 was skipped, not counted.
+        assert_eq!(report.evicted_count, 1, "evicted_count must be 1");
+
+        // (c) evicted_bytes must equal the size of the one real .bin removed.
+        assert_eq!(
+            report.evicted_bytes, sz,
+            "evicted_bytes must equal one entry's size"
+        );
+
+        // (d) On-disk .bin total (metadata() on a dangling symlink returns
+        //     NotFound and is filtered out by .ok()) must be ≤ cap.
+        let on_disk: u64 = [inp1, inp2, inp3]
+            .iter()
+            .filter_map(|inp| {
+                std::fs::metadata(entry_bin_path(root, eng, inp))
+                    .ok()
+                    .map(|m| m.len())
+            })
+            .sum();
+        assert_eq!(
+            on_disk,
+            cap,
+            "on-disk .bin total {} must equal cap {} (dangling symlink filtered; exactly one real entry survives)",
+            on_disk,
+            cap
+        );
+    }
+
     /// Step-1 RED: verify that `evict_over_cap` tolerates `NotFound` in the
     /// candidate-walker loop when a concurrent reify-process has removed a
     /// candidate's `.bin` between the `read_dir` scan and the `File::open` at
@@ -4799,75 +4881,12 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn evict_over_cap_tolerates_notfound_in_candidate_walker_when_bin_concurrently_removed() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let root = tmp.path();
-        let eng = "ff00000000000000000000000000ffff";
-        // inp1: .bin is a dangling symlink — read_dir lists it, File::open → NotFound
-        let inp1 = "cc00000000000000000000000000cccc";
-        let inp2 = "dd00000000000000000000000000dddd"; // real entry
-        let inp3 = "ee00000000000000000000000000eeee"; // real entry
-
-        let v = make_sample_result();
-        write_entry(root, eng, inp2, &v).unwrap();
-        write_entry(root, eng, inp3, &v).unwrap();
-
-        // Measure size from a real entry (all entries written with the same
-        // value, so they serialize to identical sizes).
-        let sz = std::fs::metadata(entry_bin_path(root, eng, inp2))
-            .unwrap()
-            .len();
-
-        // Plant inp1 to simulate the concurrent-removal race:
-        //   1. Create the shard dir (same layout as write_entry).
-        //   2. Create a real .meta so read_sidecar_mtime succeeds — the race
-        //      window is specifically File::open of the .bin, not the sidecar.
-        //   3. Create a dangling symlink as .bin: read_dir sees the entry, but
-        //      File::open follows it and returns ENOENT (NotFound) because the
-        //      symlink target does not exist.  This is the exact errno the kernel
-        //      returns when another process removes the file after readdir(3)
-        //      returns its entry but before the open(2) call.
-        let shard1 = shard_dir(root, eng, inp1);
-        std::fs::create_dir_all(&shard1).unwrap();
-        std::fs::write(entry_meta_path(root, eng, inp1), b"").unwrap();
-        let bin1 = entry_bin_path(root, eng, inp1);
-        std::os::unix::fs::symlink("/nonexistent/reify-race-simulation", &bin1).unwrap();
-
-        // cap = sz (one entry): the walker encounters the dangling-symlink inp1
-        // (currently crashes with NotFound; after fix it skips it) and observes
-        // two real candidates (inp2, inp3) summing to 2*sz > cap, so exactly
-        // one must be evicted to bring remaining ≤ cap.
-        let cap = sz;
-
-        // (a) Must not propagate Err(NotFound).
-        let report = evict_over_cap(root, eng, cap)
-            .expect("evict_over_cap must not propagate NotFound when .bin is concurrently removed");
-
-        // (b) Exactly one eviction — credit only THIS call's work; the phantom
-        //     inp1 was skipped and is NOT counted.
-        assert_eq!(report.evicted_count, 1, "evicted_count must be 1");
-
-        // (c) evicted_bytes must equal the size of the one real .bin THIS call
-        //     removed, not including the phantom inp1.
-        assert_eq!(
-            report.evicted_bytes, sz,
-            "evicted_bytes must equal one entry's size"
-        );
-
-        // (d) On-disk .bin total (real files only; metadata() on a dangling
-        //     symlink returns NotFound and is filtered out) must be ≤ cap.
-        let on_disk: u64 = [inp1, inp2, inp3]
-            .iter()
-            .filter_map(|inp| {
-                std::fs::metadata(entry_bin_path(root, eng, inp))
-                    .ok()
-                    .map(|m| m.len())
-            })
-            .sum();
-        assert!(
-            on_disk <= cap,
-            "on-disk .bin total {} must be ≤ cap {}",
-            on_disk,
-            cap
+        run_dangling_symlink_race_scenario(
+            true, // with_meta: race site #2 — sidecar present, File::open returns NotFound
+            "ff00000000000000000000000000ffff",
+            "cc00000000000000000000000000cccc",
+            "dd00000000000000000000000000dddd",
+            "ee00000000000000000000000000eeee",
         );
     }
 
@@ -4884,74 +4903,18 @@ mod tests {
     ///
     /// This complements step-1 (`evict_over_cap_tolerates_notfound_in_candidate_walker_when_bin_concurrently_removed`),
     /// which covers race site #2 (sidecar present, `File::open` returns NotFound).
-    /// Here the sidecar is intentionally absent, exercising the distinct
+    /// Here the sidecar is intentionally absent, exercising the
     /// `Err(e) if e.kind() == io::ErrorKind::NotFound => continue` arm inside
-    /// the sidecar-absent branch at ~line 1390.
+    /// the sidecar-absent fallback of `evict_over_cap`'s candidate walker.
     #[cfg(unix)]
     #[test]
     fn evict_over_cap_tolerates_notfound_when_both_meta_and_bin_concurrently_removed() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let root = tmp.path();
-        let eng = "gg00000000000000000000000000gggg";
-        // inp1: no .meta + dangling .bin symlink → exercises race site #1
-        // (sidecar-absent fallback: metadata(&file_path) returns NotFound).
-        let inp1 = "hh00000000000000000000000000hhhh";
-        let inp2 = "ii00000000000000000000000000iiii"; // real entry
-        let inp3 = "jj00000000000000000000000000jjjj"; // real entry
-
-        let v = make_sample_result();
-        write_entry(root, eng, inp2, &v).unwrap();
-        write_entry(root, eng, inp3, &v).unwrap();
-
-        let sz = std::fs::metadata(entry_bin_path(root, eng, inp2))
-            .unwrap()
-            .len();
-
-        // Plant inp1 to exercise race site #1:
-        //   - NO .meta written → read_sidecar_mtime returns NotFound (sidecar absent).
-        //   - Dangling symlink as .bin → std::fs::metadata follows the symlink and
-        //     returns NotFound because the target does not exist.
-        //   Together these trigger `Err(e) if e.kind() == io::ErrorKind::NotFound =>
-        //   continue` inside the sidecar-absent fallback, the branch added at race
-        //   site #1.
-        let shard1 = shard_dir(root, eng, inp1);
-        std::fs::create_dir_all(&shard1).unwrap();
-        // Intentionally NO .meta for inp1 — the sidecar-absent code path.
-        let bin1 = entry_bin_path(root, eng, inp1);
-        std::os::unix::fs::symlink("/nonexistent/reify-race-simulation-site1", &bin1).unwrap();
-
-        // cap = sz (one entry): walker skips inp1 (both meta absent + bin dangling),
-        // observes two real candidates (inp2, inp3) summing to 2*sz > cap, evicts one.
-        let cap = sz;
-
-        // (a) Must not propagate Err(NotFound).
-        let report = evict_over_cap(root, eng, cap).expect(
-            "evict_over_cap must not propagate NotFound when both .meta is absent and .bin is concurrently removed",
-        );
-
-        // (b) Exactly one eviction — the phantom inp1 was skipped, not counted.
-        assert_eq!(report.evicted_count, 1, "evicted_count must be 1");
-
-        // (c) evicted_bytes must equal the size of the one real .bin removed.
-        assert_eq!(
-            report.evicted_bytes, sz,
-            "evicted_bytes must equal one entry's size"
-        );
-
-        // (d) On-disk .bin total (real files only; dangling symlink not measured) ≤ cap.
-        let on_disk: u64 = [inp2, inp3]
-            .iter()
-            .filter_map(|inp| {
-                std::fs::metadata(entry_bin_path(root, eng, inp))
-                    .ok()
-                    .map(|m| m.len())
-            })
-            .sum();
-        assert!(
-            on_disk <= cap,
-            "on-disk .bin total {} must be ≤ cap {}",
-            on_disk,
-            cap
+        run_dangling_symlink_race_scenario(
+            false, // with_meta: race site #1 — sidecar absent, metadata() returns NotFound
+            "gg00000000000000000000000000gggg",
+            "hh00000000000000000000000000hhhh",
+            "ii00000000000000000000000000iiii",
+            "jj00000000000000000000000000jjjj",
         );
     }
 
@@ -5116,77 +5079,6 @@ mod tests {
 
     // ── evict_over_cap tracing tests ─────────────────────────────────────────
 
-    /// Inline subscriber that captures INFO events at the
-    /// `reify_eval::persistent_cache::gc` target.
-    ///
-    /// Mirrors the structure of `WarnCapturingSubscriber` in reify-test-support
-    /// but is defined inline to keep the scope narrow — no additions to the
-    /// test-support API needed for one field-verification test.
-    ///
-    /// Field capture contract (mirrors MessageVisitor in tracing_support.rs):
-    /// - `record_str`:   `message` stored raw; other `&str` fields stored raw.
-    /// - `record_debug`: all fields stored as `format!("{v:?}")`.  For `%Display`
-    ///   fields (tracing wraps them in a Display newtype whose Debug delegates to
-    ///   Display), the result equals the Display output.  For numeric `u64` fields
-    ///   (no sigil = Debug encoding), `{v:?}` gives the bare decimal digits.
-    struct InfoCapturingSubscriber {
-        messages: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-        fields:
-            std::sync::Arc<std::sync::Mutex<Vec<std::collections::HashMap<String, String>>>>,
-        span_counter: std::sync::atomic::AtomicU64,
-    }
-
-    struct InfoFieldVisitor {
-        message: String,
-        fields: std::collections::HashMap<String, String>,
-    }
-
-    impl tracing::field::Visit for InfoFieldVisitor {
-        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-            if field.name() == "message" {
-                self.message = value.to_owned();
-            } else {
-                self.fields.insert(field.name().to_owned(), value.to_owned());
-            }
-        }
-        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-            if field.name() == "message" {
-                self.message = format!("{value:?}");
-            } else {
-                self.fields
-                    .insert(field.name().to_owned(), format!("{value:?}"));
-            }
-        }
-    }
-
-    impl tracing::Subscriber for InfoCapturingSubscriber {
-        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-            metadata.level() == &tracing::Level::INFO
-                && metadata
-                    .target()
-                    .starts_with("reify_eval::persistent_cache::gc")
-        }
-        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-            let id = self
-                .span_counter
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            tracing::span::Id::from_u64(id)
-        }
-        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
-        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
-        fn event(&self, event: &tracing::Event<'_>) {
-            let mut visitor = InfoFieldVisitor {
-                message: String::new(),
-                fields: std::collections::HashMap::new(),
-            };
-            event.record(&mut visitor);
-            self.messages.lock().unwrap().push(visitor.message);
-            self.fields.lock().unwrap().push(visitor.fields);
-        }
-        fn enter(&self, _: &tracing::span::Id) {}
-        fn exit(&self, _: &tracing::span::Id) {}
-    }
-
     /// Step-1 RED: `evict_over_cap` must emit exactly one INFO event at the
     /// `reify_eval::persistent_cache::gc` target when eviction actually runs,
     /// with message `"evict_over_cap complete"` and structured fields
@@ -5217,15 +5109,10 @@ mod tests {
             .len();
         let cap = sz + sz / 2;
 
-        let messages = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-        let fields = std::sync::Arc::new(std::sync::Mutex::new(
-            Vec::<std::collections::HashMap<String, String>>::new(),
-        ));
-        let subscriber = InfoCapturingSubscriber {
-            messages: messages.clone(),
-            fields: fields.clone(),
-            span_counter: std::sync::atomic::AtomicU64::new(1),
-        };
+        let (subscriber, capture) =
+            reify_test_support::CapturingSubscriberBuilder::new(tracing::Level::INFO)
+                .target_prefix("reify_eval::persistent_cache::gc")
+                .build();
 
         let report = tracing::subscriber::with_default(subscriber, || {
             evict_over_cap(root, eng, cap).unwrap()
@@ -5236,7 +5123,7 @@ mod tests {
             "test precondition: at least 1 entry must have been evicted"
         );
 
-        let msgs = messages.lock().unwrap();
+        let msgs = capture.messages();
         assert_eq!(
             msgs.len(),
             1,
@@ -5248,7 +5135,7 @@ mod tests {
             "INFO event message mismatch"
         );
 
-        let all_fields = fields.lock().unwrap();
+        let all_fields = capture.fields_by_event();
         let f = &all_fields[0];
 
         assert!(
@@ -5609,9 +5496,10 @@ mod tests {
     /// Clock-skew defensiveness: entries whose mtime is in the **future**
     /// relative to `now` cause `now.duration_since(mtime)` to return
     /// `Err(SystemTimeError)`. Both sweep functions guard this with
-    /// `Err(_) => continue` (sweep_stale_tempfiles_recursive line 1774-1776;
-    /// prune_orphan_engine_version_dirs line 1911-1913), keeping the entry
-    /// rather than treating it as stale.
+    /// `Err(_) => continue` (the `Err(_) => continue` arm in
+    /// `sweep_stale_tempfiles_recursive`; the matching `Err(_) => continue`
+    /// arm in the candidate loop of `prune_orphan_engine_version_dirs`),
+    /// keeping the entry rather than treating it as stale.
     ///
     /// This test pins that conservative-keep behavior. If either `Err(_) =>
     /// continue` branch were changed to treat the error as "stale" (e.g.
@@ -5646,6 +5534,27 @@ mod tests {
         // branch.
         let orphan_dir = root.join(orphan_eng);
         forward_mtime(&orphan_dir, ORPHAN_DIR_AGE.as_secs() + 60);
+        // Defensive re-stat: confirm forward_mtime actually advanced the
+        // directory's mtime well into the future (at least ORPHAN_DIR_AGE/2
+        // past now).  A bare `mtime > now` check would pass even if
+        // File::set_times silently updated the dir mtime to ~now rather than
+        // the intended now + ORPHAN_DIR_AGE + 60s — the failure mode on some
+        // tmpfs/overlayfs configs where set_times on directory FDs is a
+        // no-op.  prune_orphan_engine_version_dirs would then see the dir as
+        // fresh (age <= ORPHAN_DIR_AGE → continue), passing the test for the
+        // wrong reason and masking any regression in the Err(_) branch.
+        let threshold = std::time::SystemTime::now()
+            .checked_add(ORPHAN_DIR_AGE / 2)
+            .expect("ORPHAN_DIR_AGE/2 overflow is astronomically unlikely");
+        assert!(
+            std::fs::metadata(&orphan_dir).unwrap().modified().unwrap() > threshold,
+            "forward_mtime must advance orphan_dir's mtime by more than \
+             ORPHAN_DIR_AGE/2 (≈15 days) past `now`; a bare `mtime > now` \
+             passes even when set_times silently updates the dir mtime to ~now \
+             (the no-op case on some tmpfs/overlayfs configs), masking \
+             regressions in the `Err(_) => continue` branch of \
+             prune_orphan_engine_version_dirs"
+        );
 
         // Use a current version distinct from orphan_eng so orphan_dir is
         // considered a candidate by prune_orphan_engine_version_dirs.
@@ -5815,8 +5724,9 @@ mod tests {
     /// skipped wholesale to avoid catastrophically deleting the live cache
     /// subdir (which would also be unidentifiable).
     ///
-    /// This test pins the early-return at lines 1823-1829. If that guard were
-    /// removed, the old subdir created below would be pruned and the
+    /// This test pins the `if current_engine_version.is_empty()` early-return
+    /// guard at the top of `prune_orphan_engine_version_dirs`. If that guard
+    /// were removed, the old subdir created below would be pruned and the
     /// `old_orphan.exists()` assertion would fail.
     #[test]
     fn prune_orphan_engine_version_dirs_with_empty_current_version_skips_all() {

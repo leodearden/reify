@@ -812,14 +812,12 @@ module.exports = grammar({
       '_',
     ),
 
-    // ── Decl-level match block (B2, task 3563) ─────────────────────────────
+    // ── Decl-level match block (B2, tasks 3563 + 3564) ──────────────────────
     // `match <discriminant> { Pattern => sub head : StructName, ... }` reachable
     // from `_member`. Parallel to `match_expression` (grammar.js above) but the
     // arm body is a declaration (sub form), not an expression. Lowering to
-    // `MemberDecl::MatchArmDeclGroup` (crates/reify-syntax/src/lib.rs:102-117) is
-    // deferred to sibling task 3564 — for now the new CST nodes fall through
-    // `lower_member`'s default and are silently dropped, mirroring the B1
-    // auto_type_arg interim pattern (task 3526, commit a46e7d3888).
+    // `MemberDecl::MatchArmDeclGroup` is wired via `lower_match_arm_decl_group`
+    // in `crates/reify-syntax/src/ts_parser.rs` (task 3564).
     match_arm_decl_block: $ => seq(
       'match',
       field('discriminant', $._expression),

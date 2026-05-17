@@ -239,6 +239,144 @@ pub(crate) fn topology_selector_result_type(name: &str) -> Option<reify_types::T
     })
 }
 
+/// The complete set of stdlib **geometry-query** helper names recognised by
+/// the compiler. Fifth geometry-name family, structurally parallel to the
+/// existing four ([`GEOMETRY_FUNCTION_NAMES`],
+/// [`GEOMETRY_QUERY_HELPER_NAMES`], [`GEOMETRY_KINEMATIC_QUERY_NAMES`],
+/// [`GEOMETRY_TOPOLOGY_SELECTOR_NAMES`]).
+///
+/// Per the PRD §1 frozen list (docs/prds/v0_3/geometry-handle-runtime.md):
+///
+/// ```text
+/// fn volume(g: Solid)                   -> Scalar<Volume>
+/// fn area(g: Surface)                   -> Scalar<Area>
+/// fn length(g: Curve)                   -> Scalar<Length>
+/// fn perimeter(g: Surface)              -> Scalar<Length>
+/// fn centroid(g: Geometry)              -> Point3<Length>
+/// fn bounding_box(g: Geometry)          -> BoundingBox
+/// fn distance(a: Geometry, b: Geometry) -> Scalar<Length>
+/// fn contains(a: Geometry, b: Geometry) -> Bool
+/// fn intersects(a: Geometry, b: Geometry) -> Bool
+/// fn geo_equiv(a: Geometry, b: Geometry) -> Bool
+/// fn angle(a: Vec3, b: Vec3)            -> Scalar<Angle>
+/// fn curvature(c: Curve, t: Real)       -> Scalar<Curvature>
+/// ```
+///
+/// **Disjointness contract**: this list MUST remain disjoint from the four
+/// other families. Cell classification could double-fire if a name appeared
+/// in two families (the geometry-query arm in `expr.rs::infer_type` is
+/// dispatched AFTER the topology-selector / kinematic-query / conformance-
+/// query arms — a name living in both would silently win at the earlier
+/// arm). Pinned by both directions: the
+/// `is_geometry_query_rejects_other_family_names` test (other → not in
+/// geometry-query) AND the `geometry_query_names_are_disjoint_from_other_families`
+/// test (every entry of `GEOMETRY_QUERY_NAMES` is absent from the four
+/// sibling slices).
+///
+/// **Maintenance contract**: adding a name here REQUIRES a parallel entry
+/// in [`geometry_query_result_type`]. Mirrors the documented contract on
+/// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES`. Pinned by the
+/// `geometry_query_names_each_have_a_result_type` test, which iterates this
+/// slice directly (not a hand-maintained fixture vec) so a new entry
+/// without a parallel result-type arm fails at test time rather than
+/// `.expect()`-panicking in production (`expr.rs::infer_type` calls
+/// `geometry_query_result_type(name).expect("is_geometry_query implies …")`).
+///
+/// **Phase 1 trade**: compile-time return-type wiring only. Eval-time
+/// dispatch arrives in Phase 6 (GHR-ζ). Until then, cells hold
+/// `Value::Undef`, which `value_type_kind_matches` accepts for any type
+/// (`reify_eval::lib:196`), so the cell typechecks at compile-time and
+/// stays `Undef` at runtime.
+///
+/// **`curvature` overload note**: only the `Curve`→`Scalar<Curvature>`
+/// overload is registered in Phase 1. The `Surface`→`Matrix<2,2,
+/// Curvature>` overload requires arg-type-aware dispatch and is deferred
+/// to a later phase.
+///
+/// Call-site dispatch is in `expr.rs::infer_type` (the `else if
+/// is_geometry_query(name)` arm, immediately after the topology-selector
+/// arm).
+///
+/// Case-sensitive: Reify function names are snake_case.
+pub const GEOMETRY_QUERY_NAMES: &[&str] = &[
+    "volume",
+    "area",
+    "length",
+    "perimeter",
+    "centroid",
+    "bounding_box",
+    "distance",
+    "contains",
+    "intersects",
+    "geo_equiv",
+    "angle",
+    "curvature",
+];
+
+pub(crate) fn is_geometry_query(name: &str) -> bool {
+    GEOMETRY_QUERY_NAMES.contains(&name)
+}
+
+/// Result type per geometry-query helper. Sets the cell's `result_type` so
+/// that downstream `value_type_kind_matches` accepts the post-process
+/// `Value` (which is `Value::Undef` until GHR-ζ Phase 6 wires kernel
+/// dispatch). Falling through to the first-arg type would mismatch — the
+/// first arg is typically a `Geometry`, `Solid`, or `Vec3`, not the helper's
+/// actual return type.
+///
+/// Per PRD §1 frozen list (Phase 1 wiring):
+/// - `volume(solid)`         → `Scalar<Volume>`
+/// - `area(surface)`         → `Scalar<Area>`
+/// - `length(curve)`         → `Scalar<Length>`
+/// - `perimeter(surface)`    → `Scalar<Length>`
+/// - `centroid(geometry)`    → `Point3<Length>`
+/// - `bounding_box(geometry)` → `BoundingBox` (the first-class
+///   `Type::BoundingBox` variant; pairs with the existing
+///   `Value::BoundingBox { min, max }` value variant at
+///   `reify_types::value.rs:547` whose value→type inference at
+///   `value.rs:1299` returns `Type::BoundingBox`)
+/// - `distance(a, b)`        → `Scalar<Length>`
+/// - `contains(a, b)`        → `Bool`
+/// - `intersects(a, b)`      → `Bool`
+/// - `geo_equiv(a, b)`       → `Bool`
+/// - `angle(a, b)`           → `Scalar<Angle>`
+/// - `curvature(curve, t)`   → `Scalar<Curvature>` (Curve overload only;
+///   Surface overload deferred — see [`GEOMETRY_QUERY_NAMES`])
+///
+/// Returns `None` for any other name (caller falls through to its default
+/// type-inference path). Mirrors the contract of the sibling
+/// [`topology_selector_result_type`].
+pub(crate) fn geometry_query_result_type(name: &str) -> Option<reify_types::Type> {
+    use reify_types::{DimensionVector, Type};
+    Some(match name {
+        "volume" => Type::Scalar {
+            dimension: DimensionVector::VOLUME,
+        },
+        "area" => Type::Scalar {
+            dimension: DimensionVector::AREA,
+        },
+        "length" => Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        "perimeter" => Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        "centroid" => Type::point3(Type::length()),
+        "bounding_box" => Type::bounding_box(),
+        "distance" => Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        "contains" => Type::Bool,
+        "intersects" => Type::Bool,
+        "geo_equiv" => Type::Bool,
+        "angle" => Type::angle(),
+        "curvature" => Type::Scalar {
+            dimension: DimensionVector::CURVATURE,
+        },
+        _ => return None,
+    })
+}
+
 // --- Unit conversion ---
 
 /// Convert a unit string and value to an SI-based `Value::Scalar`.
@@ -718,6 +856,193 @@ mod tests {
                 topology_selector_result_type(name),
                 Some(expected.clone()),
                 "topology_selector_result_type({name:?}) must equal {expected:?} (task 2699 §3.9)"
+            );
+        }
+    }
+
+    // --- Task 3603 / GHR-α — geometry-query registry (PRD §1 Phase 1) ---
+    //
+    // The fifth geometry-name family, structurally parallel to the existing four
+    // (`GEOMETRY_FUNCTION_NAMES`, `GEOMETRY_QUERY_HELPER_NAMES`,
+    // `GEOMETRY_KINEMATIC_QUERY_NAMES`, `GEOMETRY_TOPOLOGY_SELECTOR_NAMES`).
+    // Per PRD §1 frozen list:
+    //   volume / area / length / perimeter / centroid / bounding_box /
+    //   distance / contains / intersects / geo_equiv / angle / curvature
+    //
+    // Phase 1 registers compile-time return types only; eval-time dispatch
+    // arrives in Phase 6 (GHR-ζ). Until then, cells hold `Value::Undef`, which
+    // `value_type_kind_matches` accepts for any type.
+    fn phase1_geometry_query_cases() -> Vec<(&'static str, reify_types::Type)> {
+        use reify_types::{DimensionVector, Type};
+        vec![
+            (
+                "volume",
+                Type::Scalar {
+                    dimension: DimensionVector::VOLUME,
+                },
+            ),
+            (
+                "area",
+                Type::Scalar {
+                    dimension: DimensionVector::AREA,
+                },
+            ),
+            (
+                "length",
+                Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                },
+            ),
+            (
+                "perimeter",
+                Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                },
+            ),
+            ("centroid", Type::point3(Type::length())),
+            ("bounding_box", Type::bounding_box()),
+            (
+                "distance",
+                Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                },
+            ),
+            ("contains", Type::Bool),
+            ("intersects", Type::Bool),
+            ("geo_equiv", Type::Bool),
+            ("angle", Type::angle()),
+            (
+                "curvature",
+                Type::Scalar {
+                    dimension: DimensionVector::CURVATURE,
+                },
+            ),
+        ]
+    }
+
+    #[test]
+    fn is_geometry_query_recognises_all_phase1_names() {
+        for (name, _) in phase1_geometry_query_cases() {
+            assert!(
+                is_geometry_query(name),
+                "is_geometry_query({name:?}) must be true (GHR-α PRD §1)"
+            );
+        }
+    }
+
+    #[test]
+    fn geometry_query_result_type_for_all_phase1_names_matches_table() {
+        for (name, expected) in phase1_geometry_query_cases() {
+            assert_eq!(
+                geometry_query_result_type(name),
+                Some(expected.clone()),
+                "geometry_query_result_type({name:?}) must equal {expected:?} (GHR-α PRD §1)"
+            );
+        }
+    }
+
+    /// Disjointness invariant: `is_geometry_query` must reject names from the
+    /// four other geometry-name families. Without this, cell classification
+    /// could double-fire when adding the fifth dispatch arm in expr.rs.
+    #[test]
+    fn is_geometry_query_rejects_other_family_names() {
+        // Constructor family (`GEOMETRY_FUNCTION_NAMES`).
+        assert!(!is_geometry_query("box"), "must reject constructor 'box'");
+        // Conformance-query family (`GEOMETRY_QUERY_HELPER_NAMES`).
+        assert!(
+            !is_geometry_query("is_watertight"),
+            "must reject conformance-query 'is_watertight'"
+        );
+        // Kinematic-query family (`GEOMETRY_KINEMATIC_QUERY_NAMES`).
+        assert!(
+            !is_geometry_query("interferes"),
+            "must reject kinematic-query 'interferes'"
+        );
+        // Topology-selector family (`GEOMETRY_TOPOLOGY_SELECTOR_NAMES`).
+        assert!(
+            !is_geometry_query("closest_point"),
+            "must reject topology-selector 'closest_point'"
+        );
+        // Empty / unrelated.
+        assert!(!is_geometry_query(""), "must reject empty name");
+        assert!(
+            !is_geometry_query("does_not_exist"),
+            "must reject unrelated name"
+        );
+    }
+
+    /// Case-sensitivity invariant: Reify function names are snake_case. The
+    /// PascalCase / camelCase form must not match (mirrors the other four
+    /// family case-sensitivity contracts).
+    #[test]
+    fn is_geometry_query_is_case_sensitive() {
+        assert!(!is_geometry_query("Volume"));
+        assert!(!is_geometry_query("BoundingBox"));
+        assert!(!is_geometry_query("boundingBox"));
+    }
+
+    /// `geometry_query_result_type` returns `None` for any name not in the
+    /// Phase-1 frozen list — matches the contract of the sibling
+    /// `topology_selector_result_type`.
+    #[test]
+    fn geometry_query_result_type_returns_none_for_unrecognised_names() {
+        assert_eq!(geometry_query_result_type("box"), None);
+        assert_eq!(geometry_query_result_type("is_watertight"), None);
+        assert_eq!(geometry_query_result_type("closest_point"), None);
+        assert_eq!(geometry_query_result_type(""), None);
+    }
+
+    /// Disjointness invariant — forward direction (each `GEOMETRY_QUERY_NAMES`
+    /// entry must NOT appear in any of the four sibling family slices).
+    /// Complements `is_geometry_query_rejects_other_family_names` (the inverse
+    /// direction); together they pin the doc-comment disjointness contract.
+    /// Without this, a name added to `GEOMETRY_QUERY_NAMES` that also lived in
+    /// e.g. `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` would silently route through
+    /// the topology-selector arm (dispatched first in `expr.rs::infer_type`)
+    /// and the geometry-query arm would be dead code.
+    #[test]
+    fn geometry_query_names_are_disjoint_from_other_families() {
+        for name in GEOMETRY_QUERY_NAMES {
+            assert!(
+                !GEOMETRY_FUNCTION_NAMES.contains(name),
+                "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_FUNCTION_NAMES (constructor family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_HELPER_NAMES.contains(name),
+                "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_HELPER_NAMES (conformance-query family)"
+            );
+            assert!(
+                !GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name),
+                "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_KINEMATIC_QUERY_NAMES (kinematic-query family)"
+            );
+            assert!(
+                !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
+                "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_TOPOLOGY_SELECTOR_NAMES (topology-selector family)"
+            );
+        }
+    }
+
+    /// Maintenance invariant — iterates `GEOMETRY_QUERY_NAMES` *directly*
+    /// (not a hand-maintained fixture vec) and asserts every entry has a
+    /// corresponding result-type arm in `geometry_query_result_type`. Without
+    /// this, a 13th name added to the slice but missing a result-type arm
+    /// would pass the table-driven test (which iterates the fixture, not the
+    /// slice) and `.expect()`-panic in production when first called via the
+    /// `expr.rs::infer_type` dispatch
+    /// (`geometry_query_result_type(name).expect("is_geometry_query implies result type")`).
+    #[test]
+    fn geometry_query_names_each_have_a_result_type() {
+        for name in GEOMETRY_QUERY_NAMES {
+            assert!(
+                geometry_query_result_type(name).is_some(),
+                "GEOMETRY_QUERY_NAMES entry {name:?} has no matching arm in \
+                 geometry_query_result_type — adding a name to the slice \
+                 REQUIRES adding a parallel arm (or expr.rs will panic at \
+                 runtime)"
             );
         }
     }

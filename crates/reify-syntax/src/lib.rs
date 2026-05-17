@@ -97,8 +97,11 @@ pub enum MemberDecl {
     ///
     /// Represents a cluster of same-name declarations produced by an exhaustive
     /// `match` block. See PRD `docs/prds/match-block-decls.md` task 1 and spec §6.4.
-    /// Tree-sitter grammar / ts_parser lowering is deferred; tests hand-construct
-    /// this variant directly (mirroring `find_named_member_span_hand_constructed_*`).
+    /// Tree-sitter grammar (task 3563) and ts_parser lowering (task 3564) are both
+    /// wired; integration tests covering the parse → AST → compile pipeline live in
+    /// `crates/reify-compiler/tests/match_block_decl_lowering_tests.rs`.
+    /// Some legacy hand-built tests remain in `match_arm_decl_group_compile_tests.rs`
+    /// for AST-shape granularity.
     MatchArmDeclGroup(MatchArmDeclGroupDecl),
 }
 
@@ -214,10 +217,11 @@ pub struct SubDecl {
     pub is_collection: bool,
     pub where_clause: Option<WhereClause>,
     /// Members of a specialization-scope body, when this `sub` opens one.
-    /// `None` for bare instantiation or collection forms. The tree-sitter
-    /// grammar now admits `sub name : StructName { body }` (task 3569), but
-    /// `lower_sub` still yields `None` here until sibling task 3571 wires the
-    /// CST→AST mapping for the new `specialization_body` node.
+    /// `None` for bare instantiation, collection, or bare-colon-no-body forms.
+    ///
+    /// Both the grammar (task 3569) and the CST→AST lowering (task 3571) are
+    /// wired. `param_assignment` nodes inside the body are currently dropped
+    /// during lowering — their full round-trip is tracked by task 3573.
     pub body: Option<Vec<MemberDecl>>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,

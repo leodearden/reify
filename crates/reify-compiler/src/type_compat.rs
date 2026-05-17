@@ -505,6 +505,76 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
     }
 }
 
+/// Attempt to satisfy a `NoMatch` call via default-padding.
+///
+/// Searches `named` for the UNIQUE same-name candidate where:
+/// - the candidate has more params than `provided` args,
+/// - the provided prefix `arg_types[..provided]` matches `cand.params[..provided]` exactly, and
+/// - every trailing `cand.param_defaults[provided..]` is `Some`.
+///
+/// `provided` is `arg_types.len()` — callers no longer pass `compiled_args`
+/// because only its length was used and `arg_types` is always length-aligned
+/// to `compiled_args` by construction (task-3702).
+///
+/// If exactly one such candidate exists, returns it together with the cloned default
+/// `CompiledExpr`s for the trailing params. Returns `None` when zero or multiple
+/// candidates are satisfiable (caller falls through to the existing NoMatch error).
+///
+/// **Invariant:** every candidate in `named` must satisfy
+/// `param_defaults.len() == params.len()` (task-3702 strict alignment now
+/// enforced by `debug_assert!`). Violations are programming errors, not
+/// recoverable call-site conditions.
+pub(crate) fn try_default_padding<'a>(
+    named: &[&'a CompiledFunction],
+    arg_types: &[Type],
+) -> Option<(&'a CompiledFunction, Vec<CompiledExpr>)> {
+    let provided = arg_types.len();
+    let mut satisfiable: Vec<(&CompiledFunction, Vec<CompiledExpr>)> = Vec::new();
+
+    for &cand in named {
+        // Candidate must have strictly more params than provided args.
+        if cand.params.len() <= provided {
+            continue;
+        }
+        // Strict invariant: param_defaults must be length-aligned to params.
+        // Violations are bugs — surface them in debug builds. In release builds
+        // the assert is compiled out, so we also `continue` on mismatch to
+        // degrade gracefully instead of panicking on a future invariant-breaking
+        // producer (task-3702 amendment-2).
+        debug_assert!(
+            cand.param_defaults.len() == cand.params.len(),
+            "param_defaults.len() == params.len() invariant violated for candidate `{}` (task-3702): expected {}, got {}",
+            cand.name,
+            cand.params.len(),
+            cand.param_defaults.len()
+        );
+        if cand.param_defaults.len() != cand.params.len() {
+            continue;
+        }
+        // Provided prefix types must match candidate params exactly.
+        let prefix_matches = cand.params[..provided]
+            .iter()
+            .zip(arg_types[..provided].iter())
+            .all(|((_, param_ty), arg_ty)| param_ty == arg_ty);
+        if !prefix_matches {
+            continue;
+        }
+        // All trailing params must carry Some compiled default.
+        let defaults: Option<Vec<CompiledExpr>> = cand.param_defaults[provided..]
+            .iter()
+            .cloned()
+            .collect();
+        if let Some(defaults) = defaults {
+            satisfiable.push((cand, defaults));
+        }
+    }
+
+    match satisfiable.len() {
+        1 => Some(satisfiable.into_iter().next().unwrap()),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Anti-cascade guard tests (task-448): `Type::Error` operands must
@@ -846,75 +916,5 @@ mod tests {
         // candidate has more params than provided (1 > 0) — the invariant
         // check fires before any other filtering.
         let _ = try_default_padding(&[&bad_cand], &[]);
-    }
-}
-
-/// Attempt to satisfy a `NoMatch` call via default-padding.
-///
-/// Searches `named` for the UNIQUE same-name candidate where:
-/// - the candidate has more params than `provided` args,
-/// - the provided prefix `arg_types[..provided]` matches `cand.params[..provided]` exactly, and
-/// - every trailing `cand.param_defaults[provided..]` is `Some`.
-///
-/// `provided` is `arg_types.len()` — callers no longer pass `compiled_args`
-/// because only its length was used and `arg_types` is always length-aligned
-/// to `compiled_args` by construction (task-3702).
-///
-/// If exactly one such candidate exists, returns it together with the cloned default
-/// `CompiledExpr`s for the trailing params. Returns `None` when zero or multiple
-/// candidates are satisfiable (caller falls through to the existing NoMatch error).
-///
-/// **Invariant:** every candidate in `named` must satisfy
-/// `param_defaults.len() == params.len()` (task-3702 strict alignment now
-/// enforced by `debug_assert!`). Violations are programming errors, not
-/// recoverable call-site conditions.
-pub(crate) fn try_default_padding<'a>(
-    named: &[&'a CompiledFunction],
-    arg_types: &[Type],
-) -> Option<(&'a CompiledFunction, Vec<CompiledExpr>)> {
-    let provided = arg_types.len();
-    let mut satisfiable: Vec<(&CompiledFunction, Vec<CompiledExpr>)> = Vec::new();
-
-    for &cand in named {
-        // Candidate must have strictly more params than provided args.
-        if cand.params.len() <= provided {
-            continue;
-        }
-        // Strict invariant: param_defaults must be length-aligned to params.
-        // Violations are bugs — surface them in debug builds. In release builds
-        // the assert is compiled out, so we also `continue` on mismatch to
-        // degrade gracefully instead of panicking on a future invariant-breaking
-        // producer (task-3702 amendment-2).
-        debug_assert!(
-            cand.param_defaults.len() == cand.params.len(),
-            "param_defaults.len() == params.len() invariant violated for candidate `{}` (task-3702): expected {}, got {}",
-            cand.name,
-            cand.params.len(),
-            cand.param_defaults.len()
-        );
-        if cand.param_defaults.len() != cand.params.len() {
-            continue;
-        }
-        // Provided prefix types must match candidate params exactly.
-        let prefix_matches = cand.params[..provided]
-            .iter()
-            .zip(arg_types[..provided].iter())
-            .all(|((_, param_ty), arg_ty)| param_ty == arg_ty);
-        if !prefix_matches {
-            continue;
-        }
-        // All trailing params must carry Some compiled default.
-        let defaults: Option<Vec<CompiledExpr>> = cand.param_defaults[provided..]
-            .iter()
-            .cloned()
-            .collect();
-        if let Some(defaults) = defaults {
-            satisfiable.push((cand, defaults));
-        }
-    }
-
-    match satisfiable.len() {
-        1 => Some(satisfiable.into_iter().next().unwrap()),
-        _ => None,
     }
 }

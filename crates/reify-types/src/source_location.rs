@@ -17,6 +17,67 @@ pub struct SourceLocationInfo {
     pub end_column: u32,
 }
 
+/// Pre-compute byte positions of all `\n` characters in `source` in O(M).
+///
+/// Returns a sorted `Vec<usize>` of the byte offset of each newline.
+/// Pass this to [`line_col_to_byte_offset_with_offsets`] to binary-search for
+/// a byte offset in O(log M + line_length) instead of the O(M) scan done by
+/// the character-walking helpers.
+pub fn build_line_offsets(source: &str) -> Vec<usize> {
+    source
+        .bytes()
+        .enumerate()
+        .filter_map(|(i, b)| if b == b'\n' { Some(i) } else { None })
+        .collect()
+}
+
+/// Convert a 1-based `(line, col)` pair to a byte offset using a pre-built
+/// newline table.
+///
+/// `line_offsets` must be the result of [`build_line_offsets`] for the same
+/// `source`.  Both `line` and `col` are 1-based and count **Unicode codepoints**.
+///
+/// - If `line` or `col` is 0, returns 0 as a safe fallback.
+/// - If `line` exceeds the number of lines, returns `source.len()`.
+/// - If `col` exceeds the line length, clamps to the end of the line.
+pub fn line_col_to_byte_offset_with_offsets(
+    source: &str,
+    line: u32,
+    col: u32,
+    line_offsets: &[usize],
+) -> usize {
+    if line == 0 || col == 0 {
+        return 0;
+    }
+    let line = line as usize;
+    let col = col as usize;
+
+    // Byte index of the first character on the target line.
+    let line_start = if line <= 1 {
+        0
+    } else {
+        match line_offsets.get(line - 2) {
+            Some(&nl) => nl + 1,         // byte after the preceding newline
+            None => return source.len(), // line is beyond end of source
+        }
+    };
+
+    // Slice to the end of the target line (not end of source) so that an
+    // out-of-bounds col clamps to the line boundary rather than counting
+    // codepoints past the '\n' into subsequent lines.
+    let line_end = source[line_start..]
+        .find('\n')
+        .map(|i| line_start + i)
+        .unwrap_or(source.len());
+    let line_text = &source[line_start..line_end];
+    line_start
+        + line_text
+            .char_indices()
+            .nth(col - 1)
+            .map(|(i, _)| i)
+            .unwrap_or(line_text.len())
+}
+
 /// Convert a byte offset in `source` to a 1-based `(line, column)` pair.
 ///
 /// The function iterates over Unicode scalar values and increments the column
@@ -65,7 +126,122 @@ pub fn byte_offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::byte_offset_to_line_col;
+    use super::{build_line_offsets, byte_offset_to_line_col, line_col_to_byte_offset_with_offsets};
+
+    /// Smoke test that verifies `build_line_offsets` and `line_col_to_byte_offset_with_offsets`
+    /// round-trip correctly for a simple three-line source.
+    ///
+    /// Source: "abc\ndef\nghi"
+    /// Byte layout:
+    ///   0:'a' 1:'b' 2:'c' 3:'\n' 4:'d' 5:'e' 6:'f' 7:'\n' 8:'g' 9:'h' 10:'i'
+    ///
+    /// Newlines are at offsets 3 and 7, so `build_line_offsets` must return `[3, 7]`.
+    ///
+    /// Round-trip checks:
+    ///   (a) `build_line_offsets("abc\ndef\nghi")` == `[3, 7]`
+    ///   (b) `line_col_to_byte_offset_with_offsets(source, 2, 1, &offsets)` == 4  (start of 'd')
+    ///   (c) `line_col_to_byte_offset_with_offsets(source, 1, 0, &offsets)` == 0  (zero-col fallback)
+    ///   (d) `line_col_to_byte_offset_with_offsets(source, 99, 1, &offsets)` == source.len()  (past-end clamp)
+    #[test]
+    fn build_line_offsets_and_line_col_round_trip() {
+        let source = "abc\ndef\nghi";
+        // (a) newlines are at byte offsets 3 and 7.
+        let offsets = build_line_offsets(source);
+        assert_eq!(offsets, vec![3usize, 7usize]);
+
+        // (b) line 2, col 1 is the first byte of "def" — byte offset 4.
+        let byte = line_col_to_byte_offset_with_offsets(source, 2, 1, &offsets);
+        assert_eq!(byte, 4, "line 2, col 1 should be offset 4 (start of 'd')");
+
+        // (c) col = 0 is the zero-input fallback; must return 0.
+        let byte = line_col_to_byte_offset_with_offsets(source, 1, 0, &offsets);
+        assert_eq!(byte, 0, "col=0 zero-input fallback must return 0");
+
+        // (d) line = 99 is past the end of source; must clamp to source.len().
+        let byte = line_col_to_byte_offset_with_offsets(source, 99, 1, &offsets);
+        assert_eq!(
+            byte,
+            source.len(),
+            "line=99 (past end) must clamp to source.len()"
+        );
+    }
+
+    /// Verify that `col` counts Unicode codepoints, not bytes.
+    ///
+    /// Source: "äbc\ndef"
+    /// Byte layout:
+    ///   0-1:'ä' (2 bytes, U+00E4)  2:'b'  3:'c'  4:'\n'  5:'d'  6:'e'  7:'f'
+    ///
+    /// `build_line_offsets` must return `[4]` (the '\n' is at byte 4).
+    /// `line_col_to_byte_offset_with_offsets(source, 1, 2, &offsets)` must return 2
+    /// (second codepoint 'b' at byte offset 2).  A byte-counting implementation would
+    /// return 1 (second byte, the tail of 'ä') — this test catches that regression.
+    #[test]
+    fn line_col_to_byte_offset_with_offsets_multibyte_char_counts_codepoints() {
+        // 'ä' encodes as 0xC3 0xA4 in UTF-8 — two bytes, one codepoint.
+        let source = "äbc\ndef";
+        assert_eq!(source.len(), 8, "sanity: ä=2 bytes + b + c + \\n + d + e + f");
+
+        let offsets = build_line_offsets(source);
+        // Newline is at byte 4 (after ä[2] + b[1] + c[1] = 4 bytes).
+        assert_eq!(
+            offsets,
+            vec![4usize],
+            "newline in 'äbc\\ndef' must be at byte 4"
+        );
+
+        // col=2 → second codepoint on line 1 = 'b' at byte offset 2.
+        let byte = line_col_to_byte_offset_with_offsets(source, 1, 2, &offsets);
+        assert_eq!(
+            byte, 2,
+            "line 1 col 2 must be byte 2 ('b'); a byte-counting impl would return 1"
+        );
+
+        // col=1 → first codepoint 'ä' at byte offset 0.
+        let byte = line_col_to_byte_offset_with_offsets(source, 1, 1, &offsets);
+        assert_eq!(byte, 0, "line 1 col 1 must be byte 0 (start of 'ä')");
+
+        // line 2, col 1 → 'd' at byte offset 5 (after '\n' at 4).
+        let byte = line_col_to_byte_offset_with_offsets(source, 2, 1, &offsets);
+        assert_eq!(byte, 5, "line 2 col 1 must be byte 5 (start of 'd')");
+    }
+
+    /// Verify that a `col` past the end of an interior line clamps to the byte
+    /// offset of that line's trailing `'\n'`, not the start of the following line.
+    ///
+    /// This pins the deliberate clamp-to-line-end behavior introduced when the
+    /// helper was moved from engine.rs to reify-types.  The old char-walking
+    /// `line_col_to_byte_offset` would walk past the `'\n'` into the next line;
+    /// the new helper slices to `line_end` before counting codepoints so an
+    /// out-of-range col returns `line_end` (the byte offset of the `'\n'`).
+    ///
+    /// Source: "ab\ncd"
+    ///   line 1 = "ab" (2 chars), '\n' at byte 2
+    ///   line 2 = "cd" (2 chars), no trailing newline
+    ///
+    /// col=99 on line 1 → clamps to byte 2 (the '\n').
+    /// col=99 on line 2 (last line, no '\n') → clamps to source.len() = 5.
+    #[test]
+    fn line_col_to_byte_offset_with_offsets_col_past_line_end_clamps_to_newline() {
+        let source = "ab\ncd";
+        let offsets = build_line_offsets(source);
+        assert_eq!(offsets, vec![2usize], "newline in 'ab\\ncd' is at byte 2");
+
+        // col=99 past end of line 1 ("ab", 2 chars) → byte offset of '\n' = 2.
+        let byte = line_col_to_byte_offset_with_offsets(source, 1, 99, &offsets);
+        assert_eq!(
+            byte, 2,
+            "col=99 past line 1 end ('ab') must clamp to byte 2 (the '\\n')"
+        );
+
+        // col=99 past end of last line ("cd", no trailing '\n') → source.len() = 5.
+        let byte = line_col_to_byte_offset_with_offsets(source, 2, 99, &offsets);
+        assert_eq!(
+            byte,
+            source.len(),
+            "col=99 past last line end ('cd', no trailing '\\n') must clamp to source.len()"
+        );
+    }
 
     #[test]
     fn byte_offset_to_line_col_basic_conversion() {

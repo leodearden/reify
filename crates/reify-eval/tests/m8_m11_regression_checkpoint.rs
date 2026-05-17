@@ -409,7 +409,7 @@ fn assert_all_type_variants_listed(t: &reify_types::Type) {
     };
 }
 
-/// Compile-time exhaustiveness guard for all 25 `Value` variants.
+/// Compile-time exhaustiveness guard for all 26 `Value` variants.
 ///
 /// Same design as `assert_all_type_variants_listed`: never called at runtime
 /// in step-3, causes compile error if new variants aren't listed here.
@@ -447,6 +447,8 @@ fn assert_all_value_variants_listed(v: &reify_types::Value) {
         Value::Matrix(_) => true,
         // Sampled field runtime payload (v0.2 — task 2341)
         Value::SampledField(_) => true,
+        // Nominal structure instance (v0.3 — task 3540 / SIR-α)
+        Value::StructureInstance(_) => true,
         // Undefined
         Value::Undef => true,
     };

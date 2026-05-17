@@ -250,13 +250,68 @@ structure def MultiCaseResult {
     param cases : Map<String, ElasticResult>
 }
 
+// ── SIR-α wave-1 trait + structure-def surface ───────────────────────────────
+//
+// task 3540 (SIR-α): the wave-1 retirement migrates `point_load` (loads.rs)
+// and `FixedSupport` (supports.rs) off the name-dispatched builtin path and
+// onto the `structure def` ctor path. Source-level `PointLoad(...)` /
+// `FixedSupport(...)` calls now lower to `CompiledExprKind::StructureInstanceCtor`
+// (precedence over stdlib FunctionCall — see design-decision-2 in
+// `.task/plan.json`) and eval to `Value::StructureInstance`.
+//
+// PRD: docs/prds/v0_3/structure-instance-runtime.md (§6 — wave-1 stdlib swap;
+// Q-SIR-4 — preserve-don't-redesign field shapes against the existing
+// `loads.rs` / `supports.rs` Map-shape consumers).
+//
+// Trait surface — `Load` and `Support` are the marker traits the structure-defs
+// satisfy. Field shapes mirror the existing `make_kind_map` output keys
+// (`force`/`point` for loads, `target` for supports) so downstream consumers
+// reading those keys continue to work after the swap. `Real` placeholders
+// follow the precedent set by `LoadCase.loads : List<Real>` (header note 1
+// above) and `solver_elastic.ri::ElasticResult.displacement : Real` —
+// dimension-typed slots (`Vector3<Force>`, `Selector`, etc.) tighten in
+// follow-up waves once the dimensional type aliases land.
+
+trait Load {
+    // Applied force. `Real` is a placeholder for `Vector3<Force>` until the
+    // dimensional vector aliases land; mirrors the `force` key emitted by the
+    // pre-retirement `point_load` builtin (`loads.rs::eval_loads`).
+    param force : Real
+
+    // Selector identifying the geometry the load applies to. `String` is a
+    // placeholder for `Selector` until the topology-selector type lands;
+    // mirrors the `point` key emitted by the pre-retirement `point_load`
+    // builtin.
+    param point : String
+}
+
+trait Support { }
+
+// PointLoad — wave-1 replacement for the `point_load` builtin (loads.rs).
+// Field defaults let bare `PointLoad()` calls succeed (covers SIR-α boundary
+// tests in `crates/reify-eval/tests/structure_instance_e2e.rs`); callers may
+// override either field at construction.
+structure def PointLoad : Load {
+    param point : String = ""
+    param force : Real = 0.0
+}
+
+// FixedSupport — wave-1 replacement for the `FixedSupport` builtin
+// (supports.rs). The `target` field mirrors the `target` key emitted by the
+// pre-retirement `eval_supports("FixedSupport", ...)` Map.
+structure def FixedSupport : Support {
+    param target : String = ""
+}
+
 // ── v0.4 shell BC framework (runtime-only) ───────────────────────────────────
 //
-// The `PinnedSupport` constructor and the shell-aware `FixedSupport` contract
-// are name-dispatched in `crates/reify-stdlib/src/supports.rs` — no
-// `structure def` is required here, following the same pattern as
-// `envelope_max` / `envelope_min`.  Neither constructor requires a static
-// type in this module.
+// The `PinnedSupport` constructor remains name-dispatched in
+// `crates/reify-stdlib/src/supports.rs` — no `structure def` is required here
+// for this support kind yet (SIR-β-sup wave 2 expands the trait surface).
+// `FixedSupport` migrated to a structure-def in SIR-α wave 1 (above); the
+// shell-aware contract documented in this section now applies to the
+// structure-def evaluation path. Pin / displacement / roller supports remain
+// name-dispatched until the wave-2 expansion.
 //
 // Runtime semantics enforced by solver task T8 (shell BC application):
 //   - `FixedSupport` on a shell entity auto-clamps all 6 DOFs (3 translational

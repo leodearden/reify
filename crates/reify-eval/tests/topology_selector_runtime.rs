@@ -33,7 +33,9 @@
 use reify_compiler::compile_with_stdlib;
 use reify_eval::Engine;
 use reify_test_support::MockGeometryKernel;
-use reify_types::{ExportFormat, GeometryHandleId, ModulePath, Severity, Value, ValueCellId};
+use reify_types::{
+    DimensionVector, ExportFormat, GeometryHandleId, ModulePath, Severity, Value, ValueCellId,
+};
 
 /// Parse and compile a source string with the stdlib prelude.
 /// Asserts the parse and compile pipelines produce no errors.
@@ -277,6 +279,485 @@ fn angle_between_surfaces_with_literal_int_arg_falls_through_to_undef() {
     );
 }
 
+// ── Topology-selector-vocabulary v1 (task 3560) ─────────────────────────────
+//
+// Per-selector happy-path mock-kernel tests covering the 11 §3.9 selector
+// names that gained eval-time dispatch in task 3560:
+//
+//   - 1-arg list returns: edges, faces
+//   - 2-arg Range-filtered list returns: edges_by_length, faces_by_area
+//   - 3-arg predicate-filtered list returns: faces_by_normal, edges_parallel_to,
+//     edges_at_height
+//   - 2-arg topology-graph queries: adjacent_faces, shared_edges
+//   - 2-arg physical-property returns: center_of_mass, moment_of_inertia
+//
+// Each test mirrors the existing closest_point/is_on/angle_between_surfaces
+// pattern at the top of this file: parse + compile with stdlib, pre-stage a
+// MockGeometryKernel via the appropriate `with_*_result` builder, run
+// `engine.build`, and assert the cell value the post-process patches in.
+//
+// Test-fixture convention: non-trivial args use let-bound intermediates
+// (e.g. `let dir = vec3(0,0,1); let tol = 1deg; let top = faces_by_normal(body, dir, tol)`)
+// so the dispatcher resolves them via the ValueRef path — inline FunctionCall
+// args (e.g. `vec3(0,0,1)` written inline) fall through to None per the
+// literal-args contract in the dispatcher.
+
+/// `let es = edges(body)` on a structure containing `let body = box(10mm, 10mm, 10mm)`
+/// must resolve to `Value::List(vec![Int(2), Int(3), Int(4)])` when the mock
+/// kernel pre-stages `extract_edges(GeometryHandleId(1)) = [2, 3, 4]`. Pins the
+/// 1-arg list-return shape end-to-end through the dispatch.
+#[test]
+fn edges_let_resolves_to_list_of_int_via_extract_edges() {
+    let source = "structure def Bracket {\n    \
+        let body = box(10mm, 10mm, 10mm)\n    \
+        let es = edges(body)\n}";
+    let compiled = compile_no_errors(source);
+    let mut engine = engine_with_mock_kernel(|k| {
+        k.with_extracted_edges(
+            GeometryHandleId(1),
+            vec![GeometryHandleId(2), GeometryHandleId(3), GeometryHandleId(4)],
+        )
+    });
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("Bracket", "es");
+    assert_eq!(
+        result.values.get(&cell),
+        Some(&Value::List(vec![
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(4),
+        ])),
+        "Bracket.es must resolve to Value::List of three Value::Int sub-handles \
+         via kernel extract_edges, got {:?}",
+        result.values.get(&cell),
+    );
+}
+
+/// `let fs = faces(body)` on a structure containing `let body = box(10mm, 10mm, 10mm)`
+/// must resolve to `Value::List` of six `Value::Int`s when the mock kernel
+/// pre-stages `extract_faces(GeometryHandleId(1)) = [10, 11, 12, 13, 14, 15]`
+/// (matching a box's six faces). Pins the 1-arg list-return shape for the
+/// face variant.
+#[test]
+fn faces_let_resolves_to_list_of_int_via_extract_faces() {
+    let source = "structure def Bracket {\n    \
+        let body = box(10mm, 10mm, 10mm)\n    \
+        let fs = faces(body)\n}";
+    let compiled = compile_no_errors(source);
+    let mut engine = engine_with_mock_kernel(|k| {
+        k.with_extracted_faces(
+            GeometryHandleId(1),
+            vec![
+                GeometryHandleId(10),
+                GeometryHandleId(11),
+                GeometryHandleId(12),
+                GeometryHandleId(13),
+                GeometryHandleId(14),
+                GeometryHandleId(15),
+            ],
+        )
+    });
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("Bracket", "fs");
+    assert_eq!(
+        result.values.get(&cell),
+        Some(&Value::List(vec![
+            Value::Int(10),
+            Value::Int(11),
+            Value::Int(12),
+            Value::Int(13),
+            Value::Int(14),
+            Value::Int(15),
+        ])),
+        "Bracket.fs must resolve to Value::List of six Value::Int sub-handles \
+         via kernel extract_faces, got {:?}",
+        result.values.get(&cell),
+    );
+}
+
+/// `let com = center_of_mass(body, density)` on a structure containing
+/// `let body = box(10mm, 10mm, 10mm)` and `let density = 7850.0` must resolve
+/// to `Value::Point(vec![length(0), length(0), length(0)])` when the mock
+/// kernel pre-stages a JSON-Point3 reply for `CenterOfMass(handle=1,
+/// density=7850.0)`. Pins the JSON-decode → `Value::Point<Length>` round-trip
+/// for the physical-property selector (density routed via the new
+/// `resolve_real_scalar_arg`).
+#[test]
+fn center_of_mass_let_resolves_to_point3_length_via_kernel_reply() {
+    let source = "structure def Bracket {\n    \
+        let body = box(10mm, 10mm, 10mm)\n    \
+        let density = 7850.0\n    \
+        let com = center_of_mass(body, density)\n}";
+    let compiled = compile_no_errors(source);
+    let mut engine = engine_with_mock_kernel(|k| {
+        k.with_center_of_mass_result(
+            GeometryHandleId(1),
+            7850.0,
+            Value::String("{\"x\":0.0,\"y\":0.0,\"z\":0.0}".to_string()),
+        )
+    });
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("Bracket", "com");
+    assert_eq!(
+        result.values.get(&cell),
+        Some(&Value::Point(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ])),
+        "Bracket.com must resolve to Value::Point of three Length scalars via \
+         kernel CenterOfMass JSON reply, got {:?}",
+        result.values.get(&cell),
+    );
+}
+
+/// `let i = moment_of_inertia(body, density)` on a structure containing
+/// `let body = box(50mm, 30mm, 10mm)` and `let density = 7850.0` must resolve
+/// to a rank-2 `Value::Tensor` (3 rows × 3 cols) of MomentOfInertia-dimensioned
+/// scalars when the mock kernel pre-stages the OCCT row-of-row `Value::List`
+/// reply for `InertiaTensor(handle=1, density=7850.0)`. Pins the
+/// raw-Real-rows → nested-Tensor-of-MI-Scalars re-wrap (the eval-side owns the
+/// dimension tagging; the kernel reply is dimensionless `Value::Real`).
+#[test]
+fn moment_of_inertia_let_resolves_to_rank2_tensor_via_kernel_reply() {
+    let source = "structure def Bracket {\n    \
+        let body = box(50mm, 30mm, 10mm)\n    \
+        let density = 7850.0\n    \
+        let i = moment_of_inertia(body, density)\n}";
+    let compiled = compile_no_errors(source);
+    let mut engine = engine_with_mock_kernel(|k| {
+        k.with_inertia_tensor_result(
+            GeometryHandleId(1),
+            7850.0,
+            Value::List(vec![
+                Value::List(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]),
+                Value::List(vec![Value::Real(0.0), Value::Real(2.0), Value::Real(0.0)]),
+                Value::List(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(3.0)]),
+            ]),
+        )
+    });
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("Bracket", "i");
+    let mi = |v: f64| Value::Scalar {
+        si_value: v,
+        dimension: DimensionVector::MOMENT_OF_INERTIA,
+    };
+    assert_eq!(
+        result.values.get(&cell),
+        Some(&Value::Tensor(vec![
+            Value::Tensor(vec![mi(1.0), mi(0.0), mi(0.0)]),
+            Value::Tensor(vec![mi(0.0), mi(2.0), mi(0.0)]),
+            Value::Tensor(vec![mi(0.0), mi(0.0), mi(3.0)]),
+        ])),
+        "Bracket.i must resolve to a rank-2 Value::Tensor (3×3) of \
+         MomentOfInertia-dimensioned scalars via kernel InertiaTensor reply, \
+         got {:?}",
+        result.values.get(&cell),
+    );
+}
+
+/// `let es = edges_by_length(body, r)` with `let r = 0mm..50mm` must resolve
+/// to the filtered `Value::List` of edge sub-handles whose `EdgeLength` falls
+/// in `[0, 0.05] m`. Both staged edges (10 mm and 20 mm) are within range, so
+/// both survive. Pins the Range-arg resolution + delegation to
+/// `topology_selectors::edges_by_length`.
+#[test]
+fn edges_by_length_let_resolves_to_filtered_list_via_helper() {
+    let source = "structure def Bracket {\n    \
+        let body = box(10mm, 10mm, 10mm)\n    \
+        let r = 0mm..50mm\n    \
+        let es = edges_by_length(body, r)\n}";
+    let compiled = compile_no_errors(source);
+    let mut engine = engine_with_mock_kernel(|k| {
+        k.with_extracted_edges(
+            GeometryHandleId(1),
+            vec![GeometryHandleId(2), GeometryHandleId(3)],
+        )
+        .with_edge_length_result(GeometryHandleId(2), Value::Real(0.010))
+        .with_edge_length_result(GeometryHandleId(3), Value::Real(0.020))
+    });
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("Bracket", "es");
+    assert_eq!(
+        result.values.get(&cell),
+        Some(&Value::List(vec![Value::Int(2), Value::Int(3)])),
+        "Bracket.es must resolve to the length-filtered Value::List (both \
+         edges within [0, 50] mm) via topology_selectors::edges_by_length, \
+         got {:?}",
+        result.values.get(&cell),
+    );
+}
+
+/// `let fs = faces_by_area(body, r)` with `let r = 0mm*0mm..1m*1m` must
+/// resolve to the area-filtered `Value::List`. The single staged face
+/// (0.0001 m²) is within `[0, 1] m²`, so it survives. Pins the Area-Range
+/// resolution + delegation to `topology_selectors::faces_by_area`.
+#[test]
+fn faces_by_area_let_resolves_to_filtered_list_via_helper() {
+    let source = "structure def Bracket {\n    \
+        let body = box(10mm, 10mm, 10mm)\n    \
+        let r = 0mm*0mm..1m*1m\n    \
+        let fs = faces_by_area(body, r)\n}";
+    let compiled = compile_no_errors(source);
+    let mut engine = engine_with_mock_kernel(|k| {
+        k.with_extracted_faces(GeometryHandleId(1), vec![GeometryHandleId(2)])
+            .with_surface_area_result(GeometryHandleId(2), Value::Real(0.0001))
+    });
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("Bracket", "fs");
+    assert_eq!(
+        result.values.get(&cell),
+        Some(&Value::List(vec![Value::Int(2)])),
+        "Bracket.fs must resolve to the area-filtered Value::List via \
+         topology_selectors::faces_by_area, got {:?}",
+        result.values.get(&cell),
+    );
+}
+
+/// `let fs = faces_by_normal(body, dir, tol)` with `let dir = vec3(0.0, 0.0, 1.0)`
+/// and `let tol = 1deg` must resolve to the normal-filtered `Value::List`. The
+/// single staged face's normal is exactly `+z` (matching `dir`), so it survives
+/// the 1° tolerance. Pins the Vec3-arg + angle-arg resolution + delegation to
+/// `topology_selectors::faces_by_normal`.
+#[test]
+fn faces_by_normal_let_resolves_to_filtered_list_via_helper() {
+    let source = "structure def Bracket {\n    \
+        let body = box(10mm, 10mm, 10mm)\n    \
+        let dir = vec3(0.0, 0.0, 1.0)\n    \
+        let tol = 1deg\n    \
+        let fs = faces_by_normal(body, dir, tol)\n}";
+    let compiled = compile_no_errors(source);
+    let mut engine = engine_with_mock_kernel(|k| {
+        k.with_extracted_faces(GeometryHandleId(1), vec![GeometryHandleId(2)])
+            .with_face_normal_result(
+                GeometryHandleId(2),
+                Value::String("{\"x\":0.0,\"y\":0.0,\"z\":1.0}".to_string()),
+            )
+    });
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("Bracket", "fs");
+    assert_eq!(
+        result.values.get(&cell),
+        Some(&Value::List(vec![Value::Int(2)])),
+        "Bracket.fs must resolve to the normal-filtered Value::List via \
+         topology_selectors::faces_by_normal, got {:?}",
+        result.values.get(&cell),
+    );
+}
+
+/// `let es = edges_parallel_to(body, axis, tol)` with `let axis = vec3(0.0, 0.0, 1.0)`
+/// and `let tol = 1deg` must resolve to the tangent-filtered `Value::List`. The
+/// single staged edge's tangent is `+z` (parallel to `axis`), so it survives
+/// the 1° tolerance. Pins the Vec3-arg + angle-arg resolution + delegation to
+/// `topology_selectors::edges_parallel_to` (sign-tolerant tangent predicate).
+#[test]
+fn edges_parallel_to_let_resolves_to_filtered_list_via_helper() {
+    let source = "structure def Bracket {\n    \
+        let body = box(10mm, 10mm, 10mm)\n    \
+        let axis = vec3(0.0, 0.0, 1.0)\n    \
+        let tol = 1deg\n    \
+        let es = edges_parallel_to(body, axis, tol)\n}";
+    let compiled = compile_no_errors(source);
+    let mut engine = engine_with_mock_kernel(|k| {
+        k.with_extracted_edges(GeometryHandleId(1), vec![GeometryHandleId(2)])
+            .with_edge_tangent_result(
+                GeometryHandleId(2),
+                Value::String("{\"x\":0.0,\"y\":0.0,\"z\":1.0}".to_string()),
+            )
+    });
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("Bracket", "es");
+    assert_eq!(
+        result.values.get(&cell),
+        Some(&Value::List(vec![Value::Int(2)])),
+        "Bracket.es must resolve to the tangent-filtered Value::List via \
+         topology_selectors::edges_parallel_to, got {:?}",
+        result.values.get(&cell),
+    );
+}
+
+/// `let es = edges_at_height(body, z, tol)` with `let z = 0mm` and
+/// `let tol = 0.01mm` must resolve to the height-filtered `Value::List`. The
+/// single staged edge's bbox z-extent is `[0, 0]` (exactly on the `z = 0`
+/// plane), within the 0.01 mm tolerance, so it survives. Pins the
+/// Length-scalar-arg resolution + delegation to
+/// `topology_selectors::edges_at_height`.
+#[test]
+fn edges_at_height_let_resolves_to_filtered_list_via_helper() {
+    let source = "structure def Bracket {\n    \
+        let body = box(10mm, 10mm, 10mm)\n    \
+        let z = 0mm\n    \
+        let tol = 0.01mm\n    \
+        let es = edges_at_height(body, z, tol)\n}";
+    let compiled = compile_no_errors(source);
+    let mut engine = engine_with_mock_kernel(|k| {
+        k.with_extracted_edges(GeometryHandleId(1), vec![GeometryHandleId(2)])
+            .with_bbox_result(
+                GeometryHandleId(2),
+                Value::String(
+                    "{\"xmin\":-0.005,\"ymin\":-0.005,\"zmin\":0.0,\
+                      \"xmax\":0.005,\"ymax\":0.005,\"zmax\":0.0}"
+                        .to_string(),
+                ),
+            )
+    });
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("Bracket", "es");
+    assert_eq!(
+        result.values.get(&cell),
+        Some(&Value::List(vec![Value::Int(2)])),
+        "Bracket.es must resolve to the height-filtered Value::List via \
+         topology_selectors::edges_at_height, got {:?}",
+        result.values.get(&cell),
+    );
+}
+
+/// `let neighbors = adjacent_faces(body, body)` must resolve to the
+/// `Value::List` of face sub-handles adjacent to the given face, via
+/// `selector_vocabulary_v2::adjacent_to_face`.
+///
+/// NOTE: the natural fixture is
+/// `let top = single(faces_by_normal(body, vec3(0,0,1), 1deg)); adjacent_faces(body, top)`
+/// but `single` is out of scope (task #2698) and `Type::Geometry` face cells
+/// are not directly representable, so this test uses the artificial
+/// `adjacent_faces(body, body)` form: the mock stages `body` as its own sole
+/// face (`extract_faces(1) = [1]`), so `adjacent_to_face` recovers
+/// `face_index = 0` and the `AdjacentFaces` reply `[0]` maps back to handle 1.
+/// This exercises the full dispatch wiring (handle→index→query→index→handle)
+/// even though the topology is synthetic.
+#[test]
+fn adjacent_faces_let_resolves_via_selector_vocabulary_v2() {
+    let source = "structure def Bracket {\n    \
+        let body = box(10mm, 10mm, 10mm)\n    \
+        let neighbors = adjacent_faces(body, body)\n}";
+    let compiled = compile_no_errors(source);
+    let mut engine = engine_with_mock_kernel(|k| {
+        k.with_extracted_faces(GeometryHandleId(1), vec![GeometryHandleId(1)])
+            .with_adjacent_faces_result(
+                GeometryHandleId(1),
+                0,
+                Value::List(vec![Value::Int(0)]),
+            )
+    });
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("Bracket", "neighbors");
+    assert_eq!(
+        result.values.get(&cell),
+        Some(&Value::List(vec![Value::Int(1)])),
+        "Bracket.neighbors must resolve to the adjacency Value::List via \
+         selector_vocabulary_v2::adjacent_to_face (AdjacentFaces index 0 → \
+         handle 1), got {:?}",
+        result.values.get(&cell),
+    );
+}
+
+/// `let es = shared_edges(body, body)` must derive a common parent solid
+/// via `GeometryQuery::OwnerBody`, recover face indices via `extract_faces`,
+/// dispatch `GeometryQuery::SharedEdges`, and map the reply integer indices
+/// back to edge handles via `extract_edges(parent)`. This exercises the full
+/// dispatch wiring (handle→OwnerBody→index→SharedEdges→index→edge_handle).
+///
+/// NOTE: like `adjacent_faces_let_resolves_via_selector_vocabulary_v2`, the
+/// natural fixture would let-bind two face handles (e.g. via `single(faces_by_normal(...))`),
+/// but `single` is out of scope (#2698) and `Type::Geometry` face cells are
+/// not directly representable. The artificial `shared_edges(body, body)` form
+/// stages `body` as its own owner (OwnerBody(1)=1), its own sole face
+/// (extract_faces(1)=[1] so face_index=0), and stages a SharedEdges reply
+/// `[0]` that maps back via extract_edges(1)=[2] → handle 2.
+#[test]
+fn shared_edges_let_resolves_to_list_via_owner_body_derivation() {
+    let source = "structure def Bracket {\n    \
+        let body = box(10mm, 10mm, 10mm)\n    \
+        let es = shared_edges(body, body)\n}";
+    let compiled = compile_no_errors(source);
+    let mut engine = engine_with_mock_kernel(|k| {
+        k.with_owner_body_result(GeometryHandleId(1), GeometryHandleId(1))
+            .with_extracted_faces(GeometryHandleId(1), vec![GeometryHandleId(1)])
+            .with_extracted_edges(GeometryHandleId(1), vec![GeometryHandleId(2)])
+            .with_shared_edges_result(
+                GeometryHandleId(1),
+                0,
+                0,
+                Value::List(vec![Value::Int(0)]),
+            )
+    });
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("Bracket", "es");
+    assert_eq!(
+        result.values.get(&cell),
+        Some(&Value::List(vec![Value::Int(2)])),
+        "Bracket.es must resolve to the SharedEdges Value::List via \
+         OwnerBody-derivation (SharedEdges index 0 → edge handle 2), got {:?}",
+        result.values.get(&cell),
+    );
+}
+
+/// `shared_edges(face_a, face_b)` where the two faces' OwnerBody replies
+/// indicate DIFFERENT parent solids must silently degrade to an empty
+/// `Value::List` AND emit a warning diagnostic mentioning "different parent
+/// solids". This pins the design-doc §4.3 cross-solid guard rail — an
+/// unhelpful but well-defined contract that prevents the dispatch from
+/// constructing a malformed SharedEdges query against a single shape when the
+/// faces span two different shapes.
+///
+/// Fixture: two distinct boxes (`body_a` = handle 1, `body_b` = handle 2),
+/// each declared as its own OwnerBody. `shared_edges(body_a, body_b)` resolves
+/// args[0]→1, args[1]→2; OwnerBody(1)=1, OwnerBody(2)=2 → parent_a != parent_b
+/// → empty list + warning.
+#[test]
+fn shared_edges_cross_solid_returns_empty_list_with_warning() {
+    let source = "structure def Bracket {\n    \
+        let body_a = box(10mm, 10mm, 10mm)\n    \
+        let body_b = box(5mm, 5mm, 5mm)\n    \
+        let es = shared_edges(body_a, body_b)\n}";
+    let compiled = compile_no_errors(source);
+    let mut engine = engine_with_mock_kernel(|k| {
+        k.with_owner_body_result(GeometryHandleId(1), GeometryHandleId(1))
+            .with_owner_body_result(GeometryHandleId(2), GeometryHandleId(2))
+    });
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("Bracket", "es");
+    assert_eq!(
+        result.values.get(&cell),
+        Some(&Value::List(vec![])),
+        "Bracket.es must silently degrade to an empty Value::List when the two \
+         faces have different parent solids, got {:?}",
+        result.values.get(&cell),
+    );
+    assert!(
+        result.diagnostics.iter().any(|d| {
+            d.severity == Severity::Warning
+                && d.message.to_lowercase().contains("different parent solids")
+        }),
+        "expected a warning diagnostic mentioning 'different parent solids', got {:?}",
+        result.diagnostics,
+    );
+}
+
 // ── Tessellate-path parity test ─────────────────────────────────────────────
 
 /// The post-process must run on the `tessellate_realizations` path too, so
@@ -314,6 +795,49 @@ fn tessellate_realizations_post_processes_topology_selectors() {
         ])),
         "TessellateResult.values must expose the kernel-resolved Point3-Length \
          for closest_point cells (parity with BuildResult.values), got {:?}",
+        result.values.get(&cell),
+    );
+}
+
+/// Tessellate-path parity for the task-3560 selector cluster. Exercises one
+/// representative new selector — `edges(body)` — via
+/// `engine.tessellate_realizations(&compiled)` and asserts the same
+/// `Bracket.es == Value::List(...)` outcome as the build-path test
+/// `edges_let_resolves_to_list_of_int_via_extract_edges`. Pins that all three
+/// call sites in `engine_build.rs` (build / build_snapshot / tessellate)
+/// consistently propagate the kernel-resolved value through the post-process;
+/// without this, a GUI overlay reading `TessellateResult.values` would see
+/// `Value::Undef` while a parallel build's overlay would see `Value::List(_)`.
+///
+/// Pinning `edges` specifically also pins the cluster-A widening of
+/// `Engine::post_process_topology_selectors` from `&dyn` to `&mut dyn
+/// GeometryKernel` at the tessellate site — `edges` calls
+/// `kernel.extract_edges(...)` which takes `&mut self`.
+#[test]
+fn tessellate_realizations_post_processes_new_topology_selectors() {
+    let source = "structure def Bracket {\n    \
+        let body = box(10mm, 10mm, 10mm)\n    \
+        let es = edges(body)\n}";
+    let compiled = compile_no_errors(source);
+    let mut engine = engine_with_mock_kernel(|k| {
+        k.with_extracted_edges(
+            GeometryHandleId(1),
+            vec![GeometryHandleId(2), GeometryHandleId(3), GeometryHandleId(4)],
+        )
+    });
+
+    let result = engine.tessellate_realizations(&compiled);
+
+    let cell = ValueCellId::new("Bracket", "es");
+    assert_eq!(
+        result.values.get(&cell),
+        Some(&Value::List(vec![
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(4),
+        ])),
+        "TessellateResult.values must expose the kernel-resolved Value::List \
+         for edges() cells (parity with BuildResult.values), got {:?}",
         result.values.get(&cell),
     );
 }
@@ -394,6 +918,117 @@ fn closest_point_on_box_via_occt_returns_plus_x_face_hit() {
             expected[i],
             si,
             diff
+        );
+    }
+}
+
+/// OCCT-backed end-to-end smoke test for the cluster-A 1-arg list-return
+/// selectors `edges` and `faces` (task 3560). Gated by
+/// `reify_kernel_occt::OCCT_AVAILABLE` so the file always compiles; the test
+/// is a runtime no-op when the OCCT shared lib is absent.
+///
+/// `box(10mm, 10mm, 10mm)` is the canonical reference solid: 12 edges
+/// (4 along each of the three axes) and 6 faces (one per axis-aligned
+/// half-space). The OCCT kernel's `extract_edges` / `extract_faces`
+/// canonicalises via `TopoDS_Shape::IsSame` so the counts match the
+/// well-known topology invariants for a cuboid.
+///
+/// Confirms the cluster-A dispatch arms (`Edges`, `Faces` in
+/// `try_eval_topology_selector`) compose correctly with the real OCCT
+/// kernel — the dispatch resolves the geometry-arg ValueRef against the
+/// realisation's named-step handle map, round-trips through
+/// `kernel.extract_edges` / `kernel.extract_faces`, and wraps the resulting
+/// `Vec<GeometryHandleId>` as `Value::List(Vec<Value::Int>)`. Sibling to
+/// `closest_point_on_box_via_occt_returns_plus_x_face_hit` above.
+///
+/// NOTE on kernel wrapping: the sibling closest_point test wraps the
+/// `OcctKernelHandle` in a `SingleKernelHolder` because `closest_point`
+/// flows through `GeometryKernel::query` (which SingleKernelHolder
+/// forwards). The cluster-A selectors instead call
+/// `GeometryKernel::extract_edges` / `extract_faces` directly — and
+/// `SingleKernelHolder` does NOT override the trait default for those
+/// methods (the default returns
+/// `Err(QueryError::QueryFailed("topology extraction not supported by this
+/// kernel"))`), which would downgrade the test to `Value::Undef`. So this
+/// test passes the boxed `OcctKernelHandle` directly to `Engine::new` —
+/// matching how `Engine::with_registered_kernel` boxes the factory output
+/// in production. Forwarding extract_edges/faces/vertices through
+/// SingleKernelHolder is out-of-scope for task 3560 (would touch
+/// reify-geometry/src/lib.rs).
+#[test]
+fn edges_and_faces_of_box_via_occt_return_canonical_counts() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping edges_and_faces_of_box_via_occt_return_canonical_counts: OCCT not available"
+        );
+        return;
+    }
+    let source = "structure def Bracket {\n    \
+        let body = box(10mm, 10mm, 10mm)\n    \
+        let es = edges(body)\n    \
+        let fs = faces(body)\n}";
+    let compiled = compile_no_errors(source);
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let kernel: Box<dyn reify_types::GeometryKernel> =
+        Box::new(reify_kernel_occt::OcctKernelHandle::spawn());
+    let mut engine = Engine::new(Box::new(checker), Some(kernel));
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let es_cell = ValueCellId::new("Bracket", "es");
+    let es_value = result
+        .values
+        .get(&es_cell)
+        .unwrap_or_else(|| panic!("Bracket.es must be present in BuildResult.values"));
+    let edges = match es_value {
+        Value::List(items) => items,
+        other => panic!(
+            "Bracket.es must be Value::List(...) via OCCT extract_edges, got {:?}",
+            other
+        ),
+    };
+    assert_eq!(
+        edges.len(),
+        12,
+        "Bracket.es must list exactly 12 edges (a cuboid's canonical edge \
+         count) via OCCT extract_edges, got {} edges",
+        edges.len()
+    );
+    for (i, item) in edges.iter().enumerate() {
+        assert!(
+            matches!(item, Value::Int(_)),
+            "Bracket.es[{}] must be Value::Int(handle), got {:?}",
+            i,
+            item
+        );
+    }
+
+    let fs_cell = ValueCellId::new("Bracket", "fs");
+    let fs_value = result
+        .values
+        .get(&fs_cell)
+        .unwrap_or_else(|| panic!("Bracket.fs must be present in BuildResult.values"));
+    let faces = match fs_value {
+        Value::List(items) => items,
+        other => panic!(
+            "Bracket.fs must be Value::List(...) via OCCT extract_faces, got {:?}",
+            other
+        ),
+    };
+    assert_eq!(
+        faces.len(),
+        6,
+        "Bracket.fs must list exactly 6 faces (a cuboid's canonical face \
+         count) via OCCT extract_faces, got {} faces",
+        faces.len()
+    );
+    for (i, item) in faces.iter().enumerate() {
+        assert!(
+            matches!(item, Value::Int(_)),
+            "Bracket.fs[{}] must be Value::Int(handle), got {:?}",
+            i,
+            item
         );
     }
 }

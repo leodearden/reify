@@ -147,7 +147,7 @@ mod tests {
 
         // Verify `#[serde(skip_serializing_if = "Option::is_none")]` contract:
         // when last_rejection_reason is None it must be absent from the JSON (no null key).
-        let default_val = serde_json::to_value(&MorphStats::default())
+        let default_val = serde_json::to_value(MorphStats::default())
             .expect("serialize default must succeed");
         assert!(
             default_val.get("last_rejection_reason").is_none(),

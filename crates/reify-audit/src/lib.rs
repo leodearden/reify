@@ -1,14 +1,16 @@
 //! Reify architecture audit forensics.
 //!
 //! This crate implements the F-infra detector core described in
-//! `docs/architecture-audit/f-infra-design.md`. Slice 1 (T-1) ships only the
-//! P5 phantom-done detector; P1/P2 follow in T-2/T-3.
+//! `docs/architecture-audit/f-infra-design.md`. The crate currently ships
+//! three detectors: P5 (phantom-done), P2 (consumer-stub), and P1
+//! (producer-orphan). The integration suites in
+//! `tests/{p1,p2,p5}.rs` exercise every code path through hermetic mocks.
 //!
 //! ## Design seams
 //!
 //! Per `f-infra-design.md` §3 ("pure logic; no scheduler, no MCP server")
 //! and §10 (T-1 single-crate, narrow-lock-friendly), all side effects are
-//! abstracted behind two seams:
+//! abstracted behind three seams:
 //!
 //! 1. **`&rusqlite::Connection`** — production opens
 //!    `data/orchestrator/runs.db`; tests use [`rusqlite::Connection::open_in_memory`]
@@ -16,10 +18,17 @@
 //! 2. **[`GitOps`] trait** — production uses [`RealGitOps`] which shells out
 //!    to `git`; tests use [`MockGitOps`] (gated behind the `test-support`
 //!    feature) with HashMap-backed canned answers.
+//! 3. **[`JCodemunchOps`] trait** — production uses a jcodemunch-MCP-backed
+//!    impl supplied by the T-4 CLI (#3672); tests use [`MockJCodemunchOps`]
+//!    (gated behind `feature = "test-support"`) with HashMap-backed canned
+//!    answers keyed on `(branch, since_epoch)` for changed-symbol queries and
+//!    `(file, name)` for reference queries, enabling file-level disambiguation.
+//!    Per `f-infra-design.md` §5 P1.
 //!
-//! Both seams let the integration tests in `tests/p5.rs` exercise every code
-//! path (happy path + four false-positive guards + `check_pre_done`
-//! filtering) without a real git repo or a real runs.db file.
+//! All three seams let the integration tests in `tests/{p1,p2,p5}.rs` exercise
+//! every code path (happy path + false-positive guards + `check_pre_done`
+//! filtering) without a real git repo, a real runs.db, or a real jcodemunch
+//! MCP server.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -29,6 +38,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub mod p5_phantom_done;
 pub mod p2_consumer_stub;
 pub mod p1_producer_orphan;
+pub mod fused_memory_client;
 
 // -----------------------------------------------------------------------
 // Public surface — finding shape
@@ -207,6 +217,12 @@ pub struct AuditContext<'a> {
     /// boundaries are deterministic. Epoch-seconds keeps the crate's dep-set
     /// minimal (no chrono/time) per `f-infra-design.md` §12.
     pub now: Option<i64>,
+    /// Branch P1 queries via `get_changed_symbols`. `None` defaults to
+    /// `"main"` inside the P1 detector (via `.as_deref().unwrap_or("main")`),
+    /// keeping all existing fixtures unchanged. The periodic-sweep CLI (T-4
+    /// #3672) sets this when running against a non-main branch. Per
+    /// `f-infra-design.md` §5 P1.
+    pub producer_branch: Option<String>,
 }
 
 // -----------------------------------------------------------------------
@@ -263,6 +279,30 @@ pub trait GitOps {
 /// slice-1 integration suite (see `MockGitOps` for the test seam) — kept
 /// minimal so the eventual T-4 CLI can construct one and call
 /// [`p5_phantom_done::check_pre_done`].
+///
+/// # Invariants
+///
+/// **Construct exactly once per `project_root`.** The private
+/// `gitignore_unavailable` field is a per-instance `AtomicBool` that
+/// short-circuits all subsequent
+/// [`is_gitignored`](GitOps::is_gitignored) calls after the first
+/// unrecoverable `git check-ignore` exit, so a task with N files against
+/// a broken git repo emits at most one
+/// `reify-audit: git check-ignore exited …` breadcrumb rather than N
+/// copies of the same line.
+///
+/// This dedup is silently defeated by constructing a fresh [`RealGitOps`]
+/// per task, per file, or per worker: each new instance starts with a
+/// cleared flag and re-emits the breadcrumb on its first failing call.
+/// The CLI binary (`bin/reify-audit.rs`) constructs exactly one
+/// [`RealGitOps`] per invocation and threads it through [`AuditContext`]
+/// for every detector; future callers MUST preserve this single-instance
+/// discipline.
+///
+/// The multi-file regression test
+/// `cli::git_check_ignore_breadcrumb_dedups_across_files`
+/// (`tests/cli.rs`) pins the user-visible signal: with N≥2 files in a
+/// non-git directory, exactly one breadcrumb appears in stderr.
 pub struct RealGitOps {
     /// Working directory passed as `git -C <dir>` to every invocation.
     pub project_root: PathBuf,
@@ -270,6 +310,10 @@ pub struct RealGitOps {
     /// exit code (anything other than 0 or 1). Subsequent calls short-circuit
     /// and return `false` silently, so a task with N files against a broken git
     /// repo emits at most one breadcrumb rather than N copies of the same line.
+    ///
+    /// Invariant: per-instance — see [`RealGitOps`] doc for the
+    /// single-instance construction requirement that makes this budget
+    /// meaningful in production.
     gitignore_unavailable: AtomicBool,
 }
 
@@ -582,10 +626,15 @@ pub trait JCodemunchOps {
     /// nothing changed or the branch does not exist.
     fn get_changed_symbols(&self, branch: &str, since_epoch: i64) -> Vec<ChangedSymbol>;
 
-    /// Equivalent of `mcp__jcodemunch__find_references(symbol_name)`: every
-    /// non-declaration reference of the symbol across the workspace. Returns
-    /// an empty vec when the symbol has no callers (an orphan candidate).
-    fn find_references(&self, symbol_name: &str) -> Vec<SymbolReference>;
+    /// Equivalent of `mcp__jcodemunch__find_references(symbol)`: every
+    /// non-declaration reference of the symbol across the workspace, scoped
+    /// to the symbol's declaring file so that two same-named symbols in
+    /// different files are not conflated. Production impls MUST scope the
+    /// lookup to `symbol.file` (e.g. pass the file path to jcodemunch-MCP
+    /// for module-level disambiguation); tests key on `(file, name)`.
+    /// Returns an empty vec when the symbol has no callers (an orphan
+    /// candidate). Per `f-infra-design.md` §5 P1.
+    fn find_references(&self, symbol: &ChangedSymbol) -> Vec<SymbolReference>;
 }
 
 /// HashMap-backed [`JCodemunchOps`] for tests. Gated behind
@@ -596,7 +645,7 @@ pub trait JCodemunchOps {
 #[derive(Debug, Default)]
 pub struct MockJCodemunchOps {
     get_changed_symbols: HashMap<(String, i64), Vec<ChangedSymbol>>,
-    find_references: HashMap<String, Vec<SymbolReference>>,
+    find_references: HashMap<(String, String), Vec<SymbolReference>>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -618,8 +667,8 @@ impl MockJCodemunchOps {
     }
 
     // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
-    pub fn set_find_references(&mut self, symbol_name: &str, refs: Vec<SymbolReference>) {
-        self.find_references.insert(symbol_name.to_string(), refs);
+    pub fn set_find_references(&mut self, file: &str, name: &str, refs: Vec<SymbolReference>) {
+        self.find_references.insert((file.to_string(), name.to_string()), refs);
     }
 }
 
@@ -632,9 +681,9 @@ impl JCodemunchOps for MockJCodemunchOps {
             .unwrap_or_default()
     }
 
-    fn find_references(&self, symbol_name: &str) -> Vec<SymbolReference> {
+    fn find_references(&self, symbol: &ChangedSymbol) -> Vec<SymbolReference> {
         self.find_references
-            .get(symbol_name)
+            .get(&(symbol.file.clone(), symbol.name.clone()))
             .cloned()
             .unwrap_or_default()
     }

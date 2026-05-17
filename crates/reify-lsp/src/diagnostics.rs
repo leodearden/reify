@@ -396,15 +396,15 @@ mod tests {
 
     /// Minimal source that references two stdlib symbols (Rigid trait, Material struct).
     /// Shared across all task-2176 stdlib-resolution tests to avoid tripling the literal.
+    // Post-GHR-α (task 3603): Physical is spec-shape (geometry : Solid +
+    // material : Material struct slot); the legacy flat-scalar
+    // density/volume/centroid_x/y/z params were retired. Rigid still refines
+    // Physical and adds moment_of_inertia. Mirrors the canonical spec-shape
+    // fixture in structural_physical_tests.rs.
     const STDLIB_PROBE_SRC: &str = r#"structure S : Rigid {
-    param density: Real = 7850
-    param name: String = "steel"
-    param volume: Real = 1.0
-    param centroid_x: Real = 0.0
-    param centroid_y: Real = 0.0
-    param centroid_z: Real = 0.0
-    param moment_of_inertia: Real = 1.0
+    param geometry: Solid = box(10mm, 20mm, 30mm)
     param material: Material = Material(name: "steel", density: 7850.0, youngs_modulus: 200000000000.0)
+    param moment_of_inertia: Real = 1.0
 }"#;
 
     #[test]

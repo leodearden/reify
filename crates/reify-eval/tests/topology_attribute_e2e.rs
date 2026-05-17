@@ -1346,7 +1346,10 @@ fn engine_build_local_index_reassignment_warning_filters_cross_realization() {
         })
         .collect();
 
-    // Exactly two warnings per realization (one per role: Side + NewEdge) — no more, no less.
+    // Ten warnings per realization: 2 for face/edge roles (Side + NewEdge) plus
+    // 8 for the 8 CornerVertex role variants (one per sign-combo corner).
+    // Both boxes in each union are coincident, so each paired (box1,box2)
+    // vertex with the same CornerVertex role is geometrically tied.
     // Note: `FeatureId::from(realization_id)` formats as `{entity}#realization[{index}]`
     // where the entity is the structure name "S". Realization 0 is for `foo`,
     // realization 1 is for `bar` — their feature_ids are S#realization[0] and
@@ -1354,9 +1357,9 @@ fn engine_build_local_index_reassignment_warning_filters_cross_realization() {
     //
     // Cross-realization isolation: a broken per-realization filter in
     // `execute_realization_ops` would cause realization 1's detector pass to
-    // re-see realization 0's still-resident table entries, emitting at least two
+    // re-see realization 0's still-resident table entries, emitting at least ten
     // additional warnings naming `S#realization[0]` (one per role), making
-    // r0_count ≥ 4 and tripping the assert below.
+    // r0_count ≥ 20 and tripping the assert below.
     let r0_count = warnings
         .iter()
         .filter(|d| d.message.contains("S#realization[0]"))
@@ -1365,32 +1368,33 @@ fn engine_build_local_index_reassignment_warning_filters_cross_realization() {
         .iter()
         .filter(|d| d.message.contains("S#realization[1]"))
         .count();
-    // Each coincident-box union produces two tied-centroid warnings per realization:
-    // one for Role::Side and one for Role::NewEdge. So each realization contributes
-    // exactly 2 warnings naming its feature_id. A broken per-realization filter
-    // would cause realization 1's detector pass to re-see realization 0's entries,
-    // emitting at least two additional warnings naming S#realization[0] (one per role),
-    // making r0_count ≥ 4 and tripping the assert.
+    // Each coincident-box union produces 10 tied-centroid warnings per realization:
+    // 1 for Role::Side, 1 for Role::NewEdge, and 8 for the 8 CornerVertex variants
+    // (one warning per sign-combo since box1/box2 share coincident vertices).
+    // A broken per-realization filter would cause realization 1's detector pass to
+    // re-see realization 0's entries, making r0_count ≥ 20 and tripping the assert.
     assert_eq!(
         r0_count,
-        2,
-        "expected exactly 2 warnings naming S#realization[0] (one per role: Side + NewEdge); \
-         broken per-realization filter would yield ≥ 4; \
+        10,
+        "expected exactly 10 warnings naming S#realization[0] \
+         (1×Side + 1×NewEdge + 8×CornerVertex); \
+         broken per-realization filter would yield ≥ 20; \
          messages: {:?}",
         warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
     assert_eq!(
         r1_count,
-        2,
-        "expected exactly 2 warnings naming S#realization[1] (one per role: Side + NewEdge); \
+        10,
+        "expected exactly 10 warnings naming S#realization[1] \
+         (1×Side + 1×NewEdge + 8×CornerVertex); \
          messages: {:?}",
         warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
     assert_eq!(
         warnings.len(),
-        4,
-        "expected exactly 4 TopologyAttributeLocalIndexReassigned warnings total \
-         (2 per realization × 2 realizations); \
+        20,
+        "expected exactly 20 TopologyAttributeLocalIndexReassigned warnings total \
+         (10 per realization × 2 realizations); \
          messages: {:?}",
         warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
     );

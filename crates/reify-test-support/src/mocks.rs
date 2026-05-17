@@ -720,6 +720,8 @@ pub struct MockGeometryKernel {
     extracted_edges: HashMap<GeometryHandleId, Result<Vec<GeometryHandleId>, QueryError>>,
     /// Per-parent face-extraction results; `Ok(vec)` or `Err(e)`.
     extracted_faces: HashMap<GeometryHandleId, Result<Vec<GeometryHandleId>, QueryError>>,
+    /// Per-parent vertex-extraction results; `Ok(vec)` or `Err(e)`.
+    extracted_vertices: HashMap<GeometryHandleId, Result<Vec<GeometryHandleId>, QueryError>>,
 }
 
 impl MockGeometryKernel {
@@ -732,6 +734,7 @@ impl MockGeometryKernel {
             typed_queries: HashMap::new(),
             extracted_edges: HashMap::new(),
             extracted_faces: HashMap::new(),
+            extracted_vertices: HashMap::new(),
         }
     }
 
@@ -900,6 +903,28 @@ impl MockGeometryKernel {
     /// Configure `extract_faces(parent)` to return an error.
     pub fn with_extract_faces_error(mut self, parent: GeometryHandleId, err: QueryError) -> Self {
         self.extracted_faces.insert(parent, Err(err));
+        self
+    }
+
+    /// Configure a successful `extract_vertices` result for `parent`.
+    ///
+    /// `kernel.extract_vertices(parent)` will return `Ok(vertices)`.
+    pub fn with_extracted_vertices(
+        mut self,
+        parent: GeometryHandleId,
+        vertices: Vec<GeometryHandleId>,
+    ) -> Self {
+        self.extracted_vertices.insert(parent, Ok(vertices));
+        self
+    }
+
+    /// Configure `extract_vertices(parent)` to return an error.
+    pub fn with_extract_vertices_error(
+        mut self,
+        parent: GeometryHandleId,
+        err: QueryError,
+    ) -> Self {
+        self.extracted_vertices.insert(parent, Err(err));
         self
     }
 
@@ -1088,6 +1113,37 @@ impl MockGeometryKernel {
             QueryKey::AncestorFacesOfEdge {
                 shape: parent,
                 edge_index,
+            },
+            value,
+        );
+        self
+    }
+
+    /// Configure a `SharedEdges` query result for a specific (parent shape,
+    /// face_a index, face_b index) triple.
+    ///
+    /// The `value` should be a `Value::List(Vec<Value::Int>)` of global edge
+    /// indices into the same canonical TopExp_Explorer order returned by
+    /// `extract_edges(parent)`. Decoded by the `shared_edges` topology-selector
+    /// dispatch arm (eval-side, task 3560), which maps each integer index back
+    /// to a `GeometryHandleId` via the canonical extract_edges list.
+    ///
+    /// Mirrors [`Self::with_adjacent_faces_result`] — needed for `shared_edges`
+    /// dispatch tests because the `QueryKey::SharedEdges` variant keys on three
+    /// fields (shape + face_a + face_b) and constructing it via the typed_queries
+    /// map directly would expose internal API.
+    pub fn with_shared_edges_result(
+        mut self,
+        parent: GeometryHandleId,
+        face_a: usize,
+        face_b: usize,
+        value: Value,
+    ) -> Self {
+        self.typed_queries.insert(
+            QueryKey::SharedEdges {
+                shape: parent,
+                face_a,
+                face_b,
             },
             value,
         );
@@ -1293,6 +1349,19 @@ impl GeometryKernel for MockGeometryKernel {
         handle: GeometryHandleId,
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
         match self.extracted_faces.get(&handle) {
+            Some(result) => result.clone(),
+            None => Err(QueryError::QueryFailed(format!(
+                "no topology extraction fixture for {:?}",
+                handle
+            ))),
+        }
+    }
+
+    fn extract_vertices(
+        &mut self,
+        handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        match self.extracted_vertices.get(&handle) {
             Some(result) => result.clone(),
             None => Err(QueryError::QueryFailed(format!(
                 "no topology extraction fixture for {:?}",

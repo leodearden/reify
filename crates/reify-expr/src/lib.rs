@@ -593,24 +593,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             Value::Map(map)
         }
 
-        CompiledExprKind::IndexAccess { object, index } => {
-            let obj = eval_expr(object, ctx);
-            let idx = eval_expr(index, ctx);
-            if obj.is_undef() || idx.is_undef() {
-                return Value::Undef;
-            }
-            match (&obj, &idx) {
-                (Value::List(items), Value::Int(i)) => {
-                    if *i < 0 {
-                        return Value::Undef;
-                    }
-                    let i = *i as usize;
-                    items.get(i).cloned().unwrap_or(Value::Undef)
-                }
-                (Value::Map(entries), key) => entries.get(key).cloned().unwrap_or(Value::Undef),
-                _ => Value::Undef,
-            }
-        }
+        CompiledExprKind::IndexAccess { object, index } => eval_index_access(object, index, ctx),
 
         CompiledExprKind::MethodCall {
             object,
@@ -764,6 +747,117 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             );
             Value::Undef
         }
+
+        // task 3540 step-18 (SIR-α): build the structure instance with NO
+        // registry lookup — `type_id`/`type_name`/`version` are baked at
+        // lowering time (reify-expr stays registry-free,
+        // design-decision-2; type_id is the StructureTypeId(0) placeholder,
+        // identity is (name, version) per esc-3540-177 RULING 2+3).
+        // Evaluate every supplied `ordered_arg` in declaration order, then
+        // fill each `default` whose name is NOT covered by an ordered_arg,
+        // evaluated in the SAME `EvalContext` — so a default that is itself
+        // a structure ctor recurses through `eval_expr` and yields a nested
+        // `Value::StructureInstance`. An `Undef` field value is kept in its
+        // own slot: the structure is still constructed (no
+        // `FunctionCall`-style strict whole-value short-circuit).
+        CompiledExprKind::StructureInstanceCtor {
+            type_id,
+            type_name,
+            version,
+            ordered_args,
+            defaults,
+        } => eval_structure_instance_ctor(
+            *type_id,
+            type_name,
+            *version,
+            ordered_args,
+            defaults,
+            ctx,
+        ),
+    }
+}
+
+/// Build a `Value::StructureInstance` for a compile-lowered structure
+/// constructor (task 3540 step-18; the eval half of design-decision-2).
+///
+/// Extracted from `eval_expr`'s match arm and marked `#[inline(never)]` on
+/// purpose: the locals here (a `PersistentMap` plus loop temporaries) must
+/// NOT inflate `eval_expr`'s stack frame. `eval_expr` is the hot mutually-
+/// recursive evaluator, and `eval_user_fn_recursion_depth_exceeded` is a
+/// safety test that drives `MAX_RECURSION_DEPTH` (256) deep and asserts the
+/// guard trips *before* the native stack is exhausted. Inlining this body
+/// into every recursive `eval_expr` frame regressed that test into a real
+/// stack overflow; keeping it in a separate non-inlined frame (allocated
+/// only when a ctor is actually evaluated, never on the deep user-fn path)
+/// restores the lean frame the guard relies on.
+///
+/// No registry lookup — reify-expr stays registry-free (design-decision-2);
+/// `type_id` is the `StructureTypeId(0)` placeholder, identity is
+/// `(type_name, version)` per esc-3540-177 RULING 2+3. `ordered_args`
+/// evaluate in declaration order; each `default` whose name is not covered
+/// by an ordered arg fills its slot, evaluated in the SAME `EvalContext`
+/// (so a default that is itself a structure ctor recurses through
+/// `eval_expr` → nested `Value::StructureInstance`). An `Undef` field value
+/// is kept in its own slot — the structure is still constructed (no
+/// `FunctionCall`-style strict whole-value short-circuit).
+#[inline(never)]
+fn eval_structure_instance_ctor(
+    type_id: reify_types::StructureTypeId,
+    type_name: &str,
+    version: u32,
+    ordered_args: &[(String, CompiledExpr)],
+    defaults: &[(String, CompiledExpr)],
+    ctx: &EvalContext,
+) -> Value {
+    let mut fields: PersistentMap<String, Value> = PersistentMap::new();
+    for (name, arg) in ordered_args {
+        fields.insert(name.clone(), eval_expr(arg, ctx));
+    }
+    for (name, def) in defaults {
+        if !fields.contains_key(name) {
+            fields.insert(name.clone(), eval_expr(def, ctx));
+        }
+    }
+    Value::StructureInstance(Box::new(reify_types::StructureInstanceData {
+        type_id,
+        type_name: type_name.to_string(),
+        version,
+        fields,
+    }))
+}
+
+/// Evaluate `CompiledExprKind::IndexAccess`. Extracted from `eval_expr`'s
+/// match arm and marked `#[inline(never)]` for the same reason
+/// `eval_structure_instance_ctor` is hoisted out: the local `Value` slots
+/// here (`obj`, `idx`) widen `eval_expr`'s debug-mode stack frame enough to
+/// regress `eval_user_fn_recursion_depth_exceeded` (the safety test that
+/// drives `MAX_RECURSION_DEPTH=256` and asserts the runtime guard trips
+/// *before* the native stack is exhausted). Keeping this body in a separate
+/// non-inlined frame — allocated only when an index access is actually
+/// evaluated, not on every recursive `eval_expr` frame — restores the lean
+/// frame the guard relies on. The `Value::StructureInstance` arm here is the
+/// SIR-α (task 3540) field-projection path; lowering site is
+/// `CompiledExpr::index_access` in `reify-compiler/src/expr.rs`.
+#[inline(never)]
+fn eval_index_access(object: &CompiledExpr, index: &CompiledExpr, ctx: &EvalContext) -> Value {
+    let obj = eval_expr(object, ctx);
+    let idx = eval_expr(index, ctx);
+    if obj.is_undef() || idx.is_undef() {
+        return Value::Undef;
+    }
+    match (&obj, &idx) {
+        (Value::List(items), Value::Int(i)) => {
+            if *i < 0 {
+                return Value::Undef;
+            }
+            let i = *i as usize;
+            items.get(i).cloned().unwrap_or(Value::Undef)
+        }
+        (Value::Map(entries), key) => entries.get(key).cloned().unwrap_or(Value::Undef),
+        (Value::StructureInstance(data), Value::String(k)) => {
+            data.fields.get(k).cloned().unwrap_or(Value::Undef)
+        }
+        _ => Value::Undef,
     }
 }
 
@@ -3742,6 +3836,159 @@ mod tests {
         }
     }
 
+    // ── task 3540 step-17: StructureInstanceCtor eval (RED) ─────────────────
+    //
+    // `eval_expr` on `CompiledExprKind::StructureInstanceCtor` must build a
+    // `Value::StructureInstance { type_id: StructureTypeId(0), type_name,
+    // version, fields }`. `fields` = each ordered_arg evaluated in order,
+    // PLUS each default whose name is not covered by ordered_args, evaluated
+    // in the SAME `EvalContext`. No registry lookup (reify-expr stays
+    // registry-free — design-decision-2); type_id/type_name/version are baked
+    // at lowering time. Undef field values stay Undef IN THEIR SLOT (the
+    // ctor does NOT strict-short-circuit the whole structure to Undef the
+    // way `FunctionCall` does). RED until step-18 replaces the placeholder
+    // arm (currently returns `Value::Undef`).
+
+    /// Build a `CompiledExpr::structure_instance_ctor` test fixture.
+    fn sct(
+        name: &str,
+        version: u32,
+        ordered: Vec<(&str, CompiledExpr)>,
+        defaults: Vec<(&str, CompiledExpr)>,
+    ) -> CompiledExpr {
+        CompiledExpr::structure_instance_ctor(
+            reify_types::StructureTypeId(0),
+            name.to_string(),
+            version,
+            ordered
+                .into_iter()
+                .map(|(n, e)| (n.to_string(), e))
+                .collect(),
+            defaults
+                .into_iter()
+                .map(|(n, e)| (n.to_string(), e))
+                .collect(),
+            Type::StructureRef(name.to_string()),
+        )
+    }
+
+    #[test]
+    fn structure_instance_ctor_all_args_supplied() {
+        let expr = sct(
+            "Steel_AISI_1045",
+            1,
+            vec![
+                ("youngs_modulus", lit(Value::Int(200), Type::Int)),
+                ("poisson", lit(Value::Real(0.3), Type::Real)),
+            ],
+            vec![],
+        );
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::StructureInstance(data) => {
+                assert_eq!(data.type_id, reify_types::StructureTypeId(0));
+                assert_eq!(data.type_name, "Steel_AISI_1045");
+                assert_eq!(data.version, 1);
+                assert_eq!(
+                    data.fields.get(&"youngs_modulus".to_string()),
+                    Some(&Value::Int(200))
+                );
+                assert_eq!(
+                    data.fields.get(&"poisson".to_string()),
+                    Some(&Value::Real(0.3))
+                );
+                assert_eq!(data.fields.len(), 2);
+            }
+            other => panic!("expected StructureInstance, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn structure_instance_ctor_omitted_args_use_defaults() {
+        // `target` supplied; `magnitude` omitted → its default fills the slot.
+        let expr = sct(
+            "PointLoad",
+            1,
+            vec![("target", lit(Value::Int(7), Type::Int))],
+            vec![("magnitude", lit(Value::Int(0), Type::Int))],
+        );
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::StructureInstance(data) => {
+                assert_eq!(data.fields.get(&"target".to_string()), Some(&Value::Int(7)));
+                assert_eq!(
+                    data.fields.get(&"magnitude".to_string()),
+                    Some(&Value::Int(0)),
+                    "omitted param filled from its captured default"
+                );
+                assert_eq!(data.fields.len(), 2);
+            }
+            other => panic!("expected StructureInstance, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn structure_instance_ctor_nested_default_recurses() {
+        // A default expression that is itself a structure ctor recurses
+        // through the same eval path → nested Value::StructureInstance.
+        let inner = sct(
+            "Steel_AISI_1045",
+            1,
+            vec![("youngs_modulus", lit(Value::Int(200), Type::Int))],
+            vec![],
+        );
+        let outer = sct("Beam", 2, vec![], vec![("material", inner)]);
+        let values = ValueMap::new();
+        match eval_expr(&outer, &EvalContext::simple(&values)) {
+            Value::StructureInstance(data) => {
+                assert_eq!(data.type_name, "Beam");
+                assert_eq!(data.version, 2);
+                match data.fields.get(&"material".to_string()) {
+                    Some(Value::StructureInstance(inner)) => {
+                        assert_eq!(inner.type_name, "Steel_AISI_1045");
+                        assert_eq!(
+                            inner.fields.get(&"youngs_modulus".to_string()),
+                            Some(&Value::Int(200))
+                        );
+                    }
+                    other => panic!(
+                        "expected nested StructureInstance for 'material', got {:?}",
+                        other
+                    ),
+                }
+            }
+            other => panic!("expected StructureInstance, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn structure_instance_ctor_undef_field_propagates_in_slot() {
+        // An unbound ValueRef evals to Undef. The ctor keeps the structure
+        // (does NOT strict-short-circuit to Undef like FunctionCall): the
+        // Undef stays in that one slot.
+        let expr = sct(
+            "Beam",
+            1,
+            vec![
+                ("length", lit(Value::Int(5), Type::Int)),
+                ("mystery", vref("Nowhere", "missing", Type::Real)),
+            ],
+            vec![],
+        );
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::StructureInstance(data) => {
+                assert_eq!(data.fields.get(&"length".to_string()), Some(&Value::Int(5)));
+                assert_eq!(
+                    data.fields.get(&"mystery".to_string()),
+                    Some(&Value::Undef),
+                    "Undef field value stays Undef in its own slot"
+                );
+            }
+            other => panic!("expected StructureInstance, got {:?}", other),
+        }
+    }
+
     // ── User function evaluation tests ──────────────────────────────────
 
     use reify_types::{CompiledFnBody, CompiledFunction, ContentHash};
@@ -4709,25 +4956,6 @@ mod tests {
         }
     }
 
-    // ── task-3663 tests ───────────────────────────────────────────────────────
-
-    /// A `CrossSubGeometryRef` must be consumed by the bare-let drop site in
-    /// `entity.rs` (task-3508) before `eval_expr` is ever called.  Reaching the
-    /// eval arm for this variant is a routing violation — not a normal
-    /// undef-propagation case — and must fire identically in debug **and** release
-    /// builds.
-    ///
-    /// `unreachable!()` (added in step-2) satisfies this: unlike the former
-    /// `debug_assert!(false, ...) + get_or_undef` which silently returned `Undef`
-    /// in release builds, `unreachable!()` always panics.
-    ///
-    /// Not gated on `#[cfg(debug_assertions)]` because `unreachable!()` is active
-    /// in every build profile.
-    ///
-    /// RED before step-2: the current `debug_assert!(false,
-    /// "CrossSubGeometryRef should not reach eval; ...")` message does NOT contain
-    /// the expected substring `"should be consumed"`, so `should_panic`'s
-    /// substring check fails in debug; and in release no panic fires at all.
     // ── AdHocSelector (@point) unit tests ────────────────────────────────────
 
     /// Build a length-dimensioned scalar for a given mm value.
@@ -4825,6 +5053,13 @@ mod tests {
         );
     }
 
+    // ── task-3663 tests ───────────────────────────────────────────────────────
+
+    /// Pins that `eval_expr` panics with the routing-violation message in every
+    /// build profile when a `CrossSubGeometryRef` reaches the eval arm.  The
+    /// entity name contains `'.'` so the constructor's `debug_assert` does not
+    /// pre-empt the eval-side `unreachable!()`.  See the invariant comment at
+    /// `eval_expr` (lib.rs:145) for the full routing-violation rationale.
     #[test]
     #[should_panic(expected = "CrossSubGeometryRef should be consumed by entity.rs")]
     fn cross_sub_geometry_ref_panics_in_eval_when_not_consumed() {
@@ -4837,5 +5072,22 @@ mod tests {
         let values = ValueMap::new();
         // Should always panic with the routing-violation message, in every profile.
         eval_expr(&expr, &EvalContext::simple(&values));
+    }
+
+    /// Companion to `cross_sub_geometry_ref_panics_in_eval_when_not_consumed`:
+    /// a `ValueRef` with the same `ValueCellId` shape does NOT panic — it
+    /// returns `Value::Undef` when the cell is absent.  This pins that the
+    /// panic above is keyed on the `CrossSubGeometryRef` *variant*, not on
+    /// the id shape or the missing-value path.
+    #[test]
+    fn value_ref_with_identical_id_returns_undef_not_panics() {
+        let expr = CompiledExpr::value_ref(ValueCellId::new("Parent.sub", "member"), Type::Geometry);
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        assert!(
+            result.is_undef(),
+            "ValueRef with absent cell should return Value::Undef, got {:?}",
+            result
+        );
     }
 }

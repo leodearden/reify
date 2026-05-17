@@ -972,6 +972,53 @@ pub(crate) fn compile_expr_guarded(
                 .map(|a| a.result_type.clone())
                 .collect();
 
+            // ── task 3540 (SIR-α): structure-instance ctor lowering ─────────
+            // When the callee name resolves to a `structure def`
+            // `TopologyTemplate` in `scope.template_registry`, emit a
+            // `StructureInstanceCtor` instead of a stdlib `FunctionCall`
+            // (precedence over `eval_builtin` — design-decision-2). Identity
+            // is `(type_name, version)`; `type_id` is a baked
+            // `StructureTypeId(0)` placeholder re-stamped by name on any
+            // registry-keyed path (esc-3540-177 RULING 2). `version` is read
+            // from the `@version(N)` accessor `template.version()`
+            // (esc-3540-176 / RULING 3). Positional args bind to the
+            // template's `Param` cells in declaration order; uncovered params
+            // contribute their `default_expr`.
+            if let Some(registry) = scope.template_registry
+                && let Some(template) = registry.get(name.as_str())
+                && template.entity_kind == EntityKind::Structure
+            {
+                let params: Vec<(&str, Option<&CompiledExpr>)> = template
+                    .value_cells
+                    .iter()
+                    .filter(|vc| matches!(vc.kind, ValueCellKind::Param))
+                    .map(|vc| (vc.id.member.as_str(), vc.default_expr.as_ref()))
+                    .collect();
+                let mut ordered_args: Vec<(String, CompiledExpr)> =
+                    Vec::with_capacity(compiled_args.len());
+                for (i, arg) in compiled_args.iter().enumerate() {
+                    let pname = params
+                        .get(i)
+                        .map(|(n, _)| (*n).to_string())
+                        .unwrap_or_else(|| format!("__arg{}", i));
+                    ordered_args.push((pname, arg.clone()));
+                }
+                let covered = ordered_args.len();
+                let defaults: Vec<(String, CompiledExpr)> = params
+                    .iter()
+                    .skip(covered)
+                    .filter_map(|(n, d)| d.map(|e| ((*n).to_string(), e.clone())))
+                    .collect();
+                return CompiledExpr::structure_instance_ctor(
+                    reify_types::StructureTypeId(0),
+                    name.clone(),
+                    template.version(),
+                    ordered_args,
+                    defaults,
+                    Type::StructureRef(name.clone()),
+                );
+            }
+
             match resolve_function_overload(name, &arg_types, functions) {
                 OverloadResolution::Resolved(matched_fn) => {
                     // Exactly one user fn matches — emit UserFunctionCall
@@ -1106,7 +1153,29 @@ pub(crate) fn compile_expr_guarded(
                         }
                     }
 
-                    // No user fn with this name — fall through to stdlib FunctionCall
+                    // No user fn with this name — fall through to stdlib FunctionCall.
+                    //
+                    // **Dispatch precedence note (GHR-α / task 3603).** The stdlib
+                    // geometry-query family (`is_geometry_query` arm below, names like
+                    // `length` / `volume` / `area` / `contains` / `distance` / `angle` /
+                    // …) is consulted ONLY in this `NoUserFunctions` arm of
+                    // `resolve_function_overload`. A user-defined `fn length(...)` in
+                    // scope produces an `OverloadResolution::Resolved` (or `Ambiguous`
+                    // / `NoMatch`) outcome above and shadows the geometry-query arm —
+                    // the user's return type wins. This shadow-by-user-fns precedence
+                    // is intentional and pinned by the
+                    // `user_defined_length_shadows_stdlib_geometry_query` regression
+                    // test in `crates/reify-compiler/tests/structural_physical_spec_shape.rs`.
+                    //
+                    // **Internal-arm precedence (within `NoUserFunctions`).** The arms
+                    // below are checked in order: `is_geometry_query_helper` →
+                    // `is_geometry_kinematic_query` → `is_geometry_topology_selector` →
+                    // `is_geometry_query` → `is_geometry_function` →
+                    // `infer_list_helper_return_type` → first-arg fallback. The four
+                    // geometry-name families are pinned disjoint in
+                    // `units.rs::tests::geometry_query_names_are_disjoint_from_other_families`,
+                    // so within this arm the ordering is unobservable — no name can
+                    // satisfy two predicates.
                     let resolved = ResolvedFunction {
                         name: name.clone(),
                         qualified_name: format!("std::{}", name),
@@ -1144,6 +1213,26 @@ pub(crate) fn compile_expr_guarded(
                         // the helper's actual return type.
                         topology_selector_result_type(name)
                             .expect("is_geometry_topology_selector implies result type")
+                    } else if is_geometry_query(name) {
+                        // volume / area / length / perimeter / centroid /
+                        // bounding_box / distance / contains / intersects /
+                        // geo_equiv / angle / curvature: the GHR-α / PRD §1
+                        // Phase-1 geometry-query family (task 3603). The
+                        // per-name result type comes from
+                        // `geometry_query_result_type`, which is the frozen
+                        // PRD §1 table. Eval-time dispatch arrives in Phase 6
+                        // (GHR-ζ); Phase 1 produces `Value::Undef` cells with
+                        // the correct compile-time type so downstream
+                        // user-asserted-constraint typing and trait conformance
+                        // (notably the spec-shape `Physical` trait's
+                        // `let mass = volume(geometry) * material.density`
+                        // and `let centroid = centroid(geometry)`) typecheck.
+                        // Falling through to the first-arg default would
+                        // mismatch — the first arg is a `Geometry` / `Solid` /
+                        // `Surface` / `Curve` handle, not the helper's actual
+                        // return type.
+                        geometry_query_result_type(name)
+                            .expect("is_geometry_query implies result type")
                     } else if is_geometry_function(name) {
                         Type::dimensionless_scalar()
                     } else if let Some(t) = infer_list_helper_return_type(name, &compiled_args) {
@@ -1852,6 +1941,49 @@ pub(crate) fn compile_expr_guarded(
                 }
             }
             // ── End purpose-subject member access ──────────────────────────────
+
+            // ── task 3540 (SIR-α): StructureInstance field projection ──────────
+            //
+            // Handler esc-3540-182 (A): when the object resolves to a
+            // structure/trait-typed value, `.member` projects the field out of
+            // the runtime `Value::StructureInstance`. This is the entity-scope
+            // member-access path for chains like
+            // `self.primary.material.youngs_modulus` — `self.primary.material`
+            // already resolves (via the `self.sub.member` branch above) to a
+            // value-ref whose runtime value is a `Value::StructureInstance`
+            // (the structure-def param/let default lowered by the
+            // StructureInstanceCtor path). Reuse `IndexAccess` with a
+            // string-literal key (handler (A)(1) — no new CompiledExprKind);
+            // the eval-side IndexAccess arm reads `fields[member]`.
+            //
+            // (A)(2) member-Type resolution: for a concrete `StructureRef`,
+            // resolve the declared field type from the structure-def template
+            // in `scope.template_registry` (esc-3540-177-threaded). For a
+            // `TraitObject` the concrete runtime type is not statically known
+            // (traits are not in `template_registry`); fall back to `Type::Real`
+            // — a permissive, non-poison type so the chain neither cascades nor
+            // is rejected. The runtime `Value` is whatever the field actually
+            // holds (e.g. a `Value::Scalar`), independent of this static type.
+            //
+            // The poison short-circuit must run first so an already-errored
+            // object propagates rather than being treated as a structure.
+            if !compiled_obj.result_type.is_error()
+                && let Type::StructureRef(struct_name) | Type::TraitObject(struct_name) =
+                    &compiled_obj.result_type
+            {
+                let member_type = scope
+                    .template_registry
+                    .and_then(|r| r.get(struct_name.as_str()))
+                    .and_then(|t| {
+                        t.value_cells
+                            .iter()
+                            .find(|vc| vc.id.member == *member)
+                            .map(|vc| vc.cell_type.clone())
+                    })
+                    .unwrap_or(Type::Real);
+                let key = CompiledExpr::literal(Value::String(member.clone()), Type::String);
+                return CompiledExpr::index_access(compiled_obj, key, member_type);
+            }
 
             if COLLECTION_AGGREGATION_MEMBERS.contains(&member.as_str()) {
                 // Anti-cascade consumer (task-448 / task-1921 S4): if the object
@@ -3390,5 +3522,223 @@ pub structure Rack {
         }
         // (e) result_type must be Type::Geometry.
         assert_eq!(result.result_type, Type::Geometry);
+    }
+
+    // ───────────────────────────────────────────────────────────────────────
+    // task 3540 step-15: structure-instance ctor lowering (RED)
+    //
+    // When a FunctionCall callee resolves to a `structure def` template in
+    // `scope.template_registry`, the compiler must emit
+    // `CompiledExprKind::StructureInstanceCtor` instead of a stdlib
+    // `FunctionCall` (design-decision-2). type_id is a baked
+    // `StructureTypeId(0)` placeholder; (type_name, version) are authoritative
+    // (esc-3540-173 / RULING 2+3). version is read via `template.version()`
+    // (the @version(N) accessor, esc-3540-176). Builtins (e.g. `cos`) are NOT
+    // perturbed.
+    //
+    // NOTE (escalate_info, design_concern, non-blocking): plan step-15(b)
+    // posits a `Beam { length: 2.0m }` "named-arg form". There is no
+    // record/struct-literal `ExprKind` in the surface grammar
+    // (reify-syntax/src/lib.rs ExprKind has FunctionCall only) — structure
+    // construction is positional-call form exclusively. Scenario (b) is
+    // therefore covered by the positional-binding test below rather than a
+    // separate `{}` form.
+    // ───────────────────────────────────────────────────────────────────────
+
+    /// Build a minimal structure-def `TopologyTemplate` with the given
+    /// `(param_name, default)` params (mirrors scc.rs::minimal_template).
+    fn sct_template(
+        name: &str,
+        params: &[(&str, Option<CompiledExpr>)],
+    ) -> crate::types::TopologyTemplate {
+        let value_cells = params
+            .iter()
+            .map(|(pname, default)| crate::types::ValueCellDecl {
+                id: ValueCellId::new(name, *pname),
+                kind: crate::types::ValueCellKind::Param,
+                visibility: crate::types::Visibility::Public,
+                cell_type: Type::Real,
+                default_expr: default.clone(),
+                solver_hints: vec![],
+                span: SourceSpan::prelude(),
+            })
+            .collect();
+        crate::types::TopologyTemplate {
+            name: name.to_string(),
+            entity_kind: crate::types::EntityKind::Structure,
+            visibility: crate::types::Visibility::Public,
+            type_params: vec![],
+            trait_bounds: vec![],
+            value_cells,
+            constraints: vec![],
+            realizations: vec![],
+            sub_components: vec![],
+            ports: vec![],
+            connections: vec![],
+            guarded_groups: vec![],
+            structure_controlling: std::collections::HashSet::new(),
+            objective: None,
+            meta: std::collections::HashMap::new(),
+            content_hash: ContentHash(0),
+            is_recursive: false,
+            annotations: vec![],
+            pragmas: vec![],
+            match_arm_groups: vec![],
+            forall_templates: vec![],
+        }
+    }
+
+    fn call_expr(name: &str, args: Vec<reify_syntax::Expr>) -> reify_syntax::Expr {
+        reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::FunctionCall {
+                name: name.to_string(),
+                args,
+            },
+            span: SourceSpan::prelude(),
+        }
+    }
+
+    fn num_expr(v: f64) -> reify_syntax::Expr {
+        reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::NumberLiteral {
+                value: v,
+                is_real: true,
+            },
+            span: SourceSpan::prelude(),
+        }
+    }
+
+    #[test]
+    fn structure_def_zero_arg_call_lowers_to_ctor() {
+        let tmpl = sct_template(
+            "Steel_AISI_1045",
+            &[(
+                "youngs_modulus",
+                Some(CompiledExpr::literal(Value::Int(200), Type::Int)),
+            )],
+        );
+        let mut registry: std::collections::HashMap<String, &crate::types::TopologyTemplate> =
+            std::collections::HashMap::new();
+        registry.insert("Steel_AISI_1045".to_string(), &tmpl);
+
+        let mut scope = CompilationScope::new("Host");
+        scope.is_entity_scope = true;
+        scope.set_template_registry(&registry);
+
+        let mut diags: Vec<Diagnostic> = vec![];
+        let result = compile_expr(
+            &call_expr("Steel_AISI_1045", vec![]),
+            &scope,
+            &[],
+            &[],
+            &mut diags,
+        );
+
+        match &result.kind {
+            CompiledExprKind::StructureInstanceCtor {
+                type_name,
+                version,
+                ordered_args,
+                defaults,
+                ..
+            } => {
+                assert_eq!(type_name, "Steel_AISI_1045");
+                assert_eq!(*version, 1, "absent @version defaults to 1 via version()");
+                assert!(ordered_args.is_empty(), "zero-arg call → no ordered args");
+                assert!(
+                    defaults.iter().any(|(n, _)| n == "youngs_modulus"),
+                    "omitted param's default must be captured, got {:?}",
+                    defaults.iter().map(|(n, _)| n).collect::<Vec<_>>()
+                );
+            }
+            other => panic!("expected StructureInstanceCtor, got {:?}", other),
+        }
+        assert_eq!(
+            result.result_type,
+            Type::StructureRef("Steel_AISI_1045".to_string())
+        );
+    }
+
+    #[test]
+    fn structure_def_positional_args_bind_in_declaration_order() {
+        let tmpl = sct_template(
+            "PointLoad",
+            &[
+                ("target", Some(CompiledExpr::literal(Value::Undef, Type::Real))),
+                (
+                    "magnitude",
+                    Some(CompiledExpr::literal(Value::Int(0), Type::Int)),
+                ),
+            ],
+        );
+        let mut registry: std::collections::HashMap<String, &crate::types::TopologyTemplate> =
+            std::collections::HashMap::new();
+        registry.insert("PointLoad".to_string(), &tmpl);
+
+        let mut scope = CompilationScope::new("Host");
+        scope.is_entity_scope = true;
+        scope.set_template_registry(&registry);
+
+        let mut diags: Vec<Diagnostic> = vec![];
+        let result = compile_expr(
+            &call_expr("PointLoad", vec![num_expr(5.0)]),
+            &scope,
+            &[],
+            &[],
+            &mut diags,
+        );
+
+        match &result.kind {
+            CompiledExprKind::StructureInstanceCtor {
+                ordered_args,
+                defaults,
+                ..
+            } => {
+                assert_eq!(ordered_args.len(), 1, "one positional arg supplied");
+                assert_eq!(
+                    ordered_args[0].0, "target",
+                    "first positional binds to first param in declaration order"
+                );
+                assert!(
+                    defaults.iter().any(|(n, _)| n == "magnitude"),
+                    "uncovered param keeps its default"
+                );
+                assert!(
+                    !defaults.iter().any(|(n, _)| n == "target"),
+                    "covered param must NOT appear in defaults"
+                );
+            }
+            other => panic!("expected StructureInstanceCtor, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn builtin_call_not_perturbed_by_ctor_path() {
+        // Empty template registry → `cos` is not a structure-def → must stay
+        // a FunctionCall (the stdlib path), NOT a StructureInstanceCtor.
+        let registry: std::collections::HashMap<String, &crate::types::TopologyTemplate> =
+            std::collections::HashMap::new();
+        let mut scope = CompilationScope::new("Host");
+        scope.is_entity_scope = true;
+        scope.set_template_registry(&registry);
+
+        let mut diags: Vec<Diagnostic> = vec![];
+        let result = compile_expr(
+            &call_expr("cos", vec![num_expr(0.0)]),
+            &scope,
+            &[],
+            &[],
+            &mut diags,
+        );
+
+        assert!(
+            !matches!(result.kind, CompiledExprKind::StructureInstanceCtor { .. }),
+            "builtin `cos` must not lower to StructureInstanceCtor"
+        );
+        assert!(
+            matches!(result.kind, CompiledExprKind::FunctionCall { .. }),
+            "builtin `cos` must remain a FunctionCall, got {:?}",
+            result.kind
+        );
     }
 }

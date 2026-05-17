@@ -91,7 +91,9 @@ pub use kernel_attribute_hook::propagate_via_kernel_attribute_hook;
 pub use kernel_registry::{
     collect_registry, pick_lexmin_brep_kernel, pick_lexmin_kernel, registry,
 };
-pub use primitive_attribute_seed::seed_primitive_attributes;
+pub use primitive_attribute_seed::{
+    seed_primitive_attributes, seed_primitive_attributes_for_handle,
+};
 pub use realization_cache::{NO_OPTIONS, RealizationCache};
 pub use test_runner::{TestResult, TestStatus, run_tests};
 pub use topology_attribute_propagation::{
@@ -201,7 +203,11 @@ impl std::error::Error for EngineError {}
 /// would be a cascade.  Mirrors the guards in
 /// `reify_compiler::type_compat::{implicitly_converts_to, type_compatible}`
 /// (task-448 / task-1922).
-fn value_type_kind_matches(value: &reify_types::Value, ty: &reify_types::Type) -> bool {
+fn value_type_kind_matches(
+    value: &reify_types::Value,
+    ty: &reify_types::Type,
+    registry: Option<&reify_types::StructureRegistry>,
+) -> bool {
     use reify_types::{Type, Value};
     // Anti-cascade guard — see function doc.
     if ty.is_error() {
@@ -245,6 +251,24 @@ fn value_type_kind_matches(value: &reify_types::Value, ty: &reify_types::Type) -
         // surface Type. Rejecting here is correct (the default-reject case
         // would also reject) but the explicit arm makes the intent obvious.
         Value::SampledField(_) => false,
+        // Structure instances (task 3540 / SIR-α). Nominal conformance check:
+        // a `Value::StructureInstance` satisfies a `Type::StructureRef(n)` of
+        // its own canonical name, or a `Type::TraitObject(b)` for any trait
+        // bound it declares conformance to. Declared bounds live in the
+        // per-Engine `StructureRegistry` side-table, keyed by the opaque
+        // `type_id`. Without a registry the trait-bound lookup is unprovable
+        // and conservatively returns `false` (the conformance is still proven
+        // at compile time by the trait-typed-param machinery; this runtime
+        // check is the defence-in-depth arm). Any non-structure target type
+        // (Int, Real, List, …) default-rejects via the inner `_` arm.
+        Value::StructureInstance(data) => match ty {
+            Type::StructureRef(n) => n == &data.type_name,
+            Type::TraitObject(bound) => registry
+                .and_then(|r| r.meta(data.type_id))
+                .map(|m| m.declared_trait_bounds.iter().any(|b| b == bound))
+                .unwrap_or(false),
+            _ => false,
+        },
         // Note: `Type::Geometry` and `Type::TypeParam` have no corresponding
         // `Value` variant, so any non-Undef value supplied to a cell of those
         // types falls through this `match` and returns `false`, triggering
@@ -255,27 +279,19 @@ fn value_type_kind_matches(value: &reify_types::Value, ty: &reify_types::Type) -
         // `crate::engine_eval::Engine::eval` (task 1867), and regression-locked
         // in CI by `crates/reify-eval/tests/value_cell_type_invariants.rs`.
         //
-        // `Type::StructureRef` is allowed on value cells (task 1876): user
-        // code may write `param material : Material = Material(...)` where
-        // `Material` is a canonical struct. The struct-call default evaluates
-        // to `Value::Undef` via `reify_stdlib::eval_builtin`'s fallthrough
-        // path (structure constructors are not builtins), and `Value::Undef`
-        // is accepted for any type by the arm above. No Value variant exists
-        // for structure instances yet — if one is added later, add a matching
-        // arm here. The `Type::StructureRef` _arm itself_ is intentionally
-        // omitted: the default-reject case is correct for any non-Undef
-        // value because we have no way to represent a structure instance.
+        // `Type::StructureRef` / `Type::TraitObject` are allowed on value
+        // cells (tasks 1876 / 2287). As of task 3540 / SIR-α these are
+        // satisfied by the `Value::StructureInstance` arm above (nominal
+        // name / declared-trait-bound conformance). A *non-structure* value
+        // (e.g. a `Value::Map` or a struct-call default that still evaluates
+        // to `Value::Undef` via `reify_stdlib::eval_builtin`'s fallthrough)
+        // supplied to such a cell is handled by `Value::Undef` (always
+        // accepted) or default-rejects here — there is no representable
+        // non-Undef, non-StructureInstance value for those types.
         //
-        // `Type::TraitObject` is allowed for the same reason (task 2287):
-        // trait-typed params default to `Value::Undef` via the same fallthrough
-        // path, and `Value::Undef` is accepted for any type by the arm above.
-        // The `Type::TraitObject` arm is intentionally omitted: the
-        // default-reject case is correct for any non-Undef value because we
-        // have no way to represent a trait-object instance.
-        //
-        // If a future `Value::GeometryHandle`, `Value::TraitObjectInstance`, or
-        // `Value::StructureInstance` variant is added, add a matching arm here
-        // AND relax the runtime assertion so the compiler enforces completeness.
+        // If a future `Value::GeometryHandle` or `Value::TraitObjectInstance`
+        // variant is added, add a matching arm here AND relax the runtime
+        // assertion so the compiler enforces completeness.
     }
 }
 
@@ -311,6 +327,17 @@ pub struct Engine {
     /// Note: this duplicates data already held in the static `prelude` slice,
     /// adding per-Engine memory proportional to the number of prelude functions.
     prelude_functions: Vec<CompiledFunction>,
+    /// Per-Engine structure-definition side-table (task 3540 / SIR-α).
+    ///
+    /// Maps interned `StructureTypeId`s to `StructureMeta` (declared trait
+    /// bounds, `@version(N)`, declaration-order field layout). Populated at
+    /// construction by walking every `prelude` module's `templates` (only
+    /// `EntityKind::Structure`), and incrementally refreshed from the user
+    /// module's templates at the top of `eval()` (`intern` is idempotent on
+    /// name — existing ids stay stable, meta is overwritten). Backs
+    /// `Value::StructureInstance` nominal-conformance and cache-key stability;
+    /// ids are NOT stable across Engine restarts (cache keys use name+version).
+    structure_registry: reify_types::StructureRegistry,
     /// Overridden param values (set by set_param_and_invalidate).
     param_overrides: std::collections::HashMap<ValueCellId, reify_types::Value>,
     /// Consolidated evaluation state from last eval() or edit_param().
@@ -1005,7 +1032,7 @@ mod tests {
             quantity: Box::new(Type::Real),
         };
         assert!(
-            value_type_kind_matches(&v, &t),
+            value_type_kind_matches(&v, &t, None),
             "Value::Matrix should be accepted by Type::Tensor (cross-variant Ok-path)"
         );
     }
@@ -1026,7 +1053,7 @@ mod tests {
             quantity: Box::new(Type::Real),
         };
         assert!(
-            value_type_kind_matches(&v, &t),
+            value_type_kind_matches(&v, &t, None),
             "Value::Tensor should be accepted by Type::Matrix (cross-variant Ok-path)"
         );
     }
@@ -1041,7 +1068,7 @@ mod tests {
         let v = Value::Tensor(vec![]);
         let t = Type::Real;
         assert!(
-            !value_type_kind_matches(&v, &t),
+            !value_type_kind_matches(&v, &t, None),
             "Value::Tensor should be rejected by Type::Real (negative kind-check path)"
         );
     }
@@ -1055,7 +1082,7 @@ mod tests {
         let v = Value::Matrix(vec![]);
         let t = Type::Real;
         assert!(
-            !value_type_kind_matches(&v, &t),
+            !value_type_kind_matches(&v, &t, None),
             "Value::Matrix should be rejected by Type::Real (negative kind-check path)"
         );
     }
@@ -1076,7 +1103,7 @@ mod tests {
         let v = Value::Real(1.0);
         let t = Type::Error;
         assert!(
-            value_type_kind_matches(&v, &t),
+            value_type_kind_matches(&v, &t, None),
             "Value::Real against Type::Error must return true (anti-cascade guard)"
         );
     }
@@ -1092,7 +1119,7 @@ mod tests {
         let v = Value::Bool(true);
         let t = Type::Error;
         assert!(
-            value_type_kind_matches(&v, &t),
+            value_type_kind_matches(&v, &t, None),
             "Value::Bool against Type::Error must return true (anti-cascade guard)"
         );
     }
@@ -1108,7 +1135,7 @@ mod tests {
         let v = Value::List(vec![Value::Int(1)]);
         let t = Type::Error;
         assert!(
-            value_type_kind_matches(&v, &t),
+            value_type_kind_matches(&v, &t, None),
             "Value::List against Type::Error must return true (anti-cascade guard)"
         );
     }
@@ -1125,7 +1152,7 @@ mod tests {
         let v = Value::Undef;
         let t = Type::Error;
         assert!(
-            value_type_kind_matches(&v, &t),
+            value_type_kind_matches(&v, &t, None),
             "Value::Undef against Type::Error must return true (Undef sentinel always accepted)"
         );
     }
@@ -1143,7 +1170,7 @@ mod tests {
         let v = Value::Bool(true);
         let t = Type::Int;
         assert!(
-            !value_type_kind_matches(&v, &t),
+            !value_type_kind_matches(&v, &t, None),
             "Value::Bool against Type::Int must return false (Type::Error guard must not over-fire)"
         );
     }
@@ -1160,7 +1187,7 @@ mod tests {
         let v = Value::Int(1);
         let t = Type::Bool;
         assert!(
-            !value_type_kind_matches(&v, &t),
+            !value_type_kind_matches(&v, &t, None),
             "Value::Int against Type::Bool must return false"
         );
     }
@@ -1172,8 +1199,166 @@ mod tests {
         let v = Value::Bool(true);
         let t = Type::Bool;
         assert!(
-            value_type_kind_matches(&v, &t),
+            value_type_kind_matches(&v, &t, None),
             "Value::Bool against Type::Bool must return true"
+        );
+    }
+
+    // ── value_type_kind_matches: StructureInstance arm (task 3540 / SIR-α) ────
+    // step-5: these tests call the *future* 3-arg signature
+    // `value_type_kind_matches(value, ty, registry)`. They fail to compile
+    // against the current 2-arg signature — the compile failure IS the RED
+    // signal. step-6 changes the signature + adds the StructureInstance arm,
+    // turning these green.
+
+    /// Build a `(Value::StructureInstance, StructureRegistry)` pair where the
+    /// instance's `type_id` is the id the registry interned for `name` with the
+    /// given declared trait bounds. Mirrors the per-Engine side-table contract.
+    #[cfg(test)]
+    fn structure_instance_with_registry(
+        name: &str,
+        bounds: &[&str],
+    ) -> (reify_types::Value, reify_types::StructureRegistry) {
+        use reify_types::{StructureInstanceData, StructureMeta, StructureRegistry, Value};
+        let mut reg = StructureRegistry::new();
+        let id = reg.intern(
+            name,
+            StructureMeta {
+                name: name.to_string(),
+                version: 1,
+                declared_trait_bounds: bounds.iter().map(|s| s.to_string()).collect(),
+                source: None,
+                field_layout: vec![],
+            },
+        );
+        let v = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: id,
+            type_name: name.to_string(),
+            version: 1,
+            fields: Default::default(),
+        }));
+        (v, reg)
+    }
+
+    /// (a) StructureInstance against a StructureRef of the *same* name → true.
+    #[test]
+    fn value_type_kind_matches_structure_instance_into_matching_structure_ref_returns_true() {
+        use reify_types::Type;
+        let (v, reg) = structure_instance_with_registry("Steel_AISI_1045", &["ElasticMaterial"]);
+        let t = Type::StructureRef("Steel_AISI_1045".to_string());
+        assert!(
+            value_type_kind_matches(&v, &t, Some(&reg)),
+            "StructureInstance must match a StructureRef of the same name"
+        );
+    }
+
+    /// (a) StructureInstance against a StructureRef of a *different* name → false.
+    #[test]
+    fn value_type_kind_matches_structure_instance_into_mismatched_structure_ref_returns_false() {
+        use reify_types::Type;
+        let (v, reg) = structure_instance_with_registry("Steel_AISI_1045", &["ElasticMaterial"]);
+        let t = Type::StructureRef("Aluminium_6061_T6".to_string());
+        assert!(
+            !value_type_kind_matches(&v, &t, Some(&reg)),
+            "StructureInstance must NOT match a StructureRef of a different name"
+        );
+    }
+
+    /// (b) StructureInstance against a TraitObject in its declared bounds → true.
+    #[test]
+    fn value_type_kind_matches_structure_instance_into_declared_trait_object_returns_true() {
+        use reify_types::Type;
+        let (v, reg) = structure_instance_with_registry("Steel_AISI_1045", &["ElasticMaterial"]);
+        let t = Type::TraitObject("ElasticMaterial".to_string());
+        assert!(
+            value_type_kind_matches(&v, &t, Some(&reg)),
+            "StructureInstance must match a TraitObject it declares conformance to"
+        );
+    }
+
+    /// (b) StructureInstance against a TraitObject NOT in its bounds → false.
+    #[test]
+    fn value_type_kind_matches_structure_instance_into_undeclared_trait_object_returns_false() {
+        use reify_types::Type;
+        let (v, reg) = structure_instance_with_registry("Steel_AISI_1045", &["ElasticMaterial"]);
+        let t = Type::TraitObject("Load".to_string());
+        assert!(
+            !value_type_kind_matches(&v, &t, Some(&reg)),
+            "StructureInstance must NOT match a TraitObject outside its declared bounds"
+        );
+    }
+
+    /// (c) StructureInstance against unrelated primitive types → false.
+    #[test]
+    fn value_type_kind_matches_structure_instance_into_unrelated_types_returns_false() {
+        use reify_types::Type;
+        let (v, reg) = structure_instance_with_registry("Steel_AISI_1045", &["ElasticMaterial"]);
+        for t in [Type::Int, Type::Real, Type::Bool, Type::String] {
+            assert!(
+                !value_type_kind_matches(&v, &t, Some(&reg)),
+                "StructureInstance must be rejected by unrelated type {t:?}"
+            );
+        }
+    }
+
+    /// (b/edge) Absent registry → trait-object conformance cannot be proven,
+    /// so a TraitObject match conservatively returns false.
+    #[test]
+    fn value_type_kind_matches_structure_instance_trait_object_without_registry_returns_false() {
+        use reify_types::Type;
+        let (v, _reg) = structure_instance_with_registry("Steel_AISI_1045", &["ElasticMaterial"]);
+        let t = Type::TraitObject("ElasticMaterial".to_string());
+        assert!(
+            !value_type_kind_matches(&v, &t, None),
+            "Without a registry, trait-bound conformance is unprovable → false"
+        );
+    }
+
+    // ── Engine structure_registry prelude population (task 3540 / step-11) ───
+
+    /// `Engine::new()` must populate `structure_registry` from the prelude
+    /// modules. `Steel_AISI_1045` is a `structure def : ElasticMaterial` in
+    /// `crates/reify-compiler/stdlib/materials_fea.ri`, so after construction
+    /// it must be interned with its declared trait bound, default version 1,
+    /// and a declaration-order `field_layout`. Unknown names resolve to `None`.
+    #[test]
+    fn engine_new_populates_structure_registry_from_prelude() {
+        use reify_test_support::mocks::MockConstraintChecker;
+        let engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let reg = engine.structure_registry();
+
+        let id = reg
+            .id_for("Steel_AISI_1045")
+            .expect("Steel_AISI_1045 must be interned from the prelude");
+        let meta = reg.meta(id).expect("meta present for interned id");
+
+        assert_eq!(meta.name, "Steel_AISI_1045");
+        assert_eq!(
+            meta.version, 1,
+            "default version is 1 until @version(N) wiring (step-14)"
+        );
+        assert_eq!(
+            meta.declared_trait_bounds,
+            vec!["ElasticMaterial".to_string()],
+            "structure def Steel_AISI_1045 : ElasticMaterial"
+        );
+
+        // field_layout preserves materials_fea.ri declaration order.
+        let names: Vec<&str> = meta.field_layout.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(
+            names.len() >= 4,
+            "Steel_AISI_1045 declares at least 4 params, got {names:?}"
+        );
+        assert_eq!(
+            &names[..4],
+            &["youngs_modulus", "poisson_ratio", "density", "yield_stress"],
+            "first four params in declaration order"
+        );
+
+        assert_eq!(
+            reg.id_for("NonExistentStructure"),
+            None,
+            "unknown structure name resolves to None"
         );
     }
 
@@ -1658,6 +1843,79 @@ structure S {
              WarmStatePool::from_env_or_default(); a regression to \
              ::unlimited() or ::new(arbitrary) would diverge here \
              (engine and expected pool both resolve from the same env snapshot)"
+        );
+    }
+
+    // ── Task 3541 step-3: Engine::drain_and_record_warm_pool_events ──────────
+
+    /// `drain_and_record_warm_pool_events` drains the pool event buffer,
+    /// records each drained event on the journal, and returns the Vec.
+    ///
+    /// Assertions:
+    /// (a) The returned Vec contains both events pre-populated via donate calls.
+    /// (b) After the drain, the pool's own event buffer is empty.
+    /// (c) The journal has recorded the Donated and (any Evicted) events —
+    ///     verified via `engine.journal_event_count()`.
+    #[test]
+    fn engine_drain_and_record_warm_pool_events_drains_records_and_returns() {
+        use crate::warm_pool::WarmPoolEvent;
+        use reify_types::OpaqueState;
+        use reify_test_support::mocks::MockConstraintChecker;
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        // Pre-populate the pool with two donations using a tiny budget so
+        // the second donate triggers an eviction (budget = 1 byte).
+        *engine.warm_pool_mut() = crate::warm_pool::WarmStatePool::new(1);
+
+        let node_a = crate::cache::NodeId::Value(reify_types::ValueCellId::new("Beam", "length"));
+        let node_b = crate::cache::NodeId::Value(reify_types::ValueCellId::new("Plate", "width"));
+
+        // Donate node_a (fits in budget = 1 byte) — size_bytes=1
+        engine.warm_pool_mut().donate(node_a.clone(), OpaqueState::new(1i32, 1));
+        // Donate node_b — triggers eviction of node_a (LRU) because budget=1 byte
+        engine.warm_pool_mut().donate(node_b.clone(), OpaqueState::new(2i32, 1));
+
+        // At least two events are buffered (Donated(a), Evicted(a), Donated(b))
+        let count_before = engine.journal_event_count();
+
+        let drained = engine.drain_and_record_warm_pool_events();
+
+        // (a) Exactly 3 events in deterministic order: Donated(a), Evicted(a), Donated(b).
+        // donate(a, size=1, budget=1) → Donated(a); donate(b, size=1) evicts a → Evicted(a),
+        // Donated(b).  Loose assertions like !is_empty() would allow a regression that
+        // produces 1 or 2 events to silently pass.
+        assert_eq!(
+            drained.len(),
+            3,
+            "donate(a)+evict(a)+donate(b) must yield exactly 3 events; got {}",
+            drained.len()
+        );
+        assert!(
+            matches!(drained[0], WarmPoolEvent::Donated { .. }),
+            "drained[0] must be Donated (first donation of node_a)"
+        );
+        assert!(
+            matches!(drained[1], WarmPoolEvent::Evicted { .. }),
+            "drained[1] must be Evicted (node_a evicted when node_b donated)"
+        );
+        assert!(
+            matches!(drained[2], WarmPoolEvent::Donated { .. }),
+            "drained[2] must be Donated (donation of node_b)"
+        );
+
+        // (b) Pool event buffer is now empty
+        assert!(
+            engine.warm_pool_mut().drain_events().is_empty(),
+            "pool event buffer must be empty after drain"
+        );
+
+        // (c) Journal recorded exactly the drained events
+        let count_after = engine.journal_event_count();
+        assert_eq!(
+            count_after - count_before,
+            drained.len(),
+            "journal must record exactly as many events as were drained"
         );
     }
 }

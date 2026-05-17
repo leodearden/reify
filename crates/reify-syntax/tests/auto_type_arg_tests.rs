@@ -16,8 +16,9 @@
 //!   and `auto_type_arg_clean_input_has_no_spurious_errors` (task 3665: CST ERROR
 //!   nodes inside `type_arg_list` are now surfaced in `module.errors`).
 //!
-//! Task 3662 references task 3665 as its gate for parse-level free/multi-param
-//! coverage; the lowering extension (Auto variant + ERROR propagation) landed here.
+//! Task 3662 consolidated free/multi-param zero-error coverage into
+//! `auto_type_arg_clean_input_has_no_spurious_errors` (gated on task 3665; the
+//! `auto(free):` fixture was added to that test rather than kept as a separate test).
 
 use reify_types::ModulePath;
 
@@ -276,25 +277,27 @@ fn auto_type_arg_cst_error_propagates_to_module_errors() {
          module.errors was empty — the ERROR node is not being propagated from the \
          type_arg_list subtree into module.errors"
     );
-    // The error message must mention the nature of the problem.
+    // The error message must specifically describe a type-argument-list syntax problem.
     let has_relevant_message = m.errors.iter().any(|e| {
-        e.message.contains("type arg") || e.message.contains("syntax error") || e.message.contains("ERROR")
+        e.message.contains("type arg") || e.message.contains("syntax error")
     });
     assert!(
         has_relevant_message,
-        "expected an error message mentioning 'type arg', 'syntax error', or 'ERROR'; \
+        "expected an error message mentioning 'type arg' or 'syntax error'; \
          got: {:?}",
         m.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
 }
 
-/// Well-formed `auto:` type-arg inputs must produce ZERO parse errors (negative
-/// guard — the ERROR subtree scan in `lower_type_args_from_node` must not
-/// false-positive on valid inputs).
+/// Well-formed `auto:` / `auto(free):` type-arg inputs must produce ZERO parse errors
+/// (negative guard — the ERROR subtree scan in `lower_type_args_from_node` must not
+/// false-positive on valid inputs).  Covers strict, free, and multi-param forms;
+/// task 3662 added the `auto(free):` entry here to consolidate zero-error coverage.
 #[test]
 fn auto_type_arg_clean_input_has_no_spurious_errors() {
     for source in &[
         "fn f() -> Bearing<auto: Seal> { 0 }",
+        "fn g() -> Bearing<auto(free): Seal> { 0 }",
         "fn h() -> Coupling<auto: A, auto: B> { 0 }",
     ] {
         let m = reify_syntax::parse(source, ModulePath::single("t"));

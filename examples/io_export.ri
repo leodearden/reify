@@ -1,10 +1,12 @@
-// M8.4 I/O export integration fixture.
+// M8.4 I/O export integration fixture (post-GHR-α / task 3603).
 //
 // Exercises an export-ready part with:
-//   • Physical + Elastic + Strong trait conformance (Steel AISI 1020)
+//   • Physical + Elastic + Strong trait conformance (Steel AISI 1020), where
+//     Physical is the spec-shape body trait (geometry + material struct slot)
+//     introduced by PRD §8 Phase 1 / GHR-α.
 //   • DimensionalTolerance sub with computed lets (upper_limit, lower_limit, band)
 //   • Flatness and SurfaceFinish subs for GD&T annotation
-//   • Geometry body (box) — parsed/compiled but not evaluated (no kernel in tests)
+//   • Geometry body (box) supplied via the Physical `geometry` slot.
 //
 // NOTE: enum types and GD&T structure definitions are re-declared locally.
 // This is the same workaround as m8_tolerancing.ri: compile_with_stdlib provides
@@ -53,13 +55,14 @@ structure def DimensionalTolerance {
 //
 // Steel AISI 1020 properties:
 //   density       = 7850.0 kg/m³
-//   volume        = 0.001 m³
-//   mass          = volume * density = 0.001 * 7850 = 7.85 (computed by Physical)
 //   youngs_modulus = 200e9 Pa
 //   poissons_ratio = 0.29
 //   shear_modulus  ≈ 77.5e9 Pa
 //   yield_strength = 207e6 Pa
 //   uts            = 380e6 Pa
+//
+// Geometry: 100mm × 50mm × 10mm box (post-GHR-α: geometry is a first-class
+// struct slot, not flat-scalar volume/centroid params).
 //
 // Tolerance:
 //   nominal = 100mm, upper_deviation = +0.05mm, lower_deviation = -0.05mm
@@ -68,15 +71,13 @@ structure def DimensionalTolerance {
 //   tolerance_band = 0.05mm - (-0.05mm) = 0.1mm = 0.0001m
 
 structure def ExportPart : Physical + Elastic + Strong {
-    // ── MaterialSpec (via Physical) ─────────────────────────────────────────
-    param name    : String = "Steel AISI 1020"
-    param density : Real   = 7850.0
-
-    // ── Physical ──────────────────────────────────────────────────────────
-    param volume      : Real = 0.001
-    param centroid_x  : Real = 0.0
-    param centroid_y  : Real = 0.0
-    param centroid_z  : Real = 0.0
+    // ── Physical (spec shape: geometry + material slots) ──────────────────
+    param geometry : Solid = box(100mm, 50mm, 10mm)
+    param material : Material = Material(
+        name: "Steel AISI 1020",
+        density: 7850.0,
+        youngs_modulus: 200000000000.0
+    )
 
     // ── Elastic ───────────────────────────────────────────────────────────
     param youngs_modulus : Real = 200000000000.0
@@ -114,12 +115,4 @@ structure def ExportPart : Physical + Elastic + Strong {
         direction:  SurfaceDirection.Parallel,
         process:    "milling"
     )
-
-    // ── @test constraints ─────────────────────────────────────────────────
-    //
-    // Mass computed by Physical trait: volume * density = 0.001 * 7850 = 7.85
-    // uts >= yield_strength is injected by Strong trait.
-
-    constraint volume > 0.0
-    constraint density > 0.0
 }

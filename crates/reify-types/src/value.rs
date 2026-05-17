@@ -7,6 +7,7 @@ use crate::expr::CompiledExpr;
 use crate::hash::ContentHash;
 use crate::identity::ValueCellId;
 use crate::persistent::PersistentMap;
+use crate::structure_registry::StructureTypeId;
 
 // ── Float ordering strategy ───────────────────────────────────────────────────
 //
@@ -567,8 +568,36 @@ pub enum Value {
     /// `engine_eval::elaborate_field` constructs a fresh `SampledField` per cold-start,
     /// so the per-field-per-session `oob_emitted` AtomicBool resets naturally.
     SampledField(SampledField),
+    /// Instance of a `structure def` (e.g. `Steel_AISI_1045()`).
+    ///
+    /// `type_id` is an opaque per-Engine handle into the
+    /// [`StructureRegistry`](crate::StructureRegistry) side-table (declared
+    /// trait bounds, source span, field layout). `type_name` and `version`
+    /// are carried inline so that [`content_hash`](Value::content_hash) — a
+    /// pure function with no registry access — can compose a cache key that
+    /// is stable across Engine restarts (PRD §5: key on *name*, never the
+    /// ephemeral id; `@version(N)` bumps must invalidate). `fields` is the
+    /// constructed parameter map (declaration-order-independent: hashing and
+    /// equality sort by key).
+    StructureInstance(Box<StructureInstanceData>),
     /// Undefined — not yet determined or computation failed.
     Undef,
+}
+
+/// Boxed payload of [`Value::StructureInstance`].
+///
+/// Boxed so the `Value` enum stays compact — inlining four fields (plus the
+/// `PersistentMap` header) widened every `Value`-typed stack slot enough to
+/// regress `reify-expr`'s 256-deep `eval_user_fn_recursion_depth_exceeded`
+/// safety test into a real debug-mode stack overflow (the runtime guard at
+/// `MAX_RECURSION_DEPTH` is sized for the pre-SIR-α frame). Boxing costs one
+/// heap allocation per ctor call (rare path) and restores the lean frame.
+#[derive(Debug, Clone)]
+pub struct StructureInstanceData {
+    pub type_id: StructureTypeId,
+    pub type_name: String,
+    pub version: u32,
+    pub fields: PersistentMap<String, Value>,
 }
 
 /// Normalize range inclusivity flags: force `inclusive=false` when the
@@ -771,7 +800,7 @@ impl Value {
         // 8=Set, 9=Map, 10=Satisfaction(reserved), 11=Option, 12=Lambda, 13=Field,
         // 14=Tensor, 15=Complex, 16=Orientation, 17=Range, 18=Point, 19=Vector,
         // 20=Frame, 21=Transform, 22=Plane, 23=Axis, 24=BoundingBox, 25=Matrix,
-        // 26=SampledField
+        // 26=SampledField, 27=StructureInstance
         match self {
             Value::Bool(b) => ContentHash::of(&[0, *b as u8]),
             Value::Int(i) => {
@@ -1033,6 +1062,23 @@ impl Value {
                 h = h.combine(hash_floats(&sf.data));
                 h
             }
+            Value::StructureInstance(data) => {
+                // tag=27; cross-Engine-stable identity: name + version + the
+                // sorted-by-key field hashes. `type_id` is intentionally
+                // excluded — it is a per-Engine ephemeral handle, while the
+                // persistent cache key must survive Engine restarts (PRD §5).
+                let mut h = ContentHash::of(&[27]);
+                h = h.combine(ContentHash::of_str(&data.type_name));
+                h = h.combine(ContentHash::of(&data.version.to_le_bytes()));
+                let mut entries: Vec<(&String, &Value)> = data.fields.iter().collect();
+                entries.sort_by(|a, b| a.0.cmp(b.0));
+                h = h.combine(ContentHash::of(&(entries.len() as u64).to_le_bytes()));
+                for (k, v) in entries {
+                    h = h.combine(ContentHash::of_str(k));
+                    h = h.combine(v.content_hash());
+                }
+                h
+            }
             Value::Undef => ContentHash::of(&[5]),
         }
     }
@@ -1059,8 +1105,9 @@ impl Value {
     ///
     /// Empty `Point` and `Vector` are not valid inputs to `infer_type` —
     /// debug builds trip a `debug_assert!`; release builds panic via
-    /// `unreachable!`.  Use [`try_infer_type()`] for ambiguity-aware
-    /// inference that returns `None` without panicking.
+    /// `.expect()` (the assertion is compiled out), with a message that
+    /// points back to the `debug_assert!`.  Use [`try_infer_type()`] for
+    /// ambiguity-aware inference that returns `None` without panicking.
     ///
     /// Use [`try_infer_type()`] when you need to distinguish "genuinely ambiguous"
     /// from "has a known fallback".
@@ -1259,6 +1306,7 @@ impl Value {
             // SampledField is the runtime payload stored under Value::Field.lambda
             // for source = sampled fields; it has no standalone Type.
             Value::SampledField(_) => None,
+            Value::StructureInstance(data) => Some(Type::StructureRef(data.type_name.clone())),
             Value::Undef => Some(Type::Bool),
         }
     }
@@ -1418,6 +1466,20 @@ impl Value {
                 sf.kind,
                 sf.data.len()
             ),
+            Value::StructureInstance(data) => {
+                let mut entries: Vec<(&String, &Value)> = data.fields.iter().collect();
+                entries.sort_by(|a, b| a.0.cmp(b.0));
+                let type_name = &data.type_name;
+                if entries.is_empty() {
+                    format!("{type_name} {{ }}")
+                } else {
+                    let inner: Vec<String> = entries
+                        .iter()
+                        .map(|(k, v)| format!("{k}: {}", v.format_hover()))
+                        .collect();
+                    format!("{type_name} {{ {} }}", inner.join(", "))
+                }
+            }
             Value::Undef => "(undefined)".to_string(),
         }
     }
@@ -1560,6 +1622,20 @@ impl Value {
             }
             Value::SampledField(sf) => {
                 format!("SampledField('{}', {} samples)", sf.name, sf.data.len())
+            }
+            Value::StructureInstance(data) => {
+                let mut entries: Vec<(&String, &Value)> = data.fields.iter().collect();
+                entries.sort_by(|a, b| a.0.cmp(b.0));
+                let type_name = &data.type_name;
+                if entries.is_empty() {
+                    format!("{type_name} {{ }}")
+                } else {
+                    let inner: Vec<String> = entries
+                        .iter()
+                        .map(|(k, v)| format!("{k}: {}", v.format_display()))
+                        .collect();
+                    format!("{type_name} {{ {} }}", inner.join(", "))
+                }
             }
             Value::Undef => "undefined".to_string(),
         }
@@ -1872,6 +1948,9 @@ impl PartialEq for Value {
             }
             (Value::Matrix(a), Value::Matrix(b)) => a == b,
             (Value::SampledField(a), Value::SampledField(b)) => a == b,
+            (Value::StructureInstance(a), Value::StructureInstance(b)) => {
+                a.type_name == b.type_name && a.version == b.version && a.fields == b.fields
+            }
             (Value::Undef, Value::Undef) => true,
             _ => false,
         }
@@ -1930,6 +2009,7 @@ impl Ord for Value {
                 Value::Axis { .. } => 23,
                 Value::BoundingBox { .. } => 24,
                 Value::SampledField(_) => 25,
+                Value::StructureInstance(_) => 26,
             }
         }
 
@@ -2126,6 +2206,20 @@ impl Ord for Value {
                 },
             ) => amin.cmp(bmin).then_with(|| amax.cmp(bmax)),
             (Value::SampledField(a), Value::SampledField(b)) => a.cmp(b),
+            (Value::StructureInstance(a), Value::StructureInstance(b)) => {
+                // Ordering must agree with PartialEq (Eq/Ord contract) and be
+                // field-insertion-order-independent: compare name, then
+                // version, then the sorted-by-key (key, value) pairs.
+                // `type_id` is excluded — it is per-Engine ephemeral.
+                let mut ae: Vec<(&String, &Value)> = a.fields.iter().collect();
+                ae.sort_by(|x, y| x.0.cmp(y.0));
+                let mut be: Vec<(&String, &Value)> = b.fields.iter().collect();
+                be.sort_by(|x, y| x.0.cmp(y.0));
+                a.type_name
+                    .cmp(&b.type_name)
+                    .then_with(|| a.version.cmp(&b.version))
+                    .then_with(|| ae.cmp(&be))
+            }
             _ => unreachable!("same type tag but different variants"),
         }
     }
@@ -2337,6 +2431,18 @@ impl std::fmt::Display for Value {
                     sf.data.len(),
                     sf.interpolation
                 )
+            }
+            Value::StructureInstance(data) => {
+                // `TypeName { k1: v1, k2: v2 }` with keys sorted for
+                // deterministic output; empty → `TypeName { }`.
+                let mut entries: Vec<(&String, &Value)> = data.fields.iter().collect();
+                entries.sort_by(|a, b| a.0.cmp(b.0));
+                let type_name = &data.type_name;
+                write!(f, "{type_name} {{")?;
+                for (i, (k, v)) in entries.iter().enumerate() {
+                    write!(f, "{} {k}: {v}", if i > 0 { "," } else { "" })?;
+                }
+                write!(f, " }}")
             }
             Value::Undef => write!(f, "undef"),
         }
@@ -2553,7 +2659,8 @@ pub enum Freshness {
     ///
     /// See arch §7.1 lines 716-728.
     Intermediate { generation: u64 },
-    /// Gated; not recalculated, showing previous best.
+    /// Current entry not authoritative; previous best on display (either
+    /// gated on upstream, or recomputation in flight via a ComputeNode).
     ///
     /// `last_substantive` carries the opaque identity of the last
     /// known-good result (if any); use [`ResultRef::none()`] when no
@@ -2662,6 +2769,161 @@ mod tests {
         -1.0,
         1.0,
     ];
+
+    // ── Value::StructureInstance variant (task 3540 / SIR-α) ─────────────────
+    mod structure_instance {
+        use super::*;
+        use crate::StructureTypeId;
+
+        /// Build a `Value::StructureInstance` with a fixed `type_id`/`version`
+        /// and the given `(name, value)` field pairs.
+        fn si(name: &str, version: u32, pairs: &[(&str, Value)]) -> Value {
+            let fields: PersistentMap<String, Value> = pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.clone()))
+                .collect();
+            Value::StructureInstance(Box::new(StructureInstanceData {
+                type_id: StructureTypeId(0),
+                type_name: name.to_string(),
+                version,
+                fields,
+            }))
+        }
+
+        #[test]
+        fn construct_and_destructure() {
+            let v = si("Steel_AISI_1045", 1, &[("youngs_modulus", Value::Real(205e9))]);
+            match &v {
+                Value::StructureInstance(data) => {
+                    assert_eq!(data.type_name, "Steel_AISI_1045");
+                    assert_eq!(data.version, 1);
+                    assert_eq!(
+                        data.fields.get(&"youngs_modulus".to_string()),
+                        Some(&Value::Real(205e9))
+                    );
+                }
+                other => panic!("expected StructureInstance, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn clone_preserves_nested_fields() {
+            let v = si(
+                "Beam",
+                1,
+                &[
+                    ("length", Value::length(1.0)),
+                    ("material", si("Steel_AISI_1045", 1, &[("e", Value::Real(2.0))])),
+                ],
+            );
+            let c = v.clone();
+            assert_eq!(v, c, "clone is structurally equal (PersistentMap sharing)");
+        }
+
+        #[test]
+        fn partial_eq_is_field_order_insensitive() {
+            let a = si("S", 1, &[("x", Value::Int(1)), ("y", Value::Int(2))]);
+            let b = si("S", 1, &[("y", Value::Int(2)), ("x", Value::Int(1))]);
+            assert_eq!(a, b, "PersistentMap content equality ignores insert order");
+        }
+
+        #[test]
+        fn partial_eq_discriminates_name_version_and_fields() {
+            let base = si("S", 1, &[("x", Value::Int(1))]);
+            assert_ne!(base, si("T", 1, &[("x", Value::Int(1))]), "name differs");
+            assert_ne!(base, si("S", 2, &[("x", Value::Int(1))]), "version differs");
+            assert_ne!(
+                base,
+                si("S", 1, &[("x", Value::Int(2))]),
+                "field value differs"
+            );
+            assert_ne!(
+                base,
+                si("S", 1, &[("x", Value::Int(1)), ("z", Value::Int(0))]),
+                "extra field"
+            );
+        }
+
+        #[test]
+        fn content_hash_is_deterministic() {
+            let v = si("S", 1, &[("a", Value::Int(1))]);
+            assert_eq!(
+                v.content_hash(),
+                v.content_hash(),
+                "content_hash is a deterministic pure function"
+            );
+        }
+
+        #[test]
+        fn content_hash_equal_for_equal_structures() {
+            let a = si("S", 1, &[("a", Value::Int(1)), ("b", Value::Real(2.0))]);
+            let b = si("S", 1, &[("a", Value::Int(1)), ("b", Value::Real(2.0))]);
+            assert_eq!(a.content_hash(), b.content_hash());
+        }
+
+        #[test]
+        fn content_hash_independent_of_field_insertion_order() {
+            let a = si(
+                "S",
+                1,
+                &[
+                    ("alpha", Value::Int(1)),
+                    ("beta", Value::Int(2)),
+                    ("gamma", Value::Int(3)),
+                ],
+            );
+            let b = si(
+                "S",
+                1,
+                &[
+                    ("gamma", Value::Int(3)),
+                    ("alpha", Value::Int(1)),
+                    ("beta", Value::Int(2)),
+                ],
+            );
+            assert_eq!(
+                a.content_hash(),
+                b.content_hash(),
+                "content_hash must sort fields by key before folding"
+            );
+        }
+
+        #[test]
+        fn content_hash_differs_on_name() {
+            let a = si("Steel_AISI_1045", 1, &[("x", Value::Int(1))]);
+            let b = si("Aluminium_6061_T6", 1, &[("x", Value::Int(1))]);
+            assert_ne!(a.content_hash(), b.content_hash());
+        }
+
+        #[test]
+        fn content_hash_differs_on_version() {
+            let a = si("S", 1, &[("x", Value::Int(1))]);
+            let b = si("S", 2, &[("x", Value::Int(1))]);
+            assert_ne!(
+                a.content_hash(),
+                b.content_hash(),
+                "@version(N) bump must invalidate the content hash"
+            );
+        }
+
+        #[test]
+        fn content_hash_differs_on_field_value() {
+            let a = si("S", 1, &[("x", Value::Int(1))]);
+            let b = si("S", 1, &[("x", Value::Int(2))]);
+            assert_ne!(a.content_hash(), b.content_hash());
+        }
+
+        #[test]
+        fn content_hash_distinct_from_map_lookalike() {
+            // Linguistic Map-vs-Structure distinction: a Value::Map with the
+            // same String→Value entry must not collide with a StructureInstance.
+            let structure = si("S", 1, &[("x", Value::Int(1))]);
+            let mut m = BTreeMap::new();
+            m.insert(Value::String("x".to_string()), Value::Int(1));
+            let map = Value::Map(m);
+            assert_ne!(structure.content_hash(), map.content_hash());
+        }
+    }
 
     // ── normalize_range_flags unit tests ─────────────────────────────────────
 
@@ -7357,6 +7619,15 @@ mod tests {
             ),
             ("Range", Value::range(None, None, false, false)),
             ("Matrix", Value::Matrix(vec![])),
+            (
+                "StructureInstance",
+                Value::StructureInstance(Box::new(StructureInstanceData {
+                    type_id: crate::StructureTypeId(0),
+                    type_name: "S".into(),
+                    version: 1,
+                    fields: crate::PersistentMap::new(),
+                })),
+            ),
             ("Undef", Value::Undef),
         ];
 
@@ -7643,16 +7914,12 @@ mod tests {
     /// `components.first()?` propagates None out of the Point arm.
     #[test]
     fn try_infer_type_empty_point_returns_none() {
-        use crate::ty::Type;
         let v = Value::Point(vec![]);
         assert_eq!(
             v.try_infer_type(),
             None,
             "empty Point has no inferable quantity type"
         );
-        // try_infer_type returning None means infer_type dispatches to the None branch;
-        // step-04 replaces the unwrap_or(Type::Real) there with debug_assert + unreachable!.
-        let _ = Type::Real; // suppress unused import lint
     }
 
     /// Empty Vector has no inferable quantity type — try_infer_type() returns None.
@@ -8046,6 +8313,29 @@ mod tests {
     ///   with plain `==` (NaN != NaN always, so the result would flip to false).
     /// - Different-bits-unequal: fails if a contributor introduces NaN
     ///   canonicalisation (all NaNs would be treated as equal).
+    #[test]
+    fn sampled_field_grid_metadata_eq_nan_bits_equal_returns_true() {
+        // Half 1: same bit-pattern NaN → equal.
+        let mut a = sample_field_1d_fixture();
+        let mut b = sample_field_1d_fixture();
+        a.spacing[0] = f64::NAN;
+        b.spacing[0] = f64::from_bits(f64::NAN.to_bits()); // identical bit pattern
+        assert!(
+            a.grid_metadata_eq(&b),
+            "same-bit-pattern NaN values must compare as equal (NaN bit-equality contract)"
+        );
+
+        // Half 2: distinct bit-pattern NaN → not equal.
+        let mut c = sample_field_1d_fixture();
+        let mut d = sample_field_1d_fixture();
+        c.spacing[0] = f64::NAN;
+        d.spacing[0] = f64::from_bits(f64::NAN.to_bits() | 1); // different payload bit
+        assert!(
+            !c.grid_metadata_eq(&d),
+            "distinct-bit-pattern NaN values must compare as unequal (NaN bit-equality contract)"
+        );
+    }
+
     // ── format_display_triple unit tests (Task 3648) ─────────────────────────
 
     /// Scalar mm(4.2) → Some((4.2, "4.2", "mm")):
@@ -8124,29 +8414,6 @@ mod tests {
         assert!(
             Value::Int(5).format_display_triple().is_none(),
             "Int must return None — not a physical scalar"
-        );
-    }
-
-    #[test]
-    fn sampled_field_grid_metadata_eq_nan_bits_equal_returns_true() {
-        // Half 1: same bit-pattern NaN → equal.
-        let mut a = sample_field_1d_fixture();
-        let mut b = sample_field_1d_fixture();
-        a.spacing[0] = f64::NAN;
-        b.spacing[0] = f64::from_bits(f64::NAN.to_bits()); // identical bit pattern
-        assert!(
-            a.grid_metadata_eq(&b),
-            "same-bit-pattern NaN values must compare as equal (NaN bit-equality contract)"
-        );
-
-        // Half 2: distinct bit-pattern NaN → not equal.
-        let mut c = sample_field_1d_fixture();
-        let mut d = sample_field_1d_fixture();
-        c.spacing[0] = f64::NAN;
-        d.spacing[0] = f64::from_bits(f64::NAN.to_bits() | 1); // different payload bit
-        assert!(
-            !c.grid_metadata_eq(&d),
-            "distinct-bit-pattern NaN values must compare as unequal (NaN bit-equality contract)"
         );
     }
 }

@@ -780,6 +780,48 @@ pub struct AutoResolveIteration {
     pub driving_metric_value: Option<f64>,
 }
 
+/// IPC payload for the `warm-pool-event` Tauri channel.
+///
+/// Wire format per PRD §2.2: `{"kind":"evicted"|"donated","size_bytes":<u64>,"node_id":<string>}`.
+/// Field names match the TS interface in `gui/src/types.ts` exactly — no `serde(rename_all)`.
+///
+/// Constructed from the engine-internal
+/// [`reify_eval::warm_pool::WarmPoolEvent`] enum via [`WarmPoolEvent::from_engine_event`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WarmPoolEvent {
+    /// `"evicted"` or `"donated"`.
+    pub kind: String,
+    /// Warm-state size involved in the event, in bytes.
+    pub size_bytes: u64,
+    /// Stringified [`reify_eval::cache::NodeId`] of the victim (evicted) or donor (donated) node.
+    pub node_id: String,
+}
+
+impl WarmPoolEvent {
+    /// Translate an engine-internal [`reify_eval::warm_pool::WarmPoolEvent`] to the
+    /// flat IPC shape required by the `warm-pool-event` channel wire format.
+    ///
+    /// Preserves the victim/donor `node_id` contract documented in `journal.rs:53-62`:
+    /// `WarmPoolEvent::Evicted.node_id` is the **victim** node; `Donated.node_id` is
+    /// the **donor** node.  The `to_string()` call uses `NodeId`'s `Display` impl
+    /// (`cache.rs:57`), which is stable across variant additions.
+    pub fn from_engine_event(ev: &reify_eval::warm_pool::WarmPoolEvent) -> Self {
+        use reify_eval::warm_pool::WarmPoolEvent as EngineEvent;
+        match ev {
+            EngineEvent::Evicted { node_id, size_bytes } => Self {
+                kind: "evicted".to_string(),
+                size_bytes: *size_bytes as u64,
+                node_id: node_id.to_string(),
+            },
+            EngineEvent::Donated { node_id, size_bytes } => Self {
+                kind: "donated".to_string(),
+                size_bytes: *size_bytes as u64,
+                node_id: node_id.to_string(),
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod format_value_range_tests {
     use super::*;

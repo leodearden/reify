@@ -87,6 +87,10 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 include_str!("../stdlib/solver_elastic.ri"),
             ),
             (
+                "std.solver.buckling",
+                include_str!("../stdlib/solver_buckling.ri"),
+            ),
+            (
                 "std.fea.multi_case",
                 include_str!("../stdlib/fea_multi_case.ri"),
             ),

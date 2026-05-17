@@ -12,20 +12,34 @@
 
 // ── Physical body trait ─────────────────────────────────────────────────────
 
-// Physical refines MaterialSpec (from materials_mechanical.ri), adding volume
-// and centroid position. The computed `mass` default uses volume * density
-// where density comes from the MaterialSpec refinement.
+// Physical is the spec-shape body trait (PRD `geometry-handle-runtime.md` §1
+// Phase 1 / task 3603, "GHR-α"). It carries:
 //
-// Note: prior to task 1876 this refined a trait named `Material`; that trait
-// has been renamed to `MaterialSpec` (the identifier `Material` now names a
-// first-class struct). See materials_mechanical.ri for migration guidance.
-trait Physical : MaterialSpec {
-    param volume : Real
-    param centroid_x : Real
-    param centroid_y : Real
-    param centroid_z : Real
-    let mass = volume * density
-    constraint volume > 0
+//   - `geometry : Solid` — the body's shape, as a first-class geometry handle.
+//   - `material : Material` — the body's material, as a first-class struct
+//     slot (Material is a struct now; the prior `MaterialSpec` trait edge has
+//     been removed — see materials_mechanical.ri §Trait Resolution Policy
+//     and SIR-α / task 3540 for the migration to struct-slot composition).
+//   - `let mass = volume(geometry) * material.density` — computed via the
+//     PRD §1 frozen geometry-query family (Phase 1 typecheck-only; eval-time
+//     dispatch arrives in Phase 6 / GHR-ζ, currently produces `Value::Undef`).
+//   - `let centroid = centroid(geometry)` — same status as `mass`.
+//   - `constraint material.density > 0` — preserves the "Physical injects at
+//     least one positivity constraint" invariant from the legacy shape
+//     (the prior `constraint volume > 0` is gone because `volume` is no
+//     longer a flat param; a geometry-derived positivity will be revived
+//     in Phase 6).
+//
+// Historical note: prior to task 1876 this refined a trait named `Material`,
+// later renamed to `MaterialSpec`. PRD Phase 1 retires the trait edge
+// entirely. Legacy `density / name / volume / centroid_x/y/z` flat params
+// are gone — see PRD §7.2 row 1 for the trade and §8 Phase 1 for the spec.
+trait Physical {
+    param geometry : Solid
+    param material : Material
+    let mass = volume(geometry) * material.density
+    let centroid = centroid(geometry)
+    constraint material.density > 0
 }
 
 // ── Rigidity ────────────────────────────────────────────────────────────────

@@ -13,8 +13,8 @@ use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
 ///
 /// Six families (hand-rolled `&str` checks — `regex` is intentionally NOT a
 /// dependency per design §12):
-/// 1. TODO variants: `TODO(…pending)`, `TODO(post-\w+)`, `TODO(…later)`,
-///    `TODO(task_\d+)` — substring scans on a lowercase copy.
+/// 1. TODO variants: `TODO(…pending)`, `TODO(post-…)`, `TODO(…later)`,
+///    `TODO(task_N)` — substring scans on a lowercase copy.
 /// 2. `unimplemented!(` — hard panic placeholder.
 /// 3. `panic!(` + later `not yet` — explicit "not yet implemented" panic.
 /// 4. `tracing::warn!(` + `reason="task_` + `_pending"` — structured warning.
@@ -38,7 +38,7 @@ fn line_matches_stub(line: &str) -> Option<&'static str> {
             return Some("TODO(pending)");
         }
         if inner.contains("post-") {
-            return Some("TODO(post-\\w+)");
+            return Some("TODO(post-)");
         }
         if inner.contains("later") {
             return Some("TODO(later)");
@@ -94,9 +94,102 @@ fn title_signals_stub(title: &str) -> bool {
     t.contains("stub") || t.contains("placeholder")
 }
 
+/// Threshold above which `check()` warns about an unbounded backlog
+/// when both `target_task_id` and `window` are unset (sweep mode
+/// without pre-narrowing — see the `# Callers` rustdoc on `check`).
+/// 50 is well above every existing test fixture (max 7 tasks in
+/// `seven_prepd_legacy_tasks_produce_no_false_positives` /
+/// audit_integration.rs) and well below the unbounded-backlog
+/// scenario (hundreds of tasks loaded from fused-memory). The
+/// comparison is strict `>` so a backlog of exactly 50 does not warn.
+const SWEEP_BACKLOG_WARN_THRESHOLD: usize = 50;
+
+/// Scan all tasks in `ctx.task_metadata` for canonical stub markers in their
+/// added-line diff and return [`Pattern::P2ConsumerStub`] findings.
+///
+/// # Callers
+///
+/// **Pre-done hook** (`check_pre_done`-style): set `ctx.target_task_id` to the
+/// single closing task.  The task's `status` will still be `"in_progress"` at
+/// call time — the orchestrator has not yet flipped it to `"done"` — so P2
+/// omits a `status != "done"` filter (see the `NOTE` comment inside the body).
+///
+/// **Periodic sweep** (`--mode sweep`): narrow `ctx.task_metadata` to the
+/// closing-window tasks **before** calling this function.  Passing the full
+/// backlog will surface every in-progress `TODO(... pending)` as a finding,
+/// because P2 has no internal status filter to suppress legitimate WIP markers.
+///
+/// Reference: `docs/architecture-audit/f-infra-design.md` §5 P2 and §10.
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
+    // Sweep-mode contract enforcement (esc-3752-365). The # Callers rustdoc
+    // above requires sweep-mode callers to narrow `ctx.task_metadata` to
+    // closing-window tasks before invoking check(). A caller that forgets —
+    // runs --mode sweep with no --task and no --since against the full
+    // fused-memory backlog — would silently surface every in-progress WIP
+    // `TODO(... pending)` as a Medium-severity finding. Make the contract
+    // explicit per project convention "contract in production code is made
+    // explicit rather than relying on test coverage".
+    //
+    // KNOWN LIMITATION (esc-3752-365 review, suggestion 1): The `window.is_none()`
+    // conjunct is intended as a proxy for "no sweep scoping was requested", but
+    // `ctx.window` is NOT consumed by P2 — the AuditContext::window rustdoc says
+    // "None of the slice-1 detector paths consume this yet". The CLI also loads the
+    // full fused-memory backlog regardless of --since (it only builds `window`,
+    // never filters `task_metadata`). Consequently, a --since-scoped sweep
+    // (window=Some but task_metadata still contains the full backlog) BYPASSES this
+    // guard and still surfaces spurious findings. This guard therefore only catches
+    // the zero-scoping-flag case (--mode sweep with neither --task nor --since).
+    // Complete protection requires the CLI or loader to narrow `ctx.task_metadata`
+    // at load time before calling check().
+    //
+    // We use BOTH debug_assert! and eprintln!:
+    //   - debug_assert! panics in dev/test (loud fail-fast; the
+    //     `sweep_mode_unbounded_backlog_panics_in_debug` integration test
+    //     pins this signal via #[should_panic(expected = "unbounded backlog")]).
+    //   - eprintln! emits a `reify-audit:` breadcrumb so production release
+    //     builds (debug_assert compiled out) still surface the warning on
+    //     stderr alongside the spurious findings. Joins the existing breadcrumb
+    //     convention from lib.rs (git check-ignore) and p5_phantom_done.rs
+    //     (runs.db unreadable).
+    if ctx.target_task_id.is_none()
+        && ctx.window.is_none()
+        && ctx.task_metadata.len() > SWEEP_BACKLOG_WARN_THRESHOLD
+    {
+        eprintln!(
+            "reify-audit: p2::check called with unbounded backlog \
+             (target_task_id=None, window=None, {} tasks > threshold {}); \
+             callers MUST pre-narrow ctx.task_metadata to closing-window \
+             tasks per the # Callers rustdoc — else every in-progress WIP \
+             `TODO(... pending)` will surface as a Medium-severity finding",
+            ctx.task_metadata.len(),
+            SWEEP_BACKLOG_WARN_THRESHOLD,
+        );
+        debug_assert!(
+            false,
+            "p2::check called with unbounded backlog \
+             (target_task_id=None, window=None, {} tasks): callers MUST \
+             pre-narrow ctx.task_metadata to closing-window tasks per the \
+             # Callers rustdoc",
+            ctx.task_metadata.len(),
+        );
+    }
+
     let mut findings = Vec::new();
 
+    // NOTE: unlike `p5_phantom_done::check_task` (which filters `meta.status != "done"`
+    //   to skip non-`done` tasks), P2 deliberately iterates EVERY task regardless of
+    //   status. Reason: the D-1 pre-done hook calls into P2 *before* the orchestrator
+    //   flips `status` from `in_progress` to `done`, so a `status != "done"` filter
+    //   would suppress every finding on the primary call path (`check_pre_done`-style
+    //   single-task narrowing via `target_task_id`).
+    //
+    //   Constraint on periodic-sweep callers (e.g. T-4 CLI in `--mode sweep`): they
+    //   MUST narrow `ctx.task_metadata` to closing-window tasks themselves before
+    //   calling `check`. Passing the full backlog will surface every in-progress
+    //   task carrying a legitimate WIP `TODO(... pending)` as a finding — the marker
+    //   is what P2 looks for, and there is no further filter inside this function.
+    //
+    //   Reference: `docs/architecture-audit/f-infra-design.md` §5 P2 and §10.
     for meta in ctx.task_metadata.values() {
         // Optional single-task narrowing (mirrors p5_phantom_done::check_with_target).
         if let Some(target) = ctx.target_task_id.as_deref()
@@ -118,6 +211,20 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         //   sweeps over hundreds of tasks. The `+++ b/path` hunk headers
         //   already delimit per-file sections in a multi-path diff output.
         //   Reference: docs/architecture-audit/f-infra-design.md §5 P2.
+        //
+        //   Additionally: `line_matches_stub` allocates a fresh `String` per
+        //   added line via `to_lowercase()` (see line_matches_stub, top of
+        //   function). When the per-task coalescing follow-up lands, consider
+        //   reusing a per-task `String` scratch buffer via `clear();
+        //   push_str(line); make_ascii_lowercase()` guarded by
+        //   `line.is_ascii()`, falling back to `to_lowercase()` for the
+        //   non-ASCII tail. This collapses the ASCII fast-path and
+        //   scratch-buffer goals into one coherent strategy: zero allocations
+        //   on all-ASCII input (the common case for Rust stub markers), one
+        //   allocation per non-ASCII line (same cost as today). Note: do NOT
+        //   call `make_ascii_lowercase()` on non-ASCII input without the
+        //   `is_ascii()` guard — it silently skips non-ASCII bytes rather than
+        //   case-folding them, changing semantics vs. `to_lowercase()`.
         for path in &meta.files {
             // Skip test-shaped paths to avoid false positives on intentional
             // stubs inside test helpers (design §5 P2 false-positive guards).

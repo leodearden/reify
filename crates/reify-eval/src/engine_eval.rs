@@ -1140,6 +1140,15 @@ impl Engine {
         // SHADOWING INVARIANT) and seal it in an Arc so clones are O(1).
         // See `merge_functions` in lib.rs for the full contract.
         self.functions = merge_functions(module, &self.prelude_functions);
+        // Incrementally refresh the structure side-table from the user
+        // module's `structure def` templates (task 3540 / SIR-α step-12).
+        // `intern` is idempotent on name: prelude-seeded structures keep
+        // their stable `StructureTypeId`; user structures are added (or their
+        // meta overwritten on re-eval after an edit).
+        crate::engine_admin::populate_structure_registry(
+            &mut self.structure_registry,
+            std::slice::from_ref(module),
+        );
         self.compiled_purposes = module.compiled_purposes.clone();
         // Snapshot the field declarations so `Engine::edit_param` can
         // re-elaborate composed fields incrementally when their tracked
@@ -1759,6 +1768,41 @@ impl Engine {
                     &self.meta_map,
                     &mut diagnostics,
                 );
+
+                // task 3540 (SIR-α), handler esc-3540-182 (A): expose the
+                // elaborated non-collection sub as a single
+                // `Value::StructureInstance` at `ValueCellId(parent, sub.name)`.
+                // The per-member scoped cells `ValueCellId(parent.sub, member)`
+                // are left intact (the existing `self.<sub>.<member>` cross-sub
+                // access path still reads them); this adds the collapsed value
+                // so `self.<sub>` member-access chains — and direct inspection
+                // of the sub cell — see a structure-shaped Value rather than a
+                // missing cell. Fields are gathered from the just-populated
+                // scoped cells in the child template's declaration order.
+                // `type_id` is the ephemeral `StructureTypeId(0)` placeholder
+                // (identity is name+version per esc-3540-173); `version` is the
+                // child structure-def's `@version(N)` (esc-3540-176).
+                {
+                    let mut fields: PersistentMap<String, Value> = PersistentMap::new();
+                    for cell in &child_template.value_cells {
+                        if let Some(v) =
+                            values.get(&ValueCellId::new(&scoped_entity, &cell.id.member))
+                        {
+                            fields.insert(cell.id.member.clone(), v.clone());
+                        }
+                    }
+                    let si = Value::StructureInstance(Box::new(reify_types::StructureInstanceData {
+                        type_id: reify_types::StructureTypeId(0),
+                        type_name: sub.structure_name.clone(),
+                        version: child_template.version(),
+                        fields,
+                    }));
+                    let sub_id = ValueCellId::new(&template.name, &sub.name);
+                    values.insert(sub_id.clone(), si.clone());
+                    snapshot
+                        .values
+                        .insert(sub_id, (si, DeterminacyState::Determined));
+                }
             }
 
             // Re-evaluate let bindings that may depend on sub-component cells:
@@ -2780,110 +2824,154 @@ impl Engine {
                                 .collect()
                         };
 
-                        match self.dispatch_compute_node(
+                        // Derive a unique per-entity ComputeNodeId index by
+                        // taking `max(existing.index) + 1` over already-inserted
+                        // ComputeNodes in the same entity. `insert_compute_node`
+                        // does NOT dedupe (graph.rs:565-571 "Duplicate targets"
+                        // doc), so this caller-side counter discharges the
+                        // unique-ID contract. Without it, two `@optimized` calls
+                        // in the same entity would collide on
+                        // `PersistentMap<ComputeNodeId, _>`, silently overwriting
+                        // the first node.
+                        //
+                        // `max(index) + 1` is preferred over `count()` because
+                        // the latter assumes densely-allocated indices [0..N).
+                        // That happens to be true today (this is the only
+                        // insertion site), but any future code path that removes
+                        // a ComputeNode or reserves an index out-of-order would
+                        // let `count()` collide with a still-present id.
+                        // `max + 1` discharges the unique-ID contract without
+                        // relying on an insertion-only / no-gaps invariant.
+                        let next_index: u32 = snapshot
+                            .graph
+                            .compute_nodes
+                            .iter()
+                            .filter(|(id, _)| id.entity == cell_id.entity)
+                            .map(|(id, _)| id.index)
+                            .max()
+                            .map(|m| m + 1)
+                            .unwrap_or(0);
+
+                        // Extract `value_inputs` via a shallow walk over the
+                        // call args: each direct `ValueRef(cell)` arg
+                        // contributes the referenced cell. Literals, BinOps,
+                        // and other complex sub-expressions contribute no
+                        // entries in the γ slice — transitive-dependency
+                        // walking is deferred to P3.2 (the cache-key
+                        // composition slice that consumes `value_inputs`).
+                        // Crucially, the OUTPUT cell (`cell_id`) is NOT in
+                        // this list — that would be a graph self-loop.
+                        let value_inputs: Vec<reify_types::ValueCellId> = args
+                            .iter()
+                            .filter_map(|arg| match &arg.kind {
+                                reify_types::CompiledExprKind::ValueRef(
+                                    target_cell,
+                                ) => Some(target_cell.clone()),
+                                _ => None,
+                            })
+                            .collect();
+
+                        // task δ / 3423 (PRD §3 atomic completion, §8 task δ):
+                        // insert the ComputeNode FIRST — BEFORE dispatch — so
+                        // that mid-flight an observer reading
+                        // `cache.pending_cause(output_vc) ==
+                        // Some(NodeId::Compute(c_id))` can resolve `c_id` to a
+                        // live graph node (the "computing badge" rendering
+                        // policy, PRD §3). `cached_result: None` because the
+                        // CacheStore is now the canonical at-rest store for the
+                        // result (PRD §5); the prior γ wiring set it
+                        // post-dispatch.
+                        let c_id = reify_types::ComputeNodeId::new(
+                            cell_id.entity.as_str(),
+                            next_index,
+                        );
+                        snapshot.graph.insert_compute_node(
+                            crate::graph::ComputeNodeData {
+                                computation_id: c_id.clone(),
+                                target: target.clone(),
+                                value_inputs,
+                                realization_inputs: vec![],
+                                options_hash: reify_types::ContentHash(0),
+                                cache_key: reify_types::ContentHash(0),
+                                cached_result: None,
+                                result_content_hash: None,
+                                opaque_state: None,
+                                running: None,
+                                output_value_cells: vec![cell_id.clone()],
+                            },
+                        );
+
+                        // task δ / 3423: the begin → invoke trampoline →
+                        // atomic-complete-or-leave-Pending lifecycle is now
+                        // owned by `Engine::run_compute_dispatch` (PRD §3 / §8
+                        // task δ). It pre-marks the output VC Pending with
+                        // `pending_cause = NodeId::Compute(c_id)`, invokes the
+                        // γ trampoline, and on success flips Pending → Final and
+                        // clears the cause in one critical section. On
+                        // Failed/Cancelled it returns Err and LEAVES the VC
+                        // Pending — the Err arm below owns the Failed transition
+                        // (it has the diagnostic context for the ErrorRef).
+                        match self.run_compute_dispatch(
+                            &c_id,
+                            std::slice::from_ref(cell_id),
                             &target,
                             &arg_values,
                             &[],
                             &Value::Undef,
                             None,
+                            VersionId(version_id),
                         ) {
                             Ok((result, diags)) => {
                                 diagnostics.extend(diags);
-
-                                // Derive a unique per-entity ComputeNodeId index by
-                                // taking `max(existing.index) + 1` over already-inserted
-                                // ComputeNodes in the same entity. `insert_compute_node`
-                                // does NOT dedupe (graph.rs:565-571 "Duplicate targets"
-                                // doc), so this caller-side counter discharges the
-                                // unique-ID contract. Without it, two `@optimized` calls
-                                // in the same entity would collide on
-                                // `PersistentMap<ComputeNodeId, _>`, silently overwriting
-                                // the first node.
-                                //
-                                // `max(index) + 1` is preferred over `count()` because
-                                // the latter assumes densely-allocated indices [0..N).
-                                // That happens to be true today (this is the only
-                                // insertion site), but any future code path that removes
-                                // a ComputeNode or reserves an index out-of-order would
-                                // let `count()` collide with a still-present id.
-                                // `max + 1` discharges the unique-ID contract without
-                                // relying on an insertion-only / no-gaps invariant.
-                                let next_index: u32 = snapshot
-                                    .graph
-                                    .compute_nodes
-                                    .iter()
-                                    .filter(|(id, _)| id.entity == cell_id.entity)
-                                    .map(|(id, _)| id.index)
-                                    .max()
-                                    .map(|m| m + 1)
-                                    .unwrap_or(0);
-
-                                // Extract `value_inputs` via a shallow walk over the
-                                // call args: each direct `ValueRef(cell)` arg
-                                // contributes the referenced cell. Literals, BinOps,
-                                // and other complex sub-expressions contribute no
-                                // entries in the γ slice — transitive-dependency
-                                // walking is deferred to P3.2 (the cache-key
-                                // composition slice that consumes `value_inputs`).
-                                // Crucially, the OUTPUT cell (`cell_id`) is NOT in
-                                // this list — that would be a graph self-loop.
-                                let value_inputs: Vec<reify_types::ValueCellId> = args
-                                    .iter()
-                                    .filter_map(|arg| match &arg.kind {
-                                        reify_types::CompiledExprKind::ValueRef(
-                                            target_cell,
-                                        ) => Some(target_cell.clone()),
-                                        _ => None,
-                                    })
-                                    .collect();
-
-                                // Record a ComputeNode in the graph so callers can
-                                // inspect which cells were routed through a trampoline.
-                                snapshot.graph.insert_compute_node(
-                                    crate::graph::ComputeNodeData {
-                                        computation_id: reify_types::ComputeNodeId::new(
-                                            cell_id.entity.as_str(),
-                                            next_index,
-                                        ),
-                                        target,
-                                        value_inputs,
-                                        realization_inputs: vec![],
-                                        options_hash: reify_types::ContentHash(0),
-                                        cache_key: reify_types::ContentHash(0),
-                                        cached_result: Some(result.clone()),
-                                        result_content_hash: None,
-                                        opaque_state: None,
-                                        running: None,
-                                        output_value_cells: vec![cell_id.clone()],
-                                    },
-                                );
 
                                 values.insert(cell_id.clone(), result.clone());
                                 snapshot.values.insert(
                                     cell_id.clone(),
                                     (result.clone(), DeterminacyState::Determined),
                                 );
-                                let trace = take_trace(
+                                // Preserve `let_traces` consumption so the
+                                // per-node trace map stays drained consistently
+                                // with every other let-cell visit. The trace is
+                                // no longer threaded into a cache write here —
+                                // `run_compute_dispatch` →
+                                // `complete_compute_dispatch_atomically` is the
+                                // canonical writer (it writes with an empty
+                                // DependencyTrace; the ComputeNode's
+                                // `value_inputs` drive the cache key in P3.2,
+                                // not the output VC's trace).
+                                //
+                                // **Intermediate freshness propagation is
+                                // intentionally dropped for @optimized cells in
+                                // δ scope.** The pre-`run_compute_dispatch`
+                                // wiring threaded `take_trace(...)` into
+                                // `record_evaluation_propagating_freshness`, so
+                                // the output cell would inherit derived
+                                // freshness (e.g. Intermediate when any input
+                                // was Intermediate, §7.2). The δ contract
+                                // (PRD §3) flips the output Pending→Final on
+                                // successful completion — period. Restoring
+                                // derived-Intermediate propagation when inputs
+                                // are partial is a separate concern and is
+                                // deferred to a future slice (the upstream
+                                // Pending gate already short-circuits
+                                // Failed/Pending inputs before reaching here).
+                                let _trace = take_trace(
                                     &mut let_traces,
                                     &node_id,
                                     "sorted_lets",
                                     "let_traces",
                                 );
-                                let cached_result =
-                                    CachedResult::Value(result, DeterminacyState::Determined);
-                                let outcome = self
-                                    .cache
-                                    .record_evaluation_propagating_freshness(
-                                        node_id.clone(),
-                                        cached_result,
-                                        VersionId(version_id),
-                                        trace,
-                                        false,
-                                    );
+                                // `run_compute_dispatch` bundles
+                                // write+flip+clear and does not surface an
+                                // EvalOutcome (the atomicity-as-API contract);
+                                // a completed dispatch (re)computed a value, so
+                                // the journal records `Changed`.
                                 self.journal.record(EvalEvent {
                                     timestamp: Instant::now(),
                                     node_id,
-                                    kind: EventKind::Completed { outcome },
+                                    kind: EventKind::Completed {
+                                        outcome: EvalOutcome::Changed,
+                                    },
                                     version: VersionId(version_id),
                                     payload: Some(EventPayload::Duration(start.elapsed())),
                                 });
@@ -2898,6 +2986,27 @@ impl Engine {
                                 // failure: the diagnostic would say "compute trampoline
                                 // failed" while the cell happily holds an unrelated
                                 // Determined value (review feedback #1, suggestion 1).
+                                //
+                                // The ComputeNode inserted above (lines ~2884-2902)
+                                // is INTENTIONALLY left in `snapshot.graph.compute_nodes`
+                                // on this arm, even though the output VC ends up
+                                // Failed and `cached_result` / `result_content_hash` /
+                                // `running` are all `None`. Rationale:
+                                //   - `pending_cause = NodeId::Compute(c_id)` resolution
+                                //     (PRD §3) requires `c_id` to be present in the
+                                //     graph so observers (debug UI, the upcoming
+                                //     P3.2 cache-key composition) can chase the chain
+                                //     root. Removing the node on failure would leave a
+                                //     dangling chain-root pointer.
+                                //   - The output VC's `Failed` state (set below via
+                                //     `cache.mark_failed`) already communicates the
+                                //     compute outcome; the live-but-result-less
+                                //     ComputeNode signals "tried, then failed" rather
+                                //     than "no such computation ever existed".
+                                //   - Adding a per-node status field is a separate
+                                //     concern; deferred to a future slice if a
+                                //     consumer ever needs to distinguish in-flight
+                                //     from completed-failed at the ComputeNode level.
                                 //
                                 // Mirror the §9.1 panic-boundary handler below
                                 // (engine_eval.rs ~L2929-2965): surface the

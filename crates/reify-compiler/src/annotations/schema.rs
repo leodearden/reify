@@ -189,6 +189,26 @@ const SCHEMAS: &[AnnotationSchema] = &[
         on_extra: ExtraArgsPolicy::WarnIgnore,
         arg_check: Some(check_solid_args),
     },
+    // @version(N) — structure-def integer-versioning annotation (task 3540
+    // SIR-α, PRD §6 / Q-SIR-3). Listed as valid in ALL contexts so the schema's
+    // generic context-mismatch warning never fires for @version; the helper
+    // emits the bespoke `W_VERSION_ANNOTATION_NOT_ON_STRUCTURE_DEF` warning for
+    // any non-`structure` context instead.
+    //
+    // Namespace note: this is distinct from the `#version` *module pragma* in
+    // `MODULE_ONLY_PRAGMAS` — pragmas (`#name`) and annotations (`@name`) flow
+    // through `validate_pragmas` and `validate_annotations` respectively, so
+    // recognising the `@version` annotation here cannot disturb the `#version`
+    // module-pragma path.
+    AnnotationSchema {
+        name: "version",
+        label: "@version",
+        valid_contexts: ALL_VALID_CONTEXTS,
+        args: &[],
+        flag_set: None,
+        on_extra: ExtraArgsPolicy::WarnIgnore,
+        arg_check: Some(check_version_args),
+    },
 ];
 
 /// Look up the schema for a known annotation by its canonical name.
@@ -249,6 +269,42 @@ fn check_shell_args(ann: &Annotation, _context: &str, diagnostics: &mut Vec<Diag
                         .to_string(),
                 )
                 .with_label(DiagnosticLabel::new(ann.span, "too many arguments")),
+            );
+        }
+    }
+}
+
+/// Check `@version(N)` shape AND context (task 3540 SIR-α). The schema lists
+/// `@version` as valid in all contexts so the generic context-mismatch warning
+/// never fires; here we narrow acceptance to the `structure` context with the
+/// bespoke `W_VERSION_ANNOTATION_NOT_ON_STRUCTURE_DEF` warning for all others.
+/// On the `structure` context, require exactly one integer literal `≥ 1` —
+/// any other shape (string, float, multiple args, missing arg, negative or
+/// zero int) is rejected with `E_VERSION_ARG_TYPE_MISMATCH` at Error severity.
+fn check_version_args(ann: &Annotation, context: &str, diagnostics: &mut Vec<Diagnostic>) {
+    if context != "structure" {
+        diagnostics.push(
+            Diagnostic::warning(format!(
+                "W_VERSION_ANNOTATION_NOT_ON_STRUCTURE_DEF: @version is only valid \
+                 on structure def declarations, not on {context}"
+            ))
+            .with_label(DiagnosticLabel::new(
+                ann.span,
+                "@version not on structure def",
+            )),
+        );
+        return;
+    }
+    match ann.args.as_slice() {
+        [reify_types::AnnotationArg::Int(n)] if *n >= 1 => {}
+        _ => {
+            diagnostics.push(
+                Diagnostic::error(
+                    "E_VERSION_ARG_TYPE_MISMATCH: @version requires a single \
+                     integer literal >= 1, e.g. @version(2)"
+                        .to_string(),
+                )
+                .with_label(DiagnosticLabel::new(ann.span, "invalid @version argument")),
             );
         }
     }

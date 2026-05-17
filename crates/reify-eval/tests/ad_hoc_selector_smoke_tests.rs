@@ -26,8 +26,9 @@ use reify_constraints::SimpleConstraintChecker;
 use reify_eval::try_eval_ad_hoc_selector;
 use reify_test_support::{MockGeometryKernel, compile_source, errors_only, parse_and_compile_with_stdlib};
 use reify_types::{
-    CapKind, CompiledExpr, DiagnosticCode, ExportFormat, FeatureId, GeometryHandleId, Role,
-    SelectorKind, Severity, TopologyAttribute, TopologyAttributeTable, Type, Value, ValueCellId,
+    CapKind, CompiledExpr, DiagnosticCode, ExportFormat, FeatureId, GeometryHandleId, QueryError,
+    Role, SelectorKind, Severity, SourceSpan, TopologyAttribute, TopologyAttributeTable, Type,
+    Value, ValueCellId,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -170,7 +171,7 @@ fn try_eval_ad_hoc_selector_face_top_resolves_to_frame_via_attribute_table() {
     let mut kernel = configured_kernel();
     let mut diagnostics = Vec::new();
 
-    let result = try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, &mut diagnostics);
+    let result = try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, SourceSpan::empty(0), &mut diagnostics);
 
     // ── Verify exact Frame contents ──────────────────────────────────────────
     // Kernel returns centroid {"x":0.0,"y":0.0,"z":0.01} → origin at (0m, 0m, 0.01m)
@@ -240,7 +241,7 @@ fn try_eval_ad_hoc_selector_face_unresolved_name_returns_undef_with_warning() {
         .with_extracted_faces(BODY_HANDLE, vec![TOP_FACE, BOTTOM_FACE, SIDE_FACE]);
     let mut diagnostics = Vec::new();
 
-    let result = try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, &mut diagnostics);
+    let result = try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, SourceSpan::empty(0), &mut diagnostics);
 
     assert!(
         matches!(result, Some(Value::Undef)),
@@ -280,7 +281,7 @@ fn try_eval_ad_hoc_selector_non_ad_hoc_expr_returns_none() {
     let bool_expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
     let mut diagnostics = Vec::new();
     let result_a =
-        try_eval_ad_hoc_selector(&bool_expr, &named_steps, &mut kernel, &table, &mut diagnostics);
+        try_eval_ad_hoc_selector(&bool_expr, &named_steps, &mut kernel, &table, SourceSpan::empty(0), &mut diagnostics);
     assert!(
         result_a.is_none(),
         "a Bool literal should return None (not applicable), got {:?}",
@@ -300,6 +301,7 @@ fn try_eval_ad_hoc_selector_non_ad_hoc_expr_returns_none() {
         &named_steps,
         &mut kernel,
         &table,
+        SourceSpan::empty(0),
         &mut diagnostics_b,
     );
     assert!(
@@ -683,7 +685,7 @@ fn try_eval_ad_hoc_selector_edge_resolves_to_frame_via_user_label() {
     let mut kernel = configured_edge_kernel();
     let mut diagnostics = Vec::new();
 
-    let result = try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, &mut diagnostics);
+    let result = try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, SourceSpan::empty(0), &mut diagnostics);
 
     // ── Verify exact Frame contents ──────────────────────────────────────────
     // Edge tangent {"x":0.0,"y":0.0,"z":1.0} → +Z → +Z = identity quaternion.
@@ -769,7 +771,7 @@ fn try_eval_ad_hoc_selector_face_side_resolves_via_cap_kind_translation() {
     let mut kernel = configured_side_kernel();
     let mut diagnostics = Vec::new();
 
-    let result = try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, &mut diagnostics);
+    let result = try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, SourceSpan::empty(0), &mut diagnostics);
 
     // ── Verify exact Frame contents ──────────────────────────────────────────
     // centroid {"x":0.0,"y":0.0,"z":0.0} → origin at world origin.
@@ -799,6 +801,309 @@ fn try_eval_ad_hoc_selector_face_side_resolves_via_cap_kind_translation() {
     assert!(
         diagnostics.is_empty(),
         "no diagnostic expected on a clean resolution; got {:?}",
+        diagnostics
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 9: extract_faces kernel error → Warning + Some(Undef)
+// Characterisation test for the Err arm at geometry_ops.rs:2157-2161.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `try_eval_ad_hoc_selector` must return `Some(Value::Undef)` and emit exactly
+/// one `Severity::Warning` that surfaces the kernel error message when
+/// `kernel.extract_faces` returns an error.
+///
+/// Asserts on the propagated kernel error text ("mock face extraction failure")
+/// rather than the incidental function-name/verb wording, so a benign message
+/// reword won't break this test.
+///
+/// Pins the Warning+Some(Undef) wiring at geometry_ops.rs:2157-2161.
+/// Passes on HEAD — characterisation test for already-implemented behaviour.
+#[test]
+fn try_eval_ad_hoc_selector_face_kernel_error_returns_undef_with_warning() {
+    // `@face("top")` with a kernel that errors on extract_faces.
+    let expr = CompiledExpr::ad_hoc_selector(
+        CompiledExpr::literal(Value::String("body".to_string()), Type::String),
+        SelectorKind::Face,
+        vec![CompiledExpr::literal(
+            Value::String("top".to_string()),
+            Type::String,
+        )],
+    );
+
+    let named_steps = named_steps_with_body();
+    let table = seeded_cylinder_table();
+    let mut kernel = MockGeometryKernel::new()
+        .with_extract_faces_error(BODY_HANDLE, QueryError::QueryFailed("mock face extraction failure".into()));
+    let mut diagnostics = Vec::new();
+
+    let result =
+        try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, SourceSpan::empty(0), &mut diagnostics);
+
+    assert!(
+        matches!(result, Some(Value::Undef)),
+        "extract_faces error should return Some(Value::Undef), got {:?}",
+        result
+    );
+
+    let warnings: Vec<_> =
+        diagnostics.iter().filter(|d| d.severity == Severity::Warning).collect();
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected exactly one Warning diagnostic, got {} total diagnostics: {:#?}",
+        diagnostics.len(),
+        diagnostics
+    );
+    assert!(
+        warnings[0].message.contains("mock face extraction failure"),
+        "warning message should propagate the kernel error text; got {:?}",
+        warnings[0].message
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 10: extract_edges kernel error → Warning + Some(Undef)
+// Characterisation test for the Err arm at geometry_ops.rs:2166-2170.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `try_eval_ad_hoc_selector` must return `Some(Value::Undef)` and emit exactly
+/// one `Severity::Warning` that surfaces the kernel error message when
+/// `kernel.extract_edges` returns an error.
+///
+/// Asserts on the propagated kernel error text ("mock edge extraction failure")
+/// rather than the incidental function-name/verb wording, so a benign message
+/// reword won't break this test.
+///
+/// Pins the Warning+Some(Undef) wiring at geometry_ops.rs:2166-2170.
+/// Passes on HEAD — characterisation test for already-implemented behaviour.
+#[test]
+fn try_eval_ad_hoc_selector_edge_kernel_error_returns_undef_with_warning() {
+    // `@edge("top_edge")` with a kernel that errors on extract_edges.
+    let expr = CompiledExpr::ad_hoc_selector(
+        CompiledExpr::literal(Value::String("body".to_string()), Type::String),
+        SelectorKind::Edge,
+        vec![CompiledExpr::literal(
+            Value::String("top_edge".to_string()),
+            Type::String,
+        )],
+    );
+
+    let named_steps = named_steps_with_body();
+    let table = seeded_edge_table();
+    let mut kernel = MockGeometryKernel::new()
+        .with_extract_edges_error(BODY_HANDLE, QueryError::QueryFailed("mock edge extraction failure".into()));
+    let mut diagnostics = Vec::new();
+
+    let result =
+        try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, SourceSpan::empty(0), &mut diagnostics);
+
+    assert!(
+        matches!(result, Some(Value::Undef)),
+        "extract_edges error should return Some(Value::Undef), got {:?}",
+        result
+    );
+
+    let warnings: Vec<_> =
+        diagnostics.iter().filter(|d| d.severity == Severity::Warning).collect();
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected exactly one Warning diagnostic, got {} total diagnostics: {:#?}",
+        diagnostics.len(),
+        diagnostics
+    );
+    assert!(
+        warnings[0].message.contains("mock edge extraction failure"),
+        "warning message should propagate the kernel error text; got {:?}",
+        warnings[0].message
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 11: non-Literal args[0] → None early return, no diagnostics
+// Characterisation test for the resolve_string_literal_arg(a)? arm at
+// geometry_ops.rs:2142.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `try_eval_ad_hoc_selector` must return `None` (not applicable) and emit no
+/// diagnostics when `args[0]` is not a `Literal(String(..))` — e.g. a `ValueRef`.
+///
+/// The base remains `Literal(String("body"))` so the function passes step (3)
+/// and reaches the `resolve_string_literal_arg(a)?` call at step (4).  The
+/// `ValueRef` causes `resolve_string_literal_arg` to return `None`, triggering
+/// the early return via `?`.
+///
+/// Pins the contract at geometry_ops.rs:2142.
+/// Passes on HEAD — characterisation test for already-implemented behaviour.
+#[test]
+fn try_eval_ad_hoc_selector_non_literal_arg_returns_none() {
+    // `@face(<dynamic_expr>)` — args[0] is a ValueRef, not a Literal(String).
+    // The base is a Literal so the function reaches the args[0] check.
+    let expr = CompiledExpr::ad_hoc_selector(
+        CompiledExpr::literal(Value::String("body".to_string()), Type::String),
+        SelectorKind::Face,
+        vec![CompiledExpr::value_ref(
+            ValueCellId::new("Body", "dynamic_label"),
+            Type::String,
+        )],
+    );
+
+    let named_steps = named_steps_with_body();
+    let table = seeded_cylinder_table();
+    let mut kernel = configured_kernel();
+    let mut diagnostics = Vec::new();
+
+    let result =
+        try_eval_ad_hoc_selector(&expr, &named_steps, &mut kernel, &table, SourceSpan::empty(0), &mut diagnostics);
+
+    assert!(
+        result.is_none(),
+        "non-Literal args[0] should return None (not applicable), got {:?}",
+        result
+    );
+    assert!(
+        diagnostics.is_empty(),
+        "None-path should emit no diagnostics; got {:?}",
+        diagnostics
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 12: engine-level TopologyAttributeStale warning carries a non-empty span
+// RED on HEAD (geometry_ops.rs:2153 hardcodes SourceSpan::empty(0)).
+// Becomes GREEN when step-5 threads cell.span through try_eval_ad_hoc_selector.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The `TopologyAttributeStale` warning emitted by `engine.build()` for an
+/// unresolved `@face` selector must carry a primary label whose source span is
+/// non-empty — i.e. it must point at a real byte range in the source, not at
+/// the synthetic empty span `{ start: 0, end: 0 }`.
+///
+/// **RED on HEAD**: `try_eval_ad_hoc_selector` passes `SourceSpan::empty(0)` to
+/// `resolve_unique_by_attribute` (geometry_ops.rs:2153), so the label span has
+/// `start == end == 0` and `is_empty()` returns `true`.
+///
+/// **GREEN after step-5**: the `cell.span` from `ValueCellDecl` (populated by
+/// the compiler from the `let`-declaration's byte range) is threaded through as
+/// `selector_span`, giving the warning a real source location.
+#[test]
+fn engine_build_topology_stale_warning_carries_nonzero_source_span() {
+    let source = r#"structure SpanCheckCylinder {
+    let body = cylinder(10mm, 20mm)
+    let mystery_frame = body @ face("nonexistent")
+}"#;
+
+    let compiled = compile_source(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "expected no compile-time Error diagnostics; got: {:#?}",
+        compile_errors
+    );
+
+    let checker = SimpleConstraintChecker;
+    let kernel = configured_engine_kernel();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    // Locate the TopologyAttributeStale warning — should be exactly one.
+    let stale_warnings: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.code == Some(DiagnosticCode::TopologyAttributeStale)
+                && d.severity == Severity::Warning
+        })
+        .collect();
+    assert_eq!(
+        stale_warnings.len(),
+        1,
+        "expected exactly one TopologyAttributeStale Warning; got: {:#?}",
+        result.diagnostics
+    );
+
+    let diag = stale_warnings[0];
+
+    // The warning must have at least one label.
+    assert!(
+        !diag.labels.is_empty(),
+        "TopologyAttributeStale warning must have at least one label; got none. \
+         Diagnostic: {:#?}",
+        diag
+    );
+
+    // The primary label must carry a real (non-empty) source span.
+    // RED on HEAD: SourceSpan::empty(0) has start == end == 0 → is_empty() == true.
+    // GREEN after step-5: cell.span from the let-decl has start < end → is_empty() == false.
+    let primary_span = diag.labels[0].span;
+    assert!(
+        !primary_span.is_empty(),
+        "TopologyAttributeStale warning's primary label should carry a real source span \
+         (from the let-decl), but got an empty span {:?}. \
+         The span-plumbing impl (step-5) must thread cell.span through \
+         try_eval_ad_hoc_selector.",
+        primary_span
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Regression pin: @point selector → None (Layer-1 / Layer-2 split)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Pins the Layer-1 / Layer-2 split contract: `@point` selectors must
+/// short-circuit to `None` without touching the kernel.
+///
+/// `@point` selectors are resolved by Layer-1 (`eval_expr`) directly from
+/// literal coordinate arguments; Layer-2 (`try_eval_ad_hoc_selector`) must
+/// be a no-op for Point and return `None` with an empty diagnostics list.
+#[test]
+fn try_eval_ad_hoc_selector_point_returns_none() {
+    // `@point(0m, 0m, 0m)` expression: base="body", kind=Point, args=[0m,0m,0m]
+    // (Layer-1 resolves @point from its literal coordinate args; Layer-2 must
+    // be a no-op and return None without touching the kernel.)
+    let expr = CompiledExpr::ad_hoc_selector(
+        CompiledExpr::literal(Value::String("body".to_string()), Type::String),
+        SelectorKind::Point,
+        vec![
+            CompiledExpr::literal(Value::length(0.0), Type::length()),
+            CompiledExpr::literal(Value::length(0.0), Type::length()),
+            CompiledExpr::literal(Value::length(0.0), Type::length()),
+        ],
+    );
+
+    let named_steps = named_steps_with_body();
+    let table = seeded_cylinder_table();
+    // MockGeometryKernel with no results configured — any accidental kernel
+    // query would return an error, making a spurious Some(Value::Undef) visible.
+    let mut kernel = MockGeometryKernel::new();
+    let mut diagnostics = Vec::new();
+
+    let result = try_eval_ad_hoc_selector(
+        &expr,
+        &named_steps,
+        &mut kernel,
+        &table,
+        SourceSpan::empty(0),
+        &mut diagnostics,
+    );
+
+    assert!(
+        result.is_none(),
+        "try_eval_ad_hoc_selector with SelectorKind::Point must return None — \
+         @point selectors are handled by Layer-1 eval_expr and Layer-2 is a no-op; \
+         got {:?}",
+        result
+    );
+    assert!(
+        diagnostics.is_empty(),
+        "no diagnostics expected for a Point selector (Layer-2 early-returns None \
+         without emitting any warning); got {:?}",
         diagnostics
     );
 }

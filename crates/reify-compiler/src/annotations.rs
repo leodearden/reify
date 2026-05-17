@@ -185,6 +185,27 @@ pub(crate) fn deprecation_message(annotations: &[reify_types::Annotation]) -> Op
     None
 }
 
+/// Extract the structure-def version from a compiled annotation list.
+///
+/// Returns the integer argument of the first well-formed `@version(N)`
+/// annotation (with `N >= 1`), or `1` when `@version` is absent or malformed.
+/// Malformed `@version` annotations are separately diagnosed by
+/// [`validate_annotations`] (`E_VERSION_ARG_TYPE_MISMATCH`); this reader is
+/// deliberately total — it never panics and always yields a usable version —
+/// so the structure registry can be populated unconditionally even in the
+/// presence of a (already-diagnosed) malformed annotation.
+pub(crate) fn annotation_version(annotations: &[reify_types::Annotation]) -> u32 {
+    for ann in annotations {
+        if ann.name == "version"
+            && let Some(reify_types::AnnotationArg::Int(n)) = ann.args.first()
+            && *n >= 1
+        {
+            return *n as u32;
+        }
+    }
+    1
+}
+
 /// Extract the optimization target from a parsed annotation list.
 ///
 /// Returns `Some(target)` for the first `@optimized("target")` annotation with a
@@ -519,4 +540,248 @@ mod tests {
         );
     }
 
+    // ── @solid annotation tests ──────────────────────────────────────────────
+
+    /// Bare `@solid` on entity contexts (structure, occurrence) validates
+    /// without diagnostics. The annotation is a bare marker; no arguments are
+    /// expected.
+    #[test]
+    fn solid_valid_on_entity_contexts() {
+        for context in ["structure", "occurrence"] {
+            let anns = vec![ann(reify_types::SOLID_ANNOTATION, vec![])];
+            let mut diagnostics = Vec::new();
+            validate_annotations(&anns, context, &mut diagnostics);
+            assert!(
+                diagnostics.is_empty(),
+                "context={context} produced unexpected diagnostics: {:?}",
+                diagnostics
+            );
+        }
+    }
+
+    /// `@solid` on a non-entity context (`function`) produces exactly one
+    /// diagnostic whose message mentions `"@solid is not valid on function"`.
+    #[test]
+    fn solid_on_function_context_warns() {
+        let anns = vec![ann(reify_types::SOLID_ANNOTATION, vec![])];
+        let mut diagnostics = Vec::new();
+        validate_annotations(&anns, "function", &mut diagnostics);
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly 1 diagnostic, got: {:?}",
+            diagnostics
+        );
+        assert!(
+            diagnostics[0]
+                .message
+                .contains("@solid is not valid on function"),
+            "unexpected message: {}",
+            diagnostics[0].message
+        );
+    }
+
+    /// `@solid(arg)` on a non-entity context (e.g. `function`) produces exactly
+    /// one diagnostic — the context-mismatch warning — not two. The args-shape
+    /// warning is suppressed because the wrong-context branch short-circuits via
+    /// `else if`.
+    ///
+    /// This test pins the single-warning-per-error contract so a future refactor
+    /// that accidentally emits both warnings is caught immediately.
+    #[test]
+    fn solid_on_function_with_args_emits_one_warning() {
+        let anns = vec![ann(
+            reify_types::SOLID_ANNOTATION,
+            vec![reify_types::AnnotationArg::Real(0.5)],
+        )];
+        let mut diagnostics = Vec::new();
+        validate_annotations(&anns, "function", &mut diagnostics);
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly 1 diagnostic (context-mismatch only), got: {:?}",
+            diagnostics
+        );
+        assert!(
+            diagnostics[0]
+                .message
+                .contains("@solid is not valid on function"),
+            "expected context-mismatch message, got: {}",
+            diagnostics[0].message
+        );
+    }
+
+    /// Any argument shape passed to `@solid` on a valid entity context (structure)
+    /// produces exactly one diagnostic whose message mentions `"takes no arguments"`.
+    ///
+    /// `@solid` is a bare marker — force-tet is unconditional, no parameter
+    /// controls its behaviour. The grid documents that every arg variant is
+    /// rejected uniformly, distinguishing it from annotations that accept typed
+    /// args (e.g. `@optimized` requires a string literal target).
+    #[test]
+    fn solid_with_any_arg_warns() {
+        let arg_shapes: &[(&str, Vec<reify_types::AnnotationArg>)] = &[
+            ("Real(0.5)", vec![reify_types::AnnotationArg::Real(0.5)]),
+            ("Int(2)", vec![reify_types::AnnotationArg::Int(2)]),
+            (
+                "String(foo)",
+                vec![reify_types::AnnotationArg::String("foo".into())],
+            ),
+            ("Bool(true)", vec![reify_types::AnnotationArg::Bool(true)]),
+            (
+                "Ident(id)",
+                vec![reify_types::AnnotationArg::Ident("ident".into())],
+            ),
+            (
+                "two reals",
+                vec![
+                    reify_types::AnnotationArg::Real(0.5),
+                    reify_types::AnnotationArg::Real(0.6),
+                ],
+            ),
+        ];
+        for (label, args) in arg_shapes {
+            let anns = vec![ann(reify_types::SOLID_ANNOTATION, args.clone())];
+            let mut diagnostics = Vec::new();
+            validate_annotations(&anns, "structure", &mut diagnostics);
+            assert_eq!(
+                diagnostics.len(),
+                1,
+                "arg shape {label}: expected exactly 1 diagnostic, got: {:?}",
+                diagnostics
+            );
+            assert!(
+                diagnostics[0].message.contains("takes no arguments"),
+                "arg shape {label}: unexpected message: {}",
+                diagnostics[0].message
+            );
+        }
+    }
+
+    // ── @version annotation tests (task 3540, step-13) ───────────────────────
+
+    /// Build a parsed `reify_syntax::Annotation` for `lower_annotations` tests.
+    fn syn_ann(name: &str, args: Vec<reify_syntax::Expr>) -> reify_syntax::Annotation {
+        reify_syntax::Annotation {
+            name: name.to_string(),
+            args,
+            span: reify_types::SourceSpan::empty(0),
+        }
+    }
+
+    /// Build a parsed integer-form numeric-literal expression.
+    fn syn_int(value: i64) -> reify_syntax::Expr {
+        reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::NumberLiteral {
+                value: value as f64,
+                is_real: false,
+            },
+            span: reify_types::SourceSpan::empty(0),
+        }
+    }
+
+    /// (a) `@version(2)` lowers to a single `AnnotationArg::Int(2)` under the
+    /// `"version"` name — exercises the generic literal-lowering path applied
+    /// to the new annotation name (no special lowering branch needed).
+    #[test]
+    fn version_annotation_lowers_int_arg() {
+        let parsed = vec![syn_ann("version", vec![syn_int(2)])];
+        let mut diagnostics = Vec::new();
+        let lowered = lower_annotations(&parsed, &mut diagnostics);
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            diagnostics
+        );
+        assert_eq!(lowered.len(), 1);
+        assert_eq!(lowered[0].name, "version");
+        assert_eq!(
+            lowered[0].args,
+            vec![reify_types::AnnotationArg::Int(2)]
+        );
+    }
+
+    /// (b) `@version("foo")` on a `structure` declaration is rejected with an
+    /// Error diagnostic whose message carries the `E_VERSION_ARG_TYPE_MISMATCH`
+    /// mnemonic. The annotations layer is message-coded (no `DiagnosticCode`
+    /// is attached anywhere in `validate_annotations`), so the mnemonic travels
+    /// in the message text.
+    #[test]
+    fn version_annotation_string_arg_rejected_on_structure() {
+        let anns = vec![ann(
+            "version",
+            vec![reify_types::AnnotationArg::String("foo".to_string())],
+        )];
+        let mut diagnostics = Vec::new();
+        validate_annotations(&anns, "structure", &mut diagnostics);
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly 1 diagnostic, got: {:?}",
+            diagnostics
+        );
+        assert_eq!(diagnostics[0].severity, reify_types::Severity::Error);
+        assert!(
+            diagnostics[0]
+                .message
+                .contains("E_VERSION_ARG_TYPE_MISMATCH"),
+            "unexpected message: {}",
+            diagnostics[0].message
+        );
+    }
+
+    /// (c) `@version(2)` on a non-structure_def context (e.g. `function`) emits
+    /// a `W_VERSION_ANNOTATION_NOT_ON_STRUCTURE_DEF` warning rather than the
+    /// generic unknown-annotation fallback.
+    #[test]
+    fn version_annotation_warns_on_non_structure_context() {
+        for context in ["function", "occurrence", "trait", "purpose"] {
+            let anns = vec![ann("version", vec![reify_types::AnnotationArg::Int(2)])];
+            let mut diagnostics = Vec::new();
+            validate_annotations(&anns, context, &mut diagnostics);
+            assert_eq!(
+                diagnostics.len(),
+                1,
+                "context={context}: expected exactly 1 diagnostic, got: {:?}",
+                diagnostics
+            );
+            assert_eq!(diagnostics[0].severity, reify_types::Severity::Warning);
+            assert!(
+                diagnostics[0]
+                    .message
+                    .contains("W_VERSION_ANNOTATION_NOT_ON_STRUCTURE_DEF"),
+                "context={context}: unexpected message: {}",
+                diagnostics[0].message
+            );
+        }
+    }
+
+    /// (c') A valid `@version(3)` on a `structure` context is accepted with no
+    /// diagnostic — pins that the structure-def special-case does not widen to
+    /// a warning.
+    #[test]
+    fn version_annotation_valid_on_structure_is_clean() {
+        let anns = vec![ann("version", vec![reify_types::AnnotationArg::Int(3)])];
+        let mut diagnostics = Vec::new();
+        validate_annotations(&anns, "structure", &mut diagnostics);
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            diagnostics
+        );
+    }
+
+    /// (d) Absent `@version` ⇒ default version `1`; a well-formed `@version(N)`
+    /// ⇒ `N`; a malformed arg falls back to the default rather than panicking.
+    #[test]
+    fn annotation_version_defaults_to_one_and_reads_int() {
+        assert_eq!(annotation_version(&[]), 1);
+        let v3 = vec![ann("version", vec![reify_types::AnnotationArg::Int(3)])];
+        assert_eq!(annotation_version(&v3), 3);
+        let bad = vec![ann(
+            "version",
+            vec![reify_types::AnnotationArg::String("x".to_string())],
+        )];
+        assert_eq!(annotation_version(&bad), 1);
+    }
 }

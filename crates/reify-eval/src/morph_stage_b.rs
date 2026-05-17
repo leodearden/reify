@@ -36,13 +36,10 @@ pub struct CorrespondenceMap {
     pub edge_to_edge: HashMap<GeometryHandleId, GeometryHandleId>,
     /// Vertex correspondence: old handle → new handle.
     ///
-    /// **Always empty in v0.2** — persistent-naming v2 does not propagate
-    /// vertex attributes (`GeometryKernel` exposes only `extract_faces` and
-    /// `extract_edges`; there is no `extract_vertices`, and `BRepKind` has no
-    /// `Vertex` variant). Reserved for the v0.3+ implementation; downstream
-    /// consumers can derive vertex correspondence from edge endpoints in the
-    /// meantime. See `docs/prds/v0_2/persistent-naming-v2.md` and the
-    /// deferred-bookmarks list.
+    /// Populated by matching `TopologyAttribute` records via the same private
+    /// helper that handles faces/edges (`match_one_kind`). See
+    /// `docs/prds/v0_3/mesh-morphing-phase-2.md` §3.2 (task β,
+    /// drift-pin retirement) for the contract retirement that introduced this.
     pub vertex_to_vertex: HashMap<GeometryHandleId, GeometryHandleId>,
 }
 
@@ -105,9 +102,10 @@ pub enum BijectionFailure {
     /// handles, signalling imported geometry or a malformed engine state.
     ///
     /// Note: `kind` records *which match call surfaced the diagnostic* (the
-    /// first kind checked in [`stage_b_eligible`] — faces, then edges). It is
-    /// NOT a claim that attribution is missing only for that kind; imported
-    /// B-reps typically lack attributes for all kinds simultaneously.
+    /// first kind checked in [`stage_b_eligible`] — faces, then edges, then
+    /// vertices). It is NOT a claim that attribution is missing only for that
+    /// kind; imported B-reps typically lack attributes for all kinds
+    /// simultaneously.
     NamingLayerError {
         kind: SubShapeKind,
         reason: NamingLayerErrorReason,
@@ -131,15 +129,16 @@ pub enum BijectionFailure {
 ///   `kernel.extract_faces(...)` on the respective B-reps.
 /// * `old_edges` / `new_edges` — edge handle slices extracted by
 ///   `kernel.extract_edges(...)` on the respective B-reps.
-/// * `old_vertices` / `new_vertices` — vertex handle slices (accepted for
-///   API forward-compatibility; not processed in v0.2).
+/// * `old_vertices` / `new_vertices` — vertex handle slices extracted by
+///   `kernel.extract_vertices(...)` on the respective B-reps.
 ///
 /// # Returns
 ///
-/// * `Ok(CorrespondenceMap)` — a complete bijection for faces and edges;
-///   `vertex_to_vertex` is always empty in v0.2.
+/// * `Ok(CorrespondenceMap)` — a complete bijection for faces, edges, and
+///   vertices.
 /// * `Err(BijectionFailure)` — the first failure encountered while checking
-///   faces, then edges (vertices are not checked in v0.2).
+///   faces, then edges, then vertices.
+///   See `docs/prds/v0_3/mesh-morphing-phase-2.md` §3.2.
 #[allow(clippy::too_many_arguments)]
 pub fn stage_b_eligible(
     old_table: &TopologyAttributeTable,
@@ -148,9 +147,8 @@ pub fn stage_b_eligible(
     new_faces: &[GeometryHandleId],
     old_edges: &[GeometryHandleId],
     new_edges: &[GeometryHandleId],
-    // Accepted for forward-compatibility; not processed in v0.2.
-    _old_vertices: &[GeometryHandleId],
-    _new_vertices: &[GeometryHandleId],
+    old_vertices: &[GeometryHandleId],
+    new_vertices: &[GeometryHandleId],
 ) -> Result<CorrespondenceMap, BijectionFailure> {
     let mut map = CorrespondenceMap::default();
 
@@ -172,9 +170,14 @@ pub fn stage_b_eligible(
         &mut map.edge_to_edge,
     )?;
 
-    // Vertices are intentionally not processed in v0.2 —
-    // see CorrespondenceMap::vertex_to_vertex doc-comment.
-    // map.vertex_to_vertex stays empty (HashMap::new()).
+    match_one_kind(
+        SubShapeKind::Vertex,
+        old_table,
+        new_table,
+        old_vertices,
+        new_vertices,
+        &mut map.vertex_to_vertex,
+    )?;
 
     Ok(map)
 }
@@ -182,7 +185,7 @@ pub fn stage_b_eligible(
 // ── Private helpers ───────────────────────────────────────────────────────────
 
 /// Attempt to build a 1-to-1 correspondence for one sub-shape kind
-/// (faces or edges).
+/// (faces, edges, or vertices).
 ///
 /// The caller supplies pre-extracted handle slices and the two attribute
 /// tables. On success the matched pairs are inserted into `out`. On
@@ -192,7 +195,8 @@ pub fn stage_b_eligible(
 ///
 /// Both `old` and `new` MUST contain distinct [`GeometryHandleId`] values
 /// (no duplicates within either slice). This mirrors the upstream kernel's
-/// `extract_faces` / `extract_edges` per-handle-once guarantee.
+/// `extract_faces` / `extract_edges` / `extract_vertices` per-handle-once
+/// guarantee.
 ///
 /// **Failure mode:** duplicates in `old` would silently overwrite earlier
 /// entries in `out` via [`HashMap::insert`] while the step-7
@@ -367,7 +371,7 @@ fn match_one_kind(
 mod tests {
     use super::*;
     use reify_types::{
-        CapKind, FeatureId, ModEntry, Role, TopologyAttribute, TopologyAttributeTable,
+        AxisSign, CapKind, FeatureId, ModEntry, Role, TopologyAttribute, TopologyAttributeTable,
     };
 
     fn feat() -> FeatureId {
@@ -431,10 +435,6 @@ mod tests {
             map.edge_to_edge.is_empty(),
             "edge_to_edge must be empty for empty input"
         );
-        assert!(
-            map.vertex_to_vertex.is_empty(),
-            "vertex_to_vertex must be empty for empty input"
-        );
     }
 
     // step-3: single face with matching attribute pairs handles
@@ -466,10 +466,6 @@ mod tests {
             "h(10) must map to h(20)"
         );
         assert!(map.edge_to_edge.is_empty(), "edge_to_edge must be empty");
-        assert!(
-            map.vertex_to_vertex.is_empty(),
-            "vertex_to_vertex must be empty"
-        );
     }
 
     // step-5: single edge with matching attribute pairs handles
@@ -501,9 +497,125 @@ mod tests {
             Some(&h(20)),
             "h(10) must map to h(20) in edge_to_edge"
         );
-        assert!(
-            map.vertex_to_vertex.is_empty(),
-            "vertex_to_vertex must be empty"
+    }
+
+    // step-1 (task 3590): vertex bijection fill — positive case
+    #[test]
+    fn stage_b_eligible_populates_vertex_to_vertex_when_vertex_attrs_present() {
+        let corner = Role::CornerVertex {
+            x: AxisSign::Pos,
+            y: AxisSign::Pos,
+            z: AxisSign::Pos,
+        };
+        let mut old_table = TopologyAttributeTable::default();
+        old_table.record(h(100), attr(corner, 0, None));
+        let mut new_table = TopologyAttributeTable::default();
+        new_table.record(h(200), attr(corner, 0, None));
+
+        let result = stage_b_eligible(
+            &old_table,
+            &new_table,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[h(100)],
+            &[h(200)],
+        );
+        let map = result.expect("single matching vertex must succeed");
+        assert!(map.face_to_face.is_empty(), "face_to_face must be empty");
+        assert!(map.edge_to_edge.is_empty(), "edge_to_edge must be empty");
+        assert_eq!(
+            map.vertex_to_vertex.len(),
+            1,
+            "vertex_to_vertex must have exactly one entry"
+        );
+        assert_eq!(
+            map.vertex_to_vertex.get(&h(100)),
+            Some(&h(200)),
+            "h(100) must map to h(200) in vertex_to_vertex"
+        );
+    }
+
+    // step-4 (task 3590): vertex unmapped element (disjoint feature_id)
+    #[test]
+    fn stage_b_eligible_handles_unmapped_vertex() {
+        let corner = Role::CornerVertex {
+            x: AxisSign::Pos,
+            y: AxisSign::Pos,
+            z: AxisSign::Pos,
+        };
+        // old: h(100) → (feat(), corner, 0)
+        // new: h(200) → (feat2(), corner, 0) — different feature_id → disjoint
+        let mut old_table = TopologyAttributeTable::default();
+        old_table.record(h(100), attr(corner, 0, None));
+        let mut new_table = TopologyAttributeTable::default();
+        new_table.record(h(200), attr_for_feat(feat2(), corner, 0));
+
+        let result = stage_b_eligible(
+            &old_table,
+            &new_table,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[h(100)],
+            &[h(200)],
+        );
+        assert_eq!(
+            result,
+            Err(BijectionFailure::UnmappedElement {
+                kind: SubShapeKind::Vertex,
+                side: SubShapeSide::Old,
+                handle: h(100),
+            }),
+            "disjoint feature_id: h(100) has no new counterpart → UnmappedElement Old h(100)"
+        );
+    }
+
+    // step-3 (task 3590): vertex count mismatch
+    #[test]
+    fn stage_b_eligible_handles_count_mismatch_for_vertices() {
+        let corner = Role::CornerVertex {
+            x: AxisSign::Pos,
+            y: AxisSign::Pos,
+            z: AxisSign::Pos,
+        };
+        let mut old_table = TopologyAttributeTable::default();
+        old_table.record(h(100), attr(corner, 0, None));
+        let mut new_table = TopologyAttributeTable::default();
+        new_table.record(h(200), attr(corner, 0, None));
+        new_table.record(
+            h(201),
+            attr(
+                Role::CornerVertex {
+                    x: AxisSign::Neg,
+                    y: AxisSign::Pos,
+                    z: AxisSign::Pos,
+                },
+                0,
+                None,
+            ),
+        );
+
+        let result = stage_b_eligible(
+            &old_table,
+            &new_table,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[h(100)],
+            &[h(200), h(201)],
+        );
+        assert_eq!(
+            result,
+            Err(BijectionFailure::CountMismatch {
+                kind: SubShapeKind::Vertex,
+                old_count: 1,
+                new_count: 2,
+            }),
+            "1 old vertex vs 2 new vertices must be CountMismatch with kind: Vertex"
         );
     }
 
@@ -745,10 +857,6 @@ mod tests {
         assert_eq!(map.face_to_face.get(&h(10)), Some(&h(20)), "h(10) → h(20)");
         assert_eq!(map.face_to_face.get(&h(11)), Some(&h(21)), "h(11) → h(21)");
         assert!(map.edge_to_edge.is_empty(), "edge_to_edge must be empty");
-        assert!(
-            map.vertex_to_vertex.is_empty(),
-            "vertex_to_vertex must be empty"
-        );
     }
 
     // amend-1b: duplicate-attribute pairs (two old + two new sharing identical
@@ -796,16 +904,18 @@ mod tests {
         );
     }
 
-    // amend-2: faces AND edges populated together in one call — guards against
-    // swapped slice arguments or accidental kind-only wiring.
+    // amend-2: faces AND edges AND vertices all populated together in one call —
+    // guards against swapped slice arguments or accidental kind-only wiring.
     #[test]
     fn stage_b_eligible_faces_and_edges_both_populated_in_single_call() {
         let mut old_table = TopologyAttributeTable::default();
         old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0, None));
         old_table.record(h(30), attr(Role::NewEdge, 0, None));
+        old_table.record(h(50), attr(Role::NewEdge, 1, None));
         let mut new_table = TopologyAttributeTable::default();
         new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0, None));
         new_table.record(h(40), attr(Role::NewEdge, 0, None));
+        new_table.record(h(60), attr(Role::NewEdge, 1, None));
 
         let result = stage_b_eligible(
             &old_table,
@@ -814,10 +924,10 @@ mod tests {
             &[h(20)],
             &[h(30)],
             &[h(40)],
-            &[],
-            &[],
+            &[h(50)],
+            &[h(60)],
         );
-        let map = result.expect("matching face + edge in same call must succeed");
+        let map = result.expect("matching face + edge + vertex in same call must succeed");
         assert_eq!(map.face_to_face.len(), 1, "one face pair");
         assert_eq!(
             map.face_to_face.get(&h(10)),
@@ -830,9 +940,11 @@ mod tests {
             Some(&h(40)),
             "edge: h(30) → h(40)"
         );
-        assert!(
-            map.vertex_to_vertex.is_empty(),
-            "vertex_to_vertex must be empty"
+        assert_eq!(map.vertex_to_vertex.len(), 1, "one vertex pair");
+        assert_eq!(
+            map.vertex_to_vertex.get(&h(50)),
+            Some(&h(60)),
+            "vertex: h(50) → h(60)"
         );
     }
 
@@ -1047,43 +1159,4 @@ mod tests {
         );
     }
 
-    // step-15: vertex_to_vertex is always empty in v0.2
-    /// Behaviour guard: even when old_vertices and new_vertices are non-empty and
-    /// both carry attributes in their respective tables, `vertex_to_vertex` must
-    /// remain empty. Documents the v0.2 limitation — persistent-naming v2 does not
-    /// propagate vertex attributes (see docs/prds/v0_2/persistent-naming-v2.md).
-    /// A future contributor enabling vertex_to_vertex must update this test AND the
-    /// doc-comment on `CorrespondenceMap::vertex_to_vertex`.
-    #[test]
-    fn stage_b_eligible_vertex_to_vertex_is_always_empty_in_v0_2() {
-        // Give both old and new vertex handles attributes — the function still must
-        // not populate vertex_to_vertex in v0.2.
-        let mut old_table = TopologyAttributeTable::default();
-        old_table.record(h(100), attr(Role::NewEdge, 0, None));
-        let mut new_table = TopologyAttributeTable::default();
-        new_table.record(h(200), attr(Role::NewEdge, 0, None));
-
-        // Faces and edges are empty so the only non-trivial input is the vertex slices.
-        let result = stage_b_eligible(
-            &old_table,
-            &new_table,
-            &[],
-            &[],
-            &[],
-            &[],
-            &[h(100)],
-            &[h(200)],
-        );
-        let map = result.expect(
-            "non-empty vertex slices with matching attributes must not cause failure \
-             (vertex matching is not performed in v0.2 — \
-             see docs/prds/v0_2/persistent-naming-v2.md)",
-        );
-        assert!(
-            map.vertex_to_vertex.is_empty(),
-            "vertex_to_vertex must always be empty in v0.2 — \
-             persistent-naming v2 does not propagate vertex attributes \
-             (see docs/prds/v0_2/persistent-naming-v2.md)"
-        );
-    }
 }

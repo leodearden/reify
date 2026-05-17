@@ -401,6 +401,7 @@ fn propagate_one(
 /// bounds in `result_face_handles`. The FFI primitive guarantees
 /// in-range indices, so this is a defense-in-depth path pinned by the
 /// step-11 unit tests.
+#[allow(clippy::too_many_arguments)]
 pub fn populate_extrude_attributes(
     table: &mut TopologyAttributeTable,
     feature_id: &FeatureId,
@@ -409,6 +410,9 @@ pub fn populate_extrude_attributes(
     result_face_handles: &[GeometryHandleId],
     result_edge_handles: &[GeometryHandleId],
     history: &SweepOpHistoryRecords,
+    result_vertex_handles: &[GeometryHandleId],
+    start_cap_vertex_index_lists: &[Vec<u32>],
+    end_cap_vertex_index_lists: &[Vec<u32>],
 ) -> Result<(), QueryError> {
     // Caps: start → Top, end → Bottom; each cap is unique → local_index = 0.
     write_cap_attributes(
@@ -441,6 +445,24 @@ pub fn populate_extrude_attributes(
         &history.face_generated,
         Role::Side,
         "extrude side",
+    )?;
+
+    // Cap vertices: start → Top, end → Bottom.
+    write_cap_vertex_attributes(
+        table,
+        feature_id,
+        result_vertex_handles,
+        start_cap_vertex_index_lists,
+        CapKind::Top,
+        "extrude start cap vertex",
+    )?;
+    write_cap_vertex_attributes(
+        table,
+        feature_id,
+        result_vertex_handles,
+        end_cap_vertex_index_lists,
+        CapKind::Bottom,
+        "extrude end cap vertex",
     )?;
 
     Ok(())
@@ -484,6 +506,7 @@ pub fn populate_extrude_attributes(
 /// Local-index assignment, parameter semantics, and out-of-range error
 /// behaviour are identical to [`populate_extrude_attributes`]; see
 /// that helper's doc-comment for the parameter contract.
+#[allow(clippy::too_many_arguments)]
 pub fn populate_revolve_attributes(
     table: &mut TopologyAttributeTable,
     feature_id: &FeatureId,
@@ -492,6 +515,9 @@ pub fn populate_revolve_attributes(
     result_face_handles: &[GeometryHandleId],
     result_edge_handles: &[GeometryHandleId],
     history: &SweepOpHistoryRecords,
+    result_vertex_handles: &[GeometryHandleId],
+    start_cap_vertex_index_lists: &[Vec<u32>],
+    end_cap_vertex_index_lists: &[Vec<u32>],
 ) -> Result<(), QueryError> {
     write_cap_attributes(
         table,
@@ -520,6 +546,23 @@ pub fn populate_revolve_attributes(
         &history.face_generated,
         Role::RevolvedFace,
         "revolve revolved face",
+    )?;
+
+    write_cap_vertex_attributes(
+        table,
+        feature_id,
+        result_vertex_handles,
+        start_cap_vertex_index_lists,
+        CapKind::Start,
+        "revolve start cap vertex",
+    )?;
+    write_cap_vertex_attributes(
+        table,
+        feature_id,
+        result_vertex_handles,
+        end_cap_vertex_index_lists,
+        CapKind::End,
+        "revolve end cap vertex",
     )?;
 
     Ok(())
@@ -551,6 +594,7 @@ pub fn populate_revolve_attributes(
 /// Local-index assignment, parameter semantics, and out-of-range error
 /// behaviour are identical to [`populate_extrude_attributes`]; see that
 /// helper's doc-comment for the parameter contract.
+#[allow(clippy::too_many_arguments)]
 pub fn populate_sweep_attributes(
     table: &mut TopologyAttributeTable,
     feature_id: &FeatureId,
@@ -559,6 +603,9 @@ pub fn populate_sweep_attributes(
     result_face_handles: &[GeometryHandleId],
     result_edge_handles: &[GeometryHandleId],
     history: &SweepOpHistoryRecords,
+    result_vertex_handles: &[GeometryHandleId],
+    start_cap_vertex_index_lists: &[Vec<u32>],
+    end_cap_vertex_index_lists: &[Vec<u32>],
 ) -> Result<(), QueryError> {
     write_cap_attributes(
         table,
@@ -587,6 +634,23 @@ pub fn populate_sweep_attributes(
         &history.face_generated,
         Role::SweptFace,
         "sweep swept face",
+    )?;
+
+    write_cap_vertex_attributes(
+        table,
+        feature_id,
+        result_vertex_handles,
+        start_cap_vertex_index_lists,
+        CapKind::Start,
+        "sweep start cap vertex",
+    )?;
+    write_cap_vertex_attributes(
+        table,
+        feature_id,
+        result_vertex_handles,
+        end_cap_vertex_index_lists,
+        CapKind::End,
+        "sweep end cap vertex",
     )?;
 
     Ok(())
@@ -636,6 +700,7 @@ pub fn populate_sweep_attributes(
 /// cap-face index is out of range. The FFI primitive guarantees in-range
 /// indices on success, so these are defense-in-depth paths pinned by the
 /// step-9 unit tests.
+#[allow(clippy::too_many_arguments)]
 pub fn populate_loft_attributes(
     table: &mut TopologyAttributeTable,
     feature_id: &FeatureId,
@@ -644,6 +709,9 @@ pub fn populate_loft_attributes(
     result_face_handles: &[GeometryHandleId],
     result_edge_handles: &[GeometryHandleId],
     history: &LoftOpHistoryRecords,
+    result_vertex_handles: &[GeometryHandleId],
+    start_cap_vertex_index_lists: &[Vec<u32>],
+    end_cap_vertex_index_lists: &[Vec<u32>],
 ) -> Result<(), QueryError> {
     // Pin the lockstep invariant: `engine_build.rs::populate_loft_op` builds
     // `section_faces` and `section_edges` in tandem (one push per profile) so
@@ -692,6 +760,23 @@ pub fn populate_loft_attributes(
         &history.face_generated,
     )?;
 
+    write_cap_vertex_attributes(
+        table,
+        feature_id,
+        result_vertex_handles,
+        start_cap_vertex_index_lists,
+        CapKind::Start,
+        "loft start cap vertex",
+    )?;
+    write_cap_vertex_attributes(
+        table,
+        feature_id,
+        result_vertex_handles,
+        end_cap_vertex_index_lists,
+        CapKind::End,
+        "loft end cap vertex",
+    )?;
+
     Ok(())
 }
 
@@ -726,6 +811,53 @@ fn write_cap_attributes(
                 mod_history: Vec::new(),
             },
         );
+    }
+    Ok(())
+}
+
+/// Shared helper: write `Role::CapCornerVertex { face }` entries for all
+/// vertices belonging to cap faces.
+///
+/// `cap_vertex_index_lists` is a slice of `Vec<u32>`, one inner `Vec` per
+/// cap face (mirrors `cap_face_indices` in [`write_cap_attributes`]).  Each
+/// inner `Vec` is a list of indices into `result_vertex_handles` that belong
+/// to that cap face's vertices.  `local_index` is assigned sequentially
+/// within each inner Vec, resetting to 0 at the start of each new cap face's
+/// vertex list.
+///
+/// Returns `Err(QueryError::QueryFailed)` if any index is out of range for
+/// `result_vertex_handles` (defense-in-depth; the caller supplies
+/// kernel-derived indices that are guaranteed in-range for well-formed ops).
+fn write_cap_vertex_attributes(
+    table: &mut TopologyAttributeTable,
+    feature_id: &FeatureId,
+    result_vertex_handles: &[GeometryHandleId],
+    cap_vertex_index_lists: &[Vec<u32>],
+    face: CapKind,
+    kind: &str,
+) -> Result<(), QueryError> {
+    for cap_vertices in cap_vertex_index_lists {
+        for (local_index, &vertex_idx) in cap_vertices.iter().enumerate() {
+            let idx_usize = vertex_idx as usize;
+            if idx_usize >= result_vertex_handles.len() {
+                return Err(QueryError::QueryFailed(format!(
+                    "{kind} vertex index {vertex_idx} is out of range \
+                     for result vertex handles of len {}",
+                    result_vertex_handles.len()
+                )));
+            }
+            let handle = result_vertex_handles[idx_usize];
+            table.record(
+                handle,
+                TopologyAttribute {
+                    feature_id: feature_id.clone(),
+                    role: Role::CapCornerVertex { face },
+                    local_index: local_index as u32,
+                    user_label: None,
+                    mod_history: Vec::new(),
+                },
+            );
+        }
     }
     Ok(())
 }
@@ -1808,6 +1940,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect("step-11 history is well-formed");
 
@@ -1836,6 +1971,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect("step-11 history is well-formed");
 
@@ -1864,6 +2002,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect("step-11 history is well-formed");
 
@@ -1901,6 +2042,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect("step-11 history is well-formed");
 
@@ -1936,6 +2080,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect_err("expected QueryFailed for out-of-range start_cap index");
         match err {
@@ -1971,6 +2118,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect_err("expected QueryFailed for out-of-range result_subshape_index");
         match err {
@@ -1999,6 +2149,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect("empty history is a no-op");
         assert!(table.is_empty());
@@ -2078,6 +2231,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect("step-13 partial-revolve history is well-formed");
 
@@ -2115,6 +2271,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect("step-13 partial-revolve history is well-formed");
 
@@ -2171,6 +2330,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect("step-13 full-revolve history is well-formed");
 
@@ -2207,6 +2369,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect_err("expected QueryFailed for out-of-range start_cap index");
         match err {
@@ -2242,6 +2407,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect_err("expected QueryFailed for out-of-range result_subshape_index");
         match err {
@@ -2320,6 +2488,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect("step-7 history is well-formed");
 
@@ -2348,6 +2519,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect("step-7 history is well-formed");
 
@@ -2376,6 +2550,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect("step-7 history is well-formed");
 
@@ -2413,6 +2590,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect("empty history is a no-op");
         assert!(table.is_empty());
@@ -2436,6 +2616,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect_err("expected QueryFailed for out-of-range start_cap index");
         match err {
@@ -2471,6 +2654,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect_err("expected QueryFailed for out-of-range result_subshape_index");
         match err {
@@ -2506,6 +2692,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect_err("expected QueryFailed for out-of-range parent_subshape_index");
         match err {
@@ -2606,6 +2795,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect("step-9 history is well-formed");
 
@@ -2634,6 +2826,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect("step-9 history is well-formed");
 
@@ -2662,6 +2857,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect("step-9 history is well-formed");
 
@@ -2704,6 +2902,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect("empty history is a no-op");
         assert!(table.is_empty());
@@ -2731,6 +2932,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect_err("expected QueryFailed for out-of-range parent_index");
         match err {
@@ -2771,6 +2975,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect_err("expected QueryFailed for out-of-range parent_subshape_index");
         match err {
@@ -2806,6 +3013,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect_err("expected QueryFailed for out-of-range result_subshape_index");
         match err {
@@ -2837,6 +3047,9 @@ mod tests {
             &layout.result_faces,
             &layout.result_edges,
             &history,
+            &[],
+            &[],
+            &[],
         )
         .expect_err("expected QueryFailed for out-of-range start_cap index");
         match err {
@@ -2879,6 +3092,9 @@ mod tests {
                     &result_faces,
                     &result_edges,
                     &history,
+                    &[],
+                    &[],
+                    &[],
                 );
             }));
             assert!(
@@ -3234,6 +3450,283 @@ mod tests {
                 "second diagnostic should be Side (higher discriminant), got: {}",
                 diagnostics2[1].message
             );
+        }
+    }
+
+    // ── task-3633 step-5: cap-vertex emission tests (Phase C) ─────────────────
+    //
+    // These four synthetic tests pin the CapCornerVertex emission contract for
+    // each of the four populate_* helpers.  They use fabricated handles and do
+    // not require an OCCT kernel.  The new three vertex-related args
+    // (result_vertex_handles, start_cap_vertex_index_lists,
+    // end_cap_vertex_index_lists) are added at the END of each signature;
+    // the tests fail to compile until step-6 widens the implementations.
+
+    #[test]
+    fn populate_extrude_attributes_emits_cap_corner_vertex_for_top_and_bottom() {
+        let mut table = TopologyAttributeTable::default();
+        let feature_id = FeatureId::new("Extrude#realization[0]");
+
+        // 7 result faces: indices 5 = start cap (Top), 6 = end cap (Bottom).
+        let result_faces: Vec<GeometryHandleId> =
+            (0..7).map(|i| GeometryHandleId(1000 + i)).collect();
+        let result_edges: Vec<GeometryHandleId> = vec![GeometryHandleId(2000)];
+        let profile_faces: Vec<GeometryHandleId> = vec![GeometryHandleId(3000)];
+        let profile_edges: Vec<GeometryHandleId> = vec![GeometryHandleId(3001)];
+
+        let history = SweepOpHistoryRecords {
+            start_cap_face_indices: vec![5],
+            end_cap_face_indices: vec![6],
+            ..Default::default()
+        };
+
+        // 8 result vertices: 0..3 belong to the start cap, 4..7 to the end cap.
+        let result_vertices: Vec<GeometryHandleId> =
+            (0..8).map(|i| GeometryHandleId(4000 + i)).collect();
+        let start_cap_vertex_index_lists: Vec<Vec<u32>> = vec![vec![0, 1, 2, 3]];
+        let end_cap_vertex_index_lists: Vec<Vec<u32>> = vec![vec![4, 5, 6, 7]];
+
+        populate_extrude_attributes(
+            &mut table,
+            &feature_id,
+            &profile_faces,
+            &profile_edges,
+            &result_faces,
+            &result_edges,
+            &history,
+            &result_vertices,
+            &start_cap_vertex_index_lists,
+            &end_cap_vertex_index_lists,
+        )
+        .expect("well-formed extrude history + vertex lists should succeed");
+
+        // Vertices 0..3 → CapCornerVertex { face: Top }, local_index 0..3.
+        for i in 0u32..4 {
+            let handle = GeometryHandleId(4000 + i as u64);
+            let attr = table
+                .lookup(handle)
+                .unwrap_or_else(|| panic!("start-cap vertex #{i} must have an entry"));
+            assert_eq!(
+                attr.role,
+                Role::CapCornerVertex {
+                    face: CapKind::Top
+                },
+                "start-cap vertex #{i} must be CapCornerVertex{{Top}}"
+            );
+            assert_eq!(
+                attr.local_index, i,
+                "start-cap vertex #{i} local_index must equal its per-cap position {i}"
+            );
+            assert_eq!(attr.feature_id, feature_id);
+            assert!(attr.user_label.is_none());
+            assert!(attr.mod_history.is_empty());
+        }
+
+        // Vertices 4..7 → CapCornerVertex { face: Bottom }, local_index 0..3.
+        for i in 0u32..4 {
+            let handle = GeometryHandleId(4004 + i as u64);
+            let attr = table
+                .lookup(handle)
+                .unwrap_or_else(|| panic!("end-cap vertex #{i} must have an entry"));
+            assert_eq!(
+                attr.role,
+                Role::CapCornerVertex {
+                    face: CapKind::Bottom
+                },
+                "end-cap vertex #{i} must be CapCornerVertex{{Bottom}}"
+            );
+            assert_eq!(
+                attr.local_index, i,
+                "end-cap vertex #{i} local_index must equal its per-cap position {i}"
+            );
+            assert_eq!(attr.feature_id, feature_id);
+            assert!(attr.user_label.is_none());
+            assert!(attr.mod_history.is_empty());
+        }
+    }
+
+    #[test]
+    fn populate_revolve_attributes_emits_cap_corner_vertex_for_start_and_end() {
+        let mut table = TopologyAttributeTable::default();
+        let feature_id = FeatureId::new("Revolve#realization[0]");
+
+        let result_faces: Vec<GeometryHandleId> =
+            (0..7).map(|i| GeometryHandleId(5000 + i)).collect();
+        let result_edges: Vec<GeometryHandleId> = vec![GeometryHandleId(5100)];
+        let profile_faces: Vec<GeometryHandleId> = vec![GeometryHandleId(5200)];
+        let profile_edges: Vec<GeometryHandleId> = vec![GeometryHandleId(5201)];
+
+        let history = SweepOpHistoryRecords {
+            start_cap_face_indices: vec![5],
+            end_cap_face_indices: vec![6],
+            ..Default::default()
+        };
+
+        let result_vertices: Vec<GeometryHandleId> =
+            (0..8).map(|i| GeometryHandleId(5300 + i)).collect();
+        let start_cap_vertex_index_lists: Vec<Vec<u32>> = vec![vec![0, 1, 2, 3]];
+        let end_cap_vertex_index_lists: Vec<Vec<u32>> = vec![vec![4, 5, 6, 7]];
+
+        populate_revolve_attributes(
+            &mut table,
+            &feature_id,
+            &profile_faces,
+            &profile_edges,
+            &result_faces,
+            &result_edges,
+            &history,
+            &result_vertices,
+            &start_cap_vertex_index_lists,
+            &end_cap_vertex_index_lists,
+        )
+        .expect("well-formed revolve history + vertex lists should succeed");
+
+        for i in 0u32..4 {
+            let attr = table
+                .lookup(GeometryHandleId(5300 + i as u64))
+                .unwrap_or_else(|| panic!("start-cap vertex #{i} must have an entry"));
+            assert_eq!(
+                attr.role,
+                Role::CapCornerVertex {
+                    face: CapKind::Start
+                }
+            );
+            assert_eq!(attr.local_index, i);
+        }
+        for i in 0u32..4 {
+            let attr = table
+                .lookup(GeometryHandleId(5304 + i as u64))
+                .unwrap_or_else(|| panic!("end-cap vertex #{i} must have an entry"));
+            assert_eq!(
+                attr.role,
+                Role::CapCornerVertex { face: CapKind::End }
+            );
+            assert_eq!(attr.local_index, i);
+        }
+    }
+
+    #[test]
+    fn populate_sweep_attributes_emits_cap_corner_vertex_for_start_and_end() {
+        let mut table = TopologyAttributeTable::default();
+        let feature_id = FeatureId::new("Sweep#realization[0]");
+
+        let result_faces: Vec<GeometryHandleId> =
+            (0..7).map(|i| GeometryHandleId(6000 + i)).collect();
+        let result_edges: Vec<GeometryHandleId> = vec![GeometryHandleId(6100)];
+        let profile_faces: Vec<GeometryHandleId> = vec![GeometryHandleId(6200)];
+        let profile_edges: Vec<GeometryHandleId> = vec![GeometryHandleId(6201)];
+
+        let history = SweepOpHistoryRecords {
+            start_cap_face_indices: vec![5],
+            end_cap_face_indices: vec![6],
+            ..Default::default()
+        };
+
+        let result_vertices: Vec<GeometryHandleId> =
+            (0..8).map(|i| GeometryHandleId(6300 + i)).collect();
+        let start_cap_vertex_index_lists: Vec<Vec<u32>> = vec![vec![0, 1, 2, 3]];
+        let end_cap_vertex_index_lists: Vec<Vec<u32>> = vec![vec![4, 5, 6, 7]];
+
+        populate_sweep_attributes(
+            &mut table,
+            &feature_id,
+            &profile_faces,
+            &profile_edges,
+            &result_faces,
+            &result_edges,
+            &history,
+            &result_vertices,
+            &start_cap_vertex_index_lists,
+            &end_cap_vertex_index_lists,
+        )
+        .expect("well-formed sweep history + vertex lists should succeed");
+
+        for i in 0u32..4 {
+            let attr = table
+                .lookup(GeometryHandleId(6300 + i as u64))
+                .unwrap_or_else(|| panic!("start-cap vertex #{i} must have an entry"));
+            assert_eq!(
+                attr.role,
+                Role::CapCornerVertex {
+                    face: CapKind::Start
+                }
+            );
+            assert_eq!(attr.local_index, i);
+        }
+        for i in 0u32..4 {
+            let attr = table
+                .lookup(GeometryHandleId(6304 + i as u64))
+                .unwrap_or_else(|| panic!("end-cap vertex #{i} must have an entry"));
+            assert_eq!(
+                attr.role,
+                Role::CapCornerVertex { face: CapKind::End }
+            );
+            assert_eq!(attr.local_index, i);
+        }
+    }
+
+    #[test]
+    fn populate_loft_attributes_emits_cap_corner_vertex_for_start_and_end() {
+        let mut table = TopologyAttributeTable::default();
+        let feature_id = FeatureId::new("Loft#realization[0]");
+
+        // Two sections; 7 result faces: 5 = start cap, 6 = end cap.
+        let section_faces: Vec<Vec<GeometryHandleId>> =
+            vec![vec![GeometryHandleId(7100)], vec![GeometryHandleId(7101)]];
+        let section_edges: Vec<Vec<GeometryHandleId>> = vec![
+            vec![GeometryHandleId(7200), GeometryHandleId(7201)],
+            vec![GeometryHandleId(7202), GeometryHandleId(7203)],
+        ];
+        let result_faces: Vec<GeometryHandleId> =
+            (0..7).map(|i| GeometryHandleId(7300 + i)).collect();
+        let result_edges: Vec<GeometryHandleId> = vec![GeometryHandleId(7400)];
+
+        let history = LoftOpHistoryRecords {
+            start_cap_face_indices: vec![5],
+            end_cap_face_indices: vec![6],
+            ..Default::default()
+        };
+
+        let result_vertices: Vec<GeometryHandleId> =
+            (0..8).map(|i| GeometryHandleId(7500 + i)).collect();
+        let start_cap_vertex_index_lists: Vec<Vec<u32>> = vec![vec![0, 1, 2, 3]];
+        let end_cap_vertex_index_lists: Vec<Vec<u32>> = vec![vec![4, 5, 6, 7]];
+
+        populate_loft_attributes(
+            &mut table,
+            &feature_id,
+            &section_faces,
+            &section_edges,
+            &result_faces,
+            &result_edges,
+            &history,
+            &result_vertices,
+            &start_cap_vertex_index_lists,
+            &end_cap_vertex_index_lists,
+        )
+        .expect("well-formed loft history + vertex lists should succeed");
+
+        for i in 0u32..4 {
+            let attr = table
+                .lookup(GeometryHandleId(7500 + i as u64))
+                .unwrap_or_else(|| panic!("start-cap vertex #{i} must have an entry"));
+            assert_eq!(
+                attr.role,
+                Role::CapCornerVertex {
+                    face: CapKind::Start
+                }
+            );
+            assert_eq!(attr.local_index, i);
+        }
+        for i in 0u32..4 {
+            let attr = table
+                .lookup(GeometryHandleId(7504 + i as u64))
+                .unwrap_or_else(|| panic!("end-cap vertex #{i} must have an entry"));
+            assert_eq!(
+                attr.role,
+                Role::CapCornerVertex { face: CapKind::End }
+            );
+            assert_eq!(attr.local_index, i);
         }
     }
 }

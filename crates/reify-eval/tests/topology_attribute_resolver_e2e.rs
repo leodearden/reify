@@ -96,6 +96,7 @@ fn resolver_dispatches_against_seeded_box_attributes() {
         &mut kernel,
         &face_handles,
         &edge_handles,
+        &[],
         &feature_id,
         &box_op,
     )

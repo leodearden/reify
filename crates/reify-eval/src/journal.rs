@@ -183,6 +183,51 @@ impl Default for EventJournal {
     }
 }
 
+/// Translate a [`crate::warm_pool::WarmPoolEvent`] into an [`EvalEvent`] for
+/// recording on the diagnostic journal.
+///
+/// # Victim / donor contract
+///
+/// The mapping preserves the contract documented at lines 52–62 of this file:
+///
+/// * [`crate::warm_pool::WarmPoolEvent::Evicted`] → [`EventKind::Evicted`]:
+///   `EvalEvent.node_id` is the **evicted** node (the victim whose state was
+///   discarded), not the donating node that triggered the eviction.
+///
+/// * [`crate::warm_pool::WarmPoolEvent::Donated`] → [`EventKind::Donated`]:
+///   `EvalEvent.node_id` is the **donating** node (the node whose state was
+///   inserted into the pool).
+///
+/// Both variants pass through `node_id` directly from the `WarmPoolEvent` field,
+/// which warm_pool.rs already sets correctly (victim for Evicted at line 322,
+/// donor for Donated at line 350).
+pub fn translate_warm_pool_event_to_eval_event(
+    ev: &crate::warm_pool::WarmPoolEvent,
+    version: VersionId,
+    timestamp: std::time::Instant,
+) -> EvalEvent {
+    match ev {
+        crate::warm_pool::WarmPoolEvent::Evicted { node_id, size_bytes } => EvalEvent {
+            timestamp,
+            node_id: node_id.clone(),
+            kind: EventKind::Evicted {
+                size_bytes: *size_bytes,
+            },
+            version,
+            payload: None,
+        },
+        crate::warm_pool::WarmPoolEvent::Donated { node_id, size_bytes } => EvalEvent {
+            timestamp,
+            node_id: node_id.clone(),
+            kind: EventKind::Donated {
+                size_bytes: *size_bytes,
+            },
+            version,
+            payload: None,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Instant;
@@ -710,5 +755,97 @@ mod tests {
         };
         let _ = format!("{:?}", event2);
         let _ = event2.clone();
+    }
+
+    // ── translate_warm_pool_event_to_eval_event unit tests ────────────────────
+
+    /// Helper: build a NodeId::Value for tests.
+    fn node(entity: &str, member: &str) -> NodeId {
+        NodeId::Value(reify_types::ValueCellId::new(entity, member))
+    }
+
+    /// Evicted variant maps correctly:
+    /// node_id is the **victim** (the evicted node), kind is EventKind::Evicted{size_bytes},
+    /// payload is None.
+    ///
+    /// The victim/donor contract (journal.rs:52-55) requires that for Evicted, the
+    /// EvalEvent.node_id is the evicted node, not a hypothetical donating node.
+    /// We use two distinct node_ids to make the contract observable.
+    #[test]
+    fn translate_warm_pool_event_evicted_maps_victim_node_id_and_size_bytes() {
+        let victim = node("Body", "thickness");
+        let _donor = node("Body", "width"); // must not appear in the output
+        let ev = crate::warm_pool::WarmPoolEvent::Evicted {
+            node_id: victim.clone(),
+            size_bytes: 4096,
+        };
+        let version = VersionId(7);
+        let ts = Instant::now();
+
+        let result = translate_warm_pool_event_to_eval_event(&ev, version, ts);
+
+        assert_eq!(result.node_id, victim, "Evicted: node_id must be the victim");
+        assert_eq!(result.version, version);
+        assert_eq!(result.timestamp, ts);
+        assert!(result.payload.is_none(), "payload must be None");
+        match result.kind {
+            EventKind::Evicted { size_bytes } => {
+                assert_eq!(size_bytes, 4096);
+            }
+            other => panic!("expected EventKind::Evicted, got {:?}", other),
+        }
+    }
+
+    /// Donated variant maps correctly:
+    /// node_id is the **donor** (the donating node), kind is EventKind::Donated{size_bytes},
+    /// payload is None.
+    ///
+    /// The victim/donor contract (journal.rs:58-62) requires that for Donated, the
+    /// EvalEvent.node_id is the donating node.
+    #[test]
+    fn translate_warm_pool_event_donated_maps_donor_node_id_and_size_bytes() {
+        let donor = node("Plate", "height");
+        let ev = crate::warm_pool::WarmPoolEvent::Donated {
+            node_id: donor.clone(),
+            size_bytes: 8192,
+        };
+        let version = VersionId(3);
+        let ts = Instant::now();
+
+        let result = translate_warm_pool_event_to_eval_event(&ev, version, ts);
+
+        assert_eq!(result.node_id, donor, "Donated: node_id must be the donor");
+        assert_eq!(result.version, version);
+        assert_eq!(result.timestamp, ts);
+        assert!(result.payload.is_none(), "payload must be None");
+        match result.kind {
+            EventKind::Donated { size_bytes } => {
+                assert_eq!(size_bytes, 8192);
+            }
+            other => panic!("expected EventKind::Donated, got {:?}", other),
+        }
+    }
+
+    /// Evicted victim contract: when victim and a hypothetical donor differ,
+    /// the EvalEvent.node_id must be the victim, not the donor.
+    ///
+    /// This pins the contract documented at journal.rs:52-55: Evicted events must
+    /// carry the evicted node's id, not the donating node that triggered eviction.
+    #[test]
+    fn translate_warm_pool_event_evicted_victim_contract_not_donor() {
+        let victim = node("Beam", "length");
+        let ev = crate::warm_pool::WarmPoolEvent::Evicted {
+            node_id: victim.clone(),
+            size_bytes: 512,
+        };
+        let result =
+            translate_warm_pool_event_to_eval_event(&ev, VersionId(0), Instant::now());
+        // The node_id must be the victim, not any other node
+        assert_eq!(result.node_id, victim);
+        // And the kind must be Evicted (not Donated)
+        assert!(
+            matches!(result.kind, EventKind::Evicted { .. }),
+            "must be Evicted, not Donated"
+        );
     }
 }

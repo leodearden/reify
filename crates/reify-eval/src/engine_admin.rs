@@ -5,7 +5,7 @@ use crate::demand::DemandRegistry;
 use crate::journal::EventJournal;
 use crate::snapshot::Snapshot;
 use crate::{Engine, EvaluationState};
-use reify_compiler::{CompiledModule, ValueCellKind};
+use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
 use reify_types::{
     CompiledFunction, ConstraintChecker, ConstraintSolver, Diagnostic, FeatureTagTable,
     GeometryKernel, OptimizedImpl, TopologyAttributeTable,
@@ -71,11 +71,59 @@ fn module_has_auto_cells(module: &CompiledModule) -> bool {
         .any(|t| t.value_cells.iter().any(|c| c.kind.is_auto()))
 }
 
+/// Walk every `EntityKind::Structure` template in `modules` and intern a
+/// [`reify_types::StructureMeta`] per template into `registry` (task 3540 /
+/// SIR-α step-12).
+///
+/// `Occurrence` templates (instances) are skipped — only `structure def`-kind
+/// declarations back the `Value::StructureInstance` side-table. `intern` is
+/// idempotent on the structure name: an already-interned name keeps its
+/// `StructureTypeId` stable and only its `StructureMeta` is overwritten, so
+/// calling this at construction (prelude) and again per `eval()` (user module)
+/// is a safe incremental refresh.
+///
+/// `version` is fixed at `1` here; the `@version(N)` annotation read-side
+/// (task 3540 / step-14) will source it from `TopologyTemplate.version` once
+/// that field exists. `source` is `None` (templates carry no single decl
+/// span; per-cell spans live on `value_cells`).
+pub(crate) fn populate_structure_registry(
+    registry: &mut reify_types::StructureRegistry,
+    modules: &[CompiledModule],
+) {
+    for module in modules {
+        for tmpl in &module.templates {
+            if tmpl.entity_kind != EntityKind::Structure {
+                continue;
+            }
+            let field_layout: Vec<(String, reify_types::Type)> = tmpl
+                .value_cells
+                .iter()
+                .filter(|c| matches!(c.kind, ValueCellKind::Param))
+                .map(|c| (c.id.member.clone(), c.cell_type.clone()))
+                .collect();
+            registry.intern(
+                &tmpl.name,
+                reify_types::StructureMeta {
+                    name: tmpl.name.clone(),
+                    version: 1,
+                    declared_trait_bounds: tmpl.trait_bounds.clone(),
+                    source: None,
+                    field_layout,
+                },
+            );
+        }
+    }
+}
+
 pub(crate) fn validate_param_override(
     value: &reify_types::Value,
     cell_type: &reify_types::Type,
 ) -> Result<(), ParamOverrideRejection> {
-    if !crate::value_type_kind_matches(value, cell_type) {
+    // `registry: None` for now — param-override validation does not yet
+    // consult the per-Engine structure side-table. Trait-bound conformance
+    // for `Value::StructureInstance` is proven at compile time; the registry
+    // is plumbed into the eval path in a later step (3540 / SIR-α step-12).
+    if !crate::value_type_kind_matches(value, cell_type, None) {
         return Err(ParamOverrideRejection::TypeKindMismatch);
     }
     if let reify_types::Type::Scalar {
@@ -124,6 +172,11 @@ impl Engine {
             .iter()
             .flat_map(|pm| pm.functions.iter().cloned())
             .collect();
+        // Seed the structure side-table from the prelude's `structure def`
+        // templates (task 3540 / SIR-α step-12). Refreshed incrementally per
+        // `eval()` from the user module's templates.
+        let mut structure_registry = reify_types::StructureRegistry::new();
+        populate_structure_registry(&mut structure_registry, prelude);
         Self {
             constraint_checker,
             geometry_kernel,
@@ -131,6 +184,7 @@ impl Engine {
             cache: CacheStore::new(),
             prelude,
             prelude_functions,
+            structure_registry,
             param_overrides: std::collections::HashMap::new(),
             eval_state: None,
             demand: DemandRegistry::new(),
@@ -223,6 +277,26 @@ impl Engine {
     /// entry. Task 2982.
     pub fn swept_kind_table(&self) -> &crate::sweep_classifier::SweptKindTable {
         &self.swept_kind_table
+    }
+
+    /// **Test-instrumentation only — not a stable public surface.**
+    ///
+    /// Immutable access to the per-Engine [`reify_types::StructureRegistry`]
+    /// seeded from the prelude at construction and refreshed per `eval()`
+    /// from the user module's `structure def` templates (task 3540 / SIR-α
+    /// step-12). Tests assert that a known prelude structure (e.g.
+    /// `Steel_AISI_1045`) is interned with its declared trait bounds, default
+    /// version, and declaration-order field layout, and that unknown names
+    /// resolve to `None`.
+    ///
+    /// Mirrors the cfg-gating of [`realization_cache`](Self::realization_cache):
+    /// `StructureTypeId`s are per-Engine ephemeral handles, so exposing the
+    /// table in production builds would leak an internal id space into the
+    /// public surface. Only available under
+    /// `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn structure_registry(&self) -> &reify_types::StructureRegistry {
+        &self.structure_registry
     }
 
     /// **Test-instrumentation only — not a stable public metric.**
@@ -1077,6 +1151,52 @@ impl Engine {
     pub fn clear_panic_on_eval(&mut self) {
         self.panic_on_eval_cells.clear();
     }
+
+    // ── Task 3541: warm-pool event drain + journal recording ─────────────────
+
+    /// Drain the warm pool's buffered telemetry events, record each as an
+    /// [`crate::journal::EvalEvent`] on the diagnostic journal, and return the
+    /// drained [`Vec<crate::warm_pool::WarmPoolEvent>`] so the GUI layer can
+    /// surface them.
+    ///
+    /// # Invariants
+    ///
+    /// - After this call, `self.warm_pool.drain_events()` returns an empty Vec.
+    /// - Each drained event is recorded on the journal with:
+    ///   - `version = VersionId(self.next_version_id.saturating_sub(1))` — the
+    ///     most recently assigned eval version (or 0 before the first eval).
+    ///   - `timestamp = Instant::now()` at drain time.
+    ///
+    /// # Drain site
+    ///
+    /// Called by `EngineSession::drain_and_emit_warm_pool_events` (engine.rs)
+    /// after each engine call site that may produce donations or evictions
+    /// (check, edit_check, build, tessellate_snapshot, etc.).  This is the
+    /// eval-boundary call site that wires the existing warm_pool event buffer
+    /// to the diagnostic journal, subsuming M-010.
+    pub fn drain_and_record_warm_pool_events(
+        &mut self,
+    ) -> Vec<crate::warm_pool::WarmPoolEvent> {
+        let events = self.warm_pool.drain_events();
+        let version = reify_types::VersionId(self.next_version_id.saturating_sub(1));
+        let timestamp = std::time::Instant::now();
+        for ev in &events {
+            let eval_event =
+                crate::journal::translate_warm_pool_event_to_eval_event(ev, version, timestamp);
+            self.journal.record(eval_event);
+        }
+        events
+    }
+
+    /// Number of events currently recorded in the engine's diagnostic journal.
+    ///
+    /// Exposed only in test and test-instrumentation builds — callers use it
+    /// to assert that `drain_and_record_warm_pool_events` correctly records
+    /// events on the journal.
+    #[cfg(test)]
+    pub fn journal_event_count(&self) -> usize {
+        self.journal.len()
+    }
 }
 
 /// Perform the full startup-sweep of `cache_root`, binding the current build's
@@ -1465,8 +1585,7 @@ mod tests {
     #[test]
     fn sweep_persistent_cache_at_startup_binds_live_engine_version() {
         use crate::persistent_cache::{
-            ENGINE_VERSION_HASH, ORPHAN_DIR_AGE, STALE_TEMPFILE_AGE, SweepReport, backdate_mtime,
-            shard_dir,
+            ENGINE_VERSION_HASH, ORPHAN_DIR_AGE, STALE_TEMPFILE_AGE, backdate_mtime, shard_dir,
         };
 
         let tmp = tempfile::TempDir::new().unwrap();

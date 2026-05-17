@@ -26,6 +26,66 @@ use crate::types::{
     format_value,
 };
 
+// ── Persistent-cache startup sweep (task 3698) ────────────────────────────────
+
+/// Test-friendly seam: sweep a caller-supplied `cache_root`.
+///
+/// Thin wrapper over [`reify_eval::sweep_persistent_cache_at_startup`] exposed
+/// as a `pub(crate)` function so unit tests can drive a hermetic `TempDir`
+/// without manipulating process env (which is not thread-safe in in-process
+/// tests).  Not part of `reify_gui`'s public API.
+///
+/// Returns the [`reify_eval::persistent_cache::SweepReport`] so tests can
+/// assert on `tempfiles_removed` / `orphan_dirs_removed`.
+pub(crate) fn sweep_persistent_cache(
+    cache_root: &std::path::Path,
+) -> reify_eval::persistent_cache::SweepReport {
+    reify_eval::sweep_persistent_cache_at_startup(cache_root)
+}
+
+/// Production startup hook: resolve `cache_root` from process env and run the
+/// sweep.
+///
+/// Called once from `gui/src-tauri/src/main.rs` before `EngineSession`
+/// construction so the stale-tempfile and orphan-directory cleanup runs on
+/// every GUI launch (task 3698).
+///
+/// Resolution mirrors `reify-cli`'s `resolve_cache_root` pipeline:
+/// `REIFY_CACHE_DIR` → `REIFY_CACHE_MAX_BYTES` / `HOME` / `XDG_CACHE_HOME`.
+/// On resolver error (e.g. malformed `REIFY_CACHE_MAX_BYTES`) the sweep is
+/// skipped and the error is logged at `tracing::debug!` level — matching the
+/// CLI's policy so both entry points behave identically on bad env.
+/// The `SweepReport` is discarded.
+pub fn bootstrap_persistent_cache_sweep() {
+    use reify_config::cache::{CacheResolverInputs, resolve_cache};
+
+    let env_dir = std::env::var("REIFY_CACHE_DIR").ok();
+    let env_max_bytes = std::env::var("REIFY_CACHE_MAX_BYTES").ok();
+    let xdg_cache_home = std::env::var("XDG_CACHE_HOME").ok();
+    let home = std::env::var("HOME").unwrap_or_default();
+
+    let inputs = CacheResolverInputs {
+        cli_dir: None,
+        env_dir: env_dir.as_deref(),
+        env_max_bytes: env_max_bytes.as_deref(),
+        user_config: None,
+        project_config: None,
+        home: std::path::Path::new(&home),
+        xdg_cache_home: xdg_cache_home.as_deref(),
+    };
+
+    match resolve_cache(&inputs) {
+        Ok(r) => {
+            let _ = sweep_persistent_cache(&r.dir);
+        }
+        Err(e) => {
+            tracing::debug!("persistent-cache sweep skipped — resolver error: {e}");
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 mod core_state {
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
@@ -408,6 +468,15 @@ pub struct EngineSession {
     /// (the default), all emit paths are no-ops — existing tests that construct an
     /// EngineSession without installing an emitter are unaffected.
     auto_resolve_emitter: Option<Arc<dyn AutoResolveEmitter>>,
+    /// Optional warm-pool event sink installed by the GUI layer.
+    ///
+    /// When `Some`, `drain_and_emit_warm_pool_events` forwards each drained
+    /// [`reify_eval::warm_pool::WarmPoolEvent`] (translated to the IPC
+    /// [`crate::types::WarmPoolEvent`] shape) to the installed emitter. When
+    /// `None` (the default), the drain still records events on the journal but
+    /// no IPC emission occurs — existing tests that don't install an emitter are
+    /// unaffected.
+    warm_pool_event_emitter: Option<Arc<dyn WarmPoolEventEmitter>>,
 }
 
 /// Trait for sinking auto-resolve loop events to the GUI transport layer.
@@ -419,6 +488,17 @@ pub trait AutoResolveEmitter: Send + Sync {
     fn start(&self);
     fn iteration(&self, iter: AutoResolveIteration);
     fn complete(&self);
+}
+
+/// Trait for sinking warm-pool telemetry events to the GUI transport layer.
+///
+/// Implemented by [`crate::TauriWarmPoolEventEmitter`] in `main.rs` for the
+/// production path (calls `event_bus::emit_typed` with channel `"warm-pool-event"`),
+/// and by `RecordingWarmPoolEventEmitter` in engine tests.
+///
+/// The trait is object-safe: no method takes or returns `Self`.
+pub trait WarmPoolEventEmitter: Send + Sync {
+    fn emit(&self, event: crate::types::WarmPoolEvent);
 }
 
 /// Build the normalized source-map key for a module name: `"{name}.ri"`.
@@ -771,6 +851,7 @@ impl EngineSession {
             consumed_idents_cache: None,
             compile_failure: None,
             auto_resolve_emitter: None,
+            warm_pool_event_emitter: None,
         }
     }
 
@@ -781,6 +862,16 @@ impl EngineSession {
     /// on the emitter.  Replaces any previously installed emitter.
     pub fn set_auto_resolve_emitter(&mut self, emitter: Arc<dyn AutoResolveEmitter>) {
         self.auto_resolve_emitter = Some(emitter);
+    }
+
+    /// Install a warm-pool event emitter on this session.
+    ///
+    /// After installation, every `drain_and_emit_warm_pool_events` call
+    /// (which happens after each engine check/build/edit call) forwards
+    /// translated IPC [`crate::types::WarmPoolEvent`] values to the emitter.
+    /// Replaces any previously installed emitter.
+    pub fn set_warm_pool_event_emitter(&mut self, emitter: Arc<dyn WarmPoolEventEmitter>) {
+        self.warm_pool_event_emitter = Some(emitter);
     }
 
     /// Install a constraint solver into the underlying Engine for testing.
@@ -806,6 +897,22 @@ impl EngineSession {
     pub(crate) fn check_and_emit_for_test(&mut self, compiled: &CompiledModule) {
         let r = self.core.engine_mut().check(compiled);
         self.emit_auto_resolve_if_any(&r);
+        self.drain_and_emit_warm_pool_events();
+    }
+
+    /// Expose the engine's warm pool for test-only manipulation (e.g. pre-populating
+    /// events before asserting that `drain_and_emit_warm_pool_events` forwards them).
+    #[cfg(test)]
+    pub(crate) fn warm_pool_mut_for_test(&mut self) -> &mut reify_eval::warm_pool::WarmStatePool {
+        self.core.engine_mut().warm_pool_mut()
+    }
+
+    /// Trigger a warm-pool drain-and-emit cycle in tests without needing a full
+    /// engine check/build call. Used by step-5 tests to verify the emitter
+    /// contract in isolation.
+    #[cfg(test)]
+    pub(crate) fn drain_and_emit_warm_pool_events_for_test(&mut self) {
+        self.drain_and_emit_warm_pool_events();
     }
 
     /// Emit auto-resolve events if an emitter is installed and the check produced
@@ -816,6 +923,34 @@ impl EngineSession {
     /// - `check.resolved_params` is empty (no auto params were resolved).
     ///
     /// When both conditions are met, fires `start → iteration → complete` in order.
+    /// Drain the engine's warm-pool event buffer, record each on the journal,
+    /// and forward the translated IPC events to the installed
+    /// [`WarmPoolEventEmitter`] (if any).
+    ///
+    /// Called after each engine call site that may produce donations or
+    /// evictions (check, edit_check, build, tessellate_snapshot, etc.) — the
+    /// same sites that invoke [`Self::emit_auto_resolve_if_any`].
+    ///
+    /// When no emitter is installed, the drain still records events on the
+    /// journal (M-010 wiring) but no IPC emission occurs.
+    ///
+    /// # Design note (follow-up opportunity)
+    ///
+    /// The five call sites that pair `emit_auto_resolve_if_any` + this method
+    /// are shaping into a "post-engine-call telemetry drain" pattern.  A future
+    /// refactor could extract a single `post_engine_call_telemetry(&self, check:
+    /// &CheckResult)` helper so new engine entry points can't forget to drain
+    /// warm-pool events and silently lose telemetry.  Tracked in task review
+    /// suggestion #4 (task 3541 amendment pass).
+    fn drain_and_emit_warm_pool_events(&mut self) {
+        let raw_events = self.core.engine_mut().drain_and_record_warm_pool_events();
+        if let Some(emitter) = &self.warm_pool_event_emitter {
+            for ev in &raw_events {
+                emitter.emit(crate::types::WarmPoolEvent::from_engine_event(ev));
+            }
+        }
+    }
+
     fn emit_auto_resolve_if_any(&self, check: &CheckResult) {
         let emitter = match &self.auto_resolve_emitter {
             Some(e) => e,
@@ -977,6 +1112,7 @@ impl EngineSession {
         self.emit_auto_resolve_if_any(self.core.last_check().expect(
             "emit_auto_resolve_if_any: last_check must be Some after commit_state — see ordering invariant",
         ));
+        self.drain_and_emit_warm_pool_events();
 
         self.build_gui_state()
     }
@@ -1018,6 +1154,7 @@ impl EngineSession {
         self.emit_auto_resolve_if_any(self.core.last_check().expect(
             "emit_auto_resolve_if_any: last_check must be Some after commit_check — see ordering invariant",
         ));
+        self.drain_and_emit_warm_pool_events();
         self.build_gui_state()
     }
 
@@ -1053,6 +1190,7 @@ impl EngineSession {
         self.emit_auto_resolve_if_any(self.core.last_check().expect(
             "emit_auto_resolve_if_any: last_check must be Some after commit_state — see ordering invariant",
         ));
+        self.drain_and_emit_warm_pool_events();
         self.build_gui_state()
     }
 
@@ -1125,6 +1263,7 @@ impl EngineSession {
         self.emit_auto_resolve_if_any(self.core.last_check().expect(
             "emit_auto_resolve_if_any: last_check must be Some after commit_state — see ordering invariant",
         ));
+        self.drain_and_emit_warm_pool_events();
 
         self.build_gui_state()
     }
@@ -1948,13 +2087,9 @@ impl EngineSession {
     ///   is past the end of source.
     ///
     /// # Caching
-    /// `parsed_cache` and `line_offsets_cache` are checked via `debug_assert`
-    /// to enforce the cache invariant, but the byte-offset conversion is
-    /// performed inside `reify_eval::resolve_entity_at_source_position` by
-    /// walking the source character-by-character; the pre-built
-    /// `line_offsets_cache` is not passed through to that call.  A future
-    /// refactor could thread the cache into the eval layer to avoid the
-    /// redundant walk.
+    /// `line_offsets_cache` is populated in `commit_state` alongside `compiled`
+    /// and is threaded through to `reify_eval::resolve_entity_at_source_position`
+    /// so the byte-offset conversion is O(log M) rather than O(M).
     pub fn get_entity_at_source_location(&self, line: u32, col: u32) -> Option<String> {
         // Documented contract: zero line or column is out-of-range → None.
         if line == 0 || col == 0 {
@@ -1968,9 +2103,10 @@ impl EngineSession {
              whenever compiled is Some (i.e., whenever resolve_source succeeds)"
         );
 
+        let line_offsets = self.line_offsets_cache.as_deref()?;
         let compiled = self.core.compiled()?;
 
-        reify_eval::resolve_entity_at_source_position(compiled, source, line, col)
+        reify_eval::resolve_entity_at_source_position(compiled, source, line_offsets, line, col)
     }
 }
 
@@ -3322,6 +3458,19 @@ fn format_expr(expr: &reify_types::CompiledExpr) -> String {
             param_name,
             query_kind,
         } => format!("{}.{}", param_name, query_kind),
+        // task 3540 (SIR-α): exhaustiveness-forced adapter arm for the new
+        // shared-enum variant (step-16). Renders as the source-level
+        // constructor shape `TypeName(arg1, arg2, ...)` — same surface form
+        // as FunctionCall/UserFunctionCall for hover/debug views.
+        CompiledExprKind::StructureInstanceCtor {
+            type_name,
+            ordered_args,
+            ..
+        } => {
+            let arg_strs: Vec<String> =
+                ordered_args.iter().map(|(_, e)| format_expr(e)).collect();
+            format!("{}({})", type_name, arg_strs.join(", "))
+        }
     }
 }
 
@@ -3393,18 +3542,11 @@ fn diagnostics_to_info(
         .collect()
 }
 
-/// Pre-compute byte positions of all `\n` characters in `source` in O(M).
-///
-/// Returns a sorted `Vec<usize>` of the byte offset of each newline.
-/// Pass this to [`offset_to_line_col_fast`] to binary-search for line/col
-/// in O(log M) instead of the O(M) scan done by [`reify_types::byte_offset_to_line_col`].
-pub(crate) fn build_line_offsets(source: &str) -> Vec<usize> {
-    source
-        .bytes()
-        .enumerate()
-        .filter_map(|(i, b)| if b == b'\n' { Some(i) } else { None })
-        .collect()
-}
+// `build_line_offsets` and `line_col_to_byte_offset_with_offsets` have been
+// moved to `reify_types::source_location` so that `reify-eval` can use them
+// without depending on `reify-gui`.  Re-export here as `pub(crate)` so all
+// existing callers inside this crate (and engine_tests.rs) compile unchanged.
+pub(crate) use reify_types::{build_line_offsets, line_col_to_byte_offset_with_offsets};
 
 /// Binary-search for the (line, column) of `offset` using a pre-built newline table.
 ///
@@ -3461,49 +3603,3 @@ pub(crate) fn offset_to_line_col_fast(
     (line, col)
 }
 
-/// Convert a 1-based `(line, col)` pair to a byte offset using a pre-built
-/// newline table.
-///
-/// `line_offsets` must be the result of [`build_line_offsets`] for the same
-/// `source`.  Both `line` and `col` are 1-based and count **Unicode codepoints**.
-///
-/// - If `line` or `col` is 0, returns 0 as a safe fallback.
-/// - If `line` exceeds the number of lines, returns `source.len()`.
-/// - If `col` exceeds the line length, clamps to the end of the line.
-pub(crate) fn line_col_to_byte_offset_with_offsets(
-    source: &str,
-    line: u32,
-    col: u32,
-    line_offsets: &[usize],
-) -> usize {
-    if line == 0 || col == 0 {
-        return 0;
-    }
-    let line = line as usize;
-    let col = col as usize;
-
-    // Byte index of the first character on the target line.
-    let line_start = if line <= 1 {
-        0
-    } else {
-        match line_offsets.get(line - 2) {
-            Some(&nl) => nl + 1,         // byte after the preceding newline
-            None => return source.len(), // line is beyond end of source
-        }
-    };
-
-    // Slice to the end of the target line (not end of source) so that an
-    // out-of-bounds col clamps to the line boundary rather than counting
-    // codepoints past the '\n' into subsequent lines.
-    let line_end = source[line_start..]
-        .find('\n')
-        .map(|i| line_start + i)
-        .unwrap_or(source.len());
-    let line_text = &source[line_start..line_end];
-    line_start
-        + line_text
-            .char_indices()
-            .nth(col - 1)
-            .map(|(i, _)| i)
-            .unwrap_or(line_text.len())
-}

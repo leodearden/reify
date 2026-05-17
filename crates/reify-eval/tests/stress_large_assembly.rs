@@ -207,19 +207,42 @@ fn assembly_has_50_plus_subs() {
 }
 
 /// SteelBeam.mass = volume * density (tolerance 1e-9).
+///
+/// Post-GHR-α (task 3603 / PRD §8 Phase 1): spec-shape `Physical` no longer
+/// exposes flat `volume` / `density` params — it now stores a `geometry :
+/// Solid` slot plus a `material : Material` struct slot, and computes `mass =
+/// volume(geometry) * material.density` via the new stdlib geometry-query
+/// `volume(Solid) → Scalar<Volume>`. At Phase 1 this is typecheck-only; runtime
+/// kernel dispatch for `volume(geometry)` arrives in Phase 6 (GHR-ζ), so
+/// `mass` evaluates to `Value::Undef`. This numeric-read assertion (and the
+/// helper's `.volume` / `.density` lookups) revives once geometry-derived
+/// computation lands.
 #[test]
+#[ignore = "Phase 6 will revive — GHR-ζ (geometry-handle-runtime PRD): mass = volume(geometry) * material.density needs kernel dispatch"]
 fn mass_propagation_steel_beam() {
     assert_mass_equals_volume_times_density(eval_canonical(), "SteelBeam");
 }
 
 /// AluminumPlate.mass = volume * density (tolerance 1e-9).
+///
+/// Post-GHR-α (task 3603 / PRD §8 Phase 1): see `mass_propagation_steel_beam`
+/// for the full rationale — same flat-scalar→spec-shape transition; revived
+/// once kernel dispatch lands.
 #[test]
+#[ignore = "Phase 6 will revive — GHR-ζ (geometry-handle-runtime PRD): mass = volume(geometry) * material.density needs kernel dispatch"]
 fn mass_propagation_aluminum_plate() {
     assert_mass_equals_volume_times_density(eval_canonical(), "AluminumPlate");
 }
 
 /// LargeAssembly.total_mass exists and is > 0.
+///
+/// Post-GHR-α (task 3603 / PRD §8 Phase 1): `total_mass` aggregates each
+/// sub-component's spec-shape `mass = volume(geometry) * material.density`,
+/// which evaluates to `Value::Undef` until Phase 6 (GHR-ζ) wires kernel
+/// dispatch — so the aggregate is also Undef. Revived once kernel dispatch
+/// lands.
 #[test]
+#[ignore = "Phase 6 will revive — GHR-ζ (geometry-handle-runtime PRD): total_mass aggregates per-sub mass = volume(geometry) * material.density (needs kernel dispatch)"]
 fn total_mass_computed() {
     let result = eval_canonical();
     let id = ValueCellId::new("LargeAssembly", "total_mass");

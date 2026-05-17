@@ -194,35 +194,130 @@ fn material_struct_call_is_valid_param_default() {
          default-expression compilation must not drop struct-constructor calls",
     );
 
-    // Struct-constructor calls lower to `CompiledExprKind::FunctionCall` with
-    // a ResolvedFunction whose `name` is the struct's simple name and whose
-    // `qualified_name` starts with the module prefix (e.g. `std::Material`).
-    // Named-arg reordering is handled by the compiler; here we only care that
-    // the callee is `Material` and that all three supplied values survived.
+    // SIR-α (task 3540, design-decision-2): a `structure def` constructor call
+    // lowers to `CompiledExprKind::StructureInstanceCtor` (NOT a stdlib
+    // `FunctionCall`) — the ctor path takes precedence over `eval_builtin`.
+    // The original task-1876 intent is preserved: the struct-call default must
+    // not be dropped, the callee is `Material`, and all three supplied values
+    // survive (here as `ordered_args`, since they cover all three params).
     match &default_expr.kind {
-        CompiledExprKind::FunctionCall { function, args } => {
+        CompiledExprKind::StructureInstanceCtor {
+            type_name,
+            ordered_args,
+            ..
+        } => {
             assert_eq!(
-                function.name, "Material",
-                "default_expr should be a call to `Material`, got function.name={:?}",
-                function.name
+                type_name, "Material",
+                "default_expr should construct `Material`, got type_name={:?}",
+                type_name
             );
             assert_eq!(
-                args.len(),
+                ordered_args.len(),
                 3,
-                "Material(...) should lower to a call with 3 args, got {}: {:?}",
-                args.len(),
-                args
+                "Material(...) should lower to a ctor with 3 bound args, got {}: {:?}",
+                ordered_args.len(),
+                ordered_args
             );
         }
         other => panic!(
-            "expected Part.material.default_expr to be a FunctionCall for `Material(...)`, \
-             got {:?}",
+            "expected Part.material.default_expr to be a StructureInstanceCtor for \
+             `Material(...)`, got {:?}",
             other
         ),
     }
 }
 
 // ─── step-9: end-to-end BoltFlange compiles with a Material(...) default ────
+
+/// Mirror of `examples/m5_geometry_flange.ri`, used by both
+/// `boltflange_compiles_with_material_default` and the self-enforcing
+/// mirror check `boltflange_mirror_source_matches_example_file`.
+///
+/// **Mirroring contract** (reviewer #6 follow-up): this string MUST stay
+/// in lock-step with `examples/m5_geometry_flange.ri`. The mirror-check
+/// test below reads the on-disk example at test time and compares the
+/// structural-body lines, so divergence between the embedded source and
+/// the example is caught at `cargo test` time rather than via human
+/// diffing.
+const BOLTFLANGE_MIRROR_SOURCE: &str = r#"
+        structure def BoltFlange : Rigid {
+            param outer_radius : Length = 60mm
+            param height : Length = 12mm
+            param hole_count : Int = 8
+            param bolt_circle_radius : Length = 45mm
+            param hole_radius : Length = 4mm
+
+            // Rigid trait requirement (Rigid's own param; Physical's geometry +
+            // material slots are below)
+            param moment_of_inertia : Real = 0.000001
+
+            // Canonical Material struct default — the task-1876 payoff this
+            // test pins (recorded StructureInstanceCtor with 3 bound args).
+            param material : Material = Material(name: "steel", density: 7850.0, youngs_modulus: 200000000000.0)
+
+            constraint outer_radius > bolt_circle_radius
+            constraint hole_count > 0
+
+            let body = cylinder(outer_radius, height)
+            let hole = translate(cylinder(hole_radius, height), bolt_circle_radius, 0mm, 0mm)
+            let holes = circular_pattern(hole, 0mm, 0mm, 0mm, 0, 0, 1, hole_count, 360deg)
+            param geometry : Solid = difference(body, holes)
+        }
+    "#;
+
+/// **Self-enforcing mirror contract** (reviewer #6 follow-up). Reads
+/// `examples/m5_geometry_flange.ri` at test time and asserts that every
+/// distinctive param/let/constraint line of `BOLTFLANGE_MIRROR_SOURCE` is
+/// present in the example file. Without this check, the doc-comment on
+/// `boltflange_compiles_with_material_default` claimed the embedded source
+/// "mirrors the example one-for-one" but enforcement was manual — a
+/// divergence in the example would silently outdate the test fixture.
+///
+/// Comparison strategy: trim leading whitespace on each line, drop empty
+/// lines and pure comment lines, and require each non-trivial line of the
+/// embedded source to appear as a substring of the on-disk file. Tolerates
+/// whitespace / comment / surrounding-text differences while still
+/// catching any structural divergence (param renames, value changes,
+/// trait-bound changes, etc.).
+#[test]
+fn boltflange_mirror_source_matches_example_file() {
+    const EXAMPLE_PATH: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/m5_geometry_flange.ri"
+    );
+    let example_src = std::fs::read_to_string(EXAMPLE_PATH).expect(
+        "failed to read examples/m5_geometry_flange.ri — check CARGO_MANIFEST_DIR resolution",
+    );
+
+    // Each distinctive line of the embedded source must appear (after
+    // leading-whitespace trim) somewhere in the on-disk example.
+    let mut missing: Vec<String> = Vec::new();
+    for line in BOLTFLANGE_MIRROR_SOURCE.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Skip pure-comment lines and the bracketing braces — those don't
+        // carry structural-body content.
+        if trimmed.starts_with("//") || trimmed == "{" || trimmed == "}" {
+            continue;
+        }
+        if !example_src.contains(trimmed) {
+            missing.push(trimmed.to_string());
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "BOLTFLANGE_MIRROR_SOURCE has diverged from examples/m5_geometry_flange.ri \
+         — the following lines from the embedded mirror are not present in the on-disk \
+         example: {:#?}. Either update the example to match the mirror, or update the \
+         mirror (and the boltflange_compiles_with_material_default test) to match the \
+         example. Mirror contract is documented at \
+         `boltflange_compiles_with_material_default`.",
+        missing
+    );
+}
 
 /// Mirror `examples/m5_geometry_flange.ri` exactly, except replace the
 /// previously-defaultless `param material : Material` declaration with a
@@ -236,42 +331,20 @@ fn material_struct_call_is_valid_param_default() {
 /// regressions before step-10 updates the example file itself.
 #[test]
 fn boltflange_compiles_with_material_default() {
-    // Source intentionally mirrors the example layout one-for-one so that, if
-    // the example evolves, a diff against this string makes the divergence
-    // visible. The only change versus the on-disk example is line 22.
-    let source = r#"
-        structure def BoltFlange : Rigid {
-            param outer_radius : Length = 60mm
-            param height : Length = 12mm
-            param hole_count : Int = 8
-            param bolt_circle_radius : Length = 45mm
-            param hole_radius : Length = 4mm
-
-            // MaterialSpec trait requirements (density + name, inherited via Physical)
-            param density : Real = 7850
-            param name : String = "steel"
-
-            // Physical trait requirements
-            param volume : Real = 0.0001
-            param centroid_x : Real = 0.0
-            param centroid_y : Real = 0.0
-            param centroid_z : Real = 0.0
-
-            // Rigid trait requirements
-            param moment_of_inertia : Real = 0.000001
-
-            // Material reference (canonical struct default — task 1876 payoff)
-            param material : Material = Material(name: "steel", density: 7850.0, youngs_modulus: 200000000000.0)
-
-            constraint outer_radius > bolt_circle_radius
-            constraint hole_count > 0
-
-            let body = cylinder(outer_radius, height)
-            let hole = translate(cylinder(hole_radius, height), bolt_circle_radius, 0mm, 0mm)
-            let holes = circular_pattern(hole, 0mm, 0mm, 0mm, 0, 0, 1, hole_count, 360deg)
-            param geometry : Solid = difference(body, holes)
-        }
-    "#;
+    // Source intentionally mirrors `examples/m5_geometry_flange.ri`
+    // one-for-one. Post-GHR-α (task 3603 / PRD §8 Phase 1) the example is
+    // spec-shape `Rigid : Physical` — geometry + material struct slots; the
+    // legacy flat `density/name/volume/centroid_x/y/z` params are gone
+    // (`material : Material` now carries density via the struct,
+    // `geometry : Solid` feeds the trait's `volume(geometry)` let).
+    //
+    // The mirroring contract is SELF-ENFORCING (reviewer #6 follow-up): the
+    // `boltflange_mirror_source_matches_example_file` assertion below reads
+    // the on-disk example at test time and verifies every distinctive
+    // param/let line of `BOLTFLANGE_MIRROR_SOURCE` is present in the
+    // example file. If the example evolves, this test fails — humans no
+    // longer need to diff manually.
+    let source = BOLTFLANGE_MIRROR_SOURCE;
     let module = compile_source_with_stdlib(source);
 
     let errors: Vec<_> = module
@@ -308,25 +381,33 @@ fn boltflange_compiles_with_material_default() {
         "BoltFlange.material should carry the recorded `Material(...)` default — \
          the canonical struct default is the user-visible payoff for task 1876",
     );
+    // SIR-α (task 3540, design-decision-2): the `Material(...)` struct default
+    // lowers to a `StructureInstanceCtor`, not a stdlib `FunctionCall`. The
+    // task-1876 payoff (canonical struct default is recorded, carrying all
+    // three supplied values) is preserved against the new lowering shape.
     match &default_expr.kind {
-        CompiledExprKind::FunctionCall { function, args } => {
+        CompiledExprKind::StructureInstanceCtor {
+            type_name,
+            ordered_args,
+            ..
+        } => {
             assert_eq!(
-                function.name, "Material",
-                "BoltFlange.material default should be a `Material(...)` call, got {:?}",
-                function.name
+                type_name, "Material",
+                "BoltFlange.material default should construct `Material`, got {:?}",
+                type_name
             );
             assert_eq!(
-                args.len(),
+                ordered_args.len(),
                 3,
-                "BoltFlange.material default should carry 3 named args (name, density, \
+                "BoltFlange.material default should carry 3 bound args (name, density, \
                  youngs_modulus); got {}: {:?}",
-                args.len(),
-                args
+                ordered_args.len(),
+                ordered_args
             );
         }
         other => panic!(
-            "expected BoltFlange.material.default_expr to be a FunctionCall for `Material(...)`, \
-             got {:?}",
+            "expected BoltFlange.material.default_expr to be a StructureInstanceCtor for \
+             `Material(...)`, got {:?}",
             other
         ),
     }
@@ -389,23 +470,26 @@ fn material_spec_trait_still_usable_as_trait_object() {
         m_cell.cell_type
     );
 
-    // The default expression `SomeSteel()` must lower to a FunctionCall whose
-    // callee is `SomeSteel` — confirming the call-syntax struct constructor
-    // path survives as a valid default for a trait-typed param.
+    // The default expression `SomeSteel()` must lower to a
+    // `StructureInstanceCtor` (SIR-α design-decision-2) whose constructed type
+    // is `SomeSteel` — confirming the struct-constructor path survives as a
+    // valid default for a trait-typed param (task-1874 pathway) under the new
+    // SIR-α lowering.
     let default_expr = m_cell.default_expr.as_ref().expect(
         "Widget.m should carry the recorded `SomeSteel()` default — \
          struct-constructor call defaults must work for trait-typed params (task 1874)",
     );
     match &default_expr.kind {
-        CompiledExprKind::FunctionCall { function, .. } => {
+        CompiledExprKind::StructureInstanceCtor { type_name, .. } => {
             assert_eq!(
-                function.name, "SomeSteel",
-                "Widget.m default should be a `SomeSteel()` call, got {:?}",
-                function.name
+                type_name, "SomeSteel",
+                "Widget.m default should construct `SomeSteel`, got {:?}",
+                type_name
             );
         }
         other => panic!(
-            "expected Widget.m.default_expr to be a FunctionCall for `SomeSteel()`, got {:?}",
+            "expected Widget.m.default_expr to be a StructureInstanceCtor for `SomeSteel()`, \
+             got {:?}",
             other
         ),
     }
