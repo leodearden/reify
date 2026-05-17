@@ -345,6 +345,7 @@
 
 pub mod assembly;
 pub mod boundary;
+pub mod buckling_kernel;
 pub mod constitutive;
 pub mod eigensolve;
 pub mod elements;
