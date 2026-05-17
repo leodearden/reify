@@ -799,6 +799,49 @@ fn tessellate_realizations_post_processes_topology_selectors() {
     );
 }
 
+/// Tessellate-path parity for the task-3560 selector cluster. Exercises one
+/// representative new selector — `edges(body)` — via
+/// `engine.tessellate_realizations(&compiled)` and asserts the same
+/// `Bracket.es == Value::List(...)` outcome as the build-path test
+/// `edges_let_resolves_to_list_of_int_via_extract_edges`. Pins that all three
+/// call sites in `engine_build.rs` (build / build_snapshot / tessellate)
+/// consistently propagate the kernel-resolved value through the post-process;
+/// without this, a GUI overlay reading `TessellateResult.values` would see
+/// `Value::Undef` while a parallel build's overlay would see `Value::List(_)`.
+///
+/// Pinning `edges` specifically also pins the cluster-A widening of
+/// `Engine::post_process_topology_selectors` from `&dyn` to `&mut dyn
+/// GeometryKernel` at the tessellate site — `edges` calls
+/// `kernel.extract_edges(...)` which takes `&mut self`.
+#[test]
+fn tessellate_realizations_post_processes_new_topology_selectors() {
+    let source = "structure def Bracket {\n    \
+        let body = box(10mm, 10mm, 10mm)\n    \
+        let es = edges(body)\n}";
+    let compiled = compile_no_errors(source);
+    let mut engine = engine_with_mock_kernel(|k| {
+        k.with_extracted_edges(
+            GeometryHandleId(1),
+            vec![GeometryHandleId(2), GeometryHandleId(3), GeometryHandleId(4)],
+        )
+    });
+
+    let result = engine.tessellate_realizations(&compiled);
+
+    let cell = ValueCellId::new("Bracket", "es");
+    assert_eq!(
+        result.values.get(&cell),
+        Some(&Value::List(vec![
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(4),
+        ])),
+        "TessellateResult.values must expose the kernel-resolved Value::List \
+         for edges() cells (parity with BuildResult.values), got {:?}",
+        result.values.get(&cell),
+    );
+}
+
 // ── OCCT-gated end-to-end smoke test ────────────────────────────────────────
 
 /// OCCT-backed end-to-end smoke test for the topology-selector dispatch
