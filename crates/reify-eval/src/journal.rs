@@ -183,6 +183,51 @@ impl Default for EventJournal {
     }
 }
 
+/// Translate a [`crate::warm_pool::WarmPoolEvent`] into an [`EvalEvent`] for
+/// recording on the diagnostic journal.
+///
+/// # Victim / donor contract
+///
+/// The mapping preserves the contract documented at lines 52–62 of this file:
+///
+/// * [`crate::warm_pool::WarmPoolEvent::Evicted`] → [`EventKind::Evicted`]:
+///   `EvalEvent.node_id` is the **evicted** node (the victim whose state was
+///   discarded), not the donating node that triggered the eviction.
+///
+/// * [`crate::warm_pool::WarmPoolEvent::Donated`] → [`EventKind::Donated`]:
+///   `EvalEvent.node_id` is the **donating** node (the node whose state was
+///   inserted into the pool).
+///
+/// Both variants pass through `node_id` directly from the `WarmPoolEvent` field,
+/// which warm_pool.rs already sets correctly (victim for Evicted at line 322,
+/// donor for Donated at line 350).
+pub fn translate_warm_pool_event_to_eval_event(
+    ev: &crate::warm_pool::WarmPoolEvent,
+    version: VersionId,
+    timestamp: std::time::Instant,
+) -> EvalEvent {
+    match ev {
+        crate::warm_pool::WarmPoolEvent::Evicted { node_id, size_bytes } => EvalEvent {
+            timestamp,
+            node_id: node_id.clone(),
+            kind: EventKind::Evicted {
+                size_bytes: *size_bytes,
+            },
+            version,
+            payload: None,
+        },
+        crate::warm_pool::WarmPoolEvent::Donated { node_id, size_bytes } => EvalEvent {
+            timestamp,
+            node_id: node_id.clone(),
+            kind: EventKind::Donated {
+                size_bytes: *size_bytes,
+            },
+            version,
+            payload: None,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Instant;
