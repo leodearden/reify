@@ -27,13 +27,18 @@ use reify_types::SourceLocationInfo;
 ///
 /// Uses the compiled module's value-cell spans to approximate each template's
 /// source range (`[min(cell.span.start), max(cell.span.end))`).  Within the
-/// matching template, narrows to the smallest value cell whose span contains
-/// the offset.
+/// matching template, the narrow step checks (in priority order):
+/// 1. `value_cells` — returns `"Entity.member"` for the first matching cell.
+/// 2. `realizations` (skipping `name: None`) — returns `"Entity.name"` for
+///    the first matching realization.
+/// 3. `sub_components` — returns `"Entity.name"` for the first matching sub.
 ///
 /// Returns:
 /// - `Some("Entity.member")` when the cursor is inside a value cell's span.
+/// - `Some("Entity.name")` when the cursor is inside a realization or
+///   sub_component declaration body.
 /// - `Some("Entity")` when the cursor is inside the template's approximate
-///   span but outside any specific value cell (e.g. a constraint line).
+///   span but outside any specific named member (e.g. a constraint line).
 /// - `None` when `line` or `col` is 0, when the position is outside every
 ///   template's approximate span, or when the position is past the end of
 ///   `source`.
@@ -106,18 +111,44 @@ pub fn resolve_entity_at_source_position(
 
     let template = best_template?;
 
-    // Within this template, find the value cell whose span contains the offset.
+    // Narrow step: check member kinds in priority order.
     // Span is a half-open interval [start, end): start ≤ offset < end.
-    let matching_cell = template
+
+    // 1. value_cells — highest priority.
+    if let Some(cell) = template
         .value_cells
         .iter()
-        .find(|vc| offset >= vc.span.start as usize && offset < vc.span.end as usize);
-
-    if let Some(cell) = matching_cell {
-        Some(format!("{}.{}", template.name, cell.id.member))
-    } else {
-        Some(template.name.clone())
+        .find(|vc| offset >= vc.span.start as usize && offset < vc.span.end as usize)
+    {
+        return Some(format!("{}.{}", template.name, cell.id.member));
     }
+
+    // 2. realizations — skip entries with name: None (only emitted by test helpers).
+    if let Some(r) = template
+        .realizations
+        .iter()
+        .filter(|r| r.name.is_some())
+        .find(|r| offset >= r.span.start as usize && offset < r.span.end as usize)
+    {
+        return Some(format!(
+            "{}.{}",
+            template.name,
+            r.name.as_ref().unwrap()
+        ));
+    }
+
+    // 3. sub_components — name is always populated for compiler-produced entries.
+    if let Some(sc) = template
+        .sub_components
+        .iter()
+        .find(|sc| offset >= sc.span.start as usize && offset < sc.span.end as usize)
+    {
+        return Some(format!("{}.{}", template.name, sc.name));
+    }
+
+    // 4. Position is inside the template's approximate span but outside any
+    //    named member (e.g. a constraint line) — return the template name.
+    Some(template.name.clone())
 }
 
 
