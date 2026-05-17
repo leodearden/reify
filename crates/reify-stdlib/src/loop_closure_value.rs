@@ -216,8 +216,29 @@ pub fn flatten_dofs(values: &[JointValue]) -> Vec<f64> {
 /// `Err(FlattenError::BufferTooShort)` on shortfall and
 /// `Err(FlattenError::BufferTooLong)` if trailing f64s remain.
 pub fn unflatten_dofs(dofs: &[f64], shapes: &[JointKind]) -> Result<Vec<JointValue>, FlattenError> {
-    let _ = (dofs, shapes);
-    unimplemented!("step-6-impl")
+    let mut out = Vec::with_capacity(shapes.len());
+    let mut cursor: usize = 0;
+    for (i, kind) in shapes.iter().enumerate() {
+        let width = kind.flat_len();
+        if cursor + width > dofs.len() {
+            return Err(FlattenError::BufferTooShort {
+                consumed: cursor,
+                remaining_shapes: shapes.len() - i,
+            });
+        }
+        let chunk = &dofs[cursor..cursor + width];
+        // `chunk.len() == width == kind.flat_len()` so from_slice cannot fail
+        // here — the WrongLen branch is unreachable by construction.
+        out.push(JointValue::from_slice(*kind, chunk)?);
+        cursor += width;
+    }
+    if cursor < dofs.len() {
+        return Err(FlattenError::BufferTooLong {
+            consumed: cursor,
+            leftover: dofs.len() - cursor,
+        });
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
