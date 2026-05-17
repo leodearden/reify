@@ -1458,4 +1458,33 @@ mod tests {
             "FractureToughness Length slot should be Rational(-1, 2)"
         );
     }
+
+    /// CURVATURE is 1/Length — dimensionally identical to ABSORPTION_COEFF.
+    /// Pin the Length-slot exponent to Rational(-1, 1) and confirm all other
+    /// slots are Rational::ZERO. Added for task 3603 / GHR-α (PRD §8 Phase 1)
+    /// so the stdlib geometry-query registration `curvature → Scalar<Curvature>`
+    /// has a well-defined dimensional alias.
+    #[test]
+    fn curvature_constant_is_length_inverse() {
+        // 1/m = reciprocal of LENGTH — matches ABSORPTION_COEFF by construction.
+        assert_eq!(
+            DimensionVector::CURVATURE,
+            DimensionVector::from_exps(&[(0, -1)])
+        );
+        // Length slot is exactly Rational(-1, 1).
+        assert_eq!(
+            DimensionVector::CURVATURE.0[0],
+            Rational::new(-1, 1),
+            "Curvature Length slot should be Rational(-1, 1)"
+        );
+        // All other slots are Rational::ZERO.
+        for i in 1..10 {
+            assert_eq!(
+                DimensionVector::CURVATURE.0[i],
+                Rational::ZERO,
+                "Curvature slot {} should be Rational::ZERO",
+                i
+            );
+        }
+    }
 }
