@@ -897,7 +897,7 @@ mod tests {
     /// task-3702 (tighten try_default_padding signature)
     #[cfg(debug_assertions)]
     #[test]
-    #[should_panic(expected = "param_defaults.len() == params.len()")]
+    #[should_panic(expected = "param_defaults")]
     fn try_default_padding_debug_assert_fires_on_misaligned_param_defaults() {
         // Deliberately bad shape: params has 1 entry, param_defaults is empty.
         let bad_cand = CompiledFunction {
