@@ -133,3 +133,59 @@ fn std_solver_buckling_module_loads_with_no_errors() {
         errors
     );
 }
+
+// ─── step-3: BucklingOptions param shape ─────────────────────────────────────
+
+/// `BucklingOptions` must declare exactly the six params from PRD §4 with the
+/// canonical types:
+///
+///   - `n_modes    : Int`     (eigenpair count to compute)
+///   - `mode       : String`  (algorithm selector; allowlist validated at
+///                             trampoline per PRD §4)
+///   - `sigma      : Real`    (eigenvalue shift origin)
+///   - `tol        : Real`    (Lanczos convergence tolerance)
+///   - `max_iters  : Int`     (hard cap on Lanczos iterations)
+///   - `auto_dense : Bool`    (fall back to dense GEVD when DOF ≤ ~200)
+///
+/// PRD's `Integer` maps to Reify's `Int` builtin (same encoding as
+/// `ElasticOptions.max_iter`).
+#[test]
+fn buckling_options_struct_has_correct_param_shape() {
+    let template = find_structure("BucklingOptions");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    assert_eq!(
+        params.len(),
+        6,
+        "BucklingOptions should have exactly 6 param cells \
+         (n_modes, mode, sigma, tol, max_iters, auto_dense), got: {:?}",
+        names
+    );
+
+    let expected: &[(&str, Type)] = &[
+        ("n_modes", Type::Int),
+        ("mode", Type::String),
+        ("sigma", Type::Real),
+        ("tol", Type::Real),
+        ("max_iters", Type::Int),
+        ("auto_dense", Type::Bool),
+    ];
+
+    for (member, expected_ty) in expected {
+        let cell = params
+            .iter()
+            .find(|vc| vc.id.member == *member)
+            .unwrap_or_else(|| {
+                panic!(
+                    "BucklingOptions missing required param '{}'; got: {:?}",
+                    member, names
+                )
+            });
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "BucklingOptions.{} should be {:?}, got {:?}",
+            member, expected_ty, cell.cell_type
+        );
+    }
+}
