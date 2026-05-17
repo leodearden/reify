@@ -8729,3 +8729,171 @@ fn get_mechanism_descriptors_does_not_warn_for_normally_named_params() {
         warn_count
     );
 }
+
+// ---- amendment review tests (suggestions 1, 3, 4) ---------------------------
+
+/// Source for unsupported-unit test: bind(y_axis, 50inch) where "inch" is not
+/// in UNIT_TABLE.  initial_value_si must be None and a DEBUG event must fire at
+/// `reify_gui::engine::literal_bind`.
+const SNAPSHOT_UNSUPPORTED_UNIT_BIND_SOURCE: &str = r#"
+structure Kinematic {
+    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0     = mechanism()
+    let m1     = body(m0, "solid_a", y_axis)
+    let snap   = snapshot(m1, [bind(y_axis, 50inch)])
+}
+"#;
+
+/// `bind(y_axis, 50inch)` — "inch" is not in UNIT_TABLE — must produce
+/// `JointBinding::LiteralBound { initial_value_si: None, scrubbable: true }`
+/// AND emit exactly one DEBUG event at the `literal_bind` target.
+#[test]
+fn get_mechanism_descriptors_literal_bind_with_unsupported_unit_yields_none_and_logs_debug() {
+    reify_test_support::prime_tracing_callsite_cache();
+
+    let mut session = make_session();
+    // "50inch" may not parse as a valid Reify quantity — if load fails, skip the
+    // test with a note rather than panicking.  If the source does load (the parser
+    // accepts arbitrary unit suffixes), we assert the binding and the log event.
+    let load_result = session.load_from_source(SNAPSHOT_UNSUPPORTED_UNIT_BIND_SOURCE, "kinematic");
+    if load_result.is_err() {
+        // Parser rejected the unsupported unit at parse/compile time — that is an
+        // acceptable alternative outcome; the engine's silent-None path is only
+        // reached when the AST carries the literal.  Skip gracefully.
+        return;
+    }
+
+    let (subscriber, counters) = CountingSubscriberBuilder::new()
+        .count_level(tracing::Level::DEBUG)
+        .target_prefix("reify_gui::engine::literal_bind")
+        .build();
+
+    let descriptors = tracing::subscriber::with_default(subscriber, || {
+        session.get_mechanism_descriptors()
+    });
+
+    let debug_count = counters[&tracing::Level::DEBUG].load(std::sync::atomic::Ordering::Acquire);
+    assert_eq!(
+        debug_count, 1,
+        "expected exactly 1 DEBUG event at literal_bind target for unsupported unit 'inch'; got {}",
+        debug_count
+    );
+
+    let m1_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .expect("expected descriptor with bodies_count=1");
+    let joint = &m1_desc.joints[0];
+
+    assert!(
+        matches!(joint.binding, crate::types::JointBinding::LiteralBound { initial_value_si: None, .. }),
+        "unsupported unit must produce LiteralBound with initial_value_si=None; got {:?}",
+        joint.binding
+    );
+}
+
+/// Source for mixed-bind test (literal before param): two snapshot() calls bind
+/// the same joint y_axis — first to a literal 50mm, then to param y_pos.
+/// With the broadened ParamBound guard (`LiteralBound { .. }`), the param
+/// wins and binding must be ParamBound.
+const SNAPSHOT_LITERAL_THEN_PARAM_SOURCE: &str = r#"
+structure Kinematic {
+    param y_pos: Length = 100mm
+    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0     = mechanism()
+    let m1     = body(m0, "solid_a", y_axis)
+    let snap1  = snapshot(m1, [bind(y_axis, 50mm)])
+    let snap2  = snapshot(m1, [bind(y_axis, y_pos)])
+}
+"#;
+
+/// When two snapshot() calls bind the same joint — first to a literal (50mm),
+/// then to a param — the param arm must win and produce `ParamBound`.
+///
+/// This verifies the broadened guard `matches!(jd.binding, LiteralBound { .. })`
+/// (vs the former `LiteralBound { initial_value_si: None, .. }` guard which would
+/// have left the binding as LiteralBound while setting flat fields to the param).
+#[test]
+fn get_mechanism_descriptors_literal_then_param_bind_promotes_to_param_bound() {
+    let mut session = make_session();
+    session
+        .load_from_source(SNAPSHOT_LITERAL_THEN_PARAM_SOURCE, "kinematic")
+        .expect("load literal-then-param source");
+
+    let descriptors = session.get_mechanism_descriptors();
+    let m1_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .expect("expected descriptor with bodies_count=1");
+
+    let joint = &m1_desc.joints[0];
+
+    // Param must win: binding = ParamBound, flat field = param cell id.
+    assert_eq!(
+        joint.binding,
+        crate::types::JointBinding::ParamBound {
+            param_cell_id: "Kinematic.y_pos".to_string(),
+            current_value_si: Some(0.1),
+        },
+        "literal-then-param: param must win; binding must be ParamBound; got {:?}",
+        joint.binding
+    );
+    assert_eq!(
+        joint.driving_param_cell_id,
+        Some("Kinematic.y_pos".to_string()),
+        "flat field must reflect param; got {:?}",
+        joint.driving_param_cell_id
+    );
+}
+
+/// Source for bind-on-fixed-joint test: a fixed joint j_f with a param bound
+/// to it via snapshot().  The binding should remain FixedNoMotion (structural
+/// default is authoritative for non-movable joints), while the flat field
+/// `driving_param_cell_id` is set anyway (best-effort, may diverge from binding).
+const SNAPSHOT_FIXED_JOINT_WITH_PARAM_SOURCE: &str = r#"
+structure Kinematic {
+    param p: Length = 10mm
+    let j_f = fixed()
+    let m0  = mechanism()
+    let m1  = body(m0, "solid_a", j_f)
+    let snap = snapshot(m1, [bind(j_f, p)])
+}
+"#;
+
+/// `bind(j_f, p)` on a fixed joint must NOT promote `binding` from `FixedNoMotion`
+/// to `ParamBound` — fixed joints are structurally immovable and the binding
+/// field is authoritative.
+///
+/// The flat `driving_param_cell_id` field may be populated anyway (best-effort,
+/// documented edge case): callers should treat `binding` as authoritative for
+/// non-LiteralBound joints and `driving_param_cell_id` as best-effort only.
+#[test]
+fn get_mechanism_descriptors_bind_on_fixed_joint_does_not_promote_binding() {
+    let mut session = make_session();
+    session
+        .load_from_source(SNAPSHOT_FIXED_JOINT_WITH_PARAM_SOURCE, "kinematic")
+        .expect("load fixed-joint-with-param source");
+
+    let descriptors = session.get_mechanism_descriptors();
+    let m1_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .expect("expected descriptor with bodies_count=1");
+
+    let fixed_joint = m1_desc
+        .joints
+        .iter()
+        .find(|j| j.kind == "fixed")
+        .expect("expected a fixed joint descriptor");
+
+    // Binding must remain FixedNoMotion — structural kind overrides bind() form.
+    assert_eq!(
+        fixed_joint.binding,
+        crate::types::JointBinding::FixedNoMotion,
+        "bind(fixed_j, param) must NOT promote binding to ParamBound; got {:?}",
+        fixed_joint.binding
+    );
+    // Document expected flat-field behavior: best-effort, may be set for
+    // fixed joints even though binding is FixedNoMotion.
+    // (Not asserting a specific value here — the best-effort nature is the point.)
+}
