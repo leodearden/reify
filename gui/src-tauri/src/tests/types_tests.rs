@@ -2115,3 +2115,141 @@ fn fea_case_changed_serializes_to_expected_json_shape() {
         })
     );
 }
+
+// ---- JointBinding enum IPC contract tests (task 3783, step-1) ----------------
+
+/// Compile-time IPC contract for `JointBinding`: Serialize + DeserializeOwned +
+/// Clone + Debug + PartialEq.
+#[test]
+fn joint_binding_ipc_contract() {
+    use super::assert_ipc_contract;
+    use crate::types::JointBinding;
+    assert_ipc_contract::<JointBinding>();
+}
+
+/// `JointBinding::ParamBound` round-trips through `serde_json::to_value` /
+/// `from_value` and serializes with `kind: "param_bound"` plus the expected
+/// payload keys.
+#[test]
+fn joint_binding_param_bound_round_trips() {
+    use crate::types::JointBinding;
+
+    let binding = JointBinding::ParamBound {
+        param_cell_id: "Kinematic.y_pos".to_string(),
+        current_value_si: Some(0.1),
+    };
+    let v = serde_json::to_value(&binding).expect("serialize ParamBound");
+
+    assert_eq!(
+        v["kind"], "param_bound",
+        "ParamBound must serialize with kind=\"param_bound\"; got {:?}",
+        v["kind"]
+    );
+    assert!(
+        v.get("param_cell_id").is_some(),
+        "expected 'param_cell_id' key in ParamBound"
+    );
+    assert!(
+        v.get("current_value_si").is_some(),
+        "expected 'current_value_si' key in ParamBound"
+    );
+
+    let back: JointBinding = serde_json::from_value(v).expect("deserialize ParamBound");
+    assert_eq!(back, binding, "ParamBound must round-trip without data loss");
+}
+
+/// `JointBinding::LiteralBound` round-trips through `serde_json::to_value` /
+/// `from_value` and serializes with `kind: "literal_bound"` plus the expected
+/// payload keys.
+#[test]
+fn joint_binding_literal_bound_round_trips() {
+    use crate::types::JointBinding;
+
+    let binding = JointBinding::LiteralBound {
+        synth_param_name: "__joint_y_axis_v".to_string(),
+        initial_value_si: Some(0.05),
+        scrubbable: true,
+    };
+    let v = serde_json::to_value(&binding).expect("serialize LiteralBound");
+
+    assert_eq!(
+        v["kind"], "literal_bound",
+        "LiteralBound must serialize with kind=\"literal_bound\"; got {:?}",
+        v["kind"]
+    );
+    assert!(
+        v.get("synth_param_name").is_some(),
+        "expected 'synth_param_name' key in LiteralBound"
+    );
+    assert!(
+        v.get("initial_value_si").is_some(),
+        "expected 'initial_value_si' key in LiteralBound"
+    );
+    assert!(
+        v.get("scrubbable").is_some(),
+        "expected 'scrubbable' key in LiteralBound"
+    );
+
+    let back: JointBinding = serde_json::from_value(v).expect("deserialize LiteralBound");
+    assert_eq!(
+        back, binding,
+        "LiteralBound must round-trip without data loss"
+    );
+}
+
+/// `JointBinding::CouplingDerived` round-trips through `serde_json::to_value` /
+/// `from_value` and serializes with `kind: "coupling_derived"`.
+#[test]
+fn joint_binding_coupling_derived_round_trips() {
+    use crate::types::JointBinding;
+
+    let binding = JointBinding::CouplingDerived {
+        source_joint: "j_drive".to_string(),
+    };
+    let v = serde_json::to_value(&binding).expect("serialize CouplingDerived");
+
+    assert_eq!(
+        v["kind"], "coupling_derived",
+        "CouplingDerived must serialize with kind=\"coupling_derived\"; got {:?}",
+        v["kind"]
+    );
+    assert!(
+        v.get("source_joint").is_some(),
+        "expected 'source_joint' key in CouplingDerived"
+    );
+
+    let back: JointBinding = serde_json::from_value(v).expect("deserialize CouplingDerived");
+    assert_eq!(
+        back, binding,
+        "CouplingDerived must round-trip without data loss"
+    );
+}
+
+/// `JointBinding::FixedNoMotion` round-trips through `serde_json::to_value` /
+/// `from_value` as the unit variant `{"kind": "fixed_no_motion"}`.
+#[test]
+fn joint_binding_fixed_no_motion_round_trips() {
+    use crate::types::JointBinding;
+
+    let binding = JointBinding::FixedNoMotion;
+    let v = serde_json::to_value(&binding).expect("serialize FixedNoMotion");
+
+    assert_eq!(
+        v["kind"], "fixed_no_motion",
+        "FixedNoMotion must serialize as {{\"kind\": \"fixed_no_motion\"}}; got {:?}",
+        v
+    );
+    // Unit variant: only the `kind` discriminator key should be present.
+    assert_eq!(
+        v.as_object().map(|m| m.len()),
+        Some(1),
+        "FixedNoMotion wire must be exactly {{\"kind\": \"fixed_no_motion\"}} (one key); got {:?}",
+        v
+    );
+
+    let back: JointBinding = serde_json::from_value(v).expect("deserialize FixedNoMotion");
+    assert_eq!(
+        back, binding,
+        "FixedNoMotion must round-trip without data loss"
+    );
+}
