@@ -1862,6 +1862,16 @@ impl<'a> Lowering<'a> {
         //   TODO(task 3573): lower param_assignment once a MemberDecl variant or
         //   let-rewrite is decided for the `name = value where?` form.
         // - Absent body field (instantiation/collection/bare-colon forms) → `None`.
+        //
+        // Note: this loop intentionally does NOT run the annotation/pragma machinery
+        // (`pending_annotations` / `pragmas`) used by `lower_members`. Pragmas or
+        // `@annotation` markers written inside a specialization body are silently
+        // dropped. This is acceptable in practice because the validator forbids
+        // `param`/`port`/`sub` (the only members that carry annotations in normal
+        // structures) and `let`/`constraint` (the permitted members) do not
+        // conventionally carry annotations. If future usage demands annotation
+        // propagation here, replace this loop with a call to `lower_members` and
+        // filter the result.
         let body = node.child_by_field_name("body").map(|body_node| {
             let mut members = Vec::new();
             let mut cursor = body_node.walk();

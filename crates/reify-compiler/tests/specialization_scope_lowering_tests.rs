@@ -30,19 +30,23 @@ fn forbidden_diagnostics(diagnostics: &[reify_types::Diagnostic]) -> Vec<&reify_
 
 /// Source-driven rewrite of `compile_pipeline_invokes_specialization_scope_validator`.
 ///
-/// Parses `.ri` source `structure S { sub scope : Foo { param x } }`, runs the
-/// full compile pipeline, and asserts that the specialization-scope validator
-/// fires `SpecializationForbiddenDecl` — which requires `lower_sub` to
-/// populate `body: Some([MemberDecl::Param("x")])`.
+/// Parses `.ri` source `structure S { sub scope : Foo { sub inner : Bar } }`, runs
+/// the full compile pipeline, and asserts that the specialization-scope validator
+/// fires `SpecializationForbiddenDecl` for the forbidden nested `sub` declaration —
+/// which requires `lower_sub` to populate `body: Some([MemberDecl::Sub(...)])`.
+///
+/// Using `sub inner : Bar` (instead of the `param x` in the AST-shape pin below)
+/// ensures each test covers a distinct forbidden-decl variant: Sub here, Param in
+/// the shape-pin test.
 ///
 /// This test is RED before step-2 because `lower_sub` currently hardcodes
 /// `body: None` — the validator's walker is a no-op when `body.is_none()`, so
-/// `param x` is never visited and no `SpecializationForbiddenDecl` is emitted.
+/// `sub inner` is never visited and no `SpecializationForbiddenDecl` is emitted.
 ///
 /// Leaf signal from phase-3-grammar-fiction-triage-log.md §B3.
 #[test]
 fn compile_pipeline_invokes_specialization_scope_validator_from_source() {
-    let source = "structure S { sub scope : Foo { param x } }";
+    let source = "structure S { sub scope : Foo { sub inner : Bar } }";
     let parsed = reify_syntax::parse(source, ModulePath::single("test_spec_scope_validator"));
 
     assert!(
@@ -240,6 +244,16 @@ fn where_guard_before_body_preserves_both_fields() {
     assert!(
         sub_decl.body.is_some(),
         "body should be Some — the {{ depth = depth - 1 }} block should be recognised as a body"
+    );
+
+    // The body contains only a `param_assignment` (`depth = depth - 1`), which is
+    // silently dropped during lowering per the design decision (task 3573 follow-up).
+    // Pin the empty-vec outcome explicitly so task 3573 must consciously update this
+    // test when it lowers `param_assignment` to an actual MemberDecl variant.
+    assert!(
+        sub_decl.body.as_ref().unwrap().is_empty(),
+        "param_assignment is dropped per task 3573 follow-up; expected empty body, got: {:?}",
+        sub_decl.body.as_ref().unwrap()
     );
 }
 
