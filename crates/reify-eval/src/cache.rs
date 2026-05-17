@@ -795,11 +795,23 @@ impl CacheStore {
             } else {
                 // First-time dispatch: no prior result → seed Pending with
                 // the ResultRef::none() sentinel.
+                //
+                // Compute `result_hash` from the seeded `CachedResult` (rather
+                // than a `ContentHash(0)` sentinel) so this entry obeys the
+                // global invariant `result_hash == result.content_hash()` that
+                // `record_evaluation_with_freshness`'s early-cutoff path relies
+                // on. Without this, a same-hash check against the bogus 0 would
+                // happen to take the changed-path (correct by accident) and a
+                // trampoline that legitimately returned a value hashing to 0
+                // would mis-route through the early-cutoff branch.
+                let result =
+                    CachedResult::Value(Value::Undef, DeterminacyState::Determined);
+                let result_hash = result.content_hash();
                 self.caches.insert(
                     node,
                     NodeCache {
-                        result: CachedResult::Value(Value::Undef, DeterminacyState::Determined),
-                        result_hash: ContentHash(0),
+                        result,
+                        result_hash,
                         freshness: Freshness::Pending {
                             last_substantive: ResultRef::none(),
                         },
