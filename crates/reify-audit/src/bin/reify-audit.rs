@@ -72,7 +72,7 @@ impl JCodemunchOps for NoopJCodemunchOps {
     fn get_changed_symbols(&self, _branch: &str, _since_epoch: i64) -> Vec<ChangedSymbol> {
         vec![]
     }
-    fn find_references(&self, _symbol_name: &str) -> Vec<SymbolReference> {
+    fn find_references(&self, _symbol: &ChangedSymbol) -> Vec<SymbolReference> {
         vec![]
     }
 }

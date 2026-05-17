@@ -132,7 +132,7 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
             // suppress (design §5 P1: refs filtered to non-`*/tests/*`).
             let has_non_test_caller = ctx
                 .jcodemunch
-                .find_references(&symbol.name)
+                .find_references(&symbol)
                 .iter()
                 .any(|r| !crate::is_test_path(&r.file));
             if has_non_test_caller {

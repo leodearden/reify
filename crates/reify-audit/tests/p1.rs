@@ -161,7 +161,7 @@ mod tests {
             done_at,
             vec![changed_symbol("new_widget", "crates/reify-x/src/widget.rs")],
         );
-        jc.set_find_references("new_widget", vec![]);
+        jc.set_find_references("crates/reify-x/src/widget.rs", "new_widget", vec![]);
 
         let mut task_metadata = HashMap::new();
         task_metadata.insert(
@@ -229,6 +229,7 @@ mod tests {
         );
         // Real non-test caller → new_widget suppressed.
         jc.set_find_references(
+            "crates/reify-x/src/widget.rs",
             "new_widget",
             vec![SymbolReference {
                 file: "crates/reify-y/src/uses_widget.rs".to_string(),
@@ -237,6 +238,7 @@ mod tests {
         );
         // Only a test-path caller → test_only_widget still flagged.
         jc.set_find_references(
+            "crates/reify-x/src/other.rs",
             "test_only_widget",
             vec![SymbolReference {
                 file: "crates/reify-y/tests/it.rs".to_string(),
@@ -305,7 +307,7 @@ mod tests {
             done_at,
             vec![changed_symbol("fresh_widget", "crates/reify-x/src/fresh.rs")],
         );
-        jc.set_find_references("fresh_widget", vec![]);
+        jc.set_find_references("crates/reify-x/src/fresh.rs", "fresh_widget", vec![]);
 
         let mut task_metadata = HashMap::new();
         task_metadata.insert(
@@ -368,7 +370,7 @@ mod tests {
                 "crates/reify-x/src/scaffold.rs",
             )],
         );
-        jc.set_find_references("scaffold_widget", vec![]);
+        jc.set_find_references("crates/reify-x/src/scaffold.rs", "scaffold_widget", vec![]);
 
         // (a) Foundation task → suppressed.
         let mut tm_foundation = HashMap::new();
@@ -465,8 +467,8 @@ mod tests {
                 },
             ],
         );
-        jc.set_find_references("marked_widget", vec![]);
-        jc.set_find_references("blank_marked_widget", vec![]);
+        jc.set_find_references("crates/reify-x/src/marked.rs", "marked_widget", vec![]);
+        jc.set_find_references("crates/reify-x/src/blank.rs", "blank_marked_widget", vec![]);
 
         let mut task_metadata = HashMap::new();
         task_metadata.insert(
@@ -549,9 +551,10 @@ mod tests {
                 changed_symbol("live_widget", "crates/reify-x/src/live.rs"),
             ],
         );
-        for name in ["stdlib_widget", "dead_widget", "cfg_test_widget", "live_widget"] {
-            jc.set_find_references(name, vec![]);
-        }
+        jc.set_find_references("crates/reify-stdlib/src/prelude.rs", "stdlib_widget", vec![]);
+        jc.set_find_references("crates/reify-x/src/dead.rs", "dead_widget", vec![]);
+        jc.set_find_references("crates/reify-x/src/cfgt.rs", "cfg_test_widget", vec![]);
+        jc.set_find_references("crates/reify-x/src/live.rs", "live_widget", vec![]);
 
         let mut task_metadata = HashMap::new();
         task_metadata.insert(
@@ -615,7 +618,7 @@ mod tests {
             let done_at = NOW - age;
             let mut jc = MockJCodemunchOps::new();
             jc.set_changed_symbols("main", done_at, vec![changed_symbol(name, file)]);
-            jc.set_find_references(name, vec![]);
+            jc.set_find_references(file, name, vec![]);
 
             let mut task_metadata = HashMap::new();
             task_metadata.insert(name.to_string(), done_meta(name, done_at, Some("docs/x.md")));
@@ -674,7 +677,7 @@ mod tests {
             done_at,
             vec![changed_symbol("branch_widget", "crates/reify-x/src/branch.rs")],
         );
-        jc.set_find_references("branch_widget", vec![]);
+        jc.set_find_references("crates/reify-x/src/branch.rs", "branch_widget", vec![]);
 
         let mut task_metadata = HashMap::new();
         task_metadata.insert(
@@ -755,8 +758,8 @@ mod tests {
             done_at_b,
             vec![changed_symbol("widget_b", "crates/reify-x/src/b.rs")],
         );
-        jc.set_find_references("widget_a", vec![]);
-        jc.set_find_references("widget_b", vec![]);
+        jc.set_find_references("crates/reify-x/src/a.rs", "widget_a", vec![]);
+        jc.set_find_references("crates/reify-x/src/b.rs", "widget_b", vec![]);
 
         let mut task_metadata = HashMap::new();
         task_metadata.insert(
@@ -817,7 +820,7 @@ mod tests {
             done_at,
             vec![changed_symbol("review_widget", "crates/reify-x/src/review.rs")],
         );
-        jc.set_find_references("review_widget", vec![]);
+        jc.set_find_references("crates/reify-x/src/review.rs", "review_widget", vec![]);
 
         let mut task_metadata = HashMap::new();
         // The done producer.

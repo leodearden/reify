@@ -284,7 +284,7 @@ mod tests {
             }],
         );
         // Zero callers → true orphan.
-        jc.set_find_references("resolve_unique_by_attribute", vec![]);
+        jc.set_find_references("crates/reify-eval/src/selector_resolution.rs", "resolve_unique_by_attribute", vec![]);
 
         let mut task_metadata = HashMap::new();
         task_metadata.insert(

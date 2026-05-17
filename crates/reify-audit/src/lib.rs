@@ -617,10 +617,15 @@ pub trait JCodemunchOps {
     /// nothing changed or the branch does not exist.
     fn get_changed_symbols(&self, branch: &str, since_epoch: i64) -> Vec<ChangedSymbol>;
 
-    /// Equivalent of `mcp__jcodemunch__find_references(symbol_name)`: every
-    /// non-declaration reference of the symbol across the workspace. Returns
-    /// an empty vec when the symbol has no callers (an orphan candidate).
-    fn find_references(&self, symbol_name: &str) -> Vec<SymbolReference>;
+    /// Equivalent of `mcp__jcodemunch__find_references(symbol)`: every
+    /// non-declaration reference of the symbol across the workspace, scoped
+    /// to the symbol's declaring file so that two same-named symbols in
+    /// different files are not conflated. Production impls MUST scope the
+    /// lookup to `symbol.file` (e.g. pass the file path to jcodemunch-MCP
+    /// for module-level disambiguation); tests key on `(file, name)`.
+    /// Returns an empty vec when the symbol has no callers (an orphan
+    /// candidate). Per `f-infra-design.md` §5 P1.
+    fn find_references(&self, symbol: &ChangedSymbol) -> Vec<SymbolReference>;
 }
 
 /// HashMap-backed [`JCodemunchOps`] for tests. Gated behind
@@ -631,7 +636,7 @@ pub trait JCodemunchOps {
 #[derive(Debug, Default)]
 pub struct MockJCodemunchOps {
     get_changed_symbols: HashMap<(String, i64), Vec<ChangedSymbol>>,
-    find_references: HashMap<String, Vec<SymbolReference>>,
+    find_references: HashMap<(String, String), Vec<SymbolReference>>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -653,8 +658,8 @@ impl MockJCodemunchOps {
     }
 
     // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
-    pub fn set_find_references(&mut self, symbol_name: &str, refs: Vec<SymbolReference>) {
-        self.find_references.insert(symbol_name.to_string(), refs);
+    pub fn set_find_references(&mut self, file: &str, name: &str, refs: Vec<SymbolReference>) {
+        self.find_references.insert((file.to_string(), name.to_string()), refs);
     }
 }
 
@@ -667,9 +672,9 @@ impl JCodemunchOps for MockJCodemunchOps {
             .unwrap_or_default()
     }
 
-    fn find_references(&self, symbol_name: &str) -> Vec<SymbolReference> {
+    fn find_references(&self, symbol: &ChangedSymbol) -> Vec<SymbolReference> {
         self.find_references
-            .get(symbol_name)
+            .get(&(symbol.file.clone(), symbol.name.clone()))
             .cloned()
             .unwrap_or_default()
     }
