@@ -490,3 +490,58 @@ fn buckling_result_struct_has_correct_param_shape() {
         );
     }
 }
+
+// ─── step-13: BucklingResult non-negativity constraint ───────────────────────
+
+/// `BucklingResult` must declare a non-negativity constraint on `iterations`:
+///
+///   constraint iterations >= 0
+///
+/// `iterations` is a Lanczos iteration count — a negative count is
+/// impossible. Encoding this as a structure-level constraint follows the
+/// task-2544 convention: "the contract in production code is made explicit
+/// rather than relying solely on test coverage." Mirrors
+/// `ElasticResult.iterations >= 0` (`solver_elastic.ri:313-321`).
+///
+/// The assertion shape mirrors
+/// `solver_elastic_tests.rs::elastic_result_constrains_iterations_and_max_von_mises_nonneg`,
+/// substituting `BinOp::Ge` (`>=`) for `BinOp::Gt` (`>`).
+#[test]
+fn buckling_result_constrains_iterations_nonneg() {
+    let template = find_structure("BucklingResult");
+
+    assert!(
+        !template.constraints.is_empty(),
+        "BucklingResult should declare at least 1 constraint (iterations >= 0), got {} constraints",
+        template.constraints.len()
+    );
+
+    let matched = template.constraints.iter().any(|c| {
+        // The constraint must be a `>=` BinOp with a ValueRef to `iterations`
+        // on the left and the literal `0` on the right. Pinning the RHS
+        // prevents a silent weakening where the bound is changed to a
+        // negative value but the name + op check still passes.
+        match &c.expr.kind {
+            CompiledExprKind::BinOp { op, left, right } => {
+                if *op != BinOp::Ge || !collect_value_ref_members(left).contains(&"iterations") {
+                    return false;
+                }
+                match &right.kind {
+                    CompiledExprKind::Literal(Value::Int(0)) => true,
+                    CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    });
+    assert!(
+        matched,
+        "BucklingResult should declare `constraint iterations >= 0`; got constraints: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+}
