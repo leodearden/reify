@@ -130,3 +130,37 @@ structure def Mode {
     param eigenvalue : Real
     param mode_shape : Field<Point3<Length>, Vector3<Length>>
 }
+
+// ── BucklingResult ───────────────────────────────────────────────────────────
+
+// `BucklingResult` is the single-load-case buckling-solver output container.
+// Populated exclusively by the `solver::buckling` trampoline (PRD §13 task ε);
+// no caller-supplied defaults are meaningful.
+//
+// Field semantics:
+//   modes       — list of computed eigenpairs in ascending |eigenvalue|
+//                 order (smallest critical load first). Length ≤
+//                 `options.n_modes`; equal to `n_modes` iff `converged ==
+//                 true`. Empty on early-cancellation; partial on non-
+//                 convergence (PRD §5 emits `W_BucklingNotConverged` in that
+//                 case).
+//   converged   — true iff all `options.n_modes` modes converged within
+//                 `options.tol`. False iff Lanczos hit `max_iters` before
+//                 reaching the tolerance for all requested modes.
+//   iterations  — total Lanczos iteration count across restarts.
+//                 Diagnostic for tuning (`solver hit cap` vs `solver
+//                 converged in 47 iters`). Mirrors
+//                 `ElasticResult.iterations`.
+//   pre_stress  — the linear-static elastic solve that produced the stress
+//                 field consumed by K_g assembly. Returned so downstream
+//                 code can inspect the same displacement/stress field
+//                 the buckling solve was based on, without re-running
+//                 `solve_elastic_static`.
+//
+// PRD reference: docs/prds/v0_5/buckling-eigensolver.md §4.
+structure def BucklingResult {
+    param modes : List<Mode>
+    param converged : Bool
+    param iterations : Int
+    param pre_stress : ElasticResult
+}
