@@ -375,6 +375,85 @@ mod tests {
         assert_eq!(JointKind::Spherical.flat_len(), 4);
     }
 
+    // ── JointKind ↔ joints::JOINT_KINDS cross-check tests (amend) ────────
+    //
+    // Lock the new `JointKind` enum to `crate::joints::JOINT_KINDS` — the
+    // documented source of truth for joint-kind strings — so a future
+    // addition to JOINT_KINDS (e.g. for a follow-up PRD) without an
+    // accompanying `JointKind::from_str` arm + `flat_len` arm fails at
+    // test time rather than silently mis-bridging through `unflatten_dofs`
+    // (where the missing arm would emit `None` and break the chain
+    // motion-value contract with no compile- or test-time signal).
+    //
+    // Mirrors the `is_joint_value_aligns_with_joint_kinds` /
+    // `transform_at_dispatches_for_every_joint_kind` pattern that
+    // already guards other JOINT_KINDS dispatch surfaces.
+
+    #[test]
+    fn joint_kind_from_str_aligns_with_joint_kinds() {
+        // Iterate the canonical kind set and confirm every entry maps to
+        // a `Some(JointKind::..)` variant.  The hardcoded
+        // `joint_kind_from_str_maps_all_seven_canonical_strings` test
+        // above only covers the 7 strings it explicitly names, so it
+        // would NOT catch a new entry added to JOINT_KINDS later —
+        // this assertion does.
+        use crate::joints::JOINT_KINDS;
+        for &kind in JOINT_KINDS {
+            assert!(
+                JointKind::from_str(kind).is_some(),
+                "JOINT_KINDS entry '{kind}' has no matching JointKind variant — \
+                 add the variant + a `from_str` arm + a `flat_len` arm, or \
+                 remove '{kind}' from JOINT_KINDS."
+            );
+        }
+    }
+
+    #[test]
+    fn joint_kind_flat_len_aligns_with_joint_kinds_arity_fixture() {
+        // Single source-of-truth fixture for per-kind STORAGE width
+        // (the `flat_len` driver for `flatten_dofs` / `unflatten_dofs`).
+        // Colocated with this test so a future arity change has exactly
+        // one place to update.  Iterating JOINT_KINDS catches two drift
+        // modes: (1) a new JOINT_KINDS entry without a fixture row, and
+        // (2) a fixture row whose width disagrees with `flat_len`.
+        use crate::joints::JOINT_KINDS;
+        let expected_flat_len: &[(&str, usize)] = &[
+            ("prismatic", 1),
+            ("revolute", 1),
+            ("coupling", 1),
+            ("fixed", 1),
+            ("planar", 3),
+            ("spherical", 4), // STORAGE: quaternion w,x,y,z (not the 3 manifold DOF).
+            ("cylindrical", 2),
+        ];
+        for &kind in JOINT_KINDS {
+            let variant = JointKind::from_str(kind).unwrap_or_else(|| {
+                panic!(
+                    "JOINT_KINDS entry '{kind}' has no JointKind variant — \
+                     covered separately by joint_kind_from_str_aligns_with_joint_kinds"
+                )
+            });
+            let want = expected_flat_len
+                .iter()
+                .find(|(k, _)| *k == kind)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "JOINT_KINDS entry '{kind}' is missing from the \
+                         per-kind flat_len fixture — add ('{kind}', \
+                         <storage_width>) to the `expected_flat_len` table."
+                    )
+                })
+                .1;
+            assert_eq!(
+                variant.flat_len(),
+                want,
+                "JointKind::{variant:?}.flat_len() == {} but the per-kind \
+                 fixture expects {want} for '{kind}'.",
+                variant.flat_len()
+            );
+        }
+    }
+
     // ── flatten_dofs tests (step-4) ──────────────────────────────────────
 
     #[test]
