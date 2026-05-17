@@ -313,7 +313,7 @@ impl tracing::Subscriber for CountingSubscriber {
 ///
 /// # Release-mode asymmetry
 ///
-/// Both `WarnCountingSubscriber` and `WarnCapturingSubscriber` rely entirely on
+/// Both `WarnCountingSubscriber` and `LevelCapturingSubscriber` rely entirely on
 /// the dispatcher's `enabled()` contract: their `event()` implementations
 /// perform no defensive level re-check.  In debug builds the `debug_assert_eq!`
 /// that embeds this marker catches contract violations loudly.  In release
@@ -328,7 +328,7 @@ impl tracing::Subscriber for CountingSubscriber {
 /// `tests::event_panics_on_non_warn_when_dispatcher_contract_violated`
 /// (`WarnCountingSubscriber`) and
 /// `tests::capturing_event_panics_on_non_warn_when_dispatcher_contract_violated`
-/// (`WarnCapturingSubscriber`) both use the literal `"enabled() contract
+/// (`LevelCapturingSubscriber`) both use the literal `"enabled() contract
 /// violated"` — the same text as this const.  Because Rust requires a **string
 /// literal** (not a const expression) in the `expected` parameter of
 /// `#[should_panic]`, the sync cannot be enforced by the type system.  Instead
@@ -401,23 +401,23 @@ impl tracing::Subscriber for WarnCountingSubscriber {
 
 /// Captured output from [`warn_capturing_subscriber`]: event count, message
 /// text, and structured fields for all WARN events.
+///
+/// Wraps a [`Capture`] produced by [`CapturingSubscriberBuilder::new`] at
+/// `WARN` level, delegating all accessors to it and adding WARN-specific
+/// assertion helpers on top.
 pub struct WarnCapture {
-    count: Arc<AtomicUsize>,
-    messages: Arc<std::sync::Mutex<Vec<String>>>,
-    fields: Arc<std::sync::Mutex<Vec<HashMap<String, String>>>>,
+    inner: Capture,
 }
 
 impl WarnCapture {
     /// Return the number of WARN events that have been emitted so far.
     pub fn count(&self) -> usize {
-        // Acquire ordering pairs with the Release store in WarnCapturingSubscriber::event(),
-        // ensuring the count is fully visible once observed.
-        self.count.load(Ordering::Acquire)
+        self.inner.count()
     }
 
     /// Return a snapshot of all captured WARN event message strings.
     pub fn messages(&self) -> Vec<String> {
-        self.messages.lock().unwrap().clone()
+        self.inner.messages()
     }
 
     /// Assert that exactly `expected` WARN events were emitted.
@@ -472,7 +472,7 @@ impl WarnCapture {
     /// [`assert_any_event_has_fields`]: Self::assert_any_event_has_fields
     /// [`assert_any_event_field_contains`]: Self::assert_any_event_field_contains
     pub fn fields_by_event(&self) -> Vec<HashMap<String, String>> {
-        self.fields.lock().unwrap().clone()
+        self.inner.fields_by_event()
     }
 
     /// Assert that at least one captured WARN message equals `expected` exactly.
@@ -492,7 +492,7 @@ impl WarnCapture {
     /// message includes `expected` and the full list of captured messages for
     /// diagnostics.
     pub fn assert_any_message_equals(&self, expected: &str) {
-        let messages = self.messages.lock().unwrap();
+        let messages = self.messages();
         assert!(
             messages.iter().any(|m| m == expected),
             "no WARN message equaled {expected:?}; captured messages: {messages:?}"
@@ -583,40 +583,8 @@ impl WarnCapture {
 /// [`Arc`] so callers can inspect results after the subscriber has been
 /// installed and removed.
 pub fn warn_capturing_subscriber() -> (impl tracing::Subscriber + Send + Sync, WarnCapture) {
-    let count = Arc::new(AtomicUsize::new(0));
-    let messages = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-    let fields = Arc::new(std::sync::Mutex::new(Vec::<HashMap<String, String>>::new()));
-    let capture = WarnCapture {
-        count: Arc::clone(&count),
-        messages: Arc::clone(&messages),
-        fields: Arc::clone(&fields),
-    };
-    let subscriber = WarnCapturingSubscriber {
-        count,
-        messages,
-        fields,
-        span_counter: AtomicU64::new(1),
-    };
-    (subscriber, capture)
-}
-
-// ── WarnCapturingSubscriber (private) ─────────────────────────────────────────
-//
-// TODO: `WarnCapturingSubscriber` is now nearly identical to the private
-// `LevelCapturingSubscriber` backing `CapturingSubscriberBuilder` (same
-// fields, same `event()` body minus the `debug_assert` and the optional
-// `target_prefix` filter).  A follow-up task should reimplement
-// `warn_capturing_subscriber()` as a thin wrapper around
-// `CapturingSubscriberBuilder::new(Level::WARN)` and have `WarnCapture`
-// delegate to `Capture`, so contract changes only have one place to land.
-// Preserve the debug_assert_eq! level check by parameterizing it on the
-// builder's registered level.
-
-struct WarnCapturingSubscriber {
-    count: Arc<AtomicUsize>,
-    messages: Arc<std::sync::Mutex<Vec<String>>>,
-    fields: Arc<std::sync::Mutex<Vec<HashMap<String, String>>>>,
-    span_counter: AtomicU64,
+    let (subscriber, inner) = CapturingSubscriberBuilder::new(tracing::Level::WARN).build();
+    (subscriber, WarnCapture { inner })
 }
 
 /// A [`tracing::field::Visit`] implementation that extracts the formatted
@@ -655,51 +623,6 @@ impl tracing::field::Visit for MessageVisitor {
                 .insert(field.name().to_owned(), format!("{value:?}"));
         }
     }
-}
-
-impl tracing::Subscriber for WarnCapturingSubscriber {
-    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-        metadata.level() == &tracing::Level::WARN
-    }
-
-    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-        let id = self.span_counter.fetch_add(1, Ordering::Relaxed);
-        tracing::span::Id::from_u64(id)
-    }
-
-    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
-
-    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
-
-    fn event(&self, event: &tracing::Event<'_>) {
-        // The tracing dispatcher only calls event() when enabled() returned true;
-        // our enabled() accepts only WARN, so only WARN events should reach here.
-        // See release-mode asymmetry note on `CONTRACT_VIOLATION_MARKER`.
-        debug_assert_eq!(
-            event.metadata().level(),
-            &tracing::Level::WARN,
-            "WarnCapturingSubscriber: event() reached with non-WARN — {}",
-            CONTRACT_VIOLATION_MARKER
-        );
-        let mut visitor = MessageVisitor {
-            message: String::new(),
-            fields: HashMap::new(),
-        };
-        event.record(&mut visitor);
-        self.messages.lock().unwrap().push(visitor.message);
-        self.fields.lock().unwrap().push(visitor.fields);
-        // Increment count *after* pushing to the vectors so that an Acquire
-        // load of count() is a fence for vector contents (Release pairs with
-        // WarnCapture::count()'s Acquire load and with assertion helpers).
-        // NOTE(bug-fix): Previously fetch_add was called *before* the pushes,
-        // so a concurrent Acquire load of count() == N could observe N before
-        // messages[N-1] was written — this was a latent memory-ordering bug.
-        self.count.fetch_add(1, Ordering::Release);
-    }
-
-    fn enter(&self, _span: &tracing::span::Id) {}
-
-    fn exit(&self, _span: &tracing::span::Id) {}
 }
 
 // ── CapturingSubscriberBuilder ────────────────────────────────────────────────
@@ -845,6 +768,19 @@ impl tracing::Subscriber for LevelCapturingSubscriber {
     fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
 
     fn event(&self, event: &tracing::Event<'_>) {
+        // The tracing dispatcher only calls event() when enabled() returned true;
+        // our enabled() accepts only events at self.level, so only events at
+        // that level should reach here.  See release-mode asymmetry note on
+        // `CONTRACT_VIOLATION_MARKER`.
+        debug_assert_eq!(
+            event.metadata().level(),
+            &self.level,
+            "LevelCapturingSubscriber: event() reached at unexpected level {:?} \
+             (registered {:?}) — {}",
+            event.metadata().level(),
+            self.level,
+            CONTRACT_VIOLATION_MARKER
+        );
         let mut visitor = MessageVisitor {
             message: String::new(),
             fields: HashMap::new(),
@@ -1611,7 +1547,7 @@ mod tests {
     /// - `event_panics_on_non_warn_when_dispatcher_contract_violated`
     ///   (`WarnCountingSubscriber`)
     /// - `capturing_event_panics_on_non_warn_when_dispatcher_contract_violated`
-    ///   (`WarnCapturingSubscriber`)
+    ///   (`LevelCapturingSubscriber`)
     ///
     /// # Sync requirement
     ///
