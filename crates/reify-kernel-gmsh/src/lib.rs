@@ -97,7 +97,9 @@ pub use mesh_volume::{MeshSurfaceToVolumeReport, mesh_surface_to_volume_with_dia
 // error without re-declaring the literal.
 pub use mesh_profile_2d::{MeshPlane2dResult, STUB_UNAVAILABLE_MARKER, mesh_plane_2d};
 #[cfg(feature = "mesh-morph")]
-pub use mesh_boundary::{BoundaryAttributionInput, compute_boundary_association};
+pub use mesh_boundary::{
+    BoundaryAttributionInput, compute_boundary_association, validate_attribution_length,
+};
 pub use options::MeshingOptions;
 // Task 2999: a-posteriori volume mesh refinement driven by per-element size
 // hints (PRD docs/prds/v0_4/a-posteriori-error-estimation.md task #2).

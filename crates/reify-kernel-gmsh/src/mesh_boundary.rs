@@ -16,7 +16,7 @@
 //! `has_gmsh` because it calls `mesh_surface_to_volume_with_diagnostics` which
 //! only exists in the real FFI build.
 
-use reify_types::{BoundaryAssociation, GeometryHandleId, Mesh, NodeAttachment};
+use reify_types::{BoundaryAssociation, GeometryError, GeometryHandleId, Mesh, NodeAttachment};
 
 // ---------------------------------------------------------------------------
 // Input type
@@ -119,4 +119,36 @@ pub fn compute_boundary_association(
     }
 
     ba
+}
+
+// ---------------------------------------------------------------------------
+// Pure-Rust helper: validate_attribution_length
+// ---------------------------------------------------------------------------
+
+/// Verify that `attribution.per_vertex.len()` equals the number of vertices
+/// in `surface` (`surface.vertices.len() / 3`).
+///
+/// Returns `Err(GeometryError::OperationFailed)` on mismatch, with a message
+/// that includes:
+/// - the phrase `"attribution per_vertex length"` for triage grep,
+/// - the actual length (`attribution.per_vertex.len()`),
+/// - the expected length (`surface.vertices.len() / 3`),
+/// - the raw `surface.vertices.len()`.
+///
+/// Called at the top of `mesh_surface_to_volume_with_attribution` before
+/// any meshing is attempted.
+pub fn validate_attribution_length(
+    surface: &Mesh,
+    attribution: &BoundaryAttributionInput,
+) -> Result<(), GeometryError> {
+    let expected = surface.vertices.len() / 3;
+    let actual = attribution.per_vertex.len();
+    if actual != expected {
+        return Err(GeometryError::OperationFailed(format!(
+            "attribution per_vertex length {actual} does not match surface vertex count \
+             {expected} (surface.vertices.len() = {raw})",
+            raw = surface.vertices.len(),
+        )));
+    }
+    Ok(())
 }
