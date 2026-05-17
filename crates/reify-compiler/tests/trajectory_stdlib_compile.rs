@@ -227,3 +227,47 @@ fn profile_trait_exists_with_no_params() {
         trait_def.refinements
     );
 }
+
+// ─── step-5: BoundaryCondition marker trait ──────────────────────────────────
+
+/// `BoundaryCondition` is the marker trait for every spline boundary-mode
+/// variant declared in this module: `NaturalSpline`, `ClampedSpline`,
+/// `PeriodicSpline` (PRD §4.1). The semantic invariants on each variant
+/// ("zero second derivative at endpoints", "specified tangents", "endpoints
+/// agree") are evaluator-time concerns in β, not authoring-time params, so
+/// the trait is intentionally empty.
+///
+/// Test pins three invariants: (a) the trait is found, (b) it has zero
+/// required members + zero defaults, (c) it has no refinements (top-level
+/// marker, no parent trait).
+#[test]
+fn boundary_condition_trait_exists_with_no_params() {
+    let trait_def = find_trait("BoundaryCondition");
+
+    assert!(
+        trait_def.required_members.is_empty(),
+        "BoundaryCondition should declare zero required members (marker \
+         trait); got: {:?}",
+        trait_def
+            .required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        trait_def.defaults.is_empty(),
+        "BoundaryCondition should declare zero defaults (marker trait); \
+         got: {:?}",
+        trait_def
+            .defaults
+            .iter()
+            .map(|d| &d.name)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        trait_def.refinements.is_empty(),
+        "BoundaryCondition should declare zero refinements (top-level \
+         marker, no parent trait); got: {:?}",
+        trait_def.refinements
+    );
+}
