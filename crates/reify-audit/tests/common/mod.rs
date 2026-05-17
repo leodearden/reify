@@ -6,4 +6,4 @@
 //! when a given test binary consumes only a subset of the helpers.
 
 pub mod schema;
-// pub mod fixtures; — added in step-4
+pub mod fixtures;
