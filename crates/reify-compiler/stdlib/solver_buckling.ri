@@ -105,3 +105,28 @@ structure def BucklingOptions {
     //                           Reify `constraint` clauses can only express
     //                           scalar predicates, not string-set membership.
 }
+
+// ── Mode ─────────────────────────────────────────────────────────────────────
+
+// `Mode` is one eigenpair returned by the buckling eigensolver: a scalar
+// load-multiplier eigenvalue paired with a displacement-field eigenvector.
+// Populated exclusively by the solver — no caller-supplied defaults are
+// meaningful, no constraints (every field is solver-determined). Mirrors
+// the `ElasticResult`-style "output container only" discipline.
+//
+// Field semantics:
+//   eigenvalue — load multiplier (dimensionless). For the standard buckling
+//                pair `(K + λ K_g) φ = 0`, this is λ; the critical load is
+//                `λ × reference_load_magnitude` (computed by the stdlib
+//                helper `critical_load`, PRD §13 task ε).
+//   mode_shape — eigenvector reshaped as a per-node displacement Field over
+//                the mesh. Precise `Field<Point3<Length>, Vector3<Length>>`
+//                type per the `ElasticResult.displacement` precedent (task
+//                3117 landed; PRD §4's "Real-placeholder per #3117 workaround"
+//                footnote is stale — see plan.json design-decision-1).
+//
+// PRD reference: docs/prds/v0_5/buckling-eigensolver.md §4.
+structure def Mode {
+    param eigenvalue : Real
+    param mode_shape : Field<Point3<Length>, Vector3<Length>>
+}
