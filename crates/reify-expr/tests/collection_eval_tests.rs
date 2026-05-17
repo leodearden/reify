@@ -1533,12 +1533,14 @@ fn eval_method_map_with_user_function() {
     // Then create [1, 2, 3].map(|x| double(x)) and verify it produces [2, 4, 6]
     use reify_types::{CompiledExprKind, CompiledFnBody, CompiledFunction, ContentHash};
 
-    let double_fn = CompiledFunction::new_with_no_defaults(
-        "double".to_string(),
-        false,
-        vec![("x".to_string(), Type::Int)],
-        Type::Int,
-        CompiledFnBody {
+    let params = vec![("x".to_string(), Type::Int)];
+    let double_fn = CompiledFunction {
+        name: "double".to_string(),
+        is_pub: false,
+        param_defaults: CompiledFunction::no_defaults_for(&params),
+        params,
+        return_type: Type::Int,
+        body: CompiledFnBody {
             let_bindings: vec![],
             result_expr: CompiledExpr::binop(
                 BinOp::Mul,
@@ -1547,10 +1549,10 @@ fn eval_method_map_with_user_function() {
                 Type::Int,
             ),
         },
-        ContentHash::of(b"double_int"),
-        vec![],
-        None,
-    );
+        content_hash: ContentHash::of(b"double_int"),
+        annotations: vec![],
+        optimized_target: None,
+    };
 
     // Lambda body: double(x) — a UserFunctionCall node
     let x_id = ValueCellId::new("$lambda_uf.S", "x");
@@ -1599,12 +1601,14 @@ fn eval_method_filter_with_user_function() {
     use reify_types::{CompiledExprKind, CompiledFnBody, CompiledFunction, ContentHash};
 
     // Define user function: is_even(x) = x % 2 == 0
-    let is_even_fn = CompiledFunction::new_with_no_defaults(
-        "is_even".to_string(),
-        false,
-        vec![("x".to_string(), Type::Int)],
-        Type::Bool,
-        CompiledFnBody {
+    let params = vec![("x".to_string(), Type::Int)];
+    let is_even_fn = CompiledFunction {
+        name: "is_even".to_string(),
+        is_pub: false,
+        param_defaults: CompiledFunction::no_defaults_for(&params),
+        params,
+        return_type: Type::Bool,
+        body: CompiledFnBody {
             let_bindings: vec![],
             result_expr: CompiledExpr::binop(
                 BinOp::Eq,
@@ -1618,10 +1622,10 @@ fn eval_method_filter_with_user_function() {
                 Type::Bool,
             ),
         },
-        ContentHash::of(b"is_even_fn"),
-        vec![],
-        None,
-    );
+        content_hash: ContentHash::of(b"is_even_fn"),
+        annotations: vec![],
+        optimized_target: None,
+    };
 
     // Lambda body: is_even(x)
     let x_id = ValueCellId::new("$lambda_filter_uf.S", "x");
@@ -1672,12 +1676,14 @@ fn eval_method_fold_with_user_function() {
     use reify_types::{CompiledExprKind, CompiledFnBody, CompiledFunction, ContentHash};
 
     // Define user function: add(a, b) = a + b
-    let add_fn = CompiledFunction::new_with_no_defaults(
-        "add".to_string(),
-        false,
-        vec![("a".to_string(), Type::Int), ("b".to_string(), Type::Int)],
-        Type::Int,
-        CompiledFnBody {
+    let params = vec![("a".to_string(), Type::Int), ("b".to_string(), Type::Int)];
+    let add_fn = CompiledFunction {
+        name: "add".to_string(),
+        is_pub: false,
+        param_defaults: CompiledFunction::no_defaults_for(&params),
+        params,
+        return_type: Type::Int,
+        body: CompiledFnBody {
             let_bindings: vec![],
             result_expr: CompiledExpr::binop(
                 BinOp::Add,
@@ -1686,10 +1692,10 @@ fn eval_method_fold_with_user_function() {
                 Type::Int,
             ),
         },
-        ContentHash::of(b"add_fn"),
-        vec![],
-        None,
-    );
+        content_hash: ContentHash::of(b"add_fn"),
+        annotations: vec![],
+        optimized_target: None,
+    };
 
     // Lambda body: add(acc, x)
     let acc_id = ValueCellId::new("$lambda_fold_uf.S", "acc");
@@ -1747,12 +1753,14 @@ fn eval_method_all_any_with_user_function() {
     use reify_types::{CompiledExprKind, CompiledFnBody, CompiledFunction, ContentHash};
 
     // Define user function: is_even(x) = x % 2 == 0
-    let is_even_fn = CompiledFunction::new_with_no_defaults(
-        "is_even".to_string(),
-        false,
-        vec![("x".to_string(), Type::Int)],
-        Type::Bool,
-        CompiledFnBody {
+    let params = vec![("x".to_string(), Type::Int)];
+    let is_even_fn = CompiledFunction {
+        name: "is_even".to_string(),
+        is_pub: false,
+        param_defaults: CompiledFunction::no_defaults_for(&params),
+        params,
+        return_type: Type::Bool,
+        body: CompiledFnBody {
             let_bindings: vec![],
             result_expr: CompiledExpr::binop(
                 BinOp::Eq,
@@ -1766,10 +1774,10 @@ fn eval_method_all_any_with_user_function() {
                 Type::Bool,
             ),
         },
-        ContentHash::of(b"is_even_fn_all_any"),
-        vec![],
-        None,
-    );
+        content_hash: ContentHash::of(b"is_even_fn_all_any"),
+        annotations: vec![],
+        optimized_target: None,
+    };
 
     let x_id = ValueCellId::new("$lambda_all_any_uf.S", "x");
     let make_is_even_lambda = |x_id: ValueCellId| {

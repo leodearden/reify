@@ -16,36 +16,40 @@ use reify_types::{CompiledExpr, CompiledFnBody, CompiledFunction, ContentHash, T
 /// parameter of the given type. The body is a constant `Int(0)` literal —
 /// irrelevant for matching purposes.
 fn make_fn(name: &str, param_type: Type) -> CompiledFunction {
-    CompiledFunction::new_with_no_defaults(
-        name.to_string(),
-        false,
-        vec![("x".to_string(), param_type)],
-        Type::Int,
-        CompiledFnBody {
+    let params = vec![("x".to_string(), param_type)];
+    CompiledFunction {
+        name: name.to_string(),
+        is_pub: false,
+        param_defaults: CompiledFunction::no_defaults_for(&params),
+        params,
+        return_type: Type::Int,
+        body: CompiledFnBody {
             let_bindings: vec![],
             result_expr: CompiledExpr::literal(Value::Int(0), Type::Int),
         },
-        ContentHash::of(name.as_bytes()),
-        vec![],
-        None,
-    )
+        content_hash: ContentHash::of(name.as_bytes()),
+        annotations: vec![],
+        optimized_target: None,
+    }
 }
 
 /// Build a minimal `CompiledFunction` with the given name and NO parameters.
 fn make_fn_nullary(name: &str) -> CompiledFunction {
-    CompiledFunction::new_with_no_defaults(
-        name.to_string(),
-        false,
-        vec![],
-        Type::Int,
-        CompiledFnBody {
+    let params: Vec<(String, Type)> = vec![];
+    CompiledFunction {
+        name: name.to_string(),
+        is_pub: false,
+        param_defaults: CompiledFunction::no_defaults_for(&params),
+        params,
+        return_type: Type::Int,
+        body: CompiledFnBody {
             let_bindings: vec![],
             result_expr: CompiledExpr::literal(Value::Int(0), Type::Int),
         },
-        ContentHash::of(name.as_bytes()),
-        vec![],
-        None,
-    )
+        content_hash: ContentHash::of(name.as_bytes()),
+        annotations: vec![],
+        optimized_target: None,
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
