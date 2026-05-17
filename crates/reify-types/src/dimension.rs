@@ -490,6 +490,14 @@ pub static NAMED_DIMENSIONS: &[(DimensionVector, &str)] = &[
     (DimensionVector::DIELECTRIC_STRENGTH, "DielectricStrength"),
     (DimensionVector::STIFFNESS, "Stiffness"),
     (DimensionVector::ABSORPTION_COEFF, "AbsorptionCoeff"),
+    // Task 3603 / GHR-α: `Curvature` is dimensionally identical to
+    // `AbsorptionCoeff` (both `1/Length`). The entry is placed AFTER
+    // `AbsorptionCoeff` so the first-match linear scan in `canonical_name`
+    // continues to return `"AbsorptionCoeff"` for the shared dim (preserves
+    // existing `materials_optical` golden behavior). The name→dim direction
+    // (`resolve_dimension_type`) finds this entry directly when source syntax
+    // says `Curvature`.
+    (DimensionVector::CURVATURE, "Curvature"),
     (DimensionVector::FRACTURE_TOUGHNESS, "FractureToughness"),
 ];
 
@@ -966,21 +974,38 @@ mod tests {
         assert_eq!(DimensionVector::DIMENSIONLESS.canonical_name(), None);
     }
 
-    /// Full coverage: every named singleton round-trips through `canonical_name`.
+    /// Full coverage: every named singleton resolves via `canonical_name` to
+    /// SOME registered name for its dim.
     ///
     /// The test derives its loop from [`super::NAMED_DIMENSIONS`] — the single source-of-truth
     /// table shared with `resolve_dimension_type`. Adding a new named dimension only requires
     /// updating `NAMED_DIMENSIONS`; this test and both consuming functions automatically stay in
     /// sync.
+    ///
+    /// Refactored for task 3603 / GHR-α to admit dim aliases (e.g. `Curvature`
+    /// and `AbsorptionCoeff` both map to `1/Length`). The strict per-row
+    /// `canonical_name == Some(expected_name)` assertion is replaced by
+    /// "canonical_name returns some name registered for that dim"; the
+    /// first-match scan-order property is verified separately by the
+    /// `materials_optical` golden tests.
     #[test]
     fn canonical_name_covers_all_named_singletons() {
-        for &(dim, expected) in super::NAMED_DIMENSIONS {
-            assert_eq!(
-                dim.canonical_name(),
-                Some(expected),
-                "canonical_name() mismatch for {:?}: expected {:?}",
+        for &(dim, _) in super::NAMED_DIMENSIONS {
+            let canon = dim.canonical_name();
+            assert!(
+                canon.is_some(),
+                "canonical_name returned None for registered dim {:?}",
                 dim,
-                expected,
+            );
+            let canon_name = canon.unwrap();
+            let canon_is_registered_for_dim = super::NAMED_DIMENSIONS
+                .iter()
+                .any(|(d, n)| *d == dim && *n == canon_name);
+            assert!(
+                canon_is_registered_for_dim,
+                "canonical_name({:?}) returned {:?}, which is not registered for that dim",
+                dim,
+                canon_name,
             );
         }
         // DIMENSIONLESS is intentionally not named (self-explanatory to users).
