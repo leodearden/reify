@@ -242,4 +242,54 @@ mod tests {
         assert_eq!(s.len(), 4);
         assert_eq!(s, &[1.0, 0.0, 0.0, 0.0]);
     }
+
+    // ── JointKind::from_str / flat_len tests (step-3) ────────────────────
+
+    #[test]
+    fn joint_kind_from_str_maps_all_seven_canonical_strings() {
+        // Mirrors crate::joints::JOINT_KINDS 1:1.
+        assert_eq!(JointKind::from_str("prismatic"), Some(JointKind::Prismatic));
+        assert_eq!(JointKind::from_str("revolute"), Some(JointKind::Revolute));
+        assert_eq!(JointKind::from_str("coupling"), Some(JointKind::Coupling));
+        assert_eq!(JointKind::from_str("fixed"), Some(JointKind::Fixed));
+        assert_eq!(JointKind::from_str("planar"), Some(JointKind::Planar));
+        assert_eq!(JointKind::from_str("spherical"), Some(JointKind::Spherical));
+        assert_eq!(
+            JointKind::from_str("cylindrical"),
+            Some(JointKind::Cylindrical)
+        );
+    }
+
+    #[test]
+    fn joint_kind_from_str_unknown_returns_none() {
+        assert_eq!(JointKind::from_str(""), None);
+        assert_eq!(JointKind::from_str("Prismatic"), None); // case-sensitive
+        assert_eq!(JointKind::from_str("ball"), None);
+        assert_eq!(JointKind::from_str("hinge"), None);
+    }
+
+    #[test]
+    fn joint_kind_flat_len_single_dof_kinds_are_1() {
+        // Prismatic/Revolute/Coupling/Fixed all carry a single f64 payload.
+        assert_eq!(JointKind::Prismatic.flat_len(), 1);
+        assert_eq!(JointKind::Revolute.flat_len(), 1);
+        assert_eq!(JointKind::Coupling.flat_len(), 1);
+        assert_eq!(JointKind::Fixed.flat_len(), 1);
+    }
+
+    #[test]
+    fn joint_kind_flat_len_cylindrical_is_2() {
+        assert_eq!(JointKind::Cylindrical.flat_len(), 2);
+    }
+
+    #[test]
+    fn joint_kind_flat_len_planar_is_3() {
+        assert_eq!(JointKind::Planar.flat_len(), 3);
+    }
+
+    #[test]
+    fn joint_kind_flat_len_spherical_is_4_not_3() {
+        // STORAGE width, not manifold DOF — quaternion has 4 components.
+        assert_eq!(JointKind::Spherical.flat_len(), 4);
+    }
 }
