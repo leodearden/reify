@@ -57,15 +57,34 @@ mod tests {
     /// from the phase-3-files-synthesis.md cluster index) must produce zero
     /// findings across all three detectors in a single shared AuditContext.
     ///
-    /// Why none fires:
-    ///  - P5 skips tasks with `done_provenance=None` (early-returns on the
-    ///    `done_provenance.as_ref()?` guard in p5_phantom_done.rs).
-    ///  - P1 skips tasks with `done_at=None` (the `let Some(done_at) = …`
-    ///    destructure at p1_producer_orphan.rs:82-84).
-    ///  - P2 iterates `meta.files` which is `vec![]` for all seven tasks
-    ///    → zero `diff_added_lines` calls → no markers → no findings.
+    /// Each fixture defeats a distinct false-positive guard; the guard
+    /// inventory is:
     ///
-    /// Task IDs: 215 (C-24), 250 (C-07), 2347 (C-07 doc), 2358 (C-36),
+    ///  - task 215  → P5 guard A3: kind=merged + DB event + diff covers files
+    ///                → `missing.is_empty()` → P5 returns `None`.
+    ///  - task 250  → P5 guard A2: kind=found_on_main + `files=[]` → empty-files
+    ///                early-return before any git-diff call.
+    ///  - task 2347 → P1 guard B3: `audit_foundation=Some(true)` → P1
+    ///                short-circuits before per-symbol iteration (symbol mock
+    ///                seeded so the guard is demonstrably load-bearing).
+    ///  - task 2358 → P1 guard B4: `prd` + paired pending consumer (task 2358_c,
+    ///                `consumer_ref` matching 2358's `prd`) → `has_pending_consumer`
+    ///                returns true → P1 short-circuits.
+    ///  - task 2658 → P1 guard B5: changed-symbol file in `crates/reify-stdlib/`
+    ///                → stdlib scope-exclude fires → P1 skips the symbol.
+    ///  - task 2699 → P1 guard B7: `g_allow_marker=Some("non-blank")` →
+    ///                `is_g_allow_suppressed` returns true → P1 skips the symbol.
+    ///  - task 2954 → P2 guard C2: `files=["crates/x/tests/foo.rs"]` →
+    ///                `is_test_path` fires → P2 skips the diff scan entirely.
+    ///
+    /// The DB is seeded so fixture 1 (task 215) can satisfy
+    /// `has_task_completed_event`; the other six fixtures and the 8th paired
+    /// consumer (2358_c) all early-return before any DB query — five on
+    /// `done_provenance.as_ref()?` (guard A1), one on `meta.files.is_empty()`
+    /// (guard A2, task 250), and 2358_c on `status != "done"`.
+    ///
+    /// Task IDs trace to the phase-3-files-synthesis.md cluster index:
+    /// 215 (C-24), 250 (C-07), 2347 (C-07 doc), 2358 (C-36),
     /// 2658 (C-04 substitute — avoids reusing 2657 from the P2 positive
     /// fixture in step-3), 2699 (C-07 dispatch), 2954 (C-07 docs-only).
     #[test]
