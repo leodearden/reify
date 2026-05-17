@@ -512,15 +512,23 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
 /// - the provided prefix `arg_types[..provided]` matches `cand.params[..provided]` exactly, and
 /// - every trailing `cand.param_defaults[provided..]` is `Some`.
 ///
+/// `provided` is `arg_types.len()` — callers no longer pass `compiled_args`
+/// because only its length was used and `arg_types` is always length-aligned
+/// to `compiled_args` by construction (task-3702).
+///
 /// If exactly one such candidate exists, returns it together with the cloned default
 /// `CompiledExpr`s for the trailing params. Returns `None` when zero or multiple
 /// candidates are satisfiable (caller falls through to the existing NoMatch error).
+///
+/// **Invariant:** every candidate in `named` must satisfy
+/// `param_defaults.len() == params.len()` (task-3702 strict alignment now
+/// enforced by `debug_assert!`). Violations are programming errors, not
+/// recoverable call-site conditions.
 pub(crate) fn try_default_padding<'a>(
     named: &[&'a CompiledFunction],
-    compiled_args: &[CompiledExpr],
     arg_types: &[Type],
 ) -> Option<(&'a CompiledFunction, Vec<CompiledExpr>)> {
-    let provided = compiled_args.len();
+    let provided = arg_types.len();
     let mut satisfiable: Vec<(&CompiledFunction, Vec<CompiledExpr>)> = Vec::new();
 
     for &cand in named {
@@ -528,7 +536,18 @@ pub(crate) fn try_default_padding<'a>(
         if cand.params.len() <= provided {
             continue;
         }
-        // param_defaults must be populated and length-aligned to params.
+        // Strict invariant: param_defaults must be length-aligned to params.
+        // Violations are bugs — surface them in debug builds. In release builds
+        // the assert is compiled out, so we also `continue` on mismatch to
+        // degrade gracefully instead of panicking on a future invariant-breaking
+        // producer (task-3702 amendment-2).
+        debug_assert!(
+            cand.param_defaults.len() == cand.params.len(),
+            "param_defaults.len() == params.len() invariant violated for candidate `{}` (task-3702): expected {}, got {}",
+            cand.name,
+            cand.params.len(),
+            cand.param_defaults.len()
+        );
         if cand.param_defaults.len() != cand.params.len() {
             continue;
         }
@@ -798,5 +817,104 @@ mod tests {
                 label,
             );
         }
+    }
+
+    // ── task-3702 tests ───────────────────────────────────────────────────────
+
+    /// Helper: build a minimal `CompiledFnBody` returning a Real(2.0) literal.
+    fn stub_body_real() -> CompiledFnBody {
+        CompiledFnBody {
+            let_bindings: vec![],
+            result_expr: CompiledExpr::literal(Value::Real(2.0), Type::Real),
+        }
+    }
+
+    /// `try_default_padding` with the tightened signature (no `compiled_args`
+    /// argument) returns the expected candidate and default expressions when
+    /// exactly one candidate satisfies the padding contract.
+    ///
+    /// Candidate: `f(x: Real, y: Real)` where param 1 (`y`) has default
+    /// `Real(2.0)`. Caller provides 1 arg of type `Real` — the trailing
+    /// default must be filled in.
+    ///
+    /// Expected: `Some((&cand, vec![Real(2.0) literal]))`.
+    ///
+    /// RED before step-5: the current `try_default_padding` signature still
+    /// requires a `compiled_args: &[CompiledExpr]` second argument, so this
+    /// call (with only 2 positional args) fails to compile.
+    ///
+    /// task-3702 (tighten try_default_padding signature)
+    #[test]
+    fn try_default_padding_new_signature_returns_padded_fn() {
+        let default_expr = CompiledExpr::literal(Value::Real(2.0), Type::Real);
+        let cand = CompiledFunction {
+            name: "f".to_string(),
+            is_pub: false,
+            params: vec![
+                ("x".to_string(), Type::Real),
+                ("y".to_string(), Type::Real),
+            ],
+            param_defaults: vec![None, Some(default_expr.clone())],
+            return_type: Type::Real,
+            body: stub_body_real(),
+            content_hash: ContentHash::of_str("f_stub_3702"),
+            annotations: vec![],
+            optimized_target: None,
+        };
+
+        // New signature: no compiled_args — only arg_types.
+        let result = try_default_padding(&[&cand], &[Type::Real]);
+
+        let (matched_fn, defaults) = result.expect("should find a matching candidate");
+        assert!(
+            std::ptr::eq(matched_fn, &cand),
+            "returned candidate must be the same object"
+        );
+        assert_eq!(defaults.len(), 1, "one trailing default expected");
+        assert_eq!(
+            defaults[0].content_hash, default_expr.content_hash,
+            "default expr content hash must match the Real(2.0) literal"
+        );
+    }
+
+    /// `try_default_padding` fires a `debug_assert!` (panics in debug builds)
+    /// when a candidate violates the length invariant
+    /// (`param_defaults.len() != params.len()`).
+    ///
+    /// This is the "bad shape" that was previously silently skipped by the
+    /// defensive filter; after task-3702 it is a programming error surfaced in
+    /// debug builds.
+    ///
+    /// Candidate: deliberately constructed via struct-literal with
+    /// `params = vec![("x", Real)]` but `param_defaults = Vec::new()` —
+    /// the legacy empty form that violates the invariant.
+    ///
+    /// RED before step-5: the assert is not yet in the code, so calling
+    /// `try_default_padding` with this candidate returns `None` silently
+    /// instead of panicking, causing the `#[should_panic]` annotation to
+    /// make the test fail.
+    ///
+    /// task-3702 (tighten try_default_padding signature)
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "param_defaults.len() == params.len()")]
+    fn try_default_padding_debug_assert_fires_on_misaligned_param_defaults() {
+        // Deliberately bad shape: params has 1 entry, param_defaults is empty.
+        let bad_cand = CompiledFunction {
+            name: "bad".to_string(),
+            is_pub: false,
+            params: vec![("x".to_string(), Type::Real)],
+            param_defaults: Vec::new(), // invariant violation — intentional for this test
+            return_type: Type::Real,
+            body: stub_body_real(),
+            content_hash: ContentHash::of_str("bad_stub_3702"),
+            annotations: vec![],
+            optimized_target: None,
+        };
+
+        // New signature: (named, arg_types). Providing 0 arg types so the
+        // candidate has more params than provided (1 > 0) — the invariant
+        // check fires before any other filtering.
+        let _ = try_default_padding(&[&bad_cand], &[]);
     }
 }
