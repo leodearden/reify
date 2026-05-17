@@ -1845,4 +1845,74 @@ structure S {
              (engine and expected pool both resolve from the same env snapshot)"
         );
     }
+
+    // ── Task 3541 step-3: Engine::drain_and_record_warm_pool_events ──────────
+
+    /// `drain_and_record_warm_pool_events` drains the pool event buffer,
+    /// records each drained event on the journal, and returns the Vec.
+    ///
+    /// Assertions:
+    /// (a) The returned Vec contains both events pre-populated via donate calls.
+    /// (b) After the drain, the pool's own event buffer is empty.
+    /// (c) The journal has recorded the Donated and (any Evicted) events —
+    ///     verified via `engine.journal_event_count()`.
+    #[test]
+    fn engine_drain_and_record_warm_pool_events_drains_records_and_returns() {
+        use crate::warm_pool::WarmPoolEvent;
+        use reify_types::OpaqueState;
+        use reify_test_support::mocks::MockConstraintChecker;
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        // Pre-populate the pool with two donations using a tiny budget so
+        // the second donate triggers an eviction (budget = 1 byte).
+        *engine.warm_pool_mut() = crate::warm_pool::WarmStatePool::new(1);
+
+        let node_a = crate::cache::NodeId::Value(reify_types::ValueCellId::new("Beam", "length"));
+        let node_b = crate::cache::NodeId::Value(reify_types::ValueCellId::new("Plate", "width"));
+
+        // Donate node_a (fits in budget = 1 byte) — size_bytes=1
+        engine.warm_pool_mut().donate(node_a.clone(), OpaqueState::new(1i32, 1));
+        // Donate node_b — triggers eviction of node_a (LRU) because budget=1 byte
+        engine.warm_pool_mut().donate(node_b.clone(), OpaqueState::new(2i32, 1));
+
+        // At least two events are buffered (Donated(a), Evicted(a), Donated(b))
+        let count_before = engine.journal_event_count();
+
+        let drained = engine.drain_and_record_warm_pool_events();
+
+        // (a) Returned Vec is non-empty
+        assert!(
+            !drained.is_empty(),
+            "drain must return the buffered WarmPoolEvents"
+        );
+
+        // (b) Pool event buffer is now empty
+        assert!(
+            engine.warm_pool_mut().drain_events().is_empty(),
+            "pool event buffer must be empty after drain"
+        );
+
+        // (c) Journal recorded the events
+        let count_after = engine.journal_event_count();
+        assert_eq!(
+            count_after - count_before,
+            drained.len(),
+            "journal must record exactly as many events as were drained"
+        );
+
+        // (d) At least one Donated and one Evicted are present in drained
+        assert!(
+            drained
+                .iter()
+                .any(|e| matches!(e, WarmPoolEvent::Donated { .. })),
+            "must include at least one Donated event"
+        );
+        assert!(
+            drained
+                .iter()
+                .any(|e| matches!(e, WarmPoolEvent::Evicted { .. })),
+            "must include at least one Evicted event"
+        );
+    }
 }
