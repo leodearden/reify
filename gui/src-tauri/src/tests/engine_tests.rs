@@ -8068,3 +8068,55 @@ fn engine_session_warm_pool_event_emitter_captures_donated_and_evicted_events() 
     );
     assert_eq!(events[2].size_bytes, 1, "events[2].size_bytes must be 1");
 }
+
+#[test]
+fn sweep_persistent_cache_removes_stale_tempfile_under_explicit_cache_root() {
+    // Parameterized-seam unit test (task 3698): calls
+    // `crate::engine::sweep_persistent_cache(cache_dir.path())` with an
+    // explicit hermetic TempDir rather than manipulating process env — which
+    // would be racy in in-process tests (std::env::set_var is not thread-safe).
+    //
+    // Asserts: stale .tmp.* file is gone, report.tempfiles_removed == 1.
+    use std::fs::{self, File, OpenOptions};
+    use std::io::Write as _;
+    use std::time::{Duration, SystemTime};
+
+    use reify_eval::persistent_cache::{ENGINE_VERSION_HASH, STALE_TEMPFILE_AGE, shard_dir};
+    use tempfile::TempDir;
+
+    let cache_dir = TempDir::new().expect("tempdir");
+
+    // 32-char hex hash whose "bb" prefix determines the shard subdirectory.
+    let input_hash = "bb00000000000000000000000000cafe";
+    let shard = shard_dir(cache_dir.path(), ENGINE_VERSION_HASH, input_hash);
+    fs::create_dir_all(&shard).expect("create shard dir");
+
+    let stale_path = shard.join(".tmp.stale_seed");
+    {
+        let mut f = File::create(&stale_path).expect("create stale tempfile");
+        f.write_all(b"stale content").expect("write stale content");
+    }
+
+    // Backdate mtime to > STALE_TEMPFILE_AGE (1 h) past; 2-min buffer for CI.
+    let stale_mtime = SystemTime::now() - (STALE_TEMPFILE_AGE + Duration::from_secs(120));
+    let times = std::fs::FileTimes::new().set_modified(stale_mtime);
+    {
+        let file = OpenOptions::new()
+            .write(true)
+            .open(&stale_path)
+            .expect("open stale file to backdate mtime");
+        file.set_times(times).expect("backdate mtime");
+    }
+
+    // Call the parameterized seam (defined in step-4).
+    let report = crate::engine::sweep_persistent_cache(cache_dir.path());
+
+    assert!(
+        !stale_path.exists(),
+        "stale .tmp.* file must be removed by sweep_persistent_cache; path={stale_path:?}"
+    );
+    assert_eq!(
+        report.tempfiles_removed, 1,
+        "SweepReport.tempfiles_removed must be 1"
+    );
+}

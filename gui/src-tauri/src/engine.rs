@@ -26,6 +26,66 @@ use crate::types::{
     format_value,
 };
 
+// ── Persistent-cache startup sweep (task 3698) ────────────────────────────────
+
+/// Test-friendly seam: sweep a caller-supplied `cache_root`.
+///
+/// Thin wrapper over [`reify_eval::sweep_persistent_cache_at_startup`] exposed
+/// as a `pub(crate)` function so unit tests can drive a hermetic `TempDir`
+/// without manipulating process env (which is not thread-safe in in-process
+/// tests).  Not part of `reify_gui`'s public API.
+///
+/// Returns the [`reify_eval::persistent_cache::SweepReport`] so tests can
+/// assert on `tempfiles_removed` / `orphan_dirs_removed`.
+pub(crate) fn sweep_persistent_cache(
+    cache_root: &std::path::Path,
+) -> reify_eval::persistent_cache::SweepReport {
+    reify_eval::sweep_persistent_cache_at_startup(cache_root)
+}
+
+/// Production startup hook: resolve `cache_root` from process env and run the
+/// sweep.
+///
+/// Called once from `gui/src-tauri/src/main.rs` before `EngineSession`
+/// construction so the stale-tempfile and orphan-directory cleanup runs on
+/// every GUI launch (task 3698).
+///
+/// Resolution mirrors `reify-cli`'s `resolve_cache_root` pipeline:
+/// `REIFY_CACHE_DIR` → `REIFY_CACHE_MAX_BYTES` / `HOME` / `XDG_CACHE_HOME`.
+/// On resolver error (e.g. malformed `REIFY_CACHE_MAX_BYTES`) the sweep is
+/// skipped and the error is logged at `tracing::debug!` level — matching the
+/// CLI's policy so both entry points behave identically on bad env.
+/// The `SweepReport` is discarded.
+pub fn bootstrap_persistent_cache_sweep() {
+    use reify_config::cache::{CacheResolverInputs, resolve_cache};
+
+    let env_dir = std::env::var("REIFY_CACHE_DIR").ok();
+    let env_max_bytes = std::env::var("REIFY_CACHE_MAX_BYTES").ok();
+    let xdg_cache_home = std::env::var("XDG_CACHE_HOME").ok();
+    let home = std::env::var("HOME").unwrap_or_default();
+
+    let inputs = CacheResolverInputs {
+        cli_dir: None,
+        env_dir: env_dir.as_deref(),
+        env_max_bytes: env_max_bytes.as_deref(),
+        user_config: None,
+        project_config: None,
+        home: std::path::Path::new(&home),
+        xdg_cache_home: xdg_cache_home.as_deref(),
+    };
+
+    match resolve_cache(&inputs) {
+        Ok(r) => {
+            let _ = sweep_persistent_cache(&r.dir);
+        }
+        Err(e) => {
+            tracing::debug!("persistent-cache sweep skipped — resolver error: {e}");
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 mod core_state {
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};

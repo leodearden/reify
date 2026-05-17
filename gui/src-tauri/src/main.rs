@@ -542,6 +542,13 @@ fn get_kernel_status() -> reify_gui::kernel_status::KernelStatus {
 }
 
 fn main() {
+    // Sweep stale tempfiles and orphan directories from the persistent cache
+    // before any engine work. Best-effort: resolver errors are logged at
+    // tracing::debug! level and the sweep is skipped; IO errors inside the
+    // sweep are never fatal per the wrapper's contract. Wired here (task 3698)
+    // so the cleanup runs on every GUI launch without per-feature wiring.
+    reify_gui::engine::bootstrap_persistent_cache_sweep();
+
     // Boot the engine via the inventory-based kernel registry. OCCT is registered automatically
     // via the cfg(has_occt)-gated inventory::submit! in reify-kernel-occt::register.
     let checker = SimpleConstraintChecker;

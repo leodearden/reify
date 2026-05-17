@@ -84,15 +84,27 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    // (a) Early-exit arms: --help / --version short-circuit before the sweep.
     match args[1].as_str() {
         "--help" | "-h" | "help" => {
             print_usage(&mut std::io::stdout());
-            ExitCode::SUCCESS
+            return ExitCode::SUCCESS;
         }
         "--version" | "-V" => {
             println!("reify {}", env!("CARGO_PKG_VERSION"));
-            ExitCode::SUCCESS
+            return ExitCode::SUCCESS;
         }
+        _ => {}
+    }
+
+    // (b) Sweep stale tempfiles and orphan dirs from the persistent cache.
+    // Best-effort: resolver errors are silently ignored. Runs once here so
+    // all engine-using subcommands inherit the cleanup without per-command
+    // wiring (task 3698).
+    cache::run_startup_sweep();
+
+    // (c) Command dispatcher.
+    match args[1].as_str() {
         "check" => cmd_check(&args[2..]),
         "test" => cmd_test(&args[2..]),
         "build" => cmd_build(&args[2..]),
