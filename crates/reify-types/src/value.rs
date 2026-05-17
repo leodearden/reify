@@ -1105,8 +1105,9 @@ impl Value {
     ///
     /// Empty `Point` and `Vector` are not valid inputs to `infer_type` —
     /// debug builds trip a `debug_assert!`; release builds panic via
-    /// `unreachable!`.  Use [`try_infer_type()`] for ambiguity-aware
-    /// inference that returns `None` without panicking.
+    /// `.expect()` with the message in the `debug_assert!` body.  Use
+    /// [`try_infer_type()`] for ambiguity-aware inference that returns
+    /// `None` without panicking.
     ///
     /// Use [`try_infer_type()`] when you need to distinguish "genuinely ambiguous"
     /// from "has a known fallback".
