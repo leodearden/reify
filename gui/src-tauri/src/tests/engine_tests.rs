@@ -1160,15 +1160,16 @@ fn collect_snapshot_bind_pairs_emits_debug_when_args1_not_listliteral() {
     );
 }
 
-/// `snapshot(m1, [bind(j1, 0mm)])` — non-empty bind list, but the second arg
-/// of `bind` is a dimensional literal (`0mm`), not an `Ident`.  No valid
-/// `bind(Ident, Ident)` pair survives the filter — case (c).  Must emit DEBUG.
+/// `snapshot(m1, [bind(j1, 0mm + 1mm)])` — non-empty bind list, but the second
+/// arg of `bind` is a `BinOp` expression, which is neither an `Ident` (Param
+/// ref) nor a `QuantityLiteral`/`NumberLiteral` (literal value).  No valid
+/// `bind(Ident, Ident|Literal)` pair survives the filter — case (c).  Must emit DEBUG.
 const NON_BIND_LIST_SNAPSHOT_SOURCE: &str = r#"
 structure Kinematic {
     let j1 = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
     let m0 = mechanism()
     let m1 = body(m0, "solid_a", j1)
-    let snap = snapshot(m1, [bind(j1, 0mm)])
+    let snap = snapshot(m1, [bind(j1, 0mm + 1mm)])
 }
 "#;
 
@@ -1199,8 +1200,8 @@ fn collect_snapshot_bind_pairs_emits_debug_when_list_has_no_valid_binds() {
 
     assert_eq!(
         debug_count, 1,
-        "expected exactly 1 DEBUG event for snapshot(m1, [bind(j1, 0mm)]) — non-empty list \
-         with no valid bind(Ident,Ident) pairs (case c); got {}",
+        "expected exactly 1 DEBUG event for snapshot(m1, [bind(j1, 0mm+1mm)]) — non-empty list \
+         with no valid bind(Ident, Ident|Literal) pairs (case c); got {}",
         debug_count
     );
     assert_eq!(

@@ -2538,6 +2538,20 @@ fn scalar_to_f64(val: &Value) -> Option<f64> {
 
 // ---- driving-param resolution (step-12) ----------------------------------------
 
+/// Represents the value side of a `bind(joint, value)` expression inside a `snapshot()` call.
+///
+/// Returned by [`collect_snapshot_bind_pairs`] after the η-engine extension:
+/// - `Param`: the value side is a bare identifier; downstream resolved against Param cells.
+/// - `Literal`: the value side is a literal expression (`QuantityLiteral` or `NumberLiteral`)
+///   whose SI value can be computed from [`UNIT_TABLE`].
+enum BindValue {
+    /// A bare identifier referring to a Param cell (e.g. `bind(j, y_pos)`).
+    Param(String),
+    /// A literal expression providing an immediate SI-convertible value
+    /// (e.g. `bind(j, 50mm)` or `bind(j, 0.5)`).
+    Literal(reify_syntax::Expr),
+}
+
 /// Walk the parsed declarations looking for `snapshot(mech, [bind(joint, param), …])`
 /// invocations and populate `driving_param_cell_id` on the matching joint descriptor.
 ///
@@ -2583,8 +2597,8 @@ fn resolve_driving_params_from_ast(
             None => continue,
         };
 
-        // Collect (joint_ident, value_ident) pairs from all snapshot() calls.
-        let mut bind_pairs: Vec<(String, String)> = Vec::new();
+        // Collect (joint_ident, bind_value) pairs from all snapshot() calls.
+        let mut bind_pairs: Vec<(String, BindValue)> = Vec::new();
         for member in &structure.members {
             let expr = match member {
                 reify_syntax::MemberDecl::Let(l) => &l.value,
@@ -2594,16 +2608,7 @@ fn resolve_driving_params_from_ast(
         }
 
         // Resolve each pair.
-        for (joint_cell_name, value_cell_name) in bind_pairs {
-            // The value side must be a Param cell (not a Let or Auto).
-            let is_param = template
-                .value_cells
-                .iter()
-                .any(|c| c.id.member == value_cell_name && matches!(c.kind, ValueCellKind::Param));
-            if !is_param {
-                continue;
-            }
-
+        for (joint_cell_name, bind_value) in bind_pairs {
             // Look up the joint Map value by cell id.
             let joint_cell_id = ValueCellId::new(structure_name, &joint_cell_name);
             let joint_val = check.values.get_or_undef(&joint_cell_id);
@@ -2611,57 +2616,102 @@ fn resolve_driving_params_from_ast(
                 continue;
             }
 
-            let param_cell_id_str = format!("{}.{}", structure_name, value_cell_name);
+            match bind_value {
+                BindValue::Param(value_cell_name) => {
+                    // The value side must be a Param cell (not a Let or Auto).
+                    let is_param = template
+                        .value_cells
+                        .iter()
+                        .any(|c| c.id.member == value_cell_name && matches!(c.kind, ValueCellKind::Param));
+                    if !is_param {
+                        continue;
+                    }
 
-            // Scan descriptors from this structure and find the matching joint slot.
-            for desc in descriptors.iter_mut() {
-                if desc.entity_path != *structure_name {
-                    continue;
+                    let param_cell_id_str = format!("{}.{}", structure_name, value_cell_name);
+
+                    // Scan descriptors from this structure and find the matching joint slot.
+                    for desc in descriptors.iter_mut() {
+                        if desc.entity_path != *structure_name {
+                            continue;
+                        }
+
+                        let seen_joints = match seen_joints_cache.get(&desc.cell_id) {
+                            Some(sj) => sj,
+                            None => continue,
+                        };
+
+                        let joint_index = match seen_joints.iter().position(|j| j == &joint_val) {
+                            Some(idx) => idx,
+                            None => continue,
+                        };
+
+                        if let Some(jd) = desc.joints.get_mut(joint_index)
+                            && jd.driving_param_cell_id.is_none()
+                        {
+                            jd.driving_param_cell_id = Some(param_cell_id_str.clone());
+                            tracing::debug!(
+                                target: "reify_gui::engine::param_resolution",
+                                structure = %structure_name,
+                                joint = %joint_cell_name,
+                                param_cell = %param_cell_id_str,
+                                "resolved driving param via snapshot+bind AST match"
+                            );
+                            let param_cell_id = ValueCellId::new(structure_name, &value_cell_name);
+                            let param_val = check.values.get_or_undef(&param_cell_id);
+                            jd.current_value_si = scalar_to_f64(&param_val);
+                            // Promote binding to ParamBound (first-wins: only if still unresolved default).
+                            if matches!(jd.binding, JointBinding::LiteralBound { initial_value_si: None, .. }) {
+                                jd.binding = JointBinding::ParamBound {
+                                    param_cell_id: param_cell_id_str.clone(),
+                                    current_value_si: jd.current_value_si,
+                                };
+                            }
+                        }
+                    }
                 }
 
-                // Use the cached seen_joints for this mechanism instead of
-                // re-walking the bodies list (avoids redundant O(B) work per pair).
-                let seen_joints = match seen_joints_cache.get(&desc.cell_id) {
-                    Some(sj) => sj,
-                    None => continue,
-                };
+                BindValue::Literal(literal_expr) => {
+                    // Evaluate the literal expression to SI value using UNIT_TABLE.
+                    use reify_syntax::ExprKind;
+                    let initial_value_si = match &literal_expr.kind {
+                        ExprKind::QuantityLiteral { value, unit } => {
+                            // Look up the unit in UNIT_TABLE for SI scale.
+                            UNIT_TABLE
+                                .iter()
+                                .find(|(u, _, _)| *u == unit.as_str())
+                                .map(|(_, scale, _)| value * scale)
+                        }
+                        ExprKind::NumberLiteral { value, .. } => Some(*value),
+                        _ => None, // complex expression — conservatively no initial value
+                    };
 
-                // Find which joint_index this cell's value corresponds to.
-                let joint_index = match seen_joints.iter().position(|j| j == &joint_val) {
-                    Some(idx) => idx,
-                    None => continue,
-                };
+                    // Scan descriptors from this structure and find the matching joint slot.
+                    for desc in descriptors.iter_mut() {
+                        if desc.entity_path != *structure_name {
+                            continue;
+                        }
 
-                if let Some(jd) = desc.joints.get_mut(joint_index)
-                    && jd.driving_param_cell_id.is_none()
-                {
-                    jd.driving_param_cell_id = Some(param_cell_id_str.clone());
-                    // Telemetry: confirm which (structure, joint, param) triple
-                    // was resolved so operators can verify AST-based matching.
-                    // Fires AFTER the Param check has passed and
-                    // driving_param_cell_id has been populated.
-                    tracing::debug!(
-                        target: "reify_gui::engine::param_resolution",
-                        structure = %structure_name,
-                        joint = %joint_cell_name,
-                        param_cell = %param_cell_id_str,
-                        "resolved driving param via snapshot+bind AST match"
-                    );
-                    // Step-24: populate current_value_si from the param cell's
-                    // post-eval value so the slider's initial position reflects
-                    // the actual evaluated parameter value (not just the source
-                    // default).  Uses the same check.values channel as build_values.
-                    let param_cell_id = ValueCellId::new(structure_name, &value_cell_name);
-                    let param_val = check.values.get_or_undef(&param_cell_id);
-                    jd.current_value_si = scalar_to_f64(&param_val);
-                    // task-3783: promote binding to ParamBound only when the
-                    // descriptor still holds the kind-based default (i.e. has not
-                    // been resolved yet by a prior bind() pair — first-wins).
-                    if matches!(jd.binding, JointBinding::LiteralBound { initial_value_si: None, .. }) {
-                        jd.binding = JointBinding::ParamBound {
-                            param_cell_id: param_cell_id_str.clone(),
-                            current_value_si: jd.current_value_si,
+                        let seen_joints = match seen_joints_cache.get(&desc.cell_id) {
+                            Some(sj) => sj,
+                            None => continue,
                         };
+
+                        let joint_index = match seen_joints.iter().position(|j| j == &joint_val) {
+                            Some(idx) => idx,
+                            None => continue,
+                        };
+
+                        if let Some(jd) = desc.joints.get_mut(joint_index) {
+                            // Refine the binding to LiteralBound using the joint cell name
+                            // (not the index-based default) — first-wins guard.
+                            if matches!(jd.binding, JointBinding::LiteralBound { initial_value_si: None, .. }) {
+                                jd.binding = JointBinding::LiteralBound {
+                                    synth_param_name: format!("__joint_{joint_cell_name}_v"),
+                                    initial_value_si,
+                                    scrubbable: true,
+                                };
+                            }
+                        }
                     }
                 }
             }
@@ -2725,8 +2775,9 @@ fn walk_function_calls(
 }
 
 /// Recursively search `expr` for `snapshot(mech_expr, [bind(joint, value), …])`.
-/// For each `bind(Ident(joint_name), Ident(value_name))` append
-/// `(joint_name, value_name)` to `pairs`.
+/// For each `bind(Ident(joint_name), <value>)` where `<value>` is either an
+/// `Ident` (Param ref) or a `QuantityLiteral`/`NumberLiteral` (immediate value),
+/// append `(joint_name, BindValue)` to `pairs`.
 ///
 /// Delegates all AST recursion to [`walk_function_calls`].
 ///
@@ -2742,8 +2793,8 @@ fn walk_function_calls(
 /// * **(a)** `args[1]` is **not** a `ListLiteral` — likely a user-shadowed
 ///   `snapshot` function or a malformed call.
 /// * **(c)** `args[1]` **is** a non-empty `ListLiteral` but none of its
-///   elements are valid `bind(Ident, Ident)` pairs — malformed bind syntax or
-///   user-shadowed `bind`.
+///   elements are valid `bind(Ident, Ident|Literal)` pairs — malformed bind
+///   syntax or user-shadowed `bind`.
 ///
 /// Sub-case **(b)** — an empty `ListLiteral` — is **silent**; `snapshot(m, [])`
 /// is valid stdlib usage (a snapshot with no bound parameters) and must not be
@@ -2752,7 +2803,7 @@ fn walk_function_calls(
 /// Calls with fewer than two arguments (`args.len() < 2`) are also **silent**
 /// — they cannot contribute pairs regardless of shadowing, so they are
 /// excluded from the anomaly surface intentionally.
-fn collect_snapshot_bind_pairs(expr: &reify_syntax::Expr, pairs: &mut Vec<(String, String)>) {
+fn collect_snapshot_bind_pairs(expr: &reify_syntax::Expr, pairs: &mut Vec<(String, BindValue)>) {
     use reify_syntax::ExprKind;
     walk_function_calls(expr, &mut |name, args| {
         if name != "snapshot" || args.len() < 2 {
@@ -2779,19 +2830,25 @@ fn collect_snapshot_bind_pairs(expr: &reify_syntax::Expr, pairs: &mut Vec<(Strin
                     ExprKind::Ident(s) => s.clone(),
                     _ => continue,
                 };
-                let value_ident = match &bind_args[1].kind {
-                    ExprKind::Ident(s) => s.clone(),
-                    _ => continue, // literal or complex expr → not a param ref
+                // Match the value side: Ident → Param ref; QuantityLiteral/NumberLiteral
+                // → Literal; complex expressions (BinOp, FunctionCall, etc.) → skip.
+                let bind_value = match &bind_args[1].kind {
+                    ExprKind::Ident(s) => BindValue::Param(s.clone()),
+                    ExprKind::QuantityLiteral { .. } | ExprKind::NumberLiteral { .. } => {
+                        BindValue::Literal(bind_args[1].clone())
+                    }
+                    _ => continue, // complex expr — not directly resolvable to Param or Literal
                 };
-                pairs.push((joint_ident, value_ident));
+                pairs.push((joint_ident, bind_value));
             }
 
-            // Case (c): non-empty list but no bind(Ident, Ident) pairs survived.
+            // Case (c): non-empty list but no resolvable bind(Ident, Ident|Literal) pairs
+            // survived (malformed bind syntax or user-shadowed bind).
             if pairs.len() == pairs_before {
                 tracing::debug!(
                     target: "reify_gui::engine::snapshot_bind_pairs",
                     arg_count = args.len(),
-                    "snapshot() bind list contained no resolvable bind(Ident, Ident) pairs \
+                    "snapshot() bind list contained no resolvable bind(Ident, Ident|Literal) pairs \
                      (malformed bind syntax or user-shadowed bind)"
                 );
             }
