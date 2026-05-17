@@ -886,10 +886,7 @@ mod tests {
                 },
             ),
             ("centroid", Type::point3(Type::length())),
-            (
-                "bounding_box",
-                Type::StructureRef("BoundingBox".into()),
-            ),
+            ("bounding_box", Type::bounding_box()),
             (
                 "distance",
                 Type::Scalar {
