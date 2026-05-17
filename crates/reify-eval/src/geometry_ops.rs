@@ -1821,6 +1821,7 @@ pub(crate) fn try_eval_topology_selector(
         "faces_by_normal" => TopologySelectorHelper::FacesByNormal,
         "edges_parallel_to" => TopologySelectorHelper::EdgesParallelTo,
         "edges_at_height" => TopologySelectorHelper::EdgesAtHeight,
+        "adjacent_faces" => TopologySelectorHelper::AdjacentFaces,
         _ => return None,
     };
 
@@ -1969,6 +1970,21 @@ pub(crate) fn try_eval_topology_selector(
                 diagnostics,
             )
         }
+        TopologySelectorHelper::AdjacentFaces => {
+            // args[0]: parent solid ValueRef → named_steps map → GeometryHandleId.
+            let parent = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            // args[1]: face sub-handle ValueRef → named_steps map → GeometryHandleId.
+            let face_handle = resolve_geometry_handle_arg(&args[1], named_steps)?;
+            // `adjacent_to_face` internally recovers the 0-based face index via
+            // `extract_faces(parent)`, dispatches `GeometryQuery::AdjacentFaces`,
+            // and maps the reply indices back to face handles. Same
+            // Ok→List / Err→warning+Undef contract as the filtered helpers.
+            dispatch_filtered_list(
+                crate::selector_vocabulary_v2::adjacent_to_face(kernel, parent, face_handle),
+                &function.name,
+                diagnostics,
+            )
+        }
     }
 }
 
@@ -2040,6 +2056,9 @@ enum TopologySelectorHelper {
     /// lying entirely within a tolerance of a horizontal `z = z0` plane
     /// (task 3560).
     EdgesAtHeight,
+    /// `adjacent_faces(parent, face) -> List<Geometry>` — faces of `parent`
+    /// that share at least one edge with `face` (task 3560).
+    AdjacentFaces,
 }
 
 impl TopologySelectorHelper {
@@ -2055,7 +2074,8 @@ impl TopologySelectorHelper {
             | TopologySelectorHelper::CenterOfMass
             | TopologySelectorHelper::MomentOfInertia
             | TopologySelectorHelper::EdgesByLength
-            | TopologySelectorHelper::FacesByArea => 2,
+            | TopologySelectorHelper::FacesByArea
+            | TopologySelectorHelper::AdjacentFaces => 2,
             TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => 1,
             TopologySelectorHelper::FacesByNormal
             | TopologySelectorHelper::EdgesParallelTo
