@@ -4041,4 +4041,51 @@ mod tests {
             "begin_compute_dispatch must bump pending_transition_count by 1 per marked output"
         );
     }
+
+    /// RED (task 3423/δ step-4): `begin_compute_dispatch` on an ABSENT output
+    /// VC (first-time dispatch — no prior cache entry) seeds a fresh Pending
+    /// entry with `last_substantive: ResultRef::none()` (no prior result to
+    /// display), `pending_cause = Some(NodeId::Compute(c_id))`, and an empty
+    /// dependency trace. Pins the first-time-dispatch path that step-3's
+    /// GREEN does NOT yet handle — fails until step-5 extends the impl.
+    #[test]
+    fn begin_compute_dispatch_seeds_pending_entry_for_absent_output() {
+        use reify_types::{ComputeNodeId, Freshness, ResultRef};
+
+        let mut store = CacheStore::new();
+        let b = ValueCellId::new("T", "b");
+
+        // No entry for `b` — first-time dispatch.
+        assert!(
+            store.get(&NodeId::Value(b.clone())).is_none(),
+            "precondition: output VC must be absent"
+        );
+
+        let c_id = ComputeNodeId::new("T", 0);
+        let marked = store.begin_compute_dispatch(&c_id, &[b.clone()]);
+
+        assert_eq!(
+            marked, 1,
+            "begin_compute_dispatch must report 1 (absent VC seeded)"
+        );
+        let entry = store
+            .get(&NodeId::Value(b.clone()))
+            .expect("absent output VC must be seeded with a fresh entry");
+        assert_eq!(
+            entry.freshness,
+            Freshness::Pending {
+                last_substantive: ResultRef::none(),
+            },
+            "first-time dispatch has no prior result — last_substantive must be ResultRef::none()"
+        );
+        assert!(
+            entry.dependency_trace.reads.is_empty(),
+            "seeded entry must carry an empty dependency trace"
+        );
+        assert_eq!(
+            store.pending_cause(&NodeId::Value(b.clone())),
+            Some(NodeId::Compute(c_id)),
+            "seeded entry must record NodeId::Compute(c_id) as the chain root (PRD §3)"
+        );
+    }
 }
