@@ -121,7 +121,12 @@ impl JointValue {
     /// Borrow the underlying storage as a contiguous slice of f64s.  Length
     /// matches `JointKind::flat_len` for the corresponding kind (1, 2, 3, or 4).
     pub fn as_f64_slice(&self) -> &[f64] {
-        unimplemented!("step-2-impl")
+        match self {
+            JointValue::Scalar(x) => std::slice::from_ref(x),
+            JointValue::Cyl(arr) => arr.as_slice(),
+            JointValue::Planar(arr) => arr.as_slice(),
+            JointValue::Sphere(arr) => arr.as_slice(),
+        }
     }
 
     /// Construct from a flat `&[f64]` slice keyed by `kind`.  Returns
