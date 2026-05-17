@@ -648,6 +648,91 @@ fn get_mechanism_descriptors_current_value_si_updates_after_set_parameter() {
     );
 }
 
+// ---- JointBinding ParamBound promotion via AST resolver (task 3783, step-7) ----
+
+/// `resolve_driving_params_from_ast` must promote the joint `binding` field from
+/// the kind-based default `LiteralBound` to `ParamBound { param_cell_id, current_value_si }`
+/// when a `bind(joint, param)` pair is found.
+///
+/// Also verifies that the legacy flat fields (`driving_param_cell_id`,
+/// `current_value_si`) remain populated for backward compat.
+#[test]
+fn get_mechanism_descriptors_param_bind_promotes_binding_to_param_bound() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(SNAPSHOT_PARAM_BIND_SOURCE, "kinematic")
+        .expect("load snapshot+param source");
+
+    let descriptors = session.get_mechanism_descriptors();
+    let m1_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .expect("expected descriptor with bodies_count=1 (m1)");
+
+    let joint = &m1_desc.joints[0];
+
+    // The binding must have been promoted to ParamBound.
+    assert_eq!(
+        joint.binding,
+        crate::types::JointBinding::ParamBound {
+            param_cell_id: "Kinematic.y_pos".to_string(),
+            current_value_si: Some(0.1),
+        },
+        "bind(y_axis, y_pos) must promote binding to ParamBound {{ param_cell_id: \"Kinematic.y_pos\", \
+         current_value_si: Some(0.1) }}; got {:?}",
+        joint.binding
+    );
+
+    // Backward-compat flat fields must still be populated.
+    assert_eq!(
+        joint.driving_param_cell_id,
+        Some("Kinematic.y_pos".to_string()),
+        "driving_param_cell_id must still be Some(\"Kinematic.y_pos\") for compat; got {:?}",
+        joint.driving_param_cell_id
+    );
+    assert_eq!(
+        joint.current_value_si,
+        Some(0.1),
+        "current_value_si flat field must be Some(0.1); got {:?}",
+        joint.current_value_si
+    );
+}
+
+/// After `set_parameter("Kinematic.y_pos", "150mm")` the `binding` field on the
+/// joint descriptor must reflect the updated value in `ParamBound.current_value_si`.
+#[test]
+fn get_mechanism_descriptors_param_bind_binding_updates_after_set_parameter() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(SNAPSHOT_PARAM_BIND_SOURCE, "kinematic")
+        .expect("load snapshot+param source");
+
+    session
+        .set_parameter("Kinematic.y_pos", "150mm")
+        .expect("set_parameter should succeed");
+
+    let descriptors = session.get_mechanism_descriptors();
+    let m1_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .expect("expected descriptor with bodies_count=1");
+    let joint = &m1_desc.joints[0];
+
+    assert_eq!(
+        joint.binding,
+        crate::types::JointBinding::ParamBound {
+            param_cell_id: "Kinematic.y_pos".to_string(),
+            current_value_si: Some(0.15),
+        },
+        "after set_parameter(150mm), binding must show current_value_si=Some(0.15); got {:?}",
+        joint.binding
+    );
+}
+
 // ---- edge case tests (amendment pass, suggestion 8) -------------------------
 
 /// Source for double-bind test: same joint j bound to two different params in
