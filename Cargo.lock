@@ -4417,9 +4417,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "reify-build-utils"
+version = "0.1.0"
+
+[[package]]
 name = "reify-cli"
 version = "0.1.0"
 dependencies = [
+ "reify-build-utils",
  "reify-compiler",
  "reify-config",
  "reify-constraints",
@@ -4555,6 +4560,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "notify",
+ "reify-build-utils",
  "reify-compiler",
  "reify-config",
  "reify-constraints",
@@ -4596,6 +4602,7 @@ name = "reify-kernel-gmsh"
 version = "0.1.0"
 dependencies = [
  "inventory",
+ "reify-build-utils",
  "reify-eval",
  "reify-kernel-gmsh",
  "reify-test-support",
@@ -4624,6 +4631,7 @@ dependencies = [
  "cxx",
  "cxx-build",
  "inventory",
+ "reify-build-utils",
  "reify-eval",
  "reify-kernel-occt",
  "reify-mesh-morph",
@@ -4641,6 +4649,7 @@ dependencies = [
  "cxx",
  "cxx-build",
  "inventory",
+ "reify-build-utils",
  "reify-eval",
  "reify-expr",
  "reify-kernel-openvdb",

@@ -1,6 +1,8 @@
 use std::env;
 use std::path::PathBuf;
 
+use reify_build_utils::{LibLoc, NativeDep, read_soname_version};
+
 // Pull in the shared constants so build.rs can emit the generated C++ header
 // with the authoritative CPP_LINE_WIRE_MIN_LENGTH_SQ value. Using #[path] here
 // avoids duplicating the literal value in build.rs — duplicating would reintroduce
@@ -8,79 +10,16 @@ use std::path::PathBuf;
 #[path = "src/floor_constants.rs"]
 mod floor_constants;
 
-fn find_include_dir() -> Option<PathBuf> {
-    if let Ok(dir) = env::var("OCCT_INCLUDE_DIR") {
-        return Some(PathBuf::from(dir));
-    }
-
-    let search_include = [
-        "/usr/include/opencascade",
-        "/usr/local/include/opencascade",
-        "/snap/freecad/current/usr/include/opencascade",
-    ];
-
-    for p in &search_include {
-        let path = PathBuf::from(p);
-        if path.join("Standard_Failure.hxx").exists() {
-            return Some(path);
-        }
-    }
-
-    // Also try numbered snap directories
-    if let Ok(entries) = std::fs::read_dir("/snap/freecad") {
-        for entry in entries.flatten() {
-            let candidate = entry.path().join("usr/include/opencascade");
-            if candidate.join("Standard_Failure.hxx").exists() {
-                return Some(candidate);
-            }
-        }
-    }
-
-    None
-}
-
-fn find_lib_dir() -> Option<PathBuf> {
-    if let Ok(dir) = env::var("OCCT_LIB_DIR") {
-        return Some(PathBuf::from(dir));
-    }
-
-    let search_lib = [
-        "/usr/lib/x86_64-linux-gnu",
-        "/usr/lib",
-        "/usr/local/lib",
-        "/snap/freecad/current/usr/lib",
-    ];
-
-    for p in &search_lib {
-        let path = PathBuf::from(p);
-        if path.join("libTKernel.so").exists() {
-            return Some(path);
-        }
-    }
-
-    if let Ok(entries) = std::fs::read_dir("/snap/freecad") {
-        for entry in entries.flatten() {
-            let candidate = entry.path().join("usr/lib");
-            if candidate.join("libTKernel.so").exists() {
-                return Some(candidate);
-            }
-        }
-    }
-
-    None
-}
-
 fn main() {
     // Declare has_occt as a known cfg so rustc doesn't warn about it.
     println!("cargo::rustc-check-cfg=cfg(has_occt)");
+    println!("cargo:rerun-if-env-changed=OCCT_INCLUDE_DIR");
+    println!("cargo:rerun-if-env-changed=OCCT_LIB_DIR");
 
     // Auto-detect OCCT availability.
-    let include_dir = find_include_dir();
-    let lib_dir = find_lib_dir();
-
-    let (include_dir, lib_dir) = match (include_dir, lib_dir) {
-        (Some(inc), Some(lib)) => (inc, lib),
-        _ => {
+    let LibLoc { include_dir, lib_dir } = match reify_build_utils::find(NativeDep::Occt) {
+        Some(loc) => loc,
+        None => {
             // OCCT not found — emit a warning and exit gracefully.
             // The crate will compile with stub types instead of FFI bindings.
             println!(
@@ -150,11 +89,45 @@ fn main() {
         "TKBool",
         "TKOffset",
     ];
+
+    // Pin OCCT linkage to the exact SONAME filename in `lib_dir` instead of
+    // letting ld pick `libTKernel.so` from the first `-L` dir that has one.
+    // Reason: `reify-cli` and `reify-gui` transitively depend on
+    // `reify-kernel-gmsh` (and `-openvdb`) whose build.rs scripts add
+    // `/opt/reify-deps/lib` to the link search path. The conda env ships OCCT
+    // 7.9 there as a transitive of gmsh=4.15.2, so ld would otherwise resolve
+    // OCCT against 7.9 and the resulting binary would NEED `libTKernel.so.7.9`
+    // — which only exists under `/etc/ld.so.conf.d/reify-deps.conf`. Pinning
+    // to the OCCT-detected lib_dir's exact filename (e.g. `:libTKernel.so.7.8`
+    // on the system path) makes the link impervious to the gmsh-induced `-L`.
+    //
+    // The first-level symlink target is read at build time so this adapts to
+    // whatever OCCT version is actually installed (7.8 on system today, 7.9
+    // tomorrow if Debian/Ubuntu update). Fallback `"7.8"` is the current
+    // system version (`libTKernel.so → libTKernel.so.7.8`) on the dev box.
+    let so_version = read_soname_version(&lib_dir, "TKernel").unwrap_or_else(|| {
+        println!(
+            "cargo:warning=Could not detect OCCT SONAME from {} — falling back to '7.8'. \
+             If your OCCT install uses a different version, set OCCT_LIB_DIR.",
+            lib_dir.display()
+        );
+        "7.8".to_string()
+    });
     for lib in &occt_libs {
-        println!("cargo:rustc-link-lib=dylib={}", lib);
+        // `dylib:+verbatim` passes the literal name to the linker without the
+        // usual `lib<NAME>` / `.so` rewrites — ld then accepts the exact
+        // filename match. Without `+verbatim`, rustc rejects the leading `:`
+        // ("library name must not be empty") and a bare `lib<NAME>.so.<VER>`
+        // would be normalised to `-llib<NAME>.so.<VER>` which has no match
+        // anywhere.
+        println!("cargo:rustc-link-lib=dylib:+verbatim=lib{lib}.so.{so_version}");
     }
 
-    // Set rpath so the dynamic linker can find OCCT libs at runtime
+    // Set rpath so test binaries in *this* package resolve OCCT at runtime.
+    // Note: `rustc-link-arg` only applies to bin/test targets in this same
+    // package — workspace binaries (`reify`, `reify-gui`) get their RPATH via
+    // `reify_build_utils::emit_rpath_for_bins(NativeDep::Occt)` in their own
+    // build.rs.
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
 
     // Also need to link the C++ standard library

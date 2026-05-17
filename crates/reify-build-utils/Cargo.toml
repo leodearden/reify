@@ -1,0 +1,6 @@
+[package]
+name = "reify-build-utils"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared build-script helpers: native-dep discovery and RPATH emission for Reify kernel adapters and binary packages"

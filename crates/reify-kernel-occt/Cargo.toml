@@ -34,6 +34,7 @@ mesh-morph = ["dep:reify-mesh-morph"]
 [build-dependencies]
 cxx-build = "1"
 cc = "1"
+reify-build-utils.workspace = true
 
 # `reify-eval` is a dev-dependency (not a normal dep) for the same reason the
 # OCCT, Manifold, and Fidget adapters exclude it from production deps: adapter

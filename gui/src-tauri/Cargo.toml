@@ -46,6 +46,7 @@ notify.workspace = true
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+reify-build-utils.workspace = true
 
 [dev-dependencies]
 reify-test-support.workspace = true
