@@ -54,3 +54,15 @@
 // TODO(joint-value-type): retarget to the kinematic-completion PRD's
 // `JointValue` (likely `Scalar<...>` or a struct) when that PRD lands.
 pub type JointValue = Real
+
+// ── Marker traits ─────────────────────────────────────────────────────────
+
+// Profile — marker trait for every motion-profile variant (PRD §4.1).
+// Currently only `PiecewisePolynomialProfile` refines it; future variants
+// (TrapezoidalProfile, SCurveProfile, …) are queued in later v0.3 phases.
+//
+// Kept empty by design: every shared member would force every variant to
+// carry redundant data and defeat the marker-trait purpose. Future shared
+// fields (e.g. `total_duration`) land in their own phases once the design
+// has settled on a single representation.
+trait Profile { }
