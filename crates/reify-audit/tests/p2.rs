@@ -596,6 +596,7 @@ mod tests {
     ///
     /// Reference: esc-3752-365 (reviewer-accepted sweep-mode contract suggestion).
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "unbounded backlog")]
     fn sweep_mode_unbounded_backlog_panics_in_debug() {
         let conn = Connection::open_in_memory().expect("open in-memory sqlite");
