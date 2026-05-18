@@ -291,12 +291,8 @@ impl SpatialTransform6 {
     pub fn apply(&self, v: &SpatialVector6) -> SpatialVector6 {
         let a = v.as_array();
         let mut out = [0.0; 6];
-        for i in 0..6 {
-            let mut acc = 0.0;
-            for k in 0..6 {
-                acc += self.0[i * 6 + k] * a[k];
-            }
-            out[i] = acc;
+        for (out_i, row) in out.iter_mut().zip(self.0.chunks_exact(6)) {
+            *out_i = row.iter().zip(a.iter()).map(|(m, x)| m * x).sum();
         }
         SpatialVector6::from_array(out)
     }
@@ -371,12 +367,8 @@ impl SpatialInertia6 {
     pub fn apply(&self, v: &SpatialVector6) -> SpatialVector6 {
         let a = v.as_array();
         let mut out = [0.0; 6];
-        for i in 0..6 {
-            let mut acc = 0.0;
-            for k in 0..6 {
-                acc += self.0[i * 6 + k] * a[k];
-            }
-            out[i] = acc;
+        for (out_i, row) in out.iter_mut().zip(self.0.chunks_exact(6)) {
+            *out_i = row.iter().zip(a.iter()).map(|(m, x)| m * x).sum();
         }
         SpatialVector6::from_array(out)
     }
