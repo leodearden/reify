@@ -61,3 +61,51 @@ impl SpatialVector6 {
         [self.0[3], self.0[4], self.0[5]]
     }
 }
+
+/// A rigid-body pose: a local pure-Rust mirror of Reify's
+/// `reify_types::Value::Frame { origin: Point3<LENGTH>, basis: Orientation }`.
+///
+/// Spatial primitives are consumed by RNEA at speed; they operate on raw `f64`
+/// rather than paying a match-and-unbox cost on every call, so this struct
+/// carries the `Value::Frame` payload at the f64 level:
+///
+/// * `rotation` — a `(w, x, y, z)` unit quaternion, scalar first, matching the
+///   ordering of `Value::Orientation`.
+/// * `translation` — meters, with the Reify `LENGTH` dimension stripped.
+///
+/// A future adapter `Frame3::from_value_frame(&Value) -> Option<Self>` (the
+/// eval-side wiring that bridges `Value::Frame` ↔ `Frame3`) is filed under
+/// RBD-ε, where the RNEA call sites actually need it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Frame3 {
+    rotation: [f64; 4],
+    translation: [f64; 3],
+}
+
+impl Frame3 {
+    /// The identity pose: unit quaternion `(1, 0, 0, 0)` and zero translation.
+    pub fn identity() -> Self {
+        Frame3 {
+            rotation: [1.0, 0.0, 0.0, 0.0],
+            translation: [0.0, 0.0, 0.0],
+        }
+    }
+
+    /// Construct from a `(w, x, y, z)` quaternion and a meters translation.
+    pub fn new(rotation: [f64; 4], translation: [f64; 3]) -> Self {
+        Frame3 {
+            rotation,
+            translation,
+        }
+    }
+
+    /// The `(w, x, y, z)` rotation quaternion.
+    pub fn rotation(&self) -> [f64; 4] {
+        self.rotation
+    }
+
+    /// The translation `[x, y, z]` in meters.
+    pub fn translation(&self) -> [f64; 3] {
+        self.translation
+    }
+}
