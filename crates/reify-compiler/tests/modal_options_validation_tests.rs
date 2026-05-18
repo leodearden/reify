@@ -410,3 +410,124 @@ fn mode_struct_has_no_constraints_or_defaults() {
             .collect::<Vec<_>>()
     );
 }
+
+// ─── step-11: ModalResult param shape (no constraints, no defaults) ──────────
+
+/// `ModalResult` is the solver-output container (PRD §4.1). It must declare
+/// exactly the six PRD §4.1 params with the canonical types, in declaration
+/// order:
+///
+///   - `part                  : String`                  (PLACEHOLDER for the
+///                                                        future `Part`
+///                                                        structure_def from
+///                                                        the v0.3 solver-
+///                                                        elastic PRD — see
+///                                                        plan design-decision-2)
+///   - `modes                 : List<Mode>`              (computed eigenpairs;
+///                                                        `Mode` is module-local
+///                                                        → `Type::StructureRef`)
+///   - `boundary_conditions    : List<Support>`           (`Support` is the
+///                                                        marker trait from
+///                                                        `std.fea.multi_case`,
+///                                                        in the growing prelude
+///                                                        → `Type::TraitObject`,
+///                                                        same as trajectory's
+///                                                        `List<BoundaryCondition>`)
+///   - `damping               : DampingDescriptor`       (trait-typed
+///                                                        → `Type::TraitObject`)
+///   - `mass_matrix_norm       : Real`                    (‖M‖ diagnostic)
+///   - `stiffness_matrix_norm  : Real`                    (‖K‖ diagnostic)
+///
+/// Type representations confirmed against the trajectory precedent
+/// (`trajectory_stdlib_compile.rs:628-639`): a module-local structure name
+/// resolves to `Type::StructureRef`, a prelude marker trait resolves to
+/// `Type::TraitObject`, and `List<Trait>` wraps the trait object in
+/// `Type::List`.
+///
+/// `ModalResult` is solver-populated only: every field is determined by the
+/// modal solve, so no caller-supplied defaults are meaningful and no scalar
+/// constraint is declared at the structure-def level (collection invariants
+/// such as "modes non-empty / sorted by frequency" are enforced at the future
+/// modal_analysis trampoline, mirroring `BucklingResult` discipline at
+/// `solver_buckling.ri:196-205` and the no-constraints-no-defaults shape from
+/// `buckling_stdlib_compile.rs::mode_struct_has_no_constraints_or_defaults`).
+#[test]
+fn modal_result_struct_has_correct_param_shape() {
+    let template = find_structure("ModalResult");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    // (a) tight count
+    assert_eq!(
+        params.len(),
+        6,
+        "ModalResult should have exactly 6 param cells (part, modes, \
+         boundary_conditions, damping, mass_matrix_norm, \
+         stiffness_matrix_norm), got: {:?}",
+        names
+    );
+
+    // (b) param names + types in declaration order
+    let expected: &[(&str, Type)] = &[
+        ("part", Type::String),
+        (
+            "modes",
+            Type::List(Box::new(Type::StructureRef("Mode".to_string()))),
+        ),
+        (
+            "boundary_conditions",
+            Type::List(Box::new(Type::TraitObject("Support".to_string()))),
+        ),
+        (
+            "damping",
+            Type::TraitObject("DampingDescriptor".to_string()),
+        ),
+        ("mass_matrix_norm", Type::Real),
+        ("stiffness_matrix_norm", Type::Real),
+    ];
+
+    let expected_names: Vec<&str> = expected.iter().map(|(m, _)| *m).collect();
+    assert_eq!(
+        names, expected_names,
+        "ModalResult params must be declared in canonical order \
+         (part, modes, boundary_conditions, damping, mass_matrix_norm, \
+         stiffness_matrix_norm); got: {:?}",
+        names
+    );
+
+    for (i, (expected_name, expected_ty)) in expected.iter().enumerate() {
+        let cell = &params[i];
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "ModalResult.{} should be {:?}, got {:?}",
+            expected_name, expected_ty, cell.cell_type
+        );
+    }
+
+    // (c) no defaults — solver-populated output container
+    for cell in &params {
+        assert!(
+            cell.default_expr.is_none(),
+            "ModalResult.{} should have no default_expr (solver-only-produced \
+             output container), but got: {:?}",
+            cell.id.member,
+            cell.default_expr
+        );
+    }
+
+    // (c) no constraints — collection invariants (modes non-empty / sorted)
+    // are enforced at the future modal_analysis trampoline, not declared at
+    // the structure-def level (mirrors BucklingResult discipline at
+    // solver_buckling.ri:196-205).
+    assert!(
+        template.constraints.is_empty(),
+        "ModalResult should declare no constraints (solver-only-produced \
+         output container; collection invariants are trampoline-enforced); \
+         got: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+}
