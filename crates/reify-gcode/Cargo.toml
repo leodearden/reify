@@ -1,0 +1,6 @@
+[package]
+name = "reify-gcode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Reify G-code parser (Marlin + Klipper) — value-typed AST shared across dialects for trajectory ingestion (PRD docs/prds/v0_3/trajectory-input-shaping.md §7 Phase 5)"
