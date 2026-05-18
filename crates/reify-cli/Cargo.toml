@@ -25,6 +25,7 @@ reify-stdlib.workspace = true
 reify-lsp.workspace = true
 reify-mcp.workspace = true
 reify-doc.workspace = true
+reify-doc-build.workspace = true
 reify-config.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
