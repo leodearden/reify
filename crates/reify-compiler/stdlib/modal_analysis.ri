@@ -1,0 +1,52 @@
+// Stdlib: Modal Analysis Options, Modes & Results  (`std.modal.analysis`)
+//
+// PRD: docs/prds/v0_3/modal-analysis.md §4.1, §4.2, §4.3, §10 task α.
+//
+// Provides the named-type surface for the v0.3 modal-analysis kernel:
+//   - `DampingDescriptor`  — marker trait for damping-strategy variants
+//   - `NoDamping`          — marker structure refining `DampingDescriptor`
+//                            (undamped solve; default behaviour)
+//   - `RayleighDamping`    — proportional damping (alpha, beta) refining
+//                            `DampingDescriptor`
+//   - `Mode`               — single (frequency, shape, participation, damping)
+//                            modal eigenpair
+//   - `ModalResult`        — solver-output container (part, modes, BCs,
+//                            damping, mass-/stiffness-matrix-norms)
+//   - `ModalOptions`       — solver-input knobs (n_modes, BCs, damping,
+//                            sigma, tol, max_iters, reference_direction)
+//
+// Module placement: `std.modal.analysis` is the v0.3 sibling reserved by
+// `std.trajectory`'s header — "registered last … ready for the planned
+// `std.modal` / `std.dynamics` siblings". Registered immediately BEFORE
+// `std.trajectory` in `stdlib_loader.rs` so the v0.3 analysis cluster stays
+// grouped at the tail of the loader vec, and so `ModalResult` is in the
+// growing prelude for the future task that tightens trajectory.ri to consume
+// `ModalResult.modes` (kinematic-completion PRD; not yet landed).
+//
+// `trait Support` from the much-earlier `std.fea.multi_case` is already in
+// the growing prelude at this point, so `List<Support>` resolves on both
+// `ModalResult.boundary_conditions` and `ModalOptions.boundary_conditions`.
+//
+// Encoding notes:
+//   1. Number-literal grammar is `\d+(\.\d+)?` (no scientific notation).
+//      The PRD's `1e-9` default for `tol` therefore appears here as
+//      `0.000000001`, same convention as `solver_buckling.ri`'s `tol = 1e-8`
+//      → `0.00000001`.
+//   2. `ModalResult.part : String` is a PLACEHOLDER for the future `Part`
+//      structure_def from the v0.3 solver-elastic PRD (not yet landed; see
+//      `fea_multi_case.ri:269-273` placeholder convention). A FIXME comment
+//      on the param flags the future tighten target.
+//   3. `Mode.frequency : Real` is a placeholder for `Scalar<Frequency>` —
+//      `Frequency` (= s⁻¹) is an SI-derived dimension but has no named scalar
+//      alias yet. Same placeholder pattern as `fea_multi_case.ri::Load.force
+//      : Real` waiting for `Vector3<Force>`.
+//   4. `Mode.shape : List<Vector3<Real>>` is the correct semantics, NOT a
+//      placeholder: mass-normalized eigenvectors are mathematically
+//      dimensionless under `Φᵀ·M·Φ = I` (PRD §4.1 + §7.5).
+//   5. `ModalOptions.reference_direction : Vector3<Real>` is the correct
+//      semantics (unit vector — dimensionless). The constraint
+//      `reference_direction.norm() > 0` is NOT expressible in Reify's
+//      `constraint` grammar (method-call on Vector3, not a scalar predicate)
+//      and is deferred to the runtime trampoline (future task ζ), mirroring
+//      `BucklingOptions.mode` allowlist-deferral precedent
+//      (solver_buckling.ri:97-107).
