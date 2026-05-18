@@ -211,3 +211,40 @@ mod compose {
         assert_mat6_eq(&left.as_matrix(), &right.as_matrix(), TOL_NUMERIC);
     }
 }
+
+mod inverse {
+    use super::*;
+
+    #[test]
+    fn identity_inverse_is_identity() {
+        let x = SpatialTransform6::from_frame3(&Frame3::identity());
+        assert_mat6_eq(&x.inverse().as_matrix(), &identity6(), TOL_TIGHT);
+    }
+
+    #[test]
+    fn pure_translation_inverse_negates_translation() {
+        // Featherstone closed-form: X(r, E)⁻¹ = X(−Eᵀr, Eᵀ).
+        // identity rotation ⇒ X(F(t))⁻¹ == X(F(−t)).
+        let t = [1.0, 2.0, 3.0];
+        let x = SpatialTransform6::from_frame3(&Frame3::new([1.0, 0.0, 0.0, 0.0], t));
+        let expected = SpatialTransform6::from_frame3(&Frame3::new(
+            [1.0, 0.0, 0.0, 0.0],
+            [-t[0], -t[1], -t[2]],
+        ));
+        assert_mat6_eq(&x.inverse().as_matrix(), &expected.as_matrix(), TOL_TIGHT);
+    }
+
+    #[test]
+    fn pure_rotation_inverse_conjugates_rotation() {
+        // 30° about x: q = (cos π/12, sin π/12, 0, 0); conj = (cos, −sin, 0, 0).
+        // Zero translation ⇒ X(F(q))⁻¹ == X(F(conj q)).
+        let half = std::f64::consts::PI / 12.0;
+        let (c, s) = (half.cos(), half.sin());
+        let q = [c, s, 0.0, 0.0];
+        let q_conj = [c, -s, 0.0, 0.0];
+        let x = SpatialTransform6::from_frame3(&Frame3::new(q, [0.0, 0.0, 0.0]));
+        let expected =
+            SpatialTransform6::from_frame3(&Frame3::new(q_conj, [0.0, 0.0, 0.0]));
+        assert_mat6_eq(&x.inverse().as_matrix(), &expected.as_matrix(), TOL_NUMERIC);
+    }
+}
