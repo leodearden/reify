@@ -99,3 +99,75 @@ fn trait_decl_doc_propagates_to_compiled_trait() {
         "CompiledTrait.doc should carry the doc comment"
     );
 }
+
+// ─── negative case: absence of /// → doc must be None, not Some("") ─────────
+//
+// Catches a class of regression in `extract_doc_comment`/lowering where the
+// absence of a doc comment is accidentally lowered to `Some(String::new())`
+// instead of `None`.  One combined fixture covers all four compiled types.
+
+#[test]
+fn missing_doc_comment_lowers_to_none() {
+    let compiled = compile_source(
+        "structure Widget { let x = 1.0 }\n\
+         occurrence Weld { let duration = 5.0 }\n\
+         fn dbl(x: Real) -> Real { x + x }\n\
+         trait Rigid { param mass: Real }\n\
+         enum Color { Red, Green, Blue }\n",
+    );
+
+    let structure = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Widget")
+        .expect("Widget template should exist");
+    assert!(
+        structure.doc.is_none(),
+        "TopologyTemplate.doc must be None when no /// comment is present, got {:?}",
+        structure.doc
+    );
+
+    let occurrence = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Weld")
+        .expect("Weld template should exist");
+    assert!(
+        occurrence.doc.is_none(),
+        "TopologyTemplate.doc (occurrence path) must be None when no /// comment is present, got {:?}",
+        occurrence.doc
+    );
+
+    let func = compiled
+        .functions
+        .iter()
+        .find(|f| f.name == "dbl")
+        .expect("dbl function should exist");
+    assert!(
+        func.doc.is_none(),
+        "CompiledFunction.doc must be None when no /// comment is present, got {:?}",
+        func.doc
+    );
+
+    let trait_def = compiled
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "Rigid")
+        .expect("Rigid trait should exist");
+    assert!(
+        trait_def.doc.is_none(),
+        "CompiledTrait.doc must be None when no /// comment is present, got {:?}",
+        trait_def.doc
+    );
+
+    let enum_def = compiled
+        .enum_defs
+        .iter()
+        .find(|e| e.name == "Color")
+        .expect("Color enum should exist");
+    assert!(
+        enum_def.doc.is_none(),
+        "EnumDef.doc must be None when no /// comment is present, got {:?}",
+        enum_def.doc
+    );
+}
