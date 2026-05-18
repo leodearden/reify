@@ -29,6 +29,7 @@ mod list;
 mod loads;
 pub mod loop_closure;
 pub mod loop_closure_solver;
+pub mod loop_closure_value;
 mod matrix;
 mod mechanism;
 mod numeric;

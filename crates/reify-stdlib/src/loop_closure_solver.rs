@@ -997,6 +997,7 @@ fn validate_loop_closure_inputs(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::loop_closure_value::{JointValue, flatten_dofs};
 
     // ── Public type API surface (step-11) ──────────────────────────────
 
@@ -1418,9 +1419,14 @@ mod tests {
         // Setting max_iters=0 should return NotConverged with x = [0.5]
         // (the midpoint, before any Newton step).
         let chain_a = vec![prismatic_x_0_to_1()];
-        let vals_a = vec![0.5];
+        // α-pre bridge: per-joint motion values typed as Vec<JointValue>
+        // (all `Scalar` for these scalar-joint chains).  solve_loop_closure
+        // still consumes `&[f64]` in α-pre, so the values pass through
+        // `flatten_dofs` at the call boundary.  flatten_dofs of a single
+        // `Scalar(0.5)` is exactly `vec![0.5]`, so behaviour is preserved.
+        let vals_a = vec![JointValue::Scalar(0.5)];
         let chain_b = vec![prismatic_x_0_to_1()];
-        let vals_b_initial = vec![0.0];
+        let vals_b_initial = vec![JointValue::Scalar(0.0)];
         let free_b = vec![0];
         let strategy = StartStrategy::Midpoint;
         let cfg = NewtonConfig {
@@ -1432,9 +1438,9 @@ mod tests {
 
         let outcome = solve_loop_closure(
             &chain_a,
-            &vals_a,
+            &flatten_dofs(&vals_a),
             &chain_b,
-            &vals_b_initial,
+            &flatten_dofs(&vals_b_initial),
             &free_b,
             &strategy,
             &cfg,
@@ -1457,18 +1463,18 @@ mod tests {
         // Midpoint init at 0.5m, but chain_a's value is also 0.5m so we are
         // at the root immediately — trivially Converged in 0 iterations.
         let chain_a = vec![prismatic_x_0_to_1()];
-        let vals_a = vec![0.5];
+        let vals_a = vec![JointValue::Scalar(0.5)];
         let chain_b = vec![prismatic_x_0_to_1()];
-        let vals_b_initial = vec![0.0];
+        let vals_b_initial = vec![JointValue::Scalar(0.0)];
         let free_b = vec![0];
         let strategy = StartStrategy::Midpoint;
         let cfg = NewtonConfig::default();
 
         let outcome = solve_loop_closure(
             &chain_a,
-            &vals_a,
+            &flatten_dofs(&vals_a),
             &chain_b,
-            &vals_b_initial,
+            &flatten_dofs(&vals_b_initial),
             &free_b,
             &strategy,
             &cfg,
@@ -1491,10 +1497,13 @@ mod tests {
         // we should converge ~immediately (Newton solves the linear case
         // in 1 iter to machine precision anyway).
         let chain_a = vec![prismatic_x_0_to_1()];
-        let vals_a = vec![0.5];
+        let vals_a = vec![JointValue::Scalar(0.5)];
         let chain_b = vec![prismatic_x_0_to_1()];
-        let vals_b_initial = vec![0.499];
+        let vals_b_initial = vec![JointValue::Scalar(0.499)];
         let free_b = vec![0];
+        // WarmStart payload is an abstract Newton-state seed (NOT a chain
+        // motion-value vector — its length matches `free_b`, not chain_b),
+        // so it stays `Vec<f64>` per the α-pre scope.
         let strategy = StartStrategy::WarmStart(vec![0.499]);
         let cfg_loose = NewtonConfig {
             tol_pos_m: 1e-3,
@@ -1505,9 +1514,9 @@ mod tests {
 
         let outcome = solve_loop_closure(
             &chain_a,
-            &vals_a,
+            &flatten_dofs(&vals_a),
             &chain_b,
-            &vals_b_initial,
+            &flatten_dofs(&vals_b_initial),
             &free_b,
             &strategy,
             &cfg_loose,
@@ -1528,9 +1537,9 @@ mod tests {
         // Same starting point, but tight 1e-9 tolerance. Linear case →
         // Newton finds the root in 1 step regardless of tol.
         let chain_a = vec![prismatic_x_0_to_1()];
-        let vals_a = vec![0.5];
+        let vals_a = vec![JointValue::Scalar(0.5)];
         let chain_b = vec![prismatic_x_0_to_1()];
-        let vals_b_initial = vec![0.499];
+        let vals_b_initial = vec![JointValue::Scalar(0.499)];
         let free_b = vec![0];
         let strategy = StartStrategy::WarmStart(vec![0.499]);
         let cfg_tight = NewtonConfig {
@@ -1542,9 +1551,9 @@ mod tests {
 
         let outcome = solve_loop_closure(
             &chain_a,
-            &vals_a,
+            &flatten_dofs(&vals_a),
             &chain_b,
-            &vals_b_initial,
+            &flatten_dofs(&vals_b_initial),
             &free_b,
             &strategy,
             &cfg_tight,
@@ -1614,9 +1623,9 @@ mod tests {
         // Jacobian assembly that single-prismatic tests cannot.
         let chain_a = vec![revolute_z_0_to_pi(), prismatic_x_0_to_1()];
         let theta_a = std::f64::consts::PI / 3.0;
-        let vals_a = vec![theta_a, 0.5];
+        let vals_a = vec![JointValue::Scalar(theta_a), JointValue::Scalar(0.5)];
         let chain_b = vec![revolute_z_0_to_pi(), prismatic_x_0_to_1()];
-        let vals_b_initial = vec![0.0, 0.0];
+        let vals_b_initial = vec![JointValue::Scalar(0.0), JointValue::Scalar(0.0)];
         let free_b = vec![0, 1];
         let strategy = StartStrategy::WarmStart(vec![0.1, 0.1]);
         // Generous max_iters; tight tol so we exercise convergence rate.
@@ -1629,9 +1638,9 @@ mod tests {
 
         let outcome = solve_loop_closure(
             &chain_a,
-            &vals_a,
+            &flatten_dofs(&vals_a),
             &chain_b,
-            &vals_b_initial,
+            &flatten_dofs(&vals_b_initial),
             &free_b,
             &strategy,
             &cfg,
@@ -1666,9 +1675,9 @@ mod tests {
     #[test]
     fn solve_loop_closure_warm_start_length_mismatch_returns_invalid_input() {
         let chain_a = vec![prismatic_x_0_to_1()];
-        let vals_a = vec![0.5];
+        let vals_a = vec![JointValue::Scalar(0.5)];
         let chain_b = vec![prismatic_x_0_to_1()];
-        let vals_b_initial = vec![0.0];
+        let vals_b_initial = vec![JointValue::Scalar(0.0)];
         let free_b = vec![0];
         // WarmStart length 2 ≠ free_b length 1.
         let strategy = StartStrategy::WarmStart(vec![0.0, 0.1]);
@@ -1676,9 +1685,9 @@ mod tests {
 
         let outcome = solve_loop_closure(
             &chain_a,
-            &vals_a,
+            &flatten_dofs(&vals_a),
             &chain_b,
-            &vals_b_initial,
+            &flatten_dofs(&vals_b_initial),
             &free_b,
             &strategy,
             &cfg,
@@ -1697,9 +1706,9 @@ mod tests {
     #[test]
     fn solve_loop_closure_midpoint_free_b_out_of_range_returns_invalid_input() {
         let chain_a = vec![prismatic_x_0_to_1()];
-        let vals_a = vec![0.5];
+        let vals_a = vec![JointValue::Scalar(0.5)];
         let chain_b = vec![prismatic_x_0_to_1()];
-        let vals_b_initial = vec![0.0];
+        let vals_b_initial = vec![JointValue::Scalar(0.0)];
         // free_b index 5 is out of range for chain_b of length 1.
         let free_b = vec![5];
         let strategy = StartStrategy::Midpoint;
@@ -1707,9 +1716,9 @@ mod tests {
 
         let outcome = solve_loop_closure(
             &chain_a,
-            &vals_a,
+            &flatten_dofs(&vals_a),
             &chain_b,
-            &vals_b_initial,
+            &flatten_dofs(&vals_b_initial),
             &free_b,
             &strategy,
             &cfg,
@@ -1728,9 +1737,9 @@ mod tests {
     #[test]
     fn solve_loop_closure_warm_start_free_b_out_of_range_returns_invalid_input() {
         let chain_a = vec![prismatic_x_0_to_1()];
-        let vals_a = vec![0.5];
+        let vals_a = vec![JointValue::Scalar(0.5)];
         let chain_b = vec![prismatic_x_0_to_1()];
-        let vals_b_initial = vec![0.0];
+        let vals_b_initial = vec![JointValue::Scalar(0.0)];
         // free_b index 5 is out of range for chain_b of length 1.
         let free_b = vec![5];
         // WarmStart vec has length 1 to match free_b len — so the length-mismatch
@@ -1740,9 +1749,9 @@ mod tests {
 
         let outcome = solve_loop_closure(
             &chain_a,
-            &vals_a,
+            &flatten_dofs(&vals_a),
             &chain_b,
-            &vals_b_initial,
+            &flatten_dofs(&vals_b_initial),
             &free_b,
             &strategy,
             &cfg,
@@ -1764,11 +1773,11 @@ mod tests {
     #[test]
     fn solve_loop_closure_warm_start_free_b_index_exceeds_vals_b_initial_returns_invalid_input() {
         let chain_a = vec![prismatic_x_0_to_1()];
-        let vals_a = vec![0.5];
+        let vals_a = vec![JointValue::Scalar(0.5)];
         // chain_b has 2 joints so free_b[0]=1 passes the chain_b bound check.
         let chain_b = vec![prismatic_x_0_to_1(), prismatic_x_0_to_1()];
         // vals_b_initial has only 1 entry — free_b[0]=1 is OOB here.
-        let vals_b_initial = vec![0.0];
+        let vals_b_initial = vec![JointValue::Scalar(0.0)];
         let free_b = vec![1];
         // WarmStart vec length 1 matches free_b len — length-mismatch guard does not fire.
         let strategy = StartStrategy::WarmStart(vec![0.0]);
@@ -1776,9 +1785,9 @@ mod tests {
 
         let outcome = solve_loop_closure(
             &chain_a,
-            &vals_a,
+            &flatten_dofs(&vals_a),
             &chain_b,
-            &vals_b_initial,
+            &flatten_dofs(&vals_b_initial),
             &free_b,
             &strategy,
             &cfg,
@@ -1810,18 +1819,18 @@ mod tests {
         // No "range" key.
         let bad_joint = Value::Map(bad_joint_map);
         let chain_a = vec![prismatic_x_0_to_1()];
-        let vals_a = vec![0.5];
+        let vals_a = vec![JointValue::Scalar(0.5)];
         let chain_b = vec![bad_joint];
-        let vals_b_initial = vec![0.0];
+        let vals_b_initial = vec![JointValue::Scalar(0.0)];
         let free_b = vec![0];
         let strategy = StartStrategy::Midpoint;
         let cfg = NewtonConfig::default();
 
         let outcome = solve_loop_closure(
             &chain_a,
-            &vals_a,
+            &flatten_dofs(&vals_a),
             &chain_b,
-            &vals_b_initial,
+            &flatten_dofs(&vals_b_initial),
             &free_b,
             &strategy,
             &cfg,
@@ -1841,18 +1850,18 @@ mod tests {
     fn solve_loop_closure_warm_start_converges_single_prismatic() {
         // chain_a fixed at 0.5m; chain_b's free var should converge there.
         let chain_a = vec![prismatic_x_0_to_1()];
-        let vals_a = vec![0.5];
+        let vals_a = vec![JointValue::Scalar(0.5)];
         let chain_b = vec![prismatic_x_0_to_1()];
-        let vals_b_initial = vec![0.0]; // FREE var
+        let vals_b_initial = vec![JointValue::Scalar(0.0)]; // FREE var
         let free_b = vec![0];
         let strategy = StartStrategy::WarmStart(vec![0.0]);
         let cfg = NewtonConfig::default();
 
         let outcome = solve_loop_closure(
             &chain_a,
-            &vals_a,
+            &flatten_dofs(&vals_a),
             &chain_b,
-            &vals_b_initial,
+            &flatten_dofs(&vals_b_initial),
             &free_b,
             &strategy,
             &cfg,
