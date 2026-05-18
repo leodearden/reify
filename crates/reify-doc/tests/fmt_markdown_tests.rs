@@ -2113,8 +2113,13 @@ fn assert_or_update_snapshot(filename: &str, actual: &str) {
 
 /// Build the inline `DocModel` fixture used by the snapshot tests.
 ///
-/// TODO(future task): replace with `build_doc_model(load_str!("examples/integration_full_v01.ri"))`
-/// once that function lands; see scope caveat in task 2357 description.
+/// `reify_doc_build::build_doc_model` now exists (landed in task 3562) and can be
+/// called as `build_doc_model(&compiled, source)` on any `CompiledModule`.  This
+/// curated inline fixture is intentionally retained rather than rewired to the real
+/// lowering output: rewiring would make the snapshot goldens depend on the full
+/// compiler pipeline and would force regenerating dozens of Markdown goldens whenever
+/// any lowering detail changes — conflating formatter tests with lowering tests.  The
+/// reify-doc-build and reify-cli test suites cover real `build_doc_model` output.
 ///
 /// The fixture mirrors the *structure* of `examples/integration_full_v01.ri` —
 /// multiple Structures, an Occurrence, a Trait, an Enum, a Function, a
