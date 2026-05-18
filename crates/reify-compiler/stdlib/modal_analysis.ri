@@ -84,3 +84,37 @@ trait DampingDescriptor { }
 //
 // PRD reference: docs/prds/v0_3/modal-analysis.md §4.2.
 structure def NoDamping : DampingDescriptor { }
+
+// ── RayleighDamping ──────────────────────────────────────────────────────────
+
+// `RayleighDamping` is proportional damping parameterized by two scalars
+// (PRD §4.2). The per-mode damping ratio is:
+//
+//     ζ_i = (α + β · ω_i²) / (2 · ω_i)
+//
+// where ω_i is the natural angular frequency of mode i (rad/s). This form
+// preserves mode-shape orthogonality (the damping matrix C = α·M + β·K
+// commutes with M and K under the mass-orthonormal mode basis), so the
+// transient response can be integrated mode-by-mode in real arithmetic
+// rather than requiring a full complex-eigenvalue solve.
+//
+// Param semantics (PRD §4.2):
+//   alpha — mass-proportional damping coefficient (units 1/s). Damps low
+//           frequencies more than high. Often calibrated from measured
+//           damping ratio at the fundamental mode.
+//   beta  — stiffness-proportional damping coefficient (units s). Damps
+//           high frequencies more than low. Useful for suppressing
+//           high-frequency numerical noise from explicit time integration.
+//
+// Explicitly NOT constrained: alpha / beta are conventionally non-negative
+// but physically meaningful at zero ("stiffness-only" damping with α=0; or
+// "mass-only" damping with β=0). Imposing `alpha >= 0` or `beta >= 0` at
+// the structure-def level would forbid these special cases, so the contract
+// stays open here. Mirrors solver_buckling.ri:97-107 "sigma is explicitly
+// NOT constrained" discipline.
+//
+// PRD reference: docs/prds/v0_3/modal-analysis.md §4.2.
+structure def RayleighDamping : DampingDescriptor {
+    param alpha : Real
+    param beta : Real
+}
