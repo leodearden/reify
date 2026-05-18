@@ -369,6 +369,95 @@ mod capstone {
     }
 }
 
+mod spatial_inertia6 {
+    use super::*;
+
+    #[test]
+    fn point_mass_at_origin_is_block_diagonal() {
+        // Featherstone Eq. 2.63 with c = 0:
+        //   I_6 = [[Ī, 0]; [0, m·I_3]].
+        let i6 = SpatialInertia6::from_mass_com_inertia(
+            2.0,
+            [0.0, 0.0, 0.0],
+            [[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]],
+        );
+        let tl = [[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]];
+        let z3 = [[0.0; 3]; 3];
+        let br = [[2.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 2.0]];
+        let expected = block6(tl, z3, z3, br);
+        assert_mat6_eq(&i6.as_matrix(), &expected, TOL_TIGHT);
+    }
+
+    #[test]
+    fn is_symmetric() {
+        // Featherstone (2008) §2.13: the spatial inertia is symmetric. With
+        // Ī symmetric, c̃·c̃ᵀ symmetric, and (m·c̃)ᵀ = m·c̃ᵀ (the BL block),
+        // every entry should mirror across the diagonal.
+        let i6 = SpatialInertia6::from_mass_com_inertia(
+            2.5,
+            [1.0, -0.5, 0.25],
+            [[1.0, 0.1, 0.0], [0.1, 2.0, 0.05], [0.0, 0.05, 3.0]],
+        );
+        let m = i6.as_matrix();
+        for i in 0..6 {
+            for j in 0..6 {
+                assert!(
+                    (m[i * 6 + j] - m[j * 6 + i]).abs() < TOL_TIGHT,
+                    "asymmetry at [{i},{j}]/[{j},{i}]: {} vs {}",
+                    m[i * 6 + j],
+                    m[j * 6 + i]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn identity_inertia_at_origin_apply_returns_input() {
+        // mass = 1, com = 0, Ī = I_3 ⇒ I_6 = I_6×6, so apply is the identity.
+        let i6 = SpatialInertia6::from_mass_com_inertia(
+            1.0,
+            [0.0, 0.0, 0.0],
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        );
+        let v = SpatialVector6::from_array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        assert_vec6_eq(&i6.apply(&v), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], TOL_TIGHT);
+    }
+
+    #[test]
+    fn parallel_axis_offset_com_matches_featherstone_eq_2_63() {
+        // c = [1, 0, 0], m = 1, Ī = I_3. Featherstone Eq. 2.63:
+        //   c̃        = [[0,0,0],[0,0,-1],[0,1,0]]
+        //   c̃·c̃ᵀ   = [[0,0,0],[0,1,0],[0,0,1]]
+        //   TL = Ī + m·c̃·c̃ᵀ = [[1,0,0],[0,2,0],[0,0,2]]
+        //   TR = m·c̃,  BL = m·c̃ᵀ = -m·c̃,  BR = m·I_3.
+        let i6 = SpatialInertia6::from_mass_com_inertia(
+            1.0,
+            [1.0, 0.0, 0.0],
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        );
+        let tl = [[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 2.0]];
+        let tr = [[0.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]];
+        let bl = [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]];
+        let br = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let expected = block6(tl, tr, bl, br);
+        assert_mat6_eq(&i6.as_matrix(), &expected, TOL_TIGHT);
+
+        // Apply to v_lin = [1,0,0] (parallel to c): the m·c̃ contribution to
+        // angular momentum is c × v_lin = 0, so the result matches the dense
+        // matvec via as_matrix() and collapses to [0,0,0, 1,0,0].
+        let v = SpatialVector6::from_array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+        let expected_apply = matvec6(&i6.as_matrix(), &v.as_array());
+        assert_vec6_eq(&i6.apply(&v), &expected_apply, TOL_TIGHT);
+        assert_vec6_eq(&i6.apply(&v), &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0], TOL_TIGHT);
+
+        // Apply to ω_z = [0,0,1, 0,0,0]: the m·c̃ off-diagonal block is
+        // exercised and the dense matvec is the oracle.
+        let w = SpatialVector6::from_array([0.0, 0.0, 1.0, 0.0, 0.0, 0.0]);
+        let expected_w = matvec6(&i6.as_matrix(), &w.as_array());
+        assert_vec6_eq(&i6.apply(&w), &expected_w, TOL_TIGHT);
+    }
+}
+
 mod transform_apply {
     use super::*;
 
