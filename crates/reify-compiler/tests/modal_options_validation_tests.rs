@@ -311,3 +311,99 @@ fn rayleigh_damping_param_shape() {
         template.trait_bounds
     );
 }
+
+// ─── step-9: Mode param shape (no constraints, no defaults) ──────────────────
+
+/// `Mode` (in std/modal/analysis — NOT std/solver/buckling's coexisting
+/// Mode; see plan.json design-decision-6) must declare exactly the four
+/// PRD §4.1 params with the canonical types:
+///
+///   - `frequency          : Real`                 (placeholder for Scalar<Frequency>;
+///                                                  encoded as Real per plan design-decision-3)
+///   - `shape              : List<Vector3<Real>>`  (mass-normalized eigenvector;
+///                                                  dimensionless under Φᵀ·M·Φ = I — NOT a placeholder)
+///   - `participation_mass : Real`                 (effective modal mass along reference direction)
+///   - `damping_ratio      : Real`                 (ζ_i derived from Rayleigh α/β, or 0 for undamped)
+///
+/// Mode lives in std/modal/analysis; the `find_structure` helper at the top
+/// of this file already filters to that module via `load_stdlib_module()`,
+/// so this lookup does NOT see buckling's Mode template even though both
+/// modules share the simple name (per the per-module template storage
+/// invariant pinned in plan design-decision-6).
+#[test]
+fn mode_struct_has_correct_param_shape() {
+    let template = find_structure("Mode");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    assert_eq!(
+        params.len(),
+        4,
+        "Mode should have exactly 4 param cells \
+         (frequency, shape, participation_mass, damping_ratio), got: {:?}",
+        names
+    );
+
+    let expected: &[(&str, Type)] = &[
+        ("frequency", Type::Real),
+        ("shape", Type::List(Box::new(Type::vec3(Type::Real)))),
+        ("participation_mass", Type::Real),
+        ("damping_ratio", Type::Real),
+    ];
+
+    for (i, (expected_name, expected_ty)) in expected.iter().enumerate() {
+        let cell = &params[i];
+        assert_eq!(
+            cell.id.member.as_str(),
+            *expected_name,
+            "Mode param at index {} should be `{}`, got `{}`",
+            i,
+            expected_name,
+            cell.id.member
+        );
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "Mode.{} should be {:?}, got {:?}",
+            expected_name, expected_ty, cell.cell_type
+        );
+    }
+}
+
+/// `Mode` is a solver-populated output container — every field is determined
+/// by the modal solve, so caller-supplied defaults are meaningless and no
+/// per-field scalar invariant is expressible per-field (frequency depends on
+/// the geometry, shape is collection-shaped, participation_mass and
+/// damping_ratio are derived). Mirrors `Mode` discipline in
+/// `buckling_stdlib_compile.rs::mode_struct_has_no_constraints_or_defaults`
+/// (445-472).
+#[test]
+fn mode_struct_has_no_constraints_or_defaults() {
+    let template = find_structure("Mode");
+
+    // No defaults: every Mode instance must be solver-populated.
+    for cell in param_cells(template) {
+        assert!(
+            cell.default_expr.is_none(),
+            "Mode.{} should have no default_expr (solver-only-produced), \
+             but got: {:?}",
+            cell.id.member,
+            cell.default_expr
+        );
+    }
+
+    // No constraints: frequency / participation_mass / damping_ratio are all
+    // physically non-negative but every modal-solver implementation enforces
+    // that as a producer invariant; declaring them at the structure-def
+    // level would be redundant duplication and could fire spuriously on
+    // floating-point round-off. shape is collection-shaped, not scalar.
+    assert!(
+        template.constraints.is_empty(),
+        "Mode should declare no constraints (solver-only-produced output \
+         container, producer-enforced invariants only); got: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+}
