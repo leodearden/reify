@@ -77,10 +77,22 @@ pub structure Widget {
     // Params: width, height, depth (in source order).
     assert_eq!(params.len(), 3, "expected 3 params; got {params:?}");
     assert_eq!(params[0].name, "width");
-    assert!(
-        params[0].default_repr.is_some(),
-        "width has a default (10mm)"
-    );
+    {
+        let default = params[0]
+            .default_repr
+            .as_deref()
+            .expect("width has a default (10mm); default_repr must be Some");
+        assert!(
+            default.contains("10mm"),
+            "width default_repr must contain the actual default value '10mm', \
+             not the full declaration; got: {default:?}"
+        );
+        assert!(
+            !default.contains("param"),
+            "width default_repr must NOT contain 'param' (should be the RHS value, \
+             not the full declaration text); got: {default:?}"
+        );
+    }
     assert_eq!(params[1].name, "height");
     assert!(
         params[1].default_repr.is_some(),
@@ -486,6 +498,85 @@ constraint def non_negative {
             );
         }
         other => panic!("expected ItemKind::ConstraintDef for 'non_negative', got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Amendment: purpose with explicit minimize / maximize objective
+// ---------------------------------------------------------------------------
+
+/// Verify that `lower_purpose` renders explicit minimize/maximize objectives
+/// as clean placeholders rather than Rust Debug AST output.
+///
+/// `CompiledExpr` has no source span, so we cannot span-slice the objective
+/// expression.  The lowering emits "<minimize>" / "<maximize>" instead of
+/// `format!("{expr:?}")` which would produce unreadable internal AST text.
+#[test]
+fn purpose_with_explicit_objective() {
+    let source = r#"
+purpose with_minimize(subject: Structure) {
+    minimize 1.0
+}
+
+purpose with_maximize(subject: Structure) {
+    maximize 1.0
+}
+"#;
+    let compiled = compile_source_with_stdlib(source);
+    let diag_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, reify_types::Severity::Error))
+        .collect();
+    assert!(
+        diag_errors.is_empty(),
+        "compilation errors in purpose minimize/maximize source: {:?}",
+        diag_errors
+    );
+
+    let model: DocModel = build_doc_model(&compiled, source);
+    let module = &model.modules[0];
+
+    // ── minimize purpose ──────────────────────────────────────────────────
+    let min_item = find_item(module, "with_minimize");
+    match &min_item.kind {
+        ItemKind::Purpose { direction, expr_repr } => {
+            assert_eq!(direction, "minimize", "direction must be 'minimize'");
+            // Must NOT contain Rust internal Debug output.
+            assert!(
+                !expr_repr.contains("CompiledExpr"),
+                "minimize expr_repr must not contain Rust Debug output 'CompiledExpr'; \
+                 got: {expr_repr:?}"
+            );
+            assert!(
+                !expr_repr.contains("BinOp"),
+                "minimize expr_repr must not contain Rust Debug output 'BinOp'; \
+                 got: {expr_repr:?}"
+            );
+            // Should be the clean placeholder.
+            assert_eq!(
+                expr_repr, "<minimize>",
+                "minimize expr_repr must be '<minimize>' placeholder; got: {expr_repr:?}"
+            );
+        }
+        other => panic!("expected ItemKind::Purpose for 'with_minimize', got {other:?}"),
+    }
+
+    // ── maximize purpose ──────────────────────────────────────────────────
+    let max_item = find_item(module, "with_maximize");
+    match &max_item.kind {
+        ItemKind::Purpose { direction, expr_repr } => {
+            assert_eq!(direction, "maximize", "direction must be 'maximize'");
+            assert!(
+                !expr_repr.contains("CompiledExpr"),
+                "maximize expr_repr must not contain Rust Debug output; got: {expr_repr:?}"
+            );
+            assert_eq!(
+                expr_repr, "<maximize>",
+                "maximize expr_repr must be '<maximize>' placeholder; got: {expr_repr:?}"
+            );
+        }
+        other => panic!("expected ItemKind::Purpose for 'with_maximize', got {other:?}"),
     }
 }
 

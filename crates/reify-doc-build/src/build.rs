@@ -181,22 +181,28 @@ fn lower_param(vc: &ValueCellDecl, source: &str) -> ParamDoc {
 
     let type_repr = type_to_string(&vc.cell_type);
 
-    // For the default expression, we use the span-sliced text if available.
-    // CompiledExpr does not have a Display impl; we fall back to the span.
+    // Extract the default expression text from the full declaration span.
+    //
+    // `ValueCellDecl.span` covers the entire declaration statement, e.g.
+    // "param width: Scalar = 10mm".  `CompiledExpr` has no source span of its
+    // own, so we derive the default value text by splitting at the first '='
+    // separator and trimming the RHS.  This yields the actual default token(s)
+    // (e.g. "10mm") rather than the full declaration string.  When no '=' is
+    // found (prelude-sentinel span or other malformed span), we return the safe
+    // placeholder "<default>" to indicate presence-without-text.
+    //
+    // `default_repr` is `Some` iff `default_expr.is_some()`: the field is
+    // present when-and-only-when the param has a declared default.
     let default_repr = vc
         .default_expr
         .as_ref()
         .map(|_expr| {
-            // The default expression's span is stored on the ValueCellDecl itself.
-            // We slice `source` at the cell's span location. However, ValueCellDecl
-            // only has a `span` field that covers the whole declaration — not just
-            // the default expression. We fall back to "<default>" as a best-effort
-            // rendering to keep the model non-empty and truthful (the field IS present).
-            //
-            // A richer approach would parse the default from the source span or store
-            // the source slice during compilation. That is out of scope here; what matters
-            // is `default_repr.is_some()` iff the param has a default.
-            span_text(source, vc.span).to_string()
+            let decl_text = span_text(source, vc.span);
+            if let Some(pos) = decl_text.find('=') {
+                decl_text[pos + 1..].trim().to_string()
+            } else {
+                "<default>".to_string()
+            }
         });
 
     // Annotations on value cells are not carried through CompiledModule; they are
@@ -236,7 +242,12 @@ fn lower_port(p: &reify_compiler::CompiledPort) -> PortDoc {
 
 fn lower_constraint(c: &CompiledConstraint, source: &str) -> ConstraintDoc {
     let expr_repr = span_text(source, c.span).to_string();
-    let line = if c.span.is_prelude() {
+    // Guard both the prelude sentinel (u32::MAX) AND any non-sentinel span whose
+    // start offset exceeds source.len() (e.g. a span seeded from a different
+    // compilation unit).  byte_offset_to_line_col contains debug_assert!(offset
+    // <= source.len()), so calling it with an out-of-range offset panics in
+    // debug/test builds.
+    let line = if c.span.is_prelude() || c.span.start as usize > source.len() {
         None
     } else {
         let (line_num, _col) = byte_offset_to_line_col(source, c.span.start as usize);
@@ -375,11 +386,15 @@ fn lower_field(field: &CompiledField) -> ItemDoc {
 
 fn lower_purpose(p: &CompiledPurpose, source: &str) -> ItemDoc {
     let (expr_repr, direction) = match &p.objective {
-        Some(OptimizationObjective::Minimize(expr)) => {
-            (format!("{expr:?}"), "minimize".to_string())
+        Some(OptimizationObjective::Minimize(_expr)) => {
+            // `CompiledExpr` carries no source span, so we cannot slice the
+            // objective expression text from `source` the way constraints do.
+            // We emit a clean directive placeholder rather than the unreadable
+            // Rust Debug output that `format!("{_expr:?}")` would produce.
+            ("<minimize>".to_string(), "minimize".to_string())
         }
-        Some(OptimizationObjective::Maximize(expr)) => {
-            (format!("{expr:?}"), "maximize".to_string())
+        Some(OptimizationObjective::Maximize(_expr)) => {
+            ("<maximize>".to_string(), "maximize".to_string())
         }
         None => {
             // Fall back to first constraint expression if available.
@@ -572,17 +587,24 @@ fn type_to_string(ty: &Type) -> String {
 }
 
 /// Slice `source` at the byte offsets of `span`. Returns an empty string if
-/// the span is a prelude sentinel or out of bounds.
+/// the span is a prelude sentinel, out of bounds, or malformed.
+///
+/// This function is **infallible**: it never panics, even on malformed spans
+/// with `end < start` (which `SourceSpan::new` only `debug_assert!`s against),
+/// or on spans that land on a non-UTF-8 char boundary (multibyte source).
 fn span_text(source: &str, span: SourceSpan) -> &str {
     if span.is_prelude() {
         return "";
     }
     let start = span.start as usize;
     let end = (span.end as usize).min(source.len());
-    if start >= source.len() {
+    // Guards: start >= source.len(), malformed end < start, or zero-length span.
+    if start >= end {
         return "";
     }
-    &source[start..end]
+    // Use str::get rather than direct indexing so that a span landing on a
+    // non-UTF-8 char boundary (multibyte source) returns "" instead of panicking.
+    source.get(start..end).unwrap_or("")
 }
 
 /// Extract the local (rightmost) component of a cell id like `"Entity.param_name"`.

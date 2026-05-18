@@ -389,33 +389,48 @@ fn doc_o_flag_writes_to_file_for_json() {
 
 #[test]
 fn doc_o_flag_writes_markdown_without_extra_trailing_newline() {
-    // Pins two contracts:
-    // (a) The CLI file-write path does NOT append an extra trailing newline on
-    //     top of the formatter's own output (write_single_file_or_stdout contract).
-    // (b) The written markdown contains real DocModel content (not a stub).
+    // Pins the contract: the CLI file-write path produces the EXACT same bytes
+    // as the stdout path for markdown single-file mode.  Both paths call
+    // write_single_file_or_stdout with trailing_newline=false, so the file
+    // content must equal the stdout content byte-for-byte.
+    //
+    // This replaces the weaker `!written.ends_with("\n\n\n")` proxy that would
+    // miss a single spurious trailing newline when the formatter body already
+    // ends in exactly one newline.
     let path = common::fixture_path("bracket.ri");
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let out_path = dir.path().join("doc.md");
     let out_str = out_path.to_str().expect("tmp path is utf-8");
 
-    let (status, stdout, stderr) = run_doc(&["--format", "markdown", "-o", out_str, &path]);
-
+    // (a) Write to file with -o.
+    let (file_status, file_stdout, file_stderr) =
+        run_doc(&["--format", "markdown", "-o", out_str, &path]);
     assert!(
-        status.success(),
+        file_status.success(),
         "reify doc --format markdown -o <file> must exit 0.\n\
-         stdout: {stdout}\nstderr: {stderr}"
+         stdout: {file_stdout}\nstderr: {file_stderr}"
     );
     assert!(
-        stdout.is_empty(),
-        "stdout must be empty when -o <file> is supplied, got: {stdout}"
+        file_stdout.is_empty(),
+        "stdout must be empty when -o <file> is supplied, got: {file_stdout}"
     );
+
+    // (b) Emit to stdout without -o.
+    let (stdout_status, stdout_output, stdout_stderr) =
+        run_doc(&["--format", "markdown", &path]);
+    assert!(
+        stdout_status.success(),
+        "reify doc --format markdown must exit 0.\n\
+         stdout: {stdout_output}\nstderr: {stdout_stderr}"
+    );
+
     let written = std::fs::read_to_string(&out_path).expect("read tmp doc.md");
+
+    // Structural assertions on the real DocModel content.
     assert!(
         written.starts_with("# bracket"),
         "markdown file must start with '# bracket' (module H1), got: {written}"
     );
-    // Real DocModel from build_doc_model includes the 'Bracket' structure item
-    // and its 'width' param — neither appears in the old stub output.
     assert!(
         written.contains("Bracket"),
         "markdown file must contain item name 'Bracket' (from real DocModel), got: {written}"
@@ -424,13 +439,14 @@ fn doc_o_flag_writes_markdown_without_extra_trailing_newline() {
         written.contains("width"),
         "markdown file must contain param name 'width' (from real DocModel), got: {written}"
     );
-    // render_markdown naturally ends with \n\n (section separator). File-mode
-    // must NOT add a *third* trailing newline on top of the formatter's output.
-    assert!(
-        !written.ends_with("\n\n\n"),
-        "markdown file must NOT end with triple newlines (file mode must not \
-         append an extra trailing newline), got tail: {:?}",
-        &written[written.len().saturating_sub(20)..]
+
+    // Byte-for-byte: file content must exactly equal stdout output.
+    // Markdown single-file mode uses trailing_newline=false for BOTH paths, so
+    // no extra bytes should be added in file mode.
+    assert_eq!(
+        written, stdout_output,
+        "markdown file content must exactly match stdout output \
+         (file mode must not append extra bytes on top of the formatter output)"
     );
 }
 
