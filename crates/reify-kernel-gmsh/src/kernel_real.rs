@@ -199,9 +199,19 @@ impl GmshKernel {
 
         // Reclassify the discrete surface and build geometry so 3D meshing
         // has a parametric region to fill. Dihedral threshold π/2 (90°)
-        // splits the cube faces; π for curve-feature detection accepts any
-        // sharp edge.
-        ffi::classify_surfaces(std::f64::consts::FRAC_PI_2, 1, 1, std::f64::consts::PI, 0)?;
+        // splits cube faces into separate B-rep surface entities. curve_angle
+        // π/4 (45°) is the bend-angle threshold above which curve-curve
+        // junctions are emitted as B-rep vertex entities — sharper than the
+        // π default and recognizes 90°-junction corners during classification.
+        //
+        // Note: this affects only the B-rep classification. `create_geometry`
+        // and `mesh_generate(3)` below re-mesh from the resulting parametric
+        // geometry, so output node identities are gmsh's choice and do NOT
+        // preserve the input discrete vertex set — confirmed by the
+        // diagnostic test in `tests/gmsh_classify_diagnostics.rs`. See task
+        // 3591 for the broader NodeAttachment-producer redesign that
+        // implication motivates.
+        ffi::classify_surfaces(std::f64::consts::FRAC_PI_2, 1, 1, std::f64::consts::FRAC_PI_4, 0)?;
         ffi::create_geometry(&[])?;
 
         // After classify+createGeometry, gmsh creates new geometric surface
