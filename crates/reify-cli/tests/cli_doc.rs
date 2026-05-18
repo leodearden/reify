@@ -184,7 +184,40 @@ fn doc_format_markdown_emits_markdown_to_stdout() {
 }
 
 #[test]
-fn doc_default_format_is_html_stub() {
+fn doc_markdown_populates_cross_refs() {
+    // bracket_with_trait.ri declares `trait HasHole` and `structure Bracket : HasHole`.
+    // After step-10 wires build_cross_refs, the markdown output for Bracket must
+    // contain a "Conforms to" cross-ref section listing HasHole.
+    // Fails against the stub because the stub passes None for cross_refs.
+    let path = common::fixture_path("bracket_with_trait.ri");
+    let (status, stdout, stderr) = run_doc(&["--format", "markdown", &path]);
+
+    assert!(
+        status.success(),
+        "reify doc --format markdown on bracket_with_trait.ri must exit 0.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    // Real items must appear: the trait and the conforming structure.
+    assert!(
+        stdout.contains("HasHole"),
+        "markdown must contain trait name 'HasHole', got: {stdout}"
+    );
+    assert!(
+        stdout.contains("Bracket"),
+        "markdown must contain structure name 'Bracket', got: {stdout}"
+    );
+    // Cross-ref section must appear because Bracket : HasHole.
+    assert!(
+        stdout.contains("Conforms to"),
+        "markdown must contain 'Conforms to' cross-ref section for Bracket, got: {stdout}"
+    );
+}
+
+#[test]
+fn doc_default_format_is_real_html() {
+    // Regression guard: default format is HTML via reify_doc::fmt_html::render_html.
+    // Asserts real (non-stub) output: embedded <style>, module <h1>, item names,
+    // and param names must appear; the old <pre>-wrapped stub body must NOT.
     let path = common::fixture_path("bracket.ri");
     let (status, stdout, stderr) = run_doc(&[&path]);
 
@@ -195,7 +228,7 @@ fn doc_default_format_is_html_stub() {
     );
     assert!(
         stdout.starts_with("<!DOCTYPE html>"),
-        "default html stub must start with '<!DOCTYPE html>', got: {stdout}"
+        "html output must start with '<!DOCTYPE html>', got: {stdout}"
     );
     assert!(
         stdout.contains("<html"),
@@ -207,17 +240,33 @@ fn doc_default_format_is_html_stub() {
     );
     assert!(
         stdout.contains("<title>bracket</title>"),
-        "html output must contain '<title>bracket</title>' (from the \
-         minimal DocModel's module path), got: {stdout}"
-    );
-    assert!(
-        stdout.contains("<pre>"),
-        "html stub must wrap markdown body in a <pre> block, got: {stdout}"
-    );
-    assert!(
-        stdout.contains("# bracket"),
-        "html stub's <pre> body must contain the markdown H1 '# bracket', \
+        "html output must contain '<title>bracket</title>' (module path as page title), \
          got: {stdout}"
+    );
+    // Real render_html embeds a stylesheet — the stub does not.
+    assert!(
+        stdout.contains("<style>"),
+        "real html must contain an embedded '<style>' block, got: {stdout}"
+    );
+    // Real render_html emits module path as an <h1> — the stub does not.
+    assert!(
+        stdout.contains("<h1>bracket</h1>"),
+        "real html must contain '<h1>bracket</h1>' (module H1), got: {stdout}"
+    );
+    // Real DocModel from build_doc_model contains the 'Bracket' structure item.
+    assert!(
+        stdout.contains("Bracket"),
+        "real html must contain item name 'Bracket', got: {stdout}"
+    );
+    // Real DocModel from build_doc_model contains the 'width' param.
+    assert!(
+        stdout.contains("width"),
+        "real html must contain param name 'width', got: {stdout}"
+    );
+    // The old stub wrapped a <pre> block — real render_html does not.
+    assert!(
+        !stdout.contains("<pre>"),
+        "real html must NOT contain a '<pre>' stub block, got: {stdout}"
     );
 }
 
@@ -340,10 +389,10 @@ fn doc_o_flag_writes_to_file_for_json() {
 
 #[test]
 fn doc_o_flag_writes_markdown_without_extra_trailing_newline() {
-    // Pins the `write_single_file_or_stdout` contract that file-mode does
-    // *not* append a trailing newline (the comment in cmd_doc explicitly
-    // calls out "round-trips cleanly").  We compare the on-disk bytes to the
-    // formatter's own output via render_markdown's single-mode body.
+    // Pins two contracts:
+    // (a) The CLI file-write path does NOT append an extra trailing newline on
+    //     top of the formatter's own output (write_single_file_or_stdout contract).
+    // (b) The written markdown contains real DocModel content (not a stub).
     let path = common::fixture_path("bracket.ri");
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let out_path = dir.path().join("doc.md");
@@ -361,28 +410,26 @@ fn doc_o_flag_writes_markdown_without_extra_trailing_newline() {
         "stdout must be empty when -o <file> is supplied, got: {stdout}"
     );
     let written = std::fs::read_to_string(&out_path).expect("read tmp doc.md");
-    // Compare against the formatter's own output: file mode must equal the
-    // body byte-for-byte, with no extra trailing newline appended by the
-    // CLI write path.
-    let expected = match reify_doc::fmt_markdown::render_markdown(
-        &reify_doc::model::DocModel {
-            modules: vec![reify_doc::model::ModuleDoc {
-                path: "bracket".to_string(),
-                ..Default::default()
-            }],
-        },
-        None,
-        &reify_doc::fmt_markdown::MarkdownOptions::default(),
-    ) {
-        reify_doc::fmt_markdown::MarkdownOutput::Single(s) => s,
-        reify_doc::fmt_markdown::MarkdownOutput::Split(_) => {
-            panic!("default MarkdownOptions must produce Single, not Split")
-        }
-    };
-    assert_eq!(
-        written, expected,
-        "markdown file write must equal render_markdown's output byte-for-byte \
-         (no extra trailing newline appended)"
+    assert!(
+        written.starts_with("# bracket"),
+        "markdown file must start with '# bracket' (module H1), got: {written}"
+    );
+    // Real DocModel from build_doc_model includes the 'Bracket' structure item
+    // and its 'width' param — neither appears in the old stub output.
+    assert!(
+        written.contains("Bracket"),
+        "markdown file must contain item name 'Bracket' (from real DocModel), got: {written}"
+    );
+    assert!(
+        written.contains("width"),
+        "markdown file must contain param name 'width' (from real DocModel), got: {written}"
+    );
+    // File-mode must NOT add a second trailing newline on top of the formatter's output.
+    assert!(
+        !written.ends_with("\n\n"),
+        "markdown file must NOT end with double newlines (file mode does not append \
+         a trailing newline), got tail: {:?}",
+        &written[written.len().saturating_sub(20)..]
     );
 }
 
@@ -390,9 +437,8 @@ fn doc_o_flag_writes_markdown_without_extra_trailing_newline() {
 fn doc_o_flag_writes_html_without_extra_trailing_newline() {
     // Same contract as the markdown variant: `-o <file>` writes the raw
     // formatter output without appending a stdout-style trailing newline.
-    // The HTML stub itself ends with `</html>\n` (one newline baked in by
-    // the format string), so the on-disk byte count is exactly that — no
-    // extra `\n` after.
+    // render_html ends with `</html>\n` (one newline), so the on-disk byte
+    // count is exactly that — no extra `\n` after.
     let path = common::fixture_path("bracket.ri");
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let out_path = dir.path().join("doc.html");
@@ -410,12 +456,17 @@ fn doc_o_flag_writes_html_without_extra_trailing_newline() {
         "stdout must be empty when -o <file> is supplied, got: {stdout}"
     );
     let written = std::fs::read_to_string(&out_path).expect("read tmp doc.html");
-    // The HTML stub format string ends with exactly one `\n` after `</html>`.
+    // Real html from render_html must contain the 'Bracket' item name.
+    assert!(
+        written.contains("Bracket"),
+        "html file must contain item name 'Bracket' (from real DocModel), got: {written}"
+    );
+    // render_html ends with exactly one `\n` after `</html>`.
     // File-mode must NOT add a second trailing newline on top of that.
     assert!(
         written.ends_with("</html>\n"),
         "html file body must end with '</html>\\n' (one newline from the \
-         format template, not two), got tail: {:?}",
+         formatter, not two), got tail: {:?}",
         &written[written.len().saturating_sub(20)..]
     );
     assert!(
@@ -496,6 +547,8 @@ fn doc_o_without_value_exits_two() {
 
 #[test]
 fn doc_split_markdown_writes_files_to_directory() {
+    // bracket.ri declares `structure Bracket` — render_split emits index.md
+    // plus one per-item file named `structure-Bracket.md`.
     let path = common::fixture_path("bracket.ri");
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let dir_str = dir.path().to_str().expect("tmp dir path is utf-8");
@@ -508,7 +561,7 @@ fn doc_split_markdown_writes_files_to_directory() {
         "reify doc --format markdown --split -o <dir> must exit 0.\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
-    let entries: Vec<String> = std::fs::read_dir(dir.path())
+    let mut entries: Vec<String> = std::fs::read_dir(dir.path())
         .expect("read tmp dir")
         .map(|e| {
             e.expect("read entry")
@@ -517,13 +570,17 @@ fn doc_split_markdown_writes_files_to_directory() {
                 .into_owned()
         })
         .collect();
-    // Minimal placeholder DocModel has zero items, so render_split emits
-    // only `index.md` (matches fmt_markdown::render_split's known
-    // item-less behaviour).
-    assert_eq!(
-        entries,
-        vec!["index.md".to_string()],
-        "expected exactly index.md in {}, got: {entries:?}",
+    entries.sort();
+    // Real DocModel from build_doc_model has the Bracket structure item, so
+    // render_split must emit both index.md and structure-Bracket.md.
+    assert!(
+        entries.contains(&"index.md".to_string()),
+        "expected index.md in {}, got: {entries:?}",
+        dir.path().display()
+    );
+    assert!(
+        entries.contains(&"structure-Bracket.md".to_string()),
+        "expected structure-Bracket.md in {}, got: {entries:?}",
         dir.path().display()
     );
     let index = std::fs::read_to_string(dir.path().join("index.md")).expect("read index.md");
