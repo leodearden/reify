@@ -108,6 +108,7 @@ impl std::error::Error for FlattenError {}
 impl JointValue {
     /// Manifold DOF for this value (1 / 2 / 3 / 3).  Does **not** drive
     /// flatten/unflatten arithmetic — use [`JointKind::flat_len`] for that.
+    // G-allow: KCC-γ task #3765 widens chain_transform/value_for_joint to JointValue; dof_count is consumed by that chain-arity bridge (also KCC-α #3764 snapshot/sweep).
     pub fn dof_count(&self) -> usize {
         match self {
             JointValue::Scalar(_) => 1,
@@ -120,6 +121,7 @@ impl JointValue {
 
     /// Borrow the underlying storage as a contiguous slice of f64s.  Length
     /// matches `JointKind::flat_len` for the corresponding kind (1, 2, 3, or 4).
+    // G-allow: KCC-γ task #3765 chain-bridge — as_f64_slice backs flatten_dofs storage concat at the chain_transform boundary.
     pub fn as_f64_slice(&self) -> &[f64] {
         match self {
             JointValue::Scalar(x) => std::slice::from_ref(x),
@@ -131,6 +133,7 @@ impl JointValue {
 
     /// Construct from a flat `&[f64]` slice keyed by `kind`.  Returns
     /// `Err(FlattenError::WrongLen)` if `dofs.len() != kind.flat_len()`.
+    // G-allow: KCC-γ task #3765 chain widening — from_slice is the per-kind unflatten constructor wired by KCC-γ.
     pub fn from_slice(kind: JointKind, dofs: &[f64]) -> Result<Self, FlattenError> {
         let expected = kind.flat_len();
         if dofs.len() != expected {
@@ -156,6 +159,7 @@ impl JointValue {
     /// Project Sphere back onto the unit-quaternion manifold (L2 normalize);
     /// no-op for Scalar / Cyl / Planar.  Resets a degenerate (near-zero-norm)
     /// quaternion to identity `[1, 0, 0, 0]` rather than producing NaN.
+    // G-allow: KCC-α task #3764 / KCC-γ #3765 Newton-step unit-quaternion manifold projection (PRD §5.3), consumed by the widened solver path.
     pub fn renormalize_quaternion(&mut self) {
         // PRD §5.3 calls this after each Newton step as the unit-quaternion
         // manifold projection.  The zero-norm guard prevents a degenerate
@@ -187,6 +191,7 @@ impl JointKind {
     /// `Option<JointKind>` return so unknown-kind callers can pattern-match
     /// directly without dragging an error type through the API.
     #[allow(clippy::should_implement_trait)]
+    // G-allow: KCC-γ task #3765 chain widening — JointKind::from_str maps joint-kind strings for the JointValue chain bridge.
     pub fn from_str(s: &str) -> Option<JointKind> {
         match s {
             "prismatic" => Some(JointKind::Prismatic),
@@ -203,6 +208,7 @@ impl JointKind {
     /// Storage width (number of f64s `JointValue` of this kind occupies in
     /// the flat buffer) — 1 for prismatic/revolute/coupling/fixed, 2 for
     /// cylindrical, 3 for planar, **4** for spherical (quaternion).
+    // G-allow: KCC-γ task #3765 chain widening — flat_len drives per-kind storage-width consumption in unflatten_dofs.
     pub fn flat_len(&self) -> usize {
         match self {
             JointKind::Prismatic
@@ -222,6 +228,7 @@ impl JointKind {
 ///
 /// Round-trip law: `unflatten_dofs(&flatten_dofs(v), shapes) == Ok(v.to_vec())`
 /// when `shapes[i]` matches each `v[i]`'s variant.
+// G-allow: KCC-γ task #3765 widens chain_transform to consume &flatten_dofs(&[JointValue]) at the chain boundary (PRD §5.1).
 pub fn flatten_dofs(values: &[JointValue]) -> Vec<f64> {
     let total: usize = values.iter().map(|v| v.as_f64_slice().len()).sum();
     let mut out = Vec::with_capacity(total);
@@ -235,6 +242,7 @@ pub fn flatten_dofs(values: &[JointValue]) -> Vec<f64> {
 /// per shape via [`JointValue::from_slice`].  Returns
 /// `Err(FlattenError::BufferTooShort)` on shortfall and
 /// `Err(FlattenError::BufferTooLong)` if trailing f64s remain.
+// G-allow: KCC-γ task #3765 chain widening — unflatten_dofs reconstructs Vec<JointValue> from the &[f64] solver buffer (PRD §5.1).
 pub fn unflatten_dofs(dofs: &[f64], shapes: &[JointKind]) -> Result<Vec<JointValue>, FlattenError> {
     let mut out = Vec::with_capacity(shapes.len());
     let mut cursor: usize = 0;

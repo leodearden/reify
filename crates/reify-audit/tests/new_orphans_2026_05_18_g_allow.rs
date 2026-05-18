@@ -83,7 +83,12 @@ const PINS: &[(&str, &str, &str)] = &[
 
 #[test]
 fn new_orphans_2026_05_18_are_g_allow_marked() {
-    let Some(result) = run_orphan_audit("crates/reify-*/src") else {
+    // Use the crate-level scope rather than "crates/reify-*/src": common names
+    // like from_slice/from_str/dof_count collide with same-named pub fns in
+    // other crates (e.g. PreludeContext::from_slice in reify-compiler), giving
+    // false-positive callers>0 that hide those fns from orphans[]/allowed[].
+    // file_suffix .ends_with() matching works equally well with the narrower scope.
+    let Some(result) = run_orphan_audit("crates/reify-stdlib/src") else {
         return;
     };
 
