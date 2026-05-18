@@ -438,6 +438,7 @@ fn apply_lambda_with_user_function_registry() {
     let params = vec![("x".to_string(), Type::Int)];
     let double_fn = CompiledFunction {
         name: "double".to_string(),
+        doc: None,
         is_pub: false,
         param_defaults: CompiledFunction::no_defaults_for(&params),
         params,
@@ -524,6 +525,7 @@ fn nested_lambda_calls_user_function() {
     let params = vec![("x".to_string(), Type::Int)];
     let double_fn = CompiledFunction {
         name: "double".to_string(),
+        doc: None,
         is_pub: false,
         param_defaults: CompiledFunction::no_defaults_for(&params),
         params,

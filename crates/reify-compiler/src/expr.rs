@@ -3565,6 +3565,7 @@ pub structure Rack {
             .collect();
         crate::types::TopologyTemplate {
             name: name.to_string(),
+            doc: None,
             entity_kind: crate::types::EntityKind::Structure,
             visibility: crate::types::Visibility::Public,
             type_params: vec![],

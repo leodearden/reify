@@ -3998,6 +3998,7 @@ mod tests {
         let params = vec![("x".to_string(), Type::Real)];
         CompiledFunction {
             name: "double".to_string(),
+            doc: None,
             is_pub: false,
             param_defaults: CompiledFunction::no_defaults_for(&params),
             params,
@@ -4022,6 +4023,7 @@ mod tests {
         let params = vec![("x".to_string(), Type::Real)];
         CompiledFunction {
             name: "f".to_string(),
+            doc: None,
             is_pub: false,
             param_defaults: CompiledFunction::no_defaults_for(&params),
             params,
@@ -4077,6 +4079,7 @@ mod tests {
         let params = vec![("n".to_string(), Type::Int)];
         CompiledFunction {
             name: "factorial".to_string(),
+            doc: None,
             is_pub: false,
             param_defaults: CompiledFunction::no_defaults_for(&params),
             params,
@@ -4126,6 +4129,7 @@ mod tests {
         let params = vec![("x".to_string(), Type::Int)];
         CompiledFunction {
             name: "infinite".to_string(),
+            doc: None,
             is_pub: false,
             param_defaults: CompiledFunction::no_defaults_for(&params),
             params,
@@ -4247,6 +4251,7 @@ mod tests {
         ];
         let area_fn = CompiledFunction {
             name: "area".to_string(),
+            doc: None,
             is_pub: false,
             param_defaults: CompiledFunction::no_defaults_for(&params),
             params,
@@ -4319,6 +4324,7 @@ mod tests {
         let params1 = vec![("x".to_string(), Type::Real)];
         let process1 = CompiledFunction {
             name: "process".to_string(),
+            doc: None,
             is_pub: false,
             param_defaults: CompiledFunction::no_defaults_for(&params1),
             params: params1,
@@ -4340,6 +4346,7 @@ mod tests {
         let params2 = vec![("x".to_string(), Type::Real), ("y".to_string(), Type::Real)];
         let process2 = CompiledFunction {
             name: "process".to_string(),
+            doc: None,
             is_pub: false,
             param_defaults: CompiledFunction::no_defaults_for(&params2),
             params: params2,

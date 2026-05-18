@@ -7,6 +7,10 @@ use std::collections::HashSet;
 /// Shared reference to entity definition fields (used by both StructureDef and OccurrenceDef).
 pub(crate) struct EntityDefRef<'a> {
     pub(crate) name: &'a str,
+    /// Documentation comment from the source `///` lines preceding the declaration.
+    /// Mirrors `StructureDef::doc` / `OccurrenceDef::doc` and is forwarded to
+    /// `TopologyTemplate::doc` by `compile_entity`.
+    pub(crate) doc: Option<String>,
     pub(crate) is_pub: bool,
     pub(crate) type_params: &'a [reify_syntax::TypeParamDecl],
     pub(crate) trait_bounds: &'a [reify_syntax::TraitBoundRef],
@@ -20,6 +24,7 @@ impl<'a> From<&'a reify_syntax::StructureDef> for EntityDefRef<'a> {
     fn from(s: &'a reify_syntax::StructureDef) -> Self {
         EntityDefRef {
             name: &s.name,
+            doc: s.doc.clone(),
             is_pub: s.is_pub,
             type_params: &s.type_params,
             trait_bounds: &s.trait_bounds,
@@ -35,6 +40,7 @@ impl<'a> From<&'a reify_syntax::OccurrenceDef> for EntityDefRef<'a> {
     fn from(o: &'a reify_syntax::OccurrenceDef) -> Self {
         EntityDefRef {
             name: &o.name,
+            doc: o.doc.clone(),
             is_pub: o.is_pub,
             type_params: &o.type_params,
             trait_bounds: &o.trait_bounds,
@@ -2237,6 +2243,7 @@ pub(crate) fn compile_entity(
 
     TopologyTemplate {
         name: entity_name.to_string(),
+        doc: structure.doc.clone(),
         entity_kind,
         visibility,
         type_params,

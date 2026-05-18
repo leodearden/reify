@@ -5,6 +5,7 @@ fn enum_def_construction_and_lookup() {
     let def = reify_types::EnumDef {
         name: "Color".into(),
         variants: vec!["Red".into(), "Green".into(), "Blue".into()],
+        doc: None,
     };
     assert_eq!(def.name, "Color");
     assert_eq!(def.variants.len(), 3);
@@ -18,6 +19,7 @@ fn enum_def_debug_clone_eq() {
     let def1 = reify_types::EnumDef {
         name: "Shape".into(),
         variants: vec!["Circle".into(), "Square".into()],
+        doc: None,
     };
     let def2 = def1.clone();
     assert_eq!(def1, def2);
@@ -214,6 +216,7 @@ fn trait_member_associated_type() {
 fn trait_def_full_construction() {
     let def = reify_types::TraitDef {
         name: "Bracket".into(),
+        doc: None,
         type_params: vec![reify_types::TypeParam {
             name: "T".into(),
             bounds: vec![],
@@ -277,9 +280,11 @@ fn all_m5_types_exported_from_crate_root() {
     let _ = reify_types::EnumDef {
         name: "X".into(),
         variants: vec![],
+        doc: None,
     };
     let _ = reify_types::TraitDef {
         name: "X".into(),
+        doc: None,
         type_params: vec![],
         refinements: vec![],
         members: vec![],
@@ -321,6 +326,7 @@ fn trait_member_satisfies_eq() {
 fn trait_def_satisfies_eq() {
     let def = reify_types::TraitDef {
         name: "Test".into(),
+        doc: None,
         type_params: vec![],
         refinements: vec![],
         members: vec![],

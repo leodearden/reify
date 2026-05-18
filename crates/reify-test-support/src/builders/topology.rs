@@ -14,6 +14,7 @@ use reify_types::{
 /// Builder for `TopologyTemplate`.
 pub struct TopologyTemplateBuilder {
     name: String,
+    doc: Option<String>,
     entity_kind: EntityKind,
     visibility: reify_compiler::Visibility,
     type_params: Vec<TypeParam>,
@@ -37,6 +38,7 @@ impl TopologyTemplateBuilder {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            doc: None,
             entity_kind: EntityKind::Structure,
             visibility: reify_compiler::Visibility::Private,
             type_params: Vec::new(),
@@ -55,6 +57,12 @@ impl TopologyTemplateBuilder {
             forall_templates: Vec::new(),
             connections: Vec::new(),
         }
+    }
+
+    /// Set the `doc` string for this template (mirrors `TopologyTemplate::doc`).
+    pub fn doc(mut self, doc: impl Into<String>) -> Self {
+        self.doc = Some(doc.into());
+        self
     }
 
     /// Add a captured `CompiledForallTemplate` to the builder (task 2629).
@@ -419,6 +427,7 @@ impl TopologyTemplateBuilder {
 
         TopologyTemplate {
             name: self.name,
+            doc: self.doc,
             entity_kind: self.entity_kind,
             visibility: self.visibility,
             type_params: self.type_params,

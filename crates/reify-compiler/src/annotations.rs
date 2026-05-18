@@ -499,6 +499,7 @@ mod tests {
         let params: Vec<(String, Type)> = vec![];
         let stub_fn = reify_types::CompiledFunction {
             name: "fn_collection".to_string(),
+            doc: None,
             is_pub: false,
             param_defaults: reify_types::CompiledFunction::no_defaults_for(&params),
             params,

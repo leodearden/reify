@@ -837,6 +837,7 @@ mod tests {
         let enum_defs = vec![reify_types::EnumDef {
             name: "Direction".to_string(),
             variants: vec!["In".to_string(), "Out".to_string()],
+            doc: None,
         }];
 
         // TypeExpr for `Direction` (bare named type, no type_args)
@@ -852,6 +853,7 @@ mod tests {
         let trait_dir = CompiledTrait {
             name: "TraitDir".to_string(),
             is_pub: false,
+            doc: None,
             type_params: vec![],
             refinements: vec![],
             required_members: vec![
@@ -993,6 +995,7 @@ mod tests {
         let trait_x = CompiledTrait {
             name: "TraitX".to_string(),
             is_pub: false,
+            doc: None,
             type_params: vec![],
             refinements: vec![],
             required_members: vec![TraitRequirement {
@@ -1011,6 +1014,7 @@ mod tests {
         let trait_y = CompiledTrait {
             name: "TraitY".to_string(),
             is_pub: false,
+            doc: None,
             type_params: vec![],
             refinements: vec![],
             required_members: vec![],
@@ -1042,6 +1046,7 @@ mod tests {
         let trait_z = CompiledTrait {
             name: "TraitZ".to_string(),
             is_pub: false,
+            doc: None,
             type_params: vec![],
             refinements: vec![],
             required_members: vec![],
@@ -1404,6 +1409,7 @@ mod tests {
         let enum_defs = vec![reify_types::EnumDef {
             name: "Direction".to_string(),
             variants: vec!["In".to_string(), "Out".to_string()],
+            doc: None,
         }];
 
         let structure_def = reify_syntax::StructureDef {
@@ -1472,6 +1478,7 @@ mod tests {
         let enum_defs = vec![reify_types::EnumDef {
             name: "Direction".to_string(),
             variants: vec!["In".to_string(), "Out".to_string()],
+            doc: None,
         }];
 
         let structure_def = reify_syntax::StructureDef {
@@ -1541,6 +1548,7 @@ mod tests {
         let trait_a = CompiledTrait {
             name: "TraitA".to_string(),
             is_pub: false,
+            doc: None,
             type_params: vec![],
             refinements: vec![],
             required_members: vec![TraitRequirement {
@@ -1561,6 +1569,7 @@ mod tests {
         let trait_b = CompiledTrait {
             name: "TraitB".to_string(),
             is_pub: false,
+            doc: None,
             type_params: vec![],
             refinements: vec![],
             required_members: vec![],
@@ -1659,6 +1668,7 @@ mod tests {
         let trait_a = CompiledTrait {
             name: "TraitA".to_string(),
             is_pub: false,
+            doc: None,
             type_params: vec![],
             refinements: vec![],
             required_members: vec![TraitRequirement {
@@ -1678,6 +1688,7 @@ mod tests {
         let trait_b = CompiledTrait {
             name: "TraitB".to_string(),
             is_pub: false,
+            doc: None,
             type_params: vec![],
             refinements: vec![],
             required_members: vec![],
@@ -1894,6 +1905,7 @@ mod tests {
         let trait_a = CompiledTrait {
             name: "TraitA".to_string(),
             is_pub: false,
+            doc: None,
             type_params: vec![],
             refinements: vec![],
             required_members: vec![TraitRequirement {
@@ -2717,6 +2729,7 @@ mod tests {
         let trait_t = CompiledTrait {
             name: "TraitT".to_string(),
             is_pub: false,
+            doc: None,
             type_params: vec![],
             refinements: vec![],
             required_members: vec![TraitRequirement {
@@ -3932,6 +3945,7 @@ mod tests {
     fn minimal_template(name: &str, cells: Vec<ValueCellDecl>) -> TopologyTemplate {
         TopologyTemplate {
             name: name.to_string(),
+            doc: None,
             entity_kind: EntityKind::Structure,
             visibility: Visibility::Public,
             type_params: vec![],
@@ -4175,6 +4189,7 @@ mod tests {
         let material_spec = CompiledTrait {
             name: "MaterialSpec".to_string(),
             is_pub: true,
+            doc: None,
             type_params: vec![],
             refinements: vec![],
             required_members: vec![],

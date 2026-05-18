@@ -106,6 +106,7 @@ pub(crate) fn collect_decl_refs<'a>(
                 ctx.enum_defs.push(reify_types::EnumDef {
                     name: e.name.clone(),
                     variants: e.variants.clone(),
+                    doc: e.doc.clone(),
                 });
             }
             Declaration::Function(fn_def) => {

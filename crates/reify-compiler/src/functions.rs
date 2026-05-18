@@ -193,6 +193,7 @@ pub(crate) fn compile_function(
 
     Some(CompiledFunction {
         name: fn_def.name.clone(),
+        doc: fn_def.doc.clone(),
         is_pub: fn_def.is_pub,
         params,
         param_defaults,

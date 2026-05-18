@@ -2326,6 +2326,7 @@ mod helper_tests {
         use reify_types::ContentHash;
         crate::TopologyTemplate {
             name: name.into(),
+            doc: None,
             entity_kind: crate::EntityKind::Structure,
             visibility: crate::Visibility::Private,
             type_params: vec![],

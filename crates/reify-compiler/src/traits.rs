@@ -219,6 +219,7 @@ pub(crate) fn compile_trait(
     CompiledTrait {
         name: trait_decl.name.clone(),
         is_pub: trait_decl.is_pub,
+        doc: trait_decl.doc.clone(),
         type_params,
         refinements: trait_decl
             .refinements
