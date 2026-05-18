@@ -1,0 +1,231 @@
+// Stdlib: Trajectory Input Shaping  (`std.trajectory`)
+//
+// PRD: docs/prds/v0_3/trajectory-input-shaping.md §4.1, §11 task α.
+//
+// Provides the named-type substrate for the v0.3 trajectory-input-shaping
+// PRD — every consumer task (β / δ / η / ι / ξ) depends on the trait, enum,
+// and structure_def names declared here. Scope is the type surface only —
+// no Rust evaluator and no constructor side effects (that is β).
+//
+// Surface (PRD §4.1):
+//   - trait Profile                     (marker for all motion-profile variants)
+//   - trait BoundaryCondition           (marker for all spline boundary kinds)
+//   - enum  SplineKind                  (CubicSpline | QuinticSpline)
+//   - structure def Waypoint            (t, values, vels?, accels?)
+//   - structure def NaturalSpline       (zero-DOF marker : BoundaryCondition)
+//   - structure def ClampedSpline       (start_velocity, end_velocity : BoundaryCondition)
+//   - structure def PeriodicSpline      (zero-DOF marker : BoundaryCondition)
+//   - structure def PiecewisePolynomialProfile : Profile
+//                                       (mechanism, waypoints, boundary, spline_kind;
+//                                        constraint waypoints.count > 0)
+//
+// Module placement: registered last in `stdlib_loader.rs` — `std.trajectory`
+// has no compile-time dependency on any other stdlib module (every type it
+// references is a primitive, builtin parametric container, the `Time`
+// dimension from `std.units`, or a name declared in this file). The trailing
+// position keeps the v0.3 trajectory cluster visually grouped at the end of
+// the loader, ready for the planned `std.modal` / `std.dynamics` siblings.
+//
+// Encoding notes:
+//   1. `JointValue` is declared as a `pub type JointValue = Real` alias at
+//      the top of the file so call sites read `List<JointValue>` exactly
+//      matching the PRD §4.1 declaration. The kinematic-constraints
+//      completion PRD (sibling, not yet landed) will replace the underlying
+//      `Real` with a proper kinematic-scalar type; that single alias line
+//      retargets every consumer in this file without touching any
+//      structure_def body. Same posture as `analysis.ri::pub type Stress =
+//      Pressure` and `pub type Strain = Dimensionless`.
+//   2. `mechanism` on `PiecewisePolynomialProfile` uses bare `Real` with a
+//      `TODO(mechanism-type)` note pointing at the same sibling PRD. No
+//      analogous alias makes sense (Mechanism is a structural type, not a
+//      scalar dimension) — same pattern as `LoadCase.loads : List<Real>`'s
+//      `TODO(load-trait)` annotation in `fea_multi_case.ri`.
+
+// ── Type aliases ──────────────────────────────────────────────────────────
+
+// JointValue: per-joint scalar — position / velocity / acceleration depending
+// on the call-site. Currently aliased to `Real` as the kinematic-completion
+// PRD (which owns the proper kinematic-scalar type) has not landed yet.
+// Same placeholder convention as `fea_multi_case.ri::LoadCase.loads :
+// List<Real>` with its `TODO(load-trait)` annotation. Retargeting this line
+// when the kinematic PRD lands propagates the type tightening to every
+// consumer in this file without touching any structure_def body.
+//
+// TODO(joint-value-type): retarget to the kinematic-completion PRD's
+// `JointValue` (likely `Scalar<...>` or a struct) when that PRD lands.
+pub type JointValue = Real
+
+// ── Marker traits ─────────────────────────────────────────────────────────
+
+// Profile — marker trait for every motion-profile variant (PRD §4.1).
+// Currently only `PiecewisePolynomialProfile` refines it; future variants
+// (TrapezoidalProfile, SCurveProfile, …) are queued in later v0.3 phases.
+//
+// Kept empty by design: every shared member would force every variant to
+// carry redundant data and defeat the marker-trait purpose. Future shared
+// fields (e.g. `total_duration`) land in their own phases once the design
+// has settled on a single representation.
+trait Profile { }
+
+// BoundaryCondition — marker trait for every spline boundary-mode variant
+// (PRD §4.1). The α phase declares three refining structures:
+//   - NaturalSpline   ("zero second derivative at endpoints")
+//   - ClampedSpline   ("specified tangents at first / last waypoint")
+//   - PeriodicSpline  ("first and last waypoint agree")
+//
+// Kept empty: each variant encodes its semantic invariant in the β-phase
+// evaluator (`PiecewisePolynomialProfile` coefficient construction), not as
+// an authoring-time param. The trait exists only to give the `boundary`
+// param on `PiecewisePolynomialProfile` a single nominal type so the
+// evaluator dispatches on the concrete variant via the SIR-α nominal
+// type-tag — exactly the same mechanism `solve_elastic_static` uses to
+// dispatch on `PointLoad` vs `FixedSupport`.
+trait BoundaryCondition { }
+
+// ── Spline degree selector ────────────────────────────────────────────────
+
+// SplineKind — selects the polynomial degree the β evaluator uses when
+// building the per-segment coefficients for a `PiecewisePolynomialProfile`
+// (PRD §4.1):
+//
+//   CubicSpline   — degree-3 polynomial per segment; the default when
+//                   waypoints carry only positions (vels / accels are none).
+//   QuinticSpline — degree-5 polynomial per segment; selected when waypoints
+//                   carry explicit `vels` AND `accels` (per-waypoint q̇ and q̈
+//                   give the extra degrees of freedom a quintic needs).
+//
+// Same module-top-level positioning as `enum HardnessScale` in
+// `materials_mechanical.ri`.
+enum SplineKind { CubicSpline, QuinticSpline }
+
+// ── Waypoint ──────────────────────────────────────────────────────────────
+
+// Waypoint — per-knot data the spline interpolates between (PRD §4.1).
+//
+//   t       : Time                          — knot time
+//   values  : List<JointValue>              — per-joint positions
+//   vels    : Option<List<JointValue>>      — optional per-joint q̇
+//   accels  : Option<List<JointValue>>      — optional per-joint q̈
+//
+// No defaults — every field is caller-supplied (the spline path through the
+// waypoints is entirely determined by the caller's data). `vels` / `accels`
+// are `Option`-typed so the caller can omit per-knot derivative data when
+// the chosen `SplineKind` does not need it (cubic interpolation works with
+// positions alone; quintic needs both).
+//
+// No structure-level constraint: the only meaningful cross-field invariant
+// (`vels.len() == values.len()` when present) is owned by the β-phase
+// profile builder once it sees all waypoints together — a per-knot constraint
+// cannot see the rest of the waypoint list, so the check belongs there.
+//
+// TODO(joint-value-type): `List<JointValue>` retargets to the kinematic-
+// completion PRD's proper `JointValue` type when that PRD lands (see the
+// header §1 type alias note).
+structure def Waypoint {
+    param t : Time
+    param values : List<JointValue>
+    param vels : Option<List<JointValue>>
+    param accels : Option<List<JointValue>>
+}
+
+// ── BoundaryCondition variants ────────────────────────────────────────────
+
+// NaturalSpline — zero-DOF "natural" boundary marker (PRD §4.1).
+// Semantic invariant: "zero second derivative at the endpoints" — enforced
+// by the β-phase evaluator when it builds the spline coefficients, NOT as
+// an authoring-time param. The structure exists only to give the β
+// evaluator a nominal type-tag to dispatch on; the dispatch shape mirrors
+// `PointLoad` / `FixedSupport` in `solve_elastic_static`.
+structure def NaturalSpline : BoundaryCondition { }
+
+// ClampedSpline — "clamped" boundary marker carrying explicit per-joint
+// velocity tangents at the first and last waypoint (PRD §4.1):
+//
+//   start_velocity : List<JointValue>   — q̇ at the first waypoint
+//   end_velocity   : List<JointValue>   — q̇ at the last waypoint
+//
+// Both lists are caller-supplied (no defaults): a "clamped" boundary is
+// only meaningful when the caller has a specific tangent intent. The β-
+// phase evaluator dispatches on the SIR-α nominal type-tag — exactly the
+// same mechanism `solve_elastic_static` uses to dispatch on `PointLoad`
+// vs `FixedSupport`.
+//
+// No structure-level constraint: the only meaningful cross-list invariant
+// (`start_velocity.len() == end_velocity.len() == waypoints[0].values.len()`)
+// is profile-level and owned by the β-phase profile builder once it sees
+// the waypoints together — a per-clamped-spline constraint cannot see the
+// rest of the profile, so the check belongs there.
+//
+// TODO(joint-value-type): `List<JointValue>` retargets to the kinematic-
+// completion PRD's proper `JointValue` type when that PRD lands (see the
+// header §1 type alias note).
+structure def ClampedSpline : BoundaryCondition {
+    param start_velocity : List<JointValue>
+    param end_velocity : List<JointValue>
+}
+
+// PeriodicSpline — zero-DOF "periodic" boundary marker (PRD §4.1).
+// Semantic invariant: "the first and last waypoint agree" (both position
+// and derivatives), so the resulting spline closes back on itself —
+// enforced by the β-phase evaluator when it builds the spline coefficients,
+// NOT as an authoring-time param. The structure exists only to give the β
+// evaluator a nominal type-tag to dispatch on; the dispatch shape mirrors
+// `PointLoad` / `FixedSupport` in `solve_elastic_static`.
+structure def PeriodicSpline : BoundaryCondition { }
+
+// ── PiecewisePolynomialProfile ────────────────────────────────────────────
+
+// PiecewisePolynomialProfile — α-phase concrete `Profile` variant carrying
+// the four authoring-time params the β-phase evaluator needs to build
+// per-segment polynomial coefficients (PRD §4.1):
+//
+//   mechanism   : Real                 — the kinematic chain whose joints
+//                                        the profile interpolates over.
+//                                        Currently `Real` placeholder.
+//   waypoints   : List<Waypoint>       — per-knot data, ordered by `t`.
+//   boundary    : BoundaryCondition    — variant chooses tangent / endpoint
+//                                        policy (Natural / Clamped /
+//                                        Periodic). The β evaluator
+//                                        dispatches on the SIR-α nominal
+//                                        type-tag exactly as
+//                                        `solve_elastic_static` does for
+//                                        `PointLoad` vs `FixedSupport`.
+//   spline_kind : SplineKind           — selects polynomial degree (cubic
+//                                        for position-only waypoints,
+//                                        quintic when waypoints carry
+//                                        vels AND accels).
+//
+// No defaults — every field is caller-supplied. There is no meaningful
+// default `mechanism` (the chain is the whole point of a motion profile),
+// no default `waypoints` (an empty profile is rejected by the constraint
+// below — see step-20), no default `boundary` (the caller must choose
+// `NaturalSpline` / `ClampedSpline` / `PeriodicSpline` explicitly), and no
+// default `spline_kind` (the cubic-vs-quintic decision is the caller's per-
+// problem trade-off).
+//
+// TODO(mechanism-type): tighten `mechanism : Real` to the kinematic-
+// completion PRD's `Mechanism` type when that PRD lands. Same shape and
+// rationale as `LoadCase.loads : List<Real>` with its `TODO(load-trait)`
+// annotation in `fea_multi_case.ri:84`.
+structure def PiecewisePolynomialProfile : Profile {
+    param mechanism : Real
+    param waypoints : List<Waypoint>
+    param boundary : BoundaryCondition
+    param spline_kind : SplineKind
+
+    // Reject an empty waypoint list at construction.
+    //
+    // Encodes the PRD §11-α observable signal "ctor constraints fire
+    // (e.g. empty waypoints list rejected)" as an explicit contract in
+    // production code rather than relying solely on test coverage (task
+    // 2544 convention; same shape `BucklingOptions.n_modes > 0` uses in
+    // `solver_buckling.ri`). The `.count` method on `List` is recognised
+    // in constraint position (`reify-expr/src/lib.rs:1349` evaluator arm;
+    // precedent: `constraint vents.count == n` in
+    // `forall_statement_lower_tests.rs`).
+    //
+    // Fires automatically at construction via SIR-α's
+    // `check_constraints_against_templates` machinery (task 3540, landed)
+    // — no further plumbing needed in this task.
+    constraint waypoints.count > 0
+}
