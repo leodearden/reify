@@ -98,6 +98,22 @@ const JointRow: Component<JointRowProps> = (props) => {
   const dimension = () => joint().dimension;
   const drivingParam = () => joint().driving_param_cell_id;
 
+  /**
+   * Binding-aware param-cell-id resolver.
+   * - param_bound → binding.param_cell_id (falls back to legacy driving_param_cell_id)
+   * - literal_bound → binding.synth_param_name (the engine-session virtual param)
+   * - coupling_derived / fixed_no_motion → null (not scrubbable)
+   *
+   * This is the id passed to onSetParameter and used as the first arg to
+   * onScrubLocal; the RAF-coalesced set_parameter IPC reuses it unchanged.
+   */
+  const effectiveParamCellId = (): string | null => {
+    const b = joint().binding;
+    if (b.kind === 'param_bound') return b.param_cell_id ?? drivingParam();
+    if (b.kind === 'literal_bound') return b.synth_param_name;
+    return null;
+  };
+
   // Whether this joint supports scrubbing.
   // Prismatic/revolute joints with a param binding OR a scrubbable literal binding
   // are scrubbable; coupling and fixed joints are never scrubbable.
@@ -145,7 +161,7 @@ const JointRow: Component<JointRowProps> = (props) => {
         if (pendingValue === null) return;
         const val = pendingValue;
         pendingValue = null;
-        const param = drivingParam();
+        const param = effectiveParamCellId();
         if (param !== null) {
           props.onSetParameter(param, formatParamValue(val, kind()));
         }
@@ -163,7 +179,7 @@ const JointRow: Component<JointRowProps> = (props) => {
     // JointDescriptor.current_value_si, enabling refresh()'s equality
     // check to clear the override once the backend confirms the value.
     const valueSi = displayToSi(displayValue, kind());
-    const param = drivingParam();
+    const param = effectiveParamCellId();
     props.onScrubLocal(param, joint().joint_index, valueSi);
 
     // Schedule the actual set_parameter IPC call via RAF coalescing
