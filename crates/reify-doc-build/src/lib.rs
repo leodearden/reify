@@ -8,4 +8,7 @@
 //! This crate is the natural home for future compiler→doc-model transforms
 //! (e.g., `build_doc_model`, formatter/CLI lowering stages).
 
+pub mod build;
 pub mod cross_refs;
+
+pub use build::build_doc_model;

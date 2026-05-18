@@ -4506,7 +4506,9 @@ version = "0.1.0"
 dependencies = [
  "reify-compiler",
  "reify-doc",
+ "reify-syntax",
  "reify-test-support",
+ "reify-types",
  "serde",
  "serde_json",
 ]
