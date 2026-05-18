@@ -424,11 +424,12 @@ fn doc_o_flag_writes_markdown_without_extra_trailing_newline() {
         written.contains("width"),
         "markdown file must contain param name 'width' (from real DocModel), got: {written}"
     );
-    // File-mode must NOT add a second trailing newline on top of the formatter's output.
+    // render_markdown naturally ends with \n\n (section separator). File-mode
+    // must NOT add a *third* trailing newline on top of the formatter's output.
     assert!(
-        !written.ends_with("\n\n"),
-        "markdown file must NOT end with double newlines (file mode does not append \
-         a trailing newline), got tail: {:?}",
+        !written.ends_with("\n\n\n"),
+        "markdown file must NOT end with triple newlines (file mode must not \
+         append an extra trailing newline), got tail: {:?}",
         &written[written.len().saturating_sub(20)..]
     );
 }

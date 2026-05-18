@@ -411,80 +411,6 @@ enum Format {
     Json,
 }
 
-/// Build a near-empty but well-formed [`reify_doc::model::DocModel`] from a
-/// compiled module.
-///
-/// This is a deliberate placeholder that preserves only the module path so
-/// the `reify doc` CLI pipeline (formatter dispatch, output plumbing,
-/// usage/error handling) can be exercised end-to-end without depending on
-/// the full lowering pass that would walk `compiled.templates`,
-/// `compiled.functions`, etc.
-///
-/// TODO(task-3562): replace with `reify_doc_build::build_doc_model` when
-/// it lands. See `docs/prds/reify-doc-tool.md`. Sibling tasks
-/// 2351/2355/2357/2359 all closed (done) without producing the symbol;
-/// task 3562 now tracks the actual implementation work.
-fn minimal_doc_model_from_compiled(
-    compiled: &reify_compiler::CompiledModule,
-) -> reify_doc::model::DocModel {
-    reify_doc::model::DocModel {
-        modules: vec![reify_doc::model::ModuleDoc {
-            path: compiled.path.to_string(),
-            ..Default::default()
-        }],
-    }
-}
-
-/// Escape the five HTML-significant characters (`&`, `<`, `>`, `"`, `'`) so
-/// that arbitrary text — including the markdown body we wrap inside `<pre>` —
-/// cannot break out of the HTML structure.
-fn escape_html(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for ch in s.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            _ => out.push(ch),
-        }
-    }
-    out
-}
-
-/// Render a self-contained HTML page wrapping the markdown body inside a
-/// `<pre>` block.
-///
-/// This is a deliberate placeholder so the spec-mandated `--format html`
-/// default has *some* HTML-shaped output end-to-end without preempting the
-/// real formatter.
-///
-/// TODO(task-3562): replace with `reify_doc::fmt_html::render_html` once
-/// the dedicated HTML formatter (`fmt_html.rs`) is wired up. Task 2359
-/// closed (done) without producing it; task 3562 carries the rollup.
-fn render_html_stub(model: &reify_doc::model::DocModel) -> String {
-    let md_body = match reify_doc::fmt_markdown::render_markdown(
-        model,
-        None,
-        &reify_doc::fmt_markdown::MarkdownOptions::default(),
-    ) {
-        reify_doc::fmt_markdown::MarkdownOutput::Single(s) => s,
-        // `render_markdown` only emits `Split` when `opts.split == true`, and
-        // we always pass `MarkdownOptions::default()` (split = false).  Use
-        // `unreachable!` so a future refactor that breaks this invariant
-        // panics loudly instead of silently emitting an empty `<pre>` block.
-        reify_doc::fmt_markdown::MarkdownOutput::Split(_) => {
-            unreachable!("render_html_stub always uses MarkdownOptions::default() (split = false)")
-        }
-    };
-    let path = model.modules.first().map(|m| m.path.as_str()).unwrap_or("");
-    let escaped_path = escape_html(path);
-    let escaped_body = escape_html(&md_body);
-    format!(
-        "<!DOCTYPE html>\n<html>\n<head><meta charset=\"utf-8\"><title>{escaped_path}</title></head>\n<body>\n<pre>\n{escaped_body}\n</pre>\n</body>\n</html>\n"
-    )
-}
 
 fn cmd_doc(args: &[String]) -> ExitCode {
     if args.is_empty() {
@@ -612,7 +538,21 @@ fn cmd_doc(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let model = minimal_doc_model_from_compiled(&compiled);
+    // Read the source file so build_doc_model can slice SourceSpan offsets
+    // into the source string for constraint expr_repr and line numbers.
+    // parse_and_compile already read and validated the file, so a second
+    // read error is unexpected but handled consistently with the existing
+    // `Error reading {path}: {e}` convention.
+    let source = match std::fs::read_to_string(input) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error reading {}: {}", input, e);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let model = reify_doc_build::build_doc_model(&compiled, &source);
+    let xrefs = reify_doc_build::cross_refs::build_cross_refs(&compiled.templates);
 
     match format {
         Format::Json => {
@@ -624,14 +564,9 @@ fn cmd_doc(args: &[String]) -> ExitCode {
             write_single_file_or_stdout(output.as_deref(), &body, /*trailing_newline=*/ true)
         }
         Format::Markdown => {
-            // TODO(task-3562): once `reify_doc_build::build_doc_model`
-            // lands, wire `reify_doc_build::cross_refs::build_cross_refs(
-            // &compiled.templates)` here and pass `Some(&xrefs)` instead of
-            // `None`.  With the placeholder empty `DocModel`, cross-refs
-            // would be degenerate, so `None` is byte-equivalent and saves a
-            // workspace dep.
             let opts = reify_doc::fmt_markdown::MarkdownOptions { split };
-            let rendered = reify_doc::fmt_markdown::render_markdown(&model, None, &opts);
+            let rendered =
+                reify_doc::fmt_markdown::render_markdown(&model, Some(&xrefs), &opts);
             match rendered {
                 reify_doc::fmt_markdown::MarkdownOutput::Single(body) => {
                     write_single_file_or_stdout(
@@ -668,8 +603,8 @@ fn cmd_doc(args: &[String]) -> ExitCode {
             }
         }
         Format::Html => {
-            // Default + explicit `--format html`: emit the in-CLI HTML stub.
-            let body = render_html_stub(&model);
+            // Default + explicit `--format html`: emit the real HTML formatter output.
+            let body = reify_doc::fmt_html::render_html(&model, Some(&xrefs));
             write_single_file_or_stdout(output.as_deref(), &body, /*trailing_newline=*/ false)
         }
     }
