@@ -72,3 +72,15 @@
 // `trait Support { }` (fea_multi_case.ri:288) and `trait BoundaryCondition
 // { }` (trajectory.ri).
 trait DampingDescriptor { }
+
+// ── NoDamping ────────────────────────────────────────────────────────────────
+
+// `NoDamping` is the zero-field marker structure for an undamped modal solve
+// (PRD §4.2). Semantically equivalent to `RayleighDamping(alpha: 0, beta: 0)`
+// but a distinct nominal type so the future `modal_analysis` trampoline can
+// discriminate the no-damping fast path at dispatch via the SIR-α nominal
+// type-tag — same dispatch mechanism `solve_elastic_static` uses to
+// discriminate `PointLoad` vs `FixedSupport` in `fea_multi_case.ri`.
+//
+// PRD reference: docs/prds/v0_3/modal-analysis.md §4.2.
+structure def NoDamping : DampingDescriptor { }
