@@ -1,6 +1,6 @@
 # G-tool baseline report
 
-**Captured:** 2026-05-12
+**Captured:** 2026-05-18
 **Tool:** `scripts/audit-orphan-producers.sh`
 **Design:** `docs/architecture-audit/g-reviewer-tool-session-prompt.md`
 **Portfolio slot:** approach G — corpus-wide reviewer aid for Type-A
@@ -78,14 +78,17 @@ Public functions in `crates/reify-*/src/` whose only callers are
 tests, the defining file itself, comments, or `use`/`pub use`
 re-exports.
 
-- **Scanned:** 1427 `pub fn` declarations across 306 files
-- **Orphan candidates:** 425  (zero non-test callers, no `// G-allow:`)
+- **Scanned:** 1440 `pub fn` declarations across 313 files
+- **Orphan candidates:** 434  (zero non-test callers, no `// G-allow:`)
 - **Allow-listed:** 28  (zero callers; marked legitimate API surface)
 
 ## Orphan candidates
 
 | Crate | File:Line | Function |
 |---|---|---|
+| `reify-build-utils` | `crates/reify-build-utils/src/lib.rs:172` | `emit_rpath_for_bins` |
+| `reify-build-utils` | `crates/reify-build-utils/src/lib.rs:197` | `emit_rpath_for_tests` |
+| `reify-build-utils` | `crates/reify-build-utils/src/lib.rs:218` | `read_soname_version` |
 | `reify-compiler` | `crates/reify-compiler/src/annotations.rs:93` | `is_known_block_pragma` |
 | `reify-compiler` | `crates/reify-compiler/src/annotations.rs:98` | `is_module_only_pragma` |
 | `reify-compiler` | `crates/reify-compiler/src/auto_type_param.rs:556` | `enumerate_candidates` |
@@ -99,7 +102,7 @@ re-exports.
 | `reify-compiler` | `crates/reify-compiler/src/conformance/mod.rs:331` | `emit_geometry_trait_violation` |
 | `reify-compiler` | `crates/reify-compiler/src/connect.rs:69` | `auto_match_port_members` |
 | `reify-compiler` | `crates/reify-compiler/src/connect.rs:133` | `is_forward_compatible` |
-| `reify-compiler` | `crates/reify-compiler/src/functions.rs:214` | `resolve_field_type_name` |
+| `reify-compiler` | `crates/reify-compiler/src/functions.rs:215` | `resolve_field_type_name` |
 | `reify-compiler` | `crates/reify-compiler/src/geometry.rs:1045` | `extract_collection_count` |
 | `reify-compiler` | `crates/reify-compiler/src/geometry.rs:1070` | `unsupported_geometry_fn_message` |
 | `reify-compiler` | `crates/reify-compiler/src/geometry_modify.rs:8` | `compile_modify_2arg` |
@@ -140,12 +143,12 @@ re-exports.
 | `reify-compiler` | `crates/reify-compiler/src/type_resolution.rs:1415` | `resolve_parameterized_builtin_type_with_subst` |
 | `reify-compiler` | `crates/reify-compiler/src/type_resolution.rs:1552` | `resolve_type_alias_expr_to_dim_with_subst` |
 | `reify-compiler` | `crates/reify-compiler/src/type_resolution.rs:1625` | `collect_type_expr_names` |
-| `reify-compiler` | `crates/reify-compiler/src/types.rs:308` | `test_templates` |
-| `reify-compiler` | `crates/reify-compiler/src/types.rs:315` | `non_test_templates` |
-| `reify-compiler` | `crates/reify-compiler/src/types.rs:324` | `test_constraint_defs` |
-| `reify-compiler` | `crates/reify-compiler/src/types.rs:329` | `non_test_constraint_defs` |
-| `reify-compiler` | `crates/reify-compiler/src/types.rs:336` | `test_functions` |
-| `reify-compiler` | `crates/reify-compiler/src/types.rs:341` | `non_test_functions` |
+| `reify-compiler` | `crates/reify-compiler/src/types.rs:310` | `test_templates` |
+| `reify-compiler` | `crates/reify-compiler/src/types.rs:317` | `non_test_templates` |
+| `reify-compiler` | `crates/reify-compiler/src/types.rs:326` | `test_constraint_defs` |
+| `reify-compiler` | `crates/reify-compiler/src/types.rs:331` | `non_test_constraint_defs` |
+| `reify-compiler` | `crates/reify-compiler/src/types.rs:338` | `test_functions` |
+| `reify-compiler` | `crates/reify-compiler/src/types.rs:343` | `non_test_functions` |
 | `reify-config` | `crates/reify-config/src/cache.rs:41` | `default_cache_dir` |
 | `reify-config` | `crates/reify-config/src/cache.rs:77` | `parse_cache_config` |
 | `reify-config` | `crates/reify-config/src/cache.rs:256` | `load_cache_config_from_path` |
@@ -301,6 +304,7 @@ re-exports.
 | `reify-eval` | `crates/reify-eval/src/warm_pool.rs:493` | `budget_bytes` |
 | `reify-eval` | `crates/reify-eval/src/warm_pool.rs:515` | `dropped_events` |
 | `reify-expr` | `crates/reify-expr/src/lib.rs:82` | `_test_at_depth` |
+| `reify-gcode` | `crates/reify-gcode/src/marlin.rs:28` | `parse_marlin` |
 | `reify-geometry` | `crates/reify-geometry/src/lib.rs:39` | `register_kernel` |
 | `reify-geometry` | `crates/reify-geometry/src/lib.rs:44` | `has_kernel` |
 | `reify-kernel-fidget` | `crates/reify-kernel-fidget/src/kernel.rs:191` | `evaluate_sdf_at` |
@@ -485,14 +489,19 @@ re-exports.
 | `reify-stdlib` | `crates/reify-stdlib/src/loop_closure_solver.rs:339` | `newton_solve` |
 | `reify-stdlib` | `crates/reify-stdlib/src/loop_closure_solver.rs:653` | `mechanism_loop_closure_chains` |
 | `reify-stdlib` | `crates/reify-stdlib/src/loop_closure_solver.rs:820` | `solve_loop_closure_with_diagnostics` |
+| `reify-stdlib` | `crates/reify-stdlib/src/loop_closure_value.rs:123` | `as_f64_slice` |
+| `reify-stdlib` | `crates/reify-stdlib/src/loop_closure_value.rs:159` | `renormalize_quaternion` |
+| `reify-stdlib` | `crates/reify-stdlib/src/loop_closure_value.rs:206` | `flat_len` |
+| `reify-stdlib` | `crates/reify-stdlib/src/loop_closure_value.rs:225` | `flatten_dofs` |
+| `reify-stdlib` | `crates/reify-stdlib/src/loop_closure_value.rs:238` | `unflatten_dofs` |
 | `reify-stdlib` | `crates/reify-stdlib/src/supports.rs:76` | `is_support_value` |
 | `reify-types` | `crates/reify-types/src/diagnostics.rs:80` | `is_prelude` |
 | `reify-types` | `crates/reify-types/src/dimension.rs:36` | `is_zero` |
 | `reify-types` | `crates/reify-types/src/dimension.rs:40` | `is_integer` |
 | `reify-types` | `crates/reify-types/src/dimension.rs:44` | `as_i8` |
-| `reify-types` | `crates/reify-types/src/expr.rs:318` | `new_with_no_defaults` |
-| `reify-types` | `crates/reify-types/src/expr.rs:1587` | `user_function_call` |
-| `reify-types` | `crates/reify-types/src/expr.rs:1657` | `match_expr` |
+| `reify-types` | `crates/reify-types/src/expr.rs:329` | `no_defaults_for` |
+| `reify-types` | `crates/reify-types/src/expr.rs:1571` | `user_function_call` |
+| `reify-types` | `crates/reify-types/src/expr.rs:1641` | `match_expr` |
 | `reify-types` | `crates/reify-types/src/geometry.rs:2480` | `try_nary` |
 | `reify-types` | `crates/reify-types/src/geometry.rs:2504` | `nary` |
 | `reify-types` | `crates/reify-types/src/node_traits.rs:334` | `set_instance` |
