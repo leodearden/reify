@@ -172,3 +172,74 @@ structure def Mode {
     param participation_mass : Real
     param damping_ratio : Real
 }
+
+// ── ModalResult ──────────────────────────────────────────────────────────────
+
+// `ModalResult` is the modal-analysis solver-output container (PRD §4.1) —
+// the parallel sibling of `BucklingResult` (`std.solver.buckling`). Each
+// instance bundles the computed eigenpairs together with the inputs they
+// were solved against (boundary conditions, damping strategy) plus two
+// matrix-norm diagnostics.
+//
+// Solver-populated only: every field is determined by the modal solve, so
+// no caller-supplied defaults are meaningful. No scalar constraints are
+// declared at the structure-def level — the meaningful invariants here are
+// COLLECTION invariants (`modes` non-empty, sorted ascending by frequency)
+// which Reify's `constraint` grammar cannot express (it admits only scalar
+// predicates over same-scope cells). These are producer-enforced by the
+// future `modal_analysis` runtime trampoline (task ζ), mirroring the
+// `BucklingResult.modes` discipline at solver_buckling.ri:196-205.
+//
+// Field semantics (PRD §4.1):
+//   part                 — the analysed part. FIXME(part-structdef): encoded
+//                          as `String` PLACEHOLDER for the future `Part`
+//                          structure_def from the v0.3 solver-elastic PRD
+//                          (not yet landed). `String` (not `Real`) because
+//                          `Part` semantically denotes a named entity /
+//                          handle, consistent with the `FixedSupport.target
+//                          : String` selector-placeholder precedent
+//                          (fea_multi_case.ri:269-273 placeholder
+//                          convention). Tightens to the `Part` type once it
+//                          lands; consumer task ζ reads `.modes`, not
+//                          `.part`, so this placeholder is non-blocking.
+//   modes                — the computed modal eigenpairs, one `Mode` per
+//                          extracted mode, ordered ascending by frequency.
+//                          `Mode` is module-local so this resolves to
+//                          `List<StructureRef("Mode")>`.
+//   boundary_conditions  — the support set the solve was constrained with.
+//                          `Support` is the marker trait from
+//                          `std.fea.multi_case`, already in the growing
+//                          prelude at modal-compile time, so this resolves
+//                          to `List<TraitObject("Support")>` (same shape as
+//                          trajectory's `List<BoundaryCondition>`).
+//   damping              — the damping strategy applied (`NoDamping` or
+//                          `RayleighDamping`); trait-typed so eval-time
+//                          dispatch matches via the SIR-α nominal type-tag.
+//   mass_matrix_norm     — ‖M‖ diagnostic (conditioning / sanity check).
+//   stiffness_matrix_norm — ‖K‖ diagnostic (conditioning / sanity check).
+//
+// PRD reference: docs/prds/v0_3/modal-analysis.md §4.1.
+structure def ModalResult {
+    param part : String
+    param modes : List<Mode>
+    param boundary_conditions : List<Support>
+    param damping : DampingDescriptor
+    param mass_matrix_norm : Real
+    param stiffness_matrix_norm : Real
+    // NOTE — explicitly NOT constrained:
+    //   modes               : List<Mode>    — collection invariants
+    //                                          (non-empty, sorted ascending by
+    //                                          frequency) are producer-enforced
+    //                                          by the future modal_analysis
+    //                                          trampoline (task ζ); Reify
+    //                                          constraint clauses express only
+    //                                          scalar predicates, not
+    //                                          collection invariants. Mirrors
+    //                                          BucklingResult.modes discipline
+    //                                          (solver_buckling.ri:196-205).
+    //   boundary_conditions : List<Support> — collection of trait objects; no
+    //                                          scalar invariant expressible.
+    //   damping             : DampingDescriptor — trait-typed; not scalar-
+    //                                          predicable.
+    //   part / *_norm       — solver-populated outputs; no caller invariant.
+}
