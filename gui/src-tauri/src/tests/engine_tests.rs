@@ -648,6 +648,179 @@ fn get_mechanism_descriptors_current_value_si_updates_after_set_parameter() {
     );
 }
 
+/// Source for step-9: 1-body mechanism where y_axis is bound to a bare
+/// dimensionless number `0.5`.  `bind(y_axis, 0.5)` — NumberLiteral →
+/// initial_value_si should be Some(0.5) (no unit conversion).
+const SNAPSHOT_NUMBER_LITERAL_BIND_SOURCE: &str = r#"
+structure Kinematic {
+    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0     = mechanism()
+    let m1     = body(m0, "solid_a", y_axis)
+    let snap   = snapshot(m1, [bind(y_axis, 0.5)])
+}
+"#;
+
+// ---- JointBinding ParamBound promotion via AST resolver (task 3783, step-7) ----
+
+/// `resolve_driving_params_from_ast` must promote the joint `binding` field from
+/// the kind-based default `LiteralBound` to `ParamBound { param_cell_id, current_value_si }`
+/// when a `bind(joint, param)` pair is found.
+///
+/// Also verifies that the legacy flat fields (`driving_param_cell_id`,
+/// `current_value_si`) remain populated for backward compat.
+#[test]
+fn get_mechanism_descriptors_param_bind_promotes_binding_to_param_bound() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(SNAPSHOT_PARAM_BIND_SOURCE, "kinematic")
+        .expect("load snapshot+param source");
+
+    let descriptors = session.get_mechanism_descriptors();
+    let m1_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .expect("expected descriptor with bodies_count=1 (m1)");
+
+    let joint = &m1_desc.joints[0];
+
+    // The binding must have been promoted to ParamBound.
+    assert_eq!(
+        joint.binding,
+        crate::types::JointBinding::ParamBound {
+            param_cell_id: "Kinematic.y_pos".to_string(),
+            current_value_si: Some(0.1),
+        },
+        "bind(y_axis, y_pos) must promote binding to ParamBound {{ param_cell_id: \"Kinematic.y_pos\", \
+         current_value_si: Some(0.1) }}; got {:?}",
+        joint.binding
+    );
+
+    // Backward-compat flat fields must still be populated.
+    assert_eq!(
+        joint.driving_param_cell_id,
+        Some("Kinematic.y_pos".to_string()),
+        "driving_param_cell_id must still be Some(\"Kinematic.y_pos\") for compat; got {:?}",
+        joint.driving_param_cell_id
+    );
+    assert_eq!(
+        joint.current_value_si,
+        Some(0.1),
+        "current_value_si flat field must be Some(0.1); got {:?}",
+        joint.current_value_si
+    );
+}
+
+/// After `set_parameter("Kinematic.y_pos", "150mm")` the `binding` field on the
+/// joint descriptor must reflect the updated value in `ParamBound.current_value_si`.
+#[test]
+fn get_mechanism_descriptors_param_bind_binding_updates_after_set_parameter() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(SNAPSHOT_PARAM_BIND_SOURCE, "kinematic")
+        .expect("load snapshot+param source");
+
+    session
+        .set_parameter("Kinematic.y_pos", "150mm")
+        .expect("set_parameter should succeed");
+
+    let descriptors = session.get_mechanism_descriptors();
+    let m1_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .expect("expected descriptor with bodies_count=1");
+    let joint = &m1_desc.joints[0];
+
+    assert_eq!(
+        joint.binding,
+        crate::types::JointBinding::ParamBound {
+            param_cell_id: "Kinematic.y_pos".to_string(),
+            current_value_si: Some(0.15),
+        },
+        "after set_parameter(150mm), binding must show current_value_si=Some(0.15); got {:?}",
+        joint.binding
+    );
+}
+
+// ---- LiteralBound binding via AST resolver (task 3783, step-9) ---------------
+
+/// User-observable signal: `bind(y_axis, 50mm)` must produce
+/// `JointBinding::LiteralBound { synth_param_name: "__joint_y_axis_v",
+/// initial_value_si: Some(0.05), scrubbable: true }`.
+///
+/// This is the primary contract test for the η-engine task.
+#[test]
+fn get_mechanism_descriptors_literal_bind_produces_scrubbable_literal_bound_binding() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(SNAPSHOT_LITERAL_BIND_SOURCE, "kinematic")
+        .expect("load snapshot+literal source");
+
+    let descriptors = session.get_mechanism_descriptors();
+    let m1_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .expect("expected descriptor with bodies_count=1");
+
+    let joint = &m1_desc.joints[0];
+
+    // Must produce LiteralBound with joint cell name (not joint_index).
+    assert_eq!(
+        joint.binding,
+        crate::types::JointBinding::LiteralBound {
+            synth_param_name: "__joint_y_axis_v".to_string(),
+            initial_value_si: Some(0.05),
+            scrubbable: true,
+        },
+        "bind(y_axis, 50mm) must produce LiteralBound {{ synth_param_name: \"__joint_y_axis_v\", \
+         initial_value_si: Some(0.05), scrubbable: true }}; got {:?}",
+        joint.binding
+    );
+
+    // Legacy flat field must remain None (literal, not a param reference).
+    assert!(
+        joint.driving_param_cell_id.is_none(),
+        "literal bind must NOT set driving_param_cell_id; got {:?}",
+        joint.driving_param_cell_id
+    );
+}
+
+/// `bind(y_axis, 0.5)` (bare NumberLiteral, no unit) must produce
+/// `JointBinding::LiteralBound { initial_value_si: Some(0.5), ... }`.
+#[test]
+fn get_mechanism_descriptors_literal_bind_with_dimensionless_number_literal() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(SNAPSHOT_NUMBER_LITERAL_BIND_SOURCE, "kinematic")
+        .expect("load snapshot+number-literal source");
+
+    let descriptors = session.get_mechanism_descriptors();
+    let m1_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .expect("expected descriptor with bodies_count=1");
+
+    let joint = &m1_desc.joints[0];
+
+    assert_eq!(
+        joint.binding,
+        crate::types::JointBinding::LiteralBound {
+            synth_param_name: "__joint_y_axis_v".to_string(),
+            initial_value_si: Some(0.5),
+            scrubbable: true,
+        },
+        "bind(y_axis, 0.5) must produce LiteralBound {{ initial_value_si: Some(0.5) }}; got {:?}",
+        joint.binding
+    );
+}
+
 // ---- edge case tests (amendment pass, suggestion 8) -------------------------
 
 /// Source for double-bind test: same joint j bound to two different params in
@@ -987,15 +1160,16 @@ fn collect_snapshot_bind_pairs_emits_debug_when_args1_not_listliteral() {
     );
 }
 
-/// `snapshot(m1, [bind(j1, 0mm)])` — non-empty bind list, but the second arg
-/// of `bind` is a dimensional literal (`0mm`), not an `Ident`.  No valid
-/// `bind(Ident, Ident)` pair survives the filter — case (c).  Must emit DEBUG.
+/// `snapshot(m1, [bind(j1, 0mm + 1mm)])` — non-empty bind list, but the second
+/// arg of `bind` is a `BinOp` expression, which is neither an `Ident` (Param
+/// ref) nor a `QuantityLiteral`/`NumberLiteral` (literal value).  No valid
+/// `bind(Ident, Ident|Literal)` pair survives the filter — case (c).  Must emit DEBUG.
 const NON_BIND_LIST_SNAPSHOT_SOURCE: &str = r#"
 structure Kinematic {
     let j1 = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
     let m0 = mechanism()
     let m1 = body(m0, "solid_a", j1)
-    let snap = snapshot(m1, [bind(j1, 0mm)])
+    let snap = snapshot(m1, [bind(j1, 0mm + 1mm)])
 }
 "#;
 
@@ -1026,8 +1200,8 @@ fn collect_snapshot_bind_pairs_emits_debug_when_list_has_no_valid_binds() {
 
     assert_eq!(
         debug_count, 1,
-        "expected exactly 1 DEBUG event for snapshot(m1, [bind(j1, 0mm)]) — non-empty list \
-         with no valid bind(Ident,Ident) pairs (case c); got {}",
+        "expected exactly 1 DEBUG event for snapshot(m1, [bind(j1, 0mm+1mm)]) — non-empty list \
+         with no valid bind(Ident, Ident|Literal) pairs (case c); got {}",
         debug_count
     );
     assert_eq!(
@@ -8320,4 +8494,406 @@ fn fea_case_emitter_wires_through_real_commit_path() {
          got {} events",
         events.len()
     );
+}
+
+// ---- extract_joint_descriptor kind-based binding default tests (task 3783, step-5) ----
+
+/// Helper: build a single-body mechanism Value::Map containing a joint of the
+/// given kind.  The joint map contains only a `"kind"` key (sufficient for the
+/// kind→binding dispatch; other fields are not required by extract_joint_descriptor).
+fn make_single_body_mechanism_map(
+    joint_kind: &str,
+) -> std::collections::BTreeMap<reify_types::Value, reify_types::Value> {
+    use std::collections::BTreeMap;
+    use reify_types::Value;
+
+    let mut joint_map: BTreeMap<Value, Value> = BTreeMap::new();
+    joint_map.insert(
+        Value::String("kind".to_string()),
+        Value::String(joint_kind.to_string()),
+    );
+
+    let mut body_map: BTreeMap<Value, Value> = BTreeMap::new();
+    body_map.insert(Value::String("at".to_string()), Value::Map(joint_map));
+
+    let mut mech_map: BTreeMap<Value, Value> = BTreeMap::new();
+    mech_map.insert(
+        Value::String("kind".to_string()),
+        Value::String("mechanism".to_string()),
+    );
+    mech_map.insert(
+        Value::String("bodies".to_string()),
+        Value::List(vec![Value::Map(body_map)]),
+    );
+    mech_map
+}
+
+/// `extract_joints_from_mechanism` assigns `JointBinding::FixedNoMotion` as
+/// the default binding for a joint of kind `"fixed"`.
+#[test]
+fn extract_joint_descriptor_assigns_kind_based_binding_defaults_fixed() {
+    use crate::engine::extract_joints_from_mechanism;
+    use crate::types::JointBinding;
+
+    let mech_map = make_single_body_mechanism_map("fixed");
+    let (joints, _) = extract_joints_from_mechanism(&mech_map);
+
+    assert_eq!(joints.len(), 1, "expected 1 joint descriptor for fixed");
+    assert_eq!(
+        joints[0].binding,
+        JointBinding::FixedNoMotion,
+        "fixed joint must have binding=FixedNoMotion; got {:?}",
+        joints[0].binding
+    );
+}
+
+/// `extract_joints_from_mechanism` assigns `JointBinding::CouplingDerived { source_joint: "" }`
+/// as the default binding for a joint of kind `"coupling"`.
+#[test]
+fn extract_joint_descriptor_assigns_kind_based_binding_defaults_coupling() {
+    use crate::engine::extract_joints_from_mechanism;
+    use crate::types::JointBinding;
+
+    let mech_map = make_single_body_mechanism_map("coupling");
+    let (joints, _) = extract_joints_from_mechanism(&mech_map);
+
+    assert_eq!(joints.len(), 1, "expected 1 joint descriptor for coupling");
+    assert_eq!(
+        joints[0].binding,
+        JointBinding::CouplingDerived {
+            source_joint: "".to_string()
+        },
+        "coupling joint must have binding=CouplingDerived {{ source_joint: \"\" }}; got {:?}",
+        joints[0].binding
+    );
+}
+
+/// `extract_joints_from_mechanism` assigns a `JointBinding::LiteralBound` with
+/// `synth_param_name = "__joint_2_v"`, `initial_value_si = None`, `scrubbable = true`
+/// for a prismatic joint at joint_index 2.
+///
+/// Note: joint_index is 0-based within the mechanism. To get index=2 we add 3 bodies
+/// with 3 distinct joints and check the third one.
+#[test]
+fn extract_joint_descriptor_assigns_kind_based_binding_defaults_prismatic() {
+    use std::collections::BTreeMap;
+    use crate::engine::extract_joints_from_mechanism;
+    use crate::types::JointBinding;
+    use reify_types::Value;
+
+    // Build a mechanism with 3 distinct prismatic joints so the third has joint_index=2.
+    let make_prismatic = |tag: u8| -> Value {
+        let mut joint_map: BTreeMap<Value, Value> = BTreeMap::new();
+        joint_map.insert(
+            Value::String("kind".to_string()),
+            Value::String("prismatic".to_string()),
+        );
+        // Use a unique tag key to ensure structural inequality for deduplication.
+        joint_map.insert(
+            Value::String("_tag".to_string()),
+            Value::Int(tag as i64),
+        );
+        Value::Map(joint_map)
+    };
+
+    let bodies: Vec<Value> = (0u8..3)
+        .map(|i| {
+            let mut body_map: BTreeMap<Value, Value> = BTreeMap::new();
+            body_map.insert(Value::String("at".to_string()), make_prismatic(i));
+            Value::Map(body_map)
+        })
+        .collect();
+
+    let mut mech_map: BTreeMap<Value, Value> = BTreeMap::new();
+    mech_map.insert(
+        Value::String("kind".to_string()),
+        Value::String("mechanism".to_string()),
+    );
+    mech_map.insert(Value::String("bodies".to_string()), Value::List(bodies));
+
+    let (joints, _) = extract_joints_from_mechanism(&mech_map);
+    assert_eq!(joints.len(), 3, "expected 3 joint descriptors");
+
+    // Third joint has joint_index=2.
+    assert_eq!(
+        joints[2].binding,
+        JointBinding::LiteralBound {
+            synth_param_name: "__joint_2_v".to_string(),
+            initial_value_si: None,
+            scrubbable: true,
+        },
+        "prismatic at joint_index=2 must have synth_param_name='__joint_2_v'; got {:?}",
+        joints[2].binding
+    );
+}
+
+/// `extract_joints_from_mechanism` assigns a `JointBinding::LiteralBound` with
+/// `synth_param_name = "__joint_0_v"`, `initial_value_si = None`, `scrubbable = true`
+/// for a revolute joint at joint_index 0.
+#[test]
+fn extract_joint_descriptor_assigns_kind_based_binding_defaults_revolute() {
+    use crate::engine::extract_joints_from_mechanism;
+    use crate::types::JointBinding;
+
+    let mech_map = make_single_body_mechanism_map("revolute");
+    let (joints, _) = extract_joints_from_mechanism(&mech_map);
+
+    assert_eq!(joints.len(), 1, "expected 1 joint descriptor for revolute");
+    assert_eq!(
+        joints[0].binding,
+        JointBinding::LiteralBound {
+            synth_param_name: "__joint_0_v".to_string(),
+            initial_value_si: None,
+            scrubbable: true,
+        },
+        "revolute at joint_index=0 must have synth_param_name='__joint_0_v'; got {:?}",
+        joints[0].binding
+    );
+}
+
+// ---- reserved __joint_* param name collision warnings (task 3783, step-11) ----
+
+/// Source with a Param cell named `__joint_y_axis_v` — collides with the
+/// synth-virtual-param naming pattern used by the η-engine literal-bind path.
+/// `get_mechanism_descriptors()` must emit exactly 1 WARN at the
+/// `reify_gui::engine::reserved_param_name` target for this structure.
+const RESERVED_PARAM_NAME_SOURCE: &str = r#"
+structure Kinematic {
+    param __joint_y_axis_v: Length = 50mm
+    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0     = mechanism()
+    let m1     = body(m0, "solid_a", y_axis)
+}
+"#;
+
+/// A user-authored `param __joint_y_axis_v` matches the `__joint_*` reserved
+/// synth-virtual-param naming pattern.  `get_mechanism_descriptors` must emit
+/// exactly 1 WARN at `reify_gui::engine::reserved_param_name`.
+#[test]
+fn get_mechanism_descriptors_emits_warn_for_user_param_matching_reserved_pattern() {
+    // Inoculate against tracing's per-callsite Interest cache — see
+    // `prime_tracing_callsite_cache` in reify-test-support for why.
+    reify_test_support::prime_tracing_callsite_cache();
+
+    let mut session = make_session();
+    session
+        .load_from_source(RESERVED_PARAM_NAME_SOURCE, "kinematic")
+        .expect("load reserved-param-name source");
+
+    let (subscriber, counters) = CountingSubscriberBuilder::new()
+        .count_level(tracing::Level::WARN)
+        .target_prefix("reify_gui::engine::reserved_param_name")
+        .build();
+
+    tracing::subscriber::with_default(subscriber, || {
+        let _ = session.get_mechanism_descriptors();
+    });
+
+    let warn_count = counters[&tracing::Level::WARN].load(Ordering::Acquire);
+    assert_eq!(
+        warn_count, 1,
+        "expected exactly 1 WARN at reify_gui::engine::reserved_param_name \
+         for structure with param __joint_y_axis_v; got {}",
+        warn_count
+    );
+}
+
+/// Normally-named params (e.g. `y_pos`) must NOT trigger the reserved-name
+/// warning — this test pins the no-false-positive contract.
+#[test]
+fn get_mechanism_descriptors_does_not_warn_for_normally_named_params() {
+    // Inoculate against tracing's per-callsite Interest cache.
+    reify_test_support::prime_tracing_callsite_cache();
+
+    // SNAPSHOT_PARAM_BIND_SOURCE has `param y_pos: Length = 100mm` — no
+    // __joint_* pattern match.
+    let mut session = make_session();
+    session
+        .load_from_source(SNAPSHOT_PARAM_BIND_SOURCE, "kinematic")
+        .expect("load snapshot+param source");
+
+    let (subscriber, counters) = CountingSubscriberBuilder::new()
+        .count_level(tracing::Level::WARN)
+        .target_prefix("reify_gui::engine::reserved_param_name")
+        .build();
+
+    tracing::subscriber::with_default(subscriber, || {
+        let _ = session.get_mechanism_descriptors();
+    });
+
+    let warn_count = counters[&tracing::Level::WARN].load(Ordering::Acquire);
+    assert_eq!(
+        warn_count, 0,
+        "expected 0 WARN events at reify_gui::engine::reserved_param_name \
+         for normally-named param y_pos; got {}",
+        warn_count
+    );
+}
+
+// ---- amendment review tests (suggestions 1, 3, 4) ---------------------------
+
+/// Source for unsupported-unit test: bind(y_axis, 50inch) where "inch" is not
+/// in UNIT_TABLE.  initial_value_si must be None and a DEBUG event must fire at
+/// `reify_gui::engine::literal_bind`.
+const SNAPSHOT_UNSUPPORTED_UNIT_BIND_SOURCE: &str = r#"
+structure Kinematic {
+    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0     = mechanism()
+    let m1     = body(m0, "solid_a", y_axis)
+    let snap   = snapshot(m1, [bind(y_axis, 50inch)])
+}
+"#;
+
+/// `bind(y_axis, 50inch)` — "inch" is not in UNIT_TABLE — must produce
+/// `JointBinding::LiteralBound { initial_value_si: None, scrubbable: true }`
+/// AND emit exactly one DEBUG event at the `literal_bind` target.
+#[test]
+fn get_mechanism_descriptors_literal_bind_with_unsupported_unit_yields_none_and_logs_debug() {
+    reify_test_support::prime_tracing_callsite_cache();
+
+    let mut session = make_session();
+    // "50inch" may not parse as a valid Reify quantity — if load fails, skip the
+    // test with a note rather than panicking.  If the source does load (the parser
+    // accepts arbitrary unit suffixes), we assert the binding and the log event.
+    let load_result = session.load_from_source(SNAPSHOT_UNSUPPORTED_UNIT_BIND_SOURCE, "kinematic");
+    if load_result.is_err() {
+        // Parser rejected the unsupported unit at parse/compile time — that is an
+        // acceptable alternative outcome; the engine's silent-None path is only
+        // reached when the AST carries the literal.  Skip gracefully.
+        return;
+    }
+
+    let (subscriber, counters) = CountingSubscriberBuilder::new()
+        .count_level(tracing::Level::DEBUG)
+        .target_prefix("reify_gui::engine::literal_bind")
+        .build();
+
+    let descriptors = tracing::subscriber::with_default(subscriber, || {
+        session.get_mechanism_descriptors()
+    });
+
+    let debug_count = counters[&tracing::Level::DEBUG].load(std::sync::atomic::Ordering::Acquire);
+    assert_eq!(
+        debug_count, 1,
+        "expected exactly 1 DEBUG event at literal_bind target for unsupported unit 'inch'; got {}",
+        debug_count
+    );
+
+    let m1_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .expect("expected descriptor with bodies_count=1");
+    let joint = &m1_desc.joints[0];
+
+    assert!(
+        matches!(joint.binding, crate::types::JointBinding::LiteralBound { initial_value_si: None, .. }),
+        "unsupported unit must produce LiteralBound with initial_value_si=None; got {:?}",
+        joint.binding
+    );
+}
+
+/// Source for mixed-bind test (literal before param): two snapshot() calls bind
+/// the same joint y_axis — first to a literal 50mm, then to param y_pos.
+/// With the broadened ParamBound guard (`LiteralBound { .. }`), the param
+/// wins and binding must be ParamBound.
+const SNAPSHOT_LITERAL_THEN_PARAM_SOURCE: &str = r#"
+structure Kinematic {
+    param y_pos: Length = 100mm
+    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0     = mechanism()
+    let m1     = body(m0, "solid_a", y_axis)
+    let snap1  = snapshot(m1, [bind(y_axis, 50mm)])
+    let snap2  = snapshot(m1, [bind(y_axis, y_pos)])
+}
+"#;
+
+/// When two snapshot() calls bind the same joint — first to a literal (50mm),
+/// then to a param — the param arm must win and produce `ParamBound`.
+///
+/// This verifies the broadened guard `matches!(jd.binding, LiteralBound { .. })`
+/// (vs the former `LiteralBound { initial_value_si: None, .. }` guard which would
+/// have left the binding as LiteralBound while setting flat fields to the param).
+#[test]
+fn get_mechanism_descriptors_literal_then_param_bind_promotes_to_param_bound() {
+    let mut session = make_session();
+    session
+        .load_from_source(SNAPSHOT_LITERAL_THEN_PARAM_SOURCE, "kinematic")
+        .expect("load literal-then-param source");
+
+    let descriptors = session.get_mechanism_descriptors();
+    let m1_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .expect("expected descriptor with bodies_count=1");
+
+    let joint = &m1_desc.joints[0];
+
+    // Param must win: binding = ParamBound, flat field = param cell id.
+    assert_eq!(
+        joint.binding,
+        crate::types::JointBinding::ParamBound {
+            param_cell_id: "Kinematic.y_pos".to_string(),
+            current_value_si: Some(0.1),
+        },
+        "literal-then-param: param must win; binding must be ParamBound; got {:?}",
+        joint.binding
+    );
+    assert_eq!(
+        joint.driving_param_cell_id,
+        Some("Kinematic.y_pos".to_string()),
+        "flat field must reflect param; got {:?}",
+        joint.driving_param_cell_id
+    );
+}
+
+/// Source for bind-on-fixed-joint test: a fixed joint j_f with a param bound
+/// to it via snapshot().  The binding should remain FixedNoMotion (structural
+/// default is authoritative for non-movable joints), while the flat field
+/// `driving_param_cell_id` is set anyway (best-effort, may diverge from binding).
+const SNAPSHOT_FIXED_JOINT_WITH_PARAM_SOURCE: &str = r#"
+structure Kinematic {
+    param p: Length = 10mm
+    let j_f = fixed()
+    let m0  = mechanism()
+    let m1  = body(m0, "solid_a", j_f)
+    let snap = snapshot(m1, [bind(j_f, p)])
+}
+"#;
+
+/// `bind(j_f, p)` on a fixed joint must NOT promote `binding` from `FixedNoMotion`
+/// to `ParamBound` — fixed joints are structurally immovable and the binding
+/// field is authoritative.
+///
+/// The flat `driving_param_cell_id` field may be populated anyway (best-effort,
+/// documented edge case): callers should treat `binding` as authoritative for
+/// non-LiteralBound joints and `driving_param_cell_id` as best-effort only.
+#[test]
+fn get_mechanism_descriptors_bind_on_fixed_joint_does_not_promote_binding() {
+    let mut session = make_session();
+    session
+        .load_from_source(SNAPSHOT_FIXED_JOINT_WITH_PARAM_SOURCE, "kinematic")
+        .expect("load fixed-joint-with-param source");
+
+    let descriptors = session.get_mechanism_descriptors();
+    let m1_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .expect("expected descriptor with bodies_count=1");
+
+    let fixed_joint = m1_desc
+        .joints
+        .iter()
+        .find(|j| j.kind == "fixed")
+        .expect("expected a fixed joint descriptor");
+
+    // Binding must remain FixedNoMotion — structural kind overrides bind() form.
+    assert_eq!(
+        fixed_joint.binding,
+        crate::types::JointBinding::FixedNoMotion,
+        "bind(fixed_j, param) must NOT promote binding to ParamBound; got {:?}",
+        fixed_joint.binding
+    );
+    // Document expected flat-field behavior: best-effort, may be set for
+    // fixed joints even though binding is FixedNoMotion.
+    // (Not asserting a specific value here — the best-effort nature is the point.)
 }

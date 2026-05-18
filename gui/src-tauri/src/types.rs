@@ -492,10 +492,58 @@ pub struct JointDescriptor {
     /// `bind(joint, param_ref)` inside a `snapshot()` call.
     /// `None` when the bind expression is a literal rather than a param reference,
     /// or when no `snapshot()` / `bind()` call references this joint.
+    ///
+    /// **Backward-compat:** kept for parity with the downstream η-frontend consumer
+    /// which has not yet migrated to the `binding` field. The `binding` field is
+    /// the authoritative source going forward.
     pub driving_param_cell_id: Option<String>,
     /// Current evaluated SI value of the `driving_param_cell_id` cell.
     /// `None` when `driving_param_cell_id` is `None` or the value is `Undef`.
+    ///
+    /// **Backward-compat:** mirrors the `current_value_si` inside `binding` for the
+    /// `ParamBound` case. See `driving_param_cell_id` note above.
     pub current_value_si: Option<f64>,
+    /// Structured description of how this joint is driven (introduced in task 3783).
+    ///
+    /// This is the authoritative field. The legacy `driving_param_cell_id` /
+    /// `current_value_si` flat fields carry the same data for the `ParamBound` case
+    /// and are kept for backward compatibility with the η-frontend (separate task).
+    pub binding: JointBinding,
+}
+
+/// Describes how a kinematic joint is driven within a `snapshot()` call.
+///
+/// # Variant mapping (PRD §8.1)
+///
+/// | Variant | bind() form | Description |
+/// |---------|-------------|-------------|
+/// | `ParamBound` | `bind(j, param_ref)` | Joint driven by a named `param` cell; the param slider controls the joint position. |
+/// | `LiteralBound` | `bind(j, 100mm)` | Joint driven by a literal constant; surfaced as a scrub-virtual-param slider in the GUI. |
+/// | `CouplingDerived` | coupling joint (no bind) | Joint position is geometrically derived from another driving joint. `source_joint` detection is deferred to ζ work. |
+/// | `FixedNoMotion` | fixed joint / default | Joint has no independent motion variable; position is fully constrained. |
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum JointBinding {
+    /// Joint is driven by a named `param` cell via `bind(joint, param_ref)`.
+    /// `current_value_si` is the current evaluated SI value of the param cell.
+    ParamBound {
+        param_cell_id: String,
+        current_value_si: Option<f64>,
+    },
+    /// Joint is driven by a literal constant via `bind(joint, <literal>)`.
+    /// Surfaced as a scrubbable synth-virtual-param slider in the GUI.
+    /// `synth_param_name` is the virtual param name used internally (e.g. `__joint_y_axis_v`).
+    /// `initial_value_si` is the SI value of the literal (e.g. `0.1` for `100mm`).
+    LiteralBound {
+        synth_param_name: String,
+        initial_value_si: Option<f64>,
+        scrubbable: bool,
+    },
+    /// Joint position is derived from another driving joint (coupling joint).
+    /// `source_joint` is the cell name of the driving joint; empty string until ζ detection is implemented.
+    CouplingDerived { source_joint: String },
+    /// Joint has no independent motion variable (fixed joint or conservative default).
+    FixedNoMotion,
 }
 
 /// Current phase of the evaluation engine (mirrors frontend EvaluationStatus interface).
