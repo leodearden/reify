@@ -602,4 +602,160 @@ describe('MechanismPanel', () => {
       }
     });
   });
+
+  describe('(j) literal-bound slider fires onSetParameter with synth param name', () => {
+    it('literal_bound prismatic slider fires onSetParameter with synth_param_name and "Xmm" value', () => {
+      const rafSpy = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((cb) => {
+        cb(performance.now());
+        return 1;
+      });
+      try {
+        const onSetParameter = vi.fn();
+        const desc = makeDescriptor({
+          cell_id: 'Kinematic.m',
+          joints: [
+            makeJoint({
+              joint_index: 0,
+              kind: 'prismatic',
+              driving_param_cell_id: null,
+              current_value_si: null,
+              range_lower_si: 0,
+              range_upper_si: 0.8,
+              binding: {
+                kind: 'literal_bound',
+                synth_param_name: '__joint_x_axis_v',
+                initial_value_si: 0.1,
+                scrubbable: true,
+              },
+            }),
+          ],
+        });
+        render(() => (
+          <MechanismPanel descriptors={[desc]} onSetParameter={onSetParameter} onScrubLocal={vi.fn()} />
+        ));
+        const slider = screen.getByRole('slider') as HTMLInputElement;
+        fireEvent.input(slider, { target: { value: '400' } });
+
+        // Must fire with synth param name, not null
+        expect(onSetParameter).toHaveBeenCalledWith('__joint_x_axis_v', expect.stringMatching(/mm$/));
+      } finally {
+        rafSpy.mockRestore();
+      }
+    });
+
+    it('literal_bound revolute slider fires onSetParameter with synth_param_name and "Xdeg" value', () => {
+      const rafSpy = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((cb) => {
+        cb(performance.now());
+        return 1;
+      });
+      try {
+        const onSetParameter = vi.fn();
+        const desc = makeDescriptor({
+          cell_id: 'Kinematic.m',
+          joints: [
+            makeJoint({
+              joint_index: 0,
+              kind: 'revolute',
+              dimension: 'angle',
+              driving_param_cell_id: null,
+              current_value_si: null,
+              range_lower_si: 0,
+              range_upper_si: Math.PI,
+              binding: {
+                kind: 'literal_bound',
+                synth_param_name: '__joint_theta_v',
+                initial_value_si: 0.5,
+                scrubbable: true,
+              },
+            }),
+          ],
+        });
+        render(() => (
+          <MechanismPanel descriptors={[desc]} onSetParameter={onSetParameter} onScrubLocal={vi.fn()} />
+        ));
+        const slider = screen.getByRole('slider') as HTMLInputElement;
+        fireEvent.input(slider, { target: { value: '90' } });
+
+        expect(onSetParameter).toHaveBeenCalledWith('__joint_theta_v', expect.stringMatching(/deg$/));
+      } finally {
+        rafSpy.mockRestore();
+      }
+    });
+
+    it('param_bound joint still fires onSetParameter with param_cell_id (regression)', () => {
+      const rafSpy = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((cb) => {
+        cb(performance.now());
+        return 1;
+      });
+      try {
+        const onSetParameter = vi.fn();
+        const desc = makeDescriptor({
+          cell_id: 'Kinematic.m',
+          joints: [
+            makeJoint({
+              joint_index: 0,
+              kind: 'prismatic',
+              driving_param_cell_id: 'Kinematic.y_pos',
+              range_lower_si: 0,
+              range_upper_si: 0.8,
+              binding: {
+                kind: 'param_bound',
+                param_cell_id: 'Kinematic.y_pos',
+                current_value_si: 0.1,
+              },
+            }),
+          ],
+        });
+        render(() => (
+          <MechanismPanel descriptors={[desc]} onSetParameter={onSetParameter} onScrubLocal={vi.fn()} />
+        ));
+        const slider = screen.getByRole('slider') as HTMLInputElement;
+        fireEvent.input(slider, { target: { value: '400' } });
+
+        expect(onSetParameter).toHaveBeenCalledWith('Kinematic.y_pos', expect.stringMatching(/mm$/));
+      } finally {
+        rafSpy.mockRestore();
+      }
+    });
+
+    it('literal_bound prismatic onScrubLocal receives SI value (~0.4 m) not display value', () => {
+      const rafSpy = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((cb) => {
+        cb(performance.now());
+        return 1;
+      });
+      try {
+        const onScrubLocal = vi.fn();
+        const desc = makeDescriptor({
+          cell_id: 'Kinematic.m',
+          joints: [
+            makeJoint({
+              joint_index: 0,
+              kind: 'prismatic',
+              driving_param_cell_id: null,
+              current_value_si: null,
+              range_lower_si: 0,
+              range_upper_si: 0.8,
+              binding: {
+                kind: 'literal_bound',
+                synth_param_name: '__joint_x_axis_v',
+                initial_value_si: 0.1,
+                scrubbable: true,
+              },
+            }),
+          ],
+        });
+        render(() => (
+          <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onScrubLocal={onScrubLocal} />
+        ));
+        const slider = screen.getByRole('slider') as HTMLInputElement;
+        fireEvent.input(slider, { target: { value: '400' } });
+
+        expect(onScrubLocal).toHaveBeenCalled();
+        const thirdArg: number = onScrubLocal.mock.calls[0][2];
+        expect(thirdArg).toBeCloseTo(0.4, 6);
+      } finally {
+        rafSpy.mockRestore();
+      }
+    });
+  });
 });
