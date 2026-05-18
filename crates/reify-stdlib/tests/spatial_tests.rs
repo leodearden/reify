@@ -8,7 +8,9 @@
 //! `[ω_x, ω_y, ω_z, v_x, v_y, v_z]` — angular first, linear second. 6×6
 //! matrices are row-major `[f64; 36]`.
 
-use reify_stdlib::dynamics::spatial::{Frame3, SpatialTransform6, SpatialVector6};
+use reify_stdlib::dynamics::spatial::{
+    Frame3, SpatialInertia6, SpatialTransform6, SpatialVector6,
+};
 
 // ── Shared helpers (modeled on complex_tests.rs::assert_complex_eq) ──────────
 
