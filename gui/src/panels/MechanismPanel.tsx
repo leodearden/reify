@@ -71,6 +71,25 @@ function displayToSi(displayValue: number, kind: string): number {
 }
 
 // ---------------------------------------------------------------------------
+// Binding-aware helpers (shared between JointRow and MechanismSection)
+// ---------------------------------------------------------------------------
+
+/**
+ * Return the authoritative current-SI value for a joint using its `binding`
+ * field (Task 3788 η-frontend).
+ *
+ * - `param_bound` → `binding.current_value_si` (falls back to legacy field)
+ * - `literal_bound` → `binding.initial_value_si`  (the AST literal baseline)
+ * - `coupling_derived` / `fixed_no_motion` → `null`
+ */
+function jointCurrentSi(joint: { binding: import('../types').JointBinding; current_value_si: number | null }): number | null {
+  const b = joint.binding;
+  if (b.kind === 'param_bound') return b.current_value_si ?? joint.current_value_si;
+  if (b.kind === 'literal_bound') return b.initial_value_si;
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // JointRow component
 // ---------------------------------------------------------------------------
 
@@ -125,13 +144,30 @@ const JointRow: Component<JointRowProps> = (props) => {
     return false;
   };
 
+  /**
+   * Binding-aware current-SI value helper.
+   * - param_bound → binding.current_value_si ?? legacy current_value_si
+   * - literal_bound → binding.initial_value_si  (the AST literal baseline)
+   * - else → null
+   *
+   * Used for initialDisplay() and as the fallback for effectiveValueSi
+   * so that a literal-bound joint initializes from its literal baseline,
+   * not the null legacy current_value_si field.
+   */
+  const bindingCurrentSi = (): number | null => {
+    const b = joint().binding;
+    if (b.kind === 'param_bound') return b.current_value_si ?? joint().current_value_si;
+    if (b.kind === 'literal_bound') return b.initial_value_si;
+    return null;
+  };
+
   // Display-unit range
   const minDisplay = () => siToDisplay(joint().range_lower_si, kind()) ?? 0;
   const maxDisplay = () => siToDisplay(joint().range_upper_si, kind()) ?? 100;
 
-  // Initial slider value from current_value_si
+  // Initial slider value from the binding-aware current SI.
   const initialDisplay = () => {
-    const disp = currentSiToDisplay(joint().current_value_si, kind());
+    const disp = currentSiToDisplay(bindingCurrentSi(), kind());
     return disp ?? minDisplay();
   };
 
@@ -143,7 +179,7 @@ const JointRow: Component<JointRowProps> = (props) => {
   // re-runs whenever its value changes.  When the accessor is absent (tests)
   // the effect only runs once on mount and never again.
   createEffect(() => {
-    const eff = props.effectiveValueSi?.() ?? joint().current_value_si;
+    const eff = props.effectiveValueSi?.() ?? bindingCurrentSi();
     if (eff === null || eff === undefined) return;
     const disp = siToDisplay(eff, kind());
     if (disp !== null) setSliderValue(disp);
@@ -187,16 +223,30 @@ const JointRow: Component<JointRowProps> = (props) => {
     scheduleSetParameter(displayValue);
   }
 
+  // Compute the data-binding marker for testability and visual distinction.
+  const bindingMarker = (): 'literal' | 'param' | undefined => {
+    const b = joint().binding;
+    if (b.kind === 'literal_bound') return 'literal';
+    if (b.kind === 'param_bound') return 'param';
+    return undefined;
+  };
+
+  const isLiteralBound = () => joint().binding.kind === 'literal_bound';
+
   return (
     <div
       class={styles.jointRow}
       data-testid={`joint-row-${joint().joint_index}`}
       data-kind={kind()}
+      data-binding={bindingMarker()}
     >
       <div class={styles.jointLabel}>
         <span class={styles.jointKind}>{kind()}</span>
         <span class={styles.jointIndex}>#{joint().joint_index}</span>
         <span class={styles.jointDimension}>({dimension()})</span>
+        <Show when={isLiteralBound()}>
+          <span class={styles.literalBoundIcon} title="Literal-bound — scrub is session-only">~</span>
+        </Show>
       </div>
 
       <Show
@@ -211,7 +261,7 @@ const JointRow: Component<JointRowProps> = (props) => {
       >
         <input
           type="range"
-          class={styles.jointSlider}
+          class={`${styles.jointSlider}${isLiteralBound() ? ` ${styles.literalBoundSlider}` : ''}`}
           min={minDisplay()}
           max={maxDisplay()}
           step={kind() === 'prismatic' ? 1 : 0.1}
