@@ -133,3 +133,42 @@ fn std_modal_analysis_module_loads_with_no_errors() {
         errors
     );
 }
+
+// ─── step-3: DampingDescriptor marker trait declared ─────────────────────────
+
+/// `DampingDescriptor` is the marker trait the two damping-descriptor
+/// structures (`NoDamping`, `RayleighDamping`) refine. Empty trait surface,
+/// no methods — matches the marker-trait precedent in
+/// `fea_multi_case.ri:288 trait Support { }` and
+/// `trajectory.ri::trait BoundaryCondition { }`.
+///
+/// The trait must exist as an entry in `CompiledModule.trait_defs` (not
+/// `templates`, which stores `Structure` / `Occurrence` entities only) in
+/// the compiled `std/modal/analysis` module so the `: DampingDescriptor`
+/// refinement clause on `NoDamping` / `RayleighDamping` resolves at
+/// structure-def compile time, and so `Type::TraitObject("DampingDescriptor")`
+/// resolves on `ModalResult.damping` and `ModalOptions.damping` once those
+/// land.
+#[test]
+fn damping_descriptor_trait_declared() {
+    let module = load_stdlib_module();
+
+    let matches: Vec<_> = module
+        .trait_defs
+        .iter()
+        .filter(|t| t.name == "DampingDescriptor")
+        .collect();
+
+    assert_eq!(
+        matches.len(),
+        1,
+        "expected exactly one `trait DampingDescriptor` in \
+         std/modal/analysis::trait_defs; got {} matches. Module trait_defs: {:?}",
+        matches.len(),
+        module
+            .trait_defs
+            .iter()
+            .map(|t| &t.name)
+            .collect::<Vec<_>>()
+    );
+}
