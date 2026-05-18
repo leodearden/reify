@@ -1,0 +1,9 @@
+trait HasHole {
+    param hole_diameter: Scalar
+}
+
+structure Bracket : HasHole {
+    param width: Scalar = 80mm
+    param height: Scalar = 100mm
+    param hole_diameter: Scalar = 6mm
+}
