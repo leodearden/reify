@@ -213,4 +213,25 @@ impl SpatialTransform6 {
         }
         SpatialTransform6(m)
     }
+
+    /// Compose two spatial transforms: `self.compose(&other)` is the 6×6
+    /// matrix product `self · other` (apply `other` first, then `self`).
+    ///
+    /// Straightforward triple-nested-loop multiply on the dense `[f64; 36]`
+    /// storage — Featherstone §5.1 notes a dense representation is sufficient
+    /// for the small mechanism sizes targeted in v0.3, so no sparse/linalg
+    /// dependency is warranted.
+    pub fn compose(&self, other: &Self) -> Self {
+        let mut m = [0.0; 36];
+        for i in 0..6 {
+            for j in 0..6 {
+                let mut acc = 0.0;
+                for k in 0..6 {
+                    acc += self.0[i * 6 + k] * other.0[k * 6 + j];
+                }
+                m[i * 6 + j] = acc;
+            }
+        }
+        SpatialTransform6(m)
+    }
 }
