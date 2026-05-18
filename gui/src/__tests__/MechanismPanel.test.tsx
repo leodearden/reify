@@ -588,10 +588,16 @@ describe('MechanismPanel', () => {
         // After the fix, optimistic should contain 0.4 (SI), not 400 (display)
         expect(store.state.optimistic[key]).toBeCloseTo(0.4, 6);
 
-        // Simulate backend confirming the new value at 0.4 SI
+        // Simulate backend confirming the new value at 0.4 SI.
+        // In a real backend response, binding.current_value_si is also updated
+        // (the engine mirrors current_value_si to binding for param_bound joints).
         resolvedDescriptors = [{
           ...desc,
-          joints: [{ ...desc.joints[0], current_value_si: 0.4 }],
+          joints: [{
+            ...desc.joints[0],
+            current_value_si: 0.4,
+            binding: { kind: 'param_bound', param_cell_id: 'Kinematic.y_pos', current_value_si: 0.4 },
+          }],
         }];
 
         // After refresh, the equality check fires (0.4 === 0.4) and key is deleted
