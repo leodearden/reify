@@ -292,3 +292,83 @@ impl SpatialTransform6 {
         SpatialVector6::from_array(out)
     }
 }
+
+/// Spatial rigid-body inertia as a 6×6 symmetric matrix, stored row-major
+/// as `[f64; 36]`. Used as `f_i = I_i·a_i + cross_f(v_i, I_i·v_i)` in the
+/// RNEA backward pass (Featherstone (2008) §5.2).
+///
+/// `PartialEq` is bit-wise on the underlying `f64`s — numerical comparisons
+/// in tests use the entrywise tolerance helper, never derived equality.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpatialInertia6([f64; 36]);
+
+impl SpatialInertia6 {
+    /// Build the spatial inertia of a rigid body from its mass, center-of-mass
+    /// position (expressed in the body frame relative to the frame origin),
+    /// and rotational inertia tensor `Ī` about the COM in body axes.
+    ///
+    /// Featherstone (2008) *Rigid Body Dynamics Algorithms* Eq. 2.63:
+    ///
+    /// ```text
+    /// I_6 = [[ Ī + m·c̃·c̃ᵀ,  m·c̃     ],
+    ///        [ m·c̃ᵀ,         m·I_3   ]]
+    /// ```
+    ///
+    /// where `c̃` is the skew-symmetric matrix of `com` (so `c̃ᵀ = −c̃`).
+    /// The resulting matrix is symmetric (the top-left block is symmetric
+    /// because `Ī` is symmetric and `c̃·c̃ᵀ` is symmetric, and the off-diagonal
+    /// blocks are mutual transposes).
+    pub fn from_mass_com_inertia(
+        mass: f64,
+        com: [f64; 3],
+        inertia: [[f64; 3]; 3],
+    ) -> Self {
+        let c = skew(com);
+        // c̃ᵀ via in-place transpose.
+        let mut ct = [[0.0; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                ct[i][j] = c[j][i];
+            }
+        }
+        // m·c̃·c̃ᵀ.
+        let c_ct = mat3_mul(c, ct);
+
+        let mut m = [0.0; 36];
+        for i in 0..3 {
+            for j in 0..3 {
+                // Top-left: Ī + m·c̃·c̃ᵀ
+                m[i * 6 + j] = inertia[i][j] + mass * c_ct[i][j];
+                // Top-right: m·c̃
+                m[i * 6 + (j + 3)] = mass * c[i][j];
+                // Bottom-left: m·c̃ᵀ
+                m[(i + 3) * 6 + j] = mass * ct[i][j];
+                // Bottom-right: m·I_3
+                m[(i + 3) * 6 + (j + 3)] = if i == j { mass } else { 0.0 };
+            }
+        }
+        SpatialInertia6(m)
+    }
+
+    /// The raw row-major 6×6 storage.
+    pub fn as_matrix(&self) -> [f64; 36] {
+        self.0
+    }
+
+    /// Apply the inertia to a spatial vector: the row-major 6×6 · 6
+    /// matrix-vector product `result[i] = Σₖ self[i,k] · v[k]`.
+    ///
+    /// Used by the RNEA backward pass `f_i = I_i·a_i + cross_f(v_i, I_i·v_i)`.
+    pub fn apply(&self, v: &SpatialVector6) -> SpatialVector6 {
+        let a = v.as_array();
+        let mut out = [0.0; 6];
+        for i in 0..6 {
+            let mut acc = 0.0;
+            for k in 0..6 {
+                acc += self.0[i * 6 + k] * a[k];
+            }
+            out[i] = acc;
+        }
+        SpatialVector6::from_array(out)
+    }
+}
