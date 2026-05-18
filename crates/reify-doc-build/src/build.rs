@@ -456,7 +456,7 @@ fn lower_type_alias(a: &CompiledTypeAlias) -> ItemDoc {
     let type_repr = a
         .resolved_type
         .as_ref()
-        .map(|t| type_to_string(t))
+        .map(type_to_string)
         .unwrap_or_else(|| "<parameterized>".to_string());
 
     ItemDoc {
