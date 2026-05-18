@@ -50,3 +50,25 @@
 //      and is deferred to the runtime trampoline (future task ζ), mirroring
 //      `BucklingOptions.mode` allowlist-deferral precedent
 //      (solver_buckling.ri:97-107).
+
+// ── DampingDescriptor (marker trait) ─────────────────────────────────────────
+
+// `DampingDescriptor` is the marker trait for every damping-strategy variant
+// (PRD §4.2). The α phase declares two refining structures:
+//   - `NoDamping`        — undamped solve; semantically equivalent to
+//                          RayleighDamping(alpha: 0, beta: 0) but a distinct
+//                          type so the future `modal_analysis` trampoline can
+//                          discriminate the no-damping fast path at dispatch.
+//   - `RayleighDamping`  — proportional damping ζ_i = (α + β·ω_i²) / (2·ω_i),
+//                          where α (mass-proportional) and β (stiffness-
+//                          proportional) are user-supplied. Preserves mode-
+//                          shape orthogonality so transient response stays in
+//                          real arithmetic.
+//
+// Kept empty by design (no required members): each variant carries its own
+// per-strategy fields; the trait exists only to give the `damping` param on
+// `ModalResult` / `ModalOptions` a single nominal type, so the eval-time
+// dispatch matches via the SIR-α nominal type-tag. Same pattern as
+// `trait Support { }` (fea_multi_case.ri:288) and `trait BoundaryCondition
+// { }` (trajectory.ri).
+trait DampingDescriptor { }
