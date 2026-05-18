@@ -234,4 +234,44 @@ impl SpatialTransform6 {
         }
         SpatialTransform6(m)
     }
+
+    /// The inverse spatial transform, via the Featherstone closed form
+    /// (no general-purpose 6×6 inversion needed).
+    ///
+    /// For `X(r, E) = [[E, 0]; [−r̃·E, E]]` the inverse is
+    /// `X(−Eᵀr, Eᵀ) = [[Eᵀ, 0]; [Eᵀ·r̃, Eᵀ]]`. Working directly from the
+    /// stored blocks: let `E` be the top-left block and `BL = −r̃·E` the
+    /// bottom-left block. Then `r̃ = −BL·Eᵀ`, so the inverse bottom-left
+    /// block is `Eᵀ·r̃ = −Eᵀ·BL·Eᵀ`. This exploits `E` being orthogonal
+    /// (`Eᵀ = E⁻¹`) — the defining property of a rotation block.
+    pub fn inverse(&self) -> Self {
+        let mut e = [[0.0; 3]; 3];
+        let mut bl = [[0.0; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                e[i][j] = self.0[i * 6 + j];
+                bl[i][j] = self.0[(i + 3) * 6 + j];
+            }
+        }
+        // Eᵀ
+        let mut et = [[0.0; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                et[i][j] = e[j][i];
+            }
+        }
+        // Inverse bottom-left block: −Eᵀ·BL·Eᵀ.
+        let etbl_et = mat3_mul(mat3_mul(et, bl), et);
+
+        let mut m = [0.0; 36];
+        for i in 0..3 {
+            for j in 0..3 {
+                m[i * 6 + j] = et[i][j]; // top-left Eᵀ
+                // top-right 0 (left as initialized)
+                m[(i + 3) * 6 + j] = -etbl_et[i][j]; // bottom-left −Eᵀ·BL·Eᵀ
+                m[(i + 3) * 6 + (j + 3)] = et[i][j]; // bottom-right Eᵀ
+            }
+        }
+        SpatialTransform6(m)
+    }
 }
