@@ -624,3 +624,100 @@ fn modal_options_struct_has_correct_param_shape() {
         );
     }
 }
+
+// ─── step-15: ModalOptions literal-valued defaults ───────────────────────────
+
+/// `ModalOptions` carries literal-valued defaults on its four scalar knobs
+/// (PRD §4.3), limited to literal-valued per plan design-decision-5
+/// (trait-typed / Vector3-literal default code-paths are not exercised by
+/// any existing stdlib structure_def, so those three params stay defaultless
+/// and required-at-construction in this wave):
+///
+///   - `n_modes   = 10`           (mirrors `BucklingOptions.n_modes`; the
+///                                "first few modes" inspection workflow)
+///   - `sigma     = 0.0`          (smallest-|λ| / lowest-frequency cluster)
+///   - `tol       = 0.000000001`  (= 1e-9; decimal literal because Reify's
+///                                number grammar has no scientific notation —
+///                                strict-equality discipline per
+///                                solver_buckling.ri:62-64)
+///   - `max_iters = 200`          (PRD §4.3 — NOT 1000; modal converges
+///                                faster than buckling)
+///
+/// `boundary_conditions`, `damping`, and `reference_direction` are required
+/// at construction (no canonical default — see plan design-decision-5).
+///
+/// Mirrors `buckling_stdlib_compile.rs::buckling_options_param_defaults_match_spec`
+/// (208-288), including the strict-equality float discipline (IEEE-754
+/// round-to-nearest of these exact decimal literals is deterministic).
+#[test]
+fn modal_options_param_defaults_match_spec() {
+    let template = find_structure("ModalOptions");
+
+    // n_modes = 10
+    let n_modes_default = require_default(template, "n_modes");
+    match &n_modes_default.kind {
+        CompiledExprKind::Literal(Value::Int(v)) => {
+            assert_eq!(*v, 10, "n_modes default should be 10, got: {}", v)
+        }
+        other => panic!(
+            "n_modes default should be Literal(Value::Int(10)), got: {:?}",
+            other
+        ),
+    }
+
+    // sigma = 0.0 (strict equality; IEEE-754 round-to-nearest deterministic)
+    let sigma_default = require_default(template, "sigma");
+    match &sigma_default.kind {
+        CompiledExprKind::Literal(Value::Real(v)) => {
+            assert_eq!(*v, 0.0, "sigma default should be exactly 0.0, got: {}", v)
+        }
+        other => panic!(
+            "sigma default should be Literal(Value::Real(0.0)), got: {:?}",
+            other
+        ),
+    }
+
+    // tol = 0.000000001 (= 1e-9 in decimal; strict-equality discipline per
+    // solver_buckling.ri:62-64 decimal-encoding note)
+    let tol_default = require_default(template, "tol");
+    match &tol_default.kind {
+        CompiledExprKind::Literal(Value::Real(v)) => assert_eq!(
+            *v, 0.000000001,
+            "tol default should be exactly 0.000000001 (= 1e-9), got: {}",
+            v
+        ),
+        other => panic!(
+            "tol default should be Literal(Value::Real(0.000000001)), got: {:?}",
+            other
+        ),
+    }
+
+    // max_iters = 200 (NOT 1000 — PRD §4.3 specifies 200 for modal)
+    let max_iters_default = require_default(template, "max_iters");
+    match &max_iters_default.kind {
+        CompiledExprKind::Literal(Value::Int(v)) => {
+            assert_eq!(*v, 200, "max_iters default should be 200, got: {}", v)
+        }
+        other => panic!(
+            "max_iters default should be Literal(Value::Int(200)), got: {:?}",
+            other
+        ),
+    }
+
+    // boundary_conditions / damping / reference_direction are required at
+    // construction — no canonical default (plan design-decision-5).
+    for member in ["boundary_conditions", "damping", "reference_direction"] {
+        let cell = template
+            .value_cells
+            .iter()
+            .find(|vc| vc.id.member == member)
+            .unwrap_or_else(|| panic!("ModalOptions.{} missing", member));
+        assert!(
+            cell.default_expr.is_none(),
+            "ModalOptions.{} should have NO default_expr (required at \
+             construction per plan design-decision-5), but got: {:?}",
+            member,
+            cell.default_expr
+        );
+    }
+}
