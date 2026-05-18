@@ -1,5 +1,6 @@
 import { type Component, For, Show, createSignal, createEffect } from 'solid-js';
 import type { MechanismDescriptor, JointDescriptor } from '../types';
+import { jointCurrentSi } from '../stores/mechanismStore';
 import styles from './MechanismPanel.module.css';
 
 // ---------------------------------------------------------------------------
@@ -71,25 +72,6 @@ function displayToSi(displayValue: number, kind: string): number {
 }
 
 // ---------------------------------------------------------------------------
-// Binding-aware helpers (shared between JointRow and MechanismSection)
-// ---------------------------------------------------------------------------
-
-/**
- * Return the authoritative current-SI value for a joint using its `binding`
- * field (Task 3788 η-frontend).
- *
- * - `param_bound` → `binding.current_value_si` (falls back to legacy field)
- * - `literal_bound` → `binding.initial_value_si`  (the AST literal baseline)
- * - `coupling_derived` / `fixed_no_motion` → `null`
- */
-function jointCurrentSi(joint: { binding: import('../types').JointBinding; current_value_si: number | null }): number | null {
-  const b = joint.binding;
-  if (b.kind === 'param_bound') return b.current_value_si ?? joint.current_value_si;
-  if (b.kind === 'literal_bound') return b.initial_value_si;
-  return null;
-}
-
-// ---------------------------------------------------------------------------
 // JointRow component
 // ---------------------------------------------------------------------------
 
@@ -115,11 +97,10 @@ const JointRow: Component<JointRowProps> = (props) => {
   const joint = () => props.joint;
   const kind = () => joint().kind;
   const dimension = () => joint().dimension;
-  const drivingParam = () => joint().driving_param_cell_id;
 
   /**
    * Binding-aware param-cell-id resolver.
-   * - param_bound → binding.param_cell_id (falls back to legacy driving_param_cell_id)
+   * - param_bound → binding.param_cell_id (String in Rust; non-nullable per wire contract)
    * - literal_bound → binding.synth_param_name (the engine-session virtual param)
    * - coupling_derived / fixed_no_motion → null (not scrubbable)
    *
@@ -128,7 +109,7 @@ const JointRow: Component<JointRowProps> = (props) => {
    */
   const effectiveParamCellId = (): string | null => {
     const b = joint().binding;
-    if (b.kind === 'param_bound') return b.param_cell_id ?? drivingParam();
+    if (b.kind === 'param_bound') return b.param_cell_id;
     if (b.kind === 'literal_bound') return b.synth_param_name;
     return null;
   };
@@ -136,16 +117,19 @@ const JointRow: Component<JointRowProps> = (props) => {
   // Whether this joint supports scrubbing.
   // Prismatic/revolute joints with a param binding OR a scrubbable literal binding
   // are scrubbable; coupling and fixed joints are never scrubbable.
+  // param_bound is always scrubbable: param_cell_id is non-nullable (Rust String).
   const isScrubbable = () => {
     if (kind() !== 'prismatic' && kind() !== 'revolute') return false;
     const b = joint().binding;
-    if (b.kind === 'param_bound') return b.param_cell_id !== null;
+    if (b.kind === 'param_bound') return true;
     if (b.kind === 'literal_bound') return b.scrubbable === true;
     return false;
   };
 
   /**
    * Binding-aware current-SI value helper.
+   * Delegates to the exported `jointCurrentSi` from mechanismStore (single source of truth).
+   *
    * - param_bound → binding.current_value_si ?? legacy current_value_si
    * - literal_bound → binding.initial_value_si  (the AST literal baseline)
    * - else → null
@@ -154,12 +138,7 @@ const JointRow: Component<JointRowProps> = (props) => {
    * so that a literal-bound joint initializes from its literal baseline,
    * not the null legacy current_value_si field.
    */
-  const bindingCurrentSi = (): number | null => {
-    const b = joint().binding;
-    if (b.kind === 'param_bound') return b.current_value_si ?? joint().current_value_si;
-    if (b.kind === 'literal_bound') return b.initial_value_si;
-    return null;
-  };
+  const bindingCurrentSi = (): number | null => jointCurrentSi(joint());
 
   // Display-unit range
   const minDisplay = () => siToDisplay(joint().range_lower_si, kind()) ?? 0;

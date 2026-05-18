@@ -1,8 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createRoot } from 'solid-js';
 import type { MechanismDescriptor, JointDescriptor } from '../types';
-import { createMechanismStore } from '../stores/mechanismStore';
-import * as _mechanismStoreModule from '../stores/mechanismStore';
+import { createMechanismStore, jointCurrentSi } from '../stores/mechanismStore';
 
 // ── Fixture helpers ──────────────────────────────────────────────────────────
 
@@ -319,11 +318,6 @@ describe('createMechanismStore', () => {
   });
 
   describe('jointCurrentSi() binding-aware current-SI accessor', () => {
-    // ── FAILING TEST (step-7 RED): jointCurrentSi is not yet exported ──
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const jcs = (_mechanismStoreModule as any).jointCurrentSi as
-      ((joint: JointDescriptor) => number | null) | undefined;
-
     it('returns binding.initial_value_si for literal_bound joints', () => {
       const joint: JointDescriptor = {
         joint_index: 0,
@@ -336,9 +330,7 @@ describe('createMechanismStore', () => {
         current_value_si: null,
         binding: { kind: 'literal_bound', synth_param_name: '__joint_v', initial_value_si: 0.25, scrubbable: true },
       };
-      // Fails until step-8 exports jointCurrentSi from mechanismStore
-      expect(jcs).toBeDefined();
-      expect(jcs!(joint)).toBe(0.25);
+      expect(jointCurrentSi(joint)).toBe(0.25);
     });
 
     it('returns binding.current_value_si for param_bound joints', () => {
@@ -353,9 +345,8 @@ describe('createMechanismStore', () => {
         current_value_si: 0.1,
         binding: { kind: 'param_bound', param_cell_id: 'K.y_pos', current_value_si: 0.3 },
       };
-      expect(jcs).toBeDefined();
       // binding.current_value_si (0.3) takes precedence over legacy current_value_si (0.1)
-      expect(jcs!(joint)).toBe(0.3);
+      expect(jointCurrentSi(joint)).toBe(0.3);
     });
 
     it('falls back to legacy current_value_si when binding.current_value_si is null', () => {
@@ -370,9 +361,8 @@ describe('createMechanismStore', () => {
         current_value_si: 0.1,
         binding: { kind: 'param_bound', param_cell_id: 'K.y_pos', current_value_si: null },
       };
-      expect(jcs).toBeDefined();
       // binding.current_value_si is null → falls back to legacy current_value_si
-      expect(jcs!(joint)).toBe(0.1);
+      expect(jointCurrentSi(joint)).toBe(0.1);
     });
 
     it('returns null for coupling_derived joints', () => {
@@ -387,8 +377,7 @@ describe('createMechanismStore', () => {
         current_value_si: null,
         binding: { kind: 'coupling_derived', source_joint: '' },
       };
-      expect(jcs).toBeDefined();
-      expect(jcs!(joint)).toBeNull();
+      expect(jointCurrentSi(joint)).toBeNull();
     });
 
     it('returns null for fixed_no_motion joints', () => {
@@ -403,8 +392,7 @@ describe('createMechanismStore', () => {
         current_value_si: null,
         binding: { kind: 'fixed_no_motion' },
       };
-      expect(jcs).toBeDefined();
-      expect(jcs!(joint)).toBeNull();
+      expect(jointCurrentSi(joint)).toBeNull();
     });
   });
 });

@@ -111,16 +111,6 @@
   gap: 6px;
 }
 
-.literalBoundBadge {
-  font-size: 10px;
-  padding: 2px 6px;
-  border-radius: 3px;
-  background: var(--badge-neutral-bg, #3a3a3a);
-  color: var(--badge-neutral-text, #aaa);
-  border: 1px solid var(--border-subtle, #444);
-  cursor: default;
-}
-
 .noSliderBadge {
   font-size: 10px;
   padding: 2px 6px;
