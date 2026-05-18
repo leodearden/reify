@@ -19,10 +19,14 @@
 //! chain_transform to JointValue; multi-DOF chain participation; analytic J
 //! planar+spherical).
 //!
-//! **Removal contract**: when KCC-γ (#3765) wires real consumers for these
-//! functions, each function gains a non-test caller, leaves `allowed[]`, and
-//! assertion (b) below will fail with "found 0 entries".  KCC-γ MUST delete
-//! this file entirely as part of the consumer-wiring commit.
+//! **Removal contract**: KCC-γ (#3765) MUST delete this file as part of the
+//! consumer-wiring commit.  **Important scope caveat**: this test runs the
+//! audit with `--scope crates/reify-stdlib/src` (see note below), so a
+//! consumer wired in another crate (e.g. `reify-solver-elastic`, `reify-eval`)
+//! will NOT be visible to the audit and will NOT decrement the caller count
+//! here.  Assertion (b) will therefore NOT auto-trip when the consumer lands.
+//! KCC-γ is responsible for manually deleting this file; it cannot rely on
+//! CI-breakage as the retirement signal.
 //!
 //! Graceful skip: if `python3`, `git`, or the audit script are absent
 //! from PATH/disk the test prints a note to stderr and returns without
@@ -83,11 +87,17 @@ const PINS: &[(&str, &str, &str)] = &[
 
 #[test]
 fn new_orphans_2026_05_18_are_g_allow_marked() {
-    // Use the crate-level scope rather than "crates/reify-*/src": common names
-    // like from_slice/from_str/dof_count collide with same-named pub fns in
-    // other crates (e.g. PreludeContext::from_slice in reify-compiler), giving
-    // false-positive callers>0 that hide those fns from orphans[]/allowed[].
-    // file_suffix .ends_with() matching works equally well with the narrower scope.
+    // Scope is intentionally narrowed to crates/reify-stdlib/src rather than
+    // the wide "crates/reify-*/src" glob.  Reason: common names such as
+    // from_slice/from_str/dof_count collide with same-named pub fns in other
+    // crates (e.g. PreludeContext::from_slice in reify-compiler), producing
+    // false-positive callers>0 that push these fns out of orphans[]/allowed[].
+    // file_suffix .ends_with() matching still works correctly at this scope.
+    //
+    // TRADE-OFF: the narrow scope means a consumer wired in another crate will
+    // NOT increment caller counts here, so assertion (b) will NOT auto-fail
+    // when KCC-γ lands consumers.  Deletion of this file is therefore a MANUAL
+    // obligation for KCC-γ (#3765) — see "Removal contract" in the module doc.
     let Some(result) = run_orphan_audit("crates/reify-stdlib/src") else {
         return;
     };
