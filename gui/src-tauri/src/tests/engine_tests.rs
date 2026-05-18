@@ -7828,6 +7828,97 @@ fn engine_session_auto_resolve_emitter_emits_nan_sentinel_for_non_scalar_resolve
     }
 }
 
+/// Option(Some(Scalar)) resolved auto-param flows through `format_display_triple`
+/// recursion into a real payload entry — NOT a `<non-scalar>` sentinel and NOT a
+/// silent drop.
+///
+/// Pins the recursion arm of `format_display_triple` (value.rs) at the emit
+/// boundary: when the solver returns `Value::Option(Some(Scalar))`, the
+/// `build_parameters_payload` call must recurse through the inner Scalar and
+/// produce a real `AutoResolveParameterValue { value ≈ 5.0, unit: "mm",
+/// display: "5mm" }` rather than treating the outer Option as a non-scalar.
+#[test]
+fn engine_session_auto_resolve_emitter_emits_real_entry_for_option_some_scalar_resolved_param() {
+    use std::sync::Arc;
+    use reify_types::Value;
+
+    let thickness_id = ValueCellId::new("S", "thickness");
+    let mut solved = std::collections::HashMap::new();
+    // Inject an Option(Some(Scalar)) value — must recurse to a real entry.
+    solved.insert(
+        thickness_id.clone(),
+        Value::Option(Some(Box::new(mm(5.0)))),
+    );
+    let solver = MockConstraintSolver::new_solved(solved);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "thickness", Type::length())
+        .constraint(
+            "S",
+            0,
+            None,
+            gt(value_ref("S", "thickness"), literal(mm(2.0))),
+        )
+        .build();
+
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None)
+        .with_solver_for_test(Box::new(solver));
+
+    let recorder = RecordingEmitter::new();
+    let events = Arc::clone(&recorder.events);
+    session.set_auto_resolve_emitter(Arc::new(recorder));
+
+    session.check_and_emit_for_test(&compiled);
+
+    let events = events.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        3,
+        "expected [Start, Iteration, Complete] for Option(Some(Scalar)) param, got {} events",
+        events.len()
+    );
+    assert!(matches!(events[0], EmitEvent::Start), "event[0] must be Start");
+    assert!(matches!(events[2], EmitEvent::Complete), "event[2] must be Complete");
+
+    if let EmitEvent::Iteration(ref iter) = events[1] {
+        let param = iter
+            .parameters
+            .get("S.thickness")
+            .expect("S.thickness must be in parameters — Option(Some(Scalar)) must recurse to a real entry");
+        assert!(
+            !param.value.is_nan(),
+            "Option(Some(Scalar)) must produce a real value (not NaN), got {}",
+            param.value
+        );
+        assert!(
+            (param.value - 5.0).abs() < 1e-10,
+            "Option(Some(Scalar)) must recurse: display value must be ≈5.0 (mm), got {}",
+            param.value
+        );
+        assert_eq!(
+            param.unit, "mm",
+            "Option(Some(Scalar)) recursion must surface the engineering-unit symbol, got '{}'",
+            param.unit
+        );
+        assert_eq!(
+            param.display, "5mm",
+            "Option(Some(Scalar)) recursion must yield whole-number formatted display, got '{}'",
+            param.display
+        );
+        assert_ne!(
+            param.display, "<non-scalar>",
+            "Option(Some(Scalar)) must NOT produce the <non-scalar> sentinel"
+        );
+    } else {
+        panic!("events[1] must be Iteration");
+    }
+}
+
 /// Integration test (suggestion 4): auto-resolve emitter fires through the full
 /// `load_from_source` → `commit_state` → `emit_auto_resolve_if_any(last_check().unwrap())`
 /// path.

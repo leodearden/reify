@@ -8417,4 +8417,17 @@ mod tests {
             "Int must return None — not a physical scalar"
         );
     }
+
+    /// Value::Option(None) → None: pins the `_ => None` fallthrough arm for the
+    /// empty-Option case. Distinct from non-Scalar primitives like Bool/Int —
+    /// Option(None) is an Option wrapper carrying nothing, not a different value
+    /// family. If a future contributor changes the `_ => None` arm to something
+    /// more permissive, this test will catch it.
+    #[test]
+    fn format_display_triple_option_none_returns_none() {
+        assert!(
+            Value::Option(None).format_display_triple().is_none(),
+            "Option(None) must return None — falls through the `_ => None` arm"
+        );
+    }
 }
