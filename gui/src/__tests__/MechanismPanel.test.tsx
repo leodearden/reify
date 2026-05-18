@@ -250,8 +250,8 @@ describe('MechanismPanel', () => {
     });
   });
 
-  describe('(f) joint without driving_param_cell_id', () => {
-    it('renders read-only "literal-bound" badge instead of slider', () => {
+  describe('(f) literal-bound joints render functional sliders; coupling/fixed do not', () => {
+    it('literal_bound prismatic joint renders exactly one functional slider', () => {
       const desc = makeDescriptor({
         cell_id: 'Kinematic.m',
         joints: [
@@ -259,17 +259,95 @@ describe('MechanismPanel', () => {
             joint_index: 0,
             kind: 'prismatic',
             driving_param_cell_id: null,
+            current_value_si: null,
+            binding: {
+              kind: 'literal_bound',
+              synth_param_name: '__joint_x_axis_v',
+              initial_value_si: 0.1,
+              scrubbable: true,
+            },
           }),
         ],
       });
       render(() => (
         <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onScrubLocal={vi.fn()} />
       ));
-      // Should NOT have a slider input
-      const sliders = screen.queryAllByRole('slider');
-      expect(sliders).toHaveLength(0);
-      // Should show "literal-bound" badge
-      expect(screen.getByText(/literal-bound/i)).toBeTruthy();
+      const sliders = screen.getAllByRole('slider');
+      expect(sliders).toHaveLength(1);
+    });
+
+    it('literal_bound revolute joint renders exactly one functional slider', () => {
+      const desc = makeDescriptor({
+        cell_id: 'Kinematic.m',
+        joints: [
+          makeJoint({
+            joint_index: 0,
+            kind: 'revolute',
+            dimension: 'angle',
+            range_lower_si: 0,
+            range_upper_si: Math.PI,
+            driving_param_cell_id: null,
+            current_value_si: null,
+            binding: {
+              kind: 'literal_bound',
+              synth_param_name: '__joint_theta_v',
+              initial_value_si: 0.5,
+              scrubbable: true,
+            },
+          }),
+        ],
+      });
+      render(() => (
+        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onScrubLocal={vi.fn()} />
+      ));
+      const sliders = screen.getAllByRole('slider');
+      expect(sliders).toHaveLength(1);
+    });
+
+    it('coupling_derived joint still renders no slider (regression guard)', () => {
+      const desc = makeDescriptor({
+        cell_id: 'Kinematic.m',
+        joints: [
+          makeJoint({
+            joint_index: 0,
+            kind: 'coupling',
+            dimension: 'dimensionless',
+            axis: null,
+            range_lower_si: null,
+            range_upper_si: null,
+            driving_param_cell_id: null,
+            current_value_si: null,
+            binding: { kind: 'coupling_derived', source_joint: '' },
+          }),
+        ],
+      });
+      render(() => (
+        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onScrubLocal={vi.fn()} />
+      ));
+      expect(screen.queryAllByRole('slider')).toHaveLength(0);
+    });
+
+    it('fixed_no_motion joint still renders no slider (regression guard)', () => {
+      const desc = makeDescriptor({
+        cell_id: 'Kinematic.m',
+        joints: [
+          makeJoint({
+            joint_index: 0,
+            kind: 'fixed',
+            dimension: 'dimensionless',
+            axis: null,
+            range_lower_si: null,
+            range_upper_si: null,
+            driving_param_cell_id: null,
+            current_value_si: null,
+            binding: { kind: 'fixed_no_motion' },
+          }),
+        ],
+      });
+      render(() => (
+        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onScrubLocal={vi.fn()} />
+      ));
+      expect(screen.queryAllByRole('slider')).toHaveLength(0);
     });
   });
 
