@@ -9,7 +9,7 @@
 //! matrices are row-major `[f64; 36]`.
 
 use reify_stdlib::dynamics::spatial::{
-    Frame3, SpatialInertia6, SpatialTransform6, SpatialVector6,
+    cross_m, Frame3, SpatialInertia6, SpatialTransform6, SpatialVector6,
 };
 
 // ── Shared helpers (modeled on complex_tests.rs::assert_complex_eq) ──────────
@@ -455,6 +455,63 @@ mod spatial_inertia6 {
         let w = SpatialVector6::from_array([0.0, 0.0, 1.0, 0.0, 0.0, 0.0]);
         let expected_w = matvec6(&i6.as_matrix(), &w.as_array());
         assert_vec6_eq(&i6.apply(&w), &expected_w, TOL_TIGHT);
+    }
+}
+
+mod cross_m_module {
+    use super::*;
+
+    /// Featherstone (2008) Eq. 2.31, motion-on-motion cross product:
+    ///   cross_m(v, w) = [ω_v × ω_w, ω_v × v_w + v_v × ω_w].
+
+    #[test]
+    fn zero_cross_zero_is_zero() {
+        let z = SpatialVector6::zero();
+        assert_vec6_eq(&cross_m(&z, &z), &[0.0; 6], TOL_TIGHT);
+    }
+
+    #[test]
+    fn angular_cross_angular_is_omega_cross_omega() {
+        // ω_v = e_x, ω_w = e_y, v_v = v_w = 0 ⇒ [e_x × e_y, 0] = [e_z, 0].
+        let v = SpatialVector6::from_angular_linear([1.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
+        let w = SpatialVector6::from_angular_linear([0.0, 1.0, 0.0], [0.0, 0.0, 0.0]);
+        assert_vec6_eq(
+            &cross_m(&v, &w),
+            &[0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+            TOL_TIGHT,
+        );
+    }
+
+    #[test]
+    fn angular_cross_linear_is_in_linear_slot() {
+        // ω_v = e_x, v_w = e_y, rest zero ⇒ [0, ω_v × v_w] = [0, e_x × e_y] = [0, e_z].
+        let v = SpatialVector6::from_angular_linear([1.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
+        let w = SpatialVector6::from_angular_linear([0.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        assert_vec6_eq(
+            &cross_m(&v, &w),
+            &[0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+            TOL_TIGHT,
+        );
+    }
+
+    #[test]
+    fn linear_cross_angular_is_in_linear_slot() {
+        // v_v = e_x, ω_w = e_y, rest zero ⇒ [0, v_v × ω_w] = [0, e_x × e_y] = [0, e_z].
+        let v = SpatialVector6::from_angular_linear([0.0, 0.0, 0.0], [1.0, 0.0, 0.0]);
+        let w = SpatialVector6::from_angular_linear([0.0, 1.0, 0.0], [0.0, 0.0, 0.0]);
+        assert_vec6_eq(
+            &cross_m(&v, &w),
+            &[0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+            TOL_TIGHT,
+        );
+    }
+
+    #[test]
+    fn linear_cross_linear_vanishes() {
+        // v_v = e_x, v_w = e_y, ω_v = ω_w = 0 ⇒ both terms vanish per Eq. 2.31.
+        let v = SpatialVector6::from_angular_linear([0.0, 0.0, 0.0], [1.0, 0.0, 0.0]);
+        let w = SpatialVector6::from_angular_linear([0.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        assert_vec6_eq(&cross_m(&v, &w), &[0.0; 6], TOL_TIGHT);
     }
 }
 
