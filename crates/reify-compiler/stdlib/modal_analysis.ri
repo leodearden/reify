@@ -304,17 +304,36 @@ structure def ModalResult {
 //                          (solver_buckling.ri:97-107). See plan
 //                          design-decision-4.
 //
-// NOTE: defaults on the four scalar knobs land in step-16 and the three
-// positivity constraints in step-18 — declared defaultless/constraintless
-// here so the corresponding RED test steps (15, 17) fail before each impl.
+// Defaults (PRD §4.3) — literal-valued only, per plan design-decision-5:
+//   (a) `tol = 0.000000001` is the decimal spelling of 1e-9. Reify's
+//       number-literal grammar has no scientific notation, so the value is
+//       written out long-hand (same convention as solver_buckling.ri:60-64
+//       where `tol = 0.00000001` spells 1e-8). Strict-equality safe: the
+//       IEEE-754 round-to-nearest of this exact decimal literal is
+//       deterministic.
+//   (b) `boundary_conditions`, `damping`, `reference_direction` are LEFT
+//       DEFAULTLESS — they are required at construction. This matches the
+//       PRD §1 example usage, where every caller passes `boundary_conditions:`
+//       and `damping:` explicitly and supplies an excitation
+//       `reference_direction:` (there is no canonical default direction).
+//   (c) A trait-typed default `damping = NoDamping()` is intentionally
+//       DEFERRED to a follow-up: the trait-typed-default and Vector3-literal-
+//       default code-paths are not exercised by any existing stdlib
+//       structure_def, so adding them here would turn a 1-line .ri change
+//       into uncharted compiler territory (plan design-decision-5). Callers
+//       in PRD §1 already pass `damping:` explicitly, so there is no
+//       API-surface regression.
+//
+// NOTE: the three positivity constraints land in step-18 — declared
+// constraintless here so the step-17 RED test fails before that impl.
 //
 // PRD reference: docs/prds/v0_3/modal-analysis.md §4.3.
 structure def ModalOptions {
-    param n_modes : Int
+    param n_modes : Int = 10
     param boundary_conditions : List<Support>
     param damping : DampingDescriptor
-    param sigma : Real
-    param tol : Real
-    param max_iters : Int
+    param sigma : Real = 0.0
+    param tol : Real = 0.000000001            // = 1e-9 (no scientific notation in Reify grammar)
+    param max_iters : Int = 200               // PRD §4.3 — NOT 1000 (modal converges faster than buckling)
     param reference_direction : Vector3<Dimensionless>
 }
