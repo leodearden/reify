@@ -274,4 +274,21 @@ impl SpatialTransform6 {
         }
         SpatialTransform6(m)
     }
+
+    /// Apply the transform to a spatial vector: the row-major 6×6 · 6
+    /// matrix-vector product `result[i] = Σₖ self[i,k] · v[k]`.
+    ///
+    /// Used by the RNEA forward pass `v_i = X_{p→i}·v_p + S_i·q̇_i`.
+    pub fn apply(&self, v: &SpatialVector6) -> SpatialVector6 {
+        let a = v.as_array();
+        let mut out = [0.0; 6];
+        for i in 0..6 {
+            let mut acc = 0.0;
+            for k in 0..6 {
+                acc += self.0[i * 6 + k] * a[k];
+            }
+            out[i] = acc;
+        }
+        SpatialVector6::from_array(out)
+    }
 }
