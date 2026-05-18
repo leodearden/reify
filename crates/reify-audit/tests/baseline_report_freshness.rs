@@ -120,9 +120,21 @@ fn baseline_report_counts_are_fresh() {
 
 /// Parse a count from a doc line of the form `- **<label>:** <N>`.
 /// Returns `None` if no such line exists; panics if the number cannot be parsed.
+///
+/// Only searches in the machine-generated section that begins at the
+/// `# Orphan-producer audit` heading, so preamble prose (which may contain
+/// bullet points with the same label keywords) can never shadow the real
+/// count line.
 fn parse_count(doc: &str, label: &str) -> Option<i64> {
+    // Restrict to the generated body to guard against future preamble edits
+    // that might accidentally match the needle (e.g. a bullet like
+    // `- **Orphan candidates:** are ...` in an explanatory paragraph).
+    let search_region = doc
+        .find("# Orphan-producer audit")
+        .map(|pos| &doc[pos..])
+        .unwrap_or(doc);
     let needle = format!("- **{label}:**");
-    let line = doc.lines().find(|l| l.contains(&needle))?;
+    let line = search_region.lines().find(|l| l.contains(&needle))?;
     // Everything after the colon+space is the number (possibly followed by
     // two spaces and a parenthetical comment like "  (zero non-test callers …)").
     let after_colon = line

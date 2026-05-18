@@ -56,17 +56,27 @@ is a candidate that warrants investigation:
 
 ## How to regenerate
 
-```
-./scripts/audit-orphan-producers.sh --format markdown > docs/architecture-audit/g-tool-baseline-report.md
+> **Important:** this report has a hand-written preamble (lines 1–74,
+> through the `---` separator before `# Orphan-producer audit`).  A plain
+> redirect would overwrite it.  Use the splice procedure below.
+
+```bash
+# Step 1 — capture fresh script output to a temp file
+./scripts/audit-orphan-producers.sh --format markdown > /tmp/orphan-body.md
+
+# Step 2 — preserve the preamble, bump **Captured:** date, replace body
+TODAY=$(date +%Y-%m-%d)
+head -n 74 docs/architecture-audit/g-tool-baseline-report.md \
+    | sed "3s/\*\*Captured:\*\* .*/**Captured:** ${TODAY}/" \
+    > /tmp/orphan-preamble.md
+cat /tmp/orphan-preamble.md /tmp/orphan-body.md \
+    > docs/architecture-audit/g-tool-baseline-report.md
+
+# Step 3 — verify (on-demand freshness check)
+cargo test -p reify-audit --test baseline_report_freshness -- --ignored
 ```
 
-Or invoke via the cargo alias:
-
-```
-cargo audit-orphans
-```
-
-The tool runs in <1s against the full corpus. Diff the regenerated
+The tool runs in <1s against the full corpus.  Diff the regenerated
 report against this baseline to spot orphan accumulation or
 remediation.
 
