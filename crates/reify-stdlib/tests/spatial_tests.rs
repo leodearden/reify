@@ -62,6 +62,34 @@ fn assert_mat6_eq(actual: &[f64; 36], expected: &[f64; 36], tol: f64) {
     }
 }
 
+/// Entrywise approximate-equality assertion for a `SpatialVector6`.
+fn assert_vec6_eq(actual: &SpatialVector6, expected: &[f64; 6], tol: f64) {
+    let a = actual.as_array();
+    for i in 0..6 {
+        assert!(
+            (a[i] - expected[i]).abs() < tol,
+            "component [{i}]: expected {}, got {} (|Δ|={:e}, tol={:e})",
+            expected[i],
+            a[i],
+            (a[i] - expected[i]).abs(),
+            tol
+        );
+    }
+}
+
+/// Reference row-major 6×6 · 6 matrix-vector multiply (test oracle).
+fn matvec6(m: &[f64; 36], v: &[f64; 6]) -> [f64; 6] {
+    let mut out = [0.0; 6];
+    for i in 0..6 {
+        let mut acc = 0.0;
+        for k in 0..6 {
+            acc += m[i * 6 + k] * v[k];
+        }
+        out[i] = acc;
+    }
+    out
+}
+
 mod spatial_vector6 {
     use super::*;
 
@@ -336,5 +364,41 @@ mod capstone {
                 }
             }
         }
+    }
+}
+
+mod transform_apply {
+    use super::*;
+
+    #[test]
+    fn identity_apply_is_identity() {
+        let v = SpatialVector6::from_array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let x = SpatialTransform6::from_frame3(&Frame3::identity());
+        assert_eq!(x.apply(&v).as_array(), v.as_array());
+    }
+
+    #[test]
+    fn pure_translation_apply_picks_up_cross_term() {
+        // X(F([1,0,0])) · [ω=(0,0,1); v=(0,0,0)] = [E·ω; -r̃E·ω + E·v]
+        // = [(0,0,1); -[1,0,0]×[0,0,1]] = [(0,0,1); (0,1,0)].
+        let x = SpatialTransform6::from_frame3(&Frame3::new(
+            [1.0, 0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+        ));
+        let v = SpatialVector6::from_array([0.0, 0.0, 1.0, 0.0, 0.0, 0.0]);
+        assert_vec6_eq(&x.apply(&v), &[0.0, 0.0, 1.0, 0.0, 1.0, 0.0], TOL_TIGHT);
+    }
+
+    #[test]
+    fn apply_matches_dense_matvec_for_nontrivial_frame() {
+        // 30° about x + translation [1,2,3]; apply must equal the explicit
+        // dense 6×6·6 multiply over as_matrix().
+        let half = std::f64::consts::PI / 12.0;
+        let (c, s) = (half.cos(), half.sin());
+        let f = Frame3::new([c, s, 0.0, 0.0], [1.0, 2.0, 3.0]);
+        let x = SpatialTransform6::from_frame3(&f);
+        let v = SpatialVector6::from_array([0.5, -1.5, 2.0, -3.0, 4.0, -0.25]);
+        let expected = matvec6(&x.as_matrix(), &v.as_array());
+        assert_vec6_eq(&x.apply(&v), &expected, TOL_NUMERIC);
     }
 }
