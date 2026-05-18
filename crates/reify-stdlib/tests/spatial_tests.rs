@@ -9,7 +9,7 @@
 //! matrices are row-major `[f64; 36]`.
 
 use reify_stdlib::dynamics::spatial::{
-    cross_m, Frame3, SpatialInertia6, SpatialTransform6, SpatialVector6,
+    cross_f, cross_m, Frame3, SpatialInertia6, SpatialTransform6, SpatialVector6,
 };
 
 // ── Shared helpers (modeled on complex_tests.rs::assert_complex_eq) ──────────
@@ -512,6 +512,83 @@ mod cross_m_module {
         let v = SpatialVector6::from_angular_linear([0.0, 0.0, 0.0], [1.0, 0.0, 0.0]);
         let w = SpatialVector6::from_angular_linear([0.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
         assert_vec6_eq(&cross_m(&v, &w), &[0.0; 6], TOL_TIGHT);
+    }
+}
+
+mod cross_f_module {
+    use super::*;
+
+    /// Featherstone (2008) Eq. 2.32, motion-on-force cross product:
+    ///   cross_f(v, f) = [ω_v × τ_f + v_v × F_f,  ω_v × F_f]
+    /// where the spatial-force layout reuses SpatialVector6 storage but
+    /// interprets `[0..3]` as torque τ and `[3..6]` as force F.
+
+    #[test]
+    fn zero_cross_zero_is_zero() {
+        let z = SpatialVector6::zero();
+        assert_vec6_eq(&cross_f(&z, &z), &[0.0; 6], TOL_TIGHT);
+    }
+
+    #[test]
+    fn angular_on_torque_is_in_torque_slot() {
+        // ω_v = e_x, τ_f = e_y, rest zero ⇒ [e_x × e_y, 0] = [e_z, 0].
+        let v = SpatialVector6::from_angular_linear([1.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
+        let f = SpatialVector6::from_angular_linear([0.0, 1.0, 0.0], [0.0, 0.0, 0.0]);
+        assert_vec6_eq(
+            &cross_f(&v, &f),
+            &[0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+            TOL_TIGHT,
+        );
+    }
+
+    #[test]
+    fn linear_on_force_is_in_torque_slot() {
+        // v_v = e_x, F_f = e_y, rest zero ⇒ [v_v × F_f, 0] = [e_z, 0].
+        let v = SpatialVector6::from_angular_linear([0.0, 0.0, 0.0], [1.0, 0.0, 0.0]);
+        let f = SpatialVector6::from_angular_linear([0.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        assert_vec6_eq(
+            &cross_f(&v, &f),
+            &[0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+            TOL_TIGHT,
+        );
+    }
+
+    #[test]
+    fn angular_on_force_is_in_force_slot() {
+        // ω_v = e_x, F_f = e_y, rest zero ⇒ [0, ω_v × F_f] = [0, e_z].
+        let v = SpatialVector6::from_angular_linear([1.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
+        let f = SpatialVector6::from_angular_linear([0.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        assert_vec6_eq(
+            &cross_f(&v, &f),
+            &[0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+            TOL_TIGHT,
+        );
+    }
+
+    #[test]
+    fn motion_force_duality_holds() {
+        // Featherstone (2008) §2.11: for any motion v, motion w, force f,
+        //   <cross_m(v, w), f> = −<w, cross_f(v, f)>
+        // where <·, ·> is the standard 6-vector dot product (ω·τ + v·F).
+        let v = SpatialVector6::from_angular_linear([1.0, -0.5, 2.0], [0.25, 1.5, -1.0]);
+        let w = SpatialVector6::from_angular_linear([-0.75, 2.0, 0.5], [1.0, -1.25, 0.5]);
+        let f = SpatialVector6::from_angular_linear([0.5, 1.0, -2.0], [-1.5, 0.25, 1.75]);
+
+        let dot = |a: &SpatialVector6, b: &SpatialVector6| -> f64 {
+            let a = a.as_array();
+            let b = b.as_array();
+            (0..6).map(|i| a[i] * b[i]).sum()
+        };
+
+        let lhs = dot(&cross_m(&v, &w), &f);
+        let rhs = -dot(&w, &cross_f(&v, &f));
+        assert!(
+            (lhs - rhs).abs() < TOL_NUMERIC,
+            "duality failure: <cross_m(v,w), f> = {lhs}, -<w, cross_f(v,f)> = {rhs} \
+             (|Δ|={:e}, tol={:e})",
+            (lhs - rhs).abs(),
+            TOL_NUMERIC
+        );
     }
 }
 
