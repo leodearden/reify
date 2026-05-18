@@ -1,23 +1,39 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@solidjs/testing-library';
-import type { MechanismDescriptor, JointDescriptor } from '../types';
+import type { MechanismDescriptor, JointDescriptor, JointBinding } from '../types';
 import { MechanismPanel } from '../panels/MechanismPanel';
 import { createMechanismStore } from '../stores/mechanismStore';
 
 // ── Fixture helpers ──────────────────────────────────────────────────────────
 
 function makeJoint(overrides: Partial<JointDescriptor> & { joint_index: number }): JointDescriptor {
+  const kind = overrides.kind ?? 'prismatic';
+  const driving_param_cell_id = overrides.driving_param_cell_id !== undefined
+    ? overrides.driving_param_cell_id
+    : 'Kinematic.y_pos';
+  const current_value_si = overrides.current_value_si !== undefined ? overrides.current_value_si : 0.1;
+
+  // Derive binding from kind/driving_param_cell_id if not explicitly provided.
+  const binding: JointBinding = overrides.binding ?? (
+    driving_param_cell_id !== null
+      ? { kind: 'param_bound', param_cell_id: driving_param_cell_id, current_value_si }
+      : kind === 'coupling'
+        ? { kind: 'coupling_derived', source_joint: '' }
+        : kind === 'fixed'
+          ? { kind: 'fixed_no_motion' }
+          : { kind: 'literal_bound', synth_param_name: `__joint_${overrides.joint_index}_v`, initial_value_si: current_value_si, scrubbable: true }
+  );
+
   return {
     joint_index: overrides.joint_index,
-    kind: overrides.kind ?? 'prismatic',
+    kind,
     dimension: overrides.dimension ?? 'length',
     range_lower_si: overrides.range_lower_si ?? 0.0,
     range_upper_si: overrides.range_upper_si ?? 0.8,
     axis: overrides.axis !== undefined ? overrides.axis : [0, 1, 0],
-    driving_param_cell_id: overrides.driving_param_cell_id !== undefined
-      ? overrides.driving_param_cell_id
-      : 'Kinematic.y_pos',
-    current_value_si: overrides.current_value_si !== undefined ? overrides.current_value_si : 0.1,
+    driving_param_cell_id,
+    current_value_si,
+    binding,
   };
 }
 

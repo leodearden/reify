@@ -21,6 +21,7 @@ function makeDescriptor(overrides: Partial<MechanismDescriptor> & { cell_id: str
         axis: [0, 1, 0],
         driving_param_cell_id: 'Kinematic.y_pos',
         current_value_si: 0.1,
+        binding: { kind: 'param_bound', param_cell_id: 'Kinematic.y_pos', current_value_si: 0.1 },
       },
     ],
   };
@@ -148,6 +149,7 @@ describe('createMechanismStore', () => {
                 axis: [0, 1, 0],
                 driving_param_cell_id: 'Kinematic.y_pos',
                 current_value_si: 0.45, // matches the optimistic override
+                binding: { kind: 'param_bound', param_cell_id: 'Kinematic.y_pos', current_value_si: 0.45 },
               },
             ],
           });
@@ -182,6 +184,7 @@ describe('createMechanismStore', () => {
                 axis: [0, 1, 0],
                 driving_param_cell_id: 'Kinematic.y_pos',
                 current_value_si: 0.1, // does NOT match the optimistic override (0.45)
+                binding: { kind: 'param_bound', param_cell_id: 'Kinematic.y_pos', current_value_si: 0.1 },
               },
             ],
           });
