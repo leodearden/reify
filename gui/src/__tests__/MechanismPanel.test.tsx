@@ -603,6 +603,89 @@ describe('MechanismPanel', () => {
     });
   });
 
+  describe('(k) binding-aware initial value + visual distinction', () => {
+    it('literal_bound joint with current_value_si:null uses binding.initial_value_si for slider init', () => {
+      const desc = makeDescriptor({
+        cell_id: 'Kinematic.m',
+        joints: [
+          makeJoint({
+            joint_index: 0,
+            kind: 'prismatic',
+            driving_param_cell_id: null,
+            current_value_si: null,
+            range_lower_si: 0,
+            range_upper_si: 1.0,
+            binding: {
+              kind: 'literal_bound',
+              synth_param_name: '__joint_x_axis_v',
+              initial_value_si: 0.25,
+              scrubbable: true,
+            },
+          }),
+        ],
+      });
+      render(() => (
+        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onScrubLocal={vi.fn()} />
+      ));
+      const slider = screen.getByRole('slider') as HTMLInputElement;
+      // 0.25 m → 250 mm display
+      expect(Number(slider.value)).toBeCloseTo(250, 0);
+    });
+
+    it('literal_bound joint row carries data-binding="literal"', () => {
+      const desc = makeDescriptor({
+        cell_id: 'Kinematic.m',
+        joints: [
+          makeJoint({
+            joint_index: 0,
+            kind: 'prismatic',
+            driving_param_cell_id: null,
+            current_value_si: null,
+            binding: {
+              kind: 'literal_bound',
+              synth_param_name: '__joint_x_axis_v',
+              initial_value_si: 0.1,
+              scrubbable: true,
+            },
+          }),
+        ],
+      });
+      render(() => (
+        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onScrubLocal={vi.fn()} />
+      ));
+      const row = screen.getByTestId('joint-row-0');
+      expect(row.getAttribute('data-binding')).toBe('literal');
+      // Slider should still be present and functional
+      expect(screen.getAllByRole('slider')).toHaveLength(1);
+    });
+
+    it('param_bound joint row carries data-binding="param"', () => {
+      const desc = makeDescriptor({
+        cell_id: 'Kinematic.m',
+        joints: [
+          makeJoint({
+            joint_index: 0,
+            kind: 'prismatic',
+            driving_param_cell_id: 'Kinematic.y_pos',
+            current_value_si: 0.1,
+            binding: {
+              kind: 'param_bound',
+              param_cell_id: 'Kinematic.y_pos',
+              current_value_si: 0.1,
+            },
+          }),
+        ],
+      });
+      render(() => (
+        <MechanismPanel descriptors={[desc]} onSetParameter={vi.fn()} onScrubLocal={vi.fn()} />
+      ));
+      const row = screen.getByTestId('joint-row-0');
+      expect(row.getAttribute('data-binding')).toBe('param');
+      // Slider should be present for param_bound
+      expect(screen.getAllByRole('slider')).toHaveLength(1);
+    });
+  });
+
   describe('(j) literal-bound slider fires onSetParameter with synth param name', () => {
     it('literal_bound prismatic slider fires onSetParameter with synth_param_name and "Xmm" value', () => {
       const rafSpy = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((cb) => {
