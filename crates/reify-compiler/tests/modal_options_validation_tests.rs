@@ -531,3 +531,96 @@ fn modal_result_struct_has_correct_param_shape() {
             .collect::<Vec<_>>()
     );
 }
+
+// ─── step-13: ModalOptions param shape ───────────────────────────────────────
+
+/// `ModalOptions` is the modal-analysis solver-input knob bundle (PRD §4.3).
+/// It must declare exactly the seven PRD §4.3 params with the canonical
+/// types, in declaration order:
+///
+///   - `n_modes             : Int`                       (# modes to extract)
+///   - `boundary_conditions  : List<Support>`             (`Support` marker
+///                                                        trait from
+///                                                        `std.fea.multi_case`
+///                                                        → `List<TraitObject>`)
+///   - `damping             : DampingDescriptor`         (trait-typed
+///                                                        → `Type::TraitObject`)
+///   - `sigma               : Real`                       (spectral shift origin)
+///   - `tol                 : Real`                       (convergence tolerance)
+///   - `max_iters           : Int`                        (Lanczos iteration cap)
+///   - `reference_direction  : Vector3<Dimensionless>`     (unit excitation
+///                                                        direction — a unit
+///                                                        vector is
+///                                                        dimensionless, so
+///                                                        `Dimensionless` is
+///                                                        mathematically
+///                                                        accurate, NOT a
+///                                                        placeholder)
+///
+/// `reference_direction` uses `Vector3<Dimensionless>` — identical to the
+/// `Mode.shape : List<Vector3<Dimensionless>>` encoding. `Vector3<Real>` is
+/// NOT valid .ri syntax: the `Vector3<Q>` resolver requires `Q` to resolve
+/// to a `DimensionVector`, and `Real` is a primitive scalar, not a dimension
+/// name. `Vector3<Dimensionless>` resolves to
+/// `Type::vec3(Type::dimensionless_scalar())` (same representation pinned by
+/// `mode_struct_has_correct_param_shape`).
+///
+/// This test pins ONLY the param count, names, declaration order, and types.
+/// Defaults are pinned separately by step-15
+/// (`modal_options_param_defaults_match_spec`) and constraints by step-17
+/// (`modal_options_constrains_positivity_invariants`), so this test
+/// deliberately asserts neither.
+#[test]
+fn modal_options_struct_has_correct_param_shape() {
+    let template = find_structure("ModalOptions");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    // (a) tight count
+    assert_eq!(
+        params.len(),
+        7,
+        "ModalOptions should have exactly 7 param cells (n_modes, \
+         boundary_conditions, damping, sigma, tol, max_iters, \
+         reference_direction), got: {:?}",
+        names
+    );
+
+    // (b) param names + types in declaration order
+    let expected: &[(&str, Type)] = &[
+        ("n_modes", Type::Int),
+        (
+            "boundary_conditions",
+            Type::List(Box::new(Type::TraitObject("Support".to_string()))),
+        ),
+        (
+            "damping",
+            Type::TraitObject("DampingDescriptor".to_string()),
+        ),
+        ("sigma", Type::Real),
+        ("tol", Type::Real),
+        ("max_iters", Type::Int),
+        (
+            "reference_direction",
+            Type::vec3(Type::dimensionless_scalar()),
+        ),
+    ];
+
+    let expected_names: Vec<&str> = expected.iter().map(|(m, _)| *m).collect();
+    assert_eq!(
+        names, expected_names,
+        "ModalOptions params must be declared in canonical order \
+         (n_modes, boundary_conditions, damping, sigma, tol, max_iters, \
+         reference_direction); got: {:?}",
+        names
+    );
+
+    for (i, (expected_name, expected_ty)) in expected.iter().enumerate() {
+        let cell = &params[i];
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "ModalOptions.{} should be {:?}, got {:?}",
+            expected_name, expected_ty, cell.cell_type
+        );
+    }
+}
