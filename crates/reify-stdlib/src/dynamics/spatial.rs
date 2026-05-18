@@ -109,3 +109,108 @@ impl Frame3 {
         self.translation
     }
 }
+
+// ── Private 3×3 helpers ──────────────────────────────────────────────────────
+
+/// Rotation matrix `E` for a `(w, x, y, z)` unit quaternion.
+///
+/// Uses the standard active-rotation formula (consistent with the project's
+/// `orientation::quat_rotate`, which computes `q·(0,v)·q*`):
+///
+/// ```text
+/// E = [[1−2(y²+z²),  2(xy−wz),   2(xz+wy)],
+///      [2(xy+wz),    1−2(x²+z²), 2(yz−wx)],
+///      [2(xz−wy),    2(yz+wx),   1−2(x²+y²)]]
+/// ```
+///
+/// The input is assumed unit; defensive renormalization is layered in by a
+/// later RBD-γ step if the random-sample capstone exposes non-unit drift.
+fn quat_to_rotation_matrix(q: [f64; 4]) -> [[f64; 3]; 3] {
+    let [w, x, y, z] = q;
+    [
+        [
+            1.0 - 2.0 * (y * y + z * z),
+            2.0 * (x * y - w * z),
+            2.0 * (x * z + w * y),
+        ],
+        [
+            2.0 * (x * y + w * z),
+            1.0 - 2.0 * (x * x + z * z),
+            2.0 * (y * z - w * x),
+        ],
+        [
+            2.0 * (x * z - w * y),
+            2.0 * (y * z + w * x),
+            1.0 - 2.0 * (x * x + y * y),
+        ],
+    ]
+}
+
+/// Skew-symmetric (cross-product) matrix `ṽ` of a 3-vector, such that
+/// `ṽ · u == v × u`:
+///
+/// ```text
+/// skew([x, y, z]) = [[0, −z,  y],
+///                    [z,  0, −x],
+///                    [−y, x,  0]]
+/// ```
+fn skew(v: [f64; 3]) -> [[f64; 3]; 3] {
+    let [x, y, z] = v;
+    [[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]]
+}
+
+/// 3×3 · 3×3 matrix product (row-major nested arrays).
+fn mat3_mul(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    let mut m = [[0.0; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            m[i][j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
+        }
+    }
+    m
+}
+
+/// A 6×6 spatial (Plücker) transform in Featherstone block form, stored
+/// row-major as `[f64; 36]`.
+///
+/// `PartialEq` is bit-wise on the underlying `f64`s — numerical comparisons in
+/// tests use the entrywise tolerance helper, never derived equality.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpatialTransform6([f64; 36]);
+
+impl SpatialTransform6 {
+    /// The raw row-major 6×6 storage.
+    pub fn as_matrix(&self) -> [f64; 36] {
+        self.0
+    }
+
+    /// Build the spatial transform of a rigid-body pose, per Featherstone
+    /// (2008) *Rigid Body Dynamics Algorithms* Eq. 2.24:
+    ///
+    /// ```text
+    /// X(r, E) = [[E,      0 ],
+    ///            [−r̃·E,  E ]]
+    /// ```
+    ///
+    /// where `E` is the rotation matrix of `f.rotation` and `r̃` is the
+    /// skew-symmetric matrix of the translation `r = f.translation`.
+    pub fn from_frame3(f: &Frame3) -> Self {
+        let e = quat_to_rotation_matrix(f.rotation());
+        let r_tilde = skew(f.translation());
+        let rte = mat3_mul(r_tilde, e); // r̃·E
+
+        let mut m = [0.0; 36];
+        for i in 0..3 {
+            for j in 0..3 {
+                // Top-left: E
+                m[i * 6 + j] = e[i][j];
+                // Top-right: 0 (left as initialized).
+                // Bottom-left: −r̃·E
+                m[(i + 3) * 6 + j] = -rte[i][j];
+                // Bottom-right: E
+                m[(i + 3) * 6 + (j + 3)] = e[i][j];
+            }
+        }
+        SpatialTransform6(m)
+    }
+}
