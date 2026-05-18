@@ -401,3 +401,31 @@ pub fn cross_m(v: &SpatialVector6, w: &SpatialVector6) -> SpatialVector6 {
     let b = vec3_cross(lin_v, omega_w);
     SpatialVector6::from_angular_linear(ang, [a[0] + b[0], a[1] + b[1], a[2] + b[2]])
 }
+
+/// Spatial cross product on force vectors (the dual of `cross_m` on motions),
+/// Featherstone (2008) Eq. 2.32:
+///
+/// ```text
+/// cross_f(v, f) = [ω_v × τ_f + v_v × F_f,
+///                  ω_v × F_f]
+/// ```
+///
+/// where `v` is a motion vector and `f` is a force vector whose spatial layout
+/// reuses `SpatialVector6` storage but interprets `[0..3]` as torque τ and
+/// `[3..6]` as force F.
+///
+/// Satisfies the Featherstone (2008) §2.11 motion/force duality
+/// `<cross_m(v, w), f> = −<w, cross_f(v, f)>` under the standard 6-vector
+/// dot product `<(ω, v), (τ, F)> = ω·τ + v·F`. Used by the RNEA backward
+/// pass `f_i = I_i·a_i + cross_f(v_i, I_i·v_i) + transmitted`
+/// (Featherstone §5.2).
+pub fn cross_f(v: &SpatialVector6, f: &SpatialVector6) -> SpatialVector6 {
+    let omega_v = v.angular();
+    let lin_v = v.linear();
+    let tau_f = f.angular();
+    let force_f = f.linear();
+    let a = vec3_cross(omega_v, tau_f);
+    let b = vec3_cross(lin_v, force_f);
+    let lin = vec3_cross(omega_v, force_f);
+    SpatialVector6::from_angular_linear([a[0] + b[0], a[1] + b[1], a[2] + b[2]], lin)
+}
