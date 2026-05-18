@@ -4504,6 +4504,7 @@ describe('App MechanismPanel integration', () => {
             axis: [0, 1, 0],
             driving_param_cell_id: 'Kinematic.y_pos',
             current_value_si: 0.1,
+            binding: { kind: 'param_bound' as const, param_cell_id: 'Kinematic.y_pos', current_value_si: 0.1 },
           },
         ],
       },
@@ -4554,6 +4555,7 @@ describe('App MechanismPanel integration', () => {
           joint_index: 0, kind: 'prismatic', dimension: 'length',
           range_lower_si: 0, range_upper_si: 0.8, axis: [0, 1, 0],
           driving_param_cell_id: 'Kinematic.y', current_value_si: 0.1,
+          binding: { kind: 'param_bound' as const, param_cell_id: 'Kinematic.y', current_value_si: 0.1 },
         }],
       },
     ]);
@@ -4576,6 +4578,7 @@ describe('App MechanismPanel integration', () => {
           joint_index: 0, kind: 'prismatic', dimension: 'length',
           range_lower_si: 0, range_upper_si: 0.8, axis: [0, 1, 0],
           driving_param_cell_id: 'Kinematic.y', current_value_si: 0.1,
+          binding: { kind: 'param_bound' as const, param_cell_id: 'Kinematic.y', current_value_si: 0.1 },
         }],
       },
     ]);

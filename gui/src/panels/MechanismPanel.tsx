@@ -98,9 +98,16 @@ const JointRow: Component<JointRowProps> = (props) => {
   const dimension = () => joint().dimension;
   const drivingParam = () => joint().driving_param_cell_id;
 
-  // Whether this joint supports scrubbing (prismatic or revolute with a param binding)
-  const isScrubbable = () =>
-    (kind() === 'prismatic' || kind() === 'revolute') && drivingParam() !== null;
+  // Whether this joint supports scrubbing.
+  // Prismatic/revolute joints with a param binding OR a scrubbable literal binding
+  // are scrubbable; coupling and fixed joints are never scrubbable.
+  const isScrubbable = () => {
+    if (kind() !== 'prismatic' && kind() !== 'revolute') return false;
+    const b = joint().binding;
+    if (b.kind === 'param_bound') return b.param_cell_id !== null;
+    if (b.kind === 'literal_bound') return b.scrubbable === true;
+    return false;
+  };
 
   // Display-unit range
   const minDisplay = () => siToDisplay(joint().range_lower_si, kind()) ?? 0;
@@ -180,18 +187,9 @@ const JointRow: Component<JointRowProps> = (props) => {
         when={isScrubbable()}
         fallback={
           <div class={styles.jointReadOnly}>
-            <Show
-              when={kind() === 'coupling' || kind() === 'fixed'}
-              fallback={
-                <span class={styles.literalBoundBadge} title="Bound to a literal expression — edit source to scrub">
-                  literal-bound
-                </span>
-              }
-            >
-              <span class={styles.noSliderBadge}>
-                {kind() === 'coupling' ? 'coupling (derived)' : 'fixed (no motion)'}
-              </span>
-            </Show>
+            <span class={styles.noSliderBadge}>
+              {kind() === 'coupling' ? 'coupling (derived)' : 'fixed (no motion)'}
+            </span>
           </div>
         }
       >
