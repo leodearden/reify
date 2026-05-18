@@ -132,6 +132,205 @@ pub structure Widget {
 // written rather than the expected RED.  The test coverage is still valid;
 // step-4 requires no additional implementation.
 
+// ---------------------------------------------------------------------------
+// step-5: annotations and pragmas
+// ---------------------------------------------------------------------------
+//
+// Tests that:
+//  - Module-level pragmas are lowered into ModuleDoc.pragmas.
+//  - @deprecated / @test annotations on structures are preserved in
+//    ItemHeader.annotations (name + rendered args).
+//  - Block-level (#solver) pragmas on a structure body land in
+//    ItemHeader.pragmas.
+//  - Constraint labels (from constraint-def instantiation) are preserved in
+//    ConstraintDoc.label.
+//
+// Note: param-level annotations (e.g., @solver_hint) are consumed/validated
+// during compilation and are NOT persisted on ValueCellDecl.  Accordingly,
+// ParamDoc.annotations is always empty; this is a known limitation documented
+// in build.rs and is NOT asserted here.
+//
+// Implementation note: the step-2 WIP commit pre-implemented annotation/pragma
+// lowering helpers in build.rs, so these tests are GREEN immediately.
+// step-6 requires no additional implementation.
+
+/// Module-level pragmas, item-level annotations, and item-level pragmas are
+/// all lowered correctly.
+#[test]
+fn annotations_and_pragmas_lowering() {
+    // #version(0.1) is a known module-level pragma (no warnings produced).
+    // #solver(backend="ipopt") is a known block-level pragma on a structure.
+    // @deprecated("...") and @test are item-level annotations.
+    let source = r#"
+#version(0.1)
+
+@deprecated("use NewWidget instead")
+structure OldWidget {
+    #solver(backend="ipopt")
+    param size: Scalar = 10mm
+    constraint size > 0mm
+}
+
+@test structure TestWidget {
+    param size: Scalar = 5mm
+    constraint size > 0mm
+}
+"#;
+    let compiled = compile_source_with_stdlib(source);
+    let diag_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, reify_types::Severity::Error))
+        .collect();
+    assert!(
+        diag_errors.is_empty(),
+        "compilation errors in annotation test source: {:?}",
+        diag_errors
+    );
+
+    let model: DocModel = build_doc_model(&compiled, source);
+    assert_eq!(model.modules.len(), 1, "expected one module");
+    let module = &model.modules[0];
+
+    // ── Module-level pragma ───────────────────────────────────────────────────
+    // #version(0.1) should appear in ModuleDoc.pragmas.
+    let version_pragma = module.pragmas.iter().find(|p| p.name == "version");
+    assert!(
+        version_pragma.is_some(),
+        "expected 'version' pragma in module.pragmas; got: {:?}",
+        module.pragmas
+    );
+    let version = version_pragma.unwrap();
+    assert_eq!(
+        version.args.len(),
+        1,
+        "#version should have 1 arg; got: {:?}",
+        version.args
+    );
+
+    // ── @deprecated annotation on OldWidget ──────────────────────────────────
+    let old_widget = find_item(module, "OldWidget");
+    let deprecated_ann = old_widget
+        .header
+        .annotations
+        .iter()
+        .find(|a| a.name == "deprecated");
+    assert!(
+        deprecated_ann.is_some(),
+        "OldWidget should carry @deprecated annotation; got annotations: {:?}",
+        old_widget.header.annotations
+    );
+    let dep = deprecated_ann.unwrap();
+    assert_eq!(
+        dep.args.len(),
+        1,
+        "@deprecated should have 1 arg string; got: {:?}",
+        dep.args
+    );
+    assert!(
+        dep.args[0].contains("NewWidget"),
+        "@deprecated arg must mention 'NewWidget'; got: {:?}",
+        dep.args[0]
+    );
+
+    // ── Block-level (#solver) pragma on OldWidget ─────────────────────────────
+    let solver_pragma = old_widget
+        .header
+        .pragmas
+        .iter()
+        .find(|p| p.name == "solver");
+    assert!(
+        solver_pragma.is_some(),
+        "OldWidget should carry #solver pragma in header.pragmas; got: {:?}",
+        old_widget.header.pragmas
+    );
+    let solver = solver_pragma.unwrap();
+    assert!(
+        !solver.args.is_empty(),
+        "#solver pragma should have at least one arg; got: {:?}",
+        solver.args
+    );
+    // Rendered as "backend=\"ipopt\"" (KeyValue form).
+    assert!(
+        solver.args[0].contains("backend"),
+        "#solver arg should contain 'backend'; got: {:?}",
+        solver.args[0]
+    );
+
+    // ── @test annotation on TestWidget ───────────────────────────────────────
+    // The @test annotation must be preserved so the formatters' Tests-section
+    // partitioning logic (which looks at header.annotations) still works.
+    let test_widget = find_item(module, "TestWidget");
+    let test_ann = test_widget
+        .header
+        .annotations
+        .iter()
+        .find(|a| a.name == "test");
+    assert!(
+        test_ann.is_some(),
+        "TestWidget must carry @test annotation for formatter Tests-section partitioning; got: {:?}",
+        test_widget.header.annotations
+    );
+}
+
+/// Constraint labels from constraint-def instantiation are preserved in
+/// ConstraintDoc.label.
+#[test]
+fn constraint_label_from_instantiation() {
+    let source = r#"
+constraint def Positive {
+    param val: Scalar
+    val > 0mm
+}
+
+structure Labeled {
+    param width: Scalar = 10mm
+    constraint Positive(val: width)
+}
+"#;
+    let compiled = compile_source_with_stdlib(source);
+    let diag_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, reify_types::Severity::Error))
+        .collect();
+    assert!(
+        diag_errors.is_empty(),
+        "compilation errors in constraint label test: {:?}",
+        diag_errors
+    );
+
+    let model: DocModel = build_doc_model(&compiled, source);
+    let module = &model.modules[0];
+
+    // Labeled has one constraint whose label is set by the instantiation.
+    let labeled = find_item(module, "Labeled");
+    let (_, constraints) = match &labeled.kind {
+        ItemKind::Structure {
+            params,
+            constraints,
+            ..
+        } => (params, constraints),
+        other => panic!("expected Structure for 'Labeled', got {other:?}"),
+    };
+    assert!(
+        !constraints.is_empty(),
+        "Labeled must have at least one constraint; got none"
+    );
+    // The constraint instantiation produces a label like "Positive#0[0]".
+    let c = &constraints[0];
+    assert!(
+        c.label.is_some(),
+        "constraint from instantiation must have a label; got label: {:?}",
+        c.label
+    );
+    let label_str = c.label.as_ref().unwrap();
+    assert!(
+        label_str.contains("Positive"),
+        "constraint label should mention the constraint def name 'Positive'; got: {label_str:?}"
+    );
+}
+
 /// All remaining declaration kinds in one source: fn, trait, field def,
 /// purpose, enum, unit, type alias, and named constraint def.
 #[test]
