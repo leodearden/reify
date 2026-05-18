@@ -248,3 +248,93 @@ mod inverse {
         assert_mat6_eq(&x.inverse().as_matrix(), &expected.as_matrix(), TOL_NUMERIC);
     }
 }
+
+mod capstone {
+    use super::*;
+
+    /// Minimal deterministic xorshift64 PRNG (seed must be nonzero). No `rand`
+    /// dev-dependency: the workspace has zero `rand` references and adding one
+    /// for a single test inflates every downstream consumer's dep graph.
+    struct Xorshift64(u64);
+
+    impl Xorshift64 {
+        fn new(seed: u64) -> Self {
+            Xorshift64(seed)
+        }
+        fn next_u64(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+        /// Uniform in `[0, 1)` using the top 53 bits.
+        fn next_unit(&mut self) -> f64 {
+            (self.next_u64() >> 11) as f64 / ((1u64 << 53) as f64)
+        }
+        /// Uniform in `[lo, hi]`.
+        fn range(&mut self, lo: f64, hi: f64) -> f64 {
+            lo + (hi - lo) * self.next_unit()
+        }
+    }
+
+    /// User-observable RBD-γ signal: for 50 deterministic random `Frame3`
+    /// samples, `X(f).compose(X(f).inverse())` equals the 6×6 identity
+    /// entrywise within the Featherstone-canonical 1e-12 tolerance.
+    #[test]
+    fn from_frame3_compose_inverse_is_identity_50_random_samples() {
+        let mut rng = Xorshift64::new(0xDEAD_BEEF_CAFE_BABE);
+        let id = identity6();
+
+        for sample in 0..50 {
+            // (a) random unit quaternion, rejecting near-zero magnitudes.
+            let q = loop {
+                let raw = [
+                    rng.range(-1.0, 1.0),
+                    rng.range(-1.0, 1.0),
+                    rng.range(-1.0, 1.0),
+                    rng.range(-1.0, 1.0),
+                ];
+                let norm =
+                    (raw[0] * raw[0] + raw[1] * raw[1] + raw[2] * raw[2] + raw[3] * raw[3])
+                        .sqrt();
+                if norm > 1e-6 {
+                    break [
+                        raw[0] / norm,
+                        raw[1] / norm,
+                        raw[2] / norm,
+                        raw[3] / norm,
+                    ];
+                }
+            };
+            // (b) random translation in [-10, 10] meters.
+            let t = [
+                rng.range(-10.0, 10.0),
+                rng.range(-10.0, 10.0),
+                rng.range(-10.0, 10.0),
+            ];
+            // (c)–(d)
+            let f = Frame3::new(q, t);
+            let x = SpatialTransform6::from_frame3(&f);
+            let prod = x.compose(&x.inverse()).as_matrix();
+
+            // (e) entrywise within 1e-12 of I₆, with a sample diagnostic.
+            for i in 0..6 {
+                for j in 0..6 {
+                    let got = prod[i * 6 + j];
+                    let want = id[i * 6 + j];
+                    assert!(
+                        (got - want).abs() < TOL_NUMERIC,
+                        "sample {sample}: X·X⁻¹ ≠ I at [{i},{j}]: got {got}, want {want} \
+                         (|Δ|={:e}, tol={:e})\n  Frame3 {{ rotation: {:?}, translation: {:?} }}",
+                        (got - want).abs(),
+                        TOL_NUMERIC,
+                        q,
+                        t,
+                    );
+                }
+            }
+        }
+    }
+}
