@@ -159,6 +159,15 @@ fn skew(v: [f64; 3]) -> [[f64; 3]; 3] {
     [[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]]
 }
 
+/// 3-vector cross product `a × b`.
+fn vec3_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
 /// 3×3 · 3×3 matrix product (row-major nested arrays).
 fn mat3_mul(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let mut m = [[0.0; 3]; 3];
@@ -371,4 +380,24 @@ impl SpatialInertia6 {
         }
         SpatialVector6::from_array(out)
     }
+}
+
+/// Spatial cross product on motion vectors, Featherstone (2008) Eq. 2.31:
+///
+/// ```text
+/// cross_m(v, w) = [ω_v × ω_w,
+///                  ω_v × v_w + v_v × ω_w]
+/// ```
+///
+/// Used by the RNEA forward pass to accumulate Coriolis/centrifugal terms,
+/// e.g. `a_i = X·a_p + S·q̈ + cross_m(v_i, S·q̇_i)` (Featherstone §5.2).
+pub fn cross_m(v: &SpatialVector6, w: &SpatialVector6) -> SpatialVector6 {
+    let omega_v = v.angular();
+    let lin_v = v.linear();
+    let omega_w = w.angular();
+    let lin_w = w.linear();
+    let ang = vec3_cross(omega_v, omega_w);
+    let a = vec3_cross(omega_v, lin_w);
+    let b = vec3_cross(lin_v, omega_w);
+    SpatialVector6::from_angular_linear(ang, [a[0] + b[0], a[1] + b[1], a[2] + b[2]])
 }
