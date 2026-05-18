@@ -421,3 +421,56 @@ pub fn cross_f(v: &SpatialVector6, f: &SpatialVector6) -> SpatialVector6 {
     let lin = vec3_cross(omega_v, force_f);
     SpatialVector6::from_angular_linear([a[0] + b[0], a[1] + b[1], a[2] + b[2]], lin)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::quat_to_rotation_matrix;
+    use crate::orientation::quat_rotate;
+
+    /// Cross-checks the private `quat_to_rotation_matrix` against the
+    /// project's `orientation::quat_rotate` (`q·(0,v)·q*`). Downstream RBD
+    /// correctness hinges on `Frame3.rotation` matching the
+    /// `Value::Orientation` `(w, x, y, z)` convention and on the rotation
+    /// matrix being the active rotation `quat_rotate` implements — but the
+    /// integration test (`tests/spatial_tests.rs`) can reach neither the
+    /// private fn nor the `pub(crate)` `quat_rotate`. This in-crate check
+    /// locks the convention so a future edit to either side cannot silently
+    /// drift it. (Non-axis-aligned quaternions so every E entry is exercised.)
+    #[test]
+    fn quat_to_rotation_matrix_matches_orientation_quat_rotate() {
+        const TOL: f64 = 1e-12;
+        // (w, x, y, z) unit quaternions, none axis-aligned.
+        let quats: [[f64; 4]; 2] = [
+            {
+                let n = (1.0f64 + 0.25 + 0.0625 + 0.5625).sqrt();
+                [1.0 / n, 0.5 / n, 0.25 / n, -0.75 / n]
+            },
+            {
+                let n = (0.04f64 + 0.36 + 0.09 + 0.49).sqrt();
+                [0.2 / n, 0.6 / n, -0.3 / n, 0.7 / n]
+            },
+        ];
+        let vs: [[f64; 3]; 3] = [[1.0, 2.0, 3.0], [-0.5, 1.5, -2.25], [0.3, -0.7, 0.9]];
+
+        for q in quats {
+            let e = quat_to_rotation_matrix(q);
+            for v in vs {
+                let ev = [
+                    e[0][0] * v[0] + e[0][1] * v[1] + e[0][2] * v[2],
+                    e[1][0] * v[0] + e[1][1] * v[1] + e[1][2] * v[2],
+                    e[2][0] * v[0] + e[2][1] * v[1] + e[2][2] * v[2],
+                ];
+                let (rx, ry, rz) =
+                    quat_rotate((q[0], q[1], q[2], q[3]), v[0], v[1], v[2]);
+                assert!(
+                    (ev[0] - rx).abs() < TOL
+                        && (ev[1] - ry).abs() < TOL
+                        && (ev[2] - rz).abs() < TOL,
+                    "convention drift: E·v = {ev:?} but quat_rotate = \
+                     {:?} for q={q:?}, v={v:?}",
+                    (rx, ry, rz)
+                );
+            }
+        }
+    }
+}
