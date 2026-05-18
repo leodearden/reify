@@ -1683,6 +1683,7 @@ impl Value {
     /// and unit symbol respectively.
     ///
     /// For `Value::Option(Some(inner))`, this recurses into `inner`.
+    // G-allow: task #3648 auto-resolve emit feature; consumer is the auto-resolve diagnostic Display in subsequent #3648 steps
     pub fn format_display_triple(&self) -> Option<(f64, String, String)> {
         match self {
             Value::Scalar {

@@ -97,9 +97,9 @@ use reify_types::{
 /// an internal test shim and **not part of the public API**. It may be removed
 /// or changed at any time. Gated behind `feature = "test-support"` (or
 /// `cfg(test)` for in-crate tests); not part of the released public API.
-// G-allow: test-support shim (feature = "test-support"); not consumed in production builds
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
+// G-allow: task #3530 parity shim — test-support-gated (feature = "test-support"), consumed by validate_annotations parity tests during schema-delegation migration; remove when delegation is complete
 pub fn __validate_annotations_for_parity_test(
     annotations: &[reify_types::Annotation],
     context: &str,

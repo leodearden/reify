@@ -1057,6 +1057,7 @@ impl GeometryQuery {
     /// A wildcard `_ => BRepAndMesh` would silently mis-route future
     /// BRep-only queries to the Manifold kernel — the compiler enforces
     /// correctness at the diff site.
+    // G-allow: task #3623 QueryCapability enum mapping; consumer is the capability-dispatch arm in subsequent #3623 steps
     pub fn capability_kind(&self) -> QueryCapability {
         match self {
             // §5.4 BRepOnly set (extant as of this commit; KGQ-μ adds
