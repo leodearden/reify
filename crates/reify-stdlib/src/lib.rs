@@ -27,6 +27,7 @@ mod joints;
 mod linalg;
 mod list;
 mod loads;
+pub mod dynamics;
 pub mod loop_closure;
 pub mod loop_closure_solver;
 pub mod loop_closure_value;
