@@ -172,3 +172,53 @@ fn damping_descriptor_trait_declared() {
             .collect::<Vec<_>>()
     );
 }
+
+// ─── step-5: NoDamping marker structure ──────────────────────────────────────
+
+/// `NoDamping` is a zero-field marker structure refining `DampingDescriptor`.
+/// Semantically equivalent to `RayleighDamping(alpha: 0, beta: 0)` but a
+/// distinct nominal type so the future `modal_analysis` trampoline can
+/// discriminate the no-damping fast path via SIR-α nominal type-tag.
+///
+/// Assertions mirror the "no constraints or defaults" discipline from
+/// `buckling_stdlib_compile.rs::mode_struct_has_no_constraints_or_defaults`
+/// (445-472): zero params, zero constraints, and refines `DampingDescriptor`
+/// via `template.trait_bounds`.
+#[test]
+fn no_damping_marker_structure() {
+    let template = find_structure("NoDamping");
+
+    // (a) zero param cells — pure marker structure
+    let params = param_cells(template);
+    assert_eq!(
+        params.len(),
+        0,
+        "NoDamping should be a zero-field marker structure, but got params: {:?}",
+        params.iter().map(|vc| &vc.id.member).collect::<Vec<_>>()
+    );
+
+    // (b) no constraints — nothing to constrain
+    assert!(
+        template.constraints.is_empty(),
+        "NoDamping should declare no constraints (zero-field marker); got: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+
+    // (c) refines DampingDescriptor via the structure-def `: DampingDescriptor`
+    // refinement clause. The plan analysis points at the `materials_fea.ri::
+    // Steel_AISI_1045 : ElasticMaterial` precedent; `TopologyTemplate.
+    // trait_bounds` (types.rs:518) is the canonical store for the names of
+    // traits a structure declares conformance to.
+    assert!(
+        template
+            .trait_bounds
+            .iter()
+            .any(|t| t == "DampingDescriptor"),
+        "NoDamping should refine DampingDescriptor; got trait_bounds: {:?}",
+        template.trait_bounds
+    );
+}
