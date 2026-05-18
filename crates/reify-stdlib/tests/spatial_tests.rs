@@ -192,6 +192,36 @@ mod from_frame3 {
 
         assert_mat6_eq(&x.as_matrix(), &expected, TOL_TIGHT);
     }
+
+    #[test]
+    fn rotation_and_translation_bottom_left_is_neg_skew_r_times_e() {
+        // Distinguishes the Featherstone bottom-left ordering -r̃·E (this
+        // code, Eq. 2.24) from the alternative -E·r̃. The pure-translation
+        // case (E=I ⇒ -r̃·E == -E·r̃) and pure-rotation case (r=0 ⇒ BL=0)
+        // can't tell the two apart, and the capstone / apply oracles are
+        // self-consistent, so a wrong-but-consistent ordering would slip
+        // past every other test. Downstream RBD-δ/RBD-ε must interoperate
+        // with this exact convention, so pin it with a frame that has BOTH
+        // nonzero rotation and nonzero translation.
+        //
+        // 90° about z: q = (cos π/4, 0, 0, sin π/4) ⇒
+        //   E = [[0,-1,0],[1,0,0],[0,0,1]].
+        // r = [1,2,3] ⇒ r̃ = [[0,-3,2],[3,0,-1],[-2,1,0]].
+        // r̃·E = [[-3,0,2],[0,-3,-1],[1,2,0]] ⇒
+        //   BL = -r̃·E = [[3,0,-2],[0,3,1],[-1,-2,0]].
+        // (The alternative -E·r̃ = [[3,0,-1],[0,3,-2],[2,-1,0]] is distinct,
+        // so this assertion genuinely discriminates the convention.)
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let f = Frame3::new([s, 0.0, 0.0, s], [1.0, 2.0, 3.0]);
+        let x = SpatialTransform6::from_frame3(&f);
+
+        let e = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+        let z3 = [[0.0; 3]; 3];
+        let bl = [[3.0, 0.0, -2.0], [0.0, 3.0, 1.0], [-1.0, -2.0, 0.0]];
+        let expected = block6(e, z3, bl, e);
+
+        assert_mat6_eq(&x.as_matrix(), &expected, TOL_TIGHT);
+    }
 }
 
 mod compose {
@@ -239,6 +269,35 @@ mod compose {
         let left = x1.compose(&x2).compose(&x3);
         let right = x1.compose(&x2.compose(&x3));
         assert_mat6_eq(&left.as_matrix(), &right.as_matrix(), TOL_NUMERIC);
+    }
+
+    #[test]
+    fn compose_then_apply_equals_nested_apply() {
+        // compose() is documented "apply other first, then self", i.e.
+        //   x1.compose(&x2).apply(v) == x1.apply(x2.apply(v)).
+        // This is the exact contract the RNEA forward pass relies on. The
+        // associativity/block tests and the self-consistent oracles
+        // (capstone derives inverse from the same convention;
+        // apply_matches_dense_matvec checks apply against as_matrix) would
+        // all pass under an operand-order or row/column-major mismatch
+        // between compose and apply — only the cross-relation catches it.
+        // Use a nontrivial pair with both rotation and translation.
+        let s = std::f64::consts::FRAC_1_SQRT_2; // 90° about z
+        let half = std::f64::consts::PI / 12.0; // 30° about x
+        let (c, sx) = (half.cos(), half.sin());
+        let x1 = SpatialTransform6::from_frame3(&Frame3::new(
+            [s, 0.0, 0.0, s],
+            [1.0, 2.0, 3.0],
+        ));
+        let x2 = SpatialTransform6::from_frame3(&Frame3::new(
+            [c, sx, 0.0, 0.0],
+            [-2.0, 0.5, 1.0],
+        ));
+        let v = SpatialVector6::from_array([0.5, -1.5, 2.0, -3.0, 4.0, -0.25]);
+
+        let lhs = x1.compose(&x2).apply(&v);
+        let rhs = x1.apply(&x2.apply(&v));
+        assert_vec6_eq(&lhs, &rhs.as_array(), TOL_NUMERIC);
     }
 }
 
