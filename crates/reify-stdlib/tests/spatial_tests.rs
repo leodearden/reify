@@ -163,3 +163,51 @@ mod from_frame3 {
         assert_mat6_eq(&x.as_matrix(), &expected, TOL_TIGHT);
     }
 }
+
+mod compose {
+    use super::*;
+
+    #[test]
+    fn identity_compose_identity_is_identity() {
+        let i = SpatialTransform6::from_frame3(&Frame3::identity());
+        assert_mat6_eq(&i.compose(&i).as_matrix(), &identity6(), TOL_NUMERIC);
+    }
+
+    #[test]
+    fn translation_only_compose_sums_skew() {
+        // F1: t=[1,0,0], F2: t=[0,2,0], both identity rotation.
+        // [[I,0];[-r̃₁,I]]·[[I,0];[-r̃₂,I]] = [[I,0];[-(r̃₁+r̃₂),I]]
+        // and skew is linear, so -(r̃₁+r̃₂) = -skew([1,2,0]).
+        let f1 = Frame3::new([1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0]);
+        let f2 = Frame3::new([1.0, 0.0, 0.0, 0.0], [0.0, 2.0, 0.0]);
+        let composed = SpatialTransform6::from_frame3(&f1)
+            .compose(&SpatialTransform6::from_frame3(&f2));
+
+        let i3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let z3 = [[0.0; 3]; 3];
+        // -skew([1,2,0]) = -[[0,0,2],[0,0,-1],[-2,1,0]]
+        let neg_skew_sum = [[0.0, 0.0, -2.0], [0.0, 0.0, 1.0], [2.0, -1.0, 0.0]];
+        let expected = block6(i3, z3, neg_skew_sum, i3);
+
+        assert_mat6_eq(&composed.as_matrix(), &expected, TOL_NUMERIC);
+    }
+
+    #[test]
+    fn compose_is_associative() {
+        let x1 = SpatialTransform6::from_frame3(&Frame3::new(
+            [1.0, 0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+        ));
+        let x2 = SpatialTransform6::from_frame3(&Frame3::new(
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0],
+        ));
+        let x3 = SpatialTransform6::from_frame3(&Frame3::new(
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 3.0],
+        ));
+        let left = x1.compose(&x2).compose(&x3);
+        let right = x1.compose(&x2.compose(&x3));
+        assert_mat6_eq(&left.as_matrix(), &right.as_matrix(), TOL_NUMERIC);
+    }
+}
