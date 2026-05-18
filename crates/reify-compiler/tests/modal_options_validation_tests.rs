@@ -222,3 +222,92 @@ fn no_damping_marker_structure() {
         template.trait_bounds
     );
 }
+
+// ─── step-7: RayleighDamping param shape ─────────────────────────────────────
+
+/// `RayleighDamping` declares two PRD §4.2 params with the canonical types:
+///
+///   - `alpha : Real`  (mass-proportional damping coefficient)
+///   - `beta  : Real`  (stiffness-proportional damping coefficient)
+///
+/// Per-mode damping ratio: ζ_i = (α + β·ω_i²) / (2·ω_i). Preserves mode-shape
+/// orthogonality so transient response stays in real arithmetic.
+///
+/// Assertions:
+///   (a) exactly 2 params, (b) the two params are (alpha, beta) of type Real
+///       in declaration order,
+///   (c) neither carries a `default_expr` (input-only fields without a
+///       canonical default — PRD §4.2 lists no defaults),
+///   (d) no constraints — alpha and beta are conventionally non-negative
+///       but physically meaningful at zero (stiffness-only or mass-only
+///       damping). Mirrors `solver_buckling.ri:97-107` "explicitly NOT
+///       constrained" discipline applied to `sigma`,
+///   (e) refines `DampingDescriptor`.
+#[test]
+fn rayleigh_damping_param_shape() {
+    let template = find_structure("RayleighDamping");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    // (a) tight count
+    assert_eq!(
+        params.len(),
+        2,
+        "RayleighDamping should have exactly 2 param cells (alpha, beta), got: {:?}",
+        names
+    );
+
+    // (b) param names + types in declaration order
+    let expected: &[(&str, Type)] = &[("alpha", Type::Real), ("beta", Type::Real)];
+    for (i, (expected_name, expected_ty)) in expected.iter().enumerate() {
+        let cell = &params[i];
+        assert_eq!(
+            cell.id.member.as_str(),
+            *expected_name,
+            "RayleighDamping param at index {} should be `{}`, got `{}`",
+            i,
+            expected_name,
+            cell.id.member
+        );
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "RayleighDamping.{} should be {:?}, got {:?}",
+            expected_name, expected_ty, cell.cell_type
+        );
+    }
+
+    // (c) no defaults on either param
+    for cell in &params {
+        assert!(
+            cell.default_expr.is_none(),
+            "RayleighDamping.{} should have no default_expr (no canonical \
+             default for damping coefficients per PRD §4.2), but got: {:?}",
+            cell.id.member,
+            cell.default_expr
+        );
+    }
+
+    // (d) no constraints — mirrors solver_buckling.ri:97-107 "explicitly NOT
+    // constrained" discipline applied to sigma (zero is physically valid).
+    assert!(
+        template.constraints.is_empty(),
+        "RayleighDamping should declare no constraints (alpha/beta are \
+         conventionally non-negative but physically meaningful at zero — \
+         stiffness-only or mass-only damping); got: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+
+    // (e) refines DampingDescriptor
+    assert!(
+        template
+            .trait_bounds
+            .iter()
+            .any(|t| t == "DampingDescriptor"),
+        "RayleighDamping should refine DampingDescriptor; got trait_bounds: {:?}",
+        template.trait_bounds
+    );
+}
