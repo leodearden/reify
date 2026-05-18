@@ -5,6 +5,8 @@
 //! `reify_doc_build::build_doc_model(&compiled, source)` and asserts the
 //! structure of the returned `DocModel`.
 
+use reify_doc::fmt_html::render_html;
+use reify_doc::fmt_markdown::{render_markdown, MarkdownOptions, MarkdownOutput};
 use reify_doc::model::{DocModel, ItemKind};
 use reify_doc_build::build_doc_model;
 use reify_test_support::compile_source_with_stdlib;
@@ -485,4 +487,104 @@ constraint def non_negative {
         }
         other => panic!("expected ItemKind::ConstraintDef for 'non_negative', got {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// step-7: serde round-trip and render integration test
+// ---------------------------------------------------------------------------
+
+/// Build a DocModel from a multi-item source, assert it serde round-trips,
+/// and assert both HTML and Markdown renders are non-empty and contain the
+/// declared item names.
+#[test]
+fn doc_model_serde_roundtrip_and_render() {
+    let source = r#"
+pub structure Bracket {
+    param width: Scalar = 50mm
+    param height: Scalar = 100mm
+    constraint width > 0mm
+    constraint height > 0mm
+}
+
+fn scale(x: Real) -> Real { x }
+
+trait HasLength {
+    param length: Scalar
+}
+"#;
+    let compiled = compile_source_with_stdlib(source);
+    let diag_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, reify_types::Severity::Error))
+        .collect();
+    assert!(
+        diag_errors.is_empty(),
+        "compilation errors in serde/render test: {:?}",
+        diag_errors
+    );
+
+    let model: DocModel = build_doc_model(&compiled, source);
+    assert_eq!(model.modules.len(), 1, "expected one module");
+
+    // ── (a) Serde round-trip ─────────────────────────────────────────────────
+    let json_str = serde_json::to_string(&model).expect("model must serialize to JSON");
+    assert!(!json_str.is_empty(), "serialized JSON must be non-empty");
+
+    let model2: DocModel =
+        serde_json::from_str(&json_str).expect("model must deserialize from JSON");
+
+    // Round-trip equality: re-serialize and compare JSON strings (avoids
+    // needing PartialEq on DocModel while still catching structural diffs).
+    let json_str2 = serde_json::to_string(&model2).expect("round-tripped model must re-serialize");
+    assert_eq!(
+        json_str, json_str2,
+        "serde round-trip must be lossless (to_string→from_str→to_string equality)"
+    );
+
+    // ── (b) HTML render ──────────────────────────────────────────────────────
+    let html = render_html(&model, None);
+    assert!(!html.is_empty(), "render_html output must be non-empty");
+    assert!(
+        html.contains("Bracket"),
+        "HTML must contain item name 'Bracket'; snippet: {:?}",
+        &html[..html.len().min(500)]
+    );
+    assert!(
+        html.contains("scale"),
+        "HTML must contain item name 'scale'; snippet: {:?}",
+        &html[..html.len().min(500)]
+    );
+    assert!(
+        html.contains("HasLength"),
+        "HTML must contain item name 'HasLength'; snippet: {:?}",
+        &html[..html.len().min(500)]
+    );
+
+    // ── (c) Markdown render ──────────────────────────────────────────────────
+    let md_out = render_markdown(&model, None, &MarkdownOptions::default());
+    let md_str = match md_out {
+        MarkdownOutput::Single(s) => s,
+        MarkdownOutput::Split(parts) => parts
+            .into_iter()
+            .map(|(_, body)| body)
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    };
+    assert!(!md_str.is_empty(), "render_markdown output must be non-empty");
+    assert!(
+        md_str.contains("Bracket"),
+        "Markdown must contain item name 'Bracket'; snippet: {:?}",
+        &md_str[..md_str.len().min(500)]
+    );
+    assert!(
+        md_str.contains("scale"),
+        "Markdown must contain item name 'scale'; snippet: {:?}",
+        &md_str[..md_str.len().min(500)]
+    );
+    assert!(
+        md_str.contains("HasLength"),
+        "Markdown must contain item name 'HasLength'; snippet: {:?}",
+        &md_str[..md_str.len().min(500)]
+    );
 }
