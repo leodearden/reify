@@ -356,6 +356,23 @@ export interface EntityTreeNode {
 // ---------------------------------------------------------------------------
 
 /**
+ * Discriminated union describing how a joint's motion is bound.
+ * Mirrors the Rust `JointBinding` enum in `gui/src-tauri/src/types.rs`
+ * (serde tag `"kind"`, `rename_all = "snake_case"`).
+ *
+ * This is the **authoritative** field for determining scrub behaviour
+ * (Task 3788 η-frontend migration).  The legacy flat fields
+ * `driving_param_cell_id` and `current_value_si` on `JointDescriptor`
+ * are backward-compat mirrors populated only for `param_bound` joints;
+ * they are `null` for `literal_bound`, `coupling_derived`, and `fixed_no_motion`.
+ */
+export type JointBinding =
+  | { kind: 'param_bound'; param_cell_id: string; current_value_si: number | null }
+  | { kind: 'literal_bound'; synth_param_name: string; initial_value_si: number | null; scrubbable: boolean }
+  | { kind: 'coupling_derived'; source_joint: string }
+  | { kind: 'fixed_no_motion' };
+
+/**
  * Describes a single joint motion variable within a mechanism.
  * Mirrors the Rust `JointDescriptor` struct in `gui/src-tauri/src/types.rs`.
  */
@@ -375,10 +392,25 @@ export interface JointDescriptor {
   /**
    * The `ValueCellId` string of the `param` cell driving this joint via `bind(joint, param_ref)`
    * inside a `snapshot()` call. Null when the binding expression is a literal (not a param ref).
+   *
+   * @deprecated Use `binding.param_cell_id` (when `binding.kind === 'param_bound'`) instead.
+   * Populated only for `param_bound` joints; `null` for all other binding kinds.
    */
   driving_param_cell_id: string | null;
-  /** Current evaluated value of the driving param cell in SI units, or null if unresolved. */
+  /**
+   * Current evaluated value of the driving param cell in SI units, or null if unresolved.
+   *
+   * @deprecated Use `binding.current_value_si` (when `binding.kind === 'param_bound'`) or
+   * `binding.initial_value_si` (when `binding.kind === 'literal_bound'`) instead.
+   * Populated only for `param_bound` joints; `null` for all other binding kinds.
+   */
   current_value_si: number | null;
+  /**
+   * Authoritative description of how this joint's motion is bound (Task 3788 η-frontend).
+   * Use this field — not the legacy flat fields above — to determine scrub behaviour,
+   * param cell id, and initial SI value.
+   */
+  binding: JointBinding;
 }
 
 /**

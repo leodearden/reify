@@ -620,6 +620,7 @@ describe('bridge mechanism commands', () => {
             axis: [0, 1, 0],
             driving_param_cell_id: 'Kinematic.y_pos',
             current_value_si: 0.1,
+            binding: { kind: 'param_bound' as const, param_cell_id: 'Kinematic.y_pos', current_value_si: 0.1 },
           },
         ],
       },

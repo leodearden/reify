@@ -1,5 +1,6 @@
 import { type Component, For, Show, createSignal, createEffect } from 'solid-js';
 import type { MechanismDescriptor, JointDescriptor } from '../types';
+import { jointCurrentSi } from '../stores/mechanismStore';
 import styles from './MechanismPanel.module.css';
 
 // ---------------------------------------------------------------------------
@@ -96,19 +97,56 @@ const JointRow: Component<JointRowProps> = (props) => {
   const joint = () => props.joint;
   const kind = () => joint().kind;
   const dimension = () => joint().dimension;
-  const drivingParam = () => joint().driving_param_cell_id;
 
-  // Whether this joint supports scrubbing (prismatic or revolute with a param binding)
-  const isScrubbable = () =>
-    (kind() === 'prismatic' || kind() === 'revolute') && drivingParam() !== null;
+  /**
+   * Binding-aware param-cell-id resolver.
+   * - param_bound → binding.param_cell_id (String in Rust; non-nullable per wire contract)
+   * - literal_bound → binding.synth_param_name (the engine-session virtual param)
+   * - coupling_derived / fixed_no_motion → null (not scrubbable)
+   *
+   * This is the id passed to onSetParameter and used as the first arg to
+   * onScrubLocal; the RAF-coalesced set_parameter IPC reuses it unchanged.
+   */
+  const effectiveParamCellId = (): string | null => {
+    const b = joint().binding;
+    if (b.kind === 'param_bound') return b.param_cell_id;
+    if (b.kind === 'literal_bound') return b.synth_param_name;
+    return null;
+  };
+
+  // Whether this joint supports scrubbing.
+  // Prismatic/revolute joints with a param binding OR a scrubbable literal binding
+  // are scrubbable; coupling and fixed joints are never scrubbable.
+  // param_bound is always scrubbable: param_cell_id is non-nullable (Rust String).
+  const isScrubbable = () => {
+    if (kind() !== 'prismatic' && kind() !== 'revolute') return false;
+    const b = joint().binding;
+    if (b.kind === 'param_bound') return true;
+    if (b.kind === 'literal_bound') return b.scrubbable === true;
+    return false;
+  };
+
+  /**
+   * Binding-aware current-SI value helper.
+   * Delegates to the exported `jointCurrentSi` from mechanismStore (single source of truth).
+   *
+   * - param_bound → binding.current_value_si ?? legacy current_value_si
+   * - literal_bound → binding.initial_value_si  (the AST literal baseline)
+   * - else → null
+   *
+   * Used for initialDisplay() and as the fallback for effectiveValueSi
+   * so that a literal-bound joint initializes from its literal baseline,
+   * not the null legacy current_value_si field.
+   */
+  const bindingCurrentSi = (): number | null => jointCurrentSi(joint());
 
   // Display-unit range
   const minDisplay = () => siToDisplay(joint().range_lower_si, kind()) ?? 0;
   const maxDisplay = () => siToDisplay(joint().range_upper_si, kind()) ?? 100;
 
-  // Initial slider value from current_value_si
+  // Initial slider value from the binding-aware current SI.
   const initialDisplay = () => {
-    const disp = currentSiToDisplay(joint().current_value_si, kind());
+    const disp = currentSiToDisplay(bindingCurrentSi(), kind());
     return disp ?? minDisplay();
   };
 
@@ -120,7 +158,7 @@ const JointRow: Component<JointRowProps> = (props) => {
   // re-runs whenever its value changes.  When the accessor is absent (tests)
   // the effect only runs once on mount and never again.
   createEffect(() => {
-    const eff = props.effectiveValueSi?.() ?? joint().current_value_si;
+    const eff = props.effectiveValueSi?.() ?? bindingCurrentSi();
     if (eff === null || eff === undefined) return;
     const disp = siToDisplay(eff, kind());
     if (disp !== null) setSliderValue(disp);
@@ -138,7 +176,7 @@ const JointRow: Component<JointRowProps> = (props) => {
         if (pendingValue === null) return;
         const val = pendingValue;
         pendingValue = null;
-        const param = drivingParam();
+        const param = effectiveParamCellId();
         if (param !== null) {
           props.onSetParameter(param, formatParamValue(val, kind()));
         }
@@ -156,7 +194,7 @@ const JointRow: Component<JointRowProps> = (props) => {
     // JointDescriptor.current_value_si, enabling refresh()'s equality
     // check to clear the override once the backend confirms the value.
     const valueSi = displayToSi(displayValue, kind());
-    const param = drivingParam();
+    const param = effectiveParamCellId();
     props.onScrubLocal(param, joint().joint_index, valueSi);
 
     // Schedule the actual set_parameter IPC call via RAF coalescing
@@ -164,40 +202,45 @@ const JointRow: Component<JointRowProps> = (props) => {
     scheduleSetParameter(displayValue);
   }
 
+  // Compute the data-binding marker for testability and visual distinction.
+  const bindingMarker = (): 'literal' | 'param' | undefined => {
+    const b = joint().binding;
+    if (b.kind === 'literal_bound') return 'literal';
+    if (b.kind === 'param_bound') return 'param';
+    return undefined;
+  };
+
+  const isLiteralBound = () => joint().binding.kind === 'literal_bound';
+
   return (
     <div
       class={styles.jointRow}
       data-testid={`joint-row-${joint().joint_index}`}
       data-kind={kind()}
+      data-binding={bindingMarker()}
     >
       <div class={styles.jointLabel}>
         <span class={styles.jointKind}>{kind()}</span>
         <span class={styles.jointIndex}>#{joint().joint_index}</span>
         <span class={styles.jointDimension}>({dimension()})</span>
+        <Show when={isLiteralBound()}>
+          <span class={styles.literalBoundIcon} title="Literal-bound — scrub is session-only">~</span>
+        </Show>
       </div>
 
       <Show
         when={isScrubbable()}
         fallback={
           <div class={styles.jointReadOnly}>
-            <Show
-              when={kind() === 'coupling' || kind() === 'fixed'}
-              fallback={
-                <span class={styles.literalBoundBadge} title="Bound to a literal expression — edit source to scrub">
-                  literal-bound
-                </span>
-              }
-            >
-              <span class={styles.noSliderBadge}>
-                {kind() === 'coupling' ? 'coupling (derived)' : 'fixed (no motion)'}
-              </span>
-            </Show>
+            <span class={styles.noSliderBadge}>
+              {kind() === 'coupling' ? 'coupling (derived)' : 'fixed (no motion)'}
+            </span>
           </div>
         }
       >
         <input
           type="range"
-          class={styles.jointSlider}
+          class={`${styles.jointSlider}${isLiteralBound() ? ` ${styles.literalBoundSlider}` : ''}`}
           min={minDisplay()}
           max={maxDisplay()}
           step={kind() === 'prismatic' ? 1 : 0.1}

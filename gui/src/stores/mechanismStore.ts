@@ -1,5 +1,26 @@
 import { createStore, produce } from 'solid-js/store';
-import type { MechanismDescriptor } from '../types';
+import type { MechanismDescriptor, JointDescriptor } from '../types';
+
+// ---------------------------------------------------------------------------
+// Binding-aware current-SI helper (Task 3788 η-frontend)
+// ---------------------------------------------------------------------------
+
+/**
+ * Return the authoritative current-SI value for a joint using its `binding`
+ * field.  Used by MechanismPanel for initial/effective slider values and by
+ * `refresh()` for the optimistic-override equality check.
+ *
+ * - `param_bound`  → `binding.current_value_si` (falls back to legacy field)
+ * - `literal_bound` → `binding.initial_value_si` (AST literal baseline; the
+ *    engine never surfaces a post-scrub "current" value for LiteralBound)
+ * - `coupling_derived` / `fixed_no_motion` → `null`
+ */
+export function jointCurrentSi(joint: Pick<JointDescriptor, 'binding' | 'current_value_si'>): number | null {
+  const b = joint.binding;
+  if (b.kind === 'param_bound') return b.current_value_si ?? joint.current_value_si;
+  if (b.kind === 'literal_bound') return b.initial_value_si;
+  return null;
+}
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -53,19 +74,28 @@ export function createMechanismStore(deps: MechanismStoreDeps) {
     const newDescriptors = await deps.getMechanismDescriptors();
 
     // Build a set of keys to clear: overrides that have been "committed"
-    // (i.e. the backend's current_value_si is within tolerance of the optimistic
-    // value — strict === is avoided because the JS display→SI conversion
-    // (e.g. 90deg → 90 * π/180) may not bit-match the Rust-side parse of "90deg").
+    // (i.e. the backend's authoritative current-SI is within tolerance of the
+    // optimistic value — strict === is avoided because the JS display→SI
+    // conversion, e.g. 90deg → 90 * π/180, may not bit-match the Rust-side
+    // parse of "90deg").
+    //
+    // Binding semantics:
+    //   param_bound   → uses binding.current_value_si (set by engine on commit)
+    //   literal_bound → uses binding.initial_value_si (AST baseline; the engine
+    //                   never surfaces a post-scrub value for LiteralBound, so a
+    //                   literal-bound override will NOT equal the baseline unless
+    //                   the user explicitly scrubbed back, which is fine to clear)
+    //   coupling/fixed → null → never cleared
     const toDelete: string[] = [];
     for (const desc of newDescriptors) {
       for (const joint of desc.joints) {
         const key = `${desc.cell_id}:${joint.joint_index}`;
         const override = state.optimistic[key];
+        const committedSi = jointCurrentSi(joint);
         if (
           override !== undefined &&
-          joint.current_value_si !== null &&
-          Math.abs(joint.current_value_si - override) <=
-            1e-9 * (1 + Math.abs(override))
+          committedSi !== null &&
+          Math.abs(committedSi - override) <= 1e-9 * (1 + Math.abs(override))
         ) {
           toDelete.push(key);
         }
