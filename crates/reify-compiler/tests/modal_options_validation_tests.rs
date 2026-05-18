@@ -721,3 +721,93 @@ fn modal_options_param_defaults_match_spec() {
         );
     }
 }
+
+// ─── step-17: ModalOptions positivity-invariant constraints ──────────────────
+
+/// `ModalOptions` must declare exactly the three PRD §4.3 positivity
+/// constraints at the structure-def level:
+///
+///   constraint n_modes   > 0
+///   constraint tol       > 0
+///   constraint max_iters > 0
+///
+/// Making the contract explicit in production code rather than relying solely
+/// on test coverage is the task-2544 convention (recorded in memory id
+/// 0773d3a8). Combined with the SIR-α generic constraint-firing pipeline,
+/// these declarations are what make `ModalOptions(n_modes: 0)` emit a
+/// constraint-violation diagnostic — the PRD's user-observable signal.
+///
+/// Explicitly NOT constrained (regression-gated by the tight count==3):
+///   - `sigma`               : any spectral shift is physically valid (the
+///                              negative side of the spectrum is meaningful);
+///                              `sigma >= 0` would wrongly forbid it. Mirrors
+///                              the `BucklingOptions.sigma` discipline.
+///   - `reference_direction` : the `norm() > 0` invariant is a method-call on
+///                              Vector3, NOT a scalar predicate, so it is not
+///                              expressible in Reify's `constraint` grammar.
+///                              Deferred to the runtime trampoline (future
+///                              task ζ) per plan design-decision-4, mirroring
+///                              `BucklingOptions.mode` allowlist-deferral.
+///   - `damping`             : trait-typed; not scalar-predicable.
+///   - `boundary_conditions` : collection of trait objects; not scalar-
+///                              predicable.
+///
+/// Assertion shape mirrors
+/// `buckling_stdlib_compile.rs::buckling_options_constrains_positivity_invariants`
+/// (320-376), including the tight count==3 regression gate and the
+/// Int(0)/Real(0.0) RHS-literal future-proofing.
+#[test]
+fn modal_options_constrains_positivity_invariants() {
+    let template = find_structure("ModalOptions");
+
+    // Tight count: exactly 3 constraints. A weaker `>= 3` would let a bogus
+    // 4th constraint (e.g., an accidental `constraint sigma >= 0` that would
+    // silently exclude negative-side-of-spectrum shifts) pass. The .ri file's
+    // "explicitly NOT constrained" note is enforced here as a regression gate.
+    assert_eq!(
+        template.constraints.len(),
+        3,
+        "ModalOptions should declare exactly 3 constraints \
+         (n_modes > 0, tol > 0, max_iters > 0); sigma / damping / \
+         boundary_conditions / reference_direction are explicitly NOT \
+         constrained per the .ri file. Got {} constraints: {:?}",
+        template.constraints.len(),
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+
+    for required in &["n_modes", "tol", "max_iters"] {
+        let matched = template.constraints.iter().any(|c| {
+            // Constraint expression must be a `>` BinOp with a ValueRef to the
+            // required member on the LHS and the literal `0` on the RHS.
+            // Accept either `Int(0)` or `Real(0.0)` for the RHS literal
+            // (mirrors buckling_stdlib_compile.rs:356-360 future-proofing).
+            match &c.expr.kind {
+                CompiledExprKind::BinOp { op, left, right } => {
+                    if *op != BinOp::Gt || !collect_value_ref_members(left).contains(required) {
+                        return false;
+                    }
+                    match &right.kind {
+                        CompiledExprKind::Literal(Value::Int(0)) => true,
+                        CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
+                        _ => false,
+                    }
+                }
+                _ => false,
+            }
+        });
+        assert!(
+            matched,
+            "ModalOptions should declare `constraint {} > 0`; got constraints: {:?}",
+            required,
+            template
+                .constraints
+                .iter()
+                .map(|c| &c.expr.kind)
+                .collect::<Vec<_>>()
+        );
+    }
+}
