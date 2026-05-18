@@ -4429,6 +4429,7 @@ dependencies = [
  "reify-config",
  "reify-constraints",
  "reify-doc",
+ "reify-doc-build",
  "reify-eval",
  "reify-geometry",
  "reify-kernel-occt",
