@@ -243,3 +243,78 @@ structure def ModalResult {
     //                                          predicable.
     //   part / *_norm       — solver-populated outputs; no caller invariant.
 }
+
+// ── ModalOptions ─────────────────────────────────────────────────────────────
+
+// `ModalOptions` is the configuration object passed to the v0.3 modal
+// eigensolver (PRD §4.3) — the parallel sibling of `BucklingOptions`
+// (`std.solver.buckling`). The scalar knobs carry sensible defaults (added
+// in a later wave) so a caller overrides only the fields they care about;
+// `boundary_conditions`, `damping`, and `reference_direction` are required
+// at construction (no canonical default).
+//
+// Param semantics (PRD §4.3):
+//   n_modes             — eigenpair count to extract. Default 10 (added in a
+//                          later step) covers the typical "first few modes"
+//                          inspection workflow, mirroring
+//                          `BucklingOptions.n_modes`.
+//   boundary_conditions — the support set constraining the eigenproblem.
+//                          `Support` is the marker trait from
+//                          `std.fea.multi_case`, in the growing prelude at
+//                          modal-compile time → `List<TraitObject("Support")>`.
+//                          Required at construction (no default).
+//   damping             — damping strategy (`NoDamping` for an undamped
+//                          solve, `RayleighDamping(α, β)` for proportional
+//                          damping). Trait-typed so the eval-time trampoline
+//                          dispatches via the SIR-α nominal type-tag.
+//                          Required at construction (no default in this wave;
+//                          a trait-typed `= NoDamping()` default is deferred
+//                          per plan design-decision-5).
+//   sigma               — spectral-shift origin (in eigenvalue units;
+//                          dimensionless). Default `0.0` (added later) targets
+//                          the smallest-|λ| cluster (lowest-frequency modes).
+//                          Explicitly NOT constrained: a shift can physically
+//                          be anywhere on the real line (mirrors
+//                          BucklingOptions.sigma).
+//   tol                 — eigensolver convergence tolerance. Default 1e-9
+//                          (added later) encoded as the decimal literal
+//                          `0.000000001` — Reify's number grammar has no
+//                          scientific notation (same convention as
+//                          solver_buckling.ri:60-64).
+//   max_iters           — upper bound on total solver iterations across
+//                          restarts. Default 200 (added later) per PRD §4.3
+//                          (NOT 1000 — modal converges faster than buckling).
+//                          Exists so a pathologically conditioned problem
+//                          fails loudly rather than running forever.
+//   reference_direction — unit excitation direction along which modal
+//                          participation mass is projected (PRD §4.3).
+//                          Encoded as `Vector3<Dimensionless>` — a unit
+//                          vector is dimensionless, so this is mathematically
+//                          accurate, NOT a placeholder (same encoding as
+//                          `Mode.shape`; `Vector3<Real>` is not valid .ri
+//                          syntax — the `Vector3<Q>` resolver requires `Q`
+//                          to be a dimension name). Required at construction
+//                          (no default — there is no canonical excitation
+//                          direction). The `reference_direction.norm() > 0`
+//                          invariant is NOT expressible in Reify's
+//                          `constraint` grammar (method-call on Vector3, not
+//                          a scalar predicate) and is deferred to the runtime
+//                          trampoline (future task ζ), mirroring
+//                          `BucklingOptions.mode` allowlist-deferral
+//                          (solver_buckling.ri:97-107). See plan
+//                          design-decision-4.
+//
+// NOTE: defaults on the four scalar knobs land in step-16 and the three
+// positivity constraints in step-18 — declared defaultless/constraintless
+// here so the corresponding RED test steps (15, 17) fail before each impl.
+//
+// PRD reference: docs/prds/v0_3/modal-analysis.md §4.3.
+structure def ModalOptions {
+    param n_modes : Int
+    param boundary_conditions : List<Support>
+    param damping : DampingDescriptor
+    param sigma : Real
+    param tol : Real
+    param max_iters : Int
+    param reference_direction : Vector3<Dimensionless>
+}
