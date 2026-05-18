@@ -129,3 +129,26 @@
   color: var(--badge-info-text, #8aaccc);
   border: 1px solid var(--border-info, #3a5a7a);
 }
+
+/* ── Literal-bound visual distinction (Task 3788 η-frontend) ────────────── */
+
+/**
+ * Literal-bound slider gets a dashed outline to signal that scrubs are
+ * session-only (no AST writeback).  Non-functional — purely visual.
+ */
+.literalBoundSlider {
+  outline: 1px dashed var(--accent-muted, #6fa8dc);
+  outline-offset: 2px;
+}
+
+/**
+ * Small inline icon appended to the joint label for literal-bound joints.
+ * The "~" tilde symbol hints at "approximate / session-only".
+ */
+.literalBoundIcon {
+  font-size: 10px;
+  color: var(--accent-muted, #6fa8dc);
+  opacity: 0.7;
+  cursor: default;
+  user-select: none;
+}
