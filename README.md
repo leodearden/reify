@@ -94,7 +94,7 @@ See [`docs/fea-cache.md`](docs/fea-cache.md) for the FEA cache surface (director
 ## Repository layout
 
 ```
-crates/                 24 Rust crates (kernel, eval, constraints, LSP, CLI…)
+crates/                 26 Rust crates (kernel, eval, constraints, LSP, CLI…)
 gui/                    Tauri 2 + SolidJS + Three.js frontend
 examples/               50+ .ri sample files
 docs/                   Language spec, stdlib reference, design notes
