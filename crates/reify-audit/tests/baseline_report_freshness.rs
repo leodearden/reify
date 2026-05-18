@@ -3,18 +3,19 @@
 //! a small tolerance of the live `scripts/audit-orphan-producers.sh` output,
 //! so the doc cannot silently re-stale without a test failure.
 //!
-//! User-observable signal:
-//!   `cargo test -p reify-audit --test baseline_report_freshness`
+//! User-observable signal (on-demand):
+//!   `cargo test -p reify-audit --test baseline_report_freshness -- --ignored`
 //!
-//! Anti-gaming rationale: the tolerance constants are tuned so that the
-//! current stale doc (Orphan candidates: 425, live ~434, drift = 9) FAILS
-//! (red), while a freshly regenerated doc (drift ≈ 0) PASSES with comfortable
-//! margin (green).  The tolerance is intentionally small — it tolerates at
-//! most a few days of normal code churn (~+1.5 orphans/day historically)
-//! before tripping, making this a periodic freshness tripwire rather than an
-//! unconditional gating check.  If you hit it: regenerate the doc per the
-//! "How to regenerate" section in the report (splice below the preamble,
-//! bump `**Captured:**`).
+//! Anti-gaming rationale: the test is intentionally `#[ignore]`d because
+//! (i) the underlying script is documented as corpus-level / reviewer-cadence
+//! (scripts/audit-orphan-producers.sh header lines 12-14: "corpus-level only
+//! … Reviewers run it at `/review` cadence or on demand"); (ii) natural orphan
+//! churn (~+1.5/day historically) against the small ORPHAN_TOL=8 would
+//! otherwise convert this into a time-bomb that blocks unrelated PRs within
+//! ~a week; (iii) reviewers, `/audit` runs, and ad-hoc verification still
+//! invoke it via `-- --ignored`, so the anti-re-staling intent is preserved.
+//! If you hit it: regenerate the doc per the "How to regenerate" section in
+//! the report (splice below the preamble, bump `**Captured:**`).
 //!
 //! Graceful skip: if `python3`, `git`, or the audit script are absent
 //! from PATH/disk the test prints a note to stderr and returns without
@@ -25,12 +26,14 @@ use std::path::Path;
 use reify_test_support::run_orphan_audit;
 
 /// How many orphan candidates the live count may drift from the doc's declared
-/// value before the test trips.
+/// value before the on-demand check trips.
 ///
 /// Rationale: historical churn ≈ +9 orphans / 6 days ≈ 1.5/day.  A tolerance
-/// of 8 tolerates ~5 days of drift but fails at the current stale-doc drift
-/// of 9 (425 doc vs ~434 live), satisfying the TDD-red requirement.  After
-/// regeneration the drift will be ≈ 0, giving ample margin.
+/// of 8 catches real drift since the last regeneration when the test is invoked
+/// on demand (`-- --ignored`), while giving a few days of slack for minor churn.
+/// (Historical context: this value was originally chosen so that the stale doc
+/// at step-1 — drift=9, doc=425 vs live=434 — would FAIL the TDD-red step,
+/// while a freshly regenerated doc would PASS with ample margin.)
 const ORPHAN_TOL: i64 = 8;
 
 /// How many allow-listed entries the live count may drift from the doc's
@@ -38,6 +41,9 @@ const ORPHAN_TOL: i64 = 8;
 /// so a tight tolerance is appropriate.
 const ALLOWED_TOL: i64 = 3;
 
+#[ignore = "on-demand drift check; run via --ignored. Tolerance trips on natural orphan churn \
+    (~+1.5/day) and would block unrelated PRs if always-on. Aligned with \
+    scripts/audit-orphan-producers.sh review-cadence operating model."]
 #[test]
 fn baseline_report_counts_are_fresh() {
     // --- 1. Run live audit (graceful-skip if env not available) ---
