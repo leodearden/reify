@@ -232,8 +232,8 @@ fn anisotropic_material_has_law_and_frame() {
     let frame_cell = params.iter().find(|p| p.id.member == "frame").unwrap();
     assert_eq!(
         frame_cell.cell_type,
-        Type::StructureRef("Frame".to_string()),
-        "AnisotropicMaterial.frame must be a Frame structure ref"
+        Type::StructureRef("MaterialFrame".to_string()),
+        "AnisotropicMaterial.frame must be a MaterialFrame structure ref"
     );
 }
 
