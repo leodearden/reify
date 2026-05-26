@@ -75,6 +75,7 @@ pub use kernel_validation::{
 };
 pub use node_traits::{HasNodeKind, NodeKind, NodeTraits, NodeTraitsMap};
 pub use persistent::PersistentMap;
+pub use primitives::PortDirection;
 pub use provenance::{FieldImportProvenance, SnapshotProvenance};
 pub use source_location::{
     SourceLocationInfo, build_line_offsets, byte_offset_to_line_col,
@@ -82,7 +83,6 @@ pub use source_location::{
 };
 pub use spanned_ident::SpannedIdent;
 pub use structure_registry::{StructureMeta, StructureRegistry, StructureTypeId};
-pub use primitives::PortDirection;
 pub use traits::{EnumDef, TraitBound, TraitDef, TraitMember, TraitRef, TypeParam};
 pub use ty::Type;
 pub use value::{

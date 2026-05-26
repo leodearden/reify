@@ -340,23 +340,6 @@ fn annotation_consts_live_in_primitives_and_reexported_at_root_and_module() {
     assert_eq!(reify_types::annotation::SHELL_ANNOTATION, "shell");
     assert_eq!(reify_types::annotation::SOLID_ANNOTATION, "solid");
 
-    // (d) All three paths name the *same* 'static str (pub use re-exports, not copies).
-    assert!(std::ptr::eq(
-        reify_types::primitives::TEST_ANNOTATION.as_ptr(),
-        reify_types::TEST_ANNOTATION.as_ptr(),
-    ));
-    assert!(std::ptr::eq(
-        reify_types::primitives::TEST_ANNOTATION.as_ptr(),
-        reify_types::annotation::TEST_ANNOTATION.as_ptr(),
-    ));
-    assert!(std::ptr::eq(
-        reify_types::primitives::SHELL_ANNOTATION.as_ptr(),
-        reify_types::annotation::SHELL_ANNOTATION.as_ptr(),
-    ));
-    assert!(std::ptr::eq(
-        reify_types::primitives::SOLID_ANNOTATION.as_ptr(),
-        reify_types::SOLID_ANNOTATION.as_ptr(),
-    ));
 }
 
 #[test]

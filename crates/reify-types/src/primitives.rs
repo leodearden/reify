@@ -2,8 +2,9 @@
 //!
 //! This module is the home for small enums and constants that are needed by
 //! both AST-tier and IR-tier code inside `reify-types`, and which carry no
-//! dependencies on other `reify-types` modules. At task γ this module will
-//! move wholesale into `reify-core`.
+//! dependencies on other `reify-types` modules. Per PRD
+//! `docs/prds/core-ast-ir-layering.md` §5 (the `reify-core` split), this
+//! module is scheduled to move wholesale into `reify-core`.
 
 /// Direction of a port in a trait definition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
