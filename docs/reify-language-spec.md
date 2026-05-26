@@ -152,7 +152,17 @@ some(value)         // Option<T>: present value
 none                // Option<T>: absent value
 ```
 
-`undef`, `auto`, `some`, `none` are keywords, not identifiers. `undef` and `auto` can appear anywhere a value expression is expected. `some(value)` and `none` are the constructors for `Option<T>`.
+`undef`, `auto`, `some`, `none` are keywords, not identifiers (§2.10). `undef` can appear anywhere a value expression is expected. `some(value)` and `none` are the constructors for `Option<T>`.
+
+`auto` and `auto(free)` are valid only at a **binding site** — a position where a named declaration slot directly receives its value:
+
+- a `param` default (`param wall_thickness : Length = auto`),
+- a sub-instance parameter override (`sub b : Bearing { bore = auto }`),
+- a `let` binding (`let m : Length = auto`),
+- a structure-construction named argument (`Bolt(length: auto)`),
+- a connect-parameter assignment (`connect a -> b { gain = auto }`).
+
+`auto` is **not** a general expression operand. It may not appear as a function-call argument, inside an arithmetic or logical expression, in a `constraint`/`minimize`/`maximize` body, in a field `source`, or in a collection literal — these are parse errors. To bound a solver-delegated value, attach a constraint to the binding rather than embedding `auto` in an expression: write `length = auto, length > 2mm`, not `length = auto + 2mm`. (Reconciled 2026-05-26 with the grammar, which admits `auto` only at binding sites; see `docs/prds/auto-binding-site-positions.md`. The prior "anywhere a value expression is expected" wording over-promised relative to the parser.)
 
 **`auto` modes:**
 
