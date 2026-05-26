@@ -65,37 +65,70 @@ fn two_box_kernel(dx: f64) -> (OcctKernel, GeometryHandleId, GeometryHandleId) {
 
 /// Rotation-rigid-invariance and quaternion-convention check.
 ///
-/// Fixture: box_a at origin, box_b at (30, 0, 0) — NOT rotation-symmetric so
-/// a 90° rotation about Z genuinely changes the distance.
+/// **Fixture** (asymmetric — defeats the cube-invariance blind spot):
+/// - `box_a`: a 12×8×6 brick centered at origin (X∈[-6,6], Y∈[-4,4], Z∈[-3,3]).
+///   The non-cube shape is critical: a 90°-Z rotation shrinks its X-extent to ±4
+///   (the old Y-extent), yielding a different distance to `box_b` than any other axis.
+/// - `box_b`: a 10×10×10 cube translated to (30, 0, 0) (X∈[25,35]).
 ///
-/// The 90°-Z rotation quaternion is: qw = cos(π/4), qz = sin(π/4), qx = qy = 0.
+/// **Expected distances** under a 90°-Z rotation of `box_a`:
+/// - Correct Z-rotation: rotated brick has X∈[-4,4] → distance to X∈[25,35] is **21 mm**.
+/// - Wrong-axis result (xyzw/wxyz swap → interpreted as 90°-X): brick keeps X∈[-6,6] →
+///   distance is **19 mm**. The 2 mm delta is ~2×10⁶× the assertion tolerance, so any
+///   quaternion-swap bug definitively fails this test.
 ///
-/// `baseline` is computed by baking the rotation into a new shape via
-/// `GeometryOp::Rotate`, then calling `min_clearance`. The test then calls
-/// `distance_with_transform(box_b_id, box_a_id, &t_rel)` (b transformed, a
-/// fixed — forces the a_extent > b_extent branch when a has been rotated already
-/// and b is the raw box) and asserts they agree within 1e-6.
+/// **Contract**: `distance_with_transform(a, b, t)` pre-composes `t` into the
+/// cheaper-by-topology side. When |a| ≤ |b| (both rectangular solids have 18
+/// topo entities → equal → the a-side branch applies), this equals
+/// `min_clearance(T·box_a, box_b)`. The baseline is computed by baking the
+/// rotation into `box_a` via `GeometryOp::Rotate` and calling `min_clearance`.
 ///
-/// This test specifically catches xyzw/wxyz swap bugs in the quaternion
-/// constructor (gp_Quaternion takes x,y,z,w — wrong order produces a different
-/// rotation and a different distance).
+/// The 90°-Z rotation quaternion: `qw = cos(π/4)`, `qz = sin(π/4)`, `qx = qy = 0`.
 #[test]
 fn distance_with_transform_rotation_only_matches_rotated_shape() {
-    let (mut kernel, box_a_id, box_b_id) = two_box_kernel(30.0);
+    // Build an asymmetric fixture inline (avoids two_box_kernel's cube symmetry).
+    let mut kernel = OcctKernel::new();
 
-    // Bake a 90°-Z rotation into box_b.
-    let rotated = kernel
+    // box_a: 12×8×6 brick centered at origin. Width→X, Height→Y, Depth→Z.
+    let box_a = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(12.0),
+            height: Value::Real(8.0),
+            depth: Value::Real(6.0),
+        })
+        .expect("box_a (12×8×6 brick) creation should succeed");
+    let box_a_id = box_a.id;
+
+    // box_b: 10×10×10 cube translated to (30, 0, 0) → X∈[25,35].
+    let box_b_raw = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(10.0),
+            depth: Value::Real(10.0),
+        })
+        .expect("box_b_raw creation should succeed");
+    let box_b = kernel
+        .execute(&GeometryOp::Translate {
+            target: box_b_raw.id,
+            dx: 30.0,
+            dy: 0.0,
+            dz: 0.0,
+        })
+        .expect("box_b translate to (30,0,0) should succeed");
+    let box_b_id = box_b.id;
+
+    // Baseline: bake a 90°-Z rotation into box_a, then measure min_clearance.
+    // After rotation: box_a's X-extent is ±4 (old Y-extent), distance to box_b = 21mm.
+    let rotated_a = kernel
         .execute(&GeometryOp::Rotate {
-            target: box_b_id,
+            target: box_a_id,
             axis: [0.0, 0.0, 1.0],
             angle_rad: PI / 2.0,
         })
-        .expect("rotate box_b 90° Z should succeed");
-
-    // Baseline: min_clearance(box_a, rotated_box_b).
+        .expect("rotate box_a 90° Z should succeed");
     let baseline = kernel
-        .min_clearance(box_a_id, rotated.id)
-        .expect("min_clearance(box_a, rotated) should succeed");
+        .min_clearance(rotated_a.id, box_b_id)
+        .expect("min_clearance(rotated_a, box_b) should succeed");
 
     // Transform3 encoding 90°-Z rotation: qw = cos(π/4), qz = sin(π/4).
     let t_rel = Transform3 {
@@ -108,10 +141,8 @@ fn distance_with_transform_rotation_only_matches_rotated_shape() {
         tz: 0.0,
     };
 
-    // Under-transform: distance_with_transform(box_a, box_b, t_rel) where t_rel
-    // is applied to box_b. Since `distance_with_transform(a, b, t)` pre-composes
-    // t into the cheaper side (and by rigid-invariance dist(A, T·B) == dist(T⁻¹·A, B)),
-    // this should match baseline.
+    // Under-transform: distance_with_transform(a, b, t) applies t to a (the first arg)
+    // per the contract at lib.rs:855 — equivalent to min_clearance(T·box_a, box_b).
     let under_transform = kernel
         .distance_with_transform(box_a_id, box_b_id, &t_rel)
         .expect("distance_with_transform should succeed");
@@ -120,8 +151,8 @@ fn distance_with_transform_rotation_only_matches_rotated_shape() {
         (under_transform - baseline).abs() < 1e-6,
         "rotation rigid-invariance failed: \
          distance_with_transform = {under_transform}, \
-         min_clearance(rotated) = {baseline}, \
-         delta = {}",
+         min_clearance(rotated_a) = {baseline}, \
+         delta = {} (expected ≈21mm; a wrong-axis quaternion would give ≈19mm)",
         (under_transform - baseline).abs()
     );
 }
