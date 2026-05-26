@@ -3223,9 +3223,6 @@ mod invariant_tests {
     /// `Type::Geometry` is representable as of GHR-β (task 3604): a
     /// `Value::GeometryHandle` exists and `is_representable_cell_type` must
     /// admit it.
-    ///
-    /// RED: `is_representable_cell_type` still rejects `Type::Geometry` until
-    /// step-6 flips the predicate.
     #[test]
     fn is_representable_cell_type_admits_geometry() {
         assert!(

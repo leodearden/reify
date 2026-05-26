@@ -3124,6 +3124,28 @@ mod tests {
             // Different entity ⇒ not Equal
             let d = gh("Hinge", 0, [7u8; 32], 42);
             assert_ne!(a.cmp(&d), Ordering::Equal);
+
+            // Directional asserts: pin the documented lexicographic order
+            // (entity → index → upstream_values_hash); kernel_handle excluded.
+
+            // entity: "A" < "B" regardless of other fields
+            assert_eq!(
+                gh("A", 0, [0u8; 32], 1).cmp(&gh("B", 0, [0u8; 32], 1)),
+                Ordering::Less,
+                "entity ordering: A < B"
+            );
+            // index: 0 < 1 when entity is equal
+            assert_eq!(
+                gh("A", 0, [0u8; 32], 1).cmp(&gh("A", 1, [0u8; 32], 1)),
+                Ordering::Less,
+                "index ordering: 0 < 1 when entity equal"
+            );
+            // upstream_values_hash: [0;32] < [1;32] when entity + index equal
+            assert_eq!(
+                gh("A", 0, [0u8; 32], 1).cmp(&gh("A", 0, [1u8; 32], 1)),
+                Ordering::Less,
+                "upstream_values_hash ordering: [0;32] < [1;32] when entity+index equal"
+            );
         }
 
         #[test]

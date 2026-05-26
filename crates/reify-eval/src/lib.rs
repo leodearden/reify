@@ -1363,7 +1363,6 @@ mod tests {
     // ── value_type_kind_matches: GeometryHandle arm (task 3604 / GHR-β) ────────
 
     /// GeometryHandle against Type::Geometry → true.
-    /// RED: step-2's placeholder arm returns false for Type::Geometry.
     #[test]
     fn value_type_kind_matches_geometry_handle_into_geometry_type_returns_true() {
         use reify_types::{Type, Value, identity::RealizationNodeId, geometry::GeometryHandleId};
