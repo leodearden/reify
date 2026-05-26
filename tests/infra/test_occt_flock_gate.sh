@@ -151,8 +151,10 @@ echo "--- Test 14: REIFY_OCCT_LOCK_WAIT=1 fires within budget, exits non-zero wi
 _LOCK14="$(mktemp)"
 _ERR14="$(mktemp)"
 
-# Spawn a background holder that acquires the lock and holds it for 10s.
-( flock -x 9; sleep 10 ) 9>>"$_LOCK14" &
+# Spawn a background holder that acquires slot-1 and holds it for 10s.
+# The wrapper uses ${LOCK}.slot-1 (not $LOCK directly), so the holder must
+# target the slot file to actually block the wrapper.
+( flock -x 9; sleep 10 ) 9>>"${_LOCK14}.slot-1" &
 _HOLDER14=$!
 sleep 0.2  # give the holder time to acquire before we proceed
 
@@ -174,7 +176,7 @@ assert "Test 14: wrapper exits within 3s, not blocked until outer safety timeout
 assert "Test 14: stderr mentions 'acquire' and lock-wait duration (1s)" \
     grep -qE 'acquire.*1s|1s.*acquire' "$_ERR14"
 
-rm -f "$_LOCK14" "$_ERR14"
+rm -f "$_LOCK14" "${_LOCK14}.slot-1" "$_ERR14"
 
 # -- Test 15: post-lock timer fires N seconds AFTER lock acquisition, not after start ---
 echo ""
@@ -182,12 +184,14 @@ echo "--- Test 15: REIFY_OCCT_TEST_TIMEOUT measured post-lock, not from wrapper 
 
 _LOCK15="$(mktemp)"
 
-# Spawn a holder that holds the lock for 4 seconds.
+# Spawn a holder that holds slot-1 for 4 seconds.
+# The wrapper uses ${LOCK}.slot-1 (not $LOCK directly), so the holder must
+# target the slot file to actually block the wrapper.
 # _START15 is recorded ~0.2s after holder spawn, so the effective wait from
 # _START15's perspective is ~3.8s; adding 1s command gives ~4.8s, which
 # truncates to 4 (satisfying the lower bound ≥ 4).  With 3s holder the
 # wait is ~2.8s, total ~3.8s → truncates to 3 → spurious failure on CI.
-( flock -x 9; sleep 4 ) 9>>"$_LOCK15" &
+( flock -x 9; sleep 4 ) 9>>"${_LOCK15}.slot-1" &
 _HOLDER15=$!
 sleep 0.2  # give holder time to acquire
 
@@ -200,7 +204,7 @@ _ELAPSED15=$(( _END15 - _START15 ))
 
 kill "$_HOLDER15" 2>/dev/null || true
 wait "$_HOLDER15" 2>/dev/null || true
-rm -f "$_LOCK15"
+rm -f "$_LOCK15" "${_LOCK15}.slot-1"
 
 # Expected: lock acquired after ~4s, then `timeout 1 sleep 5` kills after 1s → rc=124
 # elapsed ≈ 5s total.  Without internal timeout: sleep 5 runs fully → rc=0, elapsed ≈ 9s.
