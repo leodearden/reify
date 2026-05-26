@@ -49,7 +49,7 @@ use reify_types::SourceLocationInfo;
 ///   template's source span, or when the position is past the end of `source`.
 pub fn resolve_entity_at_source_position(
     compiled: &CompiledModule,
-    _parsed: &reify_syntax::ParsedModule,
+    parsed: &reify_syntax::ParsedModule,
     source: &str,
     line_offsets: &[usize],
     line: u32,
@@ -62,52 +62,79 @@ pub fn resolve_entity_at_source_position(
 
     // Convert (line, col) → byte offset using the pre-built newline table.
     // The helper is infallible (returns source.len() for past-end positions);
-    // the template-walk's half-open `offset < max_end` check filters those out,
+    // the template-walk's half-open `offset < outer_end` check filters those out,
     // preserving the documented None contract for past-end positions.
     let offset = reify_types::line_col_to_byte_offset_with_offsets(source, line, col, line_offsets);
 
-    // Walk templates and find the one whose approximate span contains the offset.
+    // Build a name → (start, end) byte-offset table from the parsed declarations.
+    // StructureDef.span / OccurrenceDef.span cover the full `pub structure NAME { ... }`
+    // byte range including the header line and closing brace — fixing the "header line
+    // falls outside member-derived span" bug (see task 3880).
+    let parsed_decl_spans: std::collections::HashMap<&str, (usize, usize)> = parsed
+        .declarations
+        .iter()
+        .filter_map(|decl| match decl {
+            reify_syntax::Declaration::Structure(s) => {
+                Some((s.name.as_str(), (s.span.start as usize, s.span.end as usize)))
+            }
+            reify_syntax::Declaration::Occurrence(o) => {
+                Some((o.name.as_str(), (o.span.start as usize, o.span.end as usize)))
+            }
+            _ => None,
+        })
+        .collect();
+
+    // Walk templates and find the one whose source span contains the offset.
     //
-    // The approximate span is derived from the union of all member spans:
-    // value_cells, constraints, realizations, and sub_components.  This covers
-    // positions in constraint lines, geometry body cells, and sub-component
-    // declarations — all of which live inside the structure body but may fall
-    // between value-cell spans.
+    // Outer span selection — two-layer model:
+    // 1. Parsed declaration span (`StructureDef.span` / `OccurrenceDef.span`) —
+    //    covers the full `pub structure NAME { ... }` byte range including the
+    //    header line and closing brace.  Fixes the "clicking the header line
+    //    resolves to the previous structure" off-by-one (task 3880).
+    // 2. Fallback (defensive): member-derived min/max span (value_cells, constraints,
+    //    realizations, sub_components).  Used when the compiled template has no
+    //    corresponding parsed declaration (e.g. a future generic instantiation).
+    //    Worst case is the pre-fix behavior, not a panic.
     //
-    // The approximation is [min(all_member.span.start), max(all_member.span.end)).
-    // Templates with no spanned members are skipped.
+    // The narrow step (value_cells → realizations → sub_components → template name)
+    // is unchanged — it only runs once the outer containment check selects a template.
     let mut best_template: Option<&reify_compiler::TopologyTemplate> = None;
     let mut best_span_size = usize::MAX;
 
     for template in &compiled.templates {
-        // Collect span bounds from all member kinds that carry source spans.
-        let mut min_start = usize::MAX;
-        let mut max_end = 0usize;
+        // Outer span: prefer the parsed declaration span, fall back to member spans.
+        let (outer_start, outer_end) =
+            if let Some(&(start, end)) = parsed_decl_spans.get(template.name.as_str()) {
+                (start, end)
+            } else {
+                // Fallback: derive from member spans (pre-fix approximation).
+                let mut min_start = usize::MAX;
+                let mut max_end = 0usize;
+                for vc in &template.value_cells {
+                    min_start = min_start.min(vc.span.start as usize);
+                    max_end = max_end.max(vc.span.end as usize);
+                }
+                for c in &template.constraints {
+                    min_start = min_start.min(c.span.start as usize);
+                    max_end = max_end.max(c.span.end as usize);
+                }
+                for r in &template.realizations {
+                    min_start = min_start.min(r.span.start as usize);
+                    max_end = max_end.max(r.span.end as usize);
+                }
+                for sc in &template.sub_components {
+                    min_start = min_start.min(sc.span.start as usize);
+                    max_end = max_end.max(sc.span.end as usize);
+                }
+                if min_start == usize::MAX {
+                    // No spanned members and no parsed span — skip this template.
+                    continue;
+                }
+                (min_start, max_end)
+            };
 
-        for vc in &template.value_cells {
-            min_start = min_start.min(vc.span.start as usize);
-            max_end = max_end.max(vc.span.end as usize);
-        }
-        for c in &template.constraints {
-            min_start = min_start.min(c.span.start as usize);
-            max_end = max_end.max(c.span.end as usize);
-        }
-        for r in &template.realizations {
-            min_start = min_start.min(r.span.start as usize);
-            max_end = max_end.max(r.span.end as usize);
-        }
-        for sc in &template.sub_components {
-            min_start = min_start.min(sc.span.start as usize);
-            max_end = max_end.max(sc.span.end as usize);
-        }
-
-        if min_start == usize::MAX {
-            // No spanned members — skip this template.
-            continue;
-        }
-
-        if offset >= min_start && offset < max_end {
-            let size = max_end - min_start;
+        if offset >= outer_start && offset < outer_end {
+            let size = outer_end - outer_start;
             if size < best_span_size {
                 best_template = Some(template);
                 best_span_size = size;
