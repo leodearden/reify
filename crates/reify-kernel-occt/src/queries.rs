@@ -13,16 +13,23 @@ use crate::ffi::ffi::{OcctShape, Transform3Props};
 use crate::Transform3;
 use reify_types::QueryError;
 
-/// Build a `Transform3Props` POD from a `Transform3` (field-for-field copy).
-fn to_props(t: &Transform3) -> Transform3Props {
-    Transform3Props {
-        qw: t.qw,
-        qx: t.qx,
-        qy: t.qy,
-        qz: t.qz,
-        tx: t.tx,
-        ty: t.ty,
-        tz: t.tz,
+/// Conversion from `Transform3` (always-compiled public type) to the cxx-bridge
+/// `Transform3Props` POD (available only under `has_occt`).
+///
+/// Both structs have identical field order `{ qw, qx, qy, qz, tx, ty, tz }`, so
+/// this `From` impl is the single enforced coupling point — any future field addition
+/// must touch both definitions (the compiler will catch a missing initialiser here).
+impl From<&Transform3> for Transform3Props {
+    fn from(t: &Transform3) -> Self {
+        Transform3Props {
+            qw: t.qw,
+            qx: t.qx,
+            qy: t.qy,
+            qz: t.qz,
+            tx: t.tx,
+            ty: t.ty,
+            tz: t.tz,
+        }
     }
 }
 
@@ -35,7 +42,7 @@ pub(crate) fn distance_with_transform(
     b: &OcctShape,
     t: &Transform3,
 ) -> Result<f64, QueryError> {
-    crate::ffi::ffi::distance_with_transform(a, b, &to_props(t))
+    crate::ffi::ffi::distance_with_transform(a, b, &Transform3Props::from(t))
         .map_err(|e| QueryError::QueryFailed(e.to_string()))
 }
 
@@ -50,6 +57,6 @@ pub(crate) fn interferes_with_transform(
     b: &OcctShape,
     t: &Transform3,
 ) -> Result<bool, QueryError> {
-    crate::ffi::ffi::interferes_with_transform(a, b, &to_props(t))
+    crate::ffi::ffi::interferes_with_transform(a, b, &Transform3Props::from(t))
         .map_err(|e| QueryError::QueryFailed(e.to_string()))
 }

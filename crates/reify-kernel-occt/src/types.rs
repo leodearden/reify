@@ -13,6 +13,13 @@
 /// Field order: `{ qw, qx, qy, qz, tx, ty, tz }` — quaternion scalar-first
 /// (`qw + qx·i + qy·j + qz·k`); translation last.
 ///
+/// **Invariant**: the quaternion `(qw, qx, qy, qz)` must be a unit quaternion
+/// (`|q|² ∈ [1-1e-6, 1+1e-6]`). The C++ `build_trsf` helper validates this and
+/// returns `QueryError::QueryFailed` if the norm deviates — passing a non-unit
+/// quaternion (e.g. from accumulated float drift in a kinematic chain) silently
+/// produces a non-rigid `gp_Trsf`, so callers must normalise before constructing
+/// a `Transform3`.
+///
 /// On the C++ side, OCCT's `gp_Quaternion` constructor takes `(x, y, z, w)`, so the
 /// single point of field-order translation is the explicit `gp_Quaternion(t.qx, t.qy,
 /// t.qz, t.qw)` line in `cpp/occt_wrapper.cpp`.

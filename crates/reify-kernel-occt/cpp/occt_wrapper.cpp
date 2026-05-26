@@ -2929,7 +2929,23 @@ double min_clearance(const OcctShape& a, const OcctShape& b) {
 ///
 /// Field order in `Transform3Props`: { qw, qx, qy, qz, tx, ty, tz }.
 /// OCCT's `gp_Quaternion` constructor order is (x, y, z, w) — the mapping is explicit.
+///
+/// **Requires** a unit quaternion (`|q|² ∈ [1-1e-6, 1+1e-6]`). Passing a non-unit
+/// quaternion would silently produce a non-rigid `gp_Trsf`, causing
+/// `trsf.Inverted()` in the cheaper-by-topology branch to violate rigid-invariance.
+/// Callers (e.g. kinematic-chain accumulators) must normalise before wrapping in
+/// a `Transform3`; drift exceeding 1e-6 raises a `QueryError::QueryFailed`.
 static gp_Trsf build_trsf(const Transform3Props& t) {
+    // Validate unit quaternion before handing to OCCT. Non-unit inputs produce
+    // silently wrong transforms — better to fail loudly than return bad distances.
+    const double norm_sq = t.qw * t.qw + t.qx * t.qx + t.qy * t.qy + t.qz * t.qz;
+    constexpr double UNIT_QT_EPS = 1e-6;
+    if (std::abs(norm_sq - 1.0) > UNIT_QT_EPS) {
+        throw std::runtime_error(
+            "build_trsf: non-unit quaternion (|q|^2 = " +
+            std::to_string(norm_sq) + ", expected 1 +/- 1e-6); "
+            "caller must normalise the quaternion before passing a Transform3");
+    }
     // Quaternion order: OCCT is (x,y,z,w) — Transform3.qw last in the call.
     gp_Quaternion q(t.qx, t.qy, t.qz, t.qw);
     gp_Trsf trsf;

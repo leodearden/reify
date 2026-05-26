@@ -56,10 +56,6 @@ fn two_box_kernel(dx: f64) -> (OcctKernel, GeometryHandleId, GeometryHandleId) {
 }
 
 // ---------------------------------------------------------------------------
-// distance_with_transform — rigid-invariance pin (translation-only)
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // distance_with_transform — rigid-invariance pin (rotation-only)
 // ---------------------------------------------------------------------------
 
@@ -153,6 +149,103 @@ fn distance_with_transform_rotation_only_matches_rotated_shape() {
          distance_with_transform = {under_transform}, \
          min_clearance(rotated_a) = {baseline}, \
          delta = {} (expected ≈21mm; a wrong-axis quaternion would give ≈19mm)",
+        (under_transform - baseline).abs()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// distance_with_transform — rigid-invariance pin (rotation + translation combined)
+// ---------------------------------------------------------------------------
+
+/// Combined-transform rigid-invariance: verifies that `distance_with_transform`
+/// handles the full SE(3) case (both rotation and translation nonzero), catching
+/// bugs where `SetRotation` / `SetTranslationPart` compose in the wrong order.
+///
+/// **Fixture** (same asymmetric brick as the rotation-only test):
+/// - `box_a`: 12×8×6 brick centered at origin (X∈[-6,6], Y∈[-4,4], Z∈[-3,3]).
+/// - `box_b`: 10×10×10 cube translated to (30, 0, 0) (X∈[25,35]).
+///
+/// **Transform**: 90°-Z rotation (`qw=cos(π/4)`, `qz=sin(π/4)`) **and** +5mm X translation.
+///
+/// `gp_Trsf` applies as `p' = R·p + t` (rotate-then-translate). After the combined transform:
+/// - 90°-Z rotates box_a: X-extent shrinks to ±4 (old Y-extent).
+/// - +5mm X translation shifts it: X∈[1, 9].
+/// - Distance to box_b (X∈[25,35]) = **16 mm**.
+///
+/// A translate-before-rotate bug would give ≈21 mm, a ~5 mm delta well above 1e-6.
+#[test]
+fn distance_with_transform_rotation_and_translation_matches_composed_shape() {
+    let mut kernel = OcctKernel::new();
+
+    // box_a: 12×8×6 brick centered at origin.
+    let box_a = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(12.0),
+            height: Value::Real(8.0),
+            depth: Value::Real(6.0),
+        })
+        .expect("box_a (12×8×6 brick) creation should succeed");
+    let box_a_id = box_a.id;
+
+    // box_b: 10×10×10 cube translated to (30, 0, 0) → X∈[25,35].
+    let box_b_raw = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(10.0),
+            depth: Value::Real(10.0),
+        })
+        .expect("box_b_raw creation should succeed");
+    let box_b = kernel
+        .execute(&GeometryOp::Translate {
+            target: box_b_raw.id,
+            dx: 30.0,
+            dy: 0.0,
+            dz: 0.0,
+        })
+        .expect("box_b translate to (30,0,0) should succeed");
+    let box_b_id = box_b.id;
+
+    // Baseline: bake Rotate(box_a, 90°-Z) then Translate(+5mm X), then min_clearance.
+    // GeometryOps follow the same compose-order as gp_Trsf (rotate first, translate second).
+    let rotated_a = kernel
+        .execute(&GeometryOp::Rotate {
+            target: box_a_id,
+            axis: [0.0, 0.0, 1.0],
+            angle_rad: PI / 2.0,
+        })
+        .expect("rotate box_a 90°-Z should succeed");
+    let composed_a = kernel
+        .execute(&GeometryOp::Translate {
+            target: rotated_a.id,
+            dx: 5.0,
+            dy: 0.0,
+            dz: 0.0,
+        })
+        .expect("translate rotated_a by +5mm X should succeed");
+    let baseline = kernel
+        .min_clearance(composed_a.id, box_b_id)
+        .expect("min_clearance(composed_a, box_b) should succeed");
+
+    // Combined Transform3: 90°-Z rotation + 5mm X translation.
+    let t_rel = Transform3 {
+        qw: (PI / 4.0).cos(),
+        qx: 0.0,
+        qy: 0.0,
+        qz: (PI / 4.0).sin(),
+        tx: 5.0,
+        ty: 0.0,
+        tz: 0.0,
+    };
+    let under_transform = kernel
+        .distance_with_transform(box_a_id, box_b_id, &t_rel)
+        .expect("distance_with_transform should succeed");
+
+    assert!(
+        (under_transform - baseline).abs() < 1e-6,
+        "combined rotation+translation rigid-invariance failed: \
+         distance_with_transform = {under_transform}, \
+         min_clearance(rotate_then_translate(box_a)) = {baseline}, \
+         delta = {} (expected ≈16mm; translate-before-rotate bug would give ≈21mm)",
         (under_transform - baseline).abs()
     );
 }
