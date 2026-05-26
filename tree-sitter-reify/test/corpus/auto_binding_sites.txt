@@ -103,3 +103,41 @@ structure S { sub b : Bearing { bore = auto(free) } }
         (param_assignment
           name: (identifier)
           value: (auto_keyword))))))
+
+================================================================================
+named_argument value = auto (strict) — step-7 RED, GREEN after step-8
+================================================================================
+
+structure S { sub b = Bearing(bore: auto) }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (identifier)
+      (named_argument_list
+        (named_argument
+          name: (identifier)
+          value: (auto_keyword))))))
+
+================================================================================
+named_argument value = auto(free) — step-7 RED, GREEN after step-8
+================================================================================
+
+structure S { sub b = Bearing(bore: auto(free)) }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (identifier)
+      (named_argument_list
+        (named_argument
+          name: (identifier)
+          value: (auto_keyword))))))
