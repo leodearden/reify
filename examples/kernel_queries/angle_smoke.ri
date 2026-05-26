@@ -1,0 +1,22 @@
+// Smoke fixture for angle(Vec3, Vec3) -> Angle (task 3614, KGQ-ε)
+// PRD: docs/prds/v0_3/kernel-geometry-queries.md §9
+//
+// User-observable signal:
+//   angle(vec3(1,0,0), vec3(0,1,0)) == Angle(90 deg)  (π/2 radians)
+//
+// Pure-math: acos(clamp(dot(a,b)/(|a||b|), -1, 1)). No kernel call.
+// Args are let-bound vec3 values so they land in the engine values map
+// as Value::Vector([Real,Real,Real]) and are resolved by resolve_vec3_arg.
+//
+// Pinning test:
+//   crates/reify-eval/tests/kernel_queries_angle_smoke.rs::
+//     angle_smoke_evals_to_ninety_degrees
+//
+// Grammar modelled on examples/topology_selectors/block_inertia.ri
+// and examples/linalg.ri (vec3 literal syntax).
+
+structure def AngleSmoke {
+    let a = vec3(1.0, 0.0, 0.0)
+    let b = vec3(0.0, 1.0, 0.0)
+    let angle_ab = angle(a, b)
+}

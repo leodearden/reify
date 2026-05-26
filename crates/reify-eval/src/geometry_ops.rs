@@ -1752,6 +1752,7 @@ fn kernel_distance(
 //   `closest_point(point, geometry)` → `GeometryQuery::ClosestPointOnShape`
 //   `is_on(point, geometry)`         → `GeometryQuery::PointOnShape`
 //   `angle_between_surfaces(a, b)`   → `GeometryQuery::SurfaceAngle`
+//   `angle(a, b)`                    → pure-math acos (task 3614, KGQ-ε)
 //
 // ── Which names are compile-time typed but NOT eval-dispatched (task 2699) ──
 //
@@ -1787,9 +1788,11 @@ fn kernel_distance(
 //                          (parsed from the kernel's JSON-Point3 reply).
 //   `Some(Value::Bool(_))` for `is_on`.
 //   `Some(Value::Scalar { dimension: ANGLE, .. })` for
-//                          `angle_between_surfaces`.
+//                          `angle_between_surfaces` and `angle`.
 //   `Some(Value::Undef)`   on a kernel error or a malformed kernel reply
-//                          (defensive downgrade with a Warning diagnostic).
+//                          (defensive downgrade with a Warning diagnostic);
+//                          also for `angle` with zero-length / non-finite
+//                          input (Warning emitted, no kernel call).
 //   `None`                 when the expression is not a recognised
 //                          topology-selector helper, or the arg shape is
 //                          unsupported. Callers fall through to the cell's
@@ -1823,6 +1826,7 @@ pub(crate) fn try_eval_topology_selector(
         "edges_at_height" => TopologySelectorHelper::EdgesAtHeight,
         "adjacent_faces" => TopologySelectorHelper::AdjacentFaces,
         "shared_edges" => TopologySelectorHelper::SharedEdges,
+        "angle" => TopologySelectorHelper::Angle,
         _ => return None,
     };
 
@@ -1885,7 +1889,8 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::EdgesParallelTo
                 | TopologySelectorHelper::EdgesAtHeight
                 | TopologySelectorHelper::AdjacentFaces
-                | TopologySelectorHelper::SharedEdges => {
+                | TopologySelectorHelper::SharedEdges
+                | TopologySelectorHelper::Angle => {
                     unreachable!("ClosestPoint/IsOn outer match guarantees this")
                 }
             }
@@ -1896,6 +1901,47 @@ pub(crate) fn try_eval_topology_selector(
             let face_b = resolve_geometry_handle_arg(&args[1], named_steps)?;
             let query = reify_types::GeometryQuery::SurfaceAngle { face_a, face_b };
             dispatch_surface_angle(kernel, &query, &function.name, diagnostics)
+        }
+        TopologySelectorHelper::Angle => {
+            // Both args: value-flow Vec3 ValueRefs → values map → [f64; 3].
+            // Pure-math: acos(clamp(dot(a,b)/(|a||b|), -1, 1)). No kernel call.
+            //
+            // The dot-product and L2-norm are hand-rolled on [f64; 3] rather than
+            // reusing `crates/reify-stdlib/src/linalg.rs` because that crate
+            // operates on `Value` tensors, not bare [f64; 3] slices.  If the
+            // degenerate-input semantics here ever diverge from linalg.rs's
+            // `magnitude`/`dot` handling, align them explicitly.  See also the
+            // unit tests for `angle` in this module (task 3614, KGQ-ε).
+            let a = resolve_vec3_arg(&args[0], values)?;
+            let b = resolve_vec3_arg(&args[1], values)?;
+            let dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+            let na = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+            let nb = (b[0] * b[0] + b[1] * b[1] + b[2] * b[2]).sqrt();
+            // Primary degenerate guard: zero-length or explicitly non-finite
+            // (NaN/inf component → NaN magnitude, overflow → inf magnitude).
+            if na == 0.0 || nb == 0.0 || !na.is_finite() || !nb.is_finite() {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "angle: degenerate input — zero-length or non-finite vector \
+                     (|a|={na}, |b|={nb}); cell left at Undef"
+                )));
+                return Some(reify_types::Value::Undef);
+            }
+            let cos_theta = (dot / (na * nb)).clamp(-1.0, 1.0);
+            // Secondary degenerate guard: catch NaN from subnormal magnitude
+            // underflow (na*nb underflows to 0.0 while both na and nb
+            // individually passed the guard above — a rare but possible case
+            // with extremely small component values).  clamp() propagates NaN
+            // unchanged in IEEE 754, so this must be tested after clamping.
+            if !cos_theta.is_finite() {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "angle: computed cosine is non-finite \
+                     (|a|={na}, |b|={nb}, dot={dot}); \
+                     possible subnormal magnitude underflow; cell left at Undef"
+                )));
+                return Some(reify_types::Value::Undef);
+            }
+            let theta = cos_theta.acos();
+            Some(reify_types::Value::angle(theta))
         }
         TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => {
             // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
@@ -1919,7 +1965,8 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::EdgesParallelTo
                 | TopologySelectorHelper::EdgesAtHeight
                 | TopologySelectorHelper::AdjacentFaces
-                | TopologySelectorHelper::SharedEdges => {
+                | TopologySelectorHelper::SharedEdges
+                | TopologySelectorHelper::Angle => {
                     unreachable!("Edges/Faces outer match guarantees this")
                 }
             };
@@ -2271,6 +2318,12 @@ enum TopologySelectorHelper {
     /// an empty list (with a warning) when the two faces live on different
     /// parent solids (design-doc §4.3).
     SharedEdges,
+    /// `angle(a, b) -> Angle` — angle between two 3-D vectors (task 3614,
+    /// PRD `docs/prds/v0_3/kernel-geometry-queries.md` §9 KGQ-ε).
+    /// Pure-math: `acos(clamp(dot(a,b)/(|a||b|), -1, 1))`. No kernel call.
+    /// Args are value-flow `Vector<3>` resolved from `values`; zero-length
+    /// or non-finite input emits a Warning and returns `Some(Value::Undef)`.
+    Angle,
 }
 
 impl TopologySelectorHelper {
@@ -2288,7 +2341,8 @@ impl TopologySelectorHelper {
             | TopologySelectorHelper::EdgesByLength
             | TopologySelectorHelper::FacesByArea
             | TopologySelectorHelper::AdjacentFaces
-            | TopologySelectorHelper::SharedEdges => 2,
+            | TopologySelectorHelper::SharedEdges
+            | TopologySelectorHelper::Angle => 2,
             TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => 1,
             TopologySelectorHelper::FacesByNormal
             | TopologySelectorHelper::EdgesParallelTo
@@ -6858,6 +6912,18 @@ mod tests {
         ])
     }
 
+    /// Build a Value::Vector with three dimensionless Real components, mirroring
+    /// how a let-bound `vec3(x, y, z)` realises in the `values` map.
+    /// Analogous to `point3_length_value` above. Used by the `angle` dispatch
+    /// unit tests (task 3614, KGQ-ε).
+    fn vec3_value(x: f64, y: f64, z: f64) -> reify_types::Value {
+        reify_types::Value::Vector(vec![
+            reify_types::Value::Real(x),
+            reify_types::Value::Real(y),
+            reify_types::Value::Real(z),
+        ])
+    }
+
     #[test]
     fn try_eval_topology_selector_closest_point_kernel_reply_parses_to_point3_length() {
         use reify_test_support::mocks::MockGeometryKernel;
@@ -7567,6 +7633,391 @@ mod tests {
             "diagnostic must indicate the parse failure, got: {}",
             diag.message
         );
+    }
+
+    // ── try_eval_topology_selector: angle dispatch (task 3614, KGQ-ε) ────────
+    //
+    // These tests pin the pure-math `angle(Vec3, Vec3) -> Angle` dispatch arm.
+    // No kernel calls — acos(clamp(dot/(|a||b|), -1, 1)).  Modelled on the
+    // `try_eval_topology_selector_angle_between_surfaces_*` tests above.
+
+    #[test]
+    fn try_eval_topology_selector_angle_two_vec3_value_refs_returns_angle_scalar() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let mut kernel = MockGeometryKernel::new();
+
+        let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let mut values = reify_types::ValueMap::new();
+        values.insert(
+            reify_types::ValueCellId::new("AngleSmoke", "a"),
+            vec3_value(1.0, 0.0, 0.0),
+        );
+        values.insert(
+            reify_types::ValueCellId::new("AngleSmoke", "b"),
+            vec3_value(0.0, 1.0, 0.0),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "angle",
+            "AngleSmoke",
+            "a",
+            reify_types::Type::vec3(reify_types::Type::Real),
+            "b",
+            reify_types::Type::vec3(reify_types::Type::Real),
+            reify_types::Type::angle(),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::angle(std::f64::consts::FRAC_PI_2)),
+            "angle(vec3(1,0,0), vec3(0,1,0)) must return Some(Value::angle(PI/2)); got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "perpendicular vectors must NOT emit diagnostics, got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_angle_parallel_vectors_returns_zero_angle() {
+        // vec3(1,0,0) · vec3(2,0,0): cos=1.0 → clamp → acos(1.0) = 0.0.
+        // Proves the acos-domain upper-bound clamp for parallel vectors.
+        use reify_test_support::mocks::MockGeometryKernel;
+        let mut kernel = MockGeometryKernel::new();
+
+        let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let mut values = reify_types::ValueMap::new();
+        values.insert(
+            reify_types::ValueCellId::new("AngleSmoke", "a"),
+            vec3_value(1.0, 0.0, 0.0),
+        );
+        values.insert(
+            reify_types::ValueCellId::new("AngleSmoke", "b"),
+            vec3_value(2.0, 0.0, 0.0),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "angle",
+            "AngleSmoke",
+            "a",
+            reify_types::Type::vec3(reify_types::Type::Real),
+            "b",
+            reify_types::Type::vec3(reify_types::Type::Real),
+            reify_types::Type::angle(),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::angle(0.0)),
+            "angle(vec3(1,0,0), vec3(2,0,0)) (parallel) must return Some(Value::angle(0.0)); \
+             got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "parallel vectors must NOT emit diagnostics, got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_angle_antiparallel_vectors_returns_pi() {
+        // vec3(1,0,0) · vec3(-1,0,0): cos=-1.0 → clamp → acos(-1.0) = π.
+        // Proves the acos-domain lower-bound clamp for antiparallel vectors.
+        use reify_test_support::mocks::MockGeometryKernel;
+        let mut kernel = MockGeometryKernel::new();
+
+        let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let mut values = reify_types::ValueMap::new();
+        values.insert(
+            reify_types::ValueCellId::new("AngleSmoke", "a"),
+            vec3_value(1.0, 0.0, 0.0),
+        );
+        values.insert(
+            reify_types::ValueCellId::new("AngleSmoke", "b"),
+            vec3_value(-1.0, 0.0, 0.0),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "angle",
+            "AngleSmoke",
+            "a",
+            reify_types::Type::vec3(reify_types::Type::Real),
+            "b",
+            reify_types::Type::vec3(reify_types::Type::Real),
+            reify_types::Type::angle(),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::angle(std::f64::consts::PI)),
+            "angle(vec3(1,0,0), vec3(-1,0,0)) (antiparallel) must return \
+             Some(Value::angle(PI)); got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "antiparallel vectors must NOT emit diagnostics, got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_angle_nonvec3_scalar_literal_args_falls_through_to_none() {
+        // angle(<literal_real>, <literal_real>) — scalar Real literals (not
+        // Value::Vector), so resolve_vec3_arg returns None for both args and
+        // the dispatcher falls through to None.  Note: resolve_vec3_arg DOES
+        // accept Literal(Value::Vector) (see line ~2490), so a literal *vec3*
+        // would NOT fall through — it would resolve and compute an angle.
+        // This test pins the non-Vec3 scalar literal case only.  See
+        // `try_eval_topology_selector_angle_literal_vec3_args_resolves_and_returns_angle`
+        // for the literal-Vec3 case.
+        use reify_test_support::mocks::CountingMockKernel;
+        let inner = reify_test_support::mocks::MockGeometryKernel::new();
+        let mut kernel = CountingMockKernel::new(inner);
+
+        let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let values = reify_types::ValueMap::new();
+
+        let expr = topology_selector_call_literal_args("angle");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "angle(<literal>, <literal>) must return None, got {:?}",
+            result
+        );
+        assert_eq!(
+            kernel.total_query_count(),
+            0,
+            "kernel must NOT be consulted for non-ValueRef args"
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_angle_literal_vec3_args_resolves_and_returns_angle() {
+        // angle(Literal(vec3(1,0,0)), Literal(vec3(0,1,0))) — resolve_vec3_arg
+        // accepts CompiledExprKind::Literal(Value::Vector) directly (line ~2490),
+        // so literal vec3 args DO resolve and produce an angle, unlike the
+        // scalar-literal case above.  Pins the actually-distinct contract for
+        // literal-typed Vec3 args.
+        use reify_test_support::mocks::MockGeometryKernel;
+        let mut kernel = MockGeometryKernel::new();
+
+        let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let values = reify_types::ValueMap::new(); // empty — args come from literals
+
+        // Build angle(Literal(vec3(1,0,0)), Literal(vec3(0,1,0))).
+        let arg_a = reify_types::CompiledExpr::literal(
+            vec3_value(1.0, 0.0, 0.0),
+            reify_types::Type::vec3(reify_types::Type::Real),
+        );
+        let arg_b = reify_types::CompiledExpr::literal(
+            vec3_value(0.0, 1.0, 0.0),
+            reify_types::Type::vec3(reify_types::Type::Real),
+        );
+        let mut ch =
+            reify_types::ContentHash::of(&[reify_types::TAG_FUNCTION_CALL])
+                .combine(reify_types::ContentHash::of_str("angle"));
+        ch = ch.combine(arg_a.content_hash).combine(arg_b.content_hash);
+        let expr = reify_types::CompiledExpr {
+            kind: reify_types::CompiledExprKind::FunctionCall {
+                function: reify_types::ResolvedFunction {
+                    name: "angle".to_string(),
+                    qualified_name: "angle".to_string(),
+                },
+                args: vec![arg_a, arg_b],
+            },
+            result_type: reify_types::Type::angle(),
+            content_hash: ch,
+        };
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::angle(std::f64::consts::FRAC_PI_2)),
+            "angle(literal vec3(1,0,0), literal vec3(0,1,0)) must resolve to \
+             Some(Value::angle(π/2)); got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "orthogonal literal vec3 args must NOT emit diagnostics, got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_angle_zero_length_vector_returns_undef() {
+        // Degenerate input: zero-length vec3(0,0,0) causes |a|=0, division by
+        // zero → the dispatcher must emit exactly one Warning and return
+        // Some(Value::Undef) rather than propagating NaN.
+        use reify_test_support::mocks::MockGeometryKernel;
+        let mut kernel = MockGeometryKernel::new();
+
+        let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let mut values = reify_types::ValueMap::new();
+        values.insert(
+            reify_types::ValueCellId::new("AngleSmoke", "a"),
+            vec3_value(0.0, 0.0, 0.0),
+        );
+        values.insert(
+            reify_types::ValueCellId::new("AngleSmoke", "b"),
+            vec3_value(0.0, 1.0, 0.0),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "angle",
+            "AngleSmoke",
+            "a",
+            reify_types::Type::vec3(reify_types::Type::Real),
+            "b",
+            reify_types::Type::vec3(reify_types::Type::Real),
+            reify_types::Type::angle(),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::Undef),
+            "angle(vec3(0,0,0), ...) with zero-length input must return \
+             Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "zero-length vector must emit exactly one Warning, got {} diagnostics: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_types::Severity::Warning,
+            "diagnostic severity must be Warning, got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("angle"),
+            "diagnostic must mention the helper name 'angle', got: {}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_angle_nonfinite_vector_component_returns_undef() {
+        // Degenerate input: a vector with a NaN component causes na = NaN
+        // (NaN*NaN + 0 + 0 = NaN, sqrt(NaN) = NaN).  The primary guard
+        // `!na.is_finite()` at the dispatch arm must catch this and return
+        // Some(Value::Undef) with exactly one Warning — no panic, no NaN-poison.
+        // Also tested: f64::INFINITY component → na = inf → same guard fires.
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        for (label, ax, ay, az) in [
+            ("NaN", f64::NAN, 0.0_f64, 0.0_f64),
+            ("INFINITY", f64::INFINITY, 0.0, 0.0),
+        ] {
+            let mut kernel = MockGeometryKernel::new();
+            let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+            let mut values = reify_types::ValueMap::new();
+            values.insert(
+                reify_types::ValueCellId::new("T", "a"),
+                vec3_value(ax, ay, az),
+            );
+            values.insert(
+                reify_types::ValueCellId::new("T", "b"),
+                vec3_value(0.0, 1.0, 0.0),
+            );
+            let expr = topology_selector_call_two_value_refs(
+                "angle",
+                "T",
+                "a",
+                reify_types::Type::vec3(reify_types::Type::Real),
+                "b",
+                reify_types::Type::vec3(reify_types::Type::Real),
+                reify_types::Type::angle(),
+            );
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = super::try_eval_topology_selector(
+                &expr,
+                &named_steps,
+                &values,
+                &mut kernel,
+                &mut diagnostics,
+            );
+            assert_eq!(
+                result,
+                Some(reify_types::Value::Undef),
+                "angle(vec3({label},...), ...) must return Some(Value::Undef); got {result:?}"
+            );
+            assert_eq!(
+                diagnostics.len(),
+                1,
+                "non-finite component must emit exactly one Warning \
+                 (label={label}), got {} diagnostics: {diagnostics:?}",
+                diagnostics.len()
+            );
+            assert_eq!(
+                diagnostics[0].severity,
+                reify_types::Severity::Warning,
+                "diagnostic severity must be Warning (label={label}), got {:?}",
+                diagnostics[0].severity
+            );
+        }
     }
 
     // ── gate_query_capability unit tests (task 3623) ─────────────────────────
