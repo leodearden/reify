@@ -1,0 +1,8 @@
+[package]
+name = "reify-fdm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "FDM (fused deposition modeling) as-printed FEA — R-fast zone classifier and related structure models (see docs/prds/v0_5/fdm-as-printed-fea.md)"
+
+[dependencies]
