@@ -4337,6 +4337,364 @@ mod tests {
         );
     }
 
+    // ── geometry_op_to_operation unit tests ──────────────────────────────────
+
+    /// Pins the `GeometryOp` → `Operation` total mapping (task ε / 3436,
+    /// PRD §8 step-3/4). Each entry constructs a representative `GeometryOp`
+    /// (argument values are immaterial — the mapping is purely on variant
+    /// kind, mirroring `parent_handles_for_op`'s table) and asserts the
+    /// dispatcher-classifier output.
+    ///
+    /// Coverage spans every variant family — Primitives, Curves, Pipe,
+    /// Booleans, single-target Modify/Transform/Pattern, single-profile
+    /// Sweep, multi-profile Loft. Rust's exhaustive `match` inside
+    /// `geometry_op_to_operation` makes a new `GeometryOp` variant fail to
+    /// compile at the helper site, so the helper itself guards against
+    /// missing arms — this test pins the chosen `Operation` per arm.
+    ///
+    /// RED before step-4 impl: `geometry_op_to_operation` does not exist yet.
+    #[test]
+    fn geometry_op_to_operation_maps_every_variant_family() {
+        use reify_types::{Operation, Value};
+
+        let h = |id| GeometryHandleId(id);
+        let r = |v| Value::Real(v);
+
+        struct Case {
+            op: GeometryOp,
+            expected: Operation,
+            label: &'static str,
+        }
+
+        let cases: Vec<Case> = vec![
+            // Primitives
+            Case {
+                op: GeometryOp::Box {
+                    width: r(0.01),
+                    height: r(0.01),
+                    depth: r(0.01),
+                },
+                expected: Operation::PrimitiveBox,
+                label: "Box → PrimitiveBox",
+            },
+            Case {
+                op: GeometryOp::Cylinder {
+                    radius: r(0.005),
+                    height: r(0.02),
+                },
+                expected: Operation::PrimitiveCylinder,
+                label: "Cylinder → PrimitiveCylinder",
+            },
+            Case {
+                op: GeometryOp::Sphere { radius: r(0.005) },
+                expected: Operation::PrimitiveSphere,
+                label: "Sphere → PrimitiveSphere",
+            },
+            Case {
+                op: GeometryOp::Tube {
+                    outer_r: r(0.01),
+                    inner_r: r(0.005),
+                    height: r(0.02),
+                },
+                expected: Operation::PrimitiveTube,
+                label: "Tube → PrimitiveTube",
+            },
+            // Booleans
+            Case {
+                op: GeometryOp::Union {
+                    left: h(1),
+                    right: h(2),
+                },
+                expected: Operation::BooleanUnion,
+                label: "Union → BooleanUnion",
+            },
+            Case {
+                op: GeometryOp::Difference {
+                    left: h(1),
+                    right: h(2),
+                },
+                expected: Operation::BooleanDifference,
+                label: "Difference → BooleanDifference",
+            },
+            Case {
+                op: GeometryOp::Intersection {
+                    left: h(1),
+                    right: h(2),
+                },
+                expected: Operation::BooleanIntersection,
+                label: "Intersection → BooleanIntersection",
+            },
+            // Modify
+            Case {
+                op: GeometryOp::Fillet {
+                    target: h(1),
+                    radius: r(0.001),
+                },
+                expected: Operation::ModifyFillet,
+                label: "Fillet → ModifyFillet",
+            },
+            Case {
+                op: GeometryOp::Chamfer {
+                    target: h(1),
+                    distance: r(0.001),
+                },
+                expected: Operation::ModifyChamfer,
+                label: "Chamfer → ModifyChamfer",
+            },
+            Case {
+                op: GeometryOp::Shell {
+                    target: h(1),
+                    thickness: r(0.001),
+                    faces_to_remove: vec![0],
+                },
+                expected: Operation::ModifyShell,
+                label: "Shell → ModifyShell",
+            },
+            Case {
+                op: GeometryOp::Draft {
+                    target: h(1),
+                    angle: r(0.1),
+                    plane: h(2),
+                },
+                expected: Operation::ModifyDraft,
+                label: "Draft → ModifyDraft",
+            },
+            Case {
+                op: GeometryOp::Thicken {
+                    target: h(1),
+                    offset: r(0.001),
+                },
+                expected: Operation::ModifyThicken,
+                label: "Thicken → ModifyThicken",
+            },
+            // Transform
+            Case {
+                op: GeometryOp::Translate {
+                    target: h(1),
+                    dx: 0.0,
+                    dy: 0.0,
+                    dz: 0.01,
+                },
+                expected: Operation::TransformTranslate,
+                label: "Translate → TransformTranslate",
+            },
+            Case {
+                op: GeometryOp::Rotate {
+                    target: h(1),
+                    axis: [0.0, 0.0, 1.0],
+                    angle_rad: 0.5,
+                },
+                expected: Operation::TransformRotate,
+                label: "Rotate → TransformRotate",
+            },
+            Case {
+                op: GeometryOp::Scale {
+                    target: h(1),
+                    factor: 2.0,
+                },
+                expected: Operation::TransformScale,
+                label: "Scale → TransformScale",
+            },
+            Case {
+                op: GeometryOp::RotateAround {
+                    target: h(1),
+                    point: [0.0, 0.0, 0.0],
+                    axis: [0.0, 0.0, 1.0],
+                    angle_rad: 0.5,
+                },
+                expected: Operation::TransformRotateAround,
+                label: "RotateAround → TransformRotateAround",
+            },
+            // Pattern
+            Case {
+                op: GeometryOp::LinearPattern {
+                    target: h(1),
+                    direction: [1.0, 0.0, 0.0],
+                    count: 3,
+                    spacing: r(0.01),
+                },
+                expected: Operation::PatternLinear,
+                label: "LinearPattern → PatternLinear",
+            },
+            Case {
+                op: GeometryOp::CircularPattern {
+                    target: h(1),
+                    axis_origin: [0.0, 0.0, 0.0],
+                    axis_dir: [0.0, 0.0, 1.0],
+                    count: 4,
+                    angle: r(1.57),
+                },
+                expected: Operation::PatternCircular,
+                label: "CircularPattern → PatternCircular",
+            },
+            Case {
+                op: GeometryOp::Mirror {
+                    target: h(1),
+                    plane_origin: [0.0, 0.0, 0.0],
+                    plane_normal: [1.0, 0.0, 0.0],
+                },
+                expected: Operation::PatternMirror,
+                label: "Mirror → PatternMirror",
+            },
+            Case {
+                op: GeometryOp::LinearPattern2D {
+                    target: h(1),
+                    direction1: [1.0, 0.0, 0.0],
+                    count1: 3,
+                    spacing1: r(0.01),
+                    direction2: [0.0, 1.0, 0.0],
+                    count2: 3,
+                    spacing2: r(0.01),
+                },
+                expected: Operation::PatternLinear2D,
+                label: "LinearPattern2D → PatternLinear2D",
+            },
+            Case {
+                op: GeometryOp::ArbitraryPattern {
+                    target: h(1),
+                    transforms: vec![[0.0, 0.0, 0.0]],
+                },
+                expected: Operation::PatternArbitrary,
+                label: "ArbitraryPattern → PatternArbitrary",
+            },
+            // Sweep (single-profile)
+            Case {
+                op: GeometryOp::Extrude {
+                    profile: h(1),
+                    distance: r(0.01),
+                },
+                expected: Operation::SweepExtrude,
+                label: "Extrude → SweepExtrude",
+            },
+            Case {
+                op: GeometryOp::ExtrudeSymmetric {
+                    profile: h(1),
+                    distance: r(0.01),
+                },
+                expected: Operation::SweepExtrudeSymmetric,
+                label: "ExtrudeSymmetric → SweepExtrudeSymmetric",
+            },
+            Case {
+                op: GeometryOp::Revolve {
+                    profile: h(1),
+                    axis_origin: [0.0, 0.0, 0.0],
+                    axis_dir: [0.0, 0.0, 1.0],
+                    angle_rad: 1.0,
+                },
+                expected: Operation::SweepRevolve,
+                label: "Revolve → SweepRevolve",
+            },
+            Case {
+                op: GeometryOp::Sweep {
+                    profile: h(1),
+                    path: h(2),
+                },
+                expected: Operation::SweepSweep,
+                label: "Sweep → SweepSweep",
+            },
+            Case {
+                op: GeometryOp::SweepGuided {
+                    profile: h(1),
+                    path: h(2),
+                    guide: h(3),
+                },
+                expected: Operation::SweepSweepGuided,
+                label: "SweepGuided → SweepSweepGuided",
+            },
+            Case {
+                op: GeometryOp::Pipe {
+                    path: h(1),
+                    radius: r(0.005),
+                },
+                expected: Operation::SweepPipe,
+                label: "Pipe → SweepPipe",
+            },
+            // Loft (multi-profile)
+            Case {
+                op: GeometryOp::Loft {
+                    profiles: vec![h(1), h(2)],
+                },
+                expected: Operation::SweepLoft,
+                label: "Loft → SweepLoft",
+            },
+            Case {
+                op: GeometryOp::LoftGuided {
+                    profiles: vec![h(1), h(2)],
+                    guides: vec![h(3)],
+                },
+                expected: Operation::SweepLoftGuided,
+                label: "LoftGuided → SweepLoftGuided",
+            },
+            // Curves
+            Case {
+                op: GeometryOp::LineSegment {
+                    x1: 0.0,
+                    y1: 0.0,
+                    z1: 0.0,
+                    x2: 1.0,
+                    y2: 0.0,
+                    z2: 0.0,
+                },
+                expected: Operation::CurveLineSegment,
+                label: "LineSegment → CurveLineSegment",
+            },
+            Case {
+                op: GeometryOp::Arc {
+                    center: [0.0, 0.0, 0.0],
+                    radius: 0.01,
+                    start_angle: 0.0,
+                    end_angle: 1.57,
+                    axis: [0.0, 0.0, 1.0],
+                },
+                expected: Operation::CurveArc,
+                label: "Arc → CurveArc",
+            },
+            Case {
+                op: GeometryOp::Helix {
+                    radius: 0.01,
+                    pitch: 0.005,
+                    height: 0.05,
+                },
+                expected: Operation::CurveHelix,
+                label: "Helix → CurveHelix",
+            },
+            Case {
+                op: GeometryOp::InterpCurve {
+                    points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                },
+                expected: Operation::CurveInterpCurve,
+                label: "InterpCurve → CurveInterpCurve",
+            },
+            Case {
+                op: GeometryOp::BezierCurve {
+                    control_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                },
+                expected: Operation::CurveBezierCurve,
+                label: "BezierCurve → CurveBezierCurve",
+            },
+            Case {
+                op: GeometryOp::NurbsCurve {
+                    control_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                    weights: vec![1.0, 1.0],
+                    knots: vec![0.0, 0.0, 1.0, 1.0],
+                    degree: 1,
+                },
+                expected: Operation::CurveNurbsCurve,
+                label: "NurbsCurve → CurveNurbsCurve",
+            },
+        ];
+
+        for Case {
+            op,
+            expected,
+            label,
+        } in cases
+        {
+            let got = geometry_op_to_operation(&op);
+            assert_eq!(got, expected, "{label} (got {got:?})");
+        }
+    }
+
     // ── compute_tessellation_budgets unit tests ───────────────────────────────
 
     /// Pins the return type of `compute_tessellation_budgets`:
