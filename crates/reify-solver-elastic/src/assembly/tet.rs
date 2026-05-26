@@ -69,18 +69,49 @@ use crate::math::{MIN_JACOBIAN_DET, inverse_transpose_3x3};
 /// `phys_nodes.len()` must equal `E::N_NODES`; the resulting matrix is
 /// `n_dofs × n_dofs` with `n_dofs = 3 · N_NODES`.
 ///
-/// The wrappers `element_stiffness_p1` / `element_stiffness_p2` fix
-/// `E = TetP1` / `E = TetP2` and assert the right `phys_nodes` length —
-/// callers should prefer those typed entry points.
-///
-/// Uses `det.abs()` for the volume measure so mirror-flipped (left-handed)
-/// node orderings still produce a non-negative strain-energy integrand.
-/// Right-handed elements have `det J > 0` and `det.abs() == det`.
-#[allow(clippy::needless_range_loop)]
+/// One-line delegate to [`element_stiffness_generic_with_d_global`] —
+/// preserves the legacy `IsotropicElastic`-taking entry point exactly so
+/// every existing call site keeps its bit-identical numerical behaviour
+/// (foundation β C4 contract: no possibility of a reordered FP
+/// accumulation when the D matrix path stays unchanged for the legacy
+/// callers).
+#[inline]
 pub(crate) fn element_stiffness_generic<E: ReferenceElement>(
     element: &E,
     phys_nodes: &[[f64; 3]],
     material: &IsotropicElastic,
+) -> ElementStiffness {
+    element_stiffness_generic_with_d_global(element, phys_nodes, &material.d_matrix())
+}
+
+/// D-agnostic element-stiffness assembly primitive — the inner
+/// `K_e = ∫ BᵀD_globalB |det J| dV` loop with the 6×6 D matrix passed
+/// in directly rather than derived from an `IsotropicElastic`.
+///
+/// `phys_nodes.len()` must equal `E::N_NODES`; the resulting matrix is
+/// `n_dofs × n_dofs` with `n_dofs = 3 · N_NODES`.
+///
+/// Uses `det.abs()` for the volume measure so mirror-flipped
+/// (left-handed) node orderings still produce a non-negative strain-energy
+/// integrand. Right-handed elements have `det J > 0` and
+/// `det.abs() == det`.
+///
+/// # Foundation β role (PRD §C4)
+///
+/// This is the **single source of truth** for the BᵀDB inner loop. The
+/// legacy `element_stiffness_generic(element, phys, &material)` delegates
+/// to this function via `&material.d_matrix()`, and the per-shape
+/// `element_stiffness_*_with_field` entry points (steps 10/12) delegate
+/// via `&material_field.material_at(centroid).d_matrix_global()`. Both
+/// paths share the same FP accumulation order, so the C4 bit-identity
+/// contract reduces to "identity-frame rotate_voigt is bitwise-no-op"
+/// (pinned by `rotate_voigt_identity_frame_is_bitwise_no_op` from
+/// foundation α) plus this delegation.
+#[allow(clippy::needless_range_loop)]
+pub(crate) fn element_stiffness_generic_with_d_global<E: ReferenceElement>(
+    element: &E,
+    phys_nodes: &[[f64; 3]],
+    d_mat: &[[f64; 6]; 6],
 ) -> ElementStiffness {
     assert_eq!(
         phys_nodes.len(),
@@ -89,7 +120,6 @@ pub(crate) fn element_stiffness_generic<E: ReferenceElement>(
     );
     let n = E::N_NODES;
     let n_dofs = 3 * n;
-    let d_mat = material.d_matrix();
     let mut k_e = ElementStiffness::zeros(n_dofs);
 
     // Reusable scratch buffers (one allocation per call, not per q-point).
