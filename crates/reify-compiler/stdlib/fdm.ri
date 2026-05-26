@@ -106,7 +106,7 @@ structure def FDMProcess {
     // vec3 args have consistent dimensions (each is a 1mm unit vector
     // component). The meaningful quantity is the *direction* (dimensionless
     // ratio), but the type captures the physical coordinate system.
-    param build_direction : Vector3<Length>
+    param build_direction : Vector3<Length> = vec3(0mm, 0mm, 1mm)
 
     // layer_height is the slicer-equivalent layer thickness — the
     // perpendicular distance between adjacent layer centrelines. This
@@ -114,20 +114,20 @@ structure def FDMProcess {
     // of build-direction stiffness reduction in the β-phase knockdown model.
     // Typical FDM range: 0.1mm (fine) to 0.4mm (coarse); default 0.2mm
     // per PRD §"Motivating end-to-end" and common FDM practice.
-    param layer_height : Length
+    param layer_height : Length = 0.2mm
 
     // walls is the number of perimeter shells (also called "perimeters"
     // or "outlines" in slicer terminology). Each shell adds one layer-width
     // of solid material around the part boundary. Typical FDM range: 2–4;
     // default 3 per PRD §"Motivating end-to-end".
-    param walls : Int
+    param walls : Int = 3
 
     // top_bottom_layers is the number of solid (100%-density) layers
     // printed on the top and bottom surfaces of the part. These layers
     // close the infill structure and are treated as fully dense in the
     // β-phase property-correlation pass. Typical FDM range: 3–6;
     // default 4 per PRD §"Motivating end-to-end".
-    param top_bottom_layers : Int
+    param top_bottom_layers : Int = 4
 
     // infill_density is the volume fraction of the infill region, in the
     // interval (0, 1]. A value of 0.2 means 20% of the infill volume is
@@ -136,7 +136,7 @@ structure def FDMProcess {
     // Typical FDM range: 0.1–0.5; default 0.2 per PRD §"Motivating
     // end-to-end" and Gibson & Ashby 1997 (PRD §"Built-in property
     // correlations").
-    param infill_density : Real
+    param infill_density : Real = 0.2
 
     // infill_pattern selects the internal geometry the slicer generates for
     // the infill region. The β-phase property-correlation pass uses this to
@@ -144,7 +144,7 @@ structure def FDMProcess {
     // Triangular, Honeycomb) knockdown factor models. Default: Gyroid, the
     // near-isotropic pattern preferred for structural FEA per PRD §"Built-in
     // property correlations".
-    param infill_pattern : InfillPattern
+    param infill_pattern : InfillPattern = InfillPattern.Gyroid
 
     // material is the base filament material — the elastic properties of
     // the bulk polymer before FDM-process knockdowns are applied. The β-phase
@@ -152,7 +152,7 @@ structure def FDMProcess {
     // build-direction knockdown factors to obtain the as-printed stiffness
     // tensor. Default: ABS_Plastic(), the canonical FDM thermoplastic per
     // PRD §"Motivating end-to-end".
-    param material : ElasticMaterial
+    param material : ElasticMaterial = ABS_Plastic()
 
     // ── Per-property provenance slots ──────────────────────────────────────
 
@@ -163,11 +163,52 @@ structure def FDMProcess {
     // is historical — the three fields (source, reference, notes) are generic
     // citation fields that apply equally to process parameters.
 
-    param build_direction_provenance : MaterialPropertyProvenance
-    param layer_height_provenance : MaterialPropertyProvenance
-    param walls_provenance : MaterialPropertyProvenance
-    param top_bottom_layers_provenance : MaterialPropertyProvenance
-    param infill_density_provenance : MaterialPropertyProvenance
-    param infill_pattern_provenance : MaterialPropertyProvenance
-    param material_provenance : MaterialPropertyProvenance
+    param build_direction_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "Reify FDM defaults v1",
+            reference: "PRD docs/prds/v0_5/fdm-as-printed-fea.md §Motivating end-to-end — unit-Z print axis default",
+            notes: "Build direction default vec3(0,0,1) aligns with the standard FDM Z-up convention (print bed in XY plane). PMC9828590 provides empirical evidence for build-Z knockdown magnitude."
+        )
+
+    param layer_height_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "Reify FDM defaults v1",
+            reference: "PRD docs/prds/v0_5/fdm-as-printed-fea.md §Motivating end-to-end — 0.2mm typical FDM layer",
+            notes: "0.2mm is the industry-standard default layer height for FDM ABS/PLA on 0.4mm nozzles. Range 0.1-0.4mm typical; 0.2mm balances print speed and surface quality."
+        )
+
+    param walls_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "Reify FDM defaults v1",
+            reference: "PRD docs/prds/v0_5/fdm-as-printed-fea.md §Motivating end-to-end — 3 perimeters typical",
+            notes: "3 perimeter shells is standard FDM practice for structural parts. Fewer than 2 risks delamination at boundaries; more than 4 increases print time with diminishing returns."
+        )
+
+    param top_bottom_layers_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "Reify FDM defaults v1",
+            reference: "PRD docs/prds/v0_5/fdm-as-printed-fea.md §Motivating end-to-end — 4 top/bottom solid layers",
+            notes: "4 solid layers closes the infill structure cleanly for most layer heights. For 0.2mm layers this gives 0.8mm of solid skin, which is typical for structural FDM parts."
+        )
+
+    param infill_density_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "Reify FDM defaults v1",
+            reference: "Gibson & Ashby 1997 (PRD §Built-in property correlations) — 0.2 typical FDM sparse infill",
+            notes: "0.2 (20%) infill density is the standard default for structural FDM parts. Gibson-Ashby open-cell foam model: E_eff = E_bulk * rho^n, n≈2 for open-cell foams."
+        )
+
+    param infill_pattern_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "Reify FDM defaults v1",
+            reference: "PRD docs/prds/v0_5/fdm-as-printed-fea.md §Built-in property correlations — gyroid as near-isotropic default",
+            notes: "Gyroid is preferred for structural FEA because it approximates near-isotropic in-plane stiffness. Grid/triangular/honeycomb are directional and require orthotropic knockdown factors."
+        )
+
+    param material_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "Reify FDM defaults v1",
+            reference: "PRD docs/prds/v0_5/fdm-as-printed-fea.md §Motivating end-to-end — ABS_Plastic() as canonical FDM resin",
+            notes: "ABS is the canonical FDM thermoplastic; its properties are well-characterised (matweb, NIST). See materials_fea.ri::ABS_Plastic for the full property provenance chain."
+        )
 }
