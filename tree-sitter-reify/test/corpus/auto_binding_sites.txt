@@ -141,3 +141,47 @@ structure S { sub b = Bearing(bore: auto(free)) }
         (named_argument
           name: (identifier)
           value: (auto_keyword))))))
+
+================================================================================
+connect_param_assignment value = auto (strict) — step-9 RED, GREEN after step-10
+================================================================================
+
+structure S { connect a -> b { gain = auto } }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (connect_statement
+      left: (port_ref
+        (identifier))
+      operator: (connect_operator)
+      right: (port_ref
+        (identifier))
+      body: (connect_body
+        (connect_param_assignment
+          name: (identifier)
+          value: (auto_keyword))))))
+
+================================================================================
+connect_param_assignment value = auto(free) — step-9 RED, GREEN after step-10
+================================================================================
+
+structure S { connect a -> b { gain = auto(free) } }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (connect_statement
+      left: (port_ref
+        (identifier))
+      operator: (connect_operator)
+      right: (port_ref
+        (identifier))
+      body: (connect_body
+        (connect_param_assignment
+          name: (identifier)
+          value: (auto_keyword))))))
