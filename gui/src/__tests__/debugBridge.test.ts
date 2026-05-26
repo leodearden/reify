@@ -1234,3 +1234,164 @@ describe('debug bridge pickViewport selection', () => {
     });
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// debug bridge dual-viewport binding regression (step-7)
+//
+// Pins the exact bug scenario from the task description:
+//   - dual-viewport layout registers def-preview (empty) THEN design-main (populated)
+//   - viewport_state / screenshot / fit_to_view called with no viewportId param
+//   - should target design-main (populated), NOT def-preview (empty/zero)
+//
+// Registration order mirrors DualViewport.tsx: def-preview mounts first (JSX
+// order), design-main mounts second. Both inserted via window.__REIFY_DEBUG__.viewports.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('debug bridge dual-viewport binding regression', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  /** Empty stub: getMeshes returns a zero-size Map (def-preview has no geometry). */
+  function makeEmptyStub() {
+    return {
+      scene: {} as any,
+      camera: {
+        position: { set: vi.fn(), x: 0, y: 0, z: 5 },
+        up: { set: vi.fn(), x: 0, y: 1, z: 0 },
+        rotation: { x: 0, y: 0, z: 0 },
+        fov: 75, near: 0.1, far: 1000,
+        zoom: 1,
+        lookAt: vi.fn(),
+        updateProjectionMatrix: vi.fn(),
+        updateMatrixWorld: vi.fn(),
+      } as any,
+      renderer: {
+        render: vi.fn(),
+        domElement: { toDataURL: vi.fn().mockReturnValue('data:image/png;base64,EMPTY_VP') },
+      } as any,
+      getMeshes: vi.fn().mockReturnValue(new Map<string, unknown>()),
+      getGhostMeshes: vi.fn().mockReturnValue(new Map()),
+      fitToView: vi.fn(),
+      flyToEntity: vi.fn(),
+      controls: { target: { set: vi.fn(), x: 0, y: 0, z: 0 }, update: vi.fn() } as any,
+    };
+  }
+
+  /** Populated stub: getMeshes returns a Map with 7 entries (design-main has geometry). */
+  function makePopulatedStub() {
+    const fitToView = vi.fn();
+    const rendererRender = vi.fn();
+    const mockGeometry = {
+      getAttribute: vi.fn().mockReturnValue(null),
+      getIndex: vi.fn().mockReturnValue(null),
+    };
+    // 7 mesh entries mirroring the reported printer.ri state (1444 triangles / 7 meshes)
+    const meshMap = new Map<string, unknown>(
+      Array.from({ length: 7 }, (_, i) => [`entity/part-${i}`, { geometry: mockGeometry }]),
+    );
+    return {
+      scene: {} as any,
+      camera: {
+        position: { set: vi.fn(), x: 10, y: 10, z: 10 },
+        up: { set: vi.fn(), x: 0, y: 1, z: 0 },
+        rotation: { x: 0, y: 0, z: 0 },
+        fov: 75, near: 0.1, far: 1000,
+        zoom: 1,
+        lookAt: vi.fn(),
+        updateProjectionMatrix: vi.fn(),
+        updateMatrixWorld: vi.fn(),
+      } as any,
+      renderer: {
+        render: rendererRender,
+        domElement: { toDataURL: vi.fn().mockReturnValue('data:image/png;base64,POPULATED_VP') },
+      } as any,
+      getMeshes: vi.fn().mockReturnValue(meshMap),
+      getGhostMeshes: vi.fn().mockReturnValue(new Map()),
+      fitToView,
+      flyToEntity: vi.fn(),
+      controls: { target: { set: vi.fn(), x: 0, y: 0, z: 0 }, update: vi.fn() } as any,
+      // expose spies for assertions
+      _fitToView: fitToView,
+      _rendererRender: rendererRender,
+    };
+  }
+
+  async function dispatchCmd(
+    id: number,
+    command: string,
+    params: Record<string, unknown>,
+  ) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('viewport_state with no viewportId returns meshCount from the populated design-main viewport, not 0 from def-preview', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const defPreview = makeEmptyStub();    // def-preview: 0 meshes
+    const designMain = makePopulatedStub(); // design-main: 7 meshes
+
+    // Registration order mirrors DualViewport.tsx: def-preview first, design-main second
+    window.__REIFY_DEBUG__!.viewports = {
+      'def-preview': defPreview as any,
+      'design-main': designMain as any,
+    };
+
+    const result = await dispatchCmd(600, 'viewport_state', {});
+    expect(result).not.toHaveProperty('error');
+    // Must report 7, NOT 0 — the bug returned 0 by reading def-preview
+    expect(result.meshCount).toBe(7);
+  });
+
+  it('screenshot with no viewportId calls renderer.render on the populated design-main viewport', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const defPreview = makeEmptyStub();
+    const designMain = makePopulatedStub();
+
+    window.__REIFY_DEBUG__!.viewports = {
+      'def-preview': defPreview as any,
+      'design-main': designMain as any,
+    };
+
+    await dispatchCmd(601, 'screenshot', {});
+    // design-main's render must have been called
+    expect(designMain._rendererRender).toHaveBeenCalled();
+    // def-preview's render must NOT have been called
+    expect(defPreview.renderer.render).not.toHaveBeenCalled();
+  });
+
+  it('fit_to_view with no viewportId invokes fitToView on the populated design-main viewport', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const defPreview = makeEmptyStub();
+    const designMain = makePopulatedStub();
+
+    window.__REIFY_DEBUG__!.viewports = {
+      'def-preview': defPreview as any,
+      'design-main': designMain as any,
+    };
+
+    await dispatchCmd(602, 'fit_to_view', {});
+    // design-main's fitToView must have been called
+    expect(designMain._fitToView).toHaveBeenCalledTimes(1);
+    // def-preview's fitToView must NOT have been called
+    expect(defPreview.fitToView).not.toHaveBeenCalled();
+  });
+});
