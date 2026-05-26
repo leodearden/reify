@@ -259,9 +259,13 @@ pub fn element_stiffness_p2(
 #[allow(clippy::needless_range_loop)]
 mod tests {
     use super::*;
+    use crate::assembly::hex::element_stiffness_hex_p1;
     use crate::assembly::test_support::{
-        dimensionless_steel_like, linf, matvec, scaled_p2_phys_nodes, strain_energies,
+        dimensionless_steel_like, linf, matvec, scaled_p2_phys_nodes,
+        scaled_unit_hex_phys_nodes, scaled_unit_wedge_phys_nodes, strain_energies,
     };
+    use crate::assembly::wedge::element_stiffness_wedge_p1;
+    use crate::elements::{hex_p1::HexP1, wedge_p1::WedgeP1};
 
     /// Canonical unit reference tet: vertices `(0,0,0), (1,0,0), (0,1,0),
     /// (0,0,1)` with reference-tet volume 1/6.
@@ -271,6 +275,75 @@ mod tests {
         [0.0, 1.0, 0.0],
         [0.0, 0.0, 1.0],
     ];
+
+    // ── Step 7 RED: D-agnostic primitive bit-identity regression ────────────
+
+    /// `element_stiffness_generic_with_d_global(element, phys, &d_mat)` must
+    /// return a `Vec<f64>` bitwise equal to the existing
+    /// `element_stiffness_*(phys, &material)` path for all four shapes.
+    /// This is the load-bearing pin for the C4 contract: the new path
+    /// shares the BᵀDB inner loop verbatim with the legacy path.
+    #[test]
+    fn element_stiffness_generic_with_d_global_matches_isotropic_path_bit_for_bit() {
+        let mat = dimensionless_steel_like();
+        let d_mat = mat.d_matrix();
+
+        // TetP1 row
+        {
+            let legacy = element_stiffness_p1(&UNIT_TET_P1, &mat);
+            let via_d = element_stiffness_generic_with_d_global(&TetP1, &UNIT_TET_P1[..], &d_mat);
+            assert_eq!(via_d.n_dofs, legacy.n_dofs, "TetP1 n_dofs mismatch");
+            for (i, (got, want)) in via_d.data.iter().zip(legacy.data.iter()).enumerate() {
+                assert_eq!(
+                    got.to_bits(),
+                    want.to_bits(),
+                    "TetP1: K[{i}] = {got} must equal {want} bitwise (D-agnostic primitive must share inner loop)",
+                );
+            }
+        }
+        // TetP2 row
+        {
+            let phys = scaled_p2_phys_nodes(1.0);
+            let legacy = element_stiffness_p2(&phys, &mat);
+            let via_d = element_stiffness_generic_with_d_global(&TetP2, &phys[..], &d_mat);
+            assert_eq!(via_d.n_dofs, legacy.n_dofs, "TetP2 n_dofs mismatch");
+            for (i, (got, want)) in via_d.data.iter().zip(legacy.data.iter()).enumerate() {
+                assert_eq!(
+                    got.to_bits(),
+                    want.to_bits(),
+                    "TetP2: K[{i}] = {got} must equal {want} bitwise",
+                );
+            }
+        }
+        // HexP1 row
+        {
+            let phys = scaled_unit_hex_phys_nodes(1.0);
+            let legacy = element_stiffness_hex_p1(&phys, &mat);
+            let via_d = element_stiffness_generic_with_d_global(&HexP1, &phys[..], &d_mat);
+            assert_eq!(via_d.n_dofs, legacy.n_dofs, "HexP1 n_dofs mismatch");
+            for (i, (got, want)) in via_d.data.iter().zip(legacy.data.iter()).enumerate() {
+                assert_eq!(
+                    got.to_bits(),
+                    want.to_bits(),
+                    "HexP1: K[{i}] = {got} must equal {want} bitwise",
+                );
+            }
+        }
+        // WedgeP1 row
+        {
+            let phys = scaled_unit_wedge_phys_nodes(1.0);
+            let legacy = element_stiffness_wedge_p1(&phys, &mat);
+            let via_d = element_stiffness_generic_with_d_global(&WedgeP1, &phys[..], &d_mat);
+            assert_eq!(via_d.n_dofs, legacy.n_dofs, "WedgeP1 n_dofs mismatch");
+            for (i, (got, want)) in via_d.data.iter().zip(legacy.data.iter()).enumerate() {
+                assert_eq!(
+                    got.to_bits(),
+                    want.to_bits(),
+                    "WedgeP1: K[{i}] = {got} must equal {want} bitwise",
+                );
+            }
+        }
+    }
 
     #[test]
     fn p1_returns_12_by_12_stiffness() {
