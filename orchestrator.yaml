@@ -5,29 +5,25 @@
 max_concurrent_tasks: 48
 max_per_module: 1
 lock_depth: 4
-# Verification commands (Rust + GUI frontend)
-# package-lock.json is committed — use npm ci for reproducible installs
-# Commands use `cargo --workspace`; orchestrator's scope_cargo rewriter rewrites
-# to `cargo -p <crate>` when all task files live in one crate. Do not pre-scope.
-# Each potentially-long invocation is wrapped with `timeout --kill-after=60 <N>m`:
-# SIGTERM at N minutes, then SIGKILL 60s later if it didn't exit. The --kill-after
-# fallback is essential — a hung cargo process ignored SIGTERM for 10h on 2026-04-19.
-# Budgets are generous (2-3x typical runtime) to tolerate cold caches and contention.
-# OCCT-gated cargo test invocations delegate their timeout to the wrapper via
-# REIFY_OCCT_TEST_TIMEOUT so the budget measures post-lock test runtime only —
-# lock-wait time (up to REIFY_OCCT_LOCK_WAIT=1800s) does not consume the test budget.
-# Cargo test uses a two-pass pattern (debug and release):
-#   1. Gated pass: ./scripts/cargo-test-occt-gated.sh cargo test -p <occt-crates>
-#      Acquires a cross-process flock so OCCT-touching crates serialize across
-#      concurrent worktrees. Authoritative crate list: scripts/occt-touching-crates.txt
-#      (drift-checked by tests/infra/test_occt_gated_scope.sh).
-#   2. Ungated pass: timeout --kill-after=60 Nm cargo test --workspace --exclude <occt-crates>
-#      Non-OCCT crates run concurrently across worktrees (no flock; no serialization).
-#      Has its own outer timeout because it bypasses the wrapper.
-# Other invocations (npm ci, sync_comments, infra/run_all) keep outer timeouts.
-test_command: ". ~/.cargo/env && ./scripts/tree-sitter-generate.sh && REIFY_OCCT_TEST_TIMEOUT=2700 ./scripts/cargo-test-occt-gated.sh cargo test -p reify-kernel-occt -p reify-eval -p reify-cli -p reify-config -- --test-threads=1 && timeout --kill-after=60 30m cargo test --workspace --exclude reify-kernel-occt --exclude reify-eval --exclude reify-cli --exclude reify-config -- --test-threads=1 && REIFY_OCCT_TEST_TIMEOUT=3600 ./scripts/cargo-test-occt-gated.sh cargo test -p reify-kernel-occt -p reify-eval -p reify-cli -p reify-config --release -- --test-threads=1 && timeout --kill-after=60 45m cargo test --workspace --exclude reify-kernel-occt --exclude reify-eval --exclude reify-cli --exclude reify-config --release -- --test-threads=1 && if test -d gui; then (cd gui && timeout --kill-after=60 15m bash -c 'npm ci && npm test'); fi && if test -f gui/sidecar/package-lock.json; then (cd gui/sidecar && timeout --kill-after=60 10m npm ci); fi && if test -f tree-sitter-reify/package-lock.json; then (cd tree-sitter-reify && timeout --kill-after=60 10m npm ci); fi && if test -f tests/sync_comments_test.sh; then timeout --kill-after=60 10m bash tests/sync_comments_test.sh; else echo 'WARNING: sync_comments_test.sh not found, skipping'; fi && if test -f tests/infra/run_all.sh; then timeout --kill-after=60 20m bash tests/infra/run_all.sh; fi"
-lint_command: ". ~/.cargo/env && ./scripts/tree-sitter-generate.sh && timeout --kill-after=60 30m cargo clippy --workspace -- -D warnings && if test -d gui; then (cd gui && timeout --kill-after=60 15m bash -c 'npm ci && npm run typecheck'); fi && if test -f gui/sidecar/package-lock.json; then (cd gui/sidecar && timeout --kill-after=60 10m bash -c 'npm ci && npm run typecheck && npm run typecheck:test'); fi && if test -f tree-sitter-reify/package-lock.json; then (cd tree-sitter-reify && timeout --kill-after=60 10m npm ci); fi && if test -f scripts/test_pm_standardization.sh; then timeout --kill-after=60 10m bash scripts/test_pm_standardization.sh; else echo 'WARNING: test_pm_standardization.sh not found, skipping'; fi && if test -f scripts/check_event_inventory.sh; then timeout --kill-after=60 5m bash scripts/check_event_inventory.sh; else echo 'WARNING: check_event_inventory.sh not found, skipping'; fi"
-type_check_command: ". ~/.cargo/env && ./scripts/tree-sitter-generate.sh && timeout --kill-after=60 20m cargo check --workspace"
+# Verification commands — thin delegations to scripts/verify.sh, the single
+# source of truth shared with the git hooks (hooks/project-checks +
+# hooks/pre-merge-commit). All the logic lives in verify.sh: the OCCT flock gate
+# (scripts/cargo-test-occt-gated.sh) + --test-threads=1, the cargo-nextest
+# ungated tail (graceful fallback to `cargo test`), the sccache/jobserver/OCCT
+# LD_LIBRARY_PATH env, the per-invocation timeout budgets, the tree-sitter
+# generate prereq, and the npm/infra steps. `verify.sh --print-plan` emits the
+# exact ordered command list it will run; the infra drift tests assert against
+# that oracle. Authoritative OCCT crate list: scripts/occt-touching-crates.txt
+# (shared via scripts/occt-scope-lib.sh). See `scripts/verify.sh --help`.
+#
+# --scope all verifies the whole workspace: the orchestrator commits task work
+# before verifying, so there is no staged diff to scope by, and the old
+# scope_cargo `cargo --workspace`→`-p` rewrite no longer applies (the thin
+# command has no `cargo --workspace` literal). sccache + the shared jobserver
+# keep full-workspace verifies cheap. verify_env below still applies.
+test_command: "./scripts/verify.sh test --profile both --scope all --include-infra"
+lint_command: "./scripts/verify.sh lint --scope all --include-infra"
+type_check_command: "./scripts/verify.sh typecheck --scope all"
 
 # Run test/lint/type sequentially in one verify invocation.
 # Rust workspaces take an advisory lock on target/.cargo-lock, so the three
