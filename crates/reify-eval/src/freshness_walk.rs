@@ -1648,9 +1648,11 @@ mod tests {
     /// Step-1 (task 3649): `propagate_freshness_only` accepts any `IntoIterator`
     /// with `Item = &ValueCellId`, not only `&HashSet<ValueCellId>`.
     ///
-    /// Uses the same two-cell `a → b` scaffold as
-    /// `propagates_intermediate_to_final_through_two_cell_chain` but passes
-    /// a borrowed-slice iterator (`[a.clone()].iter()`) instead of `&HashSet`.
+    /// The unique coverage here is compile-time: `[a.clone()].iter()` (a slice
+    /// iterator) must type-check against the widened signature. Behavioral
+    /// correctness (Final propagation, updated-set membership) is already covered
+    /// by `propagates_intermediate_to_final_through_two_cell_chain`; no
+    /// assertions are repeated here.
     ///
     /// RED: does NOT compile against `changed: &HashSet<ValueCellId>` — a
     /// slice iterator is not a `&HashSet`. GREEN once the signature is widened
@@ -1678,28 +1680,16 @@ mod tests {
         let mut reverse_index = ReverseDependencyIndex::new();
         reverse_index.add(a.clone(), NodeId::Value(b.clone()));
 
-        // Flip `a` to Final via the canonical writer.
         assert!(cache.set_freshness(&NodeId::Value(a.clone()), Freshness::Final));
 
-        // Pass a borrowed slice iterator — NOT a &HashSet.
-        // This call does NOT type-check against `changed: &HashSet<ValueCellId>`.
-        let updated = super::propagate_freshness_only(
+        // Compile-time check: a slice iterator type-checks against the widened
+        // `impl IntoIterator<Item = &ValueCellId>` signature.
+        let _ = super::propagate_freshness_only(
             &mut cache,
             &reverse_index,
             &EvaluationGraph::default(),
             [a.clone()].iter(),
             1,
-        );
-
-        assert_eq!(
-            cache.freshness(&NodeId::Value(b.clone())),
-            Freshness::Final,
-            "b should be Final after walking from a=Final"
-        );
-        assert!(
-            updated.contains(&NodeId::Value(b.clone())),
-            "updated set should contain Value(b), got: {:?}",
-            updated
         );
     }
 }

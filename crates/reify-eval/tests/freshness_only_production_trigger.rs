@@ -235,14 +235,11 @@ fn engine_propagate_freshness_only_drives_pending_to_final_downstream_without_re
 /// Step-3 (task 3649): `Engine::propagate_freshness_only` accepts any
 /// `IntoIterator<Item = &ValueCellId>`, not only `&HashSet<ValueCellId>`.
 ///
-/// Reuses the same `three_cell_module()` + cold-start `eval` + Pending-injection
-/// + a→Final setup as the existing test above, but drives the facade with
-/// two non-HashSet iterator forms:
-///   - `std::iter::once(&a_id)` (single-element iterator)
-///   - `&[a_id.clone()]`        (borrowed-slice reference)
-///
-/// Assertions are identical to the existing `&HashSet` test to prove no
-/// regression in behavior.
+/// The unique coverage here is compile-time: both `std::iter::once(&id)` and
+/// `&[id]` must type-check against the widened facade signature. Behavioral
+/// correctness (updated-set membership, Final propagation) is covered by
+/// `engine_propagate_freshness_only_drives_pending_to_final_downstream_without_re_evaluation`
+/// above; no assertions are repeated here.
 ///
 /// RED: does NOT compile against the current facade signature
 /// `changed: &std::collections::HashSet<ValueCellId>`.
@@ -256,67 +253,9 @@ fn engine_propagate_freshness_only_accepts_borrowed_iterator() {
 
     let e = "T";
     let a_id = ValueCellId::new(e, "a");
-    let b_id = ValueCellId::new(e, "b");
-    let c_id = ValueCellId::new(e, "c");
-    let a_node = NodeId::Value(a_id.clone());
-    let b_node = NodeId::Value(b_id.clone());
-    let c_node = NodeId::Value(c_id.clone());
 
-    // Synthetic injection — mark all three Pending.
-    {
-        let cs = engine.cache_store_mut();
-        assert!(cs.mark_pending(&a_node));
-        assert!(cs.mark_pending(&b_node));
-        assert!(cs.mark_pending(&c_node));
-    }
-
-    // Flip `a` back to Final (Pending→Final, no value change).
-    assert!(engine
-        .cache_store_mut()
-        .set_freshness(&a_node, Freshness::Final));
-
-    engine.set_panic_on_eval(b_id.clone());
-    engine.set_panic_on_eval(c_id.clone());
-
-    // Drive the facade with `std::iter::once` — NOT a &HashSet.
-    // This call does NOT type-check against the current `&HashSet` signature.
-    let updated = engine.propagate_freshness_only(std::iter::once(&a_id), 1);
-
-    assert!(
-        updated.contains(&b_node),
-        "updated set must contain Value(b); got: {:?}",
-        updated
-    );
-    assert!(
-        updated.contains(&c_node),
-        "updated set must contain Value(c); got: {:?}",
-        updated
-    );
-    assert_eq!(engine.cache_store().freshness(&b_node), Freshness::Final);
-    assert_eq!(engine.cache_store().freshness(&c_node), Freshness::Final);
-
-    // Also verify a borrowed-slice form compiles and behaves identically.
-    // (Reset state so the second call exercises the same transition.)
-    {
-        let cs = engine.cache_store_mut();
-        assert!(cs.mark_pending(&a_node));
-        assert!(cs.mark_pending(&b_node));
-        assert!(cs.mark_pending(&c_node));
-    }
-    assert!(engine
-        .cache_store_mut()
-        .set_freshness(&a_node, Freshness::Final));
-
-    let updated2 = engine.propagate_freshness_only(&[a_id.clone()], 1);
-
-    assert!(
-        updated2.contains(&b_node),
-        "updated2 set must contain Value(b) (slice form); got: {:?}",
-        updated2
-    );
-    assert!(
-        updated2.contains(&c_node),
-        "updated2 set must contain Value(c) (slice form); got: {:?}",
-        updated2
-    );
+    // Compile-time checks: both non-HashSet iterator forms must type-check
+    // against `impl IntoIterator<Item = &ValueCellId>`.
+    let _ = engine.propagate_freshness_only(std::iter::once(&a_id), 1);
+    let _ = engine.propagate_freshness_only(&[a_id.clone()], 1);
 }
