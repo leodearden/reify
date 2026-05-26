@@ -1,6 +1,9 @@
 //! M5 trait-related type definitions.
 //!
-//! Contains EnumDef, TraitDef, TraitMember, TraitRef, TraitBound, TypeParam, PortDirection.
+//! Contains EnumDef, TraitDef, TraitMember, TraitRef, TraitBound, TypeParam.
+//! `PortDirection` lives in `crate::primitives` and is re-exported at the crate root.
+
+use crate::primitives::PortDirection;
 
 /// Definition of an enum type with named variants.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,17 +14,6 @@ pub struct EnumDef {
     pub variants: Vec<String>,
     /// Doc comment extracted from the `///` lines preceding the declaration.
     pub doc: Option<String>,
-}
-
-/// Direction of a port in a trait definition.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum PortDirection {
-    /// Input port.
-    In,
-    /// Output port.
-    Out,
-    /// Bidirectional port.
-    Bidi,
 }
 
 /// A reference to a trait, optionally with type arguments.

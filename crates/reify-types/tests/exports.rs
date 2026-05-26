@@ -285,6 +285,64 @@ fn quantifier_kind_lives_in_ast_and_reexported_at_root() {
 }
 
 #[test]
+fn port_direction_lives_in_primitives_and_reexported_at_root() {
+    // (a) Construct each variant via the new primitives-module path.
+    //     Fails to compile today because `reify_types::primitives` does not exist.
+    let prim_in = reify_types::primitives::PortDirection::In;
+    let prim_out = reify_types::primitives::PortDirection::Out;
+    let prim_bidi = reify_types::primitives::PortDirection::Bidi;
+
+    // (b) Construct via the crate-root re-export path (must remain resolvable).
+    let root_in: reify_types::PortDirection = reify_types::PortDirection::In;
+    let root_out: reify_types::PortDirection = reify_types::PortDirection::Out;
+    let root_bidi: reify_types::PortDirection = reify_types::PortDirection::Bidi;
+
+    // (c) Cross-assign: proves the crate-root path and the primitives-module path
+    //     name the same type (would not compile if they were distinct types).
+    let _same1: reify_types::primitives::PortDirection = root_in;
+    let _same2: reify_types::PortDirection = prim_out;
+    let _same3: reify_types::primitives::PortDirection = root_bidi;
+
+    // (d) Equality and inequality checks.
+    assert_eq!(prim_in, root_in);
+    assert_eq!(prim_out, root_out);
+    assert_eq!(prim_bidi, root_bidi);
+    assert_ne!(prim_in, root_out);
+    assert_ne!(prim_out, root_bidi);
+    assert_ne!(prim_bidi, root_in);
+}
+
+#[test]
+fn annotation_consts_live_in_primitives_and_reexported_at_root_and_module() {
+    // (a) All 6 constants resolve at the new primitives-module path and carry
+    //     the canonical lowercase values.
+    //     Fails to compile today because `reify_types::primitives` has no annotation constants.
+    assert_eq!(reify_types::primitives::TEST_ANNOTATION, "test");
+    assert_eq!(reify_types::primitives::DEPRECATED_ANNOTATION, "deprecated");
+    assert_eq!(reify_types::primitives::OPTIMIZED_ANNOTATION, "optimized");
+    assert_eq!(reify_types::primitives::SOLVER_HINT_ANNOTATION, "solver_hint");
+    assert_eq!(reify_types::primitives::SHELL_ANNOTATION, "shell");
+    assert_eq!(reify_types::primitives::SOLID_ANNOTATION, "solid");
+
+    // (b) Crate-root paths must remain resolvable.
+    assert_eq!(reify_types::TEST_ANNOTATION, "test");
+    assert_eq!(reify_types::DEPRECATED_ANNOTATION, "deprecated");
+    assert_eq!(reify_types::OPTIMIZED_ANNOTATION, "optimized");
+    assert_eq!(reify_types::SOLVER_HINT_ANNOTATION, "solver_hint");
+    assert_eq!(reify_types::SHELL_ANNOTATION, "shell");
+    assert_eq!(reify_types::SOLID_ANNOTATION, "solid");
+
+    // (c) annotation-module path must remain resolvable (consumed by reify-syntax:665).
+    assert_eq!(reify_types::annotation::TEST_ANNOTATION, "test");
+    assert_eq!(reify_types::annotation::DEPRECATED_ANNOTATION, "deprecated");
+    assert_eq!(reify_types::annotation::OPTIMIZED_ANNOTATION, "optimized");
+    assert_eq!(reify_types::annotation::SOLVER_HINT_ANNOTATION, "solver_hint");
+    assert_eq!(reify_types::annotation::SHELL_ANNOTATION, "shell");
+    assert_eq!(reify_types::annotation::SOLID_ANNOTATION, "solid");
+
+}
+
+#[test]
 fn cross_sub_geometry_ref_variant_exported_and_distinct_from_value_ref() {
     let xref = reify_types::CompiledExpr::cross_sub_geometry_ref(
         reify_types::ValueCellId::new("Outer.inner", "body"),
