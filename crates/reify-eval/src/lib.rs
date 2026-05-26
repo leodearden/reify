@@ -107,7 +107,7 @@ pub use topology_attribute_resolver::{
 };
 pub use geometry_ops::try_eval_ad_hoc_selector;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use reify_compiler::{CompiledModule, CompiledPurpose};
@@ -314,7 +314,30 @@ pub struct EvaluationState {
 /// The engine facade — main entry point for evaluation.
 pub struct Engine {
     constraint_checker: Box<dyn ConstraintChecker>,
-    geometry_kernel: Option<Box<dyn GeometryKernel>>,
+    /// Task ε (3436): multi-handle geometry kernels keyed by registered name.
+    ///
+    /// Supersedes the v0.2 single-kernel field `Option<Box<dyn GeometryKernel>>`.
+    /// A `None`-kernel engine is now represented by an empty map. A single-kernel
+    /// engine constructed via `Engine::new` / `Engine::with_prelude` wraps the
+    /// caller-supplied `Box<dyn GeometryKernel>` under the synthetic constant
+    /// [`Engine::DEFAULT_KERNEL_NAME`]; multi-kernel engines constructed via
+    /// `Engine::with_registered_kernels` populate one entry per inventory
+    /// registration keyed on the adapter's `name`.
+    ///
+    /// Per-op dispatch routing in `execute_realization_ops` (step-8) consults
+    /// `crate::dispatcher::dispatch` and indexes into this map by the
+    /// dispatcher-named kernel. Single-handle paths (export, tessellate,
+    /// conformance/kinematic post-process) route through
+    /// [`Engine::default_kernel_name`] which is the BRep-preferring lex-min
+    /// pick of the loaded set (or the synthetic `DEFAULT_KERNEL_NAME` for the
+    /// single-kernel wrapping case).
+    geometry_kernels: BTreeMap<String, Box<dyn GeometryKernel>>,
+    /// Name of the kernel `geometry_kernels` entry to use as the default for
+    /// single-handle surfaces (export, tessellate, post-process) and as the
+    /// fallback when a dispatcher plan names a kernel absent from the map.
+    /// `None` matches the v0.2 `geometry_kernel: None` semantics (no kernel
+    /// configured: `geometry_output` is `None` and tessellation skips).
+    default_kernel_name: Option<String>,
     solver: Option<Box<dyn ConstraintSolver>>,
     cache: CacheStore,
     /// Compiled stdlib prelude modules (cached via OnceLock; zero-cost borrow).
@@ -429,6 +452,24 @@ pub struct Engine {
     /// The field itself is always present (module-private, no `pub`) so that
     /// writer sites in `engine_eval.rs` need no cfg-gating.
     last_sub_component_unknown_structure_errors: usize,
+    /// Count of `dispatcher::dispatch` invocations on the per-op hot path
+    /// during the most recent `build()` / `build_snapshot()` /
+    /// `tessellate_realizations()` / `tessellate_snapshot()` call. Reset to 0
+    /// at the start of each entry point (before any per-realization work),
+    /// incremented once per `dispatch(...)` call inside
+    /// `execute_realization_ops`.
+    ///
+    /// Task ε (3436) step-12 instrumentation. Used to pin the cache-rehit
+    /// signal: a second build of the same module with the same demanded
+    /// tolerance hits the per-realization `RealizationCache` short-circuit at
+    /// the top of `execute_realization_ops`, which returns BEFORE the per-op
+    /// loop runs, so the counter reports 0 on the second build.
+    ///
+    /// Exposed to callers only under `#[cfg(any(test, feature = "test-instrumentation"))]`
+    /// via `Engine::last_dispatch_count()` in `engine_admin.rs`. The field
+    /// itself is always present (module-private, no `pub`) so that the
+    /// reset / increment sites in `engine_build.rs` need no cfg-gating.
+    last_dispatch_count: usize,
     /// Event journal recording evaluation events.
     journal: EventJournal,
     /// User-defined functions from the last eval() call.

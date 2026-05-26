@@ -17,7 +17,7 @@ use reify_types::{
 
 use crate::cache::{CacheStore, CachedResult, FAILED_REALIZATION_STUB_HANDLE, NodeCache, NodeId};
 use crate::deps::DependencyTrace;
-use crate::dispatcher::{dispatch, per_stage_tolerance_for_plan};
+use crate::dispatcher::{DispatchPlan, dispatch, per_stage_tolerance_for_plan};
 use crate::geometry_ops::compile_geometry_op;
 use crate::journal::{EvalEvent, EventJournal, EventKind};
 use crate::primitive_attribute_seed::{parse_bbox_xyz_min, seed_primitive_attributes_for_handle};
@@ -50,12 +50,29 @@ enum SingleParentSweepKind {
 /// so each new per-realization side-channel adds one struct field
 /// instead of growing the function signature by one parameter and
 /// the diff at every call site.
+///
+/// **`produced_repr_out`** (task ε / 3436 step-10): channel through which the
+/// executor surfaces the terminal output [`ReprKind`] for the realization
+/// (i.e. the repr produced by the dispatcher-chosen kernel for the LAST
+/// successful op of the realization, derived via [`plan_output_repr`]).
+/// On cache hit the channel is set to [`ReprKind::BRep`] (the cache only
+/// holds BRep-keyed entries). On rollback (`had_failure` or fewer handles
+/// than ops produced) the channel is left untouched so the caller writes
+/// nothing and the realization graph node retains its construction-time
+/// default. The caller (`build` / `build_snapshot`) writes the value into
+/// `self.eval_state.snapshot.graph.realizations[id].produced_repr` via
+/// disjoint-field borrows immediately after `execute_realization_ops` returns.
 struct RealizationOutputs<'a> {
     step_handles: &'a mut Vec<GeometryHandleId>,
     named_steps: &'a mut HashMap<String, GeometryHandleId>,
     feature_tag_table: &'a mut FeatureTagTable,
     topology_attribute_table: &'a mut TopologyAttributeTable,
     swept_kind_table: &'a mut SweptKindTable,
+    /// Terminal output [`ReprKind`] surfaced by the executor for the post-call
+    /// `eval_state.snapshot.graph.realizations[id].produced_repr` write
+    /// (task ε / 3436 step-10). See struct-level docstring above for the full
+    /// write contract.
+    produced_repr_out: &'a mut Option<ReprKind>,
 }
 
 impl<'a> RealizationOutputs<'a> {
@@ -71,6 +88,7 @@ impl<'a> RealizationOutputs<'a> {
         feature_tag_table: &'a mut FeatureTagTable,
         topology_attribute_table: &'a mut TopologyAttributeTable,
         swept_kind_table: &'a mut SweptKindTable,
+        produced_repr_out: &'a mut Option<ReprKind>,
     ) -> Self {
         Self {
             step_handles,
@@ -78,6 +96,7 @@ impl<'a> RealizationOutputs<'a> {
             feature_tag_table,
             topology_attribute_table,
             swept_kind_table,
+            produced_repr_out,
         }
     }
 }
@@ -629,6 +648,133 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
     }
 }
 
+/// Total `GeometryOp` → `Operation` classifier used by the per-op dispatch
+/// path (task ε / 3436, PRD §8 step-4).
+///
+/// Maps each runtime `GeometryOp` variant (`reify-types::geometry::GeometryOp`,
+/// which carries the per-call parameters: handles, lengths, angles, …) to its
+/// coarse [`Operation`] classifier (`reify-types::geometry::Operation`, used
+/// as the BTreeMap key in `CapabilityDescriptor::supports`). The dispatcher
+/// (`crate::dispatcher::dispatch`) consults the `(Operation, ReprKind)` table
+/// to pick a kernel + conversion chain per op.
+///
+/// **Mirrors [`parent_handles_for_op`].** Both helpers exhaustively match
+/// every `GeometryOp` variant; the compiler enforces drift between this table
+/// and the variant set at the call site. Adding a new `GeometryOp` variant
+/// requires adding an arm in both functions at the same diff site.
+///
+/// **No `Convert` arm.** `Operation::Convert { from }` is the only
+/// `Operation` shape that does not correspond to a `GeometryOp` variant:
+/// representation conversion (BRep→Mesh tessellation, Mesh→Sdf rasterisation,
+/// …) is *not* an op the compiler emits today. Conversion-stage execution is
+/// deferred to task ζ (#3437, Manifold execute arm) + new cross-kernel
+/// mesh-ingest trait surface. ε surfaces non-empty dispatch plans as a
+/// diagnostic rather than executing them (see PRD §8 design decision).
+// Wired into `execute_realization_ops` in step-8 (#3436).
+#[allow(dead_code)]
+fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
+    match op {
+        // Primitives
+        GeometryOp::Box { .. } => Operation::PrimitiveBox,
+        GeometryOp::Cylinder { .. } => Operation::PrimitiveCylinder,
+        GeometryOp::Sphere { .. } => Operation::PrimitiveSphere,
+        GeometryOp::Tube { .. } => Operation::PrimitiveTube,
+
+        // Booleans
+        GeometryOp::Union { .. } => Operation::BooleanUnion,
+        GeometryOp::Difference { .. } => Operation::BooleanDifference,
+        GeometryOp::Intersection { .. } => Operation::BooleanIntersection,
+
+        // Modify
+        GeometryOp::Fillet { .. } => Operation::ModifyFillet,
+        GeometryOp::Chamfer { .. } => Operation::ModifyChamfer,
+        GeometryOp::Shell { .. } => Operation::ModifyShell,
+        GeometryOp::Draft { .. } => Operation::ModifyDraft,
+        GeometryOp::Thicken { .. } => Operation::ModifyThicken,
+
+        // Transform
+        GeometryOp::Translate { .. } => Operation::TransformTranslate,
+        GeometryOp::Rotate { .. } => Operation::TransformRotate,
+        GeometryOp::Scale { .. } => Operation::TransformScale,
+        GeometryOp::RotateAround { .. } => Operation::TransformRotateAround,
+
+        // Pattern
+        GeometryOp::LinearPattern { .. } => Operation::PatternLinear,
+        GeometryOp::CircularPattern { .. } => Operation::PatternCircular,
+        GeometryOp::Mirror { .. } => Operation::PatternMirror,
+        GeometryOp::LinearPattern2D { .. } => Operation::PatternLinear2D,
+        GeometryOp::ArbitraryPattern { .. } => Operation::PatternArbitrary,
+
+        // Sweep (single-profile + Pipe)
+        GeometryOp::Extrude { .. } => Operation::SweepExtrude,
+        GeometryOp::ExtrudeSymmetric { .. } => Operation::SweepExtrudeSymmetric,
+        GeometryOp::Revolve { .. } => Operation::SweepRevolve,
+        GeometryOp::Sweep { .. } => Operation::SweepSweep,
+        GeometryOp::SweepGuided { .. } => Operation::SweepSweepGuided,
+        GeometryOp::Pipe { .. } => Operation::SweepPipe,
+
+        // Loft (multi-profile)
+        GeometryOp::Loft { .. } => Operation::SweepLoft,
+        GeometryOp::LoftGuided { .. } => Operation::SweepLoftGuided,
+
+        // Curve constructors
+        GeometryOp::LineSegment { .. } => Operation::CurveLineSegment,
+        GeometryOp::Arc { .. } => Operation::CurveArc,
+        GeometryOp::Helix { .. } => Operation::CurveHelix,
+        GeometryOp::InterpCurve { .. } => Operation::CurveInterpCurve,
+        GeometryOp::BezierCurve { .. } => Operation::CurveBezierCurve,
+        GeometryOp::NurbsCurve { .. } => Operation::CurveNurbsCurve,
+    }
+}
+
+/// Derive the output [`ReprKind`] for a dispatched op by reading the chosen
+/// kernel's capability descriptor (task ε / 3436, PRD §8 step-6).
+///
+/// Given a [`DispatchPlan`] (whose `kernel` names the BTreeMap-key of the
+/// kernel chosen to run the final op) and the dispatched [`Operation`], look
+/// up `registry[plan.kernel].supports` for the first entry whose first tuple
+/// element equals `op` and return its second tuple element — the output
+/// `ReprKind` the kernel produces. This is the value
+/// [`Engine::execute_realization_ops`] (step-10) will record into the
+/// realization graph node's `produced_repr` field.
+///
+/// **Why the descriptor lookup, not just `demanded`.** [`dispatch`] guarantees
+/// the chosen kernel supports `(op, demanded)` — so in the ε baseline
+/// `demanded == ReprKind::BRep` and this helper trivially returns `BRep`.
+/// However, in future seams (ζ/η/θ) where per-op demanded reprs vary per
+/// kernel choice, the descriptor lookup is the single source of truth for
+/// "what does this kernel actually produce?". Threading the demanded repr
+/// instead would couple the produced-repr write to the dispatcher's input,
+/// hiding mis-declarations in adapter descriptors.
+///
+/// **First-match semantics.** Returns the first matching entry in declaration
+/// order. In v0.3 each kernel declares at most one repr per op (e.g. OCCT
+/// declares `(BooleanUnion, BRep)` only, not also `(BooleanUnion, Mesh)`);
+/// the dispatcher's `current_repr == demanded` invariant
+/// (see [`crate::dispatcher::dispatch`]) enforces this for booleans/modify/
+/// transform/pattern ops, since the same `ReprKind` slot encodes both input
+/// and output. Multi-repr kernels are a forward-looking concern; first-match
+/// is sufficient for ε.
+///
+/// **Returns `None`** when the plan's named kernel is absent from the
+/// registry, or when the kernel's descriptor has no entry for `op`. Both
+/// indicate an invariant violation (dispatch should not have chosen such a
+/// kernel); the caller surfaces this as a diagnostic rather than fabricating
+/// a repr.
+// Wired into `execute_realization_ops` in step-10 (#3436).
+fn plan_output_repr(
+    registry: &BTreeMap<String, &CapabilityDescriptor>,
+    plan: &DispatchPlan,
+    op: Operation,
+) -> Option<ReprKind> {
+    let descriptor = registry.get(plan.kernel.as_str())?;
+    descriptor
+        .supports
+        .iter()
+        .find(|(o, _)| *o == op)
+        .map(|(_, r)| *r)
+}
+
 impl Engine {
     /// Build geometry from the current snapshot values, without re-calling eval().
     ///
@@ -653,6 +799,11 @@ impl Engine {
         module: &CompiledModule,
         format: ExportFormat,
     ) -> Option<BuildResult> {
+        // Task ε (3436) step-12: reset the dispatch-count instrumentation
+        // counter at the entry to every build/tessellate surface so a second
+        // build of the same module reports its own per-build dispatch tally
+        // (and reports 0 when fully served from the RealizationCache).
+        self.last_dispatch_count = 0;
         let state = self.eval_state.as_ref()?;
 
         // Build ValueMap from snapshot values
@@ -685,7 +836,24 @@ impl Engine {
         // mutable borrows handed to `execute_realization_ops`. Missing keys
         // are treated as `None`.
         let demanded_tols = self.compute_demanded_tols(module);
-        let geometry_output = if let Some(ref mut kernel) = self.geometry_kernel {
+        // Task ε (3436): resolve the engine's default kernel through the new
+        // multi-handle map. Single-handle surfaces (export, post-process)
+        // operate on this kernel; per-op dispatch routing is delegated to
+        // `execute_realization_ops` which takes the full kernels map +
+        // dispatch registry (step-8 wiring).
+        let default_kernel_name = self.default_kernel_name.clone();
+        // Step-8 (task ε / 3436): source the capability-descriptor registry
+        // ONCE per build via `collect_registry()` and materialise the
+        // borrowed view that `dispatcher::dispatch` expects. The owned map
+        // outlives the borrowed view because both are local bindings.
+        // Mirrors the "one allocation per build, not per realization"
+        // pattern established by `compute_tessellation_budgets`.
+        let registry_owned = crate::kernel_registry::collect_registry();
+        let registry_borrowed: BTreeMap<String, &CapabilityDescriptor> =
+            registry_owned.iter().map(|(k, v)| (k.clone(), v)).collect();
+        let geometry_output = if let Some(name) = default_kernel_name.as_deref()
+            && self.geometry_kernels.contains_key(name)
+        {
             let mut step_handles: Vec<GeometryHandleId> = Vec::new();
             let had_realization_ops = module
                 .templates
@@ -741,8 +909,15 @@ impl Engine {
                         .copied()
                         .unwrap_or(None);
                     let mut kernel_error: Option<ErrorRef> = None;
+                    // Step-10 (task ε / 3436): channel for the executor's
+                    // terminal produced [`ReprKind`]; written into the
+                    // snapshot graph node below via disjoint-field borrows
+                    // of `self.geometry_kernels` vs. `self.eval_state`.
+                    let mut produced_repr_out: Option<ReprKind> = None;
                     Engine::execute_realization_ops(
-                        kernel.as_mut(),
+                        &mut self.geometry_kernels,
+                        &registry_borrowed,
+                        name,
                         &realization.operations,
                         &realization.feature_tags,
                         &values,
@@ -754,6 +929,7 @@ impl Engine {
                             &mut self.feature_tag_table,
                             &mut self.topology_attribute_table,
                             &mut self.swept_kind_table,
+                            &mut produced_repr_out,
                         ),
                         &mut diagnostics,
                         &realization.id,
@@ -762,7 +938,21 @@ impl Engine {
                         &mut kernel_error,
                         &mut self.realization_cache,
                         demanded_tol,
+                        &mut self.last_dispatch_count,
                     );
+                    // Step-10 (task ε / 3436): persist the executor's terminal
+                    // [`ReprKind`] into the snapshot graph node. The
+                    // `eval_state` field is disjoint from `geometry_kernels`,
+                    // so the borrow is independent of the per-realization
+                    // executor borrows above. On rollback / no-op the
+                    // executor leaves the channel `None` and we skip the
+                    // write so the construction-time default survives.
+                    if let Some(repr) = produced_repr_out
+                        && let Some(state) = self.eval_state.as_mut()
+                        && let Some(node) = state.snapshot.graph.realizations.get_mut(&realization.id)
+                    {
+                        node.produced_repr = repr;
+                    }
                     // Arch §9.1 lines 868–877: kernel error on a realization →
                     // mark realization NodeId as Failed { error } and emit one
                     // EventKind::Failed event. The Diagnostic::error("geometry
@@ -777,6 +967,16 @@ impl Engine {
                         );
                     }
                 }
+                // Step-8 (task ε / 3436): the post-process helpers operate on
+                // the engine's default kernel. We re-borrow it from the
+                // `geometry_kernels` map here (after the per-realization loop
+                // released its `&mut self.geometry_kernels` borrow). The
+                // `expect` is justified by the outer `contains_key(name)`
+                // gate: the executor never removes entries from the map.
+                let default_kernel = self
+                    .geometry_kernels
+                    .get_mut(name)
+                    .expect("default kernel must remain in the map across the per-realization loop");
                 // Task 2320: see `Engine::post_process_conformance_queries`
                 // docstring for the full contract. Mirrored in `build` and
                 // `tessellate_from_values` — keep all four call sites in
@@ -786,7 +986,7 @@ impl Engine {
                     template,
                     &named_steps,
                     &mut values,
-                    kernel.as_ref(),
+                    default_kernel.as_ref(),
                     &mut diagnostics,
                 );
                 // Task 2531: kinematic-query post-process (interferes /
@@ -798,14 +998,14 @@ impl Engine {
                     template,
                     &named_steps,
                     &mut values,
-                    kernel.as_ref(),
+                    default_kernel.as_ref(),
                     &mut diagnostics,
                 );
                 Engine::run_post_processes(
                     template,
                     &named_steps,
                     &mut values,
-                    kernel.as_mut(),
+                    default_kernel.as_mut(),
                     &self.topology_attribute_table,
                     &mut diagnostics,
                 );
@@ -835,7 +1035,11 @@ impl Engine {
             } else {
                 let export_handle = *step_handles.last().unwrap();
                 let mut output = Vec::new();
-                match kernel.export(export_handle, format, &mut output) {
+                let default_kernel = self
+                    .geometry_kernels
+                    .get(name)
+                    .expect("default kernel must remain in the map for export");
+                match default_kernel.export(export_handle, format, &mut output) {
                     Ok(()) => Some(output),
                     Err(e) => {
                         diagnostics.push(Diagnostic::error(format!("export error: {}", e)));
@@ -897,6 +1101,15 @@ impl Engine {
     /// `end_to_end_tolerance_wiring_threads_promise_diagnostic_cache_and_per_stage_budget`
     /// in `crates/reify-eval/tests/tolerance_wiring_e2e.rs`.
     pub fn build(&mut self, module: &CompiledModule, format: ExportFormat) -> BuildResult {
+        // Task ε (3436) step-12: reset the dispatch-count instrumentation
+        // counter at the entry to every build/tessellate surface so a second
+        // build of the same module reports its own per-build dispatch tally
+        // (and reports 0 when fully served from the RealizationCache). Mirrors
+        // the reset at the top of `build_snapshot` / `tessellate_realizations`
+        // / `tessellate_snapshot` — must run BEFORE `check()` because no
+        // dispatcher call should be counted against the build that hasn't
+        // entered the per-realization op loop yet.
+        self.last_dispatch_count = 0;
         // PLACEMENT: AFTER check() — task 3103 consolidated the lifecycle so
         // eval() preserves active_purpose_bindings across the call, making the
         // pre-check workaround obsolete. All four surfaces (build /
@@ -933,7 +1146,19 @@ impl Engine {
         // would tag Failed events one round ahead of the values that
         // caused the kernel failure.
         let version_id = self.current_eval_version();
-        let geometry_output = if let Some(ref mut kernel) = self.geometry_kernel {
+        // Task ε (3436): resolve default kernel through the multi-handle map
+        // (see `build_snapshot` mirror for the same pattern).
+        let default_kernel_name = self.default_kernel_name.clone();
+        // Step-8 (task ε / 3436): source the capability-descriptor registry
+        // once per build and materialise the borrowed view that
+        // `dispatcher::dispatch` expects — see `build_snapshot` mirror for
+        // the rationale (one allocation per build, not per realization).
+        let registry_owned = crate::kernel_registry::collect_registry();
+        let registry_borrowed: BTreeMap<String, &CapabilityDescriptor> =
+            registry_owned.iter().map(|(k, v)| (k.clone(), v)).collect();
+        let geometry_output = if let Some(name) = default_kernel_name.as_deref()
+            && self.geometry_kernels.contains_key(name)
+        {
             // Execute geometry operations from realizations
             let mut step_handles: Vec<GeometryHandleId> = Vec::new();
             let had_realization_ops = module
@@ -985,8 +1210,14 @@ impl Engine {
                         .copied()
                         .unwrap_or(None);
                     let mut kernel_error: Option<ErrorRef> = None;
+                    // Step-10 (task ε / 3436): channel for the executor's
+                    // terminal produced [`ReprKind`]; written into the
+                    // snapshot graph node below via disjoint-field borrows.
+                    let mut produced_repr_out: Option<ReprKind> = None;
                     Engine::execute_realization_ops(
-                        kernel.as_mut(),
+                        &mut self.geometry_kernels,
+                        &registry_borrowed,
+                        name,
                         &realization.operations,
                         &realization.feature_tags,
                         &values,
@@ -998,6 +1229,7 @@ impl Engine {
                             &mut self.feature_tag_table,
                             &mut self.topology_attribute_table,
                             &mut self.swept_kind_table,
+                            &mut produced_repr_out,
                         ),
                         &mut diagnostics,
                         &realization.id,
@@ -1006,7 +1238,19 @@ impl Engine {
                         &mut kernel_error,
                         &mut self.realization_cache,
                         demanded_tol,
+                        &mut self.last_dispatch_count,
                     );
+                    // Step-10 (task ε / 3436): persist the executor's terminal
+                    // [`ReprKind`] into the snapshot graph node. See the
+                    // `build_snapshot` mirror for the full rationale; both
+                    // call sites use disjoint-field borrows of
+                    // `self.geometry_kernels` vs. `self.eval_state`.
+                    if let Some(repr) = produced_repr_out
+                        && let Some(state) = self.eval_state.as_mut()
+                        && let Some(node) = state.snapshot.graph.realizations.get_mut(&realization.id)
+                    {
+                        node.produced_repr = repr;
+                    }
                     // Arch §9.1 lines 868–877: kernel error on a realization →
                     // mark realization NodeId as Failed { error } and emit one
                     // EventKind::Failed event. The Diagnostic::error("geometry
@@ -1021,6 +1265,12 @@ impl Engine {
                         );
                     }
                 }
+                // Step-8 (task ε / 3436): re-borrow the default kernel from
+                // the map for post-process — see `build_snapshot` mirror.
+                let default_kernel = self
+                    .geometry_kernels
+                    .get_mut(name)
+                    .expect("default kernel must remain in the map across the per-realization loop");
                 // Task 2320: see `Engine::post_process_conformance_queries`
                 // docstring for the full contract. Mirrored in
                 // `build_snapshot` and `tessellate_from_values` — keep all
@@ -1031,7 +1281,7 @@ impl Engine {
                     template,
                     &named_steps,
                     &mut values,
-                    kernel.as_ref(),
+                    default_kernel.as_ref(),
                     &mut diagnostics,
                 );
                 // Task 2531: kinematic-query post-process (interferes /
@@ -1043,14 +1293,14 @@ impl Engine {
                     template,
                     &named_steps,
                     &mut values,
-                    kernel.as_ref(),
+                    default_kernel.as_ref(),
                     &mut diagnostics,
                 );
                 Engine::run_post_processes(
                     template,
                     &named_steps,
                     &mut values,
-                    kernel.as_mut(),
+                    default_kernel.as_mut(),
                     &self.topology_attribute_table,
                     &mut diagnostics,
                 );
@@ -1083,7 +1333,11 @@ impl Engine {
                 // so last() is always Some and unwrap() cannot panic.
                 let export_handle = *step_handles.last().unwrap();
                 let mut output = Vec::new();
-                match kernel.export(export_handle, format, &mut output) {
+                let default_kernel = self
+                    .geometry_kernels
+                    .get(name)
+                    .expect("default kernel must remain in the map for export");
+                match default_kernel.export(export_handle, format, &mut output) {
                     Ok(()) => Some(output),
                     Err(e) => {
                         diagnostics.push(Diagnostic::error(format!("export error: {}", e)));
@@ -1136,6 +1390,12 @@ impl Engine {
     /// tessellation precision), whereas `build` applies it at the
     /// realization-cache key.
     pub fn tessellate_realizations(&mut self, module: &CompiledModule) -> TessellateResult {
+        // Task ε (3436) step-12: reset the dispatch-count instrumentation
+        // counter at the entry to every build/tessellate surface so a second
+        // call against the same module reports its own per-build dispatch
+        // tally (and reports 0 when fully served from the RealizationCache).
+        // Mirrors `build` / `build_snapshot` / `tessellate_snapshot`.
+        self.last_dispatch_count = 0;
         // PLACEMENT: AFTER check() — task 3103 consolidated the lifecycle so
         // eval() preserves active_purpose_bindings across the call, making the
         // pre-check workaround obsolete. All four surfaces (build /
@@ -1165,6 +1425,10 @@ impl Engine {
         let registry_owned = crate::kernel_registry::collect_registry();
         let tessellation_budgets =
             self.compute_tessellation_budgets(module, &demanded_tols, &registry_owned);
+        // Step-8 (task ε / 3436): borrowed-view registry for per-op dispatch
+        // routing — same pattern as the `build` / `build_snapshot` mirrors.
+        let registry_borrowed: BTreeMap<String, &CapabilityDescriptor> =
+            registry_owned.iter().map(|(k, v)| (k.clone(), v)).collect();
         // Task 2320 amendment: `values` is moved into a local mutable binding
         // here so `tessellate_from_values` can patch conformance-query results
         // (`is_watertight` / `is_manifold` / `is_orientable`) into the map
@@ -1177,7 +1441,9 @@ impl Engine {
         self.topology_attribute_table = TopologyAttributeTable::default();
         self.swept_kind_table = SweptKindTable::default();
         let meshes = Self::tessellate_from_values(
-            &mut self.geometry_kernel,
+            &mut self.geometry_kernels,
+            &registry_borrowed,
+            self.default_kernel_name.as_deref(),
             module,
             &mut values,
             &self.functions,
@@ -1189,6 +1455,7 @@ impl Engine {
             &mut self.realization_cache,
             &demanded_tols,
             &tessellation_budgets,
+            &mut self.last_dispatch_count,
         );
 
         TessellateResult {
@@ -1507,7 +1774,9 @@ impl Engine {
     /// runtime rather than silently returning a fallback value.
     #[allow(clippy::too_many_arguments)]
     fn tessellate_from_values(
-        geometry_kernel: &mut Option<Box<dyn GeometryKernel>>,
+        geometry_kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
+        registry: &BTreeMap<String, &CapabilityDescriptor>,
+        default_kernel_name: Option<&str>,
         module: &CompiledModule,
         values: &mut ValueMap,
         functions: &[CompiledFunction],
@@ -1519,12 +1788,25 @@ impl Engine {
         realization_cache: &mut RealizationCache<GeometryHandleId>,
         demanded_tols: &[Vec<Option<f64>>],
         tessellation_budgets: &[Vec<f64>],
+        // Task ε (3436) step-12: per-build dispatch-count instrumentation
+        // forwarded from `tessellate_realizations` / `tessellate_snapshot`
+        // (each passes `&mut self.last_dispatch_count`). Threaded as a
+        // separate parameter rather than packed into a struct so the static
+        // fn's signature mirrors the disjoint-field-borrow shape already in
+        // use for the other &mut params.
+        dispatch_count: &mut usize,
     ) -> Vec<(String, Mesh)> {
         let mut meshes = Vec::new();
 
-        let kernel = match geometry_kernel.as_mut() {
-            Some(k) => k,
-            None => return meshes,
+        // Task ε (3436): the engine's default kernel is fetched by name from
+        // the multi-handle map; `None` (or absent) matches the v0.2 "no kernel
+        // configured" semantics. Per-op dispatch routing is delegated to
+        // `execute_realization_ops` (step-8), which takes the full map and
+        // the borrowed-view registry. Single-handle surfaces below (export,
+        // tessellate, post-process) operate on the default kernel.
+        let default_kernel_name = match default_kernel_name {
+            Some(name) if geometry_kernels.contains_key(name) => name,
+            _ => return meshes,
         };
 
         let mut step_handles: Vec<GeometryHandleId> = Vec::new();
@@ -1565,6 +1847,32 @@ impl Engine {
                 // Pass `&mut None` so `execute_realization_ops` collects the
                 // diagnostic but no caller acts on the kernel error here.
                 let mut kernel_error: Option<ErrorRef> = None;
+                // Step-10 (task ε / 3436): the tessellate path is a static
+                // function without `&mut self` access to `eval_state`, so the
+                // executor's terminal-repr signal is collected but discarded
+                // here — produced_repr graph-node updates happen only on the
+                // build/build_snapshot path per step-10's scope (the
+                // `executor_writes_produced_repr_brep_on_build_snapshot`
+                // forward-guard pins build_snapshot only).
+                //
+                // **Symmetric-write follow-up (task ζ / #3437)** — amendment
+                // round 2: today the discard is benign because the
+                // construction-time default (`ReprKind::BRep`, see
+                // `graph.rs:53/329`) already matches what the v0.3-ε executor
+                // produces, so any consumer that reads `produced_repr` after
+                // a tessellate-only call sees the correct value by accident.
+                // Once ζ / η make per-op `demanded` vary the tessellate path
+                // would silently leave the graph node at the BRep default
+                // while build / build_snapshot write the new repr — GUI
+                // overlays that tessellate without exporting would see a
+                // stale value. The fix is to extend `tessellate_from_values`
+                // to return a `Vec<(RealizationNodeId, ReprKind)>` (or take a
+                // disjoint-borrow `&mut` writer) and have
+                // `tessellate_realizations` / `tessellate_snapshot` apply the
+                // writes via the same idiom used in `build_snapshot`. Tracked
+                // by task ζ (#3437); the symmetric-write requirement MUST
+                // close before ζ ships.
+                let mut produced_repr_out: Option<ReprKind> = None;
                 // Task 3227 / 3297: direct positional index — no String clones,
                 // no hashing. The producer (`compute_demanded_tols`) and this
                 // consumer iterate the same `module.templates × realizations`
@@ -1573,7 +1881,9 @@ impl Engine {
                 // at runtime in both debug and release.
                 let demanded_tol = demanded_tols[t_idx][r_idx];
                 Engine::execute_realization_ops(
-                    kernel.as_mut(),
+                    geometry_kernels,
+                    registry,
+                    default_kernel_name,
                     &realization.operations,
                     &realization.feature_tags,
                     values,
@@ -1585,6 +1895,7 @@ impl Engine {
                         &mut *feature_tag_table,
                         &mut *topology_attribute_table,
                         &mut *swept_kind_table,
+                        &mut produced_repr_out,
                     ),
                     diagnostics,
                     &realization.id,
@@ -1593,6 +1904,7 @@ impl Engine {
                     &mut kernel_error,
                     realization_cache,
                     demanded_tol,
+                    &mut *dispatch_count,
                 );
 
                 // Tessellate this realization's final handle (if any new handles were produced)
@@ -1610,7 +1922,12 @@ impl Engine {
                     // bug; Rust's slice indexing panics with a precise OOB
                     // message at runtime in both debug and release.
                     let budget = tessellation_budgets[t_idx][r_idx];
-                    match kernel.tessellate(last_handle, budget) {
+                    // Re-borrow the default kernel after the per-realization
+                    // executor released its full-map borrow (step-8 #3436).
+                    let default_kernel = geometry_kernels.get(default_kernel_name).expect(
+                        "default kernel must remain in the map across the per-realization loop",
+                    );
+                    match default_kernel.tessellate(last_handle, budget) {
                         Ok(mesh) => {
                             meshes.push((realization.id.to_string(), mesh));
                         }
@@ -1621,6 +1938,11 @@ impl Engine {
                     }
                 }
             }
+            // Step-8 (task ε / 3436): re-borrow the default kernel from the
+            // map for post-process — see `build` / `build_snapshot` mirror.
+            let default_kernel = geometry_kernels
+                .get_mut(default_kernel_name)
+                .expect("default kernel must remain in the map across the per-realization loop");
             // Task 2320 amendment: mirrors the `build` / `build_snapshot`
             // wire-up so `TessellateResult.values` exposes the same
             // kernel-resolved `Bool` for conformance-query cells as
@@ -1630,7 +1952,7 @@ impl Engine {
                 template,
                 &named_steps,
                 values,
-                kernel.as_ref(),
+                default_kernel.as_ref(),
                 diagnostics,
             );
             // Task 2531: see the build / build_snapshot wire-up. Tessellate
@@ -1640,14 +1962,14 @@ impl Engine {
                 template,
                 &named_steps,
                 values,
-                kernel.as_ref(),
+                default_kernel.as_ref(),
                 diagnostics,
             );
             Engine::run_post_processes(
                 template,
                 &named_steps,
                 values,
-                kernel.as_mut(),
+                default_kernel.as_mut(),
                 topology_attribute_table,
                 diagnostics,
             );
@@ -1772,7 +2094,9 @@ impl Engine {
     /// (`debug_assertions` cfg).
     #[allow(clippy::too_many_arguments)]
     fn execute_realization_ops(
-        kernel: &mut dyn GeometryKernel,
+        kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
+        registry: &BTreeMap<String, &CapabilityDescriptor>,
+        default_kernel_name: &str,
         operations: &[reify_compiler::CompiledGeometryOp],
         feature_tags: &[FeatureTag],
         values: &ValueMap,
@@ -1786,6 +2110,13 @@ impl Engine {
         kernel_error_out: &mut Option<ErrorRef>,
         realization_cache: &mut RealizationCache<GeometryHandleId>,
         demanded_tol: Option<f64>,
+        // Task ε (3436) step-12: caller-write dispatch-count instrumentation
+        // channel. Incremented once per `dispatch(...)` call inside the per-op
+        // loop. The caller (build / build_snapshot / tessellate_*) resets the
+        // backing `Engine::last_dispatch_count` field to 0 at the entry-point
+        // and passes a mutable reference into it; the cache-hit short-circuit
+        // returns BEFORE the loop, so the counter stays at 0 on a re-hit.
+        dispatch_count: &mut usize,
     ) {
         let RealizationOutputs {
             step_handles,
@@ -1793,14 +2124,21 @@ impl Engine {
             feature_tag_table,
             topology_attribute_table,
             swept_kind_table,
+            produced_repr_out,
         } = outputs;
         let handle_start = step_handles.len();
+        // Step-8 (task ε / 3436): the v0.3-ε baseline asks the dispatcher for
+        // `(op, BRep)` with `available = {BRep}` on every op. The triple is
+        // hoisted out of the op loop because both inputs are loop-invariant —
+        // `available_set` would otherwise allocate a fresh HashSet per op.
+        let available_set: HashSet<ReprKind> =
+            Engine::BUDGET_QUERY_TRIPLE_V02.2.iter().copied().collect();
 
         // Task 2874, step-8: cache-hit short-circuit. When the caller has
         // threaded a demanded tolerance AND the realization is named (the
         // `named_steps` contract requires a name to write into the map),
         // probe the per-engine `RealizationCache` at
-        // `(entity_id, ReprKind::BRep, demanded_tol)`. On hit we push the
+        // `(entity_id, cache_repr, demanded_tol)`. On hit we push the
         // cached terminal handle, write `named_steps[name] = cached_handle`,
         // and return — preserving the post-condition the success path
         // establishes below. On miss (or when either guard is `None`) we
@@ -1810,9 +2148,21 @@ impl Engine {
         // "tighter satisfies looser" rule (`cached_tol ≤ requested_tol`),
         // so a tighter request automatically misses a looser cached entry
         // (see step-13's pin).
+        //
+        // **Amendment (suggestion #3)**: the cache repr is bound to a local
+        // `cache_repr` so the lookup-key repr and the `produced_repr_out`
+        // write below are sourced from the same value. If a future change
+        // shifts the cache key to a non-`BRep` `ReprKind` (the cache's
+        // `(entity, repr, tol, options)` shape already supports it; see
+        // `RealizationCache::lookup`), the `produced_repr_out` write follows
+        // without a separate edit. The `debug_assert_eq!` below pins the
+        // current invariant (cache-only-stores-BRep) so a future Mesh cache
+        // entry trips loudly in dev rather than silently corrupting
+        // `produced_repr` on the cache-hit branch.
+        let cache_repr = ReprKind::BRep;
         if let (Some(tol), Some(name)) = (demanded_tol, realization_name)
             && let Some(&cached_handle) =
-                realization_cache.lookup(&realization_id.entity, ReprKind::BRep, tol, NO_OPTIONS)
+                realization_cache.lookup(&realization_id.entity, cache_repr, tol, NO_OPTIONS)
         {
             // Internal-consistency invariant (amendment): the per-build
             // reset of `feature_tag_table` / `topology_attribute_table` at
@@ -1839,10 +2189,73 @@ impl Engine {
             );
             step_handles.push(cached_handle);
             named_steps.insert(name.to_string(), cached_handle);
+            // Step-10 (task ε / 3436): the [`RealizationCache`] key includes
+            // `cache_repr` (see the post-success `realization_cache.insert`
+            // call at the bottom of this function), so every cached entry's
+            // terminal handle was produced by a kernel capable of that repr.
+            // Surface `cache_repr` through `produced_repr_out` so the caller
+            // writes the same value into the realization graph node it would
+            // have written on a cold-path miss for this realization.
+            //
+            // **Amendment (suggestion #3)**: pinned by `debug_assert_eq!` to
+            // `ReprKind::BRep` — every cache populate today is BRep-keyed (the
+            // op loop writes `realization_cache.insert(..., cache_repr, ...)`
+            // below). When ζ/η extend the cache key to other repr kinds the
+            // assertion will need to relax in lockstep with the populate-side
+            // change.
+            debug_assert_eq!(
+                cache_repr,
+                ReprKind::BRep,
+                "cache_repr is pinned to BRep until ζ/η extend the cache to other ReprKinds; \
+                 if this asserts, the populate site also needs to migrate",
+            );
+            *produced_repr_out = Some(cache_repr);
             return;
         }
 
         let mut had_failure = false;
+        // Step-14 (task ε / 3436): captures the terminal output [`ReprKind`]
+        // for the LAST op that successfully executed in this realization's
+        // loop. After the loop, on the fully-successful (not rolled back)
+        // branch, the value is written to `produced_repr_out`. On rollback
+        // the channel is left untouched so the caller writes nothing — the
+        // realization graph node retains its construction-time default.
+        //
+        // Replaces the step-10 `last_plan: Option<DispatchPlan>` /
+        // `last_operation: Option<Operation>` pair (and the post-loop
+        // `plan_output_repr(registry, last_plan, last_operation)` chain)
+        // with a single capture-and-write idiom. This closes the
+        // backward-compat production gap pinned by
+        // `execute_realization_ops_writes_produced_repr_brep_in_none_fallback_backward_compat`:
+        // the old write guard `if let (Some(plan), Some(op)) =
+        // (last_plan.as_ref(), last_operation)` short-circuited in the
+        // sentinel-gated None-fallback arm because that arm never set
+        // `last_plan`, leaving `produced_repr_out` unwritten on the
+        // `Engine::new(_, Some(kernel))` construction path whenever the
+        // inventory registry lacks coverage for the caller-supplied kernel
+        // (the v0.2 backward-compat baseline, which deliberately keeps the
+        // caller's kernel out of `inventory::submit!`). The new channel is
+        // set in BOTH success paths inside the per-op loop:
+        //
+        // (a) the `Some(plan) if plan.conversions.is_empty()` arm —
+        //     `plan_output_repr(registry, plan, operation)` from the
+        //     dispatcher-named kernel's descriptor (the step-10 derivation,
+        //     now computed inside the match arm where `plan` is borrowed);
+        // (b) the `None` backward-compat fallback arm (`default_kernel_name
+        //     == Engine::DEFAULT_KERNEL_NAME &&
+        //     kernels.contains_key(default_kernel_name)`) —
+        //     `Some(ReprKind::BRep)` directly, the v0.2 single-kernel-path
+        //     invariant (the synthetic default kernel's terminal handle is
+        //     always BRep in the BRep baseline; no descriptor is available
+        //     in the inventory registry for the caller-supplied kernel, so
+        //     `plan_output_repr` is not applicable here).
+        //
+        // The `Some(_) =>` non-empty-conversion arm and the strict-mode
+        // `None` arm break the loop before this channel is read, so they
+        // leave it at the default `None` — the post-loop write then
+        // short-circuits as before, preserving the rollback-untouched
+        // contract.
+        let mut last_produced_repr: Option<ReprKind> = None;
         // Captures the per-op `GeometryOp`s in lockstep with `step_handles`
         // for this realization. After the loop, if the realization succeeds
         // (no rollback), the parallel `(realization_ops, step_handles[handle_start..])`
@@ -1866,6 +2279,227 @@ impl Engine {
             );
             match geom_op {
                 Ok(geom_op) => {
+                    // Step-8 (task ε / 3436): per-op dispatch routing.
+                    // Map the compiled `GeometryOp` to its `Operation`
+                    // classifier and ask the dispatcher for a plan. In the
+                    // v0.3-ε baseline the request is fixed at
+                    // `(op, demanded=BRep, available={BRep})` per the
+                    // `BUDGET_QUERY_TRIPLE_V02` design decision; per-op
+                    // demanded/available derivation is deferred to ζ/η/θ.
+                    let operation = geometry_op_to_operation(&geom_op);
+                    // Task ε (3436) step-12: bump the per-build dispatch
+                    // counter EXACTLY at the `dispatch(...)` call site so the
+                    // cache-hit short-circuit (which returns above without
+                    // ever entering this loop) leaves the counter at 0.
+                    *dispatch_count += 1;
+                    let plan = dispatch(registry, operation, ReprKind::BRep, &available_set);
+                    // Step-14 (task ε / 3436): the match returns a
+                    // `(resolved_kernel_name, op_produced_repr)` tuple — a
+                    // single source of truth that yokes the routing decision
+                    // to the per-op output repr capture. Borrows `plan` here
+                    // (`match &plan`) rather than moving it; the owned `plan`
+                    // is dropped at the end of this loop iteration. The
+                    // per-op `op_produced_repr` value is propagated into
+                    // `last_produced_repr` after the successful kernel call
+                    // below so the post-loop write sees the terminal op's
+                    // repr (mirroring how `step_handles.push(handle.id)`
+                    // tracks the terminal handle).
+                    let (resolved_kernel_name, op_produced_repr): (String, Option<ReprKind>) = match &plan {
+                        Some(plan) if plan.conversions.is_empty() => {
+                            // 0-conversion plan: route to plan.kernel,
+                            // falling back to the engine's default kernel if
+                            // the dispatcher named an entry not present in
+                            // the kernels map (defence against
+                            // dispatch/registry-vs-map drift; in practice the
+                            // builder always loads one adapter per registry
+                            // entry so the fallback is dormant).
+                            //
+                            // **Amendment round 2 (suggestion #3)**: also
+                            // gate the default-fallback on
+                            // `contains_key(default_kernel_name)` so the
+                            // subsequent `.expect(...)` on `kernels.get_mut`
+                            // is structurally honest. Without this gate a
+                            // hypothetical caller that bypasses the entry-
+                            // point `contains_key` check (build /
+                            // build_snapshot / tessellate_from_values all gate
+                            // there today) could land on a missing default
+                            // and surface a confusing internal error several
+                            // lines downstream. Mirrors the parallel
+                            // `contains_key` gate in the `None` arm below and
+                            // the post-loop `.expect` idiom at
+                            // engine_build.rs:967 / :2626.
+                            let name = if kernels.contains_key(plan.kernel.as_str()) {
+                                plan.kernel.clone()
+                            } else if kernels.contains_key(default_kernel_name) {
+                                default_kernel_name.to_string()
+                            } else {
+                                let err_msg = format!(
+                                    "internal error: dispatcher named kernel '{}' \
+                                     not present in engine.geometry_kernels; default \
+                                     '{default_kernel_name}' also absent",
+                                    plan.kernel,
+                                );
+                                diagnostics.push(
+                                    Diagnostic::error(err_msg.clone()).with_label(
+                                        DiagnosticLabel::new(
+                                            realization_span,
+                                            "in this realization",
+                                        ),
+                                    ),
+                                );
+                                if kernel_error_out.is_none() {
+                                    *kernel_error_out = Some(ErrorRef::new(err_msg));
+                                }
+                                break;
+                            };
+                            // Step-14 (task ε / 3436): derive the per-op
+                            // output repr from the dispatcher-named kernel's
+                            // descriptor — the step-10 `plan_output_repr`
+                            // derivation, now computed inline alongside the
+                            // routing decision so both flow through the
+                            // single capture-and-write idiom below. May
+                            // return `None` if the named kernel's descriptor
+                            // has no entry for `op` (an invariant violation
+                            // that surfaces as "leave produced_repr_out
+                            // untouched" rather than fabricating a repr).
+                            (name, plan_output_repr(registry, plan, operation))
+                        }
+                        Some(_) => {
+                            // Non-empty conversion chain. ε implements
+                            // 0-conversion routing only — conversion-stage
+                            // execution depends on ζ/η/θ (Manifold execute
+                            // arm + cross-kernel mesh-ingest trait surface).
+                            // Surface as an error diagnostic and set
+                            // `kernel_error_out` so the caller marks the
+                            // realization Failed (mirrors the kernel-error
+                            // arm below).
+                            let err_msg = format!(
+                                "non-empty conversion chain for op '{:?}' producing \
+                                 '{:?}' is not supported in v0.3-ε (deferred to ζ/η/θ)",
+                                operation,
+                                ReprKind::BRep,
+                            );
+                            diagnostics.push(Diagnostic::error(err_msg.clone()).with_label(
+                                DiagnosticLabel::new(realization_span, "in this realization"),
+                            ));
+                            if kernel_error_out.is_none() {
+                                *kernel_error_out = Some(ErrorRef::new(err_msg));
+                            }
+                            break;
+                        }
+                        None => {
+                            // dispatch returned None: no registered kernel
+                            // claims `(op, BRep)` in the inventory-derived
+                            // registry. Two cases:
+                            //
+                            // (a) Backward-compat mode — the engine was
+                            //     constructed via `Engine::new(_, Some(k))` /
+                            //     `with_prelude(_, Some(k), _)`, which wraps
+                            //     the caller-supplied kernel under the
+                            //     synthetic [`Engine::DEFAULT_KERNEL_NAME`]
+                            //     sentinel. The inventory registry is
+                            //     deliberately out of sync with the kernels
+                            //     map in this mode (the caller's kernel
+                            //     never submits to `inventory::submit!`).
+                            //     For runtime behaviour to remain identical
+                            //     to v0.2 in this path, fall back to the
+                            //     default kernel — exactly as we already do
+                            //     in the `Some(plan)` branch when the
+                            //     dispatched name is absent from the kernels
+                            //     map. Without this fallback, every
+                            //     `Engine::new(Some(MockGeometryKernel))`
+                            //     integration test that doesn't transitively
+                            //     pull in an inventory-registered adapter
+                            //     would regress to "no kernel chain" errors.
+                            //
+                            // (b) Strict mode — the engine was constructed
+                            //     via `with_registered_kernels` (or the test
+                            //     drives `execute_realization_ops` with a
+                            //     non-synthetic `default_kernel_name`).
+                            //     Emit the `NoKernelChain` diagnostic so the
+                            //     missing-coverage configuration is surfaced
+                            //     rather than silently masked.
+                            //
+                            // The sentinel comparison distinguishes the two
+                            // paths without adding a separate flag — the
+                            // name `"__reify_eval_default_kernel"` is chosen
+                            // to be impossible for any real inventory
+                            // registration (`"occt"`, `"manifold"`, …).
+                            if default_kernel_name == Engine::DEFAULT_KERNEL_NAME
+                                && kernels.contains_key(default_kernel_name)
+                            {
+                                // Step-14 (task ε / 3436): backward-compat
+                                // fallback success — yokes the routing
+                                // decision (default kernel) to a synthetic
+                                // `Some(ReprKind::BRep)` capture. The
+                                // inventory registry has no descriptor for
+                                // the caller-supplied kernel (it never
+                                // submits to `inventory::submit!`), so
+                                // `plan_output_repr` is not applicable here;
+                                // the v0.2 single-kernel-path invariant
+                                // guarantees the synthetic default kernel's
+                                // terminal handle is always BRep in the BRep
+                                // baseline, so direct `Some(ReprKind::BRep)`
+                                // capture is honest and complete. This is
+                                // the production gap closure for
+                                // `executor_writes_produced_repr_brep_on_build_snapshot`
+                                // (the step-13 unit test pins the same gap
+                                // with a synthetic registry, build-profile-
+                                // independent).
+                                (default_kernel_name.to_string(), Some(ReprKind::BRep))
+                            } else {
+                                let diag = crate::dispatcher::no_kernel_chain_diagnostic(
+                                    operation,
+                                    ReprKind::BRep,
+                                    Engine::BUDGET_QUERY_TRIPLE_V02.2,
+                                )
+                                .with_label(DiagnosticLabel::new(
+                                    realization_span,
+                                    "in this realization",
+                                ));
+                                diagnostics.push(diag);
+                                if kernel_error_out.is_none() {
+                                    *kernel_error_out = Some(ErrorRef::new(format!(
+                                        "no kernel chain for op '{:?}' producing '{:?}'",
+                                        operation,
+                                        ReprKind::BRep,
+                                    )));
+                                }
+                                break;
+                            }
+                        }
+                    };
+                    // Amendment round 2 (suggestion #3): the
+                    // `resolved_kernel_name` match arms above each guarantee
+                    // `kernels.contains_key(resolved_kernel_name)`:
+                    //
+                    // - 0-conversion arm: routes to `plan.kernel` only when
+                    //   `contains_key(plan.kernel)`; falls back to
+                    //   `default_kernel_name` only when
+                    //   `contains_key(default_kernel_name)`; otherwise
+                    //   `break`s the op loop with a diagnostic.
+                    // - Non-empty-conversion arm: `break`s before reaching
+                    //   here.
+                    // - `None` arm (backward-compat): falls back to
+                    //   `default_kernel_name` only when
+                    //   `contains_key(default_kernel_name)`; otherwise
+                    //   `break`s the op loop with a diagnostic.
+                    //
+                    // So the `.expect` below is honest: a panic here would
+                    // imply a key was removed from `kernels` between the
+                    // `contains_key` guard and this `get_mut`, which the
+                    // executor never does. Mirrors the post-loop `.expect`
+                    // idiom at engine_build.rs:967 / :2626 for the same
+                    // invariant on the default kernel.
+                    let kernel: &mut dyn GeometryKernel = kernels
+                        .get_mut(resolved_kernel_name.as_str())
+                        .expect(
+                            "resolved_kernel_name is guaranteed to be a key in `kernels` by \
+                             the preceding match arms (each gates its fallback on \
+                             `contains_key`); the executor never removes entries from the map",
+                        )
+                        .as_mut();
+
                     match kernel.execute_with_history(&geom_op) {
                         Ok((handle, attribute_history)) => {
                             // Record the parallel-array feature tag for this handle.
@@ -1970,6 +2604,27 @@ impl Engine {
                             // earlier `&geom_op` borrows above have already
                             // released — we move ownership rather than cloning.
                             realization_ops.push(geom_op);
+                            // Step-14 (task ε / 3436): capture the terminal
+                            // op's output [`ReprKind`] for the post-loop
+                            // `produced_repr_out` write. `op_produced_repr`
+                            // was bound by the match above and carries the
+                            // per-arm derivation:
+                            //
+                            // - `Some(plan)` 0-conversion success:
+                            //   `plan_output_repr(registry, plan, operation)`
+                            //   (may be `None` if the named kernel's
+                            //   descriptor has no entry for `op` — an
+                            //   invariant violation that defensively leaves
+                            //   `produced_repr_out` untouched).
+                            // - `None` backward-compat fallback success:
+                            //   `Some(ReprKind::BRep)` (the v0.2 single-
+                            //   kernel-path invariant; pinned by
+                            //   `execute_realization_ops_writes_produced_repr_brep_in_none_fallback_backward_compat`).
+                            //
+                            // Every subsequent loop iteration overwrites
+                            // this capture, so `last_produced_repr` reflects
+                            // the terminal op's repr when the loop exits.
+                            last_produced_repr = op_produced_repr;
                         }
                         Err(e) => {
                             let err_msg = format!("geometry error: {}", e);
@@ -2093,9 +2748,21 @@ impl Engine {
                     .filter(|(_, attr)| attr.feature_id == realization_feature_id)
                     .collect();
             if !realization_attrs.is_empty() {
+                // Step-8 (task ε / 3436): the centroid query is a
+                // single-handle query surface that runs against the engine's
+                // default kernel. In the v0.3-ε baseline every realization's
+                // terminal handle lives on the BRep-preferring lex-min
+                // kernel (the default), so routing centroid queries through
+                // it matches the v0.2 single-kernel semantics.
+                let default_kernel: &mut dyn GeometryKernel = kernels
+                    .get_mut(default_kernel_name)
+                    .expect(
+                        "default kernel must remain in the map for centroid queries",
+                    )
+                    .as_mut();
                 let (centroids, centroid_diags) = collect_centroids_with_failure_summary(
                     &realization_attrs,
-                    kernel,
+                    default_kernel,
                     realization_id,
                 );
                 diagnostics.extend(centroid_diags);
@@ -2112,13 +2779,44 @@ impl Engine {
                     named_steps.insert(name.to_string(), last);
                 }
                 if let (Some(tol), Some(_name)) = (demanded_tol, realization_name) {
+                    // **Amendment (suggestion #3)**: use the same `cache_repr`
+                    // local that the cache-hit short-circuit at the top of
+                    // this helper consulted, so the populate-side and the
+                    // lookup-side stay in sync when ζ/η extend the cache key
+                    // beyond `ReprKind::BRep`.
                     realization_cache.insert(
                         &realization_id.entity,
-                        ReprKind::BRep,
+                        cache_repr,
                         tol,
                         NO_OPTIONS,
                         last,
                     );
+                }
+                // Step-14 (task ε / 3436): surface the terminal op's output
+                // [`ReprKind`] through `produced_repr_out` so the caller
+                // (`build` / `build_snapshot`) writes it into
+                // `eval_state.snapshot.graph.realizations[id].produced_repr`.
+                // Gated on `last_handle.is_some()` (the same gate the
+                // `named_steps` and `realization_cache` writes use) so an
+                // empty-operations realization contributes nothing and the
+                // construction-time default survives.
+                //
+                // `last_produced_repr` is the single capture-and-write
+                // channel that honors both per-op success paths uniformly:
+                // (a) the `Some(plan)` 0-conversion arm wrote
+                // `plan_output_repr(registry, plan, operation)` from the
+                // dispatcher-named kernel's descriptor; (b) the `None`
+                // backward-compat fallback arm wrote `Some(ReprKind::BRep)`
+                // directly (the v0.2 single-kernel-path invariant for the
+                // synthetic default kernel). A `None` value here means
+                // either: (i) no op succeeded for this realization (the
+                // outer `last_handle.is_some()` gate would have already
+                // short-circuited), or (ii) the dispatcher-named kernel's
+                // descriptor had no entry for the terminal op — an
+                // invariant violation that defensively leaves the channel
+                // untouched rather than fabricating a repr.
+                if let Some(repr) = last_produced_repr {
+                    *produced_repr_out = Some(repr);
                 }
             }
         }
@@ -2457,6 +3155,12 @@ impl Engine {
     /// values, call `tessellate_snapshot()` to get updated meshes without a
     /// cold restart.
     pub fn tessellate_snapshot(&mut self, module: &CompiledModule) -> Option<TessellateResult> {
+        // Task ε (3436) step-12: reset the dispatch-count instrumentation
+        // counter at the entry to every build/tessellate surface so a second
+        // call against the same module reports its own per-build dispatch
+        // tally (and reports 0 when fully served from the RealizationCache).
+        // Mirrors `build` / `build_snapshot` / `tessellate_realizations`.
+        self.last_dispatch_count = 0;
         let state = self.eval_state.as_ref()?;
 
         // Build ValueMap from snapshot values
@@ -2493,11 +3197,17 @@ impl Engine {
         let registry_owned = crate::kernel_registry::collect_registry();
         let tessellation_budgets =
             self.compute_tessellation_budgets(module, &demanded_tols, &registry_owned);
+        // Step-8 (task ε / 3436): borrowed-view registry for per-op dispatch
+        // routing — same pattern as the `tessellate_realizations` mirror.
+        let registry_borrowed: BTreeMap<String, &CapabilityDescriptor> =
+            registry_owned.iter().map(|(k, v)| (k.clone(), v)).collect();
         self.feature_tag_table = FeatureTagTable::default();
         self.topology_attribute_table = TopologyAttributeTable::default();
         self.swept_kind_table = SweptKindTable::default();
         let meshes = Self::tessellate_from_values(
-            &mut self.geometry_kernel,
+            &mut self.geometry_kernels,
+            &registry_borrowed,
+            self.default_kernel_name.as_deref(),
             module,
             &mut values,
             &self.functions,
@@ -2509,6 +3219,7 @@ impl Engine {
             &mut self.realization_cache,
             &demanded_tols,
             &tessellation_budgets,
+            &mut self.last_dispatch_count,
         );
 
         Some(TessellateResult {
@@ -2713,6 +3424,206 @@ where
 mod tests {
     use super::*;
 
+    // ── shared test helpers (task ε / 3436, step-8) ───────────────────────────
+
+    /// Build a [`CapabilityDescriptor`] that supports every [`Operation`]
+    /// variant against [`ReprKind::BRep`]. Used by the
+    /// `execute_realization_ops_*` unit tests below to construct a synthetic
+    /// dispatch registry that routes every supported op to a single
+    /// kernel-by-name (`"default"`) — preserving the v0.2 single-kernel
+    /// behaviour while exercising the per-op dispatch routing seam wired in
+    /// step-8.
+    ///
+    /// Tests that exercise the "no kernel for op" path (`dispatch` returns
+    /// `None`) construct their own minimal descriptor inline instead.
+    fn dispatch_test_descriptor_all_brep() -> CapabilityDescriptor {
+        CapabilityDescriptor {
+            supports: vec![
+                (Operation::PrimitiveBox, ReprKind::BRep),
+                (Operation::PrimitiveCylinder, ReprKind::BRep),
+                (Operation::PrimitiveSphere, ReprKind::BRep),
+                (Operation::PrimitiveTube, ReprKind::BRep),
+                (Operation::BooleanUnion, ReprKind::BRep),
+                (Operation::BooleanDifference, ReprKind::BRep),
+                (Operation::BooleanIntersection, ReprKind::BRep),
+                (Operation::ModifyFillet, ReprKind::BRep),
+                (Operation::ModifyChamfer, ReprKind::BRep),
+                (Operation::ModifyShell, ReprKind::BRep),
+                (Operation::ModifyDraft, ReprKind::BRep),
+                (Operation::ModifyThicken, ReprKind::BRep),
+                (Operation::TransformTranslate, ReprKind::BRep),
+                (Operation::TransformRotate, ReprKind::BRep),
+                (Operation::TransformScale, ReprKind::BRep),
+                (Operation::TransformRotateAround, ReprKind::BRep),
+                (Operation::PatternLinear, ReprKind::BRep),
+                (Operation::PatternCircular, ReprKind::BRep),
+                (Operation::PatternMirror, ReprKind::BRep),
+                (Operation::PatternLinear2D, ReprKind::BRep),
+                (Operation::PatternArbitrary, ReprKind::BRep),
+                (Operation::SweepLoft, ReprKind::BRep),
+                (Operation::SweepExtrude, ReprKind::BRep),
+                (Operation::SweepRevolve, ReprKind::BRep),
+                (Operation::SweepSweep, ReprKind::BRep),
+                (Operation::SweepExtrudeSymmetric, ReprKind::BRep),
+                (Operation::SweepSweepGuided, ReprKind::BRep),
+                (Operation::SweepLoftGuided, ReprKind::BRep),
+                (Operation::SweepPipe, ReprKind::BRep),
+                (Operation::CurveLineSegment, ReprKind::BRep),
+                (Operation::CurveArc, ReprKind::BRep),
+                (Operation::CurveHelix, ReprKind::BRep),
+                (Operation::CurveInterpCurve, ReprKind::BRep),
+                (Operation::CurveBezierCurve, ReprKind::BRep),
+                (Operation::CurveNurbsCurve, ReprKind::BRep),
+            ],
+        }
+    }
+
+    /// Wrap a single boxed [`GeometryKernel`] into a multi-handle kernel map
+    /// keyed by `"default"`. Returns the map ready to pass as
+    /// `&mut kernels` to [`Engine::execute_realization_ops`]. Mirrors what
+    /// `with_prelude`/`new` do for the production builders (synthetic default
+    /// name) while keeping per-test setup terse.
+    fn dispatch_test_kernels(
+        kernel: Box<dyn GeometryKernel>,
+    ) -> BTreeMap<String, Box<dyn GeometryKernel>> {
+        let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        kernels.insert("default".to_string(), kernel);
+        kernels
+    }
+
+    /// Build the "single-default" borrowed registry view used by most
+    /// `execute_realization_ops_*` unit tests. The descriptor must outlive the
+    /// returned map because the `&CapabilityDescriptor` value borrows from it;
+    /// callers typically use the pattern
+    /// `let desc = dispatch_test_descriptor_all_brep(); let registry =
+    /// dispatch_test_single_default_registry(&desc);`.
+    fn dispatch_test_single_default_registry(
+        descriptor: &CapabilityDescriptor,
+    ) -> BTreeMap<String, &CapabilityDescriptor> {
+        let mut r: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        r.insert("default".to_string(), descriptor);
+        r
+    }
+
+    /// Per-test mutable state for the `execute_realization_ops_*` unit tests
+    /// (amendment to task ε / 3436 — addresses reviewer suggestion #1).
+    ///
+    /// Owns the bag of `&mut`-borrowed scratch storage that
+    /// [`Engine::execute_realization_ops`] writes into — step handles,
+    /// diagnostics, named-steps map, attribute tables, kernel-error channel,
+    /// realization cache, dispatch counter, and the produced-repr out-param.
+    /// Constructed via [`Default::default`] and inspected via public fields
+    /// after [`Self::run`] returns.
+    ///
+    /// Tests with pre-seeded `step_handles` (the rollback-truncation tests)
+    /// push directly into `state.step_handles` before the call. Tests that
+    /// drive multiple sequential realizations against the same state (the
+    /// `_shadows_previous` / `_failed_shadow_…` tests) call
+    /// [`Self::reset_attribute_tables`] between calls, mirroring the per-build
+    /// reset in production.
+    ///
+    /// A future signature change to `Engine::execute_realization_ops` updates
+    /// [`Self::run`] alone instead of every per-test call site.
+    struct DispatchTestState {
+        step_handles: Vec<GeometryHandleId>,
+        diagnostics: Vec<Diagnostic>,
+        named_steps: HashMap<String, GeometryHandleId>,
+        feature_tag_table: FeatureTagTable,
+        topology_attribute_table: TopologyAttributeTable,
+        swept_kind_table: SweptKindTable,
+        kernel_error_out: Option<ErrorRef>,
+        realization_cache: RealizationCache<GeometryHandleId>,
+        dispatch_count: usize,
+        produced_repr_out: Option<ReprKind>,
+    }
+
+    // Hand-written `Default` instead of `#[derive(Default)]`: the inner
+    // `RealizationCache<GeometryHandleId>` does not satisfy the derive bound
+    // (`V: Default`) — `GeometryHandleId` is a `NewType(u32)` with no
+    // `Default` impl — but `RealizationCache::new()` constructs an empty cache
+    // without that bound. Mirrors how production code initialises the field
+    // (engine_admin.rs `Engine::with_prelude_and_kernels`).
+    impl Default for DispatchTestState {
+        fn default() -> Self {
+            Self {
+                step_handles: Vec::new(),
+                diagnostics: Vec::new(),
+                named_steps: HashMap::new(),
+                feature_tag_table: FeatureTagTable::default(),
+                topology_attribute_table: TopologyAttributeTable::default(),
+                swept_kind_table: SweptKindTable::default(),
+                kernel_error_out: None,
+                realization_cache: RealizationCache::new(),
+                dispatch_count: 0,
+                produced_repr_out: None,
+            }
+        }
+    }
+
+    impl DispatchTestState {
+        /// Reset the three per-realization attribute tables (mirrors the
+        /// per-build reset in production at `build` / `build_snapshot` /
+        /// `tessellate_*`). Called by the shadow tests between sequential
+        /// realizations so the second call sees the same clean-table state the
+        /// first did.
+        fn reset_attribute_tables(&mut self) {
+            self.feature_tag_table = FeatureTagTable::default();
+            self.topology_attribute_table = TopologyAttributeTable::default();
+            self.swept_kind_table = SweptKindTable::default();
+        }
+
+        /// Drive [`Engine::execute_realization_ops`] against this state with
+        /// the canonical unit-test boilerplate — empty `ValueMap` /
+        /// `functions` / `meta_map`, the canonical `TestEntity` realization
+        /// id, and `demanded_tol = None` (the cache short-circuit is exercised
+        /// from the integration tests in `tests/multi_handle_engine_dispatch.rs`,
+        /// not from this unit-test surface).
+        ///
+        /// A future signature change to `execute_realization_ops` updates
+        /// this method alone instead of every per-test call site (~14
+        /// mechanical edits).
+        fn run(
+            &mut self,
+            kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
+            registry: &BTreeMap<String, &CapabilityDescriptor>,
+            default_kernel: &str,
+            ops: &[reify_compiler::CompiledGeometryOp],
+            realization_name: Option<&str>,
+            realization_span: SourceSpan,
+        ) {
+            let values = ValueMap::new();
+            let functions: Vec<CompiledFunction> = vec![];
+            let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+            let test_realization_id = RealizationNodeId::new("TestEntity", 0);
+            Engine::execute_realization_ops(
+                kernels,
+                registry,
+                default_kernel,
+                ops,
+                &[],
+                &values,
+                &functions,
+                &meta_map,
+                RealizationOutputs::new(
+                    &mut self.step_handles,
+                    &mut self.named_steps,
+                    &mut self.feature_tag_table,
+                    &mut self.topology_attribute_table,
+                    &mut self.swept_kind_table,
+                    &mut self.produced_repr_out,
+                ),
+                &mut self.diagnostics,
+                &test_realization_id,
+                realization_name,
+                realization_span,
+                &mut self.kernel_error_out,
+                &mut self.realization_cache,
+                None,
+                &mut self.dispatch_count,
+            );
+        }
+    }
+
     // ── execute_realization_ops unit tests ────────────────────────────────────
 
     /// Happy path: all operations compile and execute successfully.
@@ -2734,48 +3645,27 @@ mod tests {
             ],
         }];
 
-        let mut kernel = MockGeometryKernel::new();
-        let values = ValueMap::new();
-        let functions: Vec<CompiledFunction> = vec![];
-        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
-        let mut step_handles: Vec<GeometryHandleId> = vec![];
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
-
-        let mut feature_tag_table = FeatureTagTable::default();
-        let mut topology_attribute_table = TopologyAttributeTable::default();
-        let mut swept_kind_table = SweptKindTable::default();
-        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
-        Engine::execute_realization_ops(
-            &mut kernel,
+        let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
+        let desc = dispatch_test_descriptor_all_brep();
+        let registry = dispatch_test_single_default_registry(&desc);
+        let mut state = DispatchTestState::default();
+        state.run(
+            &mut kernels,
+            &registry,
+            "default",
             &ops,
-            &[],
-            &values,
-            &functions,
-            &meta_map,
-            RealizationOutputs::new(
-                &mut step_handles,
-                &mut named_steps,
-                &mut feature_tag_table,
-                &mut topology_attribute_table,
-                &mut swept_kind_table,
-            ),
-            &mut diagnostics,
-            &test_realization_id,
             None,
             SourceSpan::new(0, 0),
-            &mut None,
-            &mut RealizationCache::new(),
-            None,
         );
 
-        assert_eq!(step_handles.len(), 1, "expected one handle appended");
+        assert_eq!(state.step_handles.len(), 1, "expected one handle appended");
         // Filter to error-severity only: the v0.2 topology-attribute seeder
         // (#2574) emits a Diagnostic::warning when extract_faces / extract_edges
         // fail (e.g. on a mock kernel without an extraction fixture). The
         // happy-path contract is "no Error diagnostics"; auxiliary-metadata
         // warnings are expected noise on mock kernels.
-        let errors: Vec<_> = diagnostics
+        let errors: Vec<_> = state
+            .diagnostics
             .iter()
             .filter(|d| matches!(d.severity, reify_types::Severity::Error))
             .collect();
@@ -2790,7 +3680,8 @@ mod tests {
         // kernel level, the seeder makes exactly one warn-and-continue
         // attempt (extract_faces fails first on this mock kernel because
         // no topology fixture is configured). One Box op → 1 seeder warning.
-        let warnings: Vec<_> = diagnostics
+        let warnings: Vec<_> = state
+            .diagnostics
             .iter()
             .filter(|d| matches!(d.severity, reify_types::Severity::Warning))
             .collect();
@@ -2826,63 +3717,43 @@ mod tests {
             right: GeomRef::Step(99),
         }];
 
-        let mut kernel = MockGeometryKernel::new();
-        let values = ValueMap::new();
-        let functions: Vec<CompiledFunction> = vec![];
-        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
+        let desc = dispatch_test_descriptor_all_brep();
+        let registry = dispatch_test_single_default_registry(&desc);
         // Pre-seed with a sentinel so we can assert truncation went back to exactly
         // this pre-call length, distinguishing "INVALID pushed then truncated" from
         // "INVALID never pushed at all".
         let pre_existing = GeometryHandleId(0xCAFE);
-        let mut step_handles: Vec<GeometryHandleId> = vec![pre_existing];
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
-
-        let mut feature_tag_table = FeatureTagTable::default();
-        let mut topology_attribute_table = TopologyAttributeTable::default();
-        let mut swept_kind_table = SweptKindTable::default();
-        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
-        Engine::execute_realization_ops(
-            &mut kernel,
+        let mut state = DispatchTestState::default();
+        state.step_handles.push(pre_existing);
+        state.run(
+            &mut kernels,
+            &registry,
+            "default",
             &ops,
-            &[],
-            &values,
-            &functions,
-            &meta_map,
-            RealizationOutputs::new(
-                &mut step_handles,
-                &mut named_steps,
-                &mut feature_tag_table,
-                &mut topology_attribute_table,
-                &mut swept_kind_table,
-            ),
-            &mut diagnostics,
-            &test_realization_id,
             None,
             SourceSpan::new(0, 0),
-            &mut None,
-            &mut RealizationCache::new(),
-            None,
         );
 
         assert_eq!(
-            step_handles.len(),
+            state.step_handles.len(),
             1,
             "step_handles should be truncated back to pre-call length of 1; \
              the INVALID sentinel must not remain"
         );
         assert_eq!(
-            step_handles[0], pre_existing,
+            state.step_handles[0], pre_existing,
             "the pre-existing handle must be preserved unchanged"
         );
-        let compile_failures = diagnostics
+        let compile_failures = state
+            .diagnostics
             .iter()
             .filter(|d| d.message.contains("failed to compile geometry operation"))
             .count();
         assert_eq!(
             compile_failures, 1,
             "expected exactly 1 compile-error diagnostic, got {}: {:?}",
-            compile_failures, diagnostics
+            compile_failures, state.diagnostics
         );
     }
 
@@ -2906,53 +3777,32 @@ mod tests {
             ],
         }];
 
-        let mut kernel = FailingMockGeometryKernel;
-        let values = ValueMap::new();
-        let functions: Vec<CompiledFunction> = vec![];
-        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
-        let mut step_handles: Vec<GeometryHandleId> = vec![];
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
-
-        let mut feature_tag_table = FeatureTagTable::default();
-        let mut topology_attribute_table = TopologyAttributeTable::default();
-        let mut swept_kind_table = SweptKindTable::default();
-        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
-        Engine::execute_realization_ops(
-            &mut kernel,
+        let mut kernels = dispatch_test_kernels(Box::new(FailingMockGeometryKernel));
+        let desc = dispatch_test_descriptor_all_brep();
+        let registry = dispatch_test_single_default_registry(&desc);
+        let mut state = DispatchTestState::default();
+        state.run(
+            &mut kernels,
+            &registry,
+            "default",
             &ops,
-            &[],
-            &values,
-            &functions,
-            &meta_map,
-            RealizationOutputs::new(
-                &mut step_handles,
-                &mut named_steps,
-                &mut feature_tag_table,
-                &mut topology_attribute_table,
-                &mut swept_kind_table,
-            ),
-            &mut diagnostics,
-            &test_realization_id,
             None,
             SourceSpan::new(0, 0),
-            &mut None,
-            &mut RealizationCache::new(),
-            None,
         );
 
         assert!(
-            step_handles.is_empty(),
+            state.step_handles.is_empty(),
             "handles should be truncated back to handle_start (0)"
         );
-        let geometry_errors = diagnostics
+        let geometry_errors = state
+            .diagnostics
             .iter()
             .filter(|d| d.message.contains("geometry error"))
             .count();
         assert_eq!(
             geometry_errors, 1,
             "expected exactly 1 geometry-error diagnostic, got {}: {:?}",
-            geometry_errors, diagnostics
+            geometry_errors, state.diagnostics
         );
     }
 
@@ -2990,65 +3840,45 @@ mod tests {
             },
         ];
 
-        let mut kernel = MockGeometryKernel::new();
-        let values = ValueMap::new();
-        let functions: Vec<CompiledFunction> = vec![];
-        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
+        let desc = dispatch_test_descriptor_all_brep();
+        let registry = dispatch_test_single_default_registry(&desc);
         // Pre-seed step_handles with a sentinel to verify truncation goes back
         // to exactly this pre-call length, not to zero.
         let pre_existing = GeometryHandleId(0xBEEF);
-        let mut step_handles: Vec<GeometryHandleId> = vec![pre_existing];
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
-
-        let mut feature_tag_table = FeatureTagTable::default();
-        let mut topology_attribute_table = TopologyAttributeTable::default();
-        let mut swept_kind_table = SweptKindTable::default();
-        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
-        Engine::execute_realization_ops(
-            &mut kernel,
+        let mut state = DispatchTestState::default();
+        state.step_handles.push(pre_existing);
+        state.run(
+            &mut kernels,
+            &registry,
+            "default",
             &ops,
-            &[],
-            &values,
-            &functions,
-            &meta_map,
-            RealizationOutputs::new(
-                &mut step_handles,
-                &mut named_steps,
-                &mut feature_tag_table,
-                &mut topology_attribute_table,
-                &mut swept_kind_table,
-            ),
-            &mut diagnostics,
-            &test_realization_id,
             None,
             SourceSpan::new(0, 0),
-            &mut None,
-            &mut RealizationCache::new(),
-            None,
         );
 
         // The real handle produced by op 0 must have been discarded.
         // Only the pre-existing handle should remain.
         assert_eq!(
-            step_handles.len(),
+            state.step_handles.len(),
             1,
             "step_handles should be truncated back to the pre-call length of 1; \
              the real handle from op 0 must be gone"
         );
         assert_eq!(
-            step_handles[0], pre_existing,
+            state.step_handles[0], pre_existing,
             "the pre-existing handle must be preserved unchanged"
         );
         // Exactly one compile-error diagnostic from the failing op 1
-        let compile_failures = diagnostics
+        let compile_failures = state
+            .diagnostics
             .iter()
             .filter(|d| d.message.contains("failed to compile geometry operation"))
             .count();
         assert_eq!(
             compile_failures, 1,
             "expected exactly 1 compile-error diagnostic, got {}: {:?}",
-            compile_failures, diagnostics
+            compile_failures, state.diagnostics
         );
     }
 
@@ -3072,44 +3902,23 @@ mod tests {
             right: GeomRef::Step(99),
         }];
 
-        let mut kernel = MockGeometryKernel::new();
-        let values = ValueMap::new();
-        let functions: Vec<CompiledFunction> = vec![];
-        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
-        let mut step_handles: Vec<GeometryHandleId> = vec![];
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
-
-        let mut feature_tag_table = FeatureTagTable::default();
-        let mut topology_attribute_table = TopologyAttributeTable::default();
-        let mut swept_kind_table = SweptKindTable::default();
-        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
-        Engine::execute_realization_ops(
-            &mut kernel,
+        let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
+        let desc = dispatch_test_descriptor_all_brep();
+        let registry = dispatch_test_single_default_registry(&desc);
+        let mut state = DispatchTestState::default();
+        state.run(
+            &mut kernels,
+            &registry,
+            "default",
             &ops,
-            &[],
-            &values,
-            &functions,
-            &meta_map,
-            RealizationOutputs::new(
-                &mut step_handles,
-                &mut named_steps,
-                &mut feature_tag_table,
-                &mut topology_attribute_table,
-                &mut swept_kind_table,
-            ),
-            &mut diagnostics,
-            &test_realization_id,
             None,
             SourceSpan::new(0, 0),
-            &mut None,
-            &mut RealizationCache::new(),
-            None,
         );
 
         // The Error diagnostic must contain the standard prefix (preserves
         // existing integration-test substring checks) AND the specific reason.
-        let compile_err_diag = diagnostics
+        let compile_err_diag = state
+            .diagnostics
             .iter()
             .find(|d| {
                 d.message.contains("failed to compile geometry operation")
@@ -3152,43 +3961,22 @@ mod tests {
             ],
         }];
 
-        let mut kernel = MockGeometryKernel::new();
-        let values = ValueMap::new();
-        let functions: Vec<CompiledFunction> = vec![];
-        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
-        let mut step_handles: Vec<GeometryHandleId> = vec![];
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
-
-        let mut feature_tag_table = FeatureTagTable::default();
-        let mut topology_attribute_table = TopologyAttributeTable::default();
-        let mut swept_kind_table = SweptKindTable::default();
-        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
-        Engine::execute_realization_ops(
-            &mut kernel,
+        let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
+        let desc = dispatch_test_descriptor_all_brep();
+        let registry = dispatch_test_single_default_registry(&desc);
+        let mut state = DispatchTestState::default();
+        state.run(
+            &mut kernels,
+            &registry,
+            "default",
             &ops,
-            &[],
-            &values,
-            &functions,
-            &meta_map,
-            RealizationOutputs::new(
-                &mut step_handles,
-                &mut named_steps,
-                &mut feature_tag_table,
-                &mut topology_attribute_table,
-                &mut swept_kind_table,
-            ),
-            &mut diagnostics,
-            &test_realization_id,
             Some("body"),
             SourceSpan::new(0, 0),
-            &mut None,
-            &mut RealizationCache::new(),
-            None,
         );
 
         // Filter to error-severity only: see comment in the happy-path test.
-        let errors: Vec<_> = diagnostics
+        let errors: Vec<_> = state
+            .diagnostics
             .iter()
             .filter(|d| matches!(d.severity, reify_types::Severity::Error))
             .collect();
@@ -3199,7 +3987,8 @@ mod tests {
         );
         // Pin the expected warning count (one seeder extract-failure per
         // successful primitive op). See the happy-path test for the rationale.
-        let warnings: Vec<_> = diagnostics
+        let warnings: Vec<_> = state
+            .diagnostics
             .iter()
             .filter(|d| matches!(d.severity, reify_types::Severity::Warning))
             .collect();
@@ -3218,15 +4007,15 @@ mod tests {
             "the single warning must be the seeder's auxiliary-metadata failure, got: {:?}",
             warnings[0].message
         );
-        assert_eq!(step_handles.len(), 1, "expected one handle appended");
-        let body_handle = named_steps.get("body").copied();
+        assert_eq!(state.step_handles.len(), 1, "expected one handle appended");
+        let body_handle = state.named_steps.get("body").copied();
         assert!(
             body_handle.is_some(),
             "named_steps should contain 'body' after successful named realization"
         );
         assert_eq!(
             body_handle.unwrap(),
-            step_handles[0],
+            state.step_handles[0],
             "named_steps['body'] should equal the handle returned by the kernel"
         );
     }
@@ -3250,50 +4039,28 @@ mod tests {
             right: GeomRef::Step(99),
         }];
 
-        let mut kernel = MockGeometryKernel::new();
-        let values = ValueMap::new();
-        let functions: Vec<CompiledFunction> = vec![];
-        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
-        let mut step_handles: Vec<GeometryHandleId> = vec![];
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
-
-        let mut feature_tag_table = FeatureTagTable::default();
-        let mut topology_attribute_table = TopologyAttributeTable::default();
-        let mut swept_kind_table = SweptKindTable::default();
-        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
-        Engine::execute_realization_ops(
-            &mut kernel,
+        let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
+        let desc = dispatch_test_descriptor_all_brep();
+        let registry = dispatch_test_single_default_registry(&desc);
+        let mut state = DispatchTestState::default();
+        state.run(
+            &mut kernels,
+            &registry,
+            "default",
             &ops,
-            &[],
-            &values,
-            &functions,
-            &meta_map,
-            RealizationOutputs::new(
-                &mut step_handles,
-                &mut named_steps,
-                &mut feature_tag_table,
-                &mut topology_attribute_table,
-                &mut swept_kind_table,
-            ),
-            &mut diagnostics,
-            &test_realization_id,
             Some("bad"),
             SourceSpan::new(0, 0),
-            &mut None,
-            &mut RealizationCache::new(),
-            None,
         );
 
         assert!(
-            !named_steps.contains_key("bad"),
+            !state.named_steps.contains_key("bad"),
             "named_steps must NOT contain 'bad' after rollback; stale entries \
              would let later realizations resolve a name whose geometry was never \
              successfully produced"
         );
         // Verify rollback did happen (existing invariant)
         assert!(
-            step_handles.is_empty(),
+            state.step_handles.is_empty(),
             "handles should be truncated on failure"
         );
     }
@@ -3331,73 +4098,37 @@ mod tests {
             ],
         }];
 
-        let mut kernel = MockGeometryKernel::new();
-        let values = ValueMap::new();
-        let functions: Vec<CompiledFunction> = vec![];
-        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
-        let mut step_handles: Vec<GeometryHandleId> = vec![];
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
+        let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
+        let desc = dispatch_test_descriptor_all_brep();
+        let registry = dispatch_test_single_default_registry(&desc);
+        let mut state = DispatchTestState::default();
 
         // First binding: let body = box(…)
-        let mut feature_tag_table = FeatureTagTable::default();
-        let mut topology_attribute_table = TopologyAttributeTable::default();
-        let mut swept_kind_table = SweptKindTable::default();
-        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
-        Engine::execute_realization_ops(
-            &mut kernel,
+        state.run(
+            &mut kernels,
+            &registry,
+            "default",
             &box_ops,
-            &[],
-            &values,
-            &functions,
-            &meta_map,
-            RealizationOutputs::new(
-                &mut step_handles,
-                &mut named_steps,
-                &mut feature_tag_table,
-                &mut topology_attribute_table,
-                &mut swept_kind_table,
-            ),
-            &mut diagnostics,
-            &test_realization_id,
             Some("body"),
             SourceSpan::new(0, 0),
-            &mut None,
-            &mut RealizationCache::new(),
-            None,
         );
         // Snapshot via the contract-visible map entry, not by positional index,
         // so the snapshot stays correct if internal handle-slot layout changes.
-        let h1 = named_steps["body"];
+        let h1 = state.named_steps["body"];
 
-        // Second binding: let body = cylinder(…) — same name, different primitive
-        let mut feature_tag_table = FeatureTagTable::default();
-        let mut topology_attribute_table = TopologyAttributeTable::default();
-        let mut swept_kind_table = SweptKindTable::default();
-        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
-        Engine::execute_realization_ops(
-            &mut kernel,
+        // Second binding: let body = cylinder(…) — same name, different primitive.
+        // Reset the attribute tables between calls to mirror the per-build
+        // reset in production (each realization sees clean attribute state).
+        state.reset_attribute_tables();
+        state.run(
+            &mut kernels,
+            &registry,
+            "default",
             &cyl_ops,
-            &[],
-            &values,
-            &functions,
-            &meta_map,
-            RealizationOutputs::new(
-                &mut step_handles,
-                &mut named_steps,
-                &mut feature_tag_table,
-                &mut topology_attribute_table,
-                &mut swept_kind_table,
-            ),
-            &mut diagnostics,
-            &test_realization_id,
             Some("body"),
             SourceSpan::new(0, 0),
-            &mut None,
-            &mut RealizationCache::new(),
-            None,
         );
-        let h2 = named_steps["body"];
+        let h2 = state.named_steps["body"];
 
         // The kernel must have issued distinct handles so the test is non-trivial
         assert_ne!(
@@ -3407,7 +4138,7 @@ mod tests {
 
         // Last-write-wins: named_steps["body"] must equal h2 (the cylinder binding)
         assert_eq!(
-            named_steps.get("body").copied(),
+            state.named_steps.get("body").copied(),
             Some(h2),
             "shadowing contract: the second `let body` binding must overwrite \
              the first — named_steps[\"body\"] must be the handle from the \
@@ -3416,7 +4147,7 @@ mod tests {
 
         // Explicit anti-assertion: a first-write-wins regression must fail here
         assert_ne!(
-            named_steps.get("body").copied(),
+            state.named_steps.get("body").copied(),
             Some(h1),
             "first-write-wins regression guard: named_steps[\"body\"] must NOT \
              resolve to the first binding's handle after the second binding has \
@@ -3428,7 +4159,8 @@ mod tests {
         // fail (e.g. on a mock kernel without an extraction fixture). The
         // happy-path contract is "no Error diagnostics"; auxiliary-metadata
         // warnings are expected noise on mock kernels.
-        let errors: Vec<_> = diagnostics
+        let errors: Vec<_> = state
+            .diagnostics
             .iter()
             .filter(|d| matches!(d.severity, reify_types::Severity::Error))
             .collect();
@@ -3440,7 +4172,8 @@ mod tests {
         // Pin the expected warning count: this test runs two successful
         // primitive ops (Box, then Cylinder) through the same `diagnostics`
         // Vec, so one seeder warning per op accumulates → 2 total.
-        let warnings: Vec<_> = diagnostics
+        let warnings: Vec<_> = state
+            .diagnostics
             .iter()
             .filter(|d| matches!(d.severity, reify_types::Severity::Warning))
             .collect();
@@ -3497,44 +4230,24 @@ mod tests {
             right: GeomRef::Step(99),
         }];
 
-        let mut kernel = MockGeometryKernel::new();
-        let values = ValueMap::new();
-        let functions: Vec<CompiledFunction> = vec![];
-        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
-        let mut step_handles: Vec<GeometryHandleId> = vec![];
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
+        let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
+        let desc = dispatch_test_descriptor_all_brep();
+        let registry = dispatch_test_single_default_registry(&desc);
+        let mut state = DispatchTestState::default();
 
         // First binding: let body = box(…) — succeeds, populates named_steps.
-        let mut feature_tag_table = FeatureTagTable::default();
-        let mut topology_attribute_table = TopologyAttributeTable::default();
-        let mut swept_kind_table = SweptKindTable::default();
-        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
-        Engine::execute_realization_ops(
-            &mut kernel,
+        state.run(
+            &mut kernels,
+            &registry,
+            "default",
             &box_ops,
-            &[],
-            &values,
-            &functions,
-            &meta_map,
-            RealizationOutputs::new(
-                &mut step_handles,
-                &mut named_steps,
-                &mut feature_tag_table,
-                &mut topology_attribute_table,
-                &mut swept_kind_table,
-            ),
-            &mut diagnostics,
-            &test_realization_id,
             Some("body"),
             SourceSpan::new(0, 0),
-            &mut None,
-            &mut RealizationCache::new(),
-            None,
         );
-        let h1 = named_steps["body"];
+        let h1 = state.named_steps["body"];
         // Filter to error-severity only: see comment in the happy-path test.
-        let errors: Vec<_> = diagnostics
+        let errors: Vec<_> = state
+            .diagnostics
             .iter()
             .filter(|d| matches!(d.severity, reify_types::Severity::Error))
             .collect();
@@ -3545,7 +4258,8 @@ mod tests {
         );
         // Pin the expected warning count (one seeder failure for the
         // successful Box op). See the happy-path test for the rationale.
-        let warnings_after_first: Vec<_> = diagnostics
+        let warnings_after_first: Vec<_> = state
+            .diagnostics
             .iter()
             .filter(|d| matches!(d.severity, reify_types::Severity::Warning))
             .collect();
@@ -3559,36 +4273,20 @@ mod tests {
         );
 
         // Second binding: let body = <invalid> — fails (rollback path).
-        let mut feature_tag_table = FeatureTagTable::default();
-        let mut topology_attribute_table = TopologyAttributeTable::default();
-        let mut swept_kind_table = SweptKindTable::default();
-        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
-        Engine::execute_realization_ops(
-            &mut kernel,
+        // Reset attribute tables between realizations.
+        state.reset_attribute_tables();
+        state.run(
+            &mut kernels,
+            &registry,
+            "default",
             &fail_ops,
-            &[],
-            &values,
-            &functions,
-            &meta_map,
-            RealizationOutputs::new(
-                &mut step_handles,
-                &mut named_steps,
-                &mut feature_tag_table,
-                &mut topology_attribute_table,
-                &mut swept_kind_table,
-            ),
-            &mut diagnostics,
-            &test_realization_id,
             Some("body"),
             SourceSpan::new(0, 0),
-            &mut None,
-            &mut RealizationCache::new(),
-            None,
         );
 
         // The failed shadow must NOT have overwritten the successful binding.
         assert_eq!(
-            named_steps.get("body").copied(),
+            state.named_steps.get("body").copied(),
             Some(h1),
             "rollback guard: a failed shadow must not overwrite the previous \
              successful binding — named_steps[\"body\"] must still resolve to h1"
@@ -3596,13 +4294,14 @@ mod tests {
 
         // The second call must have emitted a diagnostic (compile failure).
         assert!(
-            !diagnostics.is_empty(),
+            !state.diagnostics.is_empty(),
             "expected a diagnostic from the failed second realization"
         );
         // Pin the warning count after the second call: the second op fails
         // before reaching `kernel.execute`, so the seeder is never invoked
         // and no NEW warning lands on top of the one from the first call.
-        let warnings_after_second: Vec<_> = diagnostics
+        let warnings_after_second: Vec<_> = state
+            .diagnostics
             .iter()
             .filter(|d| matches!(d.severity, reify_types::Severity::Warning))
             .collect();
@@ -3644,44 +4343,23 @@ mod tests {
             right: GeomRef::Step(99),
         }];
 
-        let mut kernel = MockGeometryKernel::new();
-        let values = ValueMap::new();
-        let functions: Vec<CompiledFunction> = vec![];
-        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
-        let mut step_handles: Vec<GeometryHandleId> = vec![];
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
+        let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
+        let desc = dispatch_test_descriptor_all_brep();
+        let registry = dispatch_test_single_default_registry(&desc);
         let realization_span = SourceSpan::new(100, 150);
-
-        let mut feature_tag_table = FeatureTagTable::default();
-        let mut topology_attribute_table = TopologyAttributeTable::default();
-        let mut swept_kind_table = SweptKindTable::default();
-        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
-        Engine::execute_realization_ops(
-            &mut kernel,
+        let mut state = DispatchTestState::default();
+        state.run(
+            &mut kernels,
+            &registry,
+            "default",
             &ops,
-            &[],
-            &values,
-            &functions,
-            &meta_map,
-            RealizationOutputs::new(
-                &mut step_handles,
-                &mut named_steps,
-                &mut feature_tag_table,
-                &mut topology_attribute_table,
-                &mut swept_kind_table,
-            ),
-            &mut diagnostics,
-            &test_realization_id,
             None,
             realization_span,
-            &mut None,
-            &mut RealizationCache::new(),
-            None,
         );
 
         // Find the compile-failure Error diagnostic.
-        let compile_err_diag = diagnostics
+        let compile_err_diag = state
+            .diagnostics
             .iter()
             .find(|d| {
                 d.message.contains("failed to compile geometry operation")
@@ -3733,44 +4411,23 @@ mod tests {
             ],
         }];
 
-        let mut kernel = FailingMockGeometryKernel;
-        let values = ValueMap::new();
-        let functions: Vec<CompiledFunction> = vec![];
-        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
-        let mut step_handles: Vec<GeometryHandleId> = vec![];
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
+        let mut kernels = dispatch_test_kernels(Box::new(FailingMockGeometryKernel));
+        let desc = dispatch_test_descriptor_all_brep();
+        let registry = dispatch_test_single_default_registry(&desc);
         let realization_span = SourceSpan::new(200, 250);
-
-        let mut feature_tag_table = FeatureTagTable::default();
-        let mut topology_attribute_table = TopologyAttributeTable::default();
-        let mut swept_kind_table = SweptKindTable::default();
-        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
-        Engine::execute_realization_ops(
-            &mut kernel,
+        let mut state = DispatchTestState::default();
+        state.run(
+            &mut kernels,
+            &registry,
+            "default",
             &ops,
-            &[],
-            &values,
-            &functions,
-            &meta_map,
-            RealizationOutputs::new(
-                &mut step_handles,
-                &mut named_steps,
-                &mut feature_tag_table,
-                &mut topology_attribute_table,
-                &mut swept_kind_table,
-            ),
-            &mut diagnostics,
-            &test_realization_id,
             None,
             realization_span,
-            &mut None,
-            &mut RealizationCache::new(),
-            None,
         );
 
         // Find the kernel-error Error diagnostic.
-        let kernel_err_diag = diagnostics
+        let kernel_err_diag = state
+            .diagnostics
             .iter()
             .find(|d| d.message.contains("geometry error") && matches!(d.severity, Severity::Error))
             .expect("expected an Error diagnostic with 'geometry error'");
@@ -3788,6 +4445,516 @@ mod tests {
             "kernel-error label span should equal the supplied realization_span \
              {:?}, got {:?}",
             realization_span, kernel_err_diag.labels[0].span
+        );
+    }
+
+    // ── per-op dispatch routing tests (step-7 #3436) ──────────────────────────
+    //
+    // These tests drive the multi-handle reshape of `execute_realization_ops`
+    // landing in step-8: instead of a single `&mut dyn GeometryKernel`, the
+    // helper takes a `&mut BTreeMap<String, Box<dyn GeometryKernel>>` keyed on
+    // kernel name, a borrowed `&BTreeMap<String, &CapabilityDescriptor>`
+    // dispatch registry, and a `&str` default-kernel name. For each op the
+    // helper calls `dispatcher::dispatch(registry, op, BRep, {BRep})`, routes
+    // the op to `kernels[plan.kernel]` (falling back to the default name when
+    // the plan's kernel is absent from the map), or emits a `NoKernelChain`
+    // diagnostic + sets `kernel_error_out` when dispatch returns `None`.
+
+    /// Recording kernel: delegates the full `GeometryKernel` surface to a
+    /// `MockGeometryKernel` and additionally pushes its own `name` onto a
+    /// shared `Arc<Mutex<Vec<String>>>` on every `execute` /
+    /// `execute_with_history` call. Lets the routing tests assert *which*
+    /// kernel in the map received the op call — proof that per-op dispatch
+    /// indexed into the named entry rather than the default.
+    struct NamedRecordingKernel {
+        name: String,
+        inner: reify_test_support::mocks::MockGeometryKernel,
+        log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl reify_types::GeometryKernel for NamedRecordingKernel {
+        fn execute(
+            &mut self,
+            op: &reify_types::GeometryOp,
+        ) -> Result<reify_types::GeometryHandle, reify_types::GeometryError> {
+            self.log.lock().unwrap().push(self.name.clone());
+            self.inner.execute(op)
+        }
+
+        fn query(
+            &self,
+            q: &reify_types::GeometryQuery,
+        ) -> Result<reify_types::Value, reify_types::QueryError> {
+            self.inner.query(q)
+        }
+
+        fn export(
+            &self,
+            handle: reify_types::GeometryHandleId,
+            format: reify_types::ExportFormat,
+            writer: &mut dyn std::io::Write,
+        ) -> Result<(), reify_types::ExportError> {
+            self.inner.export(handle, format, writer)
+        }
+
+        fn tessellate(
+            &self,
+            handle: reify_types::GeometryHandleId,
+            tolerance: f64,
+        ) -> Result<reify_types::Mesh, reify_types::TessError> {
+            self.inner.tessellate(handle, tolerance)
+        }
+    }
+
+    /// Two BRep kernels — `"aaa"` (lex-min) and `"default"` — both supporting
+    /// `(PrimitiveBox, BRep)`. `dispatch(registry, PrimitiveBox, BRep, {BRep})`
+    /// must pick `"aaa"` by lex-min tie-break (BTreeMap iteration order). The
+    /// recording kernel under `"aaa"` captures the `execute` call, proving the
+    /// op was routed to the dispatcher-named kernel — NOT the default.
+    ///
+    /// RED before step-8: `execute_realization_ops` still has the
+    /// single-kernel `&mut dyn GeometryKernel` first parameter, so this test
+    /// fails to compile until step-8 reshapes the signature to take
+    /// `&mut BTreeMap<String, Box<dyn GeometryKernel>>` +
+    /// `&BTreeMap<String, &CapabilityDescriptor>` + `&str` default name.
+    #[test]
+    fn execute_realization_ops_routes_to_dispatcher_picked_kernel() {
+        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_types::{CapabilityDescriptor, CompiledExpr, Operation, ReprKind, Type};
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        let log: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let mut kernels: BTreeMap<String, Box<dyn reify_types::GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "aaa".to_string(),
+            Box::new(NamedRecordingKernel {
+                name: "aaa".to_string(),
+                inner: MockGeometryKernel::new(),
+                log: std::sync::Arc::clone(&log),
+            }),
+        );
+        kernels.insert(
+            "default".to_string(),
+            Box::new(NamedRecordingKernel {
+                name: "default".to_string(),
+                inner: MockGeometryKernel::new(),
+                log: std::sync::Arc::clone(&log),
+            }),
+        );
+
+        let desc_a = CapabilityDescriptor {
+            supports: vec![(Operation::PrimitiveBox, ReprKind::BRep)],
+        };
+        let desc_d = CapabilityDescriptor {
+            supports: vec![(Operation::PrimitiveBox, ReprKind::BRep)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("aaa".to_string(), &desc_a);
+        registry.insert("default".to_string(), &desc_d);
+
+        let ops = vec![CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![
+                ("width".into(), mm_lit(10.0)),
+                ("height".into(), mm_lit(20.0)),
+                ("depth".into(), mm_lit(5.0)),
+            ],
+        }];
+
+        let mut state = DispatchTestState::default();
+        state.run(
+            &mut kernels,
+            &registry,
+            "default",
+            &ops,
+            None,
+            SourceSpan::new(0, 0),
+        );
+
+        let calls = log.lock().unwrap().clone();
+        assert_eq!(
+            calls,
+            vec!["aaa".to_string()],
+            "the op must be routed to the dispatcher-picked kernel (lex-min = \"aaa\"), \
+             not the default — got call log {:?}",
+            calls
+        );
+        assert_eq!(
+            state.step_handles.len(),
+            1,
+            "expected one handle pushed from the dispatched kernel"
+        );
+    }
+
+    /// Behavior-preserved: with only the default kernel in the map (and a
+    /// registry naming it for the op), `execute_realization_ops` must run the
+    /// op on the default kernel — exactly the v0.2 single-kernel path.
+    ///
+    /// RED before step-8: same signature change as
+    /// `execute_realization_ops_routes_to_dispatcher_picked_kernel` above.
+    #[test]
+    fn execute_realization_ops_routes_to_default_when_only_default_registered() {
+        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_types::{CapabilityDescriptor, CompiledExpr, Operation, ReprKind, Type};
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        let log: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let mut kernels: BTreeMap<String, Box<dyn reify_types::GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "default".to_string(),
+            Box::new(NamedRecordingKernel {
+                name: "default".to_string(),
+                inner: MockGeometryKernel::new(),
+                log: std::sync::Arc::clone(&log),
+            }),
+        );
+
+        let desc_d = CapabilityDescriptor {
+            supports: vec![(Operation::PrimitiveBox, ReprKind::BRep)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("default".to_string(), &desc_d);
+
+        let ops = vec![CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![
+                ("width".into(), mm_lit(10.0)),
+                ("height".into(), mm_lit(20.0)),
+                ("depth".into(), mm_lit(5.0)),
+            ],
+        }];
+
+        let mut state = DispatchTestState::default();
+        state.run(
+            &mut kernels,
+            &registry,
+            "default",
+            &ops,
+            None,
+            SourceSpan::new(0, 0),
+        );
+
+        let calls = log.lock().unwrap().clone();
+        assert_eq!(
+            calls,
+            vec!["default".to_string()],
+            "single-kernel-in-map: op must run on the default kernel; got log {:?}",
+            calls,
+        );
+        assert_eq!(state.step_handles.len(), 1, "expected one handle pushed");
+        let errors: Vec<_> = state
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, reify_types::Severity::Error))
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "behavior-preserved single-default path must not emit error diagnostics; got {:?}",
+            errors,
+        );
+    }
+
+    /// When the registry claims no kernel for the op (dispatch returns
+    /// `None`), `execute_realization_ops` must emit a
+    /// `DiagnosticCode::NoKernelChain` error diagnostic, set
+    /// `kernel_error_out` so the caller can mark the realization Failed, and
+    /// truncate `step_handles` back to its pre-call length.
+    ///
+    /// RED before step-8: routing + dispatch + NoKernelChain wiring all land
+    /// in step-8.
+    #[test]
+    fn execute_realization_ops_emits_no_kernel_chain_diagnostic_when_dispatch_returns_none() {
+        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_types::{
+            CapabilityDescriptor, CompiledExpr, DiagnosticCode, Operation, ReprKind, Type,
+        };
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        let mut kernels: BTreeMap<String, Box<dyn reify_types::GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "default".to_string(),
+            Box::new(MockGeometryKernel::new()) as Box<dyn reify_types::GeometryKernel>,
+        );
+
+        // Registry deliberately does NOT support PrimitiveBox/BRep: every
+        // descriptor in the map only supports BooleanUnion/Mesh, so
+        // `dispatch(registry, PrimitiveBox, BRep, {BRep})` returns `None`.
+        let desc_d = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("default".to_string(), &desc_d);
+
+        let ops = vec![CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![
+                ("width".into(), mm_lit(10.0)),
+                ("height".into(), mm_lit(20.0)),
+                ("depth".into(), mm_lit(5.0)),
+            ],
+        }];
+
+        let mut state = DispatchTestState::default();
+        state.run(
+            &mut kernels,
+            &registry,
+            "default",
+            &ops,
+            None,
+            SourceSpan::new(0, 0),
+        );
+
+        // A NoKernelChain error diagnostic must be emitted.
+        let no_chain: Vec<_> = state
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::NoKernelChain))
+            .collect();
+        assert_eq!(
+            no_chain.len(),
+            1,
+            "expected exactly one NoKernelChain diagnostic when the registry has no \
+             kernel for the op; got {} diagnostics total: {:?}",
+            no_chain.len(),
+            state.diagnostics
+        );
+        assert!(
+            matches!(no_chain[0].severity, reify_types::Severity::Error),
+            "NoKernelChain must be an Error-severity diagnostic; got {:?}",
+            no_chain[0].severity,
+        );
+
+        // Realization must surface as Failed via the caller-write kernel_error_out
+        // out-param (the same channel `mark_realization_failed` consumes for
+        // kernel errors today).
+        assert!(
+            state.kernel_error_out.is_some(),
+            "unroutable op must set kernel_error_out so the caller can mark the \
+             realization NodeId as Failed; got None"
+        );
+
+        // step_handles must be truncated to its pre-call length: no real handle
+        // was produced.
+        assert!(
+            state.step_handles.is_empty(),
+            "unroutable op must leave step_handles truncated to handle_start; got {:?}",
+            state.step_handles,
+        );
+    }
+
+    /// Step-13 (task ε / 3436) RED: the backward-compat None-fallback arm of
+    /// [`Engine::execute_realization_ops`] must capture a synthetic
+    /// `ReprKind::BRep` into the `produced_repr_out` channel for the executor-
+    /// write invariant (step-10) to remain TOTAL across BOTH construction
+    /// paths — `Engine::new(_, Some(kernel))` (which wraps the caller-supplied
+    /// kernel under the synthetic [`Engine::DEFAULT_KERNEL_NAME`] sentinel and
+    /// leaves the inventory registry deliberately out of sync with the kernels
+    /// map) AND `with_registered_kernels` (which loads one kernel per
+    /// inventory registration so dispatch always finds coverage).
+    ///
+    /// Pins the production gap the reviewer identified on
+    /// `tests/multi_handle_engine_dispatch.rs::executor_writes_produced_repr_brep_on_build_snapshot`:
+    /// that integration test passes incidentally when the local build has
+    /// `cfg(has_occt)` (OCCT in the registry → dispatch returns
+    /// `Some(plan{kernel:"occt"})` → 0-conversion arm falls back to the
+    /// DEFAULT_KERNEL_NAME-keyed mock → `last_plan` is `Some` → post-loop
+    /// `plan_output_repr` reads OCCT's `(PrimitiveBox, BRep)` support → writes
+    /// `BRep`), but FAILS in stub-mode builds where the registry is empty and
+    /// the None-fallback arm leaves `last_plan = None`, so the post-loop guard
+    /// `if let (Some(plan), Some(op)) = (last_plan.as_ref(), last_operation)`
+    /// short-circuits and `produced_repr_out` is never written.
+    ///
+    /// **Pre-corruption idiom**: this unit test pre-seeds `produced_repr_out =
+    /// Some(ReprKind::Mesh)` before calling `execute_realization_ops`, exactly
+    /// like the integration test pre-corrupts the snapshot graph node to
+    /// `ReprKind::Mesh` before calling `build_snapshot()`. `Mesh` is the
+    /// baseline-impossible value in v0.3-ε (the BRep baseline produces only
+    /// BRep handles), so any later read of `BRep` here can only come from a
+    /// step-14 fallback-arm write of `Some(ReprKind::BRep)`. A naïve
+    /// `produced_repr_out == Some(BRep)` assertion against the construction-
+    /// time `None` default would pass with or without the step-14 fix.
+    ///
+    /// **Why this fixture isolates the gap from OCCT availability**: the
+    /// registry constructed below has NO `(PrimitiveBox, BRep)` support
+    /// regardless of build profile — it carries only `(BooleanUnion, Mesh)`,
+    /// a coverage that cannot satisfy the BRep-baseline query triple. The
+    /// `assert!(dispatch(...).is_none())` sanity check below pins this
+    /// invariant directly so a future registry change that accidentally
+    /// covers `(PrimitiveBox, BRep)` would surface here rather than masking
+    /// the fallback-arm exercise.
+    ///
+    /// RED before step-14: `last_produced_repr` does not yet exist, so the
+    /// post-loop write key still reads `last_plan` — which is `None` in the
+    /// fallback arm — and assertion (iii) below fires.
+    #[test]
+    fn execute_realization_ops_writes_produced_repr_brep_in_none_fallback_backward_compat() {
+        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_types::{
+            CapabilityDescriptor, CompiledExpr, DiagnosticCode, Operation, ReprKind, Type,
+        };
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        // (a) Registry that does NOT cover `(PrimitiveBox, BRep)`. The lone
+        //     descriptor's `supports` list is `[(BooleanUnion, Mesh)]` — a
+        //     valid `CapabilityDescriptor` (non-empty `supports`) that cannot
+        //     answer the BRep-baseline dispatcher query for a Box op.
+        let desc_none_match = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert(
+            Engine::DEFAULT_KERNEL_NAME.to_string(),
+            &desc_none_match,
+        );
+
+        // (i) Sanity check: dispatch returns `None` for `(PrimitiveBox, BRep,
+        //     {BRep})` against this registry, confirming the test reaches the
+        //     None arm of the per-op match in `execute_realization_ops`.
+        let available_set: std::collections::HashSet<ReprKind> = {
+            let mut s = std::collections::HashSet::new();
+            s.insert(ReprKind::BRep);
+            s
+        };
+        assert!(
+            dispatch(&registry, Operation::PrimitiveBox, ReprKind::BRep, &available_set).is_none(),
+            "test invariant: synthetic registry must yield dispatch() == None for \
+             (PrimitiveBox, BRep, {{BRep}}) so the executor reaches the backward-compat \
+             fallback arm. If this fires, the registry was accidentally given coverage \
+             for (PrimitiveBox, BRep)"
+        );
+
+        // (b) Single recording mock kernel keyed under
+        //     `Engine::DEFAULT_KERNEL_NAME` — the synthetic sentinel that
+        //     `Engine::new(_, Some(kernel))` / `with_prelude` wrap the caller-
+        //     supplied kernel under (engine_admin.rs:197).
+        let log: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut kernels: BTreeMap<String, Box<dyn reify_types::GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            Engine::DEFAULT_KERNEL_NAME.to_string(),
+            Box::new(NamedRecordingKernel {
+                name: Engine::DEFAULT_KERNEL_NAME.to_string(),
+                inner: MockGeometryKernel::new(),
+                log: std::sync::Arc::clone(&log),
+            }),
+        );
+
+        let ops = vec![CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![
+                ("width".into(), mm_lit(10.0)),
+                ("height".into(), mm_lit(20.0)),
+                ("depth".into(), mm_lit(5.0)),
+            ],
+        }];
+
+        // (d) Pre-corrupt `produced_repr_out` to `Some(ReprKind::Mesh)` — a
+        //     baseline-impossible value. Any later read of `BRep` can only
+        //     come from the step-14 fallback-arm write of
+        //     `Some(ReprKind::BRep)`; the construction-time `None` default
+        //     would also let the assertion fail loudly if step-14 instead
+        //     left the channel untouched. Mirrors the pre-corruption idiom in
+        //     `tests/multi_handle_engine_dispatch.rs::executor_writes_produced_repr_brep_on_build_snapshot`.
+        //
+        //     Constructed via struct-update from `Default::default()` rather
+        //     than a post-`default()` field reassignment to avoid the clippy
+        //     `field_reassign_with_default` lint — the only field overridden
+        //     from default is `produced_repr_out`, so the struct-init form
+        //     stays readable.
+        let mut state = DispatchTestState {
+            produced_repr_out: Some(ReprKind::Mesh),
+            ..DispatchTestState::default()
+        };
+
+        // (c) `default_kernel_name = Engine::DEFAULT_KERNEL_NAME` — the
+        //     sentinel comparison `default_kernel_name ==
+        //     Engine::DEFAULT_KERNEL_NAME` inside the None arm gates the
+        //     fallback vs strict-mode behaviour (engine_build.rs:2379).
+        state.run(
+            &mut kernels,
+            &registry,
+            Engine::DEFAULT_KERNEL_NAME,
+            &ops,
+            None,
+            SourceSpan::new(0, 0),
+        );
+
+        // (ii) The recording mock kernel must have captured the call, proving
+        //      the fallback arm executed the op on the synthetic default
+        //      (rather than emitting NoKernelChain and breaking out of the
+        //      loop without executing).
+        let calls = log.lock().unwrap().clone();
+        assert_eq!(
+            calls,
+            vec![Engine::DEFAULT_KERNEL_NAME.to_string()],
+            "fallback arm must execute the op on the kernel registered under \
+             Engine::DEFAULT_KERNEL_NAME; got call log {:?}",
+            calls
+        );
+        assert_eq!(
+            state.step_handles.len(),
+            1,
+            "expected one handle pushed from the fallback-routed default kernel"
+        );
+
+        // No NoKernelChain diagnostic must be emitted: the sentinel-gated
+        // fallback arm is the backward-compat success path, NOT the strict-
+        // mode missing-coverage error path the `no_kernel_chain` test pins.
+        let no_chain: Vec<_> = state
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::NoKernelChain))
+            .collect();
+        assert!(
+            no_chain.is_empty(),
+            "backward-compat None-fallback arm (default_kernel_name == \
+             Engine::DEFAULT_KERNEL_NAME && kernels.contains_key(default_kernel_name)) \
+             must NOT emit a NoKernelChain diagnostic — that diagnostic belongs to the \
+             strict-mode arm only; got {:?}",
+            no_chain
+        );
+        // Realization must NOT be marked Failed: kernel_error_out stays None
+        // on the fallback success path (no error to surface to the caller).
+        assert!(
+            state.kernel_error_out.is_none(),
+            "backward-compat fallback success must leave kernel_error_out untouched; \
+             got {:?}",
+            state.kernel_error_out
+        );
+
+        // (iii) The produced_repr_out channel must now carry
+        //       `Some(ReprKind::BRep)` — overwriting the pre-corrupted
+        //       `Some(ReprKind::Mesh)`. RED before step-14: the post-loop
+        //       write guard `if let (Some(plan), Some(op)) =
+        //       (last_plan.as_ref(), last_operation)` short-circuits because
+        //       the fallback arm never sets `last_plan`, so the pre-corrupted
+        //       Mesh value survives and this assertion fires. Step-14
+        //       introduces a parallel `last_produced_repr` channel that the
+        //       fallback arm sets to `Some(BRep)` (the v0.2 single-kernel
+        //       invariant) and rewrites the post-loop write to consult it.
+        assert_eq!(
+            state.produced_repr_out,
+            Some(ReprKind::BRep),
+            "executor must write produced_repr = BRep through the None-fallback \
+             backward-compat arm so the executor-write invariant (step-10) remains \
+             TOTAL across both construction paths; got {:?}. If this fires after \
+             step-14 lands, check that `last_produced_repr` is set in the None arm \
+             (default_kernel_name == Engine::DEFAULT_KERNEL_NAME && \
+             kernels.contains_key(default_kernel_name)) and that the post-loop write \
+             consults it.",
+            state.produced_repr_out
         );
     }
 
@@ -4319,6 +5486,452 @@ mod tests {
         );
     }
 
+    // ── geometry_op_to_operation unit tests ──────────────────────────────────
+
+    /// Pins the `GeometryOp` → `Operation` total mapping (task ε / 3436,
+    /// PRD §8 step-3/4). Each entry constructs a representative `GeometryOp`
+    /// (argument values are immaterial — the mapping is purely on variant
+    /// kind, mirroring `parent_handles_for_op`'s table) and asserts the
+    /// dispatcher-classifier output.
+    ///
+    /// Coverage spans every variant family — Primitives, Curves, Pipe,
+    /// Booleans, single-target Modify/Transform/Pattern, single-profile
+    /// Sweep, multi-profile Loft. Rust's exhaustive `match` inside
+    /// `geometry_op_to_operation` makes a new `GeometryOp` variant fail to
+    /// compile at the helper site, so the helper itself guards against
+    /// missing arms — this test pins the chosen `Operation` per arm.
+    ///
+    /// RED before step-4 impl: `geometry_op_to_operation` does not exist yet.
+    #[test]
+    fn geometry_op_to_operation_maps_every_variant_family() {
+        use reify_types::{Operation, Value};
+
+        let h = |id| GeometryHandleId(id);
+        let r = |v| Value::Real(v);
+
+        struct Case {
+            op: GeometryOp,
+            expected: Operation,
+            label: &'static str,
+        }
+
+        let cases: Vec<Case> = vec![
+            // Primitives
+            Case {
+                op: GeometryOp::Box {
+                    width: r(0.01),
+                    height: r(0.01),
+                    depth: r(0.01),
+                },
+                expected: Operation::PrimitiveBox,
+                label: "Box → PrimitiveBox",
+            },
+            Case {
+                op: GeometryOp::Cylinder {
+                    radius: r(0.005),
+                    height: r(0.02),
+                },
+                expected: Operation::PrimitiveCylinder,
+                label: "Cylinder → PrimitiveCylinder",
+            },
+            Case {
+                op: GeometryOp::Sphere { radius: r(0.005) },
+                expected: Operation::PrimitiveSphere,
+                label: "Sphere → PrimitiveSphere",
+            },
+            Case {
+                op: GeometryOp::Tube {
+                    outer_r: r(0.01),
+                    inner_r: r(0.005),
+                    height: r(0.02),
+                },
+                expected: Operation::PrimitiveTube,
+                label: "Tube → PrimitiveTube",
+            },
+            // Booleans
+            Case {
+                op: GeometryOp::Union {
+                    left: h(1),
+                    right: h(2),
+                },
+                expected: Operation::BooleanUnion,
+                label: "Union → BooleanUnion",
+            },
+            Case {
+                op: GeometryOp::Difference {
+                    left: h(1),
+                    right: h(2),
+                },
+                expected: Operation::BooleanDifference,
+                label: "Difference → BooleanDifference",
+            },
+            Case {
+                op: GeometryOp::Intersection {
+                    left: h(1),
+                    right: h(2),
+                },
+                expected: Operation::BooleanIntersection,
+                label: "Intersection → BooleanIntersection",
+            },
+            // Modify
+            Case {
+                op: GeometryOp::Fillet {
+                    target: h(1),
+                    radius: r(0.001),
+                },
+                expected: Operation::ModifyFillet,
+                label: "Fillet → ModifyFillet",
+            },
+            Case {
+                op: GeometryOp::Chamfer {
+                    target: h(1),
+                    distance: r(0.001),
+                },
+                expected: Operation::ModifyChamfer,
+                label: "Chamfer → ModifyChamfer",
+            },
+            Case {
+                op: GeometryOp::Shell {
+                    target: h(1),
+                    thickness: r(0.001),
+                    faces_to_remove: vec![0],
+                },
+                expected: Operation::ModifyShell,
+                label: "Shell → ModifyShell",
+            },
+            Case {
+                op: GeometryOp::Draft {
+                    target: h(1),
+                    angle: r(0.1),
+                    plane: h(2),
+                },
+                expected: Operation::ModifyDraft,
+                label: "Draft → ModifyDraft",
+            },
+            Case {
+                op: GeometryOp::Thicken {
+                    target: h(1),
+                    offset: r(0.001),
+                },
+                expected: Operation::ModifyThicken,
+                label: "Thicken → ModifyThicken",
+            },
+            // Transform
+            Case {
+                op: GeometryOp::Translate {
+                    target: h(1),
+                    dx: 0.0,
+                    dy: 0.0,
+                    dz: 0.01,
+                },
+                expected: Operation::TransformTranslate,
+                label: "Translate → TransformTranslate",
+            },
+            Case {
+                op: GeometryOp::Rotate {
+                    target: h(1),
+                    axis: [0.0, 0.0, 1.0],
+                    angle_rad: 0.5,
+                },
+                expected: Operation::TransformRotate,
+                label: "Rotate → TransformRotate",
+            },
+            Case {
+                op: GeometryOp::Scale {
+                    target: h(1),
+                    factor: 2.0,
+                },
+                expected: Operation::TransformScale,
+                label: "Scale → TransformScale",
+            },
+            Case {
+                op: GeometryOp::RotateAround {
+                    target: h(1),
+                    point: [0.0, 0.0, 0.0],
+                    axis: [0.0, 0.0, 1.0],
+                    angle_rad: 0.5,
+                },
+                expected: Operation::TransformRotateAround,
+                label: "RotateAround → TransformRotateAround",
+            },
+            // Pattern
+            Case {
+                op: GeometryOp::LinearPattern {
+                    target: h(1),
+                    direction: [1.0, 0.0, 0.0],
+                    count: 3,
+                    spacing: r(0.01),
+                },
+                expected: Operation::PatternLinear,
+                label: "LinearPattern → PatternLinear",
+            },
+            Case {
+                op: GeometryOp::CircularPattern {
+                    target: h(1),
+                    axis_origin: [0.0, 0.0, 0.0],
+                    axis_dir: [0.0, 0.0, 1.0],
+                    count: 4,
+                    angle: r(1.57),
+                },
+                expected: Operation::PatternCircular,
+                label: "CircularPattern → PatternCircular",
+            },
+            Case {
+                op: GeometryOp::Mirror {
+                    target: h(1),
+                    plane_origin: [0.0, 0.0, 0.0],
+                    plane_normal: [1.0, 0.0, 0.0],
+                },
+                expected: Operation::PatternMirror,
+                label: "Mirror → PatternMirror",
+            },
+            Case {
+                op: GeometryOp::LinearPattern2D {
+                    target: h(1),
+                    direction1: [1.0, 0.0, 0.0],
+                    count1: 3,
+                    spacing1: r(0.01),
+                    direction2: [0.0, 1.0, 0.0],
+                    count2: 3,
+                    spacing2: r(0.01),
+                },
+                expected: Operation::PatternLinear2D,
+                label: "LinearPattern2D → PatternLinear2D",
+            },
+            Case {
+                op: GeometryOp::ArbitraryPattern {
+                    target: h(1),
+                    transforms: vec![[0.0, 0.0, 0.0]],
+                },
+                expected: Operation::PatternArbitrary,
+                label: "ArbitraryPattern → PatternArbitrary",
+            },
+            // Sweep (single-profile)
+            Case {
+                op: GeometryOp::Extrude {
+                    profile: h(1),
+                    distance: r(0.01),
+                },
+                expected: Operation::SweepExtrude,
+                label: "Extrude → SweepExtrude",
+            },
+            Case {
+                op: GeometryOp::ExtrudeSymmetric {
+                    profile: h(1),
+                    distance: r(0.01),
+                },
+                expected: Operation::SweepExtrudeSymmetric,
+                label: "ExtrudeSymmetric → SweepExtrudeSymmetric",
+            },
+            Case {
+                op: GeometryOp::Revolve {
+                    profile: h(1),
+                    axis_origin: [0.0, 0.0, 0.0],
+                    axis_dir: [0.0, 0.0, 1.0],
+                    angle_rad: 1.0,
+                },
+                expected: Operation::SweepRevolve,
+                label: "Revolve → SweepRevolve",
+            },
+            Case {
+                op: GeometryOp::Sweep {
+                    profile: h(1),
+                    path: h(2),
+                },
+                expected: Operation::SweepSweep,
+                label: "Sweep → SweepSweep",
+            },
+            Case {
+                op: GeometryOp::SweepGuided {
+                    profile: h(1),
+                    path: h(2),
+                    guide: h(3),
+                },
+                expected: Operation::SweepSweepGuided,
+                label: "SweepGuided → SweepSweepGuided",
+            },
+            Case {
+                op: GeometryOp::Pipe {
+                    path: h(1),
+                    radius: r(0.005),
+                },
+                expected: Operation::SweepPipe,
+                label: "Pipe → SweepPipe",
+            },
+            // Loft (multi-profile)
+            Case {
+                op: GeometryOp::Loft {
+                    profiles: vec![h(1), h(2)],
+                },
+                expected: Operation::SweepLoft,
+                label: "Loft → SweepLoft",
+            },
+            Case {
+                op: GeometryOp::LoftGuided {
+                    profiles: vec![h(1), h(2)],
+                    guides: vec![h(3)],
+                },
+                expected: Operation::SweepLoftGuided,
+                label: "LoftGuided → SweepLoftGuided",
+            },
+            // Curves
+            Case {
+                op: GeometryOp::LineSegment {
+                    x1: 0.0,
+                    y1: 0.0,
+                    z1: 0.0,
+                    x2: 1.0,
+                    y2: 0.0,
+                    z2: 0.0,
+                },
+                expected: Operation::CurveLineSegment,
+                label: "LineSegment → CurveLineSegment",
+            },
+            Case {
+                op: GeometryOp::Arc {
+                    center: [0.0, 0.0, 0.0],
+                    radius: 0.01,
+                    start_angle: 0.0,
+                    end_angle: 1.57,
+                    axis: [0.0, 0.0, 1.0],
+                },
+                expected: Operation::CurveArc,
+                label: "Arc → CurveArc",
+            },
+            Case {
+                op: GeometryOp::Helix {
+                    radius: 0.01,
+                    pitch: 0.005,
+                    height: 0.05,
+                },
+                expected: Operation::CurveHelix,
+                label: "Helix → CurveHelix",
+            },
+            Case {
+                op: GeometryOp::InterpCurve {
+                    points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                },
+                expected: Operation::CurveInterpCurve,
+                label: "InterpCurve → CurveInterpCurve",
+            },
+            Case {
+                op: GeometryOp::BezierCurve {
+                    control_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                },
+                expected: Operation::CurveBezierCurve,
+                label: "BezierCurve → CurveBezierCurve",
+            },
+            Case {
+                op: GeometryOp::NurbsCurve {
+                    control_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                    weights: vec![1.0, 1.0],
+                    knots: vec![0.0, 0.0, 1.0, 1.0],
+                    degree: 1,
+                },
+                expected: Operation::CurveNurbsCurve,
+                label: "NurbsCurve → CurveNurbsCurve",
+            },
+        ];
+
+        for Case {
+            op,
+            expected,
+            label,
+        } in cases
+        {
+            let got = geometry_op_to_operation(&op);
+            assert_eq!(got, expected, "{label} (got {got:?})");
+        }
+    }
+
+    // ── plan_output_repr unit tests ──────────────────────────────────────────
+
+    /// Pins the `plan_output_repr` produced-repr derivation helper
+    /// (task ε / 3436, PRD §8 step-5/6).
+    ///
+    /// The helper takes a borrowed-view registry, a [`DispatchPlan`] (whose
+    /// `kernel` field names the chosen kernel), and an [`Operation`], and
+    /// returns the `ReprKind` that kernel produces for `op` — i.e. the second
+    /// element of the matching entry in `descriptor.supports`. This is the
+    /// value `execute_realization_ops` (step-10) will write into the
+    /// realization graph node's `produced_repr` field.
+    ///
+    /// Two synthetic kernels exercise both reprs the v0.3 dispatcher recognises:
+    /// (a) a BRep-native kernel supporting `(BooleanUnion, BRep)` → `BRep`,
+    /// (b) a Mesh-native kernel supporting `(BooleanUnion, Mesh)` → `Mesh`.
+    /// Each plan names exactly one kernel and contains zero conversions
+    /// (the ε baseline; non-empty chains are deferred to ζ/η/θ).
+    ///
+    /// A third sub-case pins the `None` fallback when the named kernel does
+    /// not support `op` for any repr — defensible against an invariant
+    /// violation where dispatch is given an inconsistent registry.
+    ///
+    /// RED before step-6 impl: `plan_output_repr` does not exist yet.
+    #[test]
+    fn plan_output_repr_returns_kernel_descriptor_output_repr() {
+        // (a) BRep-native kernel.
+        let occt = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::BRep)],
+        };
+        let mut brep_registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        brep_registry.insert("occt".to_string(), &occt);
+        let brep_plan = DispatchPlan {
+            kernel: "occt".to_string(),
+            conversions: vec![],
+        };
+        assert_eq!(
+            plan_output_repr(&brep_registry, &brep_plan, Operation::BooleanUnion),
+            Some(ReprKind::BRep),
+            "occt supports (BooleanUnion, BRep) → plan_output_repr must return BRep",
+        );
+
+        // (b) Mesh-native kernel.
+        let manifold = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+        };
+        let mut mesh_registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        mesh_registry.insert("manifold".to_string(), &manifold);
+        let mesh_plan = DispatchPlan {
+            kernel: "manifold".to_string(),
+            conversions: vec![],
+        };
+        assert_eq!(
+            plan_output_repr(&mesh_registry, &mesh_plan, Operation::BooleanUnion),
+            Some(ReprKind::Mesh),
+            "manifold supports (BooleanUnion, Mesh) → plan_output_repr must return Mesh",
+        );
+
+        // (c) Defensive fallback: plan names a kernel whose descriptor has
+        // no entry for the requested op. plan_output_repr must return None
+        // so the caller (execute_realization_ops in step-10) can surface a
+        // diagnostic rather than fabricate a repr.
+        let empty = CapabilityDescriptor { supports: vec![] };
+        let mut empty_registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        empty_registry.insert("empty".to_string(), &empty);
+        let empty_plan = DispatchPlan {
+            kernel: "empty".to_string(),
+            conversions: vec![],
+        };
+        assert_eq!(
+            plan_output_repr(&empty_registry, &empty_plan, Operation::BooleanUnion),
+            None,
+            "kernel with no matching supports entry → plan_output_repr must return None",
+        );
+
+        // (d) Plan kernel missing from registry — also None (defensive).
+        let mut occt_only: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        occt_only.insert("occt".to_string(), &occt);
+        let missing_plan = DispatchPlan {
+            kernel: "manifold".to_string(),
+            conversions: vec![],
+        };
+        assert_eq!(
+            plan_output_repr(&occt_only, &missing_plan, Operation::BooleanUnion),
+            None,
+            "plan.kernel absent from registry → plan_output_repr must return None",
+        );
+    }
+
     // ── compute_tessellation_budgets unit tests ───────────────────────────────
 
     /// Pins the return type of `compute_tessellation_budgets`:
@@ -4524,7 +6137,14 @@ mod tests {
         use reify_test_support::mocks::MockGeometryKernel;
 
         let module = module_with_one_box_realization();
-        let mut kernel: Option<Box<dyn GeometryKernel>> = Some(Box::new(MockGeometryKernel::new()));
+        // Task ε (3436): wrap the mock kernel into the new multi-handle map
+        // under the synthetic default-kernel name. `default_kernel_name` is
+        // threaded through as the resolution key the helper indexes by.
+        let mut geometry_kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        geometry_kernels.insert(
+            Engine::DEFAULT_KERNEL_NAME.to_string(),
+            Box::new(MockGeometryKernel::new()),
+        );
         let mut values = ValueMap::new();
         let functions: Vec<CompiledFunction> = vec![];
         let mut diagnostics: Vec<Diagnostic> = vec![];
@@ -4539,8 +6159,13 @@ mod tests {
         // passing an empty slice causes `demanded_tols[0][...]` to panic.
         // `tessellation_budgets` is correctly shaped so we can confirm the
         // panic originates at the demanded_tol lookup, not the budget lookup.
+        let desc = dispatch_test_descriptor_all_brep();
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert(Engine::DEFAULT_KERNEL_NAME.to_string(), &desc);
         Engine::tessellate_from_values(
-            &mut kernel,
+            &mut geometry_kernels,
+            &registry,
+            Some(Engine::DEFAULT_KERNEL_NAME),
             &module,
             &mut values,
             &functions,
@@ -4552,6 +6177,7 @@ mod tests {
             &mut realization_cache,
             &[],               // ← OOB: empty demanded_tols
             &[vec![1e-4_f64]], // correctly shaped tessellation_budgets
+            &mut 0usize,
         );
     }
 
@@ -4571,7 +6197,13 @@ mod tests {
         use reify_test_support::mocks::MockGeometryKernel;
 
         let module = module_with_one_box_realization();
-        let mut kernel: Option<Box<dyn GeometryKernel>> = Some(Box::new(MockGeometryKernel::new()));
+        // Task ε (3436): wrap the mock kernel into the multi-handle map under
+        // the synthetic default-kernel name (sibling test mirror).
+        let mut geometry_kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        geometry_kernels.insert(
+            Engine::DEFAULT_KERNEL_NAME.to_string(),
+            Box::new(MockGeometryKernel::new()),
+        );
         let mut values = ValueMap::new();
         let functions: Vec<CompiledFunction> = vec![];
         let mut diagnostics: Vec<Diagnostic> = vec![];
@@ -4586,8 +6218,13 @@ mod tests {
         // produces at least one handle after `execute_realization_ops`, so
         // the `if step_handles.len() > handle_start` guard at line 1276 is true
         // and execution reaches the budget lookup.
+        let desc = dispatch_test_descriptor_all_brep();
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert(Engine::DEFAULT_KERNEL_NAME.to_string(), &desc);
         Engine::tessellate_from_values(
-            &mut kernel,
+            &mut geometry_kernels,
+            &registry,
+            Some(Engine::DEFAULT_KERNEL_NAME),
             &module,
             &mut values,
             &functions,
@@ -4599,6 +6236,7 @@ mod tests {
             &mut realization_cache,
             &[vec![None]], // correctly shaped demanded_tols
             &[],           // ← OOB: empty tessellation_budgets
+            &mut 0usize,
         );
     }
 
