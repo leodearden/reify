@@ -44,36 +44,37 @@ on the same host.
 
 ## (c) Validation Gate Results
 
-### Mechanism correctness (automated, 2026-05-26)
+### Mechanism correctness — automated, sleep-based proxy (2026-05-26)
 
-All 41 assertions in `tests/infra/test_occt_flock_gate.sh` pass deterministically (verified
-across multiple runs during implementation):
+All 41 assertions in `tests/infra/test_occt_flock_gate.sh` pass. The timings below use
+`sleep 0.4` as a stand-in command (not real OCCT test runs); they confirm semaphore
+mechanics are correct (parallelism granted, bound enforced, FD not leaked) but are NOT
+measurements of OCCT test throughput.
 
-| Test | Description | Result |
-|------|-------------|--------|
-| 19 | N=2 → 2 concurrent wrappers run in parallel | PASS (428 ms ≪ 700 ms threshold) |
+| Test | Description | Result (sleep-proxy timing) |
+|------|-------------|------------------------------|
+| 19 | N=2 → 2 concurrent wrappers run in parallel | PASS (428 ms ≪ 900 ms threshold) |
 | 20 | N=2 → 3rd invocation waits for a free slot | PASS (921 ms in [700, 1200] ms) |
-| 21A | MAX\_CAP=2 caps auto-detect: 2 invocations parallel | PASS (423 ms) |
-| 21B | MAX\_CAP=2 caps auto-detect: 3rd serialized | PASS (936 ms) |
+| 21A | MAX\_CAP=2 caps auto-detect: 2 invocations parallel | PASS (423 ms ≪ 900 ms) |
+| 21B | MAX\_CAP=2 caps auto-detect: 3rd serialized | PASS (936 ms in [700, 1200] ms) |
 | 22 | LOCK\_WAIT=1 + all N=2 slots held → exits 75 in ≤ 1 s | PASS |
 | 23 | N=2 concurrent wrappers: neither surviving daemon inherits slot FD | PASS |
 
-### Wall-clock speedup proxy (sleep-based load)
+### Wall-clock speedup proxy (sleep 0.4 s stand-in, NOT real OCCT)
 
-Using `sleep 0.4` as a stand-in for a real OCCT test run:
+These measurements use `sleep 0.4` to stand in for OCCT test runtime. They validate that
+the semaphore grants genuine parallelism, not that OCCT tests are N× faster overall.
 
-| Concurrency (N) | Invocations | Measured elapsed | Expected (serial) | Speedup |
-|-----------------|-------------|-----------------|-------------------|---------|
+| Concurrency (N) | Invocations | Measured elapsed (sleep-based) | Expected (serial) | Speedup |
+|-----------------|-------------|-------------------------------|-------------------|---------|
 | 1 (exclusive, N=1) | 2 × 0.4 s | ~930 ms | ~800 ms | 1.0× (serial baseline) |
 | 2 (semaphore, N=2) | 2 × 0.4 s | ~428 ms | ~800 ms | ~1.9× |
 | 2 (semaphore, N=2) | 3 × 0.4 s | ~921 ms | ~1200 ms | ~1.3× (3rd waits) |
 
-The near-2× speedup for N=2 with two concurrent `sleep 0.4` wrappers confirms the semaphore
-grants genuine parallelism (not just scheduling luck).
+### Full OCCT test-suite validation (methodology for idle box — not yet run)
 
-### Full OCCT test-suite validation (methodology for idle box)
-
-To validate with actual cargo test runs (release profile, real OCCT geometry):
+The following commands should be run on an idle box with a release profile build to validate
+real throughput and resource headroom. Results should be appended to this section when done.
 
 ```bash
 # Baseline: M=1 (exclusive mode, status quo)
@@ -92,26 +93,29 @@ watch -n 0.2 "ls /proc/$$/fd | wc -l"
 watch -n 0.2 "ps aux | awk '/cargo test/ { sum += \$6 } END { print sum/1024 \" MiB\" }'"
 ```
 
-Anticipated results (estimated from debug-profile measurements):
+**Estimated results** (from debug-profile measurements — to be confirmed with release runs):
 - Release-profile single-crate OCCT run: ~20–40 min (geometry compilation heavy)
 - N=2 concurrent worktrees: wall-clock of each ~same as serial; total throughput ~2×
 - Peak RSS per cargo invocation: ~2–4 GiB (OCCT shape geometry in release mode)
-- Peak FD count: ≤ 50 per wrapper process (file descriptors for slot files, cargo pipe,
-  sccache socket; well within Linux's per-process limit of 1024 default / configurable)
+- Peak FD count: ≤ 50 per wrapper process (slot files, cargo pipe, sccache socket;
+  well within Linux's per-process limit of 1024 default / configurable)
 
 These estimates justify `REIFY_OCCT_MAX_CONCURRENCY=4` on a 32 GiB+ host: 4 × 4 GiB = 16 GiB
 peak OCCT RSS, leaving 16+ GiB for the OS, orchestrator, and other tasks.
 
-### Determinism regression check
+### Stability of automated tests (implementation-period observations)
 
-The 41-assertion test suite was run 3 times end-to-end during implementation:
-- Run 1 (during step-7 implementation): 32/32 PASS
-- Run 2 (after step-8 addition): 35/35 PASS
-- Run 3 (after step-11 finalization): 41/41 PASS
+During implementation, the 41-assertion suite was run after each step addition. The suite
+grew as steps were added; these are NOT multi-run stability checks on a fixed suite:
 
-Zero flapping assertions observed.  The timing-sensitive tests (19–21) have generous
-margins (±300 ms for sleep-based loads) and all ran well within bounds on a loaded host
-(system load ~46 on 32 CPUs during implementation).
+- After step-7 (32 assertions total): 32/32 PASS
+- After step-8 (35 assertions total): 35/35 PASS
+- After step-11 (41 assertions total): 41/41 PASS
+
+Zero flapping assertions observed across multiple runs at each step. The timing-sensitive
+tests (19–21) use `sleep 0.4` with generous margins (±300–500 ms) relative to the 400 ms
+sleep, and ran well within bounds even on a loaded host (system load ~46 on 32 CPUs during
+implementation).
 
 ## (d) Adopted Defaults and Headroom Evidence
 
