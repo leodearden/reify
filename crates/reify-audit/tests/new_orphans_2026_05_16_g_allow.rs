@@ -54,27 +54,27 @@ const PINS: &[(&str, &str, &str)] = &[
     (
         "crates/reify-eval/src/dispatcher.rs",
         "no_kernel_chain_diagnostic",
-        "3434",
+        "3436",
     ),
     (
         "crates/reify-eval/src/dispatcher.rs",
         "kernel_pragma_unsatisfiable_diagnostic",
-        "3434",
+        "3443",
     ),
     (
         "crates/reify-eval/src/dispatcher.rs",
         "pinned_kernel_missing_diagnostic",
-        "3434",
+        "3444",
     ),
     (
         "crates/reify-eval/src/dispatcher.rs",
         "unpinned_kernel_loaded_diagnostic",
-        "3434",
+        "3444",
     ),
     (
         "crates/reify-eval/src/dispatcher.rs",
         "kernel_version_mismatch_diagnostic",
-        "3434",
+        "3444",
     ),
     (
         "crates/reify-eval/src/engine_admin.rs",

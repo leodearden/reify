@@ -29,6 +29,7 @@
 //! module can exercise it without round-tripping HTTP.
 
 use std::cell::Cell;
+use std::io::Read;
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -156,8 +157,16 @@ impl FusedMemoryClient {
             .header("content-type")
             .unwrap_or("")
             .to_string();
-        let body = response
-            .into_string()
+        // Use into_reader() instead of into_string() to avoid ureq's
+        // 10 MiB into_string cap — the live task corpus now exceeds
+        // that limit. Reading to a String (not serde_json::from_reader)
+        // keeps the SSE/JSON dual-path intact: the SSE branch must scan
+        // the body text for the `data:` line, which from_reader cannot
+        // do. For a one-shot CLI, buffering the corpus in memory is fine.
+        let mut body = String::new();
+        response
+            .into_reader()
+            .read_to_string(&mut body)
             .map_err(|e| LoadError::Http(format!("read body: {e}")))?;
 
         let value = if ctype.contains("text/event-stream") {
@@ -456,7 +465,6 @@ fn random_hex_32() -> String {
     let mut buf = [0u8; 16];
     #[cfg(unix)]
     {
-        use std::io::Read;
         if let Ok(mut f) = std::fs::File::open("/dev/urandom")
             && f.read_exact(&mut buf).is_ok()
         {
