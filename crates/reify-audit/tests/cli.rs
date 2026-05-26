@@ -1179,6 +1179,72 @@ mod http_loader {
         );
     }
 
+    /// Regression: sweep path via HTTP loader must not overflow ureq's
+    /// 10 MiB `into_string` cap when the task corpus exceeds 10 MiB.
+    ///
+    /// The mock returns a `get_tasks` payload whose serialized body is
+    /// ~11 MiB (one `pending` task with an oversized `title`). On the
+    /// unfixed code the binary exits 125 with "MCP HTTP error: read body:
+    /// response too big for into_string". After the fix it loads the
+    /// corpus and exits 0 (`--pattern P1` under NoopJCodemunchOps yields
+    /// zero findings since there are no `done` tasks).
+    #[test]
+    fn sweep_via_http_loader_oversized_corpus_does_not_overflow() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let runs_db = write_empty_runs_db(dir);
+
+        // Build an ~11 MiB title: ureq's cap is exactly 10 * 1024 * 1024
+        // bytes; 11 MiB clears it with margin once the JSON envelope is
+        // serialized.
+        let oversized_title = "x".repeat(11 * 1024 * 1024);
+
+        let mock = spawn_mock_mcp(move |args| {
+            // Sweep path sends `get_tasks` (no `id`). Pre-done path sends
+            // `get_task` with `id`. Return Null for any `get_task` calls
+            // (there should be none in a sweep, but guard anyway).
+            if args.get("id").is_some() {
+                return Some(serde_json::Value::Null);
+            }
+            Some(serde_json::json!({
+                "tasks": [
+                    {
+                        "id": 1,
+                        "status": "pending",
+                        "title": oversized_title,
+                        "metadata": {}
+                    }
+                ]
+            }))
+        });
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--since", "2026-01-01",
+                "--pattern", "P1",
+                "--fused-memory-url", mock.url(),
+                "--runs-db", runs_db.to_str().unwrap(),
+                "--project-root", dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit (oversized corpus sweep)");
+
+        mock.stop();
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_ne!(
+            out.status.code(),
+            Some(125),
+            "oversized corpus must NOT overflow (exit 125 = ureq cap hit); stderr:\n{stderr}"
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "no done tasks → P1 should yield zero findings (exit 0); stderr:\n{stderr}"
+        );
+    }
+
     /// Sweep path via HTTP loader: server returns a well-formed JSON-RPC
     /// envelope but the `tools/call get_tasks` result lacks the `tasks`
     /// array. The loader must refuse this — otherwise the sweep would
