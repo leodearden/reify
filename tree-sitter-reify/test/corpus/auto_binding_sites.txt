@@ -31,3 +31,37 @@ structure S { param x : Scalar = auto(free) }
       type: (type_expr
         (identifier))
       default: (auto_keyword))))
+
+================================================================================
+let_declaration value = auto (strict) — step-3 RED, GREEN after step-4
+================================================================================
+
+structure S { let m : Length = auto }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier))
+      value: (auto_keyword))))
+
+================================================================================
+let_declaration value = auto(free) — step-3 RED, GREEN after step-4
+================================================================================
+
+structure S { let m : Length = auto(free) }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier))
+      value: (auto_keyword))))
