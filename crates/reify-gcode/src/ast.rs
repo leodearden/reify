@@ -27,6 +27,12 @@ pub enum GcodeCommand {
     /// verbatim so the round-trip contract holds without revalidating
     /// parameters we don't otherwise care about.
     IgnoredMCode(IgnoredMCode),
+    /// Klipper-dialect `SET_VELOCITY_LIMIT KEY=VAL ...` directive. Carries
+    /// ordered KEY=VALUE pairs as raw strings; semantic interpretation of
+    /// the keys/values is the consumer's responsibility (task ο,
+    /// `gcode_import`). See plan design decision #3 for why this is
+    /// `Vec<(String, String)>` rather than a typed struct or HashMap.
+    SetVelocityLimit(SetVelocityLimit),
 }
 
 /// Parameters for a G0/G1 linear move.
@@ -98,4 +104,18 @@ pub struct Feedrate {
 pub struct IgnoredMCode {
     pub code: u16,
     pub params_raw: String,
+}
+
+/// Payload for Klipper's `SET_VELOCITY_LIMIT KEY=VAL ...` directive
+/// (PRD §7.1 Klipper subset; task ν).
+///
+/// `params` holds ordered `(KEY, VALUE)` pairs in source order, both as
+/// raw strings (no semantic coercion at parse time). The round-trip
+/// `Display` impl writes the pairs back in stored order so a directive
+/// like `SET_VELOCITY_LIMIT ACCEL=3000 VELOCITY=200` re-emits exactly
+/// the same source spelling. Empty `params` corresponds to a bare
+/// `SET_VELOCITY_LIMIT` line.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetVelocityLimit {
+    pub params: Vec<(String, String)>,
 }

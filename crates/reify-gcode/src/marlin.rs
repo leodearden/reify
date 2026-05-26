@@ -42,7 +42,11 @@ pub fn parse_marlin(src: &str) -> Result<Vec<GcodeCommand>, ParseError> {
 /// whitespace. Tabs / multi-space runs between tokens are preserved
 /// inside the returned slice; the per-line tokenizer relies on
 /// `split_whitespace` to collapse them.
-fn strip_comment_and_trim(line: &str) -> &str {
+///
+/// Visible to `crate::klipper` so the Klipper parser reuses the
+/// comment-stripping logic verbatim (Klipper shares Marlin's `;`-to-EOL
+/// comment syntax). See plan reuse-item #2 / design decision #7.
+pub(crate) fn strip_comment_and_trim(line: &str) -> &str {
     let body = match line.find(';') {
         Some(idx) => &line[..idx],
         None => line,
@@ -52,7 +56,14 @@ fn strip_comment_and_trim(line: &str) -> &str {
 
 /// Parse a single non-empty line. The caller is responsible for skipping
 /// blank lines and bumping the 1-indexed line counter.
-fn parse_line(line_no: usize, line: &str) -> Result<GcodeCommand, ParseError> {
+///
+/// Visible to `crate::klipper` so the Klipper parser's non-directive
+/// arm can delegate every shared G/M code line through this function —
+/// the authoritative dispatch for G0/G1/G2/G3/G92, standalone `F`, and
+/// the ignored-M-code allowlist (M82/M83/M104/M109). Do NOT duplicate
+/// these arms in `klipper.rs`; extend them here so both dialects stay
+/// in lock-step. See plan reuse-item #1 / design decision #7.
+pub(crate) fn parse_line(line_no: usize, line: &str) -> Result<GcodeCommand, ParseError> {
     let mut tokens = line.split_whitespace();
     // Caller guarantees `line` is non-empty and non-whitespace (see
     // `strip_comment_and_trim` + the `trimmed.is_empty()` skip in

@@ -21,7 +21,10 @@
 
 use std::fmt::{self, Display, Formatter, Write};
 
-use crate::ast::{ArcDirection, ArcMove, Feedrate, GcodeCommand, IgnoredMCode, LinearMove, SetPosition};
+use crate::ast::{
+    ArcDirection, ArcMove, Feedrate, GcodeCommand, IgnoredMCode, LinearMove, SetPosition,
+    SetVelocityLimit,
+};
 
 impl Display for GcodeCommand {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
@@ -31,6 +34,7 @@ impl Display for GcodeCommand {
             GcodeCommand::SetPosition(sp) => sp.fmt(f),
             GcodeCommand::Feedrate(fr) => fr.fmt(f),
             GcodeCommand::IgnoredMCode(m) => m.fmt(f),
+            GcodeCommand::SetVelocityLimit(svl) => svl.fmt(f),
         }
     }
 }
@@ -90,6 +94,19 @@ impl Display for IgnoredMCode {
         if !self.params_raw.is_empty() {
             f.write_char(' ')?;
             f.write_str(&self.params_raw)?;
+        }
+        Ok(())
+    }
+}
+
+impl Display for SetVelocityLimit {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str("SET_VELOCITY_LIMIT")?;
+        for (key, value) in &self.params {
+            f.write_char(' ')?;
+            f.write_str(key)?;
+            f.write_char('=')?;
+            f.write_str(value)?;
         }
         Ok(())
     }

@@ -25,8 +25,10 @@
 pub mod ast;
 pub mod display;
 pub mod error;
+pub mod klipper;
 pub mod marlin;
 
 pub use ast::GcodeCommand;
 pub use error::ParseError;
+pub use klipper::parse_klipper;
 pub use marlin::parse_marlin;
