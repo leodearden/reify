@@ -2214,17 +2214,48 @@ impl Engine {
         }
 
         let mut had_failure = false;
-        // Step-10 (task ε / 3436): captures the dispatcher plan + classifier-
-        // mapped Operation for the LAST op that successfully executed in this
-        // realization's loop. After the loop, on the fully-successful (not
-        // rolled back) branch, the pair is fed to `plan_output_repr` and the
-        // result is written to `produced_repr_out`. On rollback the channel
-        // is left untouched so the caller writes nothing — the realization
-        // graph node retains its construction-time default. `Operation` is
-        // `Copy`; `DispatchPlan` is owned so each capture moves the value
-        // from the per-iteration `plan` binding established below.
-        let mut last_plan: Option<DispatchPlan> = None;
-        let mut last_operation: Option<Operation> = None;
+        // Step-14 (task ε / 3436): captures the terminal output [`ReprKind`]
+        // for the LAST op that successfully executed in this realization's
+        // loop. After the loop, on the fully-successful (not rolled back)
+        // branch, the value is written to `produced_repr_out`. On rollback
+        // the channel is left untouched so the caller writes nothing — the
+        // realization graph node retains its construction-time default.
+        //
+        // Replaces the step-10 `last_plan: Option<DispatchPlan>` /
+        // `last_operation: Option<Operation>` pair (and the post-loop
+        // `plan_output_repr(registry, last_plan, last_operation)` chain)
+        // with a single capture-and-write idiom. This closes the
+        // backward-compat production gap pinned by
+        // `execute_realization_ops_writes_produced_repr_brep_in_none_fallback_backward_compat`:
+        // the old write guard `if let (Some(plan), Some(op)) =
+        // (last_plan.as_ref(), last_operation)` short-circuited in the
+        // sentinel-gated None-fallback arm because that arm never set
+        // `last_plan`, leaving `produced_repr_out` unwritten on the
+        // `Engine::new(_, Some(kernel))` construction path whenever the
+        // inventory registry lacks coverage for the caller-supplied kernel
+        // (the v0.2 backward-compat baseline, which deliberately keeps the
+        // caller's kernel out of `inventory::submit!`). The new channel is
+        // set in BOTH success paths inside the per-op loop:
+        //
+        // (a) the `Some(plan) if plan.conversions.is_empty()` arm —
+        //     `plan_output_repr(registry, plan, operation)` from the
+        //     dispatcher-named kernel's descriptor (the step-10 derivation,
+        //     now computed inside the match arm where `plan` is borrowed);
+        // (b) the `None` backward-compat fallback arm (`default_kernel_name
+        //     == Engine::DEFAULT_KERNEL_NAME &&
+        //     kernels.contains_key(default_kernel_name)`) —
+        //     `Some(ReprKind::BRep)` directly, the v0.2 single-kernel-path
+        //     invariant (the synthetic default kernel's terminal handle is
+        //     always BRep in the BRep baseline; no descriptor is available
+        //     in the inventory registry for the caller-supplied kernel, so
+        //     `plan_output_repr` is not applicable here).
+        //
+        // The `Some(_) =>` non-empty-conversion arm and the strict-mode
+        // `None` arm break the loop before this channel is read, so they
+        // leave it at the default `None` — the post-loop write then
+        // short-circuits as before, preserving the rollback-untouched
+        // contract.
+        let mut last_produced_repr: Option<ReprKind> = None;
         // Captures the per-op `GeometryOp`s in lockstep with `step_handles`
         // for this realization. After the loop, if the realization succeeds
         // (no rollback), the parallel `(realization_ops, step_handles[handle_start..])`
@@ -2262,11 +2293,18 @@ impl Engine {
                     // ever entering this loop) leaves the counter at 0.
                     *dispatch_count += 1;
                     let plan = dispatch(registry, operation, ReprKind::BRep, &available_set);
-                    // Step-10 (task ε / 3436): borrow `plan` here (`match &plan`)
-                    // rather than moving it; the post-success branch below moves
-                    // it into `last_plan` so the post-loop produced_repr write
-                    // has access to the dispatcher's terminal choice.
-                    let resolved_kernel_name: String = match &plan {
+                    // Step-14 (task ε / 3436): the match returns a
+                    // `(resolved_kernel_name, op_produced_repr)` tuple — a
+                    // single source of truth that yokes the routing decision
+                    // to the per-op output repr capture. Borrows `plan` here
+                    // (`match &plan`) rather than moving it; the owned `plan`
+                    // is dropped at the end of this loop iteration. The
+                    // per-op `op_produced_repr` value is propagated into
+                    // `last_produced_repr` after the successful kernel call
+                    // below so the post-loop write sees the terminal op's
+                    // repr (mirroring how `step_handles.push(handle.id)`
+                    // tracks the terminal handle).
+                    let (resolved_kernel_name, op_produced_repr): (String, Option<ReprKind>) = match &plan {
                         Some(plan) if plan.conversions.is_empty() => {
                             // 0-conversion plan: route to plan.kernel,
                             // falling back to the engine's default kernel if
@@ -2290,7 +2328,7 @@ impl Engine {
                             // `contains_key` gate in the `None` arm below and
                             // the post-loop `.expect` idiom at
                             // engine_build.rs:967 / :2626.
-                            if kernels.contains_key(plan.kernel.as_str()) {
+                            let name = if kernels.contains_key(plan.kernel.as_str()) {
                                 plan.kernel.clone()
                             } else if kernels.contains_key(default_kernel_name) {
                                 default_kernel_name.to_string()
@@ -2313,7 +2351,18 @@ impl Engine {
                                     *kernel_error_out = Some(ErrorRef::new(err_msg));
                                 }
                                 break;
-                            }
+                            };
+                            // Step-14 (task ε / 3436): derive the per-op
+                            // output repr from the dispatcher-named kernel's
+                            // descriptor — the step-10 `plan_output_repr`
+                            // derivation, now computed inline alongside the
+                            // routing decision so both flow through the
+                            // single capture-and-write idiom below. May
+                            // return `None` if the named kernel's descriptor
+                            // has no entry for `op` (an invariant violation
+                            // that surfaces as "leave produced_repr_out
+                            // untouched" rather than fabricating a repr).
+                            (name, plan_output_repr(registry, plan, operation))
                         }
                         Some(_) => {
                             // Non-empty conversion chain. ε implements
@@ -2379,7 +2428,25 @@ impl Engine {
                             if default_kernel_name == Engine::DEFAULT_KERNEL_NAME
                                 && kernels.contains_key(default_kernel_name)
                             {
-                                default_kernel_name.to_string()
+                                // Step-14 (task ε / 3436): backward-compat
+                                // fallback success — yokes the routing
+                                // decision (default kernel) to a synthetic
+                                // `Some(ReprKind::BRep)` capture. The
+                                // inventory registry has no descriptor for
+                                // the caller-supplied kernel (it never
+                                // submits to `inventory::submit!`), so
+                                // `plan_output_repr` is not applicable here;
+                                // the v0.2 single-kernel-path invariant
+                                // guarantees the synthetic default kernel's
+                                // terminal handle is always BRep in the BRep
+                                // baseline, so direct `Some(ReprKind::BRep)`
+                                // capture is honest and complete. This is
+                                // the production gap closure for
+                                // `executor_writes_produced_repr_brep_on_build_snapshot`
+                                // (the step-13 unit test pins the same gap
+                                // with a synthetic registry, build-profile-
+                                // independent).
+                                (default_kernel_name.to_string(), Some(ReprKind::BRep))
                             } else {
                                 let diag = crate::dispatcher::no_kernel_chain_diagnostic(
                                     operation,
@@ -2537,15 +2604,27 @@ impl Engine {
                             // earlier `&geom_op` borrows above have already
                             // released — we move ownership rather than cloning.
                             realization_ops.push(geom_op);
-                            // Step-10 (task ε / 3436): capture the terminal op's
-                            // dispatcher plan + Operation classifier for the
-                            // post-loop `produced_repr_out` write. Moving the
-                            // owned plan here is safe — every subsequent loop
-                            // iteration binds a fresh `plan` from `dispatch(...)`
-                            // above, so `last_plan` always reflects the latest
-                            // successful op when the loop exits.
-                            last_plan = plan;
-                            last_operation = Some(operation);
+                            // Step-14 (task ε / 3436): capture the terminal
+                            // op's output [`ReprKind`] for the post-loop
+                            // `produced_repr_out` write. `op_produced_repr`
+                            // was bound by the match above and carries the
+                            // per-arm derivation:
+                            //
+                            // - `Some(plan)` 0-conversion success:
+                            //   `plan_output_repr(registry, plan, operation)`
+                            //   (may be `None` if the named kernel's
+                            //   descriptor has no entry for `op` — an
+                            //   invariant violation that defensively leaves
+                            //   `produced_repr_out` untouched).
+                            // - `None` backward-compat fallback success:
+                            //   `Some(ReprKind::BRep)` (the v0.2 single-
+                            //   kernel-path invariant; pinned by
+                            //   `execute_realization_ops_writes_produced_repr_brep_in_none_fallback_backward_compat`).
+                            //
+                            // Every subsequent loop iteration overwrites
+                            // this capture, so `last_produced_repr` reflects
+                            // the terminal op's repr when the loop exits.
+                            last_produced_repr = op_produced_repr;
                         }
                         Err(e) => {
                             let err_msg = format!("geometry error: {}", e);
@@ -2713,21 +2792,30 @@ impl Engine {
                         last,
                     );
                 }
-                // Step-10 (task ε / 3436): surface the terminal op's output
+                // Step-14 (task ε / 3436): surface the terminal op's output
                 // [`ReprKind`] through `produced_repr_out` so the caller
                 // (`build` / `build_snapshot`) writes it into
                 // `eval_state.snapshot.graph.realizations[id].produced_repr`.
                 // Gated on `last_handle.is_some()` (the same gate the
                 // `named_steps` and `realization_cache` writes use) so an
                 // empty-operations realization contributes nothing and the
-                // construction-time default survives. `plan_output_repr`
-                // returns `None` only if dispatch named a kernel whose
-                // descriptor lacks `(op, _)` — an invariant violation; in
-                // that defensive case we leave the channel untouched so the
-                // caller writes nothing rather than fabricating a repr.
-                if let (Some(plan), Some(op)) = (last_plan.as_ref(), last_operation)
-                    && let Some(repr) = plan_output_repr(registry, plan, op)
-                {
+                // construction-time default survives.
+                //
+                // `last_produced_repr` is the single capture-and-write
+                // channel that honors both per-op success paths uniformly:
+                // (a) the `Some(plan)` 0-conversion arm wrote
+                // `plan_output_repr(registry, plan, operation)` from the
+                // dispatcher-named kernel's descriptor; (b) the `None`
+                // backward-compat fallback arm wrote `Some(ReprKind::BRep)`
+                // directly (the v0.2 single-kernel-path invariant for the
+                // synthetic default kernel). A `None` value here means
+                // either: (i) no op succeeded for this realization (the
+                // outer `last_handle.is_some()` gate would have already
+                // short-circuited), or (ii) the dispatcher-named kernel's
+                // descriptor had no entry for the terminal op — an
+                // invariant violation that defensively leaves the channel
+                // untouched rather than fabricating a repr.
+                if let Some(repr) = last_produced_repr {
                     *produced_repr_out = Some(repr);
                 }
             }
@@ -4772,7 +4860,6 @@ mod tests {
             ],
         }];
 
-        let mut state = DispatchTestState::default();
         // (d) Pre-corrupt `produced_repr_out` to `Some(ReprKind::Mesh)` — a
         //     baseline-impossible value. Any later read of `BRep` can only
         //     come from the step-14 fallback-arm write of
@@ -4780,7 +4867,16 @@ mod tests {
         //     would also let the assertion fail loudly if step-14 instead
         //     left the channel untouched. Mirrors the pre-corruption idiom in
         //     `tests/multi_handle_engine_dispatch.rs::executor_writes_produced_repr_brep_on_build_snapshot`.
-        state.produced_repr_out = Some(ReprKind::Mesh);
+        //
+        //     Constructed via struct-update from `Default::default()` rather
+        //     than a post-`default()` field reassignment to avoid the clippy
+        //     `field_reassign_with_default` lint — the only field overridden
+        //     from default is `produced_repr_out`, so the struct-init form
+        //     stays readable.
+        let mut state = DispatchTestState {
+            produced_repr_out: Some(ReprKind::Mesh),
+            ..DispatchTestState::default()
+        };
 
         // (c) `default_kernel_name = Engine::DEFAULT_KERNEL_NAME` — the
         //     sentinel comparison `default_kernel_name ==
