@@ -3351,6 +3351,139 @@ mod tests {
         kernels
     }
 
+    /// Build the "single-default" borrowed registry view used by most
+    /// `execute_realization_ops_*` unit tests. The descriptor must outlive the
+    /// returned map because the `&CapabilityDescriptor` value borrows from it;
+    /// callers typically use the pattern
+    /// `let desc = dispatch_test_descriptor_all_brep(); let registry =
+    /// dispatch_test_single_default_registry(&desc);`.
+    fn dispatch_test_single_default_registry(
+        descriptor: &CapabilityDescriptor,
+    ) -> BTreeMap<String, &CapabilityDescriptor> {
+        let mut r: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        r.insert("default".to_string(), descriptor);
+        r
+    }
+
+    /// Per-test mutable state for the `execute_realization_ops_*` unit tests
+    /// (amendment to task ε / 3436 — addresses reviewer suggestion #1).
+    ///
+    /// Owns the bag of `&mut`-borrowed scratch storage that
+    /// [`Engine::execute_realization_ops`] writes into — step handles,
+    /// diagnostics, named-steps map, attribute tables, kernel-error channel,
+    /// realization cache, dispatch counter, and the produced-repr out-param.
+    /// Constructed via [`Default::default`] and inspected via public fields
+    /// after [`Self::run`] returns.
+    ///
+    /// Tests with pre-seeded `step_handles` (the rollback-truncation tests)
+    /// push directly into `state.step_handles` before the call. Tests that
+    /// drive multiple sequential realizations against the same state (the
+    /// `_shadows_previous` / `_failed_shadow_…` tests) call
+    /// [`Self::reset_attribute_tables`] between calls, mirroring the per-build
+    /// reset in production.
+    ///
+    /// A future signature change to `Engine::execute_realization_ops` updates
+    /// [`Self::run`] alone instead of every per-test call site.
+    struct DispatchTestState {
+        step_handles: Vec<GeometryHandleId>,
+        diagnostics: Vec<Diagnostic>,
+        named_steps: HashMap<String, GeometryHandleId>,
+        feature_tag_table: FeatureTagTable,
+        topology_attribute_table: TopologyAttributeTable,
+        swept_kind_table: SweptKindTable,
+        kernel_error_out: Option<ErrorRef>,
+        realization_cache: RealizationCache<GeometryHandleId>,
+        dispatch_count: usize,
+        produced_repr_out: Option<ReprKind>,
+    }
+
+    // Hand-written `Default` instead of `#[derive(Default)]`: the inner
+    // `RealizationCache<GeometryHandleId>` does not satisfy the derive bound
+    // (`V: Default`) — `GeometryHandleId` is a `NewType(u32)` with no
+    // `Default` impl — but `RealizationCache::new()` constructs an empty cache
+    // without that bound. Mirrors how production code initialises the field
+    // (engine_admin.rs `Engine::with_prelude_and_kernels`).
+    impl Default for DispatchTestState {
+        fn default() -> Self {
+            Self {
+                step_handles: Vec::new(),
+                diagnostics: Vec::new(),
+                named_steps: HashMap::new(),
+                feature_tag_table: FeatureTagTable::default(),
+                topology_attribute_table: TopologyAttributeTable::default(),
+                swept_kind_table: SweptKindTable::default(),
+                kernel_error_out: None,
+                realization_cache: RealizationCache::new(),
+                dispatch_count: 0,
+                produced_repr_out: None,
+            }
+        }
+    }
+
+    impl DispatchTestState {
+        /// Reset the three per-realization attribute tables (mirrors the
+        /// per-build reset in production at `build` / `build_snapshot` /
+        /// `tessellate_*`). Called by the shadow tests between sequential
+        /// realizations so the second call sees the same clean-table state the
+        /// first did.
+        fn reset_attribute_tables(&mut self) {
+            self.feature_tag_table = FeatureTagTable::default();
+            self.topology_attribute_table = TopologyAttributeTable::default();
+            self.swept_kind_table = SweptKindTable::default();
+        }
+
+        /// Drive [`Engine::execute_realization_ops`] against this state with
+        /// the canonical unit-test boilerplate — empty `ValueMap` /
+        /// `functions` / `meta_map`, the canonical `TestEntity` realization
+        /// id, and `demanded_tol = None` (the cache short-circuit is exercised
+        /// from the integration tests in `tests/multi_handle_engine_dispatch.rs`,
+        /// not from this unit-test surface).
+        ///
+        /// A future signature change to `execute_realization_ops` updates
+        /// this method alone instead of every per-test call site (~14
+        /// mechanical edits).
+        fn run(
+            &mut self,
+            kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
+            registry: &BTreeMap<String, &CapabilityDescriptor>,
+            default_kernel: &str,
+            ops: &[reify_compiler::CompiledGeometryOp],
+            realization_name: Option<&str>,
+            realization_span: SourceSpan,
+        ) {
+            let values = ValueMap::new();
+            let functions: Vec<CompiledFunction> = vec![];
+            let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+            let test_realization_id = RealizationNodeId::new("TestEntity", 0);
+            Engine::execute_realization_ops(
+                kernels,
+                registry,
+                default_kernel,
+                ops,
+                &[],
+                &values,
+                &functions,
+                &meta_map,
+                RealizationOutputs::new(
+                    &mut self.step_handles,
+                    &mut self.named_steps,
+                    &mut self.feature_tag_table,
+                    &mut self.topology_attribute_table,
+                    &mut self.swept_kind_table,
+                    &mut self.produced_repr_out,
+                ),
+                &mut self.diagnostics,
+                &test_realization_id,
+                realization_name,
+                realization_span,
+                &mut self.kernel_error_out,
+                &mut self.realization_cache,
+                None,
+                &mut self.dispatch_count,
+            );
+        }
+    }
+
     // ── execute_realization_ops unit tests ────────────────────────────────────
 
     /// Happy path: all operations compile and execute successfully.
@@ -3374,53 +3507,25 @@ mod tests {
 
         let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
         let desc = dispatch_test_descriptor_all_brep();
-        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
-        registry.insert("default".to_string(), &desc);
-        let values = ValueMap::new();
-        let functions: Vec<CompiledFunction> = vec![];
-        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
-        let mut step_handles: Vec<GeometryHandleId> = vec![];
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
-
-        let mut feature_tag_table = FeatureTagTable::default();
-        let mut topology_attribute_table = TopologyAttributeTable::default();
-        let mut swept_kind_table = SweptKindTable::default();
-        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
-        Engine::execute_realization_ops(
+        let registry = dispatch_test_single_default_registry(&desc);
+        let mut state = DispatchTestState::default();
+        state.run(
             &mut kernels,
             &registry,
             "default",
             &ops,
-            &[],
-            &values,
-            &functions,
-            &meta_map,
-            RealizationOutputs::new(
-                &mut step_handles,
-                &mut named_steps,
-                &mut feature_tag_table,
-                &mut topology_attribute_table,
-                &mut swept_kind_table,
-                &mut None,
-            ),
-            &mut diagnostics,
-            &test_realization_id,
             None,
             SourceSpan::new(0, 0),
-            &mut None,
-            &mut RealizationCache::new(),
-            None,
-            &mut 0usize,
         );
 
-        assert_eq!(step_handles.len(), 1, "expected one handle appended");
+        assert_eq!(state.step_handles.len(), 1, "expected one handle appended");
         // Filter to error-severity only: the v0.2 topology-attribute seeder
         // (#2574) emits a Diagnostic::warning when extract_faces / extract_edges
         // fail (e.g. on a mock kernel without an extraction fixture). The
         // happy-path contract is "no Error diagnostics"; auxiliary-metadata
         // warnings are expected noise on mock kernels.
-        let errors: Vec<_> = diagnostics
+        let errors: Vec<_> = state
+            .diagnostics
             .iter()
             .filter(|d| matches!(d.severity, reify_types::Severity::Error))
             .collect();
@@ -3435,7 +3540,8 @@ mod tests {
         // kernel level, the seeder makes exactly one warn-and-continue
         // attempt (extract_faces fails first on this mock kernel because
         // no topology fixture is configured). One Box op → 1 seeder warning.
-        let warnings: Vec<_> = diagnostics
+        let warnings: Vec<_> = state
+            .diagnostics
             .iter()
             .filter(|d| matches!(d.severity, reify_types::Severity::Warning))
             .collect();
@@ -3473,68 +3579,41 @@ mod tests {
 
         let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
         let desc = dispatch_test_descriptor_all_brep();
-        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
-        registry.insert("default".to_string(), &desc);
-        let values = ValueMap::new();
-        let functions: Vec<CompiledFunction> = vec![];
-        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let registry = dispatch_test_single_default_registry(&desc);
         // Pre-seed with a sentinel so we can assert truncation went back to exactly
         // this pre-call length, distinguishing "INVALID pushed then truncated" from
         // "INVALID never pushed at all".
         let pre_existing = GeometryHandleId(0xCAFE);
-        let mut step_handles: Vec<GeometryHandleId> = vec![pre_existing];
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
-
-        let mut feature_tag_table = FeatureTagTable::default();
-        let mut topology_attribute_table = TopologyAttributeTable::default();
-        let mut swept_kind_table = SweptKindTable::default();
-        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
-        Engine::execute_realization_ops(
+        let mut state = DispatchTestState::default();
+        state.step_handles.push(pre_existing);
+        state.run(
             &mut kernels,
             &registry,
             "default",
             &ops,
-            &[],
-            &values,
-            &functions,
-            &meta_map,
-            RealizationOutputs::new(
-                &mut step_handles,
-                &mut named_steps,
-                &mut feature_tag_table,
-                &mut topology_attribute_table,
-                &mut swept_kind_table,
-                &mut None,
-            ),
-            &mut diagnostics,
-            &test_realization_id,
             None,
             SourceSpan::new(0, 0),
-            &mut None,
-            &mut RealizationCache::new(),
-            None,
-            &mut 0usize,
         );
 
         assert_eq!(
-            step_handles.len(),
+            state.step_handles.len(),
             1,
             "step_handles should be truncated back to pre-call length of 1; \
              the INVALID sentinel must not remain"
         );
         assert_eq!(
-            step_handles[0], pre_existing,
+            state.step_handles[0], pre_existing,
             "the pre-existing handle must be preserved unchanged"
         );
-        let compile_failures = diagnostics
+        let compile_failures = state
+            .diagnostics
             .iter()
             .filter(|d| d.message.contains("failed to compile geometry operation"))
             .count();
         assert_eq!(
             compile_failures, 1,
             "expected exactly 1 compile-error diagnostic, got {}: {:?}",
-            compile_failures, diagnostics
+            compile_failures, state.diagnostics
         );
     }
 
@@ -3560,58 +3639,30 @@ mod tests {
 
         let mut kernels = dispatch_test_kernels(Box::new(FailingMockGeometryKernel));
         let desc = dispatch_test_descriptor_all_brep();
-        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
-        registry.insert("default".to_string(), &desc);
-        let values = ValueMap::new();
-        let functions: Vec<CompiledFunction> = vec![];
-        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
-        let mut step_handles: Vec<GeometryHandleId> = vec![];
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
-
-        let mut feature_tag_table = FeatureTagTable::default();
-        let mut topology_attribute_table = TopologyAttributeTable::default();
-        let mut swept_kind_table = SweptKindTable::default();
-        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
-        Engine::execute_realization_ops(
+        let registry = dispatch_test_single_default_registry(&desc);
+        let mut state = DispatchTestState::default();
+        state.run(
             &mut kernels,
             &registry,
             "default",
             &ops,
-            &[],
-            &values,
-            &functions,
-            &meta_map,
-            RealizationOutputs::new(
-                &mut step_handles,
-                &mut named_steps,
-                &mut feature_tag_table,
-                &mut topology_attribute_table,
-                &mut swept_kind_table,
-                &mut None,
-            ),
-            &mut diagnostics,
-            &test_realization_id,
             None,
             SourceSpan::new(0, 0),
-            &mut None,
-            &mut RealizationCache::new(),
-            None,
-            &mut 0usize,
         );
 
         assert!(
-            step_handles.is_empty(),
+            state.step_handles.is_empty(),
             "handles should be truncated back to handle_start (0)"
         );
-        let geometry_errors = diagnostics
+        let geometry_errors = state
+            .diagnostics
             .iter()
             .filter(|d| d.message.contains("geometry error"))
             .count();
         assert_eq!(
             geometry_errors, 1,
             "expected exactly 1 geometry-error diagnostic, got {}: {:?}",
-            geometry_errors, diagnostics
+            geometry_errors, state.diagnostics
         );
     }
 
@@ -3651,70 +3702,43 @@ mod tests {
 
         let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
         let desc = dispatch_test_descriptor_all_brep();
-        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
-        registry.insert("default".to_string(), &desc);
-        let values = ValueMap::new();
-        let functions: Vec<CompiledFunction> = vec![];
-        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let registry = dispatch_test_single_default_registry(&desc);
         // Pre-seed step_handles with a sentinel to verify truncation goes back
         // to exactly this pre-call length, not to zero.
         let pre_existing = GeometryHandleId(0xBEEF);
-        let mut step_handles: Vec<GeometryHandleId> = vec![pre_existing];
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
-
-        let mut feature_tag_table = FeatureTagTable::default();
-        let mut topology_attribute_table = TopologyAttributeTable::default();
-        let mut swept_kind_table = SweptKindTable::default();
-        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
-        Engine::execute_realization_ops(
+        let mut state = DispatchTestState::default();
+        state.step_handles.push(pre_existing);
+        state.run(
             &mut kernels,
             &registry,
             "default",
             &ops,
-            &[],
-            &values,
-            &functions,
-            &meta_map,
-            RealizationOutputs::new(
-                &mut step_handles,
-                &mut named_steps,
-                &mut feature_tag_table,
-                &mut topology_attribute_table,
-                &mut swept_kind_table,
-                &mut None,
-            ),
-            &mut diagnostics,
-            &test_realization_id,
             None,
             SourceSpan::new(0, 0),
-            &mut None,
-            &mut RealizationCache::new(),
-            None,
-            &mut 0usize,
         );
 
         // The real handle produced by op 0 must have been discarded.
         // Only the pre-existing handle should remain.
         assert_eq!(
-            step_handles.len(),
+            state.step_handles.len(),
             1,
             "step_handles should be truncated back to the pre-call length of 1; \
              the real handle from op 0 must be gone"
         );
         assert_eq!(
-            step_handles[0], pre_existing,
+            state.step_handles[0], pre_existing,
             "the pre-existing handle must be preserved unchanged"
         );
         // Exactly one compile-error diagnostic from the failing op 1
-        let compile_failures = diagnostics
+        let compile_failures = state
+            .diagnostics
             .iter()
             .filter(|d| d.message.contains("failed to compile geometry operation"))
             .count();
         assert_eq!(
             compile_failures, 1,
             "expected exactly 1 compile-error diagnostic, got {}: {:?}",
-            compile_failures, diagnostics
+            compile_failures, state.diagnostics
         );
     }
 
@@ -3740,49 +3764,21 @@ mod tests {
 
         let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
         let desc = dispatch_test_descriptor_all_brep();
-        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
-        registry.insert("default".to_string(), &desc);
-        let values = ValueMap::new();
-        let functions: Vec<CompiledFunction> = vec![];
-        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
-        let mut step_handles: Vec<GeometryHandleId> = vec![];
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
-
-        let mut feature_tag_table = FeatureTagTable::default();
-        let mut topology_attribute_table = TopologyAttributeTable::default();
-        let mut swept_kind_table = SweptKindTable::default();
-        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
-        Engine::execute_realization_ops(
+        let registry = dispatch_test_single_default_registry(&desc);
+        let mut state = DispatchTestState::default();
+        state.run(
             &mut kernels,
             &registry,
             "default",
             &ops,
-            &[],
-            &values,
-            &functions,
-            &meta_map,
-            RealizationOutputs::new(
-                &mut step_handles,
-                &mut named_steps,
-                &mut feature_tag_table,
-                &mut topology_attribute_table,
-                &mut swept_kind_table,
-                &mut None,
-            ),
-            &mut diagnostics,
-            &test_realization_id,
             None,
             SourceSpan::new(0, 0),
-            &mut None,
-            &mut RealizationCache::new(),
-            None,
-            &mut 0usize,
         );
 
         // The Error diagnostic must contain the standard prefix (preserves
         // existing integration-test substring checks) AND the specific reason.
-        let compile_err_diag = diagnostics
+        let compile_err_diag = state
+            .diagnostics
             .iter()
             .find(|d| {
                 d.message.contains("failed to compile geometry operation")
@@ -3827,48 +3823,20 @@ mod tests {
 
         let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
         let desc = dispatch_test_descriptor_all_brep();
-        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
-        registry.insert("default".to_string(), &desc);
-        let values = ValueMap::new();
-        let functions: Vec<CompiledFunction> = vec![];
-        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
-        let mut step_handles: Vec<GeometryHandleId> = vec![];
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
-
-        let mut feature_tag_table = FeatureTagTable::default();
-        let mut topology_attribute_table = TopologyAttributeTable::default();
-        let mut swept_kind_table = SweptKindTable::default();
-        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
-        Engine::execute_realization_ops(
+        let registry = dispatch_test_single_default_registry(&desc);
+        let mut state = DispatchTestState::default();
+        state.run(
             &mut kernels,
             &registry,
             "default",
             &ops,
-            &[],
-            &values,
-            &functions,
-            &meta_map,
-            RealizationOutputs::new(
-                &mut step_handles,
-                &mut named_steps,
-                &mut feature_tag_table,
-                &mut topology_attribute_table,
-                &mut swept_kind_table,
-                &mut None,
-            ),
-            &mut diagnostics,
-            &test_realization_id,
             Some("body"),
             SourceSpan::new(0, 0),
-            &mut None,
-            &mut RealizationCache::new(),
-            None,
-            &mut 0usize,
         );
 
         // Filter to error-severity only: see comment in the happy-path test.
-        let errors: Vec<_> = diagnostics
+        let errors: Vec<_> = state
+            .diagnostics
             .iter()
             .filter(|d| matches!(d.severity, reify_types::Severity::Error))
             .collect();
@@ -3879,7 +3847,8 @@ mod tests {
         );
         // Pin the expected warning count (one seeder extract-failure per
         // successful primitive op). See the happy-path test for the rationale.
-        let warnings: Vec<_> = diagnostics
+        let warnings: Vec<_> = state
+            .diagnostics
             .iter()
             .filter(|d| matches!(d.severity, reify_types::Severity::Warning))
             .collect();
@@ -3898,15 +3867,15 @@ mod tests {
             "the single warning must be the seeder's auxiliary-metadata failure, got: {:?}",
             warnings[0].message
         );
-        assert_eq!(step_handles.len(), 1, "expected one handle appended");
-        let body_handle = named_steps.get("body").copied();
+        assert_eq!(state.step_handles.len(), 1, "expected one handle appended");
+        let body_handle = state.named_steps.get("body").copied();
         assert!(
             body_handle.is_some(),
             "named_steps should contain 'body' after successful named realization"
         );
         assert_eq!(
             body_handle.unwrap(),
-            step_handles[0],
+            state.step_handles[0],
             "named_steps['body'] should equal the handle returned by the kernel"
         );
     }
@@ -3932,55 +3901,26 @@ mod tests {
 
         let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
         let desc = dispatch_test_descriptor_all_brep();
-        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
-        registry.insert("default".to_string(), &desc);
-        let values = ValueMap::new();
-        let functions: Vec<CompiledFunction> = vec![];
-        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
-        let mut step_handles: Vec<GeometryHandleId> = vec![];
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
-
-        let mut feature_tag_table = FeatureTagTable::default();
-        let mut topology_attribute_table = TopologyAttributeTable::default();
-        let mut swept_kind_table = SweptKindTable::default();
-        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
-        Engine::execute_realization_ops(
+        let registry = dispatch_test_single_default_registry(&desc);
+        let mut state = DispatchTestState::default();
+        state.run(
             &mut kernels,
             &registry,
             "default",
             &ops,
-            &[],
-            &values,
-            &functions,
-            &meta_map,
-            RealizationOutputs::new(
-                &mut step_handles,
-                &mut named_steps,
-                &mut feature_tag_table,
-                &mut topology_attribute_table,
-                &mut swept_kind_table,
-                &mut None,
-            ),
-            &mut diagnostics,
-            &test_realization_id,
             Some("bad"),
             SourceSpan::new(0, 0),
-            &mut None,
-            &mut RealizationCache::new(),
-            None,
-            &mut 0usize,
         );
 
         assert!(
-            !named_steps.contains_key("bad"),
+            !state.named_steps.contains_key("bad"),
             "named_steps must NOT contain 'bad' after rollback; stale entries \
              would let later realizations resolve a name whose geometry was never \
              successfully produced"
         );
         // Verify rollback did happen (existing invariant)
         assert!(
-            step_handles.is_empty(),
+            state.step_handles.is_empty(),
             "handles should be truncated on failure"
         );
     }
@@ -4020,82 +3960,35 @@ mod tests {
 
         let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
         let desc = dispatch_test_descriptor_all_brep();
-        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
-        registry.insert("default".to_string(), &desc);
-        let values = ValueMap::new();
-        let functions: Vec<CompiledFunction> = vec![];
-        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
-        let mut step_handles: Vec<GeometryHandleId> = vec![];
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
+        let registry = dispatch_test_single_default_registry(&desc);
+        let mut state = DispatchTestState::default();
 
         // First binding: let body = box(…)
-        let mut feature_tag_table = FeatureTagTable::default();
-        let mut topology_attribute_table = TopologyAttributeTable::default();
-        let mut swept_kind_table = SweptKindTable::default();
-        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
-        Engine::execute_realization_ops(
+        state.run(
             &mut kernels,
             &registry,
             "default",
             &box_ops,
-            &[],
-            &values,
-            &functions,
-            &meta_map,
-            RealizationOutputs::new(
-                &mut step_handles,
-                &mut named_steps,
-                &mut feature_tag_table,
-                &mut topology_attribute_table,
-                &mut swept_kind_table,
-                &mut None,
-            ),
-            &mut diagnostics,
-            &test_realization_id,
             Some("body"),
             SourceSpan::new(0, 0),
-            &mut None,
-            &mut RealizationCache::new(),
-            None,
-            &mut 0usize,
         );
         // Snapshot via the contract-visible map entry, not by positional index,
         // so the snapshot stays correct if internal handle-slot layout changes.
-        let h1 = named_steps["body"];
+        let h1 = state.named_steps["body"];
 
-        // Second binding: let body = cylinder(…) — same name, different primitive
-        let mut feature_tag_table = FeatureTagTable::default();
-        let mut topology_attribute_table = TopologyAttributeTable::default();
-        let mut swept_kind_table = SweptKindTable::default();
-        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
-        Engine::execute_realization_ops(
+        // Second binding: let body = cylinder(…) — same name, different primitive.
+        // Reset the attribute tables between calls to mirror the per-build
+        // reset in production (each realization sees clean attribute state).
+        state.reset_attribute_tables();
+        state.run(
             &mut kernels,
             &registry,
             "default",
             &cyl_ops,
-            &[],
-            &values,
-            &functions,
-            &meta_map,
-            RealizationOutputs::new(
-                &mut step_handles,
-                &mut named_steps,
-                &mut feature_tag_table,
-                &mut topology_attribute_table,
-                &mut swept_kind_table,
-                &mut None,
-            ),
-            &mut diagnostics,
-            &test_realization_id,
             Some("body"),
             SourceSpan::new(0, 0),
-            &mut None,
-            &mut RealizationCache::new(),
-            None,
-            &mut 0usize,
         );
-        let h2 = named_steps["body"];
+        let h2 = state.named_steps["body"];
 
         // The kernel must have issued distinct handles so the test is non-trivial
         assert_ne!(
@@ -4105,7 +3998,7 @@ mod tests {
 
         // Last-write-wins: named_steps["body"] must equal h2 (the cylinder binding)
         assert_eq!(
-            named_steps.get("body").copied(),
+            state.named_steps.get("body").copied(),
             Some(h2),
             "shadowing contract: the second `let body` binding must overwrite \
              the first — named_steps[\"body\"] must be the handle from the \
@@ -4114,7 +4007,7 @@ mod tests {
 
         // Explicit anti-assertion: a first-write-wins regression must fail here
         assert_ne!(
-            named_steps.get("body").copied(),
+            state.named_steps.get("body").copied(),
             Some(h1),
             "first-write-wins regression guard: named_steps[\"body\"] must NOT \
              resolve to the first binding's handle after the second binding has \
@@ -4126,7 +4019,8 @@ mod tests {
         // fail (e.g. on a mock kernel without an extraction fixture). The
         // happy-path contract is "no Error diagnostics"; auxiliary-metadata
         // warnings are expected noise on mock kernels.
-        let errors: Vec<_> = diagnostics
+        let errors: Vec<_> = state
+            .diagnostics
             .iter()
             .filter(|d| matches!(d.severity, reify_types::Severity::Error))
             .collect();
@@ -4138,7 +4032,8 @@ mod tests {
         // Pin the expected warning count: this test runs two successful
         // primitive ops (Box, then Cylinder) through the same `diagnostics`
         // Vec, so one seeder warning per op accumulates → 2 total.
-        let warnings: Vec<_> = diagnostics
+        let warnings: Vec<_> = state
+            .diagnostics
             .iter()
             .filter(|d| matches!(d.severity, reify_types::Severity::Warning))
             .collect();
@@ -4197,49 +4092,22 @@ mod tests {
 
         let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
         let desc = dispatch_test_descriptor_all_brep();
-        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
-        registry.insert("default".to_string(), &desc);
-        let values = ValueMap::new();
-        let functions: Vec<CompiledFunction> = vec![];
-        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
-        let mut step_handles: Vec<GeometryHandleId> = vec![];
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
+        let registry = dispatch_test_single_default_registry(&desc);
+        let mut state = DispatchTestState::default();
 
         // First binding: let body = box(…) — succeeds, populates named_steps.
-        let mut feature_tag_table = FeatureTagTable::default();
-        let mut topology_attribute_table = TopologyAttributeTable::default();
-        let mut swept_kind_table = SweptKindTable::default();
-        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
-        Engine::execute_realization_ops(
+        state.run(
             &mut kernels,
             &registry,
             "default",
             &box_ops,
-            &[],
-            &values,
-            &functions,
-            &meta_map,
-            RealizationOutputs::new(
-                &mut step_handles,
-                &mut named_steps,
-                &mut feature_tag_table,
-                &mut topology_attribute_table,
-                &mut swept_kind_table,
-                &mut None,
-            ),
-            &mut diagnostics,
-            &test_realization_id,
             Some("body"),
             SourceSpan::new(0, 0),
-            &mut None,
-            &mut RealizationCache::new(),
-            None,
-            &mut 0usize,
         );
-        let h1 = named_steps["body"];
+        let h1 = state.named_steps["body"];
         // Filter to error-severity only: see comment in the happy-path test.
-        let errors: Vec<_> = diagnostics
+        let errors: Vec<_> = state
+            .diagnostics
             .iter()
             .filter(|d| matches!(d.severity, reify_types::Severity::Error))
             .collect();
@@ -4250,7 +4118,8 @@ mod tests {
         );
         // Pin the expected warning count (one seeder failure for the
         // successful Box op). See the happy-path test for the rationale.
-        let warnings_after_first: Vec<_> = diagnostics
+        let warnings_after_first: Vec<_> = state
+            .diagnostics
             .iter()
             .filter(|d| matches!(d.severity, reify_types::Severity::Warning))
             .collect();
@@ -4264,40 +4133,20 @@ mod tests {
         );
 
         // Second binding: let body = <invalid> — fails (rollback path).
-        let mut feature_tag_table = FeatureTagTable::default();
-        let mut topology_attribute_table = TopologyAttributeTable::default();
-        let mut swept_kind_table = SweptKindTable::default();
-        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
-        Engine::execute_realization_ops(
+        // Reset attribute tables between realizations.
+        state.reset_attribute_tables();
+        state.run(
             &mut kernels,
             &registry,
             "default",
             &fail_ops,
-            &[],
-            &values,
-            &functions,
-            &meta_map,
-            RealizationOutputs::new(
-                &mut step_handles,
-                &mut named_steps,
-                &mut feature_tag_table,
-                &mut topology_attribute_table,
-                &mut swept_kind_table,
-                &mut None,
-            ),
-            &mut diagnostics,
-            &test_realization_id,
             Some("body"),
             SourceSpan::new(0, 0),
-            &mut None,
-            &mut RealizationCache::new(),
-            None,
-            &mut 0usize,
         );
 
         // The failed shadow must NOT have overwritten the successful binding.
         assert_eq!(
-            named_steps.get("body").copied(),
+            state.named_steps.get("body").copied(),
             Some(h1),
             "rollback guard: a failed shadow must not overwrite the previous \
              successful binding — named_steps[\"body\"] must still resolve to h1"
@@ -4305,13 +4154,14 @@ mod tests {
 
         // The second call must have emitted a diagnostic (compile failure).
         assert!(
-            !diagnostics.is_empty(),
+            !state.diagnostics.is_empty(),
             "expected a diagnostic from the failed second realization"
         );
         // Pin the warning count after the second call: the second op fails
         // before reaching `kernel.execute`, so the seeder is never invoked
         // and no NEW warning lands on top of the one from the first call.
-        let warnings_after_second: Vec<_> = diagnostics
+        let warnings_after_second: Vec<_> = state
+            .diagnostics
             .iter()
             .filter(|d| matches!(d.severity, reify_types::Severity::Warning))
             .collect();
@@ -4355,49 +4205,21 @@ mod tests {
 
         let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
         let desc = dispatch_test_descriptor_all_brep();
-        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
-        registry.insert("default".to_string(), &desc);
-        let values = ValueMap::new();
-        let functions: Vec<CompiledFunction> = vec![];
-        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
-        let mut step_handles: Vec<GeometryHandleId> = vec![];
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
+        let registry = dispatch_test_single_default_registry(&desc);
         let realization_span = SourceSpan::new(100, 150);
-
-        let mut feature_tag_table = FeatureTagTable::default();
-        let mut topology_attribute_table = TopologyAttributeTable::default();
-        let mut swept_kind_table = SweptKindTable::default();
-        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
-        Engine::execute_realization_ops(
+        let mut state = DispatchTestState::default();
+        state.run(
             &mut kernels,
             &registry,
             "default",
             &ops,
-            &[],
-            &values,
-            &functions,
-            &meta_map,
-            RealizationOutputs::new(
-                &mut step_handles,
-                &mut named_steps,
-                &mut feature_tag_table,
-                &mut topology_attribute_table,
-                &mut swept_kind_table,
-                &mut None,
-            ),
-            &mut diagnostics,
-            &test_realization_id,
             None,
             realization_span,
-            &mut None,
-            &mut RealizationCache::new(),
-            None,
-            &mut 0usize,
         );
 
         // Find the compile-failure Error diagnostic.
-        let compile_err_diag = diagnostics
+        let compile_err_diag = state
+            .diagnostics
             .iter()
             .find(|d| {
                 d.message.contains("failed to compile geometry operation")
@@ -4451,49 +4273,21 @@ mod tests {
 
         let mut kernels = dispatch_test_kernels(Box::new(FailingMockGeometryKernel));
         let desc = dispatch_test_descriptor_all_brep();
-        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
-        registry.insert("default".to_string(), &desc);
-        let values = ValueMap::new();
-        let functions: Vec<CompiledFunction> = vec![];
-        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
-        let mut step_handles: Vec<GeometryHandleId> = vec![];
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
+        let registry = dispatch_test_single_default_registry(&desc);
         let realization_span = SourceSpan::new(200, 250);
-
-        let mut feature_tag_table = FeatureTagTable::default();
-        let mut topology_attribute_table = TopologyAttributeTable::default();
-        let mut swept_kind_table = SweptKindTable::default();
-        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
-        Engine::execute_realization_ops(
+        let mut state = DispatchTestState::default();
+        state.run(
             &mut kernels,
             &registry,
             "default",
             &ops,
-            &[],
-            &values,
-            &functions,
-            &meta_map,
-            RealizationOutputs::new(
-                &mut step_handles,
-                &mut named_steps,
-                &mut feature_tag_table,
-                &mut topology_attribute_table,
-                &mut swept_kind_table,
-                &mut None,
-            ),
-            &mut diagnostics,
-            &test_realization_id,
             None,
             realization_span,
-            &mut None,
-            &mut RealizationCache::new(),
-            None,
-            &mut 0usize,
         );
 
         // Find the kernel-error Error diagnostic.
-        let kernel_err_diag = diagnostics
+        let kernel_err_diag = state
+            .diagnostics
             .iter()
             .find(|d| d.message.contains("geometry error") && matches!(d.severity, Severity::Error))
             .expect("expected an Error diagnostic with 'geometry error'");
@@ -4631,42 +4425,14 @@ mod tests {
             ],
         }];
 
-        let values = ValueMap::new();
-        let functions: Vec<CompiledFunction> = vec![];
-        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
-        let mut step_handles: Vec<GeometryHandleId> = vec![];
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
-        let mut feature_tag_table = FeatureTagTable::default();
-        let mut topology_attribute_table = TopologyAttributeTable::default();
-        let mut swept_kind_table = SweptKindTable::default();
-        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
-
-        Engine::execute_realization_ops(
+        let mut state = DispatchTestState::default();
+        state.run(
             &mut kernels,
             &registry,
             "default",
             &ops,
-            &[],
-            &values,
-            &functions,
-            &meta_map,
-            RealizationOutputs::new(
-                &mut step_handles,
-                &mut named_steps,
-                &mut feature_tag_table,
-                &mut topology_attribute_table,
-                &mut swept_kind_table,
-                &mut None,
-            ),
-            &mut diagnostics,
-            &test_realization_id,
             None,
             SourceSpan::new(0, 0),
-            &mut None,
-            &mut RealizationCache::new(),
-            None,
-            &mut 0usize,
         );
 
         let calls = log.lock().unwrap().clone();
@@ -4678,7 +4444,7 @@ mod tests {
             calls
         );
         assert_eq!(
-            step_handles.len(),
+            state.step_handles.len(),
             1,
             "expected one handle pushed from the dispatched kernel"
         );
@@ -4726,42 +4492,14 @@ mod tests {
             ],
         }];
 
-        let values = ValueMap::new();
-        let functions: Vec<CompiledFunction> = vec![];
-        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
-        let mut step_handles: Vec<GeometryHandleId> = vec![];
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
-        let mut feature_tag_table = FeatureTagTable::default();
-        let mut topology_attribute_table = TopologyAttributeTable::default();
-        let mut swept_kind_table = SweptKindTable::default();
-        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
-
-        Engine::execute_realization_ops(
+        let mut state = DispatchTestState::default();
+        state.run(
             &mut kernels,
             &registry,
             "default",
             &ops,
-            &[],
-            &values,
-            &functions,
-            &meta_map,
-            RealizationOutputs::new(
-                &mut step_handles,
-                &mut named_steps,
-                &mut feature_tag_table,
-                &mut topology_attribute_table,
-                &mut swept_kind_table,
-                &mut None,
-            ),
-            &mut diagnostics,
-            &test_realization_id,
             None,
             SourceSpan::new(0, 0),
-            &mut None,
-            &mut RealizationCache::new(),
-            None,
-            &mut 0usize,
         );
 
         let calls = log.lock().unwrap().clone();
@@ -4771,8 +4509,9 @@ mod tests {
             "single-kernel-in-map: op must run on the default kernel; got log {:?}",
             calls,
         );
-        assert_eq!(step_handles.len(), 1, "expected one handle pushed");
-        let errors: Vec<_> = diagnostics
+        assert_eq!(state.step_handles.len(), 1, "expected one handle pushed");
+        let errors: Vec<_> = state
+            .diagnostics
             .iter()
             .filter(|d| matches!(d.severity, reify_types::Severity::Error))
             .collect();
@@ -4825,47 +4564,19 @@ mod tests {
             ],
         }];
 
-        let values = ValueMap::new();
-        let functions: Vec<CompiledFunction> = vec![];
-        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
-        let mut step_handles: Vec<GeometryHandleId> = vec![];
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
-        let mut feature_tag_table = FeatureTagTable::default();
-        let mut topology_attribute_table = TopologyAttributeTable::default();
-        let mut swept_kind_table = SweptKindTable::default();
-        let mut kernel_error_out: Option<ErrorRef> = None;
-        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
-
-        Engine::execute_realization_ops(
+        let mut state = DispatchTestState::default();
+        state.run(
             &mut kernels,
             &registry,
             "default",
             &ops,
-            &[],
-            &values,
-            &functions,
-            &meta_map,
-            RealizationOutputs::new(
-                &mut step_handles,
-                &mut named_steps,
-                &mut feature_tag_table,
-                &mut topology_attribute_table,
-                &mut swept_kind_table,
-                &mut None,
-            ),
-            &mut diagnostics,
-            &test_realization_id,
             None,
             SourceSpan::new(0, 0),
-            &mut kernel_error_out,
-            &mut RealizationCache::new(),
-            None,
-            &mut 0usize,
         );
 
         // A NoKernelChain error diagnostic must be emitted.
-        let no_chain: Vec<_> = diagnostics
+        let no_chain: Vec<_> = state
+            .diagnostics
             .iter()
             .filter(|d| d.code == Some(DiagnosticCode::NoKernelChain))
             .collect();
@@ -4875,7 +4586,7 @@ mod tests {
             "expected exactly one NoKernelChain diagnostic when the registry has no \
              kernel for the op; got {} diagnostics total: {:?}",
             no_chain.len(),
-            diagnostics
+            state.diagnostics
         );
         assert!(
             matches!(no_chain[0].severity, reify_types::Severity::Error),
@@ -4887,7 +4598,7 @@ mod tests {
         // out-param (the same channel `mark_realization_failed` consumes for
         // kernel errors today).
         assert!(
-            kernel_error_out.is_some(),
+            state.kernel_error_out.is_some(),
             "unroutable op must set kernel_error_out so the caller can mark the \
              realization NodeId as Failed; got None"
         );
@@ -4895,9 +4606,9 @@ mod tests {
         // step_handles must be truncated to its pre-call length: no real handle
         // was produced.
         assert!(
-            step_handles.is_empty(),
+            state.step_handles.is_empty(),
             "unroutable op must leave step_handles truncated to handle_start; got {:?}",
-            step_handles,
+            state.step_handles,
         );
     }
 
