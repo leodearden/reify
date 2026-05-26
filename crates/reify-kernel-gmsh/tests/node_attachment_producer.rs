@@ -6,7 +6,11 @@
 //! `Cargo.toml` activates it for all integration test binaries automatically.
 #![cfg(feature = "mesh-morph")]
 
-use reify_kernel_gmsh::mesh_boundary::EntityAttribution;
+// Crate-root re-exports (added by task 3763 / step-7).  If either import
+// fails, step-7 has not landed yet: add `pub use mesh_boundary::EntityAttribution`
+// (unconditional) and `#[cfg(has_gmsh)] pub use mesh_boundary::{BoundaryAttributedReport,
+// mesh_surface_to_volume_with_attribution}` to lib.rs.
+use reify_kernel_gmsh::EntityAttribution;
 use reify_types::{GeometryHandleId, Mesh, NodeAttachment};
 
 // ---------------------------------------------------------------------------
@@ -118,7 +122,7 @@ fn entity_attribution_stores_anchor_positions_and_handles() {
 #[cfg(has_gmsh)]
 #[test]
 fn mesh_surface_to_volume_with_attribution_attributes_surface_nodes_by_brep_entity() {
-    use reify_kernel_gmsh::mesh_boundary::mesh_surface_to_volume_with_attribution;
+    use reify_kernel_gmsh::mesh_surface_to_volume_with_attribution;
     use reify_kernel_gmsh::MeshingOptions;
     use reify_types::ElementOrderTag;
     use std::collections::BTreeSet;
@@ -242,7 +246,7 @@ fn mesh_surface_to_volume_with_attribution_attributes_surface_nodes_by_brep_enti
 #[cfg(has_gmsh)]
 #[test]
 fn attributed_boundary_nodes_lie_on_locus_of_attributed_handle() {
-    use reify_kernel_gmsh::mesh_boundary::mesh_surface_to_volume_with_attribution;
+    use reify_kernel_gmsh::mesh_surface_to_volume_with_attribution;
     use reify_kernel_gmsh::MeshingOptions;
     use reify_types::ElementOrderTag;
     use std::collections::{BTreeSet, HashMap};
@@ -557,4 +561,40 @@ fn suggested_match_tolerance_unit_cube_validates_hand_picked_0_3() {
         0.3 < tol,
         "hand-picked tolerance 0.3 must be < suggested_match_tolerance ({tol:.6})"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Crate-root re-export API surface (step-6 RED → step-7 GREEN)
+// ---------------------------------------------------------------------------
+
+/// Unconditional: `reify_kernel_gmsh::EntityAttribution` resolves at the
+/// crate root (no `mesh_boundary::` prefix needed).
+#[test]
+fn entity_attribution_available_at_crate_root() {
+    // The top-level `use reify_kernel_gmsh::EntityAttribution;` (added in
+    // step-6) already exercises this.  Construct one here to exercise the
+    // imported name — ensures the compiler sees the import as non-dead.
+    let ea = EntityAttribution {
+        faces:    vec![],
+        edges:    vec![],
+        vertices: vec![],
+        match_tolerance: 0.0,
+    };
+    assert_eq!(ea.faces.len(), 0);
+}
+
+/// cfg(has_gmsh): `BoundaryAttributedReport` and
+/// `mesh_surface_to_volume_with_attribution` resolve at the crate root.
+#[cfg(has_gmsh)]
+#[test]
+fn boundary_attributed_report_and_fn_available_at_crate_root() {
+    use reify_kernel_gmsh::BoundaryAttributedReport;
+
+    // Name the type in a helper signature — sufficient to confirm the
+    // crate-root re-export resolves.
+    fn _assert_type_exists(_: Option<BoundaryAttributedReport>) {}
+
+    // Name the function item — sufficient to confirm it resolves.
+    let _fn_ptr = reify_kernel_gmsh::mesh_surface_to_volume_with_attribution;
+    let _ = _fn_ptr; // suppress unused-variable lint
 }
