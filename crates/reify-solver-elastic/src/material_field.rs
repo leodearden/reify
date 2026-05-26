@@ -30,6 +30,72 @@
 //!   per PRD Q2 to the FDM field producer; the closure surface lets any
 //!   backing slot in without breaking the trait.
 
+use crate::constitutive::{ConstitutiveLaw, rotate_voigt};
+
+/// A concrete evaluated material value carrying a 6×6 stiffness in the
+/// material's local frame plus the local→global rotation matrix.
+///
+/// # PRD reference
+///
+/// `docs/prds/v0_5/anisotropic-heterogeneous-elastostatics.md` §C3 calls
+/// this "the concrete evaluated value carrying a resolved stiffness plus
+/// its frame." Storing the already-evaluated 6×6 `d_local` rather than a
+/// `Box<dyn ConstitutiveLaw>` gives three concrete wins:
+///
+/// 1. The codomain is uniform across heterogeneous laws (isotropic +
+///    orthotropic + transverse-iso all collapse to the same 36-`f64`
+///    representation), so a `Field<Point3, AnisotropicMaterial>` can
+///    scatter cleanly without trait-object plumbing.
+/// 2. The value is `Copy`, so per-element sampling in the assembly hot
+///    path never heap-allocates.
+/// 3. No trait-object dispatch in the inner `K_e = ∫ BᵀD_globalB |det J| dV`
+///    loop.
+///
+/// # Frame convention
+///
+/// `frame` is the **local → global** rotation (columns = local basis
+/// vectors in global coordinates), matching the convention pinned by
+/// [`rotate_voigt`]. See its docstring for the worked example.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AnisotropicMaterial {
+    /// 6×6 elasticity matrix in the material's local frame
+    /// (engineering-shear Voigt order; shear-block diagonal = G, not 2G).
+    /// Pre-computed via `ConstitutiveLaw::d_matrix_local()` at field-build
+    /// time so the value is `Copy` and the assembly hot path can avoid
+    /// trait-object dispatch.
+    pub d_local: [[f64; 6]; 6],
+    /// 3×3 local → global rotation. Columns are the local basis vectors
+    /// expressed in global coordinates (same convention as
+    /// [`rotate_voigt`]).
+    pub frame: [[f64; 3]; 3],
+}
+
+impl AnisotropicMaterial {
+    /// Construct an `AnisotropicMaterial` from any
+    /// [`ConstitutiveLaw`] + a local→global frame.
+    ///
+    /// Calls `law.d_matrix_local()` **once** at construction; subsequent
+    /// `d_matrix_global()` calls reuse the cached 6×6.
+    #[inline]
+    pub fn from_law<L: ConstitutiveLaw>(law: &L, frame: [[f64; 3]; 3]) -> Self {
+        Self {
+            d_local: law.d_matrix_local(),
+            frame,
+        }
+    }
+
+    /// Return the 6×6 elasticity matrix rotated into the global frame.
+    ///
+    /// Delegates to [`rotate_voigt`]. When `frame` is the identity, the
+    /// returned matrix is **bitwise** equal to `d_local` (pinned by
+    /// `tests::anisotropic_material_from_law_with_identity_frame_d_global_is_bitwise_d_local`
+    /// and by `rotate_voigt`'s own identity-frame bitwise-no-op contract).
+    #[inline]
+    pub fn d_matrix_global(&self) -> [[f64; 6]; 6] {
+        rotate_voigt(&self.d_local, &self.frame)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

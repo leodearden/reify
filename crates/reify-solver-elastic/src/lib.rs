@@ -383,6 +383,10 @@ pub use constitutive::{
     ConstitutiveLaw, IsotropicElastic, OrthotropicMaterial, TransverseIsotropicMaterial,
     rotate_voigt,
 };
+// Task 3778: foundation β — `AnisotropicMaterial` evaluated value bridging
+// `ConstitutiveLaw` + frame into a single `Copy` 6×6 + 3×3 record. Re-exports
+// for `MaterialField`/`ConstantField`/`DiscreteCellField` follow in step-16.
+pub use material_field::AnisotropicMaterial;
 pub use elements::{
     Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement,
     hex_p1::HexP1,
