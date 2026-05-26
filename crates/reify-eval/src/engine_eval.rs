@@ -2885,6 +2885,21 @@ impl Engine {
                             cell_id.entity.as_str(),
                             next_index,
                         );
+
+                        // ε / §5 step-3: create the cancellation handle and
+                        // defensively cancel any prior handle on the same c_id.
+                        // The defensive cancel is structurally a no-op here —
+                        // max+1 allocation always produces a fresh id — but
+                        // guards the cooperative one-in-flight invariant (PRD §2)
+                        // against any future same-node re-dispatch path
+                        // (design decision in task ε/3424).
+                        if let Some(prev) = snapshot.graph.get_compute_node_mut(&c_id) {
+                            if let Some(old) = prev.running.take() {
+                                old.cancel();
+                            }
+                        }
+                        let cancel = crate::graph::CancellationHandle::new();
+
                         snapshot.graph.insert_compute_node(
                             crate::graph::ComputeNodeData {
                                 computation_id: c_id.clone(),
@@ -2896,21 +2911,24 @@ impl Engine {
                                 cached_result: None,
                                 result_content_hash: None,
                                 opaque_state: None,
-                                running: None,
+                                // ε: the same Arc<AtomicBool> is both stored here
+                                // (so a future async driver can cancel via `running`)
+                                // and passed to run_compute_dispatch below (so the
+                                // trampoline's cooperative poll sees the signal).
+                                running: Some(cancel.clone()),
                                 output_value_cells: vec![cell_id.clone()],
                             },
                         );
 
-                        // task δ / 3423: the begin → invoke trampoline →
-                        // atomic-complete-or-leave-Pending lifecycle is now
-                        // owned by `Engine::run_compute_dispatch` (PRD §3 / §8
-                        // task δ). It pre-marks the output VC Pending with
-                        // `pending_cause = NodeId::Compute(c_id)`, invokes the
-                        // γ trampoline, and on success flips Pending → Final and
-                        // clears the cause in one critical section. On
-                        // Failed/Cancelled it returns Err and LEAVES the VC
-                        // Pending — the Err arm below owns the Failed transition
-                        // (it has the diagnostic context for the ErrorRef).
+                        // ε / §8-ε: the begin → invoke trampoline →
+                        // atomic-complete-or-leave-Pending lifecycle is owned by
+                        // `Engine::run_compute_dispatch` (PRD §3 / §8 task δ).
+                        // The SAME `cancel` handle is both stored in `running`
+                        // (so a future async driver can fire it) and passed here
+                        // (so the trampoline's cooperative poll sees the signal).
+                        // Cancelled leaves the VC Pending; Failed owns mark_failed.
+                        // PRD §2: "cancelled dispatch leaves prior best on display,
+                        // prior cache untouched, Pending until next dispatch."
                         match self.run_compute_dispatch(
                             &c_id,
                             std::slice::from_ref(cell_id),
@@ -2919,10 +2937,7 @@ impl Engine {
                             &[],
                             &Value::Undef,
                             None,
-                            // ε step-2: pass a non-cancelled placeholder handle;
-                            // step-4 wires the real handle from the node's
-                            // `running` slot and splits the Cancelled arm.
-                            &crate::graph::CancellationHandle::new(),
+                            &cancel,
                             VersionId(version_id),
                         ) {
                             Ok((result, diags)) => {
@@ -2970,6 +2985,12 @@ impl Engine {
                                 // EvalOutcome (the atomicity-as-API contract);
                                 // a completed dispatch (re)computed a value, so
                                 // the journal records `Changed`.
+                                //
+                                // ε §5 step-3: clear the running slot on terminal
+                                // outcome (PRD §2 / design decision task ε/3424).
+                                if let Some(n) = snapshot.graph.get_compute_node_mut(&c_id) {
+                                    n.running = None;
+                                }
                                 self.journal.record(EvalEvent {
                                     timestamp: Instant::now(),
                                     node_id,
@@ -2981,64 +3002,61 @@ impl Engine {
                                 });
                                 continue;
                             }
-                            Err(dispatch_err) => {
-                                // ε step-2: TEMPORARY — collapse Cancelled and Failed
-                                // into the same Failed-marking arm until step-4
-                                // separates the Cancelled path (Cancelled→Pending,
-                                // Failed→mark_failed). No behaviour change in this step.
-                                let diags = match dispatch_err {
-                                    crate::engine_compute::DispatchError::Failed(d) => d,
-                                    crate::engine_compute::DispatchError::Cancelled => vec![],
-                                };
-                                // Registered trampoline returned Failed/Cancelled —
-                                // do NOT body-inline. The user explicitly registered
-                                // a trampoline for this target, so a failure there is
-                                // a genuine compute error, not an unknown-target case.
-                                // Silently substituting an inlined body would mask the
-                                // failure: the diagnostic would say "compute trampoline
-                                // failed" while the cell happily holds an unrelated
-                                // Determined value (review feedback #1, suggestion 1).
+                            Err(crate::engine_compute::DispatchError::Cancelled) => {
+                                // ε / PRD §2 / §7.1: CANCELLED — the output VC is
+                                // already `Pending{last_substantive: prior}` from
+                                // `begin_compute_dispatch`; that IS the correct
+                                // cancelled postcondition.  Do NOT insert a value
+                                // and do NOT call `mark_failed` — the prior best
+                                // stays on display and the prior cache is untouched
+                                // until the next dispatch completes.
                                 //
-                                // The ComputeNode inserted above (lines ~2884-2902)
-                                // is INTENTIONALLY left in `snapshot.graph.compute_nodes`
-                                // on this arm, even though the output VC ends up
-                                // Failed and `cached_result` / `result_content_hash` /
-                                // `running` are all `None`. Rationale:
-                                //   - `pending_cause = NodeId::Compute(c_id)` resolution
-                                //     (PRD §3) requires `c_id` to be present in the
-                                //     graph so observers (debug UI, the upcoming
-                                //     P3.2 cache-key composition) can chase the chain
-                                //     root. Removing the node on failure would leave a
-                                //     dangling chain-root pointer.
-                                //   - The output VC's `Failed` state (set below via
-                                //     `cache.mark_failed`) already communicates the
-                                //     compute outcome; the live-but-result-less
-                                //     ComputeNode signals "tried, then failed" rather
-                                //     than "no such computation ever existed".
-                                //   - Adding a per-node status field is a separate
-                                //     concern; deferred to a future slice if a
-                                //     consumer ever needs to distinguish in-flight
-                                //     from completed-failed at the ComputeNode level.
+                                // ε §5 step-3: clear the running slot.
+                                if let Some(n) = snapshot.graph.get_compute_node_mut(&c_id) {
+                                    n.running = None;
+                                }
+                                // Drain let_traces consistently with the Ok arm
+                                // (mirrors the `take_trace` call above so the
+                                // per-node trace map stays drained on every path).
+                                let _trace = take_trace(
+                                    &mut let_traces,
+                                    &node_id,
+                                    "sorted_lets",
+                                    "let_traces",
+                                );
+                                // Journal a non-Changed event: the dispatch was
+                                // attempted but did not produce a new value.
+                                self.journal.record(EvalEvent {
+                                    timestamp: Instant::now(),
+                                    node_id,
+                                    kind: EventKind::Completed {
+                                        outcome: EvalOutcome::Unchanged,
+                                    },
+                                    version: VersionId(version_id),
+                                    payload: Some(EventPayload::Duration(start.elapsed())),
+                                });
+                                continue;
+                            }
+                            Err(crate::engine_compute::DispatchError::Failed(diags)) => {
+                                // Registered trampoline returned Failed — do NOT
+                                // body-inline. The user explicitly registered a
+                                // trampoline for this target, so a failure there is
+                                // a genuine compute error (review feedback #1,
+                                // suggestion 1).
                                 //
-                                // Mirror the §9.1 panic-boundary handler below
-                                // (engine_eval.rs ~L2929-2965): surface the
-                                // diagnostics, mark the cell Failed via
-                                // `cache.mark_failed`, emit an EventKind::Failed
-                                // journal event, and `continue`. Downstream cells
-                                // that depend on this Failed cell propagate Failed
-                                // via the freshness walk (cache.rs §9.2).
+                                // The ComputeNode is INTENTIONALLY left in the graph
+                                // so `pending_cause` resolution can chase the chain
+                                // root to a live node (PRD §3 / §5 rationale below).
                                 //
-                                // PRD §9 Q1 explicitly resolved unregistered-target
-                                // fallback to "inline + diagnostic in debug" — the
-                                // Failed/Cancelled arm is NOT covered by that
-                                // resolution; the contract for a registered
-                                // trampoline that reports failure is that the
-                                // failure surfaces, not that it is silently
-                                // recovered.
+                                // ε §5 step-3: clear the running slot on terminal
+                                // outcome.
+                                if let Some(n) = snapshot.graph.get_compute_node_mut(&c_id) {
+                                    n.running = None;
+                                }
                                 diagnostics.extend(diags);
                                 let error = ErrorRef::new(format!(
                                     "@optimized target {:?}: compute trampoline \
-                                     returned Failed/Cancelled",
+                                     returned Failed",
                                     target
                                 ));
                                 let trace = take_trace(
