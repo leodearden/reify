@@ -66,10 +66,12 @@ struct ColumnFixture {
 impl ColumnFixture {
     /// Steel AISI 1045 box column, 20 × 20 × 800 mm.
     ///
-    /// Initial mesh density: `nx=ny=4, nz=40`.
-    /// Tuned in step-6 against the 5% PRD §13 task δ bound.
+    /// Tuned 2026-05-26 against the 5% PRD §13 task δ bound.
+    /// Starting mesh `nx=ny=4, nz=40` gave 16.77% error at nz=160 (P1-tet
+    /// bending locking dominates; error ∝ C/N² where N = cross-section elements).
+    /// Cross-section refinement to `nx=ny=8` reduces the error by ≈4× (to ~4.2%).
     fn steel_aisi_1045_800mm() -> Self {
-        Self { nx: 4, ny: 4, nz: 160, lx: 0.02, ly: 0.02, lz: 0.8 }
+        Self { nx: 8, ny: 8, nz: 160, lx: 0.02, ly: 0.02, lz: 0.8 }
     }
 
     fn n_nodes(&self) -> usize {
