@@ -902,3 +902,70 @@ fn evaluate_profile_dot_fn_signature() {
         func.return_type
     );
 }
+
+// ─── step-25: evaluate_profile_ddot fn signature ──────────────────────────────
+
+/// `evaluate_profile_ddot` is the second-derivative evaluator helper — it
+/// samples the per-joint acceleration vector q̈(t) from a `Profile` at time
+/// `t` (PRD §4.1 line 243).
+///
+/// Signature: `pub fn evaluate_profile_ddot(p: Profile, t: Time) -> List<JointValue>`
+///
+/// This fn is the second-derivative companion to `evaluate_profile` (step-21/22)
+/// and `evaluate_profile_dot` (step-23/24). Param shape is identical to both
+/// companions: `(p: Profile, t: Time)` — declaration order is part of the
+/// contract. Return type is `List<JointValue>` = `List<Real>` (q̈ shares the
+/// same per-joint scalar type as q and q̇ under the α-phase alias).
+///
+/// `is_pub == true` for the same downstream-consumer reason as steps 21 and 23.
+#[test]
+fn evaluate_profile_ddot_fn_signature() {
+    let module = load_stdlib_module();
+
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "evaluate_profile_ddot")
+        .unwrap_or_else(|| {
+            panic!(
+                "evaluate_profile_ddot not found in std/trajectory; found functions: {:?}",
+                module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+            )
+        });
+
+    assert!(func.is_pub, "evaluate_profile_ddot should be pub");
+
+    assert_eq!(
+        func.params.len(),
+        2,
+        "evaluate_profile_ddot should take exactly 2 params (p, t); got: {:?}",
+        func.params
+    );
+
+    assert_eq!(
+        func.params[0],
+        ("p".to_string(), Type::TraitObject("Profile".to_string())),
+        "evaluate_profile_ddot param[0] should be (\"p\", TraitObject(\"Profile\")); \
+         got: {:?}",
+        func.params[0]
+    );
+    assert_eq!(
+        func.params[1],
+        (
+            "t".to_string(),
+            Type::Scalar {
+                dimension: DimensionVector::TIME,
+            }
+        ),
+        "evaluate_profile_ddot param[1] should be (\"t\", Scalar<TIME>); got: {:?}",
+        func.params[1]
+    );
+
+    assert_eq!(
+        func.return_type,
+        Type::List(Box::new(Type::Real)),
+        "evaluate_profile_ddot return type should be List<Real> (= List<JointValue>); \
+         got: {:?}",
+        func.return_type
+    );
+}
