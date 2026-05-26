@@ -319,6 +319,43 @@ mod tests {
     }
 
     #[test]
+    fn axis_aligned_box_min_side_distance() {
+        // Same 40×40×10 mm box.
+        let bx = AxisAlignedBox {
+            min: [0.0, 0.0, 0.0],
+            max: [0.040, 0.040, 0.010],
+        };
+        let build_z = [0.0, 0.0, 1.0];
+        let t = DEFAULT_TOP_BOTTOM_NORMAL_THRESHOLD;
+
+        // (a) center — 20 mm to nearest side (±X/±Y); top/bottom EXCLUDED.
+        assert_approx_eq(
+            bx.min_side_distance([0.020, 0.020, 0.005], build_z, t),
+            0.020,
+        );
+
+        // (b) near -X side — 0.5 mm.
+        assert_approx_eq(
+            bx.min_side_distance([0.0005, 0.020, 0.005], build_z, t),
+            0.0005,
+        );
+
+        // (c) near corner: side 0.3 mm, top 0.6 mm — top EXCLUDED → 0.3 mm.
+        assert_approx_eq(
+            bx.min_side_distance([0.0003, 0.020, 0.0094], build_z, t),
+            0.0003,
+        );
+
+        // (d) Y-up build axis on same box, center: ±X and ±Z are now sides;
+        // ±Z (5 mm) is the smallest side distance.
+        let build_y = [0.0, 1.0, 0.0];
+        assert_approx_eq(
+            bx.min_side_distance([0.020, 0.020, 0.005], build_y, t),
+            0.005,
+        );
+    }
+
+    #[test]
     fn is_top_or_bottom_normal_predicate() {
         let build = [0.0, 0.0, 1.0];
         let threshold = DEFAULT_TOP_BOTTOM_NORMAL_THRESHOLD;
