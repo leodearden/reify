@@ -2,7 +2,7 @@
 //
 // See `docs/prds/v0_3/compute-node-contract.md` §4 and §8-γ for the full spec.
 // Types defined here: `ComputeFn`, `ComputeOutcome`, `RealizationReadHandle`,
-// `ComputeDispatchRegistry`.
+// `ComputeDispatchRegistry`, `DispatchError`.
 
 use std::collections::HashMap;
 
@@ -67,6 +67,38 @@ pub enum ComputeOutcome {
     },
 }
 
+/// Error returned by [`Engine::run_compute_dispatch`] when a dispatch does not
+/// complete successfully.
+///
+/// Distinguishes the two terminal non-success outcomes so the lowering site
+/// (and tests) can apply the correct cache transition:
+///
+/// - [`DispatchError::Cancelled`] — the trampoline observed cancellation via
+///   its [`CancellationHandle`] and returned [`ComputeOutcome::Cancelled`].
+///   The output VCs are **left [`Freshness::Pending`][reify_types::Freshness::Pending]**
+///   (prior best on display, cache untouched) per PRD §2 / §7.1.  Callers
+///   must NOT call `mark_failed` on this path.
+///
+/// - [`DispatchError::Failed`] — the trampoline returned
+///   [`ComputeOutcome::Failed`], or the target string had no registered
+///   trampoline.  The output VCs are also left `Pending` (from
+///   `begin_compute_dispatch`); the caller owns the `mark_failed` transition.
+///
+/// See `docs/prds/v0_3/compute-node-contract.md` §2 / §7.1 / §8-ε.
+#[derive(Debug)]
+pub enum DispatchError {
+    /// The trampoline observed [`CancellationHandle::is_cancelled`] and
+    /// returned [`ComputeOutcome::Cancelled`].  Output VCs stay Pending; prior
+    /// cache and warm-state are untouched.  The lowering site must NOT call
+    /// `mark_failed`; it should journal a non-Changed event and `continue`.
+    Cancelled,
+    /// The trampoline returned [`ComputeOutcome::Failed`] or the target string
+    /// had no registered trampoline.  The contained `Vec<Diagnostic>` carries
+    /// the trampoline's error diagnostics (or the "no registered trampoline"
+    /// synthesised diagnostic).  The lowering site owns `mark_failed`.
+    Failed(Vec<Diagnostic>),
+}
+
 /// Minimal read-only wrapper over a realization node identity.
 ///
 /// Passed to [`ComputeFn`] invocations that declare realization inputs.
@@ -111,31 +143,70 @@ impl ComputeDispatchRegistry {
 }
 
 impl crate::Engine {
+    /// Invoke the registered compute trampoline for `target` with the supplied
+    /// inputs and the **caller-provided** cancellation handle.
+    ///
+    /// Returns `Some(outcome)` when a trampoline is registered, `None` when
+    /// the target string has no registered entry.  The raw [`ComputeOutcome`]
+    /// is returned so that [`run_compute_dispatch`](Self::run_compute_dispatch)
+    /// can discriminate `Cancelled` from `Failed` without collapsing them into
+    /// a common `Err` path (the root cause of the ε defect fixed here).
+    ///
+    /// Passing the handle in (rather than creating a fresh one here) lets the
+    /// lowering site thread the same `Arc<AtomicBool>` that it stores in the
+    /// node's `running` slot, so a future async driver cancelling via `running`
+    /// propagates to the trampoline's poll.
+    fn invoke_compute_trampoline(
+        &self,
+        target: &str,
+        value_inputs: &[Value],
+        realization_inputs: &[RealizationReadHandle],
+        options: &Value,
+        prior_warm_state: Option<&OpaqueState>,
+        cancellation: &CancellationHandle,
+    ) -> Option<ComputeOutcome> {
+        let f = self.compute_registry.fns.get(target).copied()?;
+        Some(f(
+            value_inputs,
+            realization_inputs,
+            options,
+            prior_warm_state,
+            cancellation,
+        ))
+    }
+
     /// Run the full in-flight ComputeNode dispatch lifecycle for `c_id` —
     /// begin → invoke trampoline → atomic-complete-or-leave-Pending.
     ///
-    /// PRD §3 "Atomic completion" / §8 task δ
+    /// PRD §3 "Atomic completion" / §8 tasks δ and ε
     /// (`docs/prds/v0_3/compute-node-contract.md`):
     ///
     /// 1. [`CacheStore::begin_compute_dispatch`][crate::cache::CacheStore::begin_compute_dispatch]
     ///    pre-marks every output VC `Freshness::Pending` with
     ///    `pending_cause = NodeId::Compute(c_id)` (the prior best stays on
     ///    display while recomputation is in flight).
-    /// 2. [`Engine::dispatch_compute_node`](crate::Engine::dispatch_compute_node)
-    ///    invokes the registered trampoline synchronously (γ helper; maps
-    ///    Failed/Cancelled/unregistered → `Err`).
-    /// 3. On `Ok((result, diagnostics))` —
+    /// 2. [`Engine::invoke_compute_trampoline`](Self::invoke_compute_trampoline)
+    ///    calls the registered trampoline synchronously with the PASSED
+    ///    `cancellation` handle and returns the raw [`ComputeOutcome`].
+    /// 3. On `Some(Completed{result, diagnostics})` —
     ///    [`CacheStore::complete_compute_dispatch_atomically`][crate::cache::CacheStore::complete_compute_dispatch_atomically]
     ///    writes the new value, flips Pending → Final, and clears
     ///    `pending_cause` in a single critical section. Returns
     ///    `Ok((result, diagnostics))`.
-    /// 4. On `Err(diagnostics)` — the output VCs are deliberately LEFT
-    ///    Pending per PRD §2 ("Freshness::Pending persists until the next
-    ///    dispatch completes successfully or fails"). The caller (the
-    ///    `@optimized` lowering site in `engine_eval.rs`) owns the Failed
-    ///    transition via its existing `cache.mark_failed` path, which has the
-    ///    diagnostic context to build the `ErrorRef`. Returns
-    ///    `Err(diagnostics)` verbatim.
+    /// 4. On `Some(Cancelled)` — the output VCs are **left Pending** (begin
+    ///    set them; complete is NOT called). Per PRD §2 / §7.1 a cancelled
+    ///    dispatch must leave the prior best on display and the prior cache
+    ///    untouched. Returns `Err(DispatchError::Cancelled)`. The lowering
+    ///    site must NOT call `mark_failed` on this path.
+    /// 5. On `Some(Failed{diagnostics})` or `None` (unregistered target) —
+    ///    output VCs are also left Pending; returns
+    ///    `Err(DispatchError::Failed(diagnostics))`. The caller owns the
+    ///    `mark_failed` transition (it has the `ErrorRef` context).
+    ///
+    /// The `cancellation` handle is the **same `Arc<AtomicBool>`** the
+    /// lowering site stores in the node's `running` slot, so a future async
+    /// driver cancelling via `running` propagates directly to the trampoline's
+    /// poll (PRD §5 / design decision in task ε/3424).
     ///
     /// `c_id` is forwarded to `complete_compute_dispatch_atomically`, where it
     /// is reserved for ζ-scope warm-state donation (task 3425).
@@ -143,27 +214,22 @@ impl crate::Engine {
     /// ## Freshness on completion is unconditionally Final
     ///
     /// On `Ok`, `complete_compute_dispatch_atomically` stamps the output VCs
-    /// `Freshness::Final` regardless of the input cells' freshness. The
-    /// pre-`run_compute_dispatch` wiring at the only caller propagated derived
-    /// freshness (Intermediate when any value-input was Intermediate, etc.) via
-    /// `record_evaluation_propagating_freshness`; the δ contract (PRD §3) flips
-    /// Pending → Final on successful completion. Callers that need to surface
-    /// "this @optimized output is still refining because its inputs are
-    /// Intermediate" must gate the dispatch upstream rather than relying on
-    /// derived freshness here; restoring §7.2 propagation for @optimized cells
-    /// is deferred to a future slice.
+    /// `Freshness::Final` regardless of the input cells' freshness. Restoring
+    /// derived-Intermediate propagation when inputs are partial is deferred to
+    /// a future slice (the upstream Pending gate already short-circuits
+    /// Failed/Pending inputs before reaching here).
     ///
     /// ## Multi-output dispatch is NOT yet defined
     ///
-    /// The `outputs` parameter is a slice for forward-compatibility, but
-    /// [`Engine::dispatch_compute_node`] returns a single `Value`. Today the
-    /// only caller (the `@optimized` lowering site in `engine_eval.rs`) passes
+    /// The `outputs` parameter is a slice for forward-compatibility, but the
+    /// trampoline returns a single `Value`. Today the only caller (the
+    /// `@optimized` lowering site in `engine_eval.rs`) passes
     /// `slice::from_ref(cell_id)`, i.e. a single output. A `debug_assert_eq!`
     /// pins this contract: if a future caller passes more than one output, the
     /// helper would silently broadcast the single trampoline result to every
-    /// cell rather than fan out per-component. Multi-output semantics (e.g.
-    /// destructuring a tuple return) require a separate trampoline signature
-    /// extension; until then, this assertion catches accidental misuse.
+    /// cell rather than fan out per-component. Multi-output semantics require
+    /// a trampoline signature extension; until then, this assertion catches
+    /// accidental misuse.
     #[allow(clippy::too_many_arguments)]
     pub fn run_compute_dispatch(
         &mut self,
@@ -174,8 +240,9 @@ impl crate::Engine {
         realization_inputs: &[RealizationReadHandle],
         options: &Value,
         prior_warm_state: Option<&OpaqueState>,
+        cancellation: &CancellationHandle,
         version: VersionId,
-    ) -> Result<(Value, Vec<Diagnostic>), Vec<Diagnostic>> {
+    ) -> Result<(Value, Vec<Diagnostic>), DispatchError> {
         // Multi-output dispatch is not yet defined — see docstring.
         debug_assert_eq!(
             outputs.len(),
@@ -186,18 +253,28 @@ impl crate::Engine {
         );
 
         // Step 1: pre-mark output VCs Pending (the in-flight state).
+        // begin_compute_dispatch already leaves VCs Pending{last_substantive: prior}
+        // with pending_cause = Compute(c_id). The cancelled path simply does NOT
+        // call complete — that already-correct Pending state IS the contract
+        // (PRD §2 / design decision recorded in task ε/3424).
         self.cache.begin_compute_dispatch(c_id, outputs);
 
-        // Step 2: invoke the trampoline synchronously (γ helper).
-        match self.dispatch_compute_node(
+        // Step 2: invoke the trampoline via the new helper (ε: threads the
+        // PASSED handle rather than creating a fresh throwaway one).
+        match self.invoke_compute_trampoline(
             target,
             value_inputs,
             realization_inputs,
             options,
             prior_warm_state,
+            cancellation,
         ) {
-            Ok((result, diagnostics)) => {
-                // Step 3a: atomic completion (write + flip + clear).
+            Some(ComputeOutcome::Completed {
+                result,
+                diagnostics,
+                ..
+            }) => {
+                // Step 3a: atomic completion (write + flip Pending→Final + clear cause).
                 let pairs: Vec<(ValueCellId, Value)> = outputs
                     .iter()
                     .map(|o| (o.clone(), result.clone()))
@@ -206,9 +283,20 @@ impl crate::Engine {
                     .complete_compute_dispatch_atomically(c_id, &pairs, version);
                 Ok((result, diagnostics))
             }
-            // Step 3b: leave output VCs Pending — caller owns the Failed
-            // transition (PRD §2 cancellation / Failed contract).
-            Err(diagnostics) => Err(diagnostics),
+            // Step 3b: Cancelled — leave VCs in the already-correct Pending
+            // state from begin. No warm-state donation, no mark_failed.
+            // PRD §2 / §7.1: "cancelled dispatch leaves prior best on display,
+            // prior cache untouched, Pending until next dispatch completes."
+            Some(ComputeOutcome::Cancelled) => Err(DispatchError::Cancelled),
+            // Step 3c: Failed — also leave VCs Pending; caller owns mark_failed.
+            Some(ComputeOutcome::Failed { diagnostics }) => {
+                Err(DispatchError::Failed(diagnostics))
+            }
+            // Step 3d: Unregistered target — synthesise a Failed diagnostic.
+            None => Err(DispatchError::Failed(vec![Diagnostic::error(format!(
+                "@optimized target {:?}: no registered compute trampoline",
+                target
+            ))])),
         }
     }
 }

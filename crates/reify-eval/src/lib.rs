@@ -18,7 +18,7 @@ pub use engine_admin::sweep_persistent_cache_at_startup;
 mod engine_build;
 mod engine_compute;
 pub use engine_compute::{
-    ComputeDispatchRegistry, ComputeFn, ComputeOutcome, RealizationReadHandle,
+    ComputeDispatchRegistry, ComputeFn, ComputeOutcome, DispatchError, RealizationReadHandle,
 };
 pub use graph::CancellationHandle;
 mod engine_constraints;
