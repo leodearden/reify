@@ -59,6 +59,43 @@ fn param_cells(template: &TopologyTemplate) -> Vec<&ValueCellDecl> {
         .collect()
 }
 
+// ─── MaterialFrame shape ─────────────────────────────────────────────────────
+
+#[test]
+fn frame_has_origin_and_three_axes() {
+    let template = find_structure("MaterialFrame");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["origin", "x_axis", "y_axis", "z_axis"],
+        "MaterialFrame should have exactly (origin, x_axis, y_axis, z_axis) in that order"
+    );
+
+    let length_scalar = Type::Scalar { dimension: DimensionVector::LENGTH };
+    let point3_length = Type::Point { n: 3, quantity: Box::new(length_scalar.clone()) };
+    let vec3_length = Type::Vector { n: 3, quantity: Box::new(length_scalar) };
+
+    let expected: &[(&str, Type)] = &[
+        ("origin", point3_length),
+        ("x_axis", vec3_length.clone()),
+        ("y_axis", vec3_length.clone()),
+        ("z_axis", vec3_length),
+    ];
+
+    for (member, expected_ty) in expected {
+        let cell = params
+            .iter()
+            .find(|vc| vc.id.member == *member)
+            .unwrap_or_else(|| panic!("MaterialFrame missing param '{}'", member));
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "MaterialFrame.{} should be {:?}, got {:?}",
+            member, expected_ty, cell.cell_type
+        );
+    }
+}
+
 // ─── module loads cleanly ────────────────────────────────────────────────────
 
 #[test]
@@ -143,12 +180,31 @@ fn orthotropic_material_has_nine_elastic_constants_plus_density_plus_provenance(
         ("density_provenance", provenance_ty),
     ];
 
-    let expected_names: Vec<&str> = expected.iter().map(|(m, _)| *m).collect();
+    // Set membership: all expected names must be present (order within each
+    // partition is not load-bearing — access is by-name).
+    let expected_name_set: std::collections::HashSet<&str> =
+        expected.iter().map(|(m, _)| *m).collect();
+    let actual_name_set: std::collections::HashSet<&str> = names.iter().copied().collect();
     assert_eq!(
-        names, expected_names,
-        "OrthotropicMaterial params must be in canonical order \
-         (10 physical then 10 provenance), got: {:?}",
+        actual_name_set, expected_name_set,
+        "OrthotropicMaterial params must include all expected names; got: {:?}",
         names
+    );
+
+    // Partition invariant: all *_provenance slots must come after all physical slots.
+    let last_physical = names
+        .iter()
+        .rposition(|n| !n.ends_with("_provenance"))
+        .expect("OrthotropicMaterial should have at least one physical param");
+    let first_provenance = names
+        .iter()
+        .position(|n| n.ends_with("_provenance"))
+        .expect("OrthotropicMaterial should have at least one provenance param");
+    assert!(
+        last_physical < first_provenance,
+        "OrthotropicMaterial: all *_provenance params must come after all physical params; \
+         last physical at index {last_physical}, first provenance at index {first_provenance}; \
+         full order: {names:?}"
     );
 
     for (member, expected_ty) in expected {
@@ -182,24 +238,44 @@ fn transverse_isotropic_material_has_five_elastic_constants_plus_density_plus_pr
         .map(|vc| vc.id.member.as_str())
         .collect();
 
+    // Set membership: all expected names must be present.
+    let expected_name_set: std::collections::HashSet<&str> = [
+        "e_in_plane",
+        "e_axial",
+        "nu_in_plane",
+        "nu_axial",
+        "g_axial",
+        "density",
+        "e_in_plane_provenance",
+        "e_axial_provenance",
+        "nu_in_plane_provenance",
+        "nu_axial_provenance",
+        "g_axial_provenance",
+        "density_provenance",
+    ]
+    .into_iter()
+    .collect();
+    let actual_name_set: std::collections::HashSet<&str> = names.iter().copied().collect();
     assert_eq!(
-        names,
-        vec![
-            "e_in_plane",
-            "e_axial",
-            "nu_in_plane",
-            "nu_axial",
-            "g_axial",
-            "density",
-            "e_in_plane_provenance",
-            "e_axial_provenance",
-            "nu_in_plane_provenance",
-            "nu_axial_provenance",
-            "g_axial_provenance",
-            "density_provenance",
-        ],
-        "TransverseIsotropicMaterial params must be in canonical order \
-         (6 physical then 6 provenance)"
+        actual_name_set, expected_name_set,
+        "TransverseIsotropicMaterial params must include all expected names; got: {:?}",
+        names
+    );
+
+    // Partition invariant: all *_provenance slots must come after all physical slots.
+    let last_physical = names
+        .iter()
+        .rposition(|n| !n.ends_with("_provenance"))
+        .expect("TransverseIsotropicMaterial should have at least one physical param");
+    let first_provenance = names
+        .iter()
+        .position(|n| n.ends_with("_provenance"))
+        .expect("TransverseIsotropicMaterial should have at least one provenance param");
+    assert!(
+        last_physical < first_provenance,
+        "TransverseIsotropicMaterial: all *_provenance params must come after all physical \
+         params; last physical at index {last_physical}, first provenance at index \
+         {first_provenance}; full order: {names:?}"
     );
 }
 
@@ -261,6 +337,90 @@ structure def TestHolder {
         errors.is_empty(),
         "Field<Point3<Length>, AnisotropicMaterial> should resolve in param \
          position (PRD task γ user-observable signal), got errors: {:?}",
+        errors
+    );
+}
+
+// ─── AnisotropicMaterial construction: trait-object coercion probe ───────────
+//
+// Probes that OrthotropicMaterial can be coerced into the `law : ConstitutiveLaw`
+// trait-object slot, and that a MaterialFrame can fill the `frame` slot.
+// Trait-object coercion is the kind of thing that can break silently between
+// releases; it deserves its own probe separate from the bare-orthotropic test.
+
+#[test]
+fn anisotropic_material_construction_compiles() {
+    let source = r#"
+structure def AnisotropicConstructionProbe {
+    let provenance = MaterialPropertyProvenance(source: "test", reference: "test", notes: "test")
+    let ortho_law = OrthotropicMaterial(
+        e1: 200GPa, e2: 100GPa, e3: 100GPa,
+        g12: 50GPa, g13: 50GPa, g23: 40GPa,
+        nu12: 0.3, nu13: 0.3, nu23: 0.3,
+        density: 7850.0 * 1kg / (1m * 1m * 1m),
+        e1_provenance: provenance, e2_provenance: provenance, e3_provenance: provenance,
+        g12_provenance: provenance, g13_provenance: provenance, g23_provenance: provenance,
+        nu12_provenance: provenance, nu13_provenance: provenance, nu23_provenance: provenance,
+        density_provenance: provenance,
+    )
+    let mat_frame = MaterialFrame(
+        origin: point3(0m, 0m, 0m),
+        x_axis: vec3(1m, 0m, 0m),
+        y_axis: vec3(0m, 1m, 0m),
+        z_axis: vec3(0m, 0m, 1m),
+    )
+    let aniso = AnisotropicMaterial(law: ortho_law, frame: mat_frame)
+}
+"#;
+    let result = compile_source_with_stdlib(source);
+    let errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "AnisotropicMaterial(law: OrthotropicMaterial(...), frame: MaterialFrame(...)) \
+         should compile (trait-object coercion probe); got errors: {:?}",
+        errors
+    );
+}
+
+// ─── TransverseIsotropicMaterial construction probe ──────────────────────────
+//
+// The 5-constant FDM-printed-parts path is the docstring's headline story but
+// was previously untested at construction level.
+
+#[test]
+fn transverse_isotropic_material_construction_compiles() {
+    let source = r#"
+structure def TIConstructionProbe {
+    let provenance = MaterialPropertyProvenance(source: "test", reference: "test", notes: "test")
+    let mat = TransverseIsotropicMaterial(
+        e_in_plane: 3.5GPa,
+        e_axial: 7.0GPa,
+        nu_in_plane: 0.35,
+        nu_axial: 0.35,
+        g_axial: 2.5GPa,
+        density: 1300.0 * 1kg / (1m * 1m * 1m),
+        e_in_plane_provenance: provenance,
+        e_axial_provenance: provenance,
+        nu_in_plane_provenance: provenance,
+        nu_axial_provenance: provenance,
+        g_axial_provenance: provenance,
+        density_provenance: provenance,
+    )
+}
+"#;
+    let result = compile_source_with_stdlib(source);
+    let errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "TransverseIsotropicMaterial(...) construction should compile; got errors: {:?}",
         errors
     );
 }
