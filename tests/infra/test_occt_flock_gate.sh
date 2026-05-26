@@ -77,16 +77,18 @@ _LOCK_FILE="$(mktemp)"
 _START_NS="$(date +%s%N)"
 
 # Spawn two concurrent invocations each sleeping 0.4s.
-REIFY_OCCT_LOCK="$_LOCK_FILE" "$WRAPPER" bash -c 'sleep 0.4' &
+# REIFY_OCCT_CONCURRENCY=1 pins N=1 (exclusive mode) so this test remains
+# valid after step-7 flips the default from N=1 to auto-detect.
+REIFY_OCCT_LOCK="$_LOCK_FILE" REIFY_OCCT_CONCURRENCY=1 "$WRAPPER" bash -c 'sleep 0.4' &
 _PID1=$!
-REIFY_OCCT_LOCK="$_LOCK_FILE" "$WRAPPER" bash -c 'sleep 0.4' &
+REIFY_OCCT_LOCK="$_LOCK_FILE" REIFY_OCCT_CONCURRENCY=1 "$WRAPPER" bash -c 'sleep 0.4' &
 _PID2=$!
 wait "$_PID1" "$_PID2"
 
 _END_NS="$(date +%s%N)"
 _ELAPSED_MS=$(( (_END_NS - _START_NS) / 1000000 ))
 
-rm -f "$_LOCK_FILE"
+rm -f "$_LOCK_FILE" "${_LOCK_FILE}.slot-1"
 
 # Parallel would finish in ~400ms; serialized takes >=700ms.
 assert "two 0.4s sleep invocations run serially (elapsed >= 700ms, got ${_ELAPSED_MS}ms)" \
@@ -160,7 +162,8 @@ sleep 0.2  # give the holder time to acquire before we proceed
 
 _START14="$(date +%s)"
 _EXIT14=0
-REIFY_OCCT_LOCK="$_LOCK14" REIFY_OCCT_LOCK_WAIT=1 timeout 5 "$WRAPPER" true 2>"$_ERR14" || _EXIT14=$?
+# REIFY_OCCT_CONCURRENCY=1 pins N=1 so the single holder on slot-1 blocks the wrapper.
+REIFY_OCCT_LOCK="$_LOCK14" REIFY_OCCT_CONCURRENCY=1 REIFY_OCCT_LOCK_WAIT=1 timeout 5 "$WRAPPER" true 2>"$_ERR14" || _EXIT14=$?
 _END14="$(date +%s)"
 _ELAPSED14=$(( _END14 - _START14 ))
 
@@ -197,7 +200,8 @@ sleep 0.2  # give holder time to acquire
 
 _START15="$(date +%s)"
 _EXIT15=0
-REIFY_OCCT_LOCK="$_LOCK15" REIFY_OCCT_LOCK_WAIT=10 REIFY_OCCT_TEST_TIMEOUT=1 \
+# REIFY_OCCT_CONCURRENCY=1 pins N=1 so the single holder on slot-1 blocks the wrapper.
+REIFY_OCCT_LOCK="$_LOCK15" REIFY_OCCT_CONCURRENCY=1 REIFY_OCCT_LOCK_WAIT=10 REIFY_OCCT_TEST_TIMEOUT=1 \
     "$WRAPPER" sleep 5 || _EXIT15=$?
 _END15="$(date +%s)"
 _ELAPSED15=$(( _END15 - _START15 ))
@@ -266,7 +270,8 @@ _EXIT18=0
 # inheritance pattern: the daemon's only link to the lock fd is inheritance
 # from its parent, so a correctly-patched wrapper closes fd 9 before the
 # child exec and the daemon starts life without fd 9.
-REIFY_OCCT_LOCK="$_LOCK18" "$WRAPPER" bash -c '
+# REIFY_OCCT_CONCURRENCY=1 pins N=1 so the slot file is ${_LOCK18}.slot-1.
+REIFY_OCCT_LOCK="$_LOCK18" REIFY_OCCT_CONCURRENCY=1 "$WRAPPER" bash -c '
     setsid bash -c "sleep 30" </dev/null >/dev/null 2>&1 &
     echo $! > "'"$_DAEMON_PID_FILE"'"
     disown
@@ -280,20 +285,20 @@ _DAEMON_PID="$(cat "$_DAEMON_PID_FILE" 2>/dev/null || echo "")"
 assert "Test 18: daemon spawned inside wrapper is still alive after wrapper exits (pid=$_DAEMON_PID)" \
     bash -c "[ -n '$_DAEMON_PID' ] && kill -0 '$_DAEMON_PID' 2>/dev/null"
 
-# After the wrapper returns, the flock must be free: a non-blocking flock
-# attempt on the same lock file must succeed immediately.  If fd 9 had
-# leaked into the surviving daemon, this would fail (lock still held).
+# After the wrapper returns, the slot file flock must be free: a non-blocking
+# flock attempt on ${_LOCK18}.slot-1 must succeed immediately.  If fd 9 had
+# leaked into the surviving daemon, this would fail (slot lock still held).
 _LOCK_FREE18=1
-( flock -n -x 9 || exit 1 ) 9>>"$_LOCK18" || _LOCK_FREE18=0
+( flock -n -x 9 || exit 1 ) 9>>"${_LOCK18}.slot-1" || _LOCK_FREE18=0
 
-assert "Test 18: lock released after wrapper exit despite surviving daemon (fd 9 not inherited)" \
+assert "Test 18: slot-1 lock released after wrapper exit despite surviving daemon (fd 9 not inherited)" \
     test "$_LOCK_FREE18" -eq 1
 
 # Cleanup the surviving daemon.
 if [ -n "$_DAEMON_PID" ]; then
     kill "$_DAEMON_PID" 2>/dev/null || true
 fi
-rm -f "$_LOCK18" "$_DAEMON_PID_FILE"
+rm -f "$_LOCK18" "${_LOCK18}.slot-1" "$_DAEMON_PID_FILE"
 
 assert "Test 18: wrapper exited 0 on successful spawn (got $_EXIT18)" \
     test "$_EXIT18" -eq 0
