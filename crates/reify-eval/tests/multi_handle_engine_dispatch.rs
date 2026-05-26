@@ -15,12 +15,16 @@
 //! `crates/reify-eval/src/engine_build.rs::tests` alongside the existing
 //! `execute_realization_ops_*` unit-test set.
 
-use reify_compiler::compile;
+use reify_compiler::{CompiledGeometryOp, PrimitiveKind, compile};
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::Engine;
 use reify_syntax::parse;
+use reify_test_support::builders::{CompiledModuleBuilder, TopologyTemplateBuilder};
 use reify_test_support::mocks::MockGeometryKernel;
-use reify_types::{ExportFormat, ModulePath, ReprKind};
+use reify_test_support::{
+    MockConstraintChecker, manufacturing_purpose, mm, step_output_template,
+};
+use reify_types::{CompiledExpr, ExportFormat, ModulePath, ReprKind, Type};
 
 /// `Engine::with_registered_kernels(checker)` must build an engine whose
 /// `registered_kernel_names()` set matches the inventory registry: when
@@ -241,6 +245,248 @@ fn executor_writes_produced_repr_brep_on_build_snapshot() {
              ReprKind::BRep at execution time (step-10); got {:?}. If this fires after step-10 \
              lands, check that execute_realization_ops returns the terminal repr and the build/\
              build_snapshot caller writes it back into the realization graph node.",
+            r.produced_repr,
+        );
+    }
+}
+
+/// Build a `MyDesign`-shaped [`reify_compiler::TopologyTemplate`] that carries
+/// a single named realization producing one `Box` primitive op. Mirrors the
+/// private helper of the same name in `tests/tolerance_wiring_e2e.rs` — the
+/// realization id is `(entity = "MyDesign", index = 0)` and the realization's
+/// name is `"body"` so the post-realization `named_steps` map is populated.
+///
+/// Cache-rehit tests need exactly one op (one dispatch on cold path, zero on
+/// the cache-hit short-circuit) so the `last_dispatch_count()` assertion is
+/// unambiguous.
+fn my_design_template_with_box_realization() -> reify_compiler::TopologyTemplate {
+    let mm_lit = |v: f64| CompiledExpr::literal(mm(v), Type::length());
+    let box_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_lit(10.0)),
+            ("height".into(), mm_lit(20.0)),
+            ("depth".into(), mm_lit(5.0)),
+        ],
+    };
+    TopologyTemplateBuilder::new("MyDesign")
+        .param("MyDesign", "thickness", Type::Real, None)
+        .realization_named("MyDesign", 0, "body", vec![box_op])
+        .build()
+}
+
+/// Step-11(a) (task ε / 3436) RED forward-guard: the dispatch-count
+/// instrumentation counter (`Engine::last_dispatch_count()`) must report >0 on
+/// a cold-cache first build (one realization → one op → one `dispatch(...)`
+/// call inside `execute_realization_ops`) and exactly 0 on a second build of
+/// the same module with the same demanded tolerance (cache short-circuit at
+/// the top of `execute_realization_ops` returns BEFORE the per-op loop, so
+/// `dispatch(...)` is never reached).
+///
+/// Setup mirrors the cache-hit fixture in
+/// `tests/tolerance_wiring_e2e.rs::second_build_with_unchanged_purpose_and_module_short_circuits_kernel_via_cache_hit`:
+/// `STEPOutput(1µm)` + `MyDesign` (one Box op named `"body"`) + manufacturing
+/// purpose at 1µm. The first `build()` populates the `RealizationCache` at
+/// `("MyDesign", BRep, 1e-6)`; the second `build()` with the same purpose
+/// re-activated hits the cache and short-circuits the op loop.
+///
+/// Why exactly 0 (not just `<= ops_after_first`)? The cache-hit branch at the
+/// top of `execute_realization_ops` returns BEFORE the `for op in operations`
+/// loop, and the dispatch-count counter is incremented INSIDE that loop. A
+/// cumulative-count regression where the counter doesn't reset at the build
+/// entry would surface as a non-zero second-build value. Pinning `== 0`
+/// rather than just `<` gives precise failure attribution.
+///
+/// RED before step-12 because `last_dispatch_count()` doesn't exist yet.
+/// After step-12 wires the counter increment inside the dispatcher arm and
+/// adds the `#[cfg(any(test, feature = "test-instrumentation"))]` accessor,
+/// the test compiles and passes.
+#[test]
+fn last_dispatch_count_zero_on_cache_hit_second_build() {
+    let module = CompiledModuleBuilder::new(ModulePath::new(vec![
+        "test_last_dispatch_count_zero_on_cache_hit".to_string(),
+    ]))
+    .template(step_output_template(1e-6))
+    .template(my_design_template_with_box_realization())
+    .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
+    .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let _eval = engine.eval(&module);
+    engine.activate_purpose("manufacturing", "MyDesign");
+
+    // First build: cold cache → one dispatch call (one Box op in the
+    // MyDesign realization). STEPOutput has no realization ops.
+    let _build1 = engine.build(&module, ExportFormat::Step);
+    let dispatches_after_first = engine.last_dispatch_count();
+    assert!(
+        dispatches_after_first >= 1,
+        "expected first build() to invoke the dispatcher at least once \
+         (cold cache → realization op loop runs → dispatch(...) called per op); \
+         got last_dispatch_count()={dispatches_after_first}",
+    );
+
+    // Re-activate purpose so the second build's pre-`check()` precompute
+    // sees the same `demanded_tol = Some(1e-6)` that populated the cache
+    // on the first build. Without re-activation eval() clears
+    // `active_purpose_bindings` and the cache lookup at the top of
+    // `execute_realization_ops` would not even fire — defeating the test
+    // premise. (Mirrors the pattern in tolerance_wiring_e2e.rs.)
+    engine.activate_purpose("manufacturing", "MyDesign");
+
+    // Second build: cache-hit short-circuit at the top of
+    // `execute_realization_ops` returns BEFORE the op loop, so the
+    // dispatch counter (incremented inside the loop) reports 0.
+    let _build2 = engine.build(&module, ExportFormat::Step);
+    let dispatches_after_second = engine.last_dispatch_count();
+    assert_eq!(
+        dispatches_after_second, 0,
+        "expected second build() to be served entirely from the RealizationCache: \
+         the cache-hit short-circuit returns before the per-op loop, so the \
+         dispatch counter must reset to 0 at the build entry AND no \
+         dispatch(...) call must fire. Got last_dispatch_count()={dispatches_after_second} \
+         (first build saw {dispatches_after_first}). A nonzero value means either the \
+         counter is not resetting at build() entry, or the cache-hit short-circuit \
+         is bypassed and dispatch(...) is still called per op.",
+    );
+}
+
+/// Step-11(b) (task ε / 3436) RED end-to-end pin: a module with two `Box`
+/// realizations plus a `Union` realization, built through
+/// `Engine::with_registered_kernels(checker)`, must (i) emit geometry output
+/// (proving the inventory-driven multi-handle constructor instantiates the
+/// OCCT adapter and routes per-op dispatch to it) and (ii) write
+/// `produced_repr == ReprKind::BRep` to every realization graph node — most
+/// importantly to the terminal Union realization, since the dispatcher's
+/// `(BooleanUnion, BRep, {BRep})` plan must resolve to the BRep-native OCCT
+/// kernel under the v0.3-ε baseline.
+///
+/// Source shape:
+/// ```ignore
+/// structure S {
+///     let a = box(10mm, 10mm, 10mm)
+///     let b = box(5mm, 5mm, 5mm)
+///     let r = union(a, b)
+/// }
+/// ```
+/// The reify compiler emits one realization per top-level geometry-typed
+/// `let` binding, so this compiles to three realizations: two Box-only
+/// realizations and one Union realization whose ops reference the prior
+/// two via cross-step lookup.
+///
+/// Skipped in stub mode: with `cfg(has_occt)` off `with_registered_kernels`
+/// loads an empty kernel set, so the per-op dispatcher would fail at the
+/// `no_kernel_chain_diagnostic` branch and no STEP would emerge — there is
+/// nothing meaningful to assert. Mirror's the gating pattern in
+/// `tests/kernel_registry_inventory.rs`.
+///
+/// RED today only if the instrumentation accessor in (a) is missing —
+/// otherwise the (b) assertions exercise step-10's already-landed
+/// `produced_repr` write through the inventory-driven kernel path. Pairing
+/// them in the same step-11 RED commit keeps the cache-rehit + end-to-end
+/// signals in a single failing test binary so step-12 can flip them green
+/// together.
+#[test]
+fn with_registered_kernels_end_to_end_two_boxes_plus_union() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping with_registered_kernels_end_to_end_two_boxes_plus_union: \
+             OCCT unavailable (cfg(has_occt) not set — stub-mode build)"
+        );
+        return;
+    }
+
+    let source = r#"structure S {
+    let a = box(10mm, 10mm, 10mm)
+    let b = box(5mm, 5mm, 5mm)
+    let r = union(a, b)
+}"#;
+
+    let parsed = parse(source, ModulePath::single("multi_handle_end_to_end"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let compiled = compile(&parsed);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, reify_types::Severity::Error))
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "compile errors: {compile_errors:?}"
+    );
+
+    // Verify the realization shape pre-build: expect 3 realizations
+    // (two boxes + one union) so the produced_repr assertion below is
+    // unambiguous about WHICH realization carries the Union output.
+    assert_eq!(
+        compiled.templates.len(),
+        1,
+        "expected one structure template"
+    );
+    assert_eq!(
+        compiled.templates[0].realizations.len(),
+        3,
+        "expected three realizations (two Box, one Union); got {}",
+        compiled.templates[0].realizations.len(),
+    );
+
+    let checker = SimpleConstraintChecker;
+    let mut engine = Engine::with_registered_kernels(Box::new(checker));
+
+    // STEP rather than STL: OCCT's `OcctKernelHandle::export` returns
+    // `unsupported export format: Stl` for `ExportFormat::Stl`. STEP is the
+    // only BRep-native export OCCT supports; the round-trip pin needs a
+    // format that actually round-trips.
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, reify_types::Severity::Error))
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "build emitted error diagnostics: {errors:?}"
+    );
+
+    let output = result.geometry_output.expect(
+        "Engine::with_registered_kernels(checker) must instantiate the OCCT adapter and \
+         route the per-op dispatch plan to it; the terminal Union handle must export to \
+         non-empty STEP via the default kernel",
+    );
+    assert!(
+        !output.is_empty(),
+        "STEP geometry_output must be non-empty — empty output indicates the registered \
+         kernel was not actually instantiated or the per-op dispatch routing dropped the \
+         terminal Union handle"
+    );
+
+    // Every realization graph node must carry produced_repr == BRep, written
+    // by step-10's executor-write of `plan_output_repr(plan, op)` for the
+    // (op, BRep) dispatcher plan. Most critically the Union realization
+    // — its terminal op's plan is `(BooleanUnion, BRep, {BRep})` →
+    // BRep-native OCCT kernel under the v0.3-ε baseline.
+    let snap = engine
+        .snapshot()
+        .expect("snapshot must be Some after a successful build()");
+    assert!(
+        !snap.graph.realizations.is_empty(),
+        "expected at least one realization node in the snapshot graph after build()"
+    );
+    for (id, r) in snap.graph.realizations.iter() {
+        assert_eq!(
+            r.produced_repr,
+            ReprKind::BRep,
+            "realization {id:?}: with_registered_kernels build of two-boxes-plus-union must \
+             write ReprKind::BRep (the dispatcher's terminal (op, BRep) plan resolves to \
+             the OCCT adapter for every op under the v0.3-ε baseline); got {:?}",
             r.produced_repr,
         );
     }
