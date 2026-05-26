@@ -85,6 +85,12 @@ pub fn classify_zone(probe: &ZoneProbe, params: &ZoneProcessParams) -> Zone {
             return Zone::Wall;
         }
     }
+    let skin_thickness = params.top_bottom_layers as f64 * params.layer_height;
+    if let Some(d) = probe.min_top_bottom_distance {
+        if d <= skin_thickness {
+            return Zone::Skin;
+        }
+    }
     Zone::Infill
 }
 
