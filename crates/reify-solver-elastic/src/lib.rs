@@ -352,6 +352,7 @@ pub mod elements;
 pub mod error_estimator;
 pub mod geometric_stiffness;
 pub mod interpolation;
+pub mod material_field;
 pub mod math;
 pub mod mesher;
 pub mod mpc;
