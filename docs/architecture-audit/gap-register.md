@@ -629,7 +629,18 @@ Contract document authored 2026-05-12: `docs/prds/v0_3/structure-instance-runtim
 | Blocks tasks | None active — all deferred |
 | Disposition | **accept-and-document — properly deferred v0.5+ work; not active gaps.** These PRDs are honest stubs; their FICTION mechanisms exist because the PRDs are explicitly future-work outlines, not commitments. No remediation needed. |
 | Discovered | 2026-05-12 architecture audit |
-| Notes | Phase-3 synthesis §5g flagged the "additive on top of fictional foundation" framing as worth Leo's awareness: composite-laminated-shells says "through-thickness becomes a sum over plies" but the current through-thickness is analytical closed-form for constant thickness, not a sum-over-anything. If these PRDs activate before v0.5, this disposition needs revisiting. |
+| Notes | Phase-3 synthesis §5g flagged the "additive on top of fictional foundation" framing as worth Leo's awareness: composite-laminated-shells says "through-thickness becomes a sum over plies" but the current through-thickness is analytical closed-form for constant thickness, not a sum-over-anything. If these PRDs activate before v0.5, this disposition needs revisiting — **see Partial activation (2026-05-26) below.** |
+
+#### Partial activation (2026-05-26) — constitutive-law portion promoted to an owned foundation
+
+The anticipated revisit happened. A new program (`docs/prds/v0_5/fdm-as-printed-fea.md`, FEA on the as-printed FDM structure) needs an anisotropic + spatially-varying constitutive law, which is the *same* "Orthotropic constitutive law / MaterialConstitutiveLaw" surface this cluster parked as deferred FICTION. Rather than re-derive it inside the FDM program (and again inside composite-shells), the **3D-solid constitutive core** is factored into a shared upstream foundation: `docs/prds/v0_5/anisotropic-heterogeneous-elastostatics.md` (authored 2026-05-26 via `/prd`, B+H, decompose-ready).
+
+Scope split (resolves the G4 ownership cleanly):
+- **Foundation owns** the `ConstitutiveLaw` trait (the audit's "MaterialConstitutiveLaw abstraction"), `OrthotropicMaterial` / `TransverseIsotropicMaterial`, the 6×6 Voigt frame rotation, per-element spatially-varying assembly, and the generalised `solve_elastic_static.material` argument (`ConstitutiveLaw | Field<Point3, AnisotropicMaterial>`, scalar auto-lift).
+- **`composite-laminated-shells.md` retains** its plane-stress reduction + ply-stack through-thickness integration + composite failure criteria (Tsai-Wu/Hashin) — it now *consumes* the foundation's constitutive surface rather than building orthotropy itself. A companion task (foundation PRD task η) edits the composite-shells "Sketch of approach" accordingly and wires a real cross-PRD dep edge.
+- **`fdm-as-printed-fea.md` consumes** the foundation's `Field<Point3, AnisotropicMaterial>` solver argument.
+
+So this entry's disposition is now **partially active**: the orthotropic/transverse-isotropic *stiffness* surface is owned and tasked (via the foundation PRD's decomposition). The rest of GR-041 — `Laminate`/`Ply`, composite *failure criteria*, `K_g`/buckling eigensolver (GR-024-tracked separately), `linear_taper`/varying-thickness — remains deferred v0.5+ FICTION as before. Foundation prerequisites GR-001 (struct-ctor runtime) and GR-006 (`Field<X,Y>` in param) are both **DONE** (tasks 3540/3542 and 3088/3117 respectively; this register's GR-001/GR-006 State columns are stale and lag the merged tasks).
 
 ### GR-042 — Stdlib doc generator stdlib-page surface absent (cluster C-41)
 
