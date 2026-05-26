@@ -18,6 +18,7 @@ pub mod identity;
 pub mod kernel_validation;
 pub mod node_traits;
 pub mod persistent;
+pub mod primitives;
 pub mod provenance;
 pub mod sampled;
 pub mod source_location;
@@ -81,7 +82,8 @@ pub use source_location::{
 };
 pub use spanned_ident::SpannedIdent;
 pub use structure_registry::{StructureMeta, StructureRegistry, StructureTypeId};
-pub use traits::{EnumDef, PortDirection, TraitBound, TraitDef, TraitMember, TraitRef, TypeParam};
+pub use primitives::PortDirection;
+pub use traits::{EnumDef, TraitBound, TraitDef, TraitMember, TraitRef, TypeParam};
 pub use ty::Type;
 pub use value::{
     DeterminacyState, ErrorRef, EvalError, FieldSourceKind, Freshness, InterpolationKind,
