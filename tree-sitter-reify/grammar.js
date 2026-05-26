@@ -427,7 +427,7 @@ module.exports = grammar({
       'param',
       field('name', $.identifier),
       optional(seq(':', field('type', $.type_expr))),
-      optional(seq('=', field('default', choice($.auto_keyword, $._expression)))),
+      optional(seq('=', field('default', $._binding_value))),
       optional(field('guard', $.where_clause)),
     ),
 
@@ -714,6 +714,24 @@ module.exports = grammar({
       prec.left(1, seq(field('left', $.dimensional_type_expr), field('op', '*'), field('right', $.dimensional_type_expr))),
       prec.left(1, seq(field('left', $.dimensional_type_expr), field('op', '/'), field('right', $.dimensional_type_expr))),
       $.type_expr,
+    ),
+
+    // ── Binding-site value ──────────────────────────────────
+    // Shared value rule for the five binding-site slots:
+    //   param_declaration.default, let_declaration.value,
+    //   param_assignment.value, named_argument.value,
+    //   connect_param_assignment.value.
+    //
+    // Admits an `auto_keyword` (solver-delegated value, strict or free)
+    // OR any `_expression` (ordinary value expression).
+    //
+    // Design invariant: `auto_keyword` is intentionally NOT a member of
+    // `_expression`, so operand positions (arithmetic, function-call args,
+    // constraint bodies, list literals, etc.) reject `auto` as a parse
+    // error once the external scanner reservation lands in step-12.
+    _binding_value: $ => choice(
+      $.auto_keyword,
+      $._expression,
     ),
 
     // ── Expressions ─────────────────────────────────────────
