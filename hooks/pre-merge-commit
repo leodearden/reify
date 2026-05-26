@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Pre-merge-commit hook: gate `git merge` (including --no-ff) into main.
+#
+# pre-commit fires for ordinary commits but NOT for the merge commit created by
+# a clean `git merge` — so without this hook, a --no-ff merge into main bypasses
+# the verification gate entirely. This closes that gap. Auto-active via
+# core.hooksPath=hooks; bypass with `git merge --no-verify`.
+#
+# A merge cannot trust `git diff --cached` (the index is the merge result, not a
+# curated stage), so we verify the full workspace (--scope all). verify.sh also
+# detects MERGE_HEAD and forces --scope all defensively. Worktree branches skip
+# the gate for speed, matching hooks/pre-commit (the orchestrator's task-branch
+# merges are not main and are gated by the orchestrator's own verify).
+
+ROOT="$(git rev-parse --show-toplevel)"
+
+branch="$(git rev-parse --abbrev-ref HEAD)"
+if [ "$branch" != "main" ]; then
+    exit 0
+fi
+
+exec "$ROOT/scripts/verify.sh" all --profile debug --scope all

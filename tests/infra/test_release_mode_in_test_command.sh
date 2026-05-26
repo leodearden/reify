@@ -14,56 +14,57 @@ source "$SCRIPT_DIR/test_helpers.sh"
 
 echo "=== release-mode test_command tests ==="
 
-ORCH="$REPO_ROOT/orchestrator.yaml"
+# Canonical command lists from verify.sh --print-plan (the oracle the
+# orchestrator calls since task 3766), not orchestrator.yaml directly. --scope
+# all forces the full plan; env lines are stripped via `grep -v '^#'`. Both
+# runner spellings (cargo test / cargo nextest run) are accepted — under nextest
+# the UNGATED tail drops `-- --test-threads=1` (nextest isolates per test), while
+# the GATED OCCT passes keep it. So Test 3 below pins single-threaded release to
+# the gated pass, where the OCCT serialization actually matters.
+TEST_PLAN_SEGS="$(bash "$REPO_ROOT/scripts/verify.sh" test --profile both --scope all --print-plan | grep -v '^#')"
+LINT_PLAN_SEGS="$(bash "$REPO_ROOT/scripts/verify.sh" lint --scope all --print-plan | grep -v '^#')"
+export TEST_PLAN_SEGS LINT_PLAN_SEGS
 
 # -- Test 1: release pass exists -----------------------------------------------
 echo ""
-echo "--- Test 1: release pass present in test_command ---"
+echo "--- Test 1: release workspace test pass present in the plan ---"
 
-assert "test_command contains 'cargo test --workspace.*--release'" \
-    bash -c "grep 'test_command:' '$ORCH' | grep -qE 'cargo test --workspace.*--release'"
+assert "plan contains a 'cargo (test|nextest run) --workspace … --release' pass" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'cargo (test|nextest run) --workspace.*--release'"
 
 # -- Test 2: debug pass preserved ----------------------------------------------
 echo ""
-echo "--- Test 2: debug pass preserved in test_command ---"
+echo "--- Test 2: debug (non-release) workspace test pass preserved ---"
 
-assert "test_command contains 'cargo test --workspace.*-- --test-threads=1'" \
-    bash -c "grep 'test_command:' '$ORCH' | grep -qE 'cargo test --workspace.*-- --test-threads=1'"
+assert "plan contains a non-release 'cargo (test|nextest run) --workspace' pass" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -E 'cargo (test|nextest run) --workspace' | grep -vq -- '--release'"
 
-# -- Test 3: release pass uses --test-threads=1 --------------------------------
+# -- Test 3: release OCCT pass uses --test-threads=1 ---------------------------
 echo ""
-echo "--- Test 3: release pass uses --test-threads=1 ---"
+echo "--- Test 3: gated release pass runs single-threaded (--test-threads=1) ---"
 
-assert "test_command contains 'cargo test --workspace.*--release.*-- --test-threads=1'" \
-    bash -c "grep 'test_command:' '$ORCH' | grep -qE 'cargo test --workspace.*--release.*-- --test-threads=1'"
+# Single-threaded release matters for the OCCT-touching crates (shared C++
+# global state); that pass is the flock-gated `cargo test … --release`.
+assert "plan's gated release pass uses '--release -- --test-threads=1'" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep 'cargo-test-occt-gated\.sh' | grep -- '--release' | grep -qE -- '--release -- --test-threads=1'"
 
 # -- Test 4: ordering (release AFTER debug) ------------------------------------
 echo ""
-echo "--- Test 4: release pass appears after debug pass ---"
+echo "--- Test 4: release pass appears after debug pass in the plan ---"
 
-assert "release pass byte position is greater than debug pass byte position" \
+assert "ungated release pass appears after the ungated debug pass" \
     bash -c "
-        LINE=\$(grep 'test_command:' '$ORCH')
-        PAT='cargo test --workspace --exclude'
-        DEBUG_POS=\$(awk 'BEGIN { s=ARGV[1]; p=ARGV[2]; print index(s, p) }' \"\$LINE\" \"\$PAT\")
-        RELEASE_POS=\$(awk 'BEGIN {
-            s=ARGV[1]; p=ARGV[2]
-            first = index(s, p)
-            if (first == 0) { print 0; exit }
-            rest = substr(s, first + length(p))
-            second = index(rest, p)
-            if (second == 0) { print 0; exit }
-            print first + length(p) + second - 1
-        }' \"\$LINE\" \"\$PAT\")
-        [ \"\$DEBUG_POS\" -gt 0 ] && [ \"\$RELEASE_POS\" -gt 0 ] && [ \"\$RELEASE_POS\" -gt \"\$DEBUG_POS\" ]
+        DEBUG_IDX=\$(printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -nE 'cargo (test|nextest run) --workspace' | grep -v -- '--release' | head -1 | cut -d: -f1)
+        RELEASE_IDX=\$(printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -nE 'cargo (test|nextest run) --workspace' | grep -- '--release' | head -1 | cut -d: -f1)
+        [ -n \"\$DEBUG_IDX\" ] && [ -n \"\$RELEASE_IDX\" ] && [ \"\$RELEASE_IDX\" -gt \"\$DEBUG_IDX\" ]
     "
 
-# -- Test 5: release pass NOT in lint_command ----------------------------------
+# -- Test 5: release pass NOT in lint plan -------------------------------------
 echo ""
-echo "--- Test 5: 'cargo test --release' absent from lint_command ---"
+echo "--- Test 5: no release test pass in the lint plan ---"
 
-assert "lint_command does NOT contain 'cargo test --release'" \
-    bash -c "! grep 'lint_command:' '$ORCH' | grep -q 'cargo test --release'"
+assert "lint plan does NOT contain a '--release' test pass" \
+    bash -c "! printf '%s\n' \"\$LINT_PLAN_SEGS\" | grep -qE 'cargo (test|nextest run).*--release'"
 
 # -- Test 6: sanity check — release-only test exists in workspace --------------
 echo ""

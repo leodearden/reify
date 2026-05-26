@@ -1,97 +1,17 @@
 #!/usr/bin/env bash
-# reify project-specific checks (called from pre-commit).
+# reify project-specific checks (called from hooks/pre-commit, main branch only).
+#
+# Thin delegation to scripts/verify.sh — the single source of truth shared with
+# orchestrator.yaml. --scope staged scopes the gate by `git diff --cached`, so a
+# docs-only or empty stage produces an empty plan and exits 0 (the previous
+# "no source changes — skipping" fast path is now subsumed by the scope picker).
+# --profile debug keeps the per-commit gate fast (release coverage is the
+# orchestrator's job — the one deliberate hook↔orchestrator divergence).
+# verify.sh bakes in the cargo env, sccache/jobserver, and OCCT LD_LIBRARY_PATH,
+# so the hook no longer depends on the caller's ambient environment.
+#
 # Receives repo root as $1.
 
 ROOT="${1:?}"
 
-# Skip full project checks if the only staged changes are in non-source paths
-# (e.g. .task/ cleanup).  Only source-file additions/modifications warrant the
-# full lint+test gate.
-source_changes="$(git diff --cached --name-only --diff-filter=ACMR | grep -v '^\.task/')"
-if [ -z "$source_changes" ]; then
-    echo "pre-commit: no source changes staged — skipping project checks."
-    exit 0
-fi
-
-# Ensure cargo and node tooling are on PATH (git hooks get a minimal env).
-[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
-
-echo "pre-commit: linting (main branch)..."
-
-# ── Tree-sitter: regenerate parser from grammar.js ────────────────────
-echo "  tree-sitter: generate"
-if ! "$ROOT/scripts/tree-sitter-generate.sh"; then
-    echo "pre-commit: tree-sitter generate failed."
-    exit 1
-fi
-
-# ── Rust: clippy ──────────────────────────────────────────────────────
-echo "  clippy: workspace"
-if ! cargo clippy --workspace --all-targets --quiet -- -D warnings 2>&1; then
-    echo "pre-commit: cargo clippy failed. Fix lint errors before committing to main."
-    exit 1
-fi
-
-# ── Rust: tests ───────────────────────────────────────────────────────
-echo "  test: workspace"
-if ! cargo test --workspace --quiet 2>&1; then
-    echo "pre-commit: cargo test failed. Fix test failures before committing to main."
-    exit 1
-fi
-
-# ── GUI: verify lockfile integrity + lint + test ─────────────────────
-# package-lock.json is committed — use npm ci for reproducible installs
-if [ -d "$ROOT/gui" ]; then
-    echo "  install: gui"
-    if ! (cd "$ROOT/gui" && npm ci); then
-        echo "pre-commit: npm ci failed in gui/. Check package-lock.json."
-        exit 1
-    fi
-
-    echo "  typecheck: gui"
-    if ! (cd "$ROOT/gui" && npm run typecheck); then
-        echo "pre-commit: npm run typecheck failed in gui/. Fix type errors before committing to main."
-        exit 1
-    fi
-
-    echo "  test: gui"
-    if ! (cd "$ROOT/gui" && npx vitest run --reporter=dot); then
-        echo "pre-commit: vitest failed in gui/. Fix test failures before committing to main."
-        exit 1
-    fi
-fi
-
-# ── GUI sidecar: verify lockfile integrity ───────────────────────────
-if [ -f "$ROOT/gui/sidecar/package-lock.json" ]; then
-    echo "  install: gui/sidecar"
-    if ! (cd "$ROOT/gui/sidecar" && npm ci); then
-        echo "pre-commit: npm ci failed in gui/sidecar/. Check package-lock.json."
-        exit 1
-    fi
-
-    # Both typecheck (prod-only tsconfig) and typecheck:test (superset tsconfig)
-    # run intentionally: together they give per-scope error attribution and mirror
-    # the orchestrator.yaml lint_command, matching the gui/ precedent.
-    echo "  typecheck: gui/sidecar"
-    if ! (cd "$ROOT/gui/sidecar" && npm run typecheck); then
-        echo "pre-commit: npm run typecheck failed in gui/sidecar/. Fix type errors before committing to main."
-        exit 1
-    fi
-
-    echo "  typecheck:test: gui/sidecar"
-    if ! (cd "$ROOT/gui/sidecar" && npm run typecheck:test); then
-        echo "pre-commit: npm run typecheck:test failed in gui/sidecar/. Fix type errors in test files before committing to main."
-        exit 1
-    fi
-fi
-
-# ── tree-sitter-reify: verify lockfile integrity ────────────────────
-if [ -f "$ROOT/tree-sitter-reify/package-lock.json" ]; then
-    echo "  install: tree-sitter-reify"
-    if ! (cd "$ROOT/tree-sitter-reify" && npm ci); then
-        echo "pre-commit: npm ci failed in tree-sitter-reify/. Check package-lock.json."
-        exit 1
-    fi
-fi
-
-echo "pre-commit: all checks passed."
+exec "$ROOT/scripts/verify.sh" all --profile debug --scope staged --include-infra

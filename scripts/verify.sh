@@ -1,0 +1,402 @@
+#!/usr/bin/env bash
+# scripts/verify.sh — unified verification entrypoint for Reify.
+#
+# Single source of truth shared by BOTH:
+#   - orchestrator.yaml  (test_command / lint_command / type_check_command)
+#   - hooks/project-checks + hooks/pre-merge-commit  (main-branch git gate)
+# so the two can no longer drift apart.
+#
+# Usage:
+#   verify.sh <test|lint|typecheck|all> [options]
+#
+# Options:
+#   --profile debug|release|both   Which build profile(s) to TEST. Default: debug.
+#                                  Ignored by lint/typecheck (single pass each).
+#                                  'both' runs debug then release test passes.
+#   --scope   all|staged           all     = verify everything (orchestrator / merges).
+#                                  staged  = scope by `git diff --cached` (hook fast path).
+#                                  Default: all.
+#   --include-infra                Also run the cheap static infra checks
+#                                  (sync_comments / run_all on the test side;
+#                                  pm-standardization / event-inventory on the lint side).
+#   --print-plan                   Dry run: build the exact ordered command list and
+#                                  print it (shell-quoted, one command per line, env as
+#                                  '# ' comments), then exit 0 WITHOUT running anything.
+#                                  This is a faithful oracle of what a real run executes:
+#                                  the command list is built once and only the leaf
+#                                  step (print vs eval) branches on --print-plan.
+#   -h|--help                      Show usage.
+#
+# Environment baked in (mirrors orchestrator.yaml verify_env + .cargo/run-with-occt.sh):
+#   - . ~/.cargo/env
+#   - RUSTC_WRAPPER=sccache, CARGO_INCREMENTAL=0  (sccache cache shared across worktrees)
+#   - CARGO_MAKEFLAGS=--jobserver-auth=fifo:/tmp/reify-jobserver  ONLY when that FIFO
+#     exists (else cargo uses its own per-process job pool). This is a COMPILE-time
+#     concurrency control; OCCT TEST-execution serialization is a separate mechanism
+#     (the flock wrapper + --test-threads=1 below).
+#   - OCCT LD_LIBRARY_PATH (snap + /opt/reify-deps). The .cargo/config.toml `runner`
+#     remains the primary runtime-lib mechanism for `cargo test`/`cargo run`; this is
+#     belt-and-braces for contexts the runner does not cover.
+#
+# OCCT safety:
+#   OCCT shares hidden C++ global state. Cross-PROCESS contention (concurrent worktrees)
+#   is bounded by scripts/cargo-test-occt-gated.sh (an exclusive flock); intra-process
+#   contention is bounded by `-- --test-threads=1`. The OCCT-touching crate set is
+#   defined exactly once in scripts/occt-scope-lib.sh and shared with the drift test.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Shared OCCT-scope logic (occt_declared_set / occt_touching_set).
+if [ ! -f "$SCRIPT_DIR/occt-scope-lib.sh" ]; then
+    echo "verify.sh: ERROR — scripts/occt-scope-lib.sh not found next to verify.sh" >&2
+    exit 1
+fi
+# shellcheck source=scripts/occt-scope-lib.sh
+source "$SCRIPT_DIR/occt-scope-lib.sh"
+
+usage() {
+    sed -n '2,46p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+}
+
+# ---------------------------------------------------------------------------
+# Argument parsing
+# ---------------------------------------------------------------------------
+ACTION=""
+PROFILE="debug"
+SCOPE="all"
+INCLUDE_INFRA=0
+PRINT_PLAN=0
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        test|lint|typecheck|all)
+            if [ -n "$ACTION" ]; then
+                echo "verify.sh: ERROR — action already set to '$ACTION', got '$1'" >&2
+                exit 64
+            fi
+            ACTION="$1"; shift ;;
+        --profile)
+            PROFILE="${2:?--profile requires an argument}"; shift 2 ;;
+        --profile=*)
+            PROFILE="${1#*=}"; shift ;;
+        --scope)
+            SCOPE="${2:?--scope requires an argument}"; shift 2 ;;
+        --scope=*)
+            SCOPE="${1#*=}"; shift ;;
+        --include-infra)
+            INCLUDE_INFRA=1; shift ;;
+        --print-plan)
+            PRINT_PLAN=1; shift ;;
+        -h|--help)
+            usage; exit 0 ;;
+        *)
+            echo "verify.sh: ERROR — unknown argument '$1'" >&2
+            usage >&2
+            exit 64 ;;
+    esac
+done
+
+if [ -z "$ACTION" ]; then
+    echo "verify.sh: ERROR — missing action (test|lint|typecheck|all)" >&2
+    usage >&2
+    exit 64
+fi
+case "$PROFILE" in debug|release|both) ;; *)
+    echo "verify.sh: ERROR — invalid --profile '$PROFILE' (want debug|release|both)" >&2; exit 64 ;;
+esac
+case "$SCOPE" in all|staged) ;; *)
+    echo "verify.sh: ERROR — invalid --scope '$SCOPE' (want all|staged)" >&2; exit 64 ;;
+esac
+
+# A merge in progress cannot trust `git diff --cached` (the index reflects the
+# merge result, not a curated stage), so force a full verification. Detected via
+# the git-dir-relative MERGE_HEAD so it works correctly inside linked worktrees.
+_MERGE_HEAD="$(git -C "$REPO_ROOT" rev-parse --git-path MERGE_HEAD 2>/dev/null || echo '')"
+if [ -n "$_MERGE_HEAD" ] && [ -f "$_MERGE_HEAD" ] && [ "$SCOPE" = "staged" ]; then
+    echo "verify.sh: MERGE_HEAD present — forcing --scope all (merge index is not a curated stage)" >&2
+    SCOPE="all"
+fi
+
+# Run all relative-path commands from the repo root, matching how both the
+# orchestrator (project_root) and the git hook ($ROOT) invoke verification.
+cd "$REPO_ROOT"
+
+# Action → which check families run.
+case "$ACTION" in
+    test)      DO_TEST=1; DO_LINT=0; DO_TYPECHECK=0 ;;
+    lint)      DO_TEST=0; DO_LINT=1; DO_TYPECHECK=0 ;;
+    typecheck) DO_TEST=0; DO_LINT=0; DO_TYPECHECK=1 ;;
+    all)       DO_TEST=1; DO_LINT=1; DO_TYPECHECK=1 ;;
+esac
+
+# Profiles to TEST.
+case "$PROFILE" in
+    debug)   PROFILES=(debug) ;;
+    release) PROFILES=(release) ;;
+    both)    PROFILES=(debug release) ;;
+esac
+
+# ---------------------------------------------------------------------------
+# Environment (process-level; inherited by every command in the plan)
+# ---------------------------------------------------------------------------
+ENV_LINES=()
+apply_env() {
+    if [ -f "$HOME/.cargo/env" ]; then
+        # shellcheck disable=SC1091
+        . "$HOME/.cargo/env"
+        ENV_LINES+=(". $HOME/.cargo/env")
+    else
+        ENV_LINES+=("# ~/.cargo/env not found — relying on ambient PATH for cargo")
+    fi
+
+    export RUSTC_WRAPPER=sccache
+    ENV_LINES+=("export RUSTC_WRAPPER=sccache")
+    export CARGO_INCREMENTAL=0
+    ENV_LINES+=("export CARGO_INCREMENTAL=0")
+
+    # Inherit the shared global jobserver ONLY when its FIFO exists; otherwise
+    # leave CARGO_MAKEFLAGS unset so cargo manages its own job pool. Exporting a
+    # stale fifo path when reify-jobserver.service is down would wedge cargo.
+    if [ -p /tmp/reify-jobserver ]; then
+        export CARGO_MAKEFLAGS="--jobserver-auth=fifo:/tmp/reify-jobserver"
+        ENV_LINES+=("export CARGO_MAKEFLAGS=--jobserver-auth=fifo:/tmp/reify-jobserver")
+    else
+        ENV_LINES+=("# CARGO_MAKEFLAGS left unset (no /tmp/reify-jobserver FIFO) — cargo uses its own job pool")
+    fi
+
+    # OCCT shared-library search path (mirrors .cargo/run-with-occt.sh).
+    local snap_lib="/snap/freecad/current/usr/lib"
+    if [ -d "$snap_lib" ]; then
+        export LD_LIBRARY_PATH="$snap_lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    fi
+    local deps_lib="/opt/reify-deps/lib"
+    if [ -d "$deps_lib" ] && ls "$deps_lib"/libTKernel.so* >/dev/null 2>&1; then
+        export LD_LIBRARY_PATH="$deps_lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    fi
+    ENV_LINES+=("export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}")
+}
+apply_env
+
+# ---------------------------------------------------------------------------
+# Scope decision: RUN_RUST / RUN_GUI / RUN_OCCT_GATE
+# ---------------------------------------------------------------------------
+RUN_RUST=0
+RUN_GUI=0
+RUN_OCCT_GATE=0
+
+# is_occt_crate <crate-name> — true iff the crate is in the declared OCCT set.
+_OCCT_DECLARED="$(occt_declared_set)"
+is_occt_crate() {
+    grep -qxF "$1" <<<"$_OCCT_DECLARED"
+}
+
+decide_scope() {
+    if [ "$SCOPE" = "all" ]; then
+        RUN_RUST=1; RUN_GUI=1; RUN_OCCT_GATE=1
+        return
+    fi
+
+    # --scope staged: classify staged files (added/copied/modified/renamed),
+    # ignoring the agent scratch dir. Map each path to its impact:
+    #   rust+gui+gate   workspace-global or OCCT-touching crate change
+    #   rust+gui        a non-OCCT Rust crate / Tauri crate change (Rust ⊇ GUI)
+    #   gui             frontend-only TS change (Rust ⊥ GUI)
+    #   ignore          docs / markdown / yaml config
+    #   conservative    anything unrecognised -> treat as rust+gui+gate
+    local rust=0 gui=0 gate=0 f crate
+    while IFS= read -r f; do
+        [ -z "$f" ] && continue
+        case "$f" in
+            crates/*)
+                rust=1; gui=1
+                crate="${f#crates/}"; crate="${crate%%/*}"
+                if is_occt_crate "$crate"; then gate=1; fi
+                ;;
+            gui/src-tauri/*)
+                # The Tauri Rust crate (reify-gui) is OCCT-clean by default features.
+                rust=1; gui=1
+                ;;
+            Cargo.toml|Cargo.lock|.cargo/*)
+                # Workspace-global: can affect any crate, including OCCT ones.
+                rust=1; gui=1; gate=1
+                ;;
+            tree-sitter-reify/*)
+                # Grammar drives the generated parser consumed by reify-eval (OCCT).
+                rust=1; gui=1; gate=1
+                ;;
+            gui/*)
+                # Any other GUI path (frontend src, sidecar, configs) — GUI only.
+                gui=1
+                ;;
+            docs/*|*.md|*.yaml|*.yml)
+                : # no heavy checks
+                ;;
+            *)
+                # Unrecognised path: be conservative.
+                rust=1; gui=1; gate=1
+                ;;
+        esac
+    done < <(git -C "$REPO_ROOT" diff --cached --name-only --diff-filter=ACMR | grep -v '^\.task/' || true)
+
+    RUN_RUST=$rust
+    # Any Rust change implies the (fast) GUI checks too.
+    RUN_GUI=$(( rust | gui ))
+    RUN_OCCT_GATE=$gate
+}
+decide_scope
+
+# ---------------------------------------------------------------------------
+# Plan construction (built ONCE; print vs execute branches only at the leaves)
+# ---------------------------------------------------------------------------
+PLAN=()
+add() { PLAN+=("$1"); }
+
+# OCCT crate flags, in occt-touching-crates.txt order.
+_OCCT_CRATES=()
+while IFS= read -r _c; do [ -n "$_c" ] && _OCCT_CRATES+=("$_c"); done <<<"$_OCCT_DECLARED"
+P_FLAGS=""
+EXCLUDE_FLAGS=""
+for _c in "${_OCCT_CRATES[@]}"; do
+    P_FLAGS+=" -p $_c"
+    EXCLUDE_FLAGS+=" --exclude $_c"
+done
+P_FLAGS="${P_FLAGS# }"
+EXCLUDE_FLAGS="${EXCLUDE_FLAGS# }"
+
+# Ungated tail runner: prefer cargo-nextest (one global pool over ~hundreds of
+# test binaries) with a graceful fallback to plain `cargo test` when nextest is
+# not installed. OCCT crates are excluded from this pass (they run gated).
+NEXTEST=0
+if cargo nextest --version >/dev/null 2>&1; then
+    NEXTEST=1
+fi
+
+# wrap_subshell <dir> <minutes> <inner> — "(cd DIR && timeout … INNER)", using
+# `bash -c '…'` only when INNER is a compound (&&) so the timeout governs it.
+wrap_subshell() {
+    local dir="$1" mins="$2" inner="$3"
+    case "$inner" in
+        *"&&"*)
+            printf '(cd %s && timeout --kill-after=60 %sm bash -c '\''%s'\'')' "$dir" "$mins" "$inner" ;;
+        *)
+            printf '(cd %s && timeout --kill-after=60 %sm %s)' "$dir" "$mins" "$inner" ;;
+    esac
+}
+
+add_test_passes() {
+    local profile rel gated_timeout outer_timeout ungated
+    for profile in "${PROFILES[@]}"; do
+        if [ "$profile" = "release" ]; then
+            rel=" --release"; gated_timeout=3600; outer_timeout="45m"
+        else
+            rel=""; gated_timeout=2700; outer_timeout="30m"
+        fi
+
+        # Gated pass: OCCT-touching crates, serialized via the flock wrapper,
+        # single-threaded. No outer timeout — the wrapper owns it via
+        # REIFY_OCCT_TEST_TIMEOUT (lock-wait time does not consume the budget).
+        if [ "$RUN_OCCT_GATE" -eq 1 ]; then
+            add "REIFY_OCCT_TEST_TIMEOUT=${gated_timeout} ./scripts/cargo-test-occt-gated.sh cargo test ${P_FLAGS}${rel} -- --test-threads=1"
+        fi
+
+        # Ungated tail: everything except the OCCT crates, full concurrency.
+        if [ "$NEXTEST" -eq 1 ]; then
+            ungated="timeout --kill-after=60 ${outer_timeout} cargo nextest run --workspace ${EXCLUDE_FLAGS}${rel}"
+        else
+            ungated="timeout --kill-after=60 ${outer_timeout} cargo test --workspace ${EXCLUDE_FLAGS}${rel} -- --test-threads=1"
+        fi
+        add "$ungated"
+    done
+}
+
+build_plan() {
+    # tree-sitter parser regeneration is a Rust-build prerequisite.
+    if [ "$RUN_RUST" -eq 1 ]; then
+        add "./scripts/tree-sitter-generate.sh"
+    fi
+
+    # typecheck (cargo check) only when NOT also linting — clippy --all-targets
+    # is a strict superset of `cargo check`, so running both would be redundant.
+    if [ "$DO_TYPECHECK" -eq 1 ] && [ "$DO_LINT" -eq 0 ] && [ "$RUN_RUST" -eq 1 ]; then
+        add "timeout --kill-after=60 20m cargo check --workspace"
+    fi
+
+    # lint: clippy over all targets, warnings-as-errors.
+    if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
+        add "timeout --kill-after=60 30m cargo clippy --workspace --all-targets -- -D warnings"
+    fi
+
+    # test: gated + ungated cargo passes, per profile.
+    if [ "$DO_TEST" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
+        add_test_passes
+    fi
+
+    # GUI ecosystem (npm). Rust changes imply these too; they are fast. Only
+    # meaningful when there is a GUI check to run — the GUI has a test side
+    # (npm test) and a lint side (npm run typecheck) but no `cargo check`
+    # analogue, so a pure typecheck action skips it entirely (matching the
+    # orchestrator's cargo-check-only type_check_command).
+    if [ "$RUN_GUI" -eq 1 ] && { [ "$DO_TEST" -eq 1 ] || [ "$DO_LINT" -eq 1 ]; }; then
+        local gui_inner="npm ci"
+        [ "$DO_LINT" -eq 1 ] && gui_inner+=" && npm run typecheck"
+        [ "$DO_TEST" -eq 1 ] && gui_inner+=" && npm test"
+        add "if test -d gui; then $(wrap_subshell gui 15 "$gui_inner"); fi"
+
+        local sidecar_inner="npm ci"
+        [ "$DO_LINT" -eq 1 ] && sidecar_inner+=" && npm run typecheck && npm run typecheck:test"
+        add "if test -f gui/sidecar/package-lock.json; then $(wrap_subshell gui/sidecar 10 "$sidecar_inner"); fi"
+
+        add "if test -f tree-sitter-reify/package-lock.json; then $(wrap_subshell tree-sitter-reify 10 "npm ci"); fi"
+    fi
+
+    # Cheap static infra checks (opt-in). Test-side and lint-side, mirroring the
+    # historical orchestrator split. Tied to RUN_RUST (the heavy gate) so a
+    # frontend-only or docs-only staged commit stays fast.
+    if [ "$INCLUDE_INFRA" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
+        if [ "$DO_TEST" -eq 1 ]; then
+            add "if test -f tests/sync_comments_test.sh; then timeout --kill-after=60 10m bash tests/sync_comments_test.sh; else echo 'WARNING: sync_comments_test.sh not found, skipping'; fi"
+            add "if test -f tests/infra/run_all.sh; then timeout --kill-after=60 20m bash tests/infra/run_all.sh; fi"
+        fi
+        if [ "$DO_LINT" -eq 1 ]; then
+            add "if test -f scripts/test_pm_standardization.sh; then timeout --kill-after=60 10m bash scripts/test_pm_standardization.sh; else echo 'WARNING: test_pm_standardization.sh not found, skipping'; fi"
+            add "if test -f scripts/check_event_inventory.sh; then timeout --kill-after=60 5m bash scripts/check_event_inventory.sh; else echo 'WARNING: check_event_inventory.sh not found, skipping'; fi"
+        fi
+    fi
+}
+build_plan
+
+# ---------------------------------------------------------------------------
+# Emit: print the plan (oracle) or execute it (&& semantics)
+# ---------------------------------------------------------------------------
+if [ "$PRINT_PLAN" -eq 1 ]; then
+    echo "# verify.sh plan — action=$ACTION profile=$PROFILE scope=$SCOPE include_infra=$INCLUDE_INFRA nextest=$NEXTEST"
+    echo "# scope decision — RUN_RUST=$RUN_RUST RUN_GUI=$RUN_GUI RUN_OCCT_GATE=$RUN_OCCT_GATE"
+    echo "# --- environment (process-level; inherited by every command below) ---"
+    for _e in "${ENV_LINES[@]}"; do echo "# $_e"; done
+    echo "# --- commands (executed in order; '&&' semantics — stop on first failure) ---"
+    if [ "${#PLAN[@]}" -eq 0 ]; then
+        echo "# (no commands — nothing to verify for this action/scope)"
+    fi
+    for _cmd in "${PLAN[@]+"${PLAN[@]}"}"; do
+        printf '%s\n' "$_cmd"
+    done
+    exit 0
+fi
+
+if [ "${#PLAN[@]}" -eq 0 ]; then
+    echo "verify.sh: nothing to verify (action=$ACTION scope=$SCOPE) — no commands in plan." >&2
+    exit 0
+fi
+
+for _cmd in "${PLAN[@]}"; do
+    echo "verify.sh: + $_cmd" >&2
+    eval "$_cmd" || {
+        _rc=$?
+        echo "verify.sh: FAILED (exit $_rc): $_cmd" >&2
+        exit "$_rc"
+    }
+done
+echo "verify.sh: all checks passed (action=$ACTION profile=$PROFILE scope=$SCOPE)." >&2

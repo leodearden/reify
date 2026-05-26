@@ -105,42 +105,44 @@ assert "wrapper exit code is 42 (got $_EC)" \
     test "$_EC" -eq 42
 
 
-# -- Orchestrator integration tests --------------------------------------------
-ORCH="$REPO_ROOT/orchestrator.yaml"
+# -- verify.sh plan integration tests ------------------------------------------
+# These formerly grepped orchestrator.yaml's test_command. Since task 3766 the
+# orchestrator calls scripts/verify.sh, so the canonical command list is taken
+# from verify.sh --print-plan (--scope all → full plan, index-independent; env
+# lines stripped via `grep -v '^#'`). The gated passes are plain `cargo test`
+# under the flock wrapper regardless of the nextest/cargo-test choice for the
+# ungated tail, so the gated assertions below stay exact-match.
+TEST_PLAN_SEGS="$(bash "$REPO_ROOT/scripts/verify.sh" test --profile both --scope all --print-plan | grep -v '^#')"
+export TEST_PLAN_SEGS
 
 echo ""
 echo "--- Test 10: debug pass is gated by cargo-test-occt-gated.sh ---"
 
-assert "test_command contains gated debug pass with -p reify-kernel-occt" \
-    bash -c "grep 'test_command:' '$ORCH' | grep -qF './scripts/cargo-test-occt-gated.sh cargo test -p reify-kernel-occt -p reify-eval -p reify-cli -p reify-config -- --test-threads=1'"
+assert "plan contains gated debug pass with -p reify-kernel-occt" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qF './scripts/cargo-test-occt-gated.sh cargo test -p reify-kernel-occt -p reify-eval -p reify-cli -p reify-config -- --test-threads=1'"
 
 echo ""
 echo "--- Test 11: release pass is gated by cargo-test-occt-gated.sh ---"
 
-assert "test_command contains gated release pass with -p reify-kernel-occt" \
-    bash -c "grep 'test_command:' '$ORCH' | grep -qF './scripts/cargo-test-occt-gated.sh cargo test -p reify-kernel-occt -p reify-eval -p reify-cli -p reify-config --release -- --test-threads=1'"
+assert "plan contains gated release pass with -p reify-kernel-occt" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qF './scripts/cargo-test-occt-gated.sh cargo test -p reify-kernel-occt -p reify-eval -p reify-cli -p reify-config --release -- --test-threads=1'"
 
 echo ""
-echo "--- Test 12: no bare ungated 'cargo test --workspace' in test_command ---"
+echo "--- Test 12: no bare ungated workspace pass (every --workspace leaf has --exclude) ---"
 
-# Allowed forms after task 2000:
-#   (a) Gated: cargo-test-occt-gated.sh cargo test -p ...  (no --workspace)
-#   (b) Ungated with --exclude: cargo test --workspace --exclude ... (intentional)
-# Forbidden form: bare 'cargo test --workspace' without any --exclude flags.
-# Strip the allowed ungated-with-exclude form, then assert none remains.
-assert "no bare 'cargo test --workspace' without --exclude in test_command" \
-    bash -c "
-        LINE=\$(grep 'test_command:' '$ORCH')
-        # Remove allowed ungated-with-exclude occurrences.
-        STRIPPED=\$(echo \"\$LINE\" | sed 's|cargo test --workspace --exclude[^&]*||g')
-        ! echo \"\$STRIPPED\" | grep -q 'cargo test --workspace'
-    "
+# Allowed forms:
+#   (a) Gated:   cargo-test-occt-gated.sh cargo test -p ...  (no --workspace)
+#   (b) Ungated: cargo (test|nextest run) --workspace --exclude ... (intentional)
+# Forbidden: a bare workspace pass without any --exclude flags. Accept both
+# runner spellings so the assertion is valid whether or not nextest is installed.
+assert "no bare workspace test pass without --exclude in the plan" \
+    bash -c "! printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -E 'cargo (test|nextest run) --workspace' | grep -vq -- '--exclude'"
 
 echo ""
 echo "--- Test 13: --workspace flag preserved under gate (coverage assertion) ---"
 
 assert "gated debug invocation contains '-p reify-kernel-occt'" \
-    bash -c "grep 'test_command:' '$ORCH' | grep -qF 'cargo-test-occt-gated.sh cargo test -p reify-kernel-occt'"
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qF 'cargo-test-occt-gated.sh cargo test -p reify-kernel-occt'"
 
 # -- Test 14: bounded lock-wait exits non-zero with clear message ---------------
 echo ""
@@ -227,21 +229,21 @@ assert "Test 16: stderr contains log line with 'acquired', 'OCCT lock', and nume
 
 rm -f "$_LOCK16" "$_ERR16"
 
-# -- Test 17: orchestrator.yaml no longer wraps gated invocations with outer timeout -
+# -- Test 17: gated invocations delegate the timeout to the wrapper -------------
 echo ""
-echo "--- Test 17: orchestrator.yaml delegates timeout to wrapper via REIFY_OCCT_TEST_TIMEOUT ---"
+echo "--- Test 17: plan delegates timeout to wrapper via REIFY_OCCT_TEST_TIMEOUT (no outer timeout on gated) ---"
 
-assert "Test 17: no outer 'timeout --kill-after=N Nm ./scripts/cargo-test-occt-gated' remains in test_command" \
-    bash -c "LINE=\$(grep 'test_command:' '$ORCH'); ! echo \"\$LINE\" | grep -qE 'timeout[[:space:]]+--kill-after=[0-9]+[[:space:]]+[0-9]+[smhd][[:space:]]+[./]*scripts/cargo-test-occt-gated'"
+assert "Test 17: no outer 'timeout --kill-after=N Nm ./scripts/cargo-test-occt-gated' in the plan" \
+    bash -c "! printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'timeout[[:space:]]+--kill-after=[0-9]+[[:space:]]+[0-9]+[smhd][[:space:]]+[./]*scripts/cargo-test-occt-gated'"
 
-assert "Test 17: REIFY_OCCT_TEST_TIMEOUT= appears exactly twice in test_command (once per gated invocation)" \
-    bash -c "[ \"\$(grep 'test_command:' '$ORCH' | grep -oF 'REIFY_OCCT_TEST_TIMEOUT=' | wc -l | tr -d ' ')\" -eq 2 ]"
+assert "Test 17: REIFY_OCCT_TEST_TIMEOUT= appears exactly twice in the plan (once per gated invocation)" \
+    bash -c "[ \"\$(printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -oF 'REIFY_OCCT_TEST_TIMEOUT=' | wc -l | tr -d ' ')\" -eq 2 ]"
 
 assert "Test 17: debug invocation sets REIFY_OCCT_TEST_TIMEOUT=2700" \
-    bash -c "grep 'test_command:' '$ORCH' | grep -qF 'REIFY_OCCT_TEST_TIMEOUT=2700 ./scripts/cargo-test-occt-gated.sh cargo test -p reify-kernel-occt'"
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qF 'REIFY_OCCT_TEST_TIMEOUT=2700 ./scripts/cargo-test-occt-gated.sh cargo test -p reify-kernel-occt'"
 
 assert "Test 17: release invocation sets REIFY_OCCT_TEST_TIMEOUT=3600" \
-    bash -c "grep 'test_command:' '$ORCH' | grep -qF 'REIFY_OCCT_TEST_TIMEOUT=3600 ./scripts/cargo-test-occt-gated.sh cargo test -p reify-kernel-occt -p reify-eval -p reify-cli -p reify-config --release'"
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qF 'REIFY_OCCT_TEST_TIMEOUT=3600 ./scripts/cargo-test-occt-gated.sh cargo test -p reify-kernel-occt -p reify-eval -p reify-cli -p reify-config --release'"
 
 # -- Test 18: wrapper does not leak the lock fd into background daemons --------
 # Regression test for the 2026-04-20 merge-queue wedge: sccache (spawned as a

@@ -13,36 +13,46 @@ source "$SCRIPT_DIR/test_helpers.sh"
 
 echo "=== typecheck invocation alignment tests ==="
 
-HOOK="$REPO_ROOT/hooks/project-checks"
-ORCH="$REPO_ROOT/orchestrator.yaml"
 PKG="$REPO_ROOT/gui/package.json"
 
-# -- Test 1: hooks/project-checks uses npm run typecheck ----------------------
+# Since task 3766 both the hook and the orchestrator run scripts/verify.sh, so
+# the typecheck invocation is asserted against verify.sh --print-plan (the
+# single source), not the hook/orchestrator literals. These assertions are
+# invariant across the hook/orchestrator flip — they reference only verify.sh.
+# --scope all forces the full plan; env lines stripped via `grep -v '^#'`.
+LINT_PLAN_SEGS="$(bash "$REPO_ROOT/scripts/verify.sh" lint --scope all --include-infra --print-plan | grep -v '^#')"
+TEST_PLAN_SEGS="$(bash "$REPO_ROOT/scripts/verify.sh" test --profile debug --scope all --include-infra --print-plan | grep -v '^#')"
+export LINT_PLAN_SEGS TEST_PLAN_SEGS
+
+# -- Test 1: typecheck uses 'npm run typecheck', not raw 'npx tsc --noEmit' ----
 echo ""
-echo "--- Test 1: hooks/project-checks uses npm run typecheck ---"
+echo "--- Test 1: lint plan uses npm run typecheck (not npx tsc --noEmit) ---"
 
-assert "hooks/project-checks contains 'npm run typecheck'" \
-    bash -c "grep -q 'npm run typecheck' '$HOOK'"
+assert "lint plan contains 'npm run typecheck'" \
+    bash -c "printf '%s\n' \"\$LINT_PLAN_SEGS\" | grep -q 'npm run typecheck'"
 
-assert "hooks/project-checks does NOT contain 'npx tsc --noEmit'" \
-    bash -c "! grep -q 'npx tsc --noEmit' '$HOOK'"
+assert "lint plan does NOT contain raw 'npx tsc --noEmit'" \
+    bash -c "! printf '%s\n' \"\$LINT_PLAN_SEGS\" | grep -q 'npx tsc --noEmit'"
 
-# -- Test 2: error message is aligned with new invocation ---------------------
+# -- Test 2: gui tests run via 'npm test' (fires pretest=build:grammar) --------
 echo ""
-echo "--- Test 2: error message references npm run typecheck, not tsc --noEmit ---"
+echo "--- Test 2: test plan runs gui via 'npm test' not 'npx vitest run' ---"
 
-assert "hook error message does NOT mention 'tsc --noEmit'" \
-    bash -c "! grep -q 'tsc --noEmit failed' '$HOOK'"
+# Task 3766 deliverable: the hook formerly ran `npx vitest run`, which skips the
+# pretest=build:grammar lezer codegen and lets grammar drift go uncaught. The
+# unified plan runs `npm test`, which fires the pretest hook.
+assert "test plan gui block runs 'npm test'" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -q 'cd gui &&' && printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -q 'npm test'"
 
-assert "hook error message mentions 'npm run typecheck failed'" \
-    bash -c "grep -q 'npm run typecheck failed' '$HOOK'"
+assert "test plan does NOT run 'npx vitest run' (the pretest bypass)" \
+    bash -c "! printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -q 'npx vitest'"
 
-# -- Test 3: orchestrator.yaml lint_command already uses npm run typecheck ----
+# -- Test 3: sidecar typecheck:test preserved in the lint plan -----------------
 echo ""
-echo "--- Test 3: orchestrator.yaml lint_command uses npm run typecheck ---"
+echo "--- Test 3: lint plan keeps sidecar 'npm run typecheck:test' ---"
 
-assert "orchestrator.yaml lint_command contains 'npm run typecheck'" \
-    bash -c "grep 'lint_command:' '$ORCH' | grep -q 'npm run typecheck'"
+assert "lint plan contains sidecar 'npm run typecheck:test'" \
+    bash -c "printf '%s\n' \"\$LINT_PLAN_SEGS\" | grep -q 'npm run typecheck:test'"
 
 # -- Test 4: gui/package.json defines a typecheck script ----------------------
 echo ""
