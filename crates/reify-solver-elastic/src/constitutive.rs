@@ -339,9 +339,14 @@ impl OrthotropicMaterial {
 }
 
 impl ConstitutiveLaw for OrthotropicMaterial {
+    // Fully-qualified dispatch (not `self.d_matrix_local()`) — the trait method
+    // and inherent method share a name; explicit qualification makes the dispatch
+    // target stable.  If the inherent method is renamed/moved behind a feature
+    // flag, this call will fail to compile instead of silently turning into
+    // infinite recursion via trait-method fallback.
     #[inline]
     fn d_matrix_local(&self) -> [[f64; 6]; 6] {
-        self.d_matrix_local()
+        OrthotropicMaterial::d_matrix_local(self)
     }
 }
 
@@ -466,9 +471,12 @@ impl TransverseIsotropicMaterial {
 }
 
 impl ConstitutiveLaw for TransverseIsotropicMaterial {
+    // Same name-shadowing concern as OrthotropicMaterial — fully-qualified.
+    // `IsotropicElastic` is not affected: its inherent method is `d_matrix`
+    // (not `d_matrix_local`), so there is no name collision there.
     #[inline]
     fn d_matrix_local(&self) -> [[f64; 6]; 6] {
-        self.d_matrix_local()
+        TransverseIsotropicMaterial::d_matrix_local(self)
     }
 }
 
