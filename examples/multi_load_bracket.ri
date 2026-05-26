@@ -17,13 +17,14 @@
 // runtime FEA solver will resolve them against the actual geometry once
 // topology-kind validation lands (PRD task 16).
 //
-// `MultiCaseResult` is constructed via the stdlib struct constructor; struct
-// constructors currently evaluate to `Value::Undef` at eval time, but they
-// parse and type-check cleanly so `reify check` passes — this matches the
-// smoke-test discipline in
-// `crates/reify-eval/tests/multi_load_case_stdlib_smoke.rs`. When the
-// `solve_load_cases` engine integration lands, the `let results = ...` form
-// will swap from the constructor stub to the engine call.
+// After SIR-α (task 3540) stdlib struct constructors evaluate to
+// `Value::StructureInstance` — not `Value::Undef`. The `let operating = LoadCase(...)`,
+// `let overload = LoadCase(...)`, `let transport = LoadCase(...)`, and
+// `let results = MultiCaseResult(...)` bindings below all produce inspectable
+// structure values. The eval-layer contract is pinned in
+// `crates/reify-eval/tests/load_case.rs`. When `solve_load_cases` engine
+// integration lands (task #3009), the `let results = ...` form will swap from
+// the constructor stub to the engine call.
 
 structure MultiLoadBracket {
     // ── Geometry ─────────────────────────────────────────────────────────────

@@ -339,6 +339,27 @@ structure def PressureLoad : Load {
     param direction : String = "normal"
 }
 
+// ── SIR-β-mlcfea wave-2 closure ──────────────────────────────────────────────
+//
+// task 3549 (SIR-β-mlcfea) pins `LoadCase` and `MultiCaseResult` as
+// `Value::StructureInstance` producers via the `structure def` path declared
+// above (lines 75-105 and 247-254). No Rust-side builtin retirement was needed:
+// `crates/reify-stdlib/src/` carries no `fea_multi_case.rs` — the ctors were
+// never name-dispatched, so SIR-α (task 3540) introduced both as `structure def`s
+// from the start.
+//
+// End-to-end coverage (eval layer):
+//   - ctor→StructureInstance round-trip (`LoadCase` and `MultiCaseResult`)
+//   - `self.`-qualified member-access readthrough:
+//       `self.case.name`, `self.case.loads[0]`, `self.case.supports[0]`
+//   - `options` default evaluates to `Value::Option(None)` (not `Value::None`)
+//     per `CompiledExprKind::OptionNone` in `crates/reify-expr/src/lib.rs:611`
+//   - Map-vs-StructureInstance pattern-match discriminates (GR-001 §Resolution)
+//
+// Lives in: `crates/reify-eval/tests/load_case.rs`
+// User-observable example: `examples/load_case.ri`
+// PRD: `docs/prds/v0_3/structure-instance-runtime.md` §8 task SIR-β-mlcfea.
+
 // ── v0.4 shell BC framework (runtime-only) ───────────────────────────────────
 //
 // The `PinnedSupport` constructor remains name-dispatched in
