@@ -3937,6 +3937,387 @@ mod tests {
         );
     }
 
+    // ── per-op dispatch routing tests (step-7 #3436) ──────────────────────────
+    //
+    // These tests drive the multi-handle reshape of `execute_realization_ops`
+    // landing in step-8: instead of a single `&mut dyn GeometryKernel`, the
+    // helper takes a `&mut BTreeMap<String, Box<dyn GeometryKernel>>` keyed on
+    // kernel name, a borrowed `&BTreeMap<String, &CapabilityDescriptor>`
+    // dispatch registry, and a `&str` default-kernel name. For each op the
+    // helper calls `dispatcher::dispatch(registry, op, BRep, {BRep})`, routes
+    // the op to `kernels[plan.kernel]` (falling back to the default name when
+    // the plan's kernel is absent from the map), or emits a `NoKernelChain`
+    // diagnostic + sets `kernel_error_out` when dispatch returns `None`.
+
+    /// Recording kernel: delegates the full `GeometryKernel` surface to a
+    /// `MockGeometryKernel` and additionally pushes its own `name` onto a
+    /// shared `Arc<Mutex<Vec<String>>>` on every `execute` /
+    /// `execute_with_history` call. Lets the routing tests assert *which*
+    /// kernel in the map received the op call — proof that per-op dispatch
+    /// indexed into the named entry rather than the default.
+    struct NamedRecordingKernel {
+        name: String,
+        inner: reify_test_support::mocks::MockGeometryKernel,
+        log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl reify_types::GeometryKernel for NamedRecordingKernel {
+        fn execute(
+            &mut self,
+            op: &reify_types::GeometryOp,
+        ) -> Result<reify_types::GeometryHandle, reify_types::GeometryError> {
+            self.log.lock().unwrap().push(self.name.clone());
+            self.inner.execute(op)
+        }
+
+        fn query(
+            &self,
+            q: &reify_types::GeometryQuery,
+        ) -> Result<reify_types::Value, reify_types::QueryError> {
+            self.inner.query(q)
+        }
+
+        fn export(
+            &self,
+            handle: reify_types::GeometryHandleId,
+            format: reify_types::ExportFormat,
+            writer: &mut dyn std::io::Write,
+        ) -> Result<(), reify_types::ExportError> {
+            self.inner.export(handle, format, writer)
+        }
+
+        fn tessellate(
+            &self,
+            handle: reify_types::GeometryHandleId,
+            tolerance: f64,
+        ) -> Result<reify_types::Mesh, reify_types::TessError> {
+            self.inner.tessellate(handle, tolerance)
+        }
+    }
+
+    /// Two BRep kernels — `"aaa"` (lex-min) and `"default"` — both supporting
+    /// `(PrimitiveBox, BRep)`. `dispatch(registry, PrimitiveBox, BRep, {BRep})`
+    /// must pick `"aaa"` by lex-min tie-break (BTreeMap iteration order). The
+    /// recording kernel under `"aaa"` captures the `execute` call, proving the
+    /// op was routed to the dispatcher-named kernel — NOT the default.
+    ///
+    /// RED before step-8: `execute_realization_ops` still has the
+    /// single-kernel `&mut dyn GeometryKernel` first parameter, so this test
+    /// fails to compile until step-8 reshapes the signature to take
+    /// `&mut BTreeMap<String, Box<dyn GeometryKernel>>` +
+    /// `&BTreeMap<String, &CapabilityDescriptor>` + `&str` default name.
+    #[test]
+    fn execute_realization_ops_routes_to_dispatcher_picked_kernel() {
+        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_types::{CapabilityDescriptor, CompiledExpr, Operation, ReprKind, Type};
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        let log: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let mut kernels: BTreeMap<String, Box<dyn reify_types::GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "aaa".to_string(),
+            Box::new(NamedRecordingKernel {
+                name: "aaa".to_string(),
+                inner: MockGeometryKernel::new(),
+                log: std::sync::Arc::clone(&log),
+            }),
+        );
+        kernels.insert(
+            "default".to_string(),
+            Box::new(NamedRecordingKernel {
+                name: "default".to_string(),
+                inner: MockGeometryKernel::new(),
+                log: std::sync::Arc::clone(&log),
+            }),
+        );
+
+        let desc_a = CapabilityDescriptor {
+            supports: vec![(Operation::PrimitiveBox, ReprKind::BRep)],
+        };
+        let desc_d = CapabilityDescriptor {
+            supports: vec![(Operation::PrimitiveBox, ReprKind::BRep)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("aaa".to_string(), &desc_a);
+        registry.insert("default".to_string(), &desc_d);
+
+        let ops = vec![CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![
+                ("width".into(), mm_lit(10.0)),
+                ("height".into(), mm_lit(20.0)),
+                ("depth".into(), mm_lit(5.0)),
+            ],
+        }];
+
+        let values = ValueMap::new();
+        let functions: Vec<CompiledFunction> = vec![];
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut step_handles: Vec<GeometryHandleId> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
+        let mut feature_tag_table = FeatureTagTable::default();
+        let mut topology_attribute_table = TopologyAttributeTable::default();
+        let mut swept_kind_table = SweptKindTable::default();
+        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
+
+        Engine::execute_realization_ops(
+            &mut kernels,
+            &registry,
+            "default",
+            &ops,
+            &[],
+            &values,
+            &functions,
+            &meta_map,
+            RealizationOutputs::new(
+                &mut step_handles,
+                &mut named_steps,
+                &mut feature_tag_table,
+                &mut topology_attribute_table,
+                &mut swept_kind_table,
+            ),
+            &mut diagnostics,
+            &test_realization_id,
+            None,
+            SourceSpan::new(0, 0),
+            &mut None,
+            &mut RealizationCache::new(),
+            None,
+        );
+
+        let calls = log.lock().unwrap().clone();
+        assert_eq!(
+            calls,
+            vec!["aaa".to_string()],
+            "the op must be routed to the dispatcher-picked kernel (lex-min = \"aaa\"), \
+             not the default — got call log {:?}",
+            calls
+        );
+        assert_eq!(
+            step_handles.len(),
+            1,
+            "expected one handle pushed from the dispatched kernel"
+        );
+    }
+
+    /// Behavior-preserved: with only the default kernel in the map (and a
+    /// registry naming it for the op), `execute_realization_ops` must run the
+    /// op on the default kernel — exactly the v0.2 single-kernel path.
+    ///
+    /// RED before step-8: same signature change as
+    /// `execute_realization_ops_routes_to_dispatcher_picked_kernel` above.
+    #[test]
+    fn execute_realization_ops_routes_to_default_when_only_default_registered() {
+        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_types::{CapabilityDescriptor, CompiledExpr, Operation, ReprKind, Type};
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        let log: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let mut kernels: BTreeMap<String, Box<dyn reify_types::GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "default".to_string(),
+            Box::new(NamedRecordingKernel {
+                name: "default".to_string(),
+                inner: MockGeometryKernel::new(),
+                log: std::sync::Arc::clone(&log),
+            }),
+        );
+
+        let desc_d = CapabilityDescriptor {
+            supports: vec![(Operation::PrimitiveBox, ReprKind::BRep)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("default".to_string(), &desc_d);
+
+        let ops = vec![CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![
+                ("width".into(), mm_lit(10.0)),
+                ("height".into(), mm_lit(20.0)),
+                ("depth".into(), mm_lit(5.0)),
+            ],
+        }];
+
+        let values = ValueMap::new();
+        let functions: Vec<CompiledFunction> = vec![];
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut step_handles: Vec<GeometryHandleId> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
+        let mut feature_tag_table = FeatureTagTable::default();
+        let mut topology_attribute_table = TopologyAttributeTable::default();
+        let mut swept_kind_table = SweptKindTable::default();
+        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
+
+        Engine::execute_realization_ops(
+            &mut kernels,
+            &registry,
+            "default",
+            &ops,
+            &[],
+            &values,
+            &functions,
+            &meta_map,
+            RealizationOutputs::new(
+                &mut step_handles,
+                &mut named_steps,
+                &mut feature_tag_table,
+                &mut topology_attribute_table,
+                &mut swept_kind_table,
+            ),
+            &mut diagnostics,
+            &test_realization_id,
+            None,
+            SourceSpan::new(0, 0),
+            &mut None,
+            &mut RealizationCache::new(),
+            None,
+        );
+
+        let calls = log.lock().unwrap().clone();
+        assert_eq!(
+            calls,
+            vec!["default".to_string()],
+            "single-kernel-in-map: op must run on the default kernel; got log {:?}",
+            calls,
+        );
+        assert_eq!(step_handles.len(), 1, "expected one handle pushed");
+        let errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, reify_types::Severity::Error))
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "behavior-preserved single-default path must not emit error diagnostics; got {:?}",
+            errors,
+        );
+    }
+
+    /// When the registry claims no kernel for the op (dispatch returns
+    /// `None`), `execute_realization_ops` must emit a
+    /// `DiagnosticCode::NoKernelChain` error diagnostic, set
+    /// `kernel_error_out` so the caller can mark the realization Failed, and
+    /// truncate `step_handles` back to its pre-call length.
+    ///
+    /// RED before step-8: routing + dispatch + NoKernelChain wiring all land
+    /// in step-8.
+    #[test]
+    fn execute_realization_ops_emits_no_kernel_chain_diagnostic_when_dispatch_returns_none() {
+        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_types::{
+            CapabilityDescriptor, CompiledExpr, DiagnosticCode, Operation, ReprKind, Type,
+        };
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        let mut kernels: BTreeMap<String, Box<dyn reify_types::GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "default".to_string(),
+            Box::new(MockGeometryKernel::new()) as Box<dyn reify_types::GeometryKernel>,
+        );
+
+        // Registry deliberately does NOT support PrimitiveBox/BRep: every
+        // descriptor in the map only supports BooleanUnion/Mesh, so
+        // `dispatch(registry, PrimitiveBox, BRep, {BRep})` returns `None`.
+        let desc_d = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("default".to_string(), &desc_d);
+
+        let ops = vec![CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![
+                ("width".into(), mm_lit(10.0)),
+                ("height".into(), mm_lit(20.0)),
+                ("depth".into(), mm_lit(5.0)),
+            ],
+        }];
+
+        let values = ValueMap::new();
+        let functions: Vec<CompiledFunction> = vec![];
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut step_handles: Vec<GeometryHandleId> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
+        let mut feature_tag_table = FeatureTagTable::default();
+        let mut topology_attribute_table = TopologyAttributeTable::default();
+        let mut swept_kind_table = SweptKindTable::default();
+        let mut kernel_error_out: Option<ErrorRef> = None;
+        let test_realization_id = RealizationNodeId::new("TestEntity", 0);
+
+        Engine::execute_realization_ops(
+            &mut kernels,
+            &registry,
+            "default",
+            &ops,
+            &[],
+            &values,
+            &functions,
+            &meta_map,
+            RealizationOutputs::new(
+                &mut step_handles,
+                &mut named_steps,
+                &mut feature_tag_table,
+                &mut topology_attribute_table,
+                &mut swept_kind_table,
+            ),
+            &mut diagnostics,
+            &test_realization_id,
+            None,
+            SourceSpan::new(0, 0),
+            &mut kernel_error_out,
+            &mut RealizationCache::new(),
+            None,
+        );
+
+        // A NoKernelChain error diagnostic must be emitted.
+        let no_chain: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::NoKernelChain))
+            .collect();
+        assert_eq!(
+            no_chain.len(),
+            1,
+            "expected exactly one NoKernelChain diagnostic when the registry has no \
+             kernel for the op; got {} diagnostics total: {:?}",
+            no_chain.len(),
+            diagnostics
+        );
+        assert!(
+            matches!(no_chain[0].severity, reify_types::Severity::Error),
+            "NoKernelChain must be an Error-severity diagnostic; got {:?}",
+            no_chain[0].severity,
+        );
+
+        // Realization must surface as Failed via the caller-write kernel_error_out
+        // out-param (the same channel `mark_realization_failed` consumes for
+        // kernel errors today).
+        assert!(
+            kernel_error_out.is_some(),
+            "unroutable op must set kernel_error_out so the caller can mark the \
+             realization NodeId as Failed; got None"
+        );
+
+        // step_handles must be truncated to its pre-call length: no real handle
+        // was produced.
+        assert!(
+            step_handles.is_empty(),
+            "unroutable op must leave step_handles truncated to handle_start; got {:?}",
+            step_handles,
+        );
+    }
+
     // ── effective_tessellation_tolerance unit tests ──────────────────────────
 
     /// When `module.default_tolerance` is `Some(v)`, the helper returns `v`
