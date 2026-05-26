@@ -218,6 +218,162 @@ fn mesh_surface_to_volume_with_attribution_attributes_surface_nodes_by_brep_enti
 }
 
 // ---------------------------------------------------------------------------
+// Edge/face attribution geometric correctness (characterization, has_gmsh)
+// ---------------------------------------------------------------------------
+
+/// Edge/face attribution geometric correctness: every attributed boundary
+/// node must lie on the geometric locus of its attributed B-rep handle.
+///
+/// For the unit cube: faces fix one coordinate axis at ±0.5, edges fix two
+/// axes, vertices all three.  The locus predicate: for each axis `i` where
+/// `|anchor[i]| > 0.25` (i.e., the anchor sits at ≈ ±0.5), the attributed
+/// node's `coord[i]` must be within 1e-3 of `anchor[i]`.
+///
+/// Characterization test: expected GREEN on the current producer (gmsh's
+/// classify_surfaces sub-entities are genuine B-rep entities).  If RED, a
+/// real mis-attribution has been found (e.g. a gmsh dim-1 seam spanning a
+/// face matched to an edge handle) — investigate matching; do NOT relax the
+/// locus predicate to hide the failure.
+///
+/// Also pins the complete distinct handle sets: OnEdge ≡ {201..=212} and
+/// OnFace ≡ {101..=106}.  A gmsh version change that produces a different
+/// topology should be reflected here with a re-characterization comment
+/// (task 3763).
+#[cfg(has_gmsh)]
+#[test]
+fn attributed_boundary_nodes_lie_on_locus_of_attributed_handle() {
+    use reify_kernel_gmsh::mesh_boundary::mesh_surface_to_volume_with_attribution;
+    use reify_kernel_gmsh::MeshingOptions;
+    use reify_types::ElementOrderTag;
+    use std::collections::{BTreeSet, HashMap};
+
+    let surface = subdivided_unit_cube_surface();
+
+    // Same attribution as the signal test.
+    let attribution = EntityAttribution {
+        faces: vec![
+            (h(101), [ 0.0,  0.0, -0.5]),
+            (h(102), [ 0.0,  0.0,  0.5]),
+            (h(103), [ 0.0, -0.5,  0.0]),
+            (h(104), [ 0.0,  0.5,  0.0]),
+            (h(105), [-0.5,  0.0,  0.0]),
+            (h(106), [ 0.5,  0.0,  0.0]),
+        ],
+        edges: vec![
+            (h(201), [ 0.0, -0.5, -0.5]),
+            (h(202), [-0.5,  0.0, -0.5]),
+            (h(203), [ 0.5,  0.0, -0.5]),
+            (h(204), [ 0.0,  0.5, -0.5]),
+            (h(205), [ 0.0, -0.5,  0.5]),
+            (h(206), [-0.5,  0.0,  0.5]),
+            (h(207), [ 0.5,  0.0,  0.5]),
+            (h(208), [ 0.0,  0.5,  0.5]),
+            (h(209), [-0.5, -0.5,  0.0]),
+            (h(210), [ 0.5, -0.5,  0.0]),
+            (h(211), [-0.5,  0.5,  0.0]),
+            (h(212), [ 0.5,  0.5,  0.0]),
+        ],
+        vertices: vec![
+            (h(301), [-0.5, -0.5, -0.5]),
+            (h(302), [ 0.5, -0.5, -0.5]),
+            (h(303), [-0.5,  0.5, -0.5]),
+            (h(304), [ 0.5,  0.5, -0.5]),
+            (h(305), [-0.5, -0.5,  0.5]),
+            (h(306), [ 0.5, -0.5,  0.5]),
+            (h(307), [-0.5,  0.5,  0.5]),
+            (h(308), [ 0.5,  0.5,  0.5]),
+        ],
+        match_tolerance: 0.3,
+    };
+
+    // Build handle → anchor lookup for the locus predicate.
+    let mut handle_to_anchor: HashMap<u64, [f64; 3]> = HashMap::new();
+    for (hid, anchor) in attribution
+        .faces
+        .iter()
+        .chain(&attribution.edges)
+        .chain(&attribution.vertices)
+    {
+        handle_to_anchor.insert(hid.0, *anchor);
+    }
+
+    let report = mesh_surface_to_volume_with_attribution(
+        &surface,
+        &MeshingOptions { mesh_size: None, deterministic: true, ..Default::default() },
+        ElementOrderTag::P1,
+        None,
+        None,
+        None,
+        &attribution,
+    )
+    .expect("mesh_surface_to_volume_with_attribution must succeed on a closed unit cube");
+
+    let verts = &report.volume.vertices;
+    let mut on_edge_handles: BTreeSet<u64> = BTreeSet::new();
+    let mut on_face_handles: BTreeSet<u64> = BTreeSet::new();
+
+    for (idx, attachment) in report.boundary.iter() {
+        // Extract node position from the volume mesh (f32 → f64 for comparison).
+        let node = [
+            verts[idx as usize * 3] as f64,
+            verts[idx as usize * 3 + 1] as f64,
+            verts[idx as usize * 3 + 2] as f64,
+        ];
+
+        let handle_id = match attachment {
+            NodeAttachment::OnFace(hid) => {
+                on_face_handles.insert(hid.0);
+                hid.0
+            }
+            NodeAttachment::OnEdge(hid) => {
+                on_edge_handles.insert(hid.0);
+                hid.0
+            }
+            NodeAttachment::OnVertex(hid) => hid.0,
+            _ => continue,
+        };
+
+        let anchor = *handle_to_anchor.get(&handle_id).unwrap_or_else(|| {
+            panic!("node idx={idx} attributed to unrecognised handle {handle_id}");
+        });
+
+        // Locus predicate: for each axis fixed by this handle (|anchor| ≈ 0.5),
+        // the node must lie on that axis value within 1e-3.
+        for i in 0..3 {
+            if anchor[i].abs() > 0.25 {
+                let diff = (node[i] - anchor[i]).abs();
+                assert!(
+                    diff < 1e-3,
+                    "node idx={idx} attributed to handle {handle_id} \
+                     (anchor={anchor:?}): axis {i} \
+                     node[{i}]={:.6} anchor[{i}]={:.6} diff={:.6} > 1e-3. \
+                     Node does not lie on the attributed handle's geometric locus. \
+                     This is a real mis-attribution — investigate matching or escalate; \
+                     do NOT relax this predicate (task 3763).",
+                    node[i],
+                    anchor[i],
+                    diff,
+                );
+            }
+        }
+    }
+
+    // Pin complete distinct handle sets (characterization: current producer /
+    // current gmsh version).  If a future gmsh version produces a different
+    // topology, update these expected sets and add a re-characterization comment.
+    let expected_edges: BTreeSet<u64> = (201..=212).collect();
+    let expected_faces: BTreeSet<u64> = (101..=106).collect();
+    assert_eq!(
+        on_edge_handles, expected_edges,
+        "expected OnEdge handles {{201..=212}}, got {on_edge_handles:?} (task 3763)"
+    );
+    assert_eq!(
+        on_face_handles, expected_faces,
+        "expected OnFace handles {{101..=106}}, got {on_face_handles:?} (task 3763)"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // suggested_match_tolerance (pure — no gmsh, no cfg gate)
 // ---------------------------------------------------------------------------
 
