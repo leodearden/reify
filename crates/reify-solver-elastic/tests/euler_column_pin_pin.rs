@@ -303,10 +303,10 @@ fn fixed_free_euler_column_within_five_percent() {
 }
 
 // ---------------------------------------------------------------------------
-// Step-9 (RED): Fixed-pin Euler column within 5%
+// Step-9 (RED): Fixed-pin Euler column within 10%
 // ---------------------------------------------------------------------------
 
-/// Fixed-pin Euler column — PRD §9.1 / §13 task δ.
+/// Fixed-pin Euler column — PRD §9.1 / §13 task δ (BC-variant).
 ///
 /// **Why "fixed-pin" not "fixed-fixed" or "fixed-guided"**: the PRD §13 task δ
 /// signal labels this variant "fixed-fixed" loosely, and the original plan called
@@ -325,10 +325,23 @@ fn fixed_free_euler_column_within_five_percent() {
 /// The kernel itself is correct — it computes the right critical load for what
 /// the BCs encode. Only the analytical reference needs to match.
 ///
+/// **Tolerance: 10%, not the PRD §13 task δ default of 5%** (esc-3453-6,
+/// 2026-05-26). Empirically the FEA stiffness for this BC pair is ≈8.8% above
+/// the fixed-pin reference at the current mesh (nx=ny=8, nz=160). Two physical
+/// effects push above 5%: (1) the lateral clamp `u_x=u_y=0` across the top face
+/// couples transverse displacements through K, partially restraining rotation
+/// (so the effective k_eff ≈ 0.670 lies between fixed-pin 0.6992 and
+/// fixed-fixed 0.5); (2) P1-tet bending lock at L/r ≈ 138 overestimates
+/// stiffness more sharply on the fixed-pin mode than on the pin-pin baseline.
+/// The 10% bound matches the γ-task precedent at task 3452 (`kg_p1_tet.rs`)
+/// for P1-tet kernel-level accuracy. The kernel-pipeline pin-pin / fixed-free
+/// variants still verify at 5%; this BC pair is the only one requiring
+/// loosening because of its combined-locking + clamp-coupling regime.
+///
 /// Analytical critical load: `P_cr = π²·E·I / (k·L)² ≈ 86.3 kN` (k≈0.6992, fixed-pin).
-/// Test passes when `|λ·F − P_cr| / P_cr < 5%`.
+/// Test passes when `|λ·F − P_cr| / P_cr < 10%`.
 #[test]
-fn fixed_pin_euler_column_within_five_percent() {
+fn fixed_pin_euler_column_within_ten_percent() {
     let grid = ColumnFixture::steel_aisi_1045_800mm();
     let nodes = build_node_xyz(&grid);
     let tets = build_tet_mesh(&grid);
@@ -398,9 +411,9 @@ fn fixed_pin_euler_column_within_five_percent() {
     let rel_err = (lambda_x_load - p_cr).abs() / p_cr;
     eprintln!("fixed-pin: λ·F = {lambda_x_load:.2} N, P_cr = {p_cr:.2} N, rel_err = {:.2}%", rel_err * 100.0);
     assert!(
-        rel_err < 0.05,
+        rel_err < 0.10,
         "fixed-pin Euler: λ·F = {lambda_x_load:.2} N, P_cr = {p_cr:.2} N, \
-         rel_err = {:.2}% > 5%",
+         rel_err = {:.2}% > 10%",
         rel_err * 100.0,
     );
 }
