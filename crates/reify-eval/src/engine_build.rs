@@ -814,12 +814,22 @@ impl Engine {
         // are treated as `None`.
         let demanded_tols = self.compute_demanded_tols(module);
         // Task ε (3436): resolve the engine's default kernel through the new
-        // multi-handle map. Single-handle surfaces (export, post-process,
-        // build pre-step-8) operate on this kernel; per-op dispatch routing
-        // lands in step-8 inside `execute_realization_ops`.
+        // multi-handle map. Single-handle surfaces (export, post-process)
+        // operate on this kernel; per-op dispatch routing is delegated to
+        // `execute_realization_ops` which takes the full kernels map +
+        // dispatch registry (step-8 wiring).
         let default_kernel_name = self.default_kernel_name.clone();
+        // Step-8 (task ε / 3436): source the capability-descriptor registry
+        // ONCE per build via `collect_registry()` and materialise the
+        // borrowed view that `dispatcher::dispatch` expects. The owned map
+        // outlives the borrowed view because both are local bindings.
+        // Mirrors the "one allocation per build, not per realization"
+        // pattern established by `compute_tessellation_budgets`.
+        let registry_owned = crate::kernel_registry::collect_registry();
+        let registry_borrowed: BTreeMap<String, &CapabilityDescriptor> =
+            registry_owned.iter().map(|(k, v)| (k.clone(), v)).collect();
         let geometry_output = if let Some(name) = default_kernel_name.as_deref()
-            && let Some(kernel) = self.geometry_kernels.get_mut(name)
+            && self.geometry_kernels.contains_key(name)
         {
             let mut step_handles: Vec<GeometryHandleId> = Vec::new();
             let had_realization_ops = module
@@ -877,7 +887,9 @@ impl Engine {
                         .unwrap_or(None);
                     let mut kernel_error: Option<ErrorRef> = None;
                     Engine::execute_realization_ops(
-                        kernel.as_mut(),
+                        &mut self.geometry_kernels,
+                        &registry_borrowed,
+                        name,
                         &realization.operations,
                         &realization.feature_tags,
                         &values,
@@ -912,6 +924,16 @@ impl Engine {
                         );
                     }
                 }
+                // Step-8 (task ε / 3436): the post-process helpers operate on
+                // the engine's default kernel. We re-borrow it from the
+                // `geometry_kernels` map here (after the per-realization loop
+                // released its `&mut self.geometry_kernels` borrow). The
+                // `expect` is justified by the outer `contains_key(name)`
+                // gate: the executor never removes entries from the map.
+                let default_kernel = self
+                    .geometry_kernels
+                    .get_mut(name)
+                    .expect("default kernel must remain in the map across the per-realization loop");
                 // Task 2320: see `Engine::post_process_conformance_queries`
                 // docstring for the full contract. Mirrored in `build` and
                 // `tessellate_from_values` — keep all four call sites in
@@ -921,7 +943,7 @@ impl Engine {
                     template,
                     &named_steps,
                     &mut values,
-                    kernel.as_ref(),
+                    default_kernel.as_ref(),
                     &mut diagnostics,
                 );
                 // Task 2531: kinematic-query post-process (interferes /
@@ -933,14 +955,14 @@ impl Engine {
                     template,
                     &named_steps,
                     &mut values,
-                    kernel.as_ref(),
+                    default_kernel.as_ref(),
                     &mut diagnostics,
                 );
                 Engine::run_post_processes(
                     template,
                     &named_steps,
                     &mut values,
-                    kernel.as_mut(),
+                    default_kernel.as_mut(),
                     &self.topology_attribute_table,
                     &mut diagnostics,
                 );
@@ -970,7 +992,11 @@ impl Engine {
             } else {
                 let export_handle = *step_handles.last().unwrap();
                 let mut output = Vec::new();
-                match kernel.export(export_handle, format, &mut output) {
+                let default_kernel = self
+                    .geometry_kernels
+                    .get(name)
+                    .expect("default kernel must remain in the map for export");
+                match default_kernel.export(export_handle, format, &mut output) {
                     Ok(()) => Some(output),
                     Err(e) => {
                         diagnostics.push(Diagnostic::error(format!("export error: {}", e)));
@@ -1071,8 +1097,15 @@ impl Engine {
         // Task ε (3436): resolve default kernel through the multi-handle map
         // (see `build_snapshot` mirror for the same pattern).
         let default_kernel_name = self.default_kernel_name.clone();
+        // Step-8 (task ε / 3436): source the capability-descriptor registry
+        // once per build and materialise the borrowed view that
+        // `dispatcher::dispatch` expects — see `build_snapshot` mirror for
+        // the rationale (one allocation per build, not per realization).
+        let registry_owned = crate::kernel_registry::collect_registry();
+        let registry_borrowed: BTreeMap<String, &CapabilityDescriptor> =
+            registry_owned.iter().map(|(k, v)| (k.clone(), v)).collect();
         let geometry_output = if let Some(name) = default_kernel_name.as_deref()
-            && let Some(kernel) = self.geometry_kernels.get_mut(name)
+            && self.geometry_kernels.contains_key(name)
         {
             // Execute geometry operations from realizations
             let mut step_handles: Vec<GeometryHandleId> = Vec::new();
@@ -1126,7 +1159,9 @@ impl Engine {
                         .unwrap_or(None);
                     let mut kernel_error: Option<ErrorRef> = None;
                     Engine::execute_realization_ops(
-                        kernel.as_mut(),
+                        &mut self.geometry_kernels,
+                        &registry_borrowed,
+                        name,
                         &realization.operations,
                         &realization.feature_tags,
                         &values,
@@ -1161,6 +1196,12 @@ impl Engine {
                         );
                     }
                 }
+                // Step-8 (task ε / 3436): re-borrow the default kernel from
+                // the map for post-process — see `build_snapshot` mirror.
+                let default_kernel = self
+                    .geometry_kernels
+                    .get_mut(name)
+                    .expect("default kernel must remain in the map across the per-realization loop");
                 // Task 2320: see `Engine::post_process_conformance_queries`
                 // docstring for the full contract. Mirrored in
                 // `build_snapshot` and `tessellate_from_values` — keep all
@@ -1171,7 +1212,7 @@ impl Engine {
                     template,
                     &named_steps,
                     &mut values,
-                    kernel.as_ref(),
+                    default_kernel.as_ref(),
                     &mut diagnostics,
                 );
                 // Task 2531: kinematic-query post-process (interferes /
@@ -1183,14 +1224,14 @@ impl Engine {
                     template,
                     &named_steps,
                     &mut values,
-                    kernel.as_ref(),
+                    default_kernel.as_ref(),
                     &mut diagnostics,
                 );
                 Engine::run_post_processes(
                     template,
                     &named_steps,
                     &mut values,
-                    kernel.as_mut(),
+                    default_kernel.as_mut(),
                     &self.topology_attribute_table,
                     &mut diagnostics,
                 );
@@ -1223,7 +1264,11 @@ impl Engine {
                 // so last() is always Some and unwrap() cannot panic.
                 let export_handle = *step_handles.last().unwrap();
                 let mut output = Vec::new();
-                match kernel.export(export_handle, format, &mut output) {
+                let default_kernel = self
+                    .geometry_kernels
+                    .get(name)
+                    .expect("default kernel must remain in the map for export");
+                match default_kernel.export(export_handle, format, &mut output) {
                     Ok(()) => Some(output),
                     Err(e) => {
                         diagnostics.push(Diagnostic::error(format!("export error: {}", e)));
@@ -1305,6 +1350,10 @@ impl Engine {
         let registry_owned = crate::kernel_registry::collect_registry();
         let tessellation_budgets =
             self.compute_tessellation_budgets(module, &demanded_tols, &registry_owned);
+        // Step-8 (task ε / 3436): borrowed-view registry for per-op dispatch
+        // routing — same pattern as the `build` / `build_snapshot` mirrors.
+        let registry_borrowed: BTreeMap<String, &CapabilityDescriptor> =
+            registry_owned.iter().map(|(k, v)| (k.clone(), v)).collect();
         // Task 2320 amendment: `values` is moved into a local mutable binding
         // here so `tessellate_from_values` can patch conformance-query results
         // (`is_watertight` / `is_manifold` / `is_orientable`) into the map
@@ -1318,6 +1367,7 @@ impl Engine {
         self.swept_kind_table = SweptKindTable::default();
         let meshes = Self::tessellate_from_values(
             &mut self.geometry_kernels,
+            &registry_borrowed,
             self.default_kernel_name.as_deref(),
             module,
             &mut values,
@@ -1649,6 +1699,7 @@ impl Engine {
     #[allow(clippy::too_many_arguments)]
     fn tessellate_from_values(
         geometry_kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
+        registry: &BTreeMap<String, &CapabilityDescriptor>,
         default_kernel_name: Option<&str>,
         module: &CompiledModule,
         values: &mut ValueMap,
@@ -1665,11 +1716,14 @@ impl Engine {
         let mut meshes = Vec::new();
 
         // Task ε (3436): the engine's default kernel is fetched by name from
-        // the multi-handle map; `None` matches the v0.2 "no kernel
-        // configured" semantics.
-        let kernel = match default_kernel_name.and_then(|n| geometry_kernels.get_mut(n)) {
-            Some(k) => k,
-            None => return meshes,
+        // the multi-handle map; `None` (or absent) matches the v0.2 "no kernel
+        // configured" semantics. Per-op dispatch routing is delegated to
+        // `execute_realization_ops` (step-8), which takes the full map and
+        // the borrowed-view registry. Single-handle surfaces below (export,
+        // tessellate, post-process) operate on the default kernel.
+        let default_kernel_name = match default_kernel_name {
+            Some(name) if geometry_kernels.contains_key(name) => name,
+            _ => return meshes,
         };
 
         let mut step_handles: Vec<GeometryHandleId> = Vec::new();
@@ -1718,7 +1772,9 @@ impl Engine {
                 // at runtime in both debug and release.
                 let demanded_tol = demanded_tols[t_idx][r_idx];
                 Engine::execute_realization_ops(
-                    kernel.as_mut(),
+                    geometry_kernels,
+                    registry,
+                    default_kernel_name,
                     &realization.operations,
                     &realization.feature_tags,
                     values,
@@ -1755,7 +1811,12 @@ impl Engine {
                     // bug; Rust's slice indexing panics with a precise OOB
                     // message at runtime in both debug and release.
                     let budget = tessellation_budgets[t_idx][r_idx];
-                    match kernel.tessellate(last_handle, budget) {
+                    // Re-borrow the default kernel after the per-realization
+                    // executor released its full-map borrow (step-8 #3436).
+                    let default_kernel = geometry_kernels.get(default_kernel_name).expect(
+                        "default kernel must remain in the map across the per-realization loop",
+                    );
+                    match default_kernel.tessellate(last_handle, budget) {
                         Ok(mesh) => {
                             meshes.push((realization.id.to_string(), mesh));
                         }
@@ -1766,6 +1827,11 @@ impl Engine {
                     }
                 }
             }
+            // Step-8 (task ε / 3436): re-borrow the default kernel from the
+            // map for post-process — see `build` / `build_snapshot` mirror.
+            let default_kernel = geometry_kernels
+                .get_mut(default_kernel_name)
+                .expect("default kernel must remain in the map across the per-realization loop");
             // Task 2320 amendment: mirrors the `build` / `build_snapshot`
             // wire-up so `TessellateResult.values` exposes the same
             // kernel-resolved `Bool` for conformance-query cells as
@@ -1775,7 +1841,7 @@ impl Engine {
                 template,
                 &named_steps,
                 values,
-                kernel.as_ref(),
+                default_kernel.as_ref(),
                 diagnostics,
             );
             // Task 2531: see the build / build_snapshot wire-up. Tessellate
@@ -1785,14 +1851,14 @@ impl Engine {
                 template,
                 &named_steps,
                 values,
-                kernel.as_ref(),
+                default_kernel.as_ref(),
                 diagnostics,
             );
             Engine::run_post_processes(
                 template,
                 &named_steps,
                 values,
-                kernel.as_mut(),
+                default_kernel.as_mut(),
                 topology_attribute_table,
                 diagnostics,
             );
@@ -1917,7 +1983,9 @@ impl Engine {
     /// (`debug_assertions` cfg).
     #[allow(clippy::too_many_arguments)]
     fn execute_realization_ops(
-        kernel: &mut dyn GeometryKernel,
+        kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
+        registry: &BTreeMap<String, &CapabilityDescriptor>,
+        default_kernel_name: &str,
         operations: &[reify_compiler::CompiledGeometryOp],
         feature_tags: &[FeatureTag],
         values: &ValueMap,
@@ -1940,6 +2008,12 @@ impl Engine {
             swept_kind_table,
         } = outputs;
         let handle_start = step_handles.len();
+        // Step-8 (task ε / 3436): the v0.3-ε baseline asks the dispatcher for
+        // `(op, BRep)` with `available = {BRep}` on every op. The triple is
+        // hoisted out of the op loop because both inputs are loop-invariant —
+        // `available_set` would otherwise allocate a fresh HashSet per op.
+        let available_set: HashSet<ReprKind> =
+            Engine::BUDGET_QUERY_TRIPLE_V02.2.iter().copied().collect();
 
         // Task 2874, step-8: cache-hit short-circuit. When the caller has
         // threaded a demanded tolerance AND the realization is named (the
@@ -2011,6 +2085,110 @@ impl Engine {
             );
             match geom_op {
                 Ok(geom_op) => {
+                    // Step-8 (task ε / 3436): per-op dispatch routing.
+                    // Map the compiled `GeometryOp` to its `Operation`
+                    // classifier and ask the dispatcher for a plan. In the
+                    // v0.3-ε baseline the request is fixed at
+                    // `(op, demanded=BRep, available={BRep})` per the
+                    // `BUDGET_QUERY_TRIPLE_V02` design decision; per-op
+                    // demanded/available derivation is deferred to ζ/η/θ.
+                    let operation = geometry_op_to_operation(&geom_op);
+                    let plan = dispatch(registry, operation, ReprKind::BRep, &available_set);
+                    let resolved_kernel_name: String = match plan {
+                        Some(ref plan) if plan.conversions.is_empty() => {
+                            // 0-conversion plan: route to plan.kernel,
+                            // falling back to the engine's default kernel if
+                            // the dispatcher named an entry not present in
+                            // the kernels map (defence against
+                            // dispatch/registry-vs-map drift; in practice the
+                            // builder always loads one adapter per registry
+                            // entry so the fallback is dormant).
+                            if kernels.contains_key(plan.kernel.as_str()) {
+                                plan.kernel.clone()
+                            } else {
+                                default_kernel_name.to_string()
+                            }
+                        }
+                        Some(_) => {
+                            // Non-empty conversion chain. ε implements
+                            // 0-conversion routing only — conversion-stage
+                            // execution depends on ζ/η/θ (Manifold execute
+                            // arm + cross-kernel mesh-ingest trait surface).
+                            // Surface as an error diagnostic and set
+                            // `kernel_error_out` so the caller marks the
+                            // realization Failed (mirrors the kernel-error
+                            // arm below).
+                            let err_msg = format!(
+                                "non-empty conversion chain for op '{:?}' producing \
+                                 '{:?}' is not supported in v0.3-ε (deferred to ζ/η/θ)",
+                                operation,
+                                ReprKind::BRep,
+                            );
+                            diagnostics.push(Diagnostic::error(err_msg.clone()).with_label(
+                                DiagnosticLabel::new(realization_span, "in this realization"),
+                            ));
+                            if kernel_error_out.is_none() {
+                                *kernel_error_out = Some(ErrorRef::new(err_msg));
+                            }
+                            break;
+                        }
+                        None => {
+                            // dispatch returned None: no registered kernel
+                            // claims `(op, BRep)`. Emit the standard
+                            // `NoKernelChain` diagnostic (built by
+                            // `crate::dispatcher::no_kernel_chain_diagnostic`)
+                            // and mark the realization Failed via
+                            // `kernel_error_out`. The diagnostic carries
+                            // `DiagnosticCode::NoKernelChain` so consumers
+                            // can filter by code rather than substring.
+                            let diag = crate::dispatcher::no_kernel_chain_diagnostic(
+                                operation,
+                                ReprKind::BRep,
+                                Engine::BUDGET_QUERY_TRIPLE_V02.2,
+                            )
+                            .with_label(DiagnosticLabel::new(
+                                realization_span,
+                                "in this realization",
+                            ));
+                            diagnostics.push(diag);
+                            if kernel_error_out.is_none() {
+                                *kernel_error_out = Some(ErrorRef::new(format!(
+                                    "no kernel chain for op '{:?}' producing '{:?}'",
+                                    operation,
+                                    ReprKind::BRep,
+                                )));
+                            }
+                            break;
+                        }
+                    };
+                    let kernel: &mut dyn GeometryKernel = match kernels
+                        .get_mut(resolved_kernel_name.as_str())
+                    {
+                        Some(k) => k.as_mut(),
+                        None => {
+                            // Internal-consistency violation: dispatch
+                            // returned a kernel name, but neither it nor the
+                            // default kernel name maps to an entry in
+                            // `kernels`. The builder's constructors
+                            // (`with_prelude`, `with_registered_kernels`)
+                            // make this impossible; emit a hard error to
+                            // surface any future regression and break the
+                            // op loop.
+                            let err_msg = format!(
+                                "internal error: dispatcher named kernel '{resolved_kernel_name}' \
+                                 not present in engine.geometry_kernels; default '{default_kernel_name}' \
+                                 also absent",
+                            );
+                            diagnostics.push(Diagnostic::error(err_msg.clone()).with_label(
+                                DiagnosticLabel::new(realization_span, "in this realization"),
+                            ));
+                            if kernel_error_out.is_none() {
+                                *kernel_error_out = Some(ErrorRef::new(err_msg));
+                            }
+                            break;
+                        }
+                    };
+
                     match kernel.execute_with_history(&geom_op) {
                         Ok((handle, attribute_history)) => {
                             // Record the parallel-array feature tag for this handle.
@@ -2238,9 +2416,21 @@ impl Engine {
                     .filter(|(_, attr)| attr.feature_id == realization_feature_id)
                     .collect();
             if !realization_attrs.is_empty() {
+                // Step-8 (task ε / 3436): the centroid query is a
+                // single-handle query surface that runs against the engine's
+                // default kernel. In the v0.3-ε baseline every realization's
+                // terminal handle lives on the BRep-preferring lex-min
+                // kernel (the default), so routing centroid queries through
+                // it matches the v0.2 single-kernel semantics.
+                let default_kernel: &mut dyn GeometryKernel = kernels
+                    .get_mut(default_kernel_name)
+                    .expect(
+                        "default kernel must remain in the map for centroid queries",
+                    )
+                    .as_mut();
                 let (centroids, centroid_diags) = collect_centroids_with_failure_summary(
                     &realization_attrs,
-                    kernel,
+                    default_kernel,
                     realization_id,
                 );
                 diagnostics.extend(centroid_diags);
@@ -2638,11 +2828,16 @@ impl Engine {
         let registry_owned = crate::kernel_registry::collect_registry();
         let tessellation_budgets =
             self.compute_tessellation_budgets(module, &demanded_tols, &registry_owned);
+        // Step-8 (task ε / 3436): borrowed-view registry for per-op dispatch
+        // routing — same pattern as the `tessellate_realizations` mirror.
+        let registry_borrowed: BTreeMap<String, &CapabilityDescriptor> =
+            registry_owned.iter().map(|(k, v)| (k.clone(), v)).collect();
         self.feature_tag_table = FeatureTagTable::default();
         self.topology_attribute_table = TopologyAttributeTable::default();
         self.swept_kind_table = SweptKindTable::default();
         let meshes = Self::tessellate_from_values(
             &mut self.geometry_kernels,
+            &registry_borrowed,
             self.default_kernel_name.as_deref(),
             module,
             &mut values,
