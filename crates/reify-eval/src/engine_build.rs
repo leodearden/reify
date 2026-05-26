@@ -1853,10 +1853,25 @@ impl Engine {
                 // here — produced_repr graph-node updates happen only on the
                 // build/build_snapshot path per step-10's scope (the
                 // `executor_writes_produced_repr_brep_on_build_snapshot`
-                // forward-guard pins build_snapshot only). A future tessellate
-                // surface that needs to write produced_repr can extend
-                // `tessellate_from_values` to return / collect a
-                // `Vec<(RealizationNodeId, ReprKind)>` for the caller to apply.
+                // forward-guard pins build_snapshot only).
+                //
+                // **Symmetric-write follow-up (task ζ / #3437)** — amendment
+                // round 2: today the discard is benign because the
+                // construction-time default (`ReprKind::BRep`, see
+                // `graph.rs:53/329`) already matches what the v0.3-ε executor
+                // produces, so any consumer that reads `produced_repr` after
+                // a tessellate-only call sees the correct value by accident.
+                // Once ζ / η make per-op `demanded` vary the tessellate path
+                // would silently leave the graph node at the BRep default
+                // while build / build_snapshot write the new repr — GUI
+                // overlays that tessellate without exporting would see a
+                // stale value. The fix is to extend `tessellate_from_values`
+                // to return a `Vec<(RealizationNodeId, ReprKind)>` (or take a
+                // disjoint-borrow `&mut` writer) and have
+                // `tessellate_realizations` / `tessellate_snapshot` apply the
+                // writes via the same idiom used in `build_snapshot`. Tracked
+                // by task ζ (#3437); the symmetric-write requirement MUST
+                // close before ζ ships.
                 let mut produced_repr_out: Option<ReprKind> = None;
                 // Task 3227 / 3297: direct positional index — no String clones,
                 // no hashing. The producer (`compute_demanded_tols`) and this
@@ -2260,10 +2275,44 @@ impl Engine {
                             // dispatch/registry-vs-map drift; in practice the
                             // builder always loads one adapter per registry
                             // entry so the fallback is dormant).
+                            //
+                            // **Amendment round 2 (suggestion #3)**: also
+                            // gate the default-fallback on
+                            // `contains_key(default_kernel_name)` so the
+                            // subsequent `.expect(...)` on `kernels.get_mut`
+                            // is structurally honest. Without this gate a
+                            // hypothetical caller that bypasses the entry-
+                            // point `contains_key` check (build /
+                            // build_snapshot / tessellate_from_values all gate
+                            // there today) could land on a missing default
+                            // and surface a confusing internal error several
+                            // lines downstream. Mirrors the parallel
+                            // `contains_key` gate in the `None` arm below and
+                            // the post-loop `.expect` idiom at
+                            // engine_build.rs:967 / :2626.
                             if kernels.contains_key(plan.kernel.as_str()) {
                                 plan.kernel.clone()
-                            } else {
+                            } else if kernels.contains_key(default_kernel_name) {
                                 default_kernel_name.to_string()
+                            } else {
+                                let err_msg = format!(
+                                    "internal error: dispatcher named kernel '{}' \
+                                     not present in engine.geometry_kernels; default \
+                                     '{default_kernel_name}' also absent",
+                                    plan.kernel,
+                                );
+                                diagnostics.push(
+                                    Diagnostic::error(err_msg.clone()).with_label(
+                                        DiagnosticLabel::new(
+                                            realization_span,
+                                            "in this realization",
+                                        ),
+                                    ),
+                                );
+                                if kernel_error_out.is_none() {
+                                    *kernel_error_out = Some(ErrorRef::new(err_msg));
+                                }
+                                break;
                             }
                         }
                         Some(_) => {
@@ -2353,33 +2402,36 @@ impl Engine {
                             }
                         }
                     };
-                    let kernel: &mut dyn GeometryKernel = match kernels
+                    // Amendment round 2 (suggestion #3): the
+                    // `resolved_kernel_name` match arms above each guarantee
+                    // `kernels.contains_key(resolved_kernel_name)`:
+                    //
+                    // - 0-conversion arm: routes to `plan.kernel` only when
+                    //   `contains_key(plan.kernel)`; falls back to
+                    //   `default_kernel_name` only when
+                    //   `contains_key(default_kernel_name)`; otherwise
+                    //   `break`s the op loop with a diagnostic.
+                    // - Non-empty-conversion arm: `break`s before reaching
+                    //   here.
+                    // - `None` arm (backward-compat): falls back to
+                    //   `default_kernel_name` only when
+                    //   `contains_key(default_kernel_name)`; otherwise
+                    //   `break`s the op loop with a diagnostic.
+                    //
+                    // So the `.expect` below is honest: a panic here would
+                    // imply a key was removed from `kernels` between the
+                    // `contains_key` guard and this `get_mut`, which the
+                    // executor never does. Mirrors the post-loop `.expect`
+                    // idiom at engine_build.rs:967 / :2626 for the same
+                    // invariant on the default kernel.
+                    let kernel: &mut dyn GeometryKernel = kernels
                         .get_mut(resolved_kernel_name.as_str())
-                    {
-                        Some(k) => k.as_mut(),
-                        None => {
-                            // Internal-consistency violation: dispatch
-                            // returned a kernel name, but neither it nor the
-                            // default kernel name maps to an entry in
-                            // `kernels`. The builder's constructors
-                            // (`with_prelude`, `with_registered_kernels`)
-                            // make this impossible; emit a hard error to
-                            // surface any future regression and break the
-                            // op loop.
-                            let err_msg = format!(
-                                "internal error: dispatcher named kernel '{resolved_kernel_name}' \
-                                 not present in engine.geometry_kernels; default '{default_kernel_name}' \
-                                 also absent",
-                            );
-                            diagnostics.push(Diagnostic::error(err_msg.clone()).with_label(
-                                DiagnosticLabel::new(realization_span, "in this realization"),
-                            ));
-                            if kernel_error_out.is_none() {
-                                *kernel_error_out = Some(ErrorRef::new(err_msg));
-                            }
-                            break;
-                        }
-                    };
+                        .expect(
+                            "resolved_kernel_name is guaranteed to be a key in `kernels` by \
+                             the preceding match arms (each gates its fallback on \
+                             `contains_key`); the executor never removes entries from the map",
+                        )
+                        .as_mut();
 
                     match kernel.execute_with_history(&geom_op) {
                         Ok((handle, attribute_history)) => {

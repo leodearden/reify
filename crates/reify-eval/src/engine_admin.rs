@@ -498,34 +498,59 @@ impl Engine {
     /// contract. The event fires only when a [`tracing::Subscriber`] is installed,
     /// so bare tests and binaries that install no subscriber are unaffected.
     ///
-    /// # Construction cost (task ε / 3436 amendment)
+    /// # Construction cost (task ε / 3436, amendment round 2)
     ///
-    /// **Note**: as of v0.3-ε this alias delegates to
-    /// [`Self::with_registered_kernels`], which instantiates **every**
-    /// registered adapter (calls each `KernelRegistration::factory`), not just
-    /// the lex-min-picked one. In an OCCT-only build the registered set is
-    /// just `"occt"` so the cost is unchanged — but the moment a second adapter
-    /// (e.g. `"manifold"`, `"fidget"`, `"openvdb"`) lands in the inventory,
-    /// every legacy caller of `with_registered_kernel` silently pays the
-    /// allocation + steady-state memory cost for the additional adapter even
-    /// though it never reads through to it. PRD §9 Q9.1 defers the
-    /// `#[deprecated]` attribute + caller migration to v0.4; if a heavyweight
-    /// adapter ships before then, that deprecation timing should be reassessed
-    /// (or this alias should revert to instantiating only the picked entry —
-    /// the reviewer's option (b)). The drift is intentional and recorded here
-    /// so callers and reviewers see it from the type's surface alone.
+    /// **This alias instantiates only the lex-min-picked adapter, not every
+    /// registered one**, mirroring the historical pre-ε single-pick semantics.
+    /// PRD §9 Q9.1 keeps the alias in place through v0.3.x and schedules its
+    /// removal (with the `#[deprecated]` attribute + caller migration) for
+    /// v0.4 — a v0.4 follow-up task SHOULD be filed when that release cycle
+    /// opens, but no such task exists yet because no v0.4-tracked work has
+    /// been queued.
+    ///
+    /// Round 1 of this task's amendment cycle initially delegated to
+    /// [`Self::with_registered_kernels`] (which factory-instantiates every
+    /// adapter). Round 2 reviewer feedback (catalogued in the task plan)
+    /// flagged the latent regression: in an OCCT-only build the two paths are
+    /// identical, but the moment a second adapter (`"manifold"`, `"fidget"`,
+    /// `"openvdb"`) lands in the inventory, every legacy caller of
+    /// `with_registered_kernel` would silently allocate and hold the extra
+    /// adapter even though it never reads through to it. Reverting the alias
+    /// to single-pick keeps the cost identical to v0.2 until the v0.4
+    /// deprecation cycle migrates call sites to
+    /// [`Self::with_registered_kernels`] explicitly.
+    ///
+    /// Runtime behaviour is unchanged from the round-1 alias: the BRep-
+    /// preferring lex-min picker is invariant under "load all then pick" vs
+    /// "pick then load one" — both yield the same kernel name. The selection
+    /// event is still emitted exactly once per construction (the
+    /// `engine_with_registered_kernel_emits_one_selection_event` integration
+    /// pin continues to assert this).
     pub fn with_registered_kernel(constraint_checker: Box<dyn ConstraintChecker>) -> Self {
-        // Task ε (3436): now a thin alias delegating to the multi-handle
-        // `with_registered_kernels` constructor. In an OCCT-only build the
-        // loaded set is just `"occt"`, so the BRep-preferring lex-min pick
-        // (used to populate `default_kernel_name`) selects the same entry the
-        // historical single-pick constructor returned — runtime behaviour for
-        // existing reify-cli / gui call sites is preserved. PRD §9 open
-        // question Q9.1 (deprecation cycle) defers the `#[deprecated]`
-        // attribute and call-site migration to v0.4; v0.3-ε keeps the alias
-        // plain so adding it does not pull cross-crate call sites out of
-        // reify-eval's module scope on a `deny(warnings)` build.
-        Self::with_registered_kernels(constraint_checker)
+        // Amendment round 2 (task ε / 3436): pick the lex-min BRep-capable
+        // entry from the inventory and instantiate only it, then forward to
+        // `with_prelude` (which wraps it under `DEFAULT_KERNEL_NAME` via the
+        // single-kernel `Option<Box<dyn GeometryKernel>>` API). This restores
+        // pre-ε single-pick allocation cost so additional adapter
+        // registrations cannot silently regress legacy callers (reify-cli,
+        // gui-tauri, integration tests that route through this constructor).
+        //
+        // The selection event is emitted directly here rather than via
+        // `with_registered_kernels` because we are bypassing the
+        // load-all-then-pick path. Total count is the full inventory size so
+        // operators still see the INFO-level tie-break notification when
+        // multiple adapters are registered.
+        let picked = crate::kernel_registry::pick_lexmin_brep_kernel();
+        let total = crate::kernel_registry::registry().len();
+        if let Some(reg) = picked {
+            crate::kernel_registry::emit_kernel_selection(reg.name, total);
+        }
+        let single_kernel: Option<Box<dyn GeometryKernel>> = picked.map(|reg| (reg.factory)());
+        Self::with_prelude(
+            constraint_checker,
+            single_kernel,
+            reify_compiler::stdlib_loader::load_stdlib(),
+        )
     }
 
     /// Construct an Engine using the inventory-driven multi-kernel registry,
