@@ -99,6 +99,13 @@ export function Viewport(props: ViewportProps) {
       };
       // Register in the map so sibling viewports don't clobber each other.
       window.__REIFY_DEBUG__.viewports ??= {};
+      if (import.meta.env.DEV && window.__REIFY_DEBUG__.viewports[props.viewportId]) {
+        console.warn(
+          `[Reify debug] Viewport "${props.viewportId}" is already registered in __REIFY_DEBUG__.viewports. ` +
+          `A second <Viewport viewportId="${props.viewportId}"> is overwriting the first — ` +
+          `check DualViewport for duplicate ids.`,
+        );
+      }
       window.__REIFY_DEBUG__.viewports[props.viewportId] = debugEntry;
       // Keep the legacy single slot so direct-stub-injection tests still work.
       window.__REIFY_DEBUG__.viewport = debugEntry;

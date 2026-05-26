@@ -947,117 +947,36 @@ mod tests {
         assert_eq!(via_dispatch, direct, "dispatch_stateless_tool must delegate to handle_morph_stats");
     }
 
-    // step-5 RED: five tools must expose optional viewportId in their schemas
-    // All five fail until step-6 adds viewportId to the tool_defs() schemas.
-
+    // step-5 RED → GREEN: all five viewport-aware tools must expose an optional
+    // viewportId property in their schemas. Consolidated into one table-driven test
+    // so adding a sixth tool is a one-line change (amend: suggestion-4).
     #[test]
-    fn tool_defs_viewport_state_has_optional_viewport_id() {
+    fn viewport_aware_tools_expose_optional_viewport_id() {
         let defs = tool_defs();
-        let entry = defs
-            .iter()
-            .find(|t| t.name == "viewport_state")
-            .expect("viewport_state must be present in tool_defs()");
-
-        let schema = &entry.input_schema;
-        assert_eq!(
-            schema["properties"]["viewportId"]["type"].as_str(),
-            Some("string"),
-            "properties.viewportId.type must be 'string'"
-        );
-        // viewportId must NOT be required
-        if let Some(required) = schema["required"].as_array() {
-            assert!(
-                !required.iter().any(|v| v.as_str() == Some("viewportId")),
-                "'viewportId' must NOT be listed in required"
+        let tools = [
+            "viewport_state",
+            "screenshot",
+            "screenshot_window",
+            "fit_to_view",
+            "set_camera",
+        ];
+        for tool_name in tools {
+            let entry = defs
+                .iter()
+                .find(|t| t.name == tool_name)
+                .unwrap_or_else(|| panic!("{tool_name} must be present in tool_defs()"));
+            let schema = &entry.input_schema;
+            assert_eq!(
+                schema["properties"]["viewportId"]["type"].as_str(),
+                Some("string"),
+                "{tool_name}: properties.viewportId.type must be 'string'"
             );
-        }
-    }
-
-    #[test]
-    fn tool_defs_screenshot_has_optional_viewport_id() {
-        let defs = tool_defs();
-        let entry = defs
-            .iter()
-            .find(|t| t.name == "screenshot")
-            .expect("screenshot must be present in tool_defs()");
-
-        let schema = &entry.input_schema;
-        assert_eq!(
-            schema["properties"]["viewportId"]["type"].as_str(),
-            Some("string"),
-            "properties.viewportId.type must be 'string'"
-        );
-        if let Some(required) = schema["required"].as_array() {
-            assert!(
-                !required.iter().any(|v| v.as_str() == Some("viewportId")),
-                "'viewportId' must NOT be listed in required"
-            );
-        }
-    }
-
-    #[test]
-    fn tool_defs_screenshot_window_has_optional_viewport_id() {
-        let defs = tool_defs();
-        let entry = defs
-            .iter()
-            .find(|t| t.name == "screenshot_window")
-            .expect("screenshot_window must be present in tool_defs()");
-
-        let schema = &entry.input_schema;
-        assert_eq!(
-            schema["properties"]["viewportId"]["type"].as_str(),
-            Some("string"),
-            "properties.viewportId.type must be 'string'"
-        );
-        if let Some(required) = schema["required"].as_array() {
-            assert!(
-                !required.iter().any(|v| v.as_str() == Some("viewportId")),
-                "'viewportId' must NOT be listed in required"
-            );
-        }
-    }
-
-    #[test]
-    fn tool_defs_fit_to_view_has_optional_viewport_id() {
-        let defs = tool_defs();
-        let entry = defs
-            .iter()
-            .find(|t| t.name == "fit_to_view")
-            .expect("fit_to_view must be present in tool_defs()");
-
-        let schema = &entry.input_schema;
-        assert_eq!(
-            schema["properties"]["viewportId"]["type"].as_str(),
-            Some("string"),
-            "properties.viewportId.type must be 'string'"
-        );
-        if let Some(required) = schema["required"].as_array() {
-            assert!(
-                !required.iter().any(|v| v.as_str() == Some("viewportId")),
-                "'viewportId' must NOT be listed in required"
-            );
-        }
-    }
-
-    #[test]
-    fn tool_defs_set_camera_has_optional_viewport_id() {
-        let defs = tool_defs();
-        let entry = defs
-            .iter()
-            .find(|t| t.name == "set_camera")
-            .expect("set_camera must be present in tool_defs()");
-
-        let schema = &entry.input_schema;
-        assert_eq!(
-            schema["properties"]["viewportId"]["type"].as_str(),
-            Some("string"),
-            "properties.viewportId.type must be 'string'"
-        );
-        if let Some(required) = schema["required"].as_array() {
-            assert!(
-                !required.iter().any(|v| v.as_str() == Some("viewportId")),
-                "'viewportId' must NOT be listed in required"
-            );
+            if let Some(required) = schema["required"].as_array() {
+                assert!(
+                    !required.iter().any(|v| v.as_str() == Some("viewportId")),
+                    "{tool_name}: 'viewportId' must NOT be listed in required"
+                );
+            }
         }
     }
 }

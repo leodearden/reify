@@ -974,265 +974,125 @@ describe('debug bridge pickViewport selection', () => {
     return JSON.parse(payload.result);
   }
 
-  // ── viewport_state ─────────────────────────────────────────────────────────
+  /**
+   * Generate the standard four pickViewport scenarios for a viewport-mediated tool.
+   * Scenarios (c) and (d) are identical across tools and handled generically here.
+   * Scenarios (a) and (b) accept assertion callbacks so per-tool spies can be checked.
+   * Adding coverage for a new tool is a single call site below (amend: suggestion-5).
+   */
+  type StubPopulated = ReturnType<typeof makePopulatedStub>;
+  type StubEmpty = ReturnType<typeof makeEmptyStub>;
+  function describePickViewportScenarios(
+    toolName: string,
+    baseParams: Record<string, unknown>,
+    idBase: number,
+    assertExplicit: (populated: StubPopulated, empty: StubEmpty, result: any) => void,
+    assertPopulatedFirst: (populated: StubPopulated, empty: StubEmpty, result: any) => void,
+  ) {
+    describe(toolName, () => {
+      it('(a) explicit viewportId targets that viewport', async () => {
+        const stores = makeStores();
+        await initDebugBridge(stores);
+        const populated = makePopulatedStub();
+        const empty = makeEmptyStub();
+        window.__REIFY_DEBUG__!.viewports = {
+          'def-preview': empty as any,
+          'design-main': populated as any,
+        };
+        const result = await dispatchCmd(idBase, toolName, { ...baseParams, viewportId: 'design-main' });
+        assertExplicit(populated, empty, result);
+      });
 
-  describe('viewport_state', () => {
-    it('(a) explicit viewportId targets that viewport', async () => {
-      const stores = makeStores();
-      await initDebugBridge(stores);
-      const populated = makePopulatedStub();
-      const empty = makeEmptyStub();
-      window.__REIFY_DEBUG__!.viewports = {
-        'def-preview': empty as any,
-        'design-main': populated as any,
-      };
+      it('(b) no viewportId → picks first populated viewport', async () => {
+        const stores = makeStores();
+        await initDebugBridge(stores);
+        const empty = makeEmptyStub();
+        const populated = makePopulatedStub();
+        // def-preview (empty) registered first — populated should win
+        window.__REIFY_DEBUG__!.viewports = {
+          'def-preview': empty as any,
+          'design-main': populated as any,
+        };
+        const result = await dispatchCmd(idBase + 1, toolName, baseParams);
+        assertPopulatedFirst(populated, empty, result);
+      });
 
-      const result = await dispatchCmd(500, 'viewport_state', { viewportId: 'design-main' });
-      expect(result.meshCount).toBe(1);
+      it('(c) unknown viewportId → returns error', async () => {
+        const stores = makeStores();
+        await initDebugBridge(stores);
+        window.__REIFY_DEBUG__!.viewports = { 'design-main': makePopulatedStub() as any };
+        const result = await dispatchCmd(idBase + 2, toolName, { ...baseParams, viewportId: 'nope' });
+        expect(result).toHaveProperty('error');
+      });
+
+      it('(d) no viewports and no legacy viewport → viewport not ready', async () => {
+        const stores = makeStores();
+        await initDebugBridge(stores);
+        const result = await dispatchCmd(idBase + 3, toolName, baseParams);
+        expect(result).toEqual({ error: 'viewport not ready' });
+      });
     });
+  }
 
-    it('(b) no viewportId → picks first populated viewport', async () => {
-      const stores = makeStores();
-      await initDebugBridge(stores);
-      const empty = makeEmptyStub();
-      const populated = makePopulatedStub();
-      // def-preview (empty) registered first — but populated should win
-      window.__REIFY_DEBUG__!.viewports = {
-        'def-preview': empty as any,
-        'design-main': populated as any,
-      };
+  // Camera params reused by set_camera cases.
+  const camParams = { position: [1, 2, 3], target: [0, 0, 0], up: [0, 0, 1], zoom: 1.5 };
 
-      const result = await dispatchCmd(501, 'viewport_state', {});
-      expect(result.meshCount).toBe(1);
-    });
+  // ── viewport_state (ids 500–503) ────────────────────────────────────────────
+  describePickViewportScenarios('viewport_state', {}, 500,
+    (_p, _e, result) => { expect(result.meshCount).toBe(1); },
+    (_p, _e, result) => { expect(result.meshCount).toBe(1); },
+  );
 
-    it('(c) unknown viewportId → returns error', async () => {
-      const stores = makeStores();
-      await initDebugBridge(stores);
-      window.__REIFY_DEBUG__!.viewports = { 'design-main': makePopulatedStub() as any };
-
-      const result = await dispatchCmd(502, 'viewport_state', { viewportId: 'nonexistent' });
-      expect(result).toHaveProperty('error');
-    });
-
-    it('(d) no viewports and no legacy viewport → viewport not ready', async () => {
-      const stores = makeStores();
-      await initDebugBridge(stores);
-      // viewports not set; legacy ctx.viewport not set
-
-      const result = await dispatchCmd(503, 'viewport_state', {});
-      expect(result).toEqual({ error: 'viewport not ready' });
-    });
-  });
-
-  // ── screenshot ─────────────────────────────────────────────────────────────
-
-  describe('screenshot', () => {
-    it('(a) explicit viewportId targets that viewport', async () => {
-      const stores = makeStores();
-      await initDebugBridge(stores);
-      const populatedA = makePopulatedStub();
-      const emptyB = makeEmptyStub();
-      window.__REIFY_DEBUG__!.viewports = {
-        'def-preview': emptyB as any,
-        'design-main': populatedA as any,
-      };
-
-      await dispatchCmd(510, 'screenshot', { viewportId: 'design-main' });
-      expect(populatedA._rendererRender).toHaveBeenCalledWith(populatedA.scene, populatedA.camera);
-      expect(emptyB._rendererRender).not.toHaveBeenCalled();
-    });
-
-    it('(b) no viewportId → picks first populated viewport', async () => {
-      const stores = makeStores();
-      await initDebugBridge(stores);
-      const empty = makeEmptyStub();
-      const populated = makePopulatedStub();
-      window.__REIFY_DEBUG__!.viewports = {
-        'def-preview': empty as any,
-        'design-main': populated as any,
-      };
-
-      await dispatchCmd(511, 'screenshot', {});
-      expect(populated._rendererRender).toHaveBeenCalled();
-      expect(empty._rendererRender).not.toHaveBeenCalled();
-    });
-
-    it('(c) unknown viewportId → returns error', async () => {
-      const stores = makeStores();
-      await initDebugBridge(stores);
-      window.__REIFY_DEBUG__!.viewports = { 'design-main': makePopulatedStub() as any };
-
-      const result = await dispatchCmd(512, 'screenshot', { viewportId: 'nope' });
-      expect(result).toHaveProperty('error');
-    });
-
-    it('(d) no viewports and no legacy viewport → viewport not ready', async () => {
-      const stores = makeStores();
-      await initDebugBridge(stores);
-
-      const result = await dispatchCmd(513, 'screenshot', {});
-      expect(result).toEqual({ error: 'viewport not ready' });
-    });
-  });
-
-  // ── screenshot_window ──────────────────────────────────────────────────────
-
-  describe('screenshot_window', () => {
-    it('(a) explicit viewportId targets that viewport', async () => {
-      const stores = makeStores();
-      await initDebugBridge(stores);
-      const populated = makePopulatedStub();
-      const empty = makeEmptyStub();
-      window.__REIFY_DEBUG__!.viewports = {
-        'def-preview': empty as any,
-        'design-main': populated as any,
-      };
-
-      await dispatchCmd(520, 'screenshot_window', { viewportId: 'design-main' });
+  // ── screenshot (ids 510–513) ────────────────────────────────────────────────
+  describePickViewportScenarios('screenshot', {}, 510,
+    (populated, empty) => {
       expect(populated._rendererRender).toHaveBeenCalledWith(populated.scene, populated.camera);
       expect(empty._rendererRender).not.toHaveBeenCalled();
-    });
-
-    it('(b) no viewportId → picks first populated viewport', async () => {
-      const stores = makeStores();
-      await initDebugBridge(stores);
-      const empty = makeEmptyStub();
-      const populated = makePopulatedStub();
-      window.__REIFY_DEBUG__!.viewports = {
-        'def-preview': empty as any,
-        'design-main': populated as any,
-      };
-
-      await dispatchCmd(521, 'screenshot_window', {});
+    },
+    (populated, empty) => {
       expect(populated._rendererRender).toHaveBeenCalled();
       expect(empty._rendererRender).not.toHaveBeenCalled();
-    });
+    },
+  );
 
-    it('(c) unknown viewportId → returns error', async () => {
-      const stores = makeStores();
-      await initDebugBridge(stores);
-      window.__REIFY_DEBUG__!.viewports = { 'design-main': makePopulatedStub() as any };
+  // ── screenshot_window (ids 520–523) ─────────────────────────────────────────
+  describePickViewportScenarios('screenshot_window', {}, 520,
+    (populated, empty) => {
+      expect(populated._rendererRender).toHaveBeenCalledWith(populated.scene, populated.camera);
+      expect(empty._rendererRender).not.toHaveBeenCalled();
+    },
+    (populated, empty) => {
+      expect(populated._rendererRender).toHaveBeenCalled();
+      expect(empty._rendererRender).not.toHaveBeenCalled();
+    },
+  );
 
-      const result = await dispatchCmd(522, 'screenshot_window', { viewportId: 'nope' });
-      expect(result).toHaveProperty('error');
-    });
-
-    it('(d) no viewports and no legacy viewport → viewport not ready', async () => {
-      const stores = makeStores();
-      await initDebugBridge(stores);
-
-      const result = await dispatchCmd(523, 'screenshot_window', {});
-      expect(result).toEqual({ error: 'viewport not ready' });
-    });
-  });
-
-  // ── fit_to_view ────────────────────────────────────────────────────────────
-
-  describe('fit_to_view', () => {
-    it('(a) explicit viewportId targets that viewport', async () => {
-      const stores = makeStores();
-      await initDebugBridge(stores);
-      const populated = makePopulatedStub();
-      const empty = makeEmptyStub();
-      window.__REIFY_DEBUG__!.viewports = {
-        'def-preview': empty as any,
-        'design-main': populated as any,
-      };
-
-      const result = await dispatchCmd(530, 'fit_to_view', { viewportId: 'design-main' });
+  // ── fit_to_view (ids 530–533) ────────────────────────────────────────────────
+  describePickViewportScenarios('fit_to_view', {}, 530,
+    (populated, empty, result) => {
       expect(result).toEqual({ ok: true });
       expect(populated._fitToView).toHaveBeenCalledTimes(1);
       expect(empty._fitToView).not.toHaveBeenCalled();
-    });
-
-    it('(b) no viewportId → picks first populated viewport', async () => {
-      const stores = makeStores();
-      await initDebugBridge(stores);
-      const empty = makeEmptyStub();
-      const populated = makePopulatedStub();
-      window.__REIFY_DEBUG__!.viewports = {
-        'def-preview': empty as any,
-        'design-main': populated as any,
-      };
-
-      await dispatchCmd(531, 'fit_to_view', {});
+    },
+    (populated, empty) => {
       expect(populated._fitToView).toHaveBeenCalledTimes(1);
       expect(empty._fitToView).not.toHaveBeenCalled();
-    });
+    },
+  );
 
-    it('(c) unknown viewportId → returns error', async () => {
-      const stores = makeStores();
-      await initDebugBridge(stores);
-      window.__REIFY_DEBUG__!.viewports = { 'design-main': makePopulatedStub() as any };
-
-      const result = await dispatchCmd(532, 'fit_to_view', { viewportId: 'nope' });
-      expect(result).toHaveProperty('error');
-    });
-
-    it('(d) no viewports and no legacy viewport → viewport not ready', async () => {
-      const stores = makeStores();
-      await initDebugBridge(stores);
-
-      const result = await dispatchCmd(533, 'fit_to_view', {});
-      expect(result).toEqual({ error: 'viewport not ready' });
-    });
-  });
-
-  // ── set_camera ─────────────────────────────────────────────────────────────
-
-  describe('set_camera', () => {
-    const camParams = { position: [1, 2, 3], target: [0, 0, 0], up: [0, 0, 1], zoom: 1.5 };
-
-    it('(a) explicit viewportId targets that viewport', async () => {
-      const stores = makeStores();
-      await initDebugBridge(stores);
-      const populated = makePopulatedStub();
-      const empty = makeEmptyStub();
-      window.__REIFY_DEBUG__!.viewports = {
-        'def-preview': empty as any,
-        'design-main': populated as any,
-      };
-
-      const result = await dispatchCmd(540, 'set_camera', { ...camParams, viewportId: 'design-main' });
+  // ── set_camera (ids 540–543) ─────────────────────────────────────────────────
+  describePickViewportScenarios('set_camera', camParams, 540,
+    (populated, empty, result) => {
       expect(result.ok).toBe(true);
       expect(populated._cameraPositionSet).toHaveBeenCalledWith(1, 2, 3);
       expect(empty._cameraPositionSet).not.toHaveBeenCalled();
-    });
-
-    it('(b) no viewportId → picks first populated viewport', async () => {
-      const stores = makeStores();
-      await initDebugBridge(stores);
-      const empty = makeEmptyStub();
-      const populated = makePopulatedStub();
-      window.__REIFY_DEBUG__!.viewports = {
-        'def-preview': empty as any,
-        'design-main': populated as any,
-      };
-
-      const result = await dispatchCmd(541, 'set_camera', camParams);
+    },
+    (populated, empty, result) => {
       expect(result.ok).toBe(true);
       expect(populated._cameraPositionSet).toHaveBeenCalledWith(1, 2, 3);
       expect(empty._cameraPositionSet).not.toHaveBeenCalled();
-    });
-
-    it('(c) unknown viewportId → returns error', async () => {
-      const stores = makeStores();
-      await initDebugBridge(stores);
-      window.__REIFY_DEBUG__!.viewports = { 'design-main': makePopulatedStub() as any };
-
-      const result = await dispatchCmd(542, 'set_camera', { ...camParams, viewportId: 'nope' });
-      expect(result).toHaveProperty('error');
-    });
-
-    it('(d) no viewports and no legacy viewport → viewport not ready', async () => {
-      const stores = makeStores();
-      await initDebugBridge(stores);
-
-      const result = await dispatchCmd(543, 'set_camera', camParams);
-      expect(result).toEqual({ error: 'viewport not ready' });
-    });
-  });
+    },
+  );
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

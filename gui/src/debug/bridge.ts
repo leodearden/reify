@@ -3,7 +3,7 @@
 
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
-import type { DebugStores, ReifyDebugContext } from './types';
+import type { DebugStores, DebugViewport, ReifyDebugContext } from './types';
 import { convertRawGuiState } from '../types';
 import type { RawGuiState } from '../types';
 import { Box3, Vector3 } from 'three';
@@ -29,8 +29,6 @@ function validVec3(v: unknown): v is [number, number, number] {
   );
 }
 
-import type { DebugViewport } from './types';
-
 /**
  * Resolve which DebugViewport to target for a given command invocation.
  *
@@ -48,8 +46,11 @@ function pickViewport(
   const id = params.viewportId;
 
   if (id !== undefined) {
+    // Reject non-string values before the lookup so the caller gets a clear
+    // schema-violation message rather than an ambiguous "not registered" error.
+    if (typeof id !== 'string') return { error: 'viewportId must be a string' };
     // Explicit selection — must exist.
-    const vp = ctx.viewports?.[id as string];
+    const vp = ctx.viewports?.[id];
     if (!vp) return { error: `viewport '${id}' not registered` };
     return { viewport: vp };
   }
