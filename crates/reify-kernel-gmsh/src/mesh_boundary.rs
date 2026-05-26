@@ -70,8 +70,77 @@ pub struct EntityAttribution {
     pub vertices: Vec<(GeometryHandleId, [f64; 3])>,
 
     /// Absolute Euclidean-distance tolerance for anchor matching.
-    /// `0.0` disables all matching.
+    ///
+    /// Nearest-anchor matching is unambiguous iff
+    /// `match_tolerance < suggested_match_tolerance()` — i.e., strictly less
+    /// than half the minimum same-dim pairwise anchor spacing.  The producer
+    /// matches each gmsh entity only against same-dimension caller anchors
+    /// (dim-2 against `faces`, dim-1 against `edges`, dim-0 against
+    /// `vertices`), so cross-dim anchor distances are irrelevant for
+    /// ambiguity analysis.
+    ///
+    /// Use [`EntityAttribution::suggested_match_tolerance`] to derive a
+    /// principled safe bound from the anchor geometry; choose any value in
+    /// `(0.0, suggested_match_tolerance())`.
+    ///
+    /// `0.0` disables all matching (results in an empty
+    /// [`BoundaryAssociation`]).
     pub match_tolerance: f64,
+}
+
+impl EntityAttribution {
+    /// Derive a safe upper bound for `match_tolerance` from the anchor
+    /// geometry.
+    ///
+    /// Returns `0.5 × min_same_dim_pairwise_distance`, where the minimum is
+    /// taken independently within each dimension (faces, edges, vertices) and
+    /// then the overall minimum is used.  Nearest-anchor matching is
+    /// unambiguous iff `match_tolerance < suggested_match_tolerance()`:
+    /// any query within tolerance of one anchor is guaranteed to be farther
+    /// from all other same-dim anchors.
+    ///
+    /// Returns [`f64::INFINITY`] when no dimension has ≥ 2 anchors (no
+    /// same-dim ambiguity is possible regardless of tolerance).
+    ///
+    /// Cross-dim spacing is deliberately excluded: the producer matches each
+    /// gmsh entity only against the caller anchors for the **same** dimension,
+    /// so face–edge or face–vertex distances cannot cause mis-assignment.
+    ///
+    /// # Example
+    ///
+    /// For a unit cube (side 1.0, centred at origin) the adjacent face-centre
+    /// distance is √0.5 ≈ 0.707, giving `suggested_match_tolerance` ≈ 0.354.
+    /// The hand-picked `match_tolerance = 0.3` used in the integration tests
+    /// is safely below this bound.
+    pub fn suggested_match_tolerance(&self) -> f64 {
+        let slices: [&[(_, [f64; 3])]; 3] =
+            [self.faces.as_slice(), self.edges.as_slice(), self.vertices.as_slice()];
+        let mut global_min_sq = f64::INFINITY;
+        for anchors in slices {
+            let n = anchors.len();
+            if n < 2 {
+                continue;
+            }
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    let a = anchors[i].1;
+                    let b = anchors[j].1;
+                    let dx = a[0] - b[0];
+                    let dy = a[1] - b[1];
+                    let dz = a[2] - b[2];
+                    let d2 = dx * dx + dy * dy + dz * dz;
+                    if d2 < global_min_sq {
+                        global_min_sq = d2;
+                    }
+                }
+            }
+        }
+        if global_min_sq.is_infinite() {
+            f64::INFINITY
+        } else {
+            0.5 * global_min_sq.sqrt()
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
