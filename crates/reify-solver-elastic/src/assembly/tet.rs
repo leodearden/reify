@@ -61,6 +61,7 @@
 use crate::assembly::ElementStiffness;
 use crate::constitutive::IsotropicElastic;
 use crate::elements::{ReferenceElement, tet_p1::TetP1, tet_p2::TetP2};
+use crate::material_field::MaterialField;
 use crate::math::{MIN_JACOBIAN_DET, inverse_transpose_3x3};
 
 /// Generic element-stiffness assembly: `K_e = ∫ BᵀDB |det J| dV` integrated
@@ -257,6 +258,49 @@ pub fn element_stiffness_p1(
     material: &IsotropicElastic,
 ) -> ElementStiffness {
     element_stiffness_generic(&TetP1, &phys_nodes[..], material)
+}
+
+/// Compute the 12×12 element stiffness for a P1 (linear) tetrahedron with
+/// per-element material sampled from a [`MaterialField`].
+///
+/// Samples `field.material_at(centroid)` once where `centroid` is the
+/// mean of the 4 corner phys nodes (the canonical TetP1 centroid),
+/// computes `d_global = mat.d_matrix_global()`, and dispatches to the
+/// D-agnostic primitive `element_stiffness_generic_with_d_global` —
+/// preserving the legacy `element_stiffness_p1` numerical inner loop
+/// verbatim.
+///
+/// # Foundation β contract (PRD §C4)
+///
+/// When `field = ConstantField { material: AnisotropicMaterial::from_law(&iso,
+/// IDENTITY) }`, the returned `K_e` is **bitwise** equal to
+/// `element_stiffness_p1(phys_nodes, &iso)`. Pinned by
+/// `tests/assembly_anisotropic.rs::tet_p1_with_constant_isotropic_lift_identity_frame_is_bit_identical_to_legacy_p1`.
+pub fn element_stiffness_p1_with_field<F: MaterialField>(
+    phys_nodes: &[[f64; 3]; 4],
+    field: &F,
+) -> ElementStiffness {
+    let centroid = tet_p1_centroid(phys_nodes);
+    let mat = field.material_at(centroid);
+    let d_global = mat.d_matrix_global();
+    element_stiffness_generic_with_d_global(&TetP1, &phys_nodes[..], &d_global)
+}
+
+/// Centroid of a P1 tet — mean of the 4 corner nodes.
+///
+/// Extracted as a small helper so the field-aware wrapper and any future
+/// caller share a single source of truth for the canonical TetP1 centroid
+/// (the same point at which the field is sampled per PRD design decision
+/// 5: "per-element-constant D + zone-conforming refinement").
+#[inline]
+pub(crate) fn tet_p1_centroid(phys_nodes: &[[f64; 3]; 4]) -> [f64; 3] {
+    let mut c = [0.0_f64; 3];
+    for n in phys_nodes {
+        c[0] += n[0];
+        c[1] += n[1];
+        c[2] += n[2];
+    }
+    [0.25 * c[0], 0.25 * c[1], 0.25 * c[2]]
 }
 
 /// Compute the 30×30 element stiffness for a P2 (quadratic) tetrahedron.

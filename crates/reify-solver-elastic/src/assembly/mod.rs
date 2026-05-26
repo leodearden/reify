@@ -20,6 +20,13 @@ pub use global::{
     AssemblyElement, AssemblyMode, OrphanDofsSummary, assemble_global_stiffness,
     detect_orphan_dofs,
 };
+// Task 3778: foundation β — per-element field-aware entry points.
+// The legacy `element_stiffness_p1` / `_p2` / `_hex_p1` / `_wedge_p1`
+// entries are re-exported alongside in step-16 once the full β surface
+// is wired (the hex/wedge legacy entries are already on crate root via
+// the `hex::element_stiffness_hex_p1` / `wedge::element_stiffness_wedge_p1`
+// paths in src/lib.rs).
+pub use tet::element_stiffness_p1_with_field;
 
 #[cfg(test)]
 pub(crate) mod test_support;
