@@ -320,7 +320,7 @@ fn rayleigh_damping_param_shape() {
 ///
 ///   - `frequency          : Real`                 (placeholder for Scalar<Frequency>;
 ///                                                  encoded as Real per plan design-decision-3)
-///   - `shape              : List<Vector3<Real>>`  (mass-normalized eigenvector;
+///   - `shape              : List<Vector3<Dimensionless>>`  (mass-normalized eigenvector;
 ///                                                  dimensionless under Φᵀ·M·Φ = I — NOT a placeholder)
 ///   - `participation_mass : Real`                 (effective modal mass along reference direction)
 ///   - `damping_ratio      : Real`                 (ζ_i derived from Rayleigh α/β, or 0 for undamped)
@@ -346,7 +346,10 @@ fn mode_struct_has_correct_param_shape() {
 
     let expected: &[(&str, Type)] = &[
         ("frequency", Type::Real),
-        ("shape", Type::List(Box::new(Type::vec3(Type::Real)))),
+        (
+            "shape",
+            Type::List(Box::new(Type::vec3(Type::dimensionless_scalar()))),
+        ),
         ("participation_mass", Type::Real),
         ("damping_ratio", Type::Real),
     ];

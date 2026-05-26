@@ -40,11 +40,15 @@
 //      `Frequency` (= s⁻¹) is an SI-derived dimension but has no named scalar
 //      alias yet. Same placeholder pattern as `fea_multi_case.ri::Load.force
 //      : Real` waiting for `Vector3<Force>`.
-//   4. `Mode.shape : List<Vector3<Real>>` is the correct semantics, NOT a
-//      placeholder: mass-normalized eigenvectors are mathematically
-//      dimensionless under `Φᵀ·M·Φ = I` (PRD §4.1 + §7.5).
-//   5. `ModalOptions.reference_direction : Vector3<Real>` is the correct
-//      semantics (unit vector — dimensionless). The constraint
+//   4. `Mode.shape : List<Vector3<Dimensionless>>` is the correct semantics,
+//      NOT a placeholder: mass-normalized eigenvectors are mathematically
+//      dimensionless under `Φᵀ·M·Φ = I` (PRD §4.1 + §7.5). `Real` is a
+//      primitive scalar, not a dimension name, so `Vector3<Real>` is NOT
+//      valid .ri syntax (the `Vector3<Q>` resolver requires `Q` to resolve
+//      to a `DimensionVector`); `Dimensionless` is the dimension-name
+//      spelling that makes the dimensionless claim explicit and resolvable.
+//   5. `ModalOptions.reference_direction : Vector3<Dimensionless>` is the
+//      correct semantics (unit vector — dimensionless). The constraint
 //      `reference_direction.norm() > 0` is NOT expressible in Reify's
 //      `constraint` grammar (method-call on Vector3, not a scalar predicate)
 //      and is deferred to the runtime trampoline (future task ζ), mirroring
@@ -117,4 +121,54 @@ structure def NoDamping : DampingDescriptor { }
 structure def RayleighDamping : DampingDescriptor {
     param alpha : Real
     param beta : Real
+}
+
+// ── Mode ─────────────────────────────────────────────────────────────────────
+
+// `Mode` is one modal eigenpair returned by the modal-analysis solver
+// (PRD §4.1). Solver-populated only — no caller-supplied defaults are
+// meaningful, no scalar constraints (every field is solver-determined
+// from the geometry / boundary conditions / damping).
+//
+// `Mode` coexists with `std.solver.buckling`'s `Mode` (same simple name,
+// different modules). Per-module template storage and the first-wins
+// shadow rule make this safe; if dual-import ambiguity ever surfaces at
+// user call sites, the fallback rename is a one-line `.ri` change. See
+// plan design-decision-6.
+//
+// Field semantics (PRD §4.1):
+//   frequency          — natural frequency ω/(2π) in Hz. Encoded as `Real`
+//                        as a PLACEHOLDER for `Scalar<Frequency>` — the
+//                        named-frequency scalar alias has not landed yet.
+//                        Same placeholder convention as `Load.force : Real`
+//                        waiting for `Vector3<Force>` in
+//                        `fea_multi_case.ri:269-296`.
+//   shape              — mass-normalized eigenvector (Φᵀ·M·Φ = I) reshaped
+//                        as per-node displacement-shaped vectors. Encoded
+//                        as `List<Vector3<Dimensionless>>` — NOT a
+//                        placeholder: per PRD §4.1 + §7.5 a mass-normalized
+//                        mode shape is dimensionless, so the `Dimensionless`
+//                        parameterization is mathematically accurate.
+//                        (`Vector3<Real>` is not valid .ri syntax — the
+//                        `Vector3<Q>` resolver requires `Q` to be a
+//                        dimension name; `Real` is a primitive scalar.)
+//                        (Contrast with
+//                        buckling's `Mode.mode_shape : Field<Point3<Length>,
+//                        Vector3<Length>>` where the Length parameterization
+//                        is a typing convention, not a dimensional claim;
+//                        see solver_buckling.ri:127-145 dimensionality note.)
+//   participation_mass — effective modal mass projected along the user-
+//                        supplied reference_direction (PRD §4.3
+//                        ModalOptions.reference_direction). Used to rank
+//                        modes by importance for a given excitation
+//                        direction.
+//   damping_ratio      — ζ_i for this mode. Equals 0 for an undamped solve
+//                        (`damping = NoDamping()`) or
+//                        (α + β·ω_i²) / (2·ω_i) for proportional damping
+//                        (`damping = RayleighDamping(α, β)`).
+structure def Mode {
+    param frequency : Real
+    param shape : List<Vector3<Dimensionless>>
+    param participation_mass : Real
+    param damping_ratio : Real
 }
