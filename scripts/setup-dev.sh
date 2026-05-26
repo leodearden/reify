@@ -240,6 +240,21 @@ else
     ok "sccache installed"
 fi
 
+# ---------- cargo-nextest ----------
+#
+# scripts/verify.sh runs the non-OCCT workspace test tail through nextest (one
+# global pool over hundreds of test binaries). verify.sh falls back to plain
+# `cargo test` when nextest is absent, so this is a performance dependency, not
+# a hard one — but the orchestrator/hook fast path expects it present.
+
+if cargo nextest --version &>/dev/null; then
+    ok "cargo-nextest $(cargo nextest --version 2>/dev/null | head -1 | awk '{print $2}')"
+else
+    info "Installing cargo-nextest..."
+    cargo install cargo-nextest --locked
+    ok "cargo-nextest installed"
+fi
+
 # ---------- tree-sitter-cli ----------
 
 if command -v tree-sitter &>/dev/null; then
