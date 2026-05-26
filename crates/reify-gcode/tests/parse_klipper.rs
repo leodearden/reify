@@ -6,7 +6,10 @@
 //! signal this task ships — `W_GcodeDialectShaperConflict` emission is
 //! deferred to consumer task ο (`gcode_import`).
 
-use reify_gcode::ast::{GcodeCommand, InputShaper, SetVelocityLimit};
+use reify_gcode::ast::{
+    ArcDirection, ArcMove, GcodeCommand, IgnoredMCode, InputShaper, LinearMove, SetPosition,
+    SetVelocityLimit,
+};
 use reify_gcode::parse_klipper;
 
 #[test]
@@ -68,5 +71,56 @@ fn bare_input_shaper_parses_to_empty_params() {
     assert_eq!(
         ast,
         vec![GcodeCommand::InputShaper(InputShaper { params: vec![] })]
+    );
+}
+
+// Mixed-source-order passthrough: proves that delegation to
+// `marlin::parse_line` works for every non-Klipper command class
+// (LinearMove, ArcMove, SetPosition, IgnoredMCode) and that source
+// order is preserved across the parse output.
+#[test]
+fn mixed_marlin_klipper_passthrough_preserves_order() {
+    let src = "G1 X10 Y5 F1200\n\
+               SET_VELOCITY_LIMIT VELOCITY=150\n\
+               M104 S200\n\
+               G2 X0 Y10 I-2.5 J0\n\
+               G92 E0";
+    let ast = parse_klipper(src).expect("mixed source must parse");
+    assert_eq!(
+        ast,
+        vec![
+            GcodeCommand::LinearMove(LinearMove {
+                rapid: false,
+                x: Some(10.0),
+                y: Some(5.0),
+                z: None,
+                e: None,
+                feedrate: Some(1200.0),
+            }),
+            GcodeCommand::SetVelocityLimit(SetVelocityLimit {
+                params: vec![("VELOCITY".to_string(), "150".to_string())],
+            }),
+            GcodeCommand::IgnoredMCode(IgnoredMCode {
+                code: 104,
+                params_raw: "S200".to_string(),
+            }),
+            GcodeCommand::ArcMove(ArcMove {
+                direction: ArcDirection::Cw,
+                x: Some(0.0),
+                y: Some(10.0),
+                z: None,
+                i: Some(-2.5),
+                j: Some(0.0),
+                k: None,
+                e: None,
+                feedrate: None,
+            }),
+            GcodeCommand::SetPosition(SetPosition {
+                x: None,
+                y: None,
+                z: None,
+                e: Some(0.0),
+            }),
+        ]
     );
 }
