@@ -2926,6 +2926,150 @@ mod tests {
         }
     }
 
+    // ── Value::GeometryHandle variant (task 3604 / GHR-β) ────────────────────
+    mod geometry_handle {
+        use super::*;
+        use crate::identity::RealizationNodeId;
+        use crate::geometry::GeometryHandleId;
+
+        /// Build a `Value::GeometryHandle` with the given realization_ref,
+        /// upstream_values_hash, and kernel_handle.
+        fn gh(entity: &str, index: u32, hash: [u8; 32], kernel_id: u64) -> Value {
+            Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new(entity, index),
+                upstream_values_hash: hash,
+                kernel_handle: GeometryHandleId(kernel_id),
+            }
+        }
+
+        #[test]
+        fn construct_and_destructure() {
+            let v = gh("Bracket", 0, [7u8; 32], 42);
+            match &v {
+                Value::GeometryHandle {
+                    realization_ref,
+                    upstream_values_hash,
+                    kernel_handle,
+                } => {
+                    assert_eq!(realization_ref.entity, "Bracket");
+                    assert_eq!(realization_ref.index, 0);
+                    assert_eq!(upstream_values_hash, &[7u8; 32]);
+                    assert_eq!(kernel_handle, &GeometryHandleId(42));
+                }
+                other => panic!("expected GeometryHandle, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn clone_preserves_all_three_fields() {
+            let v = gh("Bracket", 0, [7u8; 32], 42);
+            let c = v.clone();
+            match (&v, &c) {
+                (
+                    Value::GeometryHandle {
+                        realization_ref: rr_a,
+                        upstream_values_hash: h_a,
+                        kernel_handle: kh_a,
+                    },
+                    Value::GeometryHandle {
+                        realization_ref: rr_b,
+                        upstream_values_hash: h_b,
+                        kernel_handle: kh_b,
+                    },
+                ) => {
+                    assert_eq!(rr_a, rr_b);
+                    assert_eq!(h_a, h_b);
+                    assert_eq!(kh_a, kh_b);
+                }
+                _ => panic!("clone changed variant"),
+            }
+        }
+
+        #[test]
+        fn partial_eq_excludes_kernel_handle() {
+            // Same realization_ref + same hash but different kernel_handle ⇒ equal
+            let a = gh("Bracket", 0, [7u8; 32], 42);
+            let b = gh("Bracket", 0, [7u8; 32], 99);
+            assert_eq!(a, b, "kernel_handle must not participate in PartialEq");
+
+            // Differing upstream_values_hash ⇒ not equal
+            let c = gh("Bracket", 0, [8u8; 32], 42);
+            assert_ne!(a, c, "different upstream_values_hash must produce !=");
+
+            // Differing realization_ref entity ⇒ not equal
+            let d = gh("Hinge", 0, [7u8; 32], 42);
+            assert_ne!(a, d, "different entity must produce !=");
+
+            // Differing realization_ref index ⇒ not equal
+            let e = gh("Bracket", 1, [7u8; 32], 42);
+            assert_ne!(a, e, "different index must produce !=");
+        }
+
+        #[test]
+        fn content_hash_mirrors_partial_eq() {
+            // Equal-by-PartialEq handles ⇒ equal content_hash
+            let a = gh("Bracket", 0, [7u8; 32], 42);
+            let b = gh("Bracket", 0, [7u8; 32], 99); // kernel_handle differs
+            assert_eq!(a, b, "precondition: a == b");
+            assert_eq!(
+                a.content_hash(),
+                b.content_hash(),
+                "kernel_handle-only difference must not affect content_hash"
+            );
+
+            // Different upstream_values_hash ⇒ different content_hash
+            let c = gh("Bracket", 0, [8u8; 32], 42);
+            assert_ne!(
+                a.content_hash(),
+                c.content_hash(),
+                "different upstream_values_hash must produce different content_hash"
+            );
+
+            // Different realization_ref ⇒ different content_hash
+            let d = gh("Hinge", 0, [7u8; 32], 42);
+            assert_ne!(
+                a.content_hash(),
+                d.content_hash(),
+                "different entity must produce different content_hash"
+            );
+        }
+
+        #[test]
+        fn ord_agrees_with_eq() {
+            use std::cmp::Ordering;
+
+            // Equal-by-PartialEq (kernel_handle-only difference) ⇒ cmp returns Equal
+            let a = gh("Bracket", 0, [7u8; 32], 42);
+            let b = gh("Bracket", 0, [7u8; 32], 99);
+            assert_eq!(a, b, "precondition: a == b");
+            assert_eq!(
+                a.cmp(&b),
+                Ordering::Equal,
+                "Ord must return Equal for == handles"
+            );
+
+            // Different upstream_values_hash ⇒ not Equal
+            let c = gh("Bracket", 0, [8u8; 32], 42);
+            assert_ne!(a.cmp(&c), Ordering::Equal);
+
+            // Different entity ⇒ not Equal
+            let d = gh("Hinge", 0, [7u8; 32], 42);
+            assert_ne!(a.cmp(&d), Ordering::Equal);
+        }
+
+        #[test]
+        fn display_format_is_realization_ref_only() {
+            // §9 Q3: format must be `<Geometry: entity#realization[index]>`,
+            // kernel_handle is omitted for golden-test stability.
+            let v = gh("Bracket", 0, [7u8; 32], 42);
+            assert_eq!(
+                format!("{v}"),
+                "<Geometry: Bracket#realization[0]>",
+                "Display must use <Geometry: {{realization_ref}}> with no kernel_handle"
+            );
+        }
+    }
+
     // ── normalize_range_flags unit tests ─────────────────────────────────────
 
     #[test]
