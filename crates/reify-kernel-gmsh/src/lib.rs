@@ -96,11 +96,23 @@ pub use mesh_volume::{MeshSurfaceToVolumeReport, mesh_surface_to_volume_with_dia
 // at the crate root so downstream orchestrators can pattern-match the stub
 // error without re-declaring the literal.
 pub use mesh_profile_2d::{MeshPlane2dResult, STUB_UNAVAILABLE_MARKER, mesh_plane_2d};
-// The NodeAttachment producer (task 3591, PRD mesh-morphing-phase-2 §3.3 task γ)
-// is reached via the `mesh_boundary` module path rather than a crate-root
-// re-export: `BoundaryAttributedReport` embeds a `VolumeMesh` (a `has_gmsh`-only
-// type), so a crate-root re-export would need careful cfg gating. The future
-// consumer (task 2947, engine-wire) imports from `mesh_boundary::` directly.
+// NodeAttachment producer (task 3591 / task 3763, PRD mesh-morphing-phase-2 §3.3).
+//
+// `EntityAttribution` is the input type — constructible in both build modes
+// (analogous to `MeshPlane2dResult`), so the re-export is unconditional.
+//
+// `BoundaryAttributedReport` (report type) and its sole constructor
+// `mesh_surface_to_volume_with_attribution` are gated on `has_gmsh`, mirroring
+// `MeshSurfaceToVolumeReport` / `mesh_surface_to_volume_with_diagnostics` above:
+// the constructor calls into the real gmsh FFI build, and exposing a type whose
+// only constructor is `has_gmsh`-gated at the crate root in stub builds would
+// mislead callers.
+//
+// Note: `VolumeMesh` is an unconditional `reify_types` type (not `has_gmsh`-only);
+// see the import comment in `mesh_boundary.rs` and the `mesh_volume.rs` precedent.
+pub use mesh_boundary::EntityAttribution;
+#[cfg(has_gmsh)]
+pub use mesh_boundary::{BoundaryAttributedReport, mesh_surface_to_volume_with_attribution};
 pub use options::MeshingOptions;
 // Task 2999: a-posteriori volume mesh refinement driven by per-element size
 // hints (PRD docs/prds/v0_4/a-posteriori-error-estimation.md task #2).
