@@ -6,7 +6,11 @@
 //! `Cargo.toml` activates it for all integration test binaries automatically.
 #![cfg(feature = "mesh-morph")]
 
-use reify_kernel_gmsh::mesh_boundary::EntityAttribution;
+// Crate-root re-exports (added by task 3763 / step-7).  If either import
+// fails, step-7 has not landed yet: add `pub use mesh_boundary::EntityAttribution`
+// (unconditional) and `#[cfg(has_gmsh)] pub use mesh_boundary::{BoundaryAttributedReport,
+// mesh_surface_to_volume_with_attribution}` to lib.rs.
+use reify_kernel_gmsh::EntityAttribution;
 use reify_types::{GeometryHandleId, Mesh, NodeAttachment};
 
 // ---------------------------------------------------------------------------
@@ -118,7 +122,7 @@ fn entity_attribution_stores_anchor_positions_and_handles() {
 #[cfg(has_gmsh)]
 #[test]
 fn mesh_surface_to_volume_with_attribution_attributes_surface_nodes_by_brep_entity() {
-    use reify_kernel_gmsh::mesh_boundary::mesh_surface_to_volume_with_attribution;
+    use reify_kernel_gmsh::mesh_surface_to_volume_with_attribution;
     use reify_kernel_gmsh::MeshingOptions;
     use reify_types::ElementOrderTag;
     use std::collections::BTreeSet;
@@ -215,4 +219,382 @@ fn mesh_surface_to_volume_with_attribution_attributes_surface_nodes_by_brep_enti
         "expected exactly the 8 cube-corner handles 301..=308 as OnVertex, \
          got {on_vertex_handles:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Edge/face attribution geometric correctness (characterization, has_gmsh)
+// ---------------------------------------------------------------------------
+
+/// Edge/face attribution geometric correctness: every attributed boundary
+/// node must lie on the geometric locus of its attributed B-rep handle.
+///
+/// For the unit cube: faces fix one coordinate axis at ±0.5, edges fix two
+/// axes, vertices all three.  The locus predicate: for each axis `i` where
+/// `|anchor[i]| > 0.25` (i.e., the anchor sits at ≈ ±0.5), the attributed
+/// node's `coord[i]` must be within 1e-3 of `anchor[i]`.
+///
+/// Characterization test: expected GREEN on the current producer (gmsh's
+/// classify_surfaces sub-entities are genuine B-rep entities).  If RED, a
+/// real mis-attribution has been found (e.g. a gmsh dim-1 seam spanning a
+/// face matched to an edge handle) — investigate matching; do NOT relax the
+/// locus predicate to hide the failure.
+///
+/// Also pins the complete distinct handle sets: OnEdge ≡ {201..=212} and
+/// OnFace ≡ {101..=106}.  A gmsh version change that produces a different
+/// topology should be reflected here with a re-characterization comment
+/// (task 3763).
+#[cfg(has_gmsh)]
+#[test]
+fn attributed_boundary_nodes_lie_on_locus_of_attributed_handle() {
+    use reify_kernel_gmsh::mesh_surface_to_volume_with_attribution;
+    use reify_kernel_gmsh::MeshingOptions;
+    use reify_types::ElementOrderTag;
+    use std::collections::{BTreeSet, HashMap};
+
+    let surface = subdivided_unit_cube_surface();
+
+    // Same attribution as the signal test.
+    let attribution = EntityAttribution {
+        faces: vec![
+            (h(101), [ 0.0,  0.0, -0.5]),
+            (h(102), [ 0.0,  0.0,  0.5]),
+            (h(103), [ 0.0, -0.5,  0.0]),
+            (h(104), [ 0.0,  0.5,  0.0]),
+            (h(105), [-0.5,  0.0,  0.0]),
+            (h(106), [ 0.5,  0.0,  0.0]),
+        ],
+        edges: vec![
+            (h(201), [ 0.0, -0.5, -0.5]),
+            (h(202), [-0.5,  0.0, -0.5]),
+            (h(203), [ 0.5,  0.0, -0.5]),
+            (h(204), [ 0.0,  0.5, -0.5]),
+            (h(205), [ 0.0, -0.5,  0.5]),
+            (h(206), [-0.5,  0.0,  0.5]),
+            (h(207), [ 0.5,  0.0,  0.5]),
+            (h(208), [ 0.0,  0.5,  0.5]),
+            (h(209), [-0.5, -0.5,  0.0]),
+            (h(210), [ 0.5, -0.5,  0.0]),
+            (h(211), [-0.5,  0.5,  0.0]),
+            (h(212), [ 0.5,  0.5,  0.0]),
+        ],
+        vertices: vec![
+            (h(301), [-0.5, -0.5, -0.5]),
+            (h(302), [ 0.5, -0.5, -0.5]),
+            (h(303), [-0.5,  0.5, -0.5]),
+            (h(304), [ 0.5,  0.5, -0.5]),
+            (h(305), [-0.5, -0.5,  0.5]),
+            (h(306), [ 0.5, -0.5,  0.5]),
+            (h(307), [-0.5,  0.5,  0.5]),
+            (h(308), [ 0.5,  0.5,  0.5]),
+        ],
+        match_tolerance: 0.3,
+    };
+
+    // Build handle → anchor lookup for the locus predicate.
+    let mut handle_to_anchor: HashMap<u64, [f64; 3]> = HashMap::new();
+    for (hid, anchor) in attribution
+        .faces
+        .iter()
+        .chain(&attribution.edges)
+        .chain(&attribution.vertices)
+    {
+        handle_to_anchor.insert(hid.0, *anchor);
+    }
+
+    let report = mesh_surface_to_volume_with_attribution(
+        &surface,
+        &MeshingOptions { mesh_size: None, deterministic: true, ..Default::default() },
+        ElementOrderTag::P1,
+        None,
+        None,
+        None,
+        &attribution,
+    )
+    .expect("mesh_surface_to_volume_with_attribution must succeed on a closed unit cube");
+
+    let verts = &report.volume.vertices;
+    let mut on_edge_handles: BTreeSet<u64> = BTreeSet::new();
+    let mut on_face_handles: BTreeSet<u64> = BTreeSet::new();
+
+    for (idx, attachment) in report.boundary.iter() {
+        // Extract node position from the volume mesh (f32 → f64 for comparison).
+        let node = [
+            verts[idx as usize * 3] as f64,
+            verts[idx as usize * 3 + 1] as f64,
+            verts[idx as usize * 3 + 2] as f64,
+        ];
+
+        let handle_id = match attachment {
+            NodeAttachment::OnFace(hid) => {
+                on_face_handles.insert(hid.0);
+                hid.0
+            }
+            NodeAttachment::OnEdge(hid) => {
+                on_edge_handles.insert(hid.0);
+                hid.0
+            }
+            NodeAttachment::OnVertex(hid) => hid.0,
+            _ => continue,
+        };
+
+        let anchor = *handle_to_anchor.get(&handle_id).unwrap_or_else(|| {
+            panic!("node idx={idx} attributed to unrecognised handle {handle_id}");
+        });
+
+        // Locus predicate: for each axis fixed by this handle (|anchor| ≈ 0.5),
+        // the node must lie on that axis value within 1e-3.
+        for i in 0..3 {
+            if anchor[i].abs() > 0.25 {
+                let diff = (node[i] - anchor[i]).abs();
+                assert!(
+                    diff < 1e-3,
+                    "node idx={idx} attributed to handle {handle_id} \
+                     (anchor={anchor:?}): axis {i} \
+                     node[{i}]={:.6} anchor[{i}]={:.6} diff={:.6} > 1e-3. \
+                     Node does not lie on the attributed handle's geometric locus. \
+                     This is a real mis-attribution — investigate matching or escalate; \
+                     do NOT relax this predicate (task 3763).",
+                    node[i],
+                    anchor[i],
+                    diff,
+                );
+            }
+        }
+    }
+
+    // Pin complete distinct handle sets (characterization: current producer /
+    // current gmsh version).  If a future gmsh version produces a different
+    // topology, update these expected sets and add a re-characterization comment.
+    let expected_edges: BTreeSet<u64> = (201..=212).collect();
+    let expected_faces: BTreeSet<u64> = (101..=106).collect();
+    assert_eq!(
+        on_edge_handles, expected_edges,
+        "expected OnEdge handles {{201..=212}}, got {on_edge_handles:?} (task 3763)"
+    );
+    assert_eq!(
+        on_face_handles, expected_faces,
+        "expected OnFace handles {{101..=106}}, got {on_face_handles:?} (task 3763)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Over-decomposition property-witness (raw FFI, has_gmsh)
+// ---------------------------------------------------------------------------
+
+/// Property-witness: `classify_surfaces(FRAC_PI_4, …)` + `create_geometry`
+/// over-decomposes the 2×2-subdivided unit cube into more sub-entities than
+/// the geometric B-rep count (8 vertices / 12 edges / 6 faces).
+///
+/// This test replicates the classify+create_geometry prefix of
+/// `run_meshing_with_entity_queries` (see `mesh_boundary.rs`) without the
+/// surface-loop / volume / `mesh_generate(3)` suffix, so it runs quickly and
+/// isolates just the topology reconstruction step.
+///
+/// Pinned entity counts (observed on this host):
+///   dim-0 (vertices): 12
+///   dim-1 (edges):    20
+///   dim-2 (faces):    10
+///
+/// If a gmsh upgrade changes these counts, update the expected triple and
+/// leave a comment with the new gmsh version, then re-verify that the
+/// NodeAttachment producer still attributes all 8 cube corners + 12 edges +
+/// 6 faces correctly (`tests/node_attachment_producer.rs` signal test and
+/// locus test — task 3763).
+#[cfg(has_gmsh)]
+#[test]
+fn classify_surfaces_frac_pi_4_over_decomposes_unit_cube() {
+    use reify_kernel_gmsh::{ffi, init};
+    use std::f64::consts::FRAC_PI_4;
+
+    let surface = subdivided_unit_cube_surface();
+    let n_verts = surface.vertices.len() / 3;
+    let n_tris = surface.indices.len() / 3;
+
+    let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    init::ensure_initialized();
+
+    // Replicate the classify+create_geometry prefix of run_meshing_with_entity_queries
+    // (mesh_boundary.rs), stopping before surface-loop + volume + mesh_generate(3).
+    ffi::clear().expect("clear");
+    ffi::option_set_number("General.Terminal", 0.0).expect("terminal off");
+    ffi::model_add("reify_overdecomp_probe").expect("model_add");
+    let surf_tag = ffi::add_discrete_entity(2, &[]).expect("add_discrete_entity");
+
+    let node_tags: Vec<u64> = (1..=n_verts as u64).collect();
+    let coords_f64: Vec<f64> = surface.vertices.iter().map(|&v| v as f64).collect();
+    ffi::add_nodes_2d(surf_tag, &node_tags, &coords_f64).expect("add_nodes_2d");
+
+    let tri_tags: Vec<u64> = (1..=n_tris as u64).collect();
+    let tri_node_tags: Vec<u64> = surface.indices.iter().map(|&i| i as u64 + 1).collect();
+    ffi::add_elements_2d(surf_tag, 2, &tri_tags, &tri_node_tags).expect("add_elements_2d");
+
+    // Same classify_surfaces params as the producer (mesh_boundary.rs lines ~276-282).
+    ffi::classify_surfaces(FRAC_PI_4, 1, 1, FRAC_PI_4, 0).expect("classify_surfaces");
+    ffi::create_geometry(&[]).expect("create_geometry");
+
+    let n0 = ffi::get_entity_tags(0).expect("get_entity_tags(0)").len();
+    let n1 = ffi::get_entity_tags(1).expect("get_entity_tags(1)").len();
+    let n2 = ffi::get_entity_tags(2).expect("get_entity_tags(2)").len();
+
+    let _ = ffi::clear();
+
+    // Geometric unit cube: 8 vertices / 12 edges / 6 faces.
+    // gmsh over-decomposes at FRAC_PI_4 — pinned counts below.
+    // On failure after a gmsh upgrade: update the triple to (n0, n1, n2),
+    // add a comment with the gmsh version, and re-verify NodeAttachment
+    // producer attribution (task 3763).
+    assert_eq!(
+        (n0, n1, n2),
+        (12, 20, 10),
+        "gmsh over-decomposition counts changed from the pinned (12, 20, 10). \
+         Observed: ({n0}, {n1}, {n2}). Update the expected triple and re-verify \
+         NodeAttachment producer attribution (task 3763)."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// suggested_match_tolerance (pure — no gmsh, no cfg gate)
+// ---------------------------------------------------------------------------
+
+/// `suggested_match_tolerance` returns 0.5 × the minimum same-dim pairwise
+/// anchor distance. Two face anchors separated by 1.0 → 0.5.
+/// A single edge anchor (no pair) and empty vertices do not constrain the
+/// minimum, so the result is driven entirely by the face pair.
+#[test]
+fn suggested_match_tolerance_two_faces_returns_half_min_distance() {
+    let ea = EntityAttribution {
+        faces: vec![(h(1), [0.0, 0.0, 0.0]), (h(2), [1.0, 0.0, 0.0])],
+        edges: vec![(h(3), [0.0, 0.0, 0.0])], // single — no same-dim pair
+        vertices: vec![],
+        match_tolerance: 0.0,
+    };
+    let tol = ea.suggested_match_tolerance();
+    let expected = 0.5_f64; // 0.5 × min-same-dim-pairwise (1.0 from faces)
+    assert!(
+        (tol - expected).abs() < 1e-12,
+        "expected {expected}, got {tol}"
+    );
+}
+
+/// `suggested_match_tolerance` returns `f64::INFINITY` when no dimension
+/// has ≥ 2 anchors (no same-dim ambiguity is possible).
+#[test]
+fn suggested_match_tolerance_all_dims_single_anchor_returns_infinity() {
+    let ea = EntityAttribution {
+        faces:    vec![(h(1), [0.0, 0.0, 0.0])],
+        edges:    vec![(h(2), [1.0, 0.0, 0.0])],
+        vertices: vec![(h(3), [2.0, 0.0, 0.0])],
+        match_tolerance: 0.0,
+    };
+    assert!(
+        ea.suggested_match_tolerance().is_infinite(),
+        "expected INFINITY when no dim has ≥ 2 anchors"
+    );
+}
+
+/// `suggested_match_tolerance` returns `f64::INFINITY` when every dimension
+/// is empty.
+#[test]
+fn suggested_match_tolerance_empty_returns_infinity() {
+    let ea = EntityAttribution {
+        faces:    vec![],
+        edges:    vec![],
+        vertices: vec![],
+        match_tolerance: 0.0,
+    };
+    assert!(
+        ea.suggested_match_tolerance().is_infinite(),
+        "expected INFINITY for empty EntityAttribution"
+    );
+}
+
+/// `suggested_match_tolerance` for the unit-cube anchor set yields ≈ 0.354
+/// (= 0.5 × √0.5), confirming that the hand-picked 0.3 is within the safe
+/// bound (no mis-assignment possible on the cube given 0.3 < 0.354).
+#[test]
+fn suggested_match_tolerance_unit_cube_validates_hand_picked_0_3() {
+    let ea = EntityAttribution {
+        faces: vec![
+            (h(101), [ 0.0,  0.0, -0.5]),
+            (h(102), [ 0.0,  0.0,  0.5]),
+            (h(103), [ 0.0, -0.5,  0.0]),
+            (h(104), [ 0.0,  0.5,  0.0]),
+            (h(105), [-0.5,  0.0,  0.0]),
+            (h(106), [ 0.5,  0.0,  0.0]),
+        ],
+        edges: vec![
+            (h(201), [ 0.0, -0.5, -0.5]),
+            (h(202), [-0.5,  0.0, -0.5]),
+            (h(203), [ 0.5,  0.0, -0.5]),
+            (h(204), [ 0.0,  0.5, -0.5]),
+            (h(205), [ 0.0, -0.5,  0.5]),
+            (h(206), [-0.5,  0.0,  0.5]),
+            (h(207), [ 0.5,  0.0,  0.5]),
+            (h(208), [ 0.0,  0.5,  0.5]),
+            (h(209), [-0.5, -0.5,  0.0]),
+            (h(210), [ 0.5, -0.5,  0.0]),
+            (h(211), [-0.5,  0.5,  0.0]),
+            (h(212), [ 0.5,  0.5,  0.0]),
+        ],
+        vertices: vec![
+            (h(301), [-0.5, -0.5, -0.5]),
+            (h(302), [ 0.5, -0.5, -0.5]),
+            (h(303), [-0.5,  0.5, -0.5]),
+            (h(304), [ 0.5,  0.5, -0.5]),
+            (h(305), [-0.5, -0.5,  0.5]),
+            (h(306), [ 0.5, -0.5,  0.5]),
+            (h(307), [-0.5,  0.5,  0.5]),
+            (h(308), [ 0.5,  0.5,  0.5]),
+        ],
+        match_tolerance: 0.3,
+    };
+    let tol = ea.suggested_match_tolerance();
+    // Adjacent face-centre pair distance = √0.5 ≈ 0.7071; same for edge pairs.
+    // Vertex pair min = 1.0. Overall min = √0.5 → 0.5 × √0.5 ≈ 0.35355.
+    let expected = 0.5 * 0.5_f64.sqrt();
+    assert!(
+        (tol - expected).abs() < 1e-6,
+        "expected ≈{expected:.6} (0.5 × √0.5), got {tol:.6}"
+    );
+    // 0.3 must be within the safe bound
+    assert!(
+        0.3 < tol,
+        "hand-picked tolerance 0.3 must be < suggested_match_tolerance ({tol:.6})"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Crate-root re-export API surface (step-6 RED → step-7 GREEN)
+// ---------------------------------------------------------------------------
+
+/// Unconditional: `reify_kernel_gmsh::EntityAttribution` resolves at the
+/// crate root (no `mesh_boundary::` prefix needed).
+#[test]
+fn entity_attribution_available_at_crate_root() {
+    // The top-level `use reify_kernel_gmsh::EntityAttribution;` (added in
+    // step-6) already exercises this.  Construct one here to exercise the
+    // imported name — ensures the compiler sees the import as non-dead.
+    let ea = EntityAttribution {
+        faces:    vec![],
+        edges:    vec![],
+        vertices: vec![],
+        match_tolerance: 0.0,
+    };
+    assert_eq!(ea.faces.len(), 0);
+}
+
+/// cfg(has_gmsh): `BoundaryAttributedReport` and
+/// `mesh_surface_to_volume_with_attribution` resolve at the crate root.
+#[cfg(has_gmsh)]
+#[test]
+fn boundary_attributed_report_and_fn_available_at_crate_root() {
+    use reify_kernel_gmsh::BoundaryAttributedReport;
+
+    // Name the type in a helper signature — sufficient to confirm the
+    // crate-root re-export resolves.
+    fn _assert_type_exists(_: Option<BoundaryAttributedReport>) {}
+
+    // Name the function item — sufficient to confirm it resolves.
+    let _fn_ptr = reify_kernel_gmsh::mesh_surface_to_volume_with_attribution;
+    let _ = _fn_ptr; // suppress unused-variable lint
 }
