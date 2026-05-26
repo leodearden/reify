@@ -708,6 +708,55 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
     }
 }
 
+/// Derive the output [`ReprKind`] for a dispatched op by reading the chosen
+/// kernel's capability descriptor (task ε / 3436, PRD §8 step-6).
+///
+/// Given a [`DispatchPlan`] (whose `kernel` names the BTreeMap-key of the
+/// kernel chosen to run the final op) and the dispatched [`Operation`], look
+/// up `registry[plan.kernel].supports` for the first entry whose first tuple
+/// element equals `op` and return its second tuple element — the output
+/// `ReprKind` the kernel produces. This is the value
+/// [`Engine::execute_realization_ops`] (step-10) will record into the
+/// realization graph node's `produced_repr` field.
+///
+/// **Why the descriptor lookup, not just `demanded`.** [`dispatch`] guarantees
+/// the chosen kernel supports `(op, demanded)` — so in the ε baseline
+/// `demanded == ReprKind::BRep` and this helper trivially returns `BRep`.
+/// However, in future seams (ζ/η/θ) where per-op demanded reprs vary per
+/// kernel choice, the descriptor lookup is the single source of truth for
+/// "what does this kernel actually produce?". Threading the demanded repr
+/// instead would couple the produced-repr write to the dispatcher's input,
+/// hiding mis-declarations in adapter descriptors.
+///
+/// **First-match semantics.** Returns the first matching entry in declaration
+/// order. In v0.3 each kernel declares at most one repr per op (e.g. OCCT
+/// declares `(BooleanUnion, BRep)` only, not also `(BooleanUnion, Mesh)`);
+/// the dispatcher's `current_repr == demanded` invariant
+/// (see [`crate::dispatcher::dispatch`]) enforces this for booleans/modify/
+/// transform/pattern ops, since the same `ReprKind` slot encodes both input
+/// and output. Multi-repr kernels are a forward-looking concern; first-match
+/// is sufficient for ε.
+///
+/// **Returns `None`** when the plan's named kernel is absent from the
+/// registry, or when the kernel's descriptor has no entry for `op`. Both
+/// indicate an invariant violation (dispatch should not have chosen such a
+/// kernel); the caller surfaces this as a diagnostic rather than fabricating
+/// a repr.
+// Wired into `execute_realization_ops` in step-10 (#3436).
+#[allow(dead_code)]
+fn plan_output_repr(
+    registry: &BTreeMap<String, &CapabilityDescriptor>,
+    plan: &DispatchPlan,
+    op: Operation,
+) -> Option<ReprKind> {
+    let descriptor = registry.get(plan.kernel.as_str())?;
+    descriptor
+        .supports
+        .iter()
+        .find(|(o, _)| *o == op)
+        .map(|(_, r)| *r)
+}
+
 impl Engine {
     /// Build geometry from the current snapshot values, without re-calling eval().
     ///
