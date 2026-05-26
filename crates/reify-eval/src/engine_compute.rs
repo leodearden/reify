@@ -274,6 +274,215 @@ mod tests {
         engine.register_compute_fn("test::identity", identity_fn as ComputeFn);
     }
 
+    // ── Step-ε-1: RED — Cancelled/Failed/Completed discrimination ──────────────
+    // These tests call the NEW run_compute_dispatch signature:
+    //   (c_id, outputs, target, value_inputs, realization_inputs, options,
+    //    prior_warm_state, cancellation: &CancellationHandle, version)
+    //   -> Result<(Value, Vec<Diagnostic>), DispatchError>
+    //
+    // They fail to COMPILE until step-2 adds DispatchError + the cancellation
+    // param, making them RED as required by the TDD protocol.
+
+    use crate::cache::{CachedResult, NodeCache, NodeId};
+    use crate::deps::DependencyTrace;
+    use reify_types::{ComputeNodeId, DeterminacyState, Freshness, ValueCellId, VersionId};
+
+    /// Trampoline (a): polls is_cancelled() and returns Cancelled if set,
+    /// otherwise Completed{Int(0)}.
+    fn cancellable_fn(
+        _value_inputs: &[Value],
+        _realization_inputs: &[RealizationReadHandle],
+        _options: &Value,
+        _prior_warm_state: Option<&OpaqueState>,
+        cancellation: &CancellationHandle,
+    ) -> ComputeOutcome {
+        if cancellation.is_cancelled() {
+            ComputeOutcome::Cancelled
+        } else {
+            ComputeOutcome::Completed {
+                result: Value::Int(0),
+                new_warm_state: None,
+                cost_per_byte: None,
+                diagnostics: vec![],
+            }
+        }
+    }
+
+    /// Trampoline (b): always returns Failed with one error diagnostic.
+    fn always_failed_fn(
+        _value_inputs: &[Value],
+        _realization_inputs: &[RealizationReadHandle],
+        _options: &Value,
+        _prior_warm_state: Option<&OpaqueState>,
+        _cancellation: &CancellationHandle,
+    ) -> ComputeOutcome {
+        ComputeOutcome::Failed {
+            diagnostics: vec![reify_types::Diagnostic::error(
+                "test trampoline always fails",
+            )],
+        }
+    }
+
+    /// (a) A pre-cancelled handle → Err(DispatchError::Cancelled) and the
+    /// output VC is left Pending (begin set it; complete was NOT called).
+    #[test]
+    fn run_compute_dispatch_pre_cancelled_returns_dispatch_error_cancelled() {
+        use crate::engine_compute::DispatchError;
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn("test::cancellable_eps1a", cancellable_fn as ComputeFn);
+
+        let cell = ValueCellId::new("T", "b");
+        let c_id = ComputeNodeId::new("T", 0);
+
+        // Seed a Final entry so begin_compute_dispatch has a last_substantive.
+        engine.cache_store_mut().put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Int(99), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        // Pre-cancel the handle before the call.
+        let handle = CancellationHandle::new();
+        handle.cancel();
+
+        let result = engine.run_compute_dispatch(
+            &c_id,
+            std::slice::from_ref(&cell),
+            "test::cancellable_eps1a",
+            &[Value::Int(99)],
+            &[],
+            &Value::Undef,
+            None,
+            &handle, // NEW param — fails to compile until step-2
+            VersionId(2),
+        );
+
+        // Must return Err(DispatchError::Cancelled) — not Err(DispatchError::Failed).
+        assert!(
+            matches!(result, Err(DispatchError::Cancelled)),
+            "pre-cancelled dispatch must return Err(DispatchError::Cancelled), got {result:?}",
+        );
+
+        // VC is left Pending (begin was called; complete was not).
+        let node = NodeId::Value(cell.clone());
+        assert!(
+            matches!(engine.freshness(&node), Freshness::Pending { .. }),
+            "post-cancel VC freshness must be Pending, not Failed or Final",
+        );
+
+        // pending_cause == Some(NodeId::Compute(c_id)).
+        assert_eq!(
+            engine.pending_cause(&node),
+            Some(NodeId::Compute(c_id)),
+            "pending_cause must point at the in-flight ComputeNode",
+        );
+    }
+
+    /// (b) A Failed trampoline → Err(DispatchError::Failed(diags)) with the
+    /// diagnostics preserved; output VC stays Pending.
+    #[test]
+    fn run_compute_dispatch_failed_trampoline_returns_dispatch_error_failed_with_diags() {
+        use crate::engine_compute::DispatchError;
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn("test::always_failed_eps1b", always_failed_fn as ComputeFn);
+
+        let cell = ValueCellId::new("T", "b");
+        let c_id = ComputeNodeId::new("T", 0);
+
+        engine.cache_store_mut().put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Int(7), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        let handle = CancellationHandle::new(); // not cancelled
+
+        let result = engine.run_compute_dispatch(
+            &c_id,
+            std::slice::from_ref(&cell),
+            "test::always_failed_eps1b",
+            &[Value::Int(7)],
+            &[],
+            &Value::Undef,
+            None,
+            &handle, // NEW param — fails to compile until step-2
+            VersionId(2),
+        );
+
+        // Must return Err(DispatchError::Failed) with the trampoline's diagnostics.
+        match result {
+            Err(DispatchError::Failed(diags)) => {
+                assert!(!diags.is_empty(), "Failed must carry diagnostics from the trampoline");
+            }
+            other => panic!("expected Err(DispatchError::Failed(…)), got {other:?}"),
+        }
+
+        // VC is left Pending (begin was called; complete was not).
+        let node = NodeId::Value(cell.clone());
+        assert!(
+            matches!(engine.freshness(&node), Freshness::Pending { .. }),
+            "post-failed-trampoline VC freshness must be Pending, not Final or Failed",
+        );
+    }
+
+    /// (c) Completed trampoline → Ok((result, diags)) and VC flipped to Final
+    /// (regression: the happy path survives the signature change).
+    #[test]
+    fn run_compute_dispatch_completed_trampoline_returns_ok_and_flips_vc_to_final() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn("test::identity_eps1c", identity_fn as ComputeFn);
+
+        let cell = ValueCellId::new("T", "b");
+        let c_id = ComputeNodeId::new("T", 0);
+
+        engine.cache_store_mut().put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Int(5), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        let handle = CancellationHandle::new(); // not cancelled
+
+        let result = engine.run_compute_dispatch(
+            &c_id,
+            std::slice::from_ref(&cell),
+            "test::identity_eps1c",
+            &[Value::Int(5)],
+            &[],
+            &Value::Undef,
+            None,
+            &handle, // NEW param — fails to compile until step-2
+            VersionId(2),
+        );
+
+        // Happy path: Ok with the trampoline's identity result.
+        let (value, diags) = result.expect("completed dispatch must return Ok");
+        assert_eq!(value, Value::Int(5), "identity must return the input unchanged");
+        assert!(diags.is_empty(), "identity emits no diagnostics");
+
+        // VC flipped to Final by complete_compute_dispatch_atomically.
+        let node = NodeId::Value(cell.clone());
+        assert_eq!(
+            engine.freshness(&node),
+            Freshness::Final,
+            "post-completed VC freshness must be Final",
+        );
+    }
+
     // ── Test: ComputeOutcome variants and RealizationReadHandle are nameable ─
     // (compile-time surface pin — ensures the type shapes are as expected)
 
