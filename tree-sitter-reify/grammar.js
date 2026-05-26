@@ -572,7 +572,7 @@ module.exports = grammar({
     param_assignment: $ => seq(
       field('name', $.identifier),
       '=',
-      field('value', $._expression),
+      field('value', $._binding_value),
       optional(field('guard', $.where_clause)),
     ),
 
