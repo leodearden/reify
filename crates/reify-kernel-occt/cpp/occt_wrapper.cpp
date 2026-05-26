@@ -83,6 +83,7 @@
 #include <gp_Vec.hxx>
 #include <gp_Ax1.hxx>
 #include <gp_Ax2.hxx>
+#include <gp_Quaternion.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
 
@@ -2917,6 +2918,86 @@ double min_clearance(const OcctShape& a, const OcctShape& b) {
             throw std::runtime_error("BRepExtrema_DistShapeShape failed");
         }
         return dist.Value();
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Transform-aware distance / interference (kinematic-constraints PRD §6.2 + §9.2)
+// ---------------------------------------------------------------------------
+
+/// Build a `gp_Trsf` from the 7-float `Transform3Props` POD.
+///
+/// Field order in `Transform3Props`: { qw, qx, qy, qz, tx, ty, tz }.
+/// OCCT's `gp_Quaternion` constructor order is (x, y, z, w) — the mapping is explicit.
+static gp_Trsf build_trsf(const Transform3Props& t) {
+    // Quaternion order: OCCT is (x,y,z,w) — Transform3.qw last in the call.
+    gp_Quaternion q(t.qx, t.qy, t.qz, t.qw);
+    gp_Trsf trsf;
+    trsf.SetRotation(q);
+    trsf.SetTranslationPart(gp_Vec(t.tx, t.ty, t.tz));
+    return trsf;
+}
+
+/// Apply `trsf` to `shape` via `BRepBuilderAPI_Transform(…, Standard_False)`.
+///
+/// Copy=Standard_False encodes the transform as a `TopLoc_Location` rather than
+/// baking it into the underlying geometry. The returned shape shares topology
+/// pointers with the original and is transient — it is dropped before any
+/// naming bookkeeping runs, so no PNv2 concerns arise.
+static TopoDS_Shape apply_location_trsf(const TopoDS_Shape& shape, const gp_Trsf& trsf) {
+    BRepBuilderAPI_Transform xform(shape, trsf, Standard_False);
+    xform.Build();
+    if (!xform.IsDone()) {
+        throw std::runtime_error("BRepBuilderAPI_Transform failed");
+    }
+    return xform.Shape();
+}
+
+/// Shared primitive: run `BRepExtrema_DistShapeShape` after pre-composing `t_rel`
+/// into the cheaper-by-topology side.
+///
+/// Topology-size metric: `face_map().Extent() + edge_map().Extent()`.
+/// When |a| ≤ |b| we transform a by t_rel; otherwise we transform b by t_rel.Inverted()
+/// — rigid-invariance guarantees dist(T·A,B) == dist(A,T⁻¹·B).
+static double dist_with_pre_compose(
+    const OcctShape& a,
+    const OcctShape& b,
+    const Transform3Props& t)
+{
+    const gp_Trsf trsf = build_trsf(t);
+
+    // Cheaper-by-topology pick: avoid baking the transform into the larger shape.
+    std::size_t a_extent =
+        static_cast<std::size_t>(a.face_map().Extent()) +
+        static_cast<std::size_t>(a.edge_map().Extent());
+    std::size_t b_extent =
+        static_cast<std::size_t>(b.face_map().Extent()) +
+        static_cast<std::size_t>(b.edge_map().Extent());
+
+    TopoDS_Shape lhs, rhs;
+    if (a_extent <= b_extent) {
+        lhs = apply_location_trsf(a.shape, trsf);
+        rhs = b.shape;
+    } else {
+        // Rigid-invariance: dist(T·A, B) == dist(A, T⁻¹·B).
+        lhs = a.shape;
+        rhs = apply_location_trsf(b.shape, trsf.Inverted());
+    }
+
+    BRepExtrema_DistShapeShape dist(lhs, rhs);
+    if (!dist.IsDone()) {
+        throw std::runtime_error("BRepExtrema_DistShapeShape failed");
+    }
+    return dist.Value();
+}
+
+double distance_with_transform(
+    const OcctShape& a,
+    const OcctShape& b,
+    const Transform3Props& t_rel)
+{
+    return wrap_occt_call("distance_with_transform", [&]() {
+        return dist_with_pre_compose(a, b, t_rel);
     });
 }
 

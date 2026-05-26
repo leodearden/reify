@@ -74,6 +74,22 @@ pub mod ffi {
         duplicate_count: u32,
     }
 
+    /// Rigid-body transform: unit quaternion + translation. POD twin of
+    /// `crate::Transform3` (always-compiled public type) for cxx-bridge transit.
+    ///
+    /// Field order matches `Transform3` exactly: `{ qw, qx, qy, qz, tx, ty, tz }`.
+    /// On the C++ side the conversion to `gp_Quaternion` is explicit:
+    /// `gp_Quaternion(t.qx, t.qy, t.qz, t.qw)` — OCCT takes `(x, y, z, w)`.
+    struct Transform3Props {
+        qw: f64,
+        qx: f64,
+        qy: f64,
+        qz: f64,
+        tx: f64,
+        ty: f64,
+        tz: f64,
+    }
+
     /// Curvature properties at a parametric point on a face surface.
     ///
     /// Returned by `curvature_at`. All direction vectors are unit tangent
@@ -657,6 +673,17 @@ pub mod ffi {
         /// Separate symbol from query_distance for the kinematic-constraints call
         /// site (task 2531; see PRD task 7).
         fn min_clearance(a: &OcctShape, b: &OcctShape) -> Result<f64>;
+
+        /// Minimum BREP distance between `a` and `b` after pre-composing `t_rel`
+        /// into the cheaper-by-topology side (PRD §6.2 + §9.2, task 3841).
+        ///
+        /// The transformed copy uses `BRepBuilderAPI_Transform(…, Standard_False)`
+        /// (TopLoc_Location encoding — no geometry bake, no PNv2 concerns).
+        fn distance_with_transform(
+            a: &OcctShape,
+            b: &OcctShape,
+            t_rel: &Transform3Props,
+        ) -> Result<f64>;
 
         /// Return the closest point on `shape` to the query point (px, py, pz).
         ///

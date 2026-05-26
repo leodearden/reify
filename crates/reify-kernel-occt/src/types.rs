@@ -4,6 +4,36 @@
 //! Re-exported from the crate root so that call sites compile under both
 //! `has_occt` and `!has_occt` without `#[cfg]` noise.
 
+/// Rigid-body transform encoding a unit-quaternion rotation and translation.
+///
+/// Mirrors `Value::Transform { rotation: Orientation { w, x, y, z }, translation: Vector }`
+/// from `crates/reify-types/src/value.rs`. Defined in this always-compiled module so it
+/// is importable under both `has_occt` and `!has_occt` builds without `#[cfg]` noise.
+///
+/// Field order: `{ qw, qx, qy, qz, tx, ty, tz }` — quaternion scalar-first
+/// (`qw + qx·i + qy·j + qz·k`); translation last.
+///
+/// On the C++ side, OCCT's `gp_Quaternion` constructor takes `(x, y, z, w)`, so the
+/// single point of field-order translation is the explicit `gp_Quaternion(t.qx, t.qy,
+/// t.qz, t.qw)` line in `cpp/occt_wrapper.cpp`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Transform3 {
+    /// Quaternion scalar (w) component.
+    pub qw: f64,
+    /// Quaternion x component.
+    pub qx: f64,
+    /// Quaternion y component.
+    pub qy: f64,
+    /// Quaternion z component.
+    pub qz: f64,
+    /// Translation x component (millimetres, same unit as Reify geometry).
+    pub tx: f64,
+    /// Translation y component.
+    pub ty: f64,
+    /// Translation z component.
+    pub tz: f64,
+}
+
 /// Curvature properties at a parametric point on a face surface.
 ///
 /// Returned by [`crate::OcctKernel::curvature_at`]. All direction vectors

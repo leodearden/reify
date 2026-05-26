@@ -126,6 +126,18 @@ impl OcctKernel {
         Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
     }
 
+    /// Stub transform-aware distance probe — always errors because OCCT is unavailable.
+    /// Mirrors the real `OcctKernel::distance_with_transform` signature so call sites
+    /// compile under both `has_occt` and `!has_occt`.
+    pub fn distance_with_transform(
+        &self,
+        _a: GeometryHandleId,
+        _b: GeometryHandleId,
+        _t_rel: &crate::Transform3,
+    ) -> Result<f64, QueryError> {
+        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
+    }
+
     /// Stub closest-point probe — always errors because OCCT is unavailable.
     /// Mirrors the real `OcctKernel::closest_point_on_shape` signature so call sites
     /// compile under both `has_occt` and `!has_occt`.

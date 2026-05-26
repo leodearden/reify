@@ -70,6 +70,9 @@ mod warm_register;
 // `!has_occt` builds without a `#[cfg]`-gated duplicate definition.
 mod types;
 pub use types::Curvature;
+pub use types::Transform3;
+#[cfg(has_occt)]
+mod queries;
 #[cfg(has_occt)]
 mod handle;
 #[cfg(has_occt)]
@@ -818,6 +821,29 @@ impl OcctKernel {
             .get_shape(b)
             .map_err(|_| QueryError::InvalidHandle(b))?;
         ffi::ffi::min_clearance(s1, s2).map_err(|e| QueryError::QueryFailed(e.to_string()))
+    }
+
+    /// Minimum BREP distance between two shapes after pre-composing `t_rel`
+    /// into the cheaper-by-topology side (PRD §6.2 + §9.2, task 3841).
+    ///
+    /// Rigid-invariance property: `distance_with_transform(a, b, t)` equals
+    /// `min_clearance(translate_rotate(a, t), b)` within floating-point tolerance.
+    ///
+    /// Returns `Err(QueryError::InvalidHandle(id))` if either handle is unknown.
+    /// Returns `Err(QueryError::QueryFailed(...))` if the OCCT call fails.
+    pub fn distance_with_transform(
+        &self,
+        a: GeometryHandleId,
+        b: GeometryHandleId,
+        t_rel: &crate::Transform3,
+    ) -> Result<f64, QueryError> {
+        let s1 = self
+            .get_shape(a)
+            .map_err(|_| QueryError::InvalidHandle(a))?;
+        let s2 = self
+            .get_shape(b)
+            .map_err(|_| QueryError::InvalidHandle(b))?;
+        queries::distance_with_transform(s1, s2, t_rel)
     }
 
     /// Return the closest point on the shape identified by `handle` to the
