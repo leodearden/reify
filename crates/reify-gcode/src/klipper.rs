@@ -78,9 +78,29 @@ fn parse_klipper_line(line_no: usize, line: &str) -> Result<GcodeCommand, ParseE
 /// Walk `tokens` and parse each as `KEY=VALUE`, returning the ordered
 /// vec.
 ///
+/// # Split contract (design decision #5)
+///
+/// Tokens are split at the **first** `=` only — `str::find('=')` returns
+/// the earliest match, so the value substring carries any subsequent
+/// `=` chars verbatim. This means `K=A=B` parses to `("K", "A=B")`,
+/// which is what makes round-trip viable for Klipper macro arguments
+/// that legitimately carry `=` inside values (e.g. nested expressions,
+/// comma-lists, default-value sentinels).
+///
+/// The KV asymmetry is intentional:
+///
+/// - **Empty value (`KEY=`) is ACCEPTED** — semantically meaningful
+///   (e.g. "clear this parameter") and harmless to preserve through
+///   the round-trip.
+/// - **Empty key (`=200`) is REJECTED** — meaningless because there is
+///   no symbol the consumer can dispatch on; surfacing it as a parse
+///   error catches a real malformed-input bug.
+/// - **No `=` at all** — same `InvalidParameter` treatment as empty
+///   key; the token is structurally not a KV pair.
+///
 /// # Error reporting
 ///
-/// Malformed-token errors (no `=` in the token) are reported via
+/// Malformed-token errors are reported via
 /// [`ParseErrorKind::InvalidParameter`] with `letter: '='` and the raw
 /// token preserved in `value`. This is a **semantic approximation** —
 /// the leading `letter` doesn't make perfect sense for a `KEY=VALUE`
@@ -100,6 +120,9 @@ fn parse_kv_params<'a>(
 ) -> Result<Vec<(String, String)>, ParseError> {
     let mut out = Vec::new();
     for tok in tokens {
+        // `find('=')` returns the FIRST occurrence — see split contract
+        // above. The value substring (tok[eq_idx + 1..]) is allowed to be
+        // empty (KEY= is accepted) or contain further `=` chars (K=A=B).
         let Some(eq_idx) = tok.find('=') else {
             return Err(ParseError {
                 line: line_no,
@@ -111,6 +134,16 @@ fn parse_kv_params<'a>(
         };
         let key = &tok[..eq_idx];
         let value = &tok[eq_idx + 1..];
+        // Empty key (`=value`) is rejected — see split contract above.
+        if key.is_empty() {
+            return Err(ParseError {
+                line: line_no,
+                kind: ParseErrorKind::InvalidParameter {
+                    letter: '=',
+                    value: tok.to_string(),
+                },
+            });
+        }
         out.push((key.to_string(), value.to_string()));
     }
     Ok(out)
