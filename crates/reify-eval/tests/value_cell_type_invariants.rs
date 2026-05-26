@@ -1,8 +1,8 @@
 //! Regression lock for the value-cell cell_type invariant relied upon by
 //! `value_type_kind_matches` (crates/reify-eval/src/lib.rs): post-compilation,
-//! no ValueCellDecl.cell_type carries Type::TypeParam or Type::Geometry —
-//! those variants have no Value counterpart and would fall through the match
-//! to the default-reject path.
+//! no ValueCellDecl.cell_type carries Type::TypeParam — that variant has no
+//! Value counterpart and would fall through the match to the default-reject
+//! path. (Type::Geometry is representable as of task 3604 / GHR-β.)
 //!
 //! `Type::StructureRef` is intentionally NOT checked here (task 1876):
 //! user code may declare `param x : SomeStruct = SomeStruct(...)` which

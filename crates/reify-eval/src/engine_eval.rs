@@ -41,10 +41,9 @@ use crate::{
 pub const ASSERT_MSG_PREFIX: &str = "unrepresentable cell_type";
 
 /// Returns `true` when `ty` may legitimately appear as the `cell_type` of a
-/// `ValueCellDecl` post-compilation. The two variants the predicate *rejects*
-/// are `Type::TypeParam(_)` and `Type::Geometry` — any non-Undef value
-/// supplied to a cell of those types would fall through
-/// `value_type_kind_matches` (lib.rs) and trigger
+/// `ValueCellDecl` post-compilation. The variant the predicate *rejects* is
+/// `Type::TypeParam(_)` — any non-Undef value supplied to a cell of that type
+/// would fall through `value_type_kind_matches` (lib.rs) and trigger
 /// `EngineError::TypeKindMismatch`.
 ///
 /// Single source of truth shared by the runtime invariant
@@ -67,7 +66,7 @@ pub fn is_representable_cell_type(ty: &reify_types::Type) -> bool {
     use reify_types::Type;
     match ty {
         // Unrepresentable: no corresponding `Value` variant.
-        Type::TypeParam(_) | Type::Geometry => false,
+        Type::TypeParam(_) => false,
         // Compile-time-only union — value cells must hold a single concrete
         // arm type post-narrowing (task 2373).
         Type::Union(_) => false,
@@ -101,15 +100,15 @@ pub fn is_representable_cell_type(ty: &reify_types::Type) -> bool {
         | Type::Axis
         | Type::BoundingBox
         | Type::Matrix { .. }
+        | Type::Geometry // task 3604 / GHR-β: Value::GeometryHandle now exists
         | Type::Error => true,
     }
 }
 
 /// Debug-only invariant check: assert that every `ValueCellNode` in the
-/// evaluation graph has a representable `cell_type`. The two rejected variants
-/// are `Type::TypeParam` and `Type::Geometry` — any non-Undef value against
-/// such a cell triggers `TypeKindMismatch`; see `value_type_kind_matches` in
-/// lib.rs.
+/// evaluation graph has a representable `cell_type`. The rejected variant is
+/// `Type::TypeParam` — any non-Undef value against such a cell triggers
+/// `TypeKindMismatch`; see `value_type_kind_matches` in lib.rs.
 ///
 /// `Type::StructureRef` (task 1876) and `Type::TraitObject` (task 2287) are
 /// intentionally permitted despite also having no corresponding `Value` arm.
@@ -3312,7 +3311,7 @@ mod invariant_tests {
     /// guarded-decl-group arm types — no Value counterpart exists, so cells
     /// must hold a single concrete arm type post-narrowing. The
     /// `is_representable_cell_type` predicate must reject it alongside
-    /// `TypeParam` and `Geometry`.
+    /// `TypeParam`.
     #[test]
     fn is_representable_cell_type_rejects_union() {
         assert!(!super::is_representable_cell_type(&Type::Union(vec![
