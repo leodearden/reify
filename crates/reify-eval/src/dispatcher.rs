@@ -32,11 +32,14 @@
 //!
 //! # Scope boundary (task 2641)
 //!
-//! This module is pure logic. It does NOT yet wire dispatch into op
-//! execution in `geometry_ops.rs`; the kernel-registry mechanism + OCCT
-//! adapter migration that consumes [`dispatch`] is task 2642's
-//! responsibility. Subsequent kernel adapter tasks (2643 Manifold, 2644
-//! Fidget, 2645 OpenVDB) consume the [`reify_types::CapabilityDescriptor`]
+//! This module is pure logic. [`dispatch`] IS consumed by the build
+//! pipeline — the per-stage tolerance-budget allocator
+//! `Engine::compute_realization_tolerance_budget` calls it to select a
+//! kernel + conversion chain. The still-open work is cross-kernel
+//! OP-ROUTING at the op-execution seam (`execute_realization_ops`),
+//! tracked at time of writing under the multi-kernel-phase-3 DAG
+//! (tasks ~3439/3443/3444). Subsequent kernel adapter tasks (2643 Manifold,
+//! 2644 Fidget, 2645 OpenVDB) consume the [`reify_types::CapabilityDescriptor`]
 //! type defined alongside [`reify_types::Operation`] in the
 //! `reify-types` crate.
 
@@ -254,7 +257,7 @@ pub fn long_chain_diagnostic(
 /// - `demanded` — the [`ReprKind`] the op was required to produce.
 /// - `available` — the reprs the inputs were realised in when dispatch
 ///   failed; rendered sorted via [`ReprKind`]'s `Ord` derive.
-// G-allow: task #3434 no-kernel-chain diagnostic builder; in-tree consumer wiring follows the long_chain_diagnostic precedent
+// G-allow: no-kernel-chain diagnostic builder; at time of writing consumer wiring pending (task #3436, multi-kernel-phase-3 PRD)
 pub fn no_kernel_chain_diagnostic(
     op: Operation,
     demanded: ReprKind,
@@ -304,7 +307,7 @@ pub fn no_kernel_chain_diagnostic(
 ///   pragma that could not be honoured.
 /// - `op` — the [`Operation`] the pragma kernel was asked to perform.
 /// - `demanded` — the [`ReprKind`] the op was required to produce.
-// G-allow: task #3434 #kernel(...) pragma diagnostic builder; consumer wiring lands in subsequent #3434 steps (multi-kernel-phase-3 PRD)
+// G-allow: #kernel(...) pragma diagnostic builder; at time of writing consumer wiring pending (task #3443, multi-kernel-phase-3 PRD)
 pub fn kernel_pragma_unsatisfiable_diagnostic(
     pragma_kernel: &str,
     op: Operation,
@@ -345,7 +348,7 @@ pub fn kernel_pragma_unsatisfiable_diagnostic(
 ///
 /// - `kernel_id` — the kernel name pinned in `reify.toml` `[kernels]`
 ///   that is missing from the build's registry.
-// G-allow: task #3434 reify.toml [kernels] pinned-missing diagnostic builder; consumer wiring lands in subsequent #3434 steps (multi-kernel-phase-3 PRD)
+// G-allow: reify.toml [kernels] pinned-missing diagnostic builder; at time of writing consumer wiring pending (task #3444, multi-kernel-phase-3 PRD)
 pub fn pinned_kernel_missing_diagnostic(kernel_id: &str) -> Diagnostic {
     let message = format!(
         "kernel '{kernel_id}' is pinned in reify.toml but not registered in \
@@ -382,7 +385,7 @@ pub fn pinned_kernel_missing_diagnostic(kernel_id: &str) -> Diagnostic {
 ///
 /// - `kernel_id` — the kernel name present in the registry but absent from
 ///   `reify.toml` `[kernels]`.
-// G-allow: task #3434 unpinned-kernel-loaded diagnostic builder; consumer wiring lands in subsequent #3434 steps (multi-kernel-phase-3 PRD)
+// G-allow: unpinned-kernel-loaded diagnostic builder; at time of writing consumer wiring pending (task #3444, multi-kernel-phase-3 PRD)
 pub fn unpinned_kernel_loaded_diagnostic(kernel_id: &str) -> Diagnostic {
     let message = format!(
         "kernel '{kernel_id}' is registered but not listed in reify.toml \
@@ -421,7 +424,7 @@ pub fn unpinned_kernel_loaded_diagnostic(kernel_id: &str) -> Diagnostic {
 /// - `kernel_id` — the kernel name whose version disagrees.
 /// - `pinned` — the version string pinned in `reify.toml` `[kernels]`.
 /// - `actual` — the adapter's compiled-in `VERSION` constant.
-// G-allow: task #3434 kernel-version-mismatch diagnostic builder; consumer wiring lands in subsequent #3434 steps (multi-kernel-phase-3 PRD)
+// G-allow: kernel-version-mismatch diagnostic builder; at time of writing consumer wiring pending (task #3444, multi-kernel-phase-3 PRD)
 pub fn kernel_version_mismatch_diagnostic(
     kernel_id: &str,
     pinned: &str,
