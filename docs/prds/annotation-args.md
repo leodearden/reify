@@ -63,6 +63,9 @@ The materialization-vs-compile-time timing decision (Q-AA-3) is the only nominal
 
 ```rust
 // crates/reify-types/src/annotation.rs (widened)
+// NOTE (task 3555): the `Expr` variant carries `reify_types::ast::Expr`, the
+// parsed AST relocated *into* reify-types — not `reify_syntax::Expr`. See the
+// cycle-break note below §3's invariants.
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnnotationArg {
@@ -79,8 +82,9 @@ pub enum AnnotationArgValue {
     Bool(bool),
     Ident(String),
     /// Unevaluated expression. Evaluation timing + result type per
-    /// annotation schema (see ArgSchema in §4).
-    Expr(reify_syntax::Expr),
+    /// annotation schema (see ArgSchema in §4). Carries `reify_types::ast::Expr`
+    /// (re-exported as `reify_syntax::Expr`) — see the cycle-break note below.
+    Expr(reify_types::ast::Expr),
 }
 
 #[derive(Debug, Clone)]
@@ -100,6 +104,30 @@ impl Annotation {
     pub fn has_flag(&self, flag: &str) -> bool { /* ... */ }
 }
 ```
+
+**Cycle-break note (task 3555 / annotation-args δ).** The original draft placed
+`Expr(reify_syntax::Expr)` in `reify-types`. That is an impossible crate cycle:
+`reify-syntax` already depends on `reify-types`, so referencing `reify_syntax::Expr`
+from reify-types would form `reify-types → reify-syntax → reify-types`. The first
+remediation considered — relocating the compiled annotation types *up* into
+reify-syntax — is also infeasible, because `reify_types::CompiledFunction` embeds
+`Vec<Annotation>` (and is itself embedded across reify-types' `constraint.rs`), so the
+compiled annotation IR must remain reachable from reify-types.
+
+**Resolution (Option B).** The *parsed* expression AST (`Expr`, `ExprKind`, `TypeExpr`,
+`TypeExprKind`, `MatchArm`, `LambdaParam`, `DimOp`) was relocated *down* into
+`reify-types` as the `reify_types::ast` module and re-exported from `reify-syntax` (so
+`reify_syntax::Expr` and every existing call site resolve unchanged). The annotation IR
+stays in `reify-types::annotation`; `AnnotationArgValue::Expr` therefore carries
+`reify_types::ast::Expr` with no cycle. The parsed `Expr` (not `CompiledExpr`) is the
+correct representation: annotation exprs on instance hosts bind per-instance params
+(e.g. `@shell(thickness = linear_taper(z))`) and must stay unresolved until
+materialization (§4).
+
+This is a deliberate stepping stone. reify-types now holds core primitives, the parsed
+AST, *and* the compiled IR; the cleaner long-term layering is a `reify-core ← reify-ast
+← reify-ir` split that re-homes the AST into a dedicated crate strictly below the IR. A
+separate PRD tracks that transition.
 
 **Invariants.**
 

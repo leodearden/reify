@@ -6,6 +6,7 @@
 #![allow(clippy::mutable_key_type)]
 
 pub mod annotation;
+pub mod ast;
 pub mod boundary_attachment;
 pub mod constraint;
 pub mod diagnostics;
@@ -29,8 +30,12 @@ pub mod warm;
 pub mod warm_registry;
 
 pub use annotation::{
-    Annotation, AnnotationArg, DEPRECATED_ANNOTATION, OPTIMIZED_ANNOTATION, SHELL_ANNOTATION,
-    SOLID_ANNOTATION, SOLVER_HINT_ANNOTATION, TEST_ANNOTATION, has_test_annotation,
+    Annotation, AnnotationArg, AnnotationArgValue, DEPRECATED_ANNOTATION, OPTIMIZED_ANNOTATION,
+    SHELL_ANNOTATION, SOLID_ANNOTATION, SOLVER_HINT_ANNOTATION, TEST_ANNOTATION,
+    has_test_annotation,
+};
+pub use ast::{
+    DimOp, Expr, ExprKind, LambdaParam, MatchArm, TypeExpr, TypeExprKind,
 };
 pub use boundary_attachment::{BoundaryAssociation, NodeAttachment};
 pub use constraint::{

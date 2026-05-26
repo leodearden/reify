@@ -69,17 +69,44 @@ pub fn has_test_annotation(annotations: &[Annotation]) -> bool {
     annotations.iter().any(Annotation::is_test)
 }
 
-/// A resolved annotation argument value.
+/// A lowered annotation argument: an optional name plus a value.
 ///
-/// Annotation args are compile-time constants, not runtime expressions.
-/// Complex expressions in annotation positions are rejected during lowering.
+/// `name: None` is a positional argument (`@shell(0.5)`, `@allow(shadowing)`);
+/// `name: Some(_)` is a named argument (`@optimized(target = "…")`). Named-arg
+/// lowering lands in task η — task δ (the `Expr`-variant widening) only ever
+/// produces positional args.
 #[derive(Debug, Clone, PartialEq)]
-pub enum AnnotationArg {
+pub struct AnnotationArg {
+    /// `None` = positional, `Some` = named.
+    pub name: Option<String>,
+    pub value: AnnotationArgValue,
+}
+
+impl AnnotationArg {
+    /// Construct a positional argument (`name: None`) wrapping `value`.
+    pub fn positional(value: AnnotationArgValue) -> Self {
+        Self { name: None, value }
+    }
+}
+
+/// The value of an annotation argument.
+///
+/// The literal variants (`String`/`Int`/`Real`/`Bool`/`Ident`) are compile-time
+/// constants produced for the common case. `Expr` carries an *unevaluated*
+/// parsed expression for annotations whose schema declares
+/// `eval_time = AtMaterialization` (see `AnnotationSchema` in
+/// `reify-compiler/src/annotations/schema.rs`); it is evaluated in instance
+/// scope at structure-instance materialization (annotation-args PRD §4). Stored
+/// by `lower_annotations` whenever an annotation arg is a non-literal expression
+/// (task 3555 / annotation-args δ).
+#[derive(Debug, Clone, PartialEq)]
+pub enum AnnotationArgValue {
     String(String),
     Int(i64),
     Real(f64),
     Bool(bool),
     Ident(String),
+    Expr(crate::Expr),
 }
 
 #[cfg(test)]
