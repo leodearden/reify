@@ -269,9 +269,11 @@ pub(crate) fn validate_dimensioned_vec3(v: &Value, expected_dim: DimensionVector
 /// such inputs would be silently accepted as valid axes — the very
 /// consistency hole this unified helper closes.
 ///
-/// Used by `supports::eval_supports` (RollerSupport), `loads::validate_pressure_direction`
-/// (non-sentinel branch), and `joints::validate_axis` (one-line wrapper preserved
-/// for rustdoc cross-references and the 8 existing call sites).
+/// Used by `supports::eval_supports` (RollerSupport) and `joints::validate_axis`
+/// (one-line wrapper preserved for rustdoc cross-references and the 8 existing
+/// call sites).  `loads::validate_pressure_direction` was a former caller; it
+/// was deleted in task 3544 (SIR-β-load) when the `pressure_load` builtin
+/// retired and `PressureLoad` became a stdlib `structure def`.
 pub(crate) fn validate_dimensionless_unit_axis_vec3(v: &Value) -> Option<[f64; 3]> {
     let (comps, dim) = tensor_components_f64(v)?;
     if comps.len() != 3 {
@@ -1105,11 +1107,13 @@ mod tests {
     // ── validate_dimensionless_unit_axis_vec3 ─────────────────────────────────
     //
     // Unified helper hoisted from supports::validate_unit_axis_vec3,
-    // joints::validate_axis, and the non-sentinel branch of
-    // loads::validate_pressure_direction. Returns the raw (un-normalized)
-    // [x, y, z] components on success; rejects wrong arity, wrong dimension,
-    // non-finite components, zero magnitude, and squared-magnitude overflow
-    // (e.g. `[f64::MAX, 0, 0]` whose `mag_sq` is `+inf`).
+    // joints::validate_axis, and the former non-sentinel branch of
+    // loads::validate_pressure_direction (that function was deleted in task 3544
+    // (SIR-β-load) when the pressure_load builtin retired). Returns the raw
+    // (un-normalized) [x, y, z] components on success; rejects wrong arity,
+    // wrong dimension, non-finite components, zero magnitude, and
+    // squared-magnitude overflow (e.g. `[f64::MAX, 0, 0]` whose `mag_sq` is
+    // `+inf`).
 
     #[test]
     fn validate_dimensionless_unit_axis_vec3_real_vector_returns_components() {
@@ -1216,9 +1220,11 @@ mod tests {
     #[test]
     fn validate_dimensionless_unit_axis_vec3_overflow_magnitude_returns_none() {
         // Regression: `[f64::MAX, 0.0, 0.0]` has `mag_sq` = f64::MAX^2 → +inf.
-        // This is the consistency-hole assertion: the loads.rs
-        // validate_pressure_direction copy on main does not guard against
-        // `mag_sq.is_finite()` and silently accepts this input.
+        // This is the consistency-hole assertion: the (now-retired)
+        // loads.rs::validate_pressure_direction copy did not guard against
+        // `mag_sq.is_finite()` and silently accepted this input.
+        // That function was deleted in task 3544 (SIR-β-load); the fix
+        // lives here in the shared helper.
         let v = Value::Vector(vec![
             Value::Real(f64::MAX),
             Value::Real(0.0),

@@ -171,3 +171,40 @@ structure def LoadHolder {
          got errors: {errors:?}"
     );
 }
+
+/// task 3544 amendment — non-conforming structure rejected for a Load-typed param.
+///
+/// Negative companion to `trait_typed_param_admits_pressure_load`: confirms that
+/// the empty-marker `trait Load { }` relaxation does NOT disable trait identity
+/// enforcement.  Only structures that declare `: Load` (e.g. PressureLoad,
+/// PointLoad) can fill a `: Load`-typed slot; a plain structure that omits the
+/// conformance declaration must produce a "does not conform to trait" diagnostic.
+///
+/// Without this guard the positive test above cannot distinguish "nominal
+/// conformance works" from "the trait constraint is silently ignored entirely".
+#[test]
+fn trait_typed_param_rejects_non_load_structure() {
+    const SOURCE: &str = r#"
+structure def NotALoad {
+    param value : Real = 0.0
+}
+structure def LoadConsumer {
+    param load : Load
+}
+structure def BadUsage {
+    sub consumer = LoadConsumer(load: NotALoad())
+}
+"#;
+
+    let compiled = compile_source_with_stdlib(SOURCE);
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("does not conform to trait")
+                && d.message.contains("Load")),
+        "NotALoad must be rejected for a Load-typed param with a 'does not conform \
+         to trait Load' error (empty-marker trait still enforces nominal identity); \
+         got errors: {errors:?}"
+    );
+}
