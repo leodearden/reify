@@ -969,3 +969,62 @@ fn evaluate_profile_ddot_fn_signature() {
         func.return_type
     );
 }
+
+// ─── step-27: profile_duration fn signature ───────────────────────────────────
+
+/// `profile_duration` is the duration accessor — it returns the profile's
+/// total `[0, T]` span as a `Time`-dimensioned scalar (PRD §4.1 line 244).
+///
+/// Signature: `pub fn profile_duration(p: Profile) -> Time`
+///
+/// This fn differs from the three evaluate_profile* companions in two ways:
+///   (a) it takes a single param `p: Profile` (no `t` param — duration is a
+///       property of the profile, not a function of the evaluation instant);
+///   (b) its return type is `Type::Scalar { dimension: DimensionVector::TIME }`
+///       (a Time-dimensioned scalar, not a `List<JointValue>`).
+///
+/// `p : Profile` resolves to `Type::TraitObject("Profile")` (same as steps
+/// 21/23/25). `is_pub == true` for the same downstream-consumer reason.
+/// Single-param assertion mirrors `STANDARD_GRAVITY` (zero-param precedent)
+/// in `standard_gravity_tests.rs:22-50`.
+#[test]
+fn profile_duration_fn_signature() {
+    let module = load_stdlib_module();
+
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "profile_duration")
+        .unwrap_or_else(|| {
+            panic!(
+                "profile_duration not found in std/trajectory; found functions: {:?}",
+                module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+            )
+        });
+
+    assert!(func.is_pub, "profile_duration should be pub");
+
+    assert_eq!(
+        func.params.len(),
+        1,
+        "profile_duration should take exactly 1 param (p); got: {:?}",
+        func.params
+    );
+
+    assert_eq!(
+        func.params[0],
+        ("p".to_string(), Type::TraitObject("Profile".to_string())),
+        "profile_duration param[0] should be (\"p\", TraitObject(\"Profile\")); \
+         got: {:?}",
+        func.params[0]
+    );
+
+    assert_eq!(
+        func.return_type,
+        Type::Scalar {
+            dimension: DimensionVector::TIME,
+        },
+        "profile_duration return type should be Scalar<TIME>; got: {:?}",
+        func.return_type
+    );
+}
