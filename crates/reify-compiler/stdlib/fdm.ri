@@ -1,0 +1,38 @@
+// Stdlib: FDM Process Parameters
+//
+// Provides the `InfillPattern` enum and `FDMProcess` structure needed by the
+// v0.5 FDM-as-printed-FEA PRD — the process-parameters substrate for FEA on
+// as-printed FDM parts (anisotropic foundation + fidelity-ladder umbrella).
+//
+// PRD reference: docs/prds/v0_5/fdm-as-printed-fea.md task α / slice 1.
+//
+// Module exports:
+//   - `InfillPattern` — infill-pattern selector (Gyroid, Cubic, Grid,
+//                       Triangular, Honeycomb); see PRD §"Built-in property
+//                       correlations" for the near-isotropic vs directional
+//                       grouping semantics.
+//   - `FDMProcess`    — process-parameters record; seven mechanically-relevant
+//                       fields plus seven parallel `..._provenance :
+//                       MaterialPropertyProvenance` slots.
+//
+// Per-property provenance convention:
+//   FDMProcess reuses `MaterialPropertyProvenance` from `std.materials.fea`
+//   (three-field citation record: source / reference / notes) to annotate
+//   each of the seven process params with the PRD evidence they come from.
+//   The "Material" prefix in the type name is historical — the three fields
+//   are generic citation fields that apply equally to process parameters.
+//   See Plan §"Design Decisions" §"Reuse MaterialPropertyProvenance" for
+//   rationale.
+//
+// Dimensioned-literal form notes:
+//   - `0.2mm` is a single-token quantity literal (number + unit identifier).
+//   - `vec3(0mm, 0mm, 1mm)` is the compositional form for the build-direction
+//     default (a unit-Z print axis); this is a function call to the built-in
+//     `vec3` constructor, not a quantity literal.
+//   - These conventions are established by `materials_fea.ri` (density uses
+//     `n.0 * 1kg / (1m * 1m * 1m)`) and `printer.ri` (vec3 axis vectors).
+//
+// Cross-module dependencies (resolved via sequential-prelude in stdlib_loader):
+//   - `MaterialPropertyProvenance` — from std.materials.fea
+//   - `ElasticMaterial`            — from std.materials.fea
+//   - `ABS_Plastic`                — from std.materials.fea

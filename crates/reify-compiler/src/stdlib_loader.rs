@@ -106,6 +106,7 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 "std.trajectory",
                 include_str!("../stdlib/trajectory.ri"),
             ),
+            ("std.fdm", include_str!("../stdlib/fdm.ri")),
         ];
 
         // SEQUENTIAL COMPILATION WITH GROWING PRELUDE: each module is compiled
