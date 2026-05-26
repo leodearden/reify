@@ -947,7 +947,14 @@ describe('debug bridge pickViewport selection', () => {
   /** Build a viewport stub whose getMeshes returns a Map with one entry. */
   function makePopulatedStub() {
     const stub = makeEmptyStub();
-    const meshMap = new Map<string, unknown>([['entity/box', {}]]);
+    // viewport_state iterates mesh geometry — provide a minimal mock that
+    // satisfies getAttribute/getIndex null checks in the handler.
+    const mockGeometry = {
+      getAttribute: vi.fn().mockReturnValue(null),
+      getIndex: vi.fn().mockReturnValue(null),
+    };
+    const mockMesh = { geometry: mockGeometry };
+    const meshMap = new Map<string, unknown>([['entity/box', mockMesh]]);
     stub.getMeshes = vi.fn().mockReturnValue(meshMap);
     return stub;
   }

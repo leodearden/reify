@@ -29,6 +29,48 @@ function validVec3(v: unknown): v is [number, number, number] {
   );
 }
 
+import type { DebugViewport } from './types';
+
+/**
+ * Resolve which DebugViewport to target for a given command invocation.
+ *
+ * Precedence (documented in design decisions):
+ *  1. params.viewportId present → look up in ctx.viewports; error if unknown.
+ *  2. First entry in ctx.viewports whose getMeshes().size > 0 (insertion order).
+ *  3. First registered entry in ctx.viewports (any registered).
+ *  4. Legacy ctx.viewport single slot (backward compat with direct-stub tests).
+ *  5. { error: 'viewport not ready' }.
+ */
+function pickViewport(
+  ctx: ReifyDebugContext,
+  params: Record<string, unknown>,
+): { viewport: DebugViewport } | { error: string } {
+  const id = params.viewportId;
+
+  if (id !== undefined) {
+    // Explicit selection — must exist.
+    const vp = ctx.viewports?.[id as string];
+    if (!vp) return { error: `viewport '${id}' not registered` };
+    return { viewport: vp };
+  }
+
+  // No explicit id — scan for first populated viewport.
+  if (ctx.viewports) {
+    // Insertion-order scan: first with meshes > 0.
+    for (const vp of Object.values(ctx.viewports)) {
+      if (vp.getMeshes().size > 0) return { viewport: vp };
+    }
+    // Fallback: first registered (any).
+    const first = Object.values(ctx.viewports)[0];
+    if (first) return { viewport: first };
+  }
+
+  // Legacy single slot (preserves existing direct-stub tests).
+  if (ctx.viewport) return { viewport: ctx.viewport };
+
+  return { error: 'viewport not ready' };
+}
+
 function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
   return {
     // --- Read commands (frontend-mediated) ---
@@ -67,9 +109,10 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       };
     },
 
-    viewport_state: () => {
-      const vp = ctx.viewport;
-      if (!vp) return { error: 'viewport not ready' };
+    viewport_state: (params) => {
+      const picked = pickViewport(ctx, params);
+      if ('error' in picked) return picked;
+      const vp = picked.viewport;
 
       const { camera, scene } = vp;
       const meshes = vp.getMeshes();
@@ -114,9 +157,10 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       };
     },
 
-    screenshot: () => {
-      const vp = ctx.viewport;
-      if (!vp) return { error: 'viewport not ready' };
+    screenshot: (params) => {
+      const picked = pickViewport(ctx, params);
+      if ('error' in picked) return picked;
+      const vp = picked.viewport;
 
       const { renderer, scene, camera } = vp;
       // Force a render to ensure the canvas has current content
@@ -126,9 +170,10 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       return { data: dataUrl };
     },
 
-    screenshot_window: async () => {
-      const vp = ctx.viewport;
-      if (!vp) return { error: 'viewport not ready' };
+    screenshot_window: async (params) => {
+      const picked = pickViewport(ctx, params);
+      if ('error' in picked) return picked;
+      const vp = picked.viewport;
 
       const { renderer, scene, camera } = vp;
       renderer.render(scene, camera);
@@ -266,16 +311,17 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       return { ok: true };
     },
 
-    fit_to_view: () => {
-      const vp = ctx.viewport;
-      if (!vp) return { error: 'viewport not ready' };
-      vp.fitToView();
+    fit_to_view: (params) => {
+      const picked = pickViewport(ctx, params);
+      if ('error' in picked) return picked;
+      picked.viewport.fitToView();
       return { ok: true };
     },
 
     set_camera: (params) => {
-      const vp = ctx.viewport;
-      if (!vp) return { error: 'viewport not ready' };
+      const picked = pickViewport(ctx, params);
+      if ('error' in picked) return picked;
+      const vp = picked.viewport;
 
       const { position, target, up, zoom } = params as {
         position: unknown;
