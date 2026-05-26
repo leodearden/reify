@@ -60,11 +60,6 @@
 //
 // PRD reference: docs/prds/v0_5/fdm-as-printed-fea.md §"Built-in property
 // correlations".
-// Near-isotropic patterns (Gyroid, Cubic) are listed first — the β-phase
-// property-correlation pass treats these as approaching in-plane-isotropic
-// behavior. Directional patterns (Grid, Triangular, Honeycomb) receive
-// orthotropic knockdown factors. Canonical order mirrors the PRD §"Built-in
-// property correlations" prose order and is pinned by test.
 enum InfillPattern { Gyroid, Cubic, Grid, Triangular, Honeycomb }
 
 // ── FDMProcess ────────────────────────────────────────────────────────────────
