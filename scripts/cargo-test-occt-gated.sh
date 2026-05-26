@@ -134,7 +134,10 @@ _DEADLINE=$(( _FLOCK_START + LOCK_WAIT ))
 _ACQUIRED_SLOT=""
 
 while true; do
-    # Fresh shuffled order every retry pass.
+    # IMPORTANT: re-evaluate the shuffled order on EVERY retry pass, not just
+    # the first.  Caching the shuffle would cause all waiters to hammer the
+    # same slot on each retry, defeating thundering-herd avoidance.  A fresh
+    # shuffle each pass spreads load across slots as slots become free.
     if command -v shuf >/dev/null 2>&1; then
         _ORDER="$(shuf -i "1-${_N}")"
     else
