@@ -266,3 +266,10 @@ structure def PiecewisePolynomialProfile : Profile {
 // TODO(beta-3816): replace stub body `[0.0]` with the real B-spline evaluator
 // (de Boor recursion) once `reify-stdlib/src/trajectory/spline.rs` lands.
 pub fn evaluate_profile(p: Profile, t: Time) -> List<JointValue> { [0.0] }
+
+// evaluate_profile_dot — first-derivative companion to `evaluate_profile`.
+// Returns the per-joint velocity vector q̇(t) at time `t` (PRD §4.1 line 242).
+//
+// TODO(beta-3816): replace stub body `[0.0]` with B-spline first-derivative
+// evaluation once `reify-stdlib/src/trajectory/spline.rs` lands.
+pub fn evaluate_profile_dot(p: Profile, t: Time) -> List<JointValue> { [0.0] }
