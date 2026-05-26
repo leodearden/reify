@@ -357,4 +357,52 @@ rm -f "$_LOCK20" "${_LOCK20}.slot-1" "${_LOCK20}.slot-2"
 assert "Test 20: 3 invocations with N=2 complete in [700,1200]ms — 3rd is serialized (got ${_ELAPSED20_MS}ms)" \
     bash -c "test '$_ELAPSED20_MS' -ge 700 && test '$_ELAPSED20_MS' -le 1200"
 
+# -- Test 21: REIFY_OCCT_MAX_CONCURRENCY caps auto-detect N --------------------
+# Unset REIFY_OCCT_CONCURRENCY (force auto-detect path); set
+# REIFY_OCCT_MAX_CONCURRENCY=2 to cap N at 2 regardless of nproc/load.
+# Sub-test A: two concurrent wrappers → parallel (<700ms).
+# Sub-test B: three concurrent wrappers → third serialized (>=700ms, <=1200ms).
+# We do not test the nproc-load derivation directly (heterogeneous CI); we
+# only test that the cap upper-bounds correctly.
+echo ""
+echo "--- Test 21: REIFY_OCCT_MAX_CONCURRENCY=2 caps auto-detect — 2 parallel, 3rd serialized ---"
+
+_LOCK21A="$(mktemp)"
+_LOCK21B="$(mktemp)"
+
+# Sub-test A: 2 invocations with MAX_CAP=2 (unset REIFY_OCCT_CONCURRENCY)
+_START21A_NS="$(date +%s%N)"
+REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21A" \
+    "$WRAPPER" bash -c 'sleep 0.4' &
+_PID21A1=$!
+REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21A" \
+    "$WRAPPER" bash -c 'sleep 0.4' &
+_PID21A2=$!
+wait "$_PID21A1" "$_PID21A2"
+_END21A_NS="$(date +%s%N)"
+_ELAPSED21A_MS=$(( (_END21A_NS - _START21A_NS) / 1000000 ))
+rm -f "$_LOCK21A" "${_LOCK21A}.slot-1" "${_LOCK21A}.slot-2"
+
+# Sub-test B: 3 invocations with MAX_CAP=2 — third serialized
+_START21B_NS="$(date +%s%N)"
+REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21B" \
+    "$WRAPPER" bash -c 'sleep 0.4' &
+_PID21B1=$!
+REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21B" \
+    "$WRAPPER" bash -c 'sleep 0.4' &
+_PID21B2=$!
+REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21B" \
+    "$WRAPPER" bash -c 'sleep 0.4' &
+_PID21B3=$!
+wait "$_PID21B1" "$_PID21B2" "$_PID21B3"
+_END21B_NS="$(date +%s%N)"
+_ELAPSED21B_MS=$(( (_END21B_NS - _START21B_NS) / 1000000 ))
+rm -f "$_LOCK21B" "${_LOCK21B}.slot-1" "${_LOCK21B}.slot-2"
+
+assert "Test 21A: 2 invocations with MAX_CAP=2 run in parallel (<700ms, got ${_ELAPSED21A_MS}ms)" \
+    test "$_ELAPSED21A_MS" -lt 700
+
+assert "Test 21B: 3 invocations with MAX_CAP=2 have 3rd serialized ([700,1200]ms, got ${_ELAPSED21B_MS}ms)" \
+    bash -c "test '$_ELAPSED21B_MS' -ge 700 && test '$_ELAPSED21B_MS' -le 1200"
+
 test_summary
