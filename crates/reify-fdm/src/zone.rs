@@ -86,6 +86,19 @@ pub fn classify_zone(_probe: &ZoneProbe, _params: &ZoneProcessParams) -> Zone {
 mod tests {
     use super::*;
 
+    fn fdm_default_params() -> ZoneProcessParams {
+        // Mirrors stdlib FDMProcess defaults
+        // (crates/reify-compiler/stdlib/fdm.ri) + the consumer-derived
+        // line_width default of 0.4 mm (typical nozzle diameter).
+        ZoneProcessParams {
+            walls: 3,
+            top_bottom_layers: 4,
+            layer_height: 0.0002,
+            line_width: 0.0004,
+            build_direction: [0.0, 0.0, 1.0],
+        }
+    }
+
     #[test]
     fn classify_zone_returns_infill_for_deep_interior_probe() {
         // 5 mm from any side face AND any top/bottom face — deep interior.
@@ -96,13 +109,33 @@ mod tests {
             min_side_distance: Some(0.005),
             min_top_bottom_distance: Some(0.005),
         };
-        let params = ZoneProcessParams {
-            walls: 3,
-            top_bottom_layers: 4,
-            layer_height: 0.0002,
-            line_width: 0.0004,
-            build_direction: [0.0, 0.0, 1.0],
+        assert_eq!(classify_zone(&probe, &fdm_default_params()), Zone::Infill);
+    }
+
+    #[test]
+    fn classify_zone_wall_branch_returns_wall_within_side_threshold() {
+        // wall_thickness = walls × line_width = 3 × 0.4mm = 1.2mm.
+        let params = fdm_default_params();
+
+        // (a) 0.8 mm from side — inside wall band → Wall.
+        let probe_a = ZoneProbe {
+            min_side_distance: Some(0.0008),
+            min_top_bottom_distance: Some(0.010),
         };
-        assert_eq!(classify_zone(&probe, &params), Zone::Infill);
+        assert_eq!(classify_zone(&probe_a, &params), Zone::Wall);
+
+        // (b) exactly at threshold (1.2 mm) — Wall (≤).
+        let probe_b = ZoneProbe {
+            min_side_distance: Some(0.0012),
+            min_top_bottom_distance: Some(0.010),
+        };
+        assert_eq!(classify_zone(&probe_b, &params), Zone::Wall);
+
+        // (c) no side face at all — Wall cannot fire; falls through to Infill.
+        let probe_c = ZoneProbe {
+            min_side_distance: None,
+            min_top_bottom_distance: Some(0.010),
+        };
+        assert_eq!(classify_zone(&probe_c, &params), Zone::Infill);
     }
 }
