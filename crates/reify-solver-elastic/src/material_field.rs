@@ -143,6 +143,82 @@ impl MaterialField for ConstantField {
     }
 }
 
+/// A cell-indexed [`AnisotropicMaterial`] field — dispatches every
+/// lookup through a caller-supplied `locator` closure that maps a
+/// global-coordinate point to the index of the cell containing it.
+///
+/// # PRD reference
+///
+/// `docs/prds/v0_5/anisotropic-heterogeneous-elastostatics.md` §C3.
+///
+/// # Spatial-index backing (PRD Q2)
+///
+/// PRD Q2 defers the backing-structure choice (BVH vs uniform grid vs
+/// linear scan) to the FDM field producer — "decide alongside the FDM
+/// field producer." Rather than commit to a specific backing here, the
+/// `locator` closure surface lets any backing slot in without breaking
+/// the trait. Test fixtures use simple per-cell-AABB closures; the
+/// production FDM consumer will supply a BVH-backed locator.
+///
+/// # Panic contract
+///
+/// In debug builds, `material_at` panics with a `DiscreteCellField`-
+/// prefixed message if the locator returns `None` (no containing cell)
+/// or an out-of-range index. The prefix matches the
+/// `OrthotropicMaterial`/`TransverseIsotropicMaterial` convention so
+/// `#[should_panic(expected = "DiscreteCellField")]` tests can pin
+/// exactly which field rejected. Release builds skip the check; a
+/// caller-supplied locator that lies about cell membership in a release
+/// build will read an arbitrary `cells[idx]` (in-bounds via the
+/// `Send + Sync` closure's discretion) or panic at the `Vec` boundary
+/// — either way the contract is the caller's responsibility, matching
+/// the existing `debug_assert!` policy across the constitutive module.
+pub struct DiscreteCellField {
+    /// Per-cell materials. The locator's returned index references this
+    /// vector.
+    pub cells: Vec<AnisotropicMaterial>,
+    /// `point -> Some(cell_index)` for the cell containing `point`,
+    /// or `None` if no cell contains it (debug-asserted to be `Some`
+    /// at every assembly call site).
+    pub locator: Box<dyn Fn([f64; 3]) -> Option<usize> + Send + Sync>,
+}
+
+// `Box<dyn Fn>` doesn't derive `Debug`; hand-write it so the struct is
+// still discoverable via `{:?}` without exposing the closure body.
+impl std::fmt::Debug for DiscreteCellField {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DiscreteCellField")
+            .field("cells.len()", &self.cells.len())
+            .field("locator", &"<closure>")
+            .finish()
+    }
+}
+
+impl MaterialField for DiscreteCellField {
+    fn material_at(&self, point: [f64; 3]) -> AnisotropicMaterial {
+        match (self.locator)(point) {
+            Some(idx) => {
+                debug_assert!(
+                    idx < self.cells.len(),
+                    "DiscreteCellField: locator returned cell index {idx} but only {n} cells are registered",
+                    n = self.cells.len(),
+                );
+                self.cells[idx]
+            }
+            None => {
+                debug_assert!(
+                    false,
+                    "DiscreteCellField: locator returned None for point {point:?} (no containing cell)",
+                );
+                // Release-build fallback: panic at the Vec boundary by
+                // indexing with `usize::MAX`, which produces a clear
+                // out-of-bounds error rather than silent undefined data.
+                self.cells[usize::MAX]
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
