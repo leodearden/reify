@@ -216,3 +216,114 @@ fn mesh_surface_to_volume_with_attribution_attributes_surface_nodes_by_brep_enti
          got {on_vertex_handles:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// suggested_match_tolerance (pure — no gmsh, no cfg gate)
+// ---------------------------------------------------------------------------
+
+/// `suggested_match_tolerance` returns 0.5 × the minimum same-dim pairwise
+/// anchor distance. Two face anchors separated by 1.0 → 0.5.
+/// A single edge anchor (no pair) and empty vertices do not constrain the
+/// minimum, so the result is driven entirely by the face pair.
+#[test]
+fn suggested_match_tolerance_two_faces_returns_half_min_distance() {
+    let ea = EntityAttribution {
+        faces: vec![(h(1), [0.0, 0.0, 0.0]), (h(2), [1.0, 0.0, 0.0])],
+        edges: vec![(h(3), [0.0, 0.0, 0.0])], // single — no same-dim pair
+        vertices: vec![],
+        match_tolerance: 0.0,
+    };
+    let tol = ea.suggested_match_tolerance();
+    let expected = 0.5_f64; // 0.5 × min-same-dim-pairwise (1.0 from faces)
+    assert!(
+        (tol - expected).abs() < 1e-12,
+        "expected {expected}, got {tol}"
+    );
+}
+
+/// `suggested_match_tolerance` returns `f64::INFINITY` when no dimension
+/// has ≥ 2 anchors (no same-dim ambiguity is possible).
+#[test]
+fn suggested_match_tolerance_all_dims_single_anchor_returns_infinity() {
+    let ea = EntityAttribution {
+        faces:    vec![(h(1), [0.0, 0.0, 0.0])],
+        edges:    vec![(h(2), [1.0, 0.0, 0.0])],
+        vertices: vec![(h(3), [2.0, 0.0, 0.0])],
+        match_tolerance: 0.0,
+    };
+    assert!(
+        ea.suggested_match_tolerance().is_infinite(),
+        "expected INFINITY when no dim has ≥ 2 anchors"
+    );
+}
+
+/// `suggested_match_tolerance` returns `f64::INFINITY` when every dimension
+/// is empty.
+#[test]
+fn suggested_match_tolerance_empty_returns_infinity() {
+    let ea = EntityAttribution {
+        faces:    vec![],
+        edges:    vec![],
+        vertices: vec![],
+        match_tolerance: 0.0,
+    };
+    assert!(
+        ea.suggested_match_tolerance().is_infinite(),
+        "expected INFINITY for empty EntityAttribution"
+    );
+}
+
+/// `suggested_match_tolerance` for the unit-cube anchor set yields ≈ 0.354
+/// (= 0.5 × √0.5), confirming that the hand-picked 0.3 is within the safe
+/// bound (no mis-assignment possible on the cube given 0.3 < 0.354).
+#[test]
+fn suggested_match_tolerance_unit_cube_validates_hand_picked_0_3() {
+    let ea = EntityAttribution {
+        faces: vec![
+            (h(101), [ 0.0,  0.0, -0.5]),
+            (h(102), [ 0.0,  0.0,  0.5]),
+            (h(103), [ 0.0, -0.5,  0.0]),
+            (h(104), [ 0.0,  0.5,  0.0]),
+            (h(105), [-0.5,  0.0,  0.0]),
+            (h(106), [ 0.5,  0.0,  0.0]),
+        ],
+        edges: vec![
+            (h(201), [ 0.0, -0.5, -0.5]),
+            (h(202), [-0.5,  0.0, -0.5]),
+            (h(203), [ 0.5,  0.0, -0.5]),
+            (h(204), [ 0.0,  0.5, -0.5]),
+            (h(205), [ 0.0, -0.5,  0.5]),
+            (h(206), [-0.5,  0.0,  0.5]),
+            (h(207), [ 0.5,  0.0,  0.5]),
+            (h(208), [ 0.0,  0.5,  0.5]),
+            (h(209), [-0.5, -0.5,  0.0]),
+            (h(210), [ 0.5, -0.5,  0.0]),
+            (h(211), [-0.5,  0.5,  0.0]),
+            (h(212), [ 0.5,  0.5,  0.0]),
+        ],
+        vertices: vec![
+            (h(301), [-0.5, -0.5, -0.5]),
+            (h(302), [ 0.5, -0.5, -0.5]),
+            (h(303), [-0.5,  0.5, -0.5]),
+            (h(304), [ 0.5,  0.5, -0.5]),
+            (h(305), [-0.5, -0.5,  0.5]),
+            (h(306), [ 0.5, -0.5,  0.5]),
+            (h(307), [-0.5,  0.5,  0.5]),
+            (h(308), [ 0.5,  0.5,  0.5]),
+        ],
+        match_tolerance: 0.3,
+    };
+    let tol = ea.suggested_match_tolerance();
+    // Adjacent face-centre pair distance = √0.5 ≈ 0.7071; same for edge pairs.
+    // Vertex pair min = 1.0. Overall min = √0.5 → 0.5 × √0.5 ≈ 0.35355.
+    let expected = 0.5 * 0.5_f64.sqrt();
+    assert!(
+        (tol - expected).abs() < 1e-6,
+        "expected ≈{expected:.6} (0.5 × √0.5), got {tol:.6}"
+    );
+    // 0.3 must be within the safe bound
+    assert!(
+        0.3 < tol,
+        "hand-picked tolerance 0.3 must be < suggested_match_tolerance ({tol:.6})"
+    );
+}
