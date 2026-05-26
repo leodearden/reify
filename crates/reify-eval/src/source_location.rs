@@ -40,7 +40,7 @@ pub fn find_parsed_decl_containing_offset(
             _ => continue,
         };
         if offset >= span.start && offset < span.end {
-            let is_smaller = best.map_or(true, |(_, _, best_span)| span.len() < best_span.len());
+            let is_smaller = best.is_none_or(|(_, _, best_span)| span.len() < best_span.len());
             if is_smaller {
                 best = Some((name, kind, span));
             }
