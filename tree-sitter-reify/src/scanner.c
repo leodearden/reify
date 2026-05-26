@@ -23,6 +23,8 @@
 
 enum TokenType {
   UNIT_EXPR_START,
+  UNIT_MUL_OP,
+  UNIT_DIV_OP,
 };
 
 void *tree_sitter_reify_external_scanner_create(void) {
@@ -71,25 +73,80 @@ void tree_sitter_reify_external_scanner_deserialize(void *payload,
  * clarity; `c < 33` is the belt-and-suspenders safety net.
  * ──────────────────────────────────────────────────────────────────────────── */
 
+/* Helper: returns true iff c is a valid start character for a unit_expr.
+ * Matches [A-Za-z_(] — the same set checked by _unit_expr_start. */
+static bool is_unit_start(int32_t c) {
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' ||
+         c == '(';
+}
+
 /**
  * Emit UNIT_EXPR_START (zero-width) iff:
  *  1. The parser is requesting it (valid_symbols[UNIT_EXPR_START]).  [invariant A]
  *  2. lexer->lookahead is NOT a whitespace character.               [invariant B]
  *  3. lexer->lookahead is a valid unit-start character: [A-Za-z_(]  [invariant C]
  *
+ * Emit UNIT_MUL_OP ('*') or UNIT_DIV_OP ('/') iff:
+ *  1. The parser is requesting the respective token.
+ *  2. lexer->lookahead is '*' (for MUL) or '/' (for DIV).
+ *  3. The character AFTER the operator is a valid unit-start character.
+ *
+ * The one-character lookahead in UNIT_MUL_OP / UNIT_DIV_OP prevents the
+ * unit_expr mul/div arm from greedily consuming `*` or `/` when followed by
+ * a non-unit character (e.g. a digit in `25USD/1kg`).  Without this guard,
+ * tree-sitter's immediate-token preference would cause `token.immediate('/')`
+ * to win over the binary `/` operator, producing an ERROR node.
+ *
  * Order matters: tree-sitter calls external scanners BEFORE consuming extras.
- * We call mark_end without advancing so the token is truly zero-width.
+ * We call mark_end without advancing so UNIT_EXPR_START is truly zero-width.
+ * For UNIT_MUL_OP/UNIT_DIV_OP we advance past the operator before mark_end
+ * (so the token IS the operator character), then peek at the following char.
  */
 bool tree_sitter_reify_external_scanner_scan(void *payload, TSLexer *lexer,
                                               const bool *valid_symbols) {
   (void)payload;
 
-  /* [A] Bail out immediately if the parser is not requesting UNIT_EXPR_START. */
-  if (!valid_symbols[UNIT_EXPR_START]) {
+  int32_t c = lexer->lookahead;
+
+  /* ── UNIT_MUL_OP: '*' immediately followed by a unit-start character ──────
+   *
+   * Only emit when the character after '*' can start a unit_expr, so that
+   * `5kg * m` (space before '*') and `5kg*1` ('1' is not unit-start) do not
+   * greedily consume the '*' as a unit operator.
+   */
+  if (valid_symbols[UNIT_MUL_OP] && c == '*') {
+    lexer->advance(lexer, false); /* consume '*' */
+    lexer->mark_end(lexer);      /* token = '*' */
+    if (is_unit_start(lexer->lookahead)) {
+      lexer->result_symbol = UNIT_MUL_OP;
+      return true;
+    }
     return false;
   }
 
-  int32_t c = lexer->lookahead;
+  /* ── UNIT_DIV_OP: '/' immediately followed by a unit-start character ──────
+   *
+   * Same rationale as UNIT_MUL_OP.  Critical example: `25USD/1kg` — after
+   * 'USD', lookahead='/' and the char after is '1' (digit, not unit-start),
+   * so we return false.  The binary '/' operator then handles the division.
+   */
+  if (valid_symbols[UNIT_DIV_OP] && c == '/') {
+    lexer->advance(lexer, false); /* consume '/' */
+    lexer->mark_end(lexer);      /* token = '/' */
+    if (is_unit_start(lexer->lookahead)) {
+      lexer->result_symbol = UNIT_DIV_OP;
+      return true;
+    }
+    return false;
+  }
+
+  /* ── UNIT_EXPR_START: zero-width boundary before a unit_expr ─────────────
+   *
+   * [A] Bail out immediately if the parser is not requesting UNIT_EXPR_START.
+   */
+  if (!valid_symbols[UNIT_EXPR_START]) {
+    return false;
+  }
 
   /* [B] WHITESPACE GUARD — ordered before unit-start-char check (invariant B).
    *
@@ -107,10 +164,9 @@ bool tree_sitter_reify_external_scanner_scan(void *payload, TSLexer *lexer,
     return false;
   }
 
-  /* Accept only valid unit-expression start characters (PRD §3.2 unit_name
+  /* [C] Accept only valid unit-expression start characters (PRD §3.2 unit_name
    * production matching [A-Za-z_][A-Za-z0-9_]*, plus '(' for grouped units. */
-  if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' ||
-      c == '(') {
+  if (is_unit_start(c)) {
     lexer->result_symbol = UNIT_EXPR_START;
     lexer->mark_end(lexer); /* zero-width: do not advance past the lookahead */
     return true;

@@ -14,6 +14,8 @@ module.exports = grammar({
 
   externals: $ => [
     $._unit_expr_start,
+    $._unit_mul_op,
+    $._unit_div_op,
   ],
 
   extras: $ => [
@@ -910,12 +912,16 @@ module.exports = grammar({
     ),
 
     // Unit expression: composite unit with mul (*), div (/), and pow (^) operators.
-    // All internal tokens use token.immediate so any whitespace breaks the expression.
+    // */  use external scanner tokens (_unit_mul_op, _unit_div_op) that peek one
+    // character ahead and only fire when the operator is immediately adjacent AND the
+    // next character is a valid unit-start ([A-Za-z_(]).  This prevents `25USD/1kg`
+    // from greedily attempting the div arm when `/` is followed by a digit.
+    // ^ uses token.immediate because `^` is not a binary operator, so no conflict.
     // PRD §3.2: ^ binds tighter than */; */ are left-associative.
     unit_expr: $ => choice(
       prec.left(1, seq(
         field('left', $.unit_expr),
-        field('op', choice(token.immediate('*'), token.immediate('/'))),
+        field('op', choice($._unit_mul_op, $._unit_div_op)),
         field('right', $.unit_expr),
       )),
       prec(2, seq(
