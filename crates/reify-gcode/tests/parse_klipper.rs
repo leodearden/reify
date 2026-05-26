@@ -6,7 +6,7 @@
 //! signal this task ships — `W_GcodeDialectShaperConflict` emission is
 //! deferred to consumer task ο (`gcode_import`).
 
-use reify_gcode::ast::{GcodeCommand, SetVelocityLimit};
+use reify_gcode::ast::{GcodeCommand, InputShaper, SetVelocityLimit};
 use reify_gcode::parse_klipper;
 
 #[test]
@@ -43,5 +43,30 @@ fn bare_set_velocity_limit_parses_to_empty_params() {
     assert_eq!(
         ast,
         vec![GcodeCommand::SetVelocityLimit(SetVelocityLimit { params: vec![] })]
+    );
+}
+
+#[test]
+fn input_shaper_three_params_preserves_order() {
+    let ast = parse_klipper("INPUT_SHAPER SHAPER_TYPE=ei SHAPER_FREQ_X=40 SHAPER_FREQ_Y=42")
+        .expect("must parse");
+    assert_eq!(
+        ast,
+        vec![GcodeCommand::InputShaper(InputShaper {
+            params: vec![
+                ("SHAPER_TYPE".to_string(), "ei".to_string()),
+                ("SHAPER_FREQ_X".to_string(), "40".to_string()),
+                ("SHAPER_FREQ_Y".to_string(), "42".to_string()),
+            ],
+        })]
+    );
+}
+
+#[test]
+fn bare_input_shaper_parses_to_empty_params() {
+    let ast = parse_klipper("INPUT_SHAPER").expect("must parse");
+    assert_eq!(
+        ast,
+        vec![GcodeCommand::InputShaper(InputShaper { params: vec![] })]
     );
 }
