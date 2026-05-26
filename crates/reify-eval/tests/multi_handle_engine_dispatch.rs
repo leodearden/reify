@@ -196,21 +196,13 @@ fn engine_new_with_single_mock_kernel_builds_one_box_realization() {
 /// so. The right fix lives in `execute_realization_ops`, not in this test.
 #[test]
 fn executor_writes_produced_repr_brep_on_build_snapshot() {
-    // Step-13 (task ε / 3436): explicit unconditional-execution invariant.
-    // This test MUST exercise the synthetic-default-kernel path in both
-    // stub-mode (OCCT_AVAILABLE == false) and OCCT-on builds — see the doc
-    // comment above for why an `if !OCCT_AVAILABLE { return; }` skip would
-    // hide the production gap step-14 closes. The line below is a no-op at
-    // runtime but documents the invariant in a place a future maintainer
-    // cannot miss: any attempt to gate this test on OCCT availability would
-    // have to actively remove this assertion to compile, surfacing the
-    // step-13/14 design decision in the diff.
-    let _runs_unconditionally: bool = true;
-    assert!(
-        _runs_unconditionally,
-        "executor_writes_produced_repr_brep_on_build_snapshot runs unconditionally — \
-         do NOT gate on reify_kernel_occt::OCCT_AVAILABLE; see step-13/14 doc above"
-    );
+    // Step-13 (task ε / 3436): the unconditional-execution invariant
+    // (this test runs in both stub-mode and OCCT-on builds) is documented
+    // in the doc comment above. An earlier draft also carried a no-op
+    // `assert!(true, …)` block intended to surface the invariant in a
+    // place a future maintainer could not miss; that assertion was a
+    // wording-meta pattern (testing a documentation decision rather than
+    // a behaviour) and was removed during amendment.
 
     let source = "structure S {\n    let b = box(10mm, 10mm, 10mm)\n}\n";
     let parsed = parse(source, ModulePath::single("produced_repr_executor_write"));

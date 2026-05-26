@@ -653,29 +653,17 @@ impl Engine {
         self.default_kernel_name.as_deref()
     }
 
-    /// Internal helper: mutable borrow of the engine's default kernel, if any.
-    ///
-    /// Used by the build / build_snapshot / tessellate call sites that pass a
-    /// `&mut dyn GeometryKernel` to `execute_realization_ops`. Returns `None`
-    /// when no kernel is configured OR when `default_kernel_name` names a key
-    /// absent from `geometry_kernels` (latter is an internal-consistency
-    /// violation that the `with_*_kernels` constructors never produce).
-    // Wired into the per-op dispatch routing path in step-8 (#3436).
-    #[allow(dead_code)]
-    pub(crate) fn default_kernel_mut(&mut self) -> Option<&mut Box<dyn GeometryKernel>> {
-        let name = self.default_kernel_name.as_deref()?;
-        self.geometry_kernels.get_mut(name)
-    }
-
-    /// Internal helper: immutable borrow of the engine's default kernel.
-    ///
-    /// Used by post-process helpers that take `&dyn GeometryKernel`.
-    // Wired into the dispatcher-routing call sites in step-8 / step-10 (#3436).
-    #[allow(dead_code)]
-    pub(crate) fn default_kernel_ref(&self) -> Option<&dyn GeometryKernel> {
-        let name = self.default_kernel_name.as_deref()?;
-        self.geometry_kernels.get(name).map(|b| &**b)
-    }
+    // Note (amendment, task ε / 3436): earlier drafts added
+    // `default_kernel_mut(&mut self)` / `default_kernel_ref(&self)` helpers
+    // intended to centralise the BTreeMap-keyed default-kernel lookup used by
+    // `build` / `build_snapshot` / `tessellate_from_values`. The helpers were
+    // unusable in practice: the post-process call sites pair the default
+    // kernel with sibling-field borrows like `&self.topology_attribute_table`
+    // (see `run_post_processes`), which only compile under Rust's
+    // disjoint-field-borrow analysis. A `&mut self` method call collapses to
+    // a whole-self borrow that conflicts with those siblings, so the call
+    // sites must keep the inline `self.geometry_kernels.get_mut(name)`
+    // pattern. Helpers removed rather than left dead-shielded.
 
     /// Register an optimized implementation for constraints annotated with
     /// `@optimized("target")` (Task 273).
