@@ -2643,10 +2643,10 @@ impl Engine {
                 // descriptor lacks `(op, _)` — an invariant violation; in
                 // that defensive case we leave the channel untouched so the
                 // caller writes nothing rather than fabricating a repr.
-                if let (Some(plan), Some(op)) = (last_plan.as_ref(), last_operation) {
-                    if let Some(repr) = plan_output_repr(registry, plan, op) {
-                        *produced_repr_out = Some(repr);
-                    }
+                if let (Some(plan), Some(op)) = (last_plan.as_ref(), last_operation)
+                    && let Some(repr) = plan_output_repr(registry, plan, op)
+                {
+                    *produced_repr_out = Some(repr);
                 }
             }
         }

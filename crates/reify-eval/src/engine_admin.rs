@@ -630,9 +630,9 @@ impl Engine {
     /// Used by post-process helpers that take `&dyn GeometryKernel`.
     // Wired into the dispatcher-routing call sites in step-8 / step-10 (#3436).
     #[allow(dead_code)]
-    pub(crate) fn default_kernel_ref(&self) -> Option<&Box<dyn GeometryKernel>> {
+    pub(crate) fn default_kernel_ref(&self) -> Option<&dyn GeometryKernel> {
         let name = self.default_kernel_name.as_deref()?;
-        self.geometry_kernels.get(name)
+        self.geometry_kernels.get(name).map(|b| &**b)
     }
 
     /// Register an optimized implementation for constraints annotated with
