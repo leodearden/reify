@@ -759,3 +759,79 @@ fn piecewise_polynomial_profile_constrains_waypoints_nonempty() {
         ),
     }
 }
+
+// ─── step-21: evaluate_profile fn signature ───────────────────────────────────
+
+/// `evaluate_profile` is the primary evaluator helper that samples a
+/// `PiecewisePolynomialProfile` (or any future `Profile` variant) at time `t`,
+/// returning the per-joint position vector (PRD §4.1 line 241).
+///
+/// Signature: `pub fn evaluate_profile(p: Profile, t: Time) -> List<JointValue>`
+///
+/// `p : Profile` resolves to `Type::TraitObject("Profile")` — the same
+/// trait-typed param resolution verified by `fn_signature_resolves_stdlib_trait_name`
+/// in `fn_signature_type_resolution_tests.rs:60-86` (using `MaterialSpec`).
+/// `t : Time` resolves to `Type::Scalar { dimension: DimensionVector::TIME }` —
+/// already in use for `Waypoint.t` (trajectory_stdlib_compile.rs, step-9).
+/// Return type `List<JointValue>` = `List<Real>` via the module-level alias
+/// (trajectory.ri header §1).
+///
+/// Param declaration order is part of the contract — pinned here in the same
+/// way step-9 pins `Waypoint`'s (t, values, vels, accels) order.
+/// `is_pub == true` because downstream tasks (β/γ/δ/ε/η/ι/ξ) call this fn
+/// from user .ri code.
+///
+/// Pattern lifted from `standard_gravity_function_present_in_std_units`
+/// (standard_gravity_tests.rs:22-50) and the stdlib-fn-signature reuse item
+/// documented in the plan.
+#[test]
+fn evaluate_profile_fn_signature() {
+    let module = load_stdlib_module();
+
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "evaluate_profile")
+        .unwrap_or_else(|| {
+            panic!(
+                "evaluate_profile not found in std/trajectory; found functions: {:?}",
+                module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+            )
+        });
+
+    assert!(func.is_pub, "evaluate_profile should be pub");
+
+    assert_eq!(
+        func.params.len(),
+        2,
+        "evaluate_profile should take exactly 2 params (p, t); got: {:?}",
+        func.params
+    );
+
+    // Param order is contract-pinned (p first, then t).
+    assert_eq!(
+        func.params[0],
+        ("p".to_string(), Type::TraitObject("Profile".to_string())),
+        "evaluate_profile param[0] should be (\"p\", TraitObject(\"Profile\")); got: {:?}",
+        func.params[0]
+    );
+    assert_eq!(
+        func.params[1],
+        (
+            "t".to_string(),
+            Type::Scalar {
+                dimension: DimensionVector::TIME,
+            }
+        ),
+        "evaluate_profile param[1] should be (\"t\", Scalar<TIME>); got: {:?}",
+        func.params[1]
+    );
+
+    assert_eq!(
+        func.return_type,
+        Type::List(Box::new(Type::Real)),
+        "evaluate_profile return type should be List<Real> (= List<JointValue>); \
+         got: {:?}",
+        func.return_type
+    );
+}
