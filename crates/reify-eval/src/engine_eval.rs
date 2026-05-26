@@ -2893,10 +2893,10 @@ impl Engine {
                         // guards the cooperative one-in-flight invariant (PRD §2)
                         // against any future same-node re-dispatch path
                         // (design decision in task ε/3424).
-                        if let Some(prev) = snapshot.graph.get_compute_node_mut(&c_id) {
-                            if let Some(old) = prev.running.take() {
-                                old.cancel();
-                            }
+                        if let Some(prev) = snapshot.graph.get_compute_node_mut(&c_id)
+                            && let Some(old) = prev.running.take()
+                        {
+                            old.cancel();
                         }
                         let cancel = crate::graph::CancellationHandle::new();
 
