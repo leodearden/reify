@@ -629,6 +629,85 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
     }
 }
 
+/// Total `GeometryOp` → `Operation` classifier used by the per-op dispatch
+/// path (task ε / 3436, PRD §8 step-4).
+///
+/// Maps each runtime `GeometryOp` variant (`reify-types::geometry::GeometryOp`,
+/// which carries the per-call parameters: handles, lengths, angles, …) to its
+/// coarse [`Operation`] classifier (`reify-types::geometry::Operation`, used
+/// as the BTreeMap key in `CapabilityDescriptor::supports`). The dispatcher
+/// (`crate::dispatcher::dispatch`) consults the `(Operation, ReprKind)` table
+/// to pick a kernel + conversion chain per op.
+///
+/// **Mirrors [`parent_handles_for_op`].** Both helpers exhaustively match
+/// every `GeometryOp` variant; the compiler enforces drift between this table
+/// and the variant set at the call site. Adding a new `GeometryOp` variant
+/// requires adding an arm in both functions at the same diff site.
+///
+/// **No `Convert` arm.** `Operation::Convert { from }` is the only
+/// `Operation` shape that does not correspond to a `GeometryOp` variant:
+/// representation conversion (BRep→Mesh tessellation, Mesh→Sdf rasterisation,
+/// …) is *not* an op the compiler emits today. Conversion-stage execution is
+/// deferred to task ζ (#3437, Manifold execute arm) + new cross-kernel
+/// mesh-ingest trait surface. ε surfaces non-empty dispatch plans as a
+/// diagnostic rather than executing them (see PRD §8 design decision).
+// Wired into `execute_realization_ops` in step-8 (#3436).
+#[allow(dead_code)]
+fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
+    match op {
+        // Primitives
+        GeometryOp::Box { .. } => Operation::PrimitiveBox,
+        GeometryOp::Cylinder { .. } => Operation::PrimitiveCylinder,
+        GeometryOp::Sphere { .. } => Operation::PrimitiveSphere,
+        GeometryOp::Tube { .. } => Operation::PrimitiveTube,
+
+        // Booleans
+        GeometryOp::Union { .. } => Operation::BooleanUnion,
+        GeometryOp::Difference { .. } => Operation::BooleanDifference,
+        GeometryOp::Intersection { .. } => Operation::BooleanIntersection,
+
+        // Modify
+        GeometryOp::Fillet { .. } => Operation::ModifyFillet,
+        GeometryOp::Chamfer { .. } => Operation::ModifyChamfer,
+        GeometryOp::Shell { .. } => Operation::ModifyShell,
+        GeometryOp::Draft { .. } => Operation::ModifyDraft,
+        GeometryOp::Thicken { .. } => Operation::ModifyThicken,
+
+        // Transform
+        GeometryOp::Translate { .. } => Operation::TransformTranslate,
+        GeometryOp::Rotate { .. } => Operation::TransformRotate,
+        GeometryOp::Scale { .. } => Operation::TransformScale,
+        GeometryOp::RotateAround { .. } => Operation::TransformRotateAround,
+
+        // Pattern
+        GeometryOp::LinearPattern { .. } => Operation::PatternLinear,
+        GeometryOp::CircularPattern { .. } => Operation::PatternCircular,
+        GeometryOp::Mirror { .. } => Operation::PatternMirror,
+        GeometryOp::LinearPattern2D { .. } => Operation::PatternLinear2D,
+        GeometryOp::ArbitraryPattern { .. } => Operation::PatternArbitrary,
+
+        // Sweep (single-profile + Pipe)
+        GeometryOp::Extrude { .. } => Operation::SweepExtrude,
+        GeometryOp::ExtrudeSymmetric { .. } => Operation::SweepExtrudeSymmetric,
+        GeometryOp::Revolve { .. } => Operation::SweepRevolve,
+        GeometryOp::Sweep { .. } => Operation::SweepSweep,
+        GeometryOp::SweepGuided { .. } => Operation::SweepSweepGuided,
+        GeometryOp::Pipe { .. } => Operation::SweepPipe,
+
+        // Loft (multi-profile)
+        GeometryOp::Loft { .. } => Operation::SweepLoft,
+        GeometryOp::LoftGuided { .. } => Operation::SweepLoftGuided,
+
+        // Curve constructors
+        GeometryOp::LineSegment { .. } => Operation::CurveLineSegment,
+        GeometryOp::Arc { .. } => Operation::CurveArc,
+        GeometryOp::Helix { .. } => Operation::CurveHelix,
+        GeometryOp::InterpCurve { .. } => Operation::CurveInterpCurve,
+        GeometryOp::BezierCurve { .. } => Operation::CurveBezierCurve,
+        GeometryOp::NurbsCurve { .. } => Operation::CurveNurbsCurve,
+    }
+}
+
 impl Engine {
     /// Build geometry from the current snapshot values, without re-calling eval().
     ///
