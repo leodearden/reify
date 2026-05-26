@@ -196,3 +196,116 @@ structure S {
           unit: (unit_expr
             (unit_name)))
         right: (identifier)))))
+
+================================================================================
+negative: 5kg / m splits at whitespace — kg fuses to 5, " / m" is binary
+================================================================================
+
+structure S {
+  let x = 5kg / m
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (binary_expression
+        left: (quantity_literal
+          value: (number_literal)
+          unit: (unit_expr
+            (unit_name)))
+        right: (identifier)))))
+
+================================================================================
+negative: 25USD/1kg — digit after / prevents UNIT_DIV_OP, binary division
+================================================================================
+
+structure S {
+  let x = 25USD/1kg
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (binary_expression
+        left: (quantity_literal
+          value: (number_literal)
+          unit: (unit_expr
+            (unit_name)))
+        right: (quantity_literal
+          value: (number_literal)
+          unit: (unit_expr
+            (unit_name)))))))
+
+================================================================================
+negative: 5kg* m — space after * prevents UNIT_MUL_OP, binary multiplication
+================================================================================
+
+structure S {
+  let x = 5kg* m
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (binary_expression
+        left: (quantity_literal
+          value: (number_literal)
+          unit: (unit_expr
+            (unit_name)))
+        right: (identifier)))))
+
+================================================================================
+negative: 5kg*1 — scanner rollback: UNIT_MUL_OP peeks digit, rolls back, binary *
+================================================================================
+
+structure S {
+  let x = 5kg*1
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (binary_expression
+        left: (quantity_literal
+          value: (number_literal)
+          unit: (unit_expr
+            (unit_name)))
+        right: (number_literal)))))
+
+================================================================================
+negative: 5kg/1 — scanner rollback: UNIT_DIV_OP peeks digit, rolls back, binary /
+================================================================================
+
+structure S {
+  let x = 5kg/1
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (binary_expression
+        left: (quantity_literal
+          value: (number_literal)
+          unit: (unit_expr
+            (unit_name)))
+        right: (number_literal)))))
