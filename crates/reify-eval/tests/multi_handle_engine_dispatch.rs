@@ -161,8 +161,57 @@ fn engine_new_with_single_mock_kernel_builds_one_box_realization() {
 /// the executor has no channel to surface the terminal repr to the caller,
 /// so the Mesh value survives the build and the per-realization assertion
 /// fails — the desired RED signal.
+///
+/// **Step-13/14 (task ε / 3436) — unconditional-execution invariant**: this
+/// test DELIBERATELY does NOT gate on `reify_kernel_occt::OCCT_AVAILABLE`
+/// (mirroring the OCCT-skip pattern in
+/// `with_registered_kernels_loads_one_kernel_per_inventory_registration`).
+/// The fixture uses `Engine::new(_, Some(MockGeometryKernel))`, which wraps
+/// the mock under the synthetic `Engine::DEFAULT_KERNEL_NAME` sentinel and
+/// makes the engine entirely self-contained from any inventory-registered
+/// adapter. That synthetic-default-kernel path exists in both stub-mode and
+/// OCCT-on builds, so the test MUST exercise the executor-write invariant
+/// in both. Before step-14, the test passes incidentally in OCCT-on builds
+/// only — when `cfg(has_occt)` is set, the registry carries OCCT and
+/// `dispatch(_, PrimitiveBox, BRep, {BRep})` returns
+/// `Some(plan{kernel:"occt"})`, the 0-conversion arm falls back to the
+/// DEFAULT_KERNEL_NAME-keyed mock (because "occt" is not in the kernels
+/// map), `last_plan` is `Some`, and the post-loop `plan_output_repr` reads
+/// OCCT's `(PrimitiveBox, BRep)` support to write `BRep`. In stub-mode
+/// builds the registry is empty, dispatch returns `None`, the backward-
+/// compat fallback arm executes the mock but never sets `last_plan`, so
+/// the post-loop write guard short-circuits and the pre-corrupted Mesh
+/// value survives. The step-13 unit test
+/// `execute_realization_ops_writes_produced_repr_brep_in_none_fallback_backward_compat`
+/// in `engine_build.rs` pins the same gap with a synthetic registry that
+/// forces the None-fallback arm regardless of build profile. Step-14
+/// closes the gap by routing the fallback arm through a parallel
+/// `last_produced_repr = Some(BRep)` capture that the post-loop write
+/// honours uniformly.
+///
+/// If a future maintainer is tempted to add `if !reify_kernel_occt::OCCT_AVAILABLE
+/// { return; }` to silence a stub-mode failure here, that would hide the
+/// production gap behind a test skip — re-read the step-14 plan note in
+/// `.task/plan.json` (design_decisions: reviewer option (c)) before doing
+/// so. The right fix lives in `execute_realization_ops`, not in this test.
 #[test]
 fn executor_writes_produced_repr_brep_on_build_snapshot() {
+    // Step-13 (task ε / 3436): explicit unconditional-execution invariant.
+    // This test MUST exercise the synthetic-default-kernel path in both
+    // stub-mode (OCCT_AVAILABLE == false) and OCCT-on builds — see the doc
+    // comment above for why an `if !OCCT_AVAILABLE { return; }` skip would
+    // hide the production gap step-14 closes. The line below is a no-op at
+    // runtime but documents the invariant in a place a future maintainer
+    // cannot miss: any attempt to gate this test on OCCT availability would
+    // have to actively remove this assertion to compile, surfacing the
+    // step-13/14 design decision in the diff.
+    let _runs_unconditionally: bool = true;
+    assert!(
+        _runs_unconditionally,
+        "executor_writes_produced_repr_brep_on_build_snapshot runs unconditionally — \
+         do NOT gate on reify_kernel_occt::OCCT_AVAILABLE; see step-13/14 doc above"
+    );
+
     let source = "structure S {\n    let b = box(10mm, 10mm, 10mm)\n}\n";
     let parsed = parse(source, ModulePath::single("produced_repr_executor_write"));
     assert!(

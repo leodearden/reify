@@ -4664,6 +4664,204 @@ mod tests {
         );
     }
 
+    /// Step-13 (task ε / 3436) RED: the backward-compat None-fallback arm of
+    /// [`Engine::execute_realization_ops`] must capture a synthetic
+    /// `ReprKind::BRep` into the `produced_repr_out` channel for the executor-
+    /// write invariant (step-10) to remain TOTAL across BOTH construction
+    /// paths — `Engine::new(_, Some(kernel))` (which wraps the caller-supplied
+    /// kernel under the synthetic [`Engine::DEFAULT_KERNEL_NAME`] sentinel and
+    /// leaves the inventory registry deliberately out of sync with the kernels
+    /// map) AND `with_registered_kernels` (which loads one kernel per
+    /// inventory registration so dispatch always finds coverage).
+    ///
+    /// Pins the production gap the reviewer identified on
+    /// `tests/multi_handle_engine_dispatch.rs::executor_writes_produced_repr_brep_on_build_snapshot`:
+    /// that integration test passes incidentally when the local build has
+    /// `cfg(has_occt)` (OCCT in the registry → dispatch returns
+    /// `Some(plan{kernel:"occt"})` → 0-conversion arm falls back to the
+    /// DEFAULT_KERNEL_NAME-keyed mock → `last_plan` is `Some` → post-loop
+    /// `plan_output_repr` reads OCCT's `(PrimitiveBox, BRep)` support → writes
+    /// `BRep`), but FAILS in stub-mode builds where the registry is empty and
+    /// the None-fallback arm leaves `last_plan = None`, so the post-loop guard
+    /// `if let (Some(plan), Some(op)) = (last_plan.as_ref(), last_operation)`
+    /// short-circuits and `produced_repr_out` is never written.
+    ///
+    /// **Pre-corruption idiom**: this unit test pre-seeds `produced_repr_out =
+    /// Some(ReprKind::Mesh)` before calling `execute_realization_ops`, exactly
+    /// like the integration test pre-corrupts the snapshot graph node to
+    /// `ReprKind::Mesh` before calling `build_snapshot()`. `Mesh` is the
+    /// baseline-impossible value in v0.3-ε (the BRep baseline produces only
+    /// BRep handles), so any later read of `BRep` here can only come from a
+    /// step-14 fallback-arm write of `Some(ReprKind::BRep)`. A naïve
+    /// `produced_repr_out == Some(BRep)` assertion against the construction-
+    /// time `None` default would pass with or without the step-14 fix.
+    ///
+    /// **Why this fixture isolates the gap from OCCT availability**: the
+    /// registry constructed below has NO `(PrimitiveBox, BRep)` support
+    /// regardless of build profile — it carries only `(BooleanUnion, Mesh)`,
+    /// a coverage that cannot satisfy the BRep-baseline query triple. The
+    /// `assert!(dispatch(...).is_none())` sanity check below pins this
+    /// invariant directly so a future registry change that accidentally
+    /// covers `(PrimitiveBox, BRep)` would surface here rather than masking
+    /// the fallback-arm exercise.
+    ///
+    /// RED before step-14: `last_produced_repr` does not yet exist, so the
+    /// post-loop write key still reads `last_plan` — which is `None` in the
+    /// fallback arm — and assertion (iii) below fires.
+    #[test]
+    fn execute_realization_ops_writes_produced_repr_brep_in_none_fallback_backward_compat() {
+        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_types::{
+            CapabilityDescriptor, CompiledExpr, DiagnosticCode, Operation, ReprKind, Type,
+        };
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        // (a) Registry that does NOT cover `(PrimitiveBox, BRep)`. The lone
+        //     descriptor's `supports` list is `[(BooleanUnion, Mesh)]` — a
+        //     valid `CapabilityDescriptor` (non-empty `supports`) that cannot
+        //     answer the BRep-baseline dispatcher query for a Box op.
+        let desc_none_match = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert(
+            Engine::DEFAULT_KERNEL_NAME.to_string(),
+            &desc_none_match,
+        );
+
+        // (i) Sanity check: dispatch returns `None` for `(PrimitiveBox, BRep,
+        //     {BRep})` against this registry, confirming the test reaches the
+        //     None arm of the per-op match in `execute_realization_ops`.
+        let available_set: std::collections::HashSet<ReprKind> = {
+            let mut s = std::collections::HashSet::new();
+            s.insert(ReprKind::BRep);
+            s
+        };
+        assert!(
+            dispatch(&registry, Operation::PrimitiveBox, ReprKind::BRep, &available_set).is_none(),
+            "test invariant: synthetic registry must yield dispatch() == None for \
+             (PrimitiveBox, BRep, {{BRep}}) so the executor reaches the backward-compat \
+             fallback arm. If this fires, the registry was accidentally given coverage \
+             for (PrimitiveBox, BRep)"
+        );
+
+        // (b) Single recording mock kernel keyed under
+        //     `Engine::DEFAULT_KERNEL_NAME` — the synthetic sentinel that
+        //     `Engine::new(_, Some(kernel))` / `with_prelude` wrap the caller-
+        //     supplied kernel under (engine_admin.rs:197).
+        let log: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut kernels: BTreeMap<String, Box<dyn reify_types::GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            Engine::DEFAULT_KERNEL_NAME.to_string(),
+            Box::new(NamedRecordingKernel {
+                name: Engine::DEFAULT_KERNEL_NAME.to_string(),
+                inner: MockGeometryKernel::new(),
+                log: std::sync::Arc::clone(&log),
+            }),
+        );
+
+        let ops = vec![CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![
+                ("width".into(), mm_lit(10.0)),
+                ("height".into(), mm_lit(20.0)),
+                ("depth".into(), mm_lit(5.0)),
+            ],
+        }];
+
+        let mut state = DispatchTestState::default();
+        // (d) Pre-corrupt `produced_repr_out` to `Some(ReprKind::Mesh)` — a
+        //     baseline-impossible value. Any later read of `BRep` can only
+        //     come from the step-14 fallback-arm write of
+        //     `Some(ReprKind::BRep)`; the construction-time `None` default
+        //     would also let the assertion fail loudly if step-14 instead
+        //     left the channel untouched. Mirrors the pre-corruption idiom in
+        //     `tests/multi_handle_engine_dispatch.rs::executor_writes_produced_repr_brep_on_build_snapshot`.
+        state.produced_repr_out = Some(ReprKind::Mesh);
+
+        // (c) `default_kernel_name = Engine::DEFAULT_KERNEL_NAME` — the
+        //     sentinel comparison `default_kernel_name ==
+        //     Engine::DEFAULT_KERNEL_NAME` inside the None arm gates the
+        //     fallback vs strict-mode behaviour (engine_build.rs:2379).
+        state.run(
+            &mut kernels,
+            &registry,
+            Engine::DEFAULT_KERNEL_NAME,
+            &ops,
+            None,
+            SourceSpan::new(0, 0),
+        );
+
+        // (ii) The recording mock kernel must have captured the call, proving
+        //      the fallback arm executed the op on the synthetic default
+        //      (rather than emitting NoKernelChain and breaking out of the
+        //      loop without executing).
+        let calls = log.lock().unwrap().clone();
+        assert_eq!(
+            calls,
+            vec![Engine::DEFAULT_KERNEL_NAME.to_string()],
+            "fallback arm must execute the op on the kernel registered under \
+             Engine::DEFAULT_KERNEL_NAME; got call log {:?}",
+            calls
+        );
+        assert_eq!(
+            state.step_handles.len(),
+            1,
+            "expected one handle pushed from the fallback-routed default kernel"
+        );
+
+        // No NoKernelChain diagnostic must be emitted: the sentinel-gated
+        // fallback arm is the backward-compat success path, NOT the strict-
+        // mode missing-coverage error path the `no_kernel_chain` test pins.
+        let no_chain: Vec<_> = state
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::NoKernelChain))
+            .collect();
+        assert!(
+            no_chain.is_empty(),
+            "backward-compat None-fallback arm (default_kernel_name == \
+             Engine::DEFAULT_KERNEL_NAME && kernels.contains_key(default_kernel_name)) \
+             must NOT emit a NoKernelChain diagnostic — that diagnostic belongs to the \
+             strict-mode arm only; got {:?}",
+            no_chain
+        );
+        // Realization must NOT be marked Failed: kernel_error_out stays None
+        // on the fallback success path (no error to surface to the caller).
+        assert!(
+            state.kernel_error_out.is_none(),
+            "backward-compat fallback success must leave kernel_error_out untouched; \
+             got {:?}",
+            state.kernel_error_out
+        );
+
+        // (iii) The produced_repr_out channel must now carry
+        //       `Some(ReprKind::BRep)` — overwriting the pre-corrupted
+        //       `Some(ReprKind::Mesh)`. RED before step-14: the post-loop
+        //       write guard `if let (Some(plan), Some(op)) =
+        //       (last_plan.as_ref(), last_operation)` short-circuits because
+        //       the fallback arm never sets `last_plan`, so the pre-corrupted
+        //       Mesh value survives and this assertion fires. Step-14
+        //       introduces a parallel `last_produced_repr` channel that the
+        //       fallback arm sets to `Some(BRep)` (the v0.2 single-kernel
+        //       invariant) and rewrites the post-loop write to consult it.
+        assert_eq!(
+            state.produced_repr_out,
+            Some(ReprKind::BRep),
+            "executor must write produced_repr = BRep through the None-fallback \
+             backward-compat arm so the executor-write invariant (step-10) remains \
+             TOTAL across both construction paths; got {:?}. If this fires after \
+             step-14 lands, check that `last_produced_repr` is set in the None arm \
+             (default_kernel_name == Engine::DEFAULT_KERNEL_NAME && \
+             kernels.contains_key(default_kernel_name)) and that the post-loop write \
+             consults it.",
+            state.produced_repr_out
+        );
+    }
+
     // ── effective_tessellation_tolerance unit tests ──────────────────────────
 
     /// When `module.default_tolerance` is `Some(v)`, the helper returns `v`
