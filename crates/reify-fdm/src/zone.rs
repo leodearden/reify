@@ -78,7 +78,13 @@ pub struct ZoneProbe {
 /// §C4: Wall first, then Skin, else Infill. The ordering matters at
 /// corners where both bands overlap — perimeter shells dominate, which
 /// matches conventional slicer behaviour.
-pub fn classify_zone(_probe: &ZoneProbe, _params: &ZoneProcessParams) -> Zone {
+pub fn classify_zone(probe: &ZoneProbe, params: &ZoneProcessParams) -> Zone {
+    let wall_thickness = params.walls as f64 * params.line_width;
+    if let Some(d) = probe.min_side_distance {
+        if d <= wall_thickness {
+            return Zone::Wall;
+        }
+    }
     Zone::Infill
 }
 
