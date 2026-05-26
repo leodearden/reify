@@ -1,8 +1,13 @@
 //! FEA load constructors for the stdlib.
 //!
-//! Provides `point_load`, `pressure_load`, `traction_load`, `body_force`, and
-//! `gravity` constructors.  Each returns a `Value::Map` with a `kind`
-//! discriminator field, matching the joints/coupling constructor pattern.
+//! Provides `traction_load`, `body_force`, and `gravity` name-dispatched
+//! constructors.  Each returns a `Value::Map` with a `kind` discriminator
+//! field, matching the joints/coupling constructor pattern.
+//!
+//! Retired: `point_load` (SIR-α, task 3540 step-20) and `pressure_load`
+//! (SIR-β-load, task 3544 step-4) — both replaced by stdlib structure defs
+//! (`PointLoad` / `PressureLoad` in `fea_multi_case.ri`) that lower to
+//! `Value::StructureInstance` via `CompiledExprKind::StructureInstanceCtor`.
 //!
 //! Selector-target validation is delegated to
 //! [`crate::helpers::validate_selector_target`].  Selector targets are
@@ -14,7 +19,7 @@ use reify_types::{DimensionVector, Value};
 
 use crate::helpers::{
     make_kind_map, validate_dimensioned_scalar, validate_dimensioned_vec3,
-    validate_dimensionless_unit_axis_vec3, validate_selector_target,
+    validate_selector_target,
 };
 
 /// Earth standard gravity in m/s² (CGPM 1901 definition).
@@ -181,29 +186,14 @@ pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
 }
 
 // ── Validators ───────────────────────────────────────────────────────────────
-
-/// Validate a pressure-load direction argument.
-///
-/// Accepts:
-/// - `Value::String("normal")` — the outward-face-normal sentinel.
-/// - `Value::Vector` (or Tensor/Point) of exactly 3 `DIMENSIONLESS` components,
-///   all finite, with a non-zero, finite squared magnitude.
-///
-/// Returns `Some(value)` (the original input, un-normalized) on success,
-/// `None` on failure. Any other String content, dimensioned Vector,
-/// non-3-component Vector, or primitive input returns `None`.
-///
-/// The non-sentinel branch delegates to
-/// [`helpers::validate_dimensionless_unit_axis_vec3`] so the
-/// `mag_sq.is_finite()` overflow guard (e.g. for `[f64::MAX, 0, 0]`) is
-/// applied uniformly with `supports::validate_unit_axis_vec3` and
-/// `joints::validate_axis`.
-fn validate_pressure_direction(v: &Value) -> Option<Value> {
-    match v {
-        Value::String(s) if s == "normal" => Some(v.clone()),
-        _ => validate_dimensionless_unit_axis_vec3(v).map(|_| v.clone()),
-    }
-}
+//
+// task 3544 (SIR-β-load): `validate_pressure_direction` was removed here —
+// it validated the `direction` argument to the `"pressure_load"` builtin arm
+// (the `"normal"` sentinel OR a dimensionless Vector3). After step-4 retired
+// the `"pressure_load"` arm from `eval_loads`, this function became dead code.
+// The direction validation remains relevant for PressureLoad but now belongs to
+// any future wave-2 solver that reads the `direction` field from the
+// `Value::StructureInstance` produced by the stdlib structure def.
 
 #[cfg(test)]
 mod tests {
