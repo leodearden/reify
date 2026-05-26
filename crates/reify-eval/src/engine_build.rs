@@ -50,12 +50,29 @@ enum SingleParentSweepKind {
 /// so each new per-realization side-channel adds one struct field
 /// instead of growing the function signature by one parameter and
 /// the diff at every call site.
+///
+/// **`produced_repr_out`** (task ε / 3436 step-10): channel through which the
+/// executor surfaces the terminal output [`ReprKind`] for the realization
+/// (i.e. the repr produced by the dispatcher-chosen kernel for the LAST
+/// successful op of the realization, derived via [`plan_output_repr`]).
+/// On cache hit the channel is set to [`ReprKind::BRep`] (the cache only
+/// holds BRep-keyed entries). On rollback (`had_failure` or fewer handles
+/// than ops produced) the channel is left untouched so the caller writes
+/// nothing and the realization graph node retains its construction-time
+/// default. The caller (`build` / `build_snapshot`) writes the value into
+/// `self.eval_state.snapshot.graph.realizations[id].produced_repr` via
+/// disjoint-field borrows immediately after `execute_realization_ops` returns.
 struct RealizationOutputs<'a> {
     step_handles: &'a mut Vec<GeometryHandleId>,
     named_steps: &'a mut HashMap<String, GeometryHandleId>,
     feature_tag_table: &'a mut FeatureTagTable,
     topology_attribute_table: &'a mut TopologyAttributeTable,
     swept_kind_table: &'a mut SweptKindTable,
+    /// Terminal output [`ReprKind`] surfaced by the executor for the post-call
+    /// `eval_state.snapshot.graph.realizations[id].produced_repr` write
+    /// (task ε / 3436 step-10). See struct-level docstring above for the full
+    /// write contract.
+    produced_repr_out: &'a mut Option<ReprKind>,
 }
 
 impl<'a> RealizationOutputs<'a> {
@@ -71,6 +88,7 @@ impl<'a> RealizationOutputs<'a> {
         feature_tag_table: &'a mut FeatureTagTable,
         topology_attribute_table: &'a mut TopologyAttributeTable,
         swept_kind_table: &'a mut SweptKindTable,
+        produced_repr_out: &'a mut Option<ReprKind>,
     ) -> Self {
         Self {
             step_handles,
@@ -78,6 +96,7 @@ impl<'a> RealizationOutputs<'a> {
             feature_tag_table,
             topology_attribute_table,
             swept_kind_table,
+            produced_repr_out,
         }
     }
 }
@@ -743,7 +762,6 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
 /// kernel); the caller surfaces this as a diagnostic rather than fabricating
 /// a repr.
 // Wired into `execute_realization_ops` in step-10 (#3436).
-#[allow(dead_code)]
 fn plan_output_repr(
     registry: &BTreeMap<String, &CapabilityDescriptor>,
     plan: &DispatchPlan,
@@ -886,6 +904,11 @@ impl Engine {
                         .copied()
                         .unwrap_or(None);
                     let mut kernel_error: Option<ErrorRef> = None;
+                    // Step-10 (task ε / 3436): channel for the executor's
+                    // terminal produced [`ReprKind`]; written into the
+                    // snapshot graph node below via disjoint-field borrows
+                    // of `self.geometry_kernels` vs. `self.eval_state`.
+                    let mut produced_repr_out: Option<ReprKind> = None;
                     Engine::execute_realization_ops(
                         &mut self.geometry_kernels,
                         &registry_borrowed,
@@ -901,6 +924,7 @@ impl Engine {
                             &mut self.feature_tag_table,
                             &mut self.topology_attribute_table,
                             &mut self.swept_kind_table,
+                            &mut produced_repr_out,
                         ),
                         &mut diagnostics,
                         &realization.id,
@@ -910,6 +934,19 @@ impl Engine {
                         &mut self.realization_cache,
                         demanded_tol,
                     );
+                    // Step-10 (task ε / 3436): persist the executor's terminal
+                    // [`ReprKind`] into the snapshot graph node. The
+                    // `eval_state` field is disjoint from `geometry_kernels`,
+                    // so the borrow is independent of the per-realization
+                    // executor borrows above. On rollback / no-op the
+                    // executor leaves the channel `None` and we skip the
+                    // write so the construction-time default survives.
+                    if let Some(repr) = produced_repr_out
+                        && let Some(state) = self.eval_state.as_mut()
+                        && let Some(node) = state.snapshot.graph.realizations.get_mut(&realization.id)
+                    {
+                        node.produced_repr = repr;
+                    }
                     // Arch §9.1 lines 868–877: kernel error on a realization →
                     // mark realization NodeId as Failed { error } and emit one
                     // EventKind::Failed event. The Diagnostic::error("geometry
@@ -1158,6 +1195,10 @@ impl Engine {
                         .copied()
                         .unwrap_or(None);
                     let mut kernel_error: Option<ErrorRef> = None;
+                    // Step-10 (task ε / 3436): channel for the executor's
+                    // terminal produced [`ReprKind`]; written into the
+                    // snapshot graph node below via disjoint-field borrows.
+                    let mut produced_repr_out: Option<ReprKind> = None;
                     Engine::execute_realization_ops(
                         &mut self.geometry_kernels,
                         &registry_borrowed,
@@ -1173,6 +1214,7 @@ impl Engine {
                             &mut self.feature_tag_table,
                             &mut self.topology_attribute_table,
                             &mut self.swept_kind_table,
+                            &mut produced_repr_out,
                         ),
                         &mut diagnostics,
                         &realization.id,
@@ -1182,6 +1224,17 @@ impl Engine {
                         &mut self.realization_cache,
                         demanded_tol,
                     );
+                    // Step-10 (task ε / 3436): persist the executor's terminal
+                    // [`ReprKind`] into the snapshot graph node. See the
+                    // `build_snapshot` mirror for the full rationale; both
+                    // call sites use disjoint-field borrows of
+                    // `self.geometry_kernels` vs. `self.eval_state`.
+                    if let Some(repr) = produced_repr_out
+                        && let Some(state) = self.eval_state.as_mut()
+                        && let Some(node) = state.snapshot.graph.realizations.get_mut(&realization.id)
+                    {
+                        node.produced_repr = repr;
+                    }
                     // Arch §9.1 lines 868–877: kernel error on a realization →
                     // mark realization NodeId as Failed { error } and emit one
                     // EventKind::Failed event. The Diagnostic::error("geometry
@@ -1764,6 +1817,17 @@ impl Engine {
                 // Pass `&mut None` so `execute_realization_ops` collects the
                 // diagnostic but no caller acts on the kernel error here.
                 let mut kernel_error: Option<ErrorRef> = None;
+                // Step-10 (task ε / 3436): the tessellate path is a static
+                // function without `&mut self` access to `eval_state`, so the
+                // executor's terminal-repr signal is collected but discarded
+                // here — produced_repr graph-node updates happen only on the
+                // build/build_snapshot path per step-10's scope (the
+                // `executor_writes_produced_repr_brep_on_build_snapshot`
+                // forward-guard pins build_snapshot only). A future tessellate
+                // surface that needs to write produced_repr can extend
+                // `tessellate_from_values` to return / collect a
+                // `Vec<(RealizationNodeId, ReprKind)>` for the caller to apply.
+                let mut produced_repr_out: Option<ReprKind> = None;
                 // Task 3227 / 3297: direct positional index — no String clones,
                 // no hashing. The producer (`compute_demanded_tols`) and this
                 // consumer iterate the same `module.templates × realizations`
@@ -1786,6 +1850,7 @@ impl Engine {
                         &mut *feature_tag_table,
                         &mut *topology_attribute_table,
                         &mut *swept_kind_table,
+                        &mut produced_repr_out,
                     ),
                     diagnostics,
                     &realization.id,
@@ -2006,6 +2071,7 @@ impl Engine {
             feature_tag_table,
             topology_attribute_table,
             swept_kind_table,
+            produced_repr_out,
         } = outputs;
         let handle_start = step_handles.len();
         // Step-8 (task ε / 3436): the v0.3-ε baseline asks the dispatcher for
@@ -2058,10 +2124,29 @@ impl Engine {
             );
             step_handles.push(cached_handle);
             named_steps.insert(name.to_string(), cached_handle);
+            // Step-10 (task ε / 3436): the [`RealizationCache`] key includes
+            // `ReprKind::BRep` (see the post-success `realization_cache.insert`
+            // call at the bottom of this function), so every cached entry's
+            // terminal handle was produced by a BRep-native kernel. Surface
+            // BRep through `produced_repr_out` so the caller writes the same
+            // value into the realization graph node it would have written on
+            // a cold-path miss for this realization.
+            *produced_repr_out = Some(ReprKind::BRep);
             return;
         }
 
         let mut had_failure = false;
+        // Step-10 (task ε / 3436): captures the dispatcher plan + classifier-
+        // mapped Operation for the LAST op that successfully executed in this
+        // realization's loop. After the loop, on the fully-successful (not
+        // rolled back) branch, the pair is fed to `plan_output_repr` and the
+        // result is written to `produced_repr_out`. On rollback the channel
+        // is left untouched so the caller writes nothing — the realization
+        // graph node retains its construction-time default. `Operation` is
+        // `Copy`; `DispatchPlan` is owned so each capture moves the value
+        // from the per-iteration `plan` binding established below.
+        let mut last_plan: Option<DispatchPlan> = None;
+        let mut last_operation: Option<Operation> = None;
         // Captures the per-op `GeometryOp`s in lockstep with `step_handles`
         // for this realization. After the loop, if the realization succeeds
         // (no rollback), the parallel `(realization_ops, step_handles[handle_start..])`
@@ -2094,8 +2179,12 @@ impl Engine {
                     // demanded/available derivation is deferred to ζ/η/θ.
                     let operation = geometry_op_to_operation(&geom_op);
                     let plan = dispatch(registry, operation, ReprKind::BRep, &available_set);
-                    let resolved_kernel_name: String = match plan {
-                        Some(ref plan) if plan.conversions.is_empty() => {
+                    // Step-10 (task ε / 3436): borrow `plan` here (`match &plan`)
+                    // rather than moving it; the post-success branch below moves
+                    // it into `last_plan` so the post-loop produced_repr write
+                    // has access to the dispatcher's terminal choice.
+                    let resolved_kernel_name: String = match &plan {
+                        Some(plan) if plan.conversions.is_empty() => {
                             // 0-conversion plan: route to plan.kernel,
                             // falling back to the engine's default kernel if
                             // the dispatcher named an entry not present in
@@ -2328,6 +2417,15 @@ impl Engine {
                             // earlier `&geom_op` borrows above have already
                             // released — we move ownership rather than cloning.
                             realization_ops.push(geom_op);
+                            // Step-10 (task ε / 3436): capture the terminal op's
+                            // dispatcher plan + Operation classifier for the
+                            // post-loop `produced_repr_out` write. Moving the
+                            // owned plan here is safe — every subsequent loop
+                            // iteration binds a fresh `plan` from `dispatch(...)`
+                            // above, so `last_plan` always reflects the latest
+                            // successful op when the loop exits.
+                            last_plan = plan;
+                            last_operation = Some(operation);
                         }
                         Err(e) => {
                             let err_msg = format!("geometry error: {}", e);
@@ -2489,6 +2587,23 @@ impl Engine {
                         NO_OPTIONS,
                         last,
                     );
+                }
+                // Step-10 (task ε / 3436): surface the terminal op's output
+                // [`ReprKind`] through `produced_repr_out` so the caller
+                // (`build` / `build_snapshot`) writes it into
+                // `eval_state.snapshot.graph.realizations[id].produced_repr`.
+                // Gated on `last_handle.is_some()` (the same gate the
+                // `named_steps` and `realization_cache` writes use) so an
+                // empty-operations realization contributes nothing and the
+                // construction-time default survives. `plan_output_repr`
+                // returns `None` only if dispatch named a kernel whose
+                // descriptor lacks `(op, _)` — an invariant violation; in
+                // that defensive case we leave the channel untouched so the
+                // caller writes nothing rather than fabricating a repr.
+                if let (Some(plan), Some(op)) = (last_plan.as_ref(), last_operation) {
+                    if let Some(repr) = plan_output_repr(registry, plan, op) {
+                        *produced_repr_out = Some(repr);
+                    }
                 }
             }
         }
@@ -3207,6 +3322,7 @@ mod tests {
                 &mut feature_tag_table,
                 &mut topology_attribute_table,
                 &mut swept_kind_table,
+                &mut None,
             ),
             &mut diagnostics,
             &test_realization_id,
@@ -3308,6 +3424,7 @@ mod tests {
                 &mut feature_tag_table,
                 &mut topology_attribute_table,
                 &mut swept_kind_table,
+                &mut None,
             ),
             &mut diagnostics,
             &test_realization_id,
@@ -3389,6 +3506,7 @@ mod tests {
                 &mut feature_tag_table,
                 &mut topology_attribute_table,
                 &mut swept_kind_table,
+                &mut None,
             ),
             &mut diagnostics,
             &test_realization_id,
@@ -3481,6 +3599,7 @@ mod tests {
                 &mut feature_tag_table,
                 &mut topology_attribute_table,
                 &mut swept_kind_table,
+                &mut None,
             ),
             &mut diagnostics,
             &test_realization_id,
@@ -3565,6 +3684,7 @@ mod tests {
                 &mut feature_tag_table,
                 &mut topology_attribute_table,
                 &mut swept_kind_table,
+                &mut None,
             ),
             &mut diagnostics,
             &test_realization_id,
@@ -3650,6 +3770,7 @@ mod tests {
                 &mut feature_tag_table,
                 &mut topology_attribute_table,
                 &mut swept_kind_table,
+                &mut None,
             ),
             &mut diagnostics,
             &test_realization_id,
@@ -3753,6 +3874,7 @@ mod tests {
                 &mut feature_tag_table,
                 &mut topology_attribute_table,
                 &mut swept_kind_table,
+                &mut None,
             ),
             &mut diagnostics,
             &test_realization_id,
@@ -3840,6 +3962,7 @@ mod tests {
                 &mut feature_tag_table,
                 &mut topology_attribute_table,
                 &mut swept_kind_table,
+                &mut None,
             ),
             &mut diagnostics,
             &test_realization_id,
@@ -3873,6 +3996,7 @@ mod tests {
                 &mut feature_tag_table,
                 &mut topology_attribute_table,
                 &mut swept_kind_table,
+                &mut None,
             ),
             &mut diagnostics,
             &test_realization_id,
@@ -4013,6 +4137,7 @@ mod tests {
                 &mut feature_tag_table,
                 &mut topology_attribute_table,
                 &mut swept_kind_table,
+                &mut None,
             ),
             &mut diagnostics,
             &test_realization_id,
@@ -4068,6 +4193,7 @@ mod tests {
                 &mut feature_tag_table,
                 &mut topology_attribute_table,
                 &mut swept_kind_table,
+                &mut None,
             ),
             &mut diagnostics,
             &test_realization_id,
@@ -4167,6 +4293,7 @@ mod tests {
                 &mut feature_tag_table,
                 &mut topology_attribute_table,
                 &mut swept_kind_table,
+                &mut None,
             ),
             &mut diagnostics,
             &test_realization_id,
@@ -4261,6 +4388,7 @@ mod tests {
                 &mut feature_tag_table,
                 &mut topology_attribute_table,
                 &mut swept_kind_table,
+                &mut None,
             ),
             &mut diagnostics,
             &test_realization_id,
@@ -4436,6 +4564,7 @@ mod tests {
                 &mut feature_tag_table,
                 &mut topology_attribute_table,
                 &mut swept_kind_table,
+                &mut None,
             ),
             &mut diagnostics,
             &test_realization_id,
@@ -4529,6 +4658,7 @@ mod tests {
                 &mut feature_tag_table,
                 &mut topology_attribute_table,
                 &mut swept_kind_table,
+                &mut None,
             ),
             &mut diagnostics,
             &test_realization_id,
@@ -4627,6 +4757,7 @@ mod tests {
                 &mut feature_tag_table,
                 &mut topology_attribute_table,
                 &mut swept_kind_table,
+                &mut None,
             ),
             &mut diagnostics,
             &test_realization_id,
