@@ -336,4 +336,39 @@ structure def ModalOptions {
     param tol : Real = 0.000000001            // = 1e-9 (no scientific notation in Reify grammar)
     param max_iters : Int = 200               // PRD §4.3 — NOT 1000 (modal converges faster than buckling)
     param reference_direction : Vector3<Dimensionless>
+
+    // A non-positive `n_modes` requests zero eigenmodes — a degenerate solve.
+    // Declaring the lower bound at the structure-def level makes the contract
+    // explicit in production code rather than relying solely on test coverage
+    // (task-2544 convention, memory id 0773d3a8; mirrors
+    // `BucklingOptions.n_modes > 0`).
+    constraint n_modes > 0
+    // `tol` is the eigensolver convergence tolerance — must be strictly
+    // positive for the residual test to terminate. Zero or negative would
+    // silently exhaust `max_iters` on every solve. Mirrors
+    // `BucklingOptions.tol > 0`.
+    constraint tol > 0
+    // A non-positive `max_iters` would let the solver exit before doing any
+    // work — same degenerate failure mode as `BucklingOptions.max_iters <= 0`.
+    // Same task-2544 rationale as above.
+    constraint max_iters > 0
+    // NOTE — explicitly NOT constrained:
+    //   sigma               : Real                  — spectral-shift origin;
+    //                          any real is physically valid (negative shifts
+    //                          target the negative side of the spectrum).
+    //                          `sigma >= 0` would wrongly forbid that, so the
+    //                          contract stays open (mirrors
+    //                          BucklingOptions.sigma).
+    //   reference_direction : Vector3<Dimensionless> — the `norm() > 0`
+    //                          invariant is a method-call on Vector3, NOT a
+    //                          scalar predicate, so it is NOT expressible in
+    //                          Reify's `constraint` grammar. Deferred to the
+    //                          runtime trampoline (future task ζ) per plan
+    //                          design-decision-4, mirroring the
+    //                          `BucklingOptions.mode` allowlist-deferral
+    //                          precedent (solver_buckling.ri:97-107).
+    //   damping             : DampingDescriptor     — trait-typed; not
+    //                          scalar-predicable.
+    //   boundary_conditions : List<Support>         — collection of trait
+    //                          objects; not scalar-predicable.
 }

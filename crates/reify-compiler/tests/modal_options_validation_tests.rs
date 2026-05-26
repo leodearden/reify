@@ -9,10 +9,12 @@
 //! shape.
 //!
 //! Tests validate that the .ri file is loaded by the production stdlib path
-//! (mirroring `buckling_stdlib_compile.rs`), that the six structures and one
-//! trait are correctly represented in the compiled module, and that the
-//! positivity constraints on `ModalOptions.{n_modes, tol, max_iters}` are
-//! declared at the structure-def level.
+//! (mirroring `buckling_stdlib_compile.rs`), that the five structures
+//! (`NoDamping`, `RayleighDamping`, `Mode`, `ModalResult`, `ModalOptions`)
+//! and one trait (`DampingDescriptor`) are correctly represented in the
+//! compiled module, and that the positivity constraints on
+//! `ModalOptions.{n_modes, tol, max_iters}` are declared at the
+//! structure-def level.
 //!
 //! All tests use the production-path `load_stdlib_module()` helper that
 //! exercises the same embedded + sequential-prelude compilation path as
@@ -733,9 +735,20 @@ fn modal_options_param_defaults_match_spec() {
 ///
 /// Making the contract explicit in production code rather than relying solely
 /// on test coverage is the task-2544 convention (recorded in memory id
-/// 0773d3a8). Combined with the SIR-α generic constraint-firing pipeline,
-/// these declarations are what make `ModalOptions(n_modes: 0)` emit a
-/// constraint-violation diagnostic — the PRD's user-observable signal.
+/// 0773d3a8).
+///
+/// Scope note: this test asserts only the *presence and shape* of the
+/// constraint AST nodes on the compiled `ModalOptions` template. It does NOT
+/// instantiate `ModalOptions(n_modes: 0)` and assert a diagnostic — that
+/// user-observable signal is satisfied compositionally (plan
+/// design-decision 7), not re-verified here. These structure-def
+/// declarations feed the SIR-α generic constraint-firing pipeline, which is
+/// pinned end-to-end by
+/// `crates/reify-eval/tests/stress_error_messages.rs::constraint_violation_diagnostic`
+/// (constraint → `Satisfaction::Violated` diagnostic) and the
+/// `Value::StructureInstance` round-trip in
+/// `crates/reify-eval/tests/structure_instance_e2e.rs`. A modal-specific
+/// eval test would duplicate that generic coverage without adding signal.
 ///
 /// Explicitly NOT constrained (regression-gated by the tight count==3):
 ///   - `sigma`               : any spectral shift is physically valid (the
