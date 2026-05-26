@@ -126,6 +126,61 @@ fn distance_with_transform_rotation_only_matches_rotated_shape() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// interferes_with_transform — overlap / disjoint probes
+// ---------------------------------------------------------------------------
+
+/// A +45mm X translation moves box_a into box_b (dx=50 → gap of 40; +45 means
+/// the boxes now overlap by 5mm). `interferes_with_transform` must return true.
+#[test]
+fn interferes_with_transform_returns_true_for_overlap_after_transform() {
+    let (kernel, box_a_id, box_b_id) = two_box_kernel(50.0);
+    // t_rel shifts box_a by +45mm X: centre moves to (45,0,0), overlapping box_b at (50,0,0).
+    let t_rel = Transform3 {
+        qw: 1.0,
+        qx: 0.0,
+        qy: 0.0,
+        qz: 0.0,
+        tx: 45.0,
+        ty: 0.0,
+        tz: 0.0,
+    };
+    match kernel.interferes_with_transform(box_a_id, box_b_id, &t_rel) {
+        Ok(true) => {}
+        Ok(false) => panic!(
+            "overlapping configuration (dx+45 into 40-unit gap) should interfere, got Ok(false)"
+        ),
+        Err(e) => panic!("expected Ok(true), got Err({e:?})"),
+    }
+}
+
+/// Identity transform on the disjoint (dx=50, 40-unit gap) fixture: boxes stay
+/// disjoint, `interferes_with_transform` must return false.
+#[test]
+fn interferes_with_transform_returns_false_for_disjoint_after_transform() {
+    let (kernel, box_a_id, box_b_id) = two_box_kernel(50.0);
+    let t_rel = Transform3 {
+        qw: 1.0,
+        qx: 0.0,
+        qy: 0.0,
+        qz: 0.0,
+        tx: 0.0,
+        ty: 0.0,
+        tz: 0.0,
+    };
+    match kernel.interferes_with_transform(box_a_id, box_b_id, &t_rel) {
+        Ok(false) => {}
+        Ok(true) => panic!(
+            "disjoint configuration (identity transform, 40-unit gap) should not interfere, got Ok(true)"
+        ),
+        Err(e) => panic!("expected Ok(false), got Err({e:?})"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// distance_with_transform — rigid-invariance pin (translation-only)
+// ---------------------------------------------------------------------------
+
 /// Translation-rigid-invariance: `distance_with_transform(a, b, t_rel)` matches
 /// `min_clearance(translate(a, t_rel), b)` within 1e-6.
 ///
