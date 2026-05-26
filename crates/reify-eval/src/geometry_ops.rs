@@ -6858,6 +6858,18 @@ mod tests {
         ])
     }
 
+    /// Build a Value::Vector with three dimensionless Real components, mirroring
+    /// how a let-bound `vec3(x, y, z)` realises in the `values` map.
+    /// Analogous to `point3_length_value` above. Used by the `angle` dispatch
+    /// unit tests (task 3614, KGQ-ε).
+    fn vec3_value(x: f64, y: f64, z: f64) -> reify_types::Value {
+        reify_types::Value::Vector(vec![
+            reify_types::Value::Real(x),
+            reify_types::Value::Real(y),
+            reify_types::Value::Real(z),
+        ])
+    }
+
     #[test]
     fn try_eval_topology_selector_closest_point_kernel_reply_parses_to_point3_length() {
         use reify_test_support::mocks::MockGeometryKernel;
@@ -7565,6 +7577,263 @@ mod tests {
         assert!(
             diag.message.contains("parse failed"),
             "diagnostic must indicate the parse failure, got: {}",
+            diag.message
+        );
+    }
+
+    // ── try_eval_topology_selector: angle dispatch (task 3614, KGQ-ε) ────────
+    //
+    // These tests pin the pure-math `angle(Vec3, Vec3) -> Angle` dispatch arm.
+    // No kernel calls — acos(clamp(dot/(|a||b|), -1, 1)).  Modelled on the
+    // `try_eval_topology_selector_angle_between_surfaces_*` tests above.
+
+    #[test]
+    fn try_eval_topology_selector_angle_two_vec3_value_refs_returns_angle_scalar() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let mut kernel = MockGeometryKernel::new();
+
+        let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let mut values = reify_types::ValueMap::new();
+        values.insert(
+            reify_types::ValueCellId::new("AngleSmoke", "a"),
+            vec3_value(1.0, 0.0, 0.0),
+        );
+        values.insert(
+            reify_types::ValueCellId::new("AngleSmoke", "b"),
+            vec3_value(0.0, 1.0, 0.0),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "angle",
+            "AngleSmoke",
+            "a",
+            reify_types::Type::vec3(reify_types::Type::Real),
+            "b",
+            reify_types::Type::vec3(reify_types::Type::Real),
+            reify_types::Type::angle(),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::angle(std::f64::consts::FRAC_PI_2)),
+            "angle(vec3(1,0,0), vec3(0,1,0)) must return Some(Value::angle(PI/2)); got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "perpendicular vectors must NOT emit diagnostics, got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_angle_parallel_vectors_returns_zero_angle() {
+        // vec3(1,0,0) · vec3(2,0,0): cos=1.0 → clamp → acos(1.0) = 0.0.
+        // Proves the acos-domain upper-bound clamp for parallel vectors.
+        use reify_test_support::mocks::MockGeometryKernel;
+        let mut kernel = MockGeometryKernel::new();
+
+        let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let mut values = reify_types::ValueMap::new();
+        values.insert(
+            reify_types::ValueCellId::new("AngleSmoke", "a"),
+            vec3_value(1.0, 0.0, 0.0),
+        );
+        values.insert(
+            reify_types::ValueCellId::new("AngleSmoke", "b"),
+            vec3_value(2.0, 0.0, 0.0),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "angle",
+            "AngleSmoke",
+            "a",
+            reify_types::Type::vec3(reify_types::Type::Real),
+            "b",
+            reify_types::Type::vec3(reify_types::Type::Real),
+            reify_types::Type::angle(),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::angle(0.0)),
+            "angle(vec3(1,0,0), vec3(2,0,0)) (parallel) must return Some(Value::angle(0.0)); \
+             got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "parallel vectors must NOT emit diagnostics, got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_angle_antiparallel_vectors_returns_pi() {
+        // vec3(1,0,0) · vec3(-1,0,0): cos=-1.0 → clamp → acos(-1.0) = π.
+        // Proves the acos-domain lower-bound clamp for antiparallel vectors.
+        use reify_test_support::mocks::MockGeometryKernel;
+        let mut kernel = MockGeometryKernel::new();
+
+        let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let mut values = reify_types::ValueMap::new();
+        values.insert(
+            reify_types::ValueCellId::new("AngleSmoke", "a"),
+            vec3_value(1.0, 0.0, 0.0),
+        );
+        values.insert(
+            reify_types::ValueCellId::new("AngleSmoke", "b"),
+            vec3_value(-1.0, 0.0, 0.0),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "angle",
+            "AngleSmoke",
+            "a",
+            reify_types::Type::vec3(reify_types::Type::Real),
+            "b",
+            reify_types::Type::vec3(reify_types::Type::Real),
+            reify_types::Type::angle(),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::angle(std::f64::consts::PI)),
+            "angle(vec3(1,0,0), vec3(-1,0,0)) (antiparallel) must return \
+             Some(Value::angle(PI)); got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "antiparallel vectors must NOT emit diagnostics, got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_angle_literal_args_falls_through_to_none() {
+        // angle(<literal_real>, <literal_real>) — no let-bindings to resolve.
+        // Must return None and never consult the kernel; mirrors the
+        // `angle_between_surfaces_literal_args_falls_through_to_none` contract.
+        use reify_test_support::mocks::CountingMockKernel;
+        let inner = reify_test_support::mocks::MockGeometryKernel::new();
+        let mut kernel = CountingMockKernel::new(inner);
+
+        let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let values = reify_types::ValueMap::new();
+
+        let expr = topology_selector_call_literal_args("angle");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "angle(<literal>, <literal>) must return None, got {:?}",
+            result
+        );
+        assert_eq!(
+            kernel.total_query_count(),
+            0,
+            "kernel must NOT be consulted for non-ValueRef args"
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_angle_zero_length_vector_returns_undef() {
+        // Degenerate input: zero-length vec3(0,0,0) causes |a|=0, division by
+        // zero → the dispatcher must emit exactly one Warning and return
+        // Some(Value::Undef) rather than propagating NaN.
+        use reify_test_support::mocks::MockGeometryKernel;
+        let mut kernel = MockGeometryKernel::new();
+
+        let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let mut values = reify_types::ValueMap::new();
+        values.insert(
+            reify_types::ValueCellId::new("AngleSmoke", "a"),
+            vec3_value(0.0, 0.0, 0.0),
+        );
+        values.insert(
+            reify_types::ValueCellId::new("AngleSmoke", "b"),
+            vec3_value(0.0, 1.0, 0.0),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "angle",
+            "AngleSmoke",
+            "a",
+            reify_types::Type::vec3(reify_types::Type::Real),
+            "b",
+            reify_types::Type::vec3(reify_types::Type::Real),
+            reify_types::Type::angle(),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_types::Value::Undef),
+            "angle(vec3(0,0,0), ...) with zero-length input must return \
+             Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "zero-length vector must emit exactly one Warning, got {} diagnostics: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_types::Severity::Warning,
+            "diagnostic severity must be Warning, got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("angle"),
+            "diagnostic must mention the helper name 'angle', got: {}",
             diag.message
         );
     }
