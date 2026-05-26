@@ -144,4 +144,39 @@ mod tests {
         };
         assert_eq!(classify_zone(&probe_c, &params), Zone::Infill);
     }
+
+    #[test]
+    fn classify_zone_skin_branch_and_none_handling() {
+        // skin_thickness = top_bottom_layers × layer_height = 4 × 0.2mm = 0.8mm.
+        // Side distance set to 10mm in all four cases so Wall cannot fire.
+        let params = fdm_default_params();
+
+        // (a) 0.5 mm from top/bottom — inside skin band → Skin.
+        let probe_a = ZoneProbe {
+            min_side_distance: Some(0.010),
+            min_top_bottom_distance: Some(0.0005),
+        };
+        assert_eq!(classify_zone(&probe_a, &params), Zone::Skin);
+
+        // (b) exactly at threshold (0.8 mm) — Skin (≤).
+        let probe_b = ZoneProbe {
+            min_side_distance: Some(0.010),
+            min_top_bottom_distance: Some(0.0008),
+        };
+        assert_eq!(classify_zone(&probe_b, &params), Zone::Skin);
+
+        // (c) no top/bottom face at all — Skin cannot fire; falls through to Infill.
+        let probe_c = ZoneProbe {
+            min_side_distance: Some(0.010),
+            min_top_bottom_distance: None,
+        };
+        assert_eq!(classify_zone(&probe_c, &params), Zone::Infill);
+
+        // (d) 5 mm from top/bottom — past skin band → Infill.
+        let probe_d = ZoneProbe {
+            min_side_distance: Some(0.010),
+            min_top_bottom_distance: Some(0.005),
+        };
+        assert_eq!(classify_zone(&probe_d, &params), Zone::Infill);
+    }
 }
