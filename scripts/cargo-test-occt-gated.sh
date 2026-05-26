@@ -35,6 +35,9 @@
 # ===================
 # N slot files are derived from the REIFY_OCCT_LOCK base path:
 #   ${LOCK}.slot-1, ${LOCK}.slot-2, ..., ${LOCK}.slot-N
+# Slot files persist across invocations — they hold no state, only an inode for
+# flock. They are safe to remove when no wrappers are running:
+#   rm -f "${REIFY_OCCT_LOCK:-/tmp/reify-occt-$(id -u).lock}.slot-"*
 # The acquire loop shuffles 1..N order (thundering-herd avoidance), opens each
 # slot on FD 9, tries `flock -xn 9` (non-blocking exclusive), and breaks on
 # the first success. On full contention it closes FD 9, sleeps 0.5s, and
@@ -121,9 +124,22 @@ TEST_TIMEOUT="${REIFY_OCCT_TEST_TIMEOUT:-2700}"
 # allows some parallelism rather than full serialization.
 
 _MAX_CAP="${REIFY_OCCT_MAX_CONCURRENCY:-4}"
+# Validate _MAX_CAP early — a non-integer or 0 would silently break the
+# auto-detect arithmetic; fail fast with a clear message instead.
+case "$_MAX_CAP" in
+    ''|*[!0-9]*) echo "ERROR: cargo-test-occt-gated.sh: REIFY_OCCT_MAX_CONCURRENCY must be a positive integer (got '${_MAX_CAP}')" >&2; exit 64 ;;
+esac
+[ "$_MAX_CAP" -ge 1 ] || { echo "ERROR: cargo-test-occt-gated.sh: REIFY_OCCT_MAX_CONCURRENCY must be >= 1 (got '${_MAX_CAP}')" >&2; exit 64; }
 
 if [ -n "${REIFY_OCCT_CONCURRENCY:-}" ]; then
     _N="${REIFY_OCCT_CONCURRENCY}"
+    # Validate _N is a positive integer — a non-integer or 0 would cause
+    # shuf/seq to produce no output, making the wrapper spin until LOCK_WAIT
+    # elapses (~30 min default) without ever acquiring a slot.
+    case "$_N" in
+        ''|*[!0-9]*) echo "ERROR: cargo-test-occt-gated.sh: REIFY_OCCT_CONCURRENCY must be a positive integer (got '${_N}')" >&2; exit 64 ;;
+    esac
+    [ "$_N" -ge 1 ] || { echo "ERROR: cargo-test-occt-gated.sh: REIFY_OCCT_CONCURRENCY must be >= 1 (got '${_N}')" >&2; exit 64; }
 else
     _NPROC=2
     if command -v nproc >/dev/null 2>&1; then
@@ -137,7 +153,7 @@ else
     fi
     _LOAD_INT=0
     if [ -r /proc/loadavg ]; then
-        _LOAD_INT="$(awk '{printf "%d", $1}' /proc/loadavg)"
+        _LOAD_INT="$(awk '{print int($1)}' /proc/loadavg)"
     fi
     # _REIFY_OCCT_LOAD_OVERRIDE: test-only env var (underscore prefix = private).
     # Overrides the 1-minute load average used in auto-detect so tests are
@@ -169,6 +185,20 @@ fi
 # On success hold FD 9 for the wrapper's lifetime.
 #
 # The child runs with "9<&-" so no descendant inherits the slot FD.
+
+# Validate the lock parent directory is accessible before entering the acquire
+# loop.  Under set -e, a failed `exec 9>>slot-file` (ENOENT, EACCES, ENOSPC)
+# would terminate the script with no diagnostic.  Checking once up front gives
+# a clear operator-facing error and avoids a confusing silent exit.
+_LOCK_PARENT="$(dirname "$LOCK")"
+if [ ! -d "$_LOCK_PARENT" ]; then
+    echo "ERROR: cargo-test-occt-gated.sh: lock parent directory '${_LOCK_PARENT}' does not exist (REIFY_OCCT_LOCK='${LOCK}')" >&2
+    exit 1
+fi
+if [ ! -w "$_LOCK_PARENT" ]; then
+    echo "ERROR: cargo-test-occt-gated.sh: lock parent directory '${_LOCK_PARENT}' is not writable (REIFY_OCCT_LOCK='${LOCK}')" >&2
+    exit 1
+fi
 
 _FLOCK_START="$(date +%s)"
 _DEADLINE=$(( _FLOCK_START + LOCK_WAIT ))
