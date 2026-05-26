@@ -120,10 +120,11 @@ fn parse_kv_params<'a>(
 ) -> Result<Vec<(String, String)>, ParseError> {
     let mut out = Vec::new();
     for tok in tokens {
-        // `find('=')` returns the FIRST occurrence — see split contract
-        // above. The value substring (tok[eq_idx + 1..]) is allowed to be
-        // empty (KEY= is accepted) or contain further `=` chars (K=A=B).
-        let Some(eq_idx) = tok.find('=') else {
+        // `split_once('=')` splits at the FIRST `=` — see split contract
+        // above. The value substring is allowed to be empty (KEY= is
+        // accepted) or contain further `=` chars (K=A=B parses to the
+        // pair `("K", "A=B")`).
+        let Some((key, value)) = tok.split_once('=') else {
             return Err(ParseError {
                 line: line_no,
                 kind: ParseErrorKind::InvalidParameter {
@@ -132,8 +133,6 @@ fn parse_kv_params<'a>(
                 },
             });
         };
-        let key = &tok[..eq_idx];
-        let value = &tok[eq_idx + 1..];
         // Empty key (`=value`) is rejected — see split contract above.
         if key.is_empty() {
             return Err(ParseError {
