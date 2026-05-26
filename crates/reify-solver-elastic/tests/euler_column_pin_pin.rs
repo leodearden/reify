@@ -69,7 +69,7 @@ impl ColumnFixture {
     /// Initial mesh density: `nx=ny=4, nz=40`.
     /// Tuned in step-6 against the 5% PRD §13 task δ bound.
     fn steel_aisi_1045_800mm() -> Self {
-        Self { nx: 4, ny: 4, nz: 40, lx: 0.02, ly: 0.02, lz: 0.8 }
+        Self { nx: 8, ny: 8, nz: 320, lx: 0.02, ly: 0.02, lz: 0.8 }
     }
 
     fn n_nodes(&self) -> usize {
