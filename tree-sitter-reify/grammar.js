@@ -664,7 +664,7 @@ module.exports = grammar({
     named_argument: $ => seq(
       field('name', $.identifier),
       ':',
-      field('value', $._expression),
+      field('value', $._binding_value),
     ),
 
     // ── Types ───────────────────────────────────────────────
