@@ -285,6 +285,34 @@ fn quantifier_kind_lives_in_ast_and_reexported_at_root() {
 }
 
 #[test]
+fn port_direction_lives_in_primitives_and_reexported_at_root() {
+    // (a) Construct each variant via the new primitives-module path.
+    //     Fails to compile today because `reify_types::primitives` does not exist.
+    let prim_in = reify_types::primitives::PortDirection::In;
+    let prim_out = reify_types::primitives::PortDirection::Out;
+    let prim_bidi = reify_types::primitives::PortDirection::Bidi;
+
+    // (b) Construct via the crate-root re-export path (must remain resolvable).
+    let root_in: reify_types::PortDirection = reify_types::PortDirection::In;
+    let root_out: reify_types::PortDirection = reify_types::PortDirection::Out;
+    let root_bidi: reify_types::PortDirection = reify_types::PortDirection::Bidi;
+
+    // (c) Cross-assign: proves the crate-root path and the primitives-module path
+    //     name the same type (would not compile if they were distinct types).
+    let _same1: reify_types::primitives::PortDirection = root_in;
+    let _same2: reify_types::PortDirection = prim_out;
+    let _same3: reify_types::primitives::PortDirection = root_bidi;
+
+    // (d) Equality and inequality checks.
+    assert_eq!(prim_in, root_in);
+    assert_eq!(prim_out, root_out);
+    assert_eq!(prim_bidi, root_bidi);
+    assert_ne!(prim_in, root_out);
+    assert_ne!(prim_out, root_bidi);
+    assert_ne!(prim_bidi, root_in);
+}
+
+#[test]
 fn cross_sub_geometry_ref_variant_exported_and_distinct_from_value_ref() {
     let xref = reify_types::CompiledExpr::cross_sub_geometry_ref(
         reify_types::ValueCellId::new("Outer.inner", "body"),
