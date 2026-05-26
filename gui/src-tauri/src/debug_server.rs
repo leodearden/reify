@@ -51,17 +51,41 @@ fn tool_defs() -> Vec<ToolDef> {
         ToolDef {
             name: "viewport_state",
             description: "Three.js viewport state: camera position/target/fov, mesh count, scene bounding box, selected entity",
-            input_schema: json!({"type": "object", "properties": {}}),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional viewport id (e.g. 'design-main', 'def-preview'). When omitted, the first populated viewport is targeted."
+                    }
+                }
+            }),
         },
         ToolDef {
             name: "screenshot",
             description: "Take a screenshot of the 3D viewport. Returns a PNG image.",
-            input_schema: json!({"type": "object", "properties": {}}),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional viewport id (e.g. 'design-main', 'def-preview'). When omitted, the first populated viewport is targeted."
+                    }
+                }
+            }),
         },
         ToolDef {
             name: "screenshot_window",
             description: "Take a full-window screenshot including panels, overlays, and probe popups (DOM + WebGL composite via html-to-image). Returns a PNG image.",
-            input_schema: json!({"type": "object", "properties": {}}),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional viewport id (e.g. 'design-main', 'def-preview'). When omitted, the first populated viewport is targeted."
+                    }
+                }
+            }),
         },
         ToolDef {
             name: "store_state",
@@ -154,7 +178,15 @@ fn tool_defs() -> Vec<ToolDef> {
         ToolDef {
             name: "fit_to_view",
             description: "Reset the camera to fit all geometry in the viewport.",
-            input_schema: json!({"type": "object", "properties": {}}),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional viewport id (e.g. 'design-main', 'def-preview'). When omitted, the first populated viewport is targeted."
+                    }
+                }
+            }),
         },
         ToolDef {
             name: "set_camera",
@@ -162,6 +194,10 @@ fn tool_defs() -> Vec<ToolDef> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional viewport id (e.g. 'design-main', 'def-preview'). When omitted, the first populated viewport is targeted."
+                    },
                     "position": {
                         "type": "array",
                         "items": {"type": "number"},
