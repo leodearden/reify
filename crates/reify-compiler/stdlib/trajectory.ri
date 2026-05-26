@@ -229,3 +229,40 @@ structure def PiecewisePolynomialProfile : Profile {
     // — no further plumbing needed in this task.
     constraint waypoints.count > 0
 }
+
+// ── Evaluator helper fn signatures (compiler-known intrinsics) ────────────────
+//
+// These four functions are declared with minimal type-correct stub bodies that
+// satisfy the grammar's `fn_body` requirement. The stubs document the signature
+// surface so consumer tasks (β, γ, δ, ε, η, ι, ξ) can type-check their call
+// sites at α time.
+//
+// Design decision: stub bodies are used rather than body-less intrinsic
+// declarations because the Reify grammar requires `fn_body` for every `fn`
+// declaration (`tree-sitter-reify/grammar.js:91-96`; `reify-syntax/src/lib.rs:
+// 567-579`). The body-less form `fn f(...) -> T;` does not parse. Extending the
+// grammar for body-less intrinsic declarations is beyond α scope (touches
+// grammar + parser + lowering for all stdlib modules). The β task (3816) will
+// replace the stub bodies — either by editing them to call into the real
+// B-spline evaluator once `reify-stdlib/src/trajectory/spline.rs` lands, or by
+// switching dispatch to the runtime-intrinsic registry scaffolded on
+// `preserved/trajectory-beta-spline` (`crates/reify-stdlib/src/trajectory/
+// mod.rs::eval_trajectory` — commit e075cff59a recognises all four names).
+//
+// Stub body conventions:
+//   - `List<JointValue>` returns → `[0.0]`  (single-element Real list; avoids
+//     the "cannot infer element type of empty list literal" warning at
+//     `reify-compiler/src/expr.rs:2082`)
+//   - `Time` return → `0.0 * 1s`  (numeric × unit-literal; pattern from
+//     `units.ri:82` `STANDARD_GRAVITY = 9.80665 * 1m / (1s * 1s)`)
+
+// evaluate_profile — sample a Profile at time `t`, returning the per-joint
+// position vector q(t) (PRD §4.1 line 241).
+//
+// `p : Profile` accepts any concrete Profile variant via the nominal type-tag
+// mechanism (`PiecewisePolynomialProfile : Profile`). `t : Time` is the
+// evaluation instant within the profile's `[0, T]` domain.
+//
+// TODO(beta-3816): replace stub body `[0.0]` with the real B-spline evaluator
+// (de Boor recursion) once `reify-stdlib/src/trajectory/spline.rs` lands.
+pub fn evaluate_profile(p: Profile, t: Time) -> List<JointValue> { [0.0] }
