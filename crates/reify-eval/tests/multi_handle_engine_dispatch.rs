@@ -20,7 +20,7 @@ use reify_constraints::SimpleConstraintChecker;
 use reify_eval::Engine;
 use reify_syntax::parse;
 use reify_test_support::mocks::MockGeometryKernel;
-use reify_types::{ExportFormat, ModulePath};
+use reify_types::{ExportFormat, ModulePath, ReprKind};
 
 /// `Engine::with_registered_kernels(checker)` must build an engine whose
 /// `registered_kernel_names()` set matches the inventory registry: when
@@ -124,4 +124,124 @@ fn engine_new_with_single_mock_kernel_builds_one_box_realization() {
         "mock kernel export writes a fixed payload (MOCK_EXPORT_DATA); a different output \
          means the build dispatched to a different kernel than the user-supplied mock"
     );
+}
+
+/// Step-9 (task ε / 3436) RED forward-guard: after `engine.build_snapshot()`
+/// runs the per-realization op loop, every realization node's
+/// `produced_repr` must reflect what `execute_realization_ops` recorded —
+/// not just the construction-time `ReprKind::BRep` default that
+/// `EvaluationGraph::from_templates` initializes (graph.rs:329, pinned by
+/// the eval-only α forward-guard in
+/// `tests/realization_produced_repr_pinning.rs`).
+///
+/// **How this test distinguishes "executor write" from "construction-time
+/// default".** Both values are `BRep` in the v0.3-ε BRep baseline, so a
+/// naïve `produced_repr == BRep` assertion after `build()` would pass with
+/// or without the step-10 executor write. To make this RED before step-10,
+/// the test:
+///
+/// 1. Drives `engine.build()` once, which calls `eval()` internally and
+///    creates the snapshot's realization nodes with `produced_repr == BRep`.
+/// 2. Reaches into the snapshot via the `test-instrumentation`-gated
+///    `snapshot_mut()` accessor and corrupts every realization's
+///    `produced_repr` to `ReprKind::Mesh` — a value the BRep baseline can
+///    never legitimately produce.
+/// 3. Calls `engine.build_snapshot()`, which operates on the existing
+///    snapshot (skips `eval()`) and re-runs the per-realization op loop
+///    via `execute_realization_ops`.
+/// 4. Asserts every realization's `produced_repr` is now `BRep` again.
+///
+/// Only step-10's caller-write of the executor-returned terminal repr into
+/// `eval_state.snapshot.graph.realizations[id].produced_repr` can restore
+/// the BRep value once the pre-corruption has set it to Mesh. Before step-10
+/// the executor has no channel to surface the terminal repr to the caller,
+/// so the Mesh value survives the build and the per-realization assertion
+/// fails — the desired RED signal.
+#[test]
+fn executor_writes_produced_repr_brep_on_build_snapshot() {
+    let source = "structure S {\n    let b = box(10mm, 10mm, 10mm)\n}\n";
+    let parsed = parse(source, ModulePath::single("produced_repr_executor_write"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let compiled = compile(&parsed);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, reify_types::Severity::Error))
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "compile errors: {compile_errors:?}"
+    );
+
+    let checker = SimpleConstraintChecker;
+    let mock = MockGeometryKernel::new();
+    let mut engine = Engine::new(Box::new(checker), Some(Box::new(mock)));
+
+    // Step (1): seed the snapshot via build (which calls eval internally).
+    let _ = engine.build(&compiled, ExportFormat::Stl);
+
+    // Snapshot must contain at least one realization with the construction-
+    // time default (pinned by α/`realization_produced_repr_pinning.rs`).
+    let realization_ids: Vec<_> = {
+        let snap = engine
+            .snapshot()
+            .expect("snapshot must be Some after a successful build()");
+        assert!(
+            !snap.graph.realizations.is_empty(),
+            "expected at least one realization node in the snapshot graph after build()"
+        );
+        snap.graph
+            .realizations
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect()
+    };
+
+    // Step (2): pre-corrupt produced_repr → Mesh on every realization via
+    // the test-instrumentation snapshot_mut accessor. Mesh is impossible in
+    // the BRep baseline; any later read of BRep here can only come from a
+    // step-10 executor-write of the dispatcher-derived repr.
+    {
+        let snap = engine
+            .snapshot_mut()
+            .expect("snapshot_mut must be Some after a successful build()");
+        for id in &realization_ids {
+            let r = snap
+                .graph
+                .realizations
+                .get_mut(id)
+                .expect("realization id collected from iter must still be present");
+            r.produced_repr = ReprKind::Mesh;
+        }
+    }
+
+    // Step (3): re-run the per-realization op loop on the existing snapshot
+    // (build_snapshot, not build — build calls eval which would rebuild the
+    // graph from the module and reset the corrupted produced_repr to the
+    // construction default, masking the executor-write signal we're after).
+    let _ = engine.build_snapshot(&compiled, ExportFormat::Stl);
+
+    // Step (4): every realization must now carry produced_repr == BRep.
+    // Pre-step-10 this fails because the Mesh value we wrote survives the
+    // build (the executor has no channel to update the graph node). After
+    // step-10 the caller-write restores BRep from the dispatcher's
+    // `(PrimitiveBox, BRep)` plan.
+    let snap = engine
+        .snapshot()
+        .expect("snapshot must remain Some after build_snapshot()");
+    for (id, r) in snap.graph.realizations.iter() {
+        assert_eq!(
+            r.produced_repr,
+            ReprKind::BRep,
+            "realization {id:?}: executor must overwrite the pre-corrupted Mesh value with \
+             ReprKind::BRep at execution time (step-10); got {:?}. If this fires after step-10 \
+             lands, check that execute_realization_ops returns the terminal repr and the build/\
+             build_snapshot caller writes it back into the realization graph node.",
+            r.produced_repr,
+        );
+    }
 }

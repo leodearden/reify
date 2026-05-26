@@ -976,6 +976,25 @@ impl Engine {
         self.eval_state.as_ref().map(|s| &s.snapshot)
     }
 
+    /// Test-only mutable access to the current snapshot.
+    ///
+    /// Used by task ε (3436) step-9 to pre-corrupt a realization node's
+    /// `produced_repr` and prove that step-10's executor-write actually
+    /// restores it (rather than the assertion trivially passing because the
+    /// construction-time default in `EvaluationGraph::from_templates`
+    /// already matches). Future test-instrumentation use cases that need to
+    /// reach inside the snapshot (e.g. corrupt cached values, force
+    /// determinacy transitions, surgically edit graph nodes) can reuse this
+    /// same gated accessor instead of adding bespoke per-field hooks.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    /// Integration tests reach this method via the self-dev-dep with the
+    /// `test-instrumentation` feature enabled (see `crates/reify-eval/Cargo.toml`).
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn snapshot_mut(&mut self) -> Option<&mut Snapshot> {
+        self.eval_state.as_mut().map(|s| &mut s.snapshot)
+    }
+
     /// Clear all param overrides currently held by this engine.
     ///
     /// Intended for callers that semantically start fresh with respect to
