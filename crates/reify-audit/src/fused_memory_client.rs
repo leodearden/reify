@@ -29,6 +29,7 @@
 //! module can exercise it without round-tripping HTTP.
 
 use std::cell::Cell;
+use std::io::Read;
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -163,8 +164,6 @@ impl FusedMemoryClient {
         // the body text for the `data:` line, which from_reader cannot
         // do. For a one-shot CLI, buffering the corpus in memory is fine.
         let mut body = String::new();
-        #[allow(unused_imports)]
-        use std::io::Read as _;
         response
             .into_reader()
             .read_to_string(&mut body)
@@ -466,7 +465,6 @@ fn random_hex_32() -> String {
     let mut buf = [0u8; 16];
     #[cfg(unix)]
     {
-        use std::io::Read;
         if let Ok(mut f) = std::fs::File::open("/dev/urandom")
             && f.read_exact(&mut buf).is_ok()
         {
