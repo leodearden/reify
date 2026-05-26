@@ -76,13 +76,14 @@ pub struct EntityAttribution {
 
     /// Absolute Euclidean-distance tolerance for anchor matching.
     ///
-    /// Nearest-anchor matching is unambiguous iff
+    /// Nearest-anchor matching is guaranteed unambiguous when
     /// `match_tolerance < suggested_match_tolerance()` — i.e., strictly less
-    /// than half the minimum same-dim pairwise anchor spacing.  The producer
-    /// matches each gmsh entity only against same-dimension caller anchors
-    /// (dim-2 against `faces`, dim-1 against `edges`, dim-0 against
-    /// `vertices`), so cross-dim anchor distances are irrelevant for
-    /// ambiguity analysis.
+    /// than half the minimum same-dim pairwise anchor spacing (a sufficient
+    /// condition; values above the bound do not necessarily cause mis-assignment
+    /// for a given query set).  The producer matches each gmsh entity only
+    /// against same-dimension caller anchors (dim-2 against `faces`, dim-1
+    /// against `edges`, dim-0 against `vertices`), so cross-dim anchor
+    /// distances are irrelevant for ambiguity analysis.
     ///
     /// Use [`EntityAttribution::suggested_match_tolerance`] to derive a
     /// principled safe bound from the anchor geometry; choose any value in
@@ -99,10 +100,11 @@ impl EntityAttribution {
     ///
     /// Returns `0.5 × min_same_dim_pairwise_distance`, where the minimum is
     /// taken independently within each dimension (faces, edges, vertices) and
-    /// then the overall minimum is used.  Nearest-anchor matching is
-    /// unambiguous iff `match_tolerance < suggested_match_tolerance()`:
-    /// any query within tolerance of one anchor is guaranteed to be farther
-    /// from all other same-dim anchors.
+    /// then the overall minimum is used.  Nearest-anchor matching is guaranteed
+    /// unambiguous when `match_tolerance < suggested_match_tolerance()` (a
+    /// sufficient condition via the triangle inequality): any query within
+    /// tolerance of one anchor is guaranteed to be farther from all other
+    /// same-dim anchors.
     ///
     /// Returns [`f64::INFINITY`] when no dimension has ≥ 2 anchors (no
     /// same-dim ambiguity is possible regardless of tolerance).
