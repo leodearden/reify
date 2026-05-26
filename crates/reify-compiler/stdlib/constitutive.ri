@@ -1,0 +1,158 @@
+// Stdlib: Anisotropic Constitutive Laws
+//
+// Provides the `ConstitutiveLaw` marker trait + the orthotropic / transverse-
+// isotropic conforming structures + the `AnisotropicMaterial` field codomain
+// used by `solve_elastic_static` for spatially-varying material fields.
+//
+// PRD reference: docs/prds/v0_5/anisotropic-heterogeneous-elastostatics.md
+// task γ. Producer-side `d_matrix_local` + 6×6 Voigt rotation lives in
+// `reify-solver-elastic::constitutive` (task α); this module is the *stdlib
+// surface only* — the trait is a marker that the producer crate matches on
+// by structure-name in `Value::StructureInstance`.
+//
+// Module exports:
+//   - `MaterialFrame`               — local material-axis frame (origin + 3 axes)
+//   - `ConstitutiveLaw`             — marker trait (body intentionally empty)
+//   - `OrthotropicMaterial`         — 9-constant orthotropic conformer
+//   - `TransverseIsotropicMaterial` — 5-constant transverse-isotropic conformer
+//   - `AnisotropicMaterial`         — `{law, frame}` field codomain value
+//
+// Per-property provenance: every physical constant on the two conforming
+// structures has a parallel `..._provenance : MaterialPropertyProvenance`
+// slot mirroring the materials_fea.ri convention. Users instantiate a
+// concrete material with their measured/cited values and attach citations
+// per property so downstream FEA reports can reproduce the chain.
+
+// ── Material frame ───────────────────────────────────────────────────────────
+
+// MaterialFrame is the local material-axis frame attached to each anisotropic
+// constitutive value. Origin is a point in the body's global coordinate
+// system; `x_axis`/`y_axis`/`z_axis` give the material's local 1/2/3 axes
+// in global coordinates. The 6×6 Voigt rotation `D_global = Tᵀ D_local T`
+// (task α, `rotate_voigt`) consumes this frame.
+//
+// Name: `MaterialFrame` rather than bare `Frame` because "Frame" is already
+// used in dynamics PRDs (chassis frame, body frame) — keeping the name scoped
+// to constitutive use avoids a future stdlib collision. Cheap to rename now
+// while there are zero downstream consumers.
+//
+// Axis-type convention: axes are stored as `Vector3<Length>` (mirroring
+// `fdm.ri`'s `build_direction`) because `Vector3<T>` requires a *dimension*
+// parameter and the grammar has no dimensionless 3-tuple. The producer's
+// `rotate_voigt` (task α) normalises each axis to unit magnitude before
+// building the 6×6 Voigt transform, so the chosen unit on the Length cells
+// is observationally irrelevant (e.g. `vec3(1mm, 0mm, 0mm)` and
+// `vec3(2m, 0m, 0m)` produce the same `D_global`). Document literals as
+// canonical magnitudes (1mm or 1m) for readability.
+//
+// Orthonormality is a debug-side invariant the producer enforces; the
+// stdlib surface does not constrain the vectors because doing so requires
+// a cross-product / dot-product expression layer the grammar does not yet
+// admit as a `constraint`. The producer's `rotate_voigt` debug-asserts
+// the basis is orthonormal within tolerance.
+structure def MaterialFrame {
+    param origin : Point3<Length>
+    param x_axis : Vector3<Length>
+    param y_axis : Vector3<Length>
+    param z_axis : Vector3<Length>
+}
+
+// ── ConstitutiveLaw trait ────────────────────────────────────────────────────
+
+// ConstitutiveLaw is the marker trait conformed to by every concrete
+// constitutive law (isotropic, orthotropic, transverse-isotropic). The
+// body is intentionally empty: the contract "produce a 6×6 stiffness D
+// in the material's local frame" is implemented producer-side in Rust
+// (`reify-solver-elastic::constitutive`) and dispatched on the
+// structure-name carried by `Value::StructureInstance`. The stdlib trait
+// exists so `param material : ConstitutiveLaw` resolves in user code
+// (e.g. `AnisotropicMaterial.law` below) and so downstream PRDs can
+// declare their own conforming structures.
+//
+// Empty-marker pattern follows `trait Load { }` in std.fea.multi_case
+// (relaxed in DD1; see fea_multi_case.ri:293).
+trait ConstitutiveLaw { }
+
+// ── OrthotropicMaterial ──────────────────────────────────────────────────────
+
+// OrthotropicMaterial is the 9-constant orthotropic conformer: three
+// distinct Young's moduli `e1/e2/e3`, three shear moduli `g12/g13/g23`,
+// three Poisson ratios `nu12/nu13/nu23`, plus density. Local-frame stiffness
+// follows the standard orthotropic compliance matrix; positive-definiteness
+// requires the standard cross-constant constraints
+//   1 − ν12 ν21 − ν23 ν32 − ν31 ν13 − 2 ν21 ν32 ν13 > 0
+// (with `νji = νij Ej/Ei`). No validation today; tracked as follow-up
+// after task α (a release-mode diagnostic is safer than a debug-only assert).
+//
+// Provenance slots are required (no defaults) because the constants are
+// physical and meaningful only with a citation. To omit a citation,
+// supply a `MaterialPropertyProvenance(source: "", reference: "", notes: "")`
+// — the slot is structurally required but its content can be empty.
+structure def OrthotropicMaterial : ConstitutiveLaw {
+    param e1 : Pressure
+    param e2 : Pressure
+    param e3 : Pressure
+    param g12 : Pressure
+    param g13 : Pressure
+    param g23 : Pressure
+    param nu12 : Real // dimensionless
+    param nu13 : Real // dimensionless
+    param nu23 : Real // dimensionless
+    param density : Density
+
+    param e1_provenance : MaterialPropertyProvenance
+    param e2_provenance : MaterialPropertyProvenance
+    param e3_provenance : MaterialPropertyProvenance
+    param g12_provenance : MaterialPropertyProvenance
+    param g13_provenance : MaterialPropertyProvenance
+    param g23_provenance : MaterialPropertyProvenance
+    param nu12_provenance : MaterialPropertyProvenance
+    param nu13_provenance : MaterialPropertyProvenance
+    param nu23_provenance : MaterialPropertyProvenance
+    param density_provenance : MaterialPropertyProvenance
+}
+
+// ── TransverseIsotropicMaterial ──────────────────────────────────────────────
+
+// TransverseIsotropicMaterial is the 5-constant transverse-isotropic
+// conformer — the literature-standard simplification for FDM-printed
+// parts (in-plane isotropy + a distinct build/`z` axis):
+//   e_in_plane   — Young's modulus in the isotropy plane (E1 = E2)
+//   e_axial      — Young's modulus along the axial direction (E3)
+//   nu_in_plane  — in-plane Poisson ratio (ν12)
+//   nu_axial     — axial Poisson ratio (ν13 = ν23)
+//   g_axial      — axial shear modulus (G13 = G23)
+// The in-plane shear modulus is derived: G12 = E_in_plane / (2 (1 + ν_in_plane)).
+// Producer-side `d_matrix_local` (task α) maps these onto the orthotropic
+// stiffness with the standard substitutions.
+structure def TransverseIsotropicMaterial : ConstitutiveLaw {
+    param e_in_plane : Pressure
+    param e_axial : Pressure
+    param nu_in_plane : Real // dimensionless
+    param nu_axial : Real // dimensionless
+    param g_axial : Pressure
+    param density : Density
+
+    param e_in_plane_provenance : MaterialPropertyProvenance
+    param e_axial_provenance : MaterialPropertyProvenance
+    param nu_in_plane_provenance : MaterialPropertyProvenance
+    param nu_axial_provenance : MaterialPropertyProvenance
+    param g_axial_provenance : MaterialPropertyProvenance
+    param density_provenance : MaterialPropertyProvenance
+}
+
+// ── AnisotropicMaterial (field codomain) ─────────────────────────────────────
+
+// AnisotropicMaterial is the value type carried by a spatially-varying
+// material field `Field<Point3<Length>, AnisotropicMaterial>` (the PRD's
+// δ-task generalised `solve_elastic_static.material`). Each point in
+// the field carries a constitutive law plus the local material frame
+// that orients its principal axes in global coordinates.
+//
+// Isotropic materials ignore `frame`; orthotropic / transverse-isotropic
+// conformers rotate their local-frame `D` into the global frame via
+// `D_global = Tᵀ D_local T` (`rotate_voigt`, task α).
+structure def AnisotropicMaterial {
+    param law : ConstitutiveLaw
+    param frame : MaterialFrame
+}
