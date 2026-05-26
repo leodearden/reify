@@ -65,3 +65,41 @@ structure S { let m : Length = auto(free) }
       type: (type_expr
         (identifier))
       value: (auto_keyword))))
+
+================================================================================
+param_assignment value = auto (strict) — step-5 RED, GREEN after step-6
+================================================================================
+
+structure S { sub b : Bearing { bore = auto } }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (identifier)
+      body: (specialization_body
+        (param_assignment
+          name: (identifier)
+          value: (auto_keyword))))))
+
+================================================================================
+param_assignment value = auto(free) — step-5 RED, GREEN after step-6
+================================================================================
+
+structure S { sub b : Bearing { bore = auto(free) } }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (identifier)
+      body: (specialization_body
+        (param_assignment
+          name: (identifier)
+          value: (auto_keyword))))))
