@@ -127,6 +127,106 @@ fn distance_with_transform_rotation_only_matches_rotated_shape() {
 }
 
 // ---------------------------------------------------------------------------
+// distance_with_transform — identity-transform sanity check
+// ---------------------------------------------------------------------------
+
+/// Identity transform: `distance_with_transform(a, b, Identity)` must match
+/// `min_clearance(a, b)` within 1e-9 (tighter than the translation test's 1e-6
+/// because no floating-point math is done on the transform itself).
+#[test]
+fn distance_with_transform_identity_equals_min_clearance() {
+    let (kernel, box_a_id, box_b_id) = two_box_kernel(50.0);
+
+    let baseline = kernel
+        .min_clearance(box_a_id, box_b_id)
+        .expect("min_clearance should succeed");
+
+    let identity = Transform3 {
+        qw: 1.0,
+        qx: 0.0,
+        qy: 0.0,
+        qz: 0.0,
+        tx: 0.0,
+        ty: 0.0,
+        tz: 0.0,
+    };
+    let under_transform = kernel
+        .distance_with_transform(box_a_id, box_b_id, &identity)
+        .expect("distance_with_transform(identity) should succeed");
+
+    assert!(
+        (under_transform - baseline).abs() < 1e-9,
+        "identity-transform distance {under_transform} != min_clearance {baseline}, \
+         delta = {}",
+        (under_transform - baseline).abs()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Error paths — invalid handles for both methods
+// ---------------------------------------------------------------------------
+
+/// Unknown first handle in `distance_with_transform` returns `InvalidHandle(a)`.
+#[test]
+fn distance_with_transform_unknown_first_handle_returns_invalid_handle() {
+    let (kernel, box_id, _) = two_box_kernel(50.0);
+    let unknown = GeometryHandleId(998);
+    let t_rel = Transform3 { qw: 1.0, qx: 0.0, qy: 0.0, qz: 0.0, tx: 0.0, ty: 0.0, tz: 0.0 };
+    match kernel.distance_with_transform(unknown, box_id, &t_rel) {
+        Err(QueryError::InvalidHandle(id)) if id == unknown => {}
+        Err(QueryError::InvalidHandle(id)) => panic!(
+            "expected InvalidHandle({unknown:?}), got InvalidHandle({id:?})"
+        ),
+        other => panic!("expected Err(InvalidHandle({unknown:?})), got {other:?}"),
+    }
+}
+
+/// Unknown second handle in `distance_with_transform` returns `InvalidHandle(b)`.
+#[test]
+fn distance_with_transform_unknown_second_handle_returns_invalid_handle() {
+    let (kernel, box_id, _) = two_box_kernel(50.0);
+    let unknown = GeometryHandleId(999);
+    let t_rel = Transform3 { qw: 1.0, qx: 0.0, qy: 0.0, qz: 0.0, tx: 0.0, ty: 0.0, tz: 0.0 };
+    match kernel.distance_with_transform(box_id, unknown, &t_rel) {
+        Err(QueryError::InvalidHandle(id)) if id == unknown => {}
+        Err(QueryError::InvalidHandle(id)) => panic!(
+            "expected InvalidHandle({unknown:?}), got InvalidHandle({id:?})"
+        ),
+        other => panic!("expected Err(InvalidHandle({unknown:?})), got {other:?}"),
+    }
+}
+
+/// Unknown first handle in `interferes_with_transform` returns `InvalidHandle(a)`.
+#[test]
+fn interferes_with_transform_unknown_first_handle_returns_invalid_handle() {
+    let (kernel, box_id, _) = two_box_kernel(50.0);
+    let unknown = GeometryHandleId(998);
+    let t_rel = Transform3 { qw: 1.0, qx: 0.0, qy: 0.0, qz: 0.0, tx: 0.0, ty: 0.0, tz: 0.0 };
+    match kernel.interferes_with_transform(unknown, box_id, &t_rel) {
+        Err(QueryError::InvalidHandle(id)) if id == unknown => {}
+        Err(QueryError::InvalidHandle(id)) => panic!(
+            "expected InvalidHandle({unknown:?}), got InvalidHandle({id:?})"
+        ),
+        other => panic!("expected Err(InvalidHandle({unknown:?})), got {other:?}"),
+    }
+}
+
+/// Unknown second handle in `interferes_with_transform` returns `InvalidHandle(b)`.
+#[test]
+fn interferes_with_transform_unknown_second_handle_returns_invalid_handle() {
+    let (kernel, box_id, _) = two_box_kernel(50.0);
+    let unknown = GeometryHandleId(999);
+    let t_rel = Transform3 { qw: 1.0, qx: 0.0, qy: 0.0, qz: 0.0, tx: 0.0, ty: 0.0, tz: 0.0 };
+    match kernel.interferes_with_transform(box_id, unknown, &t_rel) {
+        Err(QueryError::InvalidHandle(id)) if id == unknown => {}
+        Err(QueryError::InvalidHandle(id)) => panic!(
+            "expected InvalidHandle({unknown:?}), got InvalidHandle({id:?})"
+        ),
+        other => panic!("expected Err(InvalidHandle({unknown:?})), got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // interferes_with_transform — overlap / disjoint probes
 // ---------------------------------------------------------------------------
 
