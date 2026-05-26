@@ -2134,31 +2134,66 @@ impl Engine {
                         }
                         None => {
                             // dispatch returned None: no registered kernel
-                            // claims `(op, BRep)`. Emit the standard
-                            // `NoKernelChain` diagnostic (built by
-                            // `crate::dispatcher::no_kernel_chain_diagnostic`)
-                            // and mark the realization Failed via
-                            // `kernel_error_out`. The diagnostic carries
-                            // `DiagnosticCode::NoKernelChain` so consumers
-                            // can filter by code rather than substring.
-                            let diag = crate::dispatcher::no_kernel_chain_diagnostic(
-                                operation,
-                                ReprKind::BRep,
-                                Engine::BUDGET_QUERY_TRIPLE_V02.2,
-                            )
-                            .with_label(DiagnosticLabel::new(
-                                realization_span,
-                                "in this realization",
-                            ));
-                            diagnostics.push(diag);
-                            if kernel_error_out.is_none() {
-                                *kernel_error_out = Some(ErrorRef::new(format!(
-                                    "no kernel chain for op '{:?}' producing '{:?}'",
+                            // claims `(op, BRep)` in the inventory-derived
+                            // registry. Two cases:
+                            //
+                            // (a) Backward-compat mode — the engine was
+                            //     constructed via `Engine::new(_, Some(k))` /
+                            //     `with_prelude(_, Some(k), _)`, which wraps
+                            //     the caller-supplied kernel under the
+                            //     synthetic [`Engine::DEFAULT_KERNEL_NAME`]
+                            //     sentinel. The inventory registry is
+                            //     deliberately out of sync with the kernels
+                            //     map in this mode (the caller's kernel
+                            //     never submits to `inventory::submit!`).
+                            //     For runtime behaviour to remain identical
+                            //     to v0.2 in this path, fall back to the
+                            //     default kernel — exactly as we already do
+                            //     in the `Some(plan)` branch when the
+                            //     dispatched name is absent from the kernels
+                            //     map. Without this fallback, every
+                            //     `Engine::new(Some(MockGeometryKernel))`
+                            //     integration test that doesn't transitively
+                            //     pull in an inventory-registered adapter
+                            //     would regress to "no kernel chain" errors.
+                            //
+                            // (b) Strict mode — the engine was constructed
+                            //     via `with_registered_kernels` (or the test
+                            //     drives `execute_realization_ops` with a
+                            //     non-synthetic `default_kernel_name`).
+                            //     Emit the `NoKernelChain` diagnostic so the
+                            //     missing-coverage configuration is surfaced
+                            //     rather than silently masked.
+                            //
+                            // The sentinel comparison distinguishes the two
+                            // paths without adding a separate flag — the
+                            // name `"__reify_eval_default_kernel"` is chosen
+                            // to be impossible for any real inventory
+                            // registration (`"occt"`, `"manifold"`, …).
+                            if default_kernel_name == Engine::DEFAULT_KERNEL_NAME
+                                && kernels.contains_key(default_kernel_name)
+                            {
+                                default_kernel_name.to_string()
+                            } else {
+                                let diag = crate::dispatcher::no_kernel_chain_diagnostic(
                                     operation,
                                     ReprKind::BRep,
-                                )));
+                                    Engine::BUDGET_QUERY_TRIPLE_V02.2,
+                                )
+                                .with_label(DiagnosticLabel::new(
+                                    realization_span,
+                                    "in this realization",
+                                ));
+                                diagnostics.push(diag);
+                                if kernel_error_out.is_none() {
+                                    *kernel_error_out = Some(ErrorRef::new(format!(
+                                        "no kernel chain for op '{:?}' producing '{:?}'",
+                                        operation,
+                                        ReprKind::BRep,
+                                    )));
+                                }
+                                break;
                             }
-                            break;
                         }
                     };
                     let kernel: &mut dyn GeometryKernel = match kernels
@@ -3054,6 +3089,73 @@ where
 mod tests {
     use super::*;
 
+    // ── shared test helpers (task ε / 3436, step-8) ───────────────────────────
+
+    /// Build a [`CapabilityDescriptor`] that supports every [`Operation`]
+    /// variant against [`ReprKind::BRep`]. Used by the
+    /// `execute_realization_ops_*` unit tests below to construct a synthetic
+    /// dispatch registry that routes every supported op to a single
+    /// kernel-by-name (`"default"`) — preserving the v0.2 single-kernel
+    /// behaviour while exercising the per-op dispatch routing seam wired in
+    /// step-8.
+    ///
+    /// Tests that exercise the "no kernel for op" path (`dispatch` returns
+    /// `None`) construct their own minimal descriptor inline instead.
+    fn dispatch_test_descriptor_all_brep() -> CapabilityDescriptor {
+        CapabilityDescriptor {
+            supports: vec![
+                (Operation::PrimitiveBox, ReprKind::BRep),
+                (Operation::PrimitiveCylinder, ReprKind::BRep),
+                (Operation::PrimitiveSphere, ReprKind::BRep),
+                (Operation::PrimitiveTube, ReprKind::BRep),
+                (Operation::BooleanUnion, ReprKind::BRep),
+                (Operation::BooleanDifference, ReprKind::BRep),
+                (Operation::BooleanIntersection, ReprKind::BRep),
+                (Operation::ModifyFillet, ReprKind::BRep),
+                (Operation::ModifyChamfer, ReprKind::BRep),
+                (Operation::ModifyShell, ReprKind::BRep),
+                (Operation::ModifyDraft, ReprKind::BRep),
+                (Operation::ModifyThicken, ReprKind::BRep),
+                (Operation::TransformTranslate, ReprKind::BRep),
+                (Operation::TransformRotate, ReprKind::BRep),
+                (Operation::TransformScale, ReprKind::BRep),
+                (Operation::TransformRotateAround, ReprKind::BRep),
+                (Operation::PatternLinear, ReprKind::BRep),
+                (Operation::PatternCircular, ReprKind::BRep),
+                (Operation::PatternMirror, ReprKind::BRep),
+                (Operation::PatternLinear2D, ReprKind::BRep),
+                (Operation::PatternArbitrary, ReprKind::BRep),
+                (Operation::SweepLoft, ReprKind::BRep),
+                (Operation::SweepExtrude, ReprKind::BRep),
+                (Operation::SweepRevolve, ReprKind::BRep),
+                (Operation::SweepSweep, ReprKind::BRep),
+                (Operation::SweepExtrudeSymmetric, ReprKind::BRep),
+                (Operation::SweepSweepGuided, ReprKind::BRep),
+                (Operation::SweepLoftGuided, ReprKind::BRep),
+                (Operation::SweepPipe, ReprKind::BRep),
+                (Operation::CurveLineSegment, ReprKind::BRep),
+                (Operation::CurveArc, ReprKind::BRep),
+                (Operation::CurveHelix, ReprKind::BRep),
+                (Operation::CurveInterpCurve, ReprKind::BRep),
+                (Operation::CurveBezierCurve, ReprKind::BRep),
+                (Operation::CurveNurbsCurve, ReprKind::BRep),
+            ],
+        }
+    }
+
+    /// Wrap a single boxed [`GeometryKernel`] into a multi-handle kernel map
+    /// keyed by `"default"`. Returns the map ready to pass as
+    /// `&mut kernels` to [`Engine::execute_realization_ops`]. Mirrors what
+    /// `with_prelude`/`new` do for the production builders (synthetic default
+    /// name) while keeping per-test setup terse.
+    fn dispatch_test_kernels(
+        kernel: Box<dyn GeometryKernel>,
+    ) -> BTreeMap<String, Box<dyn GeometryKernel>> {
+        let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        kernels.insert("default".to_string(), kernel);
+        kernels
+    }
+
     // ── execute_realization_ops unit tests ────────────────────────────────────
 
     /// Happy path: all operations compile and execute successfully.
@@ -3075,7 +3177,10 @@ mod tests {
             ],
         }];
 
-        let mut kernel = MockGeometryKernel::new();
+        let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
+        let desc = dispatch_test_descriptor_all_brep();
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("default".to_string(), &desc);
         let values = ValueMap::new();
         let functions: Vec<CompiledFunction> = vec![];
         let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
@@ -3088,7 +3193,9 @@ mod tests {
         let mut swept_kind_table = SweptKindTable::default();
         let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
-            &mut kernel,
+            &mut kernels,
+            &registry,
+            "default",
             &ops,
             &[],
             &values,
@@ -3167,7 +3274,10 @@ mod tests {
             right: GeomRef::Step(99),
         }];
 
-        let mut kernel = MockGeometryKernel::new();
+        let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
+        let desc = dispatch_test_descriptor_all_brep();
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("default".to_string(), &desc);
         let values = ValueMap::new();
         let functions: Vec<CompiledFunction> = vec![];
         let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
@@ -3184,7 +3294,9 @@ mod tests {
         let mut swept_kind_table = SweptKindTable::default();
         let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
-            &mut kernel,
+            &mut kernels,
+            &registry,
+            "default",
             &ops,
             &[],
             &values,
@@ -3247,7 +3359,10 @@ mod tests {
             ],
         }];
 
-        let mut kernel = FailingMockGeometryKernel;
+        let mut kernels = dispatch_test_kernels(Box::new(FailingMockGeometryKernel));
+        let desc = dispatch_test_descriptor_all_brep();
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("default".to_string(), &desc);
         let values = ValueMap::new();
         let functions: Vec<CompiledFunction> = vec![];
         let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
@@ -3260,7 +3375,9 @@ mod tests {
         let mut swept_kind_table = SweptKindTable::default();
         let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
-            &mut kernel,
+            &mut kernels,
+            &registry,
+            "default",
             &ops,
             &[],
             &values,
@@ -3331,7 +3448,10 @@ mod tests {
             },
         ];
 
-        let mut kernel = MockGeometryKernel::new();
+        let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
+        let desc = dispatch_test_descriptor_all_brep();
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("default".to_string(), &desc);
         let values = ValueMap::new();
         let functions: Vec<CompiledFunction> = vec![];
         let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
@@ -3347,7 +3467,9 @@ mod tests {
         let mut swept_kind_table = SweptKindTable::default();
         let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
-            &mut kernel,
+            &mut kernels,
+            &registry,
+            "default",
             &ops,
             &[],
             &values,
@@ -3413,7 +3535,10 @@ mod tests {
             right: GeomRef::Step(99),
         }];
 
-        let mut kernel = MockGeometryKernel::new();
+        let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
+        let desc = dispatch_test_descriptor_all_brep();
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("default".to_string(), &desc);
         let values = ValueMap::new();
         let functions: Vec<CompiledFunction> = vec![];
         let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
@@ -3426,7 +3551,9 @@ mod tests {
         let mut swept_kind_table = SweptKindTable::default();
         let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
-            &mut kernel,
+            &mut kernels,
+            &registry,
+            "default",
             &ops,
             &[],
             &values,
@@ -3493,7 +3620,10 @@ mod tests {
             ],
         }];
 
-        let mut kernel = MockGeometryKernel::new();
+        let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
+        let desc = dispatch_test_descriptor_all_brep();
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("default".to_string(), &desc);
         let values = ValueMap::new();
         let functions: Vec<CompiledFunction> = vec![];
         let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
@@ -3506,7 +3636,9 @@ mod tests {
         let mut swept_kind_table = SweptKindTable::default();
         let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
-            &mut kernel,
+            &mut kernels,
+            &registry,
+            "default",
             &ops,
             &[],
             &values,
@@ -3591,7 +3723,10 @@ mod tests {
             right: GeomRef::Step(99),
         }];
 
-        let mut kernel = MockGeometryKernel::new();
+        let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
+        let desc = dispatch_test_descriptor_all_brep();
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("default".to_string(), &desc);
         let values = ValueMap::new();
         let functions: Vec<CompiledFunction> = vec![];
         let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
@@ -3604,7 +3739,9 @@ mod tests {
         let mut swept_kind_table = SweptKindTable::default();
         let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
-            &mut kernel,
+            &mut kernels,
+            &registry,
+            "default",
             &ops,
             &[],
             &values,
@@ -3672,7 +3809,10 @@ mod tests {
             ],
         }];
 
-        let mut kernel = MockGeometryKernel::new();
+        let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
+        let desc = dispatch_test_descriptor_all_brep();
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("default".to_string(), &desc);
         let values = ValueMap::new();
         let functions: Vec<CompiledFunction> = vec![];
         let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
@@ -3686,7 +3826,9 @@ mod tests {
         let mut swept_kind_table = SweptKindTable::default();
         let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
-            &mut kernel,
+            &mut kernels,
+            &registry,
+            "default",
             &box_ops,
             &[],
             &values,
@@ -3717,7 +3859,9 @@ mod tests {
         let mut swept_kind_table = SweptKindTable::default();
         let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
-            &mut kernel,
+            &mut kernels,
+            &registry,
+            "default",
             &cyl_ops,
             &[],
             &values,
@@ -3838,7 +3982,10 @@ mod tests {
             right: GeomRef::Step(99),
         }];
 
-        let mut kernel = MockGeometryKernel::new();
+        let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
+        let desc = dispatch_test_descriptor_all_brep();
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("default".to_string(), &desc);
         let values = ValueMap::new();
         let functions: Vec<CompiledFunction> = vec![];
         let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
@@ -3852,7 +3999,9 @@ mod tests {
         let mut swept_kind_table = SweptKindTable::default();
         let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
-            &mut kernel,
+            &mut kernels,
+            &registry,
+            "default",
             &box_ops,
             &[],
             &values,
@@ -3905,7 +4054,9 @@ mod tests {
         let mut swept_kind_table = SweptKindTable::default();
         let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
-            &mut kernel,
+            &mut kernels,
+            &registry,
+            "default",
             &fail_ops,
             &[],
             &values,
@@ -3985,7 +4136,10 @@ mod tests {
             right: GeomRef::Step(99),
         }];
 
-        let mut kernel = MockGeometryKernel::new();
+        let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
+        let desc = dispatch_test_descriptor_all_brep();
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("default".to_string(), &desc);
         let values = ValueMap::new();
         let functions: Vec<CompiledFunction> = vec![];
         let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
@@ -3999,7 +4153,9 @@ mod tests {
         let mut swept_kind_table = SweptKindTable::default();
         let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
-            &mut kernel,
+            &mut kernels,
+            &registry,
+            "default",
             &ops,
             &[],
             &values,
@@ -4074,7 +4230,10 @@ mod tests {
             ],
         }];
 
-        let mut kernel = FailingMockGeometryKernel;
+        let mut kernels = dispatch_test_kernels(Box::new(FailingMockGeometryKernel));
+        let desc = dispatch_test_descriptor_all_brep();
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("default".to_string(), &desc);
         let values = ValueMap::new();
         let functions: Vec<CompiledFunction> = vec![];
         let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
@@ -4088,7 +4247,9 @@ mod tests {
         let mut swept_kind_table = SweptKindTable::default();
         let test_realization_id = RealizationNodeId::new("TestEntity", 0);
         Engine::execute_realization_ops(
-            &mut kernel,
+            &mut kernels,
+            &registry,
+            "default",
             &ops,
             &[],
             &values,
@@ -5714,8 +5875,12 @@ mod tests {
         // passing an empty slice causes `demanded_tols[0][...]` to panic.
         // `tessellation_budgets` is correctly shaped so we can confirm the
         // panic originates at the demanded_tol lookup, not the budget lookup.
+        let desc = dispatch_test_descriptor_all_brep();
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert(Engine::DEFAULT_KERNEL_NAME.to_string(), &desc);
         Engine::tessellate_from_values(
             &mut geometry_kernels,
+            &registry,
             Some(Engine::DEFAULT_KERNEL_NAME),
             &module,
             &mut values,
@@ -5768,8 +5933,12 @@ mod tests {
         // produces at least one handle after `execute_realization_ops`, so
         // the `if step_handles.len() > handle_start` guard at line 1276 is true
         // and execution reaches the budget lookup.
+        let desc = dispatch_test_descriptor_all_brep();
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert(Engine::DEFAULT_KERNEL_NAME.to_string(), &desc);
         Engine::tessellate_from_values(
             &mut geometry_kernels,
+            &registry,
             Some(Engine::DEFAULT_KERNEL_NAME),
             &module,
             &mut values,
