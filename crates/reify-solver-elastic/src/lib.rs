@@ -384,9 +384,10 @@ pub use constitutive::{
     rotate_voigt,
 };
 // Task 3778: foundation β — `AnisotropicMaterial` evaluated value bridging
-// `ConstitutiveLaw` + frame into a single `Copy` 6×6 + 3×3 record. Re-exports
-// for `MaterialField`/`ConstantField`/`DiscreteCellField` follow in step-16.
-pub use material_field::AnisotropicMaterial;
+// `ConstitutiveLaw` + frame into a single `Copy` 6×6 + 3×3 record, plus the
+// `MaterialField` trait and `ConstantField` constant-lift. `DiscreteCellField`
+// + the assembly `_with_field` entry points are re-exported in step-16.
+pub use material_field::{AnisotropicMaterial, ConstantField, MaterialField};
 pub use elements::{
     Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement,
     hex_p1::HexP1,

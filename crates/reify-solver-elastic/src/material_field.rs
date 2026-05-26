@@ -96,6 +96,53 @@ impl AnisotropicMaterial {
     }
 }
 
+/// A spatial field of [`AnisotropicMaterial`] values — the C3 surface
+/// the assembly hook (C4) samples once per element at the element
+/// centroid.
+///
+/// # PRD reference
+///
+/// `docs/prds/v0_5/anisotropic-heterogeneous-elastostatics.md` §C3.
+///
+/// # Object safety
+///
+/// The trait is intentionally **object-safe** (no `Self` in return types,
+/// no associated types, no generic methods). The
+/// `material_field_trait_is_object_safe_via_constant_field` test pins
+/// that `&dyn MaterialField` typechecks. Wrappers in `assembly::*` use a
+/// generic `F: MaterialField` bound for monomorphisation in the hot path,
+/// but the object-safe surface remains available for callers that need
+/// trait-object polymorphism.
+pub trait MaterialField {
+    /// Return the material value at the given point in global coordinates.
+    ///
+    /// Implementations must be deterministic — the same point yields the
+    /// same material. Used by the assembly hook to sample one D per
+    /// element at the element centroid.
+    fn material_at(&self, point: [f64; 3]) -> AnisotropicMaterial;
+}
+
+/// Constant lift of a single [`AnisotropicMaterial`] to a field — the
+/// bit-identity anchor for the C4 assembly hook regression.
+///
+/// A `ConstantField` of an identity-frame isotropic material assembled
+/// via the field-aware `element_stiffness_*_with_field` entry points
+/// must produce a `K_e` that is bit-equal to today's v0.3 isotropic
+/// path (`element_stiffness_p1(&phys, &iso)` etc.). Pinned by the
+/// step-9/11 integration tests.
+#[derive(Debug, Clone, Copy)]
+pub struct ConstantField {
+    /// The single material returned at every point.
+    pub material: AnisotropicMaterial,
+}
+
+impl MaterialField for ConstantField {
+    #[inline]
+    fn material_at(&self, _point: [f64; 3]) -> AnisotropicMaterial {
+        self.material
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
