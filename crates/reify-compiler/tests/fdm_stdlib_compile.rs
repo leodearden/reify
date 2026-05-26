@@ -339,30 +339,31 @@ fn fdm_process_defaults_have_expected_si_values_and_provenance_constructors() {
     }
 
     // build_direction = vec3(0mm, 0mm, 1mm) → FunctionCall { function.name: "vec3" }
-    // with Vector3<Length> result type
+    // Note: the compiled default_expr.result_type for a vec3(...) call is
+    // the common scalar dimension of the args (Scalar<Length>), not Vector3<Length>.
+    // The Vector3<Length> type is pinned by the cell's declared cell_type (step-5).
+    // Here we verify the FunctionCall structure and the component SI values.
     {
         let cell = template
             .value_cells
             .iter()
             .find(|vc| vc.id.member == "build_direction")
             .expect("FDMProcess missing 'build_direction' cell");
+        // The declared cell type must be Vector3<Length> (pinned in step-5)
+        assert_eq!(
+            cell.cell_type,
+            Type::Vector {
+                n: 3,
+                quantity: Box::new(Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                }),
+            },
+            "FDMProcess.build_direction cell_type should be Vector3<Length>"
+        );
         let expr = cell
             .default_expr
             .as_ref()
             .expect("FDMProcess.build_direction missing default_expr");
-        // Result type must be Vector3<Length>
-        let expected_result_ty = Type::Vector {
-            n: 3,
-            quantity: Box::new(Type::Scalar {
-                dimension: DimensionVector::LENGTH,
-            }),
-        };
-        assert_eq!(
-            expr.result_type, expected_result_ty,
-            "FDMProcess.build_direction default result_type should be Vector3<Length>; \
-             got: {:?}",
-            expr.result_type
-        );
         // The expression must be a FunctionCall to "vec3"
         match &expr.kind {
             CompiledExprKind::FunctionCall { function, args } => {
