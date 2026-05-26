@@ -1,142 +1,9 @@
 ================================================================================
-scientific notation: negative exponent (1e-6)
+unit_expr: Div(kg, Pow(m, 3))  [7850kg/m^3]
 ================================================================================
 
 structure S {
-  let x: Real = 1e-6
-}
-
---------------------------------------------------------------------------------
-
-(source_file
-  (structure_definition
-    name: (identifier)
-    (let_declaration
-      name: (identifier)
-      type: (type_expr
-        (identifier))
-      value: (number_literal))))
-
-================================================================================
-scientific notation: uppercase E (1E-6)
-================================================================================
-
-structure S {
-  let x: Real = 1E-6
-}
-
---------------------------------------------------------------------------------
-
-(source_file
-  (structure_definition
-    name: (identifier)
-    (let_declaration
-      name: (identifier)
-      type: (type_expr
-        (identifier))
-      value: (number_literal))))
-
-================================================================================
-scientific notation: positive exponent (1e+6)
-================================================================================
-
-structure S {
-  let x: Real = 1e+6
-}
-
---------------------------------------------------------------------------------
-
-(source_file
-  (structure_definition
-    name: (identifier)
-    (let_declaration
-      name: (identifier)
-      type: (type_expr
-        (identifier))
-      value: (number_literal))))
-
-================================================================================
-scientific notation: bare positive exponent (1e6)
-================================================================================
-
-structure S {
-  let x: Real = 1e6
-}
-
---------------------------------------------------------------------------------
-
-(source_file
-  (structure_definition
-    name: (identifier)
-    (let_declaration
-      name: (identifier)
-      type: (type_expr
-        (identifier))
-      value: (number_literal))))
-
-================================================================================
-scientific notation: decimal mantissa (1.5e2)
-================================================================================
-
-structure S {
-  let x: Real = 1.5e2
-}
-
---------------------------------------------------------------------------------
-
-(source_file
-  (structure_definition
-    name: (identifier)
-    (let_declaration
-      name: (identifier)
-      type: (type_expr
-        (identifier))
-      value: (number_literal))))
-
-================================================================================
-scientific notation: large negative exponent (1.0e-300)
-================================================================================
-
-structure S {
-  let x: Real = 1.0e-300
-}
-
---------------------------------------------------------------------------------
-
-(source_file
-  (structure_definition
-    name: (identifier)
-    (let_declaration
-      name: (identifier)
-      type: (type_expr
-        (identifier))
-      value: (number_literal))))
-
-================================================================================
-scientific notation: zero exponent (1e0)
-================================================================================
-
-structure S {
-  let x: Real = 1e0
-}
-
---------------------------------------------------------------------------------
-
-(source_file
-  (structure_definition
-    name: (identifier)
-    (let_declaration
-      name: (identifier)
-      type: (type_expr
-        (identifier))
-      value: (number_literal))))
-
-================================================================================
-preserved quantity literal: 5mm
-================================================================================
-
-structure S {
-  let w = 5mm
+  let x = 7850kg/m^3
 }
 
 --------------------------------------------------------------------------------
@@ -149,14 +16,19 @@ structure S {
       value: (quantity_literal
         value: (number_literal)
         unit: (unit_expr
-          (unit_name))))))
+          left: (unit_expr
+            (unit_name))
+          right: (unit_expr
+            base: (unit_expr
+              (unit_name))
+            exponent: (signed_integer)))))))
 
 ================================================================================
-hybrid scientific quantity: 5e6mm
+unit_expr: Div(m, Pow(s, 2))  [9.81m/s^2]
 ================================================================================
 
 structure S {
-  let x = 5e6mm
+  let x = 9.81m/s^2
 }
 
 --------------------------------------------------------------------------------
@@ -169,14 +41,19 @@ structure S {
       value: (quantity_literal
         value: (number_literal)
         unit: (unit_expr
-          (unit_name))))))
+          left: (unit_expr
+            (unit_name))
+          right: (unit_expr
+            base: (unit_expr
+              (unit_name))
+            exponent: (signed_integer)))))))
 
 ================================================================================
-scientific notation in binary expression (1e-6 + 2e-6)
+unit_expr: Mul(kN, m)  [5kN*m]
 ================================================================================
 
 structure S {
-  let x = 1e-6 + 2e-6
+  let x = 5kN*m
 }
 
 --------------------------------------------------------------------------------
@@ -186,6 +63,114 @@ structure S {
     name: (identifier)
     (let_declaration
       name: (identifier)
-      value: (binary_expression
-        left: (number_literal)
-        right: (number_literal)))))
+      value: (quantity_literal
+        value: (number_literal)
+        unit: (unit_expr
+          left: (unit_expr
+            (unit_name))
+          right: (unit_expr
+            (unit_name)))))))
+
+================================================================================
+unit_expr: Pow(mm, 2)  [25mm^2]
+================================================================================
+
+structure S {
+  let x = 25mm^2
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (quantity_literal
+        value: (number_literal)
+        unit: (unit_expr
+          base: (unit_expr
+            (unit_name))
+          exponent: (signed_integer))))))
+
+================================================================================
+unit_expr: Div(Div(kg, m), s) left-assoc  [0.001kg/m/s]
+================================================================================
+
+structure S {
+  let x = 0.001kg/m/s
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (quantity_literal
+        value: (number_literal)
+        unit: (unit_expr
+          left: (unit_expr
+            left: (unit_expr
+              (unit_name))
+            right: (unit_expr
+              (unit_name)))
+          right: (unit_expr
+            (unit_name)))))))
+
+================================================================================
+unit_expr: Div(W, Mul(m, K)) with parens  [0.5W/(m*K)]
+================================================================================
+
+structure S {
+  let x = 0.5W/(m*K)
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (quantity_literal
+        value: (number_literal)
+        unit: (unit_expr
+          left: (unit_expr
+            (unit_name))
+          right: (unit_expr
+            (unit_expr
+              left: (unit_expr
+                (unit_name))
+              right: (unit_expr
+                (unit_name)))))))))
+
+================================================================================
+unit_expr: Pow(paren(Div(Mul(kg, m), s)), 2)  [5(kg*m/s)^2]
+================================================================================
+
+structure S {
+  let x = 5(kg*m/s)^2
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (quantity_literal
+        value: (number_literal)
+        unit: (unit_expr
+          base: (unit_expr
+            (unit_expr
+              left: (unit_expr
+                left: (unit_expr
+                  (unit_name))
+                right: (unit_expr
+                  (unit_name)))
+              right: (unit_expr
+                (unit_name))))
+          exponent: (signed_integer))))))
