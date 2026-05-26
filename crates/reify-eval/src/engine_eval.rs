@@ -2919,6 +2919,10 @@ impl Engine {
                             &[],
                             &Value::Undef,
                             None,
+                            // ε step-2: pass a non-cancelled placeholder handle;
+                            // step-4 wires the real handle from the node's
+                            // `running` slot and splits the Cancelled arm.
+                            &crate::graph::CancellationHandle::new(),
                             VersionId(version_id),
                         ) {
                             Ok((result, diags)) => {
@@ -2977,7 +2981,15 @@ impl Engine {
                                 });
                                 continue;
                             }
-                            Err(diags) => {
+                            Err(dispatch_err) => {
+                                // ε step-2: TEMPORARY — collapse Cancelled and Failed
+                                // into the same Failed-marking arm until step-4
+                                // separates the Cancelled path (Cancelled→Pending,
+                                // Failed→mark_failed). No behaviour change in this step.
+                                let diags = match dispatch_err {
+                                    crate::engine_compute::DispatchError::Failed(d) => d,
+                                    crate::engine_compute::DispatchError::Cancelled => vec![],
+                                };
                                 // Registered trampoline returned Failed/Cancelled —
                                 // do NOT body-inline. The user explicitly registered
                                 // a trampoline for this target, so a failure there is
