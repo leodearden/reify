@@ -599,14 +599,14 @@ mod tests {
 
         // Cross-module isolation: build a load value via eval_builtin to confirm
         // LOAD_KINDS and SUPPORT_KINDS don't cross-contaminate is_support_value.
-        // Uses `pressure_load` (still name-dispatched) rather than `point_load`
-        // (retired in SIR-α wave-1, task 3540 step-20 — now Undef).
+        // Uses `traction_load` (still name-dispatched) rather than `point_load`
+        // (retired in SIR-α wave-1, task 3540 step-20 — now Undef) or
+        // `pressure_load` (retired in SIR-β-load, task 3544 step-4 — also Undef
+        // now). `traction_load` produces an analogous kind-tagged Map with a
+        // `traction` field; `is_support_value` must return false for it.
         let stub = point_selector_stub();
-        let pressure_mag = Value::Scalar {
-            si_value: 1e6,
-            dimension: DimensionVector::PRESSURE,
-        };
-        let load_value = eval_builtin("pressure_load", &[stub, pressure_mag]);
+        let traction_vec = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::PRESSURE);
+        let load_value = eval_builtin("traction_load", &[stub, traction_vec]);
 
         // Map without a `kind` key.
         let map_no_kind = Value::Map(BTreeMap::new());
@@ -638,7 +638,7 @@ mod tests {
             ("Map without kind key", map_no_kind),
             ("Map with kind=\"not_a_support\"", map_wrong_kind),
             ("Map with kind=Int(0)", map_int_kind),
-            ("load value from eval_builtin(pressure_load)", load_value),
+            ("load value from eval_builtin(traction_load)", load_value),
         ];
 
         for (label, v) in negative_cases {

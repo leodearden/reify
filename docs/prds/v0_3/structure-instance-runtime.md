@@ -176,7 +176,7 @@ where:
 
 **Trait declarations.** `trait Load { ... }` and `trait Support { ... }` are added in stdlib in the same wave. These declarations are what makes the rewrite cluster GR-011's Load/Support nominal-trait surface real. Trait member parameters (e.g. `Load`'s `magnitude : Force`, `direction : Vector3`) are designed in the wave-1 task in concert with the existing Rust-side fields under `loads.rs` / `supports.rs` — preserving the field shape current downstream consumers depend on.
 
-**Naming consolidation.** `point_load` → `PointLoad`, `pressure_load` → `PressureLoad`, `fixed_support` → `FixedSupport` (already PascalCase), `pinned_support` → `PinnedSupport` (already PascalCase). The wave-1 rewrite changes the snake_case form for the two ctors it touches (`point_load`, `fixed_support`) — both are stdlib-internal references; user-facing examples and the audit `findings/` corpus are checked for snake_case uses and updated in-task. Other snake_case ctors (`pressure_load`, `pinned_support`, etc.) consolidate in wave 2.
+**Naming consolidation.** `point_load` → `PointLoad`, `pressure_load` → `PressureLoad`, `fixed_support` → `FixedSupport` (already PascalCase), `pinned_support` → `PinnedSupport` (already PascalCase). The wave-1 rewrite changes the snake_case form for the two ctors it touches (`point_load`, `fixed_support`) — both are stdlib-internal references; user-facing examples and the audit `findings/` corpus are checked for snake_case uses and updated in-task. Wave-2 (SIR-β-load, task 3544) completed the `pressure_load` → `PressureLoad` consolidation; `pinned_support` remains for SIR-β-sup.
 
 **Wave 2 — remaining rewrites.** Each remaining ctor is its own follow-up task (or small batch) once the foundation slice has landed:
 

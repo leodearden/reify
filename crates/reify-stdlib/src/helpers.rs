@@ -189,7 +189,7 @@ pub(crate) fn make_kind_map(kind: &str, fields: Vec<(&str, Value)>) -> Value {
 /// - `Value::Map` — the canonical opaque-selector shape used by the existing
 ///   stub fixtures (e.g. a Map with `kind: "face_stub"`).
 /// - `Value::String` — reserved for future named-selector sentinels, analogous
-///   to `pressure_load`'s `"normal"` direction sentinel.
+///   to `PressureLoad`'s `"normal"` direction sentinel.
 ///
 /// Every other variant is rejected, including numeric primitives
 /// (`Real`/`Int`/`Bool`/`Undef`) and dimensioned containers

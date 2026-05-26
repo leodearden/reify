@@ -19,8 +19,9 @@
 //   1. PRD writes `loads : List<Load>` and `supports : List<Support>`.
 //      `Load` and `Support` are not statically-typed structs in the current
 //      stdlib: runtime load/support instances are kind-tagged `Value::Map`s
-//      produced by `point_load`, `pressure_load`, `fixed_support`,
-//      `pinned_support`, etc. (name-dispatched builtins). Using
+//      produced by `point_load`, `fixed_support`, `pinned_support`, etc.
+//      (name-dispatched builtins) or `PointLoad`, `PressureLoad`, `FixedSupport`
+//      (structure defs — SIR-α/β). Using
 //      `List<Real>` here is a placeholder pending a `trait def Load` /
 //      `trait def Support` marker that all kind-constructors satisfy;
 //      a `TODO(load-trait)` note on each field tracks the future tightening.
@@ -78,12 +79,14 @@ structure def LoadCase {
     // task #2).
     param name : String
 
-    // Applied loads for this case.  Each element is a runtime kind-tagged
-    // Map produced by `point_load`, `pressure_load`, etc.
+    // Applied loads for this case.  Each element is a `Value::StructureInstance`
+    // produced by `PointLoad(...)`, `PressureLoad(...)`, etc. (structure defs
+    // declared below — SIR-α/β wave-1/2) or a kind-tagged Map from remaining
+    // name-dispatched builtins (`traction_load`, `body_force`, `gravity`).
     //
-    // TODO(load-trait): replace `List<Real>` with `List<Load>` once
-    // `trait def Load` is declared and the kind-constructor builtins
-    // (`point_load`, `pressure_load`) are annotated as satisfying it.
+    // TODO(load-trait): replace `List<Real>` with `List<Load>` once all
+    // load constructors are migrated to structure defs conforming to
+    // `trait Load { }` and the solver wiring (PRD task 16) is ready.
     param loads : List<Real>
 
     // Boundary-condition supports for this case.  Each element is a runtime
