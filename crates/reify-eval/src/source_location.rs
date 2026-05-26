@@ -18,6 +18,82 @@
 use reify_compiler::CompiledModule;
 use reify_types::SourceLocationInfo;
 
+/// Find the innermost (smallest-span) [`reify_syntax::Declaration::Structure`] or
+/// [`reify_syntax::Declaration::Occurrence`] in `parsed` whose byte span contains
+/// `offset` (half-open: `span.start ≤ offset < span.end`).
+///
+/// Returns `(name, kind, span)` where `kind` is `"structure"` or `"occurrence"`.
+///
+/// **Shared helper** used by both [`resolve_entity_at_source_position`] and
+/// `EngineSession::get_containing_definition`.  A single implementation prevents
+/// the two traversals from drifting if a future `Declaration` variant is added
+/// and only one call site is updated.
+pub fn find_parsed_decl_containing_offset(
+    parsed: &reify_syntax::ParsedModule,
+    offset: u32,
+) -> Option<(&str, &str, reify_types::SourceSpan)> {
+    let mut best: Option<(&str, &str, reify_types::SourceSpan)> = None;
+    for decl in &parsed.declarations {
+        let (name, kind, span): (&str, &str, reify_types::SourceSpan) = match decl {
+            reify_syntax::Declaration::Structure(s) => (s.name.as_str(), "structure", s.span),
+            reify_syntax::Declaration::Occurrence(o) => (o.name.as_str(), "occurrence", o.span),
+            _ => continue,
+        };
+        if offset >= span.start && offset < span.end {
+            let is_smaller = best.map_or(true, |(_, _, best_span)| span.len() < best_span.len());
+            if is_smaller {
+                best = Some((name, kind, span));
+            }
+        }
+    }
+    best
+}
+
+/// Narrow `offset` to the most specific member within `template`.
+///
+/// Returns `"Entity.member"`, `"Entity.name"`, or `"Entity"` (template name)
+/// in decreasing specificity.  Always returns a non-empty string.
+///
+/// Priority order (half-open span `[start, end)`):
+/// 1. `value_cells` — first matching cell → `"Entity.member"`.
+/// 2. `realizations` with `name: Some(_)` — first match → `"Entity.name"`.
+/// 3. `sub_components` — first match → `"Entity.name"`.
+/// 4. Fallback: template name — cursor is inside the outer span but outside
+///    any specific named member (constraint line, header, closing brace).
+fn narrow_to_member(template: &reify_compiler::TopologyTemplate, offset: usize) -> String {
+    // 1. value_cells — highest priority.
+    if let Some(cell) = template
+        .value_cells
+        .iter()
+        .find(|vc| offset >= vc.span.start as usize && offset < vc.span.end as usize)
+    {
+        return format!("{}.{}", template.name, cell.id.member);
+    }
+
+    // 2. realizations — skip entries with name: None (only emitted by test helpers).
+    if let Some(r) = template
+        .realizations
+        .iter()
+        .filter(|r| r.name.is_some())
+        .find(|r| offset >= r.span.start as usize && offset < r.span.end as usize)
+    {
+        return format!("{}.{}", template.name, r.name.as_ref().unwrap());
+    }
+
+    // 3. sub_components — name is always populated for compiler-produced entries.
+    if let Some(sc) = template
+        .sub_components
+        .iter()
+        .find(|sc| offset >= sc.span.start as usize && offset < sc.span.end as usize)
+    {
+        return format!("{}.{}", template.name, sc.name);
+    }
+
+    // 4. Inside the outer span but outside any named member (e.g. a constraint
+    //    line, the structure header line, or the closing brace).
+    template.name.clone()
+}
+
 /// Resolve the entity (and optionally member) at a given 1-based `(line, col)`
 /// source position within `source`.
 ///
@@ -26,17 +102,20 @@ use reify_types::SourceLocationInfo;
 /// instead of the O(M) character walk of the old local helper.
 ///
 /// Uses a two-layer containment model:
-/// - **Outer check**: the parsed structure/occurrence declaration span
-///   (`StructureDef.span` / `OccurrenceDef.span`), which covers the full
-///   `pub structure NAME { ... }` byte range including the header and closing
-///   brace. Falls back to the member-derived min/max span when no parsed
-///   declaration matches the compiled template name (defensive).
-/// - **Narrow step** (within the matching template): checks member kinds in
-///   priority order:
-///   1. `value_cells` — returns `"Entity.member"` for the first matching cell.
-///   2. `realizations` (skipping `name: None`) — returns `"Entity.name"` for
-///      the first matching realization.
-///   3. `sub_components` — returns `"Entity.name"` for the first matching sub.
+/// - **Outer check** (primary): [`find_parsed_decl_containing_offset`] performs a
+///   single O(D) linear scan over parsed declarations and returns the smallest
+///   containing span.  `StructureDef.span` / `OccurrenceDef.span` cover the full
+///   `pub structure NAME { ... }` byte range including the header and closing brace —
+///   fixing the "header line falls outside member-derived span" bug (task 3880).
+///   No HashMap is built: D is small, and a linear scan is cheaper than HashMap
+///   construction for typical module sizes.
+/// - **Outer check** (fallback): if no parsed declaration covers the offset (blank
+///   line between structures, past end of source, or a synthetic template with no
+///   parsed counterpart), the member-derived min/max span is used.  Worst case is
+///   the pre-fix behavior, not a panic.
+/// - **Narrow step** (within the matching template): [`narrow_to_member`] checks
+///   member kinds in priority order (value_cells → realizations → sub_components →
+///   template name).
 ///
 /// Returns:
 /// - `Some("Entity.member")` when the cursor is inside a value cell's span.
@@ -62,79 +141,59 @@ pub fn resolve_entity_at_source_position(
 
     // Convert (line, col) → byte offset using the pre-built newline table.
     // The helper is infallible (returns source.len() for past-end positions);
-    // the template-walk's half-open `offset < outer_end` check filters those out,
-    // preserving the documented None contract for past-end positions.
+    // the containment checks below filter those out, preserving the documented
+    // None contract for past-end positions.
     let offset = reify_types::line_col_to_byte_offset_with_offsets(source, line, col, line_offsets);
 
-    // Build a name → (start, end) byte-offset table from the parsed declarations.
-    // StructureDef.span / OccurrenceDef.span cover the full `pub structure NAME { ... }`
-    // byte range including the header line and closing brace — fixing the "header line
-    // falls outside member-derived span" bug (see task 3880).
-    let parsed_decl_spans: std::collections::HashMap<&str, (usize, usize)> = parsed
-        .declarations
-        .iter()
-        .filter_map(|decl| match decl {
-            reify_syntax::Declaration::Structure(s) => {
-                Some((s.name.as_str(), (s.span.start as usize, s.span.end as usize)))
-            }
-            reify_syntax::Declaration::Occurrence(o) => {
-                Some((o.name.as_str(), (o.span.start as usize, o.span.end as usize)))
-            }
-            _ => None,
-        })
-        .collect();
+    // Step 1: Primary path — use the parsed declaration span (single O(D) scan).
+    //
+    // `find_parsed_decl_containing_offset` returns the innermost Structure or
+    // Occurrence whose parsed span covers `offset`.  Parsed spans include the
+    // header line and closing brace, fixing the off-by-one from task 3880.
+    if let Some((decl_name, _, _)) = find_parsed_decl_containing_offset(parsed, offset as u32) {
+        // Find the compiled template whose name matches the parsed declaration.
+        // In practice this always succeeds — the compiler processes every
+        // StructureDef / OccurrenceDef that the parser accepts.
+        if let Some(template) = compiled.templates.iter().find(|t| t.name == decl_name) {
+            return Some(narrow_to_member(template, offset));
+        }
+        // No compiled template for this parsed decl — defensive; fall through.
+    }
 
-    // Walk templates and find the one whose source span contains the offset.
+    // Step 2: Fallback — member-derived min/max span (defensive).
     //
-    // Outer span selection — two-layer model:
-    // 1. Parsed declaration span (`StructureDef.span` / `OccurrenceDef.span`) —
-    //    covers the full `pub structure NAME { ... }` byte range including the
-    //    header line and closing brace.  Fixes the "clicking the header line
-    //    resolves to the previous structure" off-by-one (task 3880).
-    // 2. Fallback (defensive): member-derived min/max span (value_cells, constraints,
-    //    realizations, sub_components).  Used when the compiled template has no
-    //    corresponding parsed declaration (e.g. a future generic instantiation).
-    //    Worst case is the pre-fix behavior, not a panic.
-    //
-    // The narrow step (value_cells → realizations → sub_components → template name)
-    // is unchanged — it only runs once the outer containment check selects a template.
+    // Reached when no parsed declaration covers `offset` (blank line between
+    // structures, past end of source) — in which case this also returns None —
+    // or when a compiled template has no parsed counterpart (future generic
+    // instantiation or synthetic template).
     let mut best_template: Option<&reify_compiler::TopologyTemplate> = None;
     let mut best_span_size = usize::MAX;
 
     for template in &compiled.templates {
-        // Outer span: prefer the parsed declaration span, fall back to member spans.
-        let (outer_start, outer_end) =
-            if let Some(&(start, end)) = parsed_decl_spans.get(template.name.as_str()) {
-                (start, end)
-            } else {
-                // Fallback: derive from member spans (pre-fix approximation).
-                let mut min_start = usize::MAX;
-                let mut max_end = 0usize;
-                for vc in &template.value_cells {
-                    min_start = min_start.min(vc.span.start as usize);
-                    max_end = max_end.max(vc.span.end as usize);
-                }
-                for c in &template.constraints {
-                    min_start = min_start.min(c.span.start as usize);
-                    max_end = max_end.max(c.span.end as usize);
-                }
-                for r in &template.realizations {
-                    min_start = min_start.min(r.span.start as usize);
-                    max_end = max_end.max(r.span.end as usize);
-                }
-                for sc in &template.sub_components {
-                    min_start = min_start.min(sc.span.start as usize);
-                    max_end = max_end.max(sc.span.end as usize);
-                }
-                if min_start == usize::MAX {
-                    // No spanned members and no parsed span — skip this template.
-                    continue;
-                }
-                (min_start, max_end)
-            };
-
-        if offset >= outer_start && offset < outer_end {
-            let size = outer_end - outer_start;
+        let mut min_start = usize::MAX;
+        let mut max_end = 0usize;
+        for vc in &template.value_cells {
+            min_start = min_start.min(vc.span.start as usize);
+            max_end = max_end.max(vc.span.end as usize);
+        }
+        for c in &template.constraints {
+            min_start = min_start.min(c.span.start as usize);
+            max_end = max_end.max(c.span.end as usize);
+        }
+        for r in &template.realizations {
+            min_start = min_start.min(r.span.start as usize);
+            max_end = max_end.max(r.span.end as usize);
+        }
+        for sc in &template.sub_components {
+            min_start = min_start.min(sc.span.start as usize);
+            max_end = max_end.max(sc.span.end as usize);
+        }
+        if min_start == usize::MAX {
+            // No spanned members and no parsed span — skip this template.
+            continue;
+        }
+        if offset >= min_start && offset < max_end {
+            let size = max_end - min_start;
             if size < best_span_size {
                 best_template = Some(template);
                 best_span_size = size;
@@ -142,46 +201,7 @@ pub fn resolve_entity_at_source_position(
         }
     }
 
-    let template = best_template?;
-
-    // Narrow step: check member kinds in priority order.
-    // Span is a half-open interval [start, end): start ≤ offset < end.
-
-    // 1. value_cells — highest priority.
-    if let Some(cell) = template
-        .value_cells
-        .iter()
-        .find(|vc| offset >= vc.span.start as usize && offset < vc.span.end as usize)
-    {
-        return Some(format!("{}.{}", template.name, cell.id.member));
-    }
-
-    // 2. realizations — skip entries with name: None (only emitted by test helpers).
-    if let Some(r) = template
-        .realizations
-        .iter()
-        .filter(|r| r.name.is_some())
-        .find(|r| offset >= r.span.start as usize && offset < r.span.end as usize)
-    {
-        return Some(format!(
-            "{}.{}",
-            template.name,
-            r.name.as_ref().unwrap()
-        ));
-    }
-
-    // 3. sub_components — name is always populated for compiler-produced entries.
-    if let Some(sc) = template
-        .sub_components
-        .iter()
-        .find(|sc| offset >= sc.span.start as usize && offset < sc.span.end as usize)
-    {
-        return Some(format!("{}.{}", template.name, sc.name));
-    }
-
-    // 4. Position is inside the template's approximate span but outside any
-    //    named member (e.g. a constraint line) — return the template name.
-    Some(template.name.clone())
+    Some(narrow_to_member(best_template?, offset))
 }
 
 

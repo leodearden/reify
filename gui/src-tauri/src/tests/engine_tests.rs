@@ -7384,8 +7384,14 @@ fn get_entity_at_source_location_past_end_of_source_returns_none() {
     );
 }
 
-/// (h) Multi-structure source: clicking each structure's header line resolves
-/// to that structure. Blank lines between structures resolve to None.
+/// (h) Multi-structure source: cache-wiring smoke test.
+///
+/// Verifies that the `parsed_cache` is correctly threaded through to the
+/// resolver for a multi-structure module loaded via `load_from_source`.
+/// The full per-template/per-line matrix (First, Middle, Last header lines
+/// + both gap lines) is covered by the unit test in
+/// `crates/reify-eval/src/source_location.rs`; this integration test pins
+/// only the cache-wiring for one representative header click and one gap click.
 ///
 /// Source layout (1-based lines):
 /// ```text
@@ -7401,11 +7407,6 @@ fn get_entity_at_source_location_past_end_of_source_returns_none() {
 /// 10:     param c: Scalar = 3mm
 /// 11: }
 /// ```
-///
-/// Before task-3880 the resolver used member-derived spans; the header lines
-/// (1, 5, 9) fell before each template's min_start → None. Now the parsed
-/// `StructureDef.span` covers the full declaration and header clicks resolve
-/// correctly.
 #[test]
 fn get_entity_at_source_location_multi_structure_header_lines_resolve_to_each_structure() {
     const THREE_STRUCT_SOURCE: &str = "pub structure First {\n    param a: Scalar = 1mm\n}\n\npub structure Middle {\n    param b: Scalar = 2mm\n}\n\npub structure Last {\n    param c: Scalar = 3mm\n}\n";
@@ -7417,15 +7418,9 @@ fn get_entity_at_source_location_multi_structure_header_lines_resolve_to_each_st
         .load_from_source(THREE_STRUCT_SOURCE, "multi")
         .expect("load should succeed");
 
-    // Header lines — each must resolve to its own template name.
-    let first_hdr = session.get_entity_at_source_location(1, 1);
-    assert_eq!(
-        first_hdr,
-        Some("First".to_string()),
-        "header of First (1,1) must resolve to Some(\"First\"), got {:?}",
-        first_hdr
-    );
-
+    // One representative header-line click: Middle at (5,1) verifies that the
+    // parsed_cache is threaded through to the resolver and that a non-first
+    // structure's header resolves correctly (the original task-3880 regression).
     let middle_hdr = session.get_entity_at_source_location(5, 1);
     assert_eq!(
         middle_hdr,
@@ -7434,27 +7429,12 @@ fn get_entity_at_source_location_multi_structure_header_lines_resolve_to_each_st
         middle_hdr
     );
 
-    let last_hdr = session.get_entity_at_source_location(9, 1);
-    assert_eq!(
-        last_hdr,
-        Some("Last".to_string()),
-        "header of Last (9,1) must resolve to Some(\"Last\"), got {:?}",
-        last_hdr
-    );
-
-    // Blank lines between structures — must return None (outside any parsed span).
-    let gap1 = session.get_entity_at_source_location(4, 1);
+    // One gap click: blank line between First and Middle must return None.
+    let gap = session.get_entity_at_source_location(4, 1);
     assert!(
-        gap1.is_none(),
+        gap.is_none(),
         "blank line between First and Middle (4,1) must return None, got {:?}",
-        gap1
-    );
-
-    let gap2 = session.get_entity_at_source_location(8, 1);
-    assert!(
-        gap2.is_none(),
-        "blank line between Middle and Last (8,1) must return None, got {:?}",
-        gap2
+        gap
     );
 }
 

@@ -2177,32 +2177,20 @@ impl EngineSession {
 
         let offset = line_col_to_byte_offset_with_offsets(source, line, col, line_offsets) as u32;
 
-        // Walk top-level declarations and find the innermost (smallest span) that
-        // contains the given byte offset.
-        let mut best: Option<DefInfo> = None;
-        for decl in &parsed.declarations {
-            let (name, kind, span) = match decl {
-                reify_syntax::Declaration::Structure(s) => (s.name.as_str(), "structure", s.span),
-                reify_syntax::Declaration::Occurrence(o) => (o.name.as_str(), "occurrence", o.span),
-                _ => continue,
-            };
-            if offset >= span.start && offset < span.end {
-                let is_smaller = best
-                    .as_ref()
-                    .is_none_or(|b| (span.end - span.start) < (b.span.end - b.span.start));
-                if is_smaller {
-                    best = Some(DefInfo {
-                        name: name.to_string(),
-                        kind: kind.to_string(),
-                        span: SourceSpanInfo {
-                            start: span.start,
-                            end: span.end,
-                        },
-                    });
-                }
-            }
-        }
-        best
+        // Delegate to the shared helper that is also used by
+        // `reify_eval::resolve_entity_at_source_position`.  Using a single
+        // implementation prevents the two traversals from drifting if a future
+        // `Declaration` variant is added and only one call site is updated.
+        reify_eval::source_location::find_parsed_decl_containing_offset(parsed, offset).map(
+            |(name, kind, span)| DefInfo {
+                name: name.to_string(),
+                kind: kind.to_string(),
+                span: SourceSpanInfo {
+                    start: span.start,
+                    end: span.end,
+                },
+            },
+        )
     }
 
     /// Find the entity (and optionally member) at the given 1-based `(line, col)`
@@ -2246,10 +2234,10 @@ impl EngineSession {
              whenever compiled is Some (i.e., whenever resolve_source succeeds)"
         );
 
-        let parsed = self
-            .parsed_cache
-            .as_ref()
-            .expect("parsed_cache invariant: Some when compiled is Some (see debug_assert above)");
+        // Read the cached parse result and line-offset table.  Guard defensively
+        // against None (shouldn't occur given the debug_assert above, but avoids
+        // a panic in release builds — mirrors the same guard in get_containing_definition).
+        let parsed = self.parsed_cache.as_ref()?;
         let line_offsets = self.line_offsets_cache.as_deref()?;
         let compiled = self.core.compiled()?;
 
