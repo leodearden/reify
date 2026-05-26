@@ -270,14 +270,13 @@ fn value_type_kind_matches(
                 .unwrap_or(false),
             _ => false,
         },
-        // Note: `Type::Geometry` and `Type::TypeParam` have no corresponding
-        // `Value` variant, so any non-Undef value supplied to a cell of those
-        // types falls through this `match` and returns `false`, triggering
-        // `EngineError::TypeKindMismatch`. This default-reject behaviour is
-        // sound because value cells never carry those types post-compilation —
-        // an invariant enforced at runtime by the `#[cfg(debug_assertions)]`
-        // `assert_value_cell_types_representable` check in
-        // `crate::engine_eval::Engine::eval` (task 1867), and regression-locked
+        // Note: `Type::TypeParam` has no corresponding `Value` variant, so any
+        // non-Undef value supplied to a cell of that type falls through this
+        // `match` and returns `false`, triggering `EngineError::TypeKindMismatch`.
+        // This default-reject behaviour is sound because value cells never carry
+        // TypeParam post-compilation — an invariant enforced at runtime by the
+        // `#[cfg(debug_assertions)]` `assert_value_cell_types_representable` check
+        // in `crate::engine_eval::Engine::eval` (task 1867), and regression-locked
         // in CI by `crates/reify-eval/tests/value_cell_type_invariants.rs`.
         //
         // `Type::StructureRef` / `Type::TraitObject` are allowed on value
@@ -290,9 +289,11 @@ fn value_type_kind_matches(
         // accepted) or default-rejects here — there is no representable
         // non-Undef, non-StructureInstance value for those types.
         //
-        // GHR-β placeholder: no lowering produces a real Value::GeometryHandle
-        // yet; the correct arm (`matches!(ty, Type::Geometry)`) lands in step-4.
-        Value::GeometryHandle { .. } => false,
+        // `Type::Geometry` is now representable (GHR-β, task 3604); the arm
+        // below satisfies the compiler-exhaustiveness requirement. The runtime
+        // assertion `assert_value_cell_types_representable` is relaxed in
+        // step-6 so Geometry cells are accepted.
+        Value::GeometryHandle { .. } => matches!(ty, Type::Geometry),
         // If a future `Value::TraitObjectInstance` variant is added, add a
         // matching arm here AND relax the runtime assertion so the compiler
         // enforces completeness.
