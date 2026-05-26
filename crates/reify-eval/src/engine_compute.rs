@@ -293,6 +293,15 @@ impl crate::Engine {
                 Err(DispatchError::Failed(diagnostics))
             }
             // Step 3d: Unregistered target — synthesise a Failed diagnostic.
+            //
+            // NOTE: the production caller (`engine_eval.rs`) pre-gates on
+            // registration — it body-inlines the unregistered-target path and
+            // emits its own diagnostic (PRD §9 Q1) before ever reaching this
+            // function.  This arm is therefore unreachable from production code
+            // and exists as a defensive fallback for direct test calls and any
+            // future caller that does not pre-gate.  The synthesised diagnostic
+            // text intentionally matches the `dispatch_compute_node` wording so
+            // the two helper surfaces stay consistent.
             None => Err(DispatchError::Failed(vec![Diagnostic::error(format!(
                 "@optimized target {:?}: no registered compute trampoline",
                 target

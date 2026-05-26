@@ -2886,13 +2886,21 @@ impl Engine {
                             next_index,
                         );
 
-                        // ε / §5 step-3: create the cancellation handle and
-                        // defensively cancel any prior handle on the same c_id.
-                        // The defensive cancel is structurally a no-op here —
-                        // max+1 allocation always produces a fresh id — but
-                        // guards the cooperative one-in-flight invariant (PRD §2)
-                        // against any future same-node re-dispatch path
-                        // (design decision in task ε/3424).
+                        // ε / §5 step-3: create the cancellation handle.
+                        //
+                        // The block below defensively cancels any prior handle on
+                        // the same c_id, but is UNREACHABLE today: `c_id` is
+                        // allocated as `max(index) + 1` from the current snapshot,
+                        // so it is always a fresh identifier and the lookup will
+                        // always return `None`.  The freshness gate above also
+                        // short-circuits any re-eval of a Final node before this
+                        // code is reached.
+                        //
+                        // The guard is kept for the future async-driver slice where
+                        // a same-`ComputeNodeId` re-dispatch might carry a live
+                        // `running` handle (PRD §2 one-in-flight invariant / design
+                        // decision in task ε/3424).  Until then the branch is dead
+                        // and exists only to make the invariant explicit in code.
                         if let Some(prev) = snapshot.graph.get_compute_node_mut(&c_id)
                             && let Some(old) = prev.running.take()
                         {
