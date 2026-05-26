@@ -1359,6 +1359,47 @@ mod tests {
         );
     }
 
+    // ── value_type_kind_matches: GeometryHandle arm (task 3604 / GHR-β) ────────
+
+    /// GeometryHandle against Type::Geometry → true.
+    /// RED: step-2's placeholder arm returns false for Type::Geometry.
+    #[test]
+    fn value_type_kind_matches_geometry_handle_into_geometry_type_returns_true() {
+        use reify_types::{Type, Value, identity::RealizationNodeId, geometry::GeometryHandleId};
+        let v = Value::GeometryHandle {
+            realization_ref: RealizationNodeId::new("Bracket", 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: GeometryHandleId(1),
+        };
+        assert!(
+            value_type_kind_matches(&v, &Type::Geometry, None),
+            "Value::GeometryHandle must match Type::Geometry"
+        );
+    }
+
+    /// GeometryHandle against non-Geometry types → false.
+    #[test]
+    fn value_type_kind_matches_geometry_handle_into_non_geometry_types_returns_false() {
+        use reify_types::{Type, Value, identity::RealizationNodeId, geometry::GeometryHandleId};
+        let v = Value::GeometryHandle {
+            realization_ref: RealizationNodeId::new("Bracket", 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: GeometryHandleId(1),
+        };
+        for t in [
+            Type::Int,
+            Type::Real,
+            Type::StructureRef("X".to_string()),
+            Type::List(Box::new(Type::Int)),
+            Type::Bool,
+        ] {
+            assert!(
+                !value_type_kind_matches(&v, &t, None),
+                "Value::GeometryHandle must be rejected by non-Geometry type {t:?}"
+            );
+        }
+    }
+
     // ── Engine structure_registry prelude population (task 3540 / step-11) ───
 
     /// `Engine::new()` must populate `structure_registry` from the prelude
