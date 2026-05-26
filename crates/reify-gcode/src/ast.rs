@@ -33,6 +33,14 @@ pub enum GcodeCommand {
     /// `gcode_import`). See plan design decision #3 for why this is
     /// `Vec<(String, String)>` rather than a typed struct or HashMap.
     SetVelocityLimit(SetVelocityLimit),
+    /// Klipper-dialect `INPUT_SHAPER KEY=VAL ...` directive. The
+    /// **variant identity** itself is the cross-task signal: consumer
+    /// task ο (`gcode_import`) detects this variant on its lowering path
+    /// to emit `W_GcodeDialectShaperConflict` (PRD §10.1) when the
+    /// in-PRD shaper-design supersedes the file-declared shaper.
+    /// Parameters are carried as raw strings for the same reasons as
+    /// [`SetVelocityLimit`]; see plan design decisions #2 and #3.
+    InputShaper(InputShaper),
 }
 
 /// Parameters for a G0/G1 linear move.
@@ -117,5 +125,23 @@ pub struct IgnoredMCode {
 /// `SET_VELOCITY_LIMIT` line.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SetVelocityLimit {
+    pub params: Vec<(String, String)>,
+}
+
+/// Payload for Klipper's `INPUT_SHAPER KEY=VAL ...` directive (PRD §7.1
+/// Klipper subset; task ν).
+///
+/// The variant carrying this struct is itself the cross-task signal:
+/// consumer task ο (`gcode_import`) dispatches on
+/// `GcodeCommand::InputShaper` identity to emit
+/// `W_GcodeDialectShaperConflict` when the file-declared shaper is
+/// superseded by the in-PRD shaper-design (PRD §10.1). This task
+/// (ν) only preserves the directive; it does NOT emit the warning.
+/// See plan design decision #2.
+///
+/// `params` is ordered + raw-string for the same round-trip reasons as
+/// [`SetVelocityLimit`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct InputShaper {
     pub params: Vec<(String, String)>,
 }

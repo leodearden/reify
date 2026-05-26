@@ -12,7 +12,7 @@
 //! plan design decision #6 for why a per-arm case-insensitivity layer is
 //! avoided.
 
-use crate::ast::{GcodeCommand, SetVelocityLimit};
+use crate::ast::{GcodeCommand, InputShaper, SetVelocityLimit};
 use crate::error::{ParseError, ParseErrorKind};
 use crate::marlin;
 
@@ -58,6 +58,10 @@ fn parse_klipper_line(line_no: usize, line: &str) -> Result<GcodeCommand, ParseE
         "SET_VELOCITY_LIMIT" => {
             let params = parse_kv_params(line_no, tokens)?;
             Ok(GcodeCommand::SetVelocityLimit(SetVelocityLimit { params }))
+        }
+        "INPUT_SHAPER" => {
+            let params = parse_kv_params(line_no, tokens)?;
+            Ok(GcodeCommand::InputShaper(InputShaper { params }))
         }
         _ => marlin::parse_line(line_no, line),
     }
