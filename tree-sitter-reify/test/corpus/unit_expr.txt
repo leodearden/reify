@@ -174,3 +174,25 @@ structure S {
               right: (unit_expr
                 (unit_name))))
           exponent: (signed_integer))))))
+
+================================================================================
+negative: 5kg * m splits at whitespace — kg fuses to 5, " * m" is binary
+================================================================================
+
+structure S {
+  let x = 5kg * m
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (binary_expression
+        left: (quantity_literal
+          value: (number_literal)
+          unit: (unit_expr
+            (unit_name)))
+        right: (identifier)))))

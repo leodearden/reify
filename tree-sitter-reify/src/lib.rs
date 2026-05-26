@@ -181,6 +181,35 @@ mod tests {
         );
     }
 
+    /// PRD §3.1 contiguity invariant, §7 negative fixture:
+    /// "5 kg" (space between number and unit) must NOT fuse into a quantity_literal.
+    /// The external scanner (_unit_expr_start) must refuse to emit the boundary token
+    /// when whitespace precedes the unit name.
+    #[test]
+    fn test_space_after_number_breaks_quantity_literal() {
+        let mut parser = make_parser();
+        // Byte layout of "structure S { let x = 5 kg + 0 }":
+        //   '5' is at byte 22, space at byte 23, 'k' at byte 24.
+        // A whitespace-blind scanner would fuse them: quantity_literal(22..26).
+        // Correct behavior: no quantity_literal spans both byte 22 ('5') and byte 24 ('k').
+        let source = b"structure S { let x = 5 kg + 0 }";
+        let tree = parser.parse(source, None).expect("parse failed");
+        let root = tree.root_node();
+        if let Some(ql) = find_node_by_kind(root, "quantity_literal") {
+            let start = ql.start_byte();
+            let end = ql.end_byte();
+            assert!(
+                !(start <= 22 && end >= 25),
+                "scanner must NOT fuse '5 kg' into a quantity_literal (PRD §3.1 \
+                 contiguity invariant); found quantity_literal at bytes {}..{}",
+                start,
+                end
+            );
+        }
+        // No assertion about parse errors: an ERROR node around 'kg' is acceptable —
+        // the key invariant is that no fused quantity_literal spans both tokens.
+    }
+
     #[test]
     fn test_hash_not_parsed_as_comment() {
         let mut parser = make_parser();
