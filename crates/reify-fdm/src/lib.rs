@@ -17,6 +17,6 @@
 pub mod zone;
 
 pub use zone::{
-    DEFAULT_TOP_BOTTOM_NORMAL_THRESHOLD, Zone, ZoneProbe, ZoneProcessParams, classify_zone,
-    is_top_or_bottom_normal,
+    AxisAlignedBox, DEFAULT_TOP_BOTTOM_NORMAL_THRESHOLD, Zone, ZoneProbe, ZoneProcessParams,
+    classify_zone, is_top_or_bottom_normal,
 };

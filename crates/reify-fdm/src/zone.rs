@@ -115,6 +115,50 @@ pub fn is_top_or_bottom_normal(
     dot.abs() >= cos_threshold
 }
 
+/// Axis-aligned bounding box, used as a test fixture / R-fast analytic
+/// helper for zone probing.
+///
+/// NOT a kernel-geometry handle wrapper — it carries no topology, just
+/// the two corner points in SI metres. Real-body distance probes
+/// (OCCT-backed) live downstream in the δ-task; this helper keeps γ's
+/// integration test self-contained.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AxisAlignedBox {
+    /// Lower corner (component-wise minimum).
+    pub min: [f64; 3],
+    /// Upper corner (component-wise maximum).
+    pub max: [f64; 3],
+}
+
+impl AxisAlignedBox {
+    /// Distance from `p` to the nearest face whose outward normal counts
+    /// as top/bottom under [`is_top_or_bottom_normal`] with the given
+    /// threshold. Returns `None` if no axis-aligned face qualifies.
+    pub fn min_top_bottom_distance(
+        &self,
+        p: [f64; 3],
+        build_direction: [f64; 3],
+        cos_threshold: f64,
+    ) -> Option<f64> {
+        let mut best: Option<f64> = None;
+        for axis in 0..3 {
+            for (coord, sign) in [(self.min[axis], -1.0_f64), (self.max[axis], 1.0_f64)] {
+                let mut normal = [0.0_f64; 3];
+                normal[axis] = sign;
+                if !is_top_or_bottom_normal(normal, build_direction, cos_threshold) {
+                    continue;
+                }
+                let d = (p[axis] - coord).abs();
+                best = Some(match best {
+                    Some(b) if b < d => b,
+                    _ => d,
+                });
+            }
+        }
+        best
+    }
+}
+
 pub fn classify_zone(probe: &ZoneProbe, params: &ZoneProcessParams) -> Zone {
     let wall_thickness = params.walls as f64 * params.line_width;
     if let Some(d) = probe.min_side_distance {
