@@ -460,3 +460,54 @@ fn rotate_voigt_90deg_about_z_swaps_d11_d22_for_orthotropic() {
         "D_rot[1][1]={} should ≈ D[0][0]={}", d_rot[1][1], d[0][0]
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Step 9: UFCS dispatch pinning tests (review: fragile_method_dispatch)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// review: fragile_method_dispatch
+// These tests explicitly pin that the `ConstitutiveLaw` trait dispatch and the
+// inherent `d_matrix_local` calls produce bitwise-identical results.
+//
+// Without fully-qualified syntax in the trait impls, method resolution silently
+// prefers the inherent method (so no infinite recursion today), but renaming or
+// removing the inherent method would turn the trait impl into infinite recursion
+// (stack overflow) with no compile-time warning.  Step-10 fixes this by using
+// `OrthotropicMaterial::d_matrix_local(self)` / `TransverseIsotropicMaterial::
+// d_matrix_local(self)` inside the respective trait impls.  These tests pin the
+// contract: both paths must produce the same float bits.
+
+/// Inherent call `OrthotropicMaterial::d_matrix_local(&mat)` and trait call
+/// `<OrthotropicMaterial as ConstitutiveLaw>::d_matrix_local(&mat)` must be
+/// bitwise equal.
+#[test]
+fn orthotropic_trait_dispatch_via_ufcs_matches_inherent_call() {
+    let mat = cfrp_orthotropic(); // E1=140e9, E2=E3=10e9, G12=5e9, G13=5e9, G23=3.5e9, ...
+    let d_inherent = OrthotropicMaterial::d_matrix_local(&mat);
+    let d_trait = <OrthotropicMaterial as ConstitutiveLaw>::d_matrix_local(&mat);
+    assert_eq!(
+        d_inherent, d_trait,
+        "OrthotropicMaterial: inherent and trait d_matrix_local must be bitwise equal",
+    );
+}
+
+/// Inherent call `TransverseIsotropicMaterial::d_matrix_local(&mat)` and trait
+/// call `<TransverseIsotropicMaterial as ConstitutiveLaw>::d_matrix_local(&mat)`
+/// must be bitwise equal.
+#[test]
+fn transverse_iso_trait_dispatch_via_ufcs_matches_inherent_call() {
+    // nu_axial=0.02 is physically valid for E_axial/E_in_plane=14 (see step-5 note).
+    let mat = TransverseIsotropicMaterial {
+        e_in_plane: 10e9,
+        e_axial: 140e9,
+        nu_in_plane: 0.3,
+        nu_axial: 0.02,
+        g_axial: 5e9,
+    };
+    let d_inherent = TransverseIsotropicMaterial::d_matrix_local(&mat);
+    let d_trait = <TransverseIsotropicMaterial as ConstitutiveLaw>::d_matrix_local(&mat);
+    assert_eq!(
+        d_inherent, d_trait,
+        "TransverseIsotropicMaterial: inherent and trait d_matrix_local must be bitwise equal",
+    );
+}
