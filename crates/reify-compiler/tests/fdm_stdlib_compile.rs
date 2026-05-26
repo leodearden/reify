@@ -464,8 +464,12 @@ fn fdm_process_defaults_have_expected_si_values_and_provenance_constructors() {
 ///   - `Literal(Value::Scalar { si_value, .. })` — dimensioned quantity literals
 ///   - `Literal(Value::Real(v))` — bare numbers
 ///   - `Literal(Value::Int(v))` — bare integers
-///   - `BinOp { Mul | Div | Add | Sub }` — compositional forms
-///   - `OptionSome(inner)` — some(...)
+///   - `BinOp { Mul | Div | Add | Sub }` — compositional forms (not exercised by
+///     current FDMProcess defaults, which are all single-literal; kept for parity
+///     with `materials_fea_tests.rs` where density uses a compositional BinOp form
+///     `n.0 * 1kg / (1m * 1m * 1m)`, so future compositional FDMProcess defaults
+///     absorb cleanly without a refactor)
+///   - `OptionSome(inner)` — some(...) (same parity rationale as BinOp above)
 fn compute_si_value(expr: &CompiledExpr) -> f64 {
     match &expr.kind {
         CompiledExprKind::Literal(Value::Scalar { si_value, .. }) => *si_value,

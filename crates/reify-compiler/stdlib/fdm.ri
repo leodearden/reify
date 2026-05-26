@@ -101,6 +101,14 @@ structure def FDMProcess {
     // vec3 args have consistent dimensions (each is a 1mm unit vector
     // component). The meaningful quantity is the *direction* (dimensionless
     // ratio), but the type captures the physical coordinate system.
+    //
+    // TODO(β-phase): β-phase property-correlation consumers must normalize
+    // build_direction before computing direction cosines (e.g. call
+    // `normalize(build_direction)` or extract the unit-vector ratio) to
+    // guard against callers who pass a non-unit vector. A future slice
+    // could revisit whether a dimensionless Vector3<Real> (e.g.
+    // `vec3(0.0, 0.0, 1.0)`) more honestly models the intent — deferred to
+    // the β/γ/δ review once the property-correlation call sites exist.
     param build_direction : Vector3<Length> = vec3(0mm, 0mm, 1mm)
 
     // layer_height is the slicer-equivalent layer thickness — the
