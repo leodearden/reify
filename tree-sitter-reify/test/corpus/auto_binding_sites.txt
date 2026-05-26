@@ -1,0 +1,33 @@
+================================================================================
+param_declaration default = auto (strict) — baseline regression guard
+================================================================================
+
+structure S { param x : Scalar = auto }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier))
+      default: (auto_keyword))))
+
+================================================================================
+param_declaration default = auto(free) — baseline regression guard
+================================================================================
+
+structure S { param x : Scalar = auto(free) }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier))
+      default: (auto_keyword))))
