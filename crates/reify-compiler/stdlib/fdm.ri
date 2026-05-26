@@ -36,3 +36,33 @@
 //   - `MaterialPropertyProvenance` — from std.materials.fea
 //   - `ElasticMaterial`            — from std.materials.fea
 //   - `ABS_Plastic`                — from std.materials.fea
+
+// ── InfillPattern ─────────────────────────────────────────────────────────────
+
+// InfillPattern selects which internal geometry the slicer generates for a
+// printed part. The canonical order is near-isotropic patterns first, then
+// directional patterns — matching the PRD §"Built-in property correlations"
+// grouping:
+//
+//   Near-isotropic (gyroid/cubic): the β-phase property-correlation pass
+//   treats these as approaching in-plane-isotropic behavior, applying a
+//   single scalar density-dependent knockdown factor to the isotropic
+//   elastic constants.
+//
+//   Directional (grid/triangular/honeycomb): the β-phase pass applies
+//   direction-dependent (orthotropic) knockdown factors; these patterns
+//   produce significantly different stiffness along and transverse to the
+//   infill lines.
+//
+// Ordering is canonical and pinned by test: any future variant addition
+// must be appended (not inserted) to avoid tag-encoding shifts in existing
+// FDMProcess instances.
+//
+// PRD reference: docs/prds/v0_5/fdm-as-printed-fea.md §"Built-in property
+// correlations".
+// Near-isotropic patterns (Gyroid, Cubic) are listed first — the β-phase
+// property-correlation pass treats these as approaching in-plane-isotropic
+// behavior. Directional patterns (Grid, Triangular, Honeycomb) receive
+// orthotropic knockdown factors. Canonical order mirrors the PRD §"Built-in
+// property correlations" prose order and is pinned by test.
+enum InfillPattern { Gyroid, Cubic, Grid, Triangular, Honeycomb }
