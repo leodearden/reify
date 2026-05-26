@@ -156,8 +156,18 @@ impl FusedMemoryClient {
             .header("content-type")
             .unwrap_or("")
             .to_string();
-        let body = response
-            .into_string()
+        // Use into_reader() instead of into_string() to avoid ureq's
+        // 10 MiB into_string cap — the live task corpus now exceeds
+        // that limit. Reading to a String (not serde_json::from_reader)
+        // keeps the SSE/JSON dual-path intact: the SSE branch must scan
+        // the body text for the `data:` line, which from_reader cannot
+        // do. For a one-shot CLI, buffering the corpus in memory is fine.
+        let mut body = String::new();
+        #[allow(unused_imports)]
+        use std::io::Read as _;
+        response
+            .into_reader()
+            .read_to_string(&mut body)
             .map_err(|e| LoadError::Http(format!("read body: {e}")))?;
 
         let value = if ctype.contains("text/event-stream") {
