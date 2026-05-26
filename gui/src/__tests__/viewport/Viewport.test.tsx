@@ -923,3 +923,52 @@ describe('Viewport deformation bridge', () => {
     expect(mockMeshSetDeformation).not.toHaveBeenCalled();
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Viewport debug bridge map registration (step-1 — RED)
+// Verifies that:
+//   (a) mounting a Viewport registers it in window.__REIFY_DEBUG__.viewports[id]
+//   (b) two Viewports with different ids both register; unmounting one leaves
+//       the other intact in the map
+// Both tests fail because the current code writes to viewport (singular), not
+// the viewports map.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('Viewport debug bridge map registration', () => {
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  it('(a) registers viewport under its viewportId key in window.__REIFY_DEBUG__.viewports', () => {
+    window.__REIFY_DEBUG__ = { stores: {} as any };
+    render(() => <Viewport meshes={{}} viewportId="vp-A" />);
+
+    const viewports = window.__REIFY_DEBUG__?.viewports;
+    expect(viewports).toBeDefined();
+    const vp = viewports!['vp-A'];
+    expect(vp).toBeDefined();
+    // Must expose the DebugViewport interface members
+    expect(vp.scene).toBeDefined();
+    expect(vp.camera).toBeDefined();
+    expect(vp.renderer).toBeDefined();
+    expect(typeof vp.getMeshes).toBe('function');
+    expect(typeof vp.fitToView).toBe('function');
+  });
+
+  it('(b) two viewports with different ids both register; unmounting one leaves the other', () => {
+    window.__REIFY_DEBUG__ = { stores: {} as any };
+
+    const { unmount: unmountA } = render(() => <Viewport meshes={{}} viewportId="vp-A" />);
+    render(() => <Viewport meshes={{}} viewportId="vp-B" />);
+
+    // Both must be present
+    expect(window.__REIFY_DEBUG__?.viewports?.['vp-A']).toBeDefined();
+    expect(window.__REIFY_DEBUG__?.viewports?.['vp-B']).toBeDefined();
+
+    // Unmount vp-A — its key must disappear
+    unmountA();
+    expect(window.__REIFY_DEBUG__?.viewports?.['vp-A']).toBeUndefined();
+
+    // vp-B must survive
+    expect(window.__REIFY_DEBUG__?.viewports?.['vp-B']).toBeDefined();
+  });
+});
