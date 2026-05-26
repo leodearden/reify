@@ -645,7 +645,7 @@ module.exports = grammar({
     connect_param_assignment: $ => seq(
       field('name', $.identifier),
       '=',
-      field('value', $._expression),
+      field('value', $._binding_value),
     ),
 
     // ── Chain ─────────────────────────────────────────────────
