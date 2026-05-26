@@ -63,12 +63,12 @@
 #                             interference with real OCCT runs.
 #
 #   REIFY_OCCT_CONCURRENCY    Explicit slot count N (overrides auto-detect).
-#                             Default: 1 (for this step; auto-detect is added
-#                             in a later refactor).
+#                             When set, REIFY_OCCT_MAX_CONCURRENCY is ignored.
 #
-#   REIFY_OCCT_MAX_CONCURRENCY  Hard cap on auto-detected N (reserved for
-#                             load-aware auto-detect; not active in this version).
-#                             Default: 4.
+#   REIFY_OCCT_MAX_CONCURRENCY  Hard cap on auto-detected N.
+#                             Default: 4.  Conservative for memory-heavy OCCT
+#                             release builds; raise via env in CI/benchmark.
+#                             Has no effect when REIFY_OCCT_CONCURRENCY is set.
 #
 #   REIFY_OCCT_LOCK_WAIT      Maximum seconds to wait for a slot.
 #                             Default: 1800 (30 minutes).  If no slot can be
@@ -104,11 +104,52 @@ LOCK="${REIFY_OCCT_LOCK:-${TMPDIR:-/tmp}/reify-occt-$(id -u).lock}"
 LOCK_WAIT="${REIFY_OCCT_LOCK_WAIT:-1800}"
 TEST_TIMEOUT="${REIFY_OCCT_TEST_TIMEOUT:-2700}"
 
-# Slot count N.  REIFY_OCCT_CONCURRENCY pins it explicitly; default is 1
-# (exclusive mode — preserves prior serialization contract while the
-# semaphore mechanism is introduced).  Auto-detect (nproc-based) is added
-# in a subsequent step once all existing tests have been migrated.
-_N="${REIFY_OCCT_CONCURRENCY:-1}"
+# Slot count N.  REIFY_OCCT_CONCURRENCY pins it explicitly (override); if
+# unset, auto-detect: N = clamp(nproc - load_1m_int, 1, MAX_CAP).
+#
+# Auto-detect rationale:
+#   nproc    — available logical CPUs on this host.
+#   load_int — 1-minute load average (integer truncation via awk), read from
+#              /proc/loadavg.  Fallback 0 on non-Linux or unreadable file.
+#   MAX_CAP  — hard ceiling, default 4.  Conservative for memory-heavy OCCT
+#              release builds; raise via REIFY_OCCT_MAX_CONCURRENCY in
+#              benchmark/CI contexts.
+#   N        — max(1, min(MAX_CAP, nproc - load_int)).
+#
+# The intent: on an idle box with 32 CPUs and load 0, N = min(4, 32) = 4.
+# On a stressed box (load 30 on 32 CPUs), N = max(1, 32-30) = 2 — still
+# allows some parallelism rather than full serialization.
+
+_MAX_CAP="${REIFY_OCCT_MAX_CONCURRENCY:-4}"
+
+if [ -n "${REIFY_OCCT_CONCURRENCY:-}" ]; then
+    _N="${REIFY_OCCT_CONCURRENCY}"
+else
+    _NPROC=2
+    if command -v nproc >/dev/null 2>&1; then
+        _NPROC="$(nproc)"
+    fi
+    # _REIFY_OCCT_NPROC_OVERRIDE: test-only env var (underscore prefix = private).
+    # Overrides the nproc value in the auto-detect formula so tests can simulate
+    # any CPU count without depending on actual machine capacity.
+    if [ -n "${_REIFY_OCCT_NPROC_OVERRIDE:-}" ]; then
+        _NPROC="${_REIFY_OCCT_NPROC_OVERRIDE}"
+    fi
+    _LOAD_INT=0
+    if [ -r /proc/loadavg ]; then
+        _LOAD_INT="$(awk '{printf "%d", $1}' /proc/loadavg)"
+    fi
+    # _REIFY_OCCT_LOAD_OVERRIDE: test-only env var (underscore prefix = private).
+    # Overrides the 1-minute load average used in auto-detect so tests are
+    # load-independent regardless of actual host utilization.
+    if [ -n "${_REIFY_OCCT_LOAD_OVERRIDE:-}" ]; then
+        _LOAD_INT="${_REIFY_OCCT_LOAD_OVERRIDE}"
+    fi
+    _N=$(( _NPROC - _LOAD_INT ))
+    if [ "$_N" -lt 1 ]; then _N=1; fi
+    if [ "$_N" -gt "$_MAX_CAP" ]; then _N="$_MAX_CAP"; fi
+    echo "INFO: cargo-test-occt-gated.sh: auto-detect N=${_N} (nproc=${_NPROC}, load=${_LOAD_INT}, cap=${_MAX_CAP})" >&2
+fi
 
 if [ "$#" -eq 0 ]; then
     echo "ERROR: cargo-test-occt-gated.sh: no command provided" >&2
