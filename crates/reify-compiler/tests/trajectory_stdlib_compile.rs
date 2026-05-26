@@ -262,10 +262,10 @@ fn boundary_condition_trait_exists_with_no_params() {
 /// (PRD §4.1):
 ///
 ///   - `CubicSpline`    — degree-3 polynomial per segment; the default
-///                        choice when waypoints carry only positions
-///                        (vels / accels are `none`).
+///     choice when waypoints carry only positions
+///     (vels / accels are `none`).
 ///   - `QuinticSpline`  — degree-5 polynomial per segment; selected when
-///                        waypoints carry explicit `vels` AND `accels`.
+///     waypoints carry explicit `vels` AND `accels`.
 ///
 /// Test pins the variant vector exactly (order-sensitive) — the assertion
 /// shape mirrors `boundary2_producer.rs::compiled.enum_defs[0].variants`
@@ -582,13 +582,13 @@ fn periodic_spline_refines_boundary_condition_with_no_params() {
 /// build per-segment polynomial coefficients (PRD §4.1):
 ///
 ///   - `mechanism   : Real`               (TODO(mechanism-type) placeholder —
-///                                         retargets to the kinematic-
-///                                         completion `Mechanism` type when
-///                                         that PRD lands)
+///     retargets to the kinematic-
+///     completion `Mechanism` type when
+///     that PRD lands)
 ///   - `waypoints   : List<Waypoint>`     (per-knot data; ordered by `t`)
 ///   - `boundary    : BoundaryCondition`  (variant chooses tangent / endpoint
-///                                         policy — Natural / Clamped /
-///                                         Periodic)
+///     policy — Natural / Clamped /
+///     Periodic)
 ///   - `spline_kind : SplineKind`         (CubicSpline | QuinticSpline)
 ///
 /// `List<Waypoint>` compiles to `Type::List(Box::new(Type::StructureRef
