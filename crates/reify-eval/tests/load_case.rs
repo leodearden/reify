@@ -22,9 +22,7 @@
 
 #![allow(clippy::mutable_key_type)]
 
-use reify_test_support::{
-    collect_errors, compile_source_with_stdlib, make_simple_engine, parse_and_compile_with_stdlib,
-};
+use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_with_stdlib};
 use reify_types::{PersistentMap, Value, ValueCellId};
 
 /// `PersistentMap<String, Value>::get` is keyed by `&String`; this lets the
@@ -201,49 +199,12 @@ structure def LoadCaseAccess {
     );
 }
 
-/// task 3549 SIR-β-mlcfea: `MultiCaseResult(cases: map{})` ctor lowers to a
-/// `Value::StructureInstance` whose `type_name` is `"MultiCaseResult"` and
-/// whose `cases` field is a `Value::Map`.
-///
-/// Re-pins the SIR-α tripwire in the SIR-β-mlcfea-owned file so this file
-/// is the canonical coverage owner for the LoadCase/MultiCaseResult surface.
-#[test]
-fn multi_case_result_ctor_round_trips_to_structure_instance() {
-    const SOURCE: &str = r#"
-structure def MultiCaseFixture {
-    let mcr = MultiCaseResult(cases: map{})
-}
-"#;
-
-    let compiled = parse_and_compile_with_stdlib(SOURCE);
-    let mut engine = make_simple_engine();
-    let result = engine.eval(&compiled);
-
-    let id = ValueCellId::new("MultiCaseFixture", "mcr");
-    let mcr = result
-        .values
-        .get(&id)
-        .unwrap_or_else(|| panic!("MultiCaseFixture.mcr cell missing from eval result"));
-
-    match mcr {
-        Value::StructureInstance(data) => {
-            assert_eq!(
-                data.type_name, "MultiCaseResult",
-                "expected type_name=\"MultiCaseResult\" (SIR-β-mlcfea stdlib structure_def), \
-                 got {:?}",
-                data.type_name
-            );
-            assert!(
-                matches!(field(&data.fields, "cases"), Some(Value::Map(_))),
-                "MultiCaseResult.cases must be a Value::Map; fields: {:?}",
-                data.fields
-            );
-        }
-        other => panic!(
-            "expected Value::StructureInstance for MultiCaseFixture.mcr — got {other:?}"
-        ),
-    }
-}
+// NOTE: `MultiCaseResult(cases: map{})` ctor→StructureInstance is already
+// pinned by the SIR-α tripwire in `multi_load_case_stdlib_smoke.rs`. Rather
+// than keeping a verbatim duplicate here, the Map-vs-Structure distinction
+// test below (`map_value_and_multi_case_result_pattern_match_discriminates`)
+// re-exercises MultiCaseResult as part of its discrimination assertion. The
+// sole canonical `ctor→type_name` pin remains the smoke file.
 
 /// task 3549 SIR-β-mlcfea: `examples/load_case.ri` compiles error-free under the
 /// stdlib prelude AND its documented signal cells evaluate to the correct Value
@@ -307,6 +268,17 @@ fn load_case_example_evals_clean_and_exercises_signal_cells() {
         first_load,
         &Value::Real(10.0),
         "LoadCaseDemo.first_load must be Value::Real(10.0); got {first_load:?}"
+    );
+
+    // LoadCaseDemo.first_support → Value::Real(30.0)
+    let first_support = result
+        .values
+        .get(&ValueCellId::new("LoadCaseDemo", "first_support"))
+        .unwrap_or_else(|| panic!("LoadCaseDemo.first_support cell missing"));
+    assert_eq!(
+        first_support,
+        &Value::Real(30.0),
+        "LoadCaseDemo.first_support must be Value::Real(30.0); got {first_support:?}"
     );
 
     // MapVsStructureDemo.raw_cases → Value::Map(_)
