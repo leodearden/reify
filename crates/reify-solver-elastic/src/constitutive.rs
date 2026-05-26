@@ -490,7 +490,7 @@ impl ConstitutiveLaw for TransverseIsotropicMaterial {
 /// # Formula (PRD Contract C2)
 ///
 /// ```text
-/// D_global = Tᵀ · D_local · T
+/// D_global = T · D_local · Tᵀ
 /// ```
 ///
 /// where `T` is the 6×6 **Voigt-stress transformation matrix** built from the
