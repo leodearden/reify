@@ -419,4 +419,45 @@ assert "Test 21A: 2 invocations with MAX_CAP=2 run in parallel (<700ms, got ${_E
 assert "Test 21B: 3 invocations with MAX_CAP=2 have 3rd serialized ([700,1200]ms, got ${_ELAPSED21B_MS}ms)" \
     bash -c "test '$_ELAPSED21B_MS' -ge 700 && test '$_ELAPSED21B_MS' -le 1200"
 
+# -- Test 22: LOCK_WAIT bound fires when ALL N slots are externally held ------
+# Mirrors Test 14's pattern but with N=2 (full contention across all slots).
+# Spawn two background flock holders each pinning one slot file for 10s;
+# invoke wrapper with REIFY_OCCT_CONCURRENCY=2 and REIFY_OCCT_LOCK_WAIT=1.
+# The wrapper must exit 75 (EX_TEMPFAIL) within <= 3s (1s wait + one 0.5s
+# retry cycle), confirming the deadline is checked after ALL N slots fail
+# on a given pass — not only after a single slot fails.
+echo ""
+echo "--- Test 22: LOCK_WAIT fires within budget when ALL N=2 slots are externally held ---"
+
+_LOCK22="$(mktemp)"
+_ERR22="$(mktemp)"
+
+# Spawn two background holders: one pins slot-1, one pins slot-2.
+( flock -x 9; sleep 10 ) 9>>"${_LOCK22}.slot-1" &
+_HOLDER22A=$!
+( flock -x 9; sleep 10 ) 9>>"${_LOCK22}.slot-2" &
+_HOLDER22B=$!
+sleep 0.2  # give both holders time to acquire before we proceed
+
+_START22="$(date +%s)"
+_EXIT22=0
+REIFY_OCCT_LOCK="$_LOCK22" REIFY_OCCT_CONCURRENCY=2 REIFY_OCCT_LOCK_WAIT=1 \
+    timeout 5 "$WRAPPER" true 2>"$_ERR22" || _EXIT22=$?
+_END22="$(date +%s)"
+_ELAPSED22=$(( _END22 - _START22 ))
+
+kill "$_HOLDER22A" "$_HOLDER22B" 2>/dev/null || true
+wait "$_HOLDER22A" "$_HOLDER22B" 2>/dev/null || true
+
+assert "Test 22: wrapper exits 75 when all N=2 slots held and LOCK_WAIT=1 (got $_EXIT22)" \
+    test "$_EXIT22" -eq 75
+
+assert "Test 22: wrapper exits within 3s (not blocked for full holder duration) (elapsed=${_ELAPSED22}s)" \
+    test "$_ELAPSED22" -le 3
+
+assert "Test 22: stderr mentions acquire and lock-wait duration (1s)" \
+    grep -qE 'acquire.*1s|1s.*acquire' "$_ERR22"
+
+rm -f "$_LOCK22" "${_LOCK22}.slot-1" "${_LOCK22}.slot-2" "$_ERR22"
+
 test_summary
