@@ -1,8 +1,13 @@
 //! FEA load constructors for the stdlib.
 //!
-//! Provides `point_load`, `pressure_load`, `traction_load`, `body_force`, and
-//! `gravity` constructors.  Each returns a `Value::Map` with a `kind`
-//! discriminator field, matching the joints/coupling constructor pattern.
+//! Provides `traction_load`, `body_force`, and `gravity` name-dispatched
+//! constructors.  Each returns a `Value::Map` with a `kind` discriminator
+//! field, matching the joints/coupling constructor pattern.
+//!
+//! Retired: `point_load` (SIR-α, task 3540 step-20) and `pressure_load`
+//! (SIR-β-load, task 3544 step-4) — both replaced by stdlib structure defs
+//! (`PointLoad` / `PressureLoad` in `fea_multi_case.ri`) that lower to
+//! `Value::StructureInstance` via `CompiledExprKind::StructureInstanceCtor`.
 //!
 //! Selector-target validation is delegated to
 //! [`crate::helpers::validate_selector_target`].  Selector targets are
@@ -14,7 +19,7 @@ use reify_types::{DimensionVector, Value};
 
 use crate::helpers::{
     make_kind_map, validate_dimensioned_scalar, validate_dimensioned_vec3,
-    validate_dimensionless_unit_axis_vec3, validate_selector_target,
+    validate_selector_target,
 };
 
 /// Earth standard gravity in m/s² (CGPM 1901 definition).
@@ -34,13 +39,14 @@ pub(crate) const EARTH_GRAVITY: f64 = 9.80665;
 /// `crates/reify-compiler/stdlib/fea_multi_case.ri` takes over via the
 /// `CompiledExprKind::StructureInstanceCtor` lowering. `eval_loads`'s arm is
 /// removed in lockstep so this list and its partition guard stay in sync.
+///
+/// task 3544 (SIR-β-load, step-4): `"pressure_load"` retired here — the
+/// `structure def PressureLoad : Load { ... }` declaration in
+/// `crates/reify-compiler/stdlib/fea_multi_case.ri` takes over via the same
+/// `CompiledExprKind::StructureInstanceCtor` lowering. `eval_loads`'s arm is
+/// removed in lockstep so this list and its partition guard stay in sync.
 #[allow(dead_code)]
-pub(crate) const LOAD_KINDS: &[&str] = &[
-    "pressure_load",
-    "traction_load",
-    "body_force",
-    "gravity",
-];
+pub(crate) const LOAD_KINDS: &[&str] = &["traction_load", "body_force", "gravity"];
 
 /// Returns `true` if `v` is a load `Value::Map` produced by this module —
 /// i.e., a Map with a `kind` field whose value is one of `LOAD_KINDS`.
@@ -80,34 +86,16 @@ pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
         // at the source level via the `PointLoad` ctor, not the snake_case
         // builtin. The `force`/`point` field shapes are preserved by the
         // structure-def per Q-SIR-4 (preserve-don't-redesign).
-        "pressure_load" => {
-            // Accept arity 2 (direction defaults to "normal") or 3 (explicit direction).
-            if args.len() != 2 && args.len() != 3 {
-                return Some(Value::Undef);
-            }
-            if validate_selector_target(&args[0]).is_none() {
-                return Some(Value::Undef);
-            }
-            if validate_dimensioned_scalar(&args[1], DimensionVector::PRESSURE).is_none() {
-                return Some(Value::Undef);
-            }
-            let direction = if args.len() == 2 {
-                Value::String("normal".to_string())
-            } else {
-                match validate_pressure_direction(&args[2]) {
-                    Some(d) => d,
-                    None => return Some(Value::Undef),
-                }
-            };
-            make_kind_map(
-                "pressure_load",
-                vec![
-                    ("direction", direction),
-                    ("face", args[0].clone()),
-                    ("magnitude", args[1].clone()),
-                ],
-            )
-        }
+        //
+        // task 3544 (SIR-β-load, step-4): `pressure_load` retired. The
+        // `structure def PressureLoad : Load { ... }` in
+        // `crates/reify-compiler/stdlib/fea_multi_case.ri` takes over via the
+        // same `CompiledExprKind::StructureInstanceCtor` lowering; source-level
+        // `PressureLoad(...)` evals to a `Value::StructureInstance`. Returning
+        // `None` (via the wildcard arm below) makes
+        // `eval_builtin("pressure_load", ...)` fall through to `Value::Undef`
+        // (the unknown-name contract). The `magnitude`/`face`/`direction` field
+        // shapes are preserved by the structure-def per Q-SIR-4.
         "traction_load" => {
             if args.len() != 2 {
                 return Some(Value::Undef);
@@ -198,29 +186,14 @@ pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
 }
 
 // ── Validators ───────────────────────────────────────────────────────────────
-
-/// Validate a pressure-load direction argument.
-///
-/// Accepts:
-/// - `Value::String("normal")` — the outward-face-normal sentinel.
-/// - `Value::Vector` (or Tensor/Point) of exactly 3 `DIMENSIONLESS` components,
-///   all finite, with a non-zero, finite squared magnitude.
-///
-/// Returns `Some(value)` (the original input, un-normalized) on success,
-/// `None` on failure. Any other String content, dimensioned Vector,
-/// non-3-component Vector, or primitive input returns `None`.
-///
-/// The non-sentinel branch delegates to
-/// [`helpers::validate_dimensionless_unit_axis_vec3`] so the
-/// `mag_sq.is_finite()` overflow guard (e.g. for `[f64::MAX, 0, 0]`) is
-/// applied uniformly with `supports::validate_unit_axis_vec3` and
-/// `joints::validate_axis`.
-fn validate_pressure_direction(v: &Value) -> Option<Value> {
-    match v {
-        Value::String(s) if s == "normal" => Some(v.clone()),
-        _ => validate_dimensionless_unit_axis_vec3(v).map(|_| v.clone()),
-    }
-}
+//
+// task 3544 (SIR-β-load): `validate_pressure_direction` was removed here —
+// it validated the `direction` argument to the `"pressure_load"` builtin arm
+// (the `"normal"` sentinel OR a dimensionless Vector3). After step-4 retired
+// the `"pressure_load"` arm from `eval_loads`, this function became dead code.
+// The direction validation remains relevant for PressureLoad but now belongs to
+// any future wave-2 solver that reads the `direction` field from the
+// `Value::StructureInstance` produced by the stdlib structure def.
 
 #[cfg(test)]
 mod tests {
@@ -260,314 +233,24 @@ mod tests {
     // vector validation now lives on the structure-def's field contracts and
     // is exercised by the SIR-α boundary suite, not here.
 
-    // ── pressure_load constructor: 3-arg happy path ──────────────────────────
-
-    #[test]
-    fn pressure_load_3arg_returns_map_with_correct_fields() {
-        let face = selector_stub("face_stub");
-        let magnitude = Value::Scalar {
-            si_value: 5e6,
-            dimension: DimensionVector::PRESSURE,
-        };
-        // Explicit direction: -Z unit vector (dimensionless).
-        let direction = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(-1.0)]);
-
-        let result = eval_builtin(
-            "pressure_load",
-            &[face.clone(), magnitude.clone(), direction.clone()],
-        );
-
-        let map = match result {
-            Value::Map(m) => m,
-            other => panic!("expected Value::Map, got {:?}", other),
-        };
-
-        assert_eq!(
-            map.get(&Value::String("kind".to_string())),
-            Some(&Value::String("pressure_load".to_string())),
-            "kind should be 'pressure_load'"
-        );
-        assert_eq!(
-            map.get(&Value::String("face".to_string())),
-            Some(&face),
-            "face should round-trip the selector input"
-        );
-        assert_eq!(
-            map.get(&Value::String("magnitude".to_string())),
-            Some(&magnitude),
-            "magnitude should round-trip"
-        );
-        assert_eq!(
-            map.get(&Value::String("direction".to_string())),
-            Some(&direction),
-            "direction should round-trip"
-        );
-    }
-
-    #[test]
-    fn pressure_load_direction_non_unit_vector_accepted() {
-        let face = selector_stub("face_stub");
-        let magnitude = Value::Scalar {
-            si_value: 5e6,
-            dimension: DimensionVector::PRESSURE,
-        };
-        // Non-unit dimensionless direction — magnitude 5.0, not 1.0.
-        let direction = Value::Vector(vec![Value::Real(5.0), Value::Real(0.0), Value::Real(0.0)]);
-
-        let result = eval_builtin(
-            "pressure_load",
-            &[face.clone(), magnitude.clone(), direction.clone()],
-        );
-
-        let map = match result {
-            Value::Map(m) => m,
-            other => panic!("expected Value::Map, got {:?}", other),
-        };
-
-        assert_eq!(
-            map.get(&Value::String("kind".to_string())),
-            Some(&Value::String("pressure_load".to_string())),
-            "kind should be 'pressure_load'"
-        );
-        assert_eq!(
-            map.get(&Value::String("direction".to_string())),
-            Some(&direction),
-            "direction should round-trip the un-normalized (5,0,0) input — \
-             normalization happens downstream"
-        );
-    }
-
-    // ── pressure_load: "normal" sentinel ────────────────────────────────────
-
-    #[test]
-    fn pressure_load_normal_string_direction_accepted() {
-        let face = selector_stub("face_stub");
-        let magnitude = Value::Scalar {
-            si_value: 5e6,
-            dimension: DimensionVector::PRESSURE,
-        };
-        let normal_sentinel = Value::String("normal".to_string());
-
-        let result = eval_builtin("pressure_load", &[face, magnitude, normal_sentinel.clone()]);
-
-        let map = match result {
-            Value::Map(m) => m,
-            other => panic!("expected Value::Map, got {:?}", other),
-        };
-
-        assert_eq!(
-            map.get(&Value::String("direction".to_string())),
-            Some(&normal_sentinel),
-            "direction should be Value::String(\"normal\") round-tripped"
-        );
-        assert_eq!(
-            map.get(&Value::String("kind".to_string())),
-            Some(&Value::String("pressure_load".to_string())),
-        );
-    }
-
-    // ── pressure_load: 2-arg form defaults to "normal" ──────────────────────
-
-    #[test]
-    fn pressure_load_2arg_defaults_direction_to_normal() {
-        let face = selector_stub("face_stub");
-        let magnitude = Value::Scalar {
-            si_value: 5e6,
-            dimension: DimensionVector::PRESSURE,
-        };
-
-        let result = eval_builtin("pressure_load", &[face.clone(), magnitude.clone()]);
-
-        let map = match result {
-            Value::Map(m) => m,
-            other => panic!("expected Value::Map, got {:?}", other),
-        };
-
-        assert_eq!(
-            map.get(&Value::String("direction".to_string())),
-            Some(&Value::String("normal".to_string())),
-            "2-arg form should default direction to \"normal\""
-        );
-        assert_eq!(
-            map.get(&Value::String("face".to_string())),
-            Some(&face),
-            "face should round-trip"
-        );
-        assert_eq!(
-            map.get(&Value::String("kind".to_string())),
-            Some(&Value::String("pressure_load".to_string())),
-        );
-        assert_eq!(
-            map.get(&Value::String("magnitude".to_string())),
-            Some(&magnitude),
-            "magnitude should round-trip"
-        );
-    }
-
-    // ── pressure_load: failure modes ─────────────────────────────────────────
-
-    #[test]
-    fn pressure_load_magnitude_with_force_dim_returns_undef() {
-        let force_dim_mag = Value::Scalar {
-            si_value: 5000.0,
-            dimension: DimensionVector::FORCE, // wrong: should be PRESSURE
-        };
-        assert!(
-            eval_builtin(
-                "pressure_load",
-                &[selector_stub("face_stub"), force_dim_mag]
-            )
-            .is_undef(),
-            "magnitude with FORCE dimension should return Undef"
-        );
-    }
-
-    #[test]
-    fn pressure_load_magnitude_not_scalar_returns_undef() {
-        let not_scalar = Value::Real(5.0);
-        assert!(
-            eval_builtin("pressure_load", &[selector_stub("face_stub"), not_scalar]).is_undef(),
-            "magnitude = Real should return Undef"
-        );
-    }
-
-    #[test]
-    fn pressure_load_magnitude_nan_returns_undef() {
-        let nan_mag = Value::Scalar {
-            si_value: f64::NAN,
-            dimension: DimensionVector::PRESSURE,
-        };
-        assert!(
-            eval_builtin("pressure_load", &[selector_stub("face_stub"), nan_mag]).is_undef(),
-            "magnitude NaN should return Undef"
-        );
-    }
-
-    #[test]
-    fn pressure_load_direction_length_dim_returns_undef() {
-        let pressure_mag = Value::Scalar {
-            si_value: 5e6,
-            dimension: DimensionVector::PRESSURE,
-        };
-        // Direction has LENGTH dimension — should be dimensionless.
-        let bad_dir = make_scalar_vec3([0.0, 0.0, -1.0], DimensionVector::LENGTH);
-        assert!(
-            eval_builtin(
-                "pressure_load",
-                &[selector_stub("face_stub"), pressure_mag, bad_dir]
-            )
-            .is_undef(),
-            "direction with LENGTH dimension should return Undef"
-        );
-    }
-
-    #[test]
-    fn pressure_load_direction_zero_vector_returns_undef() {
-        let pressure_mag = Value::Scalar {
-            si_value: 5e6,
-            dimension: DimensionVector::PRESSURE,
-        };
-        // Dimensionless zero vector — invalid direction.
-        let zero_dir = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
-        assert!(
-            eval_builtin(
-                "pressure_load",
-                &[selector_stub("face_stub"), pressure_mag, zero_dir]
-            )
-            .is_undef(),
-            "zero direction vector should return Undef"
-        );
-    }
-
-    #[test]
-    fn pressure_load_direction_overflow_vector_returns_undef() {
-        // Regression: `[f64::MAX, 0.0, 0.0]` has squared magnitude
-        // f64::MAX² → +inf. The pre-hoist `validate_pressure_direction`
-        // only checked `mag_sq == 0.0` and silently accepted this input.
-        // Routing through `helpers::validate_dimensionless_unit_axis_vec3`
-        // applies the `mag_sq.is_finite()` guard uniformly with
-        // `validate_axis` (joints) and `validate_unit_axis_vec3` (supports).
-        let pressure_mag = Value::Scalar {
-            si_value: 5e6,
-            dimension: DimensionVector::PRESSURE,
-        };
-        let overflow_dir = Value::Vector(vec![
-            Value::Real(f64::MAX),
-            Value::Real(0.0),
-            Value::Real(0.0),
-        ]);
-        assert!(
-            eval_builtin(
-                "pressure_load",
-                &[selector_stub("face_stub"), pressure_mag, overflow_dir]
-            )
-            .is_undef(),
-            "direction with squared-magnitude overflow (+inf) should return Undef"
-        );
-    }
-
-    #[test]
-    fn pressure_load_direction_wrong_string_returns_undef() {
-        let pressure_mag = Value::Scalar {
-            si_value: 5e6,
-            dimension: DimensionVector::PRESSURE,
-        };
-        let bad_sentinel = Value::String("up".to_string());
-        assert!(
-            eval_builtin(
-                "pressure_load",
-                &[selector_stub("face_stub"), pressure_mag, bad_sentinel]
-            )
-            .is_undef(),
-            "direction string other than \"normal\" should return Undef"
-        );
-    }
-
-    #[test]
-    fn pressure_load_selector_real_returns_undef() {
-        let pressure_mag = Value::Scalar {
-            si_value: 5e6,
-            dimension: DimensionVector::PRESSURE,
-        };
-        assert!(
-            eval_builtin("pressure_load", &[Value::Real(0.0), pressure_mag]).is_undef(),
-            "selector = Real should return Undef"
-        );
-    }
-
-    #[test]
-    fn pressure_load_zero_args_returns_undef() {
-        assert!(
-            eval_builtin("pressure_load", &[]).is_undef(),
-            "0 args → Undef"
-        );
-    }
-
-    #[test]
-    fn pressure_load_one_arg_returns_undef() {
-        assert!(
-            eval_builtin("pressure_load", &[selector_stub("face_stub")]).is_undef(),
-            "1 arg → Undef"
-        );
-    }
-
-    #[test]
-    fn pressure_load_four_args_returns_undef() {
-        let pressure_mag = Value::Scalar {
-            si_value: 5e6,
-            dimension: DimensionVector::PRESSURE,
-        };
-        let dir = Value::String("normal".to_string());
-        let extra = Value::Real(0.0);
-        assert!(
-            eval_builtin(
-                "pressure_load",
-                &[selector_stub("face_stub"), pressure_mag, dir, extra]
-            )
-            .is_undef(),
-            "4 args → Undef"
-        );
-    }
+    // ── pressure_load constructor: RETIRED (SIR-β-load, task 3544 step-4) ────
+    //
+    // The `pressure_load` name-dispatched builtin was retired in favour of the
+    // `structure def PressureLoad : Load { ... }` declaration in
+    // `crates/reify-compiler/stdlib/fea_multi_case.ri`. Source-level
+    // `PressureLoad(...)` calls now lower to `CompiledExprKind::StructureInstanceCtor`
+    // and eval to a `Value::StructureInstance` (end-to-end coverage:
+    // `crates/reify-eval/tests/pressure_load.rs::
+    //  pressure_load_in_source_lowers_to_structure_instance`).
+    //
+    // The Rust API contract — `eval_builtin("pressure_load", ...)` returns
+    // `Value::Undef` — is pinned by
+    // `pressure_load_eval_builtin_returns_undef_post_retirement` below. The
+    // former happy-path + per-argument validation tests are intentionally
+    // removed: with the arm gone, every input collapses to `Undef`, so those
+    // assertions no longer exercise distinct behaviour. Selector / dimensioned-
+    // scalar validation now lives on the structure-def's field contracts and
+    // is exercised by the SIR-β-load boundary suite, not here.
 
     // ── traction_load constructor: happy path ────────────────────────────────
 
@@ -1046,6 +729,36 @@ mod tests {
         );
     }
 
+    // ── task 3544 step-3 (RED): post-retirement contract ─────────────────────
+    //
+    // After step-4 (SIR-β-load stdlib swap), `pressure_load` is no longer a
+    // name-dispatched builtin — its role is taken by the
+    // `structure def PressureLoad : Load { ... }` declaration in
+    // `crates/reify-compiler/stdlib/fea_multi_case.ri`. Source-level
+    // `PressureLoad(...)` calls then lower to `CompiledExprKind::StructureInstanceCtor`
+    // (the precedence path landed in SIR-α step-16) and eval into a
+    // `Value::StructureInstance`. The `eval_builtin("pressure_load", ...)` Rust API
+    // path returns `Value::Undef` because the dispatch arm in `eval_loads` is removed.
+    //
+    // RED: this test currently fails because `eval_builtin("pressure_load", ...)`
+    // returns a `Value::Map` (the pre-retirement happy path). Step-4 retires
+    // the arm and updates `LOAD_KINDS` so the partition guard stays green.
+
+    #[test]
+    fn pressure_load_eval_builtin_returns_undef_post_retirement() {
+        let stub = selector_stub("face_stub");
+        let pressure_mag = Value::Scalar {
+            si_value: 1e6,
+            dimension: DimensionVector::PRESSURE,
+        };
+        assert!(
+            eval_builtin("pressure_load", &[stub, pressure_mag]).is_undef(),
+            "after step-4 retirement, eval_builtin('pressure_load', ...) must \
+             return Undef; the structure-instance ctor path replaces the \
+             builtin entirely (PRD §8 Phase 2, Q-SIR-4 — rename pressure_load → PressureLoad)"
+        );
+    }
+
     // ── LOAD_KINDS partition test ─────────────────────────────────────────────
 
     /// Guard that every kind listed in `LOAD_KINDS` is actually dispatched by
@@ -1063,10 +776,10 @@ mod tests {
             );
             m
         });
-        let pressure_mag = Value::Scalar {
-            si_value: 1e6,
-            dimension: DimensionVector::PRESSURE,
-        };
+        // `pressure_mag` removed: the `"pressure_load"` fixture arm was here but
+        // `pressure_load` was retired in SIR-β-load (task 3544 step-4) and is no
+        // longer in LOAD_KINDS — so the binding would be unused and trigger a
+        // clippy warning. `pressure_vec` (used by `traction_load`) is kept.
         let pressure_vec = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::PRESSURE);
         let fd_vec = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::FORCE_DENSITY);
         let accel_vec = make_scalar_vec3([0.0, 0.0, -9.81], DimensionVector::ACCELERATION);
@@ -1074,8 +787,8 @@ mod tests {
         for kind in LOAD_KINDS {
             // `point_load` retired in SIR-α wave-1 (step-20) — no longer in
             // LOAD_KINDS, so no fixture arm here.
+            // `pressure_load` retired in SIR-β-load (task 3544 step-4) — same.
             let result = match *kind {
-                "pressure_load" => eval_loads(kind, &[stub_selector.clone(), pressure_mag.clone()]),
                 "traction_load" => eval_loads(kind, &[stub_selector.clone(), pressure_vec.clone()]),
                 "body_force" => eval_loads(kind, &[stub_selector.clone(), fd_vec.clone()]),
                 "gravity" => eval_loads(kind, std::slice::from_ref(&accel_vec)),

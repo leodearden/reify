@@ -19,8 +19,9 @@
 //   1. PRD writes `loads : List<Load>` and `supports : List<Support>`.
 //      `Load` and `Support` are not statically-typed structs in the current
 //      stdlib: runtime load/support instances are kind-tagged `Value::Map`s
-//      produced by `point_load`, `pressure_load`, `fixed_support`,
-//      `pinned_support`, etc. (name-dispatched builtins). Using
+//      produced by `point_load`, `fixed_support`, `pinned_support`, etc.
+//      (name-dispatched builtins) or `PointLoad`, `PressureLoad`, `FixedSupport`
+//      (structure defs — SIR-α/β). Using
 //      `List<Real>` here is a placeholder pending a `trait def Load` /
 //      `trait def Support` marker that all kind-constructors satisfy;
 //      a `TODO(load-trait)` note on each field tracks the future tightening.
@@ -78,12 +79,14 @@ structure def LoadCase {
     // task #2).
     param name : String
 
-    // Applied loads for this case.  Each element is a runtime kind-tagged
-    // Map produced by `point_load`, `pressure_load`, etc.
+    // Applied loads for this case.  Each element is a `Value::StructureInstance`
+    // produced by `PointLoad(...)`, `PressureLoad(...)`, etc. (structure defs
+    // declared below — SIR-α/β wave-1/2) or a kind-tagged Map from remaining
+    // name-dispatched builtins (`traction_load`, `body_force`, `gravity`).
     //
-    // TODO(load-trait): replace `List<Real>` with `List<Load>` once
-    // `trait def Load` is declared and the kind-constructor builtins
-    // (`point_load`, `pressure_load`) are annotated as satisfying it.
+    // TODO(load-trait): replace `List<Real>` with `List<Load>` once all
+    // load constructors are migrated to structure defs conforming to
+    // `trait Load { }` and the solver wiring (PRD task 16) is ready.
     param loads : List<Real>
 
     // Boundary-condition supports for this case.  Each element is a runtime
@@ -250,7 +253,7 @@ structure def MultiCaseResult {
     param cases : Map<String, ElasticResult>
 }
 
-// ── SIR-α wave-1 trait + structure-def surface ───────────────────────────────
+// ── SIR-α / SIR-β-load wave-1/2 trait + structure-def surface ───────────────
 //
 // task 3540 (SIR-α): the wave-1 retirement migrates `point_load` (loads.rs)
 // and `FixedSupport` (supports.rs) off the name-dispatched builtin path and
@@ -259,31 +262,35 @@ structure def MultiCaseResult {
 // (precedence over stdlib FunctionCall — see design-decision-2 in
 // `.task/plan.json`) and eval to `Value::StructureInstance`.
 //
-// PRD: docs/prds/v0_3/structure-instance-runtime.md (§6 — wave-1 stdlib swap;
-// Q-SIR-4 — preserve-don't-redesign field shapes against the existing
-// `loads.rs` / `supports.rs` Map-shape consumers).
+// task 3544 (SIR-β-load): the wave-2 retirement migrates `pressure_load`
+// (loads.rs) to `structure def PressureLoad : Load { ... }` below.  The
+// `trait Load` body is relaxed to an empty marker in this wave (DD1 in
+// task 3544's plan): PressureLoad's natural fields (magnitude/face/direction)
+// don't match PointLoad's force/point shape, and carrying dead fields on every
+// pressure load would violate Q-SIR-4 (preserve-don't-redesign). The
+// empty-marker form parallels `trait Support { }` already in this file, and
+// is a strict relaxation for PointLoad (its structure def already declares
+// `point` and `force` explicitly so removing them from the trait body doesn't
+// break conformance).  Future wave-2 loads (TractionLoad, BodyForce, Gravity)
+// also have non-force/point natural fields, so the empty marker future-proofs
+// all of them.
 //
-// Trait surface — `Load` and `Support` are the marker traits the structure-defs
-// satisfy. Field shapes mirror the existing `make_kind_map` output keys
-// (`force`/`point` for loads, `target` for supports) so downstream consumers
-// reading those keys continue to work after the swap. `Real` placeholders
-// follow the precedent set by `LoadCase.loads : List<Real>` (header note 1
-// above) and `solver_elastic.ri::ElasticResult.displacement : Real` —
-// dimension-typed slots (`Vector3<Force>`, `Selector`, etc.) tighten in
-// follow-up waves once the dimensional type aliases land.
+// PRD: docs/prds/v0_3/structure-instance-runtime.md (§6 — wave-1 stdlib swap;
+// §8 Phase 2 — wave-2 PressureLoad rewrite; Q-SIR-4 — preserve-don't-redesign
+// field shapes against the existing `loads.rs` / `supports.rs` Map-shape
+// consumers).
+//
+// Trait surface — `Load` and `Support` are empty marker traits; each conforming
+// structure def declares its own natural fields. `Real`/`String` placeholders
+// in the structure defs follow the precedent set by `LoadCase.loads : List<Real>`
+// (header note 1 above) — dimension-typed slots tighten in follow-up waves once
+// the dimensional type aliases land.
 
-trait Load {
-    // Applied force. `Real` is a placeholder for `Vector3<Force>` until the
-    // dimensional vector aliases land; mirrors the `force` key emitted by the
-    // pre-retirement `point_load` builtin (`loads.rs::eval_loads`).
-    param force : Real
-
-    // Selector identifying the geometry the load applies to. `String` is a
-    // placeholder for `Selector` until the topology-selector type lands;
-    // mirrors the `point` key emitted by the pre-retirement `point_load`
-    // builtin.
-    param point : String
-}
+// Empty-marker Load trait (relaxed from the wave-1 point-load-centric body in
+// task 3544 DD1). Each conforming structure def declares its own natural field
+// shapes; the trait provides only nominal-conformance identity, not a shared
+// field contract. Parallels `trait Support { }` below.
+trait Load { }
 
 trait Support { }
 
@@ -301,6 +308,35 @@ structure def PointLoad : Load {
 // pre-retirement `eval_supports("FixedSupport", ...)` Map.
 structure def FixedSupport : Support {
     param target : String = ""
+}
+
+// PressureLoad — wave-2 replacement for the `pressure_load` builtin
+// (crates/reify-stdlib/src/loads.rs::eval_loads arm retired in task 3544
+// SIR-β-load step-4). Field shapes mirror the three keys emitted by the
+// pre-retirement `make_kind_map("pressure_load", ...)` call
+// (loads.rs:102-109; Q-SIR-4 preserve-don't-redesign):
+//
+//   `magnitude`  — applied pressure. `Real` is a placeholder for
+//                  `Scalar<PRESSURE>` until the dimensional type aliases land;
+//                  mirrors the `magnitude` key in the retired builtin.
+//   `face`       — geometry selector. `String` is a placeholder for `Selector`
+//                  until the topology-selector type lands; mirrors the `face`
+//                  key in the retired builtin.
+//   `direction`  — outward-normal sentinel or explicit direction. `String` is
+//                  a placeholder; mirrors the `direction` key in the retired
+//                  builtin. The `"normal"` sentinel means "outward face normal";
+//                  explicit dimensionless Vector3 directions are the alternative
+//                  (tightened when the dimensional vector aliases land).
+//
+// All three fields default so a bare `PressureLoad()` constructor succeeds
+// (covers SIR-β-load boundary tests in `crates/reify-eval/tests/pressure_load.rs`
+// and the golden in `crates/reify-eval/tests/golden/structure_instance.txt`).
+//
+// PRD: docs/prds/v0_3/structure-instance-runtime.md §8 Phase 2 task SIR-β-load.
+structure def PressureLoad : Load {
+    param magnitude : Real = 0.0
+    param face      : String = ""
+    param direction : String = "normal"
 }
 
 // ── v0.4 shell BC framework (runtime-only) ───────────────────────────────────
