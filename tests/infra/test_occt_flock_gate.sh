@@ -460,4 +460,79 @@ assert "Test 22: stderr mentions acquire and lock-wait duration (1s)" \
 
 rm -f "$_LOCK22" "${_LOCK22}.slot-1" "${_LOCK22}.slot-2" "$_ERR22"
 
+# -- Test 23: FD-non-leak invariant with N>1 -----------------------------------
+# Multi-slot generalization of Test 18 (which tests N=1 / slot-1 only after
+# step-6's migration).  Run two concurrent wrapper invocations under
+# REIFY_OCCT_CONCURRENCY=2 so they each acquire a different slot file
+# (slot-1 and slot-2).  Each wrapper spawns a detached daemon.
+# After both wrappers exit, BOTH slot-1 AND slot-2 must be flock-acquirable,
+# confirming that neither surviving daemon inherited the slot FD from its
+# respective wrapper invocation.  The 9<&- redirection closes FD 9 before
+# the child exec, so no descendant process can hold the slot open.
+echo ""
+echo "--- Test 23: N=2 wrappers close fd 9 on child; daemons do not leak either slot ---"
+
+_LOCK23="$(mktemp)"
+_DAEMON_PID_FILE23A="$(mktemp)"
+_DAEMON_PID_FILE23B="$(mktemp)"
+_EXIT23A=0
+_EXIT23B=0
+
+# Spawn both wrappers concurrently so they acquire different slots
+# (slot-1 and slot-2 respectively).
+REIFY_OCCT_LOCK="$_LOCK23" REIFY_OCCT_CONCURRENCY=2 "$WRAPPER" bash -c '
+    setsid bash -c "sleep 30" </dev/null >/dev/null 2>&1 &
+    echo $! > "'"$_DAEMON_PID_FILE23A"'"
+    disown
+    exit 0
+' &
+_W23A=$!
+REIFY_OCCT_LOCK="$_LOCK23" REIFY_OCCT_CONCURRENCY=2 "$WRAPPER" bash -c '
+    setsid bash -c "sleep 30" </dev/null >/dev/null 2>&1 &
+    echo $! > "'"$_DAEMON_PID_FILE23B"'"
+    disown
+    exit 0
+' &
+_W23B=$!
+wait "$_W23A" || _EXIT23A=$?
+wait "$_W23B" || _EXIT23B=$?
+
+_DAEMON23A="$(cat "$_DAEMON_PID_FILE23A" 2>/dev/null || echo "")"
+_DAEMON23B="$(cat "$_DAEMON_PID_FILE23B" 2>/dev/null || echo "")"
+
+# Both daemons must still be alive (otherwise the test is vacuous — no
+# inherited FD to worry about).
+assert "Test 23: daemon A spawned inside wrapper A is still alive (pid=$_DAEMON23A)" \
+    bash -c "[ -n '$_DAEMON23A' ] && kill -0 '$_DAEMON23A' 2>/dev/null"
+
+assert "Test 23: daemon B spawned inside wrapper B is still alive (pid=$_DAEMON23B)" \
+    bash -c "[ -n '$_DAEMON23B' ] && kill -0 '$_DAEMON23B' 2>/dev/null"
+
+# Both slot files must be flock-acquirable: surviving daemons must not have
+# inherited FD 9 from either wrapper invocation.
+_LOCK_FREE23A=1
+( flock -n -x 9 || exit 1 ) 9>>"${_LOCK23}.slot-1" || _LOCK_FREE23A=0
+
+_LOCK_FREE23B=1
+( flock -n -x 9 || exit 1 ) 9>>"${_LOCK23}.slot-2" || _LOCK_FREE23B=0
+
+assert "Test 23: slot-1 lock released after wrapper A exit (fd 9 not inherited by daemon A)" \
+    test "$_LOCK_FREE23A" -eq 1
+
+assert "Test 23: slot-2 lock released after wrapper B exit (fd 9 not inherited by daemon B)" \
+    test "$_LOCK_FREE23B" -eq 1
+
+# Both wrappers must have exited 0.
+assert "Test 23: wrapper A exited 0 (got $_EXIT23A)" \
+    test "$_EXIT23A" -eq 0
+
+assert "Test 23: wrapper B exited 0 (got $_EXIT23B)" \
+    test "$_EXIT23B" -eq 0
+
+# Cleanup surviving daemons.
+[ -n "$_DAEMON23A" ] && kill "$_DAEMON23A" 2>/dev/null || true
+[ -n "$_DAEMON23B" ] && kill "$_DAEMON23B" 2>/dev/null || true
+rm -f "$_LOCK23" "${_LOCK23}.slot-1" "${_LOCK23}.slot-2" \
+    "$_DAEMON_PID_FILE23A" "$_DAEMON_PID_FILE23B"
+
 test_summary
