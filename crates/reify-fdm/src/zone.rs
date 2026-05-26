@@ -78,6 +78,43 @@ pub struct ZoneProbe {
 /// §C4: Wall first, then Skin, else Infill. The ordering matters at
 /// corners where both bands overlap — perimeter shells dominate, which
 /// matches conventional slicer behaviour.
+/// Default cosine threshold for the top/bottom-vs-side face test:
+/// cos(45°) = √2/2.
+///
+/// Per `docs/prds/v0_5/fdm-as-printed-fea.md` open-Q2, the R-fast tier
+/// uses a normal-vs-build-direction threshold to decide whether a face
+/// belongs to the top/bottom (solid-skin) population or the side
+/// (perimeter-wall) population. 45° is the natural midpoint — a face
+/// counts as top/bottom when its outward normal is within 45° of the
+/// build axis. Downstream callers can pass a different threshold per
+/// call for geometries where the default is unsuitable.
+pub const DEFAULT_TOP_BOTTOM_NORMAL_THRESHOLD: f64 = std::f64::consts::FRAC_1_SQRT_2;
+
+/// Returns true when `normal` is aligned with `build_direction` within
+/// the given cosine threshold (`|normal · build_direction| ≥
+/// cos_threshold`).
+///
+/// Both vectors are assumed to be unit-length; it is the caller's
+/// responsibility to normalise. The absolute value lets both the top
+/// face (normal parallel to `+build_direction`) and the bottom face
+/// (normal anti-parallel) count as "top/bottom".
+///
+/// Use [`DEFAULT_TOP_BOTTOM_NORMAL_THRESHOLD`] as a sensible default.
+pub fn is_top_or_bottom_normal(
+    normal: [f64; 3],
+    build_direction: [f64; 3],
+    cos_threshold: f64,
+) -> bool {
+    debug_assert!(
+        cos_threshold > 0.0 && cos_threshold <= 1.0,
+        "cos_threshold must be in (0, 1]; got {cos_threshold}"
+    );
+    let dot = normal[0] * build_direction[0]
+        + normal[1] * build_direction[1]
+        + normal[2] * build_direction[2];
+    dot.abs() >= cos_threshold
+}
+
 pub fn classify_zone(probe: &ZoneProbe, params: &ZoneProcessParams) -> Zone {
     let wall_thickness = params.walls as f64 * params.line_width;
     if let Some(d) = probe.min_side_distance {
