@@ -685,7 +685,14 @@ impl Engine {
         // mutable borrows handed to `execute_realization_ops`. Missing keys
         // are treated as `None`.
         let demanded_tols = self.compute_demanded_tols(module);
-        let geometry_output = if let Some(ref mut kernel) = self.geometry_kernel {
+        // Task ε (3436): resolve the engine's default kernel through the new
+        // multi-handle map. Single-handle surfaces (export, post-process,
+        // build pre-step-8) operate on this kernel; per-op dispatch routing
+        // lands in step-8 inside `execute_realization_ops`.
+        let default_kernel_name = self.default_kernel_name.clone();
+        let geometry_output = if let Some(name) = default_kernel_name.as_deref()
+            && let Some(kernel) = self.geometry_kernels.get_mut(name)
+        {
             let mut step_handles: Vec<GeometryHandleId> = Vec::new();
             let had_realization_ops = module
                 .templates
@@ -933,7 +940,12 @@ impl Engine {
         // would tag Failed events one round ahead of the values that
         // caused the kernel failure.
         let version_id = self.current_eval_version();
-        let geometry_output = if let Some(ref mut kernel) = self.geometry_kernel {
+        // Task ε (3436): resolve default kernel through the multi-handle map
+        // (see `build_snapshot` mirror for the same pattern).
+        let default_kernel_name = self.default_kernel_name.clone();
+        let geometry_output = if let Some(name) = default_kernel_name.as_deref()
+            && let Some(kernel) = self.geometry_kernels.get_mut(name)
+        {
             // Execute geometry operations from realizations
             let mut step_handles: Vec<GeometryHandleId> = Vec::new();
             let had_realization_ops = module
@@ -1177,7 +1189,8 @@ impl Engine {
         self.topology_attribute_table = TopologyAttributeTable::default();
         self.swept_kind_table = SweptKindTable::default();
         let meshes = Self::tessellate_from_values(
-            &mut self.geometry_kernel,
+            &mut self.geometry_kernels,
+            self.default_kernel_name.as_deref(),
             module,
             &mut values,
             &self.functions,
@@ -1507,7 +1520,8 @@ impl Engine {
     /// runtime rather than silently returning a fallback value.
     #[allow(clippy::too_many_arguments)]
     fn tessellate_from_values(
-        geometry_kernel: &mut Option<Box<dyn GeometryKernel>>,
+        geometry_kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
+        default_kernel_name: Option<&str>,
         module: &CompiledModule,
         values: &mut ValueMap,
         functions: &[CompiledFunction],
@@ -1522,7 +1536,10 @@ impl Engine {
     ) -> Vec<(String, Mesh)> {
         let mut meshes = Vec::new();
 
-        let kernel = match geometry_kernel.as_mut() {
+        // Task ε (3436): the engine's default kernel is fetched by name from
+        // the multi-handle map; `None` matches the v0.2 "no kernel
+        // configured" semantics.
+        let kernel = match default_kernel_name.and_then(|n| geometry_kernels.get_mut(n)) {
             Some(k) => k,
             None => return meshes,
         };
@@ -2497,7 +2514,8 @@ impl Engine {
         self.topology_attribute_table = TopologyAttributeTable::default();
         self.swept_kind_table = SweptKindTable::default();
         let meshes = Self::tessellate_from_values(
-            &mut self.geometry_kernel,
+            &mut self.geometry_kernels,
+            self.default_kernel_name.as_deref(),
             module,
             &mut values,
             &self.functions,
@@ -4524,7 +4542,14 @@ mod tests {
         use reify_test_support::mocks::MockGeometryKernel;
 
         let module = module_with_one_box_realization();
-        let mut kernel: Option<Box<dyn GeometryKernel>> = Some(Box::new(MockGeometryKernel::new()));
+        // Task ε (3436): wrap the mock kernel into the new multi-handle map
+        // under the synthetic default-kernel name. `default_kernel_name` is
+        // threaded through as the resolution key the helper indexes by.
+        let mut geometry_kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        geometry_kernels.insert(
+            Engine::DEFAULT_KERNEL_NAME.to_string(),
+            Box::new(MockGeometryKernel::new()),
+        );
         let mut values = ValueMap::new();
         let functions: Vec<CompiledFunction> = vec![];
         let mut diagnostics: Vec<Diagnostic> = vec![];
@@ -4540,7 +4565,8 @@ mod tests {
         // `tessellation_budgets` is correctly shaped so we can confirm the
         // panic originates at the demanded_tol lookup, not the budget lookup.
         Engine::tessellate_from_values(
-            &mut kernel,
+            &mut geometry_kernels,
+            Some(Engine::DEFAULT_KERNEL_NAME),
             &module,
             &mut values,
             &functions,
@@ -4571,7 +4597,13 @@ mod tests {
         use reify_test_support::mocks::MockGeometryKernel;
 
         let module = module_with_one_box_realization();
-        let mut kernel: Option<Box<dyn GeometryKernel>> = Some(Box::new(MockGeometryKernel::new()));
+        // Task ε (3436): wrap the mock kernel into the multi-handle map under
+        // the synthetic default-kernel name (sibling test mirror).
+        let mut geometry_kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        geometry_kernels.insert(
+            Engine::DEFAULT_KERNEL_NAME.to_string(),
+            Box::new(MockGeometryKernel::new()),
+        );
         let mut values = ValueMap::new();
         let functions: Vec<CompiledFunction> = vec![];
         let mut diagnostics: Vec<Diagnostic> = vec![];
@@ -4587,7 +4619,8 @@ mod tests {
         // the `if step_handles.len() > handle_start` guard at line 1276 is true
         // and execution reaches the budget lookup.
         Engine::tessellate_from_values(
-            &mut kernel,
+            &mut geometry_kernels,
+            Some(Engine::DEFAULT_KERNEL_NAME),
             &module,
             &mut values,
             &functions,

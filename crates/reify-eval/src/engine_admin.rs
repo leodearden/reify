@@ -10,7 +10,7 @@ use reify_types::{
     CompiledFunction, ConstraintChecker, ConstraintSolver, Diagnostic, FeatureTagTable,
     GeometryKernel, OptimizedImpl, TopologyAttributeTable,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 /// Why an attempted param_override was rejected for a target value cell.
@@ -154,6 +154,26 @@ impl Engine {
     /// See task 205 (review) / task 424.
     pub const MAX_UNFOLD_DEPTH_LIMIT: usize = 512;
 
+    /// Synthetic key used to insert a user-supplied
+    /// `Option<Box<dyn GeometryKernel>>` (passed through `Engine::new` /
+    /// `Engine::with_prelude`) into the multi-handle `geometry_kernels` map.
+    ///
+    /// Task ε (3436) reshaped the v0.2 single-kernel field
+    /// `geometry_kernel: Option<Box<dyn GeometryKernel>>` to a
+    /// `BTreeMap<String, Box<dyn GeometryKernel>>` keyed on kernel name.
+    /// `GeometryKernel` carries no `name()` method (capabilities live in the
+    /// external inventory registry, not on the trait); a fixed synthetic
+    /// constant lets the new map hold a caller-supplied kernel without
+    /// requiring a trait extension. The const is prefixed `"__"` and named
+    /// distinctly so it cannot collide with any real inventory-registered
+    /// kernel name (`"occt"`, `"manifold"`, …).
+    ///
+    /// `Engine::default_kernel_name` is set to `Some(DEFAULT_KERNEL_NAME)`
+    /// when a non-`None` kernel is supplied through `with_prelude`, so the
+    /// engine's single-handle surfaces (`export`, `tessellate`,
+    /// post-process) resolve to the same kernel the caller passed.
+    pub const DEFAULT_KERNEL_NAME: &'static str = "__reify_eval_default_kernel";
+
     /// Construct an Engine with a caller-supplied prelude slice.
     ///
     /// Use this when you need to:
@@ -168,6 +188,35 @@ impl Engine {
         geometry_kernel: Option<Box<dyn GeometryKernel>>,
         prelude: &'static [CompiledModule],
     ) -> Self {
+        // Task ε (3436): wrap a single user-supplied kernel into the new
+        // BTreeMap-keyed multi-handle field under the synthetic constant
+        // [`Self::DEFAULT_KERNEL_NAME`]. `None` → empty map, `default_kernel_name`
+        // = `None` (matches v0.2 semantics where no kernel was configured).
+        let mut geometry_kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        let default_kernel_name: Option<String> = geometry_kernel.map(|k| {
+            let name = Engine::DEFAULT_KERNEL_NAME.to_string();
+            geometry_kernels.insert(name.clone(), k);
+            name
+        });
+        Self::with_prelude_and_kernels(
+            constraint_checker,
+            geometry_kernels,
+            default_kernel_name,
+            prelude,
+        )
+    }
+
+    /// Internal constructor accepting the new multi-handle kernel map shape
+    /// directly. Used by both [`Self::with_prelude`] (wraps a single
+    /// `Option<Box<…>>` into the map) and [`Self::with_registered_kernels`]
+    /// (loads one entry per inventory registration). Centralises the field
+    /// initialisation so future engine fields land in one place.
+    fn with_prelude_and_kernels(
+        constraint_checker: Box<dyn ConstraintChecker>,
+        geometry_kernels: BTreeMap<String, Box<dyn GeometryKernel>>,
+        default_kernel_name: Option<String>,
+        prelude: &'static [CompiledModule],
+    ) -> Self {
         let prelude_functions: Vec<CompiledFunction> = prelude
             .iter()
             .flat_map(|pm| pm.functions.iter().cloned())
@@ -179,7 +228,8 @@ impl Engine {
         populate_structure_registry(&mut structure_registry, prelude);
         Self {
             constraint_checker,
-            geometry_kernel,
+            geometry_kernels,
+            default_kernel_name,
             solver: None,
             cache: CacheStore::new(),
             prelude,
@@ -447,26 +497,141 @@ impl Engine {
     /// contract. The event fires only when a [`tracing::Subscriber`] is installed,
     /// so bare tests and binaries that install no subscriber are unaffected.
     pub fn with_registered_kernel(constraint_checker: Box<dyn ConstraintChecker>) -> Self {
-        // BRep-preferring lex-min picker (task 3224): uses pick_lexmin_brep_kernel
-        // rather than pick_lexmin_kernel so a Mesh-only kernel registered under a
-        // lex-smaller name (e.g. "manifold" < "occt") cannot silently win the pick
-        // when a BRep-capable kernel is also registered. The fallback to pure lex-min
-        // (when no entry claims a BRep pair) preserves Mesh-only-binary semantics.
-        // The helper reads the OnceLock-memoized registry(), so the inventory walk
-        // happens at most once per process even if other call paths also hit it.
-        let picked = crate::kernel_registry::pick_lexmin_brep_kernel();
-        if let Some(reg) = picked {
-            let total = crate::kernel_registry::registry().len();
-            // Same `&'static` map as pick_lexmin_brep_kernel saw — registry() is
-            // OnceLock-memoized, so the count cannot disagree with the pick.
-            crate::kernel_registry::emit_kernel_selection(reg.name, total);
+        // Task ε (3436): now a thin alias delegating to the multi-handle
+        // `with_registered_kernels` constructor. In an OCCT-only build the
+        // loaded set is just `"occt"`, so the BRep-preferring lex-min pick
+        // (used to populate `default_kernel_name`) selects the same entry the
+        // historical single-pick constructor returned — runtime behaviour for
+        // existing reify-cli / gui call sites is preserved. PRD §9 open
+        // question Q9.1 (deprecation cycle) defers the `#[deprecated]`
+        // attribute and call-site migration to v0.4; v0.3-ε keeps the alias
+        // plain so adding it does not pull cross-crate call sites out of
+        // reify-eval's module scope on a `deny(warnings)` build.
+        Self::with_registered_kernels(constraint_checker)
+    }
+
+    /// Construct an Engine using the inventory-driven multi-kernel registry,
+    /// loading **one adapter per registered descriptor** rather than a single
+    /// pick (task ε / 3436; PRD `docs/prds/v0_3/multi-kernel-phase-3.md` §8).
+    ///
+    /// Walks the static linker-collected set of [`reify_types::KernelRegistration`]
+    /// records, instantiates each adapter via its `factory` function, and
+    /// inserts the result into the engine's
+    /// [`Engine::geometry_kernels`][`Engine`]-internal `BTreeMap<String,
+    /// Box<dyn GeometryKernel>>` keyed on the adapter's `name`. The
+    /// `default_kernel_name` is set via the BRep-preferring lex-min picker
+    /// [`crate::kernel_registry::pick_lexmin_brep_kernel`] so single-handle
+    /// surfaces (`export`, `tessellate`, conformance/kinematic post-process)
+    /// resolve to the same kernel the historical single-pick constructor
+    /// returned — preserving runtime behaviour for OCCT-only builds where the
+    /// loaded set is just `"occt"`.
+    ///
+    /// # Empty-registry semantics
+    ///
+    /// When no adapter has submitted a registration (e.g. stub-mode build with
+    /// `cfg(has_occt)` off, or a binary that links no `reify-kernel-*` crate
+    /// at all), `geometry_kernels` is empty and `default_kernel_name` is
+    /// `None`, matching `Engine::new(checker, None)`. The existing build-path
+    /// error surface ("no geometry kernel registered") fires cleanly.
+    ///
+    /// # Per-op routing
+    ///
+    /// Per-op dispatch routing in `execute_realization_ops` (step-8) consults
+    /// [`crate::dispatcher::dispatch`] per op against the descriptor map and
+    /// indexes into `geometry_kernels` by the dispatcher-named kernel. In the
+    /// v0.2 baseline (`demanded=BRep`, `available={BRep}`) every op resolves
+    /// to a 0-conversion plan naming the BRep kernel — identical runtime
+    /// behaviour to the historical single-pick constructor.
+    ///
+    /// # Operator visibility
+    ///
+    /// One structured tracing event is emitted (via
+    /// [`crate::kernel_registry::emit_kernel_selection`]): `INFO` when more
+    /// than one adapter is registered (lex-min tie-break notification),
+    /// `DEBUG` when only one is. The event fires only when a
+    /// [`tracing::Subscriber`] is installed.
+    pub fn with_registered_kernels(constraint_checker: Box<dyn ConstraintChecker>) -> Self {
+        // Walk the OnceLock-memoized registry and instantiate every adapter.
+        // BTreeMap iteration order is lexicographic on `name`, matching the
+        // dispatcher's tie-break contract (PRD `docs/prds/v0_3/multi-kernel-phase-3.md`).
+        let registry = crate::kernel_registry::registry();
+        let mut geometry_kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        for (name, reg) in registry.iter() {
+            geometry_kernels.insert(name.clone(), (reg.factory)());
         }
-        let kernel: Option<Box<dyn GeometryKernel>> = picked.map(|reg| (reg.factory)());
-        Self::with_prelude(
+        // BRep-preferring lex-min picker (task 3224 carry-over): a Mesh-only
+        // kernel registered under a lex-smaller name (e.g. `"manifold" <
+        // "occt"`) must not silently become the default kernel for single-
+        // handle surfaces (export / tessellate) when a BRep-capable kernel is
+        // also loaded.  Falls back to pure lex-min when no entry claims any
+        // BRep pair (preserves Mesh-only-binary semantics).
+        let default_kernel_name: Option<String> = crate::kernel_registry::pick_lexmin_brep_kernel()
+            .map(|reg| reg.name.to_string());
+        if let Some(name) = default_kernel_name.as_deref() {
+            crate::kernel_registry::emit_kernel_selection(name, geometry_kernels.len());
+        }
+        Self::with_prelude_and_kernels(
             constraint_checker,
-            kernel,
+            geometry_kernels,
+            default_kernel_name,
             reify_compiler::stdlib_loader::load_stdlib(),
         )
+    }
+
+    /// Iterate over the names of every kernel currently held by this engine.
+    ///
+    /// Lexicographic order (the underlying field is a `BTreeMap` keyed on
+    /// kernel name). Returns the synthetic [`Self::DEFAULT_KERNEL_NAME`] for
+    /// the single-kernel `Engine::new` / `Engine::with_prelude` wrapping
+    /// case; returns adapter names (`"occt"`, future `"manifold"`, …) for
+    /// the inventory-driven `Engine::with_registered_kernels` case. Empty
+    /// iterator when `Engine::new(checker, None)` was used (no kernel
+    /// configured).
+    pub fn registered_kernel_names(&self) -> impl Iterator<Item = &str> {
+        self.geometry_kernels.keys().map(String::as_str)
+    }
+
+    /// Number of geometry kernels currently held by this engine.
+    ///
+    /// `0` matches the historical `Engine::new(checker, None)` semantics
+    /// (no kernel configured). `1` is the wrapping case (single kernel
+    /// inserted under [`Self::DEFAULT_KERNEL_NAME`]). `>1` arises with the
+    /// inventory-driven [`Self::with_registered_kernels`] constructor once
+    /// additional adapters are linked beyond OCCT.
+    pub fn kernel_count(&self) -> usize {
+        self.geometry_kernels.len()
+    }
+
+    /// Return the name of the engine's default kernel — the entry used for
+    /// single-handle surfaces (export, tessellate, post-process) and as the
+    /// fallback when a dispatcher plan names a kernel absent from the map.
+    /// `None` when no kernel is configured.
+    pub fn default_kernel_name(&self) -> Option<&str> {
+        self.default_kernel_name.as_deref()
+    }
+
+    /// Internal helper: mutable borrow of the engine's default kernel, if any.
+    ///
+    /// Used by the build / build_snapshot / tessellate call sites that pass a
+    /// `&mut dyn GeometryKernel` to `execute_realization_ops`. Returns `None`
+    /// when no kernel is configured OR when `default_kernel_name` names a key
+    /// absent from `geometry_kernels` (latter is an internal-consistency
+    /// violation that the `with_*_kernels` constructors never produce).
+    // Wired into the per-op dispatch routing path in step-8 (#3436).
+    #[allow(dead_code)]
+    pub(crate) fn default_kernel_mut(&mut self) -> Option<&mut Box<dyn GeometryKernel>> {
+        let name = self.default_kernel_name.as_deref()?;
+        self.geometry_kernels.get_mut(name)
+    }
+
+    /// Internal helper: immutable borrow of the engine's default kernel.
+    ///
+    /// Used by post-process helpers that take `&dyn GeometryKernel`.
+    // Wired into the dispatcher-routing call sites in step-8 / step-10 (#3436).
+    #[allow(dead_code)]
+    pub(crate) fn default_kernel_ref(&self) -> Option<&Box<dyn GeometryKernel>> {
+        let name = self.default_kernel_name.as_deref()?;
+        self.geometry_kernels.get(name)
     }
 
     /// Register an optimized implementation for constraints annotated with
