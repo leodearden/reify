@@ -303,35 +303,41 @@ fn fixed_free_euler_column_within_five_percent() {
 }
 
 // ---------------------------------------------------------------------------
-// Step-9 (RED): Fixed-fixed (fixed-guided) Euler column within 5%
+// Step-9 (RED): Fixed-pin Euler column within 5%
 // ---------------------------------------------------------------------------
 
-/// Fixed-fixed (fixed-guided) Euler column — PRD §9.1 / §13 task δ.
+/// Fixed-pin Euler column — PRD §9.1 / §13 task δ.
 ///
-/// **Why "fixed-guided" not strictly "fixed-fixed"**: classical Euler
-/// "fixed-fixed" clamps both ends against translation AND rotation. In a P1-tet
-/// mesh, fully clamping both end faces (all 3 DOFs at every node) leaves the
-/// column with no axial DOF to slide under the applied compressive load — the
-/// pre-stress linear-static system would have a degenerate (zero) response.
+/// **Why "fixed-pin" not "fixed-fixed" or "fixed-guided"**: the PRD §13 task δ
+/// signal labels this variant "fixed-fixed" loosely, and the original plan called
+/// it "fixed-guided" (intending `k=0.5`). The BCs implemented below — bottom face
+/// fully clamped, top face laterally clamped with `u_z` free per node — actually
+/// realize a **fixed-pin** column in P1-tet without rotational DOFs or MPCs.
 ///
-/// The standard FEA workaround is "fixed-guided": bottom fully clamped (u_x=u_y=u_z=0
-/// per node) and top laterally clamped (u_x=u_y=0 per node) but axially free
-/// (u_z unclamped). This gives the same Euler effective-length factor k=0.5 and
-/// the same critical load `P_cr = 4·π²·E·I / L²`. The PRD §13 task δ signal uses
-/// "fixed-fixed" loosely; the FEA semantics are fixed-guided. No separate axial
-/// anchor is needed: the bottom fully constrains axial translation already.
+/// Reasoning (esc-3453-5, 2026-05-26): a true "guided" end requires `θ = 0` at
+/// the cross-section, which means every top-face node must share the same `u_z`.
+/// In our BCs `u_z` is INDEPENDENTLY free per top-face node, so the top
+/// cross-section can rotate about the transverse axes — exactly the pinned-end
+/// kinematics (`u = 0`, `θ ≠ 0`). Implementing true fixed-fixed/fixed-guided in
+/// P1-tet would need a multi-point constraint enforcing `u_z_i = u_z_j` across
+/// the top face; MPCs are out of scope for v0.5 task δ.
 ///
-/// Analytical critical load: `P_cr = 4·π²·E·I / L² ≈ 168.6 kN` (k=0.5).
+/// The kernel itself is correct — it computes the right critical load for what
+/// the BCs encode. Only the analytical reference needs to match.
+///
+/// Analytical critical load: `P_cr = π²·E·I / (k·L)² ≈ 86.3 kN` (k≈0.6992, fixed-pin).
 /// Test passes when `|λ·F − P_cr| / P_cr < 5%`.
 #[test]
-fn fixed_fixed_euler_column_within_five_percent() {
+fn fixed_pin_euler_column_within_five_percent() {
     let grid = ColumnFixture::steel_aisi_1045_800mm();
     let nodes = build_node_xyz(&grid);
     let tets = build_tet_mesh(&grid);
 
     let material = IsotropicElastic { youngs_modulus: STEEL_E_PA, poisson_ratio: STEEL_NU };
 
-    // BCs: fixed-guided — bottom face fully clamped, top face laterally clamped.
+    // BCs: fixed-pin — bottom face fully clamped, top face laterally clamped
+    // (`u_z` independently free per top-face node ⇒ top cross-section can
+    // rotate ⇒ pinned end, not guided; see fn doc-comment for rationale).
     let mut bcs: Vec<DirichletBc> = Vec::new();
     // Bottom face: all 3 DOFs clamped.
     for j in 0..=grid.ny {
@@ -371,7 +377,7 @@ fn fixed_fixed_euler_column_within_five_percent() {
 
     let result = solve_buckling_kernel(&nodes, &tets, &material, &bcs, &f, opts);
 
-    assert!(result.converged, "eigensolve must converge for fixed-guided column");
+    assert!(result.converged, "eigensolve must converge for fixed-pin column");
     assert!(!result.modes.is_empty(), "must return at least 1 mode");
 
     let lambda_min = result.modes[0].eigenvalue;
@@ -380,16 +386,20 @@ fn fixed_fixed_euler_column_within_five_percent() {
         "λ_min = {lambda_min} must be positive for compressive load",
     );
 
-    // Analytical fixed-fixed Euler critical load (k=0.5): P_cr = 4·π²·E·I / L².
+    // Analytical fixed-pin Euler critical load: P_cr = π²·E·I / (k·L)²
+    // with k ≈ 0.6992 (root of `tan(π/k) = π/k`, the fixed-pin characteristic
+    // equation). See fn doc-comment: BCs implement fixed-pin, not fixed-fixed,
+    // because per-node `u_z`-free at the top face allows top-section rotation.
+    const FIXED_PIN_K: f64 = 0.6992;
     let i_min = grid.i_min();
-    let p_cr = PI.powi(2) * STEEL_E_PA * i_min / (0.5 * grid.lz).powi(2);
+    let p_cr = PI.powi(2) * STEEL_E_PA * i_min / (FIXED_PIN_K * grid.lz).powi(2);
 
     let lambda_x_load = lambda_min * APPLIED_LOAD_NEWTONS;
     let rel_err = (lambda_x_load - p_cr).abs() / p_cr;
-    eprintln!("fixed-fixed: λ·F = {lambda_x_load:.2} N, P_cr = {p_cr:.2} N, rel_err = {:.2}%", rel_err * 100.0);
+    eprintln!("fixed-pin: λ·F = {lambda_x_load:.2} N, P_cr = {p_cr:.2} N, rel_err = {:.2}%", rel_err * 100.0);
     assert!(
         rel_err < 0.05,
-        "fixed-fixed Euler: λ·F = {lambda_x_load:.2} N, P_cr = {p_cr:.2} N, \
+        "fixed-pin Euler: λ·F = {lambda_x_load:.2} N, P_cr = {p_cr:.2} N, \
          rel_err = {:.2}% > 5%",
         rel_err * 100.0,
     );
