@@ -21,10 +21,15 @@
 
 #include "tree_sitter/parser.h"
 
+/* IMPORTANT: enum order MUST match the grammar.js externals array order.
+ * grammar.js externals: [_unit_expr_start(0), _unit_mul_op(1), _unit_div_op(2),
+ *                         _auto_token(3), _auto_reservation_sentinel(4)] */
 enum TokenType {
-  UNIT_EXPR_START,
-  UNIT_MUL_OP,
-  UNIT_DIV_OP,
+  UNIT_EXPR_START,            /* index 0 — zero-width quantity-literal gate    */
+  UNIT_MUL_OP,                /* index 1 — '*' inside unit_expr                */
+  UNIT_DIV_OP,                /* index 2 — '/' inside unit_expr                */
+  AUTO_TOKEN,                 /* index 3 — the bare 'auto' keyword token        */
+  AUTO_RESERVATION_SENTINEL,  /* index 4 — never emitted; keeps scanner active */
 };
 
 void *tree_sitter_reify_external_scanner_create(void) {
@@ -142,33 +147,100 @@ bool tree_sitter_reify_external_scanner_scan(void *payload, TSLexer *lexer,
 
   /* ── UNIT_EXPR_START: zero-width boundary before a unit_expr ─────────────
    *
-   * [A] Bail out immediately if the parser is not requesting UNIT_EXPR_START.
+   * [A] Only attempt if the parser is requesting UNIT_EXPR_START.
+   *
+   * WHITESPACE GUARD: When UNIT_EXPR_START is valid but lookahead is whitespace,
+   * we do NOT return false from the entire scan function.  We simply skip the
+   * UNIT_EXPR_START emission and fall through to the AUTO_TOKEN block.  The
+   * AUTO_TOKEN block skips whitespace itself.  If we returned false for the
+   * entire function here, the AUTO_TOKEN block would never be reached at
+   * whitespace positions — which is exactly the positions where tree-sitter
+   * calls the scanner when `auto` follows whitespace in a binding site.
+   *
+   * PRD §3.1 contiguity invariant is preserved because UNIT_EXPR_START is only
+   * emitted (zero-width, no advance) when lookahead is a non-whitespace
+   * unit-start character.  When there IS whitespace before a unit name, the
+   * scanner does not emit UNIT_EXPR_START, the parser falls back to the regular
+   * DFA which processes the whitespace as an extras token, and the resulting
+   * parser state transition prevents UNIT_EXPR_START from being valid at the
+   * unit-name character — exactly as before.
    */
-  if (!valid_symbols[UNIT_EXPR_START]) {
-    return false;
+  if (valid_symbols[UNIT_EXPR_START]) {
+    bool is_ws = (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c < 33);
+    if (!is_ws && is_unit_start(c)) {
+      /* [C] ORDERING INVARIANT (PRD §10 / design decision): at post-number
+       * positions (e.g. `5auto`), UNIT_EXPR_START is valid AND 'a' is a
+       * unit_start char, so UNIT_EXPR_START fires here (zero-width, no advance)
+       * BEFORE the AUTO_TOKEN block.  The regular DFA then consumes 'auto' as a
+       * unit_name.  If AUTO_TOKEN ran first it would consume 'auto' and break
+       * quantity parsing. */
+      lexer->result_symbol = UNIT_EXPR_START;
+      lexer->mark_end(lexer); /* zero-width: do not advance past the lookahead */
+      return true;
+    }
+    /* Whitespace or non-unit-start: fall through to AUTO_TOKEN check. */
   }
 
-  /* [B] WHITESPACE GUARD — ordered before unit-start-char check (invariant B).
+  /* ── AUTO_TOKEN: narrow lexer-level reservation of `auto` ─────────────────
    *
-   * PRD §3.1: "A quantity literal is number immediately adjacent to its unit —
-   * no whitespace may appear between them."
+   * Emits AUTO_TOKEN (consuming 'auto', 4 chars) when:
+   *   1. lookahead (after skipping whitespace) is 'a'.
+   *   2. The next three chars are 'u','t','o'.
+   *   3. The char after 'auto' is NOT a word char [A-Za-z0-9_] (word boundary).
    *
-   * §7 negative fixture "5 kg":   c == ' ' → refuse → no quantity_literal
-   * §7 negative fixture "5 kg/m": c == ' ' → refuse → no quantity_literal
+   * WHITESPACE SKIPPING: tree-sitter calls the external scanner at the
+   * whitespace position immediately before 'auto' (because AUTO_TOKEN or
+   * AUTO_RESERVATION_SENTINEL is in valid_symbols).  Without whitespace skipping,
+   * the scanner sees ' ' not 'a' and returns false; tree-sitter then processes
+   * the whitespace via the regular DFA and transitions to a new parser state
+   * where AUTO_TOKEN is no longer in valid_symbols.  The 'auto' token is then
+   * lexed as an `identifier` — wrong.  Skipping whitespace here lets the scanner
+   * reach 'a' and emit AUTO_TOKEN correctly.  If the scanner subsequently returns
+   * false (e.g. not 'auto', or word-boundary fail), tree-sitter rewinds ALL
+   * advances (including the whitespace skips) — the multi-char advance + return
+   * false contract guarantees this.
    *
-   * `c < 33` catches NUL (EOF=0), ASCII control chars (1–31), and space (32).
-   * Explicit WS chars before it make the intent obvious; `c < 33` is the
-   * belt-and-suspenders net for any non-printable that slips through.
+   * The scanner emits AUTO_TOKEN regardless of valid_symbols[AUTO_TOKEN]:
+   *   - When valid (5 binding sites + auto_type_arg): parser uses auto_keyword. ✓
+   *   - When invalid (operand positions): parser produces ERROR — exactly
+   *     the §8.1 operand-rejection mechanism required by the PRD.
+   *
+   * The scanner is always reachable because AUTO_RESERVATION_SENTINEL is in
+   * grammar.js `extras` — this keeps AUTO_RESERVATION_SENTINEL in valid_symbols
+   * at every parser state, guaranteeing the scanner is invoked everywhere.
+   * AUTO_RESERVATION_SENTINEL is NEVER emitted by this function.
+   *
+   * Why not `word: $ => $.identifier`? Would over-reserve 'source', 'frame',
+   * 'direction', 'in', etc. — 36+ stdlib conflicts (materials_fea.ri,
+   * fdm.ri, io.ri, solver_elastic.ri, tolerancing.ri, units.ri).
    */
-  if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c < 33) {
-    return false;
-  }
+  {
+    /* Skip leading whitespace before the 'auto' check.  advance(skip=true)
+     * marks the char as skipped (not included in token); if we return false
+     * afterwards, tree-sitter rewinds to the original position. */
+    int32_t ch = lexer->lookahead;
+    while (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r') {
+      lexer->advance(lexer, true);
+      ch = lexer->lookahead;
+    }
 
-  /* [C] Accept only valid unit-expression start characters (PRD §3.2 unit_name
-   * production matching [A-Za-z_][A-Za-z0-9_]*, plus '(' for grouped units. */
-  if (is_unit_start(c)) {
-    lexer->result_symbol = UNIT_EXPR_START;
-    lexer->mark_end(lexer); /* zero-width: do not advance past the lookahead */
+    if (ch != 'a') return false;
+    lexer->advance(lexer, false); /* consume 'a' */
+    if (lexer->lookahead != 'u') return false;
+    lexer->advance(lexer, false);
+    if (lexer->lookahead != 't') return false;
+    lexer->advance(lexer, false);
+    if (lexer->lookahead != 'o') return false;
+    lexer->advance(lexer, false);
+    /* Word boundary check: bare `auto` must NOT be a prefix of a longer
+     * identifier.  `automatic` → lookahead='m' (word char) → refuse. */
+    int32_t c2 = lexer->lookahead;
+    if ((c2 >= 'a' && c2 <= 'z') || (c2 >= 'A' && c2 <= 'Z') ||
+        (c2 >= '0' && c2 <= '9') || c2 == '_') {
+      return false;
+    }
+    lexer->mark_end(lexer);
+    lexer->result_symbol = AUTO_TOKEN;
     return true;
   }
 

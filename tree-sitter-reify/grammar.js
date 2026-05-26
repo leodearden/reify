@@ -16,12 +16,26 @@ module.exports = grammar({
     $._unit_expr_start,
     $._unit_mul_op,
     $._unit_div_op,
+    // AUTO_TOKEN: emitted (consuming 'auto') by the external scanner.
+    // Leading underscore keeps the CST node hidden so (auto_keyword) stays
+    // the visible node — not (auto_keyword (auto_token)) — preserving corpus
+    // compatibility with auto_type_arg.txt and existing tests.
+    $._auto_token,
+    // AUTO_RESERVATION_SENTINEL: referenced from `extras` so the external
+    // scanner is invoked at EVERY lex position.  The scanner NEVER emits this
+    // token; it exists only to keep the scanner subscribed so that it can emit
+    // AUTO_TOKEN even at operand positions where AUTO_TOKEN is not in
+    // valid_symbols (producing ERROR via out-of-valid emission).
+    $._auto_reservation_sentinel,
   ],
 
   extras: $ => [
     /\s/,
     $.line_comment,
     $.block_comment,
+    // Sentinel that keeps the external scanner subscribed at every position
+    // so it can fire AUTO_TOKEN (and force ERROR) at operand positions.
+    $._auto_reservation_sentinel,
   ],
 
   conflicts: $ => [
@@ -436,9 +450,15 @@ module.exports = grammar({
     // field child indicates the free modifier is present.  The longer
     // `auto(free)` form is given higher precedence to resolve the shift-reduce
     // conflict that arises when `(` immediately follows `auto`.
+    //
+    // Uses $._auto_token (external scanner token) instead of the string
+    // literal 'auto' so that the lexer-level reservation via the external
+    // scanner is enforced.  _auto_token is leading-underscore hidden so the
+    // CST shape remains (auto_keyword) / (auto_keyword (modifier)) — no
+    // (auto_keyword (auto_token)) wrapper node.
     auto_keyword: $ => choice(
-      prec(1, seq('auto', '(', field('modifier', 'free'), ')')),
-      'auto',
+      prec(1, seq($._auto_token, '(', field('modifier', 'free'), ')')),
+      $._auto_token,
     ),
 
     // ── Let ─────────────────────────────────────────────────

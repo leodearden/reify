@@ -6,6 +6,19 @@ structure S { let x : Length = auto + 2mm }
 
 --------------------------------------------------------------------------------
 
+(source_file
+  (structure_definition
+    (identifier)
+    (let_declaration
+      (identifier)
+      (type_expr
+        (identifier))
+      (ERROR)
+      (quantity_literal
+        (number_literal)
+        (unit_expr
+          (unit_name))))))
+
 ================================================================================
 positional fn-call arg :error
 ================================================================================
@@ -13,6 +26,16 @@ positional fn-call arg :error
 structure S { let x : Length = clamp(auto) }
 
 --------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    (identifier)
+    (let_declaration
+      (identifier)
+      (type_expr
+        (identifier))
+      (identifier))
+    (ERROR)))
 
 ================================================================================
 constraint body :error
@@ -22,6 +45,15 @@ structure S { param x : Length  constraint auto }
 
 --------------------------------------------------------------------------------
 
+(source_file
+  (structure_definition
+    (identifier)
+    (param_declaration
+      (identifier)
+      (type_expr
+        (identifier)))
+    (ERROR)))
+
 ================================================================================
 minimize body :error
 ================================================================================
@@ -29,6 +61,15 @@ minimize body :error
 structure S { param x : Length  minimize auto }
 
 --------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    (identifier)
+    (param_declaration
+      (identifier)
+      (type_expr
+        (identifier)))
+    (ERROR)))
 
 ================================================================================
 list literal :error
@@ -38,6 +79,14 @@ structure S { let xs = [auto] }
 
 --------------------------------------------------------------------------------
 
+(source_file
+  (structure_definition
+    (identifier)
+    (let_declaration
+      (identifier)
+      (list_literal
+        (ERROR)))))
+
 ================================================================================
 field source expr :error
 ================================================================================
@@ -45,3 +94,11 @@ field source expr :error
 field def F : T -> U { source = analytical { auto } }
 
 --------------------------------------------------------------------------------
+
+(source_file
+  (ERROR
+    (identifier)
+    (type_expr
+      (identifier))
+    (type_expr
+      (identifier))))
