@@ -158,6 +158,30 @@ impl AxisAlignedBox {
         self.min_face_distance(p, build_direction, cos_threshold, false)
     }
 
+    /// Convenience constructor for a [`ZoneProbe`] at point `p` using
+    /// this box's analytic distance methods and the build axis carried
+    /// in `params`.
+    ///
+    /// Used by integration tests and by the future δ-task ComputeNode
+    /// wiring for box-shaped bodies. Real OCCT bodies will produce
+    /// `ZoneProbe`s through a kernel-backed probe owned by δ; this
+    /// helper keeps γ self-contained.
+    pub fn build_zone_probe(
+        &self,
+        p: [f64; 3],
+        params: &ZoneProcessParams,
+        cos_threshold: f64,
+    ) -> ZoneProbe {
+        ZoneProbe {
+            min_side_distance: self.min_side_distance(p, params.build_direction, cos_threshold),
+            min_top_bottom_distance: self.min_top_bottom_distance(
+                p,
+                params.build_direction,
+                cos_threshold,
+            ),
+        }
+    }
+
     fn min_face_distance(
         &self,
         p: [f64; 3],
