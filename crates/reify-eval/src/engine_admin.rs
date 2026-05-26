@@ -1042,9 +1042,9 @@ impl Engine {
     /// table consulted by the walk — callers that care about Intermediate
     /// fan-in should pass the current refinement generation; callers that
     /// only care about Final propagation may pass any value.
-    pub fn propagate_freshness_only(
+    pub fn propagate_freshness_only<'a>(
         &mut self,
-        changed: &std::collections::HashSet<reify_types::ValueCellId>,
+        changed: impl IntoIterator<Item = &'a reify_types::ValueCellId>,
         generation: u64,
     ) -> std::collections::HashSet<crate::cache::NodeId> {
         // `eval_state` and `cache` are disjoint Engine fields, so the
