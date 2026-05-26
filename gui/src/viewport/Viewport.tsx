@@ -87,7 +87,7 @@ export function Viewport(props: ViewportProps) {
 
     // Expose viewport internals for the debug bridge (REIFY_DEBUG=1)
     if (window.__REIFY_DEBUG__) {
-      window.__REIFY_DEBUG__.viewport = {
+      const debugEntry = {
         scene,
         camera,
         renderer,
@@ -97,6 +97,11 @@ export function Viewport(props: ViewportProps) {
         flyToEntity: (entityPath: string) => selection.flyToEntity(entityPath),
         controls: controls.controls,
       };
+      // Register in the map so sibling viewports don't clobber each other.
+      window.__REIFY_DEBUG__.viewports ??= {};
+      window.__REIFY_DEBUG__.viewports[props.viewportId] = debugEntry;
+      // Keep the legacy single slot so direct-stub-injection tests still work.
+      window.__REIFY_DEBUG__.viewport = debugEntry;
     }
 
     // Render-on-demand: keep rAF loop alive (for OrbitControls damping)
@@ -330,7 +335,13 @@ export function Viewport(props: ViewportProps) {
       meshManager.dispose();
       renderer.dispose();
       if (window.__REIFY_DEBUG__) {
-        delete window.__REIFY_DEBUG__.viewport;
+        // Per-key cleanup — only remove this viewport's entry from the map
+        // so sibling viewports that are still mounted survive.
+        delete window.__REIFY_DEBUG__.viewports?.[props.viewportId];
+        // Clear the legacy single slot only if it still points to us.
+        if (window.__REIFY_DEBUG__.viewport?.scene === scene) {
+          delete window.__REIFY_DEBUG__.viewport;
+        }
       }
     });
   });

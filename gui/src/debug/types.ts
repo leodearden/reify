@@ -63,7 +63,10 @@ export interface DebugViewport {
 /** The window.__REIFY_DEBUG__ global shape. */
 export interface ReifyDebugContext {
   stores: DebugStores;
+  /** Legacy single-slot — kept for backward compat with direct-stub-injection tests. */
   viewport?: DebugViewport;
+  /** Multi-viewport map keyed by viewportId. Each <Viewport> registers/unregisters here. */
+  viewports?: Record<string, DebugViewport>;
   editorView?: EditorView;
   /** Reactive accessor — true when test-mode is enabled (animations frozen). */
   testMode?: Accessor<boolean>;
