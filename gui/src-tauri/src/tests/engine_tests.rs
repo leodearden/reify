@@ -7318,18 +7318,14 @@ fn get_entity_at_source_location_thickness_cell_returns_bracket_thickness() {
     );
 }
 
-/// (e) Cursor on the `structure Bracket {` header line (line=1, col=1) →
-/// `None` or `Some("Bracket")`.
+/// (e) Cursor on the `pub structure Bracket {` header line (line=1, col=1) →
+/// `Some("Bracket")`.
 ///
-/// The template's approximate span is derived from value-cell and constraint spans,
-/// which start on line 2. The structure keyword at (1,1) = byte 0 falls before the
-/// span start under the current approximation, so the position is not inside any
-/// template and yields `None`.
-///
-/// The real invariant is that the position maps to at most one entity and never
-/// to an inner cell name. If a future patch derives the span from the parsed
-/// structure declaration (which starts at byte 0), (1,1) could legitimately
-/// return `Some("Bracket")` — either outcome is correct.
+/// The resolver now uses the parsed `StructureDef.span` for the outer
+/// containment check, which covers the full `pub structure NAME { ... }` byte
+/// range including the header line (task 3880). Clicking anywhere on the header
+/// line — including at byte 0 (col=1) — must resolve to the enclosing template
+/// name, never to a member or to None.
 #[test]
 fn get_entity_at_source_location_structure_header_returns_none_or_template_name() {
     let checker = SimpleConstraintChecker;
@@ -7339,10 +7335,10 @@ fn get_entity_at_source_location_structure_header_returns_none_or_template_name(
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
     let result = session.get_entity_at_source_location(1, 1);
-    assert!(
-        result.is_none() || result == Some("Bracket".to_string()),
-        "cursor on structure header (1,1) must resolve to either None or the enclosing \
-         template name, never a cell or other entity — got {:?}",
+    assert_eq!(
+        result,
+        Some("Bracket".to_string()),
+        "cursor on structure header (1,1) must resolve to the template name — got {:?}",
         result
     );
 }
@@ -7385,6 +7381,80 @@ fn get_entity_at_source_location_past_end_of_source_returns_none() {
         result.is_none(),
         "cursor past end of source (16, 1) should return None, got {:?}",
         result
+    );
+}
+
+/// (h) Multi-structure source: clicking each structure's header line resolves
+/// to that structure. Blank lines between structures resolve to None.
+///
+/// Source layout (1-based lines):
+/// ```text
+///  1: pub structure First {
+///  2:     param a: Scalar = 1mm
+///  3: }
+///  4: (blank)
+///  5: pub structure Middle {
+///  6:     param b: Scalar = 2mm
+///  7: }
+///  8: (blank)
+///  9: pub structure Last {
+/// 10:     param c: Scalar = 3mm
+/// 11: }
+/// ```
+///
+/// Before task-3880 the resolver used member-derived spans; the header lines
+/// (1, 5, 9) fell before each template's min_start → None. Now the parsed
+/// `StructureDef.span` covers the full declaration and header clicks resolve
+/// correctly.
+#[test]
+fn get_entity_at_source_location_multi_structure_header_lines_resolve_to_each_structure() {
+    const THREE_STRUCT_SOURCE: &str = "pub structure First {\n    param a: Scalar = 1mm\n}\n\npub structure Middle {\n    param b: Scalar = 2mm\n}\n\npub structure Last {\n    param c: Scalar = 3mm\n}\n";
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(THREE_STRUCT_SOURCE, "multi")
+        .expect("load should succeed");
+
+    // Header lines — each must resolve to its own template name.
+    let first_hdr = session.get_entity_at_source_location(1, 1);
+    assert_eq!(
+        first_hdr,
+        Some("First".to_string()),
+        "header of First (1,1) must resolve to Some(\"First\"), got {:?}",
+        first_hdr
+    );
+
+    let middle_hdr = session.get_entity_at_source_location(5, 1);
+    assert_eq!(
+        middle_hdr,
+        Some("Middle".to_string()),
+        "header of Middle (5,1) must resolve to Some(\"Middle\"), got {:?}",
+        middle_hdr
+    );
+
+    let last_hdr = session.get_entity_at_source_location(9, 1);
+    assert_eq!(
+        last_hdr,
+        Some("Last".to_string()),
+        "header of Last (9,1) must resolve to Some(\"Last\"), got {:?}",
+        last_hdr
+    );
+
+    // Blank lines between structures — must return None (outside any parsed span).
+    let gap1 = session.get_entity_at_source_location(4, 1);
+    assert!(
+        gap1.is_none(),
+        "blank line between First and Middle (4,1) must return None, got {:?}",
+        gap1
+    );
+
+    let gap2 = session.get_entity_at_source_location(8, 1);
+    assert!(
+        gap2.is_none(),
+        "blank line between Middle and Last (8,1) must return None, got {:?}",
+        gap2
     );
 }
 
