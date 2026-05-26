@@ -188,6 +188,12 @@ while true; do
     for _SLOT in $_ORDER; do
         _SLOT_FILE="${LOCK}.slot-${_SLOT}"
         # Open slot file on FD 9 (append — no truncation of shared lock file).
+        # INVARIANT: at most one FD 9 is open at any time.  Successful
+        # acquisition leaves FD 9 open (the held slot).  Failed acquisition
+        # closes FD 9 immediately (exec 9>&-) so the file description is fully
+        # released before the next attempt — no "stale" slot FD leaks across
+        # iterations.  The child invocation uses "9<&-" (see below) so no
+        # descendant inherits the acquired slot's FD either.
         exec 9>>"$_SLOT_FILE"
         if flock -xn 9; then
             _ACQUIRED_SLOT="$_SLOT"
