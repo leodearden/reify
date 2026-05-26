@@ -173,4 +173,70 @@ mod tests {
             }
         }
     }
+
+    // ── Step 3 RED tests ────────────────────────────────────────────────────
+
+    /// Entry-by-entry bitwise equality on both `d_local` and `frame`.
+    fn assert_anisotropic_material_bitwise_eq(
+        got: AnisotropicMaterial,
+        expected: AnisotropicMaterial,
+        ctx: &str,
+    ) {
+        for i in 0..6 {
+            for j in 0..6 {
+                assert_eq!(
+                    got.d_local[i][j].to_bits(),
+                    expected.d_local[i][j].to_bits(),
+                    "{ctx}: d_local[{i}][{j}] = {} must equal {} bitwise",
+                    got.d_local[i][j],
+                    expected.d_local[i][j],
+                );
+            }
+        }
+        for i in 0..3 {
+            for j in 0..3 {
+                assert_eq!(
+                    got.frame[i][j].to_bits(),
+                    expected.frame[i][j].to_bits(),
+                    "{ctx}: frame[{i}][{j}] = {} must equal {} bitwise",
+                    got.frame[i][j],
+                    expected.frame[i][j],
+                );
+            }
+        }
+    }
+
+    /// `ConstantField::material_at(p)` returns the same material at every
+    /// sampled point (entry-by-entry bitwise equality on both fields).
+    #[test]
+    fn constant_field_material_at_returns_same_material_at_any_point() {
+        let iso = IsotropicElastic {
+            youngs_modulus: 200e9,
+            poisson_ratio: 0.3,
+        };
+        let material = AnisotropicMaterial::from_law(&iso, IDENTITY_3X3);
+        let field = ConstantField { material };
+        for p in [[0.0, 0.0, 0.0], [1.0, 2.0, 3.0], [-5.5, 7.7, -9.9]] {
+            assert_anisotropic_material_bitwise_eq(
+                field.material_at(p),
+                material,
+                &format!("ConstantField::material_at({p:?})"),
+            );
+        }
+    }
+
+    /// Pin that `&dyn MaterialField` is a valid type — catches accidental
+    /// generic-self / associated-type additions that would break object
+    /// safety.
+    #[test]
+    fn material_field_trait_is_object_safe_via_constant_field() {
+        let iso = IsotropicElastic {
+            youngs_modulus: 1.0,
+            poisson_ratio: 0.3,
+        };
+        let field = ConstantField {
+            material: AnisotropicMaterial::from_law(&iso, IDENTITY_3X3),
+        };
+        let _: &dyn MaterialField = &field;
+    }
 }
