@@ -14,9 +14,10 @@
 // Concrete stdlib structures, every field defaulted. Each `let` below
 // evaluates to a flat `Value::StructureInstance`.
 structure def FlatPart {
-    let steel   = Steel_AISI_1045()
-    let load    = PointLoad()
-    let support = FixedSupport()
+    let steel    = Steel_AISI_1045()
+    let load     = PointLoad()
+    let pressure = PressureLoad()
+    let support  = FixedSupport()
 }
 
 // ── Nested compositional construction ───────────────────────────────────────
