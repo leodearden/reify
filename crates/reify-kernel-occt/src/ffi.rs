@@ -685,6 +685,17 @@ pub mod ffi {
             t_rel: &Transform3Props,
         ) -> Result<f64>;
 
+        /// Probe whether `a` and `b` interfere after pre-composing `t_rel` into
+        /// the cheaper-by-topology side (PRD §6.2 + §9.2, task 3841).
+        ///
+        /// Returns true iff the minimum BREP distance after transform is ≤ 0.0.
+        /// Face-touching pairs count as interfering — matches `shapes_intersect` semantics.
+        fn interferes_with_transform(
+            a: &OcctShape,
+            b: &OcctShape,
+            t_rel: &Transform3Props,
+        ) -> Result<bool>;
+
         /// Return the closest point on `shape` to the query point (px, py, pz).
         ///
         /// Uses `BRepExtrema_DistShapeShape(shape, vertex)` where the vertex is

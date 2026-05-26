@@ -800,6 +800,29 @@ impl OcctKernel {
         ffi::ffi::shapes_intersect(s1, s2).map_err(|e| QueryError::QueryFailed(e.to_string()))
     }
 
+    /// Probe whether two shapes interfere after pre-composing `t_rel` into the
+    /// cheaper-by-topology side (PRD §6.2 + §9.2, task 3841).
+    ///
+    /// Returns `Ok(true)` iff the minimum BREP distance after transform is ≤ 0.0.
+    /// Face-touching pairs count as interfering — matches `shapes_intersect` semantics.
+    ///
+    /// Returns `Err(QueryError::InvalidHandle(id))` if either handle is unknown.
+    /// Returns `Err(QueryError::QueryFailed(...))` if the OCCT call fails.
+    pub fn interferes_with_transform(
+        &self,
+        a: GeometryHandleId,
+        b: GeometryHandleId,
+        t_rel: &crate::Transform3,
+    ) -> Result<bool, QueryError> {
+        let s1 = self
+            .get_shape(a)
+            .map_err(|_| QueryError::InvalidHandle(a))?;
+        let s2 = self
+            .get_shape(b)
+            .map_err(|_| QueryError::InvalidHandle(b))?;
+        queries::interferes_with_transform(s1, s2, t_rel)
+    }
+
     /// Minimum BREP distance between two shapes via BRepExtrema_DistShapeShape.
     ///
     /// Returns `Ok(distance)` — 0.0 for overlapping shapes.

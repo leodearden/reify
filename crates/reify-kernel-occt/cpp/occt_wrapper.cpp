@@ -3001,6 +3001,17 @@ double distance_with_transform(
     });
 }
 
+bool interferes_with_transform(
+    const OcctShape& a,
+    const OcctShape& b,
+    const Transform3Props& t_rel)
+{
+    return wrap_occt_call("interferes_with_transform", [&]() {
+        // dist <= 0.0 ↔ face-touching or overlapping — same semantics as shapes_intersect.
+        return dist_with_pre_compose(a, b, t_rel) <= 0.0;
+    });
+}
+
 Point3 closest_point_on_shape(const OcctShape& shape, double px, double py, double pz) {
     return wrap_occt_call("closest_point_on_shape", [&]() {
         gp_Pnt query_pnt(px, py, pz);
