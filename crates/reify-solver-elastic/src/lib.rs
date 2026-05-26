@@ -378,7 +378,10 @@ pub use boundary::{
     DirichletBc, FaceOrder, apply_body_force, apply_dirichlet_row_elimination, apply_point_load,
     apply_traction_load,
 };
-pub use constitutive::IsotropicElastic;
+pub use constitutive::{
+    ConstitutiveLaw, IsotropicElastic, OrthotropicMaterial, TransverseIsotropicMaterial,
+    rotate_voigt,
+};
 pub use elements::{
     Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement,
     hex_p1::HexP1,

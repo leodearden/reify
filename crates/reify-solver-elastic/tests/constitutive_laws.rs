@@ -227,13 +227,18 @@ use reify_solver_elastic::TransverseIsotropicMaterial;
 
 /// `d_matrix_local` for a transversely isotropic material must equal the
 /// equivalent OrthotropicMaterial specialization element-wise within 1e-9.
+///
+/// Note: for high E_axial/E_in_plane ratios, the PD constraint caps nu_axial
+/// below `sqrt((1−nu_p²)/(2·(E_z/E_p)·(1+nu_p)))`. With E_p=10GPa,
+/// E_z=140GPa, nu_p=0.3 this bound is ≈0.158, so nu_axial=0.02 is used
+/// (physically realistic for CFRP transverse/axial pairing).
 #[test]
 fn transverse_iso_d_matrix_local_equals_orthotropic_specialization() {
-    let e_p = 10e9_f64; // in-plane
-    let e_z = 140e9_f64; // axial
-    let nu_p = 0.3_f64; // in-plane Poisson
-    let nu_a = 0.3_f64; // axial Poisson (ν13 = ν23)
-    let g_a = 5e9_f64;  // axial shear (G13 = G23)
+    let e_p = 10e9_f64;  // in-plane Young's modulus
+    let e_z = 140e9_f64; // axial Young's modulus
+    let nu_p = 0.3_f64;  // in-plane Poisson's ratio
+    let nu_a = 0.02_f64; // axial Poisson's ratio (physically valid for E_z >> E_p)
+    let g_a = 5e9_f64;   // axial shear modulus (G13 = G23)
 
     let ti = TransverseIsotropicMaterial {
         e_in_plane: e_p,
@@ -269,11 +274,12 @@ fn transverse_iso_d_matrix_local_equals_orthotropic_specialization() {
 #[test]
 fn transverse_iso_implements_constitutive_law() {
     fn _take<T: ConstitutiveLaw>(_: &T) {}
+    // nu_axial=0.02 is physically valid for E_axial/E_in_plane=14 (see above).
     let ti = TransverseIsotropicMaterial {
         e_in_plane: 10e9,
         e_axial: 140e9,
         nu_in_plane: 0.3,
-        nu_axial: 0.3,
+        nu_axial: 0.02,
         g_axial: 5e9,
     };
     _take(&ti);
@@ -282,11 +288,12 @@ fn transverse_iso_implements_constitutive_law() {
 /// D must be finite and symmetric.
 #[test]
 fn transverse_iso_d_matrix_local_is_symmetric_finite() {
+    // nu_axial=0.02 is physically valid for E_axial/E_in_plane=14 (see above).
     let ti = TransverseIsotropicMaterial {
         e_in_plane: 10e9,
         e_axial: 140e9,
         nu_in_plane: 0.3,
-        nu_axial: 0.3,
+        nu_axial: 0.02,
         g_axial: 5e9,
     };
     assert_symmetric_finite(&ti.d_matrix_local());
@@ -359,9 +366,14 @@ fn rotate_voigt_preserves_isotropic_d() {
     let d = iso.d_matrix_local();
     let d_rot = rotate_voigt(&d, &r);
 
+    // Entries that are zero in D_iso should remain ~0 in D_rot. FP arithmetic
+    // on 200 GPa inputs accumulates errors of order ε · d_max ≈ 1e-5 absolute
+    // for zero entries. Use d_max * 1e-5 as the minimum scale so that zero
+    // entries are tested at ~1e-14 relative to D's magnitude (not absolute 1e-9).
+    let d_max: f64 = d.iter().flat_map(|r| r.iter().copied()).fold(0.0_f64, f64::max);
     for i in 0..6 {
         for j in 0..6 {
-            let scale = d[i][j].abs().max(d_rot[i][j].abs()).max(1.0);
+            let scale = d[i][j].abs().max(d_rot[i][j].abs()).max(d_max * 1e-5);
             assert!(
                 (d_rot[i][j] - d[i][j]).abs() <= 1e-9 * scale,
                 "isotropic invariance broken at D[{i}][{j}]: {} vs {}",
