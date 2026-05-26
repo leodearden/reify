@@ -17,7 +17,7 @@ use reify_types::{
 
 use crate::cache::{CacheStore, CachedResult, FAILED_REALIZATION_STUB_HANDLE, NodeCache, NodeId};
 use crate::deps::DependencyTrace;
-use crate::dispatcher::{dispatch, per_stage_tolerance_for_plan};
+use crate::dispatcher::{DispatchPlan, dispatch, per_stage_tolerance_for_plan};
 use crate::geometry_ops::compile_geometry_op;
 use crate::journal::{EvalEvent, EventJournal, EventKind};
 use crate::primitive_attribute_seed::{parse_bbox_xyz_min, seed_primitive_attributes_for_handle};
@@ -4772,6 +4772,94 @@ mod tests {
             let got = geometry_op_to_operation(&op);
             assert_eq!(got, expected, "{label} (got {got:?})");
         }
+    }
+
+    // ── plan_output_repr unit tests ──────────────────────────────────────────
+
+    /// Pins the `plan_output_repr` produced-repr derivation helper
+    /// (task ε / 3436, PRD §8 step-5/6).
+    ///
+    /// The helper takes a borrowed-view registry, a [`DispatchPlan`] (whose
+    /// `kernel` field names the chosen kernel), and an [`Operation`], and
+    /// returns the `ReprKind` that kernel produces for `op` — i.e. the second
+    /// element of the matching entry in `descriptor.supports`. This is the
+    /// value `execute_realization_ops` (step-10) will write into the
+    /// realization graph node's `produced_repr` field.
+    ///
+    /// Two synthetic kernels exercise both reprs the v0.3 dispatcher recognises:
+    /// (a) a BRep-native kernel supporting `(BooleanUnion, BRep)` → `BRep`,
+    /// (b) a Mesh-native kernel supporting `(BooleanUnion, Mesh)` → `Mesh`.
+    /// Each plan names exactly one kernel and contains zero conversions
+    /// (the ε baseline; non-empty chains are deferred to ζ/η/θ).
+    ///
+    /// A third sub-case pins the `None` fallback when the named kernel does
+    /// not support `op` for any repr — defensible against an invariant
+    /// violation where dispatch is given an inconsistent registry.
+    ///
+    /// RED before step-6 impl: `plan_output_repr` does not exist yet.
+    #[test]
+    fn plan_output_repr_returns_kernel_descriptor_output_repr() {
+        // (a) BRep-native kernel.
+        let occt = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::BRep)],
+        };
+        let mut brep_registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        brep_registry.insert("occt".to_string(), &occt);
+        let brep_plan = DispatchPlan {
+            kernel: "occt".to_string(),
+            conversions: vec![],
+        };
+        assert_eq!(
+            plan_output_repr(&brep_registry, &brep_plan, Operation::BooleanUnion),
+            Some(ReprKind::BRep),
+            "occt supports (BooleanUnion, BRep) → plan_output_repr must return BRep",
+        );
+
+        // (b) Mesh-native kernel.
+        let manifold = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+        };
+        let mut mesh_registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        mesh_registry.insert("manifold".to_string(), &manifold);
+        let mesh_plan = DispatchPlan {
+            kernel: "manifold".to_string(),
+            conversions: vec![],
+        };
+        assert_eq!(
+            plan_output_repr(&mesh_registry, &mesh_plan, Operation::BooleanUnion),
+            Some(ReprKind::Mesh),
+            "manifold supports (BooleanUnion, Mesh) → plan_output_repr must return Mesh",
+        );
+
+        // (c) Defensive fallback: plan names a kernel whose descriptor has
+        // no entry for the requested op. plan_output_repr must return None
+        // so the caller (execute_realization_ops in step-10) can surface a
+        // diagnostic rather than fabricate a repr.
+        let empty = CapabilityDescriptor { supports: vec![] };
+        let mut empty_registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        empty_registry.insert("empty".to_string(), &empty);
+        let empty_plan = DispatchPlan {
+            kernel: "empty".to_string(),
+            conversions: vec![],
+        };
+        assert_eq!(
+            plan_output_repr(&empty_registry, &empty_plan, Operation::BooleanUnion),
+            None,
+            "kernel with no matching supports entry → plan_output_repr must return None",
+        );
+
+        // (d) Plan kernel missing from registry — also None (defensive).
+        let mut occt_only: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        occt_only.insert("occt".to_string(), &occt);
+        let missing_plan = DispatchPlan {
+            kernel: "manifold".to_string(),
+            conversions: vec![],
+        };
+        assert_eq!(
+            plan_output_repr(&occt_only, &missing_plan, Operation::BooleanUnion),
+            None,
+            "plan.kernel absent from registry → plan_output_repr must return None",
+        );
     }
 
     // ── compute_tessellation_budgets unit tests ───────────────────────────────
