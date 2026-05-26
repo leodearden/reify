@@ -215,3 +215,41 @@ fn embedded_equals_splits_at_first_only_and_round_trips() {
     let reparsed = parse_klipper(&rendered).expect("re-parse must succeed");
     assert_eq!(ast, reparsed);
 }
+
+// Symmetric malformed-KV path for INPUT_SHAPER: both directives share
+// the `parse_kv_params` helper, so an INPUT_SHAPER token without `=`
+// must surface the same `InvalidParameter { letter: '=', .. }` shape
+// as the SET_VELOCITY_LIMIT case above. Pins the cross-directive
+// symmetry rather than just trusting the shared-helper structure.
+#[test]
+fn input_shaper_malformed_kv_no_equals_is_invalid_parameter() {
+    let err = parse_klipper("INPUT_SHAPER SHAPER_TYPE").unwrap_err();
+    assert_eq!(
+        err,
+        ParseError {
+            line: 1,
+            kind: ParseErrorKind::InvalidParameter {
+                letter: '=',
+                value: "SHAPER_TYPE".to_string(),
+            },
+        }
+    );
+}
+
+// Klipper directives are matched **uppercase-only** here — see design
+// decision #6 in plan analysis and the module-level doc in
+// `src/klipper.rs`. Lowercase / mixed-case variants fall through to
+// `marlin::parse_line`, which surfaces `UnknownCommand` on the raw
+// token. Pinning this lets any future relaxation be a deliberate
+// contract change rather than an accidental drift.
+#[test]
+fn lowercase_directive_routes_through_marlin_unknown_command() {
+    let err = parse_klipper("set_velocity_limit FOO=1").unwrap_err();
+    assert_eq!(
+        err,
+        ParseError {
+            line: 1,
+            kind: ParseErrorKind::UnknownCommand("set_velocity_limit".to_string()),
+        }
+    );
+}
