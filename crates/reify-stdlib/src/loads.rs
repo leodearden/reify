@@ -1046,6 +1046,36 @@ mod tests {
         );
     }
 
+    // ── task 3544 step-3 (RED): post-retirement contract ─────────────────────
+    //
+    // After step-4 (SIR-β-load stdlib swap), `pressure_load` is no longer a
+    // name-dispatched builtin — its role is taken by the
+    // `structure def PressureLoad : Load { ... }` declaration in
+    // `crates/reify-compiler/stdlib/fea_multi_case.ri`. Source-level
+    // `PressureLoad(...)` calls then lower to `CompiledExprKind::StructureInstanceCtor`
+    // (the precedence path landed in SIR-α step-16) and eval into a
+    // `Value::StructureInstance`. The `eval_builtin("pressure_load", ...)` Rust API
+    // path returns `Value::Undef` because the dispatch arm in `eval_loads` is removed.
+    //
+    // RED: this test currently fails because `eval_builtin("pressure_load", ...)`
+    // returns a `Value::Map` (the pre-retirement happy path). Step-4 retires
+    // the arm and updates `LOAD_KINDS` so the partition guard stays green.
+
+    #[test]
+    fn pressure_load_eval_builtin_returns_undef_post_retirement() {
+        let stub = selector_stub("face_stub");
+        let pressure_mag = Value::Scalar {
+            si_value: 1e6,
+            dimension: DimensionVector::PRESSURE,
+        };
+        assert!(
+            eval_builtin("pressure_load", &[stub, pressure_mag]).is_undef(),
+            "after step-4 retirement, eval_builtin('pressure_load', ...) must \
+             return Undef; the structure-instance ctor path replaces the \
+             builtin entirely (PRD §8 Phase 2, Q-SIR-4 — rename pressure_load → PressureLoad)"
+        );
+    }
+
     // ── LOAD_KINDS partition test ─────────────────────────────────────────────
 
     /// Guard that every kind listed in `LOAD_KINDS` is actually dispatched by
