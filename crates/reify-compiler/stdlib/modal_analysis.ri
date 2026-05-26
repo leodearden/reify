@@ -40,13 +40,17 @@
 //      `Frequency` (= s⁻¹) is an SI-derived dimension but has no named scalar
 //      alias yet. Same placeholder pattern as `fea_multi_case.ri::Load.force
 //      : Real` waiting for `Vector3<Force>`.
-//   4. `Mode.shape : List<Vector3<Dimensionless>>` is the correct semantics,
-//      NOT a placeholder: mass-normalized eigenvectors are mathematically
-//      dimensionless under `Φᵀ·M·Φ = I` (PRD §4.1 + §7.5). `Real` is a
-//      primitive scalar, not a dimension name, so `Vector3<Real>` is NOT
-//      valid .ri syntax (the `Vector3<Q>` resolver requires `Q` to resolve
-//      to a `DimensionVector`); `Dimensionless` is the dimension-name
-//      spelling that makes the dimensionless claim explicit and resolvable.
+//   4. `Mode.shape : List<Vector3<Dimensionless>>` encodes mass-normalized
+//      eigenvectors. Strictly, components of a mass-orthonormal mode shape
+//      carry units of 1/√mass — only the modal-mass scalar
+//      mᵢ = Φᵢᵀ·M·Φᵢ = kg · (1/√kg)² is dimensionless under `Φᵀ·M·Φ = I`
+//      (PRD §4.1 + §7.5). Reify's dimension grammar has no SI-root extension,
+//      so 1/√mass is not yet expressible; `Dimensionless` is the closest
+//      encoding available today. (`Vector3<Real>` is not valid .ri syntax —
+//      the `Vector3<Q>` resolver requires `Q` to resolve to a
+//      `DimensionVector`; `Real` is a primitive scalar, not a dimension
+//      name.) Tightening to a future `Scalar<InvRootMass>` (or equivalent)
+//      is left to the kinematic-completion sweep.
 //   5. `ModalOptions.reference_direction : Vector3<Dimensionless>` is the
 //      correct semantics (unit vector — dimensionless). The constraint
 //      `reference_direction.norm() > 0` is NOT expressible in Reify's
@@ -145,23 +149,37 @@ structure def RayleighDamping : DampingDescriptor {
 //                        `fea_multi_case.ri:269-296`.
 //   shape              — mass-normalized eigenvector (Φᵀ·M·Φ = I) reshaped
 //                        as per-node displacement-shaped vectors. Encoded
-//                        as `List<Vector3<Dimensionless>>` — NOT a
-//                        placeholder: per PRD §4.1 + §7.5 a mass-normalized
-//                        mode shape is dimensionless, so the `Dimensionless`
-//                        parameterization is mathematically accurate.
-//                        (`Vector3<Real>` is not valid .ri syntax — the
-//                        `Vector3<Q>` resolver requires `Q` to be a
+//                        as `List<Vector3<Dimensionless>>` as the closest
+//                        encoding available today: strictly, components of
+//                        a mass-orthonormal mode shape carry units of
+//                        1/√mass (only the modal-mass scalar
+//                        mᵢ = Φᵢᵀ·M·Φᵢ is dimensionless per PRD §4.1 +
+//                        §7.5). Reify's dimension grammar has no SI-root
+//                        extension, so 1/√mass is not yet expressible;
+//                        `Dimensionless` is the closest currently-resolvable
+//                        spelling. (`Vector3<Real>` is not valid .ri syntax
+//                        — the `Vector3<Q>` resolver requires `Q` to be a
 //                        dimension name; `Real` is a primitive scalar.)
-//                        (Contrast with
-//                        buckling's `Mode.mode_shape : Field<Point3<Length>,
-//                        Vector3<Length>>` where the Length parameterization
-//                        is a typing convention, not a dimensional claim;
-//                        see solver_buckling.ri:127-145 dimensionality note.)
+//                        Tightening to a future `Scalar<InvRootMass>` (or
+//                        equivalent) is left to the kinematic-completion
+//                        sweep. (Contrast with buckling's `Mode.mode_shape
+//                        : Field<Point3<Length>, Vector3<Length>>` where
+//                        the Length parameterization is a typing
+//                        convention, not a dimensional claim; see
+//                        solver_buckling.ri:127-145 dimensionality note.)
 //   participation_mass — effective modal mass projected along the user-
 //                        supplied reference_direction (PRD §4.3
 //                        ModalOptions.reference_direction). Used to rank
 //                        modes by importance for a given excitation
-//                        direction.
+//                        direction. Encoded as `Real` as a PLACEHOLDER for
+//                        `Scalar<Mass>` — participation mass has the
+//                        dimension of mass (kg under SI), but the
+//                        named-scalar `Scalar<X>` alias has not landed
+//                        anywhere in the stdlib yet. Same placeholder
+//                        convention as `Mode.frequency` waiting for
+//                        `Scalar<Frequency>`, and `Load.force : Real`
+//                        waiting for `Vector3<Force>` in
+//                        `fea_multi_case.ri:269-296`.
 //   damping_ratio      — ζ_i for this mode. Equals 0 for an undamped solve
 //                        (`damping = NoDamping()`) or
 //                        (α + β·ω_i²) / (2·ω_i) for proportional damping
@@ -289,11 +307,13 @@ structure def ModalResult {
 //   reference_direction — unit excitation direction along which modal
 //                          participation mass is projected (PRD §4.3).
 //                          Encoded as `Vector3<Dimensionless>` — a unit
-//                          vector is dimensionless, so this is mathematically
-//                          accurate, NOT a placeholder (same encoding as
-//                          `Mode.shape`; `Vector3<Real>` is not valid .ri
+//                          vector is genuinely dimensionless, so this is
+//                          mathematically accurate (unlike `Mode.shape`,
+//                          whose 1/√mass components are merely encoded as
+//                          Dimensionless pending an SI-root grammar
+//                          extension). `Vector3<Real>` is not valid .ri
 //                          syntax — the `Vector3<Q>` resolver requires `Q`
-//                          to be a dimension name). Required at construction
+//                          to be a dimension name. Required at construction
 //                          (no default — there is no canonical excitation
 //                          direction). The `reference_direction.norm() > 0`
 //                          invariant is NOT expressible in Reify's
