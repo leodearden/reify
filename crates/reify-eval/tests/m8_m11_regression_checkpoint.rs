@@ -449,6 +449,8 @@ fn assert_all_value_variants_listed(v: &reify_types::Value) {
         Value::SampledField(_) => true,
         // Nominal structure instance (v0.3 — task 3540 / SIR-α)
         Value::StructureInstance(_) => true,
+        // Realized geometry handle (v0.3 — task 3604 / GHR-β)
+        Value::GeometryHandle { .. } => true,
         // Undefined
         Value::Undef => true,
     };

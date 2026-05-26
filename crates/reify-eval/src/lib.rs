@@ -290,9 +290,12 @@ fn value_type_kind_matches(
         // accepted) or default-rejects here — there is no representable
         // non-Undef, non-StructureInstance value for those types.
         //
-        // If a future `Value::GeometryHandle` or `Value::TraitObjectInstance`
-        // variant is added, add a matching arm here AND relax the runtime
-        // assertion so the compiler enforces completeness.
+        // GHR-β placeholder: no lowering produces a real Value::GeometryHandle
+        // yet; the correct arm (`matches!(ty, Type::Geometry)`) lands in step-4.
+        Value::GeometryHandle { .. } => false,
+        // If a future `Value::TraitObjectInstance` variant is added, add a
+        // matching arm here AND relax the runtime assertion so the compiler
+        // enforces completeness.
     }
 }
 

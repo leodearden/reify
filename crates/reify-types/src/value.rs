@@ -580,6 +580,21 @@ pub enum Value {
     /// constructed parameter map (declaration-order-independent: hashing and
     /// equality sort by key).
     StructureInstance(Box<StructureInstanceData>),
+    /// A realized geometry object produced by the kernel.
+    ///
+    /// `realization_ref` identifies the realization node in the topology graph
+    /// (entity + slot index). `upstream_values_hash` is a content-hash of the
+    /// parameter values that produced the geometry — it participates in equality
+    /// and ordering so that cache-key stability is preserved across Engine
+    /// restarts (PRD §5). `kernel_handle` is an ephemeral session-scoped id;
+    /// it is intentionally excluded from `==` / `Ord` / `content_hash()` (GHR-β
+    /// design decision: same geometry rebuilt in a new session must still compare
+    /// equal and hash identically).
+    GeometryHandle {
+        realization_ref: crate::identity::RealizationNodeId,
+        upstream_values_hash: [u8; 32],
+        kernel_handle: crate::geometry::GeometryHandleId,
+    },
     /// Undefined — not yet determined or computation failed.
     Undef,
 }
@@ -800,7 +815,7 @@ impl Value {
         // 8=Set, 9=Map, 10=Satisfaction(reserved), 11=Option, 12=Lambda, 13=Field,
         // 14=Tensor, 15=Complex, 16=Orientation, 17=Range, 18=Point, 19=Vector,
         // 20=Frame, 21=Transform, 22=Plane, 23=Axis, 24=BoundingBox, 25=Matrix,
-        // 26=SampledField, 27=StructureInstance
+        // 26=SampledField, 27=StructureInstance, 28=GeometryHandle
         match self {
             Value::Bool(b) => ContentHash::of(&[0, *b as u8]),
             Value::Int(i) => {
@@ -1079,6 +1094,19 @@ impl Value {
                 }
                 h
             }
+            Value::GeometryHandle {
+                realization_ref,
+                upstream_values_hash,
+                ..
+            } => {
+                // tag=28; cross-Engine-stable identity: realization entity +
+                // index + upstream_values_hash. `kernel_handle` is intentionally
+                // excluded — it is an ephemeral session-scoped id (GHR-β §DD).
+                ContentHash::of(&[28])
+                    .combine(ContentHash::of_str(&realization_ref.entity))
+                    .combine(ContentHash::of(&realization_ref.index.to_le_bytes()))
+                    .combine(ContentHash::of(upstream_values_hash))
+            }
             Value::Undef => ContentHash::of(&[5]),
         }
     }
@@ -1307,6 +1335,7 @@ impl Value {
             // for source = sampled fields; it has no standalone Type.
             Value::SampledField(_) => None,
             Value::StructureInstance(data) => Some(Type::StructureRef(data.type_name.clone())),
+            Value::GeometryHandle { .. } => Some(Type::Geometry),
             Value::Undef => Some(Type::Bool),
         }
     }
@@ -1480,6 +1509,9 @@ impl Value {
                     format!("{type_name} {{ {} }}", inner.join(", "))
                 }
             }
+            Value::GeometryHandle { realization_ref, .. } => {
+                format!("<Geometry: {realization_ref}>")
+            }
             Value::Undef => "(undefined)".to_string(),
         }
     }
@@ -1636,6 +1668,9 @@ impl Value {
                         .collect();
                     format!("{type_name} {{ {} }}", inner.join(", "))
                 }
+            }
+            Value::GeometryHandle { realization_ref, .. } => {
+                format!("<Geometry: {realization_ref}>")
             }
             Value::Undef => "undefined".to_string(),
         }
@@ -1952,6 +1987,18 @@ impl PartialEq for Value {
             (Value::StructureInstance(a), Value::StructureInstance(b)) => {
                 a.type_name == b.type_name && a.version == b.version && a.fields == b.fields
             }
+            (
+                Value::GeometryHandle {
+                    realization_ref: rr_a,
+                    upstream_values_hash: h_a,
+                    ..
+                },
+                Value::GeometryHandle {
+                    realization_ref: rr_b,
+                    upstream_values_hash: h_b,
+                    ..
+                },
+            ) => rr_a == rr_b && h_a == h_b,
             (Value::Undef, Value::Undef) => true,
             _ => false,
         }
@@ -1981,7 +2028,7 @@ impl Ord for Value {
         use std::cmp::Ordering;
 
         // Type-tag discriminant for cross-type ordering:
-        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10, Field=11, Lambda=12, Tensor=13, Complex=14, Orientation=15, Range=16, Point=17, Vector=18, Matrix=19, Frame=20, Transform=21, Plane=22, Axis=23, BoundingBox=24, SampledField=25
+        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10, Field=11, Lambda=12, Tensor=13, Complex=14, Orientation=15, Range=16, Point=17, Vector=18, Matrix=19, Frame=20, Transform=21, Plane=22, Axis=23, BoundingBox=24, SampledField=25, StructureInstance=26, GeometryHandle=27
         fn type_tag(v: &Value) -> u8 {
             match v {
                 Value::Undef => 0,
@@ -2011,6 +2058,7 @@ impl Ord for Value {
                 Value::BoundingBox { .. } => 24,
                 Value::SampledField(_) => 25,
                 Value::StructureInstance(_) => 26,
+                Value::GeometryHandle { .. } => 27,
             }
         }
 
@@ -2220,6 +2268,24 @@ impl Ord for Value {
                     .cmp(&b.type_name)
                     .then_with(|| a.version.cmp(&b.version))
                     .then_with(|| ae.cmp(&be))
+            }
+            (
+                Value::GeometryHandle {
+                    realization_ref: rr_a,
+                    upstream_values_hash: h_a,
+                    ..
+                },
+                Value::GeometryHandle {
+                    realization_ref: rr_b,
+                    upstream_values_hash: h_b,
+                    ..
+                },
+            ) => {
+                // kernel_handle excluded (ephemeral); Eq/Ord contract: Equal iff ==
+                rr_a.entity
+                    .cmp(&rr_b.entity)
+                    .then_with(|| rr_a.index.cmp(&rr_b.index))
+                    .then_with(|| h_a.cmp(h_b))
             }
             _ => unreachable!("same type tag but different variants"),
         }
@@ -2444,6 +2510,9 @@ impl std::fmt::Display for Value {
                     write!(f, "{} {k}: {v}", if i > 0 { "," } else { "" })?;
                 }
                 write!(f, " }}")
+            }
+            Value::GeometryHandle { realization_ref, .. } => {
+                write!(f, "<Geometry: {realization_ref}>")
             }
             Value::Undef => write!(f, "undef"),
         }
@@ -7772,6 +7841,14 @@ mod tests {
                     version: 1,
                     fields: crate::PersistentMap::new(),
                 })),
+            ),
+            (
+                "GeometryHandle",
+                Value::GeometryHandle {
+                    realization_ref: crate::identity::RealizationNodeId::new("T", 0),
+                    upstream_values_hash: [0u8; 32],
+                    kernel_handle: crate::geometry::GeometryHandleId(0),
+                },
             ),
             ("Undef", Value::Undef),
         ];
