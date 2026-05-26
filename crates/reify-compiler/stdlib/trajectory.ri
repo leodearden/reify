@@ -273,3 +273,11 @@ pub fn evaluate_profile(p: Profile, t: Time) -> List<JointValue> { [0.0] }
 // TODO(beta-3816): replace stub body `[0.0]` with B-spline first-derivative
 // evaluation once `reify-stdlib/src/trajectory/spline.rs` lands.
 pub fn evaluate_profile_dot(p: Profile, t: Time) -> List<JointValue> { [0.0] }
+
+// evaluate_profile_ddot — second-derivative companion to `evaluate_profile`.
+// Returns the per-joint acceleration vector q̈(t) at time `t`
+// (PRD §4.1 line 243).
+//
+// TODO(beta-3816): replace stub body `[0.0]` with B-spline second-derivative
+// evaluation once `reify-stdlib/src/trajectory/spline.rs` lands.
+pub fn evaluate_profile_ddot(p: Profile, t: Time) -> List<JointValue> { [0.0] }
