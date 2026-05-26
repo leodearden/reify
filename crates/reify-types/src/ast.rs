@@ -25,7 +25,6 @@
 //! value model, and the source/identity primitives — and the parsed AST sits
 //! here too.
 
-use crate::QuantifierKind;
 use crate::diagnostics::SourceSpan;
 use std::fmt;
 
@@ -139,6 +138,13 @@ pub struct LambdaParam {
     pub name: String,
     pub type_expr: Option<TypeExpr>,
     pub span: SourceSpan,
+}
+
+/// The kind of quantifier: universal (forall) or existential (exists).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum QuantifierKind {
+    ForAll,
+    Exists,
 }
 
 /// A dimensional operator: multiplication or division between type-level dimensions.

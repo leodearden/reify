@@ -1,3 +1,4 @@
+use crate::ast::QuantifierKind;
 use crate::hash::ContentHash;
 use crate::identity::ValueCellId;
 use crate::ty::Type;
@@ -195,13 +196,6 @@ pub enum DeterminacyPredicateKind {
     Undetermined,
     Constrained,
     PartiallyDetermined,
-}
-
-/// The kind of quantifier: universal (forall) or existential (exists).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum QuantifierKind {
-    ForAll,
-    Exists,
 }
 
 /// A compiled match arm.

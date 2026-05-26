@@ -35,7 +35,7 @@ pub use annotation::{
     has_test_annotation,
 };
 pub use ast::{
-    DimOp, Expr, ExprKind, LambdaParam, MatchArm, TypeExpr, TypeExprKind,
+    DimOp, Expr, ExprKind, LambdaParam, MatchArm, QuantifierKind, TypeExpr, TypeExprKind,
 };
 pub use boundary_attachment::{BoundaryAssociation, NodeAttachment};
 pub use constraint::{
@@ -50,7 +50,7 @@ pub use diagnostics::{
 pub use dimension::{DimensionVector, NAMED_DIMENSIONS, Rational};
 pub use expr::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, CompiledMatchArm,
-    DeterminacyPredicateKind, QuantifierKind, ResolvedFunction, SelectorKind, TAG_AD_HOC_SELECTOR,
+    DeterminacyPredicateKind, ResolvedFunction, SelectorKind, TAG_AD_HOC_SELECTOR,
     TAG_BIN_OP, TAG_CONDITIONAL, TAG_DETERMINACY_PREDICATE, TAG_FUNCTION_CALL, TAG_INDEX_ACCESS,
     TAG_LAMBDA, TAG_LIST_LITERAL, TAG_LITERAL, TAG_MAP_LITERAL, TAG_MATCH, TAG_META_ACCESS,
     TAG_METHOD_CALL, TAG_OPTION_NONE, TAG_OPTION_SOME, TAG_QUANTIFIER, TAG_RANGE_CONSTRUCTOR,

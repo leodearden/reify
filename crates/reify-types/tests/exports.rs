@@ -265,6 +265,26 @@ fn presentation_info_types_exported() {
 }
 
 #[test]
+fn quantifier_kind_lives_in_ast_and_reexported_at_root() {
+    // (a) Construct via the new ast-module path (currently fails to compile because
+    //     ast.rs only `use`s — non-pub — QuantifierKind from the crate root).
+    let ast_forall = reify_types::ast::QuantifierKind::ForAll;
+    let ast_exists = reify_types::ast::QuantifierKind::Exists;
+
+    // (b) Construct via the crate-root re-export path (must remain resolvable).
+    let root_forall: reify_types::QuantifierKind = reify_types::QuantifierKind::ForAll;
+    let root_exists: reify_types::QuantifierKind = reify_types::QuantifierKind::Exists;
+
+    // (c) Cross-assign: proves the crate-root path and the ast-module path name
+    //     the same type (would not compile if they were distinct types).
+    let _same1: reify_types::ast::QuantifierKind = root_forall;
+    let _same2: reify_types::QuantifierKind = ast_exists;
+
+    assert_eq!(ast_forall, root_forall);
+    assert_ne!(ast_forall, root_exists);
+}
+
+#[test]
 fn cross_sub_geometry_ref_variant_exported_and_distinct_from_value_ref() {
     let xref = reify_types::CompiledExpr::cross_sub_geometry_ref(
         reify_types::ValueCellId::new("Outer.inner", "body"),
