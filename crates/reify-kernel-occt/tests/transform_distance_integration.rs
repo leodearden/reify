@@ -59,6 +59,73 @@ fn two_box_kernel(dx: f64) -> (OcctKernel, GeometryHandleId, GeometryHandleId) {
 // distance_with_transform — rigid-invariance pin (translation-only)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// distance_with_transform — rigid-invariance pin (rotation-only)
+// ---------------------------------------------------------------------------
+
+/// Rotation-rigid-invariance and quaternion-convention check.
+///
+/// Fixture: box_a at origin, box_b at (30, 0, 0) — NOT rotation-symmetric so
+/// a 90° rotation about Z genuinely changes the distance.
+///
+/// The 90°-Z rotation quaternion is: qw = cos(π/4), qz = sin(π/4), qx = qy = 0.
+///
+/// `baseline` is computed by baking the rotation into a new shape via
+/// `GeometryOp::Rotate`, then calling `min_clearance`. The test then calls
+/// `distance_with_transform(box_b_id, box_a_id, &t_rel)` (b transformed, a
+/// fixed — forces the a_extent > b_extent branch when a has been rotated already
+/// and b is the raw box) and asserts they agree within 1e-6.
+///
+/// This test specifically catches xyzw/wxyz swap bugs in the quaternion
+/// constructor (gp_Quaternion takes x,y,z,w — wrong order produces a different
+/// rotation and a different distance).
+#[test]
+fn distance_with_transform_rotation_only_matches_rotated_shape() {
+    let (mut kernel, box_a_id, box_b_id) = two_box_kernel(30.0);
+
+    // Bake a 90°-Z rotation into box_b.
+    let rotated = kernel
+        .execute(&GeometryOp::Rotate {
+            target: box_b_id,
+            axis: [0.0, 0.0, 1.0],
+            angle_rad: PI / 2.0,
+        })
+        .expect("rotate box_b 90° Z should succeed");
+
+    // Baseline: min_clearance(box_a, rotated_box_b).
+    let baseline = kernel
+        .min_clearance(box_a_id, rotated.id)
+        .expect("min_clearance(box_a, rotated) should succeed");
+
+    // Transform3 encoding 90°-Z rotation: qw = cos(π/4), qz = sin(π/4).
+    let t_rel = Transform3 {
+        qw: (PI / 4.0).cos(),
+        qx: 0.0,
+        qy: 0.0,
+        qz: (PI / 4.0).sin(),
+        tx: 0.0,
+        ty: 0.0,
+        tz: 0.0,
+    };
+
+    // Under-transform: distance_with_transform(box_a, box_b, t_rel) where t_rel
+    // is applied to box_b. Since `distance_with_transform(a, b, t)` pre-composes
+    // t into the cheaper side (and by rigid-invariance dist(A, T·B) == dist(T⁻¹·A, B)),
+    // this should match baseline.
+    let under_transform = kernel
+        .distance_with_transform(box_a_id, box_b_id, &t_rel)
+        .expect("distance_with_transform should succeed");
+
+    assert!(
+        (under_transform - baseline).abs() < 1e-6,
+        "rotation rigid-invariance failed: \
+         distance_with_transform = {under_transform}, \
+         min_clearance(rotated) = {baseline}, \
+         delta = {}",
+        (under_transform - baseline).abs()
+    );
+}
+
 /// Translation-rigid-invariance: `distance_with_transform(a, b, t_rel)` matches
 /// `min_clearance(translate(a, t_rel), b)` within 1e-6.
 ///
