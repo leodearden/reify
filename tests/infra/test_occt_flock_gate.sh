@@ -294,4 +294,32 @@ rm -f "$_LOCK18" "$_DAEMON_PID_FILE"
 assert "Test 18: wrapper exited 0 on successful spawn (got $_EXIT18)" \
     test "$_EXIT18" -eq 0
 
+# -- Test 19: REIFY_OCCT_CONCURRENCY=2 runs two invocations in parallel ----------
+# With N=2 slots, two concurrent wrapper invocations must acquire different slots
+# and run simultaneously (~400ms wall-clock), NOT serialize (~800ms).
+# This test MUST FAIL on the current exclusive-flock implementation.
+echo ""
+echo "--- Test 19: REIFY_OCCT_CONCURRENCY=2 allows two concurrent invocations to run in parallel ---"
+
+_LOCK19="$(mktemp)"
+_START19_NS="$(date +%s%N)"
+
+# Spawn two concurrent invocations each sleeping 0.4s, both sharing the same
+# lock base path with 2 slots.
+REIFY_OCCT_LOCK="$_LOCK19" REIFY_OCCT_CONCURRENCY=2 "$WRAPPER" bash -c 'sleep 0.4' &
+_PID19A=$!
+REIFY_OCCT_LOCK="$_LOCK19" REIFY_OCCT_CONCURRENCY=2 "$WRAPPER" bash -c 'sleep 0.4' &
+_PID19B=$!
+wait "$_PID19A" "$_PID19B"
+
+_END19_NS="$(date +%s%N)"
+_ELAPSED19_MS=$(( (_END19_NS - _START19_NS) / 1000000 ))
+
+rm -f "$_LOCK19" "${_LOCK19}.slot-1" "${_LOCK19}.slot-2"
+
+# Parallel completion: ~400ms. Serial (exclusive): ~800ms.
+# Assert elapsed < 700ms to detect regression to exclusive-mode behavior.
+assert "Test 19: two 0.4s sleep invocations run in parallel with N=2 (elapsed < 700ms, got ${_ELAPSED19_MS}ms)" \
+    test "$_ELAPSED19_MS" -lt 700
+
 test_summary
