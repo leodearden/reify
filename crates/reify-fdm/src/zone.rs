@@ -140,12 +140,38 @@ impl AxisAlignedBox {
         build_direction: [f64; 3],
         cos_threshold: f64,
     ) -> Option<f64> {
+        self.min_face_distance(p, build_direction, cos_threshold, true)
+    }
+
+    /// Distance from `p` to the nearest face whose outward normal does
+    /// **not** count as top/bottom (i.e. a "side" / perimeter face).
+    /// Returns `None` if no axis-aligned face qualifies as a side.
+    ///
+    /// This is the dual of [`min_top_bottom_distance`]; together the two
+    /// always cover all 6 axis-aligned faces.
+    pub fn min_side_distance(
+        &self,
+        p: [f64; 3],
+        build_direction: [f64; 3],
+        cos_threshold: f64,
+    ) -> Option<f64> {
+        self.min_face_distance(p, build_direction, cos_threshold, false)
+    }
+
+    fn min_face_distance(
+        &self,
+        p: [f64; 3],
+        build_direction: [f64; 3],
+        cos_threshold: f64,
+        want_top_bottom: bool,
+    ) -> Option<f64> {
         let mut best: Option<f64> = None;
         for axis in 0..3 {
             for (coord, sign) in [(self.min[axis], -1.0_f64), (self.max[axis], 1.0_f64)] {
                 let mut normal = [0.0_f64; 3];
                 normal[axis] = sign;
-                if !is_top_or_bottom_normal(normal, build_direction, cos_threshold) {
+                let is_tb = is_top_or_bottom_normal(normal, build_direction, cos_threshold);
+                if is_tb != want_top_bottom {
                     continue;
                 }
                 let d = (p[axis] - coord).abs();
