@@ -306,27 +306,37 @@ test_generated_files_not_tracked() {
 }
 
 test_orchestrator_includes_generation() {
-    # Orchestrator verification commands must include tree-sitter generation.
-    local yaml="$REPO_ROOT/orchestrator.yaml"
-    assert_file_exists "$yaml" || return 1
+    # Since task 3766 the orchestrator runs scripts/verify.sh, so each verify
+    # action's plan (not orchestrator.yaml literals) must include tree-sitter
+    # generation. --scope all forces the full plan; env lines are '# ' comments.
+    local verify="$REPO_ROOT/scripts/verify.sh"
+    assert_file_exists "$verify" || return 1
 
-    for cmd in test_command lint_command type_check_command; do
-        if ! grep "^${cmd}:" "$yaml" | grep -q "tree-sitter-generate"; then
+    local action plan
+    for action in "test --profile both --scope all --include-infra" \
+                  "lint --scope all --include-infra" \
+                  "typecheck --scope all"; do
+        # shellcheck disable=SC2086 — $action intentionally word-splits into flags.
+        plan="$(bash "$verify" $action --print-plan 2>/dev/null | grep -v '^#')"
+        if ! printf '%s\n' "$plan" | grep -q "tree-sitter-generate"; then
             echo ""
-            echo "  ASSERTION FAILED: orchestrator.yaml $cmd does not include tree-sitter-generate"
+            echo "  ASSERTION FAILED: verify.sh '$action' plan does not include tree-sitter-generate"
             return 1
         fi
     done
 }
 
 test_hooks_include_generation() {
-    # hooks/project-checks must include tree-sitter generation.
-    local hooks="$REPO_ROOT/hooks/project-checks"
-    assert_file_exists "$hooks" || return 1
+    # The main-branch git hook runs `verify.sh all`; that plan (not the hook
+    # file's literals) must include tree-sitter generation.
+    local verify="$REPO_ROOT/scripts/verify.sh"
+    assert_file_exists "$verify" || return 1
 
-    if ! grep -q "tree-sitter-generate" "$hooks"; then
+    local plan
+    plan="$(bash "$verify" all --profile debug --scope all --include-infra --print-plan 2>/dev/null | grep -v '^#')"
+    if ! printf '%s\n' "$plan" | grep -q "tree-sitter-generate"; then
         echo ""
-        echo "  ASSERTION FAILED: hooks/project-checks does not include tree-sitter-generate"
+        echo "  ASSERTION FAILED: verify.sh 'all' plan (the hook's gate) does not include tree-sitter-generate"
         return 1
     fi
 }

@@ -151,12 +151,14 @@ else
         false
 fi
 
-# -- Test 5: orchestrator.yaml wiring -------------------------------------------
+# -- Test 5: verify.sh plan wiring ----------------------------------------------
 echo ""
-echo "--- Test 5: orchestrator.yaml test_command includes run_all.sh ---"
+echo "--- Test 5: verify.sh test plan (--include-infra) includes run_all.sh ---"
 
-assert "orchestrator.yaml references tests/infra/run_all.sh" \
-    bash -c "grep -q 'tests/infra/run_all\.sh' '$ORCHESTRATOR_YAML'"
+# Since task 3766 the orchestrator runs scripts/verify.sh; run_all.sh is wired
+# into the test-side infra of the verify.sh plan, not orchestrator.yaml directly.
+assert "verify.sh test plan references tests/infra/run_all.sh" \
+    bash -c "bash '$REPO_ROOT/scripts/verify.sh' test --scope all --include-infra --print-plan | grep -v '^#' | grep -q 'tests/infra/run_all\.sh'"
 
 # -- Test 6: structural self-checks (meta-assertions) ---------------------------
 echo ""

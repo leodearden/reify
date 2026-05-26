@@ -30,7 +30,6 @@ source "$SCRIPT_DIR/test_helpers.sh"
 source "$REPO_ROOT/scripts/occt-scope-lib.sh"
 
 CRATE_LIST="$REPO_ROOT/scripts/occt-touching-crates.txt"
-ORCH="$REPO_ROOT/orchestrator.yaml"
 
 echo "=== OCCT gated scope tests ==="
 
@@ -96,11 +95,16 @@ assert "declared OCCT-touching set equals cargo-metadata-derived set (no missing
 # ---------------------------------------------------------------------------
 # Tests 4–5: gated invocations use -p <crate> (not --workspace)
 # ---------------------------------------------------------------------------
-# Split the test_command line on ' && ' to extract per-invocation segments.
-TEST_CMD_LINE="$(grep 'test_command:' "$ORCH")"
-GATED_DEBUG="$(printf '%s' "$TEST_CMD_LINE" | sed 's/ && /\n/g' \
+# Source of truth is now scripts/verify.sh --print-plan (the oracle that the
+# orchestrator itself calls), NOT orchestrator.yaml's inlined test_command.
+# --scope all forces the full plan so the result is independent of the working
+# index; --print-plan emits one command per line with env lines as '# ' comments
+# (stripped via `grep -v '^#'`). Both runner spellings (cargo test / cargo
+# nextest run) are accepted in the ungated assertions below.
+TEST_PLAN_SEGS="$(bash "$REPO_ROOT/scripts/verify.sh" test --profile both --scope all --print-plan | grep -v '^#')"
+GATED_DEBUG="$(printf '%s\n' "$TEST_PLAN_SEGS" \
     | grep 'cargo-test-occt-gated\.sh' | grep -v -- '--release' || true)"
-GATED_RELEASE="$(printf '%s' "$TEST_CMD_LINE" | sed 's/ && /\n/g' \
+GATED_RELEASE="$(printf '%s\n' "$TEST_PLAN_SEGS" \
     | grep 'cargo-test-occt-gated\.sh' | grep -- '--release' || true)"
 export GATED_DEBUG GATED_RELEASE
 
@@ -130,12 +134,13 @@ assert "gated release invocation does not contain --workspace" \
 # ---------------------------------------------------------------------------
 # Tests 7–11: ungated-exclude assertions
 # ---------------------------------------------------------------------------
-# Extract ungated workspace passes: segments with 'cargo test --workspace' but
-# NOT containing 'cargo-test-occt-gated.sh'.
-UNGATED_DEBUG="$(printf '%s' "$TEST_CMD_LINE" | sed 's/ && /\n/g' \
-    | grep 'cargo test --workspace' | grep -v 'cargo-test-occt-gated\.sh' | grep -v -- '--release' || true)"
-UNGATED_RELEASE="$(printf '%s' "$TEST_CMD_LINE" | sed 's/ && /\n/g' \
-    | grep 'cargo test --workspace' | grep -v 'cargo-test-occt-gated\.sh' | grep -- '--release' || true)"
+# Extract ungated workspace passes: leaves running 'cargo (test|nextest run)
+# --workspace' but NOT via the gate wrapper. The (test|nextest run) alternation
+# keeps the assertions valid for both runner spellings.
+UNGATED_DEBUG="$(printf '%s\n' "$TEST_PLAN_SEGS" \
+    | grep -E 'cargo (test|nextest run) --workspace' | grep -v 'cargo-test-occt-gated\.sh' | grep -v -- '--release' || true)"
+UNGATED_RELEASE="$(printf '%s\n' "$TEST_PLAN_SEGS" \
+    | grep -E 'cargo (test|nextest run) --workspace' | grep -v 'cargo-test-occt-gated\.sh' | grep -- '--release' || true)"
 export UNGATED_DEBUG UNGATED_RELEASE
 
 echo ""
@@ -163,21 +168,21 @@ assert "ungated release invocation contains 'timeout --kill-after=60 [0-9]+m'" \
     bash -c "printf '%s' \"\$UNGATED_RELEASE\" | grep -qE 'timeout[[:space:]]+--kill-after=60[[:space:]]+[0-9]+m[[:space:]]'"
 
 echo ""
-echo "--- Test 10: gated debug appears before ungated debug in test_command ---"
-_ALL_SEGS="$(printf '%s' "$TEST_CMD_LINE" | sed 's/ && /\n/g')"
+echo "--- Test 10: gated debug appears before ungated debug in the plan ---"
+_ALL_SEGS="$TEST_PLAN_SEGS"
 _GATED_DEBUG_IDX="$(printf '%s\n' "$_ALL_SEGS" \
     | grep -n 'cargo-test-occt-gated\.sh' | grep -v -- '--release' | head -1 | cut -d: -f1 || true)"
 _UNGATED_DEBUG_IDX="$(printf '%s\n' "$_ALL_SEGS" \
-    | grep -n 'cargo test --workspace' | grep -v 'cargo-test-occt-gated' | grep -v -- '--release' | head -1 | cut -d: -f1 || true)"
+    | grep -nE 'cargo (test|nextest run) --workspace' | grep -v 'cargo-test-occt-gated' | grep -v -- '--release' | head -1 | cut -d: -f1 || true)"
 assert "gated debug (segment ${_GATED_DEBUG_IDX:-?}) precedes ungated debug (segment ${_UNGATED_DEBUG_IDX:-?})" \
     bash -c "[ '${_GATED_DEBUG_IDX:-0}' -gt 0 ] && [ '${_UNGATED_DEBUG_IDX:-0}' -gt 0 ] && [ '${_GATED_DEBUG_IDX:-0}' -lt '${_UNGATED_DEBUG_IDX:-0}' ]"
 
 echo ""
-echo "--- Test 11: gated release appears before ungated release in test_command ---"
+echo "--- Test 11: gated release appears before ungated release in the plan ---"
 _GATED_RELEASE_IDX="$(printf '%s\n' "$_ALL_SEGS" \
     | grep -n 'cargo-test-occt-gated\.sh' | grep -- '--release' | head -1 | cut -d: -f1 || true)"
 _UNGATED_RELEASE_IDX="$(printf '%s\n' "$_ALL_SEGS" \
-    | grep -n 'cargo test --workspace' | grep -v 'cargo-test-occt-gated' | grep -- '--release' | head -1 | cut -d: -f1 || true)"
+    | grep -nE 'cargo (test|nextest run) --workspace' | grep -v 'cargo-test-occt-gated' | grep -- '--release' | head -1 | cut -d: -f1 || true)"
 assert "gated release (segment ${_GATED_RELEASE_IDX:-?}) precedes ungated release (segment ${_UNGATED_RELEASE_IDX:-?})" \
     bash -c "[ '${_GATED_RELEASE_IDX:-0}' -gt 0 ] && [ '${_UNGATED_RELEASE_IDX:-0}' -gt 0 ] && [ '${_GATED_RELEASE_IDX:-0}' -lt '${_UNGATED_RELEASE_IDX:-0}' ]"
 

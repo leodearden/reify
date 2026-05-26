@@ -72,23 +72,29 @@ assert "script has no grep calls referencing orchestrator.yaml" \
 assert "script has exactly 4 'Check N:' echo statements" \
     bash -c "[ \"\$(grep -cE 'echo \"Check [0-9]' '$SCRIPT')\" = '4' ]"
 
-# -- Test 3: orchestrator.yaml uses if/then/fi guards (not || true) ----------
+# -- Test 3: verify.sh plan uses if/then/fi guards (not || true) -------------
 echo ""
-echo "--- Test 3: orchestrator.yaml if/then/fi guards for npm ci ---"
+echo "--- Test 3: if/then/fi guards for npm ci in the verify.sh plan ---"
 
-ORCH="$REPO_ROOT/orchestrator.yaml"
+# The npm-ci hardening now lives in scripts/verify.sh (called by the orchestrator
+# since task 3766), so assert against verify.sh --print-plan rather than
+# orchestrator.yaml. --include-infra so the infra leaves appear; --scope all for
+# a full, index-independent plan; env lines stripped via `grep -v '^#'`.
+TEST_PLAN_SEGS="$(bash "$REPO_ROOT/scripts/verify.sh" test --profile both --scope all --include-infra --print-plan | grep -v '^#')"
+LINT_PLAN_SEGS="$(bash "$REPO_ROOT/scripts/verify.sh" lint --scope all --include-infra --print-plan | grep -v '^#')"
+export TEST_PLAN_SEGS LINT_PLAN_SEGS
 
-assert "test_command has no '|| true' after npm ci" \
-    bash -c "! grep 'test_command:' '$ORCH' | grep -q 'npm ci.*|| true\||| true.*npm ci'"
+assert "test plan has no '|| true' after npm ci" \
+    bash -c "! printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -q 'npm ci.*|| true\||| true.*npm ci'"
 
-assert "lint_command has no '|| true' after npm ci" \
-    bash -c "! grep 'lint_command:' '$ORCH' | grep -q 'npm ci.*|| true\||| true.*npm ci'"
+assert "lint plan has no '|| true' after npm ci" \
+    bash -c "! printf '%s\n' \"\$LINT_PLAN_SEGS\" | grep -q 'npm ci.*|| true\||| true.*npm ci'"
 
-assert "test_command uses 'if test' guard pattern for npm ci" \
-    bash -c "grep 'test_command:' '$ORCH' | grep -q 'if test'"
+assert "test plan uses 'if test' guard pattern for npm ci" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -q 'if test'"
 
-assert "lint_command uses 'if test' guard pattern for npm ci" \
-    bash -c "grep 'lint_command:' '$ORCH' | grep -q 'if test'"
+assert "lint plan uses 'if test' guard pattern for npm ci" \
+    bash -c "printf '%s\n' \"\$LINT_PLAN_SEGS\" | grep -q 'if test'"
 
 # -- Test 4: script has git preflight check ----------------------------------
 echo ""
@@ -140,34 +146,34 @@ echo ""
 echo "--- Test 9: orchestrator command placement and existence guards ---"
 
 # S1: full-path assertion (the guard-pattern assertion below also provides full-path coverage)
-assert "scripts/test_pm_standardization.sh (full path) is in lint_command" \
-    bash -c "grep 'lint_command:' '$ORCH' | grep -q 'scripts/test_pm_standardization.sh'"
+assert "scripts/test_pm_standardization.sh (full path) is in the lint plan" \
+    bash -c "printf '%s\n' \"\$LINT_PLAN_SEGS\" | grep -q 'scripts/test_pm_standardization.sh'"
 
-assert "test_pm_standardization.sh is NOT in test_command" \
-    bash -c "! grep 'test_command:' '$ORCH' | grep -q 'test_pm_standardization.sh'"
+assert "test_pm_standardization.sh is NOT in the test plan" \
+    bash -c "! printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -q 'test_pm_standardization.sh'"
 
-# S2: symmetric negative assertion — test-only scripts should not be in lint_command
-assert "sync_comments_test.sh is NOT in lint_command" \
-    bash -c "! grep 'lint_command:' '$ORCH' | grep -q 'sync_comments_test.sh'"
+# S2: symmetric negative assertion — test-only scripts should not be in the lint plan
+assert "sync_comments_test.sh is NOT in the lint plan" \
+    bash -c "! printf '%s\n' \"\$LINT_PLAN_SEGS\" | grep -q 'sync_comments_test.sh'"
 
-assert "sync_comments_test.sh uses 'if test -f' guard in test_command" \
-    bash -c "grep 'test_command:' '$ORCH' | grep -q 'if test -f tests/sync_comments_test.sh'"
+assert "sync_comments_test.sh uses 'if test -f' guard in the test plan" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -q 'if test -f tests/sync_comments_test.sh'"
 
-assert "test_pm_standardization.sh uses 'if test -f' guard in lint_command" \
-    bash -c "grep 'lint_command:' '$ORCH' | grep -q 'if test -f scripts/test_pm_standardization.sh'"
+assert "test_pm_standardization.sh uses 'if test -f' guard in the lint plan" \
+    bash -c "printf '%s\n' \"\$LINT_PLAN_SEGS\" | grep -q 'if test -f scripts/test_pm_standardization.sh'"
 
-assert "check-pm-standardization.sh (old name) is NOT in lint_command after rename" \
-    bash -c "! grep 'lint_command:' '$ORCH' | grep -q 'check-pm-standardization.sh'"
+assert "check-pm-standardization.sh (old name) is NOT in the lint plan after rename" \
+    bash -c "! printf '%s\n' \"\$LINT_PLAN_SEGS\" | grep -q 'check-pm-standardization.sh'"
 
 # -- Test 10: WARNING echoes when guards trigger a skip ------------------------
 echo ""
 echo "--- Test 10: WARNING echoes for guard skips ---"
 
-assert "test_command has WARNING echo for sync_comments_test.sh skip" \
-    bash -c "grep 'test_command:' '$ORCH' | grep -q 'WARNING.*sync_comments_test'"
+assert "test plan has WARNING echo for sync_comments_test.sh skip" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -q 'WARNING.*sync_comments_test'"
 
-assert "lint_command has WARNING echo for test_pm_standardization.sh skip" \
-    bash -c "grep 'lint_command:' '$ORCH' | grep -q 'WARNING.*test_pm_standardization'"
+assert "lint plan has WARNING echo for test_pm_standardization.sh skip" \
+    bash -c "printf '%s\n' \"\$LINT_PLAN_SEGS\" | grep -q 'WARNING.*test_pm_standardization'"
 
 # -- Test 11: end-to-end execution test ----------------------------------------
 echo ""
