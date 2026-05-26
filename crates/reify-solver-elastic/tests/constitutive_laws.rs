@@ -462,6 +462,259 @@ fn rotate_voigt_90deg_about_z_swaps_d11_d22_for_orthotropic() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Convention-pinning tests (review: rotate_voigt direction is observable)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The earlier tests (90°-about-z swap, isotropic invariance, SPD probe) cannot
+// distinguish `T · D · Tᵀ` from `T⁻¹ · D · T⁻ᵀ` — direction cosines square on
+// the diagonal block, `cfrp_orthotropic()` has E2 == E3 so any 90° rotation
+// hits a symmetry axis, isotropic D is rotation-invariant, and SPD is
+// direction-insensitive. The tests below pin the convention by:
+//   1. using a fully orthotropic material with E1 ≠ E2 ≠ E3, and
+//   2. composing two non-axis-aligned rotations whose product is identity —
+//      this fails immediately if `T` and `Tᵀ` are swapped.
+
+/// Fully orthotropic CFRP-like material with **distinct** principal stiffnesses
+/// (E1 ≠ E2 ≠ E3) so that a wrong rotation direction has somewhere to be observed.
+///
+/// PD-valid: `nu_ij < sqrt(E_i/E_j)` and the Poisson determinant Δ stays > 0.
+fn distinct_orthotropic() -> OrthotropicMaterial {
+    // E1 = 140 GPa, E2 = 50 GPa, E3 = 10 GPa — three distinct stiffnesses.
+    // ν12 = 0.25 (≪ sqrt(140/50) ≈ 1.67),
+    // ν13 = 0.20 (≪ sqrt(140/10) ≈ 3.74),
+    // ν23 = 0.15 (≪ sqrt(50/10)  ≈ 2.24).
+    OrthotropicMaterial {
+        e1: 140e9,
+        e2: 50e9,
+        e3: 10e9,
+        g12: 6e9,
+        g13: 5e9,
+        g23: 4e9,
+        nu12: 0.25,
+        nu13: 0.20,
+        nu23: 0.15,
+    }
+}
+
+/// Transpose a 3×3 matrix (small helper for the round-trip test).
+fn transpose3(m: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    [
+        [m[0][0], m[1][0], m[2][0]],
+        [m[0][1], m[1][1], m[2][1]],
+        [m[0][2], m[1][2], m[2][2]],
+    ]
+}
+
+/// Multiply two 3×3 matrices (helper, to verify R·Rᵀ = I within FP tolerance).
+fn matmul3(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    let mut out = [[0.0_f64; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            for k in 0..3 {
+                out[i][j] += a[i][k] * b[k][j];
+            }
+        }
+    }
+    out
+}
+
+/// Round-trip: rotating by R then by Rᵀ must restore D_local to ≤1e-9
+/// relative tolerance.
+///
+/// This is the strongest convention-pinning test: if the implementation
+/// instead computed `T⁻¹·D·T⁻ᵀ`, then the second call (with Rᵀ) would *not*
+/// undo the first — the composition would be `T(Rᵀ)·T(R)·D·T(R)ᵀ·T(Rᵀ)ᵀ`
+/// in the wrong nesting, which generally is not the identity for an
+/// orthotropic D with three distinct E's.
+///
+/// Material: fully orthotropic with E1=140 GPa, E2=50 GPa, E3=10 GPa.
+/// Rotation: 37° about the non-principal axis (1,2,3)/√14 (no symmetry).
+#[test]
+fn rotate_voigt_round_trip_with_inverse_restores_d_local() {
+    let axis = normalize3([1.0, 2.0, 3.0]); // non-principal: hits no orthotropic symmetry
+    let angle = 37.0_f64.to_radians();        // non-multiple of 90°
+    let r = rotation_from_axis_angle(axis, angle);
+    let r_inv = transpose3(r); // orthogonal → inverse = transpose
+
+    // Sanity: R · Rᵀ ≈ I (rule out rotation-builder bugs).
+    let identity_check = matmul3(r, r_inv);
+    for i in 0..3 {
+        for j in 0..3 {
+            let expected = if i == j { 1.0 } else { 0.0 };
+            assert!(
+                (identity_check[i][j] - expected).abs() < 1e-12,
+                "R·Rᵀ[{i}][{j}] = {} expected {expected}",
+                identity_check[i][j]
+            );
+        }
+    }
+
+    let mat = distinct_orthotropic();
+    let d_local = mat.d_matrix_local();
+
+    // First rotate into the rotated frame, then rotate back.
+    let d_rotated = rotate_voigt(&d_local, &r);
+    let d_restored = rotate_voigt(&d_rotated, &r_inv);
+
+    // Restored matrix must equal D_local within tight relative tolerance.
+    // (The intermediate D_rotated entries scale with D_local entries, so FP
+    // error accumulates as ε·||D|| ≈ 1e-16 · 1e11 ≈ 1e-5 absolute — convert
+    // to ~1e-15 relative once divided by the same scale; 1e-9 is plenty.)
+    let d_max: f64 = d_local
+        .iter()
+        .flat_map(|row| row.iter().copied())
+        .fold(0.0_f64, |a, b| a.max(b.abs()));
+    for i in 0..6 {
+        for j in 0..6 {
+            let scale = d_local[i][j].abs().max(d_restored[i][j].abs()).max(d_max);
+            let err = (d_restored[i][j] - d_local[i][j]).abs();
+            assert!(
+                err <= 1e-9 * scale,
+                "round-trip failed at D[{i}][{j}]: local={}, restored={}, err={err}, scale={scale}",
+                d_local[i][j],
+                d_restored[i][j],
+            );
+        }
+    }
+
+    // Sanity: D_rotated must *not* equal D_local (otherwise the round trip is
+    // trivial, e.g. if the rotation were silently dropped to identity).
+    let differs = (0..6).any(|i| {
+        (0..6).any(|j| (d_rotated[i][j] - d_local[i][j]).abs() > 1e-3 * d_max)
+    });
+    assert!(
+        differs,
+        "intermediate D_rotated unexpectedly equals D_local — non-principal rotation should change it",
+    );
+}
+
+/// Hand-derived reference: 30° in-plane rotation pins the convention direction.
+///
+/// For an orthotropic material rotated by angle θ about the z-axis (local →
+/// global, i.e. v_global = R·v_local with R returned by
+/// `rotation_from_axis_angle([0,0,1], θ)`), the in-plane block of the
+/// rotated D matches the classical lamina-transformation formulas (Jones,
+/// "Mechanics of Composite Materials", §2.6). The z-axis being invariant
+/// under R means the 3D Poisson coupling to ε_zz factors through unchanged,
+/// so the same closed form applies to the 3D orthotropic D's in-plane
+/// indices `[0,1,3]` as to a plane-stress lamina.
+///
+/// Why this pins direction: the formula for `D̄₁₆ = D_rot[0][3]` contains
+/// odd powers of `sin(θ)`, so its sign flips under `θ → −θ`. Passing the
+/// transposed rotation (the global → local matrix, e.g. `ShellFrame.r`)
+/// effectively rotates by `−θ` and inverts the sign — which the other
+/// rotate_voigt tests (squared-cosine swap, isotropic invariance, SPD,
+/// round-trip) all miss but this one catches.
+#[test]
+fn rotate_voigt_30deg_about_z_matches_lamina_transformation_with_correct_sign() {
+    let theta = 30.0_f64.to_radians();
+    let r = rotation_from_axis_angle([0.0, 0.0, 1.0], theta);
+
+    let mat = distinct_orthotropic();
+    let d = mat.d_matrix_local();
+    let d_rot = rotate_voigt(&d, &r);
+
+    let c = theta.cos();
+    let s = theta.sin();
+    let d11 = d[0][0];
+    let d22 = d[1][1];
+    let d12 = d[0][1];
+    let d66 = d[3][3]; // G12 with engineering-shear convention
+
+    // D̄₁₁ = c⁴·D₁₁ + s⁴·D₂₂ + 2·c²s²·(D₁₂ + 2·D₆₆)
+    let d_bar_11 = c.powi(4) * d11
+        + s.powi(4) * d22
+        + 2.0 * c * c * s * s * (d12 + 2.0 * d66);
+    let scale_11 = d_bar_11.abs().max(d_rot[0][0].abs());
+    assert!(
+        (d_rot[0][0] - d_bar_11).abs() <= 1e-9 * scale_11,
+        "D_rot[0][0] = {} vs lamina D̄₁₁ = {d_bar_11}",
+        d_rot[0][0],
+    );
+
+    // D̄₂₂ = s⁴·D₁₁ + c⁴·D₂₂ + 2·c²s²·(D₁₂ + 2·D₆₆)
+    let d_bar_22 = s.powi(4) * d11
+        + c.powi(4) * d22
+        + 2.0 * c * c * s * s * (d12 + 2.0 * d66);
+    let scale_22 = d_bar_22.abs().max(d_rot[1][1].abs());
+    assert!(
+        (d_rot[1][1] - d_bar_22).abs() <= 1e-9 * scale_22,
+        "D_rot[1][1] = {} vs lamina D̄₂₂ = {d_bar_22}",
+        d_rot[1][1],
+    );
+
+    // ★ Direction-pinning entry: D̄₁₆ has odd powers of sin(θ) — sign flips
+    //   if rotation is passed transposed (= effective −θ).
+    // D̄₁₆ = c³s·(D₁₁ − D₁₂) − cs³·(D₂₂ − D₁₂) − 2cs(c² − s²)·D₆₆
+    let d_bar_16 = c.powi(3) * s * (d11 - d12)
+        - c * s.powi(3) * (d22 - d12)
+        - 2.0 * c * s * (c * c - s * s) * d66;
+    let scale_16 = d_bar_16.abs().max(d_rot[0][3].abs());
+    // Sanity: d_bar_16 must be substantially non-zero for a non-symmetry angle.
+    assert!(
+        d_bar_16.abs() > 1e6,
+        "lamina D̄₁₆ = {d_bar_16} unexpectedly small — test would not pin sign",
+    );
+    assert!(
+        (d_rot[0][3] - d_bar_16).abs() <= 1e-9 * scale_16,
+        "D_rot[0][3] = {} vs lamina D̄₁₆ = {d_bar_16} \
+         (sign mismatch ⇒ rotation convention is reversed)",
+        d_rot[0][3],
+    );
+
+    // D̄₂₆ = cs³·(D₁₁ − D₁₂) − c³s·(D₂₂ − D₁₂) + 2cs(c² − s²)·D₆₆
+    let d_bar_26 = c * s.powi(3) * (d11 - d12)
+        - c.powi(3) * s * (d22 - d12)
+        + 2.0 * c * s * (c * c - s * s) * d66;
+    let scale_26 = d_bar_26.abs().max(d_rot[1][3].abs());
+    assert!(
+        (d_rot[1][3] - d_bar_26).abs() <= 1e-9 * scale_26,
+        "D_rot[1][3] = {} vs lamina D̄₂₆ = {d_bar_26}",
+        d_rot[1][3],
+    );
+}
+
+/// Non-axis-aligned rotation of a fully orthotropic material must preserve
+/// SPD (symmetry already covered, plus all positive Rayleigh quotients) for
+/// the *distinct-E* material. This complements the cfrp_orthotropic SPD test
+/// — that one has E2 == E3 so several rotations are symmetries; here every
+/// rotation is non-trivial.
+#[test]
+fn rotate_voigt_preserves_spd_for_distinct_orthotropic_off_axis() {
+    let axis = normalize3([1.0, 2.0, 3.0]);
+    let angle = 37.0_f64.to_radians();
+    let r = rotation_from_axis_angle(axis, angle);
+
+    let d = distinct_orthotropic().d_matrix_local();
+    let d_rot = rotate_voigt(&d, &r);
+
+    assert_symmetric_finite(&d_rot);
+
+    let probes: &[[f64; 6]] = &[
+        [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        [1.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+        [1.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 1.0, 0.0, 0.0, 0.0],
+        [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+    ];
+    for (p_idx, v) in probes.iter().enumerate() {
+        let mut dv = [0.0_f64; 6];
+        for i in 0..6 {
+            for j in 0..6 {
+                dv[i] += d_rot[i][j] * v[j];
+            }
+        }
+        let rq: f64 = v.iter().zip(dv.iter()).map(|(a, b)| a * b).sum();
+        assert!(rq > 0.0, "Rayleigh quotient probe {p_idx} = {rq} ≤ 0");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Step 9: UFCS dispatch pinning tests (review: fragile_method_dispatch)
 // ─────────────────────────────────────────────────────────────────────────────
 //

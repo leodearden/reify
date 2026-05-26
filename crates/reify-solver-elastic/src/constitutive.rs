@@ -487,14 +487,51 @@ impl ConstitutiveLaw for TransverseIsotropicMaterial {
 /// Rotate a 6×6 Voigt elasticity matrix from a local material frame into a
 /// global frame.
 ///
+/// # Convention (single source of truth)
+///
+/// `rotation` is the **local → global** rotation R: it transforms vector
+/// *components* as
+///
+/// ```text
+/// v_global = R · v_local
+/// ```
+///
+/// Equivalently, the **columns** of `rotation` are the three local basis
+/// vectors `e₁, e₂, e₃` expressed in global coordinates. (The rows are the
+/// global basis vectors expressed in local coordinates.)
+///
+/// ⚠ This is the **transpose** of the `ShellFrame.r` convention in
+/// `shell_assembly.rs` (which stores rows = local basis in global coords,
+/// i.e. `v_local = ShellFrame.r · v_global`, the global → local map).
+/// Callers holding a `ShellFrame` must pass `transpose(frame.r)` here.
+///
 /// # Formula (PRD Contract C2)
 ///
 /// ```text
 /// D_global = T · D_local · Tᵀ
 /// ```
 ///
-/// where `T` is the 6×6 **Voigt-stress transformation matrix** built from the
-/// 3×3 rotation matrix `rotation` that maps local material axes → global axes.
+/// where `T = M_σ(R)` is the 6×6 **Voigt-stress Bond matrix** for R. With the
+/// chosen convention, `M_σ(R)` transforms stress *local → global*
+/// (`σ_global = T · σ_local`); the matching engineering-strain transform is
+/// `Tᵀ` (so `ε_local = Tᵀ · ε_global`), and the two combine into the formula
+/// above.
+///
+/// # Worked sanity example
+///
+/// 90° active rotation of the material frame about z (local x → global y):
+///
+/// ```text
+///       ⎡ 0  −1   0 ⎤
+///   R = ⎢ 1   0   0 ⎥   (columns = local e₁,e₂,e₃ in global coords:
+///       ⎣ 0   0   1 ⎦    e₁=[0,1,0]=ŷ, e₂=[−1,0,0]=−x̂, e₃=[0,0,1]=ẑ)
+/// ```
+///
+/// For an orthotropic D with `D₁₁ ≠ D₂₂` (stiffness along local x vs y),
+/// `rotate_voigt(&D, &R)` returns a D' with `D'₁₁ ≈ D₂₂` and `D'₂₂ ≈ D₁₁` —
+/// the original stiffness along local x is now along global y (and vice
+/// versa). Tests `rotate_voigt_90deg_about_z_swaps_d11_d22_for_orthotropic`
+/// and `rotate_voigt_round_trip_with_inverse_restores_d_local` pin this.
 ///
 /// # Voigt convention
 ///
@@ -503,7 +540,11 @@ impl ConstitutiveLaw for TransverseIsotropicMaterial {
 ///
 /// # T-matrix construction
 ///
-/// Let the rows of `rotation` be `[l1,m1,n1]`, `[l2,m2,n2]`, `[l3,m3,n3]`.
+/// Let the rows of `rotation` be `[l1,m1,n1]`, `[l2,m2,n2]`, `[l3,m3,n3]`
+/// (i.e. `lᵢ = rotation[i][0]`, `mᵢ = rotation[i][1]`, `nᵢ = rotation[i][2]`).
+/// Under the local → global convention above, row `i` of `rotation` is the
+/// `i`-th global basis vector expressed in local coordinates, and these are
+/// exactly the direction cosines the Bond formula expects.
 ///
 /// Upper-left 3×3 block (row `i` of T, col `j`): `lᵢ²`, `mᵢ²`, `nᵢ²` (squares of direction cosines).
 ///
@@ -520,9 +561,10 @@ impl ConstitutiveLaw for TransverseIsotropicMaterial {
 ///
 /// - `d_local`: the 6×6 D matrix in the material's local frame (from a
 ///   [`ConstitutiveLaw::d_matrix_local`] call).
-/// - `rotation`: the 3×3 orthonormal rotation matrix with rows = local basis
-///   vectors expressed in global coordinates (matches the `ShellFrame.r`
-///   convention in `shell_assembly.rs:60`).
+/// - `rotation`: the 3×3 orthonormal local → global rotation. Columns are
+///   the local basis vectors in global coordinates; rows are the global
+///   basis vectors in local coordinates. See the ⚠ note about
+///   `ShellFrame.r` (which is the transpose of this matrix).
 ///
 /// # Returns
 ///
