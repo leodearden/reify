@@ -12,6 +12,10 @@ function commaSep(rule) {
 module.exports = grammar({
   name: 'reify',
 
+  externals: $ => [
+    $._unit_expr_start,
+  ],
+
   extras: $ => [
     /\s/,
     $.line_comment,
@@ -896,12 +900,36 @@ module.exports = grammar({
       $.parenthesized_expression,
     ),
 
-    // Quantity literal: number immediately followed by unit identifier (e.g. 80mm)
-    // Use token.immediate to require no whitespace between number and unit
+    // Quantity literal: number immediately followed by a unit expression (e.g. 80mm, 9.81m/s^2)
+    // _unit_expr_start (external scanner) fires only when next char is a unit-start char
+    // with no whitespace, enforcing the contiguity invariant from PRD §3.1.
     quantity_literal: $ => seq(
       field('value', $.number_literal),
-      field('unit', alias($.immediate_identifier, $.unit)),
+      $._unit_expr_start,
+      field('unit', $.unit_expr),
     ),
+
+    // Unit expression: composite unit with mul (*), div (/), and pow (^) operators.
+    // All internal tokens use token.immediate so any whitespace breaks the expression.
+    // PRD §3.2: ^ binds tighter than */; */ are left-associative.
+    unit_expr: $ => choice(
+      prec.left(1, seq(
+        field('left', $.unit_expr),
+        field('op', choice(token.immediate('*'), token.immediate('/'))),
+        field('right', $.unit_expr),
+      )),
+      prec(2, seq(
+        field('base', $.unit_expr),
+        field('op', token.immediate('^')),
+        field('exponent', $.signed_integer),
+      )),
+      seq(token.immediate('('), $.unit_expr, token.immediate(')')),
+      alias($.immediate_identifier, $.unit_name),
+    ),
+
+    // Integer exponent for unit_expr pow arm (e.g. ^2, ^-1).
+    // token.immediate enforces contiguity with the preceding ^ operator.
+    signed_integer: $ => token.immediate(/-?\d+/),
 
     // An identifier that must immediately follow the previous token (no whitespace)
     immediate_identifier: $ => token.immediate(/[a-zA-Z_][a-zA-Z0-9_]*/),

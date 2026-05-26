@@ -30,7 +30,8 @@ structure S {
           name: (identifier)
           value: (quantity_literal
             value: (number_literal)
-            unit: (unit)))
+            unit: (unit_expr
+              (unit_name))))
         (let_declaration
           name: (identifier)
           value: (binary_expression
@@ -41,7 +42,8 @@ structure S {
             left: (identifier)
             right: (quantity_literal
               value: (number_literal)
-              unit: (unit))))))))
+              unit: (unit_expr
+                (unit_name)))))))))
 
 ================================================================================
 specialization body — where-guarded param_assignment
@@ -66,7 +68,8 @@ structure S {
           name: (identifier)
           value: (quantity_literal
             value: (number_literal)
-            unit: (unit))
+            unit: (unit_expr
+              (unit_name)))
           guard: (where_clause
             condition: (identifier)))))))
 

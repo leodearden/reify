@@ -168,5 +168,6 @@ fn main() {
         .flag_if_supported("-Wno-unused-but-set-variable")
         .flag_if_supported("-Wno-trigraphs");
     c_config.file(&parser_path);
+    c_config.file("src/scanner.c");
     c_config.compile("tree_sitter_reify");
 }
