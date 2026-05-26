@@ -374,6 +374,81 @@ fn attributed_boundary_nodes_lie_on_locus_of_attributed_handle() {
 }
 
 // ---------------------------------------------------------------------------
+// Over-decomposition property-witness (raw FFI, has_gmsh)
+// ---------------------------------------------------------------------------
+
+/// Property-witness: `classify_surfaces(FRAC_PI_4, …)` + `create_geometry`
+/// over-decomposes the 2×2-subdivided unit cube into more sub-entities than
+/// the geometric B-rep count (8 vertices / 12 edges / 6 faces).
+///
+/// This test replicates the classify+create_geometry prefix of
+/// `run_meshing_with_entity_queries` (see `mesh_boundary.rs`) without the
+/// surface-loop / volume / `mesh_generate(3)` suffix, so it runs quickly and
+/// isolates just the topology reconstruction step.
+///
+/// Pinned entity counts (observed on this host):
+///   dim-0 (vertices): 12
+///   dim-1 (edges):    20
+///   dim-2 (faces):    10
+///
+/// If a gmsh upgrade changes these counts, update the expected triple and
+/// leave a comment with the new gmsh version, then re-verify that the
+/// NodeAttachment producer still attributes all 8 cube corners + 12 edges +
+/// 6 faces correctly (`tests/node_attachment_producer.rs` signal test and
+/// locus test — task 3763).
+#[cfg(has_gmsh)]
+#[test]
+fn classify_surfaces_frac_pi_4_over_decomposes_unit_cube() {
+    use reify_kernel_gmsh::{ffi, init};
+    use std::f64::consts::FRAC_PI_4;
+
+    let surface = subdivided_unit_cube_surface();
+    let n_verts = surface.vertices.len() / 3;
+    let n_tris = surface.indices.len() / 3;
+
+    let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    init::ensure_initialized();
+
+    // Replicate the classify+create_geometry prefix of run_meshing_with_entity_queries
+    // (mesh_boundary.rs), stopping before surface-loop + volume + mesh_generate(3).
+    ffi::clear().expect("clear");
+    ffi::option_set_number("General.Terminal", 0.0).expect("terminal off");
+    ffi::model_add("reify_overdecomp_probe").expect("model_add");
+    let surf_tag = ffi::add_discrete_entity(2, &[]).expect("add_discrete_entity");
+
+    let node_tags: Vec<u64> = (1..=n_verts as u64).collect();
+    let coords_f64: Vec<f64> = surface.vertices.iter().map(|&v| v as f64).collect();
+    ffi::add_nodes_2d(surf_tag, &node_tags, &coords_f64).expect("add_nodes_2d");
+
+    let tri_tags: Vec<u64> = (1..=n_tris as u64).collect();
+    let tri_node_tags: Vec<u64> = surface.indices.iter().map(|&i| i as u64 + 1).collect();
+    ffi::add_elements_2d(surf_tag, 2, &tri_tags, &tri_node_tags).expect("add_elements_2d");
+
+    // Same classify_surfaces params as the producer (mesh_boundary.rs lines ~276-282).
+    ffi::classify_surfaces(FRAC_PI_4, 1, 1, FRAC_PI_4, 0).expect("classify_surfaces");
+    ffi::create_geometry(&[]).expect("create_geometry");
+
+    let n0 = ffi::get_entity_tags(0).expect("get_entity_tags(0)").len();
+    let n1 = ffi::get_entity_tags(1).expect("get_entity_tags(1)").len();
+    let n2 = ffi::get_entity_tags(2).expect("get_entity_tags(2)").len();
+
+    let _ = ffi::clear();
+
+    // Geometric unit cube: 8 vertices / 12 edges / 6 faces.
+    // gmsh over-decomposes at FRAC_PI_4 — pinned counts below.
+    // On failure after a gmsh upgrade: update the triple to (n0, n1, n2),
+    // add a comment with the gmsh version, and re-verify NodeAttachment
+    // producer attribution (task 3763).
+    assert_eq!(
+        (n0, n1, n2),
+        (12, 20, 10),
+        "gmsh over-decomposition counts changed from the pinned (12, 20, 10). \
+         Observed: ({n0}, {n1}, {n2}). Update the expected triple and re-verify \
+         NodeAttachment producer attribution (task 3763)."
+    );
+}
+
+// ---------------------------------------------------------------------------
 // suggested_match_tolerance (pure — no gmsh, no cfg gate)
 // ---------------------------------------------------------------------------
 
