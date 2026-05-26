@@ -3221,6 +3221,20 @@ mod invariant_tests {
         (id, node)
     }
 
+    /// `Type::Geometry` is representable as of GHR-β (task 3604): a
+    /// `Value::GeometryHandle` exists and `is_representable_cell_type` must
+    /// admit it.
+    ///
+    /// RED: `is_representable_cell_type` still rejects `Type::Geometry` until
+    /// step-6 flips the predicate.
+    #[test]
+    fn is_representable_cell_type_admits_geometry() {
+        assert!(
+            super::is_representable_cell_type(&Type::Geometry),
+            "Type::Geometry must be representable post GHR-β (Value::GeometryHandle exists)"
+        );
+    }
+
     /// Verify that `assert_value_cell_types_representable` panics with the
     /// expected message for every unrepresentable `Type` variant.  Uses
     /// `catch_unwind` to check all variants in a single test run, avoiding
@@ -3232,10 +3246,14 @@ mod invariant_tests {
     /// `material : Material = Material(...)` can be represented; the
     /// default expression evaluates to `Value::Undef`, which passes the
     /// kind-match check for any type.
+    ///
+    /// `Type::Geometry` is intentionally absent from this list (task 3604 /
+    /// GHR-β): it is now representable as `Value::GeometryHandle`; see
+    /// `is_representable_cell_type_admits_geometry`.
     #[test]
     fn panics_on_unrepresentable_cell_types() {
         use std::panic;
-        for ty in [Type::TypeParam("T".into()), Type::Geometry] {
+        for ty in [Type::TypeParam("T".into())] {
             let mut graph = EvaluationGraph::default();
             let (id, node) = bad_node(ty);
             graph.value_cells.insert(id, node);
@@ -3273,6 +3291,9 @@ mod invariant_tests {
             // `material : Material` are valid; their default evaluates to Undef
             // which passes the kind-match for any type.
             ("E", "e", Type::StructureRef("Material".into())),
+            // Geometry is now representable (task 3604 / GHR-β): Value::GeometryHandle
+            // was added so Geometry cells must not trigger the invariant assertion.
+            ("E", "f", Type::Geometry),
         ] {
             let id = ValueCellId::new(entity, member);
             let node = ValueCellNode {

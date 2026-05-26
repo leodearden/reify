@@ -3683,19 +3683,22 @@ fn edit_source_role_flip_probe_memoised_across_multiple_groups() {
 // ── Invariant-check tests ──────────────────────────────────────────────────
 
 /// `edit_source` must panic (in debug builds) on a malformed module whose
-/// `ValueCellDecl.cell_type` is an unrepresentable variant — either
-/// `Type::TypeParam` or `Type::Geometry` — that has no `Value` counterpart.
+/// `ValueCellDecl.cell_type` is an unrepresentable variant — `Type::TypeParam`
+/// — that has no `Value` counterpart.
 ///
-/// Both variants are exercised in a loop, mirroring the in-crate unit test
-/// `invariant_tests::panics_on_unrepresentable_cell_types` (engine_eval.rs:1514).
+/// `Type::Geometry` was removed from this loop in task 3604 / GHR-β because
+/// `Value::GeometryHandle` now makes Geometry a representable cell type; see
+/// `is_representable_cell_type_admits_geometry` in invariant_tests (engine_eval.rs).
+///
+/// Mirrors the in-crate unit test
+/// `invariant_tests::panics_on_unrepresentable_cell_types` (engine_eval.rs).
 /// The source of truth for which variants are unrepresentable is the runtime
 /// guard `assert_value_cell_types_representable` at engine_eval.rs:60.
 ///
 /// This mirrors the defensive invariant already present on the `Engine::eval`
-/// cold-start path (engine_eval.rs:247-249).  Without the corresponding fix in
-/// engine_edit.rs the call either returns normally or panics later with an
-/// unrelated message — the assertion must fire immediately after
-/// `Snapshot::from_compiled_module`.
+/// cold-start path.  Without the corresponding fix in engine_edit.rs the call
+/// either returns normally or panics later with an unrelated message — the
+/// assertion must fire immediately after `Snapshot::from_compiled_module`.
 #[test]
 #[cfg(debug_assertions)]
 fn edit_source_panics_on_unrepresentable_cell_type() {
@@ -3703,7 +3706,7 @@ fn edit_source_panics_on_unrepresentable_cell_type() {
     use reify_types::{ModulePath, Type};
     use std::panic;
 
-    for ty in [Type::TypeParam("T".into()), Type::Geometry] {
+    for ty in [Type::TypeParam("T".into())] {
         // edit_source requires an Initialized engine — seed one first with a valid eval.
         // The engine must be re-created per iteration: edit_source mutates state before
         // the assertion fires, leaving the engine potentially poisoned after a panic.
