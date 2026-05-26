@@ -245,6 +245,97 @@ structure def MultiCaseFixture {
     }
 }
 
+/// task 3549 SIR-β-mlcfea: `examples/load_case.ri` compiles error-free under the
+/// stdlib prelude AND its documented signal cells evaluate to the correct Value
+/// shapes.
+///
+/// Path is CARGO_MANIFEST_DIR-anchored per the task-348 convention:
+/// `crates/reify-eval` → `../../examples/load_case.ri` (workspace root).
+///
+/// Pins compile-cleanness AND that the example actually exercises the
+/// user-observable signal cells documented in the file's comments.
+#[test]
+fn load_case_example_evals_clean_and_exercises_signal_cells() {
+    const EXAMPLE_PATH: &str =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/load_case.ri");
+
+    let src = std::fs::read_to_string(EXAMPLE_PATH).expect("read examples/load_case.ri");
+    let compiled = parse_and_compile_with_stdlib(&src);
+
+    // Must compile with zero Error-severity diagnostics.
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "examples/load_case.ri must compile without errors under stdlib prelude; \
+         got errors: {errors:?}"
+    );
+
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    // LoadCaseDemo.case → Value::StructureInstance{type_name="LoadCase"}
+    let case = result
+        .values
+        .get(&ValueCellId::new("LoadCaseDemo", "case"))
+        .unwrap_or_else(|| panic!("LoadCaseDemo.case cell missing"));
+    match case {
+        Value::StructureInstance(data) => assert_eq!(
+            data.type_name, "LoadCase",
+            "LoadCaseDemo.case must have type_name=\"LoadCase\"; got {:?}",
+            data.type_name
+        ),
+        other => panic!("expected Value::StructureInstance for LoadCaseDemo.case; got {other:?}"),
+    }
+
+    // LoadCaseDemo.case_name → Value::String("g")
+    let case_name = result
+        .values
+        .get(&ValueCellId::new("LoadCaseDemo", "case_name"))
+        .unwrap_or_else(|| panic!("LoadCaseDemo.case_name cell missing"));
+    assert_eq!(
+        case_name,
+        &Value::String("g".to_string()),
+        "LoadCaseDemo.case_name must be Value::String(\"g\"); got {case_name:?}"
+    );
+
+    // LoadCaseDemo.first_load → Value::Real(10.0)
+    let first_load = result
+        .values
+        .get(&ValueCellId::new("LoadCaseDemo", "first_load"))
+        .unwrap_or_else(|| panic!("LoadCaseDemo.first_load cell missing"));
+    assert_eq!(
+        first_load,
+        &Value::Real(10.0),
+        "LoadCaseDemo.first_load must be Value::Real(10.0); got {first_load:?}"
+    );
+
+    // MapVsStructureDemo.raw_cases → Value::Map(_)
+    let raw_cases = result
+        .values
+        .get(&ValueCellId::new("MapVsStructureDemo", "raw_cases"))
+        .unwrap_or_else(|| panic!("MapVsStructureDemo.raw_cases cell missing"));
+    assert!(
+        matches!(raw_cases, Value::Map(_)),
+        "MapVsStructureDemo.raw_cases must be a Value::Map; got {raw_cases:?}"
+    );
+
+    // MapVsStructureDemo.wrapped → Value::StructureInstance{type_name="MultiCaseResult"}
+    let wrapped = result
+        .values
+        .get(&ValueCellId::new("MapVsStructureDemo", "wrapped"))
+        .unwrap_or_else(|| panic!("MapVsStructureDemo.wrapped cell missing"));
+    match wrapped {
+        Value::StructureInstance(data) => assert_eq!(
+            data.type_name, "MultiCaseResult",
+            "MapVsStructureDemo.wrapped must have type_name=\"MultiCaseResult\"; got {:?}",
+            data.type_name
+        ),
+        other => panic!(
+            "expected Value::StructureInstance for MapVsStructureDemo.wrapped; got {other:?}"
+        ),
+    }
+}
+
 /// task 3549 SIR-β-mlcfea: a raw `map{{...}}` value and a `MultiCaseResult`
 /// structure instance coexist in the same fixture and are structurally
 /// distinct — they do NOT conflate through the content-hash / cache path.

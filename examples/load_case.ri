@@ -1,0 +1,25 @@
+// SIR-β-mlcfea (task 3549) — wave-2 closure demonstrating LoadCase /
+// MultiCaseResult as inspectable `Value::StructureInstance` values.
+//
+// Every constructor below evaluates to a non-Undef structure-shaped value
+// (after SIR-α, task 3540). Companion test:
+// `crates/reify-eval/tests/load_case.rs`.
+//
+// PRD: docs/prds/v0_3/structure-instance-runtime.md §8 task SIR-β-mlcfea.
+
+// ── LoadCase ctor + member-access readthrough ─────────────────────────────────
+structure def LoadCaseDemo {
+    let case          = LoadCase(name: "g", loads: [10.0, 20.0], supports: [30.0])
+    let case_name     = self.case.name
+    let first_load    = self.case.loads[0]
+    let first_support = self.case.supports[0]
+}
+
+// ── Map<String, ElasticResult> vs MultiCaseResult coexistence ─────────────────
+// The raw-map binding stays `Value::Map`; the ctor binding evaluates to
+// `Value::StructureInstance` — pattern-match in any consumer distinguishes
+// them.
+structure def MapVsStructureDemo {
+    let raw_cases = map{"a" => 1, "b" => 2}
+    let wrapped   = MultiCaseResult(cases: map{})
+}
