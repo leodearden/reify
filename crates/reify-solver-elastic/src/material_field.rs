@@ -286,4 +286,58 @@ mod tests {
         };
         let _: &dyn MaterialField = &field;
     }
+
+    // ── Step 5 RED tests ────────────────────────────────────────────────────
+
+    /// `DiscreteCellField::material_at` dispatches through the locator and
+    /// returns the cell-indexed material entry-by-entry bitwise.
+    #[test]
+    fn discrete_cell_field_material_at_dispatches_through_locator_to_indexed_cell() {
+        let iso_a = IsotropicElastic {
+            youngs_modulus: 1.0,
+            poisson_ratio: 0.3,
+        };
+        let iso_b = IsotropicElastic {
+            youngs_modulus: 2.0,
+            poisson_ratio: 0.3,
+        };
+        let mat_a = AnisotropicMaterial::from_law(&iso_a, IDENTITY_3X3);
+        let mat_b = AnisotropicMaterial::from_law(&iso_b, IDENTITY_3X3);
+
+        let field = DiscreteCellField {
+            cells: vec![mat_a, mat_b],
+            locator: Box::new(|p: [f64; 3]| if p[0] < 0.5 { Some(0) } else { Some(1) }),
+        };
+
+        assert_anisotropic_material_bitwise_eq(
+            field.material_at([0.25, 0.0, 0.0]),
+            mat_a,
+            "DiscreteCellField at x=0.25 → cell 0 (mat_a)",
+        );
+        assert_anisotropic_material_bitwise_eq(
+            field.material_at([0.75, 0.0, 0.0]),
+            mat_b,
+            "DiscreteCellField at x=0.75 → cell 1 (mat_b)",
+        );
+    }
+
+    /// Out-of-range cell index must panic with a descriptive
+    /// `DiscreteCellField`-prefixed message (matches the
+    /// `OrthotropicMaterial::debug_assert_valid` panic-message-prefix
+    /// convention).
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "DiscreteCellField")]
+    fn discrete_cell_field_panics_on_out_of_range_cell_index() {
+        let iso = IsotropicElastic {
+            youngs_modulus: 1.0,
+            poisson_ratio: 0.3,
+        };
+        let mat = AnisotropicMaterial::from_law(&iso, IDENTITY_3X3);
+        let field = DiscreteCellField {
+            cells: vec![mat, mat], // 2 cells
+            locator: Box::new(|_p: [f64; 3]| Some(99)), // out-of-range
+        };
+        let _ = field.material_at([0.0, 0.0, 0.0]);
+    }
 }
