@@ -15,3 +15,5 @@
 //! `AxisAlignedBox` helper that the integration test exercises.
 
 pub mod zone;
+
+pub use zone::{Zone, ZoneProbe, ZoneProcessParams, classify_zone};
