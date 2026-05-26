@@ -195,6 +195,16 @@ mod tests {
         let source = b"structure S { let x = 5 kg + 0 }";
         let tree = parser.parse(source, None).expect("parse failed");
         let root = tree.root_node();
+
+        // Positive assertion: the source must produce a number_literal for the '5'
+        // at byte 22. Without this, the test would pass silently if parsing failed
+        // catastrophically or if number_literal were renamed — giving false confidence.
+        assert!(
+            find_node_by_kind(root, "number_literal").is_some(),
+            "expected a number_literal node for '5' in the parse tree; \
+             the test is not exercising the contiguity check if the parse failed catastrophically"
+        );
+
         if let Some(ql) = find_node_by_kind(root, "quantity_literal") {
             let start = ql.start_byte();
             let end = ql.end_byte();
