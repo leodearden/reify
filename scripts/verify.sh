@@ -32,16 +32,18 @@
 #   - RUSTC_WRAPPER=sccache, CARGO_INCREMENTAL=0  (sccache cache shared across worktrees)
 #   - CARGO_MAKEFLAGS=--jobserver-auth=fifo:/tmp/reify-jobserver  ONLY when that FIFO
 #     exists (else cargo uses its own per-process job pool). This is a COMPILE-time
-#     concurrency control; OCCT TEST-execution serialization is a separate mechanism
-#     (the flock wrapper + --test-threads=1 below).
+#     concurrency control; OCCT TEST-execution concurrency is bounded by a separate
+#     mechanism (the semaphore wrapper + --test-threads=1 below).
 #   - OCCT LD_LIBRARY_PATH (snap + /opt/reify-deps). The .cargo/config.toml `runner`
 #     remains the primary runtime-lib mechanism for `cargo test`/`cargo run`; this is
 #     belt-and-braces for contexts the runner does not cover.
 #
 # OCCT safety:
-#   OCCT shares hidden C++ global state. Cross-PROCESS contention (concurrent worktrees)
-#   is bounded by scripts/cargo-test-occt-gated.sh (an exclusive flock); intra-process
-#   contention is bounded by `-- --test-threads=1`. The OCCT-touching crate set is
+#   OCCT C++ globals are PER-PROCESS; cross-process isolation is already provided by
+#   cargo's test-binary parallelism. Cross-WORKTREE contention (concurrent worktrees)
+#   is bounded by an N-slot counting semaphore in scripts/cargo-test-occt-gated.sh;
+#   intra-process contention is bounded by `-- --test-threads=1`. The OCCT-touching
+#   crate set is
 #   defined exactly once in scripts/occt-scope-lib.sh and shared with the drift test.
 
 set -euo pipefail
@@ -295,7 +297,7 @@ add_test_passes() {
             rel=""; gated_timeout=2700; outer_timeout="30m"
         fi
 
-        # Gated pass: OCCT-touching crates, serialized via the flock wrapper,
+        # Gated pass: OCCT-touching crates, bounded via the semaphore wrapper,
         # single-threaded. No outer timeout — the wrapper owns it via
         # REIFY_OCCT_TEST_TIMEOUT (lock-wait time does not consume the budget).
         if [ "$RUN_OCCT_GATE" -eq 1 ]; then
