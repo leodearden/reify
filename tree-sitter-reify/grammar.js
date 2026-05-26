@@ -448,7 +448,7 @@ module.exports = grammar({
       field('name', $.identifier),
       optional(seq(':', field('type', $.type_expr))),
       '=',
-      field('value', $._expression),
+      field('value', $._binding_value),
       optional(field('guard', $.where_clause)),
     ),
 
