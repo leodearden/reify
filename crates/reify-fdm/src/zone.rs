@@ -223,6 +223,57 @@ mod tests {
         assert_eq!(classify_zone(&probe_d, &params), Zone::Infill);
     }
 
+    /// Tolerance for AxisAlignedBox floating-point distance assertions.
+    /// Tight (1e-12) — these distances are computed by a single subtraction
+    /// + abs() of doubles with no accumulation.
+    const EPS: f64 = 1e-12;
+
+    fn assert_approx_eq(actual: Option<f64>, expected: f64) {
+        let a = actual.expect("expected Some(_) distance");
+        assert!(
+            (a - expected).abs() < EPS,
+            "actual {a} != expected {expected}"
+        );
+    }
+
+    #[test]
+    fn axis_aligned_box_min_top_bottom_distance() {
+        // 40×40×10 mm tall-cap cube; Z is the build axis.
+        let bx = AxisAlignedBox {
+            min: [0.0, 0.0, 0.0],
+            max: [0.040, 0.040, 0.010],
+        };
+        let build_z = [0.0, 0.0, 1.0];
+        let t = DEFAULT_TOP_BOTTOM_NORMAL_THRESHOLD;
+
+        // (a) center — 5 mm to top or bottom; side faces excluded.
+        assert_approx_eq(
+            bx.min_top_bottom_distance([0.020, 0.020, 0.005], build_z, t),
+            0.005,
+        );
+
+        // (b) near +Z face — 1 mm.
+        assert_approx_eq(
+            bx.min_top_bottom_distance([0.020, 0.020, 0.009], build_z, t),
+            0.001,
+        );
+
+        // (c) point nearer to -X side than to top/bottom; -X side IGNORED
+        // (it is a side face, not top/bottom). Top/bottom dist = 5 mm.
+        assert_approx_eq(
+            bx.min_top_bottom_distance([0.0005, 0.020, 0.005], build_z, t),
+            0.005,
+        );
+
+        // (d) Y-up build axis: ±Y faces now count as top/bottom, ±X/±Z
+        // are sides. Center distance to ±Y faces = 20 mm.
+        let build_y = [0.0, 1.0, 0.0];
+        assert_approx_eq(
+            bx.min_top_bottom_distance([0.020, 0.020, 0.005], build_y, t),
+            0.020,
+        );
+    }
+
     #[test]
     fn is_top_or_bottom_normal_predicate() {
         let build = [0.0, 0.0, 1.0];
