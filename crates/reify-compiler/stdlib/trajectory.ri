@@ -281,3 +281,16 @@ pub fn evaluate_profile_dot(p: Profile, t: Time) -> List<JointValue> { [0.0] }
 // TODO(beta-3816): replace stub body `[0.0]` with B-spline second-derivative
 // evaluation once `reify-stdlib/src/trajectory/spline.rs` lands.
 pub fn evaluate_profile_ddot(p: Profile, t: Time) -> List<JointValue> { [0.0] }
+
+// profile_duration — duration accessor returning the profile's total `[0, T]`
+// span as a Time-dimensioned scalar (PRD §4.1 line 244).
+//
+// Takes only `p : Profile` (no `t` param — duration is a property of the
+// profile itself, not a function of the evaluation instant). The stub body
+// `0.0 * 1s` is the numeric-times-unit-literal pattern from `units.ri:82`
+// (`STANDARD_GRAVITY = 9.80665 * 1m / (1s * 1s)`).
+//
+// TODO(beta-3816): replace stub body `0.0 * 1s` with the actual duration
+// computation (`waypoints.last.t - waypoints.first.t`) once the B-spline
+// evaluator and the PiecewisePolynomialProfile runtime accessor land.
+pub fn profile_duration(p: Profile) -> Time { 0.0 * 1s }
