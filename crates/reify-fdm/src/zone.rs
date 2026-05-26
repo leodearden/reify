@@ -185,4 +185,22 @@ mod tests {
         };
         assert_eq!(classify_zone(&probe_d, &params), Zone::Infill);
     }
+
+    #[test]
+    fn is_top_or_bottom_normal_predicate() {
+        let build = [0.0, 0.0, 1.0];
+        let threshold = DEFAULT_TOP_BOTTOM_NORMAL_THRESHOLD;
+
+        // (a) +Z face normal — aligned → true.
+        assert!(is_top_or_bottom_normal([0.0, 0.0, 1.0], build, threshold));
+
+        // (b) -Z face normal — anti-aligned; |dot|=1 → true.
+        assert!(is_top_or_bottom_normal([0.0, 0.0, -1.0], build, threshold));
+
+        // (c) +X face normal — perpendicular; |dot|=0 → false.
+        assert!(!is_top_or_bottom_normal([1.0, 0.0, 0.0], build, threshold));
+
+        // (d) tilted normal 60° from horizontal — |dot|=0.8 > 0.7071 → true.
+        assert!(is_top_or_bottom_normal([0.6, 0.0, 0.8], build, threshold));
+    }
 }
