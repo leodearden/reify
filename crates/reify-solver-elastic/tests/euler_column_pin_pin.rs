@@ -69,7 +69,7 @@ impl ColumnFixture {
     /// Initial mesh density: `nx=ny=4, nz=40`.
     /// Tuned in step-6 against the 5% PRD §13 task δ bound.
     fn steel_aisi_1045_800mm() -> Self {
-        Self { nx: 8, ny: 8, nz: 320, lx: 0.02, ly: 0.02, lz: 0.8 }
+        Self { nx: 4, ny: 4, nz: 160, lx: 0.02, ly: 0.02, lz: 0.8 }
     }
 
     fn n_nodes(&self) -> usize {
@@ -212,6 +212,7 @@ fn pin_pin_euler_column_within_five_percent() {
 
     let lambda_x_load = lambda_min * APPLIED_LOAD_NEWTONS;
     let rel_err = (lambda_x_load - p_cr).abs() / p_cr;
+    eprintln!("pin-pin: λ·F = {lambda_x_load:.2} N, P_cr = {p_cr:.2} N, rel_err = {:.2}%", rel_err * 100.0);
     assert!(
         rel_err < 0.05,
         "pin-pin Euler: λ·F = {lambda_x_load:.2} N, P_cr = {p_cr:.2} N, \
@@ -290,6 +291,7 @@ fn fixed_free_euler_column_within_five_percent() {
 
     let lambda_x_load = lambda_min * APPLIED_LOAD_NEWTONS;
     let rel_err = (lambda_x_load - p_cr).abs() / p_cr;
+    eprintln!("fixed-free: λ·F = {lambda_x_load:.2} N, P_cr = {p_cr:.2} N, rel_err = {:.2}%", rel_err * 100.0);
     assert!(
         rel_err < 0.05,
         "fixed-free Euler: λ·F = {lambda_x_load:.2} N, P_cr = {p_cr:.2} N, \
@@ -382,6 +384,7 @@ fn fixed_fixed_euler_column_within_five_percent() {
 
     let lambda_x_load = lambda_min * APPLIED_LOAD_NEWTONS;
     let rel_err = (lambda_x_load - p_cr).abs() / p_cr;
+    eprintln!("fixed-fixed: λ·F = {lambda_x_load:.2} N, P_cr = {p_cr:.2} N, rel_err = {:.2}%", rel_err * 100.0);
     assert!(
         rel_err < 0.05,
         "fixed-fixed Euler: λ·F = {lambda_x_load:.2} N, P_cr = {p_cr:.2} N, \
