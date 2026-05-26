@@ -48,7 +48,7 @@ Master list of architecture gaps discovered across the Reify PRD corpus. Phase 3
 | Field | Value |
 |---|---|
 | Mechanism | `StructureName(field: value, ...)` evaluates at runtime to a typed structure value carrying the struct's resolved cells |
-| State | **FICTION → RESOLVED (PRD-shape work scheduled)** |
+| State | **DONE** (2026-05-26: SIR-α task 3540 + SIR-β-mat task 3542 merged; `Value::StructureInstance` shipped, starter-library `StructureName(...)` evaluates at runtime) |
 | Failure mode | F1 (compile-time contract → no runtime backing) |
 | Evidence | `crates/reify-eval/src/engine_eval.rs:114-125` (explicit comment); tasks 3213/3240/3264 (readiness probes, all done); task 2039 (parser side wired); no eval-side task filed |
 | Cited by PRDs | `structural-analysis-fea` (Material starter lib, decomp #1 + signature in §"Sketch of approach"), `multi-load-case-fea` (`LoadCase(...)`, `MultiCaseResult(...)` ctors), `structural-analysis-shells` (transitive via FEA), composite-laminated-shells, varying-thickness-shells, structural-stability-buckling, fea-gui-rendering, persistent-naming-v2 (M-022 parallel), field-source-kinds (M-016), kinematic-constraints-toplevel (M-022), pragmas (transitive), reify-doc-tool (M-006 sibling), persistent-fea-cache (transitive). Total: 17 of 40 PRDs per phase-3-breadcrumb-map.md Cluster A |
@@ -132,14 +132,14 @@ Contract document authored 2026-05-12: `docs/prds/v0_3/structure-instance-runtim
 | Field | Value |
 |---|---|
 | Mechanism | Type resolver doesn't accept `Field<X,Y>` in `param` position; every kernel result reverts to `Real` placeholder |
-| State | **TODO** (task #3117 deferred) |
+| State | **DONE** (2026-05-26: task 3088 added the `Field<D,C>` arm to `resolve_parameterized_builtin_type`; task 3117 confirmed `Field<X,Y>` resolves in `param` position and tightened `ElasticResult.displacement`/`.stress`) |
 | Failure mode | F1 |
 | Evidence | `findings/structural-analysis-fea.md` M-022; `findings/a-posteriori-error-estimation.md` M-002/M-005/M-011; `findings/structural-analysis-shells.md` M-016/M-017; `findings/multi-load-case-fea.md` M-009; `findings/composite-laminated-shells.md` M-007/M-011; `findings/varying-thickness-shells.md` M-006; `findings/fea-gui-rendering-shells.md` M-004; `findings/structural-stability-buckling.md` M-003/M-005 |
 | Cited by PRDs | structural-analysis-fea, a-posteriori-error-estimation, structural-analysis-shells, multi-load-case-fea, composite-laminated-shells, varying-thickness-shells, fea-gui-rendering-shells, structural-stability-buckling |
 | Blocks tasks | Per cluster C-03 (`phase-3-files-synthesis.md` §1); umbrella task 3117 |
 | Disposition | **fix-now → existing task #3117 adequate** (`phase-3-fixnow-filing-log.md` "Existing task adequate"). Task title already specifies user-observable outcome (tighten `ElasticResult::displacement` and `::stress` from Real → Field<X,Y>); description names probe test + resolver fix path. |
 | Discovered | 2026-05-12 architecture audit |
-| Notes | Single language-feature gap blocking the entire FEA-stack field-typing claim (breadcrumb cluster B). Currently `deferred` — would benefit from being flipped to pending alongside the C-24/C-25/C-41 doc-tool chain. |
+| Notes | Single language-feature gap that blocked the entire FEA-stack field-typing claim (breadcrumb cluster B); **resolved** — tasks 3088/3117 merged. Now consumed by `anisotropic-heterogeneous-elastostatics.md` (`param material : Field<Point3<Length>, AnisotropicMaterial>`). |
 
 ### GR-007 — Library-shipped / no-DSL-consumer (selector resolution) (cluster C-04)
 

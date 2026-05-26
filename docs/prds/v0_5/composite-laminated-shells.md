@@ -26,9 +26,11 @@ This is a substantial domain-specific extension — the constitutive matrix beco
 
 ## Sketch of approach
 
-- **`OrthotropicMaterial` stdlib type** carrying E1, E2, G12, ν12, density, ply allowables (X_T, X_C, Y_T, Y_C, S — the five ply strengths). Starter library: T300/5208 carbon-epoxy, S2/SP-381 glass-epoxy, etc.
+> **Constitutive core is consumed, not re-derived (2026-05-26).** The 3D-solid `OrthotropicMaterial` / `ConstitutiveLaw` trait surface and the 6×6 Voigt frame rotation are owned by the shared foundation `anisotropic-heterogeneous-elastostatics.md`. This PRD **consumes** that surface; it does not define orthotropy itself. Composites owns only the *shell plane-stress reduction* of that law plus the ply-stack through-thickness integration and failure criteria. See "Relationship to other PRDs and tasks" and the foundation PRD's G4 ownership split.
+
+- **Per-ply material = foundation `OrthotropicMaterial` + composite strength allowables.** Reuse the foundation's `OrthotropicMaterial` (E1, E2, E3, G12/G13/G23, ν12/ν13/ν23, density) for stiffness; composites adds a thin wrapper carrying the **ply strength allowables** (X_T, X_C, Y_T, Y_C, S — the five ply strengths) the foundation's stiffness-only material deliberately omits. Starter library: T300/5208 carbon-epoxy, S2/SP-381 glass-epoxy, etc.
 - **`Laminate` stdlib type** carrying an ordered list of `Ply { material, thickness, orientation }`. Helpers for symmetric, balanced, and quasi-isotropic layups.
-- **Element kernel extension** in `reify-solver-elastic`: through-thickness integration sums over plies; constitutive D matrix is computed per Gauss point as a layered stack rather than a single isotropic relation.
+- **Element kernel extension** in `reify-solver-elastic`: take the foundation's per-ply local-frame `ConstitutiveLaw::d_matrix_local`, apply the **shell plane-stress reduction** (composites owns this reduction), then sum the reduced stiffness over plies through-thickness — a layered stack rather than a single isotropic relation. The orientation rotation per ply reuses the foundation's `rotate_voigt`.
 - **Ply-level result fields** in `ElasticResult`: stress and strain per ply (top, mid, bottom of each ply), plus failure-index field per failure criterion.
 - **Failure criteria stdlib functions:** `tsai_wu(...)`, `hashin(...)`, `max_strain(...)` taking ply-level stress and material allowables.
 
@@ -36,7 +38,7 @@ This is a substantial domain-specific extension — the constitutive matrix beco
 
 - v0.4 `structural-analysis-shells.md` shipped (kernel, mid-surface extraction, BC/material/result framework).
 - Concrete composite-design user demand documented.
-- Stdlib material-trait infrastructure mature enough for orthotropic specification.
+- **`anisotropic-heterogeneous-elastostatics.md` shipped** — provides the `ConstitutiveLaw` trait, `OrthotropicMaterial`, and the 6×6 Voigt frame rotation this PRD consumes. **Hard prerequisite** for the constitutive surface (replaces the prior loose "stdlib material-trait infrastructure mature enough for orthotropic specification" pre-condition, which that foundation now satisfies).
 
 ## Open design questions
 
@@ -55,6 +57,7 @@ This is a substantial domain-specific extension — the constitutive matrix beco
 
 ## Relationship to other PRDs and tasks
 
+- **Consumes `anisotropic-heterogeneous-elastostatics.md` (v0.5 foundation)** — that PRD owns the 3D-solid `ConstitutiveLaw` / `OrthotropicMaterial` core and the 6×6 frame rotation; this PRD consumes them and owns only the shell plane-stress reduction + ply-stack through-thickness integration + failure criteria. G4 ownership split resolved 2026-05-26 (no reciprocal ambiguity). A real cross-PRD dependency edge from this PRD's stdlib-material task to the foundation's stdlib-structures task (foundation γ) is wired when this PRD is decomposed.
 - **Direct extension of `structural-analysis-shells.md`** — same kernel, same mid-surface extraction, same BC/material framework with orthotropic constitutive law swapped in.
 - **Composes with `multi-load-case-fea.md`** — composite-specific failure indices need per-load-case envelopes the same way isotropic stresses do.
 - **Composes with `fea-gui-rendering-shells.md`** — per-ply stress visualization and ply-failure highlighting need GUI surface.
