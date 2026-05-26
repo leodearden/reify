@@ -78,12 +78,22 @@ fn parse_klipper_line(line_no: usize, line: &str) -> Result<GcodeCommand, ParseE
 /// Walk `tokens` and parse each as `KEY=VALUE`, returning the ordered
 /// vec.
 ///
-/// Malformed-token errors are reported via
+/// # Error reporting
+///
+/// Malformed-token errors (no `=` in the token) are reported via
 /// [`ParseErrorKind::InvalidParameter`] with `letter: '='` and the raw
-/// token preserved in `value`. This is a semantic approximation — there
-/// is no dedicated `MalformedDirectiveParam` variant in `error.rs`
-/// because `error.rs` is shared with the Marlin dialect and out of
-/// scope for task ν. See plan design decision #4.
+/// token preserved in `value`. This is a **semantic approximation** —
+/// the leading `letter` doesn't make perfect sense for a `KEY=VALUE`
+/// token, but it preserves the raw text in `value` so diagnostics still
+/// carry the offending input.
+///
+/// There is no dedicated `MalformedDirectiveParam` variant in
+/// `error.rs` because that module is shared with the Marlin dialect
+/// (touched by every dialect's scope-lock) and is out of scope for
+/// task ν. See plan design decision #4 — when error-rendering needs
+/// to distinguish KV-malformation from axis-letter malformation, the
+/// fix is to add a dedicated variant in `error.rs` rather than to
+/// reinterpret the `letter: '='` sentinel here.
 fn parse_kv_params<'a>(
     line_no: usize,
     tokens: impl Iterator<Item = &'a str>,
