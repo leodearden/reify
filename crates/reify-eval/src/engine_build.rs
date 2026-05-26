@@ -799,6 +799,11 @@ impl Engine {
         module: &CompiledModule,
         format: ExportFormat,
     ) -> Option<BuildResult> {
+        // Task ε (3436) step-12: reset the dispatch-count instrumentation
+        // counter at the entry to every build/tessellate surface so a second
+        // build of the same module reports its own per-build dispatch tally
+        // (and reports 0 when fully served from the RealizationCache).
+        self.last_dispatch_count = 0;
         let state = self.eval_state.as_ref()?;
 
         // Build ValueMap from snapshot values
@@ -933,6 +938,7 @@ impl Engine {
                         &mut kernel_error,
                         &mut self.realization_cache,
                         demanded_tol,
+                        &mut self.last_dispatch_count,
                     );
                     // Step-10 (task ε / 3436): persist the executor's terminal
                     // [`ReprKind`] into the snapshot graph node. The
@@ -1095,6 +1101,15 @@ impl Engine {
     /// `end_to_end_tolerance_wiring_threads_promise_diagnostic_cache_and_per_stage_budget`
     /// in `crates/reify-eval/tests/tolerance_wiring_e2e.rs`.
     pub fn build(&mut self, module: &CompiledModule, format: ExportFormat) -> BuildResult {
+        // Task ε (3436) step-12: reset the dispatch-count instrumentation
+        // counter at the entry to every build/tessellate surface so a second
+        // build of the same module reports its own per-build dispatch tally
+        // (and reports 0 when fully served from the RealizationCache). Mirrors
+        // the reset at the top of `build_snapshot` / `tessellate_realizations`
+        // / `tessellate_snapshot` — must run BEFORE `check()` because no
+        // dispatcher call should be counted against the build that hasn't
+        // entered the per-realization op loop yet.
+        self.last_dispatch_count = 0;
         // PLACEMENT: AFTER check() — task 3103 consolidated the lifecycle so
         // eval() preserves active_purpose_bindings across the call, making the
         // pre-check workaround obsolete. All four surfaces (build /
@@ -1223,6 +1238,7 @@ impl Engine {
                         &mut kernel_error,
                         &mut self.realization_cache,
                         demanded_tol,
+                        &mut self.last_dispatch_count,
                     );
                     // Step-10 (task ε / 3436): persist the executor's terminal
                     // [`ReprKind`] into the snapshot graph node. See the
@@ -1374,6 +1390,12 @@ impl Engine {
     /// tessellation precision), whereas `build` applies it at the
     /// realization-cache key.
     pub fn tessellate_realizations(&mut self, module: &CompiledModule) -> TessellateResult {
+        // Task ε (3436) step-12: reset the dispatch-count instrumentation
+        // counter at the entry to every build/tessellate surface so a second
+        // call against the same module reports its own per-build dispatch
+        // tally (and reports 0 when fully served from the RealizationCache).
+        // Mirrors `build` / `build_snapshot` / `tessellate_snapshot`.
+        self.last_dispatch_count = 0;
         // PLACEMENT: AFTER check() — task 3103 consolidated the lifecycle so
         // eval() preserves active_purpose_bindings across the call, making the
         // pre-check workaround obsolete. All four surfaces (build /
@@ -1433,6 +1455,7 @@ impl Engine {
             &mut self.realization_cache,
             &demanded_tols,
             &tessellation_budgets,
+            &mut self.last_dispatch_count,
         );
 
         TessellateResult {
@@ -1765,6 +1788,13 @@ impl Engine {
         realization_cache: &mut RealizationCache<GeometryHandleId>,
         demanded_tols: &[Vec<Option<f64>>],
         tessellation_budgets: &[Vec<f64>],
+        // Task ε (3436) step-12: per-build dispatch-count instrumentation
+        // forwarded from `tessellate_realizations` / `tessellate_snapshot`
+        // (each passes `&mut self.last_dispatch_count`). Threaded as a
+        // separate parameter rather than packed into a struct so the static
+        // fn's signature mirrors the disjoint-field-borrow shape already in
+        // use for the other &mut params.
+        dispatch_count: &mut usize,
     ) -> Vec<(String, Mesh)> {
         let mut meshes = Vec::new();
 
@@ -1859,6 +1889,7 @@ impl Engine {
                     &mut kernel_error,
                     realization_cache,
                     demanded_tol,
+                    &mut *dispatch_count,
                 );
 
                 // Tessellate this realization's final handle (if any new handles were produced)
@@ -2064,6 +2095,13 @@ impl Engine {
         kernel_error_out: &mut Option<ErrorRef>,
         realization_cache: &mut RealizationCache<GeometryHandleId>,
         demanded_tol: Option<f64>,
+        // Task ε (3436) step-12: caller-write dispatch-count instrumentation
+        // channel. Incremented once per `dispatch(...)` call inside the per-op
+        // loop. The caller (build / build_snapshot / tessellate_*) resets the
+        // backing `Engine::last_dispatch_count` field to 0 at the entry-point
+        // and passes a mutable reference into it; the cache-hit short-circuit
+        // returns BEFORE the loop, so the counter stays at 0 on a re-hit.
+        dispatch_count: &mut usize,
     ) {
         let RealizationOutputs {
             step_handles,
@@ -2178,6 +2216,11 @@ impl Engine {
                     // `BUDGET_QUERY_TRIPLE_V02` design decision; per-op
                     // demanded/available derivation is deferred to ζ/η/θ.
                     let operation = geometry_op_to_operation(&geom_op);
+                    // Task ε (3436) step-12: bump the per-build dispatch
+                    // counter EXACTLY at the `dispatch(...)` call site so the
+                    // cache-hit short-circuit (which returns above without
+                    // ever entering this loop) leaves the counter at 0.
+                    *dispatch_count += 1;
                     let plan = dispatch(registry, operation, ReprKind::BRep, &available_set);
                     // Step-10 (task ε / 3436): borrow `plan` here (`match &plan`)
                     // rather than moving it; the post-success branch below moves
@@ -2942,6 +2985,12 @@ impl Engine {
     /// values, call `tessellate_snapshot()` to get updated meshes without a
     /// cold restart.
     pub fn tessellate_snapshot(&mut self, module: &CompiledModule) -> Option<TessellateResult> {
+        // Task ε (3436) step-12: reset the dispatch-count instrumentation
+        // counter at the entry to every build/tessellate surface so a second
+        // call against the same module reports its own per-build dispatch
+        // tally (and reports 0 when fully served from the RealizationCache).
+        // Mirrors `build` / `build_snapshot` / `tessellate_realizations`.
+        self.last_dispatch_count = 0;
         let state = self.eval_state.as_ref()?;
 
         // Build ValueMap from snapshot values
@@ -3000,6 +3049,7 @@ impl Engine {
             &mut self.realization_cache,
             &demanded_tols,
             &tessellation_budgets,
+            &mut self.last_dispatch_count,
         );
 
         Some(TessellateResult {
@@ -3331,6 +3381,7 @@ mod tests {
             &mut None,
             &mut RealizationCache::new(),
             None,
+            &mut 0usize,
         );
 
         assert_eq!(step_handles.len(), 1, "expected one handle appended");
@@ -3433,6 +3484,7 @@ mod tests {
             &mut None,
             &mut RealizationCache::new(),
             None,
+            &mut 0usize,
         );
 
         assert_eq!(
@@ -3515,6 +3567,7 @@ mod tests {
             &mut None,
             &mut RealizationCache::new(),
             None,
+            &mut 0usize,
         );
 
         assert!(
@@ -3608,6 +3661,7 @@ mod tests {
             &mut None,
             &mut RealizationCache::new(),
             None,
+            &mut 0usize,
         );
 
         // The real handle produced by op 0 must have been discarded.
@@ -3693,6 +3747,7 @@ mod tests {
             &mut None,
             &mut RealizationCache::new(),
             None,
+            &mut 0usize,
         );
 
         // The Error diagnostic must contain the standard prefix (preserves
@@ -3779,6 +3834,7 @@ mod tests {
             &mut None,
             &mut RealizationCache::new(),
             None,
+            &mut 0usize,
         );
 
         // Filter to error-severity only: see comment in the happy-path test.
@@ -3883,6 +3939,7 @@ mod tests {
             &mut None,
             &mut RealizationCache::new(),
             None,
+            &mut 0usize,
         );
 
         assert!(
@@ -3971,6 +4028,7 @@ mod tests {
             &mut None,
             &mut RealizationCache::new(),
             None,
+            &mut 0usize,
         );
         // Snapshot via the contract-visible map entry, not by positional index,
         // so the snapshot stays correct if internal handle-slot layout changes.
@@ -4005,6 +4063,7 @@ mod tests {
             &mut None,
             &mut RealizationCache::new(),
             None,
+            &mut 0usize,
         );
         let h2 = named_steps["body"];
 
@@ -4146,6 +4205,7 @@ mod tests {
             &mut None,
             &mut RealizationCache::new(),
             None,
+            &mut 0usize,
         );
         let h1 = named_steps["body"];
         // Filter to error-severity only: see comment in the happy-path test.
@@ -4202,6 +4262,7 @@ mod tests {
             &mut None,
             &mut RealizationCache::new(),
             None,
+            &mut 0usize,
         );
 
         // The failed shadow must NOT have overwritten the successful binding.
@@ -4302,6 +4363,7 @@ mod tests {
             &mut None,
             &mut RealizationCache::new(),
             None,
+            &mut 0usize,
         );
 
         // Find the compile-failure Error diagnostic.
@@ -4397,6 +4459,7 @@ mod tests {
             &mut None,
             &mut RealizationCache::new(),
             None,
+            &mut 0usize,
         );
 
         // Find the kernel-error Error diagnostic.
@@ -4573,6 +4636,7 @@ mod tests {
             &mut None,
             &mut RealizationCache::new(),
             None,
+            &mut 0usize,
         );
 
         let calls = log.lock().unwrap().clone();
@@ -4667,6 +4731,7 @@ mod tests {
             &mut None,
             &mut RealizationCache::new(),
             None,
+            &mut 0usize,
         );
 
         let calls = log.lock().unwrap().clone();
@@ -4766,6 +4831,7 @@ mod tests {
             &mut kernel_error_out,
             &mut RealizationCache::new(),
             None,
+            &mut 0usize,
         );
 
         // A NoKernelChain error diagnostic must be emitted.
@@ -6024,6 +6090,7 @@ mod tests {
             &mut realization_cache,
             &[],               // ← OOB: empty demanded_tols
             &[vec![1e-4_f64]], // correctly shaped tessellation_budgets
+            &mut 0usize,
         );
     }
 
@@ -6082,6 +6149,7 @@ mod tests {
             &mut realization_cache,
             &[vec![None]], // correctly shaped demanded_tols
             &[],           // ← OOB: empty tessellation_budgets
+            &mut 0usize,
         );
     }
 

@@ -452,6 +452,24 @@ pub struct Engine {
     /// The field itself is always present (module-private, no `pub`) so that
     /// writer sites in `engine_eval.rs` need no cfg-gating.
     last_sub_component_unknown_structure_errors: usize,
+    /// Count of `dispatcher::dispatch` invocations on the per-op hot path
+    /// during the most recent `build()` / `build_snapshot()` /
+    /// `tessellate_realizations()` / `tessellate_snapshot()` call. Reset to 0
+    /// at the start of each entry point (before any per-realization work),
+    /// incremented once per `dispatch(...)` call inside
+    /// `execute_realization_ops`.
+    ///
+    /// Task ε (3436) step-12 instrumentation. Used to pin the cache-rehit
+    /// signal: a second build of the same module with the same demanded
+    /// tolerance hits the per-realization `RealizationCache` short-circuit at
+    /// the top of `execute_realization_ops`, which returns BEFORE the per-op
+    /// loop runs, so the counter reports 0 on the second build.
+    ///
+    /// Exposed to callers only under `#[cfg(any(test, feature = "test-instrumentation"))]`
+    /// via `Engine::last_dispatch_count()` in `engine_admin.rs`. The field
+    /// itself is always present (module-private, no `pub`) so that the
+    /// reset / increment sites in `engine_build.rs` need no cfg-gating.
+    last_dispatch_count: usize,
     /// Event journal recording evaluation events.
     journal: EventJournal,
     /// User-defined functions from the last eval() call.

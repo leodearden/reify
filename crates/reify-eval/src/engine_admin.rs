@@ -247,6 +247,7 @@ impl Engine {
             last_param_override_type_kind_rejections: 0,
             last_param_override_dimension_rejections: 0,
             last_sub_component_unknown_structure_errors: 0,
+            last_dispatch_count: 0,
             journal: EventJournal::new(),
             functions: Vec::<CompiledFunction>::new().into(),
             compiled_purposes: Vec::new(),
@@ -1143,6 +1144,25 @@ impl Engine {
     #[cfg(any(test, feature = "test-instrumentation"))]
     pub fn last_sub_component_unknown_structure_errors(&self) -> usize {
         self.last_sub_component_unknown_structure_errors
+    }
+
+    /// Returns the number of `dispatcher::dispatch` invocations on the per-op
+    /// hot path during the most recent `build()` / `build_snapshot()` /
+    /// `tessellate_realizations()` / `tessellate_snapshot()` call. Reset to 0
+    /// at the start of each entry point.
+    ///
+    /// Task ε (3436) step-12 — pins the cache-rehit signal: a second build of
+    /// the same module with the same demanded tolerance hits the
+    /// `RealizationCache` short-circuit at the top of
+    /// `execute_realization_ops`, which returns BEFORE the per-op loop runs,
+    /// so the counter reports 0 on the second build.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    /// Integration tests reach this method via the self-dev-dep with the
+    /// `test-instrumentation` feature enabled (see `crates/reify-eval/Cargo.toml`).
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn last_dispatch_count(&self) -> usize {
+        self.last_dispatch_count
     }
 
     /// Access the event journal (for testing/inspection).
