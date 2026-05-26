@@ -257,7 +257,7 @@ pub fn long_chain_diagnostic(
 /// - `demanded` — the [`ReprKind`] the op was required to produce.
 /// - `available` — the reprs the inputs were realised in when dispatch
 ///   failed; rendered sorted via [`ReprKind`]'s `Ord` derive.
-// G-allow: no-kernel-chain diagnostic builder; at time of writing consumer wiring pending (task #3436, multi-kernel-phase-3 PRD)
+// G-allow: no-kernel-chain diagnostic builder; at time of writing consumer wiring pending (task #3434, multi-kernel-phase-3 PRD)
 pub fn no_kernel_chain_diagnostic(
     op: Operation,
     demanded: ReprKind,
@@ -307,7 +307,7 @@ pub fn no_kernel_chain_diagnostic(
 ///   pragma that could not be honoured.
 /// - `op` — the [`Operation`] the pragma kernel was asked to perform.
 /// - `demanded` — the [`ReprKind`] the op was required to produce.
-// G-allow: #kernel(...) pragma diagnostic builder; at time of writing consumer wiring pending (task #3443, multi-kernel-phase-3 PRD)
+// G-allow: #kernel(...) pragma diagnostic builder; at time of writing consumer wiring pending (task #3434, multi-kernel-phase-3 PRD)
 pub fn kernel_pragma_unsatisfiable_diagnostic(
     pragma_kernel: &str,
     op: Operation,
@@ -348,7 +348,7 @@ pub fn kernel_pragma_unsatisfiable_diagnostic(
 ///
 /// - `kernel_id` — the kernel name pinned in `reify.toml` `[kernels]`
 ///   that is missing from the build's registry.
-// G-allow: reify.toml [kernels] pinned-missing diagnostic builder; at time of writing consumer wiring pending (task #3444, multi-kernel-phase-3 PRD)
+// G-allow: reify.toml [kernels] pinned-missing diagnostic builder; at time of writing consumer wiring pending (task #3434, multi-kernel-phase-3 PRD)
 pub fn pinned_kernel_missing_diagnostic(kernel_id: &str) -> Diagnostic {
     let message = format!(
         "kernel '{kernel_id}' is pinned in reify.toml but not registered in \
@@ -385,7 +385,7 @@ pub fn pinned_kernel_missing_diagnostic(kernel_id: &str) -> Diagnostic {
 ///
 /// - `kernel_id` — the kernel name present in the registry but absent from
 ///   `reify.toml` `[kernels]`.
-// G-allow: unpinned-kernel-loaded diagnostic builder; at time of writing consumer wiring pending (task #3444, multi-kernel-phase-3 PRD)
+// G-allow: unpinned-kernel-loaded diagnostic builder; at time of writing consumer wiring pending (task #3434, multi-kernel-phase-3 PRD)
 pub fn unpinned_kernel_loaded_diagnostic(kernel_id: &str) -> Diagnostic {
     let message = format!(
         "kernel '{kernel_id}' is registered but not listed in reify.toml \
@@ -424,7 +424,7 @@ pub fn unpinned_kernel_loaded_diagnostic(kernel_id: &str) -> Diagnostic {
 /// - `kernel_id` — the kernel name whose version disagrees.
 /// - `pinned` — the version string pinned in `reify.toml` `[kernels]`.
 /// - `actual` — the adapter's compiled-in `VERSION` constant.
-// G-allow: kernel-version-mismatch diagnostic builder; at time of writing consumer wiring pending (task #3444, multi-kernel-phase-3 PRD)
+// G-allow: kernel-version-mismatch diagnostic builder; at time of writing consumer wiring pending (task #3434, multi-kernel-phase-3 PRD)
 pub fn kernel_version_mismatch_diagnostic(
     kernel_id: &str,
     pinned: &str,
