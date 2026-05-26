@@ -25,25 +25,31 @@ use reify_types::SourceLocationInfo;
 /// Passing a pre-built table makes the byte-offset conversion O(log M + line_length)
 /// instead of the O(M) character walk of the old local helper.
 ///
-/// Uses the compiled module's value-cell spans to approximate each template's
-/// source range (`[min(cell.span.start), max(cell.span.end))`).  Within the
-/// matching template, the narrow step checks (in priority order):
-/// 1. `value_cells` — returns `"Entity.member"` for the first matching cell.
-/// 2. `realizations` (skipping `name: None`) — returns `"Entity.name"` for
-///    the first matching realization.
-/// 3. `sub_components` — returns `"Entity.name"` for the first matching sub.
+/// Uses a two-layer containment model:
+/// - **Outer check**: the parsed structure/occurrence declaration span
+///   (`StructureDef.span` / `OccurrenceDef.span`), which covers the full
+///   `pub structure NAME { ... }` byte range including the header and closing
+///   brace. Falls back to the member-derived min/max span when no parsed
+///   declaration matches the compiled template name (defensive).
+/// - **Narrow step** (within the matching template): checks member kinds in
+///   priority order:
+///   1. `value_cells` — returns `"Entity.member"` for the first matching cell.
+///   2. `realizations` (skipping `name: None`) — returns `"Entity.name"` for
+///      the first matching realization.
+///   3. `sub_components` — returns `"Entity.name"` for the first matching sub.
 ///
 /// Returns:
 /// - `Some("Entity.member")` when the cursor is inside a value cell's span.
 /// - `Some("Entity.name")` when the cursor is inside a realization or
 ///   sub_component declaration body.
-/// - `Some("Entity")` when the cursor is inside the template's approximate
-///   span but outside any specific named member (e.g. a constraint line).
+/// - `Some("Entity")` when the cursor is inside the template's source span
+///   but outside any specific named member (e.g. the structure header line, a
+///   constraint line, or the closing brace).
 /// - `None` when `line` or `col` is 0, when the position is outside every
-///   template's approximate span, or when the position is past the end of
-///   `source`.
+///   template's source span, or when the position is past the end of `source`.
 pub fn resolve_entity_at_source_position(
     compiled: &CompiledModule,
+    _parsed: &reify_syntax::ParsedModule,
     source: &str,
     line_offsets: &[usize],
     line: u32,
@@ -219,11 +225,20 @@ mod tests {
     use super::{resolve_entity_at_source_position, resolve_entity_source_location};
     use reify_types::ModulePath;
 
-    /// Build a CompiledModule from bracket_source() using the stdlib pipeline.
-    fn bracket_compiled() -> reify_compiler::CompiledModule {
+    /// Build a (ParsedModule, CompiledModule) tuple from bracket_source() using
+    /// the stdlib pipeline. Both are returned so tests can pass `&parsed` to
+    /// `resolve_entity_at_source_position`.
+    fn bracket_parsed_and_compiled() -> (reify_syntax::ParsedModule, reify_compiler::CompiledModule) {
         let source = reify_test_support::bracket_source();
         let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("bracket"));
-        reify_compiler::compile_with_stdlib(&parsed)
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        (parsed, compiled)
+    }
+
+    /// Convenience wrapper for tests that only need the compiled module
+    /// (i.e., `resolve_entity_source_location` tests).
+    fn bracket_compiled() -> reify_compiler::CompiledModule {
+        bracket_parsed_and_compiled().1
     }
 
     // (a) Template name "Bracket" → returns Some(loc) whose (line, column)
@@ -391,10 +406,10 @@ mod tests {
     //     col 11 (1-based) = 'w' in "width" — inside the width cell span.
     #[test]
     fn entity_at_source_position_width_cell_returns_bracket_width() {
-        let compiled = bracket_compiled();
+        let (parsed, compiled) = bracket_parsed_and_compiled();
         let source = reify_test_support::bracket_source();
         let line_offsets = reify_types::build_line_offsets(source);
-        let result = resolve_entity_at_source_position(&compiled, source, &line_offsets, 2, 11);
+        let result = resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, 2, 11);
         assert_eq!(
             result,
             Some("Bracket.width".to_string()),
@@ -407,10 +422,10 @@ mod tests {
     //     col 11 (1-based) = 't' in "thickness" — inside the thickness cell span.
     #[test]
     fn entity_at_source_position_thickness_cell_returns_bracket_thickness() {
-        let compiled = bracket_compiled();
+        let (parsed, compiled) = bracket_parsed_and_compiled();
         let source = reify_test_support::bracket_source();
         let line_offsets = reify_types::build_line_offsets(source);
-        let result = resolve_entity_at_source_position(&compiled, source, &line_offsets, 4, 11);
+        let result = resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, 4, 11);
         assert_eq!(
             result,
             Some("Bracket.thickness".to_string()),
@@ -425,10 +440,10 @@ mod tests {
     //     the first and last value cell spans) but not within any value cell.
     #[test]
     fn entity_at_source_position_constraint_line_returns_template_name() {
-        let compiled = bracket_compiled();
+        let (parsed, compiled) = bracket_parsed_and_compiled();
         let source = reify_test_support::bracket_source();
         let line_offsets = reify_types::build_line_offsets(source);
-        let result = resolve_entity_at_source_position(&compiled, source, &line_offsets, 10, 5);
+        let result = resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, 10, 5);
         assert_eq!(
             result,
             Some("Bracket".to_string()),
@@ -442,10 +457,10 @@ mod tests {
     //     template's approximate span → None.
     #[test]
     fn entity_at_source_position_past_end_of_source_returns_none() {
-        let compiled = bracket_compiled();
+        let (parsed, compiled) = bracket_parsed_and_compiled();
         let source = reify_test_support::bracket_source();
         let line_offsets = reify_types::build_line_offsets(source);
-        let result = resolve_entity_at_source_position(&compiled, source, &line_offsets, 16, 1);
+        let result = resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, 16, 1);
         assert!(
             result.is_none(),
             "cursor past end of source at (16, 1) should return None, got {:?}",
@@ -457,19 +472,19 @@ mod tests {
     //     Both are documented out-of-range guards (1-based coordinate system).
     #[test]
     fn entity_at_source_position_zero_line_or_col_returns_none() {
-        let compiled = bracket_compiled();
+        let (parsed, compiled) = bracket_parsed_and_compiled();
         let source = reify_test_support::bracket_source();
         let line_offsets = reify_types::build_line_offsets(source);
         assert!(
-            resolve_entity_at_source_position(&compiled, source, &line_offsets, 0, 1).is_none(),
+            resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, 0, 1).is_none(),
             "zero line should return None"
         );
         assert!(
-            resolve_entity_at_source_position(&compiled, source, &line_offsets, 1, 0).is_none(),
+            resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, 1, 0).is_none(),
             "zero col should return None"
         );
         assert!(
-            resolve_entity_at_source_position(&compiled, source, &line_offsets, 0, 0).is_none(),
+            resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, 0, 0).is_none(),
             "zero line and col should return None"
         );
     }
@@ -479,14 +494,14 @@ mod tests {
     //     the reverse function returns the same cell.
     #[test]
     fn entity_at_source_position_at_cell_span_start_returns_cell() {
-        let compiled = bracket_compiled();
+        let (parsed, compiled) = bracket_parsed_and_compiled();
         let source = reify_test_support::bracket_source();
         let line_offsets = reify_types::build_line_offsets(source);
         let loc = resolve_entity_source_location(&compiled, source, "bracket.ri", "Bracket.width")
             .expect("forward lookup for Bracket.width must succeed");
         // loc.line and loc.column are 1-based and map to span.start of width cell.
         let result =
-            resolve_entity_at_source_position(&compiled, source, &line_offsets, loc.line, loc.column);
+            resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, loc.line, loc.column);
         assert_eq!(
             result,
             Some("Bracket.width".to_string()),
@@ -503,7 +518,7 @@ mod tests {
     //     the enclosing template name.
     #[test]
     fn entity_at_source_position_at_cell_span_end_does_not_return_that_cell() {
-        let compiled = bracket_compiled();
+        let (parsed, compiled) = bracket_parsed_and_compiled();
         let source = reify_test_support::bracket_source();
         let line_offsets = reify_types::build_line_offsets(source);
         let loc = resolve_entity_source_location(&compiled, source, "bracket.ri", "Bracket.width")
@@ -511,6 +526,7 @@ mod tests {
         // loc.end_line and loc.end_column map to span.end (exclusive upper bound).
         let result = resolve_entity_at_source_position(
             &compiled,
+            &parsed,
             source,
             &line_offsets,
             loc.end_line,
@@ -537,11 +553,11 @@ mod tests {
     //     fires RED. After step-6 it returns Some("Bracket.body"), GREEN.
     #[test]
     fn entity_at_source_position_realization_body_returns_template_dot_realization() {
-        let compiled = bracket_compiled();
+        let (parsed, compiled) = bracket_parsed_and_compiled();
         let source = reify_test_support::bracket_source();
         let line_offsets = reify_types::build_line_offsets(source);
         // line 14, col 9 = 'b' of "body" in "    let body = box(width, height, thickness)"
-        let result = resolve_entity_at_source_position(&compiled, source, &line_offsets, 14, 9);
+        let result = resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, 14, 9);
         assert_eq!(
             result,
             Some("Bracket.body".to_string()),
@@ -567,19 +583,98 @@ mod tests {
     //     so a future regression is caught explicitly.
     #[test]
     fn entity_at_source_position_col_past_line_end_clamps_to_template_name() {
-        let compiled = bracket_compiled();
+        let (parsed, compiled) = bracket_parsed_and_compiled();
         let source = reify_test_support::bracket_source();
         let line_offsets = reify_types::build_line_offsets(source);
         // line 2 = "    param width: Scalar = 80mm" (30 chars).
         // col=99 is well past the end; new helper clamps to the trailing '\n' of line 2,
         // which falls outside any value cell → enclosing template name.
-        let result = resolve_entity_at_source_position(&compiled, source, &line_offsets, 2, 99);
+        let result = resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, 2, 99);
         assert_eq!(
             result,
             Some("Bracket".to_string()),
             "cursor at (2, 99) — col past end of line 2 — must clamp to '\\n' at line end \
              and resolve to the enclosing template name, not a cell (got {:?})",
             result
+        );
+    }
+
+    // (j) multi-structure: cursor on the `pub structure Middle {` header line →
+    //     Some("Middle"). Also pins: cursor on the blank line between First and
+    //     Middle → None (gap between structures).
+    //
+    //     Source layout (1-based lines):
+    //       1: pub structure First {
+    //       2:     param a: Scalar = 1mm
+    //       3: }
+    //       4: (blank)
+    //       5: pub structure Middle {
+    //       6:     param b: Scalar = 2mm
+    //       7: }
+    //       8: (blank)
+    //       9: pub structure Last {
+    //      10:     param c: Scalar = 3mm
+    //      11: }
+    //
+    //     Under the CURRENT resolver (member-span approximation only), the Middle
+    //     template's outer span starts at line 6 (first member). Line 5 col 1 is
+    //     the header byte — it falls BEFORE min_start → resolver returns None.
+    //     After step-2 (parsed-span outer check), it returns Some("Middle").
+    //     This test is RED at step-1, GREEN at step-2.
+    #[test]
+    fn entity_at_source_position_multi_structure_header_line_in_second_structure_returns_second_template_name(
+    ) {
+        const THREE_STRUCT_SOURCE: &str = r#"pub structure First {
+    param a: Scalar = 1mm
+}
+
+pub structure Middle {
+    param b: Scalar = 2mm
+}
+
+pub structure Last {
+    param c: Scalar = 3mm
+}
+"#;
+        let parsed =
+            reify_compiler::parse_with_stdlib(THREE_STRUCT_SOURCE, ModulePath::single("multi"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let line_offsets = reify_types::build_line_offsets(THREE_STRUCT_SOURCE);
+
+        // Line 5, col 1 = 'p' in "pub structure Middle {".  Under the current
+        // member-span-only resolver this is before Middle's min_start (line 6) → None.
+        // After step-2 it uses the parsed StructureDef.span → Some("Middle").
+        let result = resolve_entity_at_source_position(
+            &compiled,
+            &parsed,
+            THREE_STRUCT_SOURCE,
+            &line_offsets,
+            5,
+            1,
+        );
+        assert_eq!(
+            result,
+            Some("Middle".to_string()),
+            "cursor on 'pub structure Middle {{' header (5, 1) must resolve to Middle, got {:?}",
+            result
+        );
+
+        // Line 4, col 1 = blank line between First and Middle → gap, returns None
+        // both before and after the fix (no structure's parsed span covers a blank
+        // line between consecutive structures).
+        let gap_result = resolve_entity_at_source_position(
+            &compiled,
+            &parsed,
+            THREE_STRUCT_SOURCE,
+            &line_offsets,
+            4,
+            1,
+        );
+        assert!(
+            gap_result.is_none(),
+            "cursor on blank gap line (4, 1) between structures must return None, got {:?}",
+            gap_result
         );
     }
 }
