@@ -98,6 +98,11 @@ use reify_types::{Freshness, ValueCellId};
 /// continues FROM them to their downstream dependents so chain-root
 /// information is forwarded correctly.
 ///
+/// `changed` accepts any iterable of borrowed [`ValueCellId`] references —
+/// a `&HashSet<ValueCellId>`, a `&[ValueCellId]`, `std::iter::once(&id)`,
+/// etc.  The items are consumed once to seed the BFS frontier; the data
+/// only flows `iter → VecDeque`, so no intermediate collection is required.
+///
 /// Returns the set of [`NodeId`]s whose freshness was actually updated; nodes
 /// pruned by early cutoff (or with no cache entry) are not included.
 ///
@@ -121,15 +126,15 @@ use reify_types::{Freshness, ValueCellId};
 /// unchanged, so no value recomputation occurs." The
 /// `walk_does_not_recompute_values_or_bump_basis_version` unit test (step-7)
 /// asserts this byte-by-byte.
-pub fn propagate_freshness_only(
+pub fn propagate_freshness_only<'a>(
     cache: &mut CacheStore,
     reverse_index: &ReverseDependencyIndex,
     graph: &crate::graph::EvaluationGraph,
-    changed: &HashSet<ValueCellId>,
+    changed: impl IntoIterator<Item = &'a ValueCellId>,
     generation: u64,
 ) -> HashSet<NodeId> {
     let mut updated: HashSet<NodeId> = HashSet::new();
-    let mut frontier: VecDeque<ValueCellId> = changed.iter().cloned().collect();
+    let mut frontier: VecDeque<ValueCellId> = changed.into_iter().cloned().collect();
     // Allocated per-call for idempotency — see module doc §"Implementation notes".
     let mut visited: HashSet<ValueCellId> = HashSet::new();
 
