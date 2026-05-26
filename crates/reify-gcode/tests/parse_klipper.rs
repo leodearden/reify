@@ -159,3 +159,59 @@ fn unknown_directive_routes_through_marlin_unknown_command() {
         }
     );
 }
+
+// Empty-key (`=200`) is rejected: a token with no symbol before the `=`
+// carries nothing the consumer can dispatch on, so the parser surfaces
+// the malformed input.
+#[test]
+fn empty_key_is_invalid_parameter() {
+    let err = parse_klipper("SET_VELOCITY_LIMIT =200").unwrap_err();
+    assert_eq!(
+        err,
+        ParseError {
+            line: 1,
+            kind: ParseErrorKind::InvalidParameter {
+                letter: '=',
+                value: "=200".to_string(),
+            },
+        }
+    );
+}
+
+// Empty-value (`KEY=`) is accepted: semantically meaningful (e.g.
+// "clear this parameter") and harmless to preserve. Round-trip
+// asserts the rendered line is exactly `SET_VELOCITY_LIMIT KEY=` and
+// re-parsing yields the same AST.
+#[test]
+fn empty_value_is_accepted_and_round_trips() {
+    let ast = parse_klipper("SET_VELOCITY_LIMIT KEY=").expect("must parse");
+    assert_eq!(
+        ast,
+        vec![GcodeCommand::SetVelocityLimit(SetVelocityLimit {
+            params: vec![("KEY".to_string(), "".to_string())],
+        })]
+    );
+    let rendered = ast[0].to_string();
+    assert_eq!(rendered, "SET_VELOCITY_LIMIT KEY=");
+    let reparsed = parse_klipper(&rendered).expect("re-parse must succeed");
+    assert_eq!(ast, reparsed);
+}
+
+// Embedded `=` in value (`K=A=B`) — splits at the FIRST `=` only, so
+// the value substring carries any trailing `=` chars. Klipper macro
+// arguments can legitimately carry `=` inside values, so the split-
+// at-first contract is what makes round-trip viable.
+#[test]
+fn embedded_equals_splits_at_first_only_and_round_trips() {
+    let ast = parse_klipper("SET_VELOCITY_LIMIT K=A=B").expect("must parse");
+    assert_eq!(
+        ast,
+        vec![GcodeCommand::SetVelocityLimit(SetVelocityLimit {
+            params: vec![("K".to_string(), "A=B".to_string())],
+        })]
+    );
+    let rendered = ast[0].to_string();
+    assert_eq!(rendered, "SET_VELOCITY_LIMIT K=A=B");
+    let reparsed = parse_klipper(&rendered).expect("re-parse must succeed");
+    assert_eq!(ast, reparsed);
+}
