@@ -345,6 +345,7 @@
 
 pub mod assembly;
 pub mod boundary;
+pub mod buckling_kernel;
 pub mod constitutive;
 pub mod eigensolve;
 pub mod elements;
@@ -408,6 +409,9 @@ pub use error_estimator::{ZzIndicator, compute_zz_indicator};
 // Task 3451: buckling eigensolver kernel — shift-invert Lanczos + dense fallback.
 // PRD: docs/prds/v0_5/buckling-eigensolver.md §5 / §13 phase 2 task β.
 pub use eigensolve::{EigenSolverOptions, EigenSolverResult, solve_eigen_dense, solve_eigen_shift_invert};
+// Task 3453: buckling-kernel orchestrator — pre-stress → K_g → eigensolve → mode-shape.
+// PRD: docs/prds/v0_5/buckling-eigensolver.md §13 task δ.
+pub use buckling_kernel::{BucklingKernelOptions, BucklingKernelResult, Mode, solve_buckling_kernel};
 // Task 3452: P1-tet K_g element kernel + global assembly + shell/hex/wedge stubs.
 // PRD: docs/prds/v0_5/buckling-eigensolver.md §13 task γ.
 pub use geometric_stiffness::{
