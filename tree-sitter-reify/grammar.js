@@ -924,6 +924,13 @@ module.exports = grammar({
         field('op', choice($._unit_mul_op, $._unit_div_op)),
         field('right', $.unit_expr),
       )),
+      // NOTE: `field('base', $.unit_expr)` technically allows another pow expression
+      // as base (e.g. `m^2^3`), producing Pow(Pow(m,2),3) deterministically (left-to-
+      // right, since token.immediate('^') greedy-matches the second ^ immediately after
+      // the integer exponent).  PRD §3.2 does not address nested-pow in unit_expr; this
+      // grammar accepts it without ambiguity.  If future PRD revisions restrict pow-base
+      // to atoms only, replace `$.unit_expr` here with a narrower hidden rule (_unit_atom:
+      // alias(immediate_identifier, unit_name) | paren-unit_expr) and update corpus tests.
       prec(2, seq(
         field('base', $.unit_expr),
         field('op', token.immediate('^')),
