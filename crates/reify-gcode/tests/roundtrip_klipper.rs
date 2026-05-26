@@ -22,4 +22,18 @@ fn fixture_roundtrip_preserves_ast() {
     let ast2 = parse_klipper(&rendered)
         .expect("re-parse of Display output must succeed");
     assert_eq!(ast1, ast2);
+
+    // Fixed-point: a second Display → parse cycle must yield the same
+    // AST. Catches regressions where Display normalizes input on the
+    // first pass but then mutates further on subsequent passes (a
+    // class of bug pure ast1 == ast2 wouldn't catch, since the first
+    // cycle hides drift between source and canonical form).
+    let rendered2: String = ast2
+        .iter()
+        .map(|c| c.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let ast3 = parse_klipper(&rendered2)
+        .expect("second re-parse of Display output must succeed");
+    assert_eq!(ast2, ast3);
 }
