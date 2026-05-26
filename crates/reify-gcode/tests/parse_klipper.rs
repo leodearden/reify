@@ -10,6 +10,7 @@ use reify_gcode::ast::{
     ArcDirection, ArcMove, GcodeCommand, IgnoredMCode, InputShaper, LinearMove, SetPosition,
     SetVelocityLimit,
 };
+use reify_gcode::error::{ParseError, ParseErrorKind};
 use reify_gcode::parse_klipper;
 
 #[test]
@@ -122,5 +123,39 @@ fn mixed_marlin_klipper_passthrough_preserves_order() {
                 e: Some(0.0),
             }),
         ]
+    );
+}
+
+// SET_VELOCITY_LIMIT VELOCITY (no =) — malformed KV token surfaces as
+// InvalidParameter with the raw offending token preserved.
+// Line-number accuracy: error is on line 2, not line 1 (the prior G1
+// line counts but is not the failure site).
+#[test]
+fn malformed_kv_no_equals_is_invalid_parameter() {
+    let err = parse_klipper("G1 X10\nSET_VELOCITY_LIMIT VELOCITY").unwrap_err();
+    assert_eq!(
+        err,
+        ParseError {
+            line: 2,
+            kind: ParseErrorKind::InvalidParameter {
+                letter: '=',
+                value: "VELOCITY".to_string(),
+            },
+        }
+    );
+}
+
+// Unknown leading token flows through marlin::parse_line and produces
+// the marlin UnknownCommand diagnostic — proves the delegation routes
+// non-Klipper-directive leading tokens through the shared dispatch.
+#[test]
+fn unknown_directive_routes_through_marlin_unknown_command() {
+    let err = parse_klipper("BOGUS_DIRECTIVE FOO=1").unwrap_err();
+    assert_eq!(
+        err,
+        ParseError {
+            line: 1,
+            kind: ParseErrorKind::UnknownCommand("BOGUS_DIRECTIVE".to_string()),
+        }
     );
 }
