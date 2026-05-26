@@ -497,6 +497,23 @@ impl Engine {
     /// [`crate::kernel_registry::emit_kernel_selection`] for the level-selection
     /// contract. The event fires only when a [`tracing::Subscriber`] is installed,
     /// so bare tests and binaries that install no subscriber are unaffected.
+    ///
+    /// # Construction cost (task ε / 3436 amendment)
+    ///
+    /// **Note**: as of v0.3-ε this alias delegates to
+    /// [`Self::with_registered_kernels`], which instantiates **every**
+    /// registered adapter (calls each `KernelRegistration::factory`), not just
+    /// the lex-min-picked one. In an OCCT-only build the registered set is
+    /// just `"occt"` so the cost is unchanged — but the moment a second adapter
+    /// (e.g. `"manifold"`, `"fidget"`, `"openvdb"`) lands in the inventory,
+    /// every legacy caller of `with_registered_kernel` silently pays the
+    /// allocation + steady-state memory cost for the additional adapter even
+    /// though it never reads through to it. PRD §9 Q9.1 defers the
+    /// `#[deprecated]` attribute + caller migration to v0.4; if a heavyweight
+    /// adapter ships before then, that deprecation timing should be reassessed
+    /// (or this alias should revert to instantiating only the picked entry —
+    /// the reviewer's option (b)). The drift is intentional and recorded here
+    /// so callers and reviewers see it from the type's surface alone.
     pub fn with_registered_kernel(constraint_checker: Box<dyn ConstraintChecker>) -> Self {
         // Task ε (3436): now a thin alias delegating to the multi-handle
         // `with_registered_kernels` constructor. In an OCCT-only build the

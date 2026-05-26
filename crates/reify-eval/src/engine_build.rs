@@ -2123,7 +2123,7 @@ impl Engine {
         // threaded a demanded tolerance AND the realization is named (the
         // `named_steps` contract requires a name to write into the map),
         // probe the per-engine `RealizationCache` at
-        // `(entity_id, ReprKind::BRep, demanded_tol)`. On hit we push the
+        // `(entity_id, cache_repr, demanded_tol)`. On hit we push the
         // cached terminal handle, write `named_steps[name] = cached_handle`,
         // and return — preserving the post-condition the success path
         // establishes below. On miss (or when either guard is `None`) we
@@ -2133,9 +2133,21 @@ impl Engine {
         // "tighter satisfies looser" rule (`cached_tol ≤ requested_tol`),
         // so a tighter request automatically misses a looser cached entry
         // (see step-13's pin).
+        //
+        // **Amendment (suggestion #3)**: the cache repr is bound to a local
+        // `cache_repr` so the lookup-key repr and the `produced_repr_out`
+        // write below are sourced from the same value. If a future change
+        // shifts the cache key to a non-`BRep` `ReprKind` (the cache's
+        // `(entity, repr, tol, options)` shape already supports it; see
+        // `RealizationCache::lookup`), the `produced_repr_out` write follows
+        // without a separate edit. The `debug_assert_eq!` below pins the
+        // current invariant (cache-only-stores-BRep) so a future Mesh cache
+        // entry trips loudly in dev rather than silently corrupting
+        // `produced_repr` on the cache-hit branch.
+        let cache_repr = ReprKind::BRep;
         if let (Some(tol), Some(name)) = (demanded_tol, realization_name)
             && let Some(&cached_handle) =
-                realization_cache.lookup(&realization_id.entity, ReprKind::BRep, tol, NO_OPTIONS)
+                realization_cache.lookup(&realization_id.entity, cache_repr, tol, NO_OPTIONS)
         {
             // Internal-consistency invariant (amendment): the per-build
             // reset of `feature_tag_table` / `topology_attribute_table` at
@@ -2163,13 +2175,26 @@ impl Engine {
             step_handles.push(cached_handle);
             named_steps.insert(name.to_string(), cached_handle);
             // Step-10 (task ε / 3436): the [`RealizationCache`] key includes
-            // `ReprKind::BRep` (see the post-success `realization_cache.insert`
+            // `cache_repr` (see the post-success `realization_cache.insert`
             // call at the bottom of this function), so every cached entry's
-            // terminal handle was produced by a BRep-native kernel. Surface
-            // BRep through `produced_repr_out` so the caller writes the same
-            // value into the realization graph node it would have written on
-            // a cold-path miss for this realization.
-            *produced_repr_out = Some(ReprKind::BRep);
+            // terminal handle was produced by a kernel capable of that repr.
+            // Surface `cache_repr` through `produced_repr_out` so the caller
+            // writes the same value into the realization graph node it would
+            // have written on a cold-path miss for this realization.
+            //
+            // **Amendment (suggestion #3)**: pinned by `debug_assert_eq!` to
+            // `ReprKind::BRep` — every cache populate today is BRep-keyed (the
+            // op loop writes `realization_cache.insert(..., cache_repr, ...)`
+            // below). When ζ/η extend the cache key to other repr kinds the
+            // assertion will need to relax in lockstep with the populate-side
+            // change.
+            debug_assert_eq!(
+                cache_repr,
+                ReprKind::BRep,
+                "cache_repr is pinned to BRep until ζ/η extend the cache to other ReprKinds; \
+                 if this asserts, the populate site also needs to migrate",
+            );
+            *produced_repr_out = Some(cache_repr);
             return;
         }
 
@@ -2623,9 +2648,14 @@ impl Engine {
                     named_steps.insert(name.to_string(), last);
                 }
                 if let (Some(tol), Some(_name)) = (demanded_tol, realization_name) {
+                    // **Amendment (suggestion #3)**: use the same `cache_repr`
+                    // local that the cache-hit short-circuit at the top of
+                    // this helper consulted, so the populate-side and the
+                    // lookup-side stay in sync when ζ/η extend the cache key
+                    // beyond `ReprKind::BRep`.
                     realization_cache.insert(
                         &realization_id.entity,
-                        ReprKind::BRep,
+                        cache_repr,
                         tol,
                         NO_OPTIONS,
                         last,
