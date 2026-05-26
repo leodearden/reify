@@ -202,7 +202,10 @@ while true; do
         break
     fi
 
-    # All N slots busy. Check deadline before sleeping.
+    # All N slots busy.  Check deadline BEFORE sleeping (not after) so the
+    # wrapper exits within at most one retry-pass overhead (~0.5s) of the
+    # deadline, regardless of N.  This guarantees a 1s LOCK_WAIT exits in
+    # ≤ ~1.5s even when all N slots are externally held (full contention).
     _NOW="$(date +%s)"
     if [ "$_NOW" -ge "$_DEADLINE" ]; then
         echo "ERROR: cargo-test-occt-gated.sh: failed to acquire OCCT slot within ${LOCK_WAIT}s (LOCK=${LOCK}, N=${_N})" >&2
