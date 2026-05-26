@@ -108,7 +108,7 @@ bool tree_sitter_reify_external_scanner_scan(void *payload, TSLexer *lexer,
   }
 
   /* Accept only valid unit-expression start characters (PRD §3.2 unit_name
-   * production: /[A-Za-z_][A-Za-z0-9_]*/, plus '(' for grouped units). */
+   * production matching [A-Za-z_][A-Za-z0-9_]*, plus '(' for grouped units. */
   if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' ||
       c == '(') {
     lexer->result_symbol = UNIT_EXPR_START;
