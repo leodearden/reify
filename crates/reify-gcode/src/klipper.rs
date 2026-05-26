@@ -63,6 +63,14 @@ fn parse_klipper_line(line_no: usize, line: &str) -> Result<GcodeCommand, ParseE
             let params = parse_kv_params(line_no, tokens)?;
             Ok(GcodeCommand::InputShaper(InputShaper { params }))
         }
+        // Fallback: delegation to `marlin::parse_line` is the
+        // authoritative dispatch for shared G/M codes (G0/G1/G2/G3/G92,
+        // standalone F, M82/M83/M104/M109). Do NOT duplicate those arms
+        // here — extending dispatch belongs in `marlin.rs` so both
+        // dialects stay in lock-step. Unknown leading tokens flow
+        // through the same path and produce the marlin
+        // `UnknownCommand(token)` diagnostic with the original line
+        // number, matching the cross-dialect error contract.
         _ => marlin::parse_line(line_no, line),
     }
 }
