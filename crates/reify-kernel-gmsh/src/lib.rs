@@ -110,8 +110,9 @@ pub use mesh_profile_2d::{MeshPlane2dResult, STUB_UNAVAILABLE_MARKER, mesh_plane
 //
 // Note: `VolumeMesh` is an unconditional `reify_types` type (not `has_gmsh`-only);
 // see the import comment in `mesh_boundary.rs` and the `mesh_volume.rs` precedent.
+#[cfg(feature = "mesh-morph")]
 pub use mesh_boundary::EntityAttribution;
-#[cfg(has_gmsh)]
+#[cfg(all(has_gmsh, feature = "mesh-morph"))]
 pub use mesh_boundary::{BoundaryAttributedReport, mesh_surface_to_volume_with_attribution};
 pub use options::MeshingOptions;
 // Task 2999: a-posteriori volume mesh refinement driven by per-element size
