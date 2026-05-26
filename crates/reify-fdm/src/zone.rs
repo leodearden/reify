@@ -71,13 +71,6 @@ pub struct ZoneProbe {
     pub min_top_bottom_distance: Option<f64>,
 }
 
-/// Classify a probed point into a [`Zone`] under the given process
-/// parameters.
-///
-/// Implements the cascade from `docs/prds/v0_5/fdm-as-printed-fea.md`
-/// §C4: Wall first, then Skin, else Infill. The ordering matters at
-/// corners where both bands overlap — perimeter shells dominate, which
-/// matches conventional slicer behaviour.
 /// Default cosine threshold for the top/bottom-vs-side face test:
 /// cos(45°) = √2/2.
 ///
@@ -122,6 +115,19 @@ pub fn is_top_or_bottom_normal(
 /// the two corner points in SI metres. Real-body distance probes
 /// (OCCT-backed) live downstream in the δ-task; this helper keeps γ's
 /// integration test self-contained.
+///
+/// **Scope:** the distance helpers ([`min_top_bottom_distance`],
+/// [`min_side_distance`], [`build_zone_probe`]) assume the query point
+/// lies inside the box or directly under a face — i.e. its projection
+/// onto the face plane lands within the bounded face. Exterior points
+/// past an edge will return the slab (face-plane) distance, not the
+/// true 3D distance to the bounded face polygon. Sufficient for γ's
+/// interior-probe integration test; downstream callers that need
+/// exterior-point distances should use a kernel-backed probe.
+///
+/// [`min_top_bottom_distance`]: AxisAlignedBox::min_top_bottom_distance
+/// [`min_side_distance`]: AxisAlignedBox::min_side_distance
+/// [`build_zone_probe`]: AxisAlignedBox::build_zone_probe
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AxisAlignedBox {
     /// Lower corner (component-wise minimum).
@@ -209,6 +215,13 @@ impl AxisAlignedBox {
     }
 }
 
+/// Classify a probed point into a [`Zone`] under the given process
+/// parameters.
+///
+/// Implements the cascade from `docs/prds/v0_5/fdm-as-printed-fea.md`
+/// §C4: Wall first, then Skin, else Infill. The ordering matters at
+/// corners where both bands overlap — perimeter shells dominate, which
+/// matches conventional slicer behaviour.
 pub fn classify_zone(probe: &ZoneProbe, params: &ZoneProcessParams) -> Zone {
     let wall_thickness = params.walls as f64 * params.line_width;
     if let Some(d) = probe.min_side_distance
