@@ -1639,4 +1639,62 @@ mod tests {
              root Some(NodeId::Compute(c_id))"
         );
     }
+
+    /// Step-1 (task 3649): `propagate_freshness_only` accepts any `IntoIterator`
+    /// with `Item = &ValueCellId`, not only `&HashSet<ValueCellId>`.
+    ///
+    /// Uses the same two-cell `a → b` scaffold as
+    /// `propagates_intermediate_to_final_through_two_cell_chain` but passes
+    /// a borrowed-slice iterator (`[a.clone()].iter()`) instead of `&HashSet`.
+    ///
+    /// RED: does NOT compile against `changed: &HashSet<ValueCellId>` — a
+    /// slice iterator is not a `&HashSet`. GREEN once the signature is widened
+    /// to `impl IntoIterator<Item = &ValueCellId>`.
+    #[test]
+    fn propagate_freshness_only_accepts_borrowed_iterator() {
+        let e = "T";
+        let a = ValueCellId::new(e, "a");
+        let b = ValueCellId::new(e, "b");
+
+        let mut cache = CacheStore::new();
+        put_value_entry(
+            &mut cache,
+            &a,
+            Freshness::Intermediate { generation: 1 },
+            vec![],
+        );
+        put_value_entry(
+            &mut cache,
+            &b,
+            Freshness::Intermediate { generation: 1 },
+            vec![a.clone()],
+        );
+
+        let mut reverse_index = ReverseDependencyIndex::new();
+        reverse_index.add(a.clone(), NodeId::Value(b.clone()));
+
+        // Flip `a` to Final via the canonical writer.
+        assert!(cache.set_freshness(&NodeId::Value(a.clone()), Freshness::Final));
+
+        // Pass a borrowed slice iterator — NOT a &HashSet.
+        // This call does NOT type-check against `changed: &HashSet<ValueCellId>`.
+        let updated = super::propagate_freshness_only(
+            &mut cache,
+            &reverse_index,
+            &EvaluationGraph::default(),
+            [a.clone()].iter(),
+            1,
+        );
+
+        assert_eq!(
+            cache.freshness(&NodeId::Value(b.clone())),
+            Freshness::Final,
+            "b should be Final after walking from a=Final"
+        );
+        assert!(
+            updated.contains(&NodeId::Value(b.clone())),
+            "updated set should contain Value(b), got: {:?}",
+            updated
+        );
+    }
 }
