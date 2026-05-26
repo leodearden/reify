@@ -496,7 +496,7 @@ mod tests {
         // n_free = 24 - 20 = 4; dense-fallback returns min(4, n_modes=3) = 3 modes.
         // Assert ≥ 1 to stay tolerant if the actual count diverges.
         assert!(
-            result.modes.len() >= 1,
+            !result.modes.is_empty(),
             "expect at least 1 mode; got {}",
             result.modes.len(),
         );
@@ -654,7 +654,7 @@ mod tests {
         // (d) Smallest |λ| must be positive: −K_g is PSD under compression,
         //     so λ = 1/(B-weighted eigenvalue) > 0.
         assert!(
-            result.modes.len() >= 1,
+            !result.modes.is_empty(),
             "must return at least 1 mode; got {}",
             result.modes.len(),
         );
