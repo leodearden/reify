@@ -250,16 +250,19 @@ describe('Editor cursor tracking', () => {
     const container = screen.getByTestId('editor-container');
     const view = getEditorView(container);
 
-    // Move cursor to line 2, column 5 (offset: line1 length + newline + 5)
+    // Move cursor to offset 25 within the editor document.
     // file1 content: 'structure Bracket {\n  param width = 80mm\n}'
-    //  line 1: 'structure Bracket {' (19 chars) + '\n' = offset 20
-    //  line 2, col 5 => offset 25
+    //  line 1: 'structure Bracket {' (19 chars) + '\n' → line 2 starts at offset 20
+    //  offset 25 = pos - line.from + 1 = (25 - 20) + 1 = 6 (1-based column)
+    //  The 6th character of line 2 is 'a' in '  param width = 80mm'.
     const offset = 25;
     view.dispatch({ selection: { anchor: offset } });
 
     expect(store.state.cursorPosition).not.toBeNull();
     expect(store.state.cursorPosition!.line).toBe(2);
-    expect(store.state.cursorPosition!.column).toBe(5);
+    // 1-based column to match the backend convention used by
+    // getEntityAtSourceLocation / getContainingDefinition.
+    expect(store.state.cursorPosition!.column).toBe(6);
   });
 });
 
