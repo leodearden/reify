@@ -1752,6 +1752,7 @@ fn kernel_distance(
 //   `closest_point(point, geometry)` → `GeometryQuery::ClosestPointOnShape`
 //   `is_on(point, geometry)`         → `GeometryQuery::PointOnShape`
 //   `angle_between_surfaces(a, b)`   → `GeometryQuery::SurfaceAngle`
+//   `angle(a, b)`                    → pure-math acos (task 3614, KGQ-ε)
 //
 // ── Which names are compile-time typed but NOT eval-dispatched (task 2699) ──
 //
@@ -1787,9 +1788,11 @@ fn kernel_distance(
 //                          (parsed from the kernel's JSON-Point3 reply).
 //   `Some(Value::Bool(_))` for `is_on`.
 //   `Some(Value::Scalar { dimension: ANGLE, .. })` for
-//                          `angle_between_surfaces`.
+//                          `angle_between_surfaces` and `angle`.
 //   `Some(Value::Undef)`   on a kernel error or a malformed kernel reply
-//                          (defensive downgrade with a Warning diagnostic).
+//                          (defensive downgrade with a Warning diagnostic);
+//                          also for `angle` with zero-length / non-finite
+//                          input (Warning emitted, no kernel call).
 //   `None`                 when the expression is not a recognised
 //                          topology-selector helper, or the arg shape is
 //                          unsupported. Callers fall through to the cell's
@@ -1823,6 +1826,7 @@ pub(crate) fn try_eval_topology_selector(
         "edges_at_height" => TopologySelectorHelper::EdgesAtHeight,
         "adjacent_faces" => TopologySelectorHelper::AdjacentFaces,
         "shared_edges" => TopologySelectorHelper::SharedEdges,
+        "angle" => TopologySelectorHelper::Angle,
         _ => return None,
     };
 
@@ -1885,7 +1889,8 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::EdgesParallelTo
                 | TopologySelectorHelper::EdgesAtHeight
                 | TopologySelectorHelper::AdjacentFaces
-                | TopologySelectorHelper::SharedEdges => {
+                | TopologySelectorHelper::SharedEdges
+                | TopologySelectorHelper::Angle => {
                     unreachable!("ClosestPoint/IsOn outer match guarantees this")
                 }
             }
@@ -1896,6 +1901,25 @@ pub(crate) fn try_eval_topology_selector(
             let face_b = resolve_geometry_handle_arg(&args[1], named_steps)?;
             let query = reify_types::GeometryQuery::SurfaceAngle { face_a, face_b };
             dispatch_surface_angle(kernel, &query, &function.name, diagnostics)
+        }
+        TopologySelectorHelper::Angle => {
+            // Both args: value-flow Vec3 ValueRefs → values map → [f64; 3].
+            // Pure-math: acos(clamp(dot(a,b)/(|a||b|), -1, 1)). No kernel call.
+            let a = resolve_vec3_arg(&args[0], values)?;
+            let b = resolve_vec3_arg(&args[1], values)?;
+            let dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+            let na = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+            let nb = (b[0] * b[0] + b[1] * b[1] + b[2] * b[2]).sqrt();
+            if na == 0.0 || nb == 0.0 || !na.is_finite() || !nb.is_finite() {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "angle: degenerate input — zero-length or non-finite vector \
+                     (|a|={na}, |b|={nb}); cell left at Undef"
+                )));
+                return Some(reify_types::Value::Undef);
+            }
+            let cos_theta = (dot / (na * nb)).clamp(-1.0, 1.0);
+            let theta = cos_theta.acos();
+            Some(reify_types::Value::angle(theta))
         }
         TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => {
             // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
@@ -1919,7 +1943,8 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::EdgesParallelTo
                 | TopologySelectorHelper::EdgesAtHeight
                 | TopologySelectorHelper::AdjacentFaces
-                | TopologySelectorHelper::SharedEdges => {
+                | TopologySelectorHelper::SharedEdges
+                | TopologySelectorHelper::Angle => {
                     unreachable!("Edges/Faces outer match guarantees this")
                 }
             };
@@ -2271,6 +2296,12 @@ enum TopologySelectorHelper {
     /// an empty list (with a warning) when the two faces live on different
     /// parent solids (design-doc §4.3).
     SharedEdges,
+    /// `angle(a, b) -> Angle` — angle between two 3-D vectors (task 3614,
+    /// PRD `docs/prds/v0_3/kernel-geometry-queries.md` §9 KGQ-ε).
+    /// Pure-math: `acos(clamp(dot(a,b)/(|a||b|), -1, 1))`. No kernel call.
+    /// Args are value-flow `Vector<3>` resolved from `values`; zero-length
+    /// or non-finite input emits a Warning and returns `Some(Value::Undef)`.
+    Angle,
 }
 
 impl TopologySelectorHelper {
@@ -2288,7 +2319,8 @@ impl TopologySelectorHelper {
             | TopologySelectorHelper::EdgesByLength
             | TopologySelectorHelper::FacesByArea
             | TopologySelectorHelper::AdjacentFaces
-            | TopologySelectorHelper::SharedEdges => 2,
+            | TopologySelectorHelper::SharedEdges
+            | TopologySelectorHelper::Angle => 2,
             TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => 1,
             TopologySelectorHelper::FacesByNormal
             | TopologySelectorHelper::EdgesParallelTo
