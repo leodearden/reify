@@ -117,6 +117,73 @@ fn param_cells(template: &TopologyTemplate) -> Vec<&ValueCellDecl> {
         .collect()
 }
 
+/// Assert the signature of a two-param evaluator helper fn
+/// (`evaluate_profile`, `evaluate_profile_dot`, or `evaluate_profile_ddot`).
+///
+/// All three share the exact same shape:
+///   `pub fn <name>(p: Profile, t: Time) -> List<JointValue>`
+///
+/// This helper centralises the lookup + pub + 2-param + return-type checks so
+/// that a future signature change (e.g. tightening `JointValue`) is a
+/// one-line edit here rather than a three-place edit prone to drift.
+///
+/// `profile_duration` is intentionally NOT covered by this helper — its shape
+/// differs (1 param, `Time` return) and it remains a standalone test.
+fn assert_evaluator_signature(name: &str) {
+    let module = load_stdlib_module();
+
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == name)
+        .unwrap_or_else(|| {
+            panic!(
+                "{} not found in std/trajectory; found functions: {:?}",
+                name,
+                module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+            )
+        });
+
+    assert!(func.is_pub, "{} should be pub", name);
+
+    assert_eq!(
+        func.params.len(),
+        2,
+        "{} should take exactly 2 params (p, t); got: {:?}",
+        name,
+        func.params
+    );
+
+    // Param order is part of the contract — p first, then t.
+    assert_eq!(
+        func.params[0],
+        ("p".to_string(), Type::TraitObject("Profile".to_string())),
+        "{} param[0] should be (\"p\", TraitObject(\"Profile\")); got: {:?}",
+        name,
+        func.params[0]
+    );
+    assert_eq!(
+        func.params[1],
+        (
+            "t".to_string(),
+            Type::Scalar {
+                dimension: DimensionVector::TIME,
+            }
+        ),
+        "{} param[1] should be (\"t\", Scalar<TIME>); got: {:?}",
+        name,
+        func.params[1]
+    );
+
+    assert_eq!(
+        func.return_type,
+        Type::List(Box::new(Type::Real)),
+        "{} return type should be List<Real> (= List<JointValue>); got: {:?}",
+        name,
+        func.return_type
+    );
+}
+
 /// Recursively walk an expression tree collecting `(method_name, member_name)`
 /// pairs from `MethodCall { object: ValueRef(member), method: name, .. }`
 /// nodes. The traversal also recurses into `BinOp`, `UnOp`, and nested
@@ -781,59 +848,11 @@ fn piecewise_polynomial_profile_constrains_waypoints_nonempty() {
 /// `is_pub == true` because downstream tasks (β/γ/δ/ε/η/ι/ξ) call this fn
 /// from user .ri code.
 ///
-/// Pattern lifted from `standard_gravity_function_present_in_std_units`
-/// (standard_gravity_tests.rs:22-50) and the stdlib-fn-signature reuse item
-/// documented in the plan.
+/// The shared assertion logic lives in `assert_evaluator_signature` — all three
+/// evaluate_* fns share the same 2-param (p:Profile, t:Time) → List<Real> shape.
 #[test]
 fn evaluate_profile_fn_signature() {
-    let module = load_stdlib_module();
-
-    let func = module
-        .functions
-        .iter()
-        .find(|f| f.name == "evaluate_profile")
-        .unwrap_or_else(|| {
-            panic!(
-                "evaluate_profile not found in std/trajectory; found functions: {:?}",
-                module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
-            )
-        });
-
-    assert!(func.is_pub, "evaluate_profile should be pub");
-
-    assert_eq!(
-        func.params.len(),
-        2,
-        "evaluate_profile should take exactly 2 params (p, t); got: {:?}",
-        func.params
-    );
-
-    // Param order is contract-pinned (p first, then t).
-    assert_eq!(
-        func.params[0],
-        ("p".to_string(), Type::TraitObject("Profile".to_string())),
-        "evaluate_profile param[0] should be (\"p\", TraitObject(\"Profile\")); got: {:?}",
-        func.params[0]
-    );
-    assert_eq!(
-        func.params[1],
-        (
-            "t".to_string(),
-            Type::Scalar {
-                dimension: DimensionVector::TIME,
-            }
-        ),
-        "evaluate_profile param[1] should be (\"t\", Scalar<TIME>); got: {:?}",
-        func.params[1]
-    );
-
-    assert_eq!(
-        func.return_type,
-        Type::List(Box::new(Type::Real)),
-        "evaluate_profile return type should be List<Real> (= List<JointValue>); \
-         got: {:?}",
-        func.return_type
-    );
+    assert_evaluator_signature("evaluate_profile");
 }
 
 // ─── step-23: evaluate_profile_dot fn signature ───────────────────────────────
@@ -844,63 +863,12 @@ fn evaluate_profile_fn_signature() {
 ///
 /// Signature: `pub fn evaluate_profile_dot(p: Profile, t: Time) -> List<JointValue>`
 ///
-/// This fn is the first-derivative companion to `evaluate_profile` (step-21/22).
-/// Param shape is identical: `(p: Profile, t: Time)` — declaration order is
-/// part of the contract, pinned here as in step-21. Return type is
-/// `List<JointValue>` = `List<Real>` (q̇ shares the same per-joint scalar
-/// type as q under the α-phase `JointValue = Real` alias).
-///
-/// `is_pub == true` for the same downstream-consumer reason as step-21.
+/// First-derivative companion to `evaluate_profile` (step-21/22). Param shape
+/// is identical: `(p: Profile, t: Time)` — same 2-param (p, t) → List<Real>
+/// contract asserted via `assert_evaluator_signature`.
 #[test]
 fn evaluate_profile_dot_fn_signature() {
-    let module = load_stdlib_module();
-
-    let func = module
-        .functions
-        .iter()
-        .find(|f| f.name == "evaluate_profile_dot")
-        .unwrap_or_else(|| {
-            panic!(
-                "evaluate_profile_dot not found in std/trajectory; found functions: {:?}",
-                module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
-            )
-        });
-
-    assert!(func.is_pub, "evaluate_profile_dot should be pub");
-
-    assert_eq!(
-        func.params.len(),
-        2,
-        "evaluate_profile_dot should take exactly 2 params (p, t); got: {:?}",
-        func.params
-    );
-
-    assert_eq!(
-        func.params[0],
-        ("p".to_string(), Type::TraitObject("Profile".to_string())),
-        "evaluate_profile_dot param[0] should be (\"p\", TraitObject(\"Profile\")); \
-         got: {:?}",
-        func.params[0]
-    );
-    assert_eq!(
-        func.params[1],
-        (
-            "t".to_string(),
-            Type::Scalar {
-                dimension: DimensionVector::TIME,
-            }
-        ),
-        "evaluate_profile_dot param[1] should be (\"t\", Scalar<TIME>); got: {:?}",
-        func.params[1]
-    );
-
-    assert_eq!(
-        func.return_type,
-        Type::List(Box::new(Type::Real)),
-        "evaluate_profile_dot return type should be List<Real> (= List<JointValue>); \
-         got: {:?}",
-        func.return_type
-    );
+    assert_evaluator_signature("evaluate_profile_dot");
 }
 
 // ─── step-25: evaluate_profile_ddot fn signature ──────────────────────────────
@@ -911,63 +879,12 @@ fn evaluate_profile_dot_fn_signature() {
 ///
 /// Signature: `pub fn evaluate_profile_ddot(p: Profile, t: Time) -> List<JointValue>`
 ///
-/// This fn is the second-derivative companion to `evaluate_profile` (step-21/22)
-/// and `evaluate_profile_dot` (step-23/24). Param shape is identical to both
-/// companions: `(p: Profile, t: Time)` — declaration order is part of the
-/// contract. Return type is `List<JointValue>` = `List<Real>` (q̈ shares the
-/// same per-joint scalar type as q and q̇ under the α-phase alias).
-///
-/// `is_pub == true` for the same downstream-consumer reason as steps 21 and 23.
+/// Second-derivative companion to `evaluate_profile` (step-21/22) and
+/// `evaluate_profile_dot` (step-23/24). Same 2-param (p, t) → List<Real>
+/// contract asserted via `assert_evaluator_signature`.
 #[test]
 fn evaluate_profile_ddot_fn_signature() {
-    let module = load_stdlib_module();
-
-    let func = module
-        .functions
-        .iter()
-        .find(|f| f.name == "evaluate_profile_ddot")
-        .unwrap_or_else(|| {
-            panic!(
-                "evaluate_profile_ddot not found in std/trajectory; found functions: {:?}",
-                module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
-            )
-        });
-
-    assert!(func.is_pub, "evaluate_profile_ddot should be pub");
-
-    assert_eq!(
-        func.params.len(),
-        2,
-        "evaluate_profile_ddot should take exactly 2 params (p, t); got: {:?}",
-        func.params
-    );
-
-    assert_eq!(
-        func.params[0],
-        ("p".to_string(), Type::TraitObject("Profile".to_string())),
-        "evaluate_profile_ddot param[0] should be (\"p\", TraitObject(\"Profile\")); \
-         got: {:?}",
-        func.params[0]
-    );
-    assert_eq!(
-        func.params[1],
-        (
-            "t".to_string(),
-            Type::Scalar {
-                dimension: DimensionVector::TIME,
-            }
-        ),
-        "evaluate_profile_ddot param[1] should be (\"t\", Scalar<TIME>); got: {:?}",
-        func.params[1]
-    );
-
-    assert_eq!(
-        func.return_type,
-        Type::List(Box::new(Type::Real)),
-        "evaluate_profile_ddot return type should be List<Real> (= List<JointValue>); \
-         got: {:?}",
-        func.return_type
-    );
+    assert_evaluator_signature("evaluate_profile_ddot");
 }
 
 // ─── step-27: profile_duration fn signature ───────────────────────────────────

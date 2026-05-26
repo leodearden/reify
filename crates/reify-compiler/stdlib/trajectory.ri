@@ -255,6 +255,12 @@ structure def PiecewisePolynomialProfile : Profile {
 //     `reify-compiler/src/expr.rs:2082`)
 //   - `Time` return → `0.0 * 1s`  (numeric × unit-literal; pattern from
 //     `units.ri:82` `STANDARD_GRAVITY = 9.80665 * 1m / (1s * 1s)`)
+//
+// α-phase hazard: if a call to any of these fns reaches the evaluator before
+// β-3816 lands, it will silently return the stub value (`[0.0]` or `0.0 * 1s`)
+// rather than a real result. No α-phase consumer is expected to invoke these
+// fns at runtime; the risk is low. β-3816 closes the hazard by replacing each
+// stub body with the real evaluator dispatch.
 
 // evaluate_profile — sample a Profile at time `t`, returning the per-joint
 // position vector q(t) (PRD §4.1 line 241).
