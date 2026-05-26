@@ -1,0 +1,10 @@
+// Task 3555 / annotation-args δ fixture.
+//
+// `@shell(linear_taper(1.0))` carries a NON-literal expression argument. Lowering
+// must preserve it as `AnnotationArg { name: None, value: Expr(<call linear_taper(1.0)>) }`
+// rather than warn-and-drop it (the pre-δ behaviour). Validation still rejects the arg
+// because @shell's Phase-1 schema accepts only a numeric-literal thickness — that schema
+// mismatch is the observable proof the IR survived lowering far enough to reach validation.
+@shell(linear_taper(1.0)) structure def Plate {
+    param x : Real
+}

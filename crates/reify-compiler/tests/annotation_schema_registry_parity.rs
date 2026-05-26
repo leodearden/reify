@@ -42,7 +42,7 @@ struct FixtureRow {
     label: &'static str,
     name: &'static str,
     context: &'static str,
-    args: Vec<reify_types::AnnotationArg>,
+    args: Vec<reify_types::AnnotationArgValue>,
     expected: Vec<ExpectedDiag>,
 }
 
@@ -51,7 +51,7 @@ impl FixtureRow {
         label: &'static str,
         name: &'static str,
         context: &'static str,
-        args: Vec<reify_types::AnnotationArg>,
+        args: Vec<reify_types::AnnotationArgValue>,
         expected: Vec<ExpectedDiag>,
     ) -> Self {
         Self {
@@ -67,7 +67,7 @@ impl FixtureRow {
         label: &'static str,
         name: &'static str,
         context: &'static str,
-        args: Vec<reify_types::AnnotationArg>,
+        args: Vec<reify_types::AnnotationArgValue>,
     ) -> Self {
         Self::new(label, name, context, args, vec![])
     }
@@ -75,7 +75,7 @@ impl FixtureRow {
 
 #[test]
 fn annotation_schema_registry_parity() {
-    use reify_types::AnnotationArg::{Bool, Ident, Int, Real, String as Str};
+    use reify_types::AnnotationArgValue::{Bool, Ident, Int, Real, String as Str};
 
     #[rustfmt::skip]
     let rows: Vec<FixtureRow> = vec![
@@ -204,7 +204,12 @@ fn annotation_schema_registry_parity() {
     for row in &rows {
         let ann = reify_types::Annotation {
             name: row.name.to_string(),
-            args: row.args.clone(),
+            args: row
+                .args
+                .iter()
+                .cloned()
+                .map(reify_types::AnnotationArg::positional)
+                .collect(),
             span: reify_types::SourceSpan::empty(0),
         };
         let diags = reify_compiler::__validate_annotations_for_parity_test(
@@ -252,12 +257,12 @@ fn annotation_schema_registry_parity() {
     {
         let a1 = reify_types::Annotation {
             name: "optimized".to_string(),
-            args: vec![Str("a".to_string())],
+            args: vec![reify_types::AnnotationArg::positional(Str("a".to_string()))],
             span: reify_types::SourceSpan::empty(0),
         };
         let a2 = reify_types::Annotation {
             name: "optimized".to_string(),
-            args: vec![Str("b".to_string())],
+            args: vec![reify_types::AnnotationArg::positional(Str("b".to_string()))],
             span: reify_types::SourceSpan::empty(10),
         };
         let anns = vec![a1, a2.clone()];
@@ -285,12 +290,12 @@ fn annotation_schema_registry_parity() {
     {
         let a1 = reify_types::Annotation {
             name: "optimized".to_string(),
-            args: vec![Str("a".to_string())],
+            args: vec![reify_types::AnnotationArg::positional(Str("a".to_string()))],
             span: reify_types::SourceSpan::empty(0),
         };
         let a2 = reify_types::Annotation {
             name: "optimized".to_string(),
-            args: vec![Str("b".to_string())],
+            args: vec![reify_types::AnnotationArg::positional(Str("b".to_string()))],
             span: reify_types::SourceSpan::empty(10),
         };
         let anns = vec![a1, a2.clone()];
@@ -309,12 +314,12 @@ fn annotation_schema_registry_parity() {
     {
         let a1 = reify_types::Annotation {
             name: "optimized".to_string(),
-            args: vec![Str("a".to_string())],
+            args: vec![reify_types::AnnotationArg::positional(Str("a".to_string()))],
             span: reify_types::SourceSpan::empty(0),
         };
         let a2 = reify_types::Annotation {
             name: "optimized".to_string(),
-            args: vec![Str("b".to_string())],
+            args: vec![reify_types::AnnotationArg::positional(Str("b".to_string()))],
             span: reify_types::SourceSpan::empty(10),
         };
         let anns = vec![a1, a2];
@@ -335,7 +340,7 @@ fn annotation_schema_registry_parity() {
         };
         let a_valid = reify_types::Annotation {
             name: "optimized".to_string(),
-            args: vec![Str("b".to_string())],
+            args: vec![reify_types::AnnotationArg::positional(Str("b".to_string()))],
             span: reify_types::SourceSpan::empty(10),
         };
         let anns = vec![a_malformed, a_valid];

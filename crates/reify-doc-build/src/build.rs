@@ -20,7 +20,8 @@ use reify_doc::model::{
     PortDoc, PragmaDoc, RealizationDoc, SubComponentDoc,
 };
 use reify_types::{
-    annotation::AnnotationArg, byte_offset_to_line_col, OptimizationObjective, SourceSpan, Type,
+    annotation::{AnnotationArg, AnnotationArgValue},
+    byte_offset_to_line_col, OptimizationObjective, SourceSpan, Type,
 };
 use reify_syntax::{Pragma, PragmaArg, PragmaValue};
 
@@ -524,13 +525,29 @@ fn lower_annotations(anns: &[reify_types::annotation::Annotation]) -> Vec<Annota
 }
 
 /// Render a single `AnnotationArg` to a printable string.
+///
+/// Named args render as `name = value`; positional args render the value alone.
 fn render_annotation_arg(arg: &AnnotationArg) -> String {
-    match arg {
-        AnnotationArg::String(s) => format!("\"{s}\""),
-        AnnotationArg::Int(i) => format!("{i}"),
-        AnnotationArg::Real(r) => format!("{r}"),
-        AnnotationArg::Bool(b) => format!("{b}"),
-        AnnotationArg::Ident(s) => s.clone(),
+    let value = render_annotation_arg_value(&arg.value);
+    match &arg.name {
+        Some(name) => format!("{name} = {value}"),
+        None => value,
+    }
+}
+
+/// Render an [`AnnotationArgValue`] to a printable string.
+fn render_annotation_arg_value(value: &AnnotationArgValue) -> String {
+    match value {
+        AnnotationArgValue::String(s) => format!("\"{s}\""),
+        AnnotationArgValue::Int(i) => format!("{i}"),
+        AnnotationArgValue::Real(r) => format!("{r}"),
+        AnnotationArgValue::Bool(b) => format!("{b}"),
+        AnnotationArgValue::Ident(s) => s.clone(),
+        // Unevaluated expression (task 3555). The parsed `Expr` has no source
+        // round-trip Display, so render a placeholder until a doc-side
+        // pretty-printer lands. Expr-valued args only arise on
+        // materialization-time-eval annotations (structure/occurrence hosts).
+        AnnotationArgValue::Expr(_) => "<expr>".to_string(),
     }
 }
 

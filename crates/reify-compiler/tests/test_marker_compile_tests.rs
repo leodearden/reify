@@ -340,7 +340,7 @@ fn multiple_annotations_with_test_marks_template() {
     assert_eq!(template.annotations[1].args.len(), 1);
     assert_eq!(
         template.annotations[1].args[0],
-        reify_types::AnnotationArg::String("old".into())
+        reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::String("old".into()))
     );
 }
 

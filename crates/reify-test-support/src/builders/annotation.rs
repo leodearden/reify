@@ -1,28 +1,28 @@
-use reify_types::{Annotation, AnnotationArg, SourceSpan};
+use reify_types::{Annotation, AnnotationArg, AnnotationArgValue, SourceSpan};
 
-/// Create an `AnnotationArg::String` with the given string value.
+/// Create a positional `String`-valued annotation argument.
 pub fn ann_str(s: impl Into<String>) -> AnnotationArg {
-    AnnotationArg::String(s.into())
+    AnnotationArg::positional(AnnotationArgValue::String(s.into()))
 }
 
-/// Create an `AnnotationArg::Int` with the given integer value.
+/// Create a positional `Int`-valued annotation argument.
 pub fn ann_int(n: i64) -> AnnotationArg {
-    AnnotationArg::Int(n)
+    AnnotationArg::positional(AnnotationArgValue::Int(n))
 }
 
-/// Create an `AnnotationArg::Real` with the given float value.
+/// Create a positional `Real`-valued annotation argument.
 pub fn ann_real(f: f64) -> AnnotationArg {
-    AnnotationArg::Real(f)
+    AnnotationArg::positional(AnnotationArgValue::Real(f))
 }
 
-/// Create an `AnnotationArg::Bool` with the given bool value.
+/// Create a positional `Bool`-valued annotation argument.
 pub fn ann_bool(b: bool) -> AnnotationArg {
-    AnnotationArg::Bool(b)
+    AnnotationArg::positional(AnnotationArgValue::Bool(b))
 }
 
-/// Create an `AnnotationArg::Ident` with the given identifier string.
+/// Create a positional `Ident`-valued annotation argument.
 pub fn ann_ident(s: impl Into<String>) -> AnnotationArg {
-    AnnotationArg::Ident(s.into())
+    AnnotationArg::positional(AnnotationArgValue::Ident(s.into()))
 }
 
 /// Create an `Annotation` with the given name and no arguments.
@@ -51,31 +51,43 @@ mod tests {
     #[test]
     fn ann_str_produces_string_arg() {
         let arg = ann_str("hello");
-        assert_eq!(arg, AnnotationArg::String("hello".to_string()));
+        assert_eq!(
+            arg,
+            AnnotationArg::positional(AnnotationArgValue::String("hello".to_string()))
+        );
     }
 
     #[test]
     fn ann_int_produces_int_arg() {
         let arg = ann_int(42);
-        assert_eq!(arg, AnnotationArg::Int(42));
+        assert_eq!(arg, AnnotationArg::positional(AnnotationArgValue::Int(42)));
     }
 
     #[test]
     fn ann_real_produces_real_arg() {
         let arg = ann_real(3.125);
-        assert_eq!(arg, AnnotationArg::Real(3.125));
+        assert_eq!(
+            arg,
+            AnnotationArg::positional(AnnotationArgValue::Real(3.125))
+        );
     }
 
     #[test]
     fn ann_bool_produces_bool_arg() {
         let arg = ann_bool(true);
-        assert_eq!(arg, AnnotationArg::Bool(true));
+        assert_eq!(
+            arg,
+            AnnotationArg::positional(AnnotationArgValue::Bool(true))
+        );
     }
 
     #[test]
     fn ann_ident_produces_ident_arg() {
         let arg = ann_ident("deprecated");
-        assert_eq!(arg, AnnotationArg::Ident("deprecated".to_string()));
+        assert_eq!(
+            arg,
+            AnnotationArg::positional(AnnotationArgValue::Ident("deprecated".to_string()))
+        );
     }
 
     #[test]
@@ -92,7 +104,7 @@ mod tests {
         assert_eq!(ann.args.len(), 1);
         assert_eq!(
             ann.args[0],
-            AnnotationArg::String("use Foo instead".to_string())
+            AnnotationArg::positional(AnnotationArgValue::String("use Foo instead".to_string()))
         );
     }
 }

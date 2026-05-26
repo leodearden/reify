@@ -1312,7 +1312,10 @@ mod tests {
         assert_eq!(rigid.annotations[0].args.len(), 1);
         assert!(matches!(
             &rigid.annotations[0].args[0],
-            reify_types::AnnotationArg::String(s) if s == "use Rigid2"
+            reify_types::AnnotationArg {
+                value: reify_types::AnnotationArgValue::String(s),
+                ..
+            } if s == "use Rigid2"
         ));
 
         // (b) one template with @test and @optimized annotations (no args)

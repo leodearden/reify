@@ -249,8 +249,11 @@ fn check_shell_args(ann: &Annotation, _context: &str, diagnostics: &mut Vec<Diag
     match ann.args.as_slice() {
         [] => {} // bare @shell — defer thickness to medial analysis.
         [
-            reify_types::AnnotationArg::Int(_)
-            | reify_types::AnnotationArg::Real(_),
+            reify_types::AnnotationArg {
+                value:
+                    reify_types::AnnotationArgValue::Int(_) | reify_types::AnnotationArgValue::Real(_),
+                ..
+            },
         ] => {}
         [_] => {
             diagnostics.push(
@@ -297,7 +300,12 @@ fn check_version_args(ann: &Annotation, context: &str, diagnostics: &mut Vec<Dia
         return;
     }
     match ann.args.as_slice() {
-        [reify_types::AnnotationArg::Int(n)] if *n >= 1 => {}
+        [
+            reify_types::AnnotationArg {
+                value: reify_types::AnnotationArgValue::Int(n),
+                ..
+            },
+        ] if *n >= 1 => {}
         _ => {
             diagnostics.push(
                 Diagnostic::error(
@@ -712,7 +720,7 @@ mod tests {
     fn validate_optimized_with_string_arg_on_constraint_def_produces_no_diagnostics() {
         let a = ann(
             reify_types::OPTIMIZED_ANNOTATION,
-            vec![reify_types::AnnotationArg::String("k::f".to_string())],
+            vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::String("k::f".to_string()))],
         );
         let mut diags: Vec<reify_types::Diagnostic> = vec![];
         validate_via_schema(std::slice::from_ref(&a), "constraint_def", &mut diags);
@@ -739,7 +747,7 @@ mod tests {
     fn validate_shell_real_arg_produces_no_diagnostics() {
         let a = ann(
             reify_types::SHELL_ANNOTATION,
-            vec![reify_types::AnnotationArg::Real(0.5)],
+            vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::Real(0.5))],
         );
         let mut diags: Vec<reify_types::Diagnostic> = vec![];
         validate_via_schema(std::slice::from_ref(&a), "structure", &mut diags);
@@ -751,7 +759,7 @@ mod tests {
     fn validate_shell_int_arg_produces_no_diagnostics() {
         let a = ann(
             reify_types::SHELL_ANNOTATION,
-            vec![reify_types::AnnotationArg::Int(2)],
+            vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::Int(2))],
         );
         let mut diags: Vec<reify_types::Diagnostic> = vec![];
         validate_via_schema(std::slice::from_ref(&a), "occurrence", &mut diags);
@@ -763,7 +771,7 @@ mod tests {
     fn validate_shell_non_numeric_arg_warns() {
         let a = ann(
             reify_types::SHELL_ANNOTATION,
-            vec![reify_types::AnnotationArg::String("thick".to_string())],
+            vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::String("thick".to_string()))],
         );
         let mut diags: Vec<reify_types::Diagnostic> = vec![];
         validate_via_schema(std::slice::from_ref(&a), "structure", &mut diags);
@@ -782,8 +790,8 @@ mod tests {
         let a = ann(
             reify_types::SHELL_ANNOTATION,
             vec![
-                reify_types::AnnotationArg::Real(0.5),
-                reify_types::AnnotationArg::Real(0.6),
+                reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::Real(0.5)),
+                reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::Real(0.6)),
             ],
         );
         let mut diags: Vec<reify_types::Diagnostic> = vec![];
@@ -803,7 +811,7 @@ mod tests {
     fn validate_shell_on_invalid_context_with_arg_emits_only_context_mismatch() {
         let a = ann(
             reify_types::SHELL_ANNOTATION,
-            vec![reify_types::AnnotationArg::String("x".to_string())],
+            vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::String("x".to_string()))],
         );
         let mut diags: Vec<reify_types::Diagnostic> = vec![];
         validate_via_schema(std::slice::from_ref(&a), "function", &mut diags);
@@ -841,22 +849,22 @@ mod tests {
     #[test]
     fn validate_solid_with_any_arg_on_valid_context_warns() {
         let arg_shapes: &[(&str, Vec<reify_types::AnnotationArg>)] = &[
-            ("Real(0.5)", vec![reify_types::AnnotationArg::Real(0.5)]),
-            ("Int(2)", vec![reify_types::AnnotationArg::Int(2)]),
+            ("Real(0.5)", vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::Real(0.5))]),
+            ("Int(2)", vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::Int(2))]),
             (
                 "String(foo)",
-                vec![reify_types::AnnotationArg::String("foo".into())],
+                vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::String("foo".into()))],
             ),
-            ("Bool(true)", vec![reify_types::AnnotationArg::Bool(true)]),
+            ("Bool(true)", vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::Bool(true))]),
             (
                 "Ident(id)",
-                vec![reify_types::AnnotationArg::Ident("ident".into())],
+                vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::Ident("ident".into()))],
             ),
             (
                 "two reals",
                 vec![
-                    reify_types::AnnotationArg::Real(0.5),
-                    reify_types::AnnotationArg::Real(0.6),
+                    reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::Real(0.5)),
+                    reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::Real(0.6)),
                 ],
             ),
         ];
@@ -890,7 +898,7 @@ mod tests {
     fn validate_solid_on_invalid_context_with_arg_emits_only_context_mismatch() {
         let a = ann(
             reify_types::SOLID_ANNOTATION,
-            vec![reify_types::AnnotationArg::Real(0.5)],
+            vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::Real(0.5))],
         );
         let mut diags: Vec<reify_types::Diagnostic> = vec![];
         validate_via_schema(std::slice::from_ref(&a), "function", &mut diags);
@@ -915,12 +923,12 @@ mod tests {
     fn duplicate_valid_optimized_on_constraint_def_warns_on_second() {
         let a1 = ann_at(
             reify_types::OPTIMIZED_ANNOTATION,
-            vec![reify_types::AnnotationArg::String("a".to_string())],
+            vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::String("a".to_string()))],
             0,
         );
         let a2 = ann_at(
             reify_types::OPTIMIZED_ANNOTATION,
-            vec![reify_types::AnnotationArg::String("b".to_string())],
+            vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::String("b".to_string()))],
             10,
         );
         let anns = vec![a1, a2.clone()];
@@ -945,12 +953,12 @@ mod tests {
     fn duplicate_valid_optimized_on_function_warns_on_second() {
         let a1 = ann_at(
             reify_types::OPTIMIZED_ANNOTATION,
-            vec![reify_types::AnnotationArg::String("a".to_string())],
+            vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::String("a".to_string()))],
             0,
         );
         let a2 = ann_at(
             reify_types::OPTIMIZED_ANNOTATION,
-            vec![reify_types::AnnotationArg::String("b".to_string())],
+            vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::String("b".to_string()))],
             10,
         );
         let anns = vec![a1, a2.clone()];
@@ -972,11 +980,11 @@ mod tests {
     fn duplicate_valid_optimized_on_structure_produces_no_duplicate_warning() {
         let a1 = ann(
             reify_types::OPTIMIZED_ANNOTATION,
-            vec![reify_types::AnnotationArg::String("a".to_string())],
+            vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::String("a".to_string()))],
         );
         let a2 = ann(
             reify_types::OPTIMIZED_ANNOTATION,
-            vec![reify_types::AnnotationArg::String("b".to_string())],
+            vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::String("b".to_string()))],
         );
         let anns = vec![a1, a2];
         let mut diags: Vec<reify_types::Diagnostic> = vec![];
@@ -996,7 +1004,7 @@ mod tests {
         let a_malformed = ann(reify_types::OPTIMIZED_ANNOTATION, vec![]);
         let a_valid = ann(
             reify_types::OPTIMIZED_ANNOTATION,
-            vec![reify_types::AnnotationArg::String("b".to_string())],
+            vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::String("b".to_string()))],
         );
         let anns = vec![a_malformed, a_valid];
         let mut diags: Vec<reify_types::Diagnostic> = vec![];
