@@ -22,6 +22,13 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
+# Source the shared OCCT-scope library: occt_declared_set + occt_touching_set are
+# the SINGLE implementations of the declared and cargo-metadata-derived sets,
+# shared with scripts/verify.sh so the two cannot drift apart (Test 3 below is the
+# drift catcher that proves they agree).
+[ -f "$REPO_ROOT/scripts/occt-scope-lib.sh" ] || { echo "ERROR: occt-scope-lib.sh not found at $REPO_ROOT/scripts/occt-scope-lib.sh"; exit 1; }
+source "$REPO_ROOT/scripts/occt-scope-lib.sh"
+
 CRATE_LIST="$REPO_ROOT/scripts/occt-touching-crates.txt"
 ORCH="$REPO_ROOT/orchestrator.yaml"
 
@@ -49,11 +56,8 @@ echo "--- Test 2: every declared crate is a real workspace member ---"
 WORKSPACE_MEMBERS="$(cargo metadata --format-version 1 --no-deps 2>/dev/null \
     | python3 -c "import sys,json; m=json.load(sys.stdin); [print(p['name']) for p in m['packages']]")"
 
-if [ -f "$CRATE_LIST" ]; then
-    DECLARED_CRATES="$(grep -v '^\s*#' "$CRATE_LIST" | grep -v '^\s*$' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-else
-    DECLARED_CRATES=""
-fi
+# Declared set comes from the shared library (single source of truth).
+DECLARED_CRATES="$(occt_declared_set)"
 
 while IFS= read -r crate; do
     [ -z "$crate" ] && continue
@@ -67,62 +71,11 @@ done <<< "$DECLARED_CRATES"
 echo ""
 echo "--- Test 3: declared set equals cargo-metadata-derived OCCT-touching set ---"
 
-# Derive the actual OCCT-touching set from a SINGLE `cargo metadata` invocation.
-# Using the workspace-unified resolve graph is both faster (one cargo process instead
-# of one per workspace member) and more accurate: workspace feature unification can
-# activate optional deps (e.g. a future crate that enables the reify-gui 'gui' feature
-# would pull in reify-kernel-occt via normal dep, but per-crate `cargo tree -p <crate>`
-# only sees each crate's own default features and would miss it).
-ACTUAL_TOUCHING="$(cargo metadata --format-version 1 2>/dev/null | python3 -c "
-import sys, json
-m = json.load(sys.stdin)
-id_to_name = {p['id']: p['name'] for p in m['packages']}
-
-# Build separate adjacency maps for normal/build vs dev deps.
-# dep_kinds[].kind: null -> normal, 'build' -> build dep, 'dev' -> dev dep.
-# We must NOT conflate them: dev-deps of a transitive dep are never compiled when
-# testing a crate that only has a normal dep on it.
-adj_normal = {}  # kind=null or kind='build' (compiled transitively)
-adj_dev = {}     # kind='dev' (only the DIRECT dev-deps of the tested crate matter)
-for node in m['resolve']['nodes']:
-    adj_normal[node['id']] = set()
-    adj_dev[node['id']] = set()
-    for d in node['deps']:
-        kinds = {dk.get('kind') for dk in d.get('dep_kinds', [])}
-        if None in kinds or 'build' in kinds:
-            adj_normal[node['id']].add(d['pkg'])
-        if 'dev' in kinds:
-            adj_dev[node['id']].add(d['pkg'])
-
-def normal_closure(start):
-    '''All packages reachable via normal/build edges only.'''
-    visited, queue = set(), [start]
-    while queue:
-        curr = queue.pop()
-        if curr in visited:
-            continue
-        visited.add(curr)
-        queue.extend(adj_normal.get(curr, []))
-    return visited
-
-occt_ids = {p['id'] for p in m['packages'] if p['name'] == 'reify-kernel-occt'}
-workspace_ids = set(m['workspace_members'])
-touching = []
-for pkg_id in workspace_ids:
-    # A crate's test compilation includes:
-    #   - normal/build closure of the crate itself, PLUS
-    #   - normal/build closure of each DIRECT dev-dep of the crate
-    # Dev-deps of transitive normal deps do NOT propagate (Cargo does not
-    # propagate dev-deps transitively).
-    compiled = normal_closure(pkg_id)
-    for dev_dep_id in adj_dev.get(pkg_id, []):
-        compiled |= normal_closure(dev_dep_id)
-    if compiled & occt_ids:
-        touching.append(id_to_name[pkg_id])
-
-for name in sorted(touching):
-    print(name)
-")"
+# Actual OCCT-touching set comes from the shared library (single source of
+# truth): a single `cargo metadata` invocation over the workspace-unified
+# resolve graph. The full rationale for that approach lives in the
+# occt_touching_set doc comment in scripts/occt-scope-lib.sh.
+ACTUAL_TOUCHING="$(occt_touching_set)"
 
 # Write both sets to temp files and diff for actionable failure output.
 # On mismatch the diff is printed so the reader can see exactly which crate
