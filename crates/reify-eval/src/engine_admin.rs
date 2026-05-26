@@ -1038,10 +1038,11 @@ impl Engine {
     /// `eval_state` is present (engine has not yet been initialised by a
     /// successful `eval()` / `eval_cached()` / `edit_source()` call).
     ///
-    /// The `generation` argument is forwarded verbatim to the §7.2 truth
-    /// table consulted by the walk — callers that care about Intermediate
-    /// fan-in should pass the current refinement generation; callers that
-    /// only care about Final propagation may pass any value.
+    /// The `generation` argument is forwarded verbatim to the §7.2
+    /// Intermediate fan-in truth table consulted by the walk — callers must
+    /// always pass the engine's current refinement generation.  A stale
+    /// generation mis-gates any downstream cell that is legitimately
+    /// Intermediate, producing incorrect freshness results.
     pub fn propagate_freshness_only<'a>(
         &mut self,
         changed: impl IntoIterator<Item = &'a reify_types::ValueCellId>,
