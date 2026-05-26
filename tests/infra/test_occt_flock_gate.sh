@@ -326,4 +326,35 @@ rm -f "$_LOCK19" "${_LOCK19}.slot-1" "${_LOCK19}.slot-2"
 assert "Test 19: two 0.4s sleep invocations run in parallel with N=2 (elapsed < 700ms, got ${_ELAPSED19_MS}ms)" \
     test "$_ELAPSED19_MS" -lt 700
 
+# -- Test 20: N=2, three concurrent invocations serializes the third ----------
+# With only 2 slots, a third concurrent wrapper invocation must wait until one
+# slot is released. Measured elapsed must be >= 700ms (two parallel rounds of
+# ~400ms) and <= 1200ms (to catch a regression to fully-serial ~1200ms).
+# This validates that the acquire-loop bounds N strictly (not ">=N" slots).
+echo ""
+echo "--- Test 20: REIFY_OCCT_CONCURRENCY=2 serializes the 3rd invocation when both slots are busy ---"
+
+_LOCK20="$(mktemp)"
+_START20_NS="$(date +%s%N)"
+
+# Spawn three concurrent invocations each sleeping 0.4s with N=2 slots.
+REIFY_OCCT_LOCK="$_LOCK20" REIFY_OCCT_CONCURRENCY=2 "$WRAPPER" bash -c 'sleep 0.4' &
+_PID20A=$!
+REIFY_OCCT_LOCK="$_LOCK20" REIFY_OCCT_CONCURRENCY=2 "$WRAPPER" bash -c 'sleep 0.4' &
+_PID20B=$!
+REIFY_OCCT_LOCK="$_LOCK20" REIFY_OCCT_CONCURRENCY=2 "$WRAPPER" bash -c 'sleep 0.4' &
+_PID20C=$!
+wait "$_PID20A" "$_PID20B" "$_PID20C"
+
+_END20_NS="$(date +%s%N)"
+_ELAPSED20_MS=$(( (_END20_NS - _START20_NS) / 1000000 ))
+
+rm -f "$_LOCK20" "${_LOCK20}.slot-1" "${_LOCK20}.slot-2"
+
+# Two slots: two run in parallel (~400ms), third waits and runs (~800ms total).
+# Lower bound >= 700ms proves the third was serialized.
+# Upper bound <= 1200ms ensures we are not fully serial (which would be ~1200ms).
+assert "Test 20: 3 invocations with N=2 complete in [700,1200]ms — 3rd is serialized (got ${_ELAPSED20_MS}ms)" \
+    bash -c "test '$_ELAPSED20_MS' -ge 700 && test '$_ELAPSED20_MS' -le 1200"
+
 test_summary
