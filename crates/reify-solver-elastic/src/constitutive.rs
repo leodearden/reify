@@ -224,12 +224,38 @@ pub struct OrthotropicMaterial {
     pub nu23: f64,
 }
 
+// ─── Private helper ──────────────────────────────────────────────────────────
+
+/// Compute the orthotropic PD determinant Δ from the six input constants.
+///
+/// ```text
+/// Δ = 1 − ν12·ν21 − ν23·ν32 − ν31·ν13 − 2·ν21·ν32·ν13   (PRD §C1)
+/// ```
+/// with the reciprocal ratios `νji = νij·Ej/Ei`.
+///
+/// This is the **single source of truth** for the Δ formula.  Both
+/// [`OrthotropicMaterial::debug_assert_valid`] and
+/// [`TransverseIsotropicMaterial::debug_assert_valid`] call it so the
+/// formula cannot drift between the two validation paths.
+#[inline]
+fn orthotropic_delta(e1: f64, e2: f64, e3: f64, nu12: f64, nu13: f64, nu23: f64) -> f64 {
+    let nu21 = nu12 * e2 / e1;
+    let nu31 = nu13 * e3 / e1;
+    let nu32 = nu23 * e3 / e2;
+    1.0 - nu12 * nu21 - nu23 * nu32 - nu31 * nu13 - 2.0 * nu21 * nu32 * nu13
+}
+
 impl OrthotropicMaterial {
     /// Assert the PD contract in debug builds.
     ///
-    /// Checks:
+    /// Checks (necessary AND sufficient for SPD; Ting 1996 §5.3):
     /// 1. All six moduli `e1, e2, e3, g12, g13, g23 > 0`.
-    /// 2. Determinant `Δ = 1 − ν12·ν21 − ν23·ν32 − ν31·ν13 − 2·ν21·ν32·ν13 > 0`
+    /// 2. Pair-determinants `1 − ν12·ν21 > 0`, `1 − ν23·ν32 > 0`,
+    ///    `1 − ν13·ν31 > 0` (each equivalent to `|νij| < sqrt(Ei/Ej)`).
+    ///    A material can satisfy Δ > 0 while a pair-determinant is negative
+    ///    (when moduli are highly asymmetric), making a diagonal D entry
+    ///    negative and the matrix non-PD.
+    /// 3. Determinant `Δ = 1 − ν12·ν21 − ν23·ν32 − ν31·ν13 − 2·ν21·ν32·ν13 > 0`
     ///    (PRD Contract C1) where `νji = νij·Ej/Ei`.
     ///
     /// Each `debug_assert!` message starts with `"OrthotropicMaterial"` so that
@@ -267,15 +293,43 @@ impl OrthotropicMaterial {
             "OrthotropicMaterial.g23 must be positive, got {g}",
             g = self.g23,
         );
-        // Reciprocal Poisson ratios from thermodynamic symmetry.
+        // Reciprocal Poisson ratios from thermodynamic symmetry (νji = νij·Ej/Ei).
         let nu21 = self.nu12 * self.e2 / self.e1;
         let nu31 = self.nu13 * self.e3 / self.e1;
         let nu32 = self.nu23 * self.e3 / self.e2;
-        let delta = 1.0
-            - self.nu12 * nu21
-            - self.nu23 * nu32
-            - nu31 * self.nu13
-            - 2.0 * nu21 * nu32 * self.nu13;
+        // ── Pair-determinant checks (check 2) ────────────────────────────────
+        // These are necessary conditions for SPD that Δ alone cannot catch.
+        // E.g. when |ν12| > sqrt(E1/E2), D33 = (1−ν12·ν21)·E3/Δ is negative
+        // even if Δ > 0.
+        debug_assert!(
+            1.0 - self.nu12 * nu21 > 0.0,
+            "OrthotropicMaterial: pair-determinant 1 − ν12·ν21 must be > 0 \
+             (requires |ν12| < sqrt(E1/E2)), got 1 − ν12·ν21 = {val}; \
+             ν12 = {nu12}, ν21 = {nu21}",
+            val = 1.0 - self.nu12 * nu21,
+            nu12 = self.nu12,
+            nu21 = nu21,
+        );
+        debug_assert!(
+            1.0 - self.nu23 * nu32 > 0.0,
+            "OrthotropicMaterial: pair-determinant 1 − ν23·ν32 must be > 0 \
+             (requires |ν23| < sqrt(E2/E3)), got 1 − ν23·ν32 = {val}; \
+             ν23 = {nu23}, ν32 = {nu32}",
+            val = 1.0 - self.nu23 * nu32,
+            nu23 = self.nu23,
+            nu32 = nu32,
+        );
+        debug_assert!(
+            1.0 - self.nu13 * nu31 > 0.0,
+            "OrthotropicMaterial: pair-determinant 1 − ν13·ν31 must be > 0 \
+             (requires |ν13| < sqrt(E1/E3)), got 1 − ν13·ν31 = {val}; \
+             ν13 = {nu13}, ν31 = {nu31}",
+            val = 1.0 - self.nu13 * nu31,
+            nu13 = self.nu13,
+            nu31 = nu31,
+        );
+        // ── Full PD determinant (check 3) — via single-source helper ─────────
+        let delta = orthotropic_delta(self.e1, self.e2, self.e3, self.nu12, self.nu13, self.nu23);
         debug_assert!(
             delta > 0.0,
             "OrthotropicMaterial: positive-definite constraint Δ = \
@@ -410,9 +464,7 @@ impl TransverseIsotropicMaterial {
             "TransverseIsotropicMaterial.g_axial must be positive, got {g}",
             g = self.g_axial,
         );
-        // Delegate full PD check to the equivalent orthotropic representation.
-        // The panic prefix of OrthotropicMaterial won't fire here; the checks
-        // above already gate all moduli. Only Δ can still fail at this point.
+        // g_in_plane must be positive before we can meaningfully check Δ.
         let g_in_plane = self.e_in_plane / (2.0 * (1.0 + self.nu_in_plane));
         debug_assert!(
             g_in_plane > 0.0,
@@ -421,26 +473,15 @@ impl TransverseIsotropicMaterial {
             nu = self.nu_in_plane,
             g = g_in_plane,
         );
-        let equiv = OrthotropicMaterial {
-            e1: self.e_in_plane,
-            e2: self.e_in_plane,
-            e3: self.e_axial,
-            g12: g_in_plane,
-            g13: self.g_axial,
-            g23: self.g_axial,
-            nu12: self.nu_in_plane,
-            nu13: self.nu_axial,
-            nu23: self.nu_axial,
-        };
-        // Compute Δ from the orthotropic equivalent (moduli already checked above).
-        let nu21 = equiv.nu12 * equiv.e2 / equiv.e1; // == nu_in_plane (symmetric)
-        let nu31 = equiv.nu13 * equiv.e3 / equiv.e1;
-        let nu32 = equiv.nu23 * equiv.e3 / equiv.e2; // == nu31 (E1==E2)
-        let delta = 1.0
-            - equiv.nu12 * nu21
-            - equiv.nu23 * nu32
-            - nu31 * equiv.nu13
-            - 2.0 * nu21 * nu32 * equiv.nu13;
+        // Full PD constraint via the single-source Δ formula (see `orthotropic_delta`).
+        // Using it here instead of inlining prevents the formula from drifting relative
+        // to `OrthotropicMaterial::debug_assert_valid`.
+        // Note: the pair-determinant sub-checks (1 − νij·νji > 0) also fire in debug
+        // builds when `d_matrix_local` delegates to `OrthotropicMaterial::d_matrix_local`.
+        let delta = orthotropic_delta(
+            self.e_in_plane, self.e_in_plane, self.e_axial,
+            self.nu_in_plane, self.nu_axial, self.nu_axial,
+        );
         debug_assert!(
             delta > 0.0,
             "TransverseIsotropicMaterial: positive-definite constraint Δ must be > 0, \
@@ -642,13 +683,17 @@ pub fn rotate_voigt(d_local: &[[f64; 6]; 6], rotation: &[[f64; 3]; 3]) -> [[f64;
     //
     // NOTE: the formula is T · D · Tᵀ (NOT Tᵀ · D · T).
     // Derivation sketch (engineering-shear Voigt convention):
-    //   σ_global = M_σ · σ_local            (M_σ = T, stress Bond matrix)
+    //   σ_global = M_σ · σ_local            (M_σ = T, stress Bond matrix for R)
     //   ε_eng_local = A · ε_eng_global       (A = H·M_σ·H⁻¹, H=diag(1,1,1,2,2,2))
     //   D_global = M_σ · D_local · A⁻¹
-    // For orthogonal R, A⁻¹ = H·M_σ⁻¹·H⁻¹ = M_σᵀ = Tᵀ (since M_σ is the Bond
-    // matrix for R and M_σ⁻¹ = M_σ for R^T which equals M_σᵀ due to the
-    // identity N_σ^T = M_σ(R^T)).
+    // For orthogonal R: Bond matrices compose multiplicatively, so
+    //   M_σ(R)·M_σ(Rᵀ) = M_σ(R·Rᵀ) = M_σ(I) = I  →  M_σ(R)⁻¹ = M_σ(Rᵀ).
+    // The engineering-shear H-conjugate M_ε = H·M_σ·H⁻¹ is also orthogonal
+    // (H is diagonal, orthogonal R keeps M_σ orthogonal up to H-scaling), so
+    //   A⁻¹ = Aᵀ = (H·M_σ·H⁻¹)ᵀ = H·M_σᵀ·H⁻¹ = H·M_σ(Rᵀ)·H⁻¹ = Tᵀ.
     // → D_global = T · D_local · Tᵀ
+    // Direction is empirically pinned by `rotate_voigt_round_trip_with_inverse_restores_d_local`
+    // and `rotate_voigt_30deg_about_z_matches_lamina_transformation_with_correct_sign`.
     let mut tmp = [[0.0_f64; 6]; 6];
     for i in 0..6 {
         for j in 0..6 {

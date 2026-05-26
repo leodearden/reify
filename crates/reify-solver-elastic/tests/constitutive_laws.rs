@@ -1,10 +1,15 @@
-/// Integration tests for `ConstitutiveLaw` trait and associated material types.
-///
-/// Convention: all D matrices use engineering-shear Voigt order
-/// `[εxx, εyy, εzz, γxy, γyz, γxz]` with shear-block diagonal = G (not 2G).
-///
-/// See PRD `docs/prds/v0_5/anisotropic-heterogeneous-elastostatics.md` §C1/C2.
-#[allow(clippy::needless_range_loop)]
+// Inner attribute must precede any outer doc comment at crate level.
+// Applies to every nested loop in this file (many test functions iterate
+// over the 6×6 D entries with index arithmetic that clippy flags as
+// `needless_range_loop`).
+#![allow(clippy::needless_range_loop)]
+
+//! Integration tests for `ConstitutiveLaw` trait and associated material types.
+//!
+//! Convention: all D matrices use engineering-shear Voigt order
+//! `[εxx, εyy, εzz, γxy, γyz, γxz]` with shear-block diagonal = G (not 2G).
+//!
+//! See PRD `docs/prds/v0_5/anisotropic-heterogeneous-elastostatics.md` §C1/C2.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Local test helpers (mirror of constitutive.rs::tests::assert_symmetric_finite)
@@ -42,12 +47,14 @@ use reify_solver_elastic::{ConstitutiveLaw, IsotropicElastic};
 /// a generic bound.
 #[test]
 fn constitutive_law_is_re_exported_from_crate_root() {
-    fn _take<T: ConstitutiveLaw>(_: &T) {}
+    // Call the trait method through the bound to ensure the trait is both
+    // in scope and callable (not just that the bound type-checks).
+    fn _take<T: ConstitutiveLaw>(v: &T) { let _ = v.d_matrix_local(); }
     let mat = IsotropicElastic {
         youngs_modulus: 200e9,
         poisson_ratio: 0.3,
     };
-    _take(&mat); // type-check call — ConstitutiveLaw must be in scope
+    _take(&mat);
 }
 
 /// `IsotropicElastic::d_matrix_local` must delegate to `d_matrix` exactly
@@ -273,7 +280,8 @@ fn transverse_iso_d_matrix_local_equals_orthotropic_specialization() {
 /// `TransverseIsotropicMaterial` implements `ConstitutiveLaw` (generic bound check).
 #[test]
 fn transverse_iso_implements_constitutive_law() {
-    fn _take<T: ConstitutiveLaw>(_: &T) {}
+    // Call the trait method through the bound (not just a bound type-check).
+    fn _take<T: ConstitutiveLaw>(v: &T) { let _ = v.d_matrix_local(); }
     // nu_axial=0.02 is physically valid for E_axial/E_in_plane=14 (see above).
     let ti = TransverseIsotropicMaterial {
         e_in_plane: 10e9,
