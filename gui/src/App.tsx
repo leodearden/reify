@@ -516,6 +516,20 @@ const App: Component = () => {
   });
 
   /**
+   * Remove a single path from the App-level changedFiles Set.
+   * Called whenever a conflict is resolved (reload or overwrite) or when a
+   * non-dirty file is silently auto-reloaded.  Keeps the "N files changed"
+   * banner in sync with the store-level dirty/externallyChanged state.
+   */
+  function removeFromChangedFiles(path: string) {
+    setChangedFiles((prev) => {
+      const next = new Set(prev);
+      next.delete(path);
+      return next;
+    });
+  }
+
+  /**
    * Show a conflict prompt (instead of a dead-end error toast) when saving a
    * file that has been modified on disk since it was loaded.  Two actions are
    * offered:
@@ -524,11 +538,16 @@ const App: Component = () => {
    * The toast's close-X serves as "Cancel" (both actions and the close-X call
    * onDismiss, satisfying the Toast.actions contract).
    *
-   * The reload/overwrite bodies are stubs for now; they are implemented in steps
-   * 12 and 14 respectively.  The prompt itself renders immediately so step-9/10
-   * tests can verify the UI before those helpers exist.
+   * Deduplicated: if a conflict toast is already visible (e.g. the user pressed
+   * Ctrl+S multiple times), subsequent calls are ignored.  A stacked second
+   * prompt with its own Reload/Overwrite buttons could silently discard newer
+   * edits if the user clicks Reload in the older copy after typing more.
    */
   function showSaveConflictPrompt(file: FileData) {
+    // Dedup check: bail if a conflict toast with this message is already mounted.
+    if (toasts().some((t) => t.message === EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG)) {
+      return;
+    }
     showToast(EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG, 'error', [
       {
         label: SAVE_CONFLICT_RELOAD_LABEL,
@@ -552,15 +571,8 @@ const App: Component = () => {
       const fileData = await bridgeOpenFile(path);
       editorStore.updateFileContent(fileData.path, fileData.content);
       editorStore.markClean(fileData.path);
-      // Keep the App-level changedFiles Set in sync with the store-level dirty/
-      // externallyChanged state. Without this, the "N files changed — Reload"
-      // banner stays visible after the user resolves the conflict via the prompt,
-      // and clicking the banner would re-fetch the file unnecessarily.
-      setChangedFiles((prev) => {
-        const next = new Set(prev);
-        next.delete(fileData.path);
-        return next;
-      });
+      // Remove from changedFiles so the "N files changed" banner disappears.
+      removeFromChangedFiles(fileData.path);
     } catch (err) {
       showToast(`Reload failed: ${errorMessage(err)}`, 'error');
     }
@@ -574,13 +586,8 @@ const App: Component = () => {
     try {
       await bridgeSaveFile(file.path, file.content);
       editorStore.markClean(file.path);
-      // Same changedFiles cleanup as reloadFromDisk — prevents the banner from
-      // remaining visible after the user chose to Overwrite the disk content.
-      setChangedFiles((prev) => {
-        const next = new Set(prev);
-        next.delete(file.path);
-        return next;
-      });
+      // Remove from changedFiles so the "N files changed" banner disappears.
+      removeFromChangedFiles(file.path);
     } catch (err) {
       showToast(`Save failed: ${errorMessage(err)}`, 'error');
     }
@@ -591,17 +598,28 @@ const App: Component = () => {
     if (!activeFile) return;
     const result = editorStore.canSave(activeFile);
     if (!result.ok) {
-      if (result.reason === 'not-found') {
-        // Invariant breach — activeFile should always be in openFiles.  Do not
-        // surface a toast since this is not an actionable user condition.
-        console.error('Save aborted: active file is not in openFiles', activeFile);
-        return;
+      // Exhaustive switch mirrors the identical guard in Editor.tsx (the other
+      // Ctrl+S call site): adding a new SaveBlockedReason member produces a
+      // TypeScript compile error at BOTH sites, preventing silent policy drift.
+      switch (result.reason) {
+        case 'not-found':
+          // Invariant breach — activeFile should always be in openFiles.  Do
+          // not surface a toast since this is not an actionable user condition.
+          console.error('Save aborted: active file is not in openFiles', activeFile);
+          return;
+        case 'externally-changed': {
+          // Show a conflict prompt with Reload / Overwrite actions so the user
+          // has a clear recovery path instead of a dead-end error toast.
+          const file = editorStore.state.openFiles.find((f) => f.path === activeFile);
+          if (file) showSaveConflictPrompt(file);
+          return;
+        }
+        default: {
+          const _exhaustive: never = result.reason;
+          console.error('Save aborted: unhandled save-blocked reason', _exhaustive);
+          return;
+        }
       }
-      // externally-changed: show a conflict prompt with Reload / Overwrite actions
-      // so the user has a clear recovery path instead of a dead-end error toast.
-      const file = editorStore.state.openFiles.find((f) => f.path === activeFile);
-      if (file) showSaveConflictPrompt(file);
-      return;
     }
     try {
       await bridgeSaveFile(result.file.path, result.file.content);
@@ -851,6 +869,10 @@ const App: Component = () => {
           // buffer so the view stays in sync with disk without any prompt.
           editorStore.updateFileContent(match.path, data.content);
           editorStore.markClean(match.path);
+          // Also clear this path from changedFiles in case a stale entry survived
+          // (e.g. a previous markExternallyChanged that was then resolved outside
+          // the normal conflict flow). Keeps the banner from outliving the conflict.
+          removeFromChangedFiles(match.path);
         }
       });
       if (!alive) {

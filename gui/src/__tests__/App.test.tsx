@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@solidjs/testing-library';
 import type { GuiState } from '../types';
 import {
-  EXTERNALLY_CHANGED_SAVE_BLOCKED_MSG,
   EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG,
   SAVE_CONFLICT_RELOAD_LABEL,
   SAVE_CONFLICT_OVERWRITE_LABEL,
@@ -5075,6 +5074,31 @@ describe('App handleSave aborts when file is externally changed', () => {
         expect.any(String),
       );
     });
+  });
+
+  it('(c) two Ctrl+S in a row while externally changed produce only one conflict prompt', async () => {
+    // Guards against stacked prompts: if the user reflexively presses Ctrl+S twice,
+    // showSaveConflictPrompt must deduplicate so only one toast is visible.  A stacked
+    // second prompt could silently discard newer edits if the user clicks Reload in
+    // the older copy after having typed more into the buffer.
+    render(() => <App />);
+    await waitFor(() => expect(fileChangedCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    capturedEditorStore.setActiveFile('/project/bracket.ri');
+    capturedEditorStore.markExternallyChanged('/project/bracket.ri');
+
+    // Press Ctrl+S twice in quick succession
+    fireEvent.keyDown(document, { key: 's', ctrlKey: true });
+    fireEvent.keyDown(document, { key: 's', ctrlKey: true });
+
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Exactly ONE conflict toast must be visible — not two stacked copies
+    const conflictToasts = screen
+      .getAllByTestId('toast')
+      .filter((t) => t.textContent?.includes(EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG));
+    expect(conflictToasts).toHaveLength(1);
   });
 });
 
