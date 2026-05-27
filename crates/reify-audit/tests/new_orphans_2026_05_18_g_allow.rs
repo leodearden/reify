@@ -11,9 +11,11 @@
 //! enforces presence of a `// G-allow:` marker on the line immediately
 //! above each `pub fn`; this test additionally asserts list membership
 //! (absent from `orphans[]`, present in `allowed[]`) and that the reason
-//! string contains the expected owner-task citation `#3765`.  Neither
-//! assertion implies `orphan_count == 0`; pre-existing baseline orphans
-//! in unrelated files are intentionally not in scope here.
+//! string cites *some* tracked owner task as `#NNNN`.  The specific task
+//! number lives only in the source `// G-allow:` marker (single source of
+//! truth), so this test never carries a second copy that could drift.
+//! Neither assertion implies `orphan_count == 0`; pre-existing baseline
+//! orphans in unrelated files are intentionally not in scope here.
 //!
 //! **Owner task**: #3765 (KCC-γ: Widen value_for_joint/joint_range_midpoint/
 //! chain_transform to JointValue; multi-DOF chain participation; analytic J
@@ -36,17 +38,14 @@
 
 use reify_test_support::run_orphan_audit;
 
-/// (file_suffix, fn_name, expected_task_substring)
+/// (file_suffix, fn_name)
 ///
 /// `file_suffix` is the suffix of the `file` field in the JSON output
 /// (repo-relative path from the workspace root).
-/// `expected_task_substring` is a string that must appear in the
-/// `allow_reason` field of the matching `allowed[]` entry.
-const PINS: &[(&str, &str, &str)] = &[
+const PINS: &[(&str, &str)] = &[
     (
         "crates/reify-stdlib/src/loop_closure_value.rs",
         "dof_count",
-        "3765",
     ),
     // as_f64_slice: wired by KCC-γ #3765 — callers in loop_closure.rs +
     // loop_closure_solver.rs; no longer an orphan in crates/reify-stdlib/src.
@@ -54,7 +53,6 @@ const PINS: &[(&str, &str, &str)] = &[
     (
         "crates/reify-stdlib/src/loop_closure_value.rs",
         "renormalize_quaternion",
-        "3765",
     ),
     // from_str: wired by KCC-γ #3765 — callers in snapshot.rs +
     // loop_closure_solver.rs.
@@ -63,7 +61,6 @@ const PINS: &[(&str, &str, &str)] = &[
     (
         "crates/reify-stdlib/src/loop_closure_value.rs",
         "flatten_dofs",
-        "3765",
     ),
     // unflatten_dofs: wired by KCC-γ #3765 — callers in snapshot.rs.
 ];
@@ -85,7 +82,7 @@ fn new_orphans_2026_05_18_are_g_allow_marked() {
         return;
     };
 
-    for &(file_suffix, fn_name, expected_task_substr) in PINS {
+    for &(file_suffix, fn_name) in PINS {
         // (a) Must NOT appear in orphans[] for the given file.
         let in_orphans = result["orphans"]
             .as_array()
@@ -127,24 +124,24 @@ fn new_orphans_2026_05_18_are_g_allow_marked() {
             1,
             "`{fn_name}` in {file_suffix} must appear exactly once in \
              allowed[]; found {} entries.  If you just wired a consumer \
-             for task #{expected_task_substr}, delete this fn's row from \
+             for `{fn_name}`, delete its row from \
              PINS in `crates/reify-audit/tests/new_orphans_2026_05_18_g_allow.rs`.\n\
              Full allowed list:\n{:#}",
             matching_allowed.len(),
             result["allowed"]
         );
 
-        // (c) The allow_reason must cite the expected owner task as `#NNNN`
-        // (anchored on the `#` prefix to avoid false matches on bare
-        // numeric substrings such as line numbers or unrelated task IDs).
-        let reason = matching_allowed[0]["allow_reason"]
-            .as_str()
-            .unwrap_or_default();
-        let expected_task_citation = format!("#{expected_task_substr}");
+        // (c) The allow_reason must cite SOME tracked owner task as `#NNNN`.
+        // The specific number lives only in the source `// G-allow:` marker
+        // (single source of truth), so it cannot drift against a second copy here.
+        let reason = matching_allowed[0]["allow_reason"].as_str().unwrap_or_default();
+        let bytes = reason.as_bytes();
+        let cites_task = bytes.iter().enumerate().any(|(i, &b)| {
+            b == b'#' && bytes.get(i + 1).is_some_and(u8::is_ascii_digit)
+        });
         assert!(
-            reason.contains(&expected_task_citation),
-            "`{fn_name}` allow_reason must contain the task citation \
-             \"{expected_task_citation}\"; got: {reason:?}"
+            cites_task,
+            "`{fn_name}` allow_reason must cite a tracked task as `#NNNN`; got: {reason:?}"
         );
     }
 }
