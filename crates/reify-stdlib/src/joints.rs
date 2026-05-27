@@ -941,6 +941,26 @@ pub(crate) fn motion_subspace_columns(joint: &Value) -> Option<Vec<SpatialVector
         _ => return None,
     };
     match kind {
+        // 3-DOF planar joint: PRD §5.1 — columns are [linear_axis_x, linear_axis_y,
+        // angular_normal] where normal = unit_axis_x × unit_axis_y (cross product).
+        // Ordering matches the `transform_at` planar motion-var order [x, y, theta].
+        // Perpendicularity is enforced by `unit_axes_xy_from_planar_map` (returns None
+        // for non-perpendicular axes), so the cross product yields a unit vector.
+        "planar" => {
+            let (ux, uy) = unit_axes_xy_from_planar_map(map)?;
+            // Plane normal = ux × uy (3-component cross product).
+            // Unit because ux ⊥ uy (perpendicularity guard enforced by the helper).
+            let n = [
+                ux[1] * uy[2] - ux[2] * uy[1],
+                ux[2] * uy[0] - ux[0] * uy[2],
+                ux[0] * uy[1] - ux[1] * uy[0],
+            ];
+            Some(vec![
+                SpatialVector6::from_angular_linear([0.0, 0.0, 0.0], ux),
+                SpatialVector6::from_angular_linear([0.0, 0.0, 0.0], uy),
+                SpatialVector6::from_angular_linear(n, [0.0, 0.0, 0.0]),
+            ])
+        }
         // 2-DOF cylindrical joint: PRD §12 Q4 — columns are [translation, rotation]
         // matching JointValue::Cyl ordering.
         // Column 0 (translation/prismatic-equivalent): [0; unit_axis] — linear along axis.
