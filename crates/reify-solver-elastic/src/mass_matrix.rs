@@ -14,6 +14,15 @@
 //! vs `M`).
 
 use crate::assembly::ElementStiffness;
+use crate::elements::{ReferenceCoord, ReferenceElement, tet_p1::TetP1};
+
+/// Conservative lower bound on `|det J|` mirroring the convention in
+/// `assembly::tet::MIN_JACOBIAN_DET` and
+/// `geometric_stiffness::tet::MIN_JACOBIAN_DET`. Anything at or below this
+/// trips a `debug_assert!` rather than silently dividing by it. Kept in
+/// sync by inspection — when the elastic-`K_e` and `K_g` paths move their
+/// constants into a shared `crate::math` module the mass path should follow.
+const MIN_JACOBIAN_DET: f64 = 1.0e-30;
 
 /// Compute the 12×12 **consistent mass matrix** `M_e` for a P1 (linear,
 /// 4-node) tetrahedron with constant density `density`.
@@ -26,12 +35,93 @@ use crate::assembly::ElementStiffness;
 /// [`ElementStiffness`], so it can be fed into [`crate::assemble_global_stiffness`]
 /// without any repacking (the assembler treats `k_e` opaquely — K vs K_g vs M).
 ///
-/// Step-2 stub: returns a zero 12×12 matrix; step-4 lands the real formula.
+/// # Formula
+///
+/// For a P1 (straight-edge) tet with constant density `ρ`, the consistent
+/// mass entries are
+///
+/// ```text
+/// M_e[3a+α, 3b+β] = ρ · ∫_Ω N_a · N_b · δ_αβ dV
+/// ```
+///
+/// Using the classical closed form `∫_T N_a · N_b dV = V_e · (1 + δ_{a,b})/20`
+/// (exact under an affine reference→physical map, so degree-2 quadrature
+/// is unnecessary), with `V_e = |det J| / 6`,
+///
+/// ```text
+/// M_e[3a+α, 3b+α] = ρ · V_e · (1 + δ_{a,b}) / 20         α ∈ {0,1,2}
+/// M_e[3a+α, 3b+β] = 0                                     α ≠ β
+/// ```
+///
+/// Total mass per axis sums to `ρ · V_e · (4 · 1/10 + 12 · 1/20) = ρ · V_e`.
+///
+/// # Panics
+///
+/// Panics under `debug_assertions` when `|det J| <= MIN_JACOBIAN_DET` or
+/// when `det J` is non-finite/subnormal — the same degeneracy-guard
+/// convention as [`crate::element_stiffness_p1`] and
+/// [`crate::geometric_element_stiffness_tet_p1`].
+///
+/// Uses `|det J|` so left-handed (mirror-flipped) node orderings still
+/// produce the physically correct positive `V_e` and a positive-mass `M_e`.
+#[allow(clippy::needless_range_loop)]
 pub fn consistent_element_mass_tet_p1(
-    _phys_nodes: &[[f64; 3]; 4],
-    _density: f64,
+    phys_nodes: &[[f64; 3]; 4],
+    density: f64,
 ) -> ElementStiffness {
-    ElementStiffness::zeros(12)
+    const N_NODES: usize = 4;
+    const N_DOFS: usize = 12;
+    let mut m_e = ElementStiffness::zeros(N_DOFS);
+
+    // P1 has constant gradients — evaluating at the centroid is just as
+    // valid as any other reference point; the centroid is the canonical
+    // 1-point Gauss location. We only need gradients to build J (for V_e);
+    // the shape-function values N_a are absorbed into the closed-form
+    // integral V_e·(1+δ_{a,b})/20.
+    let centroid = ReferenceCoord::new(0.25, 0.25, 0.25);
+    let grads_ref = TetP1.shape_grad_at(centroid);
+    debug_assert_eq!(grads_ref.len(), N_NODES);
+
+    // Forward Jacobian J_ij = Σ_k phys_nodes[k][i] · grads_ref[k][j].
+    // Inlined to avoid the intermediate Vec the trait default allocates.
+    let mut j_mat = [[0.0_f64; 3]; 3];
+    for k in 0..N_NODES {
+        for i in 0..3 {
+            for jj in 0..3 {
+                j_mat[i][jj] += phys_nodes[k][i] * grads_ref[k][jj];
+            }
+        }
+    }
+    let det = j_mat[0][0] * (j_mat[1][1] * j_mat[2][2] - j_mat[1][2] * j_mat[2][1])
+        - j_mat[0][1] * (j_mat[1][0] * j_mat[2][2] - j_mat[1][2] * j_mat[2][0])
+        + j_mat[0][2] * (j_mat[1][0] * j_mat[2][1] - j_mat[1][1] * j_mat[2][0]);
+
+    debug_assert!(
+        det.is_normal() && det.abs() > MIN_JACOBIAN_DET,
+        "degenerate element: |det J| = {} (must be > {} and finite)",
+        det.abs(),
+        MIN_JACOBIAN_DET,
+    );
+
+    let v_e = det.abs() / 6.0; // P1 tet physical volume
+
+    // For each (a, b) node-pair, compute the closed-form coefficient and
+    // write coef · I_3 into the 3×3 block at rows [3a..3a+3], cols
+    // [3b..3b+3]. Off-axis (α ≠ β) slots remain 0.0 from
+    // ElementStiffness::zeros(12) — block-diagonal-in-axes physics.
+    for a in 0..N_NODES {
+        for b in 0..N_NODES {
+            let kron = if a == b { 1.0 } else { 0.0 };
+            let coef = density * v_e * (1.0 + kron) / 20.0;
+            for alpha in 0..3 {
+                let row = 3 * a + alpha;
+                let col = 3 * b + alpha;
+                m_e.data[row * N_DOFS + col] += coef;
+            }
+        }
+    }
+
+    m_e
 }
 
 #[cfg(test)]
