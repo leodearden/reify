@@ -795,13 +795,17 @@ fn joint_jacobian_value(value: &Value) -> Value {
             let col_x = make_jacobian([0.0, 0.0, 0.0], unit_x);
             let col_y = make_jacobian([0.0, 0.0, 0.0], unit_y);
             let col_theta = make_jacobian(plane_normal, [0.0, 0.0, 0.0]);
-            // KCC-γ §11.1 producer-side signal: log when the analytic-J path
-            // is engaged for a multi-DOF joint.  The `kind` field carries the
-            // joint kind so downstream consumers / test captures can filter.
+            // KCC-γ §11.1 producer-side signal: log that the analytic-J
+            // columns are *available* for a multi-DOF joint.  The columns
+            // are returned to the caller but the chain Jacobian is still
+            // composed via FD inside `chain_jacobian_fd` — KCC-θ/ι will
+            // replace that path with SE(3) adjoint transport over these
+            // columns.  The `kind` field carries the joint kind so
+            // downstream consumers / test captures can filter on it.
             tracing::debug!(
                 target: "reify_stdlib::joints",
                 kind = kind,
-                "joint_jacobian analytic columns emitted"
+                "joint_jacobian analytic columns available"
             );
             Value::List(vec![col_x, col_y, col_theta])
         }
@@ -837,12 +841,13 @@ fn joint_jacobian_value(value: &Value) -> Value {
             let col_x = make_jacobian([1.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
             let col_y = make_jacobian([0.0, 1.0, 0.0], [0.0, 0.0, 0.0]);
             let col_z = make_jacobian([0.0, 0.0, 1.0], [0.0, 0.0, 0.0]);
-            // KCC-γ §11.1 producer-side signal: log when the analytic-J path
-            // is engaged for a multi-DOF joint.
+            // KCC-γ §11.1 producer-side signal: log that the analytic-J
+            // columns are *available* for a multi-DOF joint.  See the planar
+            // arm above for the available-vs-consumed distinction.
             tracing::debug!(
                 target: "reify_stdlib::joints",
                 kind = kind,
-                "joint_jacobian analytic columns emitted"
+                "joint_jacobian analytic columns available"
             );
             Value::List(vec![col_x, col_y, col_z])
         }
@@ -867,12 +872,13 @@ fn joint_jacobian_value(value: &Value) -> Value {
             };
             let prismatic_col = make_jacobian([0.0, 0.0, 0.0], [nax, nay, naz]);
             let revolute_col = make_jacobian([nax, nay, naz], [0.0, 0.0, 0.0]);
-            // KCC-γ §11.1 producer-side signal: log when the analytic-J path
-            // is engaged for a multi-DOF joint.
+            // KCC-γ §11.1 producer-side signal: log that the analytic-J
+            // columns are *available* for a multi-DOF joint.  See the planar
+            // arm above for the available-vs-consumed distinction.
             tracing::debug!(
                 target: "reify_stdlib::joints",
                 kind = kind,
-                "joint_jacobian analytic columns emitted"
+                "joint_jacobian analytic columns available"
             );
             Value::List(vec![prismatic_col, revolute_col])
         }

@@ -610,14 +610,18 @@ pub fn solve_loop_closure(
     };
 
     // KCC-γ §11.1 producer-side signal: probe each free joint's analytic-J
-    // path once at solve start so the tracing event fires for callers / test
-    // captures.  For multi-DOF kinds (planar / spherical / cylindrical) the
-    // `joint_jacobian` builtin emits a `tracing::debug!` at target
-    // `reify_stdlib::joints` carrying `kind = <kind>` — see
-    // `joint_jacobian_value` in `joints.rs`.  The probe's return value is
-    // intentionally discarded: the chain Jacobian itself is still composed via
-    // FD inside the closure (see `chain_jacobian_fd`).  KCC-θ/ι will replace
-    // the FD path with SE(3) adjoint transport over these analytic columns.
+    // path once at solve start so the *availability* event fires for callers
+    // / test captures.  For multi-DOF kinds (planar / spherical / cylindrical)
+    // the `joint_jacobian` builtin emits a `tracing::debug!` at target
+    // `reify_stdlib::joints` with message
+    // `"joint_jacobian analytic columns available"` carrying `kind = <kind>` —
+    // see `joint_jacobian_value` in `joints.rs`.  The probe's return value is
+    // intentionally discarded: the chain Jacobian is still composed via FD
+    // inside the closure (see `chain_jacobian_fd`), so this signal advertises
+    // joint-level analytic *availability*, not consumption.  KCC-θ/ι will
+    // replace the FD chain composition with SE(3) adjoint transport over
+    // these analytic columns, at which point the availability signal becomes
+    // a consumption signal.
     for &i in free_b {
         let _ = crate::eval_builtin("joint_jacobian", std::slice::from_ref(&chain_b[i]));
     }
