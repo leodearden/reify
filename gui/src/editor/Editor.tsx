@@ -304,6 +304,56 @@ export function Editor(props: EditorProps) {
       .catch((err: unknown) => console.error('LSP file switch error:', err));
   });
 
+  // Sync store content → CodeMirror view for the active file.
+  //
+  // This effect fires when the store's file.content changes externally (auto-reload,
+  // handleReload) for the active file. It intentionally bails when the active file
+  // changes (file switch) so the file-switch effect above can restore the cached
+  // EditorState — which may contain unsaved user edits that the store doesn't hold.
+  //
+  // Anti-loop invariant: user typing dispatches changes directly to the view
+  // via the EditorView.updateListener but does NOT call updateFileContent —
+  // only the debounced updateSource (backend call) is made. So file.content
+  // (the reactive signal) never changes during typing, and this effect never
+  // re-runs during a typing session.
+  //
+  // Subscription discipline: we always read file.content before any early return
+  // so that the reactive subscription is established for the current active file;
+  // this ensures the effect re-fires when updateFileContent is called even if a
+  // prior run bailed (e.g., because the view wasn't mounted yet).
+  let syncPreviousActive: string | null = null;
+  createEffect(() => {
+    const activeFile = props.store.state.activeFile;
+
+    // Always read file.content before any early return to maintain the reactive
+    // subscription for the current active file.
+    const file = activeFile
+      ? props.store.state.openFiles.find((f) => f.path === activeFile)
+      : undefined;
+    const storeContent = file?.content;
+
+    // Not mounted yet or no active file — update tracking to avoid a spurious
+    // dispatch on the first run after mount.
+    if (!view || !activeFile || !file || storeContent === undefined) {
+      syncPreviousActive = activeFile;
+      return;
+    }
+
+    // Active file just changed — the file-switch effect above handles EditorState
+    // rebuild (restoring cached state which may include unsaved user edits).
+    // Update tracking and bail without dispatching.
+    if (activeFile !== syncPreviousActive) {
+      syncPreviousActive = activeFile;
+      return;
+    }
+
+    // Same active file, store content changed externally (e.g. auto-reload).
+    // Dispatch only when there is an actual diff to prevent no-op transactions.
+    if (view.state.doc.toString() !== storeContent) {
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: storeContent } });
+    }
+  });
+
   // Watch scrollToLocation signal and scroll editor to target location
   createEffect(() => {
     const location = props.scrollToLocation?.();
