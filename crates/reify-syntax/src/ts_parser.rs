@@ -1898,8 +1898,17 @@ impl<'a> Lowering<'a> {
             let mut cursor = body_node.walk();
             for child in body_node.children(&mut cursor) {
                 if child.kind() == "param_assignment" {
-                    // TODO(task 3573): lower param_assignment once a MemberDecl variant
-                    // or let-rewrite is decided for the `name = value where?` form.
+                    // Invoke the shared helper at grammar slot 3 (param_assignment.value,
+                    // grammar.js:595) so auto_keyword lowering is centralised at all five
+                    // _binding_value slots (β = task 3804, PRD §4.2).  The resulting Expr
+                    // is intentionally discarded here: γ = task 3806 ("sub-instance-override
+                    // auto end-to-end") will add the MemberDecl variant or let-rewrite that
+                    // carries it forward.  CST-level coverage for this site lives in
+                    // auto_binding_sites_grammar_tests.rs::param_assignment_auto_strict_produces_auto_keyword
+                    // and param_assignment_auto_free_has_modifier_field.
+                    let _ = child
+                        .child_by_field_name("value")
+                        .and_then(|v| self.lower_binding_value(v));
                     continue;
                 }
                 if let Some(member) = self.lower_member(child) {
