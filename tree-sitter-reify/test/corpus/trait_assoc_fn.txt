@@ -128,3 +128,82 @@ structure S {
         qualified: (qualified_access
           qualifier: (identifier)
           member: (identifier))))))
+
+; ── Task 3935: trait-assoc-fn α — trait-body fn grammar (function_signature + self receiver) ──
+; Corpus tests below are developer documentation for the CST shape of trait-body fn declarations.
+; The canonical CI signal is the Rust integration tests in tree-sitter-reify/src/lib.rs
+; (test_trait_default_assoc_fn_with_body_and_self_parses, test_trait_required_assoc_fn_bodyless_parses,
+; test_trait_assoc_fn_no_self_still_parses, test_top_level_fn_bodyless_still_errors_regression,
+; test_trait_assoc_fn_default_fixture_parses_cleanly, test_trait_assoc_fn_required_fixture_parses_cleanly).
+; NOTE: The `self` receiver token is anonymous and does NOT appear in the S-expressions below.
+; Its presence is verified by child_by_field_name("receiver") in the Rust tests.
+
+================================================================================
+Trait body with default assoc fn (function_definition + self receiver)
+================================================================================
+
+trait T { fn f(self, x : Int) -> Int { x } }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (trait_declaration
+    name: (identifier)
+    (trait_member
+      (function_definition
+        name: (identifier)
+        (fn_param_list
+          (fn_param
+            name: (identifier)
+            type: (type_expr
+              (identifier))))
+        return_type: (type_expr
+          (identifier))
+        (fn_body
+          result: (identifier))))))
+
+================================================================================
+Trait body with required assoc fn (function_signature, no body)
+================================================================================
+
+trait T { fn g(self, x : Int) -> Int }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (trait_declaration
+    name: (identifier)
+    (trait_member
+      (function_signature
+        name: (identifier)
+        (fn_param_list
+          (fn_param
+            name: (identifier)
+            type: (type_expr
+              (identifier))))
+        return_type: (type_expr
+          (identifier))))))
+
+================================================================================
+REGRESSION — trait body assoc fn without self (still valid)
+================================================================================
+
+trait T { fn h(x : Int) -> Int { x } }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (trait_declaration
+    name: (identifier)
+    (trait_member
+      (function_definition
+        name: (identifier)
+        (fn_param_list
+          (fn_param
+            name: (identifier)
+            type: (type_expr
+              (identifier))))
+        return_type: (type_expr
+          (identifier))
+        (fn_body
+          result: (identifier))))))
