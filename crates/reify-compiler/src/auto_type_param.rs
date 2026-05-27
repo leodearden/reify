@@ -97,19 +97,24 @@
 //!
 //! # Common Scope
 //!
-//! All three phases are delivered as **pure utility modules**: the parser
-//! surface is now landed — `auto_type_arg` is admitted inside `type_arg_list`
-//! via `tree-sitter-reify/grammar.js:710-729` (corpus pin:
+//! All three phases are delivered as **pure utility modules**, now wired into
+//! the compile pipeline end-to-end. The parser surface is landed —
+//! `auto_type_arg` is admitted inside `type_arg_list` via
+//! `tree-sitter-reify/grammar.js:710-729` (corpus pin:
 //! `tree-sitter-reify/test/corpus/auto_type_arg.txt`), and AST lowering routes
 //! `auto_type_arg` CST nodes to `TypeExprKind::Auto { free, bound }` via
-//! `crates/reify-syntax/src/ts_parser.rs:679-720`. The residual gap is the
-//! **compile-pipeline resolver call-site**: no production caller in
-//! `crates/reify-compiler/src/lib.rs::compile_*` invokes
-//! `resolve_auto_type_params` / `resolve_auto_type_params_with_backtracking`,
-//! so `CompiledModule.auto_type_substitution` is initialised to default and
-//! is never written by any non-test caller. End-to-end source-level resolution
-//! therefore remains impossible until the resolver invocation site lands.
-//! Functions in this module are unit-tested against compiler-built registries.
+//! `crates/reify-syntax/src/ts_parser.rs:679-720`. The **compile-pipeline
+//! resolver call-site** landed in task 3558:
+//! `compile_builder::auto_type_param_phase::phase_auto_type_param_resolution`
+//! (invoked from `crates/reify-compiler/src/lib.rs::compile_with_prelude_context`
+//! between `phase_entities` and the bound-check pass) drains each
+//! `sub x = Foo<auto: Bound>()` use-site, dispatches
+//! [`resolve_auto_type_params_with_backtracking`], and writes the result into
+//! `CompiledModule.auto_type_substitution` (which stays at its empty default
+//! when the module declares no `auto:` type-args). End-to-end source-level
+//! resolution is therefore live. Functions in this module remain unit-tested
+//! against compiler-built registries in addition to the integration coverage
+//! in `crates/reify-compiler/tests/auto_type_arg_lowering_tests.rs`.
 //!
 //! Phase D (topology trigger / re-resolution on registry change) is
 //! explicitly deferred to a follow-up task.
