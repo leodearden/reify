@@ -593,3 +593,117 @@ describe('editorStore canSave', () => {
     });
   });
 });
+
+// ─── editorStore missingFiles (step-19) ──────────────────────────────────────
+
+describe('editorStore missingFiles', () => {
+  it('(a) initial state.missingFiles is []', () => {
+    createRoot((dispose) => {
+      const { state } = createEditorStore();
+      expect(state.missingFiles).toEqual([]);
+      dispose();
+    });
+  });
+
+  it('(b) markMissing(path) adds the path to missingFiles', () => {
+    createRoot((dispose) => {
+      const { state, openFile, markMissing } = createEditorStore();
+      openFile(file1);
+      markMissing('bracket.ri');
+      expect(state.missingFiles).toContain('bracket.ri');
+      dispose();
+    });
+  });
+
+  it('(c) markMissing is idempotent — duplicate call does not add a second entry', () => {
+    createRoot((dispose) => {
+      const { state, openFile, markMissing } = createEditorStore();
+      openFile(file1);
+      markMissing('bracket.ri');
+      markMissing('bracket.ri');
+      expect(state.missingFiles.filter((p) => p === 'bracket.ri')).toHaveLength(1);
+      dispose();
+    });
+  });
+
+  it('(c) markMissing idempotency — 1000 calls cause no reactive re-emission', async () => {
+    let counter = 0;
+    let storeRef!: ReturnType<typeof createEditorStore>;
+    let disposeRef!: () => void;
+
+    createRoot((dispose) => {
+      disposeRef = dispose;
+      storeRef = createEditorStore();
+      storeRef.openFile(file1);
+
+      createEffect(() => {
+        void storeRef.state.missingFiles.length;
+        counter++;
+      });
+    });
+
+    // Flush the initial effect subscription
+    await Promise.resolve();
+    expect(counter).toBe(1);
+
+    // First markMissing: new path → real setState → effect fires
+    storeRef.markMissing(file1.path);
+    await Promise.resolve();
+    expect(counter).toBe(2);
+
+    // 1000 more calls on the same already-missing path — no setState
+    const refBefore = storeRef.state.missingFiles;
+    for (let i = 0; i < 1000; i++) {
+      storeRef.markMissing(file1.path);
+    }
+    await Promise.resolve();
+    expect(counter).toBe(2); // no additional emissions
+    expect(storeRef.state.missingFiles).toEqual([file1.path]);
+    expect(storeRef.state.missingFiles).toBe(refBefore); // same proxy reference
+
+    disposeRef();
+  });
+
+  it('(d) clearMissing(path) removes only that path', () => {
+    createRoot((dispose) => {
+      const { state, openFile, markMissing, clearMissing } = createEditorStore();
+      openFile(file1);
+      openFile(file2);
+      markMissing('bracket.ri');
+      markMissing('mount.ri');
+      expect(state.missingFiles).toContain('bracket.ri');
+      expect(state.missingFiles).toContain('mount.ri');
+
+      clearMissing('bracket.ri');
+      expect(state.missingFiles).not.toContain('bracket.ri');
+      expect(state.missingFiles).toContain('mount.ri');
+      dispose();
+    });
+  });
+
+  it('(e) closeFile(path) also clears missingFiles for that path', () => {
+    createRoot((dispose) => {
+      const { state, openFile, closeFile, markMissing } = createEditorStore();
+      openFile(file1);
+      markMissing('bracket.ri');
+      expect(state.missingFiles).toContain('bracket.ri');
+
+      closeFile('bracket.ri');
+      expect(state.missingFiles).not.toContain('bracket.ri');
+      dispose();
+    });
+  });
+
+  it('(f) markMissing and markDirty are independent — both can be true simultaneously', () => {
+    createRoot((dispose) => {
+      const { state, openFile, markMissing, markDirty } = createEditorStore();
+      openFile(file1);
+
+      markMissing('bracket.ri');
+      markDirty('bracket.ri');
+      expect(state.missingFiles).toContain('bracket.ri');
+      expect(state.dirtyFiles).toContain('bracket.ri');
+      dispose();
+    });
+  });
+});
