@@ -941,6 +941,16 @@ pub(crate) fn motion_subspace_columns(joint: &Value) -> Option<Vec<SpatialVector
         _ => return None,
     };
     match kind {
+        // 1-DOF prismatic joint: PRD §5.1 — column = [0; unit_axis].
+        // Linear component is along the (unit-normalized) joint axis;
+        // angular component is zero (prismatic has no rotational DOF).
+        "prismatic" => {
+            let [ax, ay, az] = unit_axis_from_map(map)?;
+            Some(vec![SpatialVector6::from_angular_linear(
+                [0.0, 0.0, 0.0],
+                [ax, ay, az],
+            )])
+        }
         // 0-DOF fixed joint: 6×0 motion-subspace (empty Vec).
         "fixed" => Some(Vec::new()),
         _ => None,
