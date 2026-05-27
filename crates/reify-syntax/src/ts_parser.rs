@@ -1906,9 +1906,18 @@ impl<'a> Lowering<'a> {
                     // carries it forward.  CST-level coverage for this site lives in
                     // auto_binding_sites_grammar_tests.rs::param_assignment_auto_strict_produces_auto_keyword
                     // and param_assignment_auto_free_has_modifier_field.
-                    let _ = child
-                        .child_by_field_name("value")
-                        .and_then(|v| self.lower_binding_value(v));
+                    //
+                    // NOTE: gated on `auto_keyword` only — `lower_binding_value` falls
+                    // through to `lower_expr` for non-auto nodes, which can push diagnostics
+                    // as a side-effect.  Since the result is discarded at this site, calling
+                    // the helper on an ordinary expression would surface spurious errors
+                    // before γ wires the AST plumbing.  Non-auto values remain silently
+                    // skipped (pre-existing behaviour) until γ=3806 replaces the discard.
+                    if let Some(v) = child.child_by_field_name("value")
+                        && v.kind() == "auto_keyword"
+                    {
+                        let _ = self.lower_binding_value(v);
+                    }
                     continue;
                 }
                 if let Some(member) = self.lower_member(child) {

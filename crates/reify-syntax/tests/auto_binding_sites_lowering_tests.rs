@@ -28,62 +28,150 @@
 use reify_syntax::*;
 use reify_types::ModulePath;
 
+// ── Site-specific helpers ─────────────────────────────────────────────────────
+
+/// Assert that the first `let` member value in `source` lowers to
+/// `ExprKind::Auto { free: expected_free }`.
+///
+/// Callers supply the full source string; the convention is
+/// `"structure S { let m : Length = <auto-expr> }"`.
+fn assert_let_value_auto(source: &str, expected_free: bool) {
+    let module = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        module.errors.is_empty(),
+        "expected no parse errors: {:?}",
+        module.errors
+    );
+    let structure = match &module.declarations[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+    let let_decl = match &structure.members[0] {
+        MemberDecl::Let(l) => l,
+        other => panic!("expected Let, got {:?}", other),
+    };
+    match let_decl.value.kind {
+        ExprKind::Auto { free } => assert_eq!(
+            free, expected_free,
+            "wrong `free` flag: expected {}, got {}",
+            expected_free, free
+        ),
+        ref other => panic!("expected ExprKind::Auto, got {:?}", other),
+    }
+}
+
+/// Assert that the `bore` named-argument value in `source` lowers to
+/// `ExprKind::Auto { free: expected_free }`.
+///
+/// Callers supply the full source string; the convention is
+/// `"structure S { sub b = Bearing(bore: <auto-expr>) }"`.
+fn assert_named_arg_value_auto(source: &str, expected_free: bool) {
+    let module = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        module.errors.is_empty(),
+        "expected no parse errors: {:?}",
+        module.errors
+    );
+    let structure = match &module.declarations[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+    let sub_decl = match &structure.members[0] {
+        MemberDecl::Sub(s) => s,
+        other => panic!("expected Sub, got {:?}", other),
+    };
+    let (_, expr) = sub_decl
+        .args
+        .iter()
+        .find(|(n, _)| n == "bore")
+        .expect("expected a 'bore' named arg");
+    match expr.kind {
+        ExprKind::Auto { free } => assert_eq!(
+            free, expected_free,
+            "wrong `free` flag: expected {}, got {}",
+            expected_free, free
+        ),
+        ref other => panic!("expected ExprKind::Auto, got {:?}", other),
+    }
+}
+
+/// Assert that the `gain` connect-param value in `source` lowers to
+/// `ExprKind::Auto { free: expected_free }`.
+///
+/// Callers supply the full source string; the convention is
+/// `"structure S { connect a -> b { gain = <auto-expr> } }"`.
+fn assert_connect_param_value_auto(source: &str, expected_free: bool) {
+    let module = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        module.errors.is_empty(),
+        "expected no parse errors: {:?}",
+        module.errors
+    );
+    let structure = match &module.declarations[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+    let connect_decl = structure
+        .members
+        .iter()
+        .find_map(|m| match m {
+            MemberDecl::Connect(c) => Some(c),
+            _ => None,
+        })
+        .expect("expected a Connect member");
+    let (_, expr) = connect_decl
+        .params
+        .iter()
+        .find(|(n, _)| n == "gain")
+        .expect("expected a 'gain' connect param");
+    match expr.kind {
+        ExprKind::Auto { free } => assert_eq!(
+            free, expected_free,
+            "wrong `free` flag: expected {}, got {}",
+            expected_free, free
+        ),
+        ref other => panic!("expected ExprKind::Auto, got {:?}", other),
+    }
+}
+
 // ── Site 1: let_declaration.value ────────────────────────────────────────────
 
 /// `let m : Length = auto` — strict form lowers to `ExprKind::Auto { free: false }`.
 #[test]
 fn let_value_auto_strict_lowers_to_expr_kind_auto_false() {
-    let source = "structure S { let m : Length = auto }";
-    let module = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        module.errors.is_empty(),
-        "expected no parse errors: {:?}",
-        module.errors
-    );
-
-    let structure = match &module.declarations[0] {
-        Declaration::Structure(s) => s,
-        other => panic!("expected Structure, got {:?}", other),
-    };
-
-    let let_decl = match &structure.members[0] {
-        MemberDecl::Let(l) => l,
-        other => panic!("expected Let, got {:?}", other),
-    };
-
-    assert_eq!(let_decl.name, "m");
-    assert!(
-        matches!(let_decl.value.kind, ExprKind::Auto { free: false }),
-        "expected ExprKind::Auto {{ free: false }}, got {:?}",
-        let_decl.value.kind
-    );
+    assert_let_value_auto("structure S { let m : Length = auto }", false);
 }
 
 /// `let m : Length = auto(free)` — free form lowers to `ExprKind::Auto { free: true }`.
 #[test]
 fn let_value_auto_free_lowers_to_expr_kind_auto_true() {
-    let source = "structure S { let m : Length = auto(free) }";
+    assert_let_value_auto("structure S { let m : Length = auto(free) }", true);
+}
+
+/// `let m : Length = 1.0` — a non-auto literal still lowers normally.
+///
+/// Regression guard: `lower_binding_value` must not short-circuit non-`auto_keyword`
+/// nodes — they must fall through to `lower_expr` and produce the expected `ExprKind`.
+#[test]
+fn let_value_non_auto_lowers_normally() {
+    let source = "structure S { let m : Length = 1.0 }";
     let module = reify_syntax::parse(source, ModulePath::single("test"));
     assert!(
         module.errors.is_empty(),
         "expected no parse errors: {:?}",
         module.errors
     );
-
     let structure = match &module.declarations[0] {
         Declaration::Structure(s) => s,
         other => panic!("expected Structure, got {:?}", other),
     };
-
     let let_decl = match &structure.members[0] {
         MemberDecl::Let(l) => l,
         other => panic!("expected Let, got {:?}", other),
     };
-
-    assert_eq!(let_decl.name, "m");
     assert!(
-        matches!(let_decl.value.kind, ExprKind::Auto { free: true }),
-        "expected ExprKind::Auto {{ free: true }}, got {:?}",
+        matches!(let_decl.value.kind, ExprKind::NumberLiteral { .. }),
+        "expected NumberLiteral, got {:?}",
         let_decl.value.kind
     );
 }
@@ -94,68 +182,45 @@ fn let_value_auto_free_lowers_to_expr_kind_auto_true() {
 /// to `ExprKind::Auto { free: false }`.
 #[test]
 fn named_argument_value_auto_strict_lowers_to_expr_kind_auto_false() {
-    let source = "structure S { sub b = Bearing(bore: auto) }";
-    let module = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        module.errors.is_empty(),
-        "expected no parse errors: {:?}",
-        module.errors
-    );
-
-    let structure = match &module.declarations[0] {
-        Declaration::Structure(s) => s,
-        other => panic!("expected Structure, got {:?}", other),
-    };
-
-    let sub_decl = match &structure.members[0] {
-        MemberDecl::Sub(s) => s,
-        other => panic!("expected Sub, got {:?}", other),
-    };
-
-    let (name, expr) = sub_decl
-        .args
-        .iter()
-        .find(|(n, _)| n == "bore")
-        .expect("expected a 'bore' named arg");
-    assert_eq!(name, "bore");
-    assert!(
-        matches!(expr.kind, ExprKind::Auto { free: false }),
-        "expected ExprKind::Auto {{ free: false }}, got {:?}",
-        expr.kind
-    );
+    assert_named_arg_value_auto("structure S { sub b = Bearing(bore: auto) }", false);
 }
 
 /// `sub b = Bearing(bore: auto(free))` — free form lowers the `bore` arg's value
 /// to `ExprKind::Auto { free: true }`.
 #[test]
 fn named_argument_value_auto_free_lowers_to_expr_kind_auto_true() {
-    let source = "structure S { sub b = Bearing(bore: auto(free)) }";
+    assert_named_arg_value_auto("structure S { sub b = Bearing(bore: auto(free)) }", true);
+}
+
+/// `sub b = Bearing(bore: 1.0)` — a non-auto literal still lowers normally.
+///
+/// Regression guard: `lower_binding_value` must not short-circuit non-`auto_keyword`
+/// nodes at the named-argument site.
+#[test]
+fn named_argument_value_non_auto_lowers_normally() {
+    let source = "structure S { sub b = Bearing(bore: 1.0) }";
     let module = reify_syntax::parse(source, ModulePath::single("test"));
     assert!(
         module.errors.is_empty(),
         "expected no parse errors: {:?}",
         module.errors
     );
-
     let structure = match &module.declarations[0] {
         Declaration::Structure(s) => s,
         other => panic!("expected Structure, got {:?}", other),
     };
-
     let sub_decl = match &structure.members[0] {
         MemberDecl::Sub(s) => s,
         other => panic!("expected Sub, got {:?}", other),
     };
-
-    let (name, expr) = sub_decl
+    let (_, expr) = sub_decl
         .args
         .iter()
         .find(|(n, _)| n == "bore")
         .expect("expected a 'bore' named arg");
-    assert_eq!(name, "bore");
     assert!(
-        matches!(expr.kind, ExprKind::Auto { free: true }),
-        "expected ExprKind::Auto {{ free: true }}, got {:?}",
+        matches!(expr.kind, ExprKind::NumberLiteral { .. }),
+        "expected NumberLiteral, got {:?}",
         expr.kind
     );
 }
@@ -166,58 +231,33 @@ fn named_argument_value_auto_free_lowers_to_expr_kind_auto_true() {
 /// value to `ExprKind::Auto { free: false }`.
 #[test]
 fn connect_param_value_auto_strict_lowers_to_expr_kind_auto_false() {
-    let source = "structure S { connect a -> b { gain = auto } }";
-    let module = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        module.errors.is_empty(),
-        "expected no parse errors: {:?}",
-        module.errors
-    );
-
-    let structure = match &module.declarations[0] {
-        Declaration::Structure(s) => s,
-        other => panic!("expected Structure, got {:?}", other),
-    };
-
-    let connect_decl = structure
-        .members
-        .iter()
-        .find_map(|m| match m {
-            MemberDecl::Connect(c) => Some(c),
-            _ => None,
-        })
-        .expect("expected a Connect member");
-
-    let (name, expr) = connect_decl
-        .params
-        .iter()
-        .find(|(n, _)| n == "gain")
-        .expect("expected a 'gain' connect param");
-    assert_eq!(name, "gain");
-    assert!(
-        matches!(expr.kind, ExprKind::Auto { free: false }),
-        "expected ExprKind::Auto {{ free: false }}, got {:?}",
-        expr.kind
-    );
+    assert_connect_param_value_auto("structure S { connect a -> b { gain = auto } }", false);
 }
 
 /// `connect a -> b { gain = auto(free) }` — free form lowers the `gain` param's
 /// value to `ExprKind::Auto { free: true }`.
 #[test]
 fn connect_param_value_auto_free_lowers_to_expr_kind_auto_true() {
-    let source = "structure S { connect a -> b { gain = auto(free) } }";
+    assert_connect_param_value_auto("structure S { connect a -> b { gain = auto(free) } }", true);
+}
+
+/// `connect a -> b { gain = 1.0 }` — a non-auto literal still lowers normally.
+///
+/// Regression guard: `lower_binding_value` must not short-circuit non-`auto_keyword`
+/// nodes at the connect-param site.
+#[test]
+fn connect_param_value_non_auto_lowers_normally() {
+    let source = "structure S { connect a -> b { gain = 1.0 } }";
     let module = reify_syntax::parse(source, ModulePath::single("test"));
     assert!(
         module.errors.is_empty(),
         "expected no parse errors: {:?}",
         module.errors
     );
-
     let structure = match &module.declarations[0] {
         Declaration::Structure(s) => s,
         other => panic!("expected Structure, got {:?}", other),
     };
-
     let connect_decl = structure
         .members
         .iter()
@@ -226,16 +266,14 @@ fn connect_param_value_auto_free_lowers_to_expr_kind_auto_true() {
             _ => None,
         })
         .expect("expected a Connect member");
-
-    let (name, expr) = connect_decl
+    let (_, expr) = connect_decl
         .params
         .iter()
         .find(|(n, _)| n == "gain")
         .expect("expected a 'gain' connect param");
-    assert_eq!(name, "gain");
     assert!(
-        matches!(expr.kind, ExprKind::Auto { free: true }),
-        "expected ExprKind::Auto {{ free: true }}, got {:?}",
+        matches!(expr.kind, ExprKind::NumberLiteral { .. }),
+        "expected NumberLiteral, got {:?}",
         expr.kind
     );
 }
