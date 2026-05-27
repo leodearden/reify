@@ -1031,3 +1031,146 @@ pub structure Outer {
             .collect::<Vec<_>>()
     );
 }
+
+/// Positional-param constructor override propagates to cross-sub geometry.
+///
+/// Source: `pub structure Inner { param size : Length = 10mm  let body = box(size, size, size) }`
+///         `pub structure Outer { sub inner = Inner(50mm)  let body = translate(self.inner.body,
+///          200mm, 0mm, 0mm) }`.
+///
+/// `Inner(50mm)` uses POSITIONAL syntax — the `50mm` argument binds to the
+/// first (and only) parameter `size` by position.  At compile time,
+/// `connect.rs::compile_sub_component` attaches the parameter name to each
+/// positional arg, so `SubComponentDecl.args` stores `[("size",
+/// CompiledExpr(50mm))]` — indistinguishable from the named-syntax form.
+/// The override path in `seed_cross_sub_named_steps` therefore covers both
+/// syntaxes uniformly through the same `sub.args` loop.
+///
+/// Assertions mirror `cross_sub_constructor_named_param_override_reaches_geometry`
+/// but with `Value::Scalar { si_value: 0.05, dimension: LENGTH }` (50 mm in SI).
+///
+/// **RED** on main for the same root cause as the named-param test: the
+/// structure-keyed snapshot uses `Inner`'s 10mm default.  GREEN after step-2
+/// lands the override path — positional args arrive at `seed_cross_sub_named_steps`
+/// already name-attached, so no extra fix-up is needed.
+#[test]
+fn cross_sub_constructor_positional_param_override_reaches_geometry() {
+    let source = r#"pub structure Inner {
+    param size : Length = 10mm
+    let body = box(size, size, size)
+}
+pub structure Outer {
+    sub inner = Inner(50mm)
+    let body = translate(self.inner.body, 200mm, 0mm, 0mm)
+}"#;
+    let compiled = compile_source(source);
+
+    // (a) No compile-time Error diagnostics.
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "expected no compile-time Error diagnostics; got: {:?}",
+        compile_errors
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    // (a) No build-time Error diagnostics.
+    let build_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        build_errors.is_empty(),
+        "expected no Error diagnostics from build; got: {:?}",
+        build_errors
+            .iter()
+            .map(|d| format!("[{:?}] {}", d.severity, d.message))
+            .collect::<Vec<_>>()
+    );
+
+    // (b) No "unresolvable GeomRef::Sub" — inner.body must be seeded.
+    let unresolvable: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("unresolvable GeomRef::Sub"))
+        .collect();
+    assert!(
+        unresolvable.is_empty(),
+        "expected no 'unresolvable GeomRef::Sub' diagnostic; got: {:?}",
+        unresolvable.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let recorded = ops_ref.lock().unwrap().clone();
+
+    // (c) Find the per-instance Box with width/height/depth == 50 mm.
+    // 50 mm = 0.05 m in SI units.
+    let override_size = Value::Scalar {
+        si_value: 0.05,
+        dimension: DimensionVector::LENGTH,
+    };
+    let per_instance_box = recorded.iter().find(|rec| match &rec.op {
+        GeometryOp::Box { width, height, depth } => {
+            width == &override_size && height == &override_size && depth == &override_size
+        }
+        _ => false,
+    });
+    let per_instance_box = per_instance_box.expect(
+        "expected a Box op with width=height=depth=0.05 m (50 mm) for Inner(50mm) positional \
+         override; on main this fails because the structure-keyed snapshot uses Inner's \
+         default 10mm param (si_value=0.01)",
+    );
+    let override_box_handle = per_instance_box.result_handle;
+
+    // (d) Exactly one Translate whose target == the per-instance Box handle.
+    let translate_recs: Vec<_> = recorded
+        .iter()
+        .filter(|rec| matches!(rec.op, GeometryOp::Translate { .. }))
+        .collect();
+    assert_eq!(
+        translate_recs.len(),
+        1,
+        "expected exactly 1 Translate op (Outer.body); got {}: {:?}",
+        translate_recs.len(),
+        recorded
+            .iter()
+            .map(|r| format!("{:?}", r.op))
+            .collect::<Vec<_>>()
+    );
+    match translate_recs[0].op {
+        GeometryOp::Translate { target, .. } => {
+            assert_eq!(
+                target, override_box_handle,
+                "Translate target should be the per-instance Box handle ({:?}) from \
+                 Inner(50mm) positional override; on main it targets the default-args \
+                 Box instead — got {:?}",
+                override_box_handle, target
+            );
+        }
+        ref other => panic!("expected Translate op, got {:?}", other),
+    }
+
+    // (e) Build produces a geometry output.
+    assert!(
+        result.geometry_output.is_some(),
+        "expected geometry_output to be Some (positional override); got None; diagnostics: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| format!("[{:?}] {}", d.severity, d.message))
+            .collect::<Vec<_>>()
+    );
+}
