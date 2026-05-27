@@ -336,19 +336,46 @@ impl crate::Engine {
             // "Idempotent under any number of cancel-and-redispatch cycles").
             // The donation creates only a Compute-node entry, not a VC entry,
             // so there is no interference with the begin-set Pending state.
+            //
+            // ζ / step-14: the seed-then-donate sequence is symmetric with
+            // the Completed path's auto-seed in
+            // `complete_compute_dispatch_atomically` (cache.rs Step 4). On
+            // the post-edit pool-only path, the cache-miss → pool-hit fallback
+            // above took the prior out of the pool (removing the pool entry)
+            // while leaving the cache with NO Compute entry — without the
+            // explicit seed call, `donate_warm_state_with_cost` would be a
+            // silent no-op and the prior would be dropped on the floor,
+            // breaking PRD §5 idempotence on the post-edit path. Keeping the
+            // cache as the canonical at-rest store (rather than re-donating
+            // back to the pool) means the at-rest topology does not depend
+            // on whether the most recent dispatch was Completed vs Cancelled.
             Some(ComputeOutcome::Cancelled) => {
                 if let Some(prior) = prior_warm_state.take() {
-                    self.cache
+                    self.cache.seed_compute_entry_if_absent(c_id, version);
+                    let donated = self
+                        .cache
                         .donate_warm_state_with_cost(&compute_node, prior, prior_cost);
+                    debug_assert!(
+                        donated,
+                        "seed-then-donate is atomic: auto-seed guarantees the entry exists",
+                    );
                 }
                 Err(DispatchError::Cancelled)
             }
             // Step 3c: Failed — also leave VCs Pending; caller owns mark_failed.
             // ζ / step-10: same restore-prior arm as Cancelled.
+            // ζ / step-14: same seed-then-donate sequence as Cancelled
+            // (post-edit pool-only path symmetry).
             Some(ComputeOutcome::Failed { diagnostics }) => {
                 if let Some(prior) = prior_warm_state.take() {
-                    self.cache
+                    self.cache.seed_compute_entry_if_absent(c_id, version);
+                    let donated = self
+                        .cache
                         .donate_warm_state_with_cost(&compute_node, prior, prior_cost);
+                    debug_assert!(
+                        donated,
+                        "seed-then-donate is atomic: auto-seed guarantees the entry exists",
+                    );
                 }
                 Err(DispatchError::Failed(diagnostics))
             }
@@ -366,10 +393,18 @@ impl crate::Engine {
             // ζ / step-10: restore the prior just like Cancelled / Failed —
             // an unregistered target is morally equivalent to a Failed
             // dispatch from the caller's perspective.
+            // ζ / step-14: same seed-then-donate sequence (post-edit
+            // pool-only path symmetry).
             None => {
                 if let Some(prior) = prior_warm_state.take() {
-                    self.cache
+                    self.cache.seed_compute_entry_if_absent(c_id, version);
+                    let donated = self
+                        .cache
                         .donate_warm_state_with_cost(&compute_node, prior, prior_cost);
+                    debug_assert!(
+                        donated,
+                        "seed-then-donate is atomic: auto-seed guarantees the entry exists",
+                    );
                 }
                 Err(DispatchError::Failed(vec![Diagnostic::error(format!(
                     "@optimized target {:?}: no registered compute trampoline",

@@ -920,27 +920,49 @@ impl CacheStore {
         // sentinel; it has no authoritative result. See design decision 3
         // in `.task/plan.json`.
         if let Some(state) = new_warm_state {
-            let compute_node = NodeId::Compute(c_id.clone());
-            if !self.caches.contains_key(&compute_node) {
-                let sentinel =
-                    CachedResult::Value(Value::Undef, DeterminacyState::Determined);
-                self.caches.insert(
-                    compute_node.clone(),
-                    NodeCache::new(
-                        sentinel,
-                        Freshness::Final,
-                        DependencyTrace::default(),
-                        version,
-                    ),
-                );
-            }
+            self.seed_compute_entry_if_absent(c_id, version);
             // donate_warm_state_with_cost sanitises non-finite/negative cost
             // to 0.0; the no-op (entry-absent) branch cannot fire here
-            // because we just guaranteed the entry exists.
+            // because seed_compute_entry_if_absent just guaranteed the entry.
+            let compute_node = NodeId::Compute(c_id.clone());
             self.donate_warm_state_with_cost(&compute_node, state, cost_per_byte);
         }
 
         updated
+    }
+
+    /// Auto-seed a sentinel Compute entry under `NodeId::Compute(c_id)` if absent.
+    ///
+    /// Compute entries exist only to carry `warm_state` + `cost_per_byte` —
+    /// they never hold authoritative results (those live on output VCs). The
+    /// sentinel is `CachedResult::Value(Undef, Determined)` at `Freshness::Final`
+    /// with a default `DependencyTrace`. No-op when an entry already exists.
+    ///
+    /// Used by [`CacheStore::complete_compute_dispatch_atomically`] on the
+    /// Completed-Some path AND by `run_compute_dispatch`'s Cancelled / Failed /
+    /// unregistered arms when restoring the prior to a cache with no Compute
+    /// entry (the post-edit pool-only path, PRD §5 "Idempotent under any number
+    /// of cancel-and-redispatch cycles"). Keeping the sentinel construction in
+    /// one place ensures both call sites stay in sync if the placeholder shape
+    /// ever changes.
+    pub(crate) fn seed_compute_entry_if_absent(
+        &mut self,
+        c_id: &ComputeNodeId,
+        version: VersionId,
+    ) {
+        let compute_node = NodeId::Compute(c_id.clone());
+        if !self.caches.contains_key(&compute_node) {
+            let sentinel = CachedResult::Value(Value::Undef, DeterminacyState::Determined);
+            self.caches.insert(
+                compute_node,
+                NodeCache::new(
+                    sentinel,
+                    Freshness::Final,
+                    DependencyTrace::default(),
+                    version,
+                ),
+            );
+        }
     }
 
     /// Read the diagnostic-chain cause stored on a node's cache entry.
