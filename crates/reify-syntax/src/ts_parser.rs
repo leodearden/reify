@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 
 use crate::*;
-use reify_types::{ContentHash, ModulePath, SourceSpan, SpannedIdent};
+use reify_core::{ContentHash, ModulePath, PortDirection, SourceSpan, SpannedIdent};
 
 /// Check a child node for errors before lowering it. If the node has errors,
 /// push a parse error and return None. Otherwise, evaluate the lowering expression.
@@ -3033,7 +3033,7 @@ mod tests {
 
     fn parse_bracket() -> ParsedModule {
         let source = reify_test_support::bracket_source();
-        parse(source, reify_types::ModulePath::single("bracket"))
+        parse(source, ModulePath::single("bracket"))
     }
 
     #[test]
@@ -3251,7 +3251,7 @@ mod tests {
     #[test]
     fn spans_are_valid_and_cover_source_text() {
         let source = reify_test_support::bracket_source();
-        let module = parse(source, reify_types::ModulePath::single("bracket"));
+        let module = parse(source, ModulePath::single("bracket"));
 
         let structure = match &module.declarations[0] {
             Declaration::Structure(s) => s,
@@ -3432,7 +3432,7 @@ mod tests {
     #[test]
     fn content_hashes_computed_from_source_text() {
         let source = reify_test_support::bracket_source();
-        let module = parse(source, reify_types::ModulePath::single("bracket"));
+        let module = parse(source, ModulePath::single("bracket"));
 
         // Module content hash = hash of entire source
         assert_eq!(
@@ -3508,7 +3508,7 @@ mod tests {
     param !!!invalid!!!
     param height: Scalar = 100mm
 }"#;
-        let module = parse(source, reify_types::ModulePath::single("broken"));
+        let module = parse(source, ModulePath::single("broken"));
 
         // Should have parse errors
         assert!(
@@ -3546,8 +3546,8 @@ mod tests {
     fn parse_deterministic() {
         // Parsing the same source twice produces identical output.
         let source = reify_test_support::bracket_source();
-        let m1 = parse(source, reify_types::ModulePath::single("bracket"));
-        let m2 = parse(source, reify_types::ModulePath::single("bracket"));
+        let m1 = parse(source, ModulePath::single("bracket"));
+        let m2 = parse(source, ModulePath::single("bracket"));
 
         assert_eq!(m1.content_hash, m2.content_hash);
         assert_eq!(m1.declarations.len(), m2.declarations.len());
@@ -3617,7 +3617,7 @@ mod tests {
     param volume: Scalar = 100mm
     minimize volume
 }"#;
-        let module = parse(source, reify_types::ModulePath::single("test_min"));
+        let module = parse(source, ModulePath::single("test_min"));
         assert!(
             module.errors.is_empty(),
             "parse errors: {:?}",
@@ -3646,7 +3646,7 @@ mod tests {
     param thickness: Scalar = 5mm
     maximize thickness
 }"#;
-        let module = parse(source, reify_types::ModulePath::single("test_max"));
+        let module = parse(source, ModulePath::single("test_max"));
         assert!(
             module.errors.is_empty(),
             "parse errors: {:?}",
@@ -3675,7 +3675,7 @@ mod tests {
     param height: Scalar = 100mm
     minimize width * height
 }"#;
-        let module = parse(source, reify_types::ModulePath::single("test_min_complex"));
+        let module = parse(source, ModulePath::single("test_min_complex"));
         assert!(
             module.errors.is_empty(),
             "parse errors: {:?}",
@@ -3705,7 +3705,7 @@ mod tests {
     constraint w > 0mm
     minimize w
 }"#;
-        let module = parse(source, reify_types::ModulePath::single("test_min_mixed"));
+        let module = parse(source, ModulePath::single("test_min_mixed"));
         assert!(
             module.errors.is_empty(),
             "parse errors: {:?}",
@@ -3743,7 +3743,7 @@ mod tests {
     param x: Scalar = 5mm
     minimize x
 }"#;
-        let module = parse(source, reify_types::ModulePath::single("test_min_span"));
+        let module = parse(source, ModulePath::single("test_min_span"));
         assert!(
             module.errors.is_empty(),
             "parse errors: {:?}",
@@ -3769,7 +3769,7 @@ mod tests {
                 // Content hash should match the source text of the node
                 assert_eq!(
                     m.content_hash,
-                    reify_types::ContentHash::of_str(text),
+                    ContentHash::of_str(text),
                     "content_hash should match source text"
                 );
             }
@@ -3780,7 +3780,7 @@ mod tests {
     #[test]
     fn parse_enum_declaration() {
         let source = "enum Direction { In, Out, Bidi }\nstructure S { param x: Scalar = 5mm }";
-        let module = parse(source, reify_types::ModulePath::single("test_enum"));
+        let module = parse(source, ModulePath::single("test_enum"));
         assert!(
             module.errors.is_empty(),
             "parse errors: {:?}",
@@ -3800,7 +3800,7 @@ mod tests {
     #[test]
     fn parse_enum_access_expression() {
         let source = "enum Direction { In, Out, Bidi }\nstructure S { let d = Direction.In }";
-        let module = parse(source, reify_types::ModulePath::single("test_enum_access"));
+        let module = parse(source, ModulePath::single("test_enum_access"));
         assert!(
             module.errors.is_empty(),
             "parse errors: {:?}",
@@ -3833,7 +3833,7 @@ mod tests {
     #[test]
     fn parse_enum_missing_name_is_error() {
         let source = "enum { }";
-        let module = parse(source, reify_types::ModulePath::single("test_enum_err"));
+        let module = parse(source, ModulePath::single("test_enum_err"));
         assert!(
             !module.errors.is_empty(),
             "expected parse errors for malformed enum"
@@ -3883,7 +3883,7 @@ mod tests {
         let source = "structure S { let v = Foo.Bar }";
         let module = parse_with_prelude_enums(
             source,
-            reify_types::ModulePath::single("test_prelude_enum"),
+            ModulePath::single("test_prelude_enum"),
             &["Foo"],
         );
         assert!(
@@ -3909,7 +3909,7 @@ mod tests {
         let source = "enum Foo { Bar, Baz }\nstructure S { let v = Foo.Bar }";
         let module = parse_with_prelude_enums(
             source,
-            reify_types::ModulePath::single("test_prelude_overlap"),
+            ModulePath::single("test_prelude_overlap"),
             &["Foo"],
         );
         assert!(
@@ -3931,7 +3931,7 @@ mod tests {
     #[test]
     fn parse_with_prelude_enums_empty_slice_equivalent_to_parse() {
         let source = "enum Direction { In, Out, Bidi }\nstructure S { let d = Direction.In }";
-        let path = reify_types::ModulePath::single("test_empty_prelude");
+        let path = ModulePath::single("test_empty_prelude");
 
         let from_parse = parse(source, path.clone());
         let from_prelude = parse_with_prelude_enums(source, path, &[]);
@@ -3984,7 +3984,7 @@ mod tests {
         let source1 = "structure S1 { let v = PreludeEnumA.X }";
         let module1 = parse_with_prelude_enums(
             source1,
-            reify_types::ModulePath::single("test_borrow_call1"),
+            ModulePath::single("test_borrow_call1"),
             PRELUDE,
         );
         assert!(
@@ -4003,7 +4003,7 @@ mod tests {
             "enum SourceEnum { Y }\nstructure S2 { let v = PreludeEnumB.Z\n let w = SourceEnum.Y }";
         let module2 = parse_with_prelude_enums(
             source2,
-            reify_types::ModulePath::single("test_borrow_call2"),
+            ModulePath::single("test_borrow_call2"),
             PRELUDE,
         );
         assert!(
@@ -4062,7 +4062,7 @@ mod tests {
     /// Helper: parse a source string wrapping an expression in a structure let,
     /// and return the ExprKind of the let's value.
     fn parse_let_expr(source: &str) -> ExprKind {
-        let module = parse(source, reify_types::ModulePath::single("test"));
+        let module = parse(source, ModulePath::single("test"));
         assert!(
             module.errors.is_empty(),
             "parse errors: {:?}",
@@ -4235,7 +4235,7 @@ mod tests {
     #[test]
     fn parse_collection_in_let_context() {
         let source = "structure S { let x = [1, 2, 3] }";
-        let module = parse(source, reify_types::ModulePath::single("test"));
+        let module = parse(source, ModulePath::single("test"));
         assert!(
             module.errors.is_empty(),
             "parse errors: {:?}",
@@ -4299,7 +4299,7 @@ mod tests {
     #[test]
     fn parse_simple_function_definition() {
         let source = "fn area(w: Scalar, h: Scalar) -> Scalar { w * h }";
-        let module = parse(source, reify_types::ModulePath::single("test_fn"));
+        let module = parse(source, ModulePath::single("test_fn"));
         assert!(
             module.errors.is_empty(),
             "parse errors: {:?}",
@@ -4333,7 +4333,7 @@ mod tests {
     #[test]
     fn parse_pub_function_with_conditional() {
         let source = "pub fn clamp(x: Real, lo: Real, hi: Real) -> Real { if x < lo then lo else if x > hi then hi else x }";
-        let module = parse(source, reify_types::ModulePath::single("test_pub_fn"));
+        let module = parse(source, ModulePath::single("test_pub_fn"));
         assert!(
             module.errors.is_empty(),
             "parse errors: {:?}",
@@ -4367,7 +4367,7 @@ mod tests {
     #[test]
     fn parse_function_with_let_bindings() {
         let source = "fn f(x: Real) -> Real { let y = x * 2; y + 1 }";
-        let module = parse(source, reify_types::ModulePath::single("test_fn_let"));
+        let module = parse(source, ModulePath::single("test_fn_let"));
         assert!(
             module.errors.is_empty(),
             "parse errors: {:?}",
@@ -4391,7 +4391,7 @@ mod tests {
     #[test]
     fn parse_function_with_type_parameters() {
         let source = "fn identity<T>(x: T) -> T { x }";
-        let module = parse(source, reify_types::ModulePath::single("test_fn_tp"));
+        let module = parse(source, ModulePath::single("test_fn_tp"));
         assert!(
             module.errors.is_empty(),
             "parse errors: {:?}",
@@ -4408,7 +4408,7 @@ mod tests {
 
         // Also test with bounds
         let source2 = "fn add<T: Numeric>(a: T, b: T) -> T { a + b }";
-        let module2 = parse(source2, reify_types::ModulePath::single("test_fn_tp2"));
+        let module2 = parse(source2, ModulePath::single("test_fn_tp2"));
         assert!(
             module2.errors.is_empty(),
             "parse errors: {:?}",

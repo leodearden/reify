@@ -4795,6 +4795,8 @@ dependencies = [
 name = "reify-syntax"
 version = "0.1.0"
 dependencies = [
+ "reify-ast",
+ "reify-core",
  "reify-test-support",
  "reify-types",
  "tree-sitter",

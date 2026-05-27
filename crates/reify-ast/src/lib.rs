@@ -12,15 +12,37 @@
 //! locked in by `crates/reify-ast/tests/dag_invariant.rs`, which reads
 //! `Cargo.toml` directly and asserts both conditions. The workspace-wide
 //! assertion (`scripts/assert-crate-dag.sh`) arrives under task η per PRD §10.
+//!
+//! The `decl.rs` reference graph was audited during ε (PRD task ε): it references
+//! only reify-core primitives and the in-crate `ast.rs` Expr/TypeExpr. No ir-tier
+//! type references exist in decl.rs — confirmed by `cargo build -p reify-ast`.
 
 // Mirrors reify-core/reify-types preludes for lint-attribute parity across the
 // core stack; reify-ast itself has no current trigger.
 #![allow(clippy::mutable_key_type)]
 
 pub mod ast;
+pub mod decl;
 
 // ── flat root re-exports ─────────────────────────────────────────────────────
 // Mirrors the flat surface previously in reify-types::ast so that code using
 // `reify_ast::Expr` (etc.) resolves correctly alongside the module-path form
 // `reify_ast::ast::Expr`.
 pub use ast::{DimOp, Expr, ExprKind, LambdaParam, MatchArm, QuantifierKind, TypeExpr, TypeExprKind};
+
+// ── declaration AST flat re-exports ─────────────────────────────────────────
+// Mirrors the flat surface previously in reify-syntax::lib so that code using
+// `reify_ast::ParsedModule` (etc.) resolves correctly alongside the module-path
+// form `reify_ast::decl::ParsedModule`.
+pub use decl::{
+    Annotation, AssociatedTypeDecl, ChainDecl, ConnectDecl, ConnectOp, ConstraintDecl,
+    ConstraintDef, ConstraintInstDecl, Declaration, EnumDecl, FieldDef, FieldSource, FnBody,
+    FnDef, FnParam, ForallConnectBody, ForallConnectDecl, ForallConstraintBody,
+    ForallConstraintDecl, GuardedGroupDecl, ImportDecl, ImportKind, LetDecl,
+    MAX_MEMBER_NESTING_DEPTH, MatchArmDeclArmDecl, MatchArmDeclGroupDecl, MaximizeDecl,
+    MemberDecl, MemberSpanInfo, MetaBlockDecl, MinimizeDecl, NumberClass, OccurrenceDef,
+    ParamDecl, ParseError, ParsedModule, PortDecl, PortRef, Pragma, PragmaArg, PragmaValue,
+    PurposeDef, PurposeParam, StructureDef, SubDecl, TraitBoundRef, TraitDecl, TypeAliasDecl,
+    TypeParamDecl, UnitDecl, WhereClause, classify_number_literal, find_named_member_span,
+    has_test_annotation, walk_specialization_scope_members,
+};
