@@ -202,15 +202,15 @@
 ### M-027: End-to-end example file (`param thickness=auto, minimize mass s.t. max(von_mises) < yield_stress`)
 
 - **State:** FICTION
-- **Failure mode:** F1
-- **Evidence:** No `.ri` file under `examples/` or `prj/` invokes `solve_elastic_static`. PRD task #22 — blocked transitively on M-001.
+- **Failure mode:** F1 (example file absent; `s.t.` / `subject to` syntax fictional)
+- **Evidence:** No `.ri` file under `examples/` or `prj/` invokes `solve_elastic_static`. PRD task #22 — blocked transitively on M-001. *(2026-05-27 update: `param thickness : Length = auto` is grammar-supported at the param-default position via `auto_keyword` — this sub-mechanism is NOT the source of the FICTION classification. The FICTION state is driven by the absent example file and the fictional `s.t.` / `subject to` syntax. Broader `auto` binding-site coverage is addressed by `docs/prds/auto-binding-site-positions.md`, α task 3802 landed.)*
 
 ### M-028: Auto-resolve loop integration — `param thickness : Length = auto` driving FEA constraint
 
 - **State:** PARTIAL
 - **Failure mode:** F6 (auto/minimize machinery exists from v0.1; FEA feed-in path doesn't exist)
-- **Evidence:** Auto-resolve loop is a v0.1 feature, working for constraint-typed cells. PRD §"Goal" calls for `minimize mass subject to max(von_mises(bracket)) < material.yield_stress` — this needs (a) `material.yield_stress` runtime access (blocked by GR-001), (b) `max(von_mises(field))` plumbing (works for sampled fields per M-014/M-015), (c) FEA ComputeNode populating the field on each auto-resolve iteration (blocked by M-001/M-002).
-- **Note:** Each piece tested in isolation; integration is the empty case.
+- **Evidence:** Auto-resolve loop is a v0.1 feature, working for constraint-typed cells. `param thickness : Length = auto` is grammar-supported at the param-default position (via `auto_keyword` — this is NOT the source of the PARTIAL/F6 state). PRD §"Goal" calls for `minimize mass subject to max(von_mises(bracket)) < material.yield_stress` — the remaining gaps are (a) `material.yield_stress` runtime access (blocked by GR-001), (b) `max(von_mises(field))` plumbing (works for sampled fields per M-014/M-015), (c) FEA ComputeNode populating the field on each auto-resolve iteration (blocked by M-001/M-002). *(2026-05-27 update: broader `auto` binding-site coverage beyond param-default is addressed by `docs/prds/auto-binding-site-positions.md`, α task 3802 landed.)*
+- **Note:** Each piece tested in isolation; integration is the empty case. The grammar/literal portion of `param ... = auto` is supported.
 
 ## Cross-PRD breadcrumbs
 
