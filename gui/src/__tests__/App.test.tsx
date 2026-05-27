@@ -4880,6 +4880,15 @@ describe('App file-changed auto-reload (non-dirty)', () => {
 
     // No reload-prompt banner should be visible (changedFiles is empty)
     expect(screen.queryByText('Reload')).toBeNull();
+
+    // The auto-reload must NOT mark the file dirty — markClean runs after updateFileContent,
+    // so dirtyFiles should not contain this path.
+    expect(capturedEditorStore.state.dirtyFiles).not.toContain('/project/bracket.ri');
+
+    // The auto-reload must NOT echo back to the backend as a phantom user edit.
+    // (Editor is mocked in App tests, so no CodeMirror view, but this is a guard for
+    // the future when App tests may use the real Editor.)
+    expect(bridge.updateSource).not.toHaveBeenCalled();
   });
 
   it('(b) file-changed for a DIRTY open tab still triggers externallyChanged and shows the Reload banner', async () => {

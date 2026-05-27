@@ -1230,6 +1230,45 @@ describe('Editor view stays in sync with store content', () => {
     const openFile = store.state.openFiles.find((f) => f.path === '/a.ri');
     expect(openFile!.content).toBe('INITIAL');
   });
+
+  it('sync dispatch does NOT call markDirty or updateSource (non-user origin)', async () => {
+    // Regression guard: the sync createEffect's dispatch must be annotated as
+    // 'sync.external' so the updateListener bails before calling markDirty +
+    // updateSource. Without the annotation the auto-reload echoes back to the
+    // backend as a phantom user edit and immediately re-marks the file dirty.
+    const fileA: FileData = { path: '/a.ri', content: 'OLD' };
+    const store = setupStore([fileA]);
+
+    const markDirtySpy = vi.spyOn(store, 'markDirty');
+    const updateSourceSpy = vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined as any);
+
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Verify initial state — file is NOT dirty
+    expect(store.state.dirtyFiles).not.toContain('/a.ri');
+
+    // External store update — simulates auto-reload writing to the store
+    store.updateFileContent('/a.ri', 'NEW');
+
+    // Wait for the sync effect to dispatch the new content into the view
+    await vi.waitFor(() => {
+      expect(view.state.doc.toString()).toBe('NEW');
+    });
+
+    // Advance past the debounce to catch any delayed updateSource calls
+    vi.advanceTimersByTime(EDITOR_DEBOUNCE_MS + 100);
+
+    // (a) dirtyFiles must NOT contain '/a.ri' — the sync dispatch must not mark the file dirty
+    expect(store.state.dirtyFiles).not.toContain('/a.ri');
+
+    // (b) markDirty was NOT called as a result of the sync transaction
+    expect(markDirtySpy).not.toHaveBeenCalled();
+
+    // (c) updateSource bridge call was NOT made — the auto-reload must not echo back to backend
+    expect(updateSourceSpy).not.toHaveBeenCalled();
+  });
 });
 
 describe('Editor Mod-s exhaustiveness for SaveBlockedReason', () => {
