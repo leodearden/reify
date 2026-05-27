@@ -268,40 +268,11 @@ pub(crate) fn compile_purpose(
         }
     }
 
-    // task-2201: Reject multi-StructureRef-param purposes with a clear diagnostic.
-    //
-    // The ValueCellId stamping at expr.rs (~line 1222) uses `scope.entity_name`
-    // (= purpose_name) for ALL purpose-subject member refs:
-    //   `ValueCellId::new(&id.entity, member)` where `id.entity == purpose_name`.
-    // This means `a.mass` and `b.mass` in a two-param purpose would both compile
-    // to `ValueRef(check, mass)` — per-param identity is lost. The single-entity
-    // `remap_entity` call in reify-types/src/expr.rs:660 has no way to distinguish
-    // which param a given ref came from, so there is no safe forward path today.
-    //
-    // Approach 2 (encoding `format!("{}::{}", purpose_name, param_name)` and
-    // redesigning `activate_purpose` to take a per-param mapping) is deferred
-    // until a real multi-param use case appears. See esc-2181-18 S3 for design.
-    //
-    // NOTE: Do NOT return early here — the existing accumulate-and-continue
-    // pattern (let-binding/guarded-block arms below) is preserved so that
-    // `phase_purposes` (compile_builder/post_passes.rs:107-121) always receives
-    // a `CompiledPurpose` entry for every `PurposeDef`.
-    if purpose_def.params.len() > 1 {
-        diagnostics.push(
-            Diagnostic::error(format!(
-                "multi-StructureRef purpose params not supported; binding scheme TBD: \
-                 purpose '{}' has {} StructureRef params (task-2201)",
-                purpose_name,
-                purpose_def.params.len()
-            ))
-            .with_label(DiagnosticLabel::new(
-                purpose_def.params[1].span,
-                // "first extra" is self-explanatory for 3+ params too, where params[2..] are
-                // unhighlighted — the message text already says "has N StructureRef params".
-                "first extra StructureRef param".to_string(),
-            )),
-        );
-    }
+    // Multi-StructureRef purpose params now compile under the per-param
+    // `purpose::param` stamp scheme (task-2181 β, PRD §4.1 contract C1).
+    // Activation-time remap is single-bound-entity here (one entity_ref applied
+    // to every param stamp); task γ adds `activate_purpose_with_bindings` for
+    // per-param binding maps.
 
     let mut constraints = Vec::new();
     let mut constraint_index = 0u32;
