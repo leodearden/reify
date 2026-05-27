@@ -622,16 +622,18 @@ pub structure Outer {
 /// (`sub.structure_name`) so both sub names get seeded from the same
 /// per-template snapshot.
 ///
-/// This is a v0.1 documented limitation: the named_steps registry would need
-/// to key on the sub *instance* (not template) for two same-template subs to
-/// receive distinct handles.  Lifting this requires per-instance realisation
-/// of the child template, which is out of scope for the cross-sub composition
-/// MVP.  See `engine_build.rs::seed_cross_sub_named_steps` for the
-/// same-template aliasing note.
+/// **Scope note (task 3814):** this shared-handle behaviour applies only when
+/// both subs carry **no explicit constructor args** (`sub.args.is_empty()`).
+/// When subs carry distinct args — e.g. `sub a = Inner(size: 50mm)` vs
+/// `sub b = Inner(size: 80mm)` — `seed_cross_sub_named_steps` re-executes
+/// the child template's ops independently for each sub, producing distinct
+/// kernel handles.  See `cross_sub_two_subs_with_distinct_overrides_get_distinct_handles`
+/// for the override-aware counterpart and `engine_build.rs::seed_cross_sub_named_steps`
+/// for the two-mode rustdoc.
 ///
-/// Regression guard: pins the current behaviour so a future change that
-/// inadvertently breaks the same-template aliasing (e.g. an attempt to fix
-/// it that mis-keys the registry) fails this test loudly.
+/// Regression guard: pins the no-args shared-handle behaviour so a future
+/// change that inadvertently breaks it (e.g. an attempt to generalise the
+/// override path to arg-free subs) fails this test loudly.
 #[test]
 fn cross_sub_same_template_subs_share_kernel_handle() {
     let source = r#"pub structure Inner {

@@ -123,6 +123,8 @@ impl<'a> RealizationOutputs<'a> {
 ///   per-instance handles override the structure-keyed snapshot entries.
 ///   Each non-collection sub with args gets its own independent re-execution,
 ///   so two same-template subs with distinct args produce distinct handles.
+///   Pinned by the `cross_sub_two_subs_with_distinct_overrides_get_distinct_handles`
+///   regression test.
 ///
 /// No entries are produced for collection subs (compile-side blocks those),
 /// or for subs whose child template isn't yet in `module_named_steps`
