@@ -176,4 +176,46 @@ structure def FlexureCompliance {
     param parasitic_error : Option<Length> = none
     param prb_validity_range : Real = 0.0
     param at_yield : Bool = false
+
+    // Defense-in-depth: `yield_margin = (yield - max_stress) / yield` is
+    // mathematically bounded above by 1 (max attained at max_stress = 0).
+    // It is unbounded below (becomes negative when max_stress > yield,
+    // which is the "at_yield" regime per PRD §5.3 where PRB ctors emit
+    // `W_FlexureYielding` and set `at_yield = true`). A populated record
+    // with yield_margin > 1 indicates a PRB-ctor bug (e.g. swapped
+    // numerator/denominator) — declaring the upper bound at the
+    // structure-def level makes the contract explicit in production code
+    // rather than relying solely on test coverage (task 2544 convention;
+    // mirrors `BucklingOptions.n_modes > 0` in solver_buckling.ri:87 and
+    // `PiecewisePolynomialProfile.waypoints.count > 0` in
+    // trajectory.ri:230).
+    //
+    // SIR-α's `check_constraints_against_templates` machinery (task 3540,
+    // landed) evaluates structure-level constraints at the eval path, so
+    // this fires at construction with no further plumbing in β.
+    //
+    // NOTE — explicitly NOT constrained:
+    //   effective_stiffness   : RotationalStiffness  — any non-negative real
+    //                                                   is physically valid;
+    //                                                   the lower-bound
+    //                                                   convention is owned
+    //                                                   by the future
+    //                                                   dimensioned-type
+    //                                                   semantics (PRD α).
+    //   max_stress / max_stress_at_neutral : Pressure — any non-negative
+    //                                                   pressure is valid;
+    //                                                   the yield/at_yield
+    //                                                   contract already
+    //                                                   tracks the bound.
+    //   parasitic_error : Option<Length>             — Option-typed; not
+    //                                                   scalar-predicable
+    //                                                   when None.
+    //   prb_validity_range : Real (Range<Angle>      — placeholder until
+    //                              placeholder)         Range arm lands;
+    //                                                   bounds-checking is
+    //                                                   producer-enforced
+    //                                                   by PRB ctors.
+    //   at_yield : Bool                              — Bool, trivially
+    //                                                   constrained.
+    constraint yield_margin <= 1
 }
