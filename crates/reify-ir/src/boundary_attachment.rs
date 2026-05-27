@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::GeometryHandleId;
+use crate::geometry::GeometryHandleId;
 
 /// Which B-rep entity a surface node was emitted onto by the upstream surface
 /// mesher.

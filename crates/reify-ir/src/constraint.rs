@@ -2,11 +2,11 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::diagnostics::Diagnostic;
+use reify_core::diagnostics::Diagnostic;
 use crate::expr::{CompiledExpr, CompiledFunction};
-use crate::identity::{ConstraintNodeId, ValueCellId};
+use reify_core::identity::{ConstraintNodeId, ValueCellId};
 use crate::persistent::PersistentMap;
-use crate::ty::Type;
+use reify_core::ty::Type;
 use crate::value::{DeterminacyState, Satisfaction, Value, ValueMap};
 
 /// Input to constraint checking: a batch of constraints with current values.
@@ -274,8 +274,8 @@ mod tests {
 
     #[test]
     fn auto_param_with_bounds() {
-        use crate::identity::ValueCellId;
-        use crate::ty::Type;
+        use reify_core::identity::ValueCellId;
+        use reify_core::ty::Type;
 
         let ap = AutoParam {
             id: ValueCellId::new("Bracket", "width"),
@@ -290,8 +290,8 @@ mod tests {
 
     #[test]
     fn auto_param_with_free_flag() {
-        use crate::identity::ValueCellId;
-        use crate::ty::Type;
+        use reify_core::identity::ValueCellId;
+        use reify_core::ty::Type;
 
         let strict = AutoParam {
             id: ValueCellId::new("Bracket", "width"),
@@ -312,8 +312,8 @@ mod tests {
 
     #[test]
     fn auto_param_without_bounds() {
-        use crate::identity::ValueCellId;
-        use crate::ty::Type;
+        use reify_core::identity::ValueCellId;
+        use reify_core::ty::Type;
 
         let ap = AutoParam {
             id: ValueCellId::new("Bracket", "angle"),
@@ -329,7 +329,7 @@ mod tests {
     }
 
     fn make_literal_expr() -> CompiledExpr {
-        use crate::hash::ContentHash;
+        use reify_core::hash::ContentHash;
         use crate::value::Value;
         CompiledExpr {
             kind: crate::expr::CompiledExprKind::Literal(Value::Real(1.0)),
@@ -371,7 +371,7 @@ mod tests {
 
     #[test]
     fn resolution_problem_populated() {
-        use crate::identity::ValueCellId;
+        use reify_core::identity::ValueCellId;
         let mut values = crate::value::ValueMap::new();
         values.insert(
             ValueCellId::new("Bracket", "width"),
@@ -412,7 +412,7 @@ mod tests {
 
     #[test]
     fn solve_result_solved() {
-        use crate::identity::ValueCellId;
+        use reify_core::identity::ValueCellId;
         use crate::value::Value;
         use std::collections::HashMap;
 
@@ -434,7 +434,7 @@ mod tests {
 
     #[test]
     fn solve_result_solved_with_unique_flag() {
-        use crate::identity::ValueCellId;
+        use reify_core::identity::ValueCellId;
         use crate::value::Value;
         use std::collections::HashMap;
 
@@ -463,7 +463,7 @@ mod tests {
 
     #[test]
     fn solve_result_infeasible() {
-        use crate::diagnostics::Diagnostic;
+        use reify_core::diagnostics::Diagnostic;
 
         let result = SolveResult::Infeasible {
             diagnostics: vec![Diagnostic::error("constraint unsatisfiable")],

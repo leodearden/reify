@@ -29,7 +29,7 @@
 
 use std::collections::HashSet;
 
-use crate::NodeKind;
+use crate::node_traits::NodeKind;
 
 /// Presence-only registry of [`NodeKind`]s whose producers implement
 /// [`WarmStartable`](crate::warm::WarmStartable).
@@ -99,7 +99,7 @@ inventory::collect!(WarmStartableRegistration);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::NodeKind;
+    use crate::node_traits::NodeKind;
 
     #[test]
     fn new_is_empty() {

@@ -284,7 +284,7 @@ fn boundary_attachment_types_in_scope() {
 
 #[test]
 fn constraint_types_in_scope() {
-    let _: fn() -> Option<ConstraintInput<'_>> = || None;
+    let _: fn() -> Option<ConstraintInput<'static>> = || None;
     let _: fn() -> Option<ConstraintResult> = || None;
     let _: fn() -> Option<ConstraintDiagnostics> = || None;
     let _: fn() -> Option<ConstraintDomain> = || None;
@@ -292,14 +292,14 @@ fn constraint_types_in_scope() {
     let _: fn() -> Option<SolveResult> = || None;
     let _: fn() -> Option<ResolutionProblem> = || None;
     let _: fn() -> Option<OptimizationObjective> = || None;
-    let _: fn() -> Option<OptimizedImplInput<'_>> = || None;
+    let _: fn() -> Option<OptimizedImplInput<'static>> = || None;
     let _: fn() -> Option<OptimizedImplOutput> = || None;
     // Trait bounds only require the name to resolve.
     let _: fn() -> Option<Box<dyn ConstraintChecker>> = || None;
     let _: fn() -> Option<Box<dyn OptimizedImpl>> = || None;
     let _: fn() -> Option<Box<dyn ConstraintSolver>> = || None;
     // Module-path forms.
-    let _: fn() -> Option<ConstraintInputMod<'_>> = || None;
+    let _: fn() -> Option<ConstraintInputMod<'static>> = || None;
     let _: fn() -> Option<ConstraintResultMod> = || None;
     let _: fn() -> Option<ConstraintDiagnosticsMod> = || None;
     let _: fn() -> Option<ConstraintDomainMod> = || None;
@@ -307,7 +307,7 @@ fn constraint_types_in_scope() {
     let _: fn() -> Option<SolveResultMod> = || None;
     let _: fn() -> Option<ResolutionProblemMod> = || None;
     let _: fn() -> Option<OptimizationObjectiveMod> = || None;
-    let _: fn() -> Option<OptimizedImplInputMod<'_>> = || None;
+    let _: fn() -> Option<OptimizedImplInputMod<'static>> = || None;
     let _: fn() -> Option<OptimizedImplOutputMod> = || None;
     let _: fn() -> Option<Box<dyn ConstraintCheckerMod>> = || None;
     let _: fn() -> Option<Box<dyn OptimizedImplMod>> = || None;
@@ -394,14 +394,14 @@ fn geometry_types_in_scope() {
     let _: fn() -> Option<Mesh> = || None;
     let _: fn() -> Option<GeometryHandle> = || None;
     let _: fn() -> Option<GeometryHandleId> = || None;
-    let _: fn() -> Option<GeometryKernel> = || None;
-    let _: fn() -> Option<KernelAttributeHook> = || None;
+    let _: fn() -> Option<Box<dyn GeometryKernel>> = || None;
+    let _: fn() -> Option<Box<dyn KernelAttributeHook>> = || None;
     let _: fn() -> Option<KernelRegistration> = || None;
     let _: fn() -> Option<AttributeHistory> = || None;
     let _: fn() -> Option<AxisSign> = || None;
     let _: fn() -> Option<BRepKind> = || None;
     let _: fn() -> Option<BooleanOpHistoryRecords> = || None;
-    let _: fn() -> Option<BooleanOpParents> = || None;
+    let _: fn() -> Option<BooleanOpParents<'static>> = || None;
     let _: fn() -> Option<BooleanOpParentsError> = || None;
     let _: fn() -> Option<CapKind> = || None;
     let _: fn() -> Option<CapabilityDescriptor> = || None;
@@ -436,14 +436,14 @@ fn geometry_types_in_scope() {
     let _: fn() -> Option<MeshMod> = || None;
     let _: fn() -> Option<GeometryHandleMod> = || None;
     let _: fn() -> Option<GeometryHandleIdMod> = || None;
-    let _: fn() -> Option<GeometryKernelMod> = || None;
-    let _: fn() -> Option<KernelAttributeHookMod> = || None;
+    let _: fn() -> Option<Box<dyn GeometryKernelMod>> = || None;
+    let _: fn() -> Option<Box<dyn KernelAttributeHookMod>> = || None;
     let _: fn() -> Option<KernelRegistrationMod> = || None;
     let _: fn() -> Option<AttributeHistoryMod> = || None;
     let _: fn() -> Option<AxisSignMod> = || None;
     let _: fn() -> Option<BRepKindMod> = || None;
     let _: fn() -> Option<BooleanOpHistoryRecordsMod> = || None;
-    let _: fn() -> Option<BooleanOpParentsMod> = || None;
+    let _: fn() -> Option<BooleanOpParentsMod<'static>> = || None;
     let _: fn() -> Option<BooleanOpParentsErrorMod> = || None;
     let _: fn() -> Option<CapKindMod> = || None;
     let _: fn() -> Option<CapabilityDescriptorMod> = || None;
@@ -479,9 +479,9 @@ fn geometry_types_in_scope() {
         DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
         DEFAULT_POINT_ON_SHAPE_TOLERANCE_M_MOD
     );
-    // fn item just needs to be callable.
-    let _ = debug_assert_query_many_invariant as fn(_, _);
-    let _ = debug_assert_query_many_invariant_mod as fn(_, _);
+    // fn item just needs to resolve as a symbol.
+    let _ = debug_assert_query_many_invariant::<GeometryQuery, GeometryOp>;
+    let _ = debug_assert_query_many_invariant_mod::<GeometryQueryMod, GeometryOpMod>;
 }
 
 #[test]
@@ -502,9 +502,15 @@ fn node_traits_types_in_scope() {
     // Parameterised — trait object is simplest.
     let _: fn() -> Option<Box<dyn HasNodeKind>> = || None;
     let _: fn() -> Option<Box<dyn HasNodeKindMod>> = || None;
-    // NodeTraitsMap requires K: Eq + Hash + HasNodeKind; just check name resolves.
-    let _: fn() -> Option<NodeTraitsMap<NodeKind>> = || None;
-    let _: fn() -> Option<NodeTraitsMapMod<NodeKindMod>> = || None;
+    // NodeTraitsMap requires K: Eq + Hash + HasNodeKind.
+    // NodeKind itself does not impl HasNodeKind — use a local witness.
+    #[derive(Clone, Debug, Eq, Hash, PartialEq)]
+    struct TestHnk;
+    impl HasNodeKind for TestHnk {
+        fn node_kind(&self) -> NodeKind { NodeKind::Value }
+    }
+    let _: fn() -> Option<NodeTraitsMap<TestHnk>> = || None;
+    let _: fn() -> Option<NodeTraitsMapMod<TestHnk>> = || None;
 }
 
 #[test]

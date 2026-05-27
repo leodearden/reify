@@ -9,7 +9,7 @@
 //! so cache-key composition keys off the structure *name* + `version`, never
 //! the [`StructureTypeId`].
 
-use crate::{SourceSpan, Type};
+use reify_core::{SourceSpan, Type};
 use std::collections::HashMap;
 
 /// Stable per-Engine identifier for an interned structure definition.
@@ -109,7 +109,7 @@ impl StructureRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Type;
+    use reify_core::Type;
 
     fn sample_meta(name: &str, version: u32, bounds: &[&str]) -> StructureMeta {
         StructureMeta {

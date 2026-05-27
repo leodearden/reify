@@ -1,5 +1,5 @@
-use crate::diagnostics::SourceSpan;
-pub use crate::primitives::{
+use reify_core::diagnostics::SourceSpan;
+pub use reify_core::primitives::{
     DEPRECATED_ANNOTATION, OPTIMIZED_ANNOTATION, SHELL_ANNOTATION, SOLID_ANNOTATION,
     SOLVER_HINT_ANNOTATION, TEST_ANNOTATION,
 };
@@ -67,7 +67,7 @@ pub enum AnnotationArgValue {
     Real(f64),
     Bool(bool),
     Ident(String),
-    Expr(crate::Expr),
+    Expr(reify_ast::Expr),
 }
 
 #[cfg(test)]

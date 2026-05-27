@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use crate::diagnostics::DiagnosticCode;
-use crate::dimension::DimensionVector;
+use reify_core::diagnostics::DiagnosticCode;
+use reify_core::dimension::DimensionVector;
 use crate::expr::CompiledExpr;
-use crate::hash::ContentHash;
-use crate::identity::ValueCellId;
+use reify_core::hash::ContentHash;
+use reify_core::identity::ValueCellId;
 use crate::persistent::PersistentMap;
 use crate::structure_registry::StructureTypeId;
 
@@ -402,7 +402,7 @@ pub enum Value {
     ///
     /// ```rust
     /// use std::collections::BTreeSet;
-    /// use reify_types::Value;
+    /// use reify_ir::Value;
     ///
     /// // Construct a Value::Set containing all float boundary values.
     /// let boundary = [f64::NEG_INFINITY, -1.0_f64, -0.0_f64, 0.0_f64, 1.0_f64, f64::INFINITY, f64::NAN];
@@ -442,7 +442,7 @@ pub enum Value {
     ///
     /// ```rust
     /// use std::collections::BTreeMap;
-    /// use reify_types::Value;
+    /// use reify_ir::Value;
     ///
     /// // Construct a Value::Map keyed by all float boundary values.
     /// let boundary = [f64::NEG_INFINITY, -1.0_f64, -0.0_f64, 0.0_f64, 1.0_f64, f64::INFINITY, f64::NAN];
@@ -484,8 +484,8 @@ pub enum Value {
     /// when `lambda.params.len() == 1 && n > 1`; otherwise convention (i)
     /// applies.  The source of `n` is `domain_type`.
     Field {
-        domain_type: crate::ty::Type,
-        codomain_type: crate::ty::Type,
+        domain_type: reify_core::ty::Type,
+        codomain_type: reify_core::ty::Type,
         source: FieldSourceKind,
         /// The value stored for this field; valid contents depend on `source`:
         ///
@@ -591,7 +591,7 @@ pub enum Value {
     /// design decision: same geometry rebuilt in a new session must still compare
     /// equal and hash identically).
     GeometryHandle {
-        realization_ref: crate::identity::RealizationNodeId,
+        realization_ref: reify_core::identity::RealizationNodeId,
         upstream_values_hash: [u8; 32],
         kernel_handle: crate::geometry::GeometryHandleId,
     },
@@ -1139,8 +1139,8 @@ impl Value {
     ///
     /// Use [`try_infer_type()`] when you need to distinguish "genuinely ambiguous"
     /// from "has a known fallback".
-    pub fn infer_type(&self) -> crate::ty::Type {
-        use crate::ty::Type;
+    pub fn infer_type(&self) -> reify_core::ty::Type {
+        use reify_core::ty::Type;
         match self.try_infer_type() {
             Some(ty) => ty,
             None => match self {
@@ -1254,8 +1254,8 @@ impl Value {
     /// `List([Option(None)])`), this method returns `None` rather than guessing
     /// a default. Use [`infer_type()`] if you want compiler-aligned defaults
     /// applied.
-    pub fn try_infer_type(&self) -> Option<crate::ty::Type> {
-        use crate::ty::Type;
+    pub fn try_infer_type(&self) -> Option<reify_core::ty::Type> {
+        use reify_core::ty::Type;
         match self {
             Value::Bool(_) => Some(Type::Bool),
             Value::Int(_) => Some(Type::Int),
@@ -2843,7 +2843,7 @@ mod tests {
     // ── Value::StructureInstance variant (task 3540 / SIR-α) ─────────────────
     mod structure_instance {
         use super::*;
-        use crate::StructureTypeId;
+        use crate::structure_registry::StructureTypeId;
 
         /// Build a `Value::StructureInstance` with a fixed `type_id`/`version`
         /// and the given `(name, value)` field pairs.
@@ -2998,7 +2998,7 @@ mod tests {
     // ── Value::GeometryHandle variant (task 3604 / GHR-β) ────────────────────
     mod geometry_handle {
         use super::*;
-        use crate::identity::RealizationNodeId;
+        use reify_core::identity::RealizationNodeId;
         use crate::geometry::GeometryHandleId;
 
         /// Build a `Value::GeometryHandle` with the given realization_ref,
@@ -3728,7 +3728,7 @@ mod tests {
 
     #[test]
     fn test_error_ref_with_code_sets_code() {
-        use crate::diagnostics::DiagnosticCode;
+        use reify_core::diagnostics::DiagnosticCode;
         let err = ErrorRef::new("msg").with_code(DiagnosticCode::ConstraintViolated);
         assert_eq!(err.code(), Some(DiagnosticCode::ConstraintViolated));
         // The message accessor is unaffected by the builder.
@@ -3745,7 +3745,7 @@ mod tests {
 
     #[test]
     fn test_error_ref_with_code_preserves_clone_eq() {
-        use crate::diagnostics::DiagnosticCode;
+        use reify_core::diagnostics::DiagnosticCode;
         let err = ErrorRef::new("boom").with_code(DiagnosticCode::ConstraintViolated);
         let err2 = err.clone();
         assert_eq!(err, err2);
@@ -5144,7 +5144,7 @@ mod tests {
 
     #[test]
     fn value_field_variant() {
-        use crate::ty::Type;
+        use reify_core::ty::Type;
         let field_val = Value::Field {
             domain_type: Type::Real,
             codomain_type: Type::Real,
@@ -5186,7 +5186,7 @@ mod tests {
 
     #[test]
     fn value_map_remove() {
-        use crate::identity::ValueCellId;
+        use reify_core::identity::ValueCellId;
 
         let id_a = ValueCellId::new("E", "a");
         let id_b = ValueCellId::new("E", "b");
@@ -7788,8 +7788,8 @@ mod tests {
             (
                 "Field",
                 Value::Field {
-                    domain_type: crate::ty::Type::Real,
-                    codomain_type: crate::ty::Type::Real,
+                    domain_type: reify_core::ty::Type::Real,
+                    codomain_type: reify_core::ty::Type::Real,
                     source: FieldSourceKind::Analytical,
                     lambda: Arc::new(Value::Undef),
                 },
@@ -7800,7 +7800,7 @@ mod tests {
                     params: vec![],
                     body: Box::new(CompiledExpr {
                         kind: crate::expr::CompiledExprKind::Literal(Value::Int(0)),
-                        result_type: crate::ty::Type::Real,
+                        result_type: reify_core::ty::Type::Real,
                         content_hash: ContentHash::of(&[0]),
                     }),
                     captures: ValueMap::new(),
@@ -7867,7 +7867,7 @@ mod tests {
             (
                 "GeometryHandle",
                 Value::GeometryHandle {
-                    realization_ref: crate::identity::RealizationNodeId::new("T", 0),
+                    realization_ref: reify_core::identity::RealizationNodeId::new("T", 0),
                     upstream_values_hash: [0u8; 32],
                     kernel_handle: crate::geometry::GeometryHandleId(0),
                 },
@@ -7947,7 +7947,7 @@ mod tests {
         let v = Value::List(vec![Value::Int(1), Value::Int(2)]);
         assert_eq!(
             v.try_infer_type(),
-            Some(crate::ty::Type::List(Box::new(crate::ty::Type::Int))),
+            Some(reify_core::ty::Type::List(Box::new(reify_core::ty::Type::Int))),
             "non-empty List(Int) should return Some(List(Int))"
         );
     }
@@ -7959,7 +7959,7 @@ mod tests {
         let v = Value::Set(s);
         assert_eq!(
             v.try_infer_type(),
-            Some(crate::ty::Type::Set(Box::new(crate::ty::Type::Int))),
+            Some(reify_core::ty::Type::Set(Box::new(reify_core::ty::Type::Int))),
             "non-empty Set(Int) should return Some(Set(Int))"
         );
     }
@@ -7971,9 +7971,9 @@ mod tests {
         let v = Value::Map(m);
         assert_eq!(
             v.try_infer_type(),
-            Some(crate::ty::Type::Map(
-                Box::new(crate::ty::Type::String),
-                Box::new(crate::ty::Type::Int),
+            Some(reify_core::ty::Type::Map(
+                Box::new(reify_core::ty::Type::String),
+                Box::new(reify_core::ty::Type::Int),
             )),
             "non-empty Map(String,Int) should return Some(Map(String,Int))"
         );
@@ -7984,7 +7984,7 @@ mod tests {
         let v = Value::Option(Some(Box::new(Value::Int(7))));
         assert_eq!(
             v.try_infer_type(),
-            Some(crate::ty::Type::Option(Box::new(crate::ty::Type::Int))),
+            Some(reify_core::ty::Type::Option(Box::new(reify_core::ty::Type::Int))),
             "Option(Some(Int)) should return Some(Option(Int))"
         );
     }
@@ -7993,16 +7993,16 @@ mod tests {
     fn try_infer_type_scalar_values_return_some() {
         assert_eq!(
             Value::Bool(true).try_infer_type(),
-            Some(crate::ty::Type::Bool)
+            Some(reify_core::ty::Type::Bool)
         );
-        assert_eq!(Value::Int(0).try_infer_type(), Some(crate::ty::Type::Int));
+        assert_eq!(Value::Int(0).try_infer_type(), Some(reify_core::ty::Type::Int));
         assert_eq!(
             Value::Real(0.0).try_infer_type(),
-            Some(crate::ty::Type::Real)
+            Some(reify_core::ty::Type::Real)
         );
         assert_eq!(
             Value::String("".into()).try_infer_type(),
-            Some(crate::ty::Type::String)
+            Some(reify_core::ty::Type::String)
         );
     }
 
@@ -8010,7 +8010,7 @@ mod tests {
 
     #[test]
     fn infer_type_empty_list_uses_real_fallback() {
-        use crate::ty::Type;
+        use reify_core::ty::Type;
         let v = Value::List(vec![]);
         assert_eq!(
             v.infer_type(),
@@ -8021,7 +8021,7 @@ mod tests {
 
     #[test]
     fn infer_type_empty_set_uses_real_fallback() {
-        use crate::ty::Type;
+        use reify_core::ty::Type;
         let v = Value::Set(BTreeSet::new());
         assert_eq!(
             v.infer_type(),
@@ -8032,7 +8032,7 @@ mod tests {
 
     #[test]
     fn infer_type_empty_map_uses_string_real_fallback() {
-        use crate::ty::Type;
+        use reify_core::ty::Type;
         let v = Value::Map(BTreeMap::new());
         assert_eq!(
             v.infer_type(),
@@ -8045,7 +8045,7 @@ mod tests {
     fn infer_type_option_none_uses_bool_fallback() {
         assert_eq!(
             Value::Option(None).infer_type(),
-            crate::ty::Type::Option(Box::new(crate::ty::Type::Bool)),
+            reify_core::ty::Type::Option(Box::new(reify_core::ty::Type::Bool)),
             "Option(None).infer_type() should default inner type to Bool"
         );
     }
@@ -8054,7 +8054,7 @@ mod tests {
 
     #[test]
     fn infer_type_option_some_empty_list() {
-        use crate::ty::Type;
+        use reify_core::ty::Type;
         // Option(Some([])) — inner is an empty list, so try_infer_type returns
         // None for the inner value and then None for the whole Option.
         // infer_type() must NOT panic; it should recurse into infer_type() on
@@ -8069,7 +8069,7 @@ mod tests {
 
     #[test]
     fn infer_type_option_some_option_none() {
-        use crate::ty::Type;
+        use reify_core::ty::Type;
         // Option(Some(Option(None))) — the inner Option(None) is ambiguous.
         // infer_type() on the inner value yields Option(Bool) via the Bool fallback,
         // so the outer result is Option(Option(Bool)).
@@ -8083,7 +8083,7 @@ mod tests {
 
     #[test]
     fn infer_type_option_some_empty_set() {
-        use crate::ty::Type;
+        use reify_core::ty::Type;
         // Option(Some(Set{})) — inner is an empty set, try_infer_type returns None.
         // infer_type() on the inner applies the Real fallback → Set(Real),
         // so outer result is Option(Set(Real)).
@@ -8097,7 +8097,7 @@ mod tests {
 
     #[test]
     fn infer_type_nested_empty_list_preserves_structure() {
-        use crate::ty::Type;
+        use reify_core::ty::Type;
         // List(vec![List(vec![])]) — the inner list is empty so try_infer_type
         // returns None for both inner and outer. infer_type() should recurse
         // into the first element, producing List(List(Real)) not List(Real).
@@ -8111,7 +8111,7 @@ mod tests {
 
     #[test]
     fn infer_type_nested_empty_set_preserves_structure() {
-        use crate::ty::Type;
+        use reify_core::ty::Type;
         let v = Value::Set([Value::Set(BTreeSet::new())].into_iter().collect());
         assert_eq!(
             v.infer_type(),
@@ -8122,7 +8122,7 @@ mod tests {
 
     #[test]
     fn infer_type_map_with_ambiguous_values_preserves_structure() {
-        use crate::ty::Type;
+        use reify_core::ty::Type;
         // Map with a string key and an empty list value — the value is ambiguous.
         let mut m = std::collections::BTreeMap::new();
         m.insert(Value::String("k".into()), Value::List(vec![]));
@@ -8182,7 +8182,7 @@ mod tests {
     /// This exercises the happy path (n > 0), which is unaffected by step-04.
     #[test]
     fn infer_type_nonempty_point_returns_point_real() {
-        use crate::ty::Type;
+        use reify_core::ty::Type;
         let v = Value::Point(vec![Value::Real(1.0), Value::Real(2.0)]);
         assert_eq!(
             v.infer_type(),
@@ -8197,7 +8197,7 @@ mod tests {
     /// Non-empty Vector — infer_type() returns the correct Type::Vector.
     #[test]
     fn infer_type_nonempty_vector_returns_vector_real() {
-        use crate::ty::Type;
+        use reify_core::ty::Type;
         let v = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
         assert_eq!(
             v.infer_type(),

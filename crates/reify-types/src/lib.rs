@@ -5,22 +5,6 @@
 // `value.rs::SampledField` for the full rationale.
 #![allow(clippy::mutable_key_type)]
 
-pub mod annotation;
-pub mod boundary_attachment;
-pub mod constraint;
-pub mod expr;
-pub mod geometry;
-pub mod kernel_validation;
-pub mod node_traits;
-pub mod persistent;
-pub mod provenance;
-pub mod sampled;
-pub mod structure_registry;
-pub mod traits;
-pub mod value;
-pub mod warm;
-pub mod warm_registry;
-
 // ── reify-core re-exports ────────────────────────────────────────────────────
 // These eight modules now live in the `reify-core` leaf crate (task γ of
 // docs/prds/core-ast-ir-layering.md).  Re-exporting them AS modules preserves
@@ -38,6 +22,18 @@ pub use reify_core::{
 // below (`pub use ast::{…}`) continue to resolve unchanged — `ast` is now a
 // re-exported module rather than a local `pub mod`, but the path is identical.
 pub use reify_ast::ast;
+
+// ── reify-ir re-exports ──────────────────────────────────────────────────────
+// The 15 compiled-IR / runtime modules now live in the `reify-ir` crate (task ζ
+// of docs/prds/core-ast-ir-layering.md). Re-exporting them AS modules preserves
+// the `reify_types::value::Value`-style module-path spellings used across the
+// workspace. The flat re-exports below (`pub use value::{…}`, etc.) continue to
+// resolve unchanged — module names resolve through these re-exported paths
+// instead of the `pub mod` declarations that were deleted here.
+pub use reify_ir::{
+    annotation, boundary_attachment, constraint, expr, geometry, kernel_validation, node_traits,
+    persistent, provenance, sampled, structure_registry, traits, value, warm, warm_registry,
+};
 
 pub use annotation::{Annotation, AnnotationArg, AnnotationArgValue, has_test_annotation};
 pub use ast::{

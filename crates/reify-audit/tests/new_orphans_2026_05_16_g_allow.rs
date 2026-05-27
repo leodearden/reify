@@ -107,12 +107,12 @@ const PINS: &[(&str, &str, &str)] = &[
         "3293",
     ),
     (
-        "crates/reify-types/src/geometry.rs",
+        "crates/reify-ir/src/geometry.rs",
         "capability_kind",
         "3623",
     ),
     (
-        "crates/reify-types/src/value.rs",
+        "crates/reify-ir/src/value.rs",
         "format_display_triple",
         "3648",
     ),
