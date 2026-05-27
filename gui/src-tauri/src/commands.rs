@@ -1,7 +1,7 @@
 // Tauri command handlers — thin wrappers around EngineSession methods.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
 use reify_mcp::{SelectionInfo, SourceLocationInfo};
@@ -83,11 +83,17 @@ pub fn get_source_location_impl(
 }
 
 /// Open a file from disk (direct fs read, no engine involvement).
+///
+/// The returned [`FileData::path`] is the canonical absolute realpath of the
+/// file (via [`crate::path_key::canonicalize_document_key`]).  This ensures
+/// the frontend can use it as a stable document identity key regardless of
+/// whether the caller supplied a relative or absolute path.
 pub fn open_file_impl(path: &str) -> Result<FileData, String> {
-    let content =
-        std::fs::read_to_string(path).map_err(|e| format!("Error reading {}: {}", path, e))?;
+    let canonical = crate::path_key::canonicalize_document_key(path);
+    let content = std::fs::read_to_string(&canonical)
+        .map_err(|e| format!("Error reading {}: {}", canonical, e))?;
     Ok(FileData {
-        path: path.to_string(),
+        path: canonical,
         content,
     })
 }
@@ -98,12 +104,70 @@ pub fn save_file_impl(path: &str, content: &str) -> Result<(), String> {
 }
 
 /// Load a file into the engine and return the initial state.
+///
+/// The input `path` is canonicalised to an absolute realpath via
+/// [`crate::path_key::canonicalize_document_key`] before being passed to
+/// `EngineSession::load_file`.  This propagates the canonical key into the
+/// engine's `file_path` field (used later by `update_source` for import
+/// resolution) and ensures the returned [`GuiState::files`] contains
+/// absolute paths rather than bare module-key filenames.
+///
+/// Note: `engine.source_map()` stores entries under `module_key(name)` =
+/// `"{name}.ri"` (a stem-only key).  After loading, this function rewrites
+/// each `FileData.path` in the returned `GuiState` by resolving it against the
+/// canonical entry path's parent directory, so the frontend receives a stable
+/// absolute identity key regardless of how the caller spelled the input path.
 pub fn open_file_engine_impl(
     engine: &Mutex<EngineSession>,
     path: &str,
 ) -> Result<GuiState, String> {
-    crate::engine_lock::with_engine_lock(engine, |s| s.load_file(Path::new(path)))
-        .and_then(std::convert::identity)
+    let canonical = crate::path_key::canonicalize_document_key(path);
+    let mut state =
+        crate::engine_lock::with_engine_lock(engine, |s| s.load_file(Path::new(&canonical)))
+            .and_then(std::convert::identity)?;
+
+    // source_map keys are "{name}.ri" (stem-only). Resolve each against the
+    // canonical entry directory so the frontend receives absolute paths.
+    if let Some(entry_dir) = Path::new(&canonical).parent() {
+        for f in &mut state.files {
+            let resolved = entry_dir.join(&f.path);
+            if let Ok(c) = std::fs::canonicalize(&resolved) {
+                f.path = c.to_string_lossy().into_owned();
+            }
+        }
+    }
+
+    Ok(state)
+}
+
+/// Resolve the CLI argv path to a canonical [`PathBuf`] suitable for
+/// passing to `EngineSession::load_file`.
+///
+/// Rules (mirrors and extends the inline argv-parsing block previously in `main.rs`):
+///
+/// 1. Returns `None` for an empty `path_str`.
+/// 2. Builds a [`PathBuf`] from `path_str`.
+/// 3. Returns `None` if `extension()` is not `"ri"` (preserves the existing
+///    main.rs filter for non-Reify files).
+/// 4. Calls [`crate::path_key::canonicalize_document_key`] to obtain the
+///    canonical absolute form.  Falls back to the original string when
+///    canonicalize errors (e.g. file not yet on disk), so the caller can
+///    still attempt `load_file` and surface the actionable IO error.
+/// 5. Returns `Some(PathBuf::from(canonical))`.
+///
+/// Note: `path.exists()` is intentionally NOT checked here.  The old main.rs
+/// code silently ignored non-existent argv files; this helper lets the caller
+/// attempt `load_file` and receive a proper IO error instead.
+pub fn resolve_initial_file_path(path_str: &str) -> Option<PathBuf> {
+    if path_str.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(path_str);
+    if path.extension().is_none_or(|ext| ext != "ri") {
+        return None;
+    }
+    let canonical = crate::path_key::canonicalize_document_key(path_str);
+    Some(PathBuf::from(canonical))
 }
 
 /// Return the hierarchical entity tree for the currently loaded module.

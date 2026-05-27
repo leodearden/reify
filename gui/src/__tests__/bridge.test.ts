@@ -39,6 +39,7 @@ import {
   writeViewSidecar,
   getMechanismDescriptors,
   onAutoResolveIteration,
+  onFileRemoved,
 } from '../bridge';
 import type { PersistentViewState } from '../types';
 import type { KernelStatus } from '../bridge';
@@ -740,5 +741,43 @@ describe('onAutoResolveIteration malformed payload', () => {
     await onAutoResolveIteration(cb);
     expect(cb).toHaveBeenCalledWith(wellFormed);
     expect(warnSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ─── onFileRemoved (step-21) ──────────────────────────────────────────────────
+
+describe('onFileRemoved', () => {
+  it('(a) subscribes to the file-removed Tauri event channel', async () => {
+    const unlisten = vi.fn();
+    mockListen.mockResolvedValue(unlisten);
+
+    const callback = vi.fn();
+    const result = await onFileRemoved(callback);
+
+    expect(mockListen).toHaveBeenCalledWith('file-removed', expect.any(Function));
+    expect(result).toBe(unlisten);
+  });
+
+  it('(b) forwards { path } payload to the callback', async () => {
+    const unlisten = vi.fn();
+    mockListen.mockImplementation(async (_event, handler) => {
+      (handler as (event: { payload: unknown }) => void)({ payload: { path: '/a/foo.ri' } });
+      return unlisten;
+    });
+
+    const callback = vi.fn();
+    await onFileRemoved(callback);
+
+    expect(callback).toHaveBeenCalledWith({ path: '/a/foo.ri' });
+  });
+
+  it('(c) returned UnlistenFn is the one returned by listen()', async () => {
+    const unlisten = vi.fn();
+    mockListen.mockResolvedValue(unlisten);
+
+    const callback = vi.fn();
+    const result = await onFileRemoved(callback);
+
+    expect(result).toBe(unlisten);
   });
 });

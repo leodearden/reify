@@ -422,8 +422,8 @@ mod tests {
 
         // (b) Sign-mixed pattern: u_i = (-1)^i
         let mut u_sign = [0.0_f64; 12];
-        for i in 0..12 {
-            u_sign[i] = if i % 2 == 0 { 1.0 } else { -1.0 };
+        for (i, val) in u_sign.iter_mut().enumerate() {
+            *val = if i % 2 == 0 { 1.0 } else { -1.0 };
         }
         let q_sign = quad_form(&m_e, &u_sign);
         assert!(q_sign > 0.0, "sign-mixed uᵀMu = {q_sign}, expected > 0");

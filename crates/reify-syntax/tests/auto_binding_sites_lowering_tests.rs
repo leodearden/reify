@@ -7,8 +7,8 @@
 //! AST-observable binding sites (in order of the grammar's `_binding_value` rule):
 //!
 //! 1. **`let_declaration.value`** — covered here.
-//! 2a. **`named_argument.value` via `sub` (`lower_named_arg`)** — covered here.
-//! 2b. **`named_argument.value` via function_call / ad_hoc_selector
+//!    2a. **`named_argument.value` via `sub` (`lower_named_arg`)** — covered here.
+//!    2b. **`named_argument.value` via function_call / ad_hoc_selector
 //!    (`lower_call_argument`)** — covered here; this is the second caller of
 //!    grammar slot 5, exercising `ExprKind::FunctionCall { args }` context
 //!    rather than `SubDecl.args`.

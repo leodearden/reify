@@ -2818,6 +2818,7 @@ mod tests {
     // ─── task-3815: merge_branches + try_hoist_geometry_conditional unit tests ──
 
     /// Helper: build a numeric literal Expr with value 1.
+    #[allow(dead_code)]
     fn num_lit() -> reify_syntax::Expr {
         reify_syntax::Expr {
             kind: reify_syntax::ExprKind::NumberLiteral {

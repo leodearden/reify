@@ -106,8 +106,8 @@ fn consistent_mass_p1_global_m_is_psd_via_quadratic_form() {
     //     uᵀ M u must be strictly positive. The rigid-x equality pin is
     //     intentionally omitted — see the module-level doc-comment.
     let mut u_sign = [0.0_f64; 15];
-    for i in 0..15 {
-        u_sign[i] = if i % 2 == 0 { 1.0 } else { -1.0 };
+    for (i, val) in u_sign.iter_mut().enumerate() {
+        *val = if i % 2 == 0 { 1.0 } else { -1.0 };
     }
     let q_sign = global_quad_form(&m_global, &u_sign);
     assert!(q_sign > 0.0, "sign-mixed uᵀMu = {q_sign}, expected > 0");

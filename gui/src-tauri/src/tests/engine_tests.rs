@@ -7390,8 +7390,8 @@ fn get_entity_at_source_location_past_end_of_source_returns_none() {
 /// resolver for a multi-structure module loaded via `load_from_source`.
 /// The full per-template/per-line matrix (First, Middle, Last header lines
 /// + both gap lines) is covered by the unit test in
-/// `crates/reify-eval/src/source_location.rs`; this integration test pins
-/// only the cache-wiring for one representative header click and one gap click.
+///   `crates/reify-eval/src/source_location.rs`; this integration test pins
+///   only the cache-wiring for one representative header click and one gap click.
 ///
 /// Source layout (1-based lines):
 /// ```text

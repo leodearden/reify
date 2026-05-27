@@ -442,6 +442,73 @@ describe('editorStore externallyChanged', () => {
   });
 });
 
+// ─── editorStore canonical-key dedup (step-17) ───────────────────────────────
+
+describe('editorStore openFile canonical-key dedup', () => {
+  it('(a) file:///a/foo.ri then /a/foo.ri yields one tab; second call updates content', () => {
+    createRoot((dispose) => {
+      const { state, openFile } = createEditorStore();
+      openFile({ path: 'file:///a/foo.ri', content: 'v1' });
+      openFile({ path: '/a/foo.ri', content: 'v2' });
+      expect(state.openFiles).toHaveLength(1);
+      expect(state.openFiles[0].content).toBe('v2');
+      dispose();
+    });
+  });
+
+  it('(b) /a/./b/foo.ri then /a/b/foo.ri yields one tab', () => {
+    createRoot((dispose) => {
+      const { state, openFile } = createEditorStore();
+      openFile({ path: '/a/./b/foo.ri', content: 'v1' });
+      openFile({ path: '/a/b/foo.ri', content: 'v2' });
+      expect(state.openFiles).toHaveLength(1);
+      dispose();
+    });
+  });
+
+  it('(c) stored path is the canonical form', () => {
+    createRoot((dispose) => {
+      const { state, openFile } = createEditorStore();
+      openFile({ path: '/a/./b/foo.ri', content: 'x' });
+      expect(state.openFiles[0].path).toBe('/a/b/foo.ri');
+      dispose();
+    });
+  });
+
+  it('(d) closeFile with file:// form closes tab opened with bare path', () => {
+    createRoot((dispose) => {
+      const { state, openFile, closeFile } = createEditorStore();
+      openFile({ path: '/a/foo.ri', content: 'x' });
+      closeFile('file:///a/foo.ri');
+      expect(state.openFiles).toHaveLength(0);
+      dispose();
+    });
+  });
+
+  it('(d) markDirty with non-canonical path marks the canonicalized tab', () => {
+    createRoot((dispose) => {
+      const { state, openFile, markDirty } = createEditorStore();
+      openFile({ path: '/a/b/foo.ri', content: 'x' });
+      markDirty('file:///a/b/foo.ri');
+      expect(state.dirtyFiles).toContain('/a/b/foo.ri');
+      dispose();
+    });
+  });
+
+  it('(d) setActiveFile with non-canonical path activates the canonical tab', () => {
+    createRoot((dispose) => {
+      const { state, openFile, setActiveFile } = createEditorStore();
+      const f1: FileData = { path: '/a/b/foo.ri', content: 'x' };
+      const f2: FileData = { path: '/a/b/bar.ri', content: 'y' };
+      openFile(f1);
+      openFile(f2);
+      setActiveFile('file:///a/b/foo.ri');
+      expect(state.activeFile).toBe('/a/b/foo.ri');
+      dispose();
+    });
+  });
+});
+
 // ─── editorStore canSave ──────────────────────────────────────────────────────
 
 describe('editorStore canSave', () => {
@@ -522,6 +589,120 @@ describe('editorStore canSave', () => {
       // Reference-identity asserts: confirm canSave performed no setState.
       expect(state.externallyChanged).toBe(ecRefBefore);
       expect(state.openFiles).toBe(openFilesRefBefore);
+      dispose();
+    });
+  });
+});
+
+// ─── editorStore missingFiles (step-19) ──────────────────────────────────────
+
+describe('editorStore missingFiles', () => {
+  it('(a) initial state.missingFiles is []', () => {
+    createRoot((dispose) => {
+      const { state } = createEditorStore();
+      expect(state.missingFiles).toEqual([]);
+      dispose();
+    });
+  });
+
+  it('(b) markMissing(path) adds the path to missingFiles', () => {
+    createRoot((dispose) => {
+      const { state, openFile, markMissing } = createEditorStore();
+      openFile(file1);
+      markMissing('bracket.ri');
+      expect(state.missingFiles).toContain('bracket.ri');
+      dispose();
+    });
+  });
+
+  it('(c) markMissing is idempotent — duplicate call does not add a second entry', () => {
+    createRoot((dispose) => {
+      const { state, openFile, markMissing } = createEditorStore();
+      openFile(file1);
+      markMissing('bracket.ri');
+      markMissing('bracket.ri');
+      expect(state.missingFiles.filter((p) => p === 'bracket.ri')).toHaveLength(1);
+      dispose();
+    });
+  });
+
+  it('(c) markMissing idempotency — 1000 calls cause no reactive re-emission', async () => {
+    let counter = 0;
+    let storeRef!: ReturnType<typeof createEditorStore>;
+    let disposeRef!: () => void;
+
+    createRoot((dispose) => {
+      disposeRef = dispose;
+      storeRef = createEditorStore();
+      storeRef.openFile(file1);
+
+      createEffect(() => {
+        void storeRef.state.missingFiles.length;
+        counter++;
+      });
+    });
+
+    // Flush the initial effect subscription
+    await Promise.resolve();
+    expect(counter).toBe(1);
+
+    // First markMissing: new path → real setState → effect fires
+    storeRef.markMissing(file1.path);
+    await Promise.resolve();
+    expect(counter).toBe(2);
+
+    // 1000 more calls on the same already-missing path — no setState
+    const refBefore = storeRef.state.missingFiles;
+    for (let i = 0; i < 1000; i++) {
+      storeRef.markMissing(file1.path);
+    }
+    await Promise.resolve();
+    expect(counter).toBe(2); // no additional emissions
+    expect(storeRef.state.missingFiles).toEqual([file1.path]);
+    expect(storeRef.state.missingFiles).toBe(refBefore); // same proxy reference
+
+    disposeRef();
+  });
+
+  it('(d) clearMissing(path) removes only that path', () => {
+    createRoot((dispose) => {
+      const { state, openFile, markMissing, clearMissing } = createEditorStore();
+      openFile(file1);
+      openFile(file2);
+      markMissing('bracket.ri');
+      markMissing('mount.ri');
+      expect(state.missingFiles).toContain('bracket.ri');
+      expect(state.missingFiles).toContain('mount.ri');
+
+      clearMissing('bracket.ri');
+      expect(state.missingFiles).not.toContain('bracket.ri');
+      expect(state.missingFiles).toContain('mount.ri');
+      dispose();
+    });
+  });
+
+  it('(e) closeFile(path) also clears missingFiles for that path', () => {
+    createRoot((dispose) => {
+      const { state, openFile, closeFile, markMissing } = createEditorStore();
+      openFile(file1);
+      markMissing('bracket.ri');
+      expect(state.missingFiles).toContain('bracket.ri');
+
+      closeFile('bracket.ri');
+      expect(state.missingFiles).not.toContain('bracket.ri');
+      dispose();
+    });
+  });
+
+  it('(f) markMissing and markDirty are independent — both can be true simultaneously', () => {
+    createRoot((dispose) => {
+      const { state, openFile, markMissing, markDirty } = createEditorStore();
+      openFile(file1);
+
+      markMissing('bracket.ri');
+      markDirty('bracket.ri');
+      expect(state.missingFiles).toContain('bracket.ri');
+      expect(state.dirtyFiles).toContain('bracket.ri');
       dispose();
     });
   });

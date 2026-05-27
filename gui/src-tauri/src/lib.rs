@@ -10,6 +10,7 @@
 
 pub mod claude_bridge;
 pub mod commands;
+pub mod path_key;
 #[cfg(feature = "gui")]
 pub mod debug;
 #[cfg(feature = "gui")]

@@ -1,5 +1,7 @@
 use std::sync::{Arc, Mutex, RwLock};
 
+use crate::tests::test_helpers::cwd_lock;
+
 use reify_constraints::SimpleConstraintChecker;
 use reify_mcp::SelectionInfo;
 use reify_test_support::{MockGeometryKernel, bracket_source};
@@ -814,5 +816,126 @@ fn get_def_preview_impl_recovers_from_poisoned_mutex() {
     assert!(
         !state.values.is_empty(),
         "get_def_preview should return Bracket parameters after poison recovery"
+    );
+}
+
+// --- open_file_impl canonicalisation tests (step-3) ---
+
+/// (a) opening a file via its CWD-relative path returns FileData.path equal to
+/// the canonical absolute realpath of that file.
+#[test]
+fn open_file_impl_returns_canonical_path_for_relative_input() {
+    use crate::commands::open_file_impl;
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("test.ri");
+    std::fs::write(&file, "structure Test {}").unwrap();
+    let expected = std::fs::canonicalize(&file)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+
+    let _guard = cwd_lock().lock().unwrap();
+    let original = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    let result = open_file_impl("test.ri");
+
+    std::env::set_current_dir(&original).unwrap();
+
+    let file_data = result.expect("open_file_impl should succeed for existing file");
+    assert_eq!(
+        file_data.path, expected,
+        "FileData.path should be the canonical absolute realpath"
+    );
+}
+
+/// (b) two open_file_impl calls using two different spellings of the same file
+/// (relative vs absolute) return IDENTICAL path strings.
+#[test]
+fn open_file_impl_same_path_for_relative_and_absolute() {
+    use crate::commands::open_file_impl;
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("myfile.ri");
+    std::fs::write(&file, "structure MyFile {}").unwrap();
+    let abs_path = file.to_str().unwrap().to_string();
+
+    let _guard = cwd_lock().lock().unwrap();
+    let original = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    let by_relative = open_file_impl("myfile.ri").expect("relative open should succeed");
+    let by_absolute = open_file_impl(&abs_path).expect("absolute open should succeed");
+
+    std::env::set_current_dir(&original).unwrap();
+
+    assert_eq!(
+        by_relative.path, by_absolute.path,
+        "relative and absolute spellings of the same file should produce identical FileData.path"
+    );
+}
+
+/// (c) when the file does not exist, the existing "Error reading …" error is
+/// still surfaced (regression check on the fallback / error branch).
+#[test]
+fn open_file_impl_errors_for_nonexistent_file() {
+    use crate::commands::open_file_impl;
+
+    let result = open_file_impl("/tmp/__reify_nonexistent_xyzzy_99999.ri");
+    assert!(result.is_err(), "should return Err for nonexistent file");
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("Error reading"),
+        "error message should contain 'Error reading', got: {msg}"
+    );
+}
+
+// --- open_file_engine_impl canonicalisation tests (step-5) ---
+//
+// The plan's step 5 description states that GuiState.files[0].path should be
+// the canonical absolute path after calling open_file_engine_impl with a
+// relative input.  engine::source_map() always stores keys as module_key =
+// "{name}.ri" (see engine.rs commit_state:275-277), so this requires
+// open_file_engine_impl to post-process the returned GuiState.files paths
+// (see step-6 implementation for how this is done).  The test is written to
+// the observable contract: files[0].path == canonical absolute path.
+
+/// Opening a file via its CWD-relative path causes GuiState.files[0].path to
+/// equal the canonical absolute realpath (not the bare filename / module key).
+#[test]
+fn open_file_engine_impl_files_path_is_canonical_absolute() {
+    use crate::commands::open_file_engine_impl;
+    use reify_test_support::bracket_source;
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("bracket.ri");
+    std::fs::write(&file, bracket_source()).unwrap();
+    let expected = std::fs::canonicalize(&file)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let kernel = reify_test_support::MockGeometryKernel::new();
+    let session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let engine = std::sync::Mutex::new(session);
+
+    let _guard = cwd_lock().lock().unwrap();
+    let original = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    let result = open_file_engine_impl(&engine, "bracket.ri");
+
+    std::env::set_current_dir(&original).unwrap();
+
+    let state = result.expect("open_file_engine_impl should succeed for existing file");
+    assert!(
+        !state.files.is_empty(),
+        "GuiState.files should be non-empty after loading a file"
+    );
+    assert_eq!(
+        state.files[0].path, expected,
+        "GuiState.files[0].path should be the canonical absolute realpath, not a module-key form"
     );
 }

@@ -334,7 +334,6 @@ fn attributed_boundary_nodes_lie_on_locus_of_attributed_handle() {
                 hid.0
             }
             NodeAttachment::OnVertex(hid) => hid.0,
-            _ => continue,
         };
 
         let anchor = *handle_to_anchor.get(&handle_id).unwrap_or_else(|| {

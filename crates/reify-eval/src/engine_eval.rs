@@ -3246,6 +3246,7 @@ mod invariant_tests {
     /// GHR-β): it is now representable as `Value::GeometryHandle`; see
     /// `is_representable_cell_type_admits_geometry`.
     #[test]
+    #[allow(clippy::single_element_loop)]
     fn panics_on_unrepresentable_cell_types() {
         use std::panic;
         for ty in [Type::TypeParam("T".into())] {

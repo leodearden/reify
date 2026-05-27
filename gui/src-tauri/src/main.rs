@@ -23,7 +23,7 @@ use reify_gui::engine::{AutoResolveEmitter, EngineSession, FeaCaseEmitter, WarmP
 use reify_gui::event_bus::emit_typed;
 use reify_gui::lsp_bridge::LspBridge;
 use reify_gui::types::EvaluationStatus;
-use reify_gui::watcher::FileWatcher;
+use reify_gui::watcher::{FileEvent, FileWatcher};
 use reify_lsp::server::NotificationSink;
 use tower_lsp::lsp_types::{Diagnostic, Url};
 
@@ -155,31 +155,47 @@ fn create_watcher(
     let target = Some(PathBuf::from(file_path.file_name()?));
     let handle = app_handle.clone();
 
-    match FileWatcher::new(parent, target, move |changed_path| {
-        if let Ok(content) = std::fs::read_to_string(&changed_path) {
-            let state: tauri::State<'_, AppState> = handle.state();
-            let path_str = changed_path.to_string_lossy().to_string();
+    match FileWatcher::new(parent, target, move |file_event| {
+        match file_event {
+            FileEvent::Changed(changed_path) => {
+                if let Ok(content) = std::fs::read_to_string(&changed_path) {
+                    let state: tauri::State<'_, AppState> = handle.state();
+                    let path_str = changed_path.to_string_lossy().to_string();
 
-            emit_status(&handle, "evaluating");
-            {
-                let _idle = IdleGuard(handle.clone());
-                if let Ok(gui_state) =
-                    reify_gui::commands::update_source_impl(&state.engine, &path_str, &content)
-                {
-                    let delta = compute_delta(&state.last_state, &gui_state);
-                    emit_delta(&handle, &delta);
+                    emit_status(&handle, "evaluating");
+                    {
+                        let _idle = IdleGuard(handle.clone());
+                        if let Ok(gui_state) = reify_gui::commands::update_source_impl(
+                            &state.engine,
+                            &path_str,
+                            &content,
+                        ) {
+                            let delta = compute_delta(&state.last_state, &gui_state);
+                            emit_delta(&handle, &delta);
+                        }
+                    }
+
+                    handle
+                        .emit(
+                            "file-changed",
+                            reify_gui::types::FileData {
+                                path: changed_path.to_string_lossy().to_string(),
+                                content,
+                            },
+                        )
+                        .ok();
                 }
             }
-
-            handle
-                .emit(
-                    "file-changed",
-                    reify_gui::types::FileData {
-                        path: changed_path.to_string_lossy().to_string(),
-                        content,
-                    },
-                )
-                .ok();
+            FileEvent::Removed(removed_path) => {
+                handle
+                    .emit(
+                        "file-removed",
+                        serde_json::json!({
+                            "path": removed_path.to_string_lossy().as_ref()
+                        }),
+                    )
+                    .ok();
+            }
         }
     }) {
         Ok(watcher) => {
@@ -573,20 +589,25 @@ fn main() {
     let kernel_status = reify_gui::kernel_status::current_kernel_status();
     let session = EngineSession::with_registered_kernel(Box::new(checker));
 
-    // Check for initial file from command-line args or environment
+    // Check for initial file from command-line args or environment.
+    // `resolve_initial_file_path` canonicalises the argv path to an absolute
+    // realpath before loading so the engine's `file_path` field (used by
+    // `update_source` for import resolution) is always an absolute canonical
+    // path, regardless of how the user spelled the CLI argument.
     let mut session = session;
     let mut initial_file: Option<std::path::PathBuf> = None;
     if let Some(path_str) = std::env::args().nth(1) {
-        let path = std::path::PathBuf::from(&path_str);
-        if path.exists() && path.extension().is_some_and(|ext| ext == "ri") {
-            if let Err(e) = session.load_file(&path) {
+        if let Some(canonical_path) =
+            reify_gui::commands::resolve_initial_file_path(&path_str)
+        {
+            if let Err(e) = session.load_file(&canonical_path) {
                 eprintln!(
                     "Warning: failed to load initial file {}: {}",
-                    path.display(),
+                    canonical_path.display(),
                     e
                 );
             } else {
-                initial_file = Some(path);
+                initial_file = Some(canonical_path);
             }
         }
     }

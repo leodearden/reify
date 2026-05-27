@@ -476,6 +476,15 @@ export async function onFileChanged(
   });
 }
 
+/** Subscribe to file removal events. Fires when a watched file is deleted on disk. */
+export async function onFileRemoved(
+  callback: (payload: { path: string }) => void,
+): Promise<UnlistenFn> {
+  return listen<{ path: string }>('file-removed', (event) => {
+    callback(event.payload);
+  });
+}
+
 /** Subscribe to mesh removal events. */
 export async function onMeshRemoved(
   callback: (entityPath: string) => void,
