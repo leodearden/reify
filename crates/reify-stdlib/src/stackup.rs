@@ -116,6 +116,42 @@ mod tests {
     }
 
     #[test]
+    fn contributor_asym_4arg_accepts_explicit_sign() {
+        let m = expect_map(eval_stackup("contributor_asym", &[
+            len(0.010), len(0.0001), len(0.00005), Value::Int(-1),
+        ]));
+        assert_eq!(m[&Value::String("sign".into())], Value::Int(-1));
+        assert_eq!(
+            m[&Value::String("distribution".into())],
+            Value::Enum { type_name: "Distribution".into(), variant: "Normal".into() }
+        );
+    }
+
+    #[test]
+    fn contributor_asym_5arg_accepts_distribution_uniform() {
+        let dist = Value::Enum { type_name: "Distribution".into(), variant: "Uniform".into() };
+        let m = expect_map(eval_stackup("contributor_asym", &[
+            len(0.010), len(0.0001), len(0.00005), Value::Int(1), dist,
+        ]));
+        assert_eq!(
+            m[&Value::String("distribution".into())],
+            Value::Enum { type_name: "Distribution".into(), variant: "Uniform".into() }
+        );
+    }
+
+    #[test]
+    fn contributor_asym_5arg_accepts_distribution_triangular() {
+        let dist = Value::Enum { type_name: "Distribution".into(), variant: "Triangular".into() };
+        let m = expect_map(eval_stackup("contributor_asym", &[
+            len(0.010), len(0.0001), len(0.00005), Value::Int(1), dist,
+        ]));
+        assert_eq!(
+            m[&Value::String("distribution".into())],
+            Value::Enum { type_name: "Distribution".into(), variant: "Triangular".into() }
+        );
+    }
+
+    #[test]
     fn contributor_asym_3arg_returns_map_with_asymmetric_tols() {
         let nominal = len(0.010);   // 10mm
         let plus_tol = len(0.0001); // 0.1mm
