@@ -99,7 +99,6 @@ fn param_cells(template: &TopologyTemplate) -> Vec<&ValueCellDecl> {
 /// Look up the named param cell on `template` and return its `default_expr`.
 /// Panics with a clear message if the cell or its default is missing.
 /// Mirrors `buckling_stdlib_compile.rs::require_default`.
-#[allow(dead_code)]
 fn require_default<'a>(template: &'a TopologyTemplate, member: &str) -> &'a CompiledExpr {
     let cell = template
         .value_cells
@@ -109,32 +108,6 @@ fn require_default<'a>(template: &'a TopologyTemplate, member: &str) -> &'a Comp
     cell.default_expr
         .as_ref()
         .unwrap_or_else(|| panic!("{}.{} missing default_expr", template.name, member))
-}
-
-/// Recursively walk an expression tree collecting `(method_name, member_name)`
-/// pairs from `MethodCall { object: ValueRef(member), method: name, .. }`
-/// nodes. The traversal also recurses into `BinOp`, `UnOp`, and nested
-/// `MethodCall` receivers so a deeply-nested chain surfaces the pair.
-#[allow(dead_code)]
-fn collect_method_call_chain(expr: &CompiledExpr) -> Vec<(&str, &str)> {
-    let mut pairs = Vec::new();
-    match &expr.kind {
-        CompiledExprKind::MethodCall { object, method, .. } => {
-            if let CompiledExprKind::ValueRef(cell_id) = &object.kind {
-                pairs.push((method.as_str(), cell_id.member.as_str()));
-            }
-            pairs.extend(collect_method_call_chain(object));
-        }
-        CompiledExprKind::BinOp { left, right, .. } => {
-            pairs.extend(collect_method_call_chain(left));
-            pairs.extend(collect_method_call_chain(right));
-        }
-        CompiledExprKind::UnOp { operand, .. } => {
-            pairs.extend(collect_method_call_chain(operand));
-        }
-        _ => {}
-    }
-    pairs
 }
 
 // ─── step-1: module loads with zero error diagnostics ────────────────────────
