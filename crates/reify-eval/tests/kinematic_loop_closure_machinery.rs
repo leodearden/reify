@@ -18,7 +18,7 @@
 //! See docs/prds/v0_2/kinematic-constraints.md, §"Decomposition plan", task 2.
 
 use reify_constraints::{JointValue, NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure};
-use reify_stdlib::loop_closure::{chain_transform, loop_residual_twist};
+use reify_stdlib::loop_closure::loop_residual_twist;
 use reify_test_support::{
     CapturingSubscriberBuilder, collect_errors, make_simple_engine, parse_and_compile_with_stdlib,
     prime_tracing_callsite_cache,
@@ -217,41 +217,43 @@ fn loop_closure_machinery_solves_planar_in_loop_e2e() {
             assert_eq!(x.len(), 3, "planar has flat_len=3 free components");
 
             // (e) Recompose chain_a / chain_b at the converged x via the
-            // widened `chain_transform`, take `loop_residual_twist`, and
-            // confirm both linear and angular norms are below the per-arm
-            // half-tolerance — the closed-chain residual is consistent with
-            // the Newton solver's reported residual_norm.
+            // widened `chain_transform` (called internally by
+            // `loop_residual_twist`), and confirm both linear and angular
+            // norms are below the solver's own combined convergence tolerance
+            // — the closed-chain residual must agree with the Newton solver's
+            // reported residual_norm.  `loop_residual_twist` returns `None`
+            // if either internal `chain_transform` call fails, so the
+            // `.expect(...)` below subsumes the standalone FK assertions.
             let vals_b_final = vec![JointValue::Planar([x[0], x[1], x[2]])];
-            let _t_a = chain_transform(&chain_a, &vals_a)
-                .expect("chain_transform(chain_a) must succeed at converged config");
-            let _t_b = chain_transform(&chain_b, &vals_b_final)
-                .expect("chain_transform(chain_b) must succeed at converged config");
             let twist = loop_residual_twist(&chain_a, &vals_a, &chain_b, &vals_b_final)
                 .expect("loop_residual_twist must succeed at converged config");
             let angular_norm =
                 (twist[0] * twist[0] + twist[1] * twist[1] + twist[2] * twist[2]).sqrt();
             let linear_norm =
                 (twist[3] * twist[3] + twist[4] * twist[4] + twist[5] * twist[5]).sqrt();
+            let combined_tol = cfg.tol_pos_m + cfg.tol_rot_rad;
             assert!(
-                angular_norm < cfg.tol_rot_rad * 10.0,
-                "recomposed angular residual {angular_norm} should be tight \
-                 (tol_rot_rad={})",
-                cfg.tol_rot_rad
+                angular_norm < combined_tol,
+                "recomposed angular residual {angular_norm} should be below \
+                 the combined solver tolerance (tol_pos_m + tol_rot_rad = {})",
+                combined_tol
             );
             assert!(
-                linear_norm < cfg.tol_pos_m * 10.0,
-                "recomposed linear residual {linear_norm} should be tight \
-                 (tol_pos_m={})",
-                cfg.tol_pos_m
+                linear_norm < combined_tol,
+                "recomposed linear residual {linear_norm} should be below \
+                 the combined solver tolerance (tol_pos_m + tol_rot_rad = {})",
+                combined_tol
             );
         }
         other => panic!("expected Converged on planar-in-loop closure, got {other:?}"),
     }
 
     // (f) Tracing seam — the planar analytic-J emission site must have fired
-    // at least once during the solve.  The captured messages contain the
-    // "joint_jacobian analytic columns emitted" string and the captured
-    // fields include `kind = "planar"`.  PRD §11.1 producer-side signal.
+    // at least once during the solve.  The PRD §11.1 producer-side signal is
+    // an event at target `reify_stdlib::joints` carrying `kind=planar`; the
+    // structural identity (target + field) is the load-bearing check, not
+    // the free-text message string (which is intentionally not asserted on
+    // so future wording tweaks don't silently break the signal).
     let count = capture.count();
     let messages = capture.messages();
     assert!(
@@ -259,14 +261,6 @@ fn loop_closure_machinery_solves_planar_in_loop_e2e() {
         "expected at least one tracing event at target reify_stdlib::joints \
          during the planar closed-chain solve, got count={count} \
          messages={messages:?}"
-    );
-    let any_planar_analytic = messages.iter().any(|m| {
-        m.contains("joint_jacobian") && m.contains("analytic") && m.contains("emitted")
-    });
-    assert!(
-        any_planar_analytic,
-        "expected at least one captured message to contain \
-         'joint_jacobian … analytic … emitted', got messages={messages:?}"
     );
     let fields = capture.fields_by_event();
     let any_planar_kind = fields
