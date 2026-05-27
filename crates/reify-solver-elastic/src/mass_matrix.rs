@@ -174,6 +174,41 @@ mod tests {
     }
 
     #[test]
+    fn consistent_mass_p1_total_mass_equals_rho_v_on_unit_reference_tet_within_1e_12() {
+        // Total mass per axis = Σ_{a,b} M_e[3a, 3b] = ρ · V_e. On the unit
+        // reference tet V = 1/6. Pins the closed-form V·(1+δ_{a,b})/20
+        // coefficient choice — 4·(V/10) + 12·(V/20) = V.
+
+        // ρ = 1.0: absolute check
+        let m_e = consistent_element_mass_tet_p1(&UNIT_TET, 1.0);
+        let mut total: f64 = 0.0;
+        for a in 0..4 {
+            for b in 0..4 {
+                total += read(&m_e, 3 * a, 3 * b);
+            }
+        }
+        let expected = 1.0_f64 / 6.0;
+        assert!(
+            (total - expected).abs() < 1e-12,
+            "ρ=1 total axis-0 mass = {total}, expected {expected}",
+        );
+
+        // ρ = 7850.0 (steel-like): relative check
+        let m_e_steel = consistent_element_mass_tet_p1(&UNIT_TET, 7850.0);
+        let mut total_steel: f64 = 0.0;
+        for a in 0..4 {
+            for b in 0..4 {
+                total_steel += read(&m_e_steel, 3 * a, 3 * b);
+            }
+        }
+        let expected_steel = 7850.0_f64 / 6.0;
+        assert!(
+            (total_steel - expected_steel).abs() < 1e-12 * expected_steel,
+            "ρ=7850 total axis-0 mass = {total_steel}, expected {expected_steel}",
+        );
+    }
+
+    #[test]
     fn consistent_mass_p1_off_axis_blocks_are_zero_block_diagonal_3x3_structure() {
         // Each (a, b) node-pair block in M_e is `coef · I_3` — diagonal in
         // axis-axis indexing. α ≠ β entries must be exactly 0. Mirrors the
