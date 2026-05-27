@@ -764,25 +764,39 @@ fn joint_jacobian_value(value: &Value) -> Value {
         // is semantically valid (no motion variable contributes any twist), and keeps
         // the existing drift-guard tests simple.
         "fixed" => make_jacobian([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
-        // 3-DOF planar joint: zero-twist placeholder column — deferred design decision.
-        // A planar joint has a 6×3 Jacobian (three columns: two prismatic + one revolute),
-        // but the v0.1 single-column convention returns one Map per joint. Note that
-        // `chain_jacobian_fd` also returns None for chains containing a planar joint
-        // (because `value_for_joint` has no planar arm yet); this zero placeholder is
-        // NOT equivalent to "FD chain Jacobians work for planar" — they do not yet.
-        // Returning a zero-magnitude column preserves the uniform
-        // `{ angular, linear }` shape across all kinds and satisfies the
-        // `joint_jacobian_dispatches_for_every_joint_kind` coverage test.
-        // The analytic 3-DOF Jacobian is deferred per PRD task 2 ("finite-difference
-        // fallback for spherical, cylindrical, planar until analytic forms are derived").
+        // 3-DOF planar joint: returns a `Value::List` of three analytic twist
+        // columns (one per DOF) in `JointValue::Planar([x, y, theta])` storage
+        // order — element [0] is the ∂x DOF column (angular=0, linear=unit_x),
+        // element [1] is the ∂y DOF column (angular=0, linear=unit_y), and
+        // element [2] is the ∂θ DOF column (angular=plane_normal, linear=0),
+        // where plane_normal = unit_x × unit_y (the joint's plane orientation).
         //
-        // Field validation is deliberately skipped (unlike the prismatic/revolute arms):
-        // the result is zero regardless of the stored axis_x/axis_y/range fields, so
-        // a hand-built Map with missing fields returns the same correct placeholder.
-        // This matches the `"fixed"` arm's behaviour. Add
-        // `if unit_axes_xy_from_planar_map(map).is_none() { return Value::Undef; }`
-        // if you need stricter defence-in-depth for malformed fixtures.
-        "planar" => make_jacobian([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+        // Mirrors the cylindrical pattern at the `"cylindrical"` arm below —
+        // the per-DOF List shape (vs. a single Map) is the FD-fallback trigger
+        // for `loop_closure::per_joint_jacobian_local` (which calls
+        // `twist_map_to_array` expecting a single Map). KCC-γ (PRD §5.3) folds
+        // in the §2.1 δ residual via this analytic-J seam; SE(3) adjoint
+        // transport into the chain origin is handled by `chain_jacobian_fd`
+        // until KCC-θ/ι compose the per-joint columns analytically.
+        "planar" => {
+            let (unit_x, unit_y) = match unit_axes_xy_from_planar_map(map) {
+                Some(pair) => pair,
+                None => return Value::Undef,
+            };
+            // plane_normal = unit_x × unit_y (cross product).
+            // Perpendicularity is guaranteed by `unit_axes_xy_from_planar_map`
+            // (rejects parallel axes), so plane_normal is unit-norm up to
+            // floating-point precision (no renormalisation needed).
+            let plane_normal = [
+                unit_x[1] * unit_y[2] - unit_x[2] * unit_y[1],
+                unit_x[2] * unit_y[0] - unit_x[0] * unit_y[2],
+                unit_x[0] * unit_y[1] - unit_x[1] * unit_y[0],
+            ];
+            let col_x = make_jacobian([0.0, 0.0, 0.0], unit_x);
+            let col_y = make_jacobian([0.0, 0.0, 0.0], unit_y);
+            let col_theta = make_jacobian(plane_normal, [0.0, 0.0, 0.0]);
+            Value::List(vec![col_x, col_y, col_theta])
+        }
         // 3-DOF spherical joint: zero-twist placeholder column — deferred design
         // decision matching the planar/fixed pattern. A spherical joint has a
         // 6×3 Jacobian (three angular columns spanning so(3); zero linear), but
