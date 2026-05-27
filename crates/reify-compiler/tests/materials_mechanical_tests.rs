@@ -7,7 +7,6 @@
 use reify_compiler::*;
 use reify_test_support::{compile_first_template, compile_source_with_stdlib};
 use reify_core::*;
-use reify_ir::*;
 use std::path::PathBuf;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────

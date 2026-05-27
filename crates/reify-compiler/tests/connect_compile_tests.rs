@@ -6,7 +6,6 @@ use reify_test_support::{
     assert_has_diagnostic, assert_no_diagnostic, compile_first_template, compile_source,
 };
 use reify_core::*;
-use reify_ir::*;
 
 // ── Step 13: compile_connect_generates_connection ────────────────────
 
