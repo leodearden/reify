@@ -83,11 +83,17 @@ pub fn get_source_location_impl(
 }
 
 /// Open a file from disk (direct fs read, no engine involvement).
+///
+/// The returned [`FileData::path`] is the canonical absolute realpath of the
+/// file (via [`crate::path_key::canonicalize_document_key`]).  This ensures
+/// the frontend can use it as a stable document identity key regardless of
+/// whether the caller supplied a relative or absolute path.
 pub fn open_file_impl(path: &str) -> Result<FileData, String> {
-    let content =
-        std::fs::read_to_string(path).map_err(|e| format!("Error reading {}: {}", path, e))?;
+    let canonical = crate::path_key::canonicalize_document_key(path);
+    let content = std::fs::read_to_string(&canonical)
+        .map_err(|e| format!("Error reading {}: {}", canonical, e))?;
     Ok(FileData {
-        path: path.to_string(),
+        path: canonical,
         content,
     })
 }
