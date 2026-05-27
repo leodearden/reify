@@ -4,8 +4,12 @@
 //! See `docs/prds/v0_4/shell-extract-engine-bridge.md` §4–§8 and
 //! `docs/prds/v0_3/compute-node-contract.md` §4 for the full specification.
 
+use reify_core::{DiagnosticCode, Severity};
 use reify_eval::register_shell_extract_compute_fns;
-use reify_ir::{InterpolationKind, SampledField, SampledGridKind, Value};
+use reify_ir::{
+    InterpolationKind, PersistentMap, SampledField, SampledGridKind, StructureInstanceData,
+    StructureTypeId, Value,
+};
 use reify_test_support::make_simple_engine;
 
 /// Construct a synthetic thin-slab `SampledField` (5×5×3 grid) whose SDF
@@ -131,4 +135,73 @@ fn shell_extract_dispatch_on_synthetic_slab_materializes_shell_extraction_result
             diag
         );
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Step-5 test (invalid threshold → E_SHELL_BAD_THRESHOLD)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Dispatch the trampoline with `shell_threshold = 0.0` (invalid: must be > 0)
+/// and verify the failure is mapped to `DiagnosticCode::ShellBadThreshold`
+/// per PRD §7 row 3.
+///
+/// Asserts:
+/// 1. `dispatch_compute_node` returns `Err(diagnostics)`.
+/// 2. At least one diagnostic has `severity == Severity::Error` AND
+///    `code == Some(DiagnosticCode::ShellBadThreshold)`.
+/// 3. The diagnostic message contains `"0"` (the offending value).
+///
+/// RED in step-5: `DiagnosticCode::ShellBadThreshold` does not exist yet and
+/// the failure mapping does not call `.with_code(...)`. GREEN after step-6
+/// adds the variant and wires the typed code.
+#[test]
+fn shell_extract_invalid_threshold_returns_failed_with_e_shell_bad_threshold_code() {
+    let mut engine = make_simple_engine();
+    register_shell_extract_compute_fns(&mut engine);
+
+    // Build ElasticOptions with an invalid shell_threshold = 0.0 (must be > 0).
+    let bad_options = Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(0),
+        type_name: "ElasticOptions".to_string(),
+        version: 1,
+        fields: PersistentMap::from_iter([(
+            "shell_threshold".to_string(),
+            Value::Real(0.0),
+        )]),
+    }));
+
+    let field = synthetic_slab_field();
+    let sdf_value = Value::SampledField(field);
+
+    let result = engine.dispatch_compute_node(
+        "shell-extract::extract",
+        &[bad_options, sdf_value],
+        &[],
+        &Value::Undef,
+        None,
+    );
+
+    // (1) Must return Err on invalid threshold
+    let diagnostics = result.expect_err(
+        "dispatch_compute_node returned Ok; expected Err for shell_threshold=0.0",
+    );
+
+    // (2) At least one diagnostic with Severity::Error and ShellBadThreshold code
+    let typed = diagnostics.iter().find(|d| {
+        d.severity == Severity::Error
+            && d.code == Some(DiagnosticCode::ShellBadThreshold)
+    });
+    assert!(
+        typed.is_some(),
+        "expected at least one Severity::Error diagnostic with \
+         code=DiagnosticCode::ShellBadThreshold; got: {diagnostics:?}"
+    );
+
+    // (3) Message must contain the offending value "0"
+    let msg = &typed.unwrap().message;
+    assert!(
+        msg.contains('0'),
+        "expected diagnostic message to contain \"0\" (the bad threshold value); \
+         got: {msg:?}"
+    );
 }
