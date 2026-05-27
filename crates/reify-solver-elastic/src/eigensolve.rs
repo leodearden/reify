@@ -7,26 +7,38 @@
 //!
 //! # Scope
 //!
-//! This module provides two pure-function kernel primitives for the generalized
-//! symmetric eigenproblem `K φ = λ B φ`:
+//! This module provides kernel primitives for the generalized symmetric
+//! eigenproblem `K φ = λ M φ`:
 //!
 //! - [`solve_eigen_dense`] — dense QZ path via `faer::linalg::gevd::gevd_real`
 //! - [`solve_eigen_shift_invert`] — shift-invert Lanczos via sparse Cholesky +
-//!   `faer::matrix_free::eigen::partial_self_adjoint_eigen`
+//!   `faer::matrix_free::eigen::partial_self_adjoint_eigen`; falls back to
+//!   dense when the Krylov window would exceed the problem dimension.
+//! - [`lanczos_shift_invert`] — generic Lanczos core operating over arbitrary
+//!   [`StiffnessOp`] / [`MetricOp`] operator pairs; no dense fallback (caller
+//!   is responsible for small-problem dispatch).
 //!
-//! Both functions are neutral on the sign convention of (K, B): the
-//! buckling-specific sign flip `B = −K_g` is the responsibility of the caller
+//! Both concrete functions are neutral on the sign convention of (K, M): the
+//! buckling-specific sign flip `M = −K_g` is the responsibility of the caller
 //! (task δ/ε).  The trampoline layer also owns mode-string routing
 //! (`BucklingOptions.mode`), cancellation hooks, and OpaqueState caching.
+//!
+//! # Dual-consumer pattern
+//!
+//! The buckling pipeline (`buckling_kernel.rs`) calls
+//! `solve_eigen_shift_invert(&k_free, &neg_k_g_free, opts)` — unchanged.
+//! The modal-analysis pipeline (task 3819) may call `lanczos_shift_invert`
+//! directly with custom `StiffnessOp`/`MetricOp` implementations (e.g.
+//! matrix-free K, lumped diagonal M) without going through the sparse wrapper.
 //!
 //! # Design decisions
 //!
 //! See `plan.json` design_decisions entries for rationale on: pure-function
-//! surface, generic (K, B) sign convention, panic-on-SPD-violation, deterministic
+//! surface, generic (K, M) sign convention, panic-on-SPD-violation, deterministic
 //! start vector, and `faer::Mat<f64>` eigenvector storage.
 
 use faer::{Col, Conj, Mat, Par, Side};
-use faer::dyn_stack::{MemBuffer, MemStack};
+use faer::dyn_stack::{MemBuffer, MemStack, StackReq};
 use faer::linalg::gevd::{ComputeEigenvectors, gevd_real, gevd_scratch};
 use faer::linalg::solvers::SolveCore;
 use faer::mat::{MatMut, MatRef};
@@ -96,10 +108,10 @@ pub struct EigenSolverResult {
 }
 
 // ---------------------------------------------------------------------------
-// Contract guard (shared by both entry points)
+// Contract guard (shared by the sparse-wrapper entry points)
 // ---------------------------------------------------------------------------
 
-/// Validate preconditions shared by both solver entry points.
+/// Validate preconditions shared by both sparse-wrapper solver entry points.
 ///
 /// Panics with named-offending-value messages matching the `solve_cg` style
 /// (Task-2544 contract-explicitness convention).
@@ -137,6 +149,113 @@ fn check_eigen_options_and_shapes(
         k.nrows(),
         k.ncols(),
     );
+}
+
+// ---------------------------------------------------------------------------
+// Operator-pair traits
+// ---------------------------------------------------------------------------
+
+/// Apply K⁻¹ in place on a vector (or multi-vector).
+///
+/// Implementations wrap a pre-computed factorization of the stiffness matrix K.
+/// The operator is assumed to be self-adjoint and SPD, as required by the
+/// shift-invert Lanczos method.
+///
+/// # Design
+///
+/// Separate from [`MetricOp`] because the two operators have fundamentally
+/// different kernels: K⁻¹ requires a factorization + back-solve (in-place);
+/// M is a forward matvec (possibly sparse CSR, lumped diagonal, or
+/// matrix-free).  See `plan.json` design_decisions for full rationale.
+///
+/// The `Sync` supertrait is required because [`lanczos_shift_invert`] wraps
+/// the operator pair in a [`faer::matrix_free::LinOp`] implementor, which
+/// itself requires `Sync + Debug` (faer-0.24).
+pub trait StiffnessOp: Sync {
+    /// Problem dimension n.
+    fn n(&self) -> usize;
+    /// Solve K · out = out in place (overwrites `out` with K⁻¹ · out).
+    fn solve_in_place(&self, out: MatMut<'_, f64>);
+}
+
+/// Apply the mass / metric matrix M as a forward matvec.
+///
+/// Implementations may use sparse CSR matvec, a diagonal lumped mass, or a
+/// matrix-free assembly routine.
+///
+/// The `Sync` supertrait is required because [`lanczos_shift_invert`] wraps
+/// the operator pair in a [`faer::matrix_free::LinOp`] implementor, which
+/// itself requires `Sync + Debug` (faer-0.24).
+pub trait MetricOp: Sync {
+    /// Problem dimension n.
+    fn n(&self) -> usize;
+    /// Compute out ← M · rhs.
+    fn apply(
+        &self,
+        out: MatMut<'_, f64>,
+        rhs: MatRef<'_, f64>,
+        par: Par,
+        stack: &mut MemStack,
+    );
+    /// Scratch requirement for `apply`; passed through to
+    /// `partial_self_adjoint_eigen_scratch`.
+    fn apply_scratch(&self, rhs_ncols: usize, par: Par) -> StackReq;
+}
+
+// ---------------------------------------------------------------------------
+// Sparse adapters (zero-cost borrowed-reference wrappers)
+// ---------------------------------------------------------------------------
+
+/// Zero-cost adapter: wraps a sparse Cholesky factor as a [`StiffnessOp`].
+///
+/// Field layout: one fat pointer (`&Llt`) + one `usize` — equivalent to the
+/// former `ShiftInvertOp` field layout.  No heap allocation or matrix copy.
+pub struct SparseStiffnessOp<'a> {
+    pub llt: &'a Llt<usize, f64>,
+    pub n: usize,
+}
+
+impl StiffnessOp for SparseStiffnessOp<'_> {
+    #[inline]
+    fn n(&self) -> usize {
+        self.n
+    }
+
+    #[inline]
+    fn solve_in_place(&self, out: MatMut<'_, f64>) {
+        SolveCore::<f64>::solve_in_place_with_conj(self.llt, Conj::No, out);
+    }
+}
+
+/// Zero-cost adapter: wraps a sparse CSR matrix as a [`MetricOp`].
+///
+/// Field layout: one `SparseRowMatRef` fat pointer — no copy, no allocation.
+pub struct SparseMetricOp<'a> {
+    pub m: SparseRowMatRef<'a, usize, f64>,
+}
+
+impl MetricOp for SparseMetricOp<'_> {
+    #[inline]
+    fn n(&self) -> usize {
+        self.m.nrows()
+    }
+
+    #[inline]
+    fn apply(
+        &self,
+        out: MatMut<'_, f64>,
+        rhs: MatRef<'_, f64>,
+        par: Par,
+        stack: &mut MemStack,
+    ) {
+        LinOp::<f64>::apply(&self.m, out, rhs, par, stack);
+    }
+
+    #[inline]
+    fn apply_scratch(&self, _rhs_ncols: usize, _par: Par) -> StackReq {
+        // SparseRowMatRef::apply is scratch-free.
+        StackReq::EMPTY
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -262,27 +381,27 @@ pub fn solve_eigen_dense(
 }
 
 // ---------------------------------------------------------------------------
-// Shift-invert path
+// Generic shift-invert Lanczos core
 // ---------------------------------------------------------------------------
 
-/// Shift-invert linear operator: applies `K⁻¹ · B · v`.
+/// Internal composite operator: K⁻¹ · M · v.
 ///
-/// Used inside the Lanczos loop to invert the spectrum of `K φ = λ B φ`.
-/// The Krylov method finds the largest |μ| of `K⁻¹ B φ = μ φ` (μ = 1/λ),
+/// Used inside the Lanczos loop to invert the spectrum of `K φ = λ M φ`.
+/// The Krylov method finds the largest |μ| of `K⁻¹ M φ = μ φ` (μ = 1/λ),
 /// which correspond to the smallest |λ|.
-struct ShiftInvertOp<'a> {
-    llt: &'a Llt<usize, f64>,
-    b_ref: SparseRowMatRef<'a, usize, f64>,
+struct CompositeShiftInvertOp<'a, K: StiffnessOp, M: MetricOp> {
+    k_op: &'a K,
+    m_op: &'a M,
     n: usize,
 }
 
-impl core::fmt::Debug for ShiftInvertOp<'_> {
+impl<K: StiffnessOp, M: MetricOp> core::fmt::Debug for CompositeShiftInvertOp<'_, K, M> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "ShiftInvertOp(n={})", self.n)
+        write!(f, "CompositeShiftInvertOp(n={})", self.n)
     }
 }
 
-impl LinOp<f64> for ShiftInvertOp<'_> {
+impl<K: StiffnessOp, M: MetricOp> LinOp<f64> for CompositeShiftInvertOp<'_, K, M> {
     #[inline]
     fn nrows(&self) -> usize {
         self.n
@@ -294,10 +413,10 @@ impl LinOp<f64> for ShiftInvertOp<'_> {
     }
 
     #[inline]
-    fn apply_scratch(&self, _rhs_ncols: usize, _par: Par) -> faer::dyn_stack::StackReq {
-        // SparseRowMatRef::apply_scratch returns EMPTY;
-        // Llt::solve_in_place_with_conj allocates its own internal scratch.
-        faer::dyn_stack::StackReq::EMPTY
+    fn apply_scratch(&self, rhs_ncols: usize, par: Par) -> StackReq {
+        // K⁻¹ back-solve allocates its own internal scratch;
+        // M matvec scratch is provided by the MetricOp impl.
+        self.m_op.apply_scratch(rhs_ncols, par)
     }
 
     fn apply(
@@ -307,10 +426,10 @@ impl LinOp<f64> for ShiftInvertOp<'_> {
         par: Par,
         stack: &mut MemStack,
     ) {
-        // Step 1: out ← B · rhs  (CSR LinOp blanket impl, scratch-free)
-        LinOp::<f64>::apply(&self.b_ref, out.rb_mut(), rhs, par, stack);
-        // Step 2: out ← K⁻¹ · out  (Cholesky back-solve, in-place)
-        SolveCore::<f64>::solve_in_place_with_conj(self.llt, Conj::No, out.rb_mut());
+        // Step 1: out ← M · rhs
+        self.m_op.apply(out.rb_mut(), rhs, par, stack);
+        // Step 2: out ← K⁻¹ · out  (in-place back-solve)
+        self.k_op.solve_in_place(out.rb_mut());
     }
 
     fn conj_apply(
@@ -325,39 +444,62 @@ impl LinOp<f64> for ShiftInvertOp<'_> {
     }
 }
 
-/// Solve `K φ = λ B φ` via shift-invert Lanczos (σ = 0).
+/// Shift-invert Lanczos eigensolver over arbitrary SPD operator pairs.
 ///
-/// Factors K via sparse Cholesky, builds a [`ShiftInvertOp`] that applies
-/// `K⁻¹ · B`, and runs `partial_self_adjoint_eigen` to recover the Krylov
-/// eigenvalues μ with the largest |μ| (= smallest |λ| = 1/|μ|).
+/// Solves `K φ = λ M φ` using shift-invert Lanczos (σ = 0).  Finds the
+/// smallest |λ| by maximizing |μ| = 1/|λ| in the Krylov subspace of
+/// `K⁻¹ · M`.
 ///
-/// Returns up to `info.n_converged_eigen` eigenvalues sorted ascending by |λ|.
-/// If `n_converged_eigen >= n_modes`, `converged = true`; otherwise
-/// `converged = false` and the partial result is returned.
+/// This is the generic core — it operates over any [`StiffnessOp`] /
+/// [`MetricOp`] pair without knowledge of the underlying representation
+/// (sparse CSR, matrix-free, lumped diagonal, etc.).  **No dense fallback**:
+/// the caller is responsible for small-problem dispatch.  For the common
+/// sparse case with automatic dense fallback use [`solve_eigen_shift_invert`].
+///
+/// # Parameters
+///
+/// - `k_op`: pre-factored stiffness inverse (e.g. sparse Cholesky via
+///   [`SparseStiffnessOp`])
+/// - `m_op`: mass / metric matvec (e.g. CSR via [`SparseMetricOp`])
+/// - `opts`: solver options (n_modes, tol, max_iters)
 ///
 /// # Panics
 ///
-/// - K is not SPD (Cholesky failure → panic with descriptive message, matching
-///   Task-2544 panic-on-contract convention)
-/// - See also [`check_eigen_options_and_shapes`]
-pub fn solve_eigen_shift_invert(
-    k: &SparseRowMat<usize, f64>,
-    b: &SparseRowMat<usize, f64>,
+/// - `opts.n_modes == 0`
+/// - `opts.tol` not finite or ≤ 0
+/// - `opts.max_iters == 0`
+/// - `k_op.n() != m_op.n()` (dimension mismatch)
+pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
+    k_op: &K,
+    m_op: &M,
     opts: EigenSolverOptions,
 ) -> EigenSolverResult {
-    check_eigen_options_and_shapes(k, b, &opts);
-    let n = k.nrows();
+    // Contract guards for the generic entry point.
+    assert!(
+        opts.n_modes >= 1,
+        "EigenSolverOptions.n_modes = {} is invalid; must be >= 1",
+        opts.n_modes,
+    );
+    assert!(
+        opts.tol.is_finite() && opts.tol > 0.0,
+        "EigenSolverOptions.tol = {} must be a finite positive value",
+        opts.tol,
+    );
+    assert!(
+        opts.max_iters >= 1,
+        "EigenSolverOptions.max_iters = 0 is invalid; must be >= 1",
+    );
+    assert_eq!(
+        k_op.n(),
+        m_op.n(),
+        "lanczos_shift_invert: dimension mismatch — k_op.n() = {} but m_op.n() = {}",
+        k_op.n(),
+        m_op.n(),
+    );
 
-    // Factor K via sparse Cholesky (panics if not SPD per Task-2544 convention).
-    let llt = k
-        .sp_cholesky(Side::Lower)
-        .expect("eigensolve: K must be SPD; sp_cholesky failed — check that BCs have been applied");
+    let n = k_op.n();
 
-    let op = ShiftInvertOp {
-        llt: &llt,
-        b_ref: b.as_ref(),
-        n,
-    };
+    let op = CompositeShiftInvertOp { k_op, m_op, n };
 
     // Deterministic unit start vector: v₀ = (1/√n) · 1ₙ
     // (PRD §14 tactical default; fixes Lanczos seed for bit-stable test output).
@@ -365,30 +507,10 @@ pub fn solve_eigen_shift_invert(
 
     // Lanczos subspace dimensions.
     // faer's partial_self_adjoint_eigen_imp requires max_dim < n strictly.
-    // The public wrapper silently clamps: max_dim = min(max(params.max_dim,
-    //   max(2*MIN_DIM, 2*n_eigval)), n) with MIN_DIM = 32 (a faer constant).
-    // For n ≤ 64 (or 2*n_modes ≥ n) max_dim reaches n, causing a panic in the
-    // inner thick-restart loop.  Mirror faer's computation here and fall back
-    // to the dense path when the Krylov window would hit the problem size.
-    // FAER_MIN_DIM mirrors the private MIN_DIM constant from faer-0.24
-    // (src/operator/eigen/mod.rs).  If the faer workspace dependency is bumped,
-    // re-check this value.  The `shift_invert_no_panic_at_min_dim_boundaries`
-    // integration test sweeps every n in 2..=128 to catch silent divergence
-    // from faer's actual floor without requiring a recompile.
-    const FAER_MIN_DIM: usize = 32; // faer-0.24
+    // See solve_eigen_shift_invert comment for the full FAER_MIN_DIM rationale;
+    // callers that need the dense-fallback safety net should use the wrapper.
     let min_dim = opts.n_modes;
     let max_dim = (2 * opts.n_modes).max(32).min(n);
-    let effective_max_dim = max_dim
-        .max(2 * FAER_MIN_DIM)
-        .max(2 * opts.n_modes)
-        .min(n);
-
-    if effective_max_dim >= n {
-        // Problem too small for Lanczos; delegate to the direct dense solver.
-        // The dense result already satisfies the EigenSolverResult contract
-        // (converged=true, iterations=0, eigenvalues sorted ascending |λ|).
-        return solve_eigen_dense(k, b, opts);
-    }
 
     let params = PartialEigenParams {
         min_dim,
@@ -440,8 +562,7 @@ pub fn solve_eigen_shift_invert(
 
     let n_take = pairs.len().min(opts.n_modes);
     // Track what the caller actually receives: converged iff we hand back
-    // all n_modes eigenvalues.  Tighter than `n_conv >= n_modes` alone,
-    // since filter_map can drop near-zero μ even when n_conv == n_modes.
+    // all n_modes eigenvalues.
     let converged = n_take == opts.n_modes;
     let eigenvalues: Vec<f64> = pairs[..n_take].iter().map(|&(lam, _)| lam).collect();
 
@@ -459,4 +580,75 @@ pub fn solve_eigen_shift_invert(
         n_converged: n_conv,
         converged,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Sparse shift-invert wrapper (with dense fallback)
+// ---------------------------------------------------------------------------
+
+/// Solve `K φ = λ B φ` via shift-invert Lanczos (σ = 0).
+///
+/// Factors K via sparse Cholesky, builds [`SparseStiffnessOp`] +
+/// [`SparseMetricOp`] adapters, and delegates to [`lanczos_shift_invert`] for
+/// the Krylov computation.
+///
+/// Falls back to [`solve_eigen_dense`] when the Krylov window would exceed
+/// the problem dimension (n ≤ `2·FAER_MIN_DIM = 64`, or n_modes too large
+/// relative to n) — the dense path does not require n > effective_max_dim.
+///
+/// Returns up to `info.n_converged_eigen` eigenvalues sorted ascending by |λ|.
+/// If `n_converged_eigen >= n_modes`, `converged = true`; otherwise
+/// `converged = false` and the partial result is returned.
+///
+/// # Panics
+///
+/// - K is not SPD (Cholesky failure → panic with descriptive message, matching
+///   Task-2544 panic-on-contract convention)
+/// - See also [`check_eigen_options_and_shapes`]
+pub fn solve_eigen_shift_invert(
+    k: &SparseRowMat<usize, f64>,
+    b: &SparseRowMat<usize, f64>,
+    opts: EigenSolverOptions,
+) -> EigenSolverResult {
+    check_eigen_options_and_shapes(k, b, &opts);
+    let n = k.nrows();
+
+    // Factor K via sparse Cholesky (panics if not SPD per Task-2544 convention).
+    let llt = k
+        .sp_cholesky(Side::Lower)
+        .expect("eigensolve: K must be SPD; sp_cholesky failed — check that BCs have been applied");
+
+    // Dense-fallback dispatch (sparse-matrix-specific; not in the generic).
+    // faer's partial_self_adjoint_eigen_imp requires max_dim < n strictly.
+    // The public wrapper silently clamps: max_dim = min(max(params.max_dim,
+    //   max(2*MIN_DIM, 2*n_eigval)), n) with MIN_DIM = 32 (a faer constant).
+    // For n ≤ 64 (or 2*n_modes ≥ n) max_dim reaches n, causing a panic in the
+    // inner thick-restart loop.  Mirror faer's computation here and fall back
+    // to the dense path when the Krylov window would hit the problem size.
+    // FAER_MIN_DIM mirrors the private MIN_DIM constant from faer-0.24
+    // (src/operator/eigen/mod.rs).  If the faer workspace dependency is bumped,
+    // re-check this value.  The `shift_invert_no_panic_at_min_dim_boundaries`
+    // integration test sweeps every n in 2..=128 to catch silent divergence
+    // from faer's actual floor without requiring a recompile.
+    const FAER_MIN_DIM: usize = 32; // faer-0.24
+    let max_dim = (2 * opts.n_modes).max(32).min(n);
+    let effective_max_dim = max_dim
+        .max(2 * FAER_MIN_DIM)
+        .max(2 * opts.n_modes)
+        .min(n);
+
+    if effective_max_dim >= n {
+        // Problem too small for Lanczos; delegate to the direct dense solver.
+        // The dense result already satisfies the EigenSolverResult contract
+        // (converged=true, iterations=0, eigenvalues sorted ascending |λ|).
+        return solve_eigen_dense(k, b, opts);
+    }
+
+    // Delegate to the generic Lanczos core via zero-cost adapter pair.
+    // The chained matvec+backsolve through the adapters is byte-equivalent to
+    // the former ShiftInvertOp composition (same faer calls in same order),
+    // so buckling goldens pass bit-for-bit.
+    let k_op = SparseStiffnessOp { llt: &llt, n };
+    let m_op = SparseMetricOp { m: b.as_ref() };
+    lanczos_shift_invert(&k_op, &m_op, opts)
 }
