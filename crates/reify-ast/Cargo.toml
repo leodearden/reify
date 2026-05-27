@@ -1,0 +1,16 @@
+[package]
+name = "reify-ast"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Parsed expression/type AST for Reify (Phase 2 of docs/prds/core-ast-ir-layering.md task δ)"
+
+[dependencies]
+reify-core.workspace = true
+serde = { workspace = true, features = ["derive"], optional = true }
+
+[features]
+serde = ["dep:serde", "reify-core/serde"]
+
+[dev-dependencies]
+serde_json = "1"
