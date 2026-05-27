@@ -1131,6 +1131,21 @@ mod tests {
         );
     }
 
+    /// Regression pin (KCC-γ step-7): same as planar above but for spherical.
+    /// The analytic spherical Jacobian is a Value::List of 3 body-basis columns
+    /// (joints.rs:800 post-KCC-γ); per_joint_jacobian_local must return None to
+    /// trigger FD-fallback chain composition.
+    #[test]
+    fn per_joint_jacobian_local_spherical_returns_none() {
+        let sj = spherical_joint();
+        assert!(
+            super::per_joint_jacobian_local(&sj).is_none(),
+            "per_joint_jacobian_local(spherical) must return None — the analytic \
+             joint_jacobian for spherical is a Value::List of 3 body-basis columns \
+             (the FD-fallback trigger), not a single Map. See KCC-γ task 3843."
+        );
+    }
+
     // ── chain_jacobian_fd tests ──────────────────────────────────────────
 
     fn assert_columns_close(actual: &[[f64; 6]], expected: &[[f64; 6]], tol: f64, label: &str) {

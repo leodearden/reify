@@ -5421,42 +5421,144 @@ mod tests {
         );
     }
 
-    // ── joint_jacobian for spherical (step-11) ───────────────────────────────
+    // ── joint_jacobian for spherical (KCC-γ step-7 / step-8) ────────────────
 
-    /// `joint_jacobian(spherical_joint)` returns a zero-twist Map placeholder.
+    /// `joint_jacobian(spherical_joint)` returns a `Value::List` of length 3
+    /// with one analytic angular twist Map per body-frame basis DOF:
+    ///   [0] ∂ω_x DOF:  { angular: [1,0,0], linear: [0,0,0] }
+    ///   [1] ∂ω_y DOF:  { angular: [0,1,0], linear: [0,0,0] }
+    ///   [2] ∂ω_z DOF:  { angular: [0,0,1], linear: [0,0,0] }
     ///
-    /// Design decision: spherical is a 3-DOF joint with a 6×3 angular Jacobian
-    /// (three rotational columns), but the v0.1 single-column convention returns
-    /// one Map per joint. A zero column preserves the uniform `{ angular, linear }`
-    /// shape across all kinds (matching the fixed-joint and planar-joint pattern),
-    /// so `joint_jacobian_dispatches_for_every_joint_kind` can assert non-Undef
-    /// for every kind in JOINT_KINDS. The analytic 3-column form is deferred to
-    /// PRD task 2 / #2670 ("FD fallback for multi-DOF kinds").
+    /// Spherical is axis-isotropic (no preferred direction stored in the joint
+    /// Map; see `make_spherical`) so the local-frame Jacobian columns are the
+    /// body-frame basis vectors at q = identity. SE(3) adjoint transport via
+    /// FD chain composition (`chain_jacobian_fd`) handles the q-dependent
+    /// world-frame transport implicitly until KCC-θ/ι. Mirrors the
+    /// cylindrical (joints.rs:815-823) and planar pattern: the `Value::List`
+    /// shape signals to `loop_closure::per_joint_jacobian_local` to fall back
+    /// to FD chain composition (regression-pinned by
+    /// `per_joint_jacobian_local_spherical_returns_none` in loop_closure.rs).
     #[test]
-    fn joint_jacobian_spherical_returns_zero_column_placeholder() {
+    fn joint_jacobian_spherical_returns_three_column_list_with_body_basis_columns() {
         let sj = spherical_joint();
         let result = eval_builtin("joint_jacobian", &[sj]);
-        let map = match &result {
-            Value::Map(m) => m,
-            other => panic!("joint_jacobian(spherical): expected Map, got {:?}", other),
+        let items = match &result {
+            Value::List(v) => v,
+            other => panic!(
+                "joint_jacobian(spherical): expected List of 3 columns, got {:?}",
+                other
+            ),
         };
         assert_eq!(
-            map.get(&Value::String("angular".to_string())),
-            Some(&Value::Vector(vec![
-                Value::Real(0.0),
-                Value::Real(0.0),
-                Value::Real(0.0)
-            ])),
-            "angular twist column should be [0, 0, 0]"
+            items.len(),
+            3,
+            "joint_jacobian(spherical): List should have exactly 3 columns"
         );
-        assert_eq!(
-            map.get(&Value::String("linear".to_string())),
-            Some(&Value::Vector(vec![
-                Value::Real(0.0),
-                Value::Real(0.0),
-                Value::Real(0.0)
-            ])),
-            "linear twist column should be [0, 0, 0]"
+        assert_jacobian_map_components(
+            &items[0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            "spherical col[0] (∂ω_x DOF)",
+        );
+        assert_jacobian_map_components(
+            &items[1],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0],
+            "spherical col[1] (∂ω_y DOF)",
+        );
+        assert_jacobian_map_components(
+            &items[2],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, 0.0],
+            "spherical col[2] (∂ω_z DOF)",
+        );
+    }
+
+    /// Sign-pin regression test (KCC-γ step-7, resolves PRD §14.3): the
+    /// analytic ∂ω_z column's angular_z sign must match the sign produced by
+    /// `transform_log` for a positive rotation about +Z through a spherical
+    /// joint. Construct a chain `[spherical_joint()]`, take `chain_transform`
+    /// at q = orient_axis_angle(+Z, +π/4), take `transform_log` of the result,
+    /// and confirm angular_z is positive — matching the analytic column's
+    /// positive angular_z entry.
+    ///
+    /// This pins the column-order / sign convention against
+    /// `transform_log_exp_round_trip` (geometry.rs:3625) — any future change
+    /// to the spherical analytic Jacobian must keep the sign convention
+    /// consistent with the existing log/exp pipeline, otherwise the
+    /// Newton solver's residual gradient flips and the loop diverges.
+    #[test]
+    fn spherical_analytic_jacobian_matches_transform_log_convention() {
+        use crate::loop_closure::chain_transform;
+        use crate::loop_closure_value::JointValue;
+
+        let theta = std::f64::consts::FRAC_PI_4;
+        let q = eval_builtin(
+            "orient_axis_angle",
+            &[axis_z_unit(), Value::angle(theta)],
+        );
+        let (qw, qx, qy, qz) = match q {
+            Value::Orientation { w, x, y, z } => (w, x, y, z),
+            other => panic!("orient_axis_angle returned non-Orientation: {:?}", other),
+        };
+
+        // chain_transform of a single spherical joint at q = R(+Z, +π/4).
+        let chain = vec![spherical_joint()];
+        let vals = vec![JointValue::Sphere([qw, qx, qy, qz])];
+        let t = chain_transform(&chain, &vals)
+            .expect("chain_transform must return Some for a spherical-only chain");
+
+        // transform_log gives the twist; angular_z must equal +π/4 (positive).
+        let twist = eval_builtin("transform_log", &[t]);
+        let twist_map = match &twist {
+            Value::Map(m) => m,
+            other => panic!("transform_log returned non-Map: {:?}", other),
+        };
+        let angular = match twist_map.get(&Value::String("angular".to_string())) {
+            Some(Value::Vector(items)) if items.len() == 3 => items,
+            other => panic!("transform_log: expected Vector3 angular, got {:?}", other),
+        };
+        let omega_z = angular[2].as_f64().expect("angular_z must be finite");
+        assert!(
+            (omega_z - theta).abs() < 1e-12,
+            "transform_log angular_z = {omega_z}, expected +π/4 = {theta} (positive). \
+             Convention has shifted from the established transform_log_exp_round_trip \
+             pipeline at geometry.rs:3625 — the spherical analytic Jacobian's column \
+             sign must follow."
+        );
+
+        // Cross-check: the analytic Jacobian's ∂ω_z column.angular_z must also
+        // be positive (= +1.0). This is the regression pin against PRD §14.3.
+        let jac = eval_builtin("joint_jacobian", &[spherical_joint()]);
+        let cols = match &jac {
+            Value::List(v) if v.len() == 3 => v,
+            other => panic!(
+                "joint_jacobian(spherical): expected List of 3 columns, got {:?}",
+                other
+            ),
+        };
+        let col_z_map = match &cols[2] {
+            Value::Map(m) => m,
+            other => panic!("col[2]: expected Map, got {:?}", other),
+        };
+        let col_z_ang = match col_z_map.get(&Value::String("angular".to_string())) {
+            Some(Value::Vector(items)) if items.len() == 3 => items,
+            other => panic!("col[2].angular: expected Vector3, got {:?}", other),
+        };
+        let col_z_angular_z = col_z_ang[2]
+            .as_f64()
+            .expect("col[2].angular[2] must be finite");
+        assert!(
+            col_z_angular_z > 0.0 && (col_z_angular_z - 1.0).abs() < 1e-12,
+            "spherical analytic Jacobian col[2].angular_z = {col_z_angular_z}, \
+             expected +1.0 (positive, matching transform_log sign convention). \
+             If this drifted to -1.0, the Newton solver's residual gradient flips \
+             and KCC-γ loops will diverge — see PRD §14.3."
+        );
+        // omega_z and col_z_angular_z must have the same sign (both positive).
+        assert!(
+            omega_z * col_z_angular_z > 0.0,
+            "sign mismatch: transform_log angular_z={omega_z} vs analytic col[2].angular_z={col_z_angular_z}"
         );
     }
 
