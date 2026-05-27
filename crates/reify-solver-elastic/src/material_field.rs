@@ -162,17 +162,17 @@ impl MaterialField for ConstantField {
 ///
 /// # Panic contract
 ///
-/// In debug builds, `material_at` panics with a `DiscreteCellField`-
-/// prefixed message if the locator returns `None` (no containing cell)
-/// or an out-of-range index. The prefix matches the
-/// `OrthotropicMaterial`/`TransverseIsotropicMaterial` convention so
-/// `#[should_panic(expected = "DiscreteCellField")]` tests can pin
-/// exactly which field rejected. Release builds skip the check; a
-/// caller-supplied locator that lies about cell membership in a release
-/// build will read an arbitrary `cells[idx]` (in-bounds via the
-/// `Send + Sync` closure's discretion) or panic at the `Vec` boundary
-/// — either way the contract is the caller's responsibility, matching
-/// the existing `debug_assert!` policy across the constitutive module.
+/// `material_at` panics with a `DiscreteCellField`-prefixed message
+/// whenever the locator returns `None` (no containing cell). In debug
+/// builds, an out-of-range index also panics with the same prefix; in
+/// release builds the out-of-range case falls through to the Vec
+/// bounds check (which panics without the prefix). The prefix matches
+/// the `OrthotropicMaterial`/`TransverseIsotropicMaterial` convention
+/// so `#[should_panic(expected = "DiscreteCellField")]` tests can pin
+/// exactly which field rejected. The `None` branch panics in both
+/// debug and release so the panic message includes the offending point
+/// coordinates regardless of build profile — silent fall-through to a
+/// stdlib bounds-check would lose both the prefix and the coordinates.
 pub struct DiscreteCellField {
     /// Per-cell materials. The locator's returned index references this
     /// vector.
@@ -206,14 +206,17 @@ impl MaterialField for DiscreteCellField {
                 self.cells[idx]
             }
             None => {
-                debug_assert!(
-                    false,
+                // Both debug and release builds panic with the
+                // `DiscreteCellField:` prefix so `#[should_panic(expected =
+                // "DiscreteCellField")]` tests pin exactly which field
+                // rejected, and post-mortem crash messages identify the
+                // offending point coordinates regardless of build profile.
+                // The earlier release-build fallback to `self.cells[usize::MAX]`
+                // produced a stdlib generic out-of-bounds message that
+                // dropped both the prefix and the coordinates.
+                panic!(
                     "DiscreteCellField: locator returned None for point {point:?} (no containing cell)",
                 );
-                // Release-build fallback: panic at the Vec boundary by
-                // indexing with `usize::MAX`, which produces a clear
-                // out-of-bounds error rather than silent undefined data.
-                self.cells[usize::MAX]
             }
         }
     }
@@ -415,5 +418,26 @@ mod tests {
             locator: Box::new(|_p: [f64; 3]| Some(99)), // out-of-range
         };
         let _ = field.material_at([0.0, 0.0, 0.0]);
+    }
+
+    /// Locator-returned `None` must panic with the `DiscreteCellField`
+    /// prefix in **both** debug and release builds — pinning that the
+    /// earlier `self.cells[usize::MAX]` release fallback (which produced
+    /// a stdlib-generic out-of-bounds message) was replaced with an
+    /// explicit `panic!` carrying the same prefix and the point
+    /// coordinates. No `#[cfg(debug_assertions)]` gate.
+    #[test]
+    #[should_panic(expected = "DiscreteCellField: locator returned None for point")]
+    fn discrete_cell_field_panics_on_locator_none_in_release_too() {
+        let iso = IsotropicElastic {
+            youngs_modulus: 1.0,
+            poisson_ratio: 0.3,
+        };
+        let mat = AnisotropicMaterial::from_law(&iso, IDENTITY_3X3);
+        let field = DiscreteCellField {
+            cells: vec![mat],
+            locator: Box::new(|_p: [f64; 3]| None),
+        };
+        let _ = field.material_at([1.0, 2.0, 3.0]);
     }
 }
