@@ -269,13 +269,13 @@ fn seed_cross_sub_named_steps(
                     }
                 }
 
-                if realization_ok {
-                    if let Some(&final_handle) = per_instance_step_handles.last() {
-                        named_steps.insert(
-                            format!("{}.{}", sub.name, realization_name),
-                            final_handle,
-                        );
-                    }
+                if realization_ok
+                    && let Some(&final_handle) = per_instance_step_handles.last()
+                {
+                    named_steps.insert(
+                        format!("{}.{}", sub.name, realization_name),
+                        final_handle,
+                    );
                 }
             }
         }
