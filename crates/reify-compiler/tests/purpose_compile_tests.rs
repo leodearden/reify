@@ -1236,3 +1236,108 @@ purpose lightweight(subject : Structure) {
         other => panic!("expected BinOp constraint expression, got {:?}", other),
     }
 }
+
+// ── task-2181 β: multi-param per-param stamp signal-of-record ─────────────────
+
+/// Signal-of-record test for task-2181 β: a two-StructureRef-param purpose must
+/// compile without the `(task-2201)` rejection diagnostic and must stamp each
+/// param's member refs with the disjoint `{purpose}::{param}` entity scheme.
+///
+/// Contract C1 (PRD §4.1): `part.length` → `ValueRef("fits_within::part", "length")`
+/// and `envelope.length` → `ValueRef("fits_within::envelope", "length")` — the two
+/// refs are disjoint because their entity stamps differ.
+///
+/// This is the inverse of `compile_purpose_rejects_multi_structureref_params` (which
+/// asserts rejection); that test and this one are now in tension — step-4 removes the
+/// rejection, at which point `compile_purpose_rejects_multi_structureref_params` will
+/// REGRESS and must be deleted.
+///
+/// Forward pointer: activation of multi-param purposes with per-param entity bindings
+/// is added by task γ (`activate_purpose_with_bindings`).
+///
+/// RED before step-4: assertion #2 (no `(task-2201)` rejection) fails because
+/// the multi-param reject at traits.rs:286-301 still fires. Assertions #5/#6 already
+/// pass after step-2 changed the stamp.
+#[test]
+fn compile_purpose_multi_param_per_param_stamping_distinguishes_entities() {
+    let source = r#"
+purpose fits_within(part : Structure, envelope : Structure) {
+    constraint part.length > envelope.length
+}
+"#;
+    let module = compile_module_with_diagnostics(source);
+
+    // (1) Module compiles (even if with errors, the purpose is included per the
+    // accumulate-and-continue pattern).
+    // (2) No (task-2201) rejection diagnostic — the multi-param reject must be gone.
+    let rejection_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("(task-2201)"))
+        .collect();
+    assert!(
+        rejection_errors.is_empty(),
+        "expected NO '(task-2201)' rejection for multi-param purpose fits_within, \
+         but got: {:#?}",
+        rejection_errors
+    );
+
+    // (3) Exactly 1 compiled purpose with 1 constraint.
+    assert_eq!(
+        module.compiled_purposes.len(),
+        1,
+        "expected 1 compiled purpose"
+    );
+    let purpose = &module.compiled_purposes[0];
+    assert_eq!(purpose.name, "fits_within");
+    assert_eq!(purpose.constraints.len(), 1, "expected 1 constraint");
+
+    // (4) Constraint expression is BinOp(Gt, left, right).
+    let constraint = &purpose.constraints[0];
+    let (left, right) = match &constraint.expr.kind {
+        CompiledExprKind::BinOp { op, left, right } => {
+            assert_eq!(
+                *op,
+                BinOp::Gt,
+                "expected BinOp::Gt for 'part.length > envelope.length', got {:?}",
+                op
+            );
+            (left.as_ref(), right.as_ref())
+        }
+        other => panic!("expected BinOp constraint expression, got {:?}", other),
+    };
+
+    // (5) Left side: ValueRef with entity == "fits_within::part" and member == "length".
+    match &left.kind {
+        CompiledExprKind::ValueRef(id) => {
+            assert_eq!(
+                id.entity, "fits_within::part",
+                "left ValueRef entity must equal 'fits_within::part' (per-param stamp C1), got {:?}",
+                id.entity
+            );
+            assert_eq!(
+                id.member, "length",
+                "left ValueRef member must be 'length', got {:?}",
+                id.member
+            );
+        }
+        other => panic!("expected ValueRef for left side of BinOp, got {:?}", other),
+    }
+
+    // (6) Right side: ValueRef with entity == "fits_within::envelope" and member == "length".
+    match &right.kind {
+        CompiledExprKind::ValueRef(id) => {
+            assert_eq!(
+                id.entity, "fits_within::envelope",
+                "right ValueRef entity must equal 'fits_within::envelope' (per-param stamp C1), got {:?}",
+                id.entity
+            );
+            assert_eq!(
+                id.member, "length",
+                "right ValueRef member must be 'length', got {:?}",
+                id.member
+            );
+        }
+        other => panic!("expected ValueRef for right side of BinOp, got {:?}", other),
+    }
+}
