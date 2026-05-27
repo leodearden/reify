@@ -7318,18 +7318,14 @@ fn get_entity_at_source_location_thickness_cell_returns_bracket_thickness() {
     );
 }
 
-/// (e) Cursor on the `structure Bracket {` header line (line=1, col=1) →
-/// `None` or `Some("Bracket")`.
+/// (e) Cursor on the `pub structure Bracket {` header line (line=1, col=1) →
+/// `Some("Bracket")`.
 ///
-/// The template's approximate span is derived from value-cell and constraint spans,
-/// which start on line 2. The structure keyword at (1,1) = byte 0 falls before the
-/// span start under the current approximation, so the position is not inside any
-/// template and yields `None`.
-///
-/// The real invariant is that the position maps to at most one entity and never
-/// to an inner cell name. If a future patch derives the span from the parsed
-/// structure declaration (which starts at byte 0), (1,1) could legitimately
-/// return `Some("Bracket")` — either outcome is correct.
+/// The resolver now uses the parsed `StructureDef.span` for the outer
+/// containment check, which covers the full `pub structure NAME { ... }` byte
+/// range including the header line (task 3880). Clicking anywhere on the header
+/// line — including at byte 0 (col=1) — must resolve to the enclosing template
+/// name, never to a member or to None.
 #[test]
 fn get_entity_at_source_location_structure_header_returns_none_or_template_name() {
     let checker = SimpleConstraintChecker;
@@ -7339,10 +7335,10 @@ fn get_entity_at_source_location_structure_header_returns_none_or_template_name(
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
     let result = session.get_entity_at_source_location(1, 1);
-    assert!(
-        result.is_none() || result == Some("Bracket".to_string()),
-        "cursor on structure header (1,1) must resolve to either None or the enclosing \
-         template name, never a cell or other entity — got {:?}",
+    assert_eq!(
+        result,
+        Some("Bracket".to_string()),
+        "cursor on structure header (1,1) must resolve to the template name — got {:?}",
         result
     );
 }
@@ -7385,6 +7381,60 @@ fn get_entity_at_source_location_past_end_of_source_returns_none() {
         result.is_none(),
         "cursor past end of source (16, 1) should return None, got {:?}",
         result
+    );
+}
+
+/// (h) Multi-structure source: cache-wiring smoke test.
+///
+/// Verifies that the `parsed_cache` is correctly threaded through to the
+/// resolver for a multi-structure module loaded via `load_from_source`.
+/// The full per-template/per-line matrix (First, Middle, Last header lines
+/// + both gap lines) is covered by the unit test in
+/// `crates/reify-eval/src/source_location.rs`; this integration test pins
+/// only the cache-wiring for one representative header click and one gap click.
+///
+/// Source layout (1-based lines):
+/// ```text
+///  1: pub structure First {
+///  2:     param a: Scalar = 1mm
+///  3: }
+///  4: (blank)
+///  5: pub structure Middle {
+///  6:     param b: Scalar = 2mm
+///  7: }
+///  8: (blank)
+///  9: pub structure Last {
+/// 10:     param c: Scalar = 3mm
+/// 11: }
+/// ```
+#[test]
+fn get_entity_at_source_location_multi_structure_header_lines_resolve_to_each_structure() {
+    const THREE_STRUCT_SOURCE: &str = "pub structure First {\n    param a: Scalar = 1mm\n}\n\npub structure Middle {\n    param b: Scalar = 2mm\n}\n\npub structure Last {\n    param c: Scalar = 3mm\n}\n";
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(THREE_STRUCT_SOURCE, "multi")
+        .expect("load should succeed");
+
+    // One representative header-line click: Middle at (5,1) verifies that the
+    // parsed_cache is threaded through to the resolver and that a non-first
+    // structure's header resolves correctly (the original task-3880 regression).
+    let middle_hdr = session.get_entity_at_source_location(5, 1);
+    assert_eq!(
+        middle_hdr,
+        Some("Middle".to_string()),
+        "header of Middle (5,1) must resolve to Some(\"Middle\"), got {:?}",
+        middle_hdr
+    );
+
+    // One gap click: blank line between First and Middle must return None.
+    let gap = session.get_entity_at_source_location(4, 1);
+    assert!(
+        gap.is_none(),
+        "blank line between First and Middle (4,1) must return None, got {:?}",
+        gap
     );
 }
 

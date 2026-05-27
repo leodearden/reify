@@ -200,7 +200,12 @@ export function Editor(props: EditorProps) {
         if (update.selectionSet) {
           const pos = update.state.selection.main.head;
           const line = update.state.doc.lineAt(pos);
-          props.store.setCursorPosition(line.number, pos - line.from);
+          // Emit 1-based column to match the backend convention required by
+          // getEntityAtSourceLocation (engine.rs:2227, documented 1-based at
+          // engine.rs:2208) and getContainingDefinition (engine.rs:2153,
+          // documented 1-based at engine.rs:2134). CodeMirror's `pos - line.from`
+          // is 0-based; adding 1 converts to 1-based codepoint offset.
+          props.store.setCursorPosition(line.number, pos - line.from + 1);
         }
       }),
     ];

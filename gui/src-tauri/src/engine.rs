@@ -2177,53 +2177,50 @@ impl EngineSession {
 
         let offset = line_col_to_byte_offset_with_offsets(source, line, col, line_offsets) as u32;
 
-        // Walk top-level declarations and find the innermost (smallest span) that
-        // contains the given byte offset.
-        let mut best: Option<DefInfo> = None;
-        for decl in &parsed.declarations {
-            let (name, kind, span) = match decl {
-                reify_syntax::Declaration::Structure(s) => (s.name.as_str(), "structure", s.span),
-                reify_syntax::Declaration::Occurrence(o) => (o.name.as_str(), "occurrence", o.span),
-                _ => continue,
-            };
-            if offset >= span.start && offset < span.end {
-                let is_smaller = best
-                    .as_ref()
-                    .is_none_or(|b| (span.end - span.start) < (b.span.end - b.span.start));
-                if is_smaller {
-                    best = Some(DefInfo {
-                        name: name.to_string(),
-                        kind: kind.to_string(),
-                        span: SourceSpanInfo {
-                            start: span.start,
-                            end: span.end,
-                        },
-                    });
-                }
-            }
-        }
-        best
+        // Delegate to the shared helper that is also used by
+        // `reify_eval::resolve_entity_at_source_position`.  Using a single
+        // implementation prevents the two traversals from drifting if a future
+        // `Declaration` variant is added and only one call site is updated.
+        reify_eval::source_location::find_parsed_decl_containing_offset(parsed, offset).map(
+            |(name, kind, span)| DefInfo {
+                name: name.to_string(),
+                kind: kind.to_string(),
+                span: SourceSpanInfo {
+                    start: span.start,
+                    end: span.end,
+                },
+            },
+        )
     }
 
     /// Find the entity (and optionally member) at the given 1-based `(line, col)`
     /// source position.
     ///
     /// Delegates to `reify_eval::resolve_entity_at_source_position`, which uses
-    /// the compiled module's value-cell and constraint spans to approximate each
-    /// template's source range.
+    /// a two-layer containment model:
+    /// - **Outer span**: the parsed `StructureDef.span` / `OccurrenceDef.span`,
+    ///   covering the full `pub structure NAME { ... }` byte range including the
+    ///   header line and closing brace.  Fixes the off-by-one where clicking a
+    ///   structure name resolved to the previous structure (task 3880).
+    /// - **Narrow step**: member-span priority order (value_cells → realizations →
+    ///   sub_components → template name).
     ///
     /// Returns:
     /// - `Some("Entity.member")` when the cursor is inside a value cell's span.
-    /// - `Some("Entity")` when the cursor is inside the template's approximate
-    ///   span but outside any specific value cell (e.g. a constraint line).
+    /// - `Some("Entity.name")` when the cursor is inside a realization or
+    ///   sub_component declaration body.
+    /// - `Some("Entity")` when the cursor is inside the template's source span
+    ///   but outside any specific named member (e.g. the header line, a constraint
+    ///   line, or the closing brace).
     /// - `None` when `line` or `col` is zero, when no module is loaded, when the
-    ///   position is outside every template's approximate span, or when the position
-    ///   is past the end of source.
+    ///   position is outside every template's source span, or when the position is
+    ///   past the end of source.
     ///
     /// # Caching
-    /// `line_offsets_cache` is populated in `commit_state` alongside `compiled`
-    /// and is threaded through to `reify_eval::resolve_entity_at_source_position`
-    /// so the byte-offset conversion is O(log M) rather than O(M).
+    /// `parsed_cache` and `line_offsets_cache` are populated in `commit_state`
+    /// alongside `compiled` and are threaded through to the resolver so the
+    /// parse-span lookup and byte-offset conversion are O(D + log M) rather than
+    /// requiring a re-parse on every cursor/hover event.
     pub fn get_entity_at_source_location(&self, line: u32, col: u32) -> Option<String> {
         // Documented contract: zero line or column is out-of-range → None.
         if line == 0 || col == 0 {
@@ -2237,10 +2234,14 @@ impl EngineSession {
              whenever compiled is Some (i.e., whenever resolve_source succeeds)"
         );
 
+        // Read the cached parse result and line-offset table.  Guard defensively
+        // against None (shouldn't occur given the debug_assert above, but avoids
+        // a panic in release builds — mirrors the same guard in get_containing_definition).
+        let parsed = self.parsed_cache.as_ref()?;
         let line_offsets = self.line_offsets_cache.as_deref()?;
         let compiled = self.core.compiled()?;
 
-        reify_eval::resolve_entity_at_source_position(compiled, source, line_offsets, line, col)
+        reify_eval::resolve_entity_at_source_position(compiled, parsed, source, line_offsets, line, col)
     }
 }
 
