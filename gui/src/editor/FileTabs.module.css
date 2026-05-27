@@ -47,6 +47,14 @@
   flex-shrink: 0;
 }
 
+.missing {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--reify-missing, #fab387);
+  flex-shrink: 0;
+}
+
 .closeBtn {
   display: flex;
   align-items: center;

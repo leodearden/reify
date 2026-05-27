@@ -36,6 +36,7 @@ export function FileTabs(props: FileTabsProps) {
           const isActive = () => props.store.state.activeFile === file.path;
           const isDirty = () => props.store.state.dirtyFiles.includes(file.path);
           const isExternallyChanged = () => props.store.state.externallyChanged.includes(file.path);
+          const isMissing = () => props.store.state.missingFiles.includes(file.path);
 
           return (
             <div
@@ -44,7 +45,7 @@ export function FileTabs(props: FileTabsProps) {
               role="tab"
               aria-selected={isActive() ? 'true' : 'false'}
               tabindex={isActive() ? 0 : -1}
-              title={file.path}
+              title={isMissing() ? `${file.path} (missing on disk)` : file.path}
               onClick={() => props.store.setActiveFile(file.path)}
               onKeyDown={(e: KeyboardEvent) => handleKeyDown(e, file)}
             >
@@ -54,6 +55,9 @@ export function FileTabs(props: FileTabsProps) {
               </Show>
               <Show when={isExternallyChanged()}>
                 <span class={styles.externallyChanged} data-testid="externally-changed-indicator" />
+              </Show>
+              <Show when={isMissing()}>
+                <span class={styles.missing} data-testid="missing-indicator" />
               </Show>
               <button
                 class={styles.closeBtn}
