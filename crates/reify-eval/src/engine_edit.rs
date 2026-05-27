@@ -2269,11 +2269,20 @@ impl Engine {
         // and §6.4 lines 654-660: a node leaving the topology hands its warm
         // state to the pool keyed by `NodeId`; LRU eviction inside the pool
         // is the only memory bound (no engine-level eviction logic). Symmetric
-        // across all three NodeId variants currently produced by `diff_*`
-        // helpers — Value, Constraint, Realization — via the shared
-        // `donate_warm_state_and_invalidate` helper. Resolution is not yet in any
-        // `diff_*` helper (see TODO(resolution-diff) above), so it does not
-        // donate today; ComputeNode is not yet a NodeId variant.
+        // across the four NodeId variants currently produced — Value,
+        // Constraint, Realization (via the shared
+        // `donate_warm_state_and_invalidate` helper over `diff_*` removed
+        // sets), and Compute (ζ / task 3425 — iterating the OLD snapshot's
+        // `compute_nodes` directly because ComputeNodes are runtime artefacts
+        // of per-cell eval, not source-derived nodes; the freshly built
+        // `new_snapshot.graph.compute_nodes` is always empty at this stage
+        // before per-cell eval recreates them via `run_compute_dispatch`).
+        // Cost-per-byte is carried through the cache→pool leg via
+        // `donate_with_cost` so the pool→cache reinsert half of the
+        // round-trip (run_compute_dispatch's cache-miss → pool fallback)
+        // can restore both warm state and cost on the next dispatch.
+        // Resolution is not yet in any `diff_*` helper (see
+        // TODO(resolution-diff) above), so it does not donate today.
         for id in &changed {
             self.cache.invalidate(&NodeId::Value(id.clone()));
         }
@@ -2301,6 +2310,36 @@ impl Engine {
             &removed_realizations,
             NodeId::Realization,
         );
+        // (9b) ComputeNode arm (ζ / task 3425). Every ComputeNode in the old
+        //      snapshot is "removed" at this stage — the new snapshot's
+        //      compute_nodes map is empty until per-cell eval recreates them
+        //      below via `run_compute_dispatch`. For each old ComputeNode,
+        //      capture the cost FIRST (cost_per_byte_of is read-only and
+        //      stays valid before the take), then take the warm state and
+        //      donate cost+state to the pool, then invalidate the cache
+        //      entry. The reinsert half of the round-trip lands inside
+        //      `run_compute_dispatch` (engine_compute.rs) via its
+        //      cache-miss → `warm_pool.checkout_with_lru_stamp` fallback.
+        //      Collect ids into a Vec to drop the iter borrow on
+        //      `eval_state.snapshot.graph.compute_nodes` before mutating
+        //      `self.cache` inside the loop body.
+        let old_compute_ids: Vec<reify_types::ComputeNodeId> = eval_state
+            .snapshot
+            .graph
+            .compute_nodes
+            .iter()
+            .map(|(c_id, _)| c_id.clone())
+            .collect();
+        for c_id in old_compute_ids {
+            let nid = NodeId::Compute(c_id);
+            let cost = self.cache.cost_per_byte_of(&nid).unwrap_or(0.0);
+            if let Some(state) = self.cache.get_warm_state(&nid) {
+                pending_warm_seeds
+                    .pool_mut()
+                    .donate_with_cost(nid.clone(), state, cost);
+            }
+            self.cache.invalidate(&nid);
+        }
 
         // (10) Attach provenance: Edit with the value-cell-level changed set
         //      (constraints / realizations remain implicit in the new graph;
