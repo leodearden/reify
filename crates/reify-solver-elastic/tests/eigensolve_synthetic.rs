@@ -642,3 +642,67 @@ fn lanczos_shift_invert_recovers_modal_eigenpairs_on_uniform_mass_laplacian() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Step-3 tests: contract-guard #[should_panic] tests for lanczos_shift_invert.
+//
+// These tests pin the generic entry-point's own panic contract (distinct from
+// the wrapper-level guards on `solve_eigen_shift_invert` above).
+// ---------------------------------------------------------------------------
+
+/// (a) k_op.n() ≠ m_op.n() is rejected at the generic entry point with a
+/// message containing "dimension".
+#[test]
+#[should_panic(expected = "dimension")]
+fn lanczos_shift_invert_panics_on_dimension_mismatch() {
+    let n_k = 80usize;
+    let n_m = 79usize; // intentional mismatch
+
+    // K = tridiag(-1,2,-1) 80×80, factored.
+    let mut k_trips = Vec::with_capacity(3 * n_k - 2);
+    for i in 0..n_k {
+        k_trips.push(Triplet::new(i, i, 2.0));
+        if i > 0 { k_trips.push(Triplet::new(i, i - 1, -1.0)); }
+        if i + 1 < n_k { k_trips.push(Triplet::new(i, i + 1, -1.0)); }
+    }
+    let k = SparseRowMat::try_new_from_triplets(n_k, n_k, &k_trips).unwrap();
+    let llt = k.sp_cholesky(Side::Lower).expect("K must be SPD");
+    let k_op = SparseStiffnessOp { llt: &llt, n: n_k };
+
+    // M = I (79×79) — dimension deliberately mismatched with k_op.n()=80.
+    let m_trips: Vec<Triplet<usize, usize, f64>> =
+        (0..n_m).map(|i| Triplet::new(i, i, 1.0)).collect();
+    let m = SparseRowMat::try_new_from_triplets(n_m, n_m, &m_trips).unwrap();
+    let m_op = SparseMetricOp { m: m.as_ref() };
+
+    // Must panic: "lanczos_shift_invert: dimension mismatch — ..."
+    let _ = lanczos_shift_invert(&k_op, &m_op, EigenSolverOptions::default());
+}
+
+/// (b) n_modes=0 is rejected at the generic entry point with a message
+/// containing "n_modes".
+#[test]
+#[should_panic(expected = "n_modes")]
+fn lanczos_shift_invert_panics_on_zero_n_modes() {
+    let n = 80usize;
+
+    // Valid 80-DOF pair (same as Fixture D construction).
+    let mut k_trips = Vec::with_capacity(3 * n - 2);
+    for i in 0..n {
+        k_trips.push(Triplet::new(i, i, 2.0));
+        if i > 0 { k_trips.push(Triplet::new(i, i - 1, -1.0)); }
+        if i + 1 < n { k_trips.push(Triplet::new(i, i + 1, -1.0)); }
+    }
+    let k = SparseRowMat::try_new_from_triplets(n, n, &k_trips).unwrap();
+    let llt = k.sp_cholesky(Side::Lower).expect("K must be SPD");
+    let k_op = SparseStiffnessOp { llt: &llt, n };
+
+    let m_trips: Vec<Triplet<usize, usize, f64>> =
+        (0..n).map(|i| Triplet::new(i, i, 1.0)).collect();
+    let m = SparseRowMat::try_new_from_triplets(n, n, &m_trips).unwrap();
+    let m_op = SparseMetricOp { m: m.as_ref() };
+
+    // Must panic: "EigenSolverOptions.n_modes = 0 is invalid; must be >= 1"
+    let opts = EigenSolverOptions { n_modes: 0, ..EigenSolverOptions::default() };
+    let _ = lanczos_shift_invert(&k_op, &m_op, opts);
+}
