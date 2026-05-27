@@ -73,7 +73,12 @@ import type { ExportFormat, FileData, SourceLocation, ConstraintData, ToastMessa
 import { applyTheme } from './theme';
 import { errorMessage } from './utils/errorClassifier';
 import { isSameFile } from './utils/pathUtils';
-import { messageForSaveBlocked } from './editor/messages';
+import {
+  messageForSaveBlocked,
+  EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG,
+  SAVE_CONFLICT_RELOAD_LABEL,
+  SAVE_CONFLICT_OVERWRITE_LABEL,
+} from './editor/messages';
 import { loadPanelLayout, savePanelLayout, clampPanelHeightsToFit } from './hooks/useLayoutPersistence';
 import { createSerializationErrorCoalescer } from './hooks/useSerializationErrorCoalescer';
 import { loadSidecar, saveSidecar } from './stores/sidecarPersistence';
@@ -510,6 +515,38 @@ const App: Component = () => {
     }
   });
 
+  /**
+   * Show a conflict prompt (instead of a dead-end error toast) when saving a
+   * file that has been modified on disk since it was loaded.  Two actions are
+   * offered:
+   *   - "Reload from disk" — discard the buffer and reload from disk.
+   *   - "Overwrite" — save the buffer as-is, clobbering the newer disk content.
+   * The toast's close-X serves as "Cancel" (both actions and the close-X call
+   * onDismiss, satisfying the Toast.actions contract).
+   *
+   * The reload/overwrite bodies are stubs for now; they are implemented in steps
+   * 12 and 14 respectively.  The prompt itself renders immediately so step-9/10
+   * tests can verify the UI before those helpers exist.
+   */
+  function showSaveConflictPrompt(file: FileData) {
+    showToast(EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG, 'error', [
+      {
+        label: SAVE_CONFLICT_RELOAD_LABEL,
+        onClick: () => reloadFromDisk(file.path),
+      },
+      {
+        label: SAVE_CONFLICT_OVERWRITE_LABEL,
+        onClick: () => overwriteFile(file),
+      },
+    ]);
+  }
+
+  /** Stub — implemented in step-12. */
+  async function reloadFromDisk(_path: string) { /* step-12 */ }
+
+  /** Stub — implemented in step-14. */
+  async function overwriteFile(_file: FileData) { /* step-14 */ }
+
   async function handleSave() {
     const activeFile = editorStore.state.activeFile;
     if (!activeFile) return;
@@ -521,7 +558,10 @@ const App: Component = () => {
         console.error('Save aborted: active file is not in openFiles', activeFile);
         return;
       }
-      showToast(messageForSaveBlocked(result.reason), 'error');
+      // externally-changed: show a conflict prompt with Reload / Overwrite actions
+      // so the user has a clear recovery path instead of a dead-end error toast.
+      const file = editorStore.state.openFiles.find((f) => f.path === activeFile);
+      if (file) showSaveConflictPrompt(file);
       return;
     }
     try {
