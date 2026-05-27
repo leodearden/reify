@@ -25,6 +25,7 @@ pub(crate) fn apply_module_pragmas(parsed: &ParsedModule, module: &mut CompiledM
     apply_version_pragma(parsed, module);
     apply_solver_pragma(parsed, module);
     apply_kernel_pragma(parsed, module);
+    apply_cfg_pragma(parsed, module);
     warn_block_level_precision(module);
     warn_block_level_solver(module);
     warn_block_level_kernel(module);
@@ -771,6 +772,65 @@ fn apply_kernel_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                         .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
                 );
             }
+        }
+    }
+}
+
+/// Validate the arg shape of every `#cfg` pragma at module level.
+///
+/// Validated shapes (per conditional-compilation PRD
+/// `docs/prds/v0_6/conditional-compilation.md` task α):
+/// - `PragmaArg::KeyValue { .. }` — e.g. `#cfg(target = "linux")`
+/// - `PragmaArg::Bare(PragmaValue::Ident(_))` — e.g. `#cfg(linux)`
+/// - Any combination of the above in a multi-arg pragma — e.g.
+///   `#cfg(linux, target = "wasm")`
+///
+/// Any other shape (zero args, or any arg that is `Bare(non-Ident)`) emits
+/// exactly one `E_CFG_MALFORMED` Error diagnostic per pragma occurrence,
+/// attached to the whole-pragma span.  One diagnostic per occurrence
+/// (not per bad arg) mirrors the per-occurrence style of the other
+/// `apply_*_pragma` functions.
+///
+/// **Storage deferred to task γ**: this function does NOT write any
+/// typed field on `CompiledModule`; it only emits diagnostics.  Positional
+/// attachment of `#cfg` to the following `import` is task γ's job.
+fn apply_cfg_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
+    const MALFORMED_MSG: &str =
+        "E_CFG_MALFORMED: #cfg requires a key=value or bare-ident argument, \
+         e.g. #cfg(target = \"linux\") or #cfg(linux); ignored";
+
+    for pragma in &parsed.pragmas {
+        if pragma.name != "cfg" {
+            continue;
+        }
+
+        // Zero-arg case: `#cfg` or `#cfg()`.
+        if pragma.args.is_empty() {
+            module.diagnostics.push(
+                Diagnostic::error(MALFORMED_MSG)
+                    .with_label(DiagnosticLabel::new(pragma.span, "malformed #cfg")),
+            );
+            continue;
+        }
+
+        // Check each arg.  Well-formed iff KeyValue or Bare(Ident).
+        // Any other variant is malformed → emit one error for this pragma and move on.
+        let mut malformed = false;
+        for arg in &pragma.args {
+            let ok = matches!(
+                arg,
+                PragmaArg::KeyValue { .. } | PragmaArg::Bare(PragmaValue::Ident(_))
+            );
+            if !ok {
+                malformed = true;
+                break;
+            }
+        }
+        if malformed {
+            module.diagnostics.push(
+                Diagnostic::error(MALFORMED_MSG)
+                    .with_label(DiagnosticLabel::new(pragma.span, "malformed #cfg")),
+            );
         }
     }
 }
