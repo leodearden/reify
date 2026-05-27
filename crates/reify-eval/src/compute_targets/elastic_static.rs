@@ -34,8 +34,26 @@
 //! # Cache-hit contract (§3 + significance_filter.rs)
 //!
 //! `significance_filter::is_opted_in("solver::elastic_static")` returns `true`
-//! (pinned at significance_filter.rs:76). Combined with the cache machinery,
-//! a second eval of the same .ri does NOT re-dispatch the trampoline.
+//! (pinned at significance_filter.rs:76), opting this target into the output
+//! significance filter.
+//!
+//! **Current status (task 3426):** the `evaluate_let_bindings` loop in
+//! `engine_eval.rs` does not yet carry a pre-dispatch Final-gate for `@optimized`
+//! cells — every `Engine::eval()` call re-dispatches the trampoline even when the
+//! output VC is already `Freshness::Final` from the previous eval. The comment at
+//! `engine_eval.rs:2891` ("The freshness gate above also short-circuits any re-eval
+//! of a Final node") is inaccurate: the Pending gate only fires when *inputs* are
+//! `Pending`, not when the *output* is already `Final`.
+//!
+//! **Required fix:** add a pre-dispatch cache check in `engine_eval.rs` at the
+//! `@optimized` lowering site (~line 2809). The check should:
+//!   1. Compute the cache key via `compute_cache_key` from the current `value_inputs`.
+//!   2. Look up the output VC in `self.cache`.
+//!   3. If the entry is `Freshness::Final` and the cache key matches, return the
+//!      cached result without calling `run_compute_dispatch`.
+//! Until that fix lands, `DISPATCH_COUNT` will be 2 (not 1) after two `eval()`
+//! calls on the same module — the failing assertion in
+//! `e2e_cantilever_second_eval_hits_cache` is the regression pin for this gap.
 //!
 //! # Placement rationale
 //!
@@ -348,6 +366,27 @@ pub fn solve_elastic_static_trampoline(
         fields,
     }));
 
+    // ── (13) Return ComputeOutcome::Completed ────────────────────────────────
+    //
+    // Field-by-field derivation (for future tuners):
+    //
+    // `result`        — ElasticResult StructureInstance built above.
+    //
+    // `new_warm_state`— The fresh CgWarmState (wrapping the converged
+    //                   displacement vector u) serialised via `into_opaque_state()`.
+    //                   Donated back to the cache by `complete_compute_dispatch_atomically`
+    //                   (PRD §5). The next dispatch reads it via `get_warm_state` →
+    //                   `CgWarmState::from_opaque_state` for warm-start CG solve.
+    //
+    // `cost_per_byte` — 1 / size_bytes of the warm state. Larger warm states are
+    //                   more expensive per byte to keep in the pool (eviction LRU
+    //                   prefers cheaper entries). Tuners: replace with a
+    //                   profiling-derived cost (e.g. wall-clock solve time / state
+    //                   size) once solve-time measurements are available.
+    //
+    // `diagnostics`   — empty (CG convergence failures are reflected in
+    //                   `converged = Bool(false)` and the caller can inspect
+    //                   that field; no separate diagnostic is needed today).
     ComputeOutcome::Completed {
         result,
         new_warm_state,
