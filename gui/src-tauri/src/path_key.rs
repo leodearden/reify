@@ -26,3 +26,14 @@ pub fn canonicalize_document_key(path: &str) -> String {
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| path.to_string())
 }
+
+/// Canonicalise a path supplied to `debug_server::handle_open_file`.
+///
+/// This is a thin wrapper around [`canonicalize_document_key`] that exists so
+/// tests can clearly attribute canonicalisation coverage to the debug-server
+/// IPC path (the source of bug #3892's second duplicate-tab vector).  In
+/// production, `debug_server::handle_open_file` calls this before reading the
+/// file or emitting the `open_file` payload to the frontend.
+pub fn canonicalize_debug_open_path(path: &str) -> String {
+    canonicalize_document_key(path)
+}

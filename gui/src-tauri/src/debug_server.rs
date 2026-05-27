@@ -487,10 +487,14 @@ async fn handle_morph_stats(_params: Value) -> Result<Value, String> {
 }
 
 async fn handle_open_file(state: &DebugServerState, params: Value) -> Result<Value, String> {
-    let path = params["path"]
+    let raw_path = params["path"]
         .as_str()
-        .ok_or_else(|| "path is required".to_string())?
-        .to_owned();
+        .ok_or_else(|| "path is required".to_string())?;
+
+    // Canonicalise the path before reading so the frontend receives the same
+    // absolute key regardless of whether the caller supplied a relative or
+    // absolute spelling (fixes bug #3892: duplicate tabs via debug bridge).
+    let path = crate::path_key::canonicalize_debug_open_path(raw_path);
 
     // Read file from disk
     let content =
