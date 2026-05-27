@@ -1,7 +1,7 @@
 use reify_core::DimensionVector;
 use reify_ir::Value;
 
-use crate::helpers::{binary, quinary_f64, sanitize_value, ternary, unary, unary_f64};
+use crate::helpers::{binary, complex_abs, quinary_f64, sanitize_value, ternary, unary, unary_f64};
 
 pub(crate) fn eval_numeric(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {
@@ -16,6 +16,9 @@ pub(crate) fn eval_numeric(name: &str, args: &[Value]) -> Option<Value> {
                 si_value: si_value.abs(),
                 dimension: *dimension,
             },
+            // Complex modulus: |z| = sqrt(re² + im²), identical to magnitude/complex_magnitude.
+            // Returns Real for DIMENSIONLESS, Scalar otherwise; sanitizes Inf/NaN to Undef.
+            Value::Complex { re, im, dimension } => complex_abs(*re, *im, *dimension),
             _ => Value::Undef,
         }),
         "sqrt" => unary(args, |v| match v {
