@@ -373,13 +373,14 @@ pub fn shell_extract_compute_fn(
     let segmentation = match segment_regions(&single_body, &meshed, &seg_opts) {
         Ok(s) => s,
         Err(SegmentationError::InvalidThreshold { value }) => {
-            // PRD §7 row 3 / E_SHELL_BAD_THRESHOLD mapping.
-            // `DiagnosticCode::ShellBadThreshold` is added and `.with_code(...)`
-            // wired in step-6 (task γ, #3834). For now, plain error.
+            // PRD §7 row 3 — E_SHELL_BAD_THRESHOLD mapping.
+            // `DiagnosticCode::ShellBadThreshold` added in step-6 (task γ,
+            // #3834). Message template matches the PRD §7 canonical form.
             return ComputeOutcome::Failed {
                 diagnostics: vec![Diagnostic::error(format!(
                     "shell_threshold = {value} must be in (0.0, 1.0)."
-                ))],
+                ))
+                .with_code(reify_core::DiagnosticCode::ShellBadThreshold)],
             };
         }
         Err(e) => {

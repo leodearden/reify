@@ -1097,6 +1097,24 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_UNRESOLVED_NAME`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     UnresolvedName,
+    /// Origin: `crates/reify-eval/src/shell_extract_compute.rs` (γ trampoline
+    /// mapping of [`reify_shell_extract::SegmentationError::InvalidThreshold`]).
+    ///
+    /// Emitted as `Severity::Error` when the `shell_threshold` option supplied
+    /// to `"shell-extract::extract"` is ≤ 0 or ≥ 1. The producer's
+    /// `segment_regions` function requires `shell_threshold ∈ (0.0, 1.0)`.
+    ///
+    /// Canonical message form:
+    /// `"shell_threshold = <value> must be in (0.0, 1.0)."`
+    ///
+    /// Introduced in task γ (#3834, `shell-extract-engine-bridge.md` §7 row 3).
+    /// The remaining six PRD §7 codes (`ShellNoVoxelGrid`, `ShellMedialMaskOob`,
+    /// `ShellPruneFailed`, `ShellMeshQuality`, `ShellTooThick`, `ShellNoMedial`)
+    /// are deferred to task ε; only this code is wired in γ because it is the
+    /// only user-facing variant the γ test exercises.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_SHELL_BAD_THRESHOLD`.
+    ShellBadThreshold,
 }
 
 /// A diagnostic message with location and optional labels.
