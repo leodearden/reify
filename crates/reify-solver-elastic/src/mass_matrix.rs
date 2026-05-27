@@ -435,6 +435,47 @@ mod tests {
         assert!(q_sparse > 0.0, "sparse uᵀMu = {q_sparse}, expected > 0");
     }
 
+    // ----- debug-only density-guard tests -----
+    // The guard `debug_assert!(density.is_finite() && density > 0.0, ...)`
+    // is compiled in only under `debug_assertions`, so the tests must be
+    // gated identically.  The `#[should_panic]` expected string must match
+    // the guard message exactly.
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "density must be finite and positive")]
+    fn consistent_mass_p1_panics_on_nan_density() {
+        let _ = consistent_element_mass_tet_p1(&UNIT_TET, f64::NAN);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "density must be finite and positive")]
+    fn consistent_mass_p1_panics_on_positive_infinite_density() {
+        let _ = consistent_element_mass_tet_p1(&UNIT_TET, f64::INFINITY);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "density must be finite and positive")]
+    fn consistent_mass_p1_panics_on_negative_infinite_density() {
+        let _ = consistent_element_mass_tet_p1(&UNIT_TET, f64::NEG_INFINITY);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "density must be finite and positive")]
+    fn consistent_mass_p1_panics_on_zero_density() {
+        let _ = consistent_element_mass_tet_p1(&UNIT_TET, 0.0);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "density must be finite and positive")]
+    fn consistent_mass_p1_panics_on_negative_density() {
+        let _ = consistent_element_mass_tet_p1(&UNIT_TET, -1.0);
+    }
+
     #[test]
     fn consistent_mass_p1_off_axis_blocks_are_zero_block_diagonal_3x3_structure() {
         // Each (a, b) node-pair block in M_e is `coef · I_3` — diagonal in
