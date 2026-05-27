@@ -1343,3 +1343,112 @@ fn tots_shaper_param_defaults_match_spec() {
         );
     }
 }
+
+// ─── step-39: TOTSShaper design-param positivity/range constraints ────────────
+
+/// `TOTSShaper` must declare exactly 6 constraints per PRD §5.2 + §11 Phase 2:
+///
+///   constraint velocity_limit     > 0
+///   constraint acceleration_limit > 0
+///   constraint vibration_tolerance > 0
+///   constraint vibration_tolerance <= 1   (upper bound: (0,1] interval)
+///   constraint max_iters           > 0
+///   constraint tol                 > 0
+///
+/// The `vibration_tolerance ∈ (0, 1]` interval decomposes into two scalar
+/// predicates because Reify's constraint grammar admits BinOp predicates but
+/// no interval form. `BinOp::Le` handles `<= 1` (confirmed in type_compat.rs).
+///
+/// Tight count == 6 regression-gates against accidental over/under-declaration.
+/// Explicitly NOT constrained (collection invariants deferred to κ-task):
+///   `modes : List<Mode>` and `actuator_limits : List<JointLimit>`.
+///
+/// Mirrors `modal_options_constrains_positivity_invariants` in
+/// modal_options_validation_tests.rs.
+#[test]
+fn tots_shaper_constrains_design_param_invariants() {
+    let template = find_structure("TOTSShaper");
+
+    // Tight count: exactly 6 constraints.
+    assert_eq!(
+        template.constraints.len(),
+        6,
+        "TOTSShaper should declare exactly 6 constraints; \
+         got {} constraints: {:?}",
+        template.constraints.len(),
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+
+    // Five positivity constraints (> 0) for numeric design params.
+    for required in &[
+        "velocity_limit",
+        "acceleration_limit",
+        "vibration_tolerance",
+        "max_iters",
+        "tol",
+    ] {
+        let matched = template.constraints.iter().any(|c| {
+            match &c.expr.kind {
+                CompiledExprKind::BinOp { op, left, right } => {
+                    if *op != BinOp::Gt
+                        || !collect_value_ref_members(left).contains(required)
+                    {
+                        return false;
+                    }
+                    match &right.kind {
+                        CompiledExprKind::Literal(Value::Int(0)) => true,
+                        CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
+                        _ => false,
+                    }
+                }
+                _ => false,
+            }
+        });
+        assert!(
+            matched,
+            "TOTSShaper should declare `constraint {} > 0`; \
+             got constraints: {:?}",
+            required,
+            template
+                .constraints
+                .iter()
+                .map(|c| &c.expr.kind)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    // Upper-bound constraint: vibration_tolerance <= 1 (completing the (0,1]
+    // interval per PRD §11 Phase 2 ε spec). Accept Int(1) or Real(1.0) RHS.
+    let le_matched = template.constraints.iter().any(|c| {
+        match &c.expr.kind {
+            CompiledExprKind::BinOp { op, left, right } => {
+                if *op != BinOp::Le
+                    || !collect_value_ref_members(left).contains(&"vibration_tolerance")
+                {
+                    return false;
+                }
+                match &right.kind {
+                    CompiledExprKind::Literal(Value::Int(1)) => true,
+                    CompiledExprKind::Literal(Value::Real(v)) if *v == 1.0 => true,
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    });
+    assert!(
+        le_matched,
+        "TOTSShaper should declare `constraint vibration_tolerance <= 1` \
+         (upper bound completing the (0,1] interval per PRD §11 Phase 2 ε); \
+         got constraints: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+}
