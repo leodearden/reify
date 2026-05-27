@@ -253,6 +253,23 @@ mod tests {
         TetP1.jacobian(phys, ReferenceCoord::new(0.25, 0.25, 0.25));
     }
 
+    /// `GRADS_REF` must equal the canonical P1 reference-gradient table.
+    ///
+    /// The const is the single source of truth shared with
+    /// `crate::mass_matrix` and `crate::geometric_stiffness::tet`.  This
+    /// test asserts its value against the exact-representable float literals
+    /// so a future typo in the const definition is caught immediately.
+    #[test]
+    fn grads_ref_const_matches_canonical_p1_gradients() {
+        let expected: [[f64; 3]; 4] = [
+            [-1.0, -1.0, -1.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
+        assert_eq!(GRADS_REF, expected);
+    }
+
     #[test]
     fn shape_at_partition_of_unity_at_centroid_and_interior() {
         let probes = [
