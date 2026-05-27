@@ -283,6 +283,54 @@ mod tests {
         }
     }
 
+    /// uᵀ M u for a 12-DOF element matrix.
+    fn quad_form(m: &ElementStiffness, u: &[f64; 12]) -> f64 {
+        let mut acc = 0.0_f64;
+        for i in 0..12 {
+            for j in 0..12 {
+                acc += u[i] * read(m, i, j) * u[j];
+            }
+        }
+        acc
+    }
+
+    #[test]
+    fn consistent_mass_p1_is_positive_semidefinite_via_quadratic_form() {
+        // M is a Gram matrix (integral of ρ·N·Nᵀ), so PSD is structural.
+        // The strongest pin is (a) rigid-translation along an axis: the
+        // kinetic-energy invariant uᵀ M u = ρV for the unit reference tet
+        // (V = 1/6) is an *equality*, so an off-by-constant error in the
+        // coef formula would fire here. (b) sign-mixed and (c) sparse-load
+        // are positivity-only (no kernel mode).
+        let m_e = consistent_element_mass_tet_p1(&UNIT_TET, 1.0);
+
+        // (a) Rigid translation along x: u = (1,0,0, 1,0,0, 1,0,0, 1,0,0)
+        let mut u_trans = [0.0_f64; 12];
+        for node in 0..4 {
+            u_trans[3 * node] = 1.0;
+        }
+        let q_trans = quad_form(&m_e, &u_trans);
+        let expected = 1.0_f64 / 6.0;
+        assert!(
+            (q_trans - expected).abs() < 1e-12,
+            "rigid-x uᵀMu = {q_trans}, expected ρV = {expected}",
+        );
+
+        // (b) Sign-mixed pattern: u_i = (-1)^i
+        let mut u_sign = [0.0_f64; 12];
+        for i in 0..12 {
+            u_sign[i] = if i % 2 == 0 { 1.0 } else { -1.0 };
+        }
+        let q_sign = quad_form(&m_e, &u_sign);
+        assert!(q_sign > 0.0, "sign-mixed uᵀMu = {q_sign}, expected > 0");
+
+        // (c) Sparse-load: single nonzero entry at DOF 0
+        let mut u_sparse = [0.0_f64; 12];
+        u_sparse[0] = 1.0;
+        let q_sparse = quad_form(&m_e, &u_sparse);
+        assert!(q_sparse > 0.0, "sparse uᵀMu = {q_sparse}, expected > 0");
+    }
+
     #[test]
     fn consistent_mass_p1_off_axis_blocks_are_zero_block_diagonal_3x3_structure() {
         // Each (a, b) node-pair block in M_e is `coef · I_3` — diagonal in
