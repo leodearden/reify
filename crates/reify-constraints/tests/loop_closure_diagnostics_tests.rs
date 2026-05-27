@@ -21,6 +21,7 @@ use reify_constraints::{
     solve_loop_closure_with_diagnostics,
 };
 use reify_stdlib::eval_builtin;
+use reify_stdlib::loop_closure_value::JointValue;
 use reify_types::{Diagnostic, DiagnosticCode, Severity, Value};
 
 // ── Test fixtures (mirrors the inline helpers in loop_closure.rs) ──────
@@ -218,9 +219,9 @@ fn loop_closure_report_is_singular_accessor_derives_from_outcome() {
 #[test]
 fn solve_loop_closure_with_diagnostics_emits_overconstrained_for_one_dof() {
     let chain_a = vec![prismatic_x_0_to_1()];
-    let vals_a = vec![0.5];
+    let vals_a = vec![JointValue::Scalar(0.5)];
     let chain_b = vec![prismatic_x_0_to_1()];
-    let vals_b_initial = vec![0.0];
+    let vals_b_initial = vec![JointValue::Scalar(0.0)];
     let free_b = vec![0]; // 1 < 6 → over-constrained
     let strategy = StartStrategy::WarmStart(vec![0.0]);
     let cfg = NewtonConfig::default();
@@ -279,9 +280,9 @@ fn solve_loop_closure_with_diagnostics_emits_overconstrained_for_one_dof() {
 #[test]
 fn solve_loop_closure_with_diagnostics_emits_underconstrained_for_seven_dofs() {
     let chain_a = vec![prismatic_x_0_to_1()];
-    let vals_a = vec![0.5];
+    let vals_a = vec![JointValue::Scalar(0.5)];
     let chain_b: Vec<Value> = (0..7).map(|_| prismatic_x_0_to_1()).collect();
-    let vals_b_initial = vec![0.0; 7];
+    let vals_b_initial = vec![JointValue::Scalar(0.0); 7];
     let free_b: Vec<usize> = (0..7).collect();
     let strategy = StartStrategy::WarmStart(vec![0.0; 7]);
     let cfg = NewtonConfig::default();
@@ -348,9 +349,9 @@ fn solve_loop_closure_with_diagnostics_emits_underconstrained_for_seven_dofs() {
 #[test]
 fn solve_loop_closure_with_diagnostics_emits_singularity_for_rank_one_chain() {
     let chain_a = vec![prismatic_x_0_to_1()];
-    let vals_a = vec![0.5];
+    let vals_a = vec![JointValue::Scalar(0.5)];
     let chain_b: Vec<Value> = (0..6).map(|_| prismatic_x_0_to_1()).collect();
-    let vals_b_initial = vec![0.5; 6];
+    let vals_b_initial = vec![JointValue::Scalar(0.5); 6];
     let free_b: Vec<usize> = (0..6).collect();
     let strategy = StartStrategy::WarmStart(vec![0.0; 6]);
     let cfg = NewtonConfig::default();
@@ -421,9 +422,9 @@ fn solve_loop_closure_with_diagnostics_emits_singularity_for_rank_one_chain() {
 #[test]
 fn solve_loop_closure_with_diagnostics_overconstrained_midpoint_uses_joint_midpoint() {
     let chain_a = vec![prismatic_x_0_to_1()];
-    let vals_a = vec![0.5];
+    let vals_a = vec![JointValue::Scalar(0.5)];
     let chain_b = vec![prismatic_x_0_to_1()];
-    let vals_b_initial = vec![0.0];
+    let vals_b_initial = vec![JointValue::Scalar(0.0)];
     let free_b = vec![0]; // 1 < 6 → over-constrained
     let strategy = StartStrategy::Midpoint;
     let cfg = NewtonConfig::default();
@@ -493,13 +494,14 @@ fn solve_loop_closure_with_diagnostics_balanced_full_rank_emits_no_diagnostics()
         revolute_y_0_to_pi(),
         revolute_z_0_to_pi(),
     ];
-    let vals = vec![0.5, 0.5, 0.5, 0.0, 0.0, 0.0];
+    let vals_flat = vec![0.5, 0.5, 0.5, 0.0, 0.0, 0.0];
+    let vals: Vec<JointValue> = vals_flat.iter().copied().map(JointValue::Scalar).collect();
     let chain_a = chain.clone();
     let vals_a = vals.clone();
     let chain_b = chain;
     let vals_b_initial = vals.clone();
     let free_b: Vec<usize> = (0..6).collect();
-    let strategy = StartStrategy::WarmStart(vals.clone());
+    let strategy = StartStrategy::WarmStart(vals_flat.clone());
     let cfg = NewtonConfig::default();
 
     let report = solve_loop_closure_with_diagnostics(
@@ -589,13 +591,14 @@ fn solve_loop_closure_with_diagnostics_emits_underconstrained_with_full_rank_jac
         revolute_z_0_to_pi(),
         prismatic_x_0_to_1(), // 7th joint: redundant → free_b.len()=7 > 6
     ];
-    let vals = vec![0.5, 0.5, 0.5, 0.0, 0.0, 0.0, 0.5];
+    let vals_flat = vec![0.5, 0.5, 0.5, 0.0, 0.0, 0.0, 0.5];
+    let vals: Vec<JointValue> = vals_flat.iter().copied().map(JointValue::Scalar).collect();
     let chain_a = chain.clone();
     let vals_a = vals.clone();
     let chain_b = chain;
     let vals_b_initial = vals.clone(); // identity residual: chain_a == chain_b at same vals
     let free_b: Vec<usize> = (0..7).collect();
-    let strategy = StartStrategy::WarmStart(vals.clone());
+    let strategy = StartStrategy::WarmStart(vals_flat.clone());
     let cfg = NewtonConfig::default();
 
     let report = solve_loop_closure_with_diagnostics(
@@ -686,9 +689,9 @@ fn solve_loop_closure_with_diagnostics_invalid_input_precedes_overconstrained() 
     // free_b.len() = 1 < SINGLE_LOOP_RESIDUAL_COUNT (6) → also over-constrained.
     // WarmStart length = 1 = free_b.len() → does NOT trigger the length-mismatch check.
     let chain_a = vec![prismatic_x_0_to_1()];
-    let vals_a = vec![0.0];
+    let vals_a = vec![JointValue::Scalar(0.0)];
     let chain_b = vec![prismatic_x_0_to_1()]; // len = 1
-    let vals_b_initial = vec![0.0];
+    let vals_b_initial = vec![JointValue::Scalar(0.0)];
     let free_b = vec![5usize]; // 5 >= chain_b.len() (1) → InvalidInput
     let strategy = StartStrategy::WarmStart(vec![0.0]); // length matches free_b
     let cfg = NewtonConfig::default();

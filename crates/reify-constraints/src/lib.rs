@@ -28,6 +28,13 @@ pub use reify_stdlib::loop_closure_solver::{
     mechanism_loop_closure_chains, newton_solve, solve_loop_closure,
     solve_loop_closure_with_diagnostics,
 };
+// γ-widening re-export: callers that need to construct `vals_a` / `vals_b_initial`
+// for `solve_loop_closure(...)` or `solve_loop_closure_with_diagnostics(...)`
+// require `JointValue` to wrap scalar / planar / spherical / cylindrical
+// per-joint storage.  Re-exported here so downstream crates (e.g. `reify-eval`
+// integration tests) don't need a direct `reify-stdlib` dev-dep to use the
+// loop-closure API.  See `JointValue` in `crates/reify-stdlib/src/loop_closure_value.rs`.
+pub use reify_stdlib::loop_closure_value::{JointKind, JointValue};
 pub use solver::DimensionalSolver;
 pub use solvespace::SolveSpaceSolver;
 

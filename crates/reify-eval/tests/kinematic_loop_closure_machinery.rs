@@ -17,7 +17,7 @@
 //!
 //! See docs/prds/v0_2/kinematic-constraints.md, §"Decomposition plan", task 2.
 
-use reify_constraints::{NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure};
+use reify_constraints::{JointValue, NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure};
 use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_with_stdlib};
 use reify_types::{Value, ValueCellId, ValueMap};
 
@@ -59,9 +59,9 @@ fn loop_closure_machinery_solves_single_prismatic_loop_e2e() {
     // [joint_b] with index 0 free, initialised at 0.0 m.  Solver should
     // drive the free var to 0.5 m to close the loop.
     let chain_a = vec![joint_a];
-    let vals_a = vec![0.5];
+    let vals_a = vec![JointValue::Scalar(0.5)];
     let chain_b = vec![joint_b];
-    let vals_b_initial = vec![0.0];
+    let vals_b_initial = vec![JointValue::Scalar(0.0)];
     let free_b = vec![0];
     let strategy = StartStrategy::WarmStart(vec![0.0]);
     let cfg = NewtonConfig::default();

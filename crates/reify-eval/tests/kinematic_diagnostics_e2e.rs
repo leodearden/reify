@@ -17,7 +17,7 @@
 //! See docs/prds/v0_2/kinematic-constraints.md, §"Singularity, over/under-constraint diagnostics".
 
 use reify_constraints::{
-    LoopClosureReport, NewtonConfig, NewtonOutcome, StartStrategy,
+    JointValue, LoopClosureReport, NewtonConfig, NewtonOutcome, StartStrategy,
     solve_loop_closure_with_diagnostics,
 };
 use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_with_stdlib};
@@ -68,8 +68,8 @@ fn kinematic_diagnostics_e2e_reports_singularity_for_rank_one_six_dof_chain() {
     // Single-loop problem with balanced 6 free DOFs == 6 residual count
     // (no DOF imbalance) but rank-1 Jacobian → solver returns Singular.
     let chain_a = vec![joint_a];
-    let vals_a = vec![0.5];
-    let vals_b_initial = vec![0.5; 6];
+    let vals_a = vec![JointValue::Scalar(0.5)];
+    let vals_b_initial = vec![JointValue::Scalar(0.5); 6];
     let free_b: Vec<usize> = (0..6).collect();
     let strategy = StartStrategy::WarmStart(vec![0.0; 6]);
     let cfg = NewtonConfig::default();

@@ -369,12 +369,50 @@ fn solve_normal_equations(
 /// Result invariant: `NotConverged.x` and `NotConverged.residual_norm` always
 /// correspond to the same iterate — `residual_norm` is the combined norm
 /// (`sqrt(linear² + angular²)`) of `r(x)` at the returned `x`.
-pub fn newton_solve<F>(x0: Vec<f64>, mut residual_jac: F, config: &NewtonConfig) -> NewtonOutcome
+pub fn newton_solve<F>(x0: Vec<f64>, residual_jac: F, config: &NewtonConfig) -> NewtonOutcome
 where
     F: FnMut(&[f64]) -> Option<(Vec<f64>, Vec<Vec<f64>>)>,
 {
+    newton_solve_with_projection(x0, residual_jac, |_x: &mut [f64]| {}, config)
+}
+
+/// Generic Gauss-Newton solver with a per-step projection hook.
+///
+/// Behaves identically to [`newton_solve`] except that after each
+/// Newton step `x[i] += dx[i]`, the `post_step` closure is invoked with a
+/// mutable reference to `x`.  This is the seam where on-manifold projection
+/// happens — e.g. [`solve_loop_closure`] passes a closure that walks free
+/// `JointValue::Sphere` slots and applies [`renormalize_quaternion`]
+/// per-slot in storage space so the next iteration's `residual_jac` call
+/// receives a unit-norm quaternion.
+///
+/// The projection is also applied to the final iterate before the function
+/// returns, so [`NewtonOutcome::Converged::x`] and
+/// [`NewtonOutcome::NotConverged::x`] always satisfy the manifold
+/// invariants `post_step` enforces.
+///
+/// PRD §5.3 "redundant Lagrangian coordinates" trick: a Sphere slot has 4
+/// stored components (`flat_len = 4`) but only 3 manifold DOF; the Newton
+/// step is taken in storage space (`x += δx`); `post_step` projects each
+/// Sphere slot back to S³ so the iterate stays on-manifold.
+///
+/// [`renormalize_quaternion`]: crate::loop_closure_value::JointValue::renormalize_quaternion
+pub fn newton_solve_with_projection<F, P>(
+    x0: Vec<f64>,
+    mut residual_jac: F,
+    mut post_step: P,
+    config: &NewtonConfig,
+) -> NewtonOutcome
+where
+    F: FnMut(&[f64]) -> Option<(Vec<f64>, Vec<Vec<f64>>)>,
+    P: FnMut(&mut [f64]),
+{
     let mut x = x0;
     let n = x.len();
+    // Apply the projection to x0 itself — the caller's seed may be off-
+    // manifold (e.g. WarmStart from a non-unit quaternion); the closure
+    // expects on-manifold input from the very first iteration.
+    post_step(&mut x);
     let mut last_residual_norm = f64::INFINITY;
     let mut prev_combined_norm: Option<f64> = None;
     let mut diverging_streak: usize = 0;
@@ -471,6 +509,11 @@ where
         for i in 0..n {
             x[i] += dx[i];
         }
+        // On-manifold projection of the post-step iterate.  No-op when
+        // the caller supplied the default identity closure (via
+        // [`newton_solve`]); for [`solve_loop_closure`], walks Sphere
+        // slots and renormalizes each quaternion sub-vector.
+        post_step(&mut x);
     }
 
     // After max_iters (without convergence): re-evaluate r(x) at the
@@ -613,6 +656,9 @@ pub fn solve_loop_closure(
     let mut vals_b_scratch = vals_b_initial.to_vec();
     let free_b_vec = free_b.to_vec();
     let free_shapes_vec = free_shapes;
+    // Clone for the projection closure (captured separately from the
+    // residual_jac closure, both via move).
+    let free_shapes_proj = free_shapes_vec.clone();
 
     let closure = move |x: &[f64]| -> Option<(Vec<f64>, Vec<Vec<f64>>)> {
         // Expected width = Σ free_shapes[k].flat_len().  The Newton state
@@ -622,7 +668,11 @@ pub fn solve_loop_closure(
             return None;
         }
         // Unflatten the per-free-joint slices into typed JointValues and
-        // splice them back into vals_b_scratch at the free indices.
+        // splice them back into vals_b_scratch at the free indices.  Per-step
+        // projection (sphere renormalization) is already applied to `x` by
+        // `newton_solve_with_projection`'s post-step hook, so the storage
+        // here is on-manifold by construction; the unflatten is a no-op
+        // projection (preserves bit-for-bit equality with `x`).
         let mut cursor = 0;
         for (k, &i) in free_b_vec.iter().enumerate() {
             if i >= vals_b_scratch.len() {
@@ -636,14 +686,7 @@ pub fn solve_loop_closure(
             )
             .ok()?;
             cursor += width;
-            // Per PRD §5.3: project Sphere slots back to S³ after each
-            // Newton step (the closure runs once per step on the updated
-            // iterate; renormalization here is the on-manifold projection
-            // that keeps the redundant-coordinate Newton step well-posed).
-            // Scalar/Cyl/Planar `renormalize_quaternion` is a no-op.
-            let mut jv_proj = jv;
-            jv_proj.renormalize_quaternion();
-            vals_b_scratch[i] = jv_proj;
+            vals_b_scratch[i] = jv;
         }
         let twist = crate::loop_closure::loop_residual_twist(
             &chain_a_vec,
@@ -663,7 +706,37 @@ pub fn solve_loop_closure(
         Some((r, j_cols))
     };
 
-    newton_solve(x0, closure, &effective_config)
+    // Per-step on-manifold projection of x.  Walks each free joint's flat
+    // storage chunk; for Sphere slots, the chunk is a 4-component quaternion
+    // [w, x, y, z] that we renormalize in-place to lie on S³.  Other
+    // kinds (Scalar, Cyl, Planar, Fixed) are unaffected.  PRD §5.3 redundant-
+    // coordinate Newton: storage-space step + manifold projection.
+    let post_step = move |x: &mut [f64]| {
+        let mut cursor = 0;
+        for &k in &free_shapes_proj {
+            let width = k.flat_len();
+            if matches!(k, crate::loop_closure_value::JointKind::Spherical) {
+                let chunk = &mut x[cursor..cursor + width];
+                let norm_sq = chunk.iter().map(|v| v * v).sum::<f64>();
+                if norm_sq > 0.0 {
+                    let norm = norm_sq.sqrt();
+                    for v in chunk.iter_mut() {
+                        *v /= norm;
+                    }
+                } else {
+                    // Degenerate: fall back to identity quaternion
+                    // [w=1, x=0, y=0, z=0] (canonical Sphere identity).
+                    chunk[0] = 1.0;
+                    for v in &mut chunk[1..] {
+                        *v = 0.0;
+                    }
+                }
+            }
+            cursor += width;
+        }
+    };
+
+    newton_solve_with_projection(x0, closure, post_step, &effective_config)
 }
 
 /// Tikhonov-damping magnitude applied to each storage component of every
@@ -2113,7 +2186,7 @@ mod tests {
         // (2x+y=4, x+3y=5 ⟹ x=1.4, y=1.2)
         let mut a = vec![2.0_f64, 1.0, 1.0, 3.0];
         let mut b = vec![4.0_f64, 5.0];
-        let result = super::solve_normal_equations(&mut a, &mut b, 2, 1e-12);
+        let result = super::solve_normal_equations(&mut a, &mut b, 2, 1e-12, &[]);
         assert!(result, "expected solve to succeed on PD matrix");
         assert!(
             (b[0] - 1.4).abs() < 1e-9,
@@ -2132,7 +2205,7 @@ mod tests {
         // A = [[1, 2], [2, 4]] — rank-1 (singular): D[1,1] = 4 - 2²·1 = 0.
         let mut a = vec![1.0_f64, 2.0, 2.0, 4.0];
         let mut b = vec![1.0_f64, 2.0];
-        let result = super::solve_normal_equations(&mut a, &mut b, 2, 1e-12);
+        let result = super::solve_normal_equations(&mut a, &mut b, 2, 1e-12, &[]);
         assert!(!result, "expected solve to fail on singular matrix");
     }
 
@@ -2141,7 +2214,7 @@ mod tests {
         // n = 0 edge case: empty slices must return true immediately.
         let mut a: Vec<f64> = vec![];
         let mut b: Vec<f64> = vec![];
-        let result = super::solve_normal_equations(&mut a, &mut b, 0, 1e-12);
+        let result = super::solve_normal_equations(&mut a, &mut b, 0, 1e-12, &[]);
         assert!(result, "expected solve to succeed on n=0 (trivial case)");
     }
 
@@ -2958,7 +3031,7 @@ mod tests {
         // L[1,0]=1/4, L[2,0]=1/4, L[2,1]=-1/11.
         let mut a = vec![4.0_f64, 1.0, 1.0, 1.0, 3.0, 0.0, 1.0, 0.0, 2.0];
         let mut b = vec![6.0_f64, 4.0, 3.0];
-        let result = super::solve_normal_equations(&mut a, &mut b, 3, 1e-12);
+        let result = super::solve_normal_equations(&mut a, &mut b, 3, 1e-12, &[]);
         assert!(result, "expected solve to succeed on 3×3 PD matrix");
         assert!(
             (b[0] - 1.0).abs() < 1e-9,
