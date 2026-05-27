@@ -7,9 +7,8 @@
 //! These tests **fail to compile** until step 4 migrates reify-compiler's consumer
 //! sites — that compile failure is the "red" phase that justifies step 4.
 
-use reify_syntax::*;
+use reify_ast::*;
 use reify_core::*;
-use reify_ir::*;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

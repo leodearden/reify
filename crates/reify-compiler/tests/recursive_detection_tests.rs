@@ -13,7 +13,6 @@
 use reify_compiler::*;
 use reify_test_support::compile_source;
 use reify_core::*;
-use reify_ir::*;
 
 /// Helper: compile and destructure into templates + diagnostics.
 fn compile_all(source: &str) -> (Vec<TopologyTemplate>, Vec<Diagnostic>) {
