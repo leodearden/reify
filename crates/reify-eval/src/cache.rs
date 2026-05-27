@@ -868,9 +868,20 @@ impl CacheStore {
     /// `_with_cause` is deliberately NOT called here — `Freshness::Final`
     /// has no diagnostic chain root.
     ///
-    /// `c_id` is accepted but unused for δ scope; it is reserved for the
-    /// warm-state donation step (PRD §5 step 4, ζ scope / task 3425) so that
-    /// future work does not have to widen this signature.
+    /// **Warm-state donation (PRD §5 step 4 / ζ — task 3425).** When
+    /// `new_warm_state` is `Some`, an entry under `NodeId::Compute(c_id)`
+    /// is auto-seeded with a sentinel `CachedResult::Value(Undef, Determined)`
+    /// placeholder (Compute entries exist only to carry warm_state + cost;
+    /// they never hold authoritative results — those live on output VCs)
+    /// and the warm state + `cost_per_byte` are donated into it via
+    /// [`CacheStore::donate_warm_state_with_cost`]. The donation runs in
+    /// the same critical section as the output-VC flip (steps 1-3) so a
+    /// consumer cannot observe the output Final without the warm state
+    /// also being in place.
+    ///
+    /// When `new_warm_state` is `None`, no Compute entry is created — the
+    /// trampoline reported no state worth preserving, and the at-rest
+    /// surface is the cache alone.
     ///
     /// Returns the count of output entries written.
     pub fn complete_compute_dispatch_atomically(
@@ -878,9 +889,9 @@ impl CacheStore {
         c_id: &ComputeNodeId,
         outputs: &[(ValueCellId, Value)],
         version: VersionId,
+        new_warm_state: Option<OpaqueState>,
+        cost_per_byte: f64,
     ) -> usize {
-        // Reserved for ζ-scope warm-state donation (PRD §5 step 4 / task 3425).
-        let _ = c_id;
         let mut updated = 0;
         for (out, value) in outputs {
             let node = NodeId::Value(out.clone());
@@ -903,6 +914,32 @@ impl CacheStore {
             }
             updated += 1;
         }
+
+        // Step 4 (ζ): donate the trampoline's new warm state + cost to the
+        // canonical at-rest store. The Compute entry is auto-seeded as a
+        // sentinel; it has no authoritative result. See design decision 3
+        // in `.task/plan.json`.
+        if let Some(state) = new_warm_state {
+            let compute_node = NodeId::Compute(c_id.clone());
+            if !self.caches.contains_key(&compute_node) {
+                let sentinel =
+                    CachedResult::Value(Value::Undef, DeterminacyState::Determined);
+                self.caches.insert(
+                    compute_node.clone(),
+                    NodeCache::new(
+                        sentinel,
+                        Freshness::Final,
+                        DependencyTrace::default(),
+                        version,
+                    ),
+                );
+            }
+            // donate_warm_state_with_cost sanitises non-finite/negative cost
+            // to 0.0; the no-op (entry-absent) branch cannot fire here
+            // because we just guaranteed the entry exists.
+            self.donate_warm_state_with_cost(&compute_node, state, cost_per_byte);
+        }
+
         updated
     }
 
@@ -4318,6 +4355,8 @@ mod tests {
             &c_id,
             &[(b.clone(), Value::Int(99))],
             VersionId(2),
+            None,
+            0.0,
         );
 
         // (e) post-state: (Final, new value, no cause).

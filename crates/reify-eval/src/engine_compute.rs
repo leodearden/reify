@@ -279,8 +279,16 @@ impl crate::Engine {
                     .iter()
                     .map(|o| (o.clone(), result.clone()))
                     .collect();
-                self.cache
-                    .complete_compute_dispatch_atomically(c_id, &pairs, version);
+                // Warm-state threading lands in step-8 (task 3425/ζ); the
+                // call deliberately passes `None, 0.0` here so step-7's RED
+                // test can pin the missing wiring before step-8 fixes it.
+                self.cache.complete_compute_dispatch_atomically(
+                    c_id,
+                    &pairs,
+                    version,
+                    None,
+                    0.0,
+                );
                 Ok((result, diagnostics))
             }
             // Step 3b: Cancelled — leave VCs in the already-correct Pending
