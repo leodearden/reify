@@ -103,6 +103,54 @@ structure def PinnedSupportAccess {
     );
 }
 
+/// task 3546 amendment — explicit `target` field round-trips a non-default value.
+///
+/// The retired builtin test `pinned_support_returns_map_with_correct_fields` covered
+/// round-tripping an explicit selector string through the `target` key on the old
+/// `Value::Map`; this test pins the same contract on the structure-def evaluation
+/// path (field-round-trip guard for `PinnedSupport(target: "face_1")`).
+///
+/// Mirrors `FixedSupport` boundary suite behaviour for explicit args.
+#[test]
+fn pinned_support_explicit_target_field_round_trips() {
+    const SOURCE: &str = r#"
+structure def PinnedSupportExplicit {
+    let support = PinnedSupport(target: "face_1")
+}
+"#;
+
+    let compiled = parse_and_compile_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let id = ValueCellId::new("PinnedSupportExplicit", "support");
+    let support = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("PinnedSupportExplicit.support cell missing from eval result"));
+
+    match support {
+        Value::StructureInstance(data) => {
+            assert_eq!(
+                data.type_name, "PinnedSupport",
+                "expected type_name=\"PinnedSupport\"; got {:?}",
+                data.type_name
+            );
+            assert_eq!(
+                field(&data.fields, "target"),
+                Some(&Value::String("face_1".to_string())),
+                "PinnedSupport(target: \"face_1\").target must round-trip as \
+                 Value::String(\"face_1\"); fields: {:?}",
+                data.fields
+            );
+        }
+        other => panic!(
+            "expected Value::StructureInstance for PinnedSupportExplicit.support — \
+             got {other:?}"
+        ),
+    }
+}
+
 /// task 3546 step-1: trait-typed param admission — `param sup : Support = PinnedSupport()`
 /// compiles without any Error-severity diagnostics, confirming that `PinnedSupport`
 /// nominally conforms to `trait Support` (the empty-marker form from SIR-α wave-1).
@@ -153,11 +201,16 @@ structure def BadUsage {
 
     let compiled = compile_source_with_stdlib(SOURCE);
     let errors = collect_errors(&compiled.diagnostics);
+    // Match "trait 'Support'" specifically so a stray mention of the consumer
+    // structure name "SupportConsumer" cannot accidentally satisfy the check.
+    // The conformance module emits messages of the form:
+    //   "type 'NotASupport' does not conform to trait 'Support' required by param 'sup'"
+    // (see crates/reify-compiler/src/conformance/mod.rs:374-376).
     assert!(
         errors
             .iter()
             .any(|d| d.message.contains("does not conform to trait")
-                && d.message.contains("Support")),
+                && d.message.contains("trait 'Support'")),
         "NotASupport must be rejected for a Support-typed param with a 'does not conform \
          to trait Support' error (empty-marker trait still enforces nominal identity); \
          got errors: {errors:?}"
