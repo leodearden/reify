@@ -49,9 +49,15 @@ fn reify_ir_depends_only_on_reify_core_and_reify_ast() {
         .copied()
         .filter(|line| {
             let trimmed = line.trim_start();
-            !ALLOWED
-                .iter()
-                .any(|allowed| trimmed.starts_with(allowed))
+            !ALLOWED.iter().any(|allowed| {
+                // Require a word-boundary character after the crate name so that
+                // a hypothetical `reify-core-other` dep does not falsely pass the
+                // allow-list (`.` for `.workspace`, ` ` for ` = { … }`, `=` for
+                // `={}` inline tables).
+                trimmed.starts_with(&format!("{allowed}."))
+                    || trimmed.starts_with(&format!("{allowed} "))
+                    || trimmed.starts_with(&format!("{allowed}="))
+            })
         })
         .collect();
 

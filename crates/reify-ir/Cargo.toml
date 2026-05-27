@@ -11,10 +11,8 @@ reify-ast.workspace = true
 im.workspace = true
 inventory.workspace = true
 xxhash-rust.workspace = true
-serde = { workspace = true, features = ["derive"], optional = true }
-
 [features]
-serde = ["dep:serde", "reify-core/serde", "reify-ast/serde"]
+serde = ["reify-core/serde", "reify-ast/serde"]
 
 [dev-dependencies]
 serde_json = "1"

@@ -7,9 +7,8 @@
 //! Both spellings remain in sync because `reify-ir/src/lib.rs` exports each
 //! module as `pub mod` AND re-exports its symbols at the crate root.
 //!
-//! This test intentionally fails to compile before step-2 because the types
-//! don't yet exist in reify-ir — the `pub mod` declarations are added atomically
-//! with the module move (step-2, GREEN).
+//! Compile-time guarantees that reify-ir's public API exposes the listed symbols
+//! via both flat and module-path spellings.
 
 // ── annotation (flat form) ───────────────────────────────────────────────────
 use reify_ir::{Annotation, AnnotationArg, AnnotationArgValue, has_test_annotation};
@@ -533,7 +532,7 @@ fn sampled_module_accessible() {
     // `reify_ir::sampled::…` or `reify_types::sampled::…`.
     // We just verify the module path is accessible (no public items to pin here
     // beyond those already covered in the value tests above).
-    let _ = sampled::LINSPACE_MAX_INTERVALS;
+    assert!(sampled::LINSPACE_MAX_INTERVALS > 0);
 }
 
 #[test]

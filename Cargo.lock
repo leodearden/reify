@@ -4625,7 +4625,6 @@ dependencies = [
  "inventory",
  "reify-ast",
  "reify-core",
- "serde",
  "serde_json",
  "xxhash-rust",
 ]
