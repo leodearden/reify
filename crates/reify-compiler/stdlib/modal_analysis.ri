@@ -484,3 +484,54 @@ structure def StepForce : ForcingFunction {
     //                pre-loaded-history simulations where the force has been
     //                applied before t=0.
 }
+
+// ── ImpulseForce ──────────────────────────────────────────────────────────────
+
+// `ImpulseForce` applies a Dirac-delta impulse at a given location on the
+// part (PRD §5.1). Physically, an impulse is an instantaneous transfer of
+// momentum: F(t) = impulse · δ(t − time), where δ is the Dirac delta.
+//
+// Param semantics (PRD §5.1):
+//   at       — the location on the part. FIXME(location-id-type): `String`
+//              PLACEHOLDER for the future `LocationId` type (same convention
+//              as `StepForce.at` above).
+//   direction — unit excitation vector. `Vector3<Dimensionless>` per the
+//              `ModalOptions.reference_direction` precedent. The `direction`
+//              unit-vector carries the sign; `impulse` carries the positive
+//              scalar magnitude.
+//   impulse  — the positive scalar impulse (momentum transfer).
+//              FIXME(impulse-dim): encoded as `Real` PLACEHOLDER for the
+//              unrepresentable `ImpulseDim` = N·s = momentum =
+//              MASS·LENGTH·TIME⁻¹ (not in NAMED_DIMENSIONS —
+//              reify-types/src/dimension.rs:444-505 scanned). Same
+//              placeholder convention as `Mode.frequency : Real` (modal_
+//              analysis.ri:188) waiting for `Scalar<Frequency>`. The
+//              constraint `impulse > 0` (bare `0`, not `0unit`, because
+//              `impulse : Real`) works per the `n_modes > 0` precedent on
+//              `Int`-typed `n_modes`.
+//   time     — the time of the delta-function impulse application. Any real
+//              time is valid; negative values support pre-loaded-history
+//              simulations.
+//
+// PRD reference: docs/prds/v0_3/modal-analysis.md §5.1.
+structure def ImpulseForce : ForcingFunction {
+    param at : String
+    param direction : Vector3<Dimensionless>
+    param impulse : Real
+    param time : Time
+
+    // `impulse : Real` (PLACEHOLDER for ImpulseDim = N·s) uses bare `0`
+    // because the field is Real-typed — same shape as `n_modes > 0` on
+    // Int-typed `n_modes` (modal_analysis.ri:365). By convention, `direction`
+    // carries the sign (unit vector); `impulse` carries the positive scalar
+    // magnitude. Declaring the lower bound at the structure-def level follows
+    // the task-2544 explicit-contract convention (same rationale as
+    // `StepForce.magnitude > 0N` above).
+    constraint impulse > 0
+
+    // NOTE — explicitly NOT constrained:
+    //   at        : String — no scalar invariant expressible on a String placeholder
+    //   direction : Vector3<Dimensionless> — norm() is not scalar-predicable
+    //   time      : Time — any real time is valid; negative values support
+    //                pre-loaded-history simulations (force applied before t=0)
+}

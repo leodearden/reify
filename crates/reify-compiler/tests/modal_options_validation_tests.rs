@@ -944,6 +944,135 @@ fn step_force_struct_has_correct_param_shape() {
     );
 }
 
+// ─── step-7 (η): ImpulseForce param shape ────────────────────────────────────
+
+/// `ImpulseForce` (PRD §5.1) applies a Dirac-delta impulse at a location.
+/// Must declare exactly 4 params in declaration order:
+///
+///   - `at        : String`                   (PLACEHOLDER for LocationId)
+///   - `direction : Vector3<Dimensionless>`   (unit excitation vector)
+///   - `impulse   : Real`                     (PLACEHOLDER for ImpulseDim = N·s)
+///   - `time      : Time`                     (delta-application time)
+///
+/// Must refine `ForcingFunction` via `trait_bounds`. No defaults.
+/// `impulse : Real` is a PLACEHOLDER for the unrepresentable `ImpulseDim`
+/// (= N·s = momentum = MASS·LENGTH·TIME⁻¹; not in NAMED_DIMENSIONS).
+/// Constraint lands in step-10.
+#[test]
+fn impulse_force_struct_has_correct_param_shape() {
+    let template = find_structure("ImpulseForce");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    // (a) tight count
+    assert_eq!(
+        params.len(),
+        4,
+        "ImpulseForce should have exactly 4 param cells \
+         (at, direction, impulse, time), got: {:?}",
+        names
+    );
+
+    // (b) param names + types in declaration order
+    let expected: &[(&str, Type)] = &[
+        ("at", Type::String),
+        ("direction", Type::vec3(Type::dimensionless_scalar())),
+        ("impulse", Type::Real), // PLACEHOLDER for ImpulseDim (design-decision-3)
+        (
+            "time",
+            Type::Scalar {
+                dimension: DimensionVector::TIME,
+            },
+        ),
+    ];
+    let expected_names: Vec<&str> = expected.iter().map(|(m, _)| *m).collect();
+    assert_eq!(
+        names, expected_names,
+        "ImpulseForce params must be in canonical order (at, direction, impulse, time)"
+    );
+    for (i, (expected_name, expected_ty)) in expected.iter().enumerate() {
+        let cell = &params[i];
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "ImpulseForce.{} should be {:?}, got {:?}",
+            expected_name, expected_ty, cell.cell_type
+        );
+    }
+
+    // (c) no defaults — all caller-supplied
+    for cell in &params {
+        assert!(
+            cell.default_expr.is_none(),
+            "ImpulseForce.{} should have no default_expr (caller-supplied), \
+             but got: {:?}",
+            cell.id.member,
+            cell.default_expr
+        );
+    }
+
+    // (d) refines ForcingFunction
+    assert!(
+        template
+            .trait_bounds
+            .iter()
+            .any(|t| t == "ForcingFunction"),
+        "ImpulseForce should refine ForcingFunction; got trait_bounds: {:?}",
+        template.trait_bounds
+    );
+}
+
+// ─── step-9 (η): ImpulseForce impulse positivity constraint ──────────────────
+
+/// `ImpulseForce` must declare exactly 1 constraint: `impulse > 0`.
+///
+/// `impulse : Real` (PLACEHOLDER for ImpulseDim) uses bare `0` (not `0unit`)
+/// because the field is Real-typed — same shape as `n_modes > 0` on Int.
+/// Direction carries the sign; impulse is the positive scalar size.
+/// Mirrors `step_force_constrains_magnitude_positive` discipline (tight count==1).
+#[test]
+fn impulse_force_constrains_impulse_positive() {
+    let template = find_structure("ImpulseForce");
+
+    assert_eq!(
+        template.constraints.len(),
+        1,
+        "ImpulseForce should declare exactly 1 constraint (impulse > 0); \
+         got {} constraints: {:?}",
+        template.constraints.len(),
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+
+    let matched = template.constraints.iter().any(|c| {
+        match &c.expr.kind {
+            CompiledExprKind::BinOp { op, left, right } => {
+                if *op != BinOp::Gt || !collect_value_ref_members(left).contains(&"impulse") {
+                    return false;
+                }
+                match &right.kind {
+                    CompiledExprKind::Literal(Value::Int(0)) => true,
+                    CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    });
+    assert!(
+        matched,
+        "ImpulseForce should declare `constraint impulse > 0`; \
+         got constraints: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+}
+
 // ─── step-5 (η): StepForce magnitude positivity constraint ───────────────────
 
 /// `StepForce` must declare exactly 1 constraint: `magnitude > 0N`.
