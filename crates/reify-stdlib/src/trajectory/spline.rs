@@ -574,6 +574,54 @@ impl QuinticSpline {
     }
 }
 
+/// A multi-joint spline wrapping one scalar spline per joint.
+pub(crate) enum MultiJointSpline {
+    Cubic(Vec<CubicSpline>),
+    Quintic(Vec<QuinticSpline>),
+}
+
+impl MultiJointSpline {
+    /// Evaluate position at t, returning one value per joint.
+    pub(crate) fn eval(&self, t: f64) -> Vec<f64> {
+        match self {
+            MultiJointSpline::Cubic(splines) => splines.iter().map(|s| s.eval(t)).collect(),
+            MultiJointSpline::Quintic(splines) => splines.iter().map(|s| s.eval(t)).collect(),
+        }
+    }
+
+    /// Evaluate first derivative at t.
+    pub(crate) fn eval_dot(&self, t: f64) -> Vec<f64> {
+        match self {
+            MultiJointSpline::Cubic(splines) => splines.iter().map(|s| s.eval_dot(t)).collect(),
+            MultiJointSpline::Quintic(splines) => {
+                splines.iter().map(|s| s.eval_dot(t)).collect()
+            }
+        }
+    }
+
+    /// Evaluate second derivative at t.
+    pub(crate) fn eval_ddot(&self, t: f64) -> Vec<f64> {
+        match self {
+            MultiJointSpline::Cubic(splines) => splines.iter().map(|s| s.eval_ddot(t)).collect(),
+            MultiJointSpline::Quintic(splines) => {
+                splines.iter().map(|s| s.eval_ddot(t)).collect()
+            }
+        }
+    }
+
+    /// Return total duration (same for all joints).
+    pub(crate) fn duration(&self) -> f64 {
+        match self {
+            MultiJointSpline::Cubic(splines) => {
+                splines.first().map(|s| s.duration()).unwrap_or(0.0)
+            }
+            MultiJointSpline::Quintic(splines) => {
+                splines.first().map(|s| s.duration()).unwrap_or(0.0)
+            }
+        }
+    }
+}
+
 // ── Linear algebra helpers ────────────────────────────────────────────────────
 
 /// Solve a tridiagonal system Ax = rhs using the Thomas algorithm.
