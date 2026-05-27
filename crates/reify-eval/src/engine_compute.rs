@@ -272,14 +272,21 @@ impl crate::Engine {
             .cost_per_byte_of(&compute_node)
             .or_else(|| self.warm_pool.cost_per_byte_of(&compute_node))
             .unwrap_or(0.0);
+        // Cache-miss → pool-hit fallback. Use `checkout` (which discards
+        // the LRU stamp internally) rather than `checkout_with_lru_stamp`
+        // + `.map(|(state, _)| state)`: the prior state is restored back
+        // to the CACHE on Cancelled/Failed/unregistered (not back to the
+        // pool), so the pool's original `last_accessed` stamp has no
+        // downstream consumer here. The next engine_edit cycle that re-
+        // parks this entry into the pool will assign a fresh
+        // `Instant::now()` — the same limitation already documented by
+        // `donate_preserving_lru_resets_cost_to_zero_known_limitation` for
+        // the (4c)→(14b) round-trip. `checkout` makes the discard explicit
+        // rather than hiding it behind an unused `_stamp` binding.
         let mut prior_warm_state: Option<OpaqueState> = self
             .cache
             .get_warm_state(&compute_node)
-            .or_else(|| {
-                self.warm_pool
-                    .checkout_with_lru_stamp(&compute_node)
-                    .map(|(state, _stamp)| state)
-            });
+            .or_else(|| self.warm_pool.checkout(&compute_node));
 
         // Step 1: pre-mark output VCs Pending (the in-flight state).
         // begin_compute_dispatch already leaves VCs Pending{last_substantive: prior}
