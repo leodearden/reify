@@ -199,6 +199,15 @@ pub struct NodeCache {
     /// Optional warm-start state for the evaluator (type-erased).
     /// Transient: not preserved across clones (warm state is an optimization hint).
     pub warm_state: Option<OpaqueState>,
+    /// Estimated `cost_per_byte` companion of `warm_state`
+    /// (= `estimated_cold_compute_time_secs / size_bytes`, arch §4.3).
+    ///
+    /// Paired with `warm_state` — both are reset together on `Clone` and in
+    /// `record_evaluation_with_freshness` since the cost is meaningful only
+    /// while the warm state it describes is still present. Sanitised by
+    /// [`CacheStore::donate_warm_state_with_cost`] so a future cost-weighted
+    /// LRU eviction policy can `partial_cmp` safely on the field.
+    pub cost_per_byte: f64,
     /// Diagnostic-chain side-table: when `freshness == Pending`, this carries
     /// the upstream `NodeId` that caused this node to be Pending. Valid
     /// chain-root variants (per `docs/prds/v0_3/compute-node-contract.md §3`):
@@ -226,6 +235,10 @@ impl Clone for NodeCache {
             dependency_trace: self.dependency_trace.clone(),
             basis_version: self.basis_version,
             warm_state: None, // warm state is transient, not preserved across clones
+            // Cost is meaningful only while the warm_state it describes is
+            // present; resetting both together preserves the "audit-clean"
+            // pairing invariant called out on the field.
+            cost_per_byte: 0.0,
             pending_cause: self.pending_cause.clone(),
         }
     }
@@ -251,6 +264,7 @@ impl NodeCache {
             dependency_trace,
             basis_version,
             warm_state: None,
+            cost_per_byte: 0.0,
             pending_cause: None,
         }
     }
@@ -490,6 +504,7 @@ impl CacheStore {
             existing.dependency_trace = trace;
             existing.freshness = freshness;
             existing.warm_state = None; // old warm state is stale after re-evaluation
+            existing.cost_per_byte = 0.0; // paired-reset with warm_state (ζ/3425)
             return EvalOutcome::Unchanged;
         }
 
@@ -503,6 +518,7 @@ impl CacheStore {
                 dependency_trace: trace,
                 basis_version: version,
                 warm_state: None,
+                cost_per_byte: 0.0,
                 pending_cause: None,
             },
         );
@@ -818,6 +834,7 @@ impl CacheStore {
                         dependency_trace: DependencyTrace::default(),
                         basis_version: VersionId(0),
                         warm_state: None,
+                        cost_per_byte: 0.0,
                         pending_cause: Some(NodeId::Compute(c_id.clone())),
                     },
                 );
@@ -1003,13 +1020,59 @@ impl CacheStore {
     ///
     /// Returns `true` if the node was found and warm state was set,
     /// `false` if the node is not in the cache (no-op).
+    ///
+    /// Back-compat wrapper over [`CacheStore::donate_warm_state_with_cost`]
+    /// with `cost_per_byte = 0.0` — mirrors the same wrapper pattern
+    /// [`WarmStatePool::donate`](crate::warm_pool::WarmStatePool::donate)
+    /// uses over `donate_with_cost`. Existing callers and tests are
+    /// unaffected; cost-aware callers use the explicit method.
     pub fn donate_warm_state(&mut self, node: &NodeId, state: OpaqueState) -> bool {
+        self.donate_warm_state_with_cost(node, state, 0.0)
+    }
+
+    /// Store warm-start state on an existing cached node along with its
+    /// estimated `cost_per_byte` (= `estimated_cold_compute_time_secs /
+    /// size_bytes`, arch §4.3).
+    ///
+    /// Returns `true` if the node was found and both fields were written,
+    /// `false` if the node is not in the cache (no-op).
+    ///
+    /// `cost_per_byte` is sanitised to `0.0` when not finite (`NaN`, `±inf`)
+    /// or negative, mirroring [`crate::warm_pool::WarmStatePool::insert_entry`]
+    /// so a future cost-weighted-LRU comparator can safely call `partial_cmp`
+    /// without panicking on non-finite values or mishandling negative costs.
+    pub fn donate_warm_state_with_cost(
+        &mut self,
+        node: &NodeId,
+        state: OpaqueState,
+        cost_per_byte: f64,
+    ) -> bool {
         if let Some(entry) = self.caches.get_mut(node) {
+            // Sanitise: clamp NaN / ±inf / negatives to 0.0 so a future
+            // cost-weighted-LRU comparator can `partial_cmp` safely.
+            let sanitised = if cost_per_byte.is_finite() && cost_per_byte >= 0.0 {
+                cost_per_byte
+            } else {
+                0.0
+            };
             entry.warm_state = Some(state);
+            entry.cost_per_byte = sanitised;
             true
         } else {
             false
         }
+    }
+
+    /// Return the stored `cost_per_byte` for a cached node, or `None` if the
+    /// node is not present.
+    ///
+    /// Companion reader to [`CacheStore::donate_warm_state_with_cost`] /
+    /// [`CacheStore::get_warm_state`]: callers driving the in-flight
+    /// dispatch lifecycle (e.g. `engine_compute::run_compute_dispatch`)
+    /// capture the prior cost before taking the warm state so the cost can
+    /// be restored alongside the warm state on `Cancelled` / `Failed`.
+    pub fn cost_per_byte_of(&self, node: &NodeId) -> Option<f64> {
+        self.caches.get(node).map(|e| e.cost_per_byte)
     }
 
     /// Take the warm-start state out of a cached node (take semantics).
@@ -4286,6 +4349,190 @@ mod tests {
             entry.basis_version,
             VersionId(2),
             "complete must stamp the supplied version"
+        );
+    }
+
+    // ── ζ / task 3425 step-2: cost_per_byte field on NodeCache + accessors ──
+    //
+    // These pin the new `cost_per_byte` field (paired with `warm_state`) and
+    // the cost-aware `donate_warm_state_with_cost` / `cost_per_byte_of` API.
+
+    /// `NodeCache::new` defaults `cost_per_byte` to `0.0` (the entry has no
+    /// warm state yet, so the cost is undefined → `0.0`).
+    #[test]
+    fn node_cache_new_defaults_cost_per_byte_to_zero() {
+        let entry = make_seed_entry();
+        assert_eq!(
+            entry.cost_per_byte, 0.0,
+            "NodeCache::new must default cost_per_byte to 0.0",
+        );
+    }
+
+    /// `NodeCache::clone` resets `cost_per_byte` to `0.0` alongside
+    /// `warm_state = None` — both fields are transient and paired.
+    #[test]
+    fn node_cache_clone_drops_cost_per_byte_to_zero() {
+        let mut entry = make_seed_entry();
+        entry.warm_state = Some(OpaqueState::new(7i32, 4));
+        entry.cost_per_byte = 0.75;
+
+        let cloned = entry.clone();
+        assert!(
+            cloned.warm_state.is_none(),
+            "Clone must drop warm_state (transient hint)",
+        );
+        assert_eq!(
+            cloned.cost_per_byte, 0.0,
+            "Clone must reset cost_per_byte to 0.0 (paired with warm_state)",
+        );
+    }
+
+    /// `record_evaluation_with_freshness` clears `cost_per_byte` on both the
+    /// early-cutoff path and the changed/cold-start path (paired with the
+    /// existing `warm_state = None` reset).
+    #[test]
+    fn record_evaluation_clears_cost_per_byte() {
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("T", "rec"));
+        let cached = CachedResult::Value(Value::Int(1), DeterminacyState::Determined);
+
+        // Insert an entry directly (cold-start) and stamp warm_state + cost.
+        store.put(
+            node.clone(),
+            NodeCache {
+                result: cached.clone(),
+                result_hash: cached.content_hash(),
+                freshness: Freshness::Final,
+                dependency_trace: DependencyTrace::default(),
+                basis_version: VersionId(1),
+                warm_state: Some(OpaqueState::new(7i32, 4)),
+                cost_per_byte: 0.9,
+                pending_cause: None,
+            },
+        );
+
+        // Same hash → early-cutoff path: must reset both fields.
+        let outcome = store.record_evaluation(
+            node.clone(),
+            cached.clone(),
+            VersionId(2),
+            DependencyTrace::default(),
+        );
+        assert_eq!(outcome, EvalOutcome::Unchanged);
+        let entry = store.get(&node).expect("entry must still exist");
+        assert!(entry.warm_state.is_none(), "early-cutoff must clear warm_state");
+        assert_eq!(
+            entry.cost_per_byte, 0.0,
+            "early-cutoff must clear cost_per_byte (paired with warm_state)",
+        );
+
+        // Different hash → changed/cold-start path: also resets both.
+        store
+            .donate_warm_state_with_cost(&node, OpaqueState::new(8i32, 4), 0.4);
+        let new_cached =
+            CachedResult::Value(Value::Int(2), DeterminacyState::Determined);
+        let outcome = store.record_evaluation(
+            node.clone(),
+            new_cached,
+            VersionId(3),
+            DependencyTrace::default(),
+        );
+        assert_eq!(outcome, EvalOutcome::Changed);
+        let entry = store.get(&node).expect("entry must still exist");
+        assert!(entry.warm_state.is_none(), "changed path must clear warm_state");
+        assert_eq!(
+            entry.cost_per_byte, 0.0,
+            "changed path must clear cost_per_byte (paired with warm_state)",
+        );
+    }
+
+    /// `donate_warm_state_with_cost` writes both fields and
+    /// `cost_per_byte_of` reads the stored cost back.
+    #[test]
+    fn donate_warm_state_with_cost_stores_and_cost_per_byte_of_reads() {
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("T", "dwc"));
+        store.put(node.clone(), make_seed_entry());
+
+        assert_eq!(
+            store.cost_per_byte_of(&node),
+            Some(0.0),
+            "fresh entry's cost defaults to 0.0",
+        );
+
+        let donated = store.donate_warm_state_with_cost(
+            &node,
+            OpaqueState::new(123i32, 4),
+            0.625,
+        );
+        assert!(donated, "donate must report true when the node exists");
+        assert_eq!(
+            store.cost_per_byte_of(&node),
+            Some(0.625),
+            "cost_per_byte_of must reflect the donated cost",
+        );
+
+        // Absent node → reader returns None.
+        let absent = NodeId::Value(ValueCellId::new("T", "absent"));
+        assert_eq!(
+            store.cost_per_byte_of(&absent),
+            None,
+            "cost_per_byte_of on an absent node must return None",
+        );
+    }
+
+    /// The 2-arg `donate_warm_state` wrapper defaults `cost_per_byte` to
+    /// `0.0` (no behaviour change for legacy callers).
+    #[test]
+    fn donate_warm_state_two_arg_keeps_cost_at_zero() {
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("T", "two_arg"));
+        store.put(node.clone(), make_seed_entry());
+
+        let donated = store.donate_warm_state(&node, OpaqueState::new(9i32, 4));
+        assert!(donated, "donate must report true when the node exists");
+        assert_eq!(
+            store.cost_per_byte_of(&node),
+            Some(0.0),
+            "2-arg donate_warm_state must keep cost_per_byte at 0.0",
+        );
+    }
+
+    /// `donate_warm_state_with_cost` sanitises non-finite (`NaN`, `±inf`)
+    /// and negative `cost_per_byte` to `0.0` (so a future cost-weighted-LRU
+    /// `partial_cmp` is safe).
+    #[test]
+    fn donate_warm_state_with_cost_sanitises_nan_and_negative_to_zero() {
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("T", "san"));
+        store.put(node.clone(), make_seed_entry());
+
+        store.donate_warm_state_with_cost(&node, OpaqueState::new(1i32, 4), f64::NAN);
+        assert_eq!(
+            store.cost_per_byte_of(&node),
+            Some(0.0),
+            "NaN cost must sanitise to 0.0",
+        );
+
+        store.donate_warm_state_with_cost(&node, OpaqueState::new(1i32, 4), f64::INFINITY);
+        assert_eq!(
+            store.cost_per_byte_of(&node),
+            Some(0.0),
+            "+inf cost must sanitise to 0.0",
+        );
+
+        store.donate_warm_state_with_cost(&node, OpaqueState::new(1i32, 4), f64::NEG_INFINITY);
+        assert_eq!(
+            store.cost_per_byte_of(&node),
+            Some(0.0),
+            "-inf cost must sanitise to 0.0",
+        );
+
+        store.donate_warm_state_with_cost(&node, OpaqueState::new(1i32, 4), -1.5);
+        assert_eq!(
+            store.cost_per_byte_of(&node),
+            Some(0.0),
+            "negative cost must sanitise to 0.0",
         );
     }
 }
