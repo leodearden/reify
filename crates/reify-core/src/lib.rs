@@ -8,8 +8,8 @@
 //! # B1 invariant
 //!
 //! This crate MUST have zero `reify-*` dependencies. The structural invariant
-//! is locked in by `crates/reify-core/tests/dag_invariant.rs`, which shells
-//! out to `cargo metadata` and asserts that no dependency name starts with
+//! is locked in by `crates/reify-core/tests/dag_invariant.rs`, which reads
+//! `Cargo.toml` directly and asserts that no dependency key starts with
 //! `"reify-"`. The workspace-wide assertion (`scripts/assert-crate-dag.sh`)
 //! arrives under task η per PRD §10.
 
@@ -38,7 +38,11 @@ pub use diagnostics::{
 };
 pub use dimension::{DimensionVector, NAMED_DIMENSIONS, Rational};
 pub use hash::ContentHash;
-pub use identity::*;
+pub use identity::{
+    ComputeNodeId, ConstraintNodeId, EntityPath, FIELD_ENTITY_PREFIX, LOCATED_PORT_TRAIT,
+    MemberName, ModulePath, ModulePathParseError, RealizationNodeId, ResolutionNodeId,
+    ScopeId, SnapshotId, SourceNodeId, ValueCellId, VersionId,
+};
 pub use primitives::{
     DEPRECATED_ANNOTATION, OPTIMIZED_ANNOTATION, PortDirection, SHELL_ANNOTATION, SOLID_ANNOTATION,
     SOLVER_HINT_ANNOTATION, TEST_ANNOTATION,

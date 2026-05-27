@@ -4,8 +4,8 @@
 //! module move (step-2), in both the flat form (`reify_core::SourceSpan`) and
 //! the module-path form (`reify_core::diagnostics::SourceSpan`).
 //!
-//! This test is intentionally RED until step-2 lands the `pub mod` declarations
-//! and root re-exports inside `crates/reify-core/src/lib.rs`.
+//! Both spellings remain in sync because `reify-core/src/lib.rs` exports each
+//! module as `pub mod` AND re-exports its symbols at the crate root.
 
 // ── diagnostics (flat form) ──────────────────────────────────────────────────
 use reify_core::{
@@ -34,11 +34,17 @@ use reify_core::ty::Type as TypeMod;
 
 // ── identity ─────────────────────────────────────────────────────────────────
 use reify_core::{
-    ConstraintNodeId, ModulePath, RealizationNodeId, ResolutionNodeId, SnapshotId, ValueCellId,
+    ComputeNodeId, ConstraintNodeId, EntityPath, FIELD_ENTITY_PREFIX, LOCATED_PORT_TRAIT,
+    MemberName, ModulePath, ModulePathParseError, RealizationNodeId, ResolutionNodeId,
+    ScopeId, SnapshotId, SourceNodeId, ValueCellId, VersionId,
 };
 use reify_core::identity::{
-    ConstraintNodeId as CNodeMod, ModulePath as ModPathMod, RealizationNodeId as RNodeMod,
-    ResolutionNodeId as ResNodeMod, SnapshotId as SnapMod, ValueCellId as VCellMod,
+    ComputeNodeId as ComputeNodeMod, ConstraintNodeId as CNodeMod, EntityPath as EntityPathMod,
+    FIELD_ENTITY_PREFIX as FIELD_PREFIX_MOD, LOCATED_PORT_TRAIT as LOCATED_PORT_MOD,
+    MemberName as MemberNameMod, ModulePath as ModPathMod, ModulePathParseError as MPEMod,
+    RealizationNodeId as RNodeMod, ResolutionNodeId as ResNodeMod, ScopeId as ScopeIdMod,
+    SnapshotId as SnapMod, SourceNodeId as SourceNodeMod, ValueCellId as VCellMod,
+    VersionId as VersionIdMod,
 };
 
 // ── source_location ──────────────────────────────────────────────────────────
@@ -111,8 +117,8 @@ fn hash_flat_and_module_path() {
 
 #[test]
 fn dimension_flat_and_module_path() {
-    let _: DimensionVector;
-    let _: DimVecMod;
+    let _: fn() -> Option<DimensionVector> = || None;
+    let _: fn() -> Option<DimVecMod> = || None;
     let _: Rational = Rational::ZERO;
     let _: RationalMod = RationalMod::ZERO;
     // NAMED_DIMENSIONS is a static slice — just check it's non-empty.
@@ -151,6 +157,31 @@ fn identity_flat_and_module_path() {
     let snap: SnapshotId = SnapshotId(42);
     let _snap2: SnapMod = SnapMod(42);
     assert_eq!(snap, SnapshotId(42));
+
+    // Items previously covered only by wildcard re-export.
+    let cn: ComputeNodeId = ComputeNodeId::new("E", 0);
+    let _cn2: ComputeNodeMod = ComputeNodeMod::new("E", 0);
+    assert_eq!(cn, ComputeNodeId::new("E", 0));
+
+    let _si: ScopeId = ScopeId(0);
+    let _si2: ScopeIdMod = ScopeIdMod(0);
+
+    let _vi: VersionId = VersionId(0);
+    let _vi2: VersionIdMod = VersionIdMod(0);
+
+    assert_eq!(FIELD_ENTITY_PREFIX, "__field");
+    assert_eq!(FIELD_PREFIX_MOD, "__field");
+    assert_eq!(LOCATED_PORT_TRAIT, "LocatedPort");
+    assert_eq!(LOCATED_PORT_MOD, "LocatedPort");
+
+    let _: fn() -> Option<ModulePathParseError> = || None;
+    let _: fn() -> Option<MPEMod> = || None;
+    let _: fn() -> Option<EntityPath> = || None;
+    let _: fn() -> Option<EntityPathMod> = || None;
+    let _: fn() -> Option<MemberName> = || None;
+    let _: fn() -> Option<MemberNameMod> = || None;
+    let _: fn() -> Option<SourceNodeId> = || None;
+    let _: fn() -> Option<SourceNodeMod> = || None;
 }
 
 #[test]
