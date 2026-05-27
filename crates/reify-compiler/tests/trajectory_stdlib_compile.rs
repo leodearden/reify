@@ -1179,3 +1179,94 @@ fn joint_limit_constrains_max_force_positive() {
         ),
     }
 }
+
+// ─── step-35: TOTSShaper param shape ─────────────────────────────────────────
+
+/// `TOTSShaper` is the time-optimal trajectory shaper value type (PRD §5.2).
+/// It must refine the `Shaper` marker trait and declare exactly 7 params in
+/// canonical order:
+///
+///   - `modes             : List<Mode>`        (cross-module: Mode from std.modal.analysis)
+///   - `actuator_limits   : List<JointLimit>`  (JointLimit declared in this file above)
+///   - `velocity_limit    : Real`              (TODO(velocity-scalar) placeholder)
+///   - `acceleration_limit: Real`              (TODO(acceleration-scalar) placeholder)
+///   - `vibration_tolerance: Real`             (genuinely dimensionless residual fraction)
+///   - `max_iters         : Int`               (solver iteration cap)
+///   - `tol               : Real`              (convergence threshold)
+///
+/// `Mode` resolves via the growing-prelude cross-module mechanism —
+/// std.modal.analysis is loaded at slot 16 BEFORE std.trajectory at slot 17
+/// (stdlib_loader.rs:110-116). Type encoding: `Type::List(Box::new(
+/// Type::StructureRef("Mode")))` — identical to ModalResult.modes.
+///
+/// Does NOT assert defaults (step-37) or constraints (step-39).
+/// Mirrors `piecewise_polynomial_profile_has_correct_param_shape` (step-17)
+/// and `modal_options_struct_has_correct_param_shape` in
+/// modal_options_validation_tests.rs.
+#[test]
+fn tots_shaper_struct_has_correct_param_shape() {
+    let template = find_structure("TOTSShaper");
+
+    // (a) refines Shaper marker trait.
+    assert_eq!(
+        template.trait_bounds,
+        vec!["Shaper".to_string()],
+        "TOTSShaper must refine Shaper; got trait_bounds: {:?}",
+        template.trait_bounds
+    );
+
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    // (b) tight param count.
+    assert_eq!(
+        params.len(),
+        7,
+        "TOTSShaper should have exactly 7 params \
+         (modes, actuator_limits, velocity_limit, acceleration_limit, \
+          vibration_tolerance, max_iters, tol); got: {:?}",
+        names
+    );
+
+    let expected: &[(&str, Type)] = &[
+        (
+            "modes",
+            Type::List(Box::new(Type::StructureRef("Mode".to_string()))),
+        ),
+        (
+            "actuator_limits",
+            Type::List(Box::new(Type::StructureRef("JointLimit".to_string()))),
+        ),
+        ("velocity_limit", Type::Real),
+        ("acceleration_limit", Type::Real),
+        ("vibration_tolerance", Type::Real),
+        ("max_iters", Type::Int),
+        ("tol", Type::Real),
+    ];
+
+    // (c) Param declaration order is part of the contract.
+    let expected_names: Vec<&str> = expected.iter().map(|(m, _)| *m).collect();
+    assert_eq!(
+        names, expected_names,
+        "TOTSShaper params must be in canonical order; got: {:?}",
+        names
+    );
+
+    // (d) type assertion per param.
+    for (member, expected_ty) in expected {
+        let cell = params
+            .iter()
+            .find(|vc| vc.id.member == *member)
+            .unwrap_or_else(|| {
+                panic!(
+                    "TOTSShaper missing required param '{}'; got: {:?}",
+                    member, names
+                )
+            });
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "TOTSShaper.{} should be {:?}, got {:?}",
+            member, expected_ty, cell.cell_type
+        );
+    }
+}
