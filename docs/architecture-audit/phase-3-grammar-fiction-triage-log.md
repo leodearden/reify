@@ -81,6 +81,20 @@ it is supported via `auto_keyword` at `grammar.js:430` (the distinct gap of
   constraint" — expressible today as `minimize ... where ...`.
 - *Retired:* none functionally; only the spelling.
 
+**2026-05-27 amendment.** A2 correctly observed that the `= auto`
+value-default was not retired from the multi-load-case-fea PRD because it
+was already supported via `auto_keyword`. What A2 glossed was the *implicit*
+scope question: the param-default position was always supported, but there
+was no formal PRD covering the five binding-site positions (sub-instance
+parameter overrides, named-argument values, let-binding RHS, structure
+named-argument, connect-parameter assignment). A new PRD,
+`docs/prds/auto-binding-site-positions.md`, now formalizes that broader
+coverage and its α–ε task chain. Status as of 2026-05-27: α (task 3802,
+commit e411301f69) is landed; β (task 3804) is in-progress; γ/δ/ε
+(tasks 3805/3806/3807) are queued. The `= auto` fiction-flags that appeared
+in C-06/GR-009 and the synthesis docs have been corrected in the same sweep
+that filed this amendment.
+
 ### A3 — `docs/prds/v0_5/varying-thickness-shells.md`
 
 **Surface retired (deferred to a separate grammar PRD).** `@shell(thickness = linear_taper(...))`
