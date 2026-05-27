@@ -101,39 +101,180 @@ impl<'a> RealizationOutputs<'a> {
     }
 }
 
-/// Task 3441: seed compound-key entries `<sub>.<member> → handle` from each
-/// non-collection sub's completed snapshot in `module_named_steps`.  No
-/// entries are produced for collection subs (the compile-side already blocks
-/// collection-sub geometry composition) or for subs whose child template
-/// hasn't been realised yet (forward-declared / recursive); those cases fall
-/// through to the `geometry_ops.rs::resolve_geom_ref` "unresolvable
-/// GeomRef::Sub" runtime error path.
+/// Task 3441 / 3814: seed compound-key entries `<sub>.<member> → handle` from
+/// each non-collection sub's completed snapshot in `module_named_steps`.
 ///
-/// Extracted (amendment) to the single source of truth for the three eval
-/// loop sites (`build`, `build_snapshot`, `tessellate_from_values`) — keeps
-/// any future change (e.g. handling collection subs, narrowing the snapshot,
-/// emitting forward-ref diagnostics) a one-place edit instead of three.
+/// **Two-mode behaviour (task 3814):**
 ///
-/// **Same-template aliasing note (v0.1 limitation).** Because the registry
-/// keys by sub's *structure* (`sub.structure_name`), two subs of the same
-/// child template share a single set of handles — `sub a = Inner(); sub b =
-/// Inner();` makes `a.body` and `b.body` resolve to identical kernel handles.
-/// Likewise, per-instance args on a sub do NOT affect the cross-sub view (the
-/// child template is realised once with default param values).  Pinned by
-/// the `cross_sub_same_template_subs_share_handle*` regression tests in
-/// `cross_sub_geometry_e2e.rs`.
+/// * **No-args path** (`sub.args.is_empty()`): copies entries from
+///   `module_named_steps[sub.structure_name]` into `named_steps["<sub>.<m>"]`
+///   verbatim.  Two subs of the same child template therefore share the same
+///   set of handles — `sub a = Inner(); sub b = Inner();` makes `a.body` and
+///   `b.body` resolve to identical kernel handles.  Pinned by the
+///   `cross_sub_same_template_subs_share_kernel_handle` regression test.
+///
+/// * **Override path** (`!sub.args.is_empty()`): re-executes the child
+///   template's realization ops in a per-instance value scope built by
+///   cloning `values` and overlaying, for each `(param_name, _)` in
+///   `sub.args`, the scoped value at
+///   `ValueCellId("<parent>.<sub_name>", param_name)` (already evaluated by
+///   `unfold.rs::elaborate_child_instance`) into
+///   `ValueCellId(child_template.name, param_name)`.  The resulting
+///   per-instance handles override the structure-keyed snapshot entries.
+///   Each non-collection sub with args gets its own independent re-execution,
+///   so two same-template subs with distinct args produce distinct handles.
+///
+/// No entries are produced for collection subs (compile-side blocks those),
+/// or for subs whose child template isn't yet in `module_named_steps`
+/// (forward-declared / recursive; fall through to the runtime error path).
+///
+/// On the override path, kernel errors / compile errors for a realization's
+/// ops append a `Diagnostic::error` to `diagnostics` (mirroring
+/// `execute_realization_ops`) and skip the rest of that realization's ops.
+/// Per-instance ops intentionally skip `feature_tag_table` /
+/// `topology_attribute_table` / `swept_kind_table` population — those tables
+/// are populated for the PARENT's own realization ops; the per-instance
+/// pre-pass exists solely to produce the kernel handle referenced by
+/// `GeomRef::Sub("<sub>.<member>")`.
+///
+/// **Scope boundary (v0.1):** one level of override depth only (parent →
+/// direct child).  Nested sub-of-sub override propagation (Outer→Mid→Inner
+/// where Mid passes args to Inner) is left for a follow-up task.
+#[allow(clippy::too_many_arguments)]
 fn seed_cross_sub_named_steps(
     template: &reify_compiler::TopologyTemplate,
     module_named_steps: &HashMap<String, HashMap<String, GeometryHandleId>>,
     named_steps: &mut HashMap<String, GeometryHandleId>,
+    kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
+    default_kernel_name: &str,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+    templates: &[reify_compiler::TopologyTemplate],
 ) {
+    use reify_types::identity::ValueCellId;
+
     for sub in &template.sub_components {
         if sub.is_collection {
             continue;
         }
-        if let Some(child_snapshot) = module_named_steps.get(&sub.structure_name) {
-            for (member, handle) in child_snapshot {
-                named_steps.insert(format!("{}.{}", sub.name, member), *handle);
+
+        if sub.args.is_empty() {
+            // ── no-args path (existing behaviour) ───────────────────────────
+            if let Some(child_snapshot) = module_named_steps.get(&sub.structure_name) {
+                for (member, handle) in child_snapshot {
+                    named_steps.insert(format!("{}.{}", sub.name, member), *handle);
+                }
+            }
+        } else {
+            // ── override path: per-instance re-realization ─────────────────
+            //
+            // 1. Locate the child template.  If it isn't in the module (e.g.
+            //    an external or forward-declared structure) skip silently —
+            //    the missing-structure diagnostic was already emitted during
+            //    compilation.
+            let child_template =
+                match reify_compiler::find_template(templates, &sub.structure_name) {
+                    Some(t) => t,
+                    None => continue,
+                };
+
+            // 2. Obtain the default kernel.  The entry-point guards in
+            //    `build` / `build_snapshot` / `tessellate_from_values` all
+            //    verify `kernels.contains_key(default_kernel_name)` before
+            //    entering the template loop, so this is unreachable when the
+            //    kernel is absent.  Skip silently if somehow absent.
+            let kernel = match kernels.get_mut(default_kernel_name) {
+                Some(k) => k.as_mut(),
+                None => continue,
+            };
+
+            // 3. Build per-instance overlay: clone the global `values` map
+            //    and overwrite `ValueCellId(child_template.name, param_name)`
+            //    with the scoped override value already computed by
+            //    `unfold.rs::elaborate_child_instance` and stored at
+            //    `ValueCellId("<parent>.<sub_name>", param_name)`.
+            let mut values_override = values.clone();
+            for (param_name, _) in &sub.args {
+                let scoped_key = ValueCellId::new(
+                    format!("{}.{}", template.name, sub.name),
+                    param_name.as_str(),
+                );
+                if let Some(val) = values.get(&scoped_key) {
+                    let child_key =
+                        ValueCellId::new(child_template.name.as_str(), param_name.as_str());
+                    values_override.insert(child_key, val.clone());
+                }
+            }
+
+            // 4. Re-execute each named realization of the child template
+            //    against the override values map.  Uses
+            //    `compile_geometry_op` + `kernel.execute_with_history`
+            //    directly — bypasses `RealizationCache` (keyed by entity
+            //    name, so two subs of the same child would collide) and the
+            //    multi-kernel dispatcher (no per-op routing needed here;
+            //    the default kernel handles every primitive/transform op in
+            //    the child's realization chain).
+            for realization in &child_template.realizations {
+                let realization_name = match realization.name.as_deref() {
+                    Some(n) => n,
+                    None => continue, // unnamed realizations carry no user-visible handle
+                };
+
+                // Accumulates handles for `GeomRef::Step` resolution within
+                // this realization's ops (resets per-realization; child ops
+                // that reference `GeomRef::Sub` of the child's own subs will
+                // miss — one-level-deep scope boundary, see rustdoc above).
+                let mut per_instance_step_handles: Vec<GeometryHandleId> = Vec::new();
+                let mut realization_ok = true;
+
+                for op in &realization.operations {
+                    let geom_op = match compile_geometry_op(
+                        op,
+                        &values_override,
+                        &per_instance_step_handles,
+                        functions,
+                        meta_map,
+                        named_steps, // parent's named_steps for GeomRef::Sub resolution
+                        diagnostics,
+                    ) {
+                        Ok(g) => g,
+                        Err(msg) => {
+                            diagnostics.push(Diagnostic::error(format!(
+                                "per-instance re-realization compile error for \
+                                 {}.{}.{}: {}",
+                                template.name, sub.name, realization_name, msg
+                            )));
+                            realization_ok = false;
+                            break;
+                        }
+                    };
+
+                    match kernel.execute_with_history(&geom_op) {
+                        Ok((handle, _)) => {
+                            per_instance_step_handles.push(handle.id);
+                        }
+                        Err(e) => {
+                            diagnostics.push(Diagnostic::error(format!(
+                                "per-instance re-realization kernel error for \
+                                 {}.{}.{}: {}",
+                                template.name, sub.name, realization_name, e
+                            )));
+                            realization_ok = false;
+                            break;
+                        }
+                    }
+                }
+
+                if realization_ok {
+                    if let Some(&final_handle) = per_instance_step_handles.last() {
+                        named_steps.insert(
+                            format!("{}.{}", sub.name, realization_name),
+                            final_handle,
+                        );
+                    }
+                }
             }
         }
     }
@@ -891,7 +1032,18 @@ impl Engine {
                 // compile-side diagnostic in `expr.rs::try_emit_cross_sub_geometry`
                 // continues to fire for those call sites).
                 let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
-                seed_cross_sub_named_steps(template, &module_named_steps, &mut named_steps);
+                seed_cross_sub_named_steps(
+                    template,
+                    &module_named_steps,
+                    &mut named_steps,
+                    &mut self.geometry_kernels,
+                    name,
+                    &values,
+                    &self.functions,
+                    &self.meta_map,
+                    &mut diagnostics,
+                    &module.templates,
+                );
                 for (r_idx, realization) in template.realizations.iter().enumerate() {
                     // Task 2874, step-6 wiring: per-realization demanded
                     // tolerance for the cache-key triple `(entity_id,
@@ -1197,7 +1349,18 @@ impl Engine {
                 // compile-side diagnostic in `expr.rs::try_emit_cross_sub_geometry`
                 // continues to fire for those call sites).
                 let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
-                seed_cross_sub_named_steps(template, &module_named_steps, &mut named_steps);
+                seed_cross_sub_named_steps(
+                    template,
+                    &module_named_steps,
+                    &mut named_steps,
+                    &mut self.geometry_kernels,
+                    name,
+                    &values,
+                    &self.functions,
+                    &self.meta_map,
+                    &mut diagnostics,
+                    &module.templates,
+                );
                 for (r_idx, realization) in template.realizations.iter().enumerate() {
                     // Task 2874, step-6 wiring: per-realization demanded
                     // tolerance for the cache-key triple `(entity_id,
@@ -1838,7 +2001,18 @@ impl Engine {
             // compile-side diagnostic in `expr.rs::try_emit_cross_sub_geometry`
             // continues to fire for those call sites).
             let mut named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
-            seed_cross_sub_named_steps(template, &module_named_steps, &mut named_steps);
+            seed_cross_sub_named_steps(
+                template,
+                &module_named_steps,
+                &mut named_steps,
+                geometry_kernels,
+                default_kernel_name,
+                values,
+                functions,
+                meta_map,
+                diagnostics,
+                &module.templates,
+            );
             for (r_idx, realization) in template.realizations.iter().enumerate() {
                 let handle_start = step_handles.len();
                 // Tessellate paths do not propagate kernel errors into
