@@ -11,6 +11,23 @@
 use reify_core::*;
 use reify_test_support::{compile_source_with_stdlib, parse_and_compile_with_stdlib};
 
+/// True when `code` belongs to the `auto:` type-param resolution diagnostic
+/// family. Used by the negative-case tests to assert the new phase stays silent
+/// on modules that declare no `auto:` type-args.
+fn is_auto_type_param_diagnostic(code: Option<DiagnosticCode>) -> bool {
+    matches!(
+        code,
+        Some(
+            DiagnosticCode::AutoTypeParamPoolOverflow
+                | DiagnosticCode::AutoTypeParamAmbiguous
+                | DiagnosticCode::AutoTypeParamNoCandidate
+                | DiagnosticCode::AutoTypeParamNonUnique
+                | DiagnosticCode::AutoTypeParamDepthBoundExceeded
+                | DiagnosticCode::AutoTypeParamCrossProductSizeExceeded
+        )
+    )
+}
+
 /// Single Seal-conformant candidate (`ORingSeal`) → the `auto: Seal` type-arg
 /// resolves deterministically and populates the module's
 /// `auto_type_substitution` with `("T", "ORingSeal")`, with no error
@@ -198,6 +215,60 @@ fn multi_param_auto_type_args_resolve_in_declared_order() {
     assert_eq!(
         error_count, 0,
         "expected no error diagnostics, got: {:?}",
+        compiled.diagnostics
+    );
+}
+
+/// An empty module declares no `auto:` slots → the new phase early-returns,
+/// leaving `auto_type_substitution` at its empty default with no AutoTypeParam
+/// diagnostics. The empty-substitution invariant is load-bearing for cache
+/// stability (an empty Vec hashes deterministically).
+#[test]
+fn empty_module_has_default_substitution() {
+    let compiled = parse_and_compile_with_stdlib("");
+
+    assert!(
+        compiled.auto_type_substitution.as_slice().is_empty(),
+        "empty module must leave the substitution empty, got: {:?}",
+        compiled.auto_type_substitution.as_slice()
+    );
+    assert!(
+        !compiled
+            .diagnostics
+            .iter()
+            .any(|d| is_auto_type_param_diagnostic(d.code)),
+        "empty module must emit no AutoTypeParam-family diagnostics, got: {:?}",
+        compiled.diagnostics
+    );
+}
+
+/// A concrete (non-`auto:`) generic instantiation `Bearing<ORingSeal>()` raises
+/// no `AutoResolutionRequest` → the phase short-circuits and the substitution
+/// stays empty with no AutoTypeParam diagnostics. Pins the negative case so the
+/// new phase cannot corrupt substitution or fire spuriously for ordinary
+/// generics.
+#[test]
+fn module_without_auto_type_arg_has_default_substitution() {
+    let source = r#"
+        trait Seal {}
+        structure def ORingSeal : Seal {}
+        structure def Bearing<T: Seal> {}
+        structure def Assembly { sub b = Bearing<ORingSeal>() }
+    "#;
+
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    assert!(
+        compiled.auto_type_substitution.as_slice().is_empty(),
+        "non-auto generic must leave the substitution empty, got: {:?}",
+        compiled.auto_type_substitution.as_slice()
+    );
+    assert!(
+        !compiled
+            .diagnostics
+            .iter()
+            .any(|d| is_auto_type_param_diagnostic(d.code)),
+        "non-auto generic must emit no AutoTypeParam-family diagnostics, got: {:?}",
         compiled.diagnostics
     );
 }
