@@ -763,6 +763,129 @@ mod tests {
 
     const TOL_PERIODIC: f64 = 1e-10;
 
+    // ── Step-9: multi-joint vector spline ────────────────────────────────────
+
+    /// Corrected natural-BC multi-joint cubic test: per-joint at-knot
+    /// interpolation + per-joint endpoint zero-ddot.  Off-knot exact
+    /// reproduction and derivative reproduction are NOT asserted (impossible
+    /// for Natural BC — same reasoning as the single-joint step-1 correction).
+    #[test]
+    fn multi_joint_cubic_natural_per_joint_interpolation_and_endpoint_zero_ddot() {
+        fn p1(t: f64) -> f64 { 2.0 - t + t * t - 0.1 * t * t * t }
+        // dp1 and ddp1 documented for future reference but not asserted here
+        // fn dp1(t: f64) -> f64 { -1.0 + 2.0 * t - 0.3 * t * t }
+        // fn ddp1(t: f64) -> f64 { 2.0 - 0.6 * t }
+
+        let ts = [0.0, 1.0, 2.5, 4.0];
+        let bc = BoundaryCondition::Natural;
+
+        let vs0: Vec<f64> = ts.iter().map(|&t| cubic_p(t)).collect();
+        let s0 = CubicSpline::fit(&ts, &vs0, &bc).expect("joint-0 fit should succeed");
+
+        let vs1: Vec<f64> = ts.iter().map(|&t| p1(t)).collect();
+        let s1 = CubicSpline::fit(&ts, &vs1, &bc).expect("joint-1 fit should succeed");
+
+        let mjs = MultiJointSpline::Cubic(vec![s0, s1]);
+
+        // Per-joint at-knot interpolation (by construction)
+        for &t in &ts {
+            let vals = mjs.eval(t);
+            assert_eq!(vals.len(), 2);
+            assert!(
+                (vals[0] - cubic_p(t)).abs() < TOL,
+                "j0 knot t={t}: got {}, want {}",
+                vals[0], cubic_p(t)
+            );
+            assert!(
+                (vals[1] - p1(t)).abs() < TOL,
+                "j1 knot t={t}: got {}, want {}",
+                vals[1], p1(t)
+            );
+        }
+
+        // Per-joint endpoint zero-ddot (natural BC invariant)
+        for &t_end in &[ts[0], ts[3]] {
+            let ddots = mjs.eval_ddot(t_end);
+            assert_eq!(ddots.len(), 2);
+            assert!(
+                ddots[0].abs() < TOL,
+                "j0 natural BC eval_ddot at t={t_end}: {}",
+                ddots[0]
+            );
+            assert!(
+                ddots[1].abs() < TOL,
+                "j1 natural BC eval_ddot at t={t_end}: {}",
+                ddots[1]
+            );
+        }
+    }
+
+    /// Quintic Hermite multi-joint: exact per-joint reproduction is valid.
+    #[test]
+    fn multi_joint_quintic_per_joint_exact_reproduction() {
+        fn q1(t: f64) -> f64 {
+            3.0 + t - t * t + 0.5 * t * t * t + 0.2 * t * t * t * t - 0.05 * t * t * t * t * t
+        }
+        fn dq1(t: f64) -> f64 {
+            1.0 - 2.0 * t + 1.5 * t * t + 0.8 * t * t * t - 0.25 * t * t * t * t
+        }
+        fn ddq1(t: f64) -> f64 {
+            -2.0 + 3.0 * t + 2.4 * t * t - 1.0 * t * t * t
+        }
+
+        let ts = [0.0, 1.0, 2.5];
+        let knots0: Vec<KnotData> = ts
+            .iter()
+            .map(|&t| KnotData { t, value: quintic_q(t), vel: quintic_dq(t), accel: quintic_ddq(t) })
+            .collect();
+        let knots1: Vec<KnotData> = ts
+            .iter()
+            .map(|&t| KnotData { t, value: q1(t), vel: dq1(t), accel: ddq1(t) })
+            .collect();
+
+        let s0 = QuinticSpline::fit(&knots0).expect("quintic fit j0");
+        let s1 = QuinticSpline::fit(&knots1).expect("quintic fit j1");
+        let mjs = MultiJointSpline::Quintic(vec![s0, s1]);
+
+        for &t in &[0.0, 0.3, 1.0, 1.5, 2.0, 2.5] {
+            let vals = mjs.eval(t);
+            assert!(
+                (vals[0] - quintic_q(t)).abs() < TOL,
+                "quintic j0 val at t={t}: got {}, want {}",
+                vals[0], quintic_q(t)
+            );
+            assert!(
+                (vals[1] - q1(t)).abs() < TOL,
+                "quintic j1 val at t={t}: got {}, want {}",
+                vals[1], q1(t)
+            );
+
+            let dots = mjs.eval_dot(t);
+            assert!(
+                (dots[0] - quintic_dq(t)).abs() < TOL,
+                "quintic j0 dot at t={t}: got {}, want {}",
+                dots[0], quintic_dq(t)
+            );
+            assert!(
+                (dots[1] - dq1(t)).abs() < TOL,
+                "quintic j1 dot at t={t}: got {}, want {}",
+                dots[1], dq1(t)
+            );
+
+            let ddots = mjs.eval_ddot(t);
+            assert!(
+                (ddots[0] - quintic_ddq(t)).abs() < TOL,
+                "quintic j0 ddot at t={t}: got {}, want {}",
+                ddots[0], quintic_ddq(t)
+            );
+            assert!(
+                (ddots[1] - ddq1(t)).abs() < TOL,
+                "quintic j1 ddot at t={t}: got {}, want {}",
+                ddots[1], ddq1(t)
+            );
+        }
+    }
+
     // ── Step-7: quintic Hermite — exact reproduction of general quintic ───────
 
     fn quintic_q(t: f64) -> f64 {
