@@ -9,6 +9,15 @@ function commaSep(rule) {
   return optional(seq(rule, repeat(seq(',', rule)), optional(',')));
 }
 
+/**
+ * Parenthesised argument-list tail shared by call-shaped rules:
+ * function_call, ad_hoc_selector, trait_method_call.
+ * Returns `seq('(', optional($.argument_list), ')')`.
+ */
+function callTail($) {
+  return seq('(', optional($.argument_list), ')');
+}
+
 module.exports = grammar({
   name: 'reify',
 
@@ -988,9 +997,7 @@ module.exports = grammar({
 
     function_call: $ => prec(10, seq(
       field('name', $.identifier),
-      '(',
-      optional($.argument_list),
-      ')',
+      callTail($),
     )),
 
     argument_list: $ => seq(
@@ -1027,9 +1034,7 @@ module.exports = grammar({
       field('base', $._expression),
       '@',
       field('selector', $.identifier),
-      '(',
-      optional($.argument_list),
-      ')',
+      callTail($),
     )),
 
     // ── Index access ────────────────────────────────────────
@@ -1062,9 +1067,7 @@ module.exports = grammar({
     // Trait::fn(args) or obj.(Trait::fn)(args) — callable qualified path
     trait_method_call: $ => prec(10, seq(
       field('callee', choice($.qualified_access, $.instance_qualified_access)),
-      '(',
-      optional($.argument_list),
-      ')',
+      callTail($),
     )),
 
     // ── Literals ────────────────────────────────────────────
