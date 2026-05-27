@@ -392,11 +392,23 @@ pub(crate) fn try_hoist_geometry_conditional(
 ///   is lowered by `compile_expr` into `CompiledExprKind::Conditional`, which
 ///   `eval_expr` already evaluates by selecting the active branch.
 ///
-/// Spans for synthesized geometry `FunctionCall` nodes are taken from `a`'s
-/// span (then-branch) to keep source locations approximately correct.  Scalar
-/// `Conditional` nodes reuse `outer_span` (the enclosing conditional's span)
-/// so diagnostic labels point at a sensible location if the scalar arg itself
-/// later triggers a type error.
+/// **Else-if chain reduction:** before comparing, any branch that is itself
+/// a `Conditional` is reduced by recursively calling `merge_branches` on its
+/// inner `(condition, then, else)`.  This collapses
+/// `box(p) else if c2 then box(q) else box(r)` → `box(C2, C2, C2)` so
+/// the outer comparison can match it against `box(p)` and produce a single
+/// `box` op with nested scalar `Conditional` args.
+///
+/// The scalar fallback always uses the **original** (un-reduced) `a` and `b`
+/// as the `then_branch` / `else_branch` of the emitted scalar `Conditional` —
+/// this keeps the scalar args as valid AST that `compile_expr` can evaluate
+/// without encountering geometry function calls in a scalar position.
+///
+/// Spans for synthesized geometry `FunctionCall` nodes are taken from the
+/// effective (possibly-reduced) `a`'s span to keep source locations
+/// approximately correct.  Scalar `Conditional` nodes reuse `outer_span`
+/// (the enclosing conditional's span) so diagnostic labels point at a
+/// sensible location if the scalar arg itself later triggers a type error.
 fn merge_branches(
     cond: &reify_syntax::Expr,
     a: &reify_syntax::Expr,
@@ -404,6 +416,37 @@ fn merge_branches(
     functions: &[CompiledFunction],
     outer_span: reify_types::SourceSpan,
 ) -> reify_syntax::Expr {
+    // Else-if chain reduction: if a branch is itself a Conditional, reduce it
+    // to a (potentially geometry-typed) expression so the outer match can
+    // compare geometry constructors.
+    let a_owned;
+    let a_eff: &reify_syntax::Expr =
+        if let reify_syntax::ExprKind::Conditional {
+            condition: c2,
+            then_branch: t2,
+            else_branch: e2,
+        } = &a.kind
+        {
+            a_owned = merge_branches(c2, t2, e2, functions, a.span);
+            &a_owned
+        } else {
+            a
+        };
+
+    let b_owned;
+    let b_eff: &reify_syntax::Expr =
+        if let reify_syntax::ExprKind::Conditional {
+            condition: c2,
+            then_branch: t2,
+            else_branch: e2,
+        } = &b.kind
+        {
+            b_owned = merge_branches(c2, t2, e2, functions, b.span);
+            &b_owned
+        } else {
+            b
+        };
+
     if let (
         reify_syntax::ExprKind::FunctionCall {
             name: name_a,
@@ -413,13 +456,15 @@ fn merge_branches(
             name: name_b,
             args: args_b,
         },
-    ) = (&a.kind, &b.kind)
+    ) = (&a_eff.kind, &b_eff.kind)
     {
         if name_a == name_b
             && args_a.len() == args_b.len()
             && is_geometry_function(name_a)
             && !functions.iter().any(|f| f.name == *name_a)
         {
+            // Use args from the EFFECTIVE (reduced) forms so scalar args
+            // from collapsed else-if chains are properly threaded.
             let merged_args: Vec<reify_syntax::Expr> = args_a
                 .iter()
                 .zip(args_b.iter())
@@ -430,12 +475,13 @@ fn merge_branches(
                     name: name_a.clone(),
                     args: merged_args,
                 },
-                span: a.span,
+                span: a_eff.span,
             };
         }
     }
     // Scalar leaf, incompatible names/arities, or Ident branch — emit a
-    // plain scalar Conditional that compile_expr can handle.
+    // plain scalar Conditional using the ORIGINAL a and b so that compile_expr
+    // receives well-typed scalar AST nodes without geometry-call subexpressions.
     reify_syntax::Expr {
         kind: reify_syntax::ExprKind::Conditional {
             condition: Box::new(cond.clone()),
@@ -2888,12 +2934,11 @@ mod tests {
         }
     }
 
-    /// `merge_branches` (step-3): else-branch is itself a Conditional.
-    /// `box(p)` vs `Conditional(c2, box(q), box(r))` should produce a scalar
-    /// Conditional under step-2 (no reduction), causing `try_hoist` to return None.
-    /// This is the RED case that step-4 will fix by reducing else-if chains.
+    /// `try_hoist_geometry_conditional` (step-4): else-if chain
+    /// `if c1 then box(p) else (if c2 then box(q) else box(r))` reduces to
+    /// `box(nested_Conditional, ...)` via else-if chain reduction.
     #[test]
-    fn merge_branches_else_if_chain_is_scalar_conditional_before_step4() {
+    fn try_hoist_geometry_conditional_else_if_chain_returns_some() {
         let functions: Vec<CompiledFunction> = vec![];
         let cond1 = bool_cond_expr();
         let cond2 = bool_cond_expr();
@@ -2923,14 +2968,27 @@ mod tests {
             span: outer_span,
         };
 
-        // Under step-2: returns None because else_branch is Conditional, not FunctionCall.
-        // Under step-4: returns Some(box with nested Conditional args).
-        // This test documents the step-2 failure that step-4 fixes.
-        let result_step2 = try_hoist_geometry_conditional(&cond_expr, &functions);
+        // Step-4: else-if chain reduction makes this hoistable → Some(box with nested Conditional args).
+        let result = try_hoist_geometry_conditional(&cond_expr, &functions);
         assert!(
-            result_step2.is_none(),
-            "step-2 else-if chain: expected None (not yet hoistable), got {:?}",
-            result_step2.map(|e| format!("{:?}", e.kind))
+            result.is_some(),
+            "else-if chain should hoist after step-4: expected Some(box(...)), got None"
         );
+        let hoisted = result.unwrap();
+        match &hoisted.kind {
+            reify_syntax::ExprKind::FunctionCall { name, args } => {
+                assert_eq!(name, "box", "hoisted should be box");
+                assert_eq!(args.len(), 3);
+                for arg in args {
+                    // Each arg should be a (potentially nested) Conditional.
+                    assert!(
+                        matches!(&arg.kind, reify_syntax::ExprKind::Conditional { .. }),
+                        "else-if chain: box arg should be Conditional, got {:?}",
+                        arg.kind
+                    );
+                }
+            }
+            other => panic!("expected FunctionCall{{box}}, got {:?}", other),
+        }
     }
 }
