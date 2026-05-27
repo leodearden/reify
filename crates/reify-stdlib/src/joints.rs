@@ -6279,6 +6279,85 @@ mod tests {
 
     // ── motion_subspace_columns: fixed ────────────────────────────────────────
 
+    // ── motion_subspace_columns: invalid inputs ───────────────────────────────
+
+    /// Table-driven validation pins for `motion_subspace_columns`.
+    ///
+    /// Covers the contract: "Returns None for non-Map inputs, Maps without a kind
+    /// discriminator, unknown kinds, coupling joints (out of scope for v0.3), and
+    /// joints with malformed/missing axis or non-perpendicular planar axes."
+    #[test]
+    fn motion_subspace_columns_invalid_inputs_return_none() {
+        // (a) Non-Map input.
+        let non_map = Value::Real(1.0);
+        assert!(
+            super::motion_subspace_columns(&non_map).is_none(),
+            "(a) non-Map input should return None"
+        );
+
+        // (b) Map missing the "kind" key.
+        let empty_map = Value::Map(std::collections::BTreeMap::new());
+        assert!(
+            super::motion_subspace_columns(&empty_map).is_none(),
+            "(b) Map missing 'kind' should return None"
+        );
+
+        // (c) Map with unknown kind "sliding".
+        let mut unknown_kind_map = std::collections::BTreeMap::new();
+        unknown_kind_map.insert(
+            Value::String("kind".to_string()),
+            Value::String("sliding".to_string()),
+        );
+        let unknown_kind_joint = Value::Map(unknown_kind_map);
+        assert!(
+            super::motion_subspace_columns(&unknown_kind_joint).is_none(),
+            "(c) unknown kind 'sliding' should return None"
+        );
+
+        // (d) Coupling joint — out of scope for v0.3.
+        let coupling_joint = eval_builtin("couple", &[prismatic_x_joint(), Value::Real(1.0)]);
+        assert!(
+            super::motion_subspace_columns(&coupling_joint).is_none(),
+            "(d) coupling joint should return None (out of scope for v0.3)"
+        );
+
+        // (e) Prismatic Map with missing "axis" key → None via unit_axis_from_map.
+        let mut prismatic_no_axis = std::collections::BTreeMap::new();
+        prismatic_no_axis.insert(
+            Value::String("kind".to_string()),
+            Value::String("prismatic".to_string()),
+        );
+        prismatic_no_axis.insert(
+            Value::String("range".to_string()),
+            length_range_0_to_1m(),
+        );
+        let prismatic_malformed = Value::Map(prismatic_no_axis);
+        assert!(
+            super::motion_subspace_columns(&prismatic_malformed).is_none(),
+            "(e) prismatic Map missing 'axis' should return None"
+        );
+
+        // (f) Planar Map with non-perpendicular axes → None via unit_axes_xy_from_planar_map.
+        // axis_x = e_x, axis_y = e_x (parallel, dot = 1.0 >> 1e-9 threshold).
+        let parallel_planar = eval_builtin(
+            "planar",
+            &[
+                axis_x_unit(),
+                axis_x_unit(), // same axis — rejects at constructor
+                length_range_0_to_1m(),
+                length_range_0_to_1m(),
+                angle_range_0_to_pi(),
+            ],
+        );
+        // The constructor returns Undef for parallel axes; if it somehow slips through,
+        // motion_subspace_columns must also return None.
+        // Undef is Value::Undef, which is not a Map — case (a) handles it.
+        assert!(
+            super::motion_subspace_columns(&parallel_planar).is_none(),
+            "(f) planar with non-perpendicular axes should return None"
+        );
+    }
+
     // ── motion_subspace_columns: spherical ───────────────────────────────────
 
     /// PRD §4.2 pin: spherical is axis-isotropic — no stored axis. Motion-subspace
