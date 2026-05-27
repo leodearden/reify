@@ -13,24 +13,22 @@
 //     Declaring in non-alphabetical order makes any regression to source-
 //     declaration order visible in the Phase A determinism test.
 //   - `Bearing<T: Seal>` — parameterized template exercising the type bound
-//   - `BearingAssembly` — concrete assembly using `Bearing<ORingSeal>` so the
-//     file compiles cleanly under `parse_and_compile_with_stdlib` and is
-//     auto-discovered (and gated on no-error compile) by `examples_smoke.rs`.
+//   - `BearingAssembly` — assembly that now exercises the **live** B1 call-site
+//     `Bearing<auto(free): Seal>()` (task 3558), rather than the concrete
+//     `Bearing<ORingSeal>()` placeholder it used before the compile-pipeline
+//     resolver call-site existed.
 //
-// Note: the parser surface is now landed — `tree-sitter-reify/grammar.js:710-729`
-// admits `auto_type_arg` inside `type_arg_list` (corpus pin:
-// `tree-sitter-reify/test/corpus/auto_type_arg.txt`). The `BearingAssembly`
-// consumer below still uses the concrete `Bearing<ORingSeal>()` rather than
-// `Bearing<auto: Seal>()` because no production caller in
-// `crates/reify-compiler/src/lib.rs::compile_*` invokes
-// `resolve_auto_type_params`, so `Bearing<auto: Seal>()` would produce an
-// unresolved-type-arg error under `compile_with_stdlib` and break
-// `examples_smoke.rs` (which gates every `examples/*.ri` on zero
-// Error-severity diagnostics). The determinism tests invoke
-// `enumerate_candidates` / `filter_feasible_candidates` / `select_candidate`
-// directly on the registry built from this file. A follow-up task will flip
-// the consumer to `Bearing<auto: Seal>()` once the compile-pipeline call-site
-// of `resolve_auto_type_params` lands.
+// Note: task 3558 landed the compile-pipeline resolver call-site
+// (`crates/reify-compiler/src/compile_builder/auto_type_param_phase.rs`), so
+// `Bearing<auto: Seal>()` now resolves during `compile_with_stdlib`. Because
+// this fixture declares THREE Seal-conformant candidates, a STRICT `auto: Seal`
+// would resolve to `Ambiguous` and emit an Error — which `examples_smoke.rs`
+// (zero Error-severity gate over every `examples/*.ri`) would reject. The
+// consumer therefore uses `auto(free): Seal`, which deterministically selects
+// the lexicographically-first feasible candidate (`GasketSeal`) and emits only
+// a `NonUnique` *warning*, keeping the file compile-clean. The determinism
+// tests still invoke `enumerate_candidates` / `filter_feasible_candidates` /
+// `select_candidate` directly on the registry built from this file.
 
 // ── Bound trait ──────────────────────────────────────────────────────────────
 
@@ -70,8 +68,12 @@ structure def Bearing<T: Seal> {
     constraint bore_diameter > 0mm
 }
 
-// ── Concrete assembly (keeps file compile-clean under examples_smoke.rs) ──────
+// ── Assembly exercising the live `auto(free):` call-site (task 3558) ──────────
+//
+// `auto(free): Seal` resolves to the lexicographically-first feasible candidate
+// (`GasketSeal`) and emits a `NonUnique` warning — not an error — so the file
+// stays compile-clean under `examples_smoke.rs`'s zero-Error gate.
 
 structure def BearingAssembly {
-    sub bearing = Bearing<ORingSeal>()
+    sub bearing = Bearing<auto(free): Seal>()
 }
