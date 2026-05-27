@@ -6215,6 +6215,48 @@ mod tests {
 
     // ── motion_subspace_columns: fixed ────────────────────────────────────────
 
+    // ── motion_subspace_columns: prismatic ───────────────────────────────────
+
+    /// PRD §5.1 pin: prismatic column = `[0; axis]`.
+    /// `motion_subspace_columns` on a prismatic +X joint returns a single
+    /// column with angular = [0,0,0] and linear = [1,0,0].
+    #[test]
+    fn motion_subspace_columns_prismatic_unit_axis_returns_zero_axis_column() {
+        let joint = prismatic_x_joint();
+        let cols = super::motion_subspace_columns(&joint)
+            .expect("motion_subspace_columns on prismatic joint should return Some");
+        assert_eq!(cols.len(), 1, "prismatic has 1 DOF — expected 1 column");
+        let arr = cols[0].as_array();
+        for (i, (&got, exp)) in arr.iter().zip([0.0, 0.0, 0.0, 1.0, 0.0, 0.0]).enumerate() {
+            assert!(
+                (got - exp).abs() < 1e-12,
+                "prismatic +X column[{}]: expected {}, got {} (PRD §5.1: [0; axis])",
+                i, exp, got
+            );
+        }
+    }
+
+    /// Axis normalization: prismatic with unnormalized axis `[2,0,0]` (magnitude 2)
+    /// still returns column `[0,0,0, 1,0,0]`.
+    #[test]
+    fn motion_subspace_columns_prismatic_unnormalized_axis_normalizes() {
+        let axis = Value::Vector(vec![Value::Real(2.0), Value::Real(0.0), Value::Real(0.0)]);
+        let joint = eval_builtin("prismatic", &[axis, length_range_0_to_1m()]);
+        let cols = super::motion_subspace_columns(&joint)
+            .expect("motion_subspace_columns on prismatic joint should return Some");
+        assert_eq!(cols.len(), 1, "prismatic has 1 DOF — expected 1 column");
+        let arr = cols[0].as_array();
+        for (i, (&got, exp)) in arr.iter().zip([0.0, 0.0, 0.0, 1.0, 0.0, 0.0]).enumerate() {
+            assert!(
+                (got - exp).abs() < 1e-12,
+                "prismatic axis-norm column[{}]: expected {}, got {}",
+                i, exp, got
+            );
+        }
+    }
+
+    // ── motion_subspace_columns: fixed ────────────────────────────────────────
+
     /// `motion_subspace_columns` on a fixed joint returns `Some(vec![])` (0-DOF → 6×0
     /// motion-subspace).
     #[test]
