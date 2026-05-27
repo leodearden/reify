@@ -600,3 +600,63 @@ structure def HarmonicForce : ForcingFunction {
     //                (a negative phase offset is meaningful in the context of
     //                two overlapping HarmonicForce sources)
 }
+
+// ── SampledForce ──────────────────────────────────────────────────────────────
+
+// `SampledForce` applies a time-varying force described by non-uniform sample
+// tables (PRD §5.1 / §5.3). The Duhamel-integral / Newmark-β transient
+// trampoline (task θ) interpolates linearly between samples at each solver
+// timestep.
+//
+// Param semantics (PRD §5.1 / §5.3):
+//   at           — application location. FIXME(location-id-type): `String`
+//                  PLACEHOLDER per the StepForce precedent.
+//   direction    — unit excitation vector. `Vector3<Dimensionless>` per the
+//                  `ModalOptions.reference_direction` precedent. Direction
+//                  carries the sign; force_samples carry the positive scalar
+//                  magnitudes.
+//   time_samples — non-uniform time stamps at which force is specified.
+//                  `List<Time>` (bare dimension name `Time` per `io.ri:77`
+//                  precedent). Must be non-empty (empty ≡ degenerate, no force
+//                  data); the constraint `time_samples.count > 0` lands in
+//                  step-18. The `count` method on `List` is recognised in
+//                  constraint position per `reify-expr/src/lib.rs:1349`
+//                  evaluator arm; precedent:
+//                  `PiecewisePolynomialProfile.constraint waypoints.count > 0`
+//                  (trajectory.ri:230).
+//   force_samples — force magnitudes at the corresponding time stamps.
+//                  `List<Force>`. Must be non-empty (same rationale).
+//
+// Cross-list invariant NOTE: `time_samples.count == force_samples.count` is NOT
+// expressible in Reify's constraint grammar — the `constraint` clause admits
+// only scalar predicates over single cells in the same scope, and "two same-
+// structure cells equal" requires the eval-time machinery of the transient_
+// response trampoline (future task θ). Deferred there intentionally.
+//
+// PRD reference: docs/prds/v0_3/modal-analysis.md §5.1, §5.3.
+structure def SampledForce : ForcingFunction {
+    param at : String
+    param direction : Vector3<Dimensionless>
+    param time_samples : List<Time>
+    param force_samples : List<Force>
+
+    // Empty `time_samples` is degenerate: no force data can be reconstructed
+    // from zero samples. Declared at structure-def level to catch the failure
+    // at construction rather than waiting for the transient_response trampoline
+    // (task θ). Mirrors `PiecewisePolynomialProfile.constraint waypoints.count
+    // > 0` (trajectory.ri:230). The `.count` method on `List` is recognised in
+    // constraint position per `reify-expr/src/lib.rs:1349` evaluator arm.
+    constraint time_samples.count > 0
+
+    // Same rationale as time_samples.count > 0 above. An empty force_samples
+    // list with a non-empty time_samples list would also be degenerate.
+    constraint force_samples.count > 0
+
+    // NOTE — explicitly NOT constrained:
+    //   at          : String — no scalar invariant expressible on a String placeholder
+    //   direction   : Vector3<Dimensionless> — norm() not scalar-predicable
+    //   Cross-list invariant time_samples.count == force_samples.count — NOT
+    //   expressible in Reify constraint grammar (single-cell scalar predicates
+    //   only; "two same-structure cells equal" requires eval-time machinery).
+    //   Deferred to the transient_response trampoline (task θ).
+}

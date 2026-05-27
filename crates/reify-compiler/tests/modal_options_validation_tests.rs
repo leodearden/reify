@@ -1127,6 +1127,153 @@ fn harmonic_force_struct_has_correct_param_shape() {
     );
 }
 
+// ─── step-15 (η): SampledForce param shape ───────────────────────────────────
+
+/// `SampledForce` (PRD §5.1 / §5.3) applies a non-uniform-sample force table
+/// (Duhamel/Newmark-β fallback). Must declare exactly 4 params in order:
+///
+///   - `at           : String`         (PLACEHOLDER for LocationId)
+///   - `direction    : Vector3<Dimensionless>` (unit excitation vector)
+///   - `time_samples : List<Time>`     (non-uniform time stamps)
+///   - `force_samples: List<Force>`    (force magnitudes at each sample)
+///
+/// Must refine `ForcingFunction`. No defaults. Constraints land in step-18.
+/// The cross-list invariant `time_samples.count == force_samples.count` is NOT
+/// expressible in Reify constraint grammar (deferred to trampoline task θ).
+#[test]
+fn sampled_force_struct_has_correct_param_shape() {
+    let template = find_structure("SampledForce");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    // (a) tight count
+    assert_eq!(
+        params.len(),
+        4,
+        "SampledForce should have exactly 4 param cells \
+         (at, direction, time_samples, force_samples), got: {:?}",
+        names
+    );
+
+    // (b) param names + types in declaration order
+    let expected: &[(&str, Type)] = &[
+        ("at", Type::String),
+        ("direction", Type::vec3(Type::dimensionless_scalar())),
+        (
+            "time_samples",
+            Type::List(Box::new(Type::Scalar {
+                dimension: DimensionVector::TIME,
+            })),
+        ),
+        (
+            "force_samples",
+            Type::List(Box::new(Type::Scalar {
+                dimension: DimensionVector::FORCE,
+            })),
+        ),
+    ];
+    let expected_names: Vec<&str> = expected.iter().map(|(m, _)| *m).collect();
+    assert_eq!(
+        names, expected_names,
+        "SampledForce params must be in canonical order \
+         (at, direction, time_samples, force_samples)"
+    );
+    for (i, (expected_name, expected_ty)) in expected.iter().enumerate() {
+        let cell = &params[i];
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "SampledForce.{} should be {:?}, got {:?}",
+            expected_name, expected_ty, cell.cell_type
+        );
+    }
+
+    // (c) no defaults — all caller-supplied
+    for cell in &params {
+        assert!(
+            cell.default_expr.is_none(),
+            "SampledForce.{} should have no default_expr (caller-supplied), \
+             but got: {:?}",
+            cell.id.member,
+            cell.default_expr
+        );
+    }
+
+    // (d) refines ForcingFunction
+    assert!(
+        template
+            .trait_bounds
+            .iter()
+            .any(|t| t == "ForcingFunction"),
+        "SampledForce should refine ForcingFunction; got trait_bounds: {:?}",
+        template.trait_bounds
+    );
+}
+
+// ─── step-17 (η): SampledForce non-empty sample constraints ──────────────────
+
+/// `SampledForce` must declare EXACTLY 2 constraints:
+///   - `time_samples.count > 0`
+///   - `force_samples.count > 0`
+///
+/// Uses `collect_method_call_chain` to surface the `("count", "time_samples")`
+/// and `("count", "force_samples")` method-call pairs on the LHS. Mirrors
+/// `piecewise_polynomial_profile_constrains_waypoints_nonempty`
+/// (trajectory_stdlib_compile.rs:702-761) for the `waypoints.count > 0` shape.
+///
+/// Cross-list invariant `time_samples.count == force_samples.count` is NOT
+/// constrained here (Reify grammar: single-cell scalar predicates only).
+#[test]
+fn sampled_force_constrains_samples_nonempty() {
+    let template = find_structure("SampledForce");
+
+    assert_eq!(
+        template.constraints.len(),
+        2,
+        "SampledForce should declare exactly 2 constraints \
+         (time_samples.count > 0, force_samples.count > 0); \
+         got {} constraints: {:?}",
+        template.constraints.len(),
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+
+    for required_member in &["time_samples", "force_samples"] {
+        let matched = template.constraints.iter().any(|c| {
+            match &c.expr.kind {
+                CompiledExprKind::BinOp { op, left, right } => {
+                    if *op != BinOp::Gt {
+                        return false;
+                    }
+                    let pairs = collect_method_call_chain(left);
+                    if !pairs.contains(&("count", *required_member)) {
+                        return false;
+                    }
+                    match &right.kind {
+                        CompiledExprKind::Literal(Value::Int(0)) => true,
+                        CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
+                        _ => false,
+                    }
+                }
+                _ => false,
+            }
+        });
+        assert!(
+            matched,
+            "SampledForce should declare `constraint {}.count > 0`; \
+             got constraints: {:?}",
+            required_member,
+            template
+                .constraints
+                .iter()
+                .map(|c| &c.expr.kind)
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
 // ─── step-13 (η): HarmonicForce amplitude + frequency positivity constraints ──
 
 /// `HarmonicForce` must declare EXACTLY 2 constraints:
