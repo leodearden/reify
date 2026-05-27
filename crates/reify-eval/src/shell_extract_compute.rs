@@ -73,12 +73,10 @@ fn shell_extraction_result_to_value(
                     v.iter()
                         .copied()
                         .map(Value::Real)
-                        .collect::<Vec<_>>()
-                        .into(),
+                        .collect::<Vec<_>>(),
                 )
             })
-            .collect::<Vec<_>>()
-            .into(),
+            .collect::<Vec<_>>(),
     );
     let triangles_value = Value::List(
         result
@@ -89,12 +87,10 @@ fn shell_extraction_result_to_value(
                 Value::List(
                     t.iter()
                         .map(|&i| Value::Int(i as i64))
-                        .collect::<Vec<_>>()
-                        .into(),
+                        .collect::<Vec<_>>(),
                 )
             })
-            .collect::<Vec<_>>()
-            .into(),
+            .collect::<Vec<_>>(),
     );
     let thickness_value = Value::List(
         result
@@ -103,8 +99,7 @@ fn shell_extraction_result_to_value(
             .iter()
             .copied()
             .map(Value::Real)
-            .collect::<Vec<_>>()
-            .into(),
+            .collect::<Vec<_>>(),
     );
     let mut mid_surface_fields = PersistentMap::default();
     mid_surface_fields.insert("vertices".to_string(), vertices_value);
@@ -141,8 +136,7 @@ fn shell_extraction_result_to_value(
                     fields: rf,
                 }))
             })
-            .collect::<Vec<_>>()
-            .into(),
+            .collect::<Vec<_>>(),
     );
     let vertex_labels_value = Value::List(
         result
@@ -150,8 +144,7 @@ fn shell_extraction_result_to_value(
             .vertex_labels
             .iter()
             .map(|&l| Value::Int(l as i64))
-            .collect::<Vec<_>>()
-            .into(),
+            .collect::<Vec<_>>(),
     );
     let triangle_labels_value = Value::List(
         result
@@ -159,8 +152,7 @@ fn shell_extraction_result_to_value(
             .triangle_labels
             .iter()
             .map(|&l| Value::Int(l as i64))
-            .collect::<Vec<_>>()
-            .into(),
+            .collect::<Vec<_>>(),
     );
     let mut seg_fields = PersistentMap::default();
     seg_fields.insert("regions".to_string(), regions_value);
@@ -193,8 +185,7 @@ fn shell_extraction_result_to_value(
             .diagnostics
             .iter()
             .map(|d| Value::String(format!("{:?}", d.message)))
-            .collect::<Vec<_>>()
-            .into(),
+            .collect::<Vec<_>>(),
     );
 
     // ── top-level StructureInstance ──────────────────────────────────────────
@@ -310,7 +301,7 @@ pub fn shell_extract_compute_fn(
 
     // ── Parse options ─────────────────────────────────────────────────────────
     // value_inputs[0] takes priority; fall back to the `options` parameter.
-    let opts_value = value_inputs.get(0).unwrap_or(options);
+    let opts_value = value_inputs.first().unwrap_or(options);
     let (medial_opts, mid_surf_opts, prune_opts, mesher_opts, seg_opts) =
         parse_elastic_options_from_value(opts_value);
 
