@@ -215,7 +215,6 @@ fn cooperative_cancellation_sla_2x_budget() {
         &[Value::Int(1)],
         &[],
         &Value::Undef,
-        None,
         &handle,
         VersionId(2),
     );
@@ -323,7 +322,6 @@ fn dispatch_is_synchronous_counter_returns_to_zero_between_calls() {
             &[Value::Int(i as i64)],
             &[],
             &Value::Undef,
-            None,
             &handle,
             VersionId(2 + u64::from(i)),
         );
@@ -378,7 +376,6 @@ fn prior_cache_intact_after_cancelled_dispatch() {
         &[prior_value.clone()],
         &[],
         &Value::Undef,
-        None,
         &handle,
         VersionId(2),
     );

@@ -103,7 +103,6 @@ fn run_compute_dispatch_helper_invokes_begin_then_trampoline_then_atomic_complet
         &[Value::Int(41)],
         &[],
         &Value::Undef,
-        None,
         &CancellationHandle::new(), // ε: new cancellation param (not cancelled)
         VersionId(2),
     );

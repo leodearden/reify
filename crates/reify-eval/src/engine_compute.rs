@@ -10,6 +10,7 @@ use reify_types::{
     ComputeNodeId, Diagnostic, OpaqueState, RealizationNodeId, Value, ValueCellId, VersionId,
 };
 
+use crate::cache::NodeId;
 use crate::graph::CancellationHandle;
 
 /// Function-pointer type for a synchronous compute trampoline.
@@ -239,7 +240,6 @@ impl crate::Engine {
         value_inputs: &[Value],
         realization_inputs: &[RealizationReadHandle],
         options: &Value,
-        prior_warm_state: Option<&OpaqueState>,
         cancellation: &CancellationHandle,
         version: VersionId,
     ) -> Result<(Value, Vec<Diagnostic>), DispatchError> {
@@ -251,6 +251,30 @@ impl crate::Engine {
              trampoline returns a single Value and would be broadcast to every \
              cell. Multi-output semantics require a trampoline signature change.",
         );
+
+        // ζ / task 3425 step-6: source the prior warm state strictly from
+        // the canonical at-rest store (cache). When the cache misses, fall
+        // back to the warm_pool — this covers the remove-reinsert case
+        // where engine_edit step (9) parks the prior state in the pool
+        // between source edits and run_compute_dispatch (called from
+        // engine_eval's @optimized lowering site) is the natural reinsert
+        // seeding point. The captured `_prior_cost` is retained so the
+        // Cancelled / Failed arms (step-10) can restore it alongside the
+        // warm state (underscore-prefixed until step-10 consumes it).
+        let compute_node = NodeId::Compute(c_id.clone());
+        let _prior_cost = self
+            .cache
+            .cost_per_byte_of(&compute_node)
+            .or_else(|| self.warm_pool.cost_per_byte_of(&compute_node))
+            .unwrap_or(0.0);
+        let prior_warm_state: Option<OpaqueState> = self
+            .cache
+            .get_warm_state(&compute_node)
+            .or_else(|| {
+                self.warm_pool
+                    .checkout_with_lru_stamp(&compute_node)
+                    .map(|(state, _stamp)| state)
+            });
 
         // Step 1: pre-mark output VCs Pending (the in-flight state).
         // begin_compute_dispatch already leaves VCs Pending{last_substantive: prior}
@@ -266,7 +290,7 @@ impl crate::Engine {
             value_inputs,
             realization_inputs,
             options,
-            prior_warm_state,
+            prior_warm_state.as_ref(),
             cancellation,
         ) {
             Some(ComputeOutcome::Completed {
@@ -462,7 +486,6 @@ mod tests {
             &[Value::Int(99)],
             &[],
             &Value::Undef,
-            None,
             &handle, // NEW param — fails to compile until step-2
             VersionId(2),
         );
@@ -519,7 +542,6 @@ mod tests {
             &[Value::Int(7)],
             &[],
             &Value::Undef,
-            None,
             &handle, // NEW param — fails to compile until step-2
             VersionId(2),
         );
@@ -569,7 +591,6 @@ mod tests {
             &[Value::Int(5)],
             &[],
             &Value::Undef,
-            None,
             &handle, // NEW param — fails to compile until step-2
             VersionId(2),
         );

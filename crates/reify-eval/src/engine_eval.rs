@@ -2943,7 +2943,6 @@ impl Engine {
                             &arg_values,
                             &[],
                             &Value::Undef,
-                            None,
                             &cancel,
                             VersionId(version_id),
                         ) {
