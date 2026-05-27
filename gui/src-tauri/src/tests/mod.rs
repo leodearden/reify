@@ -8,6 +8,7 @@ mod kernel_status_tests;
 mod lsp_bridge_tests;
 mod mcp_context_tests;
 mod mcp_dispatch_tests;
+mod path_key_tests;
 mod types_tests;
 mod watcher_tests;
 
