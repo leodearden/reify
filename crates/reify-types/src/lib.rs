@@ -9,32 +9,30 @@ pub mod annotation;
 pub mod ast;
 pub mod boundary_attachment;
 pub mod constraint;
-pub mod diagnostics;
-pub mod dimension;
 pub mod expr;
 pub mod geometry;
-pub mod hash;
-pub mod identity;
 pub mod kernel_validation;
 pub mod node_traits;
 pub mod persistent;
-pub mod primitives;
 pub mod provenance;
 pub mod sampled;
-pub mod source_location;
-pub mod spanned_ident;
 pub mod structure_registry;
 pub mod traits;
-pub mod ty;
 pub mod value;
 pub mod warm;
 pub mod warm_registry;
 
-pub use annotation::{
-    Annotation, AnnotationArg, AnnotationArgValue, DEPRECATED_ANNOTATION, OPTIMIZED_ANNOTATION,
-    SHELL_ANNOTATION, SOLID_ANNOTATION, SOLVER_HINT_ANNOTATION, TEST_ANNOTATION,
-    has_test_annotation,
+// ── reify-core re-exports ────────────────────────────────────────────────────
+// These eight modules now live in the `reify-core` leaf crate (task γ of
+// docs/prds/core-ast-ir-layering.md).  Re-exporting them AS modules preserves
+// the `reify_types::diagnostics::SourceSpan` module-path spellings used by 15
+// files in the workspace, while the flat re-exports below preserve the
+// `reify_types::SourceSpan` spellings.  No downstream crate requires changes.
+pub use reify_core::{
+    diagnostics, dimension, hash, identity, primitives, source_location, spanned_ident, ty,
 };
+
+pub use annotation::{Annotation, AnnotationArg, AnnotationArgValue, has_test_annotation};
 pub use ast::{
     DimOp, Expr, ExprKind, LambdaParam, MatchArm, QuantifierKind, TypeExpr, TypeExprKind,
 };
@@ -75,7 +73,10 @@ pub use kernel_validation::{
 };
 pub use node_traits::{HasNodeKind, NodeKind, NodeTraits, NodeTraitsMap};
 pub use persistent::PersistentMap;
-pub use primitives::PortDirection;
+pub use primitives::{
+    DEPRECATED_ANNOTATION, OPTIMIZED_ANNOTATION, PortDirection, SHELL_ANNOTATION, SOLID_ANNOTATION,
+    SOLVER_HINT_ANNOTATION, TEST_ANNOTATION,
+};
 pub use provenance::{FieldImportProvenance, SnapshotProvenance};
 pub use source_location::{
     SourceLocationInfo, build_line_offsets, byte_offset_to_line_col,

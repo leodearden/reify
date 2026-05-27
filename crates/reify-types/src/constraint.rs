@@ -463,16 +463,10 @@ mod tests {
 
     #[test]
     fn solve_result_infeasible() {
-        use crate::diagnostics::{Diagnostic, Severity};
+        use crate::diagnostics::Diagnostic;
 
         let result = SolveResult::Infeasible {
-            diagnostics: vec![Diagnostic {
-                message: "constraint unsatisfiable".to_string(),
-                severity: Severity::Error,
-                labels: vec![],
-                code: None,
-                candidates: Vec::new(),
-            }],
+            diagnostics: vec![Diagnostic::error("constraint unsatisfiable")],
         };
         match &result {
             SolveResult::Infeasible { diagnostics } => {

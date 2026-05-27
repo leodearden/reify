@@ -4492,6 +4492,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "reify-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "xxhash-rust",
+]
+
+[[package]]
 name = "reify-doc"
 version = "0.1.0"
 dependencies = [
@@ -4790,6 +4799,7 @@ version = "0.1.0"
 dependencies = [
  "im",
  "inventory",
+ "reify-core",
  "serde",
  "serde_json",
  "xxhash-rust",
