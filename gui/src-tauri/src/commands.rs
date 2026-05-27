@@ -12,7 +12,45 @@ use crate::types::{
     DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState, MechanismDescriptor,
     PersistentViewState,
 };
-use crate::watcher::FileWatcher;
+use crate::watcher::{FileEvent, FileWatcher};
+
+/// Trait for emitting file-change and file-removal events.
+///
+/// Implementing types wrap a Tauri `AppHandle` (in production) or a test
+/// double (`EmitCapture` in tests) so that [`dispatch_file_event`] is
+/// testable without spinning up a Tauri runtime.
+pub trait FileEventEmitter {
+    /// Emit a `file-changed` event carrying the new file content.
+    fn emit_changed(&self, payload: FileData);
+    /// Emit a `file-removed` event carrying the deleted path.
+    fn emit_removed(&self, payload: serde_json::Value);
+}
+
+/// Dispatch a [`FileEvent`] through `emitter`.
+///
+/// - `FileEvent::Changed(path)`: reads the file at `path`; if successful
+///   calls `emitter.emit_changed(FileData { path, content })`.  On read
+///   error the emitter is NOT called (mirrors the existing `if let Ok`
+///   guard in `create_watcher`).
+/// - `FileEvent::Removed(path)`: calls `emitter.emit_removed({ "path": … })`
+///   without any disk read.
+pub fn dispatch_file_event<E: FileEventEmitter>(emitter: &E, event: FileEvent) {
+    match event {
+        FileEvent::Changed(path) => {
+            let path_str = path.to_string_lossy().into_owned();
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                emitter.emit_changed(FileData {
+                    path: path_str,
+                    content,
+                });
+            }
+        }
+        FileEvent::Removed(path) => {
+            let path_str = path.to_string_lossy().into_owned();
+            emitter.emit_removed(serde_json::json!({ "path": path_str }));
+        }
+    }
+}
 
 /// Application state shared across all Tauri commands.
 pub struct AppState {
