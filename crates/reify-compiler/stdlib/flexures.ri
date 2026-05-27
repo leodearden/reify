@@ -67,3 +67,28 @@
 //   the cache-lookup logic (or wires Rust-side intrinsic dispatch). The
 //   reserved-name namespacing keeps the cache key discoverable and out of
 //   user-namespace collision.
+
+// ── Type aliases ──────────────────────────────────────────────────────────
+
+// RotationalStiffness — torsional spring constant relating angular
+// displacement to restoring torque (N·m/rad in SI). PRD §4.2 names this as
+// the canonical type for `FlexureCompliance.effective_stiffness`.
+//
+// The proper dimensioned `RotationalStiffness` type lives in the compliant-
+// joints-flexures α task (Joint surface extension; PRD §3 + §11 Phase 1
+// row α), which has not been filed yet. β's only formal prereq is SIR-α
+// 3540 (REPORT-ONLY), so we ship the placeholder spelling now and retarget
+// later — exact mirror of the trajectory.ri:56 convention
+// (`pub type JointValue = Real` with `TODO(joint-value-type)` retargeting
+// comment), and analysis.ri:13 (`pub type Stress = Pressure`).
+//
+// `pub` so downstream modules and user code can reference the canonical
+// spelling at flexure call sites without re-aliasing. Retargeting this one
+// line propagates the type tightening to every consumer (in-file +
+// downstream) without touching any structure_def or fn body.
+//
+// TODO(stiffness-type): retarget to the proper `RotationalStiffness` (and
+// add the sibling `TranslationalStiffness` / `RotationalDamping` /
+// `TranslationalDamping` aliases) as dimensioned types when the compliant-
+// joints-flexures α task lands the Joint surface extension.
+pub type RotationalStiffness = Real
