@@ -1270,3 +1270,76 @@ fn tots_shaper_struct_has_correct_param_shape() {
         );
     }
 }
+
+// ─── step-37: TOTSShaper param defaults ──────────────────────────────────────
+
+/// `TOTSShaper` declares two param defaults per PRD §5.2:
+///   - `max_iters : Int = 100`         — solver iteration cap
+///   - `tol       : Real = 0.000001`   — convergence threshold (= 1e-6 in decimal)
+///
+/// The other five params (modes, actuator_limits, velocity_limit,
+/// acceleration_limit, vibration_tolerance) are required at construction —
+/// no canonical default exists for these caller-supplied values.
+///
+/// Decimal-encoding discipline: Reify's grammar has no scientific notation,
+/// so 1e-6 is spelled as `0.000001` (same convention as modal_analysis.ri
+/// tol = 0.000000001 = 1e-9 at modal_analysis.ri:356). IEEE-754
+/// round-to-nearest of these exact decimal literals is deterministic.
+///
+/// Mirrors `modal_options_param_defaults_match_spec` in
+/// modal_options_validation_tests.rs.
+#[test]
+fn tots_shaper_param_defaults_match_spec() {
+    let template = find_structure("TOTSShaper");
+
+    // max_iters = 100 per PRD §5.2 explicit default.
+    let max_iters_default = require_default(template, "max_iters");
+    match &max_iters_default.kind {
+        CompiledExprKind::Literal(Value::Int(v)) => {
+            assert_eq!(*v, 100, "max_iters default should be 100, got: {}", v)
+        }
+        other => panic!(
+            "max_iters default should be Literal(Value::Int(100)), got: {:?}",
+            other
+        ),
+    }
+
+    // tol = 0.000001 = 1e-6 per PRD §5.2; decimal-encoding (no sci notation
+    // in Reify grammar). Strict-equality safe — IEEE-754 deterministic.
+    let tol_default = require_default(template, "tol");
+    match &tol_default.kind {
+        CompiledExprKind::Literal(Value::Real(v)) => assert_eq!(
+            *v, 0.000001,
+            "tol default should be exactly 0.000001 (= 1e-6), got: {}",
+            v
+        ),
+        other => panic!(
+            "tol default should be Literal(Value::Real(0.000001)), got: {:?}",
+            other
+        ),
+    }
+
+    // The other five params are required at construction — no canonical
+    // default (caller must supply modes, actuator_limits, velocity_limit,
+    // acceleration_limit, vibration_tolerance).
+    for member in [
+        "modes",
+        "actuator_limits",
+        "velocity_limit",
+        "acceleration_limit",
+        "vibration_tolerance",
+    ] {
+        let cell = template
+            .value_cells
+            .iter()
+            .find(|vc| vc.id.member == member)
+            .unwrap_or_else(|| panic!("TOTSShaper.{} missing", member));
+        assert!(
+            cell.default_expr.is_none(),
+            "TOTSShaper.{} should have NO default_expr (required at \
+             construction), but got: {:?}",
+            member,
+            cell.default_expr
+        );
+    }
+}
