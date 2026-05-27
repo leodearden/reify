@@ -6174,4 +6174,20 @@ mod tests {
             map.keys().collect::<Vec<_>>()
         );
     }
+
+    // ── motion_subspace_columns: fixed ────────────────────────────────────────
+
+    /// `motion_subspace_columns` on a fixed joint returns `Some(vec![])` (0-DOF → 6×0
+    /// motion-subspace).
+    #[test]
+    fn motion_subspace_columns_fixed_returns_empty_vec() {
+        let fixed_joint = eval_builtin("fixed", &[]);
+        let cols = super::motion_subspace_columns(&fixed_joint)
+            .expect("motion_subspace_columns on fixed joint should return Some");
+        assert!(
+            cols.is_empty(),
+            "fixed joint has 0 DOFs — motion-subspace should be 6×0 (empty Vec), got len={}",
+            cols.len()
+        );
+    }
 }
