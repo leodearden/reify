@@ -72,6 +72,7 @@ import {
 import type { ExportFormat, FileData, SourceLocation, ConstraintData, ToastMessage, ToastAction, EntityTreeNode } from './types';
 import { applyTheme } from './theme';
 import { errorMessage } from './utils/errorClassifier';
+import { isSameFile } from './utils/pathUtils';
 import { messageForSaveBlocked } from './editor/messages';
 import { loadPanelLayout, savePanelLayout, clampPanelHeightsToFit } from './hooks/useLayoutPersistence';
 import { createSerializationErrorCoalescer } from './hooks/useSerializationErrorCoalescer';
@@ -753,8 +754,12 @@ const App: Component = () => {
     // Subscribe to file-changed events
     try {
       const unlistenFileChanged = await onFileChanged((data: FileData) => {
-        // Only act when the file is currently open
-        const match = editorStore.state.openFiles.find((f) => f.path === data.path);
+        // Only act when the file is currently open.
+        // isSameFile handles file:// URI vs bare-path mismatches that the bridge
+        // layer emits inconsistently (LSP uses URIs, Tauri commands use bare paths).
+        // We pass match.path (the tab's key) to store mutations so the store
+        // key stays stable — never accidentally renamed to the URI form.
+        const match = editorStore.state.openFiles.find((f) => isSameFile(f.path, data.path));
         if (!match) return;
 
         if (editorStore.state.dirtyFiles.includes(match.path)) {
