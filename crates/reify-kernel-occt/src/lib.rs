@@ -8094,6 +8094,33 @@ mod tests {
         );
     }
 
+    /// Singular linear part (diag(1,1,0), det=0) must return Err containing "singular".
+    /// This is RED against the base impl — BRepBuilderAPI_GTransform silently emits a
+    /// degenerate shape for det=0 without failing IsDone(), so this test fails until
+    /// the explicit determinant guard is added in step-4.
+    #[test]
+    fn gtransform_shape_singular_linear_returns_error() {
+        let shape = ffi::ffi::make_box(2.0, 2.0, 2.0).expect("make_box should succeed");
+        let result = ffi::ffi::gtransform_shape(
+            &shape,
+            // diag(1, 1, 0) — det = 0
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0,
+        );
+        match result {
+            Err(e) => {
+                let msg = e.to_string().to_lowercase();
+                assert!(
+                    msg.contains("singular"),
+                    "expected error containing 'singular', got: {e}"
+                );
+            }
+            Ok(_) => panic!("expected Err for singular linear part (det=0), got Ok"),
+        }
+    }
+
     /// `Copy=true` contract: the source shape AABB must be unchanged after the transform.
     /// Applies diag(1,1,2)+(10,0,0) and re-queries the original shape.
     #[test]
