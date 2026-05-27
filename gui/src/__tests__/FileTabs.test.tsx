@@ -191,6 +191,47 @@ describe('FileTabs', () => {
     });
   });
 
+  describe('missing-indicator', () => {
+    it('(a) tab with path in missingFiles renders missing-indicator', () => {
+      const store = setup([file1, file2]);
+      store.markMissing(file1.path);
+      render(() => <FileTabs store={store} />);
+      const indicators = screen.getAllByTestId('missing-indicator');
+      expect(indicators).toHaveLength(1);
+    });
+
+    it('(b) tabs NOT in missingFiles do NOT render the indicator', () => {
+      const store = setup([file1, file2]);
+      render(() => <FileTabs store={store} />);
+      const indicators = screen.queryAllByTestId('missing-indicator');
+      expect(indicators).toHaveLength(0);
+    });
+
+    it('(c) missing-indicator and dirty-indicator are independent — both render when both states are true', () => {
+      const store = setup([file1, file2]);
+      store.markMissing(file1.path);
+      store.markDirty(file1.path);
+      render(() => <FileTabs store={store} />);
+      const dirtyIndicators = screen.getAllByTestId('dirty-indicator');
+      const missingIndicators = screen.getAllByTestId('missing-indicator');
+      expect(dirtyIndicators).toHaveLength(1);
+      expect(missingIndicators).toHaveLength(1);
+      expect(dirtyIndicators[0]).not.toBe(missingIndicators[0]);
+    });
+
+    it('(d) tab title for a missing file includes "missing on disk"', () => {
+      const store = setup([file1, file2]);
+      store.markMissing(file1.path);
+      render(() => <FileTabs store={store} />);
+      const tabs = screen.getAllByTestId('file-tab');
+      const bracketTab = tabs.find((t) => t.textContent?.includes('bracket.ri'))!;
+      const mountTab = tabs.find((t) => t.textContent?.includes('mount.ri'))!;
+      expect(bracketTab.getAttribute('title')).toContain('missing on disk');
+      // Non-missing tab keeps the plain path as title
+      expect(mountTab.getAttribute('title')).toBe(file2.path);
+    });
+  });
+
   describe('unsaved changes confirmation', () => {
     it('clicking close on a dirty tab calls window.confirm with filename', () => {
       const store = setup([file1, file2], { dirty: [file1.path] });
