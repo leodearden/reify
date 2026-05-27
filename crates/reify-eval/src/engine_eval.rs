@@ -2807,6 +2807,59 @@ impl Engine {
                         .and_then(|f| f.optimized_target.clone());
 
                 if let Some(target) = maybe_target {
+                    // §8-η / §3 Final-gate: if the output VC is already
+                    // `Freshness::Final` in the cache from a prior eval(), the
+                    // trampoline result is unchanged — skip re-dispatch and return
+                    // the cached value directly.
+                    //
+                    // This is the in-memory cache-hit path for @optimized cells
+                    // when ALL inputs are Final.  The Pending gate above (lines
+                    // 2771-2789) handles the Pending case; this gate handles the
+                    // symmetric Final case that the Pending gate leaves unguarded.
+                    //
+                    // Placed BEFORE the `compute_dispatch` lookup so both the
+                    // trampoline path and the fall-through body-inline path benefit:
+                    // if a cell was previously evaluated (by either path) and all
+                    // inputs are still Final, the cached value is authoritative.
+                    //
+                    // Uses `NodeId::Value(cell_id.clone())` — the same key that
+                    // `complete_compute_dispatch_atomically` writes under on the
+                    // first dispatch (matching the post-dispatch store site).
+                    {
+                        let output_node_id = NodeId::Value(cell_id.clone());
+                        if self.cache.freshness(&output_node_id) == Freshness::Final {
+                            if let Some(entry) = self.cache.get(&output_node_id) {
+                                if let CachedResult::Value(cached_val, det) =
+                                    entry.result.clone()
+                                {
+                                    values.insert(cell_id.clone(), cached_val.clone());
+                                    snapshot.values.insert(
+                                        cell_id.clone(),
+                                        (cached_val, det),
+                                    );
+                                    let _trace = take_trace(
+                                        &mut let_traces,
+                                        &node_id,
+                                        "sorted_lets",
+                                        "let_traces",
+                                    );
+                                    self.journal.record(EvalEvent {
+                                        timestamp: Instant::now(),
+                                        node_id,
+                                        kind: EventKind::Completed {
+                                            outcome: EvalOutcome::Unchanged,
+                                        },
+                                        version: VersionId(version_id),
+                                        payload: Some(EventPayload::Duration(
+                                            start.elapsed(),
+                                        )),
+                                    });
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+
                     if self.compute_dispatch(&target).is_some() {
                         // Evaluate args in a scoped block so the eval_ctx borrow on
                         // `snapshot.values` ends before we mutably access `snapshot`.
@@ -2888,9 +2941,12 @@ impl Engine {
                         // the same c_id, but is UNREACHABLE today: `c_id` is
                         // allocated as `max(index) + 1` from the current snapshot,
                         // so it is always a fresh identifier and the lookup will
-                        // always return `None`.  The freshness gate above also
-                        // short-circuits any re-eval of a Final node before this
-                        // code is reached.
+                        // always return `None`.  Two freshness gates above guard
+                        // this code: the Pending gate (lines 2771-2789) fires when
+                        // inputs are Pending, and the Final-gate (lines 2808-2861)
+                        // fires when the output VC is already Final from a prior
+                        // eval().  Together they short-circuit any re-eval of a
+                        // node whose inputs or output make re-dispatch unnecessary.
                         //
                         // The guard is kept for the future async-driver slice where
                         // a same-`ComputeNodeId` re-dispatch might carry a live
