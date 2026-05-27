@@ -557,8 +557,18 @@ const App: Component = () => {
     }
   }
 
-  /** Stub — implemented in step-14. */
-  async function overwriteFile(_file: FileData) { /* step-14 */ }
+  /**
+   * Save the buffer as-is, overwriting the newer on-disk content.
+   * Called by the Overwrite action in the save conflict prompt.
+   */
+  async function overwriteFile(file: FileData) {
+    try {
+      await bridgeSaveFile(file.path, file.content);
+      editorStore.markClean(file.path);
+    } catch (err) {
+      showToast(`Save failed: ${errorMessage(err)}`, 'error');
+    }
+  }
 
   async function handleSave() {
     const activeFile = editorStore.state.activeFile;
