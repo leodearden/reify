@@ -2800,3 +2800,58 @@ structure S { param x : Real }"#,
         );
     }
 }
+
+/// Malformed `#cfg` arg shapes emit exactly one `E_CFG_MALFORMED` Error
+/// diagnostic per pragma occurrence and produce no additional errors.
+///
+/// Shapes covered (one case per row):
+/// - no-args: `#cfg` with no arg list at all → `pragma.args.is_empty()`
+/// - empty-args: `#cfg()` with empty parens → also `pragma.args.is_empty()`
+/// - bare-number, bare-string, bare-bool, bare-quantity: `Bare(non-Ident)` variants
+/// - good-then-bare-number: first arg well-formed, second arg malformed → still one error
+///
+/// Expected failure before step-4 impl: `apply_cfg_pragma` does not yet exist
+/// so no E_CFG_MALFORMED is emitted and the `exactly-one` assertion fires.
+#[test]
+fn cfg_pragma_malformed_args_emit_e_cfg_malformed() {
+    let cases: &[(&str, &str)] = &[
+        ("#cfg\nstructure S { param x : Real }", "no-args"),
+        ("#cfg()\nstructure S { param x : Real }", "empty-args"),
+        ("#cfg(42)\nstructure S { param x : Real }", "bare-number"),
+        (
+            r#"#cfg("linux")
+structure S { param x : Real }"#,
+            "bare-string",
+        ),
+        ("#cfg(true)\nstructure S { param x : Real }", "bare-bool"),
+        (
+            "#cfg(0.001m)\nstructure S { param x : Real }",
+            "bare-quantity",
+        ),
+        // First arg is well-formed (Bare Ident), second is malformed (Bare Number).
+        // ANY bad arg triggers one E_CFG_MALFORMED per pragma.
+        (
+            "#cfg(linux, 42)\nstructure S { param x : Real }",
+            "good-then-bare-number",
+        ),
+    ];
+
+    for (source, label) in cases {
+        let module = compile_source(source);
+
+        // Exactly one error whose message contains "E_CFG_MALFORMED" and "#cfg".
+        let cfg_errors: Vec<_> = errors_only(&module)
+            .into_iter()
+            .filter(|d| {
+                d.message.contains("E_CFG_MALFORMED") && d.message.contains("#cfg")
+            })
+            .collect();
+        assert_eq!(
+            cfg_errors.len(),
+            1,
+            "[{label}] expected exactly 1 E_CFG_MALFORMED error, got {}: {:?}",
+            cfg_errors.len(),
+            errors_only(&module)
+        );
+    }
+}
