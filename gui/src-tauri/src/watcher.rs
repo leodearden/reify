@@ -68,18 +68,17 @@ impl FileWatcher {
 
                     for path in event.paths {
                         // Filter to .ri files only
-                        if !path.extension().is_some_and(|ext| ext == "ri") {
+                        if path.extension().is_none_or(|ext| ext != "ri") {
                             continue;
                         }
 
                         // target_file filter: applies to Changed events only.
                         // Removed events bypass the filter (see module doc).
-                        if is_change {
-                            if let Some(ref target) = target_file
-                                && path.file_name() != target.file_name()
-                            {
-                                continue;
-                            }
+                        if is_change
+                            && let Some(ref target) = target_file
+                            && path.file_name() != target.file_name()
+                        {
+                            continue;
                         }
 
                         // Debounce: skip if we've seen this path recently
