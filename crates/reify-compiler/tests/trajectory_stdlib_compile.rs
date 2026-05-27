@@ -888,6 +888,39 @@ fn evaluate_profile_ddot_fn_signature() {
     assert_evaluator_signature("evaluate_profile_ddot");
 }
 
+// ─── helpers (step-29+) ───────────────────────────────────────────────────────
+
+/// Look up the named param cell on `template` and return its `default_expr`.
+/// Panics with a clear message if the cell or its default is missing.
+/// Mirrors `require_default` in `modal_options_validation_tests.rs:97-106`.
+#[allow(dead_code)]
+fn require_default<'a>(template: &'a TopologyTemplate, member: &str) -> &'a CompiledExpr {
+    let cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == member)
+        .unwrap_or_else(|| panic!("{}.{} missing", template.name, member));
+    cell.default_expr
+        .as_ref()
+        .unwrap_or_else(|| panic!("{}.{} missing default_expr", template.name, member))
+}
+
+/// Recursively collect ValueRef member names from a compiled expression tree.
+/// Mirrors `collect_value_ref_members` in `modal_options_validation_tests.rs:111-122`.
+#[allow(dead_code)]
+fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<&str> {
+    match &expr.kind {
+        CompiledExprKind::ValueRef(cell_id) => vec![cell_id.member.as_str()],
+        CompiledExprKind::BinOp { left, right, .. } => {
+            let mut refs = collect_value_ref_members(left);
+            refs.extend(collect_value_ref_members(right));
+            refs
+        }
+        CompiledExprKind::UnOp { operand, .. } => collect_value_ref_members(operand),
+        _ => vec![],
+    }
+}
+
 // ─── step-27: profile_duration fn signature ───────────────────────────────────
 
 /// `profile_duration` is the duration accessor — it returns the profile's
@@ -944,5 +977,52 @@ fn profile_duration_fn_signature() {
         },
         "profile_duration return type should be Scalar<TIME>; got: {:?}",
         func.return_type
+    );
+}
+
+// ─── step-29: Shaper marker trait ────────────────────────────────────────────
+
+/// `Shaper` is the marker trait for every input-shaper variant (PRD §5).
+/// Currently only `TOTSShaper` refines it (Phase 4, task ι). Future Phase 2
+/// task δ will add ZVShaper / ZVDShaper / EIShaper refinements.
+///
+/// Empty in this task by design: each variant carries its own per-strategy
+/// fields; the trait exists only to give the `shaper` param on the
+/// `input_shape` dispatcher a single nominal type so the SIR-α nominal
+/// type-tag dispatches correctly.
+///
+/// Test pins three invariants: (a) the trait is found, (b) it has zero
+/// required members + zero defaults (marker trait), (c) it has no
+/// refinements (top-level marker, no parent trait).
+/// Mirrors `profile_trait_exists_with_no_params` (step-3) and
+/// `boundary_condition_trait_exists_with_no_params` (step-5).
+#[test]
+fn shaper_trait_exists_with_no_params() {
+    let trait_def = find_trait("Shaper");
+
+    assert!(
+        trait_def.required_members.is_empty(),
+        "Shaper should declare zero required members (marker trait); \
+         got: {:?}",
+        trait_def
+            .required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        trait_def.defaults.is_empty(),
+        "Shaper should declare zero defaults (marker trait); got: {:?}",
+        trait_def
+            .defaults
+            .iter()
+            .map(|d| &d.name)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        trait_def.refinements.is_empty(),
+        "Shaper should declare zero refinements (top-level marker, no \
+         parent trait); got: {:?}",
+        trait_def.refinements
     );
 }
