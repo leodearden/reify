@@ -660,3 +660,62 @@ structure def SampledForce : ForcingFunction {
     //   only; "two same-structure cells equal" requires eval-time machinery).
     //   Deferred to the transient_response trampoline (task θ).
 }
+
+// ── ForcingTimeHistory ────────────────────────────────────────────────────────
+
+// `ForcingTimeHistory` is the additive aggregate container for all forcing
+// sources acting on a single Part during a transient simulation (PRD §5.1).
+// It bundles N `ForcingFunction`-conforming sources (StepForce, ImpulseForce,
+// HarmonicForce, SampledForce, or any future conformer) at the per-Part layer.
+//
+// Param semantics (PRD §5.1):
+//   part    — the Part on which the forcing history acts.
+//             FIXME(part-structdef): encoded as `String` PLACEHOLDER for the
+//             future `Part` topology type (not yet landed in Reify v0.3).
+//             Consistent with `ModalResult.part : String` (modal_analysis.ri:
+//             241) and `ModalOptions.part : String` using `String` as a
+//             selector/name placeholder. Consumer tasks θ/ι locate the DOF
+//             assembly via this string at runtime.
+//   sources — list of forcing sources that sum linearly at each (t, location)
+//             pair per PRD §12.5 resolved-question ("sources sum linearly; no
+//             cross-source coupling in modal superposition"). Encoded as
+//             `List<ForcingFunction>` which resolves at compile time to
+//             `Type::List(Box::new(Type::TraitObject("ForcingFunction")))` —
+//             same shape as `ModalResult.boundary_conditions : List<Support>`
+//             (modal_analysis.ri:243) which resolves to
+//             `Type::List(Box::new(Type::TraitObject("Support")))`. The
+//             `constraint sources.count > 0` lands in step-22; an empty
+//             sources list corresponds to the PRD §1 `E_TransientForcingMissing`
+//             diagnostic.
+//
+// Design note: `ForcingTimeHistory` does NOT refine `ForcingFunction`. It is
+// the AGGREGATE container, not a forcing primitive. Only the four conformers
+// (StepForce, ImpulseForce, HarmonicForce, SampledForce) carry `: ForcingFunction`.
+// Keeping the two layers separate allows `sources : List<ForcingFunction>` to
+// remain a homogeneous trait-object list, and prevents accidental recursive
+// nesting (a ForcingTimeHistory is NOT itself a source within another history).
+//
+// PRD reference: docs/prds/v0_3/modal-analysis.md §5.1.
+structure def ForcingTimeHistory {
+    param part : String
+    param sources : List<ForcingFunction>
+
+    // An empty `sources` list corresponds exactly to the PRD §1
+    // `E_TransientForcingMissing` diagnostic: there is nothing to simulate.
+    // Declaring the lower bound at the structure-def level catches the failure
+    // at construction (via SIR-α's `check_constraints_against_templates`,
+    // task 3540, already landed) rather than waiting for the transient_response
+    // trampoline (task θ) to flag it. Follows the task-2544 explicit-contract
+    // convention, mirroring `PiecewisePolynomialProfile.constraint
+    // waypoints.count > 0` (trajectory.ri:230) and
+    // `SampledForce.constraint time_samples.count > 0` above.
+    constraint sources.count > 0
+
+    // NOTE — explicitly NOT constrained:
+    //   part : String — no scalar invariant expressible on a String placeholder;
+    //                   the future `Part` tighten target does not change this.
+    //   Cross-source temporal-overlap semantics (sources summing linearly at
+    //   each (t, location) per PRD §12.5 resolved-question) are runtime
+    //   semantics, not a structure-def scalar predicate; deferred to the
+    //   transient_response trampoline (task θ).
+}

@@ -1499,3 +1499,140 @@ fn forcing_function_trait_declared() {
             .collect::<Vec<_>>()
     );
 }
+
+// ─── step-19 (η): ForcingTimeHistory param shape ──────────────────────────────
+
+/// `ForcingTimeHistory` (PRD §5.1) is the aggregate container that bundles N
+/// forcing sources at the per-Part layer. Must declare exactly 2 params in
+/// declaration order:
+///
+///   - `part    : String`                      (PLACEHOLDER for future `Part` type;
+///                                              mirrors `ModalResult.part : String`)
+///   - `sources : List<ForcingFunction>`       (List of trait-object conformers;
+///                                              resolves to
+///                                              `Type::List(Box::new(Type::TraitObject("ForcingFunction")))`)
+///
+/// Must NOT refine `ForcingFunction` — `ForcingTimeHistory` is the AGGREGATE
+/// container, not a forcing primitive. `trait_bounds` must be empty.
+/// No defaults on either param (all caller-supplied).
+/// Constraint lands in step-22.
+#[test]
+fn forcing_time_history_struct_has_correct_param_shape() {
+    let template = find_structure("ForcingTimeHistory");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    // (a) tight count — exactly 2 params
+    assert_eq!(
+        params.len(),
+        2,
+        "ForcingTimeHistory should have exactly 2 param cells (part, sources), \
+         got: {:?}",
+        names
+    );
+
+    // (b) param names + types in declaration order
+    let expected: &[(&str, Type)] = &[
+        ("part", Type::String),
+        (
+            "sources",
+            Type::List(Box::new(Type::TraitObject("ForcingFunction".to_string()))),
+        ),
+    ];
+    let expected_names: Vec<&str> = expected.iter().map(|(m, _)| *m).collect();
+    assert_eq!(
+        names, expected_names,
+        "ForcingTimeHistory params must be in canonical order (part, sources)"
+    );
+    for (i, (expected_name, expected_ty)) in expected.iter().enumerate() {
+        let cell = &params[i];
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "ForcingTimeHistory.{} should be {:?}, got {:?}",
+            expected_name, expected_ty, cell.cell_type
+        );
+    }
+
+    // (c) no defaults — all caller-supplied
+    for cell in &params {
+        assert!(
+            cell.default_expr.is_none(),
+            "ForcingTimeHistory.{} should have no default_expr (caller-supplied), \
+             but got: {:?}",
+            cell.id.member,
+            cell.default_expr
+        );
+    }
+
+    // (d) NOT a ForcingFunction conformer — trait_bounds must be empty
+    // ForcingTimeHistory is the AGGREGATE container; only the four primitives
+    // (StepForce, ImpulseForce, HarmonicForce, SampledForce) refine ForcingFunction.
+    assert!(
+        template.trait_bounds.is_empty(),
+        "ForcingTimeHistory should NOT refine ForcingFunction (it is the \
+         aggregate container, not a forcing primitive); got trait_bounds: {:?}",
+        template.trait_bounds
+    );
+}
+
+// ─── step-21 (η): ForcingTimeHistory sources non-empty constraint ─────────────
+
+/// `ForcingTimeHistory` must declare EXACTLY 1 constraint: `sources.count > 0`.
+///
+/// Uses `collect_method_call_chain` to surface the `("count", "sources")` pair
+/// on the LHS. Mirrors `sampled_force_constrains_samples_nonempty` discipline
+/// (tight count==1, `BinOp::Gt`, RHS `Literal(Int(0))` or `Real(0.0)`).
+///
+/// This constraint encodes the PRD §1 `E_TransientForcingMissing` diagnostic
+/// at the structure-def level — an empty `sources` list is caught at
+/// construction (via SIR-α's `check_constraints_against_templates`) rather than
+/// waiting for the transient_response trampoline (task θ) to flag it. Follows
+/// the task-2544 explicit-contract convention mirrored by
+/// `PiecewisePolynomialProfile.constraint waypoints.count > 0` (trajectory.ri:230).
+#[test]
+fn forcing_time_history_constrains_sources_nonempty() {
+    let template = find_structure("ForcingTimeHistory");
+
+    assert_eq!(
+        template.constraints.len(),
+        1,
+        "ForcingTimeHistory should declare exactly 1 constraint \
+         (sources.count > 0); got {} constraints: {:?}",
+        template.constraints.len(),
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+
+    let matched = template.constraints.iter().any(|c| {
+        match &c.expr.kind {
+            CompiledExprKind::BinOp { op, left, right } => {
+                if *op != BinOp::Gt {
+                    return false;
+                }
+                let pairs = collect_method_call_chain(left);
+                if !pairs.contains(&("count", "sources")) {
+                    return false;
+                }
+                match &right.kind {
+                    CompiledExprKind::Literal(Value::Int(0)) => true,
+                    CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    });
+    assert!(
+        matched,
+        "ForcingTimeHistory should declare `constraint sources.count > 0`; \
+         got constraints: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+}
