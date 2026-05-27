@@ -373,7 +373,7 @@ fn prior_cache_intact_after_cancelled_dispatch() {
         &c_id,
         std::slice::from_ref(&cell),
         "test::always_cancelled_d",
-        &[prior_value.clone()],
+        std::slice::from_ref(&prior_value),
         &[],
         &Value::Undef,
         &handle,
