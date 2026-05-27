@@ -1,0 +1,130 @@
+================================================================================
+Callable qualified path with args Trait::f(1, 2)
+================================================================================
+
+structure S {
+  let x = Trait::f(1, 2)
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (trait_method_call
+        callee: (qualified_access
+          qualifier: (identifier)
+          member: (identifier))
+        (argument_list
+          (number_literal)
+          (number_literal))))))
+
+================================================================================
+Callable instance-qualified path with args obj.(Trait::f)(3)
+================================================================================
+
+structure S {
+  let x = obj.(Trait::f)(3)
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (trait_method_call
+        callee: (instance_qualified_access
+          object: (identifier)
+          qualified: (qualified_access
+            qualifier: (identifier)
+            member: (identifier)))
+        (argument_list
+          (number_literal))))))
+
+================================================================================
+Zero-arg callable qualified path Trait::f() — no argument_list child
+================================================================================
+
+structure S {
+  let x = Trait::f()
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (trait_method_call
+        callee: (qualified_access
+          qualifier: (identifier)
+          member: (identifier))))))
+
+================================================================================
+Chained callee A::B::c(x)
+================================================================================
+
+structure S {
+  let x = A::B::c(x)
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (trait_method_call
+        callee: (qualified_access
+          qualifier: (qualified_access
+            qualifier: (identifier)
+            member: (identifier))
+          member: (identifier))
+        (argument_list
+          (identifier))))))
+
+================================================================================
+REGRESSION — bare qualified access Trait::m unchanged
+================================================================================
+
+structure S {
+  let x = Trait::m
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (qualified_access
+        qualifier: (identifier)
+        member: (identifier)))))
+
+================================================================================
+REGRESSION — bare instance-qualified access obj.(Trait::m) unchanged
+================================================================================
+
+structure S {
+  let x = obj.(Trait::m)
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (instance_qualified_access
+        object: (identifier)
+        qualified: (qualified_access
+          qualifier: (identifier)
+          member: (identifier))))))
