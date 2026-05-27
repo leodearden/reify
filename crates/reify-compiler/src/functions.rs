@@ -2,6 +2,7 @@ use super::*;
 
 use crate::types::TopologyTemplate;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_function(
     fn_def: &reify_syntax::FnDef,
     enum_defs: &[reify_types::EnumDef],
