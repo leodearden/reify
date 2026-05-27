@@ -842,7 +842,6 @@ fn modal_options_constrains_positivity_invariants() {
 /// Ported verbatim from `crates/reify-compiler/tests/trajectory_stdlib_compile.rs:125-144`
 /// (same helper used by `piecewise_polynomial_profile_constrains_waypoints_nonempty`
 /// for the `waypoints.count > 0` assertion shape needed here).
-#[allow(dead_code)]
 fn collect_method_call_chain(expr: &CompiledExpr) -> Vec<(&str, &str)> {
     let mut pairs = Vec::new();
     match &expr.kind {
