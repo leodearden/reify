@@ -329,11 +329,48 @@ mod tests {
         );
     }
 
-    // NOTE: cubic_dp and cubic_ddp are used in later steps (step-3, step-9).
-    // Suppress unused-function warnings at this stage.
-    #[allow(unused)]
-    fn _use_helpers() {
-        let _ = cubic_dp(0.0);
-        let _ = cubic_ddp(0.0);
+    // ── Step-3: clamped cubic — exact reproduction of general cubic ───────────
+
+    /// With clamped BC (endpoint slopes = exact cubic derivatives), the unique
+    /// solution is the original cubic polynomial.  This assertion IS
+    /// mathematically valid (4 knots × 4 interp + 4 C1/C2 + 2 clamped slopes
+    /// = 12 conditions for 12 unknowns).
+    #[test]
+    fn cubic_clamped_spline_reproduces_general_cubic_exactly() {
+        let ts = [0.0, 1.0, 2.5, 4.0];
+        let vs: Vec<f64> = ts.iter().map(|&t| cubic_p(t)).collect();
+        let spline = CubicSpline::fit(
+            &ts,
+            &vs,
+            &BoundaryCondition::Clamped {
+                start_vel: cubic_dp(ts[0]),
+                end_vel: cubic_dp(ts[ts.len() - 1]),
+            },
+        )
+        .expect("clamped fit should succeed");
+
+        for &t in &[0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.7, 4.0] {
+            let got = spline.eval(t);
+            let want = cubic_p(t);
+            assert!(
+                (got - want).abs() < TOL,
+                "clamped eval at t={t}: got {got}, want {want}, diff {}",
+                (got - want).abs()
+            );
+            let got_dot = spline.eval_dot(t);
+            let want_dot = cubic_dp(t);
+            assert!(
+                (got_dot - want_dot).abs() < TOL,
+                "clamped eval_dot at t={t}: got {got_dot}, want {want_dot}, diff {}",
+                (got_dot - want_dot).abs()
+            );
+            let got_ddot = spline.eval_ddot(t);
+            let want_ddot = cubic_ddp(t);
+            assert!(
+                (got_ddot - want_ddot).abs() < TOL,
+                "clamped eval_ddot at t={t}: got {got_ddot}, want {want_ddot}, diff {}",
+                (got_ddot - want_ddot).abs()
+            );
+        }
     }
 }
