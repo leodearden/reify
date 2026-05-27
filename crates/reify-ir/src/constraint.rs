@@ -63,15 +63,6 @@ pub enum ConstraintDomain {
     CrossDomain,
 }
 
-/// Optimization objective for constraint resolution.
-#[derive(Debug, Clone)]
-pub enum OptimizationObjective {
-    /// Minimize the value of the expression.
-    Minimize(CompiledExpr),
-    /// Maximize the value of the expression.
-    Maximize(CompiledExpr),
-}
-
 /// The sense of an optimization objective term (PRD §6.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ObjectiveSense {
@@ -192,8 +183,8 @@ pub struct ResolutionProblem {
     pub constraints: Vec<(ConstraintNodeId, CompiledExpr)>,
     /// Current values of all cells referenced by constraints.
     pub current_values: ValueMap,
-    /// Optional optimization objective.
-    pub objective: Option<OptimizationObjective>,
+    /// Optional multi-objective optimization container (PRD §6.1).
+    pub objective: Option<ObjectiveSet>,
     /// User-defined functions available for evaluating expressions.
     /// Shares the same Arc allocation as `Engine.functions` — assigned via
     /// `Arc::clone` at the solver boundary so construction is O(1) (task #2286).
@@ -405,22 +396,6 @@ mod tests {
     }
 
     #[test]
-    fn optimization_objective_minimize() {
-        let expr = make_literal_expr();
-        let obj = OptimizationObjective::Minimize(expr);
-        let debug = format!("{:?}", obj);
-        assert!(debug.contains("Minimize"));
-    }
-
-    #[test]
-    fn optimization_objective_maximize() {
-        let expr = make_literal_expr();
-        let obj = OptimizationObjective::Maximize(expr);
-        let debug = format!("{:?}", obj);
-        assert!(debug.contains("Maximize"));
-    }
-
-    #[test]
     fn resolution_problem_empty() {
         let problem = ResolutionProblem {
             auto_params: vec![],
@@ -453,7 +428,7 @@ mod tests {
             }],
             constraints: vec![(ConstraintNodeId::new("Bracket", 0), make_literal_expr())],
             current_values: values,
-            objective: Some(OptimizationObjective::Minimize(make_literal_expr())),
+            objective: Some(ObjectiveSet::single(ObjectiveSense::Minimize, make_literal_expr())),
             functions: vec![].into(),
         };
         assert_eq!(problem.auto_params.len(), 1);
@@ -464,16 +439,6 @@ mod tests {
         // Debug works
         let debug = format!("{:?}", problem);
         assert!(debug.contains("ResolutionProblem"));
-    }
-
-    #[test]
-    fn optimization_objective_clone() {
-        let expr = make_literal_expr();
-        let obj = OptimizationObjective::Minimize(expr);
-        let obj2 = obj.clone();
-        let d1 = format!("{:?}", obj);
-        let d2 = format!("{:?}", obj2);
-        assert_eq!(d1, d2);
     }
 
     #[test]

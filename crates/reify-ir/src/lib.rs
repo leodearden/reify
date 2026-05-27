@@ -47,7 +47,7 @@ pub use boundary_attachment::{BoundaryAssociation, NodeAttachment};
 pub use constraint::{
     AutoParam, ConstraintChecker, ConstraintDiagnostics, ConstraintDomain, ConstraintInput,
     ConstraintResult, ConstraintSolver, ObjectiveCombination, ObjectiveSense, ObjectiveSet,
-    ObjectiveTerm, OptimizationObjective, OptimizedImpl, OptimizedImplInput,
+    ObjectiveTerm, OptimizedImpl, OptimizedImplInput,
     OptimizedImplOutput, ResolutionProblem, SolveResult,
 };
 pub use expr::{
