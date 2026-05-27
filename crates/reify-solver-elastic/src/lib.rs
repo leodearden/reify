@@ -342,31 +342,20 @@
 //! let s = detect_orphan_dofs(0, &[]);
 //! assert_eq!(s.count, 0);
 //!
-//! // Task 3778: foundation β public-surface smoke pin.
-//! // Pin that the C3+C4 surface is fully discoverable from the crate root:
-//! // the `AnisotropicMaterial` evaluated value, the `MaterialField` trait, the
-//! // `ConstantField` constant-lift, the `DiscreteCellField` cell-indexed field,
-//! // and the four field-aware assembly entry points (one per shape). The
-//! // `_with_field` re-exports land in step-16; until then this doctest fails
-//! // to compile on the import block.
+//! // Task 3778: foundation β — minimal usage example for the
+//! // per-element field-aware assembly entry point. The four sibling
+//! // signatures (P1, P2, hex P1, wedge P1) and the trait-object-safety
+//! // check are pinned in `tests/assembly_anisotropic.rs::_signature_pin_*`
+//! // alongside the behavioural rows, so this doctest stays a usage
+//! // example rather than an API-surface duplicator.
 //! use reify_solver_elastic::{
-//!     AnisotropicMaterial, ConstantField, DiscreteCellField, ElementStiffness, MaterialField,
-//!     element_stiffness_p1_with_field, element_stiffness_p2_with_field,
-//!     element_stiffness_hex_p1_with_field, element_stiffness_wedge_p1_with_field,
+//!     AnisotropicMaterial, ConstantField, element_stiffness_p1_with_field,
 //! };
-//! // Pin trait object-safety alongside the type re-exports (matches the
-//! // `material_field_trait_is_object_safe_via_constant_field` unit test).
-//! const IDENTITY_3X3_3778: [[f64; 3]; 3] =
-//!     [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 //! let iso_3778 = IsotropicElastic { youngs_modulus: 1.0, poisson_ratio: 0.3 };
-//! let mat_3778 = AnisotropicMaterial::from_law(&iso_3778, IDENTITY_3X3_3778);
-//! let field_3778 = ConstantField { material: mat_3778 };
-//! let _: &dyn MaterialField = &field_3778;
-//! // DiscreteCellField construction pin — ensures the locator closure surface
-//! // is reachable from a downstream crate.
-//! let _discrete_3778 = DiscreteCellField {
-//!     cells: vec![mat_3778],
-//!     locator: Box::new(|_p: [f64; 3]| Some(0)),
+//! let identity_3778: [[f64; 3]; 3] =
+//!     [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+//! let field_3778 = ConstantField {
+//!     material: AnisotropicMaterial::from_law(&iso_3778, identity_3778),
 //! };
 //! let unit_tet_3778: [[f64; 3]; 4] = [
 //!     [0.0, 0.0, 0.0],
@@ -374,14 +363,8 @@
 //!     [0.0, 1.0, 0.0],
 //!     [0.0, 0.0, 1.0],
 //! ];
-//! let k_e_3778 = element_stiffness_p1_with_field(&unit_tet_3778, &field_3778);
-//! assert_eq!(k_e_3778.n_dofs, 12, "tet P1 with_field: n_dofs must be 12");
-//! assert_eq!(k_e_3778.data.len(), 144, "tet P1 with_field: data.len() must be 144");
-//! // Pin the function-item signatures of the remaining three shapes so a
-//! // rename or arity change trips the doctest at compile time.
-//! let _: fn(&[[f64; 3]; 10], &ConstantField) -> ElementStiffness = element_stiffness_p2_with_field;
-//! let _: fn(&[[f64; 3]; 8], &ConstantField) -> ElementStiffness = element_stiffness_hex_p1_with_field;
-//! let _: fn(&[[f64; 3]; 6], &ConstantField) -> ElementStiffness = element_stiffness_wedge_p1_with_field;
+//! let k_3778 = element_stiffness_p1_with_field(&unit_tet_3778, &field_3778);
+//! assert_eq!(k_3778.n_dofs, 12);
 //! ```
 
 pub mod assembly;

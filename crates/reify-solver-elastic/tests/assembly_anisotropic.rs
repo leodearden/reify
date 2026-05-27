@@ -85,12 +85,70 @@ fn assert_element_stiffness_bitwise_eq(
 // Step 9: tet P1 bit-identity regression
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Pin the function-item signature of `element_stiffness_p1_with_field`.
-/// Renaming or changing the surface trips this at compile time.
+/// Pin the function-item signature of all four `_with_field` entry
+/// points and the trait-object-safety of `MaterialField`. Renaming or
+/// changing any surface trips this at compile time. Consolidated here
+/// (rather than scattered across the per-shape test rows or duplicated
+/// in the crate-root doctest) so a future hand has one place to find
+/// the public-surface pins for foundation β.
 #[allow(dead_code)]
 fn _signature_pin_p1_with_field() {
     let _: fn(&[[f64; 3]; 4], &ConstantField) -> ElementStiffness =
         element_stiffness_p1_with_field;
+}
+
+#[allow(dead_code)]
+fn _signature_pin_p2_with_field() {
+    let _: fn(&[[f64; 3]; 10], &ConstantField) -> ElementStiffness =
+        element_stiffness_p2_with_field;
+}
+
+#[allow(dead_code)]
+fn _signature_pin_hex_p1_with_field() {
+    let _: fn(&[[f64; 3]; 8], &ConstantField) -> ElementStiffness =
+        element_stiffness_hex_p1_with_field;
+}
+
+#[allow(dead_code)]
+fn _signature_pin_wedge_p1_with_field() {
+    let _: fn(&[[f64; 3]; 6], &ConstantField) -> ElementStiffness =
+        element_stiffness_wedge_p1_with_field;
+}
+
+/// Pin trait object-safety of `MaterialField`. The unit-test
+/// `material_field_trait_is_object_safe_via_constant_field` covers the
+/// in-crate path; this integration-side check pins that `&dyn
+/// MaterialField` typechecks from a **downstream** crate, where
+/// accidental sealing of the trait (private super-trait, generic
+/// associated type, etc.) would surface first.
+#[allow(dead_code)]
+fn _object_safety_pin() {
+    use reify_solver_elastic::MaterialField;
+    let iso = IsotropicElastic {
+        youngs_modulus: 1.0,
+        poisson_ratio: 0.3,
+    };
+    let field = ConstantField {
+        material: AnisotropicMaterial::from_law(&iso, IDENTITY_3X3),
+    };
+    let _: &dyn MaterialField = &field;
+}
+
+/// Pin `DiscreteCellField` construction surface from a downstream crate
+/// — locator closure type + `cells: Vec<AnisotropicMaterial>` field
+/// labels. The unit tests cover behavioural sampling; this is a pure
+/// compile-time API check.
+#[allow(dead_code)]
+fn _discrete_cell_field_construction_pin() {
+    let iso = IsotropicElastic {
+        youngs_modulus: 1.0,
+        poisson_ratio: 0.3,
+    };
+    let mat = AnisotropicMaterial::from_law(&iso, IDENTITY_3X3);
+    let _discrete = DiscreteCellField {
+        cells: vec![mat],
+        locator: Box::new(|_p: [f64; 3]| Some(0)),
+    };
 }
 
 /// Constant lift of an identity-frame isotropic material must produce a
