@@ -1036,7 +1036,7 @@ fn validate_loop_closure_inputs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::loop_closure_value::{JointValue, flatten_dofs};
+    use crate::loop_closure_value::JointValue;
 
     // ── Public type API surface (step-11) ──────────────────────────────
 
@@ -1477,9 +1477,9 @@ mod tests {
 
         let outcome = solve_loop_closure(
             &chain_a,
-            &flatten_dofs(&vals_a),
+            &vals_a,
             &chain_b,
-            &flatten_dofs(&vals_b_initial),
+            &vals_b_initial,
             &free_b,
             &strategy,
             &cfg,
@@ -1511,9 +1511,9 @@ mod tests {
 
         let outcome = solve_loop_closure(
             &chain_a,
-            &flatten_dofs(&vals_a),
+            &vals_a,
             &chain_b,
-            &flatten_dofs(&vals_b_initial),
+            &vals_b_initial,
             &free_b,
             &strategy,
             &cfg,
@@ -1553,9 +1553,9 @@ mod tests {
 
         let outcome = solve_loop_closure(
             &chain_a,
-            &flatten_dofs(&vals_a),
+            &vals_a,
             &chain_b,
-            &flatten_dofs(&vals_b_initial),
+            &vals_b_initial,
             &free_b,
             &strategy,
             &cfg_loose,
@@ -1590,9 +1590,9 @@ mod tests {
 
         let outcome = solve_loop_closure(
             &chain_a,
-            &flatten_dofs(&vals_a),
+            &vals_a,
             &chain_b,
-            &flatten_dofs(&vals_b_initial),
+            &vals_b_initial,
             &free_b,
             &strategy,
             &cfg_tight,
@@ -1677,9 +1677,9 @@ mod tests {
 
         let outcome = solve_loop_closure(
             &chain_a,
-            &flatten_dofs(&vals_a),
+            &vals_a,
             &chain_b,
-            &flatten_dofs(&vals_b_initial),
+            &vals_b_initial,
             &free_b,
             &strategy,
             &cfg,
@@ -1724,9 +1724,9 @@ mod tests {
 
         let outcome = solve_loop_closure(
             &chain_a,
-            &flatten_dofs(&vals_a),
+            &vals_a,
             &chain_b,
-            &flatten_dofs(&vals_b_initial),
+            &vals_b_initial,
             &free_b,
             &strategy,
             &cfg,
@@ -1755,9 +1755,9 @@ mod tests {
 
         let outcome = solve_loop_closure(
             &chain_a,
-            &flatten_dofs(&vals_a),
+            &vals_a,
             &chain_b,
-            &flatten_dofs(&vals_b_initial),
+            &vals_b_initial,
             &free_b,
             &strategy,
             &cfg,
@@ -1788,9 +1788,9 @@ mod tests {
 
         let outcome = solve_loop_closure(
             &chain_a,
-            &flatten_dofs(&vals_a),
+            &vals_a,
             &chain_b,
-            &flatten_dofs(&vals_b_initial),
+            &vals_b_initial,
             &free_b,
             &strategy,
             &cfg,
@@ -1824,9 +1824,9 @@ mod tests {
 
         let outcome = solve_loop_closure(
             &chain_a,
-            &flatten_dofs(&vals_a),
+            &vals_a,
             &chain_b,
-            &flatten_dofs(&vals_b_initial),
+            &vals_b_initial,
             &free_b,
             &strategy,
             &cfg,
@@ -1867,9 +1867,9 @@ mod tests {
 
         let outcome = solve_loop_closure(
             &chain_a,
-            &flatten_dofs(&vals_a),
+            &vals_a,
             &chain_b,
-            &flatten_dofs(&vals_b_initial),
+            &vals_b_initial,
             &free_b,
             &strategy,
             &cfg,
@@ -1898,9 +1898,9 @@ mod tests {
 
         let outcome = solve_loop_closure(
             &chain_a,
-            &flatten_dofs(&vals_a),
+            &vals_a,
             &chain_b,
-            &flatten_dofs(&vals_b_initial),
+            &vals_b_initial,
             &free_b,
             &strategy,
             &cfg,
@@ -2538,6 +2538,227 @@ mod tests {
             None,
             "[world] alone must be rejected (would yield empty chain)"
         );
+    }
+
+    // ── KCC-γ step-11: widened solver — multi-DOF chain participation ──
+    //
+    // These tests pass `&vals_a` / `&vals_b_initial` as `&[JointValue]`
+    // directly to the widened `solve_loop_closure` /
+    // `solve_loop_closure_with_diagnostics`.  They will fail to compile
+    // until step-12 widens the solver signatures.
+
+    fn axis_y() -> Value {
+        Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)])
+    }
+
+    fn planar_xy_joint_wide() -> Value {
+        // Planar joint with ranges wide enough to admit the expected
+        // converged config (0.25, 0.433, 0) → wrap the same range_x /
+        // range_y / range_theta layout `make_planar` validates.
+        eval_builtin(
+            "planar",
+            &[
+                axis_x(),
+                axis_y(),
+                length_range(-1.0, 1.0),
+                length_range(-1.0, 1.0),
+                angle_range(-std::f64::consts::PI, std::f64::consts::PI),
+            ],
+        )
+    }
+
+    fn spherical_swing_joint() -> Value {
+        // Axis-isotropic 3-DOF spherical joint with swing magnitude up to π.
+        eval_builtin(
+            "spherical",
+            &[angle_range(0.0, std::f64::consts::PI)],
+        )
+    }
+
+    #[test]
+    fn solve_loop_closure_planar_chain_converges() {
+        // chain_a = [revolute_z @ π/3, prismatic_x @ 0.5m] →
+        //   end-effector at R_z(π/3) · Trans_x(0.5) →
+        //   translation ≈ (0.25, 0.433, 0), rotation R_z(π/3).
+        // chain_b = [planar_xy] with planar slot free; WarmStart from the
+        // zero planar config.  Convergence requires finding the planar
+        // (x, y, θ) that closes the chain at the chain_a target — namely
+        // (0.25, 0.433, π/3).  This is the canonical multi-DOF closed-chain
+        // participation case the KCC-γ widening enables.
+        let chain_a = vec![revolute_z_0_to_pi(), prismatic_x_0_to_1()];
+        let theta_a = std::f64::consts::PI / 3.0;
+        let vals_a = vec![JointValue::Scalar(theta_a), JointValue::Scalar(0.5)];
+        let chain_b = vec![planar_xy_joint_wide()];
+        let vals_b_initial = vec![JointValue::Planar([0.0, 0.0, 0.0])];
+        let free_b = vec![0];
+        // WarmStart payload is the flat Newton state (length = sum of
+        // free-joint `flat_len` widths).  Planar has flat_len=3, so the
+        // warm-start vector has 3 components.
+        let strategy = StartStrategy::WarmStart(vec![0.0, 0.0, 0.0]);
+        let cfg = NewtonConfig {
+            tol_pos_m: 1e-6,
+            tol_rot_rad: 1e-6,
+            max_iters: 50,
+            ..NewtonConfig::default()
+        };
+
+        let outcome = solve_loop_closure(
+            &chain_a,
+            &vals_a,
+            &chain_b,
+            &vals_b_initial,
+            &free_b,
+            &strategy,
+            &cfg,
+        );
+
+        match outcome {
+            NewtonOutcome::Converged {
+                x,
+                iters,
+                residual_norm,
+            } => {
+                assert!(
+                    iters < 50,
+                    "expected convergence in <50 iters, got {iters} (residual_norm={residual_norm})"
+                );
+                assert!(
+                    residual_norm < cfg.tol_pos_m + cfg.tol_rot_rad,
+                    "expected residual_norm below combined tol, got {residual_norm}"
+                );
+                assert_eq!(x.len(), 3, "planar has flat_len=3 free components");
+                // x = [tx, ty, theta] of the planar joint; check the
+                // converged solution matches the chain_a target.
+                assert!(
+                    (x[0] - 0.25).abs() < 1e-4,
+                    "expected x_tx ≈ 0.25, got {}",
+                    x[0]
+                );
+                let target_ty = 0.5 * (std::f64::consts::PI / 3.0).sin();
+                assert!(
+                    (x[1] - target_ty).abs() < 1e-4,
+                    "expected x_ty ≈ {target_ty}, got {}",
+                    x[1]
+                );
+                assert!(
+                    (x[2] - theta_a).abs() < 1e-4,
+                    "expected x_theta ≈ π/3, got {}",
+                    x[2]
+                );
+            }
+            other => panic!("expected Converged on planar-only chain_b, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn solve_loop_closure_sphere_slot_renormalizes_after_step() {
+        // chain_a = [spherical] held at identity quaternion → end-effector
+        // is identity transform.  chain_b = [spherical] free, seeded from a
+        // *non-unit-norm* quaternion (‖q‖ ≈ 1.58).  Without the per-step
+        // renormalization wired in step-12's solver, `transform_at("spherical",
+        // non_unit_q)` would emit Value::Undef and the closure would
+        // short-circuit to NotConverged.  With renormalization, the solver
+        // converges to a unit quaternion that aligns chain_b with chain_a's
+        // identity end-effector.
+        let chain_a = vec![spherical_swing_joint()];
+        let vals_a = vec![JointValue::Sphere([1.0, 0.0, 0.0, 0.0])];
+        let chain_b = vec![spherical_swing_joint()];
+        // Non-unit-norm initial quaternion: ‖[1.5, 0.5, 0, 0]‖ = √2.5 ≈ 1.58.
+        let vals_b_initial = vec![JointValue::Sphere([1.5, 0.5, 0.0, 0.0])];
+        let free_b = vec![0];
+        // WarmStart payload = the flat Newton state (4 components for the
+        // sphere's storage width).
+        let strategy = StartStrategy::WarmStart(vec![1.5, 0.5, 0.0, 0.0]);
+        let cfg = NewtonConfig {
+            tol_pos_m: 1e-6,
+            tol_rot_rad: 1e-6,
+            max_iters: 50,
+            ..NewtonConfig::default()
+        };
+
+        let outcome = solve_loop_closure(
+            &chain_a,
+            &vals_a,
+            &chain_b,
+            &vals_b_initial,
+            &free_b,
+            &strategy,
+            &cfg,
+        );
+
+        match outcome {
+            NewtonOutcome::Converged { x, .. } => {
+                assert_eq!(x.len(), 4, "sphere has flat_len=4 stored components");
+                // After convergence the Newton-state quaternion should be
+                // (approximately) unit-norm; the per-step renormalization
+                // projects the iterate back to S³ each closure evaluation.
+                let norm_sq = x[0] * x[0] + x[1] * x[1] + x[2] * x[2] + x[3] * x[3];
+                let norm = norm_sq.sqrt();
+                assert!(
+                    (norm - 1.0).abs() < 1e-3,
+                    "converged sphere quaternion should be ≈ unit-norm (proves \
+                     renormalization fired), got ‖q‖ = {norm}"
+                );
+            }
+            other => panic!(
+                "expected Converged from non-unit-norm sphere seed (renormalization \
+                 should fire to keep the quaternion on S³), got {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn solve_loop_closure_with_diagnostics_planar_chain_converges() {
+        // Same physical scenario as
+        // solve_loop_closure_planar_chain_converges, routed through the
+        // diagnostic-emitting wrapper.  A 3-DOF planar free joint against
+        // a 6-component loop residual is under-constrained (3 < 6), so
+        // the wrapper emits a single KinematicUnderconstrained warning
+        // and still delegates to the inner solver.  Convergence is
+        // expected via the WarmStart seed that lands near the root.
+        let chain_a = vec![revolute_z_0_to_pi(), prismatic_x_0_to_1()];
+        let theta_a = std::f64::consts::PI / 3.0;
+        let vals_a = vec![JointValue::Scalar(theta_a), JointValue::Scalar(0.5)];
+        let chain_b = vec![planar_xy_joint_wide()];
+        let vals_b_initial = vec![JointValue::Planar([0.0, 0.0, 0.0])];
+        let free_b = vec![0];
+        let strategy = StartStrategy::WarmStart(vec![0.0, 0.0, 0.0]);
+        let cfg = NewtonConfig {
+            tol_pos_m: 1e-6,
+            tol_rot_rad: 1e-6,
+            max_iters: 50,
+            ..NewtonConfig::default()
+        };
+
+        let report = solve_loop_closure_with_diagnostics(
+            &chain_a,
+            &vals_a,
+            &chain_b,
+            &vals_b_initial,
+            &free_b,
+            &strategy,
+            &cfg,
+        );
+
+        // The diagnostic wrapper does not report singularity for a
+        // well-conditioned planar root; only the under-constrained warning
+        // (if any) is expected.
+        assert!(
+            !report.is_singular(),
+            "planar chain converges without singularity, got {:?}",
+            report.outcome
+        );
+        match report.outcome {
+            NewtonOutcome::Converged {
+                x, residual_norm, ..
+            } => {
+                assert_eq!(x.len(), 3);
+                assert!(residual_norm < cfg.tol_pos_m + cfg.tol_rot_rad);
+            }
+            other => panic!(
+                "expected Converged from solve_loop_closure_with_diagnostics, got {other:?}"
+            ),
+        }
     }
 
     #[test]
