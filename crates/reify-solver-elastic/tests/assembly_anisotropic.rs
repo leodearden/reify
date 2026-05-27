@@ -31,6 +31,16 @@ use reify_solver_elastic::{
 // `element_stiffness(order, …)` is on the crate root). Their `_with_field`
 // counterparts above arrive via the crate-root re-exports added in step-16.
 use reify_solver_elastic::assembly::tet::{element_stiffness_p1, element_stiffness_p2};
+// Fixture-geometry helpers — single source of truth shared with the
+// in-crate unit tests via `#[doc(hidden)] pub mod test_support;`. The
+// previous inlined copies of these three helpers risked silent drift
+// from the in-crate originals (the unit tests in `tet.rs`/`hex.rs`/
+// `wedge.rs` exercise the same fixtures); de-duplicating via the
+// promoted module removes that drift surface entirely.
+use reify_solver_elastic::assembly::test_support::{
+    dimensionless_steel_like, scaled_p2_phys_nodes, scaled_unit_hex_phys_nodes,
+    scaled_unit_wedge_phys_nodes,
+};
 
 /// Identity 3×3 frame — local axes align with global.
 const IDENTITY_3X3: [[f64; 3]; 3] =
@@ -43,15 +53,6 @@ const UNIT_TET_P1: [[f64; 3]; 4] = [
     [0.0, 1.0, 0.0],
     [0.0, 0.0, 1.0],
 ];
-
-/// Steel-like dimensionless material (mirror of
-/// `assembly::test_support::dimensionless_steel_like`).
-fn dimensionless_steel_like() -> IsotropicElastic {
-    IsotropicElastic {
-        youngs_modulus: 1.0,
-        poisson_ratio: 0.3,
-    }
-}
 
 /// Assert two `ElementStiffness` matrices are bit-equal entry-by-entry.
 fn assert_element_stiffness_bitwise_eq(
@@ -90,62 +91,6 @@ fn assert_element_stiffness_bitwise_eq(
 fn _signature_pin_p1_with_field() {
     let _: fn(&[[f64; 3]; 4], &ConstantField) -> ElementStiffness =
         element_stiffness_p1_with_field;
-}
-
-/// Build the canonical 10-node P2 phys-node layout for a uniformly scaled
-/// reference tet (mirror of `assembly::test_support::scaled_p2_phys_nodes`,
-/// inlined here because that helper is `pub(crate)`).
-///
-/// Vertices in indices 0..4: `(0,0,0), (s,0,0), (0,s,0), (0,0,s)`.
-/// Edge midpoints in indices 4..10 in canonical Hughes/Gmsh edge order
-/// `(0,1), (1,2), (2,0), (0,3), (1,3), (2,3)`.
-fn scaled_p2_phys_nodes(s: f64) -> [[f64; 3]; 10] {
-    let v: [[f64; 3]; 4] = [[0.0, 0.0, 0.0], [s, 0.0, 0.0], [0.0, s, 0.0], [0.0, 0.0, s]];
-    let mid = |a: usize, b: usize| {
-        [
-            0.5 * (v[a][0] + v[b][0]),
-            0.5 * (v[a][1] + v[b][1]),
-            0.5 * (v[a][2] + v[b][2]),
-        ]
-    };
-    let edges: [(usize, usize); 6] =
-        [(0, 1), (1, 2), (2, 0), (0, 3), (1, 3), (2, 3)];
-    let mut nodes = [[0.0_f64; 3]; 10];
-    nodes[..4].copy_from_slice(&v);
-    for (i, &(a, b)) in edges.iter().enumerate() {
-        nodes[4 + i] = mid(a, b);
-    }
-    nodes
-}
-
-/// Build the 8 physical nodes of a scaled unit hex `[−s, s]³` in canonical
-/// Hughes/Gmsh hex8 order (mirror of
-/// `assembly::test_support::scaled_unit_hex_phys_nodes`).
-fn scaled_unit_hex_phys_nodes(s: f64) -> [[f64; 3]; 8] {
-    [
-        [-s, -s, -s],
-        [s, -s, -s],
-        [s, s, -s],
-        [-s, s, -s],
-        [-s, -s, s],
-        [s, -s, s],
-        [s, s, s],
-        [-s, s, s],
-    ]
-}
-
-/// Build the 6 physical nodes of a scaled unit wedge (unit triangle ×
-/// `[−s, s]`) in canonical Gmsh PRI6 order (mirror of
-/// `assembly::test_support::scaled_unit_wedge_phys_nodes`).
-fn scaled_unit_wedge_phys_nodes(s: f64) -> [[f64; 3]; 6] {
-    [
-        [0.0, 0.0, -s],
-        [s, 0.0, -s],
-        [0.0, s, -s],
-        [0.0, 0.0, s],
-        [s, 0.0, s],
-        [0.0, s, s],
-    ]
 }
 
 /// Constant lift of an identity-frame isotropic material must produce a

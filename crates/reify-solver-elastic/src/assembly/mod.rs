@@ -30,8 +30,15 @@ pub use hex::element_stiffness_hex_p1_with_field;
 pub use tet::{element_stiffness_p1_with_field, element_stiffness_p2_with_field};
 pub use wedge::element_stiffness_wedge_p1_with_field;
 
-#[cfg(test)]
-pub(crate) mod test_support;
+// Test fixture helpers shared between in-crate unit tests and integration
+// tests under `crates/reify-solver-elastic/tests/`. The module is
+// `#[doc(hidden)] pub` (not `#[cfg(test)]`) so external integration tests
+// can import a single source of truth for fixture geometry — preventing
+// drift between the in-crate copy and inlined integration-test copies.
+// Helpers that integration tests need are individually marked `pub`;
+// the remaining `pub(crate)` helpers stay scope-bounded to the crate.
+#[doc(hidden)]
+pub mod test_support;
 
 use crate::constitutive::IsotropicElastic;
 

@@ -1,19 +1,36 @@
-//! Test-only helpers shared between the `assembly::*` test modules.
+//! Test-only helpers shared between the `assembly::*` test modules and
+//! the integration tests under `crates/reify-solver-elastic/tests/`.
 //!
-//! Lives under `#[cfg(test)] pub(crate) mod test_support;` in
-//! [`crate::assembly`] so both `assembly::tests` and `assembly::tet::tests`
-//! can pull from a single source of truth. Putting the shared helpers in
-//! one place keeps the EDGES traversal driven directly off
-//! [`crate::elements::tet_p2::EDGES`] (the production constant), so a
-//! reordering of edges in production can never silently desynchronise the
-//! test fixtures from the indexing the assembly code expects.
+//! Lives under `#[doc(hidden)] pub mod test_support;` in
+//! [`crate::assembly`] so both in-crate unit tests and external
+//! integration tests can pull from a single source of truth. Putting
+//! the shared helpers in one place keeps the EDGES traversal driven
+//! directly off [`crate::elements::tet_p2::EDGES`] (the production
+//! constant), so a reordering of edges in production can never silently
+//! desynchronise the test fixtures from the indexing the assembly code
+//! expects.
+//!
+//! # Visibility
+//!
+//! Fixture-geometry helpers (`scaled_*_phys_nodes`,
+//! `dimensionless_steel_like`) are `pub` so external integration tests
+//! can import them; analysis helpers (`matvec`, `linf`,
+//! `strain_energies`, `ElementStiffnessTestSpec`,
+//! `run_element_stiffness_tests`) stay `pub(crate)` because only
+//! in-crate unit tests exercise them. The module-level
+//! `#![allow(dead_code)]` is required because all of these items are
+//! only reachable from `#[cfg(test)]` contexts (in-crate unit tests +
+//! integration tests), so in a plain `cargo build` the dead-code lint
+//! would otherwise flag the `pub(crate)` helpers.
+
+#![allow(dead_code)]
 
 use crate::assembly::ElementStiffness;
 use crate::constitutive::IsotropicElastic;
 use crate::elements::tet_p2::EDGES;
 
 /// Steel-like dimensionless material: E = 1, ν = 0.3.
-pub(crate) fn dimensionless_steel_like() -> IsotropicElastic {
+pub fn dimensionless_steel_like() -> IsotropicElastic {
     IsotropicElastic {
         youngs_modulus: 1.0,
         poisson_ratio: 0.3,
@@ -263,7 +280,7 @@ pub(crate) fn run_element_stiffness_tests(
 ///
 /// `s = 1.0` recovers the canonical reference prism (unit triangle × [−1, +1]);
 /// other scales are used by the volume-scaling tests.
-pub(crate) fn scaled_unit_wedge_phys_nodes(s: f64) -> [[f64; 3]; 6] {
+pub fn scaled_unit_wedge_phys_nodes(s: f64) -> [[f64; 3]; 6] {
     [
         [0.0, 0.0, -s], // node 0: L₀, ζ = −1  → (0, 0, −s)
         [s, 0.0, -s],   // node 1: L₁, ζ = −1  → (s, 0, −s)
@@ -280,7 +297,7 @@ pub(crate) fn scaled_unit_wedge_phys_nodes(s: f64) -> [[f64; 3]; 6] {
 ///
 /// `s = 1.0` recovers the canonical reference cube `[−1, 1]³`; other scales are
 /// used by the volume-scaling tests.
-pub(crate) fn scaled_unit_hex_phys_nodes(s: f64) -> [[f64; 3]; 8] {
+pub fn scaled_unit_hex_phys_nodes(s: f64) -> [[f64; 3]; 8] {
     [
         [-s, -s, -s], // node 0: (ξ,η,ζ) = (−1,−1,−1)
         [s, -s, -s],  // node 1: (+1,−1,−1)
@@ -300,7 +317,7 @@ pub(crate) fn scaled_unit_hex_phys_nodes(s: f64) -> [[f64; 3]; 8] {
 ///
 /// `s = 1.0` recovers the canonical unit reference tet; other scales are
 /// used by the volume-scaling tests.
-pub(crate) fn scaled_p2_phys_nodes(s: f64) -> [[f64; 3]; 10] {
+pub fn scaled_p2_phys_nodes(s: f64) -> [[f64; 3]; 10] {
     let v: [[f64; 3]; 4] = [[0.0, 0.0, 0.0], [s, 0.0, 0.0], [0.0, s, 0.0], [0.0, 0.0, s]];
     let mid = |a: usize, b: usize| {
         [
