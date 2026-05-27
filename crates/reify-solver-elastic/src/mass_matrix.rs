@@ -356,6 +356,48 @@ mod tests {
     }
 
     #[test]
+    fn consistent_mass_p1_assembled_global_m_is_symmetric_within_fp_tolerance() {
+        // Same two-tet shared-face mesh as step-17 — nodes 1, 2, 3 receive
+        // contributions from both elements (shared-DOF summation occurs).
+        // Asserts the global M is symmetric within FP tolerance, mirroring the
+        // K-stiffness pin `assembly/global.rs::global_k_is_symmetric_within_fp_tolerance`.
+        use crate::assembly::{AssemblyElement, AssemblyMode, assemble_global_stiffness};
+
+        let nodes: [[f64; 3]; 5] = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+        ];
+        let conn0 = [0_usize, 1, 2, 3];
+        let conn1 = [1_usize, 2, 3, 4];
+        let phys0 = [nodes[conn0[0]], nodes[conn0[1]], nodes[conn0[2]], nodes[conn0[3]]];
+        let phys1 = [nodes[conn1[0]], nodes[conn1[1]], nodes[conn1[2]], nodes[conn1[3]]];
+
+        let m_e0 = consistent_element_mass_tet_p1(&phys0, 1.0);
+        let m_e1 = consistent_element_mass_tet_p1(&phys1, 1.0);
+
+        let elements = [
+            AssemblyElement { id: 0, connectivity: &conn0, k_e: &m_e0 },
+            AssemblyElement { id: 1, connectivity: &conn1, k_e: &m_e1 },
+        ];
+        let m_global = assemble_global_stiffness(5, &elements, AssemblyMode::Deterministic);
+        let dense = m_global.to_dense();
+        for i in 0..15 {
+            for j in i..15 {
+                let lhs = dense[(i, j)];
+                let rhs = dense[(j, i)];
+                let scale = lhs.abs().max(rhs.abs()).max(1.0);
+                assert!(
+                    (lhs - rhs).abs() < 1e-9 * scale,
+                    "global asymmetry at ({i},{j}): {lhs} vs {rhs}",
+                );
+            }
+        }
+    }
+
+    #[test]
     fn consistent_mass_p1_is_positive_semidefinite_via_quadratic_form() {
         // M is a Gram matrix (integral of ρ·N·Nᵀ), so PSD is structural.
         // The strongest pin is (a) rigid-translation along an axis: the
