@@ -101,6 +101,7 @@ fn cfrp_orthotropic() -> OrthotropicMaterial {
 /// Compute the closed-form orthotropic D given the 9 constants.
 /// Voigt order: [εxx, εyy, εzz, γxy, γyz, γxz]
 /// shear block diagonal: G12, G23, G13.
+#[allow(clippy::too_many_arguments)]
 fn orthotropic_closed_form(
     e1: f64, e2: f64, e3: f64,
     g12: f64, g13: f64, g23: f64,
