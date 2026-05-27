@@ -637,6 +637,76 @@ mod tests {
         );
     }
 
+    // ── arg() alias tests (step-3, task-3952) ────────────────────────────────
+
+    #[test]
+    fn arg_matches_phase_dimensionless() {
+        // arg(z) must equal phase(z) exactly (same code path) for dimensionless z
+        let z = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert_eq!(
+            eval_builtin("arg", &[z.clone()]),
+            eval_builtin("phase", &[z]),
+            "arg(z) must equal phase(z) for dimensionless Complex"
+        );
+    }
+
+    #[test]
+    fn arg_matches_phase_dimensioned() {
+        // arg(z) must equal phase(z) for dimensioned Complex (phase is dimension-invariant)
+        let z = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert_eq!(
+            eval_builtin("arg", &[z.clone()]),
+            eval_builtin("phase", &[z]),
+            "arg(z) must equal phase(z) for dimensioned Complex"
+        );
+    }
+
+    #[test]
+    fn arg_complex_1_1_returns_pi_over_4() {
+        // arg(1+1i) = atan2(1,1) = π/4, with ANGLE dimension
+        let z = Value::Complex {
+            re: 1.0,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert_scalar_approx!(
+            eval_builtin("arg", &[z]),
+            std::f64::consts::FRAC_PI_4,
+            DimensionVector::ANGLE
+        );
+    }
+
+    #[test]
+    fn arg_zero_complex_returns_undef() {
+        // arg(0+0i) is undefined — zero vector has no direction
+        let z = Value::Complex {
+            re: 0.0,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("arg", &[z]).is_undef(),
+            "arg(0+0i) should be Undef, not Scalar{{0.0, ANGLE}}"
+        );
+    }
+
+    #[test]
+    fn arg_non_complex_returns_undef() {
+        // arg on a non-Complex value must return Undef
+        assert!(
+            eval_builtin("arg", &[Value::Real(1.0)]).is_undef(),
+            "arg(Real) should be Undef"
+        );
+    }
+
     // ── complex_add() tests (step-15) ─────────────────────────────────────────
 
     #[test]
