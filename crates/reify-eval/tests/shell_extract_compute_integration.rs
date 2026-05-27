@@ -387,14 +387,25 @@ fn shell_extract_second_run_hits_in_memory_compute_node_cache() {
          (solve_time_ms must not perturb the content hash)"
     );
 
-    // The cache entry after the second dispatch must carry the same hash.
+    // The cache entry after the second dispatch must hold a Final value whose
+    // content hash matches hash1 — pinning that the cache correctly stores the
+    // trampoline output and that the output is byte-stable across re-dispatches.
+    //
+    // Note: `NodeCache.result_hash` is the hash of the `CachedResult` envelope
+    // (tag + Value hash + DeterminacyState), NOT just `Value::content_hash()`.
+    // We extract the inner Value and compare its content_hash against hash1.
     let entry = engine
         .cache_store()
         .get(&node)
         .expect("cache entry must exist after second dispatch");
-    assert_eq!(
-        entry.result_hash,
-        hash1,
-        "cache entry result_hash must match the deterministic content hash"
-    );
+    match &entry.result {
+        reify_eval::cache::CachedResult::Value(v, _det) => {
+            assert_eq!(
+                v.content_hash(),
+                hash1,
+                "cache entry value content_hash must match the deterministic hash1"
+            );
+        }
+        other => panic!("expected CachedResult::Value in cache after dispatch, got {other:?}"),
+    }
 }

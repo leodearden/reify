@@ -49,6 +49,14 @@ use crate::Engine;
 ///   order (not via `PersistentMap` walk, which is not guaranteed ordered).
 /// - Iterating `segmentation.regions` in their existing index order.
 /// - Leaving the diagnostics list in arrival order (empty on the success path).
+/// - **Projecting `solve_time_ms` as `Value::Int(0)` regardless of the actual
+///   elapsed time**: the measured timing is a non-deterministic side channel
+///   that would produce different content hashes across re-dispatches on the
+///   same inputs, breaking the cache short-circuit contract. The actual timing
+///   is used only for `cost_per_byte` (passed to the LRU heuristic) and is
+///   NOT folded into the projected `Value`. Consumers that need the timing for
+///   display should read it from `ShellExtractionResult.solve_time_ms` directly
+///   rather than from the cached `Value`.
 ///
 /// PRD §5 cache-key composition forward link: `shell-extract-engine-bridge.md §5`.
 fn shell_extraction_result_to_value(
@@ -194,10 +202,13 @@ fn shell_extraction_result_to_value(
     fields.insert("mid_surface".to_string(), mid_surface_value);
     fields.insert("segmentation".to_string(), segmentation_value);
     fields.insert("naming".to_string(), naming_value);
-    fields.insert(
-        "solve_time_ms".to_string(),
-        Value::Int(result.solve_time_ms as i64),
-    );
+    // Project solve_time_ms as 0 rather than the actual measured time.
+    // Rationale: the elapsed time is a non-deterministic measurement that
+    // would produce different content hashes across re-dispatches on the same
+    // inputs, breaking the cache short-circuit contract (see helper rustdoc
+    // and step-8 of task γ, #3834). The actual timing feeds only
+    // `cost_per_byte` and must not perturb the projected Value.
+    fields.insert("solve_time_ms".to_string(), Value::Int(0));
     fields.insert("diagnostics".to_string(), diags_value);
 
     Value::StructureInstance(Box::new(StructureInstanceData {
