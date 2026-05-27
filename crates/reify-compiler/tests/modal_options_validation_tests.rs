@@ -1021,6 +1021,184 @@ fn impulse_force_struct_has_correct_param_shape() {
     );
 }
 
+// ─── step-11 (η): HarmonicForce param shape ──────────────────────────────────
+
+/// `HarmonicForce` (PRD §5.1) applies F(t) = amplitude·sin(2π·frequency·t + phase).
+/// Must declare exactly 5 params in declaration order:
+///
+///   - `at        : String`                   (PLACEHOLDER for LocationId)
+///   - `direction : Vector3<Dimensionless>`   (unit excitation vector)
+///   - `amplitude : Force`                    (positive peak force)
+///   - `frequency : Frequency`                (positive cycles/second)
+///   - `phase     : Angle`                    (phase offset; default 0deg)
+///
+/// Must refine `ForcingFunction`. The `phase` param carries a default of
+/// `0deg` (zero Angle literal) per PRD §5.1 default spec; the other four
+/// are caller-supplied (no defaults). Constraints land in step-14.
+#[test]
+fn harmonic_force_struct_has_correct_param_shape() {
+    let template = find_structure("HarmonicForce");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    // (a) tight count
+    assert_eq!(
+        params.len(),
+        5,
+        "HarmonicForce should have exactly 5 param cells \
+         (at, direction, amplitude, frequency, phase), got: {:?}",
+        names
+    );
+
+    // (b) param names + types in declaration order
+    let expected: &[(&str, Type)] = &[
+        ("at", Type::String),
+        ("direction", Type::vec3(Type::dimensionless_scalar())),
+        (
+            "amplitude",
+            Type::Scalar {
+                dimension: DimensionVector::FORCE,
+            },
+        ),
+        (
+            "frequency",
+            Type::Scalar {
+                dimension: DimensionVector::FREQUENCY,
+            },
+        ),
+        (
+            "phase",
+            Type::Scalar {
+                dimension: DimensionVector::ANGLE,
+            },
+        ),
+    ];
+    let expected_names: Vec<&str> = expected.iter().map(|(m, _)| *m).collect();
+    assert_eq!(
+        names, expected_names,
+        "HarmonicForce params must be in canonical order \
+         (at, direction, amplitude, frequency, phase)"
+    );
+    for (i, (expected_name, expected_ty)) in expected.iter().enumerate() {
+        let cell = &params[i];
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "HarmonicForce.{} should be {:?}, got {:?}",
+            expected_name, expected_ty, cell.cell_type
+        );
+    }
+
+    // (c) no defaults on at/direction/amplitude/frequency; phase HAS a default
+    for name in &["at", "direction", "amplitude", "frequency"] {
+        let cell = params.iter().find(|vc| vc.id.member == *name).unwrap();
+        assert!(
+            cell.default_expr.is_none(),
+            "HarmonicForce.{} should have no default_expr (caller-supplied), \
+             but got: {:?}",
+            name,
+            cell.default_expr
+        );
+    }
+    // phase = 0deg — must have a default that is a zero Angle literal
+    let phase_default = require_default(template, "phase");
+    match &phase_default.kind {
+        CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
+            if *si_value == 0.0 && *dimension == DimensionVector::ANGLE =>
+        {
+            // correct: 0deg = 0 radians in SI
+        }
+        CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => {
+            // acceptable fallback if literal-lowering emits Real for zero
+        }
+        other => panic!(
+            "HarmonicForce.phase default should be Literal(0 Angle), got: {:?}",
+            other
+        ),
+    }
+
+    // (d) refines ForcingFunction
+    assert!(
+        template
+            .trait_bounds
+            .iter()
+            .any(|t| t == "ForcingFunction"),
+        "HarmonicForce should refine ForcingFunction; got trait_bounds: {:?}",
+        template.trait_bounds
+    );
+}
+
+// ─── step-13 (η): HarmonicForce amplitude + frequency positivity constraints ──
+
+/// `HarmonicForce` must declare EXACTLY 2 constraints:
+///   - `amplitude > 0N`  (PRD §5.1 user-observable-signal anchor)
+///   - `frequency > 0Hz` (zero/negative frequency is physically degenerate)
+///
+/// Tight count==2 regression-gates against accidental extras (e.g., a spurious
+/// `phase >= 0` that would wrongly forbid negative phase offsets).
+///
+/// RHS literal is `Value::Scalar { si_value: 0.0, dimension: FORCE/FREQUENCY }`
+/// (dimensioned) OR `Value::Real(0.0)` (future-proofing).
+///
+/// This test serves as the PRD §5.1 user-observable-signal anchor:
+/// `HarmonicForce(amplitude: -1N, ...)` → constraint-violation diagnostic.
+/// The actual ctor-firing is verified compositionally by
+/// `stress_error_messages.rs::constraint_violation_diagnostic` (plan
+/// design-decision-7) — this test pins only the structure-def-level AST.
+#[test]
+fn harmonic_force_constrains_amplitude_and_frequency_positive() {
+    let template = find_structure("HarmonicForce");
+
+    assert_eq!(
+        template.constraints.len(),
+        2,
+        "HarmonicForce should declare exactly 2 constraints \
+         (amplitude > 0N, frequency > 0Hz); got {} constraints: {:?}",
+        template.constraints.len(),
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+
+    for (required_member, required_dim) in &[
+        ("amplitude", DimensionVector::FORCE),
+        ("frequency", DimensionVector::FREQUENCY),
+    ] {
+        let matched = template.constraints.iter().any(|c| {
+            match &c.expr.kind {
+                CompiledExprKind::BinOp { op, left, right } => {
+                    if *op != BinOp::Gt
+                        || !collect_value_ref_members(left).contains(required_member)
+                    {
+                        return false;
+                    }
+                    match &right.kind {
+                        CompiledExprKind::Literal(Value::Scalar {
+                            si_value,
+                            dimension,
+                        }) if *si_value == 0.0 && dimension == required_dim => true,
+                        CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
+                        _ => false,
+                    }
+                }
+                _ => false,
+            }
+        });
+        assert!(
+            matched,
+            "HarmonicForce should declare `constraint {} > 0`; \
+             got constraints: {:?}",
+            required_member,
+            template
+                .constraints
+                .iter()
+                .map(|c| &c.expr.kind)
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
 // ─── step-9 (η): ImpulseForce impulse positivity constraint ──────────────────
 
 /// `ImpulseForce` must declare exactly 1 constraint: `impulse > 0`.

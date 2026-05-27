@@ -535,3 +535,68 @@ structure def ImpulseForce : ForcingFunction {
     //   time      : Time — any real time is valid; negative values support
     //                pre-loaded-history simulations (force applied before t=0)
 }
+
+// ── HarmonicForce ─────────────────────────────────────────────────────────────
+
+// `HarmonicForce` applies a sinusoidal forcing function at a given location
+// on the part (PRD §5.1):
+//
+//     F(t) = amplitude · sin(2π · frequency · t + phase)
+//
+// Param semantics (PRD §5.1):
+//   at        — the application location. FIXME(location-id-type): `String`
+//               PLACEHOLDER per the StepForce/ImpulseForce precedent.
+//   direction — unit excitation vector. `Vector3<Dimensionless>` per the
+//               `ModalOptions.reference_direction` precedent. Direction carries
+//               the sign; amplitude carries the positive peak size.
+//   amplitude — peak force magnitude (must be strictly positive). Encoded as
+//               `Force` (bare dimension name per `io.ri:77` precedent). The
+//               PRD §5.1 user-observable signal example explicitly states
+//               `HarmonicForce(amplitude: -1N, ...)` should produce a
+//               constraint-violation diagnostic — the `constraint amplitude > 0N`
+//               is the production-code manifestation of that signal.
+//   frequency — cycles per second (must be strictly positive). A zero-frequency
+//               "harmonic" is a DC offset (physically degenerate as a sinusoid);
+//               negative frequency is degenerate (symmetric to positive under the
+//               sine function). Encoded as `Frequency` (bare dimension name).
+//   phase     — initial phase offset in angle units. Default `0deg` (zero Angle
+//               literal) per PRD §5.1 "default: 0". The canonical zero-Angle
+//               default `= 0deg` (not bare `= 0`) is required because a bare `0`
+//               yields `Type::Real` which is dim-incompatible with `Type::Scalar
+//               { ANGLE }` per task #3115 esc-3115-112 (structural_physical.ri:
+//               67-68 documents the same reasoning). Choice of `deg` over `rad`
+//               follows `tolerancing.ri:113` precedent and is more user-intuitive
+//               for the typical 0/90/180 phase-offset workflow. Any real phase
+//               value is physically valid (phase is modular 2π), so phase is NOT
+//               constrained.
+//
+// PRD reference: docs/prds/v0_3/modal-analysis.md §5.1.
+structure def HarmonicForce : ForcingFunction {
+    param at : String
+    param direction : Vector3<Dimensionless>
+    param amplitude : Force
+    param frequency : Frequency
+    param phase : Angle = 0deg
+
+    // PRD §5.1 user-observable signal: `HarmonicForce(amplitude: -1N, ...)`
+    // must produce a constraint-violation diagnostic. Direction carries the
+    // sign (unit vector); amplitude carries the positive peak size. Declaring
+    // the lower bound at the structure-def level follows the task-2544
+    // explicit-contract convention (same rationale as `StepForce.magnitude
+    // > 0N` and `ModalOptions.n_modes > 0`). Dimensioned literal `0N`
+    // required per structural_physical.ri:67-68.
+    constraint amplitude > 0N
+
+    // A zero-frequency "harmonic" is a DC offset (degenerate as a sinusoid);
+    // negative frequency is symmetric to positive under sin() and physically
+    // degenerate for a "harmonic" excitation. Dimensioned literal `0Hz`
+    // required per the same dim-equality rationale as `amplitude > 0N`.
+    constraint frequency > 0Hz
+
+    // NOTE — explicitly NOT constrained:
+    //   at        : String — no scalar invariant expressible on a String placeholder
+    //   direction : Vector3<Dimensionless> — norm() not scalar-predicable
+    //   phase     : Angle  — physically modular 2π; any real value is valid
+    //                (a negative phase offset is meaningful in the context of
+    //                two overlapping HarmonicForce sources)
+}
