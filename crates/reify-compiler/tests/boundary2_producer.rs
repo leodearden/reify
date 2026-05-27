@@ -216,9 +216,7 @@ fn content_hashes_present() {
 #[test]
 fn type_error_dimension_mismatch() {
     use reify_ast::*;
-    use reify_syntax::*;
     use reify_core::*;
-    use reify_ir::*;
 
     // Build a module with: let bad = thickness + 2kg
     // thickness is Scalar(Length) via type_expr, 2kg is Scalar(Mass) literal
@@ -310,9 +308,7 @@ fn type_error_dimension_mismatch() {
 #[test]
 fn constraint_non_bool_produces_warning() {
     use reify_ast::*;
-    use reify_syntax::*;
     use reify_core::*;
-    use reify_ir::*;
 
     // Build a module with: constraint width * height
     // This produces Scalar[m^2], not Bool
@@ -724,9 +720,7 @@ fn bracket_compiles_with_zero_diagnostics() {
 #[test]
 fn mul_div_different_dimensions_no_diagnostic() {
     use reify_ast::*;
-    use reify_syntax::*;
     use reify_core::*;
-    use reify_ir::*;
 
     let module = ParsedModule {
         path: ModulePath::single("mul_div_dims"),
@@ -1772,9 +1766,7 @@ fn compiled_constraint_domain_field() {
 #[test]
 fn scalar_plus_int_type_error() {
     use reify_ast::*;
-    use reify_syntax::*;
     use reify_core::*;
-    use reify_ir::*;
 
     let module = ParsedModule {
         path: ModulePath::single("scalar_plus_int"),
