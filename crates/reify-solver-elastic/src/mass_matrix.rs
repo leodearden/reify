@@ -253,6 +253,37 @@ mod tests {
     }
 
     #[test]
+    fn consistent_mass_p1_left_handed_orientation_yields_positive_mass_equal_to_rho_v() {
+        // Swap nodes 2 ↔ 3 ⇒ det J < 0; physical V is still positive,
+        // so total mass must be positive (= ρV = 1/6) and every diagonal
+        // entry must be > 0. Pins the det.abs() choice — a regression that
+        // re-introduces signed det would yield total mass = −1/6 and
+        // negative diagonal entries.
+        const FLIPPED: [[f64; 3]; 4] = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0],
+        ];
+        let m_e = consistent_element_mass_tet_p1(&FLIPPED, 1.0);
+        let mut total: f64 = 0.0;
+        for a in 0..4 {
+            for b in 0..4 {
+                total += read(&m_e, 3 * a, 3 * b);
+            }
+        }
+        let expected = 1.0_f64 / 6.0;
+        assert!(
+            (total - expected).abs() < 1e-12,
+            "left-handed total axis-0 mass = {total}, expected {expected} (det.abs() must be used)",
+        );
+        for i in 0..12 {
+            let d = read(&m_e, i, i);
+            assert!(d > 0.0, "diagonal entry M[{i},{i}] = {d}, expected > 0");
+        }
+    }
+
+    #[test]
     fn consistent_mass_p1_off_axis_blocks_are_zero_block_diagonal_3x3_structure() {
         // Each (a, b) node-pair block in M_e is `coef · I_3` — diagonal in
         // axis-axis indexing. α ≠ β entries must be exactly 0. Mirrors the
