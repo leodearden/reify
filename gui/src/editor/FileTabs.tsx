@@ -35,6 +35,7 @@ export function FileTabs(props: FileTabsProps) {
           const basename = () => file.path.split('/').pop() || file.path;
           const isActive = () => props.store.state.activeFile === file.path;
           const isDirty = () => props.store.state.dirtyFiles.includes(file.path);
+          const isExternallyChanged = () => props.store.state.externallyChanged.includes(file.path);
 
           return (
             <div
@@ -50,6 +51,9 @@ export function FileTabs(props: FileTabsProps) {
               <span>{basename()}</span>
               <Show when={isDirty()}>
                 <span class={styles.dirty} data-testid="dirty-indicator" />
+              </Show>
+              <Show when={isExternallyChanged()}>
+                <span class={styles.externallyChanged} data-testid="externally-changed-indicator" />
               </Show>
               <button
                 class={styles.closeBtn}

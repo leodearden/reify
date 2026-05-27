@@ -39,6 +39,14 @@
   flex-shrink: 0;
 }
 
+.externallyChanged {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--reify-error, #f38ba8);
+  flex-shrink: 0;
+}
+
 .closeBtn {
   display: flex;
   align-items: center;
