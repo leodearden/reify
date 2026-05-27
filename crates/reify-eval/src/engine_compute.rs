@@ -1306,4 +1306,244 @@ mod tests {
              must observe the prior=Some(99) restored by step-10",
         );
     }
+
+    // ── ζ / task 3425 step-13: pool-only restore-prior path ────────────────
+    //
+    // After engine_edit step (9) the prior compute-node warm state is parked
+    // in `warm_pool` and the cache Compute entry has been invalidated
+    // (engine_edit.rs:2275-2303). At the next dispatch, run_compute_dispatch's
+    // cache-miss → pool-hit fallback (engine_compute.rs:275-282) TAKES the
+    // prior out via `checkout_with_lru_stamp`, which REMOVES the pool entry.
+    // So at the moment the trampoline returns Cancelled / Failed / unregistered:
+    //   - The cache has NO Compute entry (engine_edit invalidated it).
+    //   - The pool has NO entry (checkout took it).
+    //   - The prior is held only in the `prior_warm_state` local.
+    //
+    // The current restore-prior arms call `cache.donate_warm_state_with_cost`,
+    // which is a silent no-op when no Compute entry exists — so the prior is
+    // dropped on the floor, breaking the PRD §5 idempotence contract on the
+    // post-edit path.
+    //
+    // Step-14 fixes this by auto-seeding a sentinel Compute entry before the
+    // donate call. These tests pin that fix. Both are RED until step-14.
+    //
+    // The two tests cover the two observable surfaces of the bug:
+    //   (1) prior visible in the cache after a Cancelled dispatch
+    //   (2) prior observable by a redispatched trampoline (PRD §5 idempotence)
+    //
+    // The existing step-9 tests pre-seed the cache directly, so they bypass
+    // this code path — they exercise the "donate succeeds because entry was
+    // pre-seeded" branch, not the "donate must auto-seed first" branch.
+    //
+    // Each test uses a fresh OnceLock to avoid racing with step-5/step-9
+    // tracers under cargo test's default thread pool.
+
+    /// (1) Cancelled with pool-only prior — cache must hold the prior after.
+    #[test]
+    fn run_compute_dispatch_cancelled_with_pool_only_prior_survives_into_cache() {
+        use crate::engine_compute::DispatchError;
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn(
+            "test::zeta_pool_only_cancelled",
+            cancellable_fn as ComputeFn,
+        );
+
+        let cell = ValueCellId::new("T", "po1");
+        let c_id = ComputeNodeId::new("T", 0);
+
+        // Seed an output VC at Final so begin_compute_dispatch has a
+        // last_substantive to display.
+        engine.cache_store_mut().put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Int(0), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        // Seed the prior ONLY in the warm_pool — NO cache Compute entry.
+        // This mirrors the state engine_edit step (9) leaves behind after a
+        // source edit that drops the compute_node from the new snapshot.
+        engine.warm_pool_mut().donate_with_cost(
+            NodeId::Compute(c_id.clone()),
+            OpaqueState::new(99i32, 4),
+            0.3,
+        );
+
+        // Sanity: no cache entry exists under the Compute node before dispatch.
+        assert!(
+            engine
+                .cache_store()
+                .get(&NodeId::Compute(c_id.clone()))
+                .is_none(),
+            "precondition: no cache Compute entry before dispatch",
+        );
+
+        // Pre-cancel the handle so cancellable_fn returns Cancelled.
+        let handle = CancellationHandle::new();
+        handle.cancel();
+
+        let result = engine.run_compute_dispatch(
+            &c_id,
+            std::slice::from_ref(&cell),
+            "test::zeta_pool_only_cancelled",
+            &[Value::Int(0)],
+            &[],
+            &Value::Undef,
+            &handle,
+            VersionId(2),
+        );
+
+        // (a) Result is Err(DispatchError::Cancelled).
+        assert!(
+            matches!(result, Err(DispatchError::Cancelled)),
+            "Cancelled trampoline must return Err(DispatchError::Cancelled), got {result:?}",
+        );
+
+        // (b) cost_per_byte must be restored to 0.3 — read BEFORE the warm
+        // state take so the cost assertion does not depend on order.
+        assert_eq!(
+            engine
+                .cache_store()
+                .cost_per_byte_of(&NodeId::Compute(c_id.clone())),
+            Some(0.3),
+            "prior cost_per_byte must be restored to cache after Cancelled \
+             on the pool-only path (step-14 auto-seed-then-donate)",
+        );
+
+        // (c) warm_state must be restored — the prior survived the cancel
+        // through the auto-seed-then-donate fix in step-14.
+        let observed_warm = engine
+            .cache_store_mut()
+            .get_warm_state(&NodeId::Compute(c_id.clone()))
+            .expect(
+                "cache must hold restored warm state after Cancelled on the \
+                 pool-only path (step-14 auto-seed-then-donate)",
+            );
+        assert_eq!(
+            observed_warm.downcast::<i32>(),
+            Some(99i32),
+            "prior warm_state(99i32) must be restored to cache after Cancelled",
+        );
+    }
+
+    /// (2) Cancel then redispatch on the pool-only path — prior observable.
+    /// PRD §5 "Idempotent under any number of cancel-and-redispatch cycles"
+    /// must hold for the post-edit path too, not only the cache-pre-seeded
+    /// path covered by step-9.
+    static ZETA_POOL_ONLY_IDEM_OBSERVED_PRIOR: OnceLock<Mutex<Option<i32>>> =
+        OnceLock::new();
+
+    fn zeta_pool_only_idem_tracer_fn(
+        _value_inputs: &[Value],
+        _realization_inputs: &[RealizationReadHandle],
+        _options: &Value,
+        prior_warm_state: Option<&OpaqueState>,
+        _cancellation: &CancellationHandle,
+    ) -> ComputeOutcome {
+        let observed = prior_warm_state.and_then(|s| s.downcast_ref::<i32>().copied());
+        *ZETA_POOL_ONLY_IDEM_OBSERVED_PRIOR
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap() = observed;
+        ComputeOutcome::Completed {
+            result: Value::Int(0),
+            new_warm_state: None,
+            cost_per_byte: None,
+            diagnostics: vec![],
+        }
+    }
+
+    #[test]
+    fn run_compute_dispatch_cancelled_pool_only_then_redispatched_observes_prior_idempotent() {
+        use crate::engine_compute::DispatchError;
+
+        // Reset the static (defensive — other tests don't touch this one).
+        if let Some(m) = ZETA_POOL_ONLY_IDEM_OBSERVED_PRIOR.get() {
+            *m.lock().unwrap() = None;
+        }
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn(
+            "test::zeta_pool_only_idem_cancellable",
+            cancellable_fn as ComputeFn,
+        );
+        engine.register_compute_fn(
+            "test::zeta_pool_only_idem_tracer",
+            zeta_pool_only_idem_tracer_fn as ComputeFn,
+        );
+
+        let cell = ValueCellId::new("T", "po2");
+        let c_id = ComputeNodeId::new("T", 0);
+
+        engine.cache_store_mut().put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Int(0), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        // Seed the prior ONLY in the warm_pool at cost 0.3, NO cache entry.
+        engine.warm_pool_mut().donate_with_cost(
+            NodeId::Compute(c_id.clone()),
+            OpaqueState::new(99i32, 4),
+            0.3,
+        );
+
+        // First dispatch: pre-cancelled cancellable_fn → Err(Cancelled).
+        // The fallback takes the prior from the pool (removing the pool
+        // entry); step-14 must restore it to the cache so the second
+        // dispatch can observe it.
+        let cancel_handle = CancellationHandle::new();
+        cancel_handle.cancel();
+        let first = engine.run_compute_dispatch(
+            &c_id,
+            std::slice::from_ref(&cell),
+            "test::zeta_pool_only_idem_cancellable",
+            &[Value::Int(0)],
+            &[],
+            &Value::Undef,
+            &cancel_handle,
+            VersionId(2),
+        );
+        assert!(
+            matches!(first, Err(DispatchError::Cancelled)),
+            "first dispatch must Cancelled, got {first:?}",
+        );
+
+        // Second dispatch: the tracer must observe Some(99) — the prior
+        // survived the post-edit cancellation cycle through step-14.
+        let second_handle = CancellationHandle::new(); // not cancelled
+        let second = engine.run_compute_dispatch(
+            &c_id,
+            std::slice::from_ref(&cell),
+            "test::zeta_pool_only_idem_tracer",
+            &[Value::Int(0)],
+            &[],
+            &Value::Undef,
+            &second_handle,
+            VersionId(3),
+        );
+        second.expect("second dispatch must Ok");
+
+        let observed = ZETA_POOL_ONLY_IDEM_OBSERVED_PRIOR
+            .get()
+            .expect("tracer must have set the static")
+            .lock()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            observed,
+            Some(99i32),
+            "after cancel-then-redispatch on the pool-only path, the second \
+             dispatch's trampoline must observe the prior=Some(99) restored \
+             by step-14's auto-seed-then-donate",
+        );
+    }
 }
