@@ -1,7 +1,7 @@
 // Tauri command handlers — thin wrappers around EngineSession methods.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
 use reify_mcp::{SelectionInfo, SourceLocationInfo};
@@ -138,6 +138,36 @@ pub fn open_file_engine_impl(
     }
 
     Ok(state)
+}
+
+/// Resolve the CLI argv path to a canonical [`PathBuf`] suitable for
+/// passing to `EngineSession::load_file`.
+///
+/// Rules (mirrors and extends the inline argv-parsing block previously in `main.rs`):
+///
+/// 1. Returns `None` for an empty `path_str`.
+/// 2. Builds a [`PathBuf`] from `path_str`.
+/// 3. Returns `None` if `extension()` is not `"ri"` (preserves the existing
+///    main.rs filter for non-Reify files).
+/// 4. Calls [`crate::path_key::canonicalize_document_key`] to obtain the
+///    canonical absolute form.  Falls back to the original string when
+///    canonicalize errors (e.g. file not yet on disk), so the caller can
+///    still attempt `load_file` and surface the actionable IO error.
+/// 5. Returns `Some(PathBuf::from(canonical))`.
+///
+/// Note: `path.exists()` is intentionally NOT checked here.  The old main.rs
+/// code silently ignored non-existent argv files; this helper lets the caller
+/// attempt `load_file` and receive a proper IO error instead.
+pub fn resolve_initial_file_path(path_str: &str) -> Option<PathBuf> {
+    if path_str.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(path_str);
+    if path.extension().is_none_or(|ext| ext != "ri") {
+        return None;
+    }
+    let canonical = crate::path_key::canonicalize_document_key(path_str);
+    Some(PathBuf::from(canonical))
 }
 
 /// Return the hierarchical entity tree for the currently loaded module.

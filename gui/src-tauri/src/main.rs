@@ -573,20 +573,25 @@ fn main() {
     let kernel_status = reify_gui::kernel_status::current_kernel_status();
     let session = EngineSession::with_registered_kernel(Box::new(checker));
 
-    // Check for initial file from command-line args or environment
+    // Check for initial file from command-line args or environment.
+    // `resolve_initial_file_path` canonicalises the argv path to an absolute
+    // realpath before loading so the engine's `file_path` field (used by
+    // `update_source` for import resolution) is always an absolute canonical
+    // path, regardless of how the user spelled the CLI argument.
     let mut session = session;
     let mut initial_file: Option<std::path::PathBuf> = None;
     if let Some(path_str) = std::env::args().nth(1) {
-        let path = std::path::PathBuf::from(&path_str);
-        if path.exists() && path.extension().is_some_and(|ext| ext == "ri") {
-            if let Err(e) = session.load_file(&path) {
+        if let Some(canonical_path) =
+            reify_gui::commands::resolve_initial_file_path(&path_str)
+        {
+            if let Err(e) = session.load_file(&canonical_path) {
                 eprintln!(
                     "Warning: failed to load initial file {}: {}",
-                    path.display(),
+                    canonical_path.display(),
                     e
                 );
             } else {
-                initial_file = Some(path);
+                initial_file = Some(canonical_path);
             }
         }
     }
