@@ -1,3 +1,4 @@
+#![allow(clippy::doc_overindented_list_items)]
 //! Tests for `crates/reify-compiler/stdlib/flexures.ri` —
 //! `std.flexures` module: `FlexureCompliance` structure_def and the
 //! `flexure_compliance(joint)` accessor stdlib fn — the value-type substrate

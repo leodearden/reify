@@ -3701,6 +3701,7 @@ fn edit_source_role_flip_probe_memoised_across_multiple_groups() {
 /// assertion must fire immediately after `Snapshot::from_compiled_module`.
 #[test]
 #[cfg(debug_assertions)]
+#[allow(clippy::single_element_loop)]
 fn edit_source_panics_on_unrepresentable_cell_type() {
     use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
     use reify_types::{ModulePath, Type};

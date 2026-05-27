@@ -257,5 +257,5 @@ fn engine_propagate_freshness_only_accepts_borrowed_iterator() {
     // Compile-time checks: both non-HashSet iterator forms must type-check
     // against `impl IntoIterator<Item = &ValueCellId>`.
     let _ = engine.propagate_freshness_only(std::iter::once(&a_id), 1);
-    let _ = engine.propagate_freshness_only(&[a_id.clone()], 1);
+    let _ = engine.propagate_freshness_only(std::slice::from_ref(&a_id), 1);
 }

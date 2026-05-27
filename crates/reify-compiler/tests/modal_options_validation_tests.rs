@@ -1,3 +1,4 @@
+#![allow(clippy::doc_overindented_list_items)]
 //! Tests for `crates/reify-compiler/stdlib/modal_analysis.ri` —
 //! `std.modal.analysis` module: `DampingDescriptor`, `NoDamping`,
 //! `RayleighDamping`, `Mode`, `ModalResult`, and `ModalOptions` structure
