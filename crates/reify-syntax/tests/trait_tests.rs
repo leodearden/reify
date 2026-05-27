@@ -3,7 +3,7 @@
 //! Tests for `trait Name { ... }` declarations with refinements, type parameters,
 //! associated types, pub visibility, and structure trait bounds.
 
-use reify_syntax::*;
+use reify_ast::*;
 
 /// Helper: parse source and return declarations and errors.
 fn parse_decls(source: &str) -> (Vec<Declaration>, Vec<ParseError>) {

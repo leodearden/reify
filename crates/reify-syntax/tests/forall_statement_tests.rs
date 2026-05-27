@@ -3,7 +3,7 @@
 //! Covers all four body alternatives (connect, chain, constraint, constraint
 //! instantiation) plus disambiguation and nesting regression scenarios.
 
-use reify_syntax::*;
+use reify_ast::*;
 
 /// Helper: parse source and return the first structure's members and errors.
 fn parse_members(source: &str) -> (Vec<MemberDecl>, Vec<ParseError>) {

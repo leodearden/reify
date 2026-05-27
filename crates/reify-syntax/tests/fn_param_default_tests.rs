@@ -100,7 +100,7 @@ fn fn_param_cst_without_default_has_no_default_field_child() {
 
 // ── AST-level tests ───────────────────────────────────────────────────────────
 
-use reify_syntax::*;
+use reify_ast::*;
 
 /// `fn f(x : T = Foo.bar) -> T { x }` — AST must carry `FnParam.default`
 /// as `Some(Expr { kind: ExprKind::MemberAccess { .. }, .. })`.

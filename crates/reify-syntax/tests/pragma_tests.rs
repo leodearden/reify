@@ -2,7 +2,7 @@
 //!
 //! Tests for `#ident` and `#ident(args)` pragma syntax at module and block level.
 
-use reify_syntax::*;
+use reify_ast::*;
 
 /// Helper: parse source and return the ParsedModule.
 fn parse_module(source: &str) -> ParsedModule {
