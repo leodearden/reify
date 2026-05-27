@@ -7,7 +7,7 @@
 // and structure_def names declared here. Scope is the type surface only —
 // no Rust evaluator and no constructor side effects (that is β).
 //
-// Surface (PRD §4.1):
+// Surface (PRD §4.1, §5):
 //   - trait Profile                     (marker for all motion-profile variants)
 //   - trait BoundaryCondition           (marker for all spline boundary kinds)
 //   - enum  SplineKind                  (CubicSpline | QuinticSpline)
@@ -18,6 +18,7 @@
 //   - structure def PiecewisePolynomialProfile : Profile
 //                                       (mechanism, waypoints, boundary, spline_kind;
 //                                        constraint waypoints.count > 0)
+//   - trait Shaper                      (marker for all input-shaper variants, PRD §5)
 //
 // Module placement: registered last in `stdlib_loader.rs` — `std.trajectory`
 // has no compile-time dependency on any other stdlib module (every type it
@@ -300,3 +301,20 @@ pub fn evaluate_profile_ddot(p: Profile, t: Time) -> List<JointValue> { [0.0] }
 // computation (`waypoints.last.t - waypoints.first.t`) once the B-spline
 // evaluator and the PiecewisePolynomialProfile runtime accessor land.
 pub fn profile_duration(p: Profile) -> Time { 0.0 * 1s }
+
+// ── Shaper marker trait (PRD §5) ──────────────────────────────────────────────
+
+// Shaper — marker trait for every input-shaper variant (PRD §5).
+//
+// ι (this task) introduces the trait and the first refining variant
+// TOTSShaper (time-optimal trajectory shaper, PRD §5.2). Future Phase 2
+// task δ will add the impulse-shaper refinements ZVShaper / ZVDShaper /
+// EIShaper. Whoever lands first wins the trait; δ's architect will see this
+// declaration and add only the ZV/ZVD/EI structures that refine it.
+//
+// Kept empty by design: each variant carries its own per-strategy fields;
+// the trait exists only to give the `shaper` param on the `input_shape`
+// dispatcher a single nominal type so the SIR-α nominal type-tag dispatches
+// correctly. Same marker-trait discipline as `trait Profile { }` (:68) and
+// `trait BoundaryCondition { }` (:83).
+trait Shaper { }
