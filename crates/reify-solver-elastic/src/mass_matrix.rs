@@ -154,6 +154,26 @@ mod tests {
     }
 
     #[test]
+    fn consistent_mass_p1_is_symmetric_within_fp_tolerance() {
+        // M_e symmetry — coef(a,b) = coef(b,a) by construction. This is the
+        // Φᵀ M Φ-diagonalisation precondition that Lanczos (task ε) relies on.
+        // Regression-guard: a future refactor that uses a half-block write loop
+        // (e.g. only a ≤ b) would fail here.
+        let m_e = consistent_element_mass_tet_p1(&UNIT_TET, 2.5);
+        for i in 0..12 {
+            for j in 0..12 {
+                let lhs = read(&m_e, i, j);
+                let rhs = read(&m_e, j, i);
+                let scale = lhs.abs().max(rhs.abs()).max(1.0);
+                assert!(
+                    (lhs - rhs).abs() < 1e-12 * scale,
+                    "asymmetry at ({i},{j}): {lhs} vs {rhs}",
+                );
+            }
+        }
+    }
+
+    #[test]
     fn consistent_mass_p1_off_axis_blocks_are_zero_block_diagonal_3x3_structure() {
         // Each (a, b) node-pair block in M_e is `coef · I_3` — diagonal in
         // axis-axis indexing. α ≠ β entries must be exactly 0. Mirrors the
