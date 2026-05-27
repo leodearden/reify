@@ -438,3 +438,103 @@ fn flexure_compliance_params_have_literal_defaults() {
         ),
     }
 }
+
+// ─── step-9: FlexureCompliance yield_margin upper-bound constraint ───────────
+
+/// `FlexureCompliance` declares the structure-level constraint
+/// `yield_margin <= 1` — the defense-in-depth encoding of the
+/// dimensionless-ratio bound on `yield_margin = (yield - max_stress) /
+/// yield`. Mathematically:
+///
+///   - At `max_stress = 0` the margin reaches its maximum of 1.
+///   - At `max_stress = yield` the margin is 0 (boundary of `at_yield`).
+///   - At `max_stress > yield` the margin goes negative — the "at_yield"
+///     regime where PRB ctors emit `W_FlexureYielding` (PRD §5.3) and set
+///     `at_yield = true`.
+///
+/// So `yield_margin > 1` is non-physical and indicates a PRB-ctor bug
+/// (e.g. swapped numerator/denominator). Encoding this as a first-class
+/// `constraint` declaration matches the project convention from task 2544
+/// ("the contract in production code is made explicit rather than relying
+/// solely on test coverage") and mirrors the same shape that
+/// `BucklingOptions.n_modes > 0` (solver_buckling.ri:87) and
+/// `PiecewisePolynomialProfile.waypoints.count > 0` (trajectory.ri:230)
+/// already use as upper-bound / lower-bound structure-level invariants.
+///
+/// SIR-α's `check_constraints_against_templates` machinery (task 3540,
+/// landed) evaluates structure-level constraints at the eval path, so this
+/// fires at construction with no further plumbing in β.
+///
+/// Test pins (a) exactly one constraint (tight count, mirroring
+/// trajectory's `piecewise_polynomial_profile_constrains_waypoints_nonempty`
+/// discipline at trajectory_stdlib_compile.rs:705), (b) the constraint is a
+/// `BinOp::Le` shape, (c) the LHS resolves to `ValueRef(yield_margin)`,
+/// (d) the RHS is `Literal::Int(1)` or `Literal::Real(1.0)` (mirrors the
+/// future-proofing rationale at trajectory_stdlib_compile.rs:752-760
+/// covering both Int and Real literal forms for the `0` / `1` RHS).
+#[test]
+fn flexure_compliance_constrains_yield_margin_upper_bound() {
+    let template = find_structure("FlexureCompliance");
+
+    assert_eq!(
+        template.constraints.len(),
+        1,
+        "FlexureCompliance should declare exactly 1 constraint \
+         (yield_margin <= 1); got: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+
+    let constraint = &template.constraints[0];
+
+    // Match BinOp::Le at the top level.
+    let (left, right, op) = match &constraint.expr.kind {
+        CompiledExprKind::BinOp { op, left, right } => (left.as_ref(), right.as_ref(), op),
+        other => panic!(
+            "FlexureCompliance constraint should be a BinOp; got: {:?}",
+            other
+        ),
+    };
+    assert_eq!(
+        *op,
+        BinOp::Le,
+        "FlexureCompliance constraint should use BinOp::Le (yield_margin <= 1); \
+         got: {:?}",
+        op
+    );
+
+    // LHS must be a ValueRef whose member is `yield_margin`.
+    match &left.kind {
+        CompiledExprKind::ValueRef(cell_id) => assert_eq!(
+            cell_id.member, "yield_margin",
+            "FlexureCompliance constraint LHS should reference yield_margin; \
+             got member: {}",
+            cell_id.member
+        ),
+        other => panic!(
+            "FlexureCompliance constraint LHS should be ValueRef(yield_margin); \
+             got: {:?}",
+            other
+        ),
+    }
+
+    // RHS must be the literal `1`. Accept either `Int(1)` or `Real(1.0)`,
+    // mirroring the future-proofing rationale established in
+    // `trajectory_stdlib_compile.rs:752-760` /
+    // `buckling_stdlib_compile.rs:356-358`: `yield_margin : Real = 0.0` so
+    // the `1` literal could lex as Int (parser-default) or Real (coerced
+    // by typing context). Accepting both keeps this test robust against a
+    // future literal-coercion change.
+    match &right.kind {
+        CompiledExprKind::Literal(Value::Int(1)) => {}
+        CompiledExprKind::Literal(Value::Real(v)) if *v == 1.0 => {}
+        other => panic!(
+            "FlexureCompliance constraint RHS should be \
+             Literal(Value::Int(1)) or Literal(Value::Real(1.0)); got: {:?}",
+            other
+        ),
+    }
+}
