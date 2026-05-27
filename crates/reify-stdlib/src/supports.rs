@@ -680,6 +680,34 @@ mod tests {
         );
     }
 
+    // ── task 3546 step-3 (RED): PinnedSupport post-retirement contract ────────
+    //
+    // After step-4 (SIR-β-sup retirement), `PinnedSupport` is no longer a
+    // name-dispatched builtin — its role is taken by the
+    // `structure def PinnedSupport : Support { ... }` declaration in
+    // `crates/reify-compiler/stdlib/fea_multi_case.ri`. Source-level
+    // `PinnedSupport(...)` calls then lower to
+    // `CompiledExprKind::StructureInstanceCtor` and eval into a
+    // `Value::StructureInstance`. The `eval_builtin("PinnedSupport", ...)`
+    // Rust API path returns `Value::Undef` because the dispatch arm in
+    // `eval_supports` is removed.
+    //
+    // RED: this test currently fails because `eval_builtin("PinnedSupport", ...)`
+    // returns a `Value::Map` (the pre-retirement happy path). Step-4 retires
+    // the arm and updates `SUPPORT_KINDS` so the partition guard stays green.
+
+    #[test]
+    fn pinned_support_eval_builtin_returns_undef_post_retirement() {
+        let selector = point_selector_stub();
+        assert!(
+            eval_builtin("PinnedSupport", &[selector]).is_undef(),
+            "after step-4 SIR-β-sup retirement (task 3546), \
+             eval_builtin('PinnedSupport', ...) must return Undef; the \
+             structure-def ctor path replaces the builtin entirely \
+             (PRD §8 Phase 2, Q-SIR-4 — PinnedSupport → structure def)"
+        );
+    }
+
     // ── SUPPORT_KINDS partition test ──────────────────────────────────────────
 
     /// Guard that every kind listed in `SUPPORT_KINDS` is actually dispatched
