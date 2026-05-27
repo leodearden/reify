@@ -209,6 +209,24 @@ mod tests {
     }
 
     #[test]
+    fn consistent_mass_p1_linear_in_density_doubles_every_entry() {
+        // M_e is linear in density — doubling ρ doubles every entry.
+        // Mirrors geometric_stiffness/tet.rs::linear_in_stress_magnitude.
+        let m1 = consistent_element_mass_tet_p1(&UNIT_TET, 1.0);
+        let m2 = consistent_element_mass_tet_p1(&UNIT_TET, 2.0);
+        for i in 0..144 {
+            let want = 2.0 * m1.data[i];
+            let got = m2.data[i];
+            let scale = want.abs().max(1.0);
+            assert!(
+                (got - want).abs() < 1e-12 * scale,
+                "linearity at idx {i}: got {got}, expected 2·{} = {want}",
+                m1.data[i],
+            );
+        }
+    }
+
+    #[test]
     fn consistent_mass_p1_off_axis_blocks_are_zero_block_diagonal_3x3_structure() {
         // Each (a, b) node-pair block in M_e is `coef · I_3` — diagonal in
         // axis-axis indexing. α ≠ β entries must be exactly 0. Mirrors the
