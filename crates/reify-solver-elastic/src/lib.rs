@@ -350,7 +350,7 @@
 //! // `_with_field` re-exports land in step-16; until then this doctest fails
 //! // to compile on the import block.
 //! use reify_solver_elastic::{
-//!     AnisotropicMaterial, ConstantField, DiscreteCellField, MaterialField,
+//!     AnisotropicMaterial, ConstantField, DiscreteCellField, ElementStiffness, MaterialField,
 //!     element_stiffness_p1_with_field, element_stiffness_p2_with_field,
 //!     element_stiffness_hex_p1_with_field, element_stiffness_wedge_p1_with_field,
 //! };
@@ -415,6 +415,9 @@ pub use assembly::{
     AssemblyElement, AssemblyMode, ElementOrder, ElementStiffness, OrphanDofsSummary,
     assemble_global_stiffness, detect_orphan_dofs, element_stiffness,
     hex::element_stiffness_hex_p1, wedge::element_stiffness_wedge_p1,
+    // Task 3778: foundation β — field-aware assembly entry points.
+    element_stiffness_hex_p1_with_field, element_stiffness_p1_with_field,
+    element_stiffness_p2_with_field, element_stiffness_wedge_p1_with_field,
 };
 pub use boundary::{
     DirichletBc, FaceOrder, apply_body_force, apply_dirichlet_row_elimination, apply_point_load,
