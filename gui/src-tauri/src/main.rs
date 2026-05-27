@@ -23,7 +23,7 @@ use reify_gui::engine::{AutoResolveEmitter, EngineSession, FeaCaseEmitter, WarmP
 use reify_gui::event_bus::emit_typed;
 use reify_gui::lsp_bridge::LspBridge;
 use reify_gui::types::EvaluationStatus;
-use reify_gui::watcher::FileWatcher;
+use reify_gui::watcher::{FileEvent, FileWatcher};
 use reify_lsp::server::NotificationSink;
 use tower_lsp::lsp_types::{Diagnostic, Url};
 
@@ -155,31 +155,47 @@ fn create_watcher(
     let target = Some(PathBuf::from(file_path.file_name()?));
     let handle = app_handle.clone();
 
-    match FileWatcher::new(parent, target, move |changed_path| {
-        if let Ok(content) = std::fs::read_to_string(&changed_path) {
-            let state: tauri::State<'_, AppState> = handle.state();
-            let path_str = changed_path.to_string_lossy().to_string();
+    match FileWatcher::new(parent, target, move |file_event| {
+        match file_event {
+            FileEvent::Changed(changed_path) => {
+                if let Ok(content) = std::fs::read_to_string(&changed_path) {
+                    let state: tauri::State<'_, AppState> = handle.state();
+                    let path_str = changed_path.to_string_lossy().to_string();
 
-            emit_status(&handle, "evaluating");
-            {
-                let _idle = IdleGuard(handle.clone());
-                if let Ok(gui_state) =
-                    reify_gui::commands::update_source_impl(&state.engine, &path_str, &content)
-                {
-                    let delta = compute_delta(&state.last_state, &gui_state);
-                    emit_delta(&handle, &delta);
+                    emit_status(&handle, "evaluating");
+                    {
+                        let _idle = IdleGuard(handle.clone());
+                        if let Ok(gui_state) = reify_gui::commands::update_source_impl(
+                            &state.engine,
+                            &path_str,
+                            &content,
+                        ) {
+                            let delta = compute_delta(&state.last_state, &gui_state);
+                            emit_delta(&handle, &delta);
+                        }
+                    }
+
+                    handle
+                        .emit(
+                            "file-changed",
+                            reify_gui::types::FileData {
+                                path: changed_path.to_string_lossy().to_string(),
+                                content,
+                            },
+                        )
+                        .ok();
                 }
             }
-
-            handle
-                .emit(
-                    "file-changed",
-                    reify_gui::types::FileData {
-                        path: changed_path.to_string_lossy().to_string(),
-                        content,
-                    },
-                )
-                .ok();
+            FileEvent::Removed(removed_path) => {
+                handle
+                    .emit(
+                        "file-removed",
+                        serde_json::json!({
+                            "path": removed_path.to_string_lossy().as_ref()
+                        }),
+                    )
+                    .ok();
+            }
         }
     }) {
         Ok(watcher) => {
