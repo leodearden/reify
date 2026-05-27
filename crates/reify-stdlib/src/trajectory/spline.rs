@@ -572,6 +572,65 @@ mod tests {
 
     const TOL_PERIODIC: f64 = 1e-10;
 
+    // ── Step-7: quintic Hermite — exact reproduction of general quintic ───────
+
+    fn quintic_q(t: f64) -> f64 {
+        1.0 + t + t * t + t * t * t - 0.5 * t * t * t * t + 0.1 * t * t * t * t * t
+    }
+    fn quintic_dq(t: f64) -> f64 {
+        1.0 + 2.0 * t + 3.0 * t * t - 2.0 * t * t * t + 0.5 * t * t * t * t
+    }
+    fn quintic_ddq(t: f64) -> f64 {
+        2.0 + 6.0 * t - 6.0 * t * t + 2.0 * t * t * t
+    }
+
+    /// Quintic Hermite uniquely determines a degree-5 poly per segment from
+    /// endpoint value/vel/accel; exact reproduction IS valid here.
+    #[test]
+    fn quintic_spline_reproduces_general_quintic_exactly() {
+        let ts = [0.0, 1.0, 2.5];
+        let knots: Vec<KnotData> = ts
+            .iter()
+            .map(|&t| KnotData {
+                t,
+                value: quintic_q(t),
+                vel: quintic_dq(t),
+                accel: quintic_ddq(t),
+            })
+            .collect();
+        let spline = QuinticSpline::fit(&knots).expect("quintic fit should succeed");
+
+        for &t in &[0.0, 0.3, 1.0, 1.2, 2.0, 2.5] {
+            let got = spline.eval(t);
+            let want = quintic_q(t);
+            assert!(
+                (got - want).abs() < TOL,
+                "quintic eval at t={t}: got {got}, want {want}, diff {}",
+                (got - want).abs()
+            );
+            let got_dot = spline.eval_dot(t);
+            let want_dot = quintic_dq(t);
+            assert!(
+                (got_dot - want_dot).abs() < TOL,
+                "quintic eval_dot at t={t}: got {got_dot}, want {want_dot}, diff {}",
+                (got_dot - want_dot).abs()
+            );
+            let got_ddot = spline.eval_ddot(t);
+            let want_ddot = quintic_ddq(t);
+            assert!(
+                (got_ddot - want_ddot).abs() < TOL,
+                "quintic eval_ddot at t={t}: got {got_ddot}, want {want_ddot}, diff {}",
+                (got_ddot - want_ddot).abs()
+            );
+        }
+    }
+
+    #[test]
+    fn quintic_fit_returns_none_for_single_knot() {
+        let k = vec![KnotData { t: 0.0, value: 0.0, vel: 0.0, accel: 0.0 }];
+        assert!(QuinticSpline::fit(&k).is_none(), "single knot should return None");
+    }
+
     // ── Step-5: periodic cubic — C1 continuity at wrap seam ──────────────────
 
     #[test]
