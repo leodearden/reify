@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/reify-core",
     "crates/reify-types",
     "crates/reify-expr",
     "crates/reify-syntax",
@@ -39,6 +40,7 @@ edition = "2024"
 license = "AGPL-3.0-or-later"
 
 [workspace.dependencies]
+reify-core = { path = "crates/reify-core" }
 reify-types = { path = "crates/reify-types" }
 reify-expr = { path = "crates/reify-expr" }
 reify-syntax = { path = "crates/reify-syntax" }
