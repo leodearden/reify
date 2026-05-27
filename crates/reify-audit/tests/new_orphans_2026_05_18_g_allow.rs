@@ -48,41 +48,24 @@ const PINS: &[(&str, &str, &str)] = &[
         "dof_count",
         "3765",
     ),
-    (
-        "crates/reify-stdlib/src/loop_closure_value.rs",
-        "as_f64_slice",
-        "3765",
-    ),
-    (
-        "crates/reify-stdlib/src/loop_closure_value.rs",
-        "from_slice",
-        "3765",
-    ),
+    // as_f64_slice: wired by KCC-γ #3765 — callers in loop_closure.rs +
+    // loop_closure_solver.rs; no longer an orphan in crates/reify-stdlib/src.
+    // from_slice: wired by KCC-γ #3765 — callers in loop_closure_solver.rs.
     (
         "crates/reify-stdlib/src/loop_closure_value.rs",
         "renormalize_quaternion",
         "3765",
     ),
-    (
-        "crates/reify-stdlib/src/loop_closure_value.rs",
-        "from_str",
-        "3765",
-    ),
-    (
-        "crates/reify-stdlib/src/loop_closure_value.rs",
-        "flat_len",
-        "3765",
-    ),
+    // from_str: wired by KCC-γ #3765 — callers in snapshot.rs +
+    // loop_closure_solver.rs.
+    // flat_len: wired by KCC-γ #3765 — callers in snapshot.rs +
+    // loop_closure_solver.rs.
     (
         "crates/reify-stdlib/src/loop_closure_value.rs",
         "flatten_dofs",
         "3765",
     ),
-    (
-        "crates/reify-stdlib/src/loop_closure_value.rs",
-        "unflatten_dofs",
-        "3765",
-    ),
+    // unflatten_dofs: wired by KCC-γ #3765 — callers in snapshot.rs.
 ];
 
 #[test]
