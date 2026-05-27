@@ -7,3 +7,9 @@ src/node-types.json
 
 # tree-sitter CLI binary — not needed in the repo.
 /tree-sitter
+
+# Local compiled object files from ad-hoc scanner.c builds (gcc -c, etc.).
+# build.rs compiles scanner.c via cc::Build into target/<profile>/build/... ;
+# any *.o sitting in the source tree is a stale artifact that would silently
+# drift from scanner.c and must never be committed.
+*.o
