@@ -365,6 +365,25 @@ structure def ShellStress {
     param bottom : Field<Point3<Length>, Tensor<2, 3, Pressure>>
 }
 
+// ── FEAMaterialInput ─────────────────────────────────────────────────────────
+//
+// Type-coercion shim for passing concrete `ElasticMaterial` structures (e.g.
+// `Steel_AISI_1045()`) to `solve_elastic_static`. The Reify overload resolver
+// uses exact type equality; a concrete `StructureRef("Steel_AISI_1045")` does
+// not match the declared `TraitObject("ElasticMaterial")` at a fn call site.
+//
+// Workaround (same pattern as `LoadCase.loads : List<Real>` for loads/supports):
+//   1. Wrap the material: `let mi = FEAMaterialInput(material: mat)`
+//      (structure ctors accept any value — no call-site type check)
+//   2. Pass `mi.material` — whose compile-time type is `ElasticMaterial` (the
+//      declared param type) — to `solve_elastic_static`. Exact match. ✓
+//
+// TODO(trait-coerce): remove this struct and pass material directly once the
+// type checker supports trait-object coercion at fn call sites.
+pub structure def FEAMaterialInput {
+    param material : ElasticMaterial
+}
+
 // ── solve_elastic_static ──────────────────────────────────────────────────────
 //
 // First @optimized consumer in this stdlib — PRD §8 task η,
