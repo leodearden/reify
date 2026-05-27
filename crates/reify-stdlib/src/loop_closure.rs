@@ -460,7 +460,19 @@ pub(crate) fn value_for_joint(joint: &Value, jv: &JointValue) -> Option<Value> {
 /// is a one-shot return shape consumed by snapshot.rs's loop-closure arm
 /// and not a durable structural concern, so a tuple alias (rather than a
 /// new struct) keeps the call-site destructuring pattern unchanged.
-pub type LoopClosureSolverInputs = (Vec<Value>, Vec<f64>, Vec<Value>, Vec<f64>, Vec<usize>);
+///
+/// KCC-γ step-10 (PRD §5.2): `vals_a` and `vals_b_initial` widen from
+/// `Vec<f64>` to `Vec<JointValue>` so multi-DOF joints (planar / spherical /
+/// cylindrical) flow into the Newton solver as typed per-DOF surfaces
+/// (`JointValue::Planar([x,y,θ])`, `JointValue::Sphere([w,x,y,z])`,
+/// `JointValue::Cyl([d,θ])`) rather than collapsing to None at the f64-shim.
+pub type LoopClosureSolverInputs = (
+    Vec<Value>,
+    Vec<JointValue>,
+    Vec<Value>,
+    Vec<JointValue>,
+    Vec<usize>,
+);
 
 /// Extract the per-loop solver inputs from a single `loop_closure` Map record.
 ///
@@ -519,13 +531,13 @@ pub fn extract_loop_closure_chains(
     let chain_b = strip_world_sentinel(path_b)?;
 
     // chain_a is the spanning-tree (already-resolved) side: every joint must
-    // resolve to an SI f64 via direct binding, coupling-tracks-parent
+    // resolve to a JointValue via direct binding, coupling-tracks-parent
     // recursion, fixed-joint sentinel, or range-midpoint fallback.  Any
     // joint that fails all four short-circuits the whole call to None.
     let mut vals_a = Vec::with_capacity(chain_a.len());
     for joint in &chain_a {
-        let v_si = resolve_joint_value_si(joint, bindings)?;
-        vals_a.push(v_si);
+        let v_jv = resolve_joint_value(joint, bindings)?;
+        vals_a.push(v_jv);
     }
 
     // chain_b is the closing side: a joint with a *direct* binding entry
@@ -535,35 +547,31 @@ pub fn extract_loop_closure_chains(
     // coupling is out of v0.2 scope (see plan design-decisions §4).
     //
     // **Asymmetry note (v0.2 limitation).**  `chain_a` resolves via
-    // `resolve_joint_value_si`, which carries a fixed-joint sentinel arm
-    // (returns `Some(0.0)`).  `chain_b`'s unbound-joint fallback uses
-    // `joint_range_midpoint` directly, which returns `None` for fixed
-    // joints — so a fixed joint appearing in `path_b` without a direct
-    // binding would collapse the whole record to None and the snapshot
-    // to Undef.  In practice the mechanism builder does not place fixed
-    // joints on closing paths (the closing edge always references a
+    // `resolve_joint_value`, which carries a fixed-joint sentinel arm
+    // (returns `Some(JointValue::Scalar(0.0))`).  `chain_b`'s unbound-joint
+    // fallback uses `joint_range_midpoint` directly, which returns `None`
+    // for fixed joints — so a fixed joint appearing in `path_b` without a
+    // direct binding would collapse the whole record to None and the
+    // snapshot to Undef.  In practice the mechanism builder does not place
+    // fixed joints on closing paths (the closing edge always references a
     // motion joint to drive the solver), so this asymmetry is a latent
     // shape constraint rather than a live bug.  A future v0.3 refactor
-    // can route this fallback through `resolve_joint_value_si` (and
-    // skip the index from `free_b` when the result is the fixed
-    // sentinel) once a real fixture demands fixed joints in path_b.
+    // can route this fallback through `resolve_joint_value` (and skip the
+    // index from `free_b` when the result is the fixed sentinel) once a
+    // real fixture demands fixed joints in path_b.
     let mut vals_b_initial = Vec::with_capacity(chain_b.len());
     let mut free_b: Vec<usize> = Vec::new();
     for (i, joint) in chain_b.iter().enumerate() {
-        if let Some(v_si) = direct_binding_value_si(joint, bindings) {
-            vals_b_initial.push(v_si);
+        if let Some(v_jv) = direct_binding_value(joint, bindings) {
+            vals_b_initial.push(v_jv);
         } else {
-            // KCC-γ: joint_range_midpoint now returns Option<JointValue>;
-            // the tuple-typed (Vec<f64>) chain bridge still operates on
-            // scalar SI values, so we extract the f64 from Scalar and
-            // collapse to None for multi-DOF kinds (step-10 widens the
-            // tuple type and removes this extraction step).
+            // KCC-γ step-10: `joint_range_midpoint` now returns
+            // `Option<JointValue>` — multi-DOF kinds (planar / spherical /
+            // cylindrical) produce per-DOF surfaces that flow directly into
+            // the widened `Vec<JointValue>` solver-input shape.  The
+            // f64-shim that collapsed multi-DOF midpoints to None is gone.
             let mid_jv = joint_range_midpoint(joint)?;
-            let mid_si = match mid_jv {
-                JointValue::Scalar(s) => s,
-                _ => return None,
-            };
-            vals_b_initial.push(mid_si);
+            vals_b_initial.push(mid_jv);
             free_b.push(i);
         }
     }
@@ -596,14 +604,25 @@ fn strip_world_sentinel(path: &[Value]) -> Option<Vec<Value>> {
     Some(path[1..].to_vec())
 }
 
-/// Look up a joint's SI value via a *direct* binding entry (no coupling
-/// recursion, no midpoint fallback).
+/// Look up a joint's motion value via a *direct* binding entry (no coupling
+/// recursion, no midpoint fallback), wrapped as a typed [`JointValue`].
 ///
 /// Linear scan — same shape as snapshot.rs's `value_for` direct-binding
-/// arm, but returns the bound value's SI f64 rather than a dimensioned
-/// `Value`.  Returns None when no binding entry's `joint` field is
-/// structurally equal to `joint`, or when the bound `value` is not a
-/// numeric type the dimension extractor recognises.
+/// arm, but returns the bound value as a per-DOF surface keyed on joint
+/// kind:
+///
+///   * `prismatic` / `revolute`              → `JointValue::Scalar(s)`
+///   * `coupling`                            → delegates to parent kind
+///   * `fixed`                               → `JointValue::Scalar(0.0)`
+///     (sentinel; `transform_at("fixed", _)` ignores the value)
+///   * `planar`     ← `Value::List([len, len, ang])` → `JointValue::Planar`
+///   * `spherical`  ← `Value::Orientation { w, x, y, z }` → `JointValue::Sphere`
+///   * `cylindrical` ← `Value::List([len, ang])`    → `JointValue::Cyl`
+///
+/// Returns None when no binding entry's `joint` field is structurally equal
+/// to `joint`, when the joint kind is unknown, or when the bound `value`
+/// shape doesn't match the expected per-kind surface (e.g. a Scalar bound
+/// to a planar joint, or a Vector bound to a revolute).
 ///
 /// Used in the closing-side `chain_b` walk to distinguish "user-pinned
 /// joint with explicit binding" (fixed initial value) from "free joint
@@ -617,7 +636,7 @@ fn strip_world_sentinel(path: &[Value]) -> Option<Vec<Value>> {
 /// solver's `vals_a` / `vals_b_initial`.  The closed-chain path here is
 /// upstream of snapshot.rs's `transform_at` validation site, which
 /// catches the dimension mismatch when the solver-converged value is
-/// rehydrated for the FK re-walk via `wrap_midpoint_for_joint` →
+/// rehydrated for the FK re-walk via `wrap_jointvalue_for_joint` →
 /// `transform_at`.  In practice the residual-evaluation path inside
 /// `solve_loop_closure` invokes `chain_transform`, which itself routes
 /// through dimension-checked Transform composition; a wrong-dimension
@@ -625,7 +644,7 @@ fn strip_world_sentinel(path: &[Value]) -> Option<Vec<Value>> {
 /// silent acceptance of an inconsistent configuration.  Callers that
 /// want eager validation should compose this with the joint-kind
 /// predicate at the snapshot boundary.
-fn direct_binding_value_si(joint: &Value, bindings: &[Value]) -> Option<f64> {
+fn direct_binding_value(joint: &Value, bindings: &[Value]) -> Option<JointValue> {
     for entry in bindings {
         let map = match entry {
             Value::Map(m) => m,
@@ -634,31 +653,87 @@ fn direct_binding_value_si(joint: &Value, bindings: &[Value]) -> Option<f64> {
         if map.get(&Value::String("joint".to_string())) == Some(joint)
             && let Some(v) = map.get(&Value::String("value".to_string()))
         {
-            // See fn-doc: as_f64() is dimension-blind here; downstream
-            // `transform_at` / `chain_transform` is the canonical
-            // dimension-validation site for closed-chain inputs.
-            return v.as_f64();
+            return jointvalue_from_bound_value(joint, v);
         }
     }
     None
 }
 
-/// Resolve a joint's motion value to an SI f64 via the same fallback
-/// chain `snapshot::value_for` uses, then extract the underlying SI scalar.
+/// Convert a bound `Value` (the `value` field of a `bind(joint, value)`
+/// binding Map) into the typed `JointValue` shape that matches the joint's
+/// kind.  Inverse of `value_for_joint` — `direct_binding_value` calls this
+/// after locating a matching binding entry.
+///
+/// Per-kind surface contract (mirrors `value_for_joint` at loop_closure.rs:399):
+///   * `prismatic` / `revolute`              → `Scalar(v.as_f64()?)`
+///   * `coupling`                            → recurses through `parent` kind
+///   * `fixed`                               → `Scalar(0.0)` (value ignored)
+///   * `planar`     ← `Value::List([len, len, ang])` → `Planar([x, y, θ])`
+///   * `spherical`  ← `Value::Orientation`           → `Sphere([w, x, y, z])`
+///   * `cylindrical` ← `Value::List([len, ang])`     → `Cyl([d, θ])`
+fn jointvalue_from_bound_value(joint: &Value, bound: &Value) -> Option<JointValue> {
+    let map = match joint {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    let kind = match map.get(&Value::String("kind".to_string())) {
+        Some(Value::String(s)) => s.as_str(),
+        _ => return None,
+    };
+    match kind {
+        "prismatic" | "revolute" => Some(JointValue::Scalar(bound.as_f64()?)),
+        "coupling" => {
+            let parent = map.get(&Value::String("parent".to_string()))?;
+            jointvalue_from_bound_value(parent, bound)
+        }
+        // 0-DOF: `transform_at("fixed", _)` ignores the value; downstream
+        // chain machinery ignores the Scalar payload via the kind dispatch.
+        "fixed" => Some(JointValue::Scalar(0.0)),
+        "planar" => {
+            let items = match bound {
+                Value::List(items) if items.len() == 3 => items,
+                _ => return None,
+            };
+            let x = items[0].as_f64()?;
+            let y = items[1].as_f64()?;
+            let theta = items[2].as_f64()?;
+            Some(JointValue::Planar([x, y, theta]))
+        }
+        "spherical" => match bound {
+            Value::Orientation { w, x, y, z } => Some(JointValue::Sphere([*w, *x, *y, *z])),
+            _ => None,
+        },
+        "cylindrical" => {
+            let items = match bound {
+                Value::List(items) if items.len() == 2 => items,
+                _ => return None,
+            };
+            let d = items[0].as_f64()?;
+            let theta = items[1].as_f64()?;
+            Some(JointValue::Cyl([d, theta]))
+        }
+        _ => None,
+    }
+}
+
+/// Resolve a joint's motion value to a typed [`JointValue`] via the same
+/// fallback chain `snapshot::value_for` uses.
 ///
 /// Resolution order:
 /// 1. Direct binding by structural `Value::Eq` on the joint Map.
 /// 2. Coupling-tracks-parent: when `joint` is a coupling and isn't directly
 ///    bound, recurse on the coupling's `parent` joint.
-/// 3. Fixed joint sentinel: `Value::Real(0.0)` (snapshot.rs's `transform_at`
-///    arm ignores the second argument for fixed joints).
-/// 4. Range-midpoint fallback via [`joint_range_midpoint`].
+/// 3. Fixed joint sentinel: `JointValue::Scalar(0.0)` (snapshot.rs's
+///    `transform_at` arm ignores the second argument for fixed joints).
+/// 4. Range-midpoint fallback via [`joint_range_midpoint`] (per-kind
+///    surface: Scalar / Planar / Sphere / Cyl).
 ///
-/// Returns None for malformed joint Maps, multi-DOF kinds the f64-per-joint
-/// signature cannot represent (planar / spherical / cylindrical), or
-/// joints with no resolvable value (no binding AND no midpoint).
-fn resolve_joint_value_si(joint: &Value, bindings: &[Value]) -> Option<f64> {
-    if let Some(v) = direct_binding_value_si(joint, bindings) {
+/// Returns None for malformed joint Maps, unknown kinds, or joints with no
+/// resolvable value (no binding AND no midpoint — e.g. a planar joint with
+/// no range_x).  KCC-γ step-10: multi-DOF kinds now resolve to the typed
+/// per-DOF surface rather than collapsing to None at the f64-shim.
+fn resolve_joint_value(joint: &Value, bindings: &[Value]) -> Option<JointValue> {
+    if let Some(v) = direct_binding_value(joint, bindings) {
         return Some(v);
     }
     if let Value::Map(map) = joint {
@@ -669,21 +744,13 @@ fn resolve_joint_value_si(joint: &Value, bindings: &[Value]) -> Option<f64> {
         if kind == "coupling"
             && let Some(parent) = map.get(&Value::String("parent".to_string()))
         {
-            return resolve_joint_value_si(parent, bindings);
+            return resolve_joint_value(parent, bindings);
         }
         if kind == "fixed" {
-            return Some(0.0);
+            return Some(JointValue::Scalar(0.0));
         }
     }
-    // KCC-γ: joint_range_midpoint now returns Option<JointValue>; this
-    // f64-typed resolver only handles Scalar-shaped midpoints (single-DOF
-    // kinds + couplings) and returns None for multi-DOF kinds.  The
-    // chain-bridge-widening in step-10 lifts this resolver to return
-    // Option<JointValue> directly.
-    joint_range_midpoint(joint).and_then(|jv| match jv {
-        JointValue::Scalar(s) => Some(s),
-        _ => None,
-    })
+    joint_range_midpoint(joint)
 }
 
 #[cfg(test)]

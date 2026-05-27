@@ -293,11 +293,19 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
                         None => StartStrategy::Midpoint,
                     };
 
+                    // KCC-γ step-10 bridge: `extract_loop_closure_chains` now
+                    // produces typed `Vec<JointValue>` vectors, but
+                    // `solve_loop_closure` still expects `&[f64]`.  Flatten
+                    // here as a one-step shim; step-12 widens the solver
+                    // signature and removes this bridge.
+                    let vals_a_flat = crate::loop_closure_value::flatten_dofs(&vals_a);
+                    let vals_b_initial_flat =
+                        crate::loop_closure_value::flatten_dofs(&vals_b_initial);
                     let outcome = solve_loop_closure(
                         &chain_a,
-                        &vals_a,
+                        &vals_a_flat,
                         &chain_b,
-                        &vals_b_initial,
+                        &vals_b_initial_flat,
                         &free_b,
                         &strategy,
                         &NewtonConfig::default(),
@@ -1000,6 +1008,85 @@ fn wrap_midpoint_for_joint(joint: &Value, mid_si: f64) -> Option<Value> {
         // in JOINT_KINDS, and is the documented breadcrumb when PRD v0.2 task 2
         // (#2670) extends joint_range_midpoint to return per-DOF defaults for planar.
         "planar" => None,
+        _ => None,
+    }
+}
+
+/// Wrap a converged `JointValue` back into the dimensioned `Value` shape
+/// that `transform_at` consumes per joint kind (mirrors
+/// `loop_closure::value_for_joint`).  Used by the closed-chain post-process
+/// loop in `snapshot()` to bind the Newton solver's converged outputs back
+/// into `synth_bindings` for the FK re-walk.
+///
+/// Per-kind surface contract:
+///   * `prismatic`   ← `Scalar(s)`           → `Value::length(s)`
+///   * `revolute`    ← `Scalar(s)`           → `Value::angle(s)`
+///   * `coupling`    ← `Scalar(s)`           → delegates to parent kind
+///   * `fixed`       ← any                   → `Value::Real(0.0)` sentinel
+///   * `planar`      ← `Planar([x, y, θ])`   → `Value::List([length, length, angle])`
+///   * `spherical`   ← `Sphere([w, x, y, z])` → `Value::Orientation { w, x, y, z }`
+///   * `cylindrical` ← `Cyl([d, θ])`         → `Value::List([length, angle])`
+///
+/// Returns `None` for non-Map joints, missing `kind`, unknown kinds, or
+/// when the `JointValue` variant does not match the joint kind.
+///
+/// KCC-γ step-10: added as the closed-chain post-process binding helper.
+/// Consumed in step-12 when `solve_loop_closure` widens to take/produce
+/// typed JointValues; until then, the single-DOF wrap path at
+/// `wrap_midpoint_for_joint` remains the live call site (free joints in
+/// closed chains are exclusively single-DOF in the pre-step-12 snapshot).
+#[allow(dead_code)]
+fn wrap_jointvalue_for_joint(
+    joint: &Value,
+    jv: &crate::loop_closure_value::JointValue,
+) -> Option<Value> {
+    use crate::loop_closure_value::JointValue;
+    let map = match joint {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    let kind = match map.get(&Value::String("kind".to_string())) {
+        Some(Value::String(s)) => s.as_str(),
+        _ => return None,
+    };
+    match (kind, jv) {
+        ("prismatic", JointValue::Scalar(s)) => Some(Value::length(*s)),
+        ("revolute", JointValue::Scalar(s)) => Some(Value::angle(*s)),
+        ("coupling", JointValue::Scalar(s)) => {
+            let parent_map = match map.get(&Value::String("parent".to_string())) {
+                Some(Value::Map(pm)) => pm,
+                _ => return None,
+            };
+            let parent_kind = match parent_map.get(&Value::String("kind".to_string())) {
+                Some(Value::String(s)) => s.as_str(),
+                _ => return None,
+            };
+            match parent_kind {
+                "prismatic" => Some(Value::length(*s)),
+                "revolute" => Some(Value::angle(*s)),
+                _ => None,
+            }
+        }
+        // 0-DOF — `transform_at("fixed", _)` ignores the value; sentinel
+        // matches `value_for_joint`'s fixed arm and the `value_for`
+        // fixed-joint binding established in this file.
+        ("fixed", _) => Some(Value::Real(0.0)),
+        ("planar", JointValue::Planar([x, y, theta])) => Some(Value::List(vec![
+            Value::length(*x),
+            Value::length(*y),
+            Value::angle(*theta),
+        ])),
+        ("spherical", JointValue::Sphere([w, x, y, z])) => Some(Value::Orientation {
+            w: *w,
+            x: *x,
+            y: *y,
+            z: *z,
+        }),
+        ("cylindrical", JointValue::Cyl([d, theta])) => Some(Value::List(vec![
+            Value::length(*d),
+            Value::angle(*theta),
+        ])),
+        // Mismatched JointValue variant / joint kind
         _ => None,
     }
 }
