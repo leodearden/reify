@@ -6235,6 +6235,57 @@ mod tests {
 
     // ── motion_subspace_columns: fixed ────────────────────────────────────────
 
+    // ── motion_subspace_columns: cylindrical ─────────────────────────────────
+
+    /// PRD §12 Q4 pin: cylindrical columns are `[translation, rotation]`.
+    /// Column 0 = `[0; unit_axis]` (prismatic-equivalent, linear along +Z),
+    /// column 1 = `[unit_axis; 0]` (revolute-equivalent, angular about +Z).
+    #[test]
+    fn motion_subspace_columns_cylindrical_returns_translation_then_rotation_columns() {
+        let joint = cylindrical_z_joint();
+        let cols = super::motion_subspace_columns(&joint)
+            .expect("motion_subspace_columns on cylindrical joint should return Some");
+        assert_eq!(cols.len(), 2, "cylindrical has 2 DOFs — expected 2 columns");
+        // Column 0: translation (prismatic-equivalent) — linear along +Z, zero angular.
+        let c0 = cols[0].as_array();
+        for (i, (&got, exp)) in c0.iter().zip([0.0, 0.0, 0.0, 0.0, 0.0, 1.0]).enumerate() {
+            assert!(
+                (got - exp).abs() < 1e-12,
+                "cylindrical col0 (translation)[{}]: expected {}, got {} (PRD §12 Q4: [0; axis])",
+                i, exp, got
+            );
+        }
+        // Column 1: rotation (revolute-equivalent) — angular about +Z, zero linear.
+        let c1 = cols[1].as_array();
+        for (i, (&got, exp)) in c1.iter().zip([0.0, 0.0, 1.0, 0.0, 0.0, 0.0]).enumerate() {
+            assert!(
+                (got - exp).abs() < 1e-12,
+                "cylindrical col1 (rotation)[{}]: expected {}, got {} (PRD §12 Q4: [axis; 0])",
+                i, exp, got
+            );
+        }
+    }
+
+    /// Both cylindrical columns share the same unit-normalized direction.
+    #[test]
+    fn motion_subspace_columns_cylindrical_unnormalized_axis_normalizes_both_columns() {
+        let axis = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(2.0)]);
+        let joint = eval_builtin("cylindrical", &[axis, length_range_0_to_1m(), angle_range_0_to_pi()]);
+        let cols = super::motion_subspace_columns(&joint)
+            .expect("motion_subspace_columns on cylindrical joint should return Some");
+        assert_eq!(cols.len(), 2, "cylindrical has 2 DOFs — expected 2 columns");
+        let c0 = cols[0].as_array();
+        let c1 = cols[1].as_array();
+        // Column 0: translation — linear [0,0,1], angular [0,0,0].
+        for (i, (&got, exp)) in c0.iter().zip([0.0, 0.0, 0.0, 0.0, 0.0, 1.0]).enumerate() {
+            assert!((got - exp).abs() < 1e-12, "col0[{}]: exp {}, got {}", i, exp, got);
+        }
+        // Column 1: rotation — angular [0,0,1], linear [0,0,0].
+        for (i, (&got, exp)) in c1.iter().zip([0.0, 0.0, 1.0, 0.0, 0.0, 0.0]).enumerate() {
+            assert!((got - exp).abs() < 1e-12, "col1[{}]: exp {}, got {}", i, exp, got);
+        }
+    }
+
     // ── motion_subspace_columns: revolute ────────────────────────────────────
 
     /// PRD §5.1 pin: revolute column = `[unit_axis; 0]`.
