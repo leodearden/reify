@@ -107,13 +107,13 @@ impl OpenVdbKernel {
         mesh: &Mesh,
         opts: &crate::MeshToVoxelOptions,
     ) -> Result<GeometryHandleId, GeometryError> {
-        if mesh.vertices.len() % 3 != 0 {
+        if !mesh.vertices.len().is_multiple_of(3) {
             return Err(GeometryError::OperationFailed(format!(
                 "mesh.vertices length {} is not a multiple of 3 (expected flat xyz layout)",
                 mesh.vertices.len(),
             )));
         }
-        if mesh.indices.len() % 3 != 0 {
+        if !mesh.indices.len().is_multiple_of(3) {
             return Err(GeometryError::OperationFailed(format!(
                 "mesh.indices length {} is not a multiple of 3 (expected flat triangle layout)",
                 mesh.indices.len(),
