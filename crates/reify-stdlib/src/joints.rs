@@ -797,21 +797,40 @@ fn joint_jacobian_value(value: &Value) -> Value {
             let col_theta = make_jacobian(plane_normal, [0.0, 0.0, 0.0]);
             Value::List(vec![col_x, col_y, col_theta])
         }
-        // 3-DOF spherical joint: zero-twist placeholder column — deferred design
-        // decision matching the planar/fixed pattern. A spherical joint has a
-        // 6×3 Jacobian (three angular columns spanning so(3); zero linear), but
-        // the v0.1 single-column convention returns one Map per joint. The
-        // analytic 3-column form is deferred per PRD task 2 / #2670 ("FD fallback
-        // for multi-DOF kinds"). Note: chain_jacobian_fd also returns None for
-        // chains containing a spherical joint because `value_for_joint` returns
-        // None for spherical (the f64-per-joint chain machinery cannot represent
-        // a quaternion motion variable); this zero placeholder is NOT equivalent
-        // to "FD chain Jacobians work for spherical" — they do not yet.
+        // 3-DOF spherical joint: returns a `Value::List` of three analytic
+        // angular twist columns (body-frame basis tangents) — one per manifold
+        // DOF. Spherical is axis-isotropic (no preferred direction in the
+        // joint Map; see `make_spherical` below), so the local-frame Jacobian
+        // columns at q = identity are exactly the body-frame basis vectors:
+        //   [0] ∂ω_x DOF:  { angular: [1,0,0], linear: [0,0,0] }
+        //   [1] ∂ω_y DOF:  { angular: [0,1,0], linear: [0,0,0] }
+        //   [2] ∂ω_z DOF:  { angular: [0,0,1], linear: [0,0,0] }
         //
-        // Field validation is deliberately skipped (matching the planar/fixed
-        // arms): the result is zero regardless of the stored range_angle, so a
-        // hand-built Map with a missing field returns the same correct placeholder.
-        "spherical" => make_jacobian([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+        // Sign convention: the column ordering and positive signs are pinned
+        // by the `spherical_analytic_jacobian_matches_transform_log_convention`
+        // regression test, which composes a chain `[spherical_joint()]` at
+        // q = orient_axis_angle(+Z, +π/4), takes `transform_log` of the
+        // resulting Transform, and confirms the twist's angular_z is positive
+        // (matching col[2].angular_z = +1.0). This is the convention used by
+        // the canonical log/exp round-trip test at geometry.rs:3625; future
+        // changes to the analytic Jacobian must preserve it or the Newton
+        // solver's residual gradient flips and KCC-γ loops diverge.
+        //
+        // SE(3) adjoint transport into the chain origin is handled
+        // implicitly by `chain_jacobian_fd` (FD fallback) until KCC-θ/ι
+        // compose the per-joint columns analytically. The Value::List shape
+        // (vs. a single Map) signals to `per_joint_jacobian_local` to fall
+        // back to FD (matches the cylindrical and planar patterns).
+        //
+        // Field validation is intentionally minimal: the result is identity
+        // (body basis) regardless of the stored range_angle, so a hand-built
+        // Map with a missing range_angle still returns the correct columns.
+        "spherical" => {
+            let col_x = make_jacobian([1.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
+            let col_y = make_jacobian([0.0, 1.0, 0.0], [0.0, 0.0, 0.0]);
+            let col_z = make_jacobian([0.0, 0.0, 1.0], [0.0, 0.0, 0.0]);
+            Value::List(vec![col_x, col_y, col_z])
+        }
         // 2-DOF cylindrical joint: returns a `Value::List` of two analytic twist
         // columns (one per DOF) — element [0] is the prismatic-DOF column
         // (angular=0, linear=unit_axis) and element [1] is the revolute-DOF
