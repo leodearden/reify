@@ -74,6 +74,21 @@ fn param_cells(template: &TopologyTemplate) -> Vec<&ValueCellDecl> {
         .collect()
 }
 
+/// Look up the named param cell on `template` and return its `default_expr`.
+/// Panics with a clear message if the cell or its default is missing.
+/// Mirrors `buckling_stdlib_compile.rs::require_default`.
+#[allow(dead_code)]
+fn require_default<'a>(template: &'a TopologyTemplate, member: &str) -> &'a CompiledExpr {
+    let cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == member)
+        .unwrap_or_else(|| panic!("{}.{} missing", template.name, member));
+    cell.default_expr
+        .as_ref()
+        .unwrap_or_else(|| panic!("{}.{} missing default_expr", template.name, member))
+}
+
 /// Recursively walk an expression tree collecting `(method_name, member_name)`
 /// pairs from `MethodCall { object: ValueRef(member), method: name, .. }`
 /// nodes. The traversal also recurses into `BinOp`, `UnOp`, and nested
@@ -276,5 +291,150 @@ fn flexure_compliance_struct_has_correct_param_shape() {
             "FlexureCompliance.{} should be {:?}, got {:?}",
             member, expected_ty, cell.cell_type
         );
+    }
+}
+
+// ─── step-7: FlexureCompliance literal-valued defaults ───────────────────────
+
+/// Every `FlexureCompliance` param must carry a sentinel-zero literal
+/// default so the stub `flexure_compliance(joint)` accessor — which
+/// currently returns `FlexureCompliance()` until λ wires real cache lookup
+/// (PRD §11 task λ) — has a well-typed value to return. The defaults
+/// expected (per the module header §6.* sentinel-zero rationale):
+///
+///   effective_stiffness   = 0.0    (Real via RotationalStiffness alias)
+///   max_stress            = 0Pa    (Scalar { PRESSURE, si_value 0.0 })
+///   max_stress_at_neutral = 0Pa    (Scalar { PRESSURE, si_value 0.0 })
+///   yield_margin          = 0.0    (Real)
+///   parasitic_error       = none   (CompiledExprKind::OptionNone)
+///   prb_validity_range    = 0.0    (Real placeholder for Range<Angle>)
+///   at_yield              = false  (Bool)
+///
+/// Strict-equality discipline for real-valued defaults mirrors the
+/// `cg_tolerance` precedent in `solver_elastic_tests.rs:336-346`: IEEE-754
+/// round-to-nearest is deterministic on the same decimal input, so strict
+/// equality catches silent regressions (e.g., `1e-12` instead of `0.0`)
+/// that an absolute-tolerance check would let through.
+///
+/// For the Real-typed defaults we accept either `Literal(Value::Real(0.0))`
+/// or `Literal(Value::Int(0))` — mirrors the future-proofing rationale at
+/// `solver_elastic_tests.rs:567-579` and `buckling_stdlib_compile.rs:356-358`
+/// (`= 0` could lex as Int or Real depending on the literal coercion path,
+/// and we want this test robust against a future literal-typing change).
+#[test]
+fn flexure_compliance_params_have_literal_defaults() {
+    let template = find_structure("FlexureCompliance");
+
+    // effective_stiffness = 0(.0) — accept Int(0) or Real(0.0).
+    let effective_stiffness_default = require_default(template, "effective_stiffness");
+    match &effective_stiffness_default.kind {
+        CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => {}
+        CompiledExprKind::Literal(Value::Int(0)) => {}
+        other => panic!(
+            "effective_stiffness default should be Literal(Value::Real(0.0)) or \
+             Literal(Value::Int(0)); got: {:?}",
+            other
+        ),
+    }
+
+    // max_stress = 0Pa — Scalar{PRESSURE, si_value 0.0}.
+    let max_stress_default = require_default(template, "max_stress");
+    match &max_stress_default.kind {
+        CompiledExprKind::Literal(Value::Scalar {
+            si_value,
+            dimension,
+        }) => {
+            assert_eq!(
+                *dimension,
+                DimensionVector::PRESSURE,
+                "max_stress default should carry PRESSURE dimension; got: {:?}",
+                dimension
+            );
+            assert_eq!(
+                *si_value, 0.0,
+                "max_stress default si_value should be exactly 0.0 (= 0Pa); got: {}",
+                si_value
+            );
+        }
+        other => panic!(
+            "max_stress default should be Literal(Value::Scalar {{ PRESSURE, 0.0 }}) \
+             (= 0Pa); got: {:?}",
+            other
+        ),
+    }
+
+    // max_stress_at_neutral = 0Pa — same shape as max_stress.
+    let max_stress_at_neutral_default = require_default(template, "max_stress_at_neutral");
+    match &max_stress_at_neutral_default.kind {
+        CompiledExprKind::Literal(Value::Scalar {
+            si_value,
+            dimension,
+        }) => {
+            assert_eq!(
+                *dimension,
+                DimensionVector::PRESSURE,
+                "max_stress_at_neutral default should carry PRESSURE dimension; got: {:?}",
+                dimension
+            );
+            assert_eq!(
+                *si_value, 0.0,
+                "max_stress_at_neutral default si_value should be exactly 0.0 (= 0Pa); got: {}",
+                si_value
+            );
+        }
+        other => panic!(
+            "max_stress_at_neutral default should be Literal(Value::Scalar \
+             {{ PRESSURE, 0.0 }}) (= 0Pa); got: {:?}",
+            other
+        ),
+    }
+
+    // yield_margin = 0(.0) — accept Int(0) or Real(0.0).
+    let yield_margin_default = require_default(template, "yield_margin");
+    match &yield_margin_default.kind {
+        CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => {}
+        CompiledExprKind::Literal(Value::Int(0)) => {}
+        other => panic!(
+            "yield_margin default should be Literal(Value::Real(0.0)) or \
+             Literal(Value::Int(0)); got: {:?}",
+            other
+        ),
+    }
+
+    // parasitic_error = none — CompiledExprKind::OptionNone (per
+    // option_compile_tests.rs:78 / :205 / multi_load_case_stdlib_tests.rs:209).
+    let parasitic_error_default = require_default(template, "parasitic_error");
+    assert!(
+        matches!(&parasitic_error_default.kind, CompiledExprKind::OptionNone),
+        "parasitic_error default should be CompiledExprKind::OptionNone (= `none`); \
+         got: {:?}",
+        parasitic_error_default.kind
+    );
+
+    // prb_validity_range = 0(.0) — accept Int(0) or Real(0.0).
+    let prb_validity_range_default = require_default(template, "prb_validity_range");
+    match &prb_validity_range_default.kind {
+        CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => {}
+        CompiledExprKind::Literal(Value::Int(0)) => {}
+        other => panic!(
+            "prb_validity_range default should be Literal(Value::Real(0.0)) or \
+             Literal(Value::Int(0)); got: {:?}",
+            other
+        ),
+    }
+
+    // at_yield = false — Bool(false).
+    let at_yield_default = require_default(template, "at_yield");
+    match &at_yield_default.kind {
+        CompiledExprKind::Literal(Value::Bool(v)) => assert!(
+            !*v,
+            "at_yield default should be false (PRB ctors flip this true on \
+             yield-exceedance only); got: {}",
+            v
+        ),
+        other => panic!(
+            "at_yield default should be Literal(Value::Bool(false)); got: {:?}",
+            other
+        ),
     }
 }
