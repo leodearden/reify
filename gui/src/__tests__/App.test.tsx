@@ -5239,6 +5239,163 @@ describe('App handleSave conflict prompt: Overwrite', () => {
   });
 });
 
+// ─── Save-conflict resolution clears the reload-prompt banner ────────────────
+
+describe('App save-conflict resolution clears the reload-prompt banner', () => {
+  const testState: GuiState = {
+    meshes: [],
+    values: [],
+    constraints: [],
+    files: [
+      { path: '/project/bracket.ri', content: 'structure Bracket {}' },
+    ],
+    tessellation_diagnostics: [],
+    compile_diagnostics: [],
+  };
+
+  let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
+
+  beforeEach(() => {
+    fileChangedCallback = undefined;
+    vi.mocked(bridge.onFileChanged).mockImplementation(async (cb: any) => {
+      fileChangedCallback = cb;
+      return () => {};
+    });
+    vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
+  });
+
+  it('(a) Reload from disk action clears the changedFiles banner after resolving the conflict', async () => {
+    // Setup: dirty file + file-changed event → changedFiles + externallyChanged both set.
+    // Guards: banner must appear, conflict prompt must surface via Ctrl+S,
+    // then clicking Reload from disk must clear the banner (changedFiles cleared).
+    const diskContent = '/* updated on disk */';
+    vi.mocked(bridge.openFile).mockResolvedValue({
+      path: '/project/bracket.ri',
+      content: diskContent,
+    });
+    vi.mocked(bridge.saveFile).mockResolvedValue(undefined);
+
+    render(() => <App />);
+    await waitFor(() => expect(fileChangedCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    // Mark dirty first so the onFileChanged handler takes the dirty branch
+    capturedEditorStore.setActiveFile('/project/bracket.ri');
+    capturedEditorStore.markDirty('/project/bracket.ri');
+
+    // Fire file-changed: dirty branch → adds to changedFiles AND calls markExternallyChanged
+    fileChangedCallback!({ path: '/project/bracket.ri', content: diskContent });
+
+    // Banner must become visible (changedFiles is non-empty)
+    await waitFor(() => {
+      // data-testid="reload-prompt" is rendered by ReloadPrompt when filePaths.length > 0
+      expect(screen.queryByTestId('reload-prompt')).not.toBeNull();
+    });
+
+    // externallyChanged must also be set (both signals populated by the dirty branch)
+    expect(capturedEditorStore.state.externallyChanged).toContain('/project/bracket.ri');
+
+    // Trigger handleSave via Ctrl+S → conflict prompt appears (externallyChanged is set)
+    fireEvent.keyDown(document, { key: 's', ctrlKey: true });
+
+    let conflictToast: HTMLElement | undefined;
+    await waitFor(() => {
+      const toasts = screen.getAllByTestId('toast');
+      conflictToast = toasts.find((t) =>
+        t.textContent?.includes(EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG),
+      );
+      expect(conflictToast).toBeTruthy();
+    });
+
+    // Click "Reload from disk" → reloadFromDisk: bridgeOpenFile + updateFileContent + markClean
+    const reloadBtn = within(conflictToast!).getByRole('button', { name: SAVE_CONFLICT_RELOAD_LABEL });
+    fireEvent.click(reloadBtn);
+
+    // bridgeOpenFile was called with the correct path
+    await waitFor(() => {
+      expect(bridge.openFile).toHaveBeenCalledWith('/project/bracket.ri');
+    });
+
+    // After reloadFromDisk resolves: the banner must be gone (changedFiles cleared).
+    // This guards against banner staleness: reloadFromDisk must also call
+    // setChangedFiles((prev) => { next.delete(path); return next; }) in addition to markClean.
+    await waitFor(() => {
+      expect(screen.queryByTestId('reload-prompt')).toBeNull();
+    });
+
+    // Store state is also clear
+    await waitFor(() => {
+      expect(capturedEditorStore.state.dirtyFiles).not.toContain('/project/bracket.ri');
+      expect(capturedEditorStore.state.externallyChanged).not.toContain('/project/bracket.ri');
+    });
+
+    // Overwrite was NOT triggered
+    expect(bridge.saveFile).not.toHaveBeenCalled();
+  });
+
+  it('(b) Overwrite action clears the changedFiles banner after resolving the conflict', async () => {
+    // Same setup as (a) but clicks Overwrite — bridgeSaveFile must be called and
+    // the banner must disappear (changedFiles cleared), bridgeOpenFile NOT called.
+    const bufferContent = 'structure Bracket { param width = 100mm }';
+    vi.mocked(bridge.saveFile).mockResolvedValue(undefined);
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: '/project/bracket.ri', content: 'unused' });
+
+    render(() => <App />);
+    await waitFor(() => expect(fileChangedCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    // Mark dirty, fire file-changed → changedFiles + externallyChanged
+    capturedEditorStore.setActiveFile('/project/bracket.ri');
+    capturedEditorStore.markDirty('/project/bracket.ri');
+    fileChangedCallback!({ path: '/project/bracket.ri', content: 'newer disk content' });
+
+    // Banner appears
+    await waitFor(() => {
+      expect(screen.queryByTestId('reload-prompt')).not.toBeNull();
+    });
+
+    // Set the buffer content that the user edited
+    capturedEditorStore.updateFileContent('/project/bracket.ri', bufferContent);
+
+    // Ctrl+S → conflict prompt
+    fireEvent.keyDown(document, { key: 's', ctrlKey: true });
+
+    let conflictToast: HTMLElement | undefined;
+    await waitFor(() => {
+      const toasts = screen.getAllByTestId('toast');
+      conflictToast = toasts.find((t) =>
+        t.textContent?.includes(EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG),
+      );
+      expect(conflictToast).toBeTruthy();
+    });
+
+    // Click "Overwrite"
+    const overwriteBtn = within(conflictToast!).getByRole('button', { name: SAVE_CONFLICT_OVERWRITE_LABEL });
+    fireEvent.click(overwriteBtn);
+
+    // bridgeSaveFile called with the buffer content
+    await waitFor(() => {
+      expect(bridge.saveFile).toHaveBeenCalledWith('/project/bracket.ri', bufferContent);
+    });
+
+    // After overwriteFile resolves: banner must be gone (changedFiles cleared).
+    // Guards against banner staleness: overwriteFile must also call
+    // setChangedFiles((prev) => { next.delete(path); return next; }) in addition to markClean.
+    await waitFor(() => {
+      expect(screen.queryByTestId('reload-prompt')).toBeNull();
+    });
+
+    // Store state cleared
+    await waitFor(() => {
+      expect(capturedEditorStore.state.dirtyFiles).not.toContain('/project/bracket.ri');
+      expect(capturedEditorStore.state.externallyChanged).not.toContain('/project/bracket.ri');
+    });
+
+    // Reload NOT called
+    expect(bridge.openFile).not.toHaveBeenCalled();
+  });
+});
+
 // Counts CSS grid tracks in a `grid-template-rows` value.
 // Whitespace separates tracks at depth 0; parens (e.g. minmax(160px, 1fr))
 // keep their internal whitespace from being mistaken for a track boundary.
