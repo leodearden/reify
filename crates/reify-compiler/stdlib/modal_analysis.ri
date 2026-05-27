@@ -392,3 +392,26 @@ structure def ModalOptions {
     //   boundary_conditions : List<Support>         — collection of trait
     //                          objects; not scalar-predicable.
 }
+
+// ── ForcingFunction (marker trait) ───────────────────────────────────────────
+
+// `ForcingFunction` is the marker trait for the four transient-forcing
+// primitives declared below (PRD §5.1 / task η):
+//
+//   - `StepForce`     — unit-step force application at a given location
+//   - `ImpulseForce`  — Dirac-delta impulse (instantaneous momentum transfer)
+//   - `HarmonicForce` — sinusoidal harmonic force F(t) = A·sin(ωt + φ)
+//   - `SampledForce`  — non-uniform-sample table (Duhamel/Newmark-β fallback)
+//
+// Kept empty by design (no required members): each conformer carries its own
+// per-strategy fields; the trait exists only to give the `sources` param on
+// `ForcingTimeHistory` a single nominal type-tag, so that
+// `sources : List<ForcingFunction>` resolves to
+// `Type::List(Box::new(Type::TraitObject("ForcingFunction")))` at compile
+// time and the eval-time dispatch matches via the SIR-α nominal type-tag.
+//
+// Same marker-trait pattern as `trait DampingDescriptor { }` (line 82) and
+// `trait Support { }` (fea_multi_case.ri:288).
+//
+// PRD reference: docs/prds/v0_3/modal-analysis.md §5.1.
+trait ForcingFunction { }

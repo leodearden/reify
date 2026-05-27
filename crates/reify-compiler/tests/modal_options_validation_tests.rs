@@ -1,20 +1,26 @@
 //! Tests for `crates/reify-compiler/stdlib/modal_analysis.ri` —
 //! `std.modal.analysis` module: `DampingDescriptor`, `NoDamping`,
 //! `RayleighDamping`, `Mode`, `ModalResult`, and `ModalOptions` structure
-//! definitions for the v0.3 modal-analysis kernel surface.
+//! definitions for the v0.3 modal-analysis kernel surface (task α), plus
+//! the task η ForcingFunction family: `ForcingFunction` marker trait,
+//! `StepForce`, `ImpulseForce`, `HarmonicForce`, `SampledForce`, and
+//! `ForcingTimeHistory` structure definitions for the transient-response
+//! forcing-time-history input surface (PRD §5.1 / §10 task η).
 //!
-//! Observable signal for PRD §10 task α
+//! Observable signal for PRD §10 tasks α and η
 //! (docs/prds/v0_3/modal-analysis.md). Per the PRD, this file parses
 //! the structure_defs and confirms type resolution matches the expected
 //! shape.
 //!
 //! Tests validate that the .ri file is loaded by the production stdlib path
-//! (mirroring `buckling_stdlib_compile.rs`), that the five structures
+//! (mirroring `buckling_stdlib_compile.rs`), that the five α structures
 //! (`NoDamping`, `RayleighDamping`, `Mode`, `ModalResult`, `ModalOptions`)
-//! and one trait (`DampingDescriptor`) are correctly represented in the
-//! compiled module, and that the positivity constraints on
+//! and one α trait (`DampingDescriptor`) are correctly represented in the
+//! compiled module, that the positivity constraints on
 //! `ModalOptions.{n_modes, tol, max_iters}` are declared at the
-//! structure-def level.
+//! structure-def level, and that the η ForcingFunction family (one marker
+//! trait + five structure_defs with constraints and defaults) matches the
+//! PRD §5.1 spec.
 //!
 //! All tests use the production-path `load_stdlib_module()` helper that
 //! exercises the same embedded + sequential-prelude compilation path as
@@ -823,4 +829,74 @@ fn modal_options_constrains_positivity_invariants() {
                 .collect::<Vec<_>>()
         );
     }
+}
+
+// ─── η additions: ForcingFunction family ─────────────────────────────────────
+
+/// Recursively walk an expression tree collecting `(method_name, member_name)`
+/// pairs from `MethodCall { object: ValueRef(member), method: name, .. }` nodes.
+/// The traversal also recurses into `BinOp`, `UnOp`, and nested `MethodCall`
+/// receivers so a deeply-nested chain like `sources.count > 0` surfaces
+/// `("count", "sources")`.
+///
+/// Ported verbatim from `crates/reify-compiler/tests/trajectory_stdlib_compile.rs:125-144`
+/// (same helper used by `piecewise_polynomial_profile_constrains_waypoints_nonempty`
+/// for the `waypoints.count > 0` assertion shape needed here).
+#[allow(dead_code)]
+fn collect_method_call_chain(expr: &CompiledExpr) -> Vec<(&str, &str)> {
+    let mut pairs = Vec::new();
+    match &expr.kind {
+        CompiledExprKind::MethodCall { object, method, .. } => {
+            if let CompiledExprKind::ValueRef(cell_id) = &object.kind {
+                pairs.push((method.as_str(), cell_id.member.as_str()));
+            }
+            pairs.extend(collect_method_call_chain(object));
+        }
+        CompiledExprKind::BinOp { left, right, .. } => {
+            pairs.extend(collect_method_call_chain(left));
+            pairs.extend(collect_method_call_chain(right));
+        }
+        CompiledExprKind::UnOp { operand, .. } => {
+            pairs.extend(collect_method_call_chain(operand));
+        }
+        _ => {}
+    }
+    pairs
+}
+
+// ─── step-1 (η): ForcingFunction marker trait declared ───────────────────────
+
+/// `ForcingFunction` is the marker trait for the four transient-forcing
+/// primitives (PRD §5.1 / §10 task η). Empty trait surface, no methods —
+/// same marker-trait pattern as `trait DampingDescriptor { }` (lines 154-176)
+/// and `trait Support { }` (fea_multi_case.ri:288).
+///
+/// The trait must exist as an entry in `CompiledModule.trait_defs` (not
+/// `templates`, which stores `Structure` / `Occurrence` entities only) in
+/// the compiled `std/modal/analysis` module so the `: ForcingFunction`
+/// refinement clause on each conformer resolves at structure-def compile
+/// time, and so `Type::TraitObject("ForcingFunction")` resolves on
+/// `ForcingTimeHistory.sources : List<ForcingFunction>`.
+#[test]
+fn forcing_function_trait_declared() {
+    let module = load_stdlib_module();
+
+    let matches: Vec<_> = module
+        .trait_defs
+        .iter()
+        .filter(|t| t.name == "ForcingFunction")
+        .collect();
+
+    assert_eq!(
+        matches.len(),
+        1,
+        "expected exactly one `trait ForcingFunction` in \
+         std/modal/analysis::trait_defs; got {} matches. Module trait_defs: {:?}",
+        matches.len(),
+        module
+            .trait_defs
+            .iter()
+            .map(|t| &t.name)
+            .collect::<Vec<_>>()
+    );
 }
