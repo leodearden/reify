@@ -73,6 +73,19 @@ pub struct NewtonConfig {
     /// it triggers the [`NewtonOutcome::Singular`] path earlier.  Default
     /// `1e-12` is a conservative double-precision threshold.
     pub singularity_pivot_eps: f64,
+    /// Per-component Tikhonov damping added to `JᵀJ`'s diagonal before
+    /// the LDLᵀ factorisation.  Empty (default) means no damping.  The
+    /// per-component vector lets [`solve_loop_closure`] target only the
+    /// redundant Sphere-quaternion storage components (3 manifold DOF in 4
+    /// stored components; the 4th column of the storage-perturbed FD Jacobian
+    /// is the unit-norm-constraint normal direction → rank-deficient by
+    /// construction) without polluting non-Sphere joints' Newton steps.
+    /// PRD §5.3 "redundant Lagrangian coordinates" trick: damping the
+    /// off-manifold direction restores a non-singular `JᵀJ`; the closure-
+    /// internal `renormalize_quaternion` then projects the iterate back to
+    /// S³ each step.  Length must either be 0 or match the Newton state
+    /// width; out-of-range indices are silently ignored.
+    pub regularization_per_diag: Vec<f64>,
 }
 
 impl Default for NewtonConfig {
@@ -82,6 +95,7 @@ impl Default for NewtonConfig {
             tol_rot_rad: 1e-6,
             max_iters: 50,
             singularity_pivot_eps: DEFAULT_SINGULARITY_PIVOT_EPS,
+            regularization_per_diag: Vec::new(),
         }
     }
 }
@@ -261,12 +275,31 @@ fn position_rotation_norms(r: &[f64]) -> (f64, f64) {
 /// rank-deficient.  Callers should pass [`NewtonConfig::singularity_pivot_eps`].
 ///
 /// Precondition: `a.len() == n*n` and `b.len() == n` (asserted in debug builds).
-fn solve_normal_equations(a: &mut [f64], b: &mut [f64], n: usize, pivot_eps: f64) -> bool {
+///
+/// Optional per-component Tikhonov regularization is added to `a`'s diagonal
+/// before factorisation: `a[i*n+i] += reg[i]` for `i < reg.len()`.  Out-of-range
+/// indices are ignored, and an empty `reg` slice is a no-op.  Used by
+/// [`solve_loop_closure`] to damp the redundant-coordinate direction of
+/// Sphere-slot Newton states (see [`NewtonConfig::regularization_per_diag`]).
+fn solve_normal_equations(
+    a: &mut [f64],
+    b: &mut [f64],
+    n: usize,
+    pivot_eps: f64,
+    reg: &[f64],
+) -> bool {
     if n == 0 {
         return true;
     }
     debug_assert_eq!(a.len(), n * n);
     debug_assert_eq!(b.len(), n);
+    // Apply per-component Tikhonov damping to the diagonal before LDLᵀ.
+    // Damping the off-manifold direction of a Sphere slot's redundant
+    // 4-storage-component Jacobian restores a non-singular JᵀJ; the
+    // closure-internal renormalize_quaternion projects the iterate back to S³.
+    for i in 0..n.min(reg.len()) {
+        a[i * n + i] += reg[i];
+    }
     // LDLᵀ: a is overwritten so that the strict-lower triangle holds L
     // (with implicit unit diagonal) and the diagonal holds D.
     for j in 0..n {
@@ -426,7 +459,13 @@ where
         for i in 0..n {
             dx[i] = -jtr[i];
         }
-        if !solve_normal_equations(&mut jtj_flat, &mut dx, n, config.singularity_pivot_eps) {
+        if !solve_normal_equations(
+            &mut jtj_flat,
+            &mut dx,
+            n,
+            config.singularity_pivot_eps,
+            &config.regularization_per_diag,
+        ) {
             return NewtonOutcome::Singular { x, iters: iter };
         }
         for i in 0..n {
@@ -491,9 +530,9 @@ where
 /// [`DiagnosticCode::KinematicSingularity`]: reify_types::DiagnosticCode::KinematicSingularity
 pub fn solve_loop_closure(
     chain_a: &[reify_types::Value],
-    vals_a: &[f64],
+    vals_a: &[crate::loop_closure_value::JointValue],
     chain_b: &[reify_types::Value],
-    vals_b_initial: &[f64],
+    vals_b_initial: &[crate::loop_closure_value::JointValue],
     free_b: &[usize],
     strategy: &StartStrategy,
     config: &NewtonConfig,
@@ -504,38 +543,67 @@ pub fn solve_loop_closure(
         return NewtonOutcome::InvalidInput { reason };
     }
 
+    // Derive the per-free-joint shape descriptor used for both the Newton
+    // state width and the unflatten arithmetic inside the closure.
+    let free_shapes: Vec<crate::loop_closure_value::JointKind> = match free_joint_shapes(chain_b, free_b) {
+        Some(v) => v,
+        None => {
+            let reason = "free_b joint kind is unknown to JointKind::from_str".to_string();
+            tracing::warn!("solve_loop_closure: {reason}");
+            return NewtonOutcome::InvalidInput { reason };
+        }
+    };
+
     // Resolve initial x0 from the strategy.  Inputs are validated above, so
-    // each branch is infallible: WarmStart length == free_b.len() and every
-    // free_b index addresses a valid joint with a queryable range.
+    // each branch is infallible: WarmStart carries an already-flattened
+    // Newton state of length `Σ free_shapes[k].flat_len()`; Midpoint
+    // builds the flat state by flattening the per-kind midpoint surfaces.
     let x0: Vec<f64> = match strategy {
         StartStrategy::WarmStart(v) => v.clone(),
-        StartStrategy::Midpoint => free_b
-            .iter()
-            .map(|&i| {
-                // KCC-γ: joint_range_midpoint returns Option<JointValue>.
-                // Until step-12 widens this solver path to flatten
-                // multi-DOF kinds into the flat Newton state, only
-                // Scalar-shaped midpoints feed x0 here.  The Midpoint-
-                // strategy validation guard (validate_loop_closure_inputs,
-                // below) only confirms Some; the multi-DOF unwrap here
-                // panics if a planar/spherical/cylindrical joint reaches
-                // this path before step-12.  In current closed-chain
-                // fixtures the free chain is single-DOF, so this is
-                // unreachable; the assertion documents the contract.
-                match crate::loop_closure::joint_range_midpoint(&chain_b[i])
-                    .expect("joint_range_midpoint validated above")
-                {
-                    crate::loop_closure_value::JointValue::Scalar(s) => s,
-                    other => panic!(
-                        "solve_loop_closure: Midpoint strategy reached \
-                         multi-DOF JointValue {other:?} for free_b[{i}] — \
-                         the f64-typed Newton path is not yet widened (KCC-γ \
-                         step-12).  Switch to WarmStart with a flat x0 buffer."
-                    ),
-                }
-            })
-            .collect(),
+        StartStrategy::Midpoint => {
+            let mut x = Vec::with_capacity(free_shapes.iter().map(|k| k.flat_len()).sum());
+            for &i in free_b {
+                // Validated above — joint_range_midpoint returns Some.
+                let mid = crate::loop_closure::joint_range_midpoint(&chain_b[i])
+                    .expect("joint_range_midpoint validated above");
+                x.extend_from_slice(mid.as_f64_slice());
+            }
+            x
+        }
     };
+
+    // KCC-γ step-12: build per-component Tikhonov damping for Sphere slots
+    // ONLY.  Sphere stores 4 quaternion components but the manifold has 3
+    // DOFs; the storage-perturbed FD Jacobian's columns are linearly
+    // dependent in the unit-norm-constraint normal direction (`transform_at`
+    // normalises the input quaternion back to S³, so any pure-storage
+    // perturbation in the q-direction has zero effect on the chain
+    // transform).  Without damping, JᵀJ is rank-deficient on every Sphere
+    // free slot → LDLᵀ pivot guard fires → spurious NewtonOutcome::Singular.
+    // Damping the off-manifold direction with `SPHERE_TIKHONOV_DAMPING`
+    // restores a non-singular JᵀJ while the closure-internal
+    // renormalize_quaternion projects the Newton iterate back to the manifold
+    // after each step.  Non-Sphere components carry zero damping → existing
+    // 1-DOF / 2-DOF / 3-DOF (planar) chain Newton paths are byte-for-byte
+    // unchanged (verified by the unchanged-output expectation of the existing
+    // `solve_loop_closure_with_diagnostics_emits_singularity_for_rank_one_chain`
+    // test in `crates/reify-constraints/tests/loop_closure_diagnostics_tests.rs`).
+    let mut effective_config = config.clone();
+    if effective_config.regularization_per_diag.is_empty() {
+        let total_width: usize = free_shapes.iter().map(|k| k.flat_len()).sum();
+        let mut reg = vec![0.0; total_width];
+        let mut cursor = 0;
+        for &k in &free_shapes {
+            let width = k.flat_len();
+            if matches!(k, crate::loop_closure_value::JointKind::Spherical) {
+                for r in &mut reg[cursor..cursor + width] {
+                    *r = SPHERE_TIKHONOV_DAMPING;
+                }
+            }
+            cursor += width;
+        }
+        effective_config.regularization_per_diag = reg;
+    }
 
     // Capture inputs for the closure.  The closure is FnMut over an internal
     // scratch buffer for vals_b to avoid reallocating each call.
@@ -544,45 +612,48 @@ pub fn solve_loop_closure(
     let chain_b_vec = chain_b.to_vec();
     let mut vals_b_scratch = vals_b_initial.to_vec();
     let free_b_vec = free_b.to_vec();
+    let free_shapes_vec = free_shapes;
 
     let closure = move |x: &[f64]| -> Option<(Vec<f64>, Vec<Vec<f64>>)> {
-        if x.len() != free_b_vec.len() {
+        // Expected width = Σ free_shapes[k].flat_len().  The Newton state
+        // is the flat concatenation of per-free-joint storage payloads.
+        let expected_width: usize = free_shapes_vec.iter().map(|k| k.flat_len()).sum();
+        if x.len() != expected_width {
             return None;
         }
-        // Substitute x into the free entries of vals_b_scratch.
+        // Unflatten the per-free-joint slices into typed JointValues and
+        // splice them back into vals_b_scratch at the free indices.
+        let mut cursor = 0;
         for (k, &i) in free_b_vec.iter().enumerate() {
-            // Defence-in-depth: `validate_loop_closure_inputs` validates every
-            // free_b index against vals_b_initial.len() before this closure is
-            // built, so this branch is unreachable from normal callers.  It
-            // remains here to keep the closure safe for any direct use.
             if i >= vals_b_scratch.len() {
                 return None;
             }
-            vals_b_scratch[i] = x[k];
+            let width = free_shapes_vec[k].flat_len();
+            let chunk = &x[cursor..cursor + width];
+            let jv = crate::loop_closure_value::JointValue::from_slice(
+                free_shapes_vec[k],
+                chunk,
+            )
+            .ok()?;
+            cursor += width;
+            // Per PRD §5.3: project Sphere slots back to S³ after each
+            // Newton step (the closure runs once per step on the updated
+            // iterate; renormalization here is the on-manifold projection
+            // that keeps the redundant-coordinate Newton step well-posed).
+            // Scalar/Cyl/Planar `renormalize_quaternion` is a no-op.
+            let mut jv_proj = jv;
+            jv_proj.renormalize_quaternion();
+            vals_b_scratch[i] = jv_proj;
         }
-        // KCC-γ step-4 bridge: the chain machinery (loop_residual_twist /
-        // chain_jacobian_fd) now consumes `&[JointValue]`.  The f64-typed
-        // solver path is still single-DOF (Scalar-only) — every entry is
-        // wrapped as `JointValue::Scalar`.  KCC-γ step-12 widens this
-        // function to take `&[JointValue]` directly and reconstructs the
-        // multi-DOF JointValue payloads from `unflatten_dofs(&x, &shapes)`.
-        let vals_a_jv: Vec<crate::loop_closure_value::JointValue> = vals_a_vec
-            .iter()
-            .map(|&v| crate::loop_closure_value::JointValue::Scalar(v))
-            .collect();
-        let vals_b_jv: Vec<crate::loop_closure_value::JointValue> = vals_b_scratch
-            .iter()
-            .map(|&v| crate::loop_closure_value::JointValue::Scalar(v))
-            .collect();
         let twist = crate::loop_closure::loop_residual_twist(
             &chain_a_vec,
-            &vals_a_jv,
+            &vals_a_vec,
             &chain_b_vec,
-            &vals_b_jv,
+            &vals_b_scratch,
         )?;
         let cols = crate::loop_closure::chain_jacobian_fd(
             &chain_b_vec,
-            &vals_b_jv,
+            &vals_b_scratch,
             &free_b_vec,
             1e-6,
         )?;
@@ -592,7 +663,70 @@ pub fn solve_loop_closure(
         Some((r, j_cols))
     };
 
-    newton_solve(x0, closure, config)
+    newton_solve(x0, closure, &effective_config)
+}
+
+/// Tikhonov-damping magnitude applied to each storage component of every
+/// Sphere free slot before LDLᵀ.  Chosen to be:
+///   - Strictly greater than `NewtonConfig`'s default
+///     `singularity_pivot_eps` (1e-12) so the LDLᵀ pivot guard does not
+///     fire on the redundant-coordinate direction; and
+///   - Small enough relative to typical chain Jacobian magnitudes (O(1) for
+///     unit-vector tangents) to leave the converged solution and convergence
+///     rate of the on-manifold (3-DOF) Newton step essentially unchanged.
+///
+/// Tied to `singularity_pivot_eps` indirectly: any caller that loosens
+/// `singularity_pivot_eps` past 1e-8 should also supply its own
+/// `regularization_per_diag` if they want a guaranteed-non-singular path.
+const SPHERE_TIKHONOV_DAMPING: f64 = 1e-8;
+
+/// Compute per-free-joint shape descriptors from `chain_b[free_b[k]]`.
+/// Returns None if any kind is unrecognised (defensive — chain_b joints
+/// are upstream-validated by `extract_loop_closure_chains` /
+/// `is_joint_value`, but a hand-built fixture might slip a malformed
+/// joint Map through).
+fn free_joint_shapes(
+    chain_b: &[reify_types::Value],
+    free_b: &[usize],
+) -> Option<Vec<crate::loop_closure_value::JointKind>> {
+    let mut out = Vec::with_capacity(free_b.len());
+    for &i in free_b {
+        if i >= chain_b.len() {
+            return None;
+        }
+        let map = match &chain_b[i] {
+            reify_types::Value::Map(m) => m,
+            _ => return None,
+        };
+        let kind = match map.get(&reify_types::Value::String("kind".to_string())) {
+            Some(reify_types::Value::String(s)) => s.as_str(),
+            _ => return None,
+        };
+        out.push(crate::loop_closure_value::JointKind::from_str(kind)?);
+    }
+    Some(out)
+}
+
+/// Manifold DOF count per joint kind, used by the over/under-constrained
+/// pre-check in `solve_loop_closure_with_diagnostics`.  Differs from
+/// `JointKind::flat_len` (storage width) for `Spherical` (3 manifold DOF
+/// vs 4 quaternion storage components) and `Fixed` (0 DOF vs 1-element
+/// sentinel slot).
+///
+/// Returns 1 for Prismatic / Revolute / Coupling, 0 for Fixed, 2 for
+/// Cylindrical, 3 for Planar, 3 for Spherical.  Sum across `free_b`
+/// gives the kinematic free-DOF count that balances against the
+/// 6-component loop residual: `< 6` = over-constrained, `== 6` =
+/// well-posed, `> 6` = under-constrained.
+fn dof_count_for_balance(kind: crate::loop_closure_value::JointKind) -> usize {
+    use crate::loop_closure_value::JointKind;
+    match kind {
+        JointKind::Prismatic | JointKind::Revolute | JointKind::Coupling => 1,
+        JointKind::Fixed => 0,
+        JointKind::Cylindrical => 2,
+        JointKind::Planar => 3,
+        JointKind::Spherical => 3,
+    }
 }
 
 /// A typed loop-closure chain pair extracted from a v0.2 Mechanism Map.
@@ -852,9 +986,9 @@ const SINGLE_LOOP_RESIDUAL_COUNT: usize = 6;
 /// [`DiagnosticCode::KinematicSingularity`]: reify_types::DiagnosticCode::KinematicSingularity
 pub fn solve_loop_closure_with_diagnostics(
     chain_a: &[reify_types::Value],
-    vals_a: &[f64],
+    vals_a: &[crate::loop_closure_value::JointValue],
     chain_b: &[reify_types::Value],
-    vals_b_initial: &[f64],
+    vals_b_initial: &[crate::loop_closure_value::JointValue],
     free_b: &[usize],
     strategy: &StartStrategy,
     config: &NewtonConfig,
@@ -876,47 +1010,69 @@ pub fn solve_loop_closure_with_diagnostics(
 
     let mut diagnostics: Vec<reify_types::Diagnostic> = Vec::new();
 
-    if free_b.len() < SINGLE_LOOP_RESIDUAL_COUNT {
-        // Over-constrained: short-circuit Newton; the diagnostic IS the signal.
+    // KCC-γ step-12: count manifold DOF (`dof_count`) rather than free_b
+    // slots so a 3-DOF planar joint balances correctly against the 6-component
+    // loop residual.  `dof_count_for_balance` returns 1/1/1/0/2/3/3 for
+    // prismatic/revolute/coupling/fixed/cylindrical/planar/spherical (manifold
+    // DOF; fixed is 0-DOF and does not contribute to free DOFs).
+    //
+    // The "any multi-DOF joint present" discriminator distinguishes:
+    //   - 1 prismatic vs 6 (1 < 6, single-DOF only) → over-constrained
+    //     short-circuit: 1 scalar free var cannot possibly span the 6-D
+    //     residual subspace, so the Newton solve would be pointless.
+    //   - 1 planar vs 6 (3 < 6, includes multi-DOF) → delegate: a planar
+    //     joint can satisfy any planar (3-D) closure residual; the Newton
+    //     solve discovers whether the loop's actual residual subspace falls
+    //     within the planar reach.  The PRD §11.1 producer-side scenario
+    //     "Multi-DOF closed chain converges" exercises exactly this case.
+    let (free_dof_count, any_multi_dof): (usize, bool) = match free_joint_shapes(chain_b, free_b) {
+        Some(shapes) => {
+            let dof: usize = shapes.iter().map(|k| dof_count_for_balance(*k)).sum();
+            let any_multi = shapes.iter().any(|k| dof_count_for_balance(*k) > 1);
+            (dof, any_multi)
+        }
+        None => {
+            // free_b joint has an unknown kind — defer to the inner solver,
+            // which returns InvalidInput with a more specific reason.  The
+            // diagnostic path treats this as 0 free DOFs (over-constrained
+            // pre-check would fire but the inner solver's InvalidInput trumps).
+            (0, false)
+        }
+    };
+
+    if free_dof_count < SINGLE_LOOP_RESIDUAL_COUNT && !any_multi_dof {
+        // Over-constrained AND every free joint is single-DOF: short-circuit
+        // Newton; the diagnostic IS the signal.  Multi-DOF joints (planar/
+        // spherical/cylindrical) skip this branch and delegate to the solver
+        // even when free_dof_count < 6 — see the comment above the
+        // `(free_dof_count, any_multi_dof)` derivation.
         let diag = reify_types::Diagnostic::error(format!(
             "kinematic system over-constrained: {} free DOFs vs {} loop residuals",
-            free_b.len(),
+            free_dof_count,
             SINGLE_LOOP_RESIDUAL_COUNT
         ))
         .with_code(reify_types::DiagnosticCode::KinematicOverconstrained);
         diagnostics.push(diag);
 
         // Resolve the returned `x` from the strategy.  Inputs are validated
-        // above, so each branch produces a vector of exactly `free_b.len()`
-        // entries — preserving the implicit contract that `outcome.x`
-        // aligns positionally with the requested free vars.  Precise
-        // contents matter less than the diagnostic itself (residual_norm
-        // is f64::INFINITY and downstream tooling treats the diagnostic as
-        // the user-facing signal); the length invariant is what callers
-        // index against.
+        // above, so each branch produces a vector of length matching the
+        // Newton state width — preserving the implicit contract that
+        // `outcome.x` aligns positionally with the requested free vars.
+        // Precise contents matter less than the diagnostic itself
+        // (residual_norm is f64::INFINITY and downstream tooling treats the
+        // diagnostic as the user-facing signal); the length invariant is
+        // what callers index against.
         let x: Vec<f64> = match strategy {
-            StartStrategy::WarmStart(v) => {
-                // Length validated to match free_b.len() above.
-                v.clone()
+            StartStrategy::WarmStart(v) => v.clone(),
+            StartStrategy::Midpoint => {
+                let mut x = Vec::new();
+                for &i in free_b {
+                    let mid = crate::loop_closure::joint_range_midpoint(&chain_b[i])
+                        .expect("joint_range_midpoint validated above");
+                    x.extend_from_slice(mid.as_f64_slice());
+                }
+                x
             }
-            StartStrategy::Midpoint => free_b
-                .iter()
-                .map(|&i| {
-                    // KCC-γ: extract Scalar from JointValue; the f64-typed
-                    // diagnostic path still operates on the pre-widening
-                    // shape — multi-DOF kinds panic here (step-12 widens).
-                    match crate::loop_closure::joint_range_midpoint(&chain_b[i])
-                        .expect("joint_range_midpoint validated above")
-                    {
-                        crate::loop_closure_value::JointValue::Scalar(s) => s,
-                        other => panic!(
-                            "solve_loop_closure_with_diagnostics: Midpoint \
-                             strategy reached multi-DOF JointValue {other:?} \
-                             for free_b[{i}] — KCC-γ step-12 widens this."
-                        ),
-                    }
-                })
-                .collect(),
         };
 
         return LoopClosureReport {
@@ -928,7 +1084,7 @@ pub fn solve_loop_closure_with_diagnostics(
         };
     }
 
-    if free_b.len() > SINGLE_LOOP_RESIDUAL_COUNT {
+    if free_dof_count > SINGLE_LOOP_RESIDUAL_COUNT {
         // Under-constrained: Newton still runs (Gauss-Newton with WarmStart
         // converges to the local minimum closest to the warm-started point —
         // that IS the PRD's "closest-to-previous config" semantics).  The
@@ -936,14 +1092,30 @@ pub fn solve_loop_closure_with_diagnostics(
         // under-determined and might want an explicit binding.
         let diag = reify_types::Diagnostic::warning(format!(
             "kinematic system under-constrained: {} free DOFs vs {} loop residuals; consider adding an explicit binding",
-            free_b.len(),
+            free_dof_count,
+            SINGLE_LOOP_RESIDUAL_COUNT
+        ))
+        .with_code(reify_types::DiagnosticCode::KinematicUnderconstrained);
+        diagnostics.push(diag);
+    } else if free_dof_count < SINGLE_LOOP_RESIDUAL_COUNT && any_multi_dof {
+        // KCC-γ step-12: multi-DOF free joint(s) with total DOF count below
+        // the 6-component loop residual.  We DELEGATE rather than short-
+        // circuit (a planar/spherical/cylindrical joint can satisfy any
+        // residual that falls within its motion subspace; only the inner
+        // Newton solve discovers whether the loop's actual residual is
+        // reachable).  Emit an under-constrained warning so the user sees
+        // the structural imbalance signal regardless of solver outcome.
+        let diag = reify_types::Diagnostic::warning(format!(
+            "kinematic system under-constrained: {} free DOFs vs {} loop residuals; multi-DOF joint(s) may still satisfy a reduced-subspace residual",
+            free_dof_count,
             SINGLE_LOOP_RESIDUAL_COUNT
         ))
         .with_code(reify_types::DiagnosticCode::KinematicUnderconstrained);
         diagnostics.push(diag);
     }
 
-    // Balanced (== 6) or under-constrained (> 6).  Delegate to the
+    // Balanced (== 6), under-constrained (> 6), or multi-DOF imbalanced
+    // (< 6 with planar/spherical/cylindrical free joints).  Delegate to the
     // existing solver; post-process the singular outcome.
     let outcome = solve_loop_closure(
         chain_a,
@@ -989,7 +1161,7 @@ pub fn solve_loop_closure_with_diagnostics(
 /// than `KinematicOverconstrained`.
 fn validate_loop_closure_inputs(
     chain_b: &[reify_types::Value],
-    vals_b_initial: &[f64],
+    vals_b_initial: &[crate::loop_closure_value::JointValue],
     free_b: &[usize],
     strategy: &StartStrategy,
 ) -> Option<String> {
@@ -1011,11 +1183,24 @@ fn validate_loop_closure_inputs(
     }
     match strategy {
         StartStrategy::WarmStart(v) => {
-            if v.len() != free_b.len() {
+            // KCC-γ step-12: WarmStart carries the flat Newton state — its
+            // length is `Σ_{k ∈ free_b} JointKind::flat_len(chain_b[k].kind)`,
+            // NOT `free_b.len()`.  Compute the expected width here so a
+            // single-DOF chain still validates as len == free_b.len() and a
+            // multi-DOF chain validates against the wider Newton state.
+            let expected: usize = match free_joint_shapes(chain_b, free_b) {
+                Some(shapes) => shapes.iter().map(|k| k.flat_len()).sum(),
+                None => {
+                    return Some(
+                        "free_b joint kind is unknown to JointKind::from_str".to_string(),
+                    );
+                }
+            };
+            if v.len() != expected {
                 return Some(format!(
                     "WarmStart length {} != free_b length {}",
                     v.len(),
-                    free_b.len()
+                    expected,
                 ));
             }
         }

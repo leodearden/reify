@@ -293,19 +293,13 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
                         None => StartStrategy::Midpoint,
                     };
 
-                    // KCC-γ step-10 bridge: `extract_loop_closure_chains` now
-                    // produces typed `Vec<JointValue>` vectors, but
-                    // `solve_loop_closure` still expects `&[f64]`.  Flatten
-                    // here as a one-step shim; step-12 widens the solver
-                    // signature and removes this bridge.
-                    let vals_a_flat = crate::loop_closure_value::flatten_dofs(&vals_a);
-                    let vals_b_initial_flat =
-                        crate::loop_closure_value::flatten_dofs(&vals_b_initial);
+                    // KCC-γ step-12: the widened solver consumes
+                    // `&[JointValue]` directly; no flatten_dofs bridge.
                     let outcome = solve_loop_closure(
                         &chain_a,
-                        &vals_a_flat,
+                        &vals_a,
                         &chain_b,
-                        &vals_b_initial_flat,
+                        &vals_b_initial,
                         &free_b,
                         &strategy,
                         &NewtonConfig::default(),
@@ -327,7 +321,31 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
                         | NewtonOutcome::Singular { x, .. } => x,
                         NewtonOutcome::InvalidInput { .. } => return Some(Value::Undef),
                     };
-                    if x.len() != free_b.len() {
+                    // KCC-γ step-12: Newton state width is the SUM of
+                    // per-free-joint flat_len values, not free_b.len().
+                    // Derive the per-free-joint shape descriptors so we can
+                    // unflatten the converged x into typed JointValues and
+                    // rehydrate the binding `Value` shapes per kind.
+                    let mut free_shapes: Vec<crate::loop_closure_value::JointKind> =
+                        Vec::with_capacity(free_b.len());
+                    for &i in &free_b {
+                        let kind_str = match &chain_b[i] {
+                            Value::Map(m) => match m
+                                .get(&Value::String("kind".to_string()))
+                            {
+                                Some(Value::String(s)) => s.as_str(),
+                                _ => return Some(Value::Undef),
+                            },
+                            _ => return Some(Value::Undef),
+                        };
+                        match crate::loop_closure_value::JointKind::from_str(kind_str) {
+                            Some(k) => free_shapes.push(k),
+                            None => return Some(Value::Undef),
+                        }
+                    }
+                    let expected_width: usize =
+                        free_shapes.iter().map(|k| k.flat_len()).sum();
+                    if x.len() != expected_width {
                         // Defence-in-depth: solver contract guarantees this
                         // length match for every non-InvalidInput outcome.
                         return Some(Value::Undef);
@@ -336,22 +354,24 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
                     // Collect this loop's converged free values as
                     // bare `Value::Real` leaves (SI units).  The dimensioned
                     // wrapping that follows for synth_bindings rehydrates
-                    // these into `Value::length` / `Value::angle` for the
-                    // FK re-walk; the Snapshot Map carrier stays bare-Real
-                    // so warm-start round-trips through pure f64 vectors
-                    // (matches `StartStrategy::WarmStart(Vec<f64>)`).
+                    // these into `Value::length` / `Value::angle` / multi-DOF
+                    // surfaces for the FK re-walk; the Snapshot Map carrier
+                    // stays bare-Real so warm-start round-trips through pure
+                    // f64 vectors (matches `StartStrategy::WarmStart(Vec<f64>)`).
                     let per_loop_reals: Vec<Value> = x.iter().map(|&v| Value::Real(v)).collect();
                     free_values.push(Value::List(per_loop_reals));
 
+                    // Unflatten the converged Newton state x into typed
+                    // JointValues (one per free joint) so multi-DOF surfaces
+                    // can be wrapped back via wrap_jointvalue_for_joint.
+                    let jvs = match crate::loop_closure_value::unflatten_dofs(&x, &free_shapes) {
+                        Ok(v) => v,
+                        Err(_) => return Some(Value::Undef),
+                    };
                     for (k, &i) in free_b.iter().enumerate() {
                         let joint = chain_b[i].clone();
-                        let wrapped = match wrap_midpoint_for_joint(&joint, x[k]) {
+                        let wrapped = match wrap_jointvalue_for_joint(&joint, &jvs[k]) {
                             Some(v) => v,
-                            // Multi-DOF or unknown joint kinds in chain_b's
-                            // free set cannot be wrapped back into a single
-                            // dimensioned `Value::length` / `Value::angle`
-                            // — surface this as Undef rather than silently
-                            // dropping the binding.
                             None => return Some(Value::Undef),
                         };
                         synth_bindings.push(make_binding(joint, wrapped));
@@ -1031,11 +1051,10 @@ fn wrap_midpoint_for_joint(joint: &Value, mid_si: f64) -> Option<Value> {
 /// when the `JointValue` variant does not match the joint kind.
 ///
 /// KCC-γ step-10: added as the closed-chain post-process binding helper.
-/// Consumed in step-12 when `solve_loop_closure` widens to take/produce
-/// typed JointValues; until then, the single-DOF wrap path at
-/// `wrap_midpoint_for_joint` remains the live call site (free joints in
-/// closed chains are exclusively single-DOF in the pre-step-12 snapshot).
-#[allow(dead_code)]
+/// KCC-γ step-12: live caller is snapshot's closed-chain block, which
+/// unflattens the converged Newton state via `unflatten_dofs(&x, &shapes)`
+/// and wraps each per-free-joint JointValue back into the dimensioned
+/// `Value` shape `transform_at` consumes.
 fn wrap_jointvalue_for_joint(
     joint: &Value,
     jv: &crate::loop_closure_value::JointValue,
