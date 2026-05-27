@@ -1174,3 +1174,161 @@ pub structure Outer {
             .collect::<Vec<_>>()
     );
 }
+
+/// Two subs of the same child template with *distinct* named-param overrides
+/// each receive their own per-instance kernel handle.
+///
+/// Source:
+/// ```
+/// pub structure Inner { param size : Length = 10mm  let body = box(size, size, size) }
+/// pub structure Outer {
+///     sub a = Inner(size: 50mm)
+///     sub b = Inner(size: 80mm)
+///     let placed_a = translate(self.a.body, 0mm, 0mm, 0mm)
+///     let placed_b = translate(self.b.body, 0mm, 0mm, 0mm)
+/// }
+/// ```
+///
+/// Assertions:
+/// * (a) No Error-severity diagnostics at compile or build time.
+/// * (b) Among recorded `GeometryOp::Box` ops, exactly one has
+///   `width == 50mm` (handle `H_a`) and exactly one has `width == 80mm`
+///   (handle `H_b`), and `H_a != H_b`.
+/// * (c) The two `GeometryOp::Translate` ops have targets `{H_a, H_b}` (one
+///   each, in any order).
+///
+/// This pins the DISTINCT-handle semantics introduced in task 3814's step-2.
+/// Compare with `cross_sub_same_template_subs_share_kernel_handle` which pins
+/// the SHARED-handle semantics for the no-args case: when `sub.args` is empty,
+/// two subs of the same template still share a single kernel handle from the
+/// structure-keyed snapshot.
+///
+/// **RED** on main because `seed_cross_sub_named_steps` uses the structure-
+/// keyed snapshot for both `a` and `b`, so both translates target `Inner`'s
+/// default 10mm Box rather than the 50mm and 80mm per-instance boxes.
+#[test]
+fn cross_sub_two_subs_with_distinct_overrides_get_distinct_handles() {
+    let source = r#"pub structure Inner {
+    param size : Length = 10mm
+    let body = box(size, size, size)
+}
+pub structure Outer {
+    sub a = Inner(size: 50mm)
+    sub b = Inner(size: 80mm)
+    let placed_a = translate(self.a.body, 0mm, 0mm, 0mm)
+    let placed_b = translate(self.b.body, 0mm, 0mm, 0mm)
+}"#;
+    let compiled = compile_source(source);
+
+    // (a) No compile-time Error diagnostics.
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "expected no compile-time Error diagnostics; got: {:?}",
+        compile_errors
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    // (a) No build-time Error diagnostics.
+    let build_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        build_errors.is_empty(),
+        "expected no Error diagnostics from build; got: {:?}",
+        build_errors
+            .iter()
+            .map(|d| format!("[{:?}] {}", d.severity, d.message))
+            .collect::<Vec<_>>()
+    );
+
+    let recorded = ops_ref.lock().unwrap().clone();
+
+    // (b) Find distinct Box handles for 50mm and 80mm.
+    let size_50 = Value::Scalar {
+        si_value: 0.05,
+        dimension: DimensionVector::LENGTH,
+    };
+    let size_80 = Value::Scalar {
+        si_value: 0.08,
+        dimension: DimensionVector::LENGTH,
+    };
+
+    let box_50 = recorded.iter().find(|rec| match &rec.op {
+        GeometryOp::Box { width, .. } => width == &size_50,
+        _ => false,
+    });
+    let box_80 = recorded.iter().find(|rec| match &rec.op {
+        GeometryOp::Box { width, .. } => width == &size_80,
+        _ => false,
+    });
+
+    let h_a = box_50
+        .expect(
+            "expected a Box op with width=0.05m (50mm) for sub a = Inner(size: 50mm); \
+             on main this fails because the structure-keyed snapshot uses Inner's 10mm default",
+        )
+        .result_handle;
+    let h_b = box_80
+        .expect(
+            "expected a Box op with width=0.08m (80mm) for sub b = Inner(size: 80mm); \
+             on main this fails because the structure-keyed snapshot uses Inner's 10mm default",
+        )
+        .result_handle;
+
+    assert_ne!(
+        h_a, h_b,
+        "sub a (50mm) and sub b (80mm) must receive DISTINCT kernel handles; \
+         got identical handle {:?} for both",
+        h_a
+    );
+
+    // (c) Each Translate targets the correct per-instance Box handle.
+    let translate_targets: Vec<_> = recorded
+        .iter()
+        .filter_map(|rec| match rec.op {
+            GeometryOp::Translate { target, .. } => Some(target),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        translate_targets.len(),
+        2,
+        "expected exactly 2 Translate ops (placed_a + placed_b); got {} in {:?}",
+        translate_targets.len(),
+        recorded
+            .iter()
+            .map(|r| format!("{:?}", r.op))
+            .collect::<Vec<_>>()
+    );
+
+    // Both per-instance handles must appear as translate targets (one each).
+    let targets_set: std::collections::HashSet<_> = translate_targets.iter().copied().collect();
+    assert!(
+        targets_set.contains(&h_a),
+        "expected one Translate targeting h_a ({:?}, the 50mm Box); \
+         translate targets were {:?}",
+        h_a, translate_targets
+    );
+    assert!(
+        targets_set.contains(&h_b),
+        "expected one Translate targeting h_b ({:?}, the 80mm Box); \
+         translate targets were {:?}",
+        h_b, translate_targets
+    );
+}
