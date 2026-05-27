@@ -6286,6 +6286,59 @@ mod tests {
 
     // ── motion_subspace_columns: fixed ────────────────────────────────────────
 
+    // ── motion_subspace_columns: PRD regression-pin ───────────────────────────
+
+    /// PRD §10 Phase 2 task δ "Observable signal" regression pin.
+    ///
+    /// Quoted verbatim: "for prismatic the column equals `[0; axis]`"
+    ///
+    /// Table-driven: for each (kind, joint, expected_dof_count) row, assert
+    /// `Some(cols)` with `cols.len() == expected_dof_count`. Additionally for
+    /// the prismatic row, assert the explicit `[0;axis]` acceptance signal.
+    #[test]
+    fn motion_subspace_columns_dof_counts_match_per_kind() {
+        struct Row {
+            kind: &'static str,
+            joint: Value,
+            expected_dof: usize,
+        }
+
+        let rows = vec![
+            Row { kind: "prismatic",   joint: prismatic_x_joint(),    expected_dof: 1 },
+            Row { kind: "revolute",    joint: revolute_z_joint(),      expected_dof: 1 },
+            Row { kind: "cylindrical", joint: cylindrical_z_joint(),   expected_dof: 2 },
+            Row { kind: "planar",      joint: planar_xy_joint(),       expected_dof: 3 },
+            Row { kind: "spherical",   joint: spherical_joint(),       expected_dof: 3 },
+            Row { kind: "fixed",       joint: eval_builtin("fixed", &[]), expected_dof: 0 },
+        ];
+
+        for Row { kind, joint, expected_dof } in &rows {
+            let cols = super::motion_subspace_columns(joint).unwrap_or_else(|| {
+                panic!("motion_subspace_columns({}) returned None", kind)
+            });
+            assert_eq!(
+                cols.len(),
+                *expected_dof,
+                "DOF count mismatch for {}: expected {}, got {}",
+                kind, expected_dof, cols.len()
+            );
+        }
+
+        // PRD §10 Phase 2 task δ explicit acceptance signal:
+        // "for prismatic the column equals [0; axis]"
+        let prismatic_cols = super::motion_subspace_columns(&prismatic_x_joint())
+            .expect("prismatic should return Some");
+        let arr = prismatic_cols[0].as_array();
+        let expected = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+        for (i, (&got, exp)) in arr.iter().zip(expected).enumerate() {
+            assert!(
+                (got - exp).abs() < 1e-12,
+                "PRD §10 δ pin — prismatic column[{}]: expected {}, got {}",
+                i, exp, got
+            );
+        }
+    }
+
     // ── motion_subspace_columns: invalid inputs ───────────────────────────────
 
     /// Table-driven validation pins for `motion_subspace_columns`.
