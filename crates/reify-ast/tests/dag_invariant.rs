@@ -14,6 +14,13 @@
 //! PRD §8 B2: "reify-ast intra-workspace deps == {reify-core}; no tree-sitter dep".
 //! The workspace-wide permanent assertion (`scripts/assert-crate-dag.sh`)
 //! arrives under task η per PRD §10.
+//!
+//! NOTE: line-based scan — misses formulations like `[dependencies."reify-foo"]`
+//! table headers, quoted `"reify-foo" = …` entries, `tree_sitter = …` via
+//! `package = "tree-sitter-…"` rename, or continuation-line inline tables.
+//! Full TOML parsing (and the underscore alias gap) are addressed by
+//! `scripts/assert-crate-dag.sh` under task η. This guard catches the common
+//! cases and is sufficient as a per-crate fast check.
 
 #[test]
 fn reify_ast_depends_only_on_reify_core() {

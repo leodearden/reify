@@ -13,9 +13,8 @@
 //! `Cargo.toml` directly and asserts both conditions. The workspace-wide
 //! assertion (`scripts/assert-crate-dag.sh`) arrives under task η per PRD §10.
 
-// `BTreeMap<Value, _>` in downstream crates can trigger this lint; we copy
-// the attribute from reify-core/reify-types to keep the crates' lint preludes
-// structurally identical for downstream reasoning.
+// Mirrors reify-core/reify-types preludes for lint-attribute parity across the
+// core stack; reify-ast itself has no current trigger.
 #![allow(clippy::mutable_key_type)]
 
 pub mod ast;

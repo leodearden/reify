@@ -10,6 +10,7 @@ reify-core.workspace = true
 serde = { workspace = true, features = ["derive"], optional = true }
 
 [features]
+# kept for future AST-serde derives; currently a no-op pass-through
 serde = ["dep:serde", "reify-core/serde"]
 
 [dev-dependencies]
