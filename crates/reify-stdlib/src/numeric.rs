@@ -1285,6 +1285,71 @@ mod tests {
         );
     }
 
+    // --- abs on Complex tests (step-1, task-3952) ---
+
+    #[test]
+    fn abs_complex_dimensionless_returns_5() {
+        // abs(3+4i) = 5.0 (3-4-5 Pythagorean triple, dimensionless → Real)
+        let z = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert_real_approx!(eval_builtin("abs", &[z]), 5.0);
+    }
+
+    #[test]
+    fn abs_complex_dimensioned_returns_scalar_5() {
+        // abs(Complex{3,4,LENGTH}) = Scalar{5.0, LENGTH}
+        let z = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert_scalar_approx!(eval_builtin("abs", &[z]), 5.0, DimensionVector::LENGTH);
+    }
+
+    #[test]
+    fn abs_complex_zero_returns_zero() {
+        // abs(0+0i) = 0.0 (zero vector: modulus is well-defined at zero, unlike phase)
+        let z = Value::Complex {
+            re: 0.0,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert_real_approx!(eval_builtin("abs", &[z]), 0.0);
+    }
+
+    #[test]
+    fn abs_complex_nan_returns_undef() {
+        // abs(Complex{NaN, 1.0, DIMLESS}) → Undef (sanitize_value catches NaN)
+        let z = Value::Complex {
+            re: f64::NAN,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("abs", &[z]).is_undef(),
+            "abs of Complex with NaN re must return Undef"
+        );
+    }
+
+    #[test]
+    fn abs_complex_matches_magnitude() {
+        // abs and magnitude must agree bit-for-bit on Complex inputs (task-3952 symmetry contract)
+        let z = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        let abs_result = eval_builtin("abs", &[z.clone()]);
+        let mag_result = eval_builtin("magnitude", &[z]);
+        assert_eq!(
+            abs_result, mag_result,
+            "abs and magnitude must produce identical results for Complex"
+        );
+    }
+
     // --- remap Scalar tests (step-17) ---
     // remap(x, from_lo, from_hi, to_lo, to_hi)
 
