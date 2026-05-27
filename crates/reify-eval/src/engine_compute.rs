@@ -295,23 +295,30 @@ impl crate::Engine {
         ) {
             Some(ComputeOutcome::Completed {
                 result,
+                new_warm_state,
+                cost_per_byte,
                 diagnostics,
-                ..
             }) => {
-                // Step 3a: atomic completion (write + flip Pending→Final + clear cause).
+                // Step 3a: atomic completion (write + flip Pending→Final +
+                // clear cause + donate warm state). PRD §5 step-3 bundles
+                // all four operations into a single critical section.
                 let pairs: Vec<(ValueCellId, Value)> = outputs
                     .iter()
                     .map(|o| (o.clone(), result.clone()))
                     .collect();
-                // Warm-state threading lands in step-8 (task 3425/ζ); the
-                // call deliberately passes `None, 0.0` here so step-7's RED
-                // test can pin the missing wiring before step-8 fixes it.
+                // ζ / task 3425 step-8: thread `new_warm_state` and
+                // `cost_per_byte.unwrap_or(0.0)` into the extended
+                // `complete_compute_dispatch_atomically` so the warm state
+                // donation lands atomically with the Pending→Final flip.
+                // The prior_warm_state local captured at the top of this
+                // function is dropped here — the cache is now authoritative
+                // (the Completed path overwrites prior with the new state).
                 self.cache.complete_compute_dispatch_atomically(
                     c_id,
                     &pairs,
                     version,
-                    None,
-                    0.0,
+                    new_warm_state,
+                    cost_per_byte.unwrap_or(0.0),
                 );
                 Ok((result, diagnostics))
             }
