@@ -5153,6 +5153,83 @@ describe('App handleSave conflict prompt: Reload from disk', () => {
   });
 });
 
+// ─── Conflict prompt: Overwrite action ───────────────────────────────────────
+
+describe('App handleSave conflict prompt: Overwrite', () => {
+  const testState: GuiState = {
+    meshes: [],
+    values: [],
+    constraints: [],
+    files: [
+      { path: '/project/bracket.ri', content: 'structure Bracket {}' },
+    ],
+    tessellation_diagnostics: [],
+    compile_diagnostics: [],
+  };
+
+  let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
+
+  beforeEach(() => {
+    fileChangedCallback = undefined;
+    vi.mocked(bridge.onFileChanged).mockImplementation(async (cb: any) => {
+      fileChangedCallback = cb;
+      return () => {};
+    });
+    vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
+  });
+
+  it('clicking Overwrite calls bridgeSaveFile with the buffer content and clears dirty/externallyChanged without calling bridgeOpenFile', async () => {
+    const bufferContent = 'structure Bracket { param width = 100mm }'; // user's edited content
+    vi.mocked(bridge.saveFile).mockResolvedValue(undefined);
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: '/project/bracket.ri', content: 'unused' });
+
+    render(() => <App />);
+    await waitFor(() => expect(fileChangedCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    // Set up dirty + externally-changed state with custom buffer content
+    capturedEditorStore.setActiveFile('/project/bracket.ri');
+    capturedEditorStore.markDirty('/project/bracket.ri');
+    capturedEditorStore.markExternallyChanged('/project/bracket.ri');
+    // Update the store's buffer content to simulate user edits
+    capturedEditorStore.updateFileContent('/project/bracket.ri', bufferContent);
+
+    // Trigger handleSave via Ctrl+S — shows conflict prompt
+    fireEvent.keyDown(document, { key: 's', ctrlKey: true });
+
+    // Wait for the conflict toast with Overwrite button to appear
+    let conflictToast: HTMLElement | undefined;
+    await waitFor(() => {
+      const toasts = screen.getAllByTestId('toast');
+      conflictToast = toasts.find((t) =>
+        t.textContent?.includes(EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG),
+      );
+      expect(conflictToast).toBeTruthy();
+    });
+
+    // Click the "Overwrite" action button
+    const overwriteBtn = within(conflictToast!).getByRole('button', { name: SAVE_CONFLICT_OVERWRITE_LABEL });
+    fireEvent.click(overwriteBtn);
+
+    // bridgeSaveFile must be called with (path, currentBufferContent)
+    await waitFor(() => {
+      expect(bridge.saveFile).toHaveBeenCalledWith(
+        '/project/bracket.ri',
+        bufferContent,
+      );
+    });
+
+    // After save promise resolves, markClean was called — both flags cleared
+    await waitFor(() => {
+      expect(capturedEditorStore.state.dirtyFiles).not.toContain('/project/bracket.ri');
+      expect(capturedEditorStore.state.externallyChanged).not.toContain('/project/bracket.ri');
+    });
+
+    // bridgeOpenFile must NOT have been called
+    expect(bridge.openFile).not.toHaveBeenCalled();
+  });
+});
+
 // Counts CSS grid tracks in a `grid-template-rows` value.
 // Whitespace separates tracks at depth 0; parens (e.g. minmax(160px, 1fr))
 // keep their internal whitespace from being mistaken for a track boundary.
