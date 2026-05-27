@@ -73,6 +73,9 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
     if let Some(v) = analysis::eval_analysis(name, args) {
         return v;
     }
+    if let Some(v) = stackup::eval_stackup(name, args) {
+        return v;
+    }
     if let Some(v) = joints::eval_joints(name, args) {
         return v;
     }
