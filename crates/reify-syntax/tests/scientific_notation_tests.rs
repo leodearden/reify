@@ -11,7 +11,7 @@
 //! See also: `tree-sitter-reify/test/corpus/scientific_notation.txt` for
 //! the CST-level corpus tests.
 
-use reify_syntax::*;
+use reify_ast::*;
 
 /// Helper: parse source and return the first structure's members and errors.
 fn parse_members(source: &str) -> (Vec<MemberDecl>, Vec<ParseError>) {

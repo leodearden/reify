@@ -5,7 +5,6 @@
 use reify_compiler::*;
 use reify_test_support::{compile_first_template, compile_source};
 use reify_core::*;
-use reify_ir::*;
 
 // ── step-9: compile basic occurrence ─────────────────────────────────
 

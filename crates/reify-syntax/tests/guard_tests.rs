@@ -3,7 +3,7 @@
 //! Tests for per-declaration postfix guards (`param x : Length where cond`)
 //! and block-level guards (`where cond { ...members... } else { ...members... }`).
 
-use reify_syntax::*;
+use reify_ast::*;
 
 /// Helper: parse source and return the first structure's members.
 fn parse_members(source: &str) -> (Vec<MemberDecl>, Vec<ParseError>) {

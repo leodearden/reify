@@ -3,7 +3,7 @@
 //! Tests for `type Name<Params> = type_expr` declarations, including dimensional
 //! type expressions like `Force / Area`.
 
-use reify_syntax::*;
+use reify_ast::{Declaration, DimOp, ParseError, TypeAliasDecl, TypeExpr, TypeExprKind};
 
 /// Helper: parse source and return declarations and errors.
 fn parse_decls(source: &str) -> (Vec<Declaration>, Vec<ParseError>) {
