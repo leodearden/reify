@@ -925,9 +925,16 @@ fn joint_jacobian_value(value: &Value) -> Value {
 /// | spherical   |  3  |
 /// | fixed       |  0  |
 ///
-/// Returns `None` for non-Map inputs, Maps without a kind discriminator, unknown
-/// kinds, coupling joints (out of scope for v0.3), and joints with malformed/missing
-/// axis or non-perpendicular planar axes.
+/// Returns `None` for:
+/// - non-Map inputs (e.g. `Value::Real`, `Value::Undef`)
+/// - Maps without a `"kind"` string discriminator
+/// - unknown/unrecognised joint kinds (e.g. `"sliding"`)
+/// - coupling joints (kind `"coupling"`) — out of scope for v0.3; no single
+///   motion-subspace exists for derived joints
+/// - joints with a missing or malformed axis field (propagated via `?` from
+///   [`unit_axis_from_map`])
+/// - planar joints with non-perpendicular axes (propagated via `?` from
+///   [`unit_axes_xy_from_planar_map`])
 ///
 /// Reference: PRD §5.1 (motion-subspace per joint kind) and §12 Q4 (cylindrical
 /// column ordering).
