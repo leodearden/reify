@@ -1034,35 +1034,55 @@ pub structure Outer {
     );
 }
 
-/// Positional-param constructor override propagates to cross-sub geometry.
+/// Partial named-param override (override one param, default-fallthrough the
+/// other) propagates to cross-sub geometry.
 ///
-/// Source: `pub structure Inner { param size : Length = 10mm  let body = box(size, size, size) }`
-///         `pub structure Outer { sub inner = Inner(50mm)  let body = translate(self.inner.body,
-///          200mm, 0mm, 0mm) }`.
+/// Source:
+/// ```text
+/// pub structure Inner {
+///     param w : Length = 10mm
+///     param h : Length = 20mm
+///     let body = box(w, h, w)
+/// }
+/// pub structure Outer {
+///     sub inner = Inner(h: 50mm)
+///     let body = translate(self.inner.body, 200mm, 0mm, 0mm)
+/// }
+/// ```
 ///
-/// `Inner(50mm)` uses POSITIONAL syntax — the `50mm` argument binds to the
-/// first (and only) parameter `size` by position.  At compile time,
-/// `connect.rs::compile_sub_component` attaches the parameter name to each
-/// positional arg, so `SubComponentDecl.args` stores `[("size",
-/// CompiledExpr(50mm))]` — indistinguishable from the named-syntax form.
-/// The override path in `seed_cross_sub_named_steps` therefore covers both
-/// syntaxes uniformly through the same `sub.args` loop.
+/// This is distinct from `cross_sub_constructor_named_param_override_reaches_geometry`
+/// (step-1) which overrides the SOLE param — here `Inner` has TWO params and
+/// the constructor only overrides `h`, leaving `w` to fall through to its
+/// declared default.  This pins the overlay-loop semantics in
+/// `seed_cross_sub_named_steps`: per-instance value scope contains the
+/// `h=50mm` override AND the un-overridden `w=10mm` resolves correctly to
+/// `Inner`'s default during re-execution (i.e. the overlay does not stomp
+/// non-overridden params with placeholder/empty values).
 ///
-/// Assertions mirror `cross_sub_constructor_named_param_override_reaches_geometry`
-/// but with `Value::Scalar { si_value: 0.05, dimension: LENGTH }` (50 mm in SI).
+/// HISTORY: the original plan called for a positional-syntax variant
+/// (`Inner(50mm)`), but the Reify grammar's `sub_declaration` rule restricts
+/// constructor args to `named_argument_list` only — positional syntax is not
+/// a language feature for sub declarations (grammar.js:488; only
+/// `function_call` accepts the broader `argument_list`).  The positional
+/// variant was therefore replaced with this partial-override variant per the
+/// task-3814 esc-3814-35 resolution (Option A) — a strictly more interesting
+/// shape than a duplicate of step-1, exercising the default-fallthrough arm
+/// of the overlay loop in addition to the override arm.
 ///
-/// **RED** on main for the same root cause as the named-param test: the
-/// structure-keyed snapshot uses `Inner`'s 10mm default.  GREEN after step-2
-/// lands the override path — positional args arrive at `seed_cross_sub_named_steps`
-/// already name-attached, so no extra fix-up is needed.
+/// **RED** on main: the structure-keyed snapshot path produces a Box with
+/// `width = Value::Scalar { si_value: 0.01, … }` AND
+/// `height = Value::Scalar { si_value: 0.02, … }` (both `Inner` defaults).
+/// **GREEN** after step-2: per-instance re-realization with the overlay
+/// produces `width = 0.01 m`, `height = 0.05 m`, `depth = 0.01 m`.
 #[test]
-fn cross_sub_constructor_positional_param_override_reaches_geometry() {
+fn cross_sub_constructor_partial_param_override_reaches_geometry() {
     let source = r#"pub structure Inner {
-    param size : Length = 10mm
-    let body = box(size, size, size)
+    param w : Length = 10mm
+    param h : Length = 20mm
+    let body = box(w, h, w)
 }
 pub structure Outer {
-    sub inner = Inner(50mm)
+    sub inner = Inner(h: 50mm)
     let body = translate(self.inner.body, 200mm, 0mm, 0mm)
 }"#;
     let compiled = compile_source(source);
@@ -1118,22 +1138,28 @@ pub structure Outer {
 
     let recorded = ops_ref.lock().unwrap().clone();
 
-    // (c) Find the per-instance Box with width/height/depth == 50 mm.
-    // 50 mm = 0.05 m in SI units.
-    let override_size = Value::Scalar {
+    // (c) Find the per-instance Box with width=depth=10mm (default for `w`)
+    // and height=50mm (override for `h`).  This is the discriminator:
+    // on main the structure-keyed snapshot path produces a Box with
+    // height=20mm (Inner's default), so this assertion fails.
+    let default_w = Value::Scalar {
+        si_value: 0.01,
+        dimension: DimensionVector::LENGTH,
+    };
+    let override_h = Value::Scalar {
         si_value: 0.05,
         dimension: DimensionVector::LENGTH,
     };
     let per_instance_box = recorded.iter().find(|rec| match &rec.op {
         GeometryOp::Box { width, height, depth } => {
-            width == &override_size && height == &override_size && depth == &override_size
+            width == &default_w && height == &override_h && depth == &default_w
         }
         _ => false,
     });
     let per_instance_box = per_instance_box.expect(
-        "expected a Box op with width=height=depth=0.05 m (50 mm) for Inner(50mm) positional \
-         override; on main this fails because the structure-keyed snapshot uses Inner's \
-         default 10mm param (si_value=0.01)",
+        "expected a Box op with width=depth=0.01 m (10 mm default for `w`) AND height=0.05 m \
+         (50 mm override for `h`) for Inner(h: 50mm); on main this fails because the \
+         structure-keyed snapshot uses Inner's default 20mm height (si_value=0.02)",
     );
     let override_box_handle = per_instance_box.result_handle;
 
@@ -1157,7 +1183,7 @@ pub structure Outer {
             assert_eq!(
                 target, override_box_handle,
                 "Translate target should be the per-instance Box handle ({:?}) from \
-                 Inner(50mm) positional override; on main it targets the default-args \
+                 Inner(h: 50mm) partial override; on main it targets the default-args \
                  Box instead — got {:?}",
                 override_box_handle, target
             );
@@ -1168,7 +1194,7 @@ pub structure Outer {
     // (e) Build produces a geometry output.
     assert!(
         result.geometry_output.is_some(),
-        "expected geometry_output to be Some (positional override); got None; diagnostics: {:?}",
+        "expected geometry_output to be Some (partial override); got None; diagnostics: {:?}",
         result
             .diagnostics
             .iter()
