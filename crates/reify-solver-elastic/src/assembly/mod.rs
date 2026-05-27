@@ -21,11 +21,11 @@ pub use global::{
     detect_orphan_dofs,
 };
 // Task 3778: foundation β — per-element field-aware entry points.
-// The legacy `element_stiffness_p1` / `_p2` / `_hex_p1` / `_wedge_p1`
-// entries are re-exported alongside in step-16 once the full β surface
-// is wired (the hex/wedge legacy entries are already on crate root via
-// the `hex::element_stiffness_hex_p1` / `wedge::element_stiffness_wedge_p1`
-// paths in src/lib.rs).
+// All four `_with_field` entries are also re-exported from the crate
+// root (`src/lib.rs`) alongside the legacy `element_stiffness_*`
+// entries, so downstream consumers can reach them via either
+// `reify_solver_elastic::element_stiffness_p1_with_field` or
+// `reify_solver_elastic::assembly::element_stiffness_p1_with_field`.
 pub use hex::element_stiffness_hex_p1_with_field;
 pub use tet::{element_stiffness_p1_with_field, element_stiffness_p2_with_field};
 pub use wedge::element_stiffness_wedge_p1_with_field;

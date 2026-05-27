@@ -21,16 +21,16 @@
 
 use reify_solver_elastic::{
     AnisotropicMaterial, ConstantField, DiscreteCellField, ElementStiffness, IsotropicElastic,
-    OrthotropicMaterial, element_stiffness_hex_p1, element_stiffness_wedge_p1,
+    OrthotropicMaterial, element_stiffness_hex_p1, element_stiffness_hex_p1_with_field,
+    element_stiffness_p1_with_field, element_stiffness_p2_with_field,
+    element_stiffness_wedge_p1, element_stiffness_wedge_p1_with_field,
 };
-// Legacy and new field-aware entry points accessed via their owning module
-// until step-16 lifts them into the crate-root `pub use` block.
-use reify_solver_elastic::assembly::hex::element_stiffness_hex_p1_with_field;
-use reify_solver_elastic::assembly::tet::{
-    element_stiffness_p1, element_stiffness_p1_with_field, element_stiffness_p2,
-    element_stiffness_p2_with_field,
-};
-use reify_solver_elastic::assembly::wedge::element_stiffness_wedge_p1_with_field;
+// The legacy `element_stiffness_p1` / `element_stiffness_p2` symbols are
+// only reachable via `assembly::tet::` (they are not re-exported at the
+// crate root, matching their pre-β visibility — only the dispatch wrapper
+// `element_stiffness(order, …)` is on the crate root). Their `_with_field`
+// counterparts above arrive via the crate-root re-exports added in step-16.
+use reify_solver_elastic::assembly::tet::{element_stiffness_p1, element_stiffness_p2};
 
 /// Identity 3×3 frame — local axes align with global.
 const IDENTITY_3X3: [[f64; 3]; 3] =
