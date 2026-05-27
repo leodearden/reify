@@ -32,6 +32,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use reify_eval::{dispatcher, kernel_registry};
 use reify_ir::{CapabilityDescriptor, Operation, ReprKind};
+use reify_kernel_openvdb::register::openvdb_capability_descriptor;
 
 /// Proves that `reify_eval::kernel_registry::registry()` contains `"openvdb"`
 /// when the openvdb adapter is linked in (i.e. the `inventory::submit!` in
@@ -111,5 +112,68 @@ fn openvdb_dispatches_for_voxel_boolean_when_only_kernel() {
         "dispatch must produce zero conversion stages when the input repr is already Voxel; \
          got conversions = {:?}",
         plan.conversions,
+    );
+}
+
+/// OpenVDB's capability descriptor must declare `(Convert{from:Mesh}, Voxel)`.
+///
+/// This is the entry added in task η (3438) that enables the dispatcher BFS
+/// to route a two-stage BRep→Mesh→Voxel chain. RED until register.rs is
+/// updated in step-4.
+#[test]
+fn openvdb_descriptor_declares_convert_mesh_to_voxel() {
+    let descriptor = openvdb_capability_descriptor();
+    assert!(
+        descriptor.supports(Operation::Convert { from: ReprKind::Mesh }, ReprKind::Voxel),
+        "OpenVDB descriptor must declare (Convert{{from:Mesh}}, Voxel) — \
+         required for the BRep→Mesh→Voxel two-stage dispatch chain (task η)",
+    );
+}
+
+/// With a synthetic registry containing OCCT's `(Convert{from:BRep}, Mesh)`
+/// and OpenVDB's full descriptor (including the new `(Convert{from:Mesh}, Voxel)`),
+/// dispatching `(BooleanUnion, Voxel)` from `{BRep}` must produce a two-stage
+/// plan: kernel="openvdb", conversions=[("occt",BRep,Mesh),("openvdb",Mesh,Voxel)].
+///
+/// Uses a synthetic in-test registry so this test does not depend on OCCT
+/// being linked into the openvdb test binary (dep-direction isolation — see
+/// module-level doc). RED until register.rs is updated in step-4.
+#[test]
+fn openvdb_dispatches_two_stage_chain_brep_to_voxel() {
+    // Build a synthetic "occt" descriptor that declares only (Convert{from:BRep}, Mesh).
+    let occt_descriptor = CapabilityDescriptor {
+        supports: vec![(Operation::Convert { from: ReprKind::BRep }, ReprKind::Mesh)],
+    };
+    let openvdb_descriptor = openvdb_capability_descriptor();
+
+    // Owned map → borrowed view (matches dispatcher::dispatch signature).
+    let owned: BTreeMap<String, CapabilityDescriptor> = BTreeMap::from([
+        ("occt".to_string(), occt_descriptor),
+        ("openvdb".to_string(), openvdb_descriptor),
+    ]);
+    let view: BTreeMap<String, &CapabilityDescriptor> =
+        owned.iter().map(|(k, v)| (k.clone(), v)).collect();
+
+    // Available repr is only BRep; demanded output is Voxel.
+    let available: HashSet<ReprKind> = HashSet::from([ReprKind::BRep]);
+    let plan = dispatcher::dispatch(&view, Operation::BooleanUnion, ReprKind::Voxel, &available);
+
+    let plan = plan.expect(
+        "dispatcher::dispatch must return Some(...) for (BooleanUnion, Voxel) with BRep input \
+         when the two-stage BRep→Mesh→Voxel chain is available",
+    );
+
+    assert_eq!(
+        plan.kernel, "openvdb",
+        "two-stage chain must resolve to openvdb as the final-stage kernel; got {:?}",
+        plan.kernel,
+    );
+    assert_eq!(
+        plan.conversions,
+        vec![
+            ("occt".to_string(), ReprKind::BRep, ReprKind::Mesh),
+            ("openvdb".to_string(), ReprKind::Mesh, ReprKind::Voxel),
+        ],
+        "two-stage chain must produce conversions [(occt,BRep,Mesh),(openvdb,Mesh,Voxel)]",
     );
 }

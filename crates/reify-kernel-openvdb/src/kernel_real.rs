@@ -320,9 +320,10 @@ unsafe impl Sync for OpenVdbKernel {}
 // ---------------------------------------------------------------------------
 
 const VOXEL_BOOL_STUB_MSG: &str = "OpenVDB voxel-Boolean execution requires Voxel handles on both operands. \
-     Direct-call voxelization via realize_voxel_from_mesh is available; \
-     dispatcher routing for Convert{from:Mesh}→Voxel is deferred until OCCT \
-     declares (Convert{from:BRep}, Mesh) in its capability descriptor (v0.3).";
+     Direct-call voxelization via realize_voxel_from_mesh_with_options is available; \
+     the descriptor now declares (Convert{from:Mesh}, Voxel) so BRep→Mesh→Voxel chains \
+     are dispatchable. Full execute()-trait routing (GeometryOp Mesh-input variant) \
+     remains future work (task ε).";
 
 impl GeometryKernel for OpenVdbKernel {
     fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
