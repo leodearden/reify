@@ -944,6 +944,71 @@ fn step_force_struct_has_correct_param_shape() {
     );
 }
 
+// ─── step-5 (η): StepForce magnitude positivity constraint ───────────────────
+
+/// `StepForce` must declare exactly 1 constraint: `magnitude > 0N`.
+///
+/// Convention: `direction : Vector3<Dimensionless>` carries the sign (unit
+/// vector); `magnitude : Force` carries the positive scalar size. A negative
+/// magnitude is meaningless when direction is the sign-carrying unit vector.
+/// PRD §5.1 user-observable signal; task-2544 explicit-contract convention.
+///
+/// Mirrors `modal_options_constrains_positivity_invariants` (lines 773-826)
+/// discipline: tight count==1 regression gate, and the dimensioned RHS literal
+/// is accepted as `Value::Scalar { si_value: 0.0, dimension: FORCE }` OR
+/// `Value::Real(0.0)` (same future-proofing as Int(0)/Real(0.0) at lines
+/// 807-810, applied to the dimensioned-literal lowering path).
+#[test]
+fn step_force_constrains_magnitude_positive() {
+    let template = find_structure("StepForce");
+
+    // Tight count: exactly 1 constraint (regression gate — no accidental extras)
+    assert_eq!(
+        template.constraints.len(),
+        1,
+        "StepForce should declare exactly 1 constraint (magnitude > 0N); \
+         got {} constraints: {:?}",
+        template.constraints.len(),
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+
+    let matched = template.constraints.iter().any(|c| {
+        match &c.expr.kind {
+            CompiledExprKind::BinOp { op, left, right } => {
+                if *op != BinOp::Gt
+                    || !collect_value_ref_members(left).contains(&"magnitude")
+                {
+                    return false;
+                }
+                match &right.kind {
+                    CompiledExprKind::Literal(Value::Scalar { si_value, .. })
+                        if *si_value == 0.0 =>
+                    {
+                        true
+                    }
+                    CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    });
+    assert!(
+        matched,
+        "StepForce should declare `constraint magnitude > 0N`; \
+         got constraints: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+}
+
 // ─── step-1 (η): ForcingFunction marker trait declared ───────────────────────
 
 /// `ForcingFunction` is the marker trait for the four transient-forcing

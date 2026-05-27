@@ -458,11 +458,29 @@ structure def StepForce : ForcingFunction {
     param direction : Vector3<Dimensionless>
     param magnitude : Force
     param start_time : Time
-    // NOTE — constraint magnitude > 0N lands in step-6.
-    // NOTE — explicitly NOT constrained (in this step):
-    //   at         : String — no scalar invariant expressible
-    //   direction  : Vector3<Dimensionless> — norm() is a method-call, not a
-    //                scalar predicate (same grammar limit as
-    //                reference_direction.norm() > 0 in modal_analysis.ri:382-389)
-    //   start_time : Time   — any real time is valid (pre-load history supported)
+
+    // By convention, `direction : Vector3<Dimensionless>` is the unit vector
+    // that carries the sign of the force; `magnitude : Force` carries the
+    // positive scalar size. A negative magnitude is meaningless when direction
+    // is the sign-carrying unit vector. Declaring the lower bound at the
+    // structure-def level makes the contract explicit in production code
+    // rather than relying solely on test coverage (task-2544 convention,
+    // mirroring `ModalOptions.n_modes > 0` at modal_analysis.ri:365 and
+    // `PiecewisePolynomialProfile.waypoints.count > 0` at trajectory.ri:230).
+    // Dimensioned literal `0N` (= 0 newtons in SI) is required to keep
+    // eval_cmp dim-equality matching at runtime; a bare `0` would yield
+    // `Indeterminate` per task #3115 esc-3115-112 (structural_physical.ri:67-68).
+    constraint magnitude > 0N
+
+    // NOTE — explicitly NOT constrained:
+    //   at         : String — no scalar invariant expressible on a String
+    //                         placeholder (LocationId not yet landed)
+    //   direction  : Vector3<Dimensionless> — `direction.norm() > 0` is a
+    //                method-call on Vector3, not a scalar predicate; NOT
+    //                expressible in Reify's constraint grammar (same limit as
+    //                `reference_direction.norm() > 0` deferred in
+    //                modal_analysis.ri:382-389).
+    //   start_time : Time — any real time is valid; negative values support
+    //                pre-loaded-history simulations where the force has been
+    //                applied before t=0.
 }
