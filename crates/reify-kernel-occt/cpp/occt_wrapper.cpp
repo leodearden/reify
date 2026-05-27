@@ -1686,6 +1686,19 @@ std::unique_ptr<OcctShape> gtransform_shape(const OcctShape& shape,
     double m20, double m21, double m22,
     double tx, double ty, double tz) {
     return wrap_occt_call("gtransform_shape", [&]() {
+        // Reject singular linear part before dispatch: BRepBuilderAPI_GTransform on a
+        // det=0 gp_GTrsf can silently emit a zero-volume / non-manifold shape without
+        // marking IsDone() false, producing hard-to-diagnose downstream failures.
+        // Cofactor expansion along row 0:
+        const double det =
+            m00 * (m11 * m22 - m12 * m21)
+          - m01 * (m10 * m22 - m12 * m20)
+          + m02 * (m10 * m21 - m11 * m20);
+        if (std::abs(det) < 1e-12) {
+            std::ostringstream oss;
+            oss << "linear part is singular (det=" << det << ")";
+            throw std::runtime_error(oss.str());
+        }
         // Build gp_GTrsf from 3×3 linear matrix (row-major) + translation XYZ.
         gp_Mat linear(m00, m01, m02,
                       m10, m11, m12,

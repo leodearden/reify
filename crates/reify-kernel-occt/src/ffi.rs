@@ -453,11 +453,13 @@ pub mod ffi {
         /// The operation runs with `Copy=true`, so the source shape is never mutated;
         /// a fresh `UniquePtr<OcctShape>` is returned.
         ///
-        /// Singular-input guard: TODO step-4 — will reject `|det(linear)| < 1e-12`
-        /// with an error message containing "singular".
+        /// Singular-input guard: rejects `|det(linear)| < 1e-12` with an error message
+        /// containing "singular". Non-uniform scale and shear are valid (e.g. diag(1,1,2)
+        /// → det=2). Per PRD `docs/prds/v0_6/affine-map-type.md` §5 task ε.
         ///
         /// # Errors
-        /// Returns an error if `BRepBuilderAPI_GTransform` fails (`IsDone()` is false).
+        /// Returns an error if the linear part is singular, or if
+        /// `BRepBuilderAPI_GTransform` fails (`IsDone()` is false).
         fn gtransform_shape(
             shape: &OcctShape,
             m00: f64,
