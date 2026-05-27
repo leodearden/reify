@@ -6,7 +6,6 @@
 #![allow(clippy::mutable_key_type)]
 
 pub mod annotation;
-pub mod ast;
 pub mod boundary_attachment;
 pub mod constraint;
 pub mod expr;
@@ -31,6 +30,14 @@ pub mod warm_registry;
 pub use reify_core::{
     diagnostics, dimension, hash, identity, primitives, source_location, spanned_ident, ty,
 };
+
+// ── reify-ast re-exports ─────────────────────────────────────────────────────
+// The parsed AST module now lives in the `reify-ast` crate (task δ of
+// docs/prds/core-ast-ir-layering.md). Re-exporting it AS a module preserves
+// the `reify_types::ast::Expr` module-path spellings. The flat re-exports
+// below (`pub use ast::{…}`) continue to resolve unchanged — `ast` is now a
+// re-exported module rather than a local `pub mod`, but the path is identical.
+pub use reify_ast::ast;
 
 pub use annotation::{Annotation, AnnotationArg, AnnotationArgValue, has_test_annotation};
 pub use ast::{

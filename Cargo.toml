@@ -28,6 +28,7 @@ members = [
     "crates/reify-mcp",
     "crates/reify-cli",
     "crates/reify-audit",
+    "crates/reify-ast",
     "crates/reify-build-utils",
     "crates/reify-test-support",
     "tree-sitter-reify",
@@ -66,6 +67,7 @@ reify-stdlib = { path = "crates/reify-stdlib" }
 reify-lsp = { path = "crates/reify-lsp" }
 reify-mcp = { path = "crates/reify-mcp" }
 reify-audit = { path = "crates/reify-audit" }
+reify-ast = { path = "crates/reify-ast" }
 reify-build-utils = { path = "crates/reify-build-utils" }
 reify-test-support = { path = "crates/reify-test-support" }
 
