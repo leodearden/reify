@@ -6285,58 +6285,95 @@ mod tests {
         );
     }
 
-    // ── motion_subspace_columns: fixed ────────────────────────────────────────
-
     // ── motion_subspace_columns: PRD regression-pin ───────────────────────────
 
     /// PRD §10 Phase 2 task δ "Observable signal" regression pin.
     ///
     /// Quoted verbatim: "for prismatic the column equals `[0; axis]`"
     ///
-    /// Table-driven: for each (kind, joint, expected_dof_count) row, assert
-    /// `Some(cols)` with `cols.len() == expected_dof_count`. Additionally for
-    /// the prismatic row, assert the explicit `[0;axis]` acceptance signal.
+    /// Table-driven: for each (kind, joint, expected_columns) row, assert
+    /// `Some(cols)` with `cols.len() == expected_columns.len()` and each column
+    /// matching its expected value within 1e-12. The prismatic row pins the
+    /// explicit PRD §10 acceptance signal `[0; axis]` = `[0,0,0, 1,0,0]`.
     #[test]
     fn motion_subspace_columns_dof_counts_match_per_kind() {
         struct Row {
             kind: &'static str,
             joint: Value,
-            expected_dof: usize,
+            /// Expected column vectors in Featherstone [ω; v] ordering.
+            expected_columns: Vec<[f64; 6]>,
         }
 
         let rows = vec![
-            Row { kind: "prismatic",   joint: prismatic_x_joint(),    expected_dof: 1 },
-            Row { kind: "revolute",    joint: revolute_z_joint(),      expected_dof: 1 },
-            Row { kind: "cylindrical", joint: cylindrical_z_joint(),   expected_dof: 2 },
-            Row { kind: "planar",      joint: planar_xy_joint(),       expected_dof: 3 },
-            Row { kind: "spherical",   joint: spherical_joint(),       expected_dof: 3 },
-            Row { kind: "fixed",       joint: eval_builtin("fixed", &[]), expected_dof: 0 },
+            // 1 DOF — PRD §5.1: column = [0; unit_axis] (acceptance signal)
+            Row {
+                kind: "prismatic",
+                joint: prismatic_x_joint(),
+                expected_columns: vec![[0.0, 0.0, 0.0, 1.0, 0.0, 0.0]],
+            },
+            // 1 DOF — PRD §5.1: column = [unit_axis; 0]
+            Row {
+                kind: "revolute",
+                joint: revolute_z_joint(),
+                expected_columns: vec![[0.0, 0.0, 1.0, 0.0, 0.0, 0.0]],
+            },
+            // 2 DOF — PRD §12 Q4: [translation, rotation]
+            Row {
+                kind: "cylindrical",
+                joint: cylindrical_z_joint(),
+                expected_columns: vec![
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 1.0], // col0: linear +Z (translation)
+                    [0.0, 0.0, 1.0, 0.0, 0.0, 0.0], // col1: angular +Z (rotation)
+                ],
+            },
+            // 3 DOF — PRD §5.1: [linear_x, linear_y, angular_normal]
+            Row {
+                kind: "planar",
+                joint: planar_xy_joint(),
+                expected_columns: vec![
+                    [0.0, 0.0, 0.0, 1.0, 0.0, 0.0], // col0: linear +X
+                    [0.0, 0.0, 0.0, 0.0, 1.0, 0.0], // col1: linear +Y
+                    [0.0, 0.0, 1.0, 0.0, 0.0, 0.0], // col2: angular +Z = e_x × e_y
+                ],
+            },
+            // 3 DOF — PRD §4.2: body-frame basis (spherical is axis-isotropic)
+            Row {
+                kind: "spherical",
+                joint: spherical_joint(),
+                expected_columns: vec![
+                    [1.0, 0.0, 0.0, 0.0, 0.0, 0.0], // col0: angular body +x
+                    [0.0, 1.0, 0.0, 0.0, 0.0, 0.0], // col1: angular body +y
+                    [0.0, 0.0, 1.0, 0.0, 0.0, 0.0], // col2: angular body +z
+                ],
+            },
+            // 0 DOF — 6×0 empty motion-subspace
+            Row {
+                kind: "fixed",
+                joint: eval_builtin("fixed", &[]),
+                expected_columns: vec![],
+            },
         ];
 
-        for Row { kind, joint, expected_dof } in &rows {
+        for Row { kind, joint, expected_columns } in &rows {
             let cols = super::motion_subspace_columns(joint).unwrap_or_else(|| {
                 panic!("motion_subspace_columns({}) returned None", kind)
             });
             assert_eq!(
                 cols.len(),
-                *expected_dof,
-                "DOF count mismatch for {}: expected {}, got {}",
-                kind, expected_dof, cols.len()
+                expected_columns.len(),
+                "{} DOF count: expected {}, got {}",
+                kind, expected_columns.len(), cols.len()
             );
-        }
-
-        // PRD §10 Phase 2 task δ explicit acceptance signal:
-        // "for prismatic the column equals [0; axis]"
-        let prismatic_cols = super::motion_subspace_columns(&prismatic_x_joint())
-            .expect("prismatic should return Some");
-        let arr = prismatic_cols[0].as_array();
-        let expected = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0];
-        for (i, (&got, exp)) in arr.iter().zip(expected).enumerate() {
-            assert!(
-                (got - exp).abs() < 1e-12,
-                "PRD §10 δ pin — prismatic column[{}]: expected {}, got {}",
-                i, exp, got
-            );
+            for (ci, (col, exp)) in cols.iter().zip(expected_columns.iter()).enumerate() {
+                let arr = col.as_array();
+                for (i, (&got, &e)) in arr.iter().zip(exp.iter()).enumerate() {
+                    assert!(
+                        (got - e).abs() < 1e-12,
+                        "{} col[{}][{}]: expected {}, got {}",
+                        kind, ci, i, e, got
+                    );
+                }
+            }
         }
     }
 
@@ -6399,124 +6436,26 @@ mod tests {
         );
 
         // (f) Planar Map with non-perpendicular axes → None via unit_axes_xy_from_planar_map.
-        // axis_x = e_x, axis_y = e_x (parallel, dot = 1.0 >> 1e-9 threshold).
-        let parallel_planar = eval_builtin(
-            "planar",
-            &[
-                axis_x_unit(),
-                axis_x_unit(), // same axis — rejects at constructor
-                length_range_0_to_1m(),
-                length_range_0_to_1m(),
-                angle_range_0_to_pi(),
-            ],
+        // Build the Map directly so the input reaches the "planar" arm and exercises
+        // the perpendicularity propagation inside unit_axes_xy_from_planar_map.
+        // axis_x = e_x, axis_y = e_x (parallel: dot = 1.0 >> 1e-9 threshold).
+        // (Using eval_builtin("planar", ...) would return Value::Undef at construction
+        // time and never reach the planar arm — case (a) would handle it instead.)
+        let mut parallel_planar_map = std::collections::BTreeMap::new();
+        parallel_planar_map.insert(
+            Value::String("kind".to_string()),
+            Value::String("planar".to_string()),
         );
-        // The constructor returns Undef for parallel axes; if it somehow slips through,
-        // motion_subspace_columns must also return None.
-        // Undef is Value::Undef, which is not a Map — case (a) handles it.
+        parallel_planar_map.insert(Value::String("axis_x".to_string()), axis_x_unit());
+        parallel_planar_map.insert(Value::String("axis_y".to_string()), axis_x_unit()); // same axis
+        let parallel_planar = Value::Map(parallel_planar_map);
         assert!(
             super::motion_subspace_columns(&parallel_planar).is_none(),
-            "(f) planar with non-perpendicular axes should return None"
+            "(f) planar Map with parallel axes should return None via unit_axes_xy_from_planar_map"
         );
-    }
-
-    // ── motion_subspace_columns: spherical ───────────────────────────────────
-
-    /// PRD §4.2 pin: spherical is axis-isotropic — no stored axis. Motion-subspace
-    /// columns are the body-frame basis vectors (three pure-angular columns).
-    ///
-    ///   col[0] = [1,0,0, 0,0,0]  (angular about body-local +x)
-    ///   col[1] = [0,1,0, 0,0,0]  (angular about body-local +y)
-    ///   col[2] = [0,0,1, 0,0,0]  (angular about body-local +z)
-    ///
-    /// World-frame transformation is RNEA's responsibility via X_{p→i}.
-    #[test]
-    fn motion_subspace_columns_spherical_returns_three_pure_angular_columns() {
-        let joint = spherical_joint();
-        let cols = super::motion_subspace_columns(&joint)
-            .expect("motion_subspace_columns on spherical joint should return Some");
-        assert_eq!(cols.len(), 3, "spherical has 3 DOFs — expected 3 columns");
-
-        let expected: [[f64; 6]; 3] = [
-            [1.0, 0.0, 0.0, 0.0, 0.0, 0.0], // col[0]: angular about body +x
-            [0.0, 1.0, 0.0, 0.0, 0.0, 0.0], // col[1]: angular about body +y
-            [0.0, 0.0, 1.0, 0.0, 0.0, 0.0], // col[2]: angular about body +z
-        ];
-        for (ci, (col, exp)) in cols.iter().zip(expected.iter()).enumerate() {
-            let arr = col.as_array();
-            for (i, (&got, &e)) in arr.iter().zip(exp.iter()).enumerate() {
-                assert!(
-                    (got - e).abs() < 1e-12,
-                    "spherical col[{}][{}]: expected {}, got {}",
-                    ci, i, e, got
-                );
-            }
-        }
-    }
-
-    // ── motion_subspace_columns: planar ──────────────────────────────────────
-
-    /// PRD §5.1 pin: planar columns = `[linear_axis_x, linear_axis_y, angular_normal]`
-    /// where `normal = axis_x × axis_y`. Ordering matches the `transform_at` planar
-    /// motion-var order `[x_length, y_length, theta_angle]`.
-    ///
-    /// For `planar_xy_joint()` (axis_x = e_x, axis_y = e_y):
-    ///   col[0] = [0,0,0, 1,0,0]  (linear along +X)
-    ///   col[1] = [0,0,0, 0,1,0]  (linear along +Y)
-    ///   col[2] = [0,0,1, 0,0,0]  (angular about +Z = e_x × e_y)
-    #[test]
-    fn motion_subspace_columns_planar_returns_three_columns_with_normal_angular() {
-        let joint = planar_xy_joint();
-        let cols = super::motion_subspace_columns(&joint)
-            .expect("motion_subspace_columns on planar joint should return Some");
-        assert_eq!(cols.len(), 3, "planar has 3 DOFs — expected 3 columns");
-
-        let expected: [[f64; 6]; 3] = [
-            [0.0, 0.0, 0.0, 1.0, 0.0, 0.0], // col[0]: linear along axis_x = +X
-            [0.0, 0.0, 0.0, 0.0, 1.0, 0.0], // col[1]: linear along axis_y = +Y
-            [0.0, 0.0, 1.0, 0.0, 0.0, 0.0], // col[2]: angular about normal = e_x × e_y = +Z
-        ];
-        for (ci, (col, exp)) in cols.iter().zip(expected.iter()).enumerate() {
-            let arr = col.as_array();
-            for (i, (&got, &e)) in arr.iter().zip(exp.iter()).enumerate() {
-                assert!(
-                    (got - e).abs() < 1e-12,
-                    "planar col[{}][{}]: expected {}, got {}",
-                    ci, i, e, got
-                );
-            }
-        }
     }
 
     // ── motion_subspace_columns: cylindrical ─────────────────────────────────
-
-    /// PRD §12 Q4 pin: cylindrical columns are `[translation, rotation]`.
-    /// Column 0 = `[0; unit_axis]` (prismatic-equivalent, linear along +Z),
-    /// column 1 = `[unit_axis; 0]` (revolute-equivalent, angular about +Z).
-    #[test]
-    fn motion_subspace_columns_cylindrical_returns_translation_then_rotation_columns() {
-        let joint = cylindrical_z_joint();
-        let cols = super::motion_subspace_columns(&joint)
-            .expect("motion_subspace_columns on cylindrical joint should return Some");
-        assert_eq!(cols.len(), 2, "cylindrical has 2 DOFs — expected 2 columns");
-        // Column 0: translation (prismatic-equivalent) — linear along +Z, zero angular.
-        let c0 = cols[0].as_array();
-        for (i, (&got, exp)) in c0.iter().zip([0.0, 0.0, 0.0, 0.0, 0.0, 1.0]).enumerate() {
-            assert!(
-                (got - exp).abs() < 1e-12,
-                "cylindrical col0 (translation)[{}]: expected {}, got {} (PRD §12 Q4: [0; axis])",
-                i, exp, got
-            );
-        }
-        // Column 1: rotation (revolute-equivalent) — angular about +Z, zero linear.
-        let c1 = cols[1].as_array();
-        for (i, (&got, exp)) in c1.iter().zip([0.0, 0.0, 1.0, 0.0, 0.0, 0.0]).enumerate() {
-            assert!(
-                (got - exp).abs() < 1e-12,
-                "cylindrical col1 (rotation)[{}]: expected {}, got {} (PRD §12 Q4: [axis; 0])",
-                i, exp, got
-            );
-        }
-    }
 
     /// Both cylindrical columns share the same unit-normalized direction.
     #[test]
@@ -6540,25 +6479,6 @@ mod tests {
 
     // ── motion_subspace_columns: revolute ────────────────────────────────────
 
-    /// PRD §5.1 pin: revolute column = `[unit_axis; 0]`.
-    /// `motion_subspace_columns` on a revolute +Z joint returns a single
-    /// column with angular = [0,0,1] and linear = [0,0,0].
-    #[test]
-    fn motion_subspace_columns_revolute_unit_axis_returns_axis_zero_column() {
-        let joint = revolute_z_joint();
-        let cols = super::motion_subspace_columns(&joint)
-            .expect("motion_subspace_columns on revolute joint should return Some");
-        assert_eq!(cols.len(), 1, "revolute has 1 DOF — expected 1 column");
-        let arr = cols[0].as_array();
-        for (i, (&got, exp)) in arr.iter().zip([0.0, 0.0, 1.0, 0.0, 0.0, 0.0]).enumerate() {
-            assert!(
-                (got - exp).abs() < 1e-12,
-                "revolute +Z column[{}]: expected {}, got {} (PRD §5.1: [unit_axis; 0])",
-                i, exp, got
-            );
-        }
-    }
-
     /// Axis normalization: revolute with unnormalized axis `[0,0,2]` (magnitude 2)
     /// still returns column `[0,0,1, 0,0,0]`.
     #[test]
@@ -6580,25 +6500,6 @@ mod tests {
 
     // ── motion_subspace_columns: prismatic ───────────────────────────────────
 
-    /// PRD §5.1 pin: prismatic column = `[0; axis]`.
-    /// `motion_subspace_columns` on a prismatic +X joint returns a single
-    /// column with angular = [0,0,0] and linear = [1,0,0].
-    #[test]
-    fn motion_subspace_columns_prismatic_unit_axis_returns_zero_axis_column() {
-        let joint = prismatic_x_joint();
-        let cols = super::motion_subspace_columns(&joint)
-            .expect("motion_subspace_columns on prismatic joint should return Some");
-        assert_eq!(cols.len(), 1, "prismatic has 1 DOF — expected 1 column");
-        let arr = cols[0].as_array();
-        for (i, (&got, exp)) in arr.iter().zip([0.0, 0.0, 0.0, 1.0, 0.0, 0.0]).enumerate() {
-            assert!(
-                (got - exp).abs() < 1e-12,
-                "prismatic +X column[{}]: expected {}, got {} (PRD §5.1: [0; axis])",
-                i, exp, got
-            );
-        }
-    }
-
     /// Axis normalization: prismatic with unnormalized axis `[2,0,0]` (magnitude 2)
     /// still returns column `[0,0,0, 1,0,0]`.
     #[test]
@@ -6618,19 +6519,4 @@ mod tests {
         }
     }
 
-    // ── motion_subspace_columns: fixed ────────────────────────────────────────
-
-    /// `motion_subspace_columns` on a fixed joint returns `Some(vec![])` (0-DOF → 6×0
-    /// motion-subspace).
-    #[test]
-    fn motion_subspace_columns_fixed_returns_empty_vec() {
-        let fixed_joint = eval_builtin("fixed", &[]);
-        let cols = super::motion_subspace_columns(&fixed_joint)
-            .expect("motion_subspace_columns on fixed joint should return Some");
-        assert!(
-            cols.is_empty(),
-            "fixed joint has 0 DOFs — motion-subspace should be 6×0 (empty Vec), got len={}",
-            cols.len()
-        );
-    }
 }
