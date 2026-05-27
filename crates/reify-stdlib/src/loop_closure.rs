@@ -42,6 +42,7 @@
 use reify_types::Value;
 
 use crate::eval_builtin;
+use crate::loop_closure_value::JointValue;
 
 /// Fold a chain of joint Maps into a single composed Transform.
 ///
@@ -139,32 +140,35 @@ fn twist_map_to_array(twist_map: &Value) -> Option<[f64; 6]> {
     Some([ang[0], ang[1], ang[2], lin[0], lin[1], lin[2]])
 }
 
-/// Return the midpoint of a joint's free-variable range, in the joint's
-/// own input coordinate (metres for prismatic, radians for revolute).
+/// Return the midpoint of a joint's free-variable range, wrapped as a
+/// `JointValue` whose variant matches the joint's kind:
+///   * `prismatic` / `revolute` / `coupling` → `JointValue::Scalar(mid)`
+///     where `mid` is the range midpoint in SI units (metres or radians).
+///   * `planar` → `JointValue::Planar([mid_x, mid_y, mid_θ])` from the
+///     three per-DOF range midpoints (`range_x`, `range_y`, `range_theta`).
+///   * `spherical` → `JointValue::Sphere([1, 0, 0, 0])` — the identity
+///     quaternion (axis-isotropic; the `range_angle` bound constrains
+///     downstream solver motion magnitude, not the seed direction).
+///   * `cylindrical` → `JointValue::Cyl([mid_d, mid_θ])` from
+///     `translation_range` / `rotation_range` midpoints.
 ///
 /// Returns `None` for joints whose range is missing, unbounded on either
 /// side, for fixed (0-DOF) joints whose free-variable space is empty, or
 /// for non-Map / unknown-kind inputs.
 ///
 /// **Coupling note**: returns the *parent's* range midpoint (not scaled by
-/// `ratio`).  The free-variable space of a coupling joint is the parent's
-/// motion variable — the coupling's `transform_at` arm applies the ratio
-/// downstream when computing the parent's coupled position.  This is the
-/// joint's own free-variable space, not the coupled output.
+/// `ratio`), wrapped as `JointValue::Scalar`.  The free-variable space of a
+/// coupling joint is the parent's motion variable — the coupling's
+/// `transform_at` arm applies the ratio downstream when computing the
+/// parent's coupled position.
 ///
-/// **Multi-DOF kinds** (`planar`, `spherical`, `cylindrical` — see
-/// `crate::joints::JOINT_KINDS` for the canonical kind list and the test
-/// module's `MULTI_DOF_KINDS` for the multi-DOF subset) return `None`:
-/// each has more than one motion variable and therefore no single-scalar
-/// midpoint to seed. Callers building initial-guess vectors should skip
-/// these kinds just as they skip `fixed`. Multi-DOF chain support is
-/// deferred to PRD v0.2 kinematic task 2 (taskmaster #2670 — "FD fallback
-/// for spherical, cylindrical, planar"); the explicit per-arm `=> None`
-/// dispatch is retained (rather than relying on the catch-all `_ => None`)
-/// so a future kind addition cannot silently change this behaviour, and
-/// the JOINT_KINDS-iteration partition test in this module's `tests` block
-/// loud-fails any drift.
-pub fn joint_range_midpoint(joint: &Value) -> Option<f64> {
+/// KCC-γ (PRD §5.2) widened this from `Option<f64>` to `Option<JointValue>`
+/// so multi-DOF kinds (planar, spherical, cylindrical) participate in the
+/// chain machinery and the loop-closure Newton solver.  The explicit
+/// per-arm dispatch is retained so a future kind addition cannot silently
+/// drift; the JOINT_KINDS-iteration partition test in this module's
+/// `tests` block loud-fails any unhandled kind.
+pub fn joint_range_midpoint(joint: &Value) -> Option<JointValue> {
     let map = match joint {
         Value::Map(m) => m,
         _ => return None,
@@ -175,34 +179,57 @@ pub fn joint_range_midpoint(joint: &Value) -> Option<f64> {
     };
     match kind {
         "prismatic" | "revolute" => {
-            let range = map.get(&Value::String("range".to_string()))?;
-            let (lo, up) = match range {
-                Value::Range {
-                    lower: Some(lo),
-                    upper: Some(up),
-                    ..
-                } => (lo.as_ref(), up.as_ref()),
-                _ => return None,
-            };
-            let lo_si = lo.as_f64()?;
-            let up_si = up.as_f64()?;
-            if !lo_si.is_finite() || !up_si.is_finite() {
-                return None;
-            }
-            Some((lo_si + up_si) / 2.0)
+            let mid = range_midpoint(map, "range")?;
+            Some(JointValue::Scalar(mid))
         }
         "coupling" => {
             let parent = map.get(&Value::String("parent".to_string()))?;
             joint_range_midpoint(parent)
         }
-        // 0-DOF — empty free-variable space; see fn-doc.
+        // 0-DOF — empty free-variable space; no midpoint to seed.
         "fixed" => None,
-        // Multi-DOF — see fn-doc / JOINT_KINDS / MULTI_DOF_KINDS.
-        "planar" => None,
-        "spherical" => None,
-        "cylindrical" => None,
+        "planar" => {
+            let mid_x = range_midpoint(map, "range_x")?;
+            let mid_y = range_midpoint(map, "range_y")?;
+            let mid_theta = range_midpoint(map, "range_theta")?;
+            Some(JointValue::Planar([mid_x, mid_y, mid_theta]))
+        }
+        // Axis-isotropic: identity quaternion is the canonical seed regardless
+        // of `range_angle` (which bounds the rotation magnitude downstream).
+        "spherical" => Some(JointValue::Sphere([1.0, 0.0, 0.0, 0.0])),
+        "cylindrical" => {
+            let mid_d = range_midpoint(map, "translation_range")?;
+            let mid_theta = range_midpoint(map, "rotation_range")?;
+            Some(JointValue::Cyl([mid_d, mid_theta]))
+        }
         _ => None,
     }
+}
+
+/// Lookup helper: extract the midpoint of a `Value::Range` stored at `key`
+/// in a joint Map.  Returns `None` for missing keys, unbounded ranges, or
+/// non-numeric / non-finite bounds.  Shared by `joint_range_midpoint`'s
+/// per-kind arms (single-DOF `range`, planar `range_{x,y,theta}`,
+/// cylindrical `translation_range` / `rotation_range`).
+fn range_midpoint(
+    map: &std::collections::BTreeMap<Value, Value>,
+    key: &str,
+) -> Option<f64> {
+    let range = map.get(&Value::String(key.to_string()))?;
+    let (lo, up) = match range {
+        Value::Range {
+            lower: Some(lo),
+            upper: Some(up),
+            ..
+        } => (lo.as_ref(), up.as_ref()),
+        _ => return None,
+    };
+    let lo_si = lo.as_f64()?;
+    let up_si = up.as_f64()?;
+    if !lo_si.is_finite() || !up_si.is_finite() {
+        return None;
+    }
+    Some((lo_si + up_si) / 2.0)
 }
 
 /// Return the analytic per-joint twist column expressed in the joint's own
@@ -461,7 +488,16 @@ pub fn extract_loop_closure_chains(
         if let Some(v_si) = direct_binding_value_si(joint, bindings) {
             vals_b_initial.push(v_si);
         } else {
-            let mid_si = joint_range_midpoint(joint)?;
+            // KCC-γ: joint_range_midpoint now returns Option<JointValue>;
+            // the tuple-typed (Vec<f64>) chain bridge still operates on
+            // scalar SI values, so we extract the f64 from Scalar and
+            // collapse to None for multi-DOF kinds (step-10 widens the
+            // tuple type and removes this extraction step).
+            let mid_jv = joint_range_midpoint(joint)?;
+            let mid_si = match mid_jv {
+                JointValue::Scalar(s) => s,
+                _ => return None,
+            };
             vals_b_initial.push(mid_si);
             free_b.push(i);
         }
@@ -574,7 +610,15 @@ fn resolve_joint_value_si(joint: &Value, bindings: &[Value]) -> Option<f64> {
             return Some(0.0);
         }
     }
-    joint_range_midpoint(joint)
+    // KCC-γ: joint_range_midpoint now returns Option<JointValue>; this
+    // f64-typed resolver only handles Scalar-shaped midpoints (single-DOF
+    // kinds + couplings) and returns None for multi-DOF kinds.  The
+    // chain-bridge-widening in step-10 lifts this resolver to return
+    // Option<JointValue> directly.
+    joint_range_midpoint(joint).and_then(|jv| match jv {
+        JointValue::Scalar(s) => Some(s),
+        _ => None,
+    })
 }
 
 #[cfg(test)]

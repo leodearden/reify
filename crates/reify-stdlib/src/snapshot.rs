@@ -952,8 +952,18 @@ fn value_for(joint: &Value, bindings: &[Value]) -> Option<Value> {
         return Some(Value::Real(0.0));
     }
     // 3. Range-midpoint fallback (spec §13.3).
-    let mid_si = joint_range_midpoint(joint)?;
-    wrap_midpoint_for_joint(joint, mid_si)
+    // KCC-γ: joint_range_midpoint now returns Option<JointValue>; the
+    // single-DOF wrap path here extracts the Scalar f64 and re-wraps via
+    // the kind-specific dimensioned constructor.  Multi-DOF wrapping is
+    // deferred to step-10's `wrap_jointvalue_for_joint` helper which the
+    // closed-chain post-process loop in this file will consume.
+    let mid_jv = joint_range_midpoint(joint)?;
+    match mid_jv {
+        crate::loop_closure_value::JointValue::Scalar(mid_si) => {
+            wrap_midpoint_for_joint(joint, mid_si)
+        }
+        _ => None,
+    }
 }
 
 /// Wrap a midpoint f64 (in SI units) back into a dimensioned `Value`

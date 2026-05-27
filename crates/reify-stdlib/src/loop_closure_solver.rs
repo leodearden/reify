@@ -512,8 +512,27 @@ pub fn solve_loop_closure(
         StartStrategy::Midpoint => free_b
             .iter()
             .map(|&i| {
-                crate::loop_closure::joint_range_midpoint(&chain_b[i])
+                // KCC-γ: joint_range_midpoint returns Option<JointValue>.
+                // Until step-12 widens this solver path to flatten
+                // multi-DOF kinds into the flat Newton state, only
+                // Scalar-shaped midpoints feed x0 here.  The Midpoint-
+                // strategy validation guard (validate_loop_closure_inputs,
+                // below) only confirms Some; the multi-DOF unwrap here
+                // panics if a planar/spherical/cylindrical joint reaches
+                // this path before step-12.  In current closed-chain
+                // fixtures the free chain is single-DOF, so this is
+                // unreachable; the assertion documents the contract.
+                match crate::loop_closure::joint_range_midpoint(&chain_b[i])
                     .expect("joint_range_midpoint validated above")
+                {
+                    crate::loop_closure_value::JointValue::Scalar(s) => s,
+                    other => panic!(
+                        "solve_loop_closure: Midpoint strategy reached \
+                         multi-DOF JointValue {other:?} for free_b[{i}] — \
+                         the f64-typed Newton path is not yet widened (KCC-γ \
+                         step-12).  Switch to WarmStart with a flat x0 buffer."
+                    ),
+                }
             })
             .collect(),
     };
@@ -869,13 +888,19 @@ pub fn solve_loop_closure_with_diagnostics(
             StartStrategy::Midpoint => free_b
                 .iter()
                 .map(|&i| {
-                    // Indices and joint-range existence validated above;
-                    // expect documents the invariant rather than silently
-                    // dropping entries (the previous filter_map could
-                    // produce x.len() < free_b.len() — a contract
-                    // violation now caught by the validation pass).
-                    crate::loop_closure::joint_range_midpoint(&chain_b[i])
+                    // KCC-γ: extract Scalar from JointValue; the f64-typed
+                    // diagnostic path still operates on the pre-widening
+                    // shape — multi-DOF kinds panic here (step-12 widens).
+                    match crate::loop_closure::joint_range_midpoint(&chain_b[i])
                         .expect("joint_range_midpoint validated above")
+                    {
+                        crate::loop_closure_value::JointValue::Scalar(s) => s,
+                        other => panic!(
+                            "solve_loop_closure_with_diagnostics: Midpoint \
+                             strategy reached multi-DOF JointValue {other:?} \
+                             for free_b[{i}] — KCC-γ step-12 widens this."
+                        ),
+                    }
                 })
                 .collect(),
         };
