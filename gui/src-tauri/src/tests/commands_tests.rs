@@ -895,3 +895,52 @@ fn open_file_impl_errors_for_nonexistent_file() {
         "error message should contain 'Error reading', got: {msg}"
     );
 }
+
+// --- open_file_engine_impl canonicalisation tests (step-5) ---
+//
+// The plan's step 5 description states that GuiState.files[0].path should be
+// the canonical absolute path after calling open_file_engine_impl with a
+// relative input.  engine::source_map() always stores keys as module_key =
+// "{name}.ri" (see engine.rs commit_state:275-277), so this requires
+// open_file_engine_impl to post-process the returned GuiState.files paths
+// (see step-6 implementation for how this is done).  The test is written to
+// the observable contract: files[0].path == canonical absolute path.
+
+/// Opening a file via its CWD-relative path causes GuiState.files[0].path to
+/// equal the canonical absolute realpath (not the bare filename / module key).
+#[test]
+fn open_file_engine_impl_files_path_is_canonical_absolute() {
+    use crate::commands::open_file_engine_impl;
+    use reify_test_support::bracket_source;
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("bracket.ri");
+    std::fs::write(&file, bracket_source()).unwrap();
+    let expected = std::fs::canonicalize(&file)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let kernel = reify_test_support::MockGeometryKernel::new();
+    let session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let engine = std::sync::Mutex::new(session);
+
+    let _guard = cwd_lock().lock().unwrap();
+    let original = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    let result = open_file_engine_impl(&engine, "bracket.ri");
+
+    std::env::set_current_dir(&original).unwrap();
+
+    let state = result.expect("open_file_engine_impl should succeed for existing file");
+    assert!(
+        !state.files.is_empty(),
+        "GuiState.files should be non-empty after loading a file"
+    );
+    assert_eq!(
+        state.files[0].path, expected,
+        "GuiState.files[0].path should be the canonical absolute realpath, not a module-key form"
+    );
+}
