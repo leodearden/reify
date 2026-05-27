@@ -11,6 +11,8 @@
 pub(crate) enum BoundaryCondition {
     /// Natural: second derivatives at endpoints are zero.
     Natural,
+    /// Clamped: first derivatives at endpoints are prescribed.
+    Clamped { start_vel: f64, end_vel: f64 },
 }
 
 /// A single-joint cubic interpolating spline.
@@ -57,6 +59,9 @@ impl CubicSpline {
 
         match bc {
             BoundaryCondition::Natural => Self::fit_natural(knots, values),
+            BoundaryCondition::Clamped { start_vel, end_vel } => {
+                Self::fit_clamped(knots, values, *start_vel, *end_vel)
+            }
         }
     }
 
@@ -176,6 +181,115 @@ impl CubicSpline {
         let i = self.segment(t);
         let s = t - self.knots[i];
         self.a[i] + s * (self.b[i] + s * (self.c[i] + s * self.d[i]))
+    }
+
+    /// Clamped cubic spline: prescribed first derivatives at endpoints.
+    fn fit_clamped(
+        knots: &[f64],
+        values: &[f64],
+        start_vel: f64,
+        end_vel: f64,
+    ) -> Option<Self> {
+        let n = knots.len();
+        let m = n - 1;
+        let h: Vec<f64> = (0..m).map(|i| knots[i + 1] - knots[i]).collect();
+
+        if n == 2 {
+            // One segment, fully determined by endpoint values and slopes via cubic Hermite
+            let h0 = h[0];
+            let v0 = values[0];
+            let v1 = values[1];
+            let d0 = start_vel;
+            let d1 = end_vel;
+            // Hermite basis: a=v0, b=d0, c=(3(v1-v0)/h - 2d0 - d1)/h, d=(2(v0-v1)/h + d0 + d1)/h^2
+            let a = v0;
+            let b = d0;
+            let c = (3.0 * (v1 - v0) / h0 - 2.0 * d0 - d1) / h0;
+            let d = (2.0 * (v0 - v1) / h0 + d0 + d1) / (h0 * h0);
+            return Some(CubicSpline {
+                knots: knots.to_vec(),
+                a: vec![a],
+                b: vec![b],
+                c: vec![c],
+                d: vec![d],
+            });
+        }
+
+        // System size = n (including endpoints with clamped BC)
+        // M[0] determined by: h[0]*M[0]/3 + h[0]*M[1]/6 = (values[1]-values[0])/h[0] - start_vel
+        // M[n-1] determined by: h[n-2]*M[n-2]/6 + h[n-2]*M[n-1]/3 = end_vel - (values[n-1]-values[n-2])/h[n-2]
+        // Interior equations same as natural.
+
+        let size = n;
+        let mut diag = vec![0.0_f64; size];
+        let mut upper = vec![0.0_f64; size - 1];
+        let mut lower = vec![0.0_f64; size - 1];
+        let mut rhs = vec![0.0_f64; size];
+
+        // Endpoint rows
+        diag[0] = h[0] / 3.0;
+        upper[0] = h[0] / 6.0;
+        rhs[0] = (values[1] - values[0]) / h[0] - start_vel;
+
+        diag[n - 1] = h[m - 1] / 3.0;
+        lower[n - 2] = h[m - 1] / 6.0;
+        rhs[n - 1] = end_vel - (values[n - 1] - values[n - 2]) / h[m - 1];
+
+        // Interior rows
+        for i in 1..n - 1 {
+            diag[i] = 2.0 * (h[i - 1] + h[i]);
+            let rhs_val = 6.0
+                * ((values[i + 1] - values[i]) / h[i]
+                    - (values[i] - values[i - 1]) / h[i - 1]);
+            rhs[i] = rhs_val;
+            if i + 1 < n - 1 {
+                upper[i] = h[i];
+            }
+            lower[i - 1] = h[i - 1];
+        }
+        // Fix: overwrite interior upper/lower after endpoint rows
+        // Actually rebuild cleanly:
+        let mut diag2 = vec![0.0_f64; size];
+        let mut upper2 = vec![0.0_f64; size - 1];
+        let mut lower2 = vec![0.0_f64; size - 1];
+        let mut rhs2 = vec![0.0_f64; size];
+
+        // First row (i=0): clamped BC
+        diag2[0] = h[0] / 3.0;
+        upper2[0] = h[0] / 6.0;
+        rhs2[0] = (values[1] - values[0]) / h[0] - start_vel;
+
+        // Last row (i=n-1): clamped BC
+        diag2[n - 1] = h[m - 1] / 3.0;
+        lower2[n - 2] = h[m - 1] / 6.0;
+        rhs2[n - 1] = end_vel - (values[n - 1] - values[n - 2]) / h[m - 1];
+
+        // Interior rows i=1..n-2
+        for i in 1..n - 1 {
+            diag2[i] = 2.0 * (h[i - 1] + h[i]);
+            rhs2[i] = 6.0
+                * ((values[i + 1] - values[i]) / h[i]
+                    - (values[i] - values[i - 1]) / h[i - 1]);
+            if i < n - 1 {
+                upper2[i] = h[i];
+            }
+            if i > 0 {
+                lower2[i - 1] = h[i - 1];
+            }
+        }
+
+        let _ = (diag, upper, lower, rhs); // drop unused first build
+
+        let m_vals = solve_tridiagonal(&lower2[..n - 1], &diag2, &upper2[..n - 1], &rhs2)?;
+
+        Self::from_second_derivatives(knots, values, &h, &m_vals)
+    }
+
+    /// Evaluate the first derivative at t.
+    pub(crate) fn eval_dot(&self, t: f64) -> f64 {
+        let i = self.segment(t);
+        let s = t - self.knots[i];
+        self.b[i] + s * (2.0 * self.c[i] + s * 3.0 * self.d[i])
     }
 
     /// Evaluate the second derivative at t.
