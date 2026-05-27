@@ -1104,3 +1104,78 @@ fn joint_limit_struct_has_correct_param_shape() {
         );
     }
 }
+
+// ─── step-33: JointLimit max_force positivity constraint ─────────────────────
+
+/// `JointLimit` must declare exactly one constraint: `max_force > 0`.
+///
+/// A "max force" of zero or negative is physically degenerate — only positive
+/// values are meaningful as an actuator limit. Making the contract explicit
+/// in production code (task #2544 convention) rather than relying solely on
+/// test coverage.
+///
+/// Tight count == 1 is a regression gate: `joint : Real` is explicitly NOT
+/// constrained (it is an entity-handle placeholder — no meaningful scalar
+/// predicate on a handle).
+///
+/// Mirrors `modal_options_constrains_positivity_invariants` in
+/// modal_options_validation_tests.rs and
+/// `piecewise_polynomial_profile_constrains_waypoints_nonempty` (step-19).
+#[test]
+fn joint_limit_constrains_max_force_positive() {
+    let template = find_structure("JointLimit");
+
+    // Tight count: exactly 1 constraint (regression-gate against accidental
+    // over-declaration of a constraint on `joint`).
+    assert_eq!(
+        template.constraints.len(),
+        1,
+        "JointLimit should declare exactly 1 constraint (max_force > 0); \
+         got {} constraints: {:?}",
+        template.constraints.len(),
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+
+    let constraint = &template.constraints[0];
+
+    // Constraint must be BinOp::Gt.
+    let (left, right, op) = match &constraint.expr.kind {
+        CompiledExprKind::BinOp { op, left, right } => (left.as_ref(), right.as_ref(), op),
+        other => panic!(
+            "JointLimit constraint should be a BinOp; got: {:?}",
+            other
+        ),
+    };
+    assert_eq!(
+        *op,
+        BinOp::Gt,
+        "JointLimit constraint should use BinOp::Gt (max_force > 0); \
+         got: {:?}",
+        op
+    );
+
+    // LHS must reference `max_force`.
+    let lhs_refs = collect_value_ref_members(left);
+    assert!(
+        lhs_refs.contains(&"max_force"),
+        "JointLimit constraint LHS should reference `max_force`; \
+         got refs: {:?}",
+        lhs_refs
+    );
+
+    // RHS must be literal 0 — accept Int(0) or Real(0.0) per future-proofing
+    // convention (mirrors piecewise_polynomial_profile_constrains_waypoints_nonempty).
+    match &right.kind {
+        CompiledExprKind::Literal(Value::Int(0)) => {}
+        CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => {}
+        other => panic!(
+            "JointLimit constraint RHS should be Literal(Int(0)) or \
+             Literal(Real(0.0)); got: {:?}",
+            other
+        ),
+    }
+}
