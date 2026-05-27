@@ -145,6 +145,31 @@ mod tests {
     }
 
     #[test]
+    fn eval_builtin_contributor_returns_map() {
+        let m = match crate::eval_builtin("contributor", &[len(0.010), len(0.0001)]) {
+            Value::Map(m) => m,
+            other => panic!("expected Map, got {:?}", other),
+        };
+        assert_eq!(m.len(), 5);
+        assert_eq!(m[&Value::String("nominal".into())], len(0.010));
+        assert_eq!(m[&Value::String("plus_tol".into())], len(0.0001));
+        assert_eq!(m[&Value::String("minus_tol".into())], len(0.0001));
+        assert_eq!(m[&Value::String("sign".into())], Value::Int(1));
+    }
+
+    #[test]
+    fn eval_builtin_unknown_stackup_name_returns_undef() {
+        assert!(crate::eval_builtin("stackup_xyz_unknown", &[]).is_undef());
+    }
+
+    #[test]
+    fn eval_builtin_t1_stub_math_names_return_undef() {
+        assert!(crate::eval_builtin("stackup_worst_case", &[]).is_undef());
+        assert!(crate::eval_builtin("stackup_rss", &[]).is_undef());
+        assert!(crate::eval_builtin("monte_carlo_stackup", &[]).is_undef());
+    }
+
+    #[test]
     fn contributor_asym_validation_returns_undef() {
         let nom = len(0.010);
         let pt = len(0.0001);
