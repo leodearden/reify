@@ -2741,3 +2741,62 @@ fn block_level_kernel_pragma_on_constraint_def_emits_deferred_warning() {
         warns
     );
 }
+
+// ── cfg pragma (task α — conditional compilation) ────────────────────────────
+
+/// Well-formed `#cfg` pragmas — `#cfg(target = "linux")` (KeyValue arg),
+/// `#cfg(linux)` (Bare-Ident arg), and `#cfg(linux, target = "wasm")`
+/// (mixed-shape multi-arg, all args pass the shape check) — produce zero
+/// `#cfg`-related diagnostics.
+///
+/// Expected failure before step-2 impl: `validate_module_pragmas` emits
+/// "unknown pragma #cfg" because "cfg" is absent from `MODULE_ONLY_PRAGMAS`.
+#[test]
+fn cfg_pragma_well_formed_no_unknown_pragma_warning() {
+    let cases: &[(&str, &str)] = &[
+        (
+            r#"#cfg(target = "linux")
+structure S { param x : Real }"#,
+            "key-value-arg",
+        ),
+        (
+            "#cfg(linux)\nstructure S { param x : Real }",
+            "bare-ident-arg",
+        ),
+        (
+            r#"#cfg(linux, target = "wasm")
+structure S { param x : Real }"#,
+            "mixed-shape-multi-arg",
+        ),
+    ];
+
+    for (source, label) in cases {
+        let module = compile_source(source);
+
+        // No error mentions "#cfg", "unknown pragma", or "E_CFG_MALFORMED".
+        let cfg_errors: Vec<_> = errors_only(&module)
+            .into_iter()
+            .filter(|d| {
+                d.message.contains("#cfg")
+                    || d.message.contains("unknown pragma")
+                    || d.message.contains("E_CFG_MALFORMED")
+            })
+            .collect();
+        assert!(
+            cfg_errors.is_empty(),
+            "[{label}] unexpected #cfg-related errors: {:?}",
+            cfg_errors
+        );
+
+        // No warning matches "unknown pragma #cfg".
+        let unknown_warns: Vec<_> = warnings_only(&module)
+            .into_iter()
+            .filter(|d| d.message.contains("unknown pragma #cfg"))
+            .collect();
+        assert!(
+            unknown_warns.is_empty(),
+            "[{label}] unexpected 'unknown pragma #cfg' warning: {:?}",
+            unknown_warns
+        );
+    }
+}
