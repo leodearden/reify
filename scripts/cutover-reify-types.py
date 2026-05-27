@@ -19,13 +19,14 @@ import shutil
 import subprocess
 from pathlib import Path
 from collections import defaultdict
+from typing import NoReturn
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
 DRY_RUN = "--dry-run" in sys.argv
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
 
-def abort(msg: str) -> None:
+def abort(msg: str) -> NoReturn:
     print(f"\nABORT: {msg}", file=sys.stderr)
     sys.exit(1)
 
@@ -292,7 +293,7 @@ def normalize_multiline_use_blocks(content: str) -> str:
                     break
                 j += 1
             # Join into a single line
-            joined = ' '.join(l.strip() for l in collected)
+            joined = ' '.join(ln.strip() for ln in collected)
             # Normalize spaces around braces and commas
             joined = re.sub(r'\s+', ' ', joined)
             # Restore leading indentation
