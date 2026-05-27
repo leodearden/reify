@@ -119,6 +119,21 @@ pub(crate) fn element_stiffness_generic_with_d_global<E: ReferenceElement>(
         E::N_NODES,
         "phys_nodes.len() must equal E::N_NODES",
     );
+    // The inner loop accumulates only the upper triangle (`b ≥ a`) and
+    // mirrors it after the q-point sum (lines ~225–242). That optimisation
+    // is correct **iff** `D` is symmetric — otherwise asymmetric content
+    // in `D` is silently dropped and the mirror produces a symmetrised
+    // approximation of `BᵀDB`. `IsotropicElastic::d_matrix()` is provably
+    // symmetric, but the field-aware surface lets callers construct an
+    // `AnisotropicMaterial` via its `pub d_local` field with arbitrary
+    // entries. Bit-exact equality (not approx-eq) matches the convention
+    // used by `OrthotropicMaterial::debug_assert_valid` — anything looser
+    // would let small FP drift mask a genuinely-asymmetric `D`.
+    debug_assert!(
+        (0..6).all(|i| (i + 1..6).all(|j| d_mat[i][j] == d_mat[j][i])),
+        "d_mat must be symmetric for upper-triangle BᵀDB assembly to be correct \
+         (asymmetric entries are silently dropped by the mirror step)",
+    );
     let n = E::N_NODES;
     let n_dofs = 3 * n;
     let mut k_e = ElementStiffness::zeros(n_dofs);
@@ -458,6 +473,20 @@ mod tests {
         let k = element_stiffness_p1(&UNIT_TET_P1, &dimensionless_steel_like());
         assert_eq!(k.n_dofs, 12);
         assert_eq!(k.data.len(), 144);
+    }
+
+    /// Asymmetric `d_mat` must trip the symmetry `debug_assert!` — pins
+    /// that the upper-triangle-mirror optimisation can't silently
+    /// symmetrise a genuinely-asymmetric `D` (which the field-aware
+    /// surface allows via `AnisotropicMaterial` struct-literal init).
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "d_mat must be symmetric")]
+    fn element_stiffness_generic_with_d_global_panics_on_asymmetric_d_mat() {
+        let mut d = dimensionless_steel_like().d_matrix();
+        // Break symmetry at a single off-diagonal entry.
+        d[0][1] += 1.0;
+        let _ = element_stiffness_generic_with_d_global(&TetP1, &UNIT_TET_P1[..], &d);
     }
 
     #[test]
