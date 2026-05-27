@@ -15,9 +15,8 @@ import { createDiagnosticsListener, lspDiagnosticToCodeMirror, type CmDiagnostic
 import { reifyHoverTooltip } from './hover';
 import { reifyGotoDefinition } from './gotoDefinition';
 import type { createEditorStore } from '../stores/editorStore';
-import type { SourceLocation } from '../types';
+import type { FileData, SourceLocation } from '../types';
 import { errorMessage } from '../utils/errorClassifier';
-import { messageForSaveBlocked } from './messages';
 import { isSameFile, normalizePath } from '../utils/pathUtils';
 import styles from './Editor.module.css';
 
@@ -37,6 +36,13 @@ export interface EditorProps {
   scrollToLocation?: () => SourceLocation | null;
   onError?: (message: string) => void;
   onOpen?: () => void;
+  /**
+   * Called when Mod-s finds the active file is externally changed.
+   * App owns the conflict-prompt implementation; Editor just delegates.
+   * Both App.handleSave and Editor.Mod-s route here so the UX is identical
+   * across call sites.
+   */
+  onSaveConflict?: (file: FileData) => void;
 }
 
 export function Editor(props: EditorProps) {
@@ -139,9 +145,14 @@ export function Editor(props: EditorProps) {
                   // user-visible policy.
                   console.error('Save aborted: file not in store', path);
                   return true;
-                case 'externally-changed':
-                  props.onError?.(messageForSaveBlocked(result.reason));
+                case 'externally-changed': {
+                  // canSave checks 'not-found' first, so when we reach this
+                  // branch the file is guaranteed in openFiles. The `if (file)`
+                  // guard is belt-and-braces — no non-null assertion / no `!`.
+                  const file = props.store.state.openFiles.find((f) => f.path === path);
+                  if (file) props.onSaveConflict?.(file);
                   return true;
+                }
                 default: {
                   // Exhaustiveness guard: TypeScript flags this `: never` assignment
                   // as a compile error if a new SaveBlockedReason member is added
