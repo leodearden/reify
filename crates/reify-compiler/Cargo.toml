@@ -17,6 +17,7 @@ reify-ast.workspace = true
 reify-core.workspace = true
 reify-ir.workspace = true
 reify-syntax.workspace = true
+reify-config.workspace = true
 indexmap.workspace = true
 tracing.workspace = true
 

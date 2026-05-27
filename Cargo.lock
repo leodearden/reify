@@ -4258,6 +4258,7 @@ dependencies = [
  "indexmap 2.14.0",
  "reify-ast",
  "reify-compiler",
+ "reify-config",
  "reify-core",
  "reify-expr",
  "reify-ir",
