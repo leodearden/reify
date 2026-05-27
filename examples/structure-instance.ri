@@ -18,6 +18,7 @@ structure def FlatPart {
     let load     = PointLoad()
     let pressure = PressureLoad()
     let support  = FixedSupport()
+    let pinned   = PinnedSupport()
 }
 
 // ── Nested compositional construction ───────────────────────────────────────
