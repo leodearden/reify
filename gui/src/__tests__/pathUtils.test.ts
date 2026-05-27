@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isSameFile, normalizePath } from '../utils/pathUtils';
+import { isSameFile, normalizePath, canonicalizeKey } from '../utils/pathUtils';
 
 describe('normalizePath', () => {
   it('strips file:// prefix from a URI', () => {
@@ -60,5 +60,54 @@ describe('isSameFile', () => {
 
   it('matches a percent-encoded URI against its decoded bare-path equivalent', () => {
     expect(isSameFile('/project/hello world.ri', 'file:///project/hello%20world.ri')).toBe(true);
+  });
+});
+
+describe('canonicalizeKey', () => {
+  // (a) delegates file:// stripping and percent-decoding to normalizePath
+  it('strips file:// prefix and decodes percent-encoding', () => {
+    expect(canonicalizeKey('file:///a/foo.ri')).toBe('/a/foo.ri');
+  });
+  it('decodes percent-encoded chars after file:// stripping', () => {
+    expect(canonicalizeKey('file:///a/hello%20world.ri')).toBe('/a/hello world.ri');
+  });
+
+  // (b) collapses ./ segments
+  it("collapses './' segments in an absolute path", () => {
+    expect(canonicalizeKey('/a/./b/foo.ri')).toBe('/a/b/foo.ri');
+  });
+  it("collapses a leading './' in an absolute path", () => {
+    expect(canonicalizeKey('/a/./foo.ri')).toBe('/a/foo.ri');
+  });
+
+  // (c) collapses .. segments
+  it("resolves '..' to parent directory", () => {
+    expect(canonicalizeKey('/a/b/../foo.ri')).toBe('/a/foo.ri');
+  });
+  it("resolves multiple '..' segments", () => {
+    expect(canonicalizeKey('/a/b/c/../../foo.ri')).toBe('/a/foo.ri');
+  });
+
+  // (d) already-canonical path unchanged
+  it('leaves an already-canonical absolute path unchanged', () => {
+    expect(canonicalizeKey('/a/b/foo.ri')).toBe('/a/b/foo.ri');
+  });
+
+  // (e) does NOT try to resolve relative paths to absolute
+  it('returns relative path unchanged (cannot CWD in pure TS)', () => {
+    expect(canonicalizeKey('relative/foo.ri')).toBe('relative/foo.ri');
+  });
+
+  // (f) repeated slashes collapse
+  it('collapses repeated slashes', () => {
+    expect(canonicalizeKey('/a//b///foo.ri')).toBe('/a/b/foo.ri');
+  });
+
+  // (g) trailing slash on non-root path removed
+  it('removes trailing slash from a non-root path', () => {
+    expect(canonicalizeKey('/a/b/')).toBe('/a/b');
+  });
+  it('leaves the root "/" unchanged', () => {
+    expect(canonicalizeKey('/')).toBe('/');
   });
 });
