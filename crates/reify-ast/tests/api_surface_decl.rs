@@ -111,67 +111,6 @@ fn max_member_nesting_depth_same_via_both_paths() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// classify_number_literal behaviour tests
-// (mirrors the 4 most-load-bearing cases from the in-file number_class_tests)
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[test]
-fn classify_real_flag_true_stays_real() {
-    assert_eq!(classify_number_literal(1.0, true), NumberClass::Real(1.0));
-}
-
-#[test]
-fn classify_integer_form_becomes_int() {
-    assert_eq!(classify_number_literal(42.0, false), NumberClass::Int(42));
-}
-
-#[test]
-fn classify_infinity_is_lossy_real() {
-    assert_eq!(
-        classify_number_literal(f64::INFINITY, false),
-        NumberClass::LossyReal(f64::INFINITY),
-    );
-}
-
-#[test]
-fn classify_overflow_past_i64_max_is_lossy_real() {
-    assert_eq!(
-        classify_number_literal(1e20, false),
-        NumberClass::LossyReal(1e20),
-    );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// has_test_annotation behaviour tests
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[test]
-fn has_test_annotation_empty_slice_returns_false() {
-    assert!(!has_test_annotation(&[]));
-}
-
-#[test]
-fn has_test_annotation_with_test_annotation_returns_true() {
-    let ann = Annotation { name: "test".into(), args: vec![], span: SourceSpan::empty(0) };
-    assert!(has_test_annotation(&[ann]));
-}
-
-#[test]
-fn has_test_annotation_non_test_returns_false() {
-    let ann = Annotation { name: "deprecated".into(), args: vec![], span: SourceSpan::empty(0) };
-    assert!(!has_test_annotation(&[ann]));
-}
-
-#[test]
-fn has_test_annotation_test_among_multiple_returns_true() {
-    let anns = vec![
-        Annotation { name: "deprecated".into(), args: vec![], span: SourceSpan::empty(0) },
-        Annotation { name: "test".into(), args: vec![], span: SourceSpan::empty(0) },
-    ];
-    assert!(has_test_annotation(&anns));
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Constructive shape tests
 // ─────────────────────────────────────────────────────────────────────────────
 

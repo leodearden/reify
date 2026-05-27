@@ -316,6 +316,13 @@ pub fn find_named_member_span<'a>(
 /// scope (the rejection rule lives in task 2369). Recursion is bounded by
 /// [`MAX_MEMBER_NESTING_DEPTH`] to prevent stack overflow on pathological
 /// input — same convention as [`find_named_member_span`].
+///
+/// **Asymmetry note:** [`find_named_member_span`] DOES recurse into
+/// `PortDecl.members` but does NOT recurse into `SubDecl.body`. These two
+/// helpers have divergent contracts that are individually correct but can
+/// surprise callers who infer one from the other. A future consolidation
+/// (shared `walk_members` helper parameterized by `visit_port_body /
+/// visit_sub_body` flags) would unify them; deferred to task η or later.
 pub fn walk_specialization_scope_members<'a, F>(sub: &'a SubDecl, visitor: &mut F)
 where
     F: FnMut(&'a MemberDecl),
@@ -329,7 +336,7 @@ fn walk_members_depth<'a, F>(members: &'a [MemberDecl], visitor: &mut F, depth: 
 where
     F: FnMut(&'a MemberDecl),
 {
-    if depth > MAX_MEMBER_NESTING_DEPTH {
+    if depth >= MAX_MEMBER_NESTING_DEPTH {
         return;
     }
     for member in members {
@@ -370,7 +377,7 @@ fn find_named_member_span_depth<'a>(
     name: &str,
     depth: usize,
 ) -> Option<MemberSpanInfo<'a>> {
-    if depth > MAX_MEMBER_NESTING_DEPTH {
+    if depth >= MAX_MEMBER_NESTING_DEPTH {
         return None;
     }
     for member in members {

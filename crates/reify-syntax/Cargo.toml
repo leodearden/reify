@@ -17,4 +17,5 @@ reify-test-support.workspace = true
 # reify_types::ModulePath::single(...) etc. keep compiling until task η
 # atomically rewrites all reify_syntax::<AST type> → reify_ast::<…> in
 # every call site including these test files.
+# REMOVE-AT: task η (PRD core-ast-ir-layering Phase 2)
 reify-types.workspace = true
