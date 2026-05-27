@@ -415,3 +415,54 @@ structure def ModalOptions {
 //
 // PRD reference: docs/prds/v0_3/modal-analysis.md §5.1.
 trait ForcingFunction { }
+
+// ── StepForce ─────────────────────────────────────────────────────────────────
+
+// `StepForce` applies a unit-step forcing function at a given location on the
+// part (PRD §5.1). The force is zero before `start_time` and constant at
+// `magnitude` (in the `direction`) from `start_time` onward.
+//
+// Param semantics (PRD §5.1):
+//   at         — the location on the part where the force is applied.
+//                FIXME(location-id-type): encoded as `String` PLACEHOLDER for
+//                the future `LocationId` topology-selector type (not yet landed
+//                in Reify v0.3). Consistent with `FixedSupport.target : String`
+//                (fea_multi_case.ri:309) and `ModalResult.part : String`
+//                (modal_analysis.ri:241) using `String` as a selector/name
+//                placeholder. Consumer tasks θ/ι read `.magnitude` and
+//                `.direction`, not `.at` directly, so this placeholder is
+//                non-blocking.
+//   direction  — unit excitation vector (no dimension — a unit vector is
+//                genuinely dimensionless). Encoded as
+//                `Vector3<Dimensionless>` per the
+//                `ModalOptions.reference_direction : Vector3<Dimensionless>`
+//                precedent (modal_analysis.ri:358). The `direction.norm() > 0`
+//                invariant is NOT expressible in Reify's constraint grammar
+//                (method-call on Vector3, not a scalar predicate; same limit
+//                as `reference_direction.norm() > 0` deferred in
+//                modal_analysis.ri:382-389).
+//   magnitude  — positive scalar force size. By convention, `direction`
+//                carries the sign (via the unit vector) and `magnitude`
+//                carries the positive size. The `constraint magnitude > 0N`
+//                lands in the next impl step (step-6).
+//   start_time — the time at which the step force switches on. Any real time
+//                is valid; negative values support pre-loaded-history
+//                simulations where the force has been applied before t=0.
+//
+// Refines `ForcingFunction` so that `sources : List<ForcingFunction>` on
+// `ForcingTimeHistory` resolves correctly via the SIR-α nominal type-tag.
+//
+// PRD reference: docs/prds/v0_3/modal-analysis.md §5.1.
+structure def StepForce : ForcingFunction {
+    param at : String
+    param direction : Vector3<Dimensionless>
+    param magnitude : Force
+    param start_time : Time
+    // NOTE — constraint magnitude > 0N lands in step-6.
+    // NOTE — explicitly NOT constrained (in this step):
+    //   at         : String — no scalar invariant expressible
+    //   direction  : Vector3<Dimensionless> — norm() is a method-call, not a
+    //                scalar predicate (same grammar limit as
+    //                reference_direction.norm() > 0 in modal_analysis.ri:382-389)
+    //   start_time : Time   — any real time is valid (pre-load history supported)
+}

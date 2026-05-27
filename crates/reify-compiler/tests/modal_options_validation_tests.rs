@@ -864,6 +864,86 @@ fn collect_method_call_chain(expr: &CompiledExpr) -> Vec<(&str, &str)> {
     pairs
 }
 
+// ─── step-3 (η): StepForce param shape ───────────────────────────────────────
+
+/// `StepForce` (PRD §5.1) applies a unit-step force at a location. Must
+/// declare exactly 4 params in declaration order:
+///
+///   - `at        : String`                   (PLACEHOLDER for LocationId)
+///   - `direction : Vector3<Dimensionless>`   (unit excitation vector)
+///   - `magnitude : Force`                    (positive scalar size)
+///   - `start_time : Time`                    (step onset time)
+///
+/// Must refine `ForcingFunction` via `trait_bounds`. No defaults on any
+/// param (all caller-supplied). Constraint lands in step-6.
+#[test]
+fn step_force_struct_has_correct_param_shape() {
+    let template = find_structure("StepForce");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    // (a) tight count
+    assert_eq!(
+        params.len(),
+        4,
+        "StepForce should have exactly 4 param cells \
+         (at, direction, magnitude, start_time), got: {:?}",
+        names
+    );
+
+    // (b) param names + types in declaration order
+    let expected: &[(&str, Type)] = &[
+        ("at", Type::String),
+        ("direction", Type::vec3(Type::dimensionless_scalar())),
+        (
+            "magnitude",
+            Type::Scalar {
+                dimension: DimensionVector::FORCE,
+            },
+        ),
+        (
+            "start_time",
+            Type::Scalar {
+                dimension: DimensionVector::TIME,
+            },
+        ),
+    ];
+    let expected_names: Vec<&str> = expected.iter().map(|(m, _)| *m).collect();
+    assert_eq!(
+        names, expected_names,
+        "StepForce params must be in canonical order (at, direction, magnitude, start_time)"
+    );
+    for (i, (expected_name, expected_ty)) in expected.iter().enumerate() {
+        let cell = &params[i];
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "StepForce.{} should be {:?}, got {:?}",
+            expected_name, expected_ty, cell.cell_type
+        );
+    }
+
+    // (c) no defaults — all caller-supplied
+    for cell in &params {
+        assert!(
+            cell.default_expr.is_none(),
+            "StepForce.{} should have no default_expr (caller-supplied), \
+             but got: {:?}",
+            cell.id.member,
+            cell.default_expr
+        );
+    }
+
+    // (d) refines ForcingFunction
+    assert!(
+        template
+            .trait_bounds
+            .iter()
+            .any(|t| t == "ForcingFunction"),
+        "StepForce should refine ForcingFunction; got trait_bounds: {:?}",
+        template.trait_bounds
+    );
+}
+
 // ─── step-1 (η): ForcingFunction marker trait declared ───────────────────────
 
 /// `ForcingFunction` is the marker trait for the four transient-forcing
