@@ -20,9 +20,10 @@
 //!   and for the non-convergence signal (max_iters=1, tol=1e-300 —
 //!   pathologically under-budgeted).
 
-use faer::Mat;
+use faer::{Mat, Side};
 use faer::sparse::{SparseRowMat, Triplet};
 use reify_solver_elastic::eigensolve::{EigenSolverOptions, solve_eigen_dense, solve_eigen_shift_invert};
+use reify_solver_elastic::{lanczos_shift_invert, SparseStiffnessOp, SparseMetricOp};
 
 // ---------------------------------------------------------------------------
 // Fixture-A helpers
@@ -553,5 +554,91 @@ fn shift_invert_no_panic_at_min_dim_boundaries() {
         };
         // Absence of panic IS the assertion.
         let _ = solve_eigen_shift_invert(&k, &b, opts);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Generic lanczos_shift_invert: modal-style test with non-identity mass matrix.
+//
+// Fixture D — 80-DOF Laplacian K + scaled identity mass M = 2.0·I.
+// Closed-form: λ_k = (1 − cos(kπ/81)) for k=1..5.
+// n=80 > 64 = 2·FAER_MIN_DIM so the Lanczos path actually runs.
+// M ≠ I is necessary: a buggy impl that ignores M would recover 2·λ_k instead.
+// ---------------------------------------------------------------------------
+
+/// Expected eigenvalues for K = tridiag(-1,2,-1) n=80, M = 2·I.
+/// Kφ = λMφ  →  λ_k = λ_k^{Laplacian}/2 = (1 − cos(kπ/81)).
+fn fixture_d_expected_5() -> [f64; 5] {
+    let n = 80usize;
+    std::array::from_fn(|i| {
+        let k = (i + 1) as f64;
+        1.0 - f64::cos(k * std::f64::consts::PI / (n as f64 + 1.0))
+    })
+}
+
+#[test]
+fn lanczos_shift_invert_recovers_modal_eigenpairs_on_uniform_mass_laplacian() {
+    let n = 80usize;
+
+    // K = tridiag(-1, 2, -1) — 80×80 Dirichlet Laplacian (SPD).
+    let mut k_trips = Vec::with_capacity(3 * n - 2);
+    for i in 0..n {
+        k_trips.push(Triplet::new(i, i, 2.0));
+        if i > 0 { k_trips.push(Triplet::new(i, i - 1, -1.0)); }
+        if i + 1 < n { k_trips.push(Triplet::new(i, i + 1, -1.0)); }
+    }
+    let k = SparseRowMat::try_new_from_triplets(n, n, &k_trips).unwrap();
+
+    // M = 2.0·I — uniform mass scaling (non-identity to exercise the M slot).
+    let m_trips: Vec<Triplet<usize, usize, f64>> =
+        (0..n).map(|i| Triplet::new(i, i, 2.0)).collect();
+    let m = SparseRowMat::try_new_from_triplets(n, n, &m_trips).unwrap();
+
+    // Factor K.
+    let llt = k.sp_cholesky(Side::Lower).expect("K must be SPD");
+
+    // Build generic operator pair.
+    let k_op = SparseStiffnessOp { llt: &llt, n };
+    let m_op = SparseMetricOp { m: m.as_ref() };
+
+    let opts = EigenSolverOptions {
+        n_modes: 5,
+        tol: 1e-10,
+        max_iters: 1000,
+        sigma: 0.0,
+    };
+
+    // Call the generic Lanczos entry point.
+    let result = lanczos_shift_invert(&k_op, &m_op, opts);
+
+    // (a) Must converge.
+    assert!(
+        result.converged,
+        "lanczos_shift_invert must converge on 80-DOF Laplacian + 2·I mass"
+    );
+    // (b) Must exercise the Lanczos path (n_converged > 0).
+    assert!(
+        result.n_converged >= 5,
+        "lanczos_shift_invert at n=80 must run Lanczos (n_converged >= 5); got {}",
+        result.n_converged
+    );
+    // (c) Must return exactly n_modes=5 eigenvalues.
+    assert_eq!(
+        result.eigenvalues.len(),
+        5,
+        "must return 5 eigenvalues"
+    );
+    // (d) Eigenvector shape n×n_modes.
+    assert_eq!(result.eigenvectors.nrows(), n, "eigenvectors must have n rows");
+    assert_eq!(result.eigenvectors.ncols(), 5, "eigenvectors must have n_modes cols");
+
+    // (e) Eigenvalues must match closed-form λ_k = (1 − cos(kπ/81)) to 1e-8.
+    let expected = fixture_d_expected_5();
+    for (i, (&got, &exp)) in result.eigenvalues.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (got - exp).abs() < 1e-8,
+            "eigenvalue[{}]: got {:.15}, expected {:.15}, diff = {:.3e}",
+            i, got, exp, (got - exp).abs(),
+        );
     }
 }
