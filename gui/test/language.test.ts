@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { LanguageSupport, getIndentation } from '@codemirror/language';
+import { LanguageSupport, getIndentation, ensureSyntaxTree } from '@codemirror/language';
 import { EditorState } from '@codemirror/state';
 import { highlightTree } from '@lezer/highlight';
 import { classHighlighter } from '@lezer/highlight';
@@ -137,6 +137,10 @@ describe('auto-indent', () => {
     // Query indentation at the start of line 2 (after the opening '{')
     // Line 2 starts at offset: 'structure S {\n'.length = 14
     const line2Start = doc.indexOf('\n') + 1;
+    // Force synchronous parse before querying indentation.
+    // Without this, getIndentation can return null under high load because
+    // CodeMirror's lazy parser may not have completed yet.
+    ensureSyntaxTree(state, state.doc.length);
     const indent = getIndentation(state, line2Start);
     // delimitedIndent on Block should produce a non-zero indent level
     expect(indent).not.toBeNull();
