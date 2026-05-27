@@ -4498,6 +4498,115 @@ mod tests {
         );
     }
 
+    /// ζ / task 3425 step-3: when `new_warm_state` is `Some`, the extended
+    /// `complete_compute_dispatch_atomically` auto-seeds a sentinel entry
+    /// under `NodeId::Compute(c_id)` (placeholder
+    /// `CachedResult::Value(Value::Undef, Determined)`) and donates the
+    /// warm state + cost in the same critical section as the output-VC
+    /// Pending→Final flip. RED until step-4 extends the helper signature.
+    #[test]
+    fn complete_compute_dispatch_atomically_with_some_new_warm_state_seeds_compute_entry() {
+        use reify_types::{ComputeNodeId, Value, VersionId};
+
+        let mut store = CacheStore::new();
+        let vc = ValueCellId::new("T", "out");
+        let c_id = ComputeNodeId::new("T", 0);
+
+        // begin → mark output Pending so atomic-complete has a Pending state
+        // to flip (matches production lifecycle).
+        store.begin_compute_dispatch(&c_id, std::slice::from_ref(&vc));
+
+        // Pre-condition: no entry exists under NodeId::Compute(c_id).
+        assert!(
+            store.get(&NodeId::Compute(c_id.clone())).is_none(),
+            "precondition: NodeId::Compute(c_id) must be absent before complete",
+        );
+
+        // RED: the new signature accepts (c_id, outputs, version,
+        // new_warm_state, cost_per_byte). Today the method takes only
+        // (c_id, outputs, version) — this call fails to compile until
+        // step-4 widens the signature.
+        let updated = store.complete_compute_dispatch_atomically(
+            &c_id,
+            &[(vc.clone(), Value::Int(7))],
+            VersionId(2),
+            Some(OpaqueState::new(99i32, 4)),
+            0.75,
+        );
+        assert_eq!(updated, 1, "complete must report 1 output updated");
+
+        // (a) Output VC is Final with the new value and no pending_cause.
+        assert_eq!(
+            store.freshness(&NodeId::Value(vc.clone())),
+            Freshness::Final,
+            "output VC freshness must be Final after complete",
+        );
+        assert_eq!(
+            store.pending_cause(&NodeId::Value(vc.clone())),
+            None,
+            "output VC pending_cause must be cleared after complete",
+        );
+
+        // (b) NodeId::Compute(c_id) entry was auto-seeded.
+        assert!(
+            store.get(&NodeId::Compute(c_id.clone())).is_some(),
+            "complete with Some warm state must auto-seed a Compute entry",
+        );
+
+        // (c) cost_per_byte_of reads 0.75 on the Compute entry.
+        assert_eq!(
+            store.cost_per_byte_of(&NodeId::Compute(c_id.clone())),
+            Some(0.75),
+            "Compute entry must carry the donated cost",
+        );
+
+        // (d) get_warm_state returns Some(OpaqueState(99i32)) (take semantics).
+        let took = store
+            .get_warm_state(&NodeId::Compute(c_id.clone()))
+            .expect("warm state must be donated to the Compute entry");
+        assert_eq!(
+            took.downcast::<i32>(),
+            Some(99),
+            "donated warm state must round-trip i32(99)",
+        );
+    }
+
+    /// When `new_warm_state` is `None`, the extended
+    /// `complete_compute_dispatch_atomically` MUST NOT seed a `Compute`
+    /// entry (the entry exists only to carry warm_state + cost; absent
+    /// warm state means no seed). RED until step-4.
+    #[test]
+    fn complete_compute_dispatch_atomically_with_none_warm_state_does_not_seed_compute_entry() {
+        use reify_types::{ComputeNodeId, Value, VersionId};
+
+        let mut store = CacheStore::new();
+        let vc = ValueCellId::new("T", "out2");
+        let c_id = ComputeNodeId::new("T", 1);
+
+        store.begin_compute_dispatch(&c_id, std::slice::from_ref(&vc));
+
+        let updated = store.complete_compute_dispatch_atomically(
+            &c_id,
+            &[(vc.clone(), Value::Int(11))],
+            VersionId(2),
+            None,
+            0.0,
+        );
+        assert_eq!(updated, 1, "complete must report 1 output updated");
+
+        // Output VC still flipped to Final as before.
+        assert_eq!(
+            store.freshness(&NodeId::Value(vc.clone())),
+            Freshness::Final,
+        );
+
+        // NodeId::Compute(c_id) entry is NOT seeded when warm state is None.
+        assert!(
+            store.get(&NodeId::Compute(c_id)).is_none(),
+            "complete with None warm state must NOT seed a Compute entry",
+        );
+    }
+
     /// `donate_warm_state_with_cost` sanitises non-finite (`NaN`, `±inf`)
     /// and negative `cost_per_byte` to `0.0` (so a future cost-weighted-LRU
     /// `partial_cmp` is safe).
