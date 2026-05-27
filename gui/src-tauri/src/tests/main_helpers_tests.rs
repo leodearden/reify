@@ -1,0 +1,113 @@
+// Tests for the resolve_initial_file_path helper used by main.rs to
+// canonicalise the argv path before loading it into the engine.
+//
+// CWD-mutating tests are serialised via the same CWD_LOCK Mutex used in
+// commands_tests.rs.  These tests live in a separate file so the module
+// boundary keeps main-helper concerns out of the general command tests.
+
+use std::sync::Mutex;
+
+/// Lock to serialise tests that call `std::env::set_current_dir`.
+static CWD_LOCK: Mutex<()> = Mutex::new(());
+
+/// (a) Given a CWD-relative argv path that exists on disk, returns
+/// `Some(canonical_absolute_pathbuf)`.
+#[test]
+fn resolve_initial_file_path_relative_existing_returns_canonical() {
+    use crate::commands::resolve_initial_file_path;
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("mydesign.ri");
+    std::fs::write(&file, "structure Foo {}").unwrap();
+    let expected = std::fs::canonicalize(&file)
+        .unwrap();
+
+    let _guard = CWD_LOCK.lock().unwrap();
+    let original = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    let result = resolve_initial_file_path("mydesign.ri");
+
+    std::env::set_current_dir(&original).unwrap();
+
+    assert_eq!(
+        result,
+        Some(expected),
+        "CWD-relative .ri path that exists should return Some(canonical)"
+    );
+}
+
+/// (b) Given an already-absolute path, returns the same canonical path
+/// (idempotent).
+#[test]
+fn resolve_initial_file_path_absolute_is_idempotent() {
+    use crate::commands::resolve_initial_file_path;
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("design.ri");
+    std::fs::write(&file, "structure Bar {}").unwrap();
+    let abs_str = file.to_str().unwrap().to_string();
+    let expected = std::fs::canonicalize(&file).unwrap();
+
+    let result = resolve_initial_file_path(&abs_str);
+    assert_eq!(
+        result,
+        Some(expected),
+        "Absolute .ri path should return Some(canonical) idempotently"
+    );
+}
+
+/// (c) Returns `None` when the path is empty.
+#[test]
+fn resolve_initial_file_path_empty_returns_none() {
+    use crate::commands::resolve_initial_file_path;
+
+    assert_eq!(
+        resolve_initial_file_path(""),
+        None,
+        "Empty path should return None"
+    );
+}
+
+/// (c) Returns `None` when the extension is not `.ri`.
+#[test]
+fn resolve_initial_file_path_non_ri_extension_returns_none() {
+    use crate::commands::resolve_initial_file_path;
+
+    // .step, .stl, no-extension — all should return None
+    assert_eq!(
+        resolve_initial_file_path("model.step"),
+        None,
+        ".step extension should return None"
+    );
+    assert_eq!(
+        resolve_initial_file_path("model.stl"),
+        None,
+        ".stl extension should return None"
+    );
+    assert_eq!(
+        resolve_initial_file_path("/absolute/model.step"),
+        None,
+        "absolute .step path should return None"
+    );
+}
+
+/// (d) Returns `Some(path)` even when the file does not exist on disk:
+/// `canonicalize_document_key` falls back to the original string, so the
+/// caller can attempt `load_file` and receive the actionable IO error.
+#[test]
+fn resolve_initial_file_path_nonexistent_ri_returns_some_fallback() {
+    use crate::commands::resolve_initial_file_path;
+
+    let nonexistent = "/tmp/__reify_test_nonexistent_xyzzy_3892/missing.ri";
+    let result = resolve_initial_file_path(nonexistent);
+    assert!(
+        result.is_some(),
+        "Nonexistent .ri path should still return Some (fallback to input)"
+    );
+    assert_eq!(
+        result.unwrap(),
+        std::path::PathBuf::from(nonexistent),
+        "Fallback should be the original path string"
+    );
+}
