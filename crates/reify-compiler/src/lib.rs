@@ -363,6 +363,15 @@ pub fn compile_with_prelude_context(
         prelude_refs,
     );
 
+    // Resolve `auto:` / `auto(free):` type-args raised by `phase_entities`
+    // BEFORE the bound-check pass: the resolver rewrites placeholder slots to
+    // concrete `Type::StructureRef`, so `phase_pending_bound_checks` sees the
+    // resolved candidate rather than the synthetic `__auto_<bound>` placeholder.
+    compile_builder::auto_type_param_phase::phase_auto_type_param_resolution(
+        &mut compile_ctx,
+        prelude_refs,
+    );
+
     compile_builder::entities_phase::phase_pending_bound_checks(&mut compile_ctx, prelude_refs);
 
     compile_builder::post_passes::phase_recursion_detection(&mut compile_ctx);

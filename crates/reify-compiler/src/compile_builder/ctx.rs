@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use reify_ast::ParsedModule;
 use reify_core::{ContentHash, Diagnostic, DiagnosticLabel, SourceSpan};
 
-use crate::entity::PendingBoundCheck;
+use crate::entity::{AutoResolutionRequest, PendingBoundCheck};
 use crate::type_resolution::TypeAliasRegistry;
 use crate::types::{
     AutoTypeSubstitution, CompiledConstraintDef, CompiledField, CompiledImport, CompiledModule,
@@ -46,6 +46,16 @@ pub(crate) struct CompilationCtx {
     pub(crate) constraint_defs: Vec<CompiledConstraintDef>,
     pub(crate) compiled_units: Vec<CompiledUnit>,
     pub(crate) pending_bound_checks: Vec<PendingBoundCheck>,
+    /// Deferred `auto:` / `auto(free):` type-argument resolution requests raised
+    /// during `phase_entities` (one per sub-component with `auto:` slots) and
+    /// drained by `auto_type_param_phase::phase_auto_type_param_resolution` once
+    /// `ctx.templates` is fully populated. Parallel to `pending_bound_checks`.
+    pub(crate) pending_auto_resolutions: Vec<AutoResolutionRequest>,
+    /// Resolved `auto:` type-parameter substitutions for the module, written by
+    /// `phase_auto_type_param_resolution` and moved into
+    /// `CompiledModule.auto_type_substitution` by `into_compiled_module`. Empty
+    /// when the module declares no `auto:` type-args (the common case).
+    pub(crate) auto_type_substitution: AutoTypeSubstitution,
     /// Unified entity namespace tracker (spec §4.2.1): structures, occurrences,
     /// constraints, and fields all share the entity name space. Maps
     /// name → (first_span, first_kind_label).
@@ -91,6 +101,8 @@ impl CompilationCtx {
             constraint_defs: Vec::new(),
             compiled_units: Vec::new(),
             pending_bound_checks: Vec::new(),
+            pending_auto_resolutions: Vec::new(),
+            auto_type_substitution: AutoTypeSubstitution::default(),
             seen_entity_names: HashMap::new(),
             unit_registry: UnitRegistry::new(),
             alias_registry: TypeAliasRegistry::new(),
@@ -183,9 +195,10 @@ impl CompilationCtx {
             solver_pragma: None,
             // Filled in by `module_pragmas::apply_module_pragmas` after assembly.
             kernel_pragma: None,
-            // Populated by a future producer task that adds `auto:` parser
-            // support; empty until then (see AutoTypeSubstitution).
-            auto_type_substitution: AutoTypeSubstitution::default(),
+            // Written by `auto_type_param_phase::phase_auto_type_param_resolution`
+            // from each `sub x = Foo<auto: Bound>()` use-site; empty when the
+            // module declares no `auto:` type-args (see AutoTypeSubstitution).
+            auto_type_substitution: self.auto_type_substitution,
             diagnostics: self.diagnostics,
             content_hash,
         }
@@ -347,6 +360,14 @@ mod tests {
         assert!(
             ctx.pending_bound_checks.is_empty(),
             "pending_bound_checks should be empty"
+        );
+        assert!(
+            ctx.pending_auto_resolutions.is_empty(),
+            "pending_auto_resolutions should be empty"
+        );
+        assert!(
+            ctx.auto_type_substitution.as_slice().is_empty(),
+            "auto_type_substitution should be empty"
         );
         assert!(
             ctx.resolution_enums.is_empty(),

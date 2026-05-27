@@ -30,7 +30,9 @@ use crate::compile_builder::ctx::CompilationCtx;
 use crate::compile_builder::defs_phase::build_constraint_def_registry;
 use crate::compile_builder::traits_phase::build_trait_registry;
 use crate::conformance::check_trait_arg_conformance;
-use crate::entity::{EntityDefRef, PendingBoundCheck, check_type_param_bounds, compile_entity};
+use crate::entity::{
+    AutoResolutionRequest, EntityDefRef, PendingBoundCheck, check_type_param_bounds, compile_entity,
+};
 use crate::type_resolution::TypeAliasRegistry;
 use crate::types::{
     CompiledConstraintDef, CompiledField, CompiledImport, CompiledTrait, EntityKind,
@@ -119,6 +121,7 @@ pub(crate) fn phase_entities(
                         &ctx.unit_registry,
                         &ctx.alias_registry,
                         &mut ctx.pending_bound_checks,
+                        &mut ctx.pending_auto_resolutions,
                         &mut ctx.diagnostics,
                         &mut ctx.templates,
                         &prelude_template_registry,
@@ -178,6 +181,7 @@ pub(crate) fn phase_entities(
                         &ctx.unit_registry,
                         &ctx.alias_registry,
                         &mut ctx.pending_bound_checks,
+                        &mut ctx.pending_auto_resolutions,
                         &mut ctx.diagnostics,
                         &mut ctx.templates,
                         &prelude_template_registry,
@@ -230,6 +234,7 @@ fn compile_entity_decl(
     unit_registry: &UnitRegistry,
     alias_registry: &TypeAliasRegistry,
     pending_bound_checks: &mut Vec<PendingBoundCheck>,
+    pending_auto_resolutions: &mut Vec<AutoResolutionRequest>,
     diagnostics: &mut Vec<Diagnostic>,
     templates: &mut Vec<TopologyTemplate>,
     prelude_template_registry: &HashMap<String, &TopologyTemplate>,
@@ -247,6 +252,7 @@ fn compile_entity_decl(
         unit_registry,
         alias_registry,
         pending_bound_checks,
+        pending_auto_resolutions,
         diagnostics,
         templates,
         prelude_template_registry,

@@ -342,6 +342,7 @@ pub(crate) fn compile_entity(
     unit_registry: &UnitRegistry,
     alias_registry: &TypeAliasRegistry,
     pending_bound_checks: &mut Vec<PendingBoundCheck>,
+    pending_auto_resolutions: &mut Vec<AutoResolutionRequest>,
     diagnostics: &mut Vec<Diagnostic>,
     compiled_templates: &[TopologyTemplate],
     prelude_template_registry: &HashMap<String, &TopologyTemplate>,
@@ -1309,12 +1310,19 @@ pub(crate) fn compile_entity(
                     })
                     .collect();
 
-                // Resolve type arguments to Type values.
+                // Resolve type arguments to Type values. `auto:` / `auto(free):`
+                // slots are lowered to a synthetic `Type::TypeParam("__auto_<bound>")`
+                // placeholder (skipped by `check_type_param_bounds`) and recorded
+                // as an `AutoClause`; the deferred `phase_auto_type_param_resolution`
+                // rewrites the slot to a concrete `Type::StructureRef` once the
+                // target template is reachable (task 3558).
+                let mut auto_clauses: Vec<AutoClause> = Vec::new();
                 let resolved_type_args: Vec<Type> = sub
                     .type_args
                     .iter()
-                    .map(|ta| {
-                        if let reify_ast::TypeExprKind::Named { name, .. } = &ta.kind {
+                    .enumerate()
+                    .map(|(position, ta)| match &ta.kind {
+                        reify_ast::TypeExprKind::Named { name, .. } => {
                             resolve_type_name(name).unwrap_or_else(|| {
                                 if type_param_names.contains(name) {
                                     Type::TypeParam(name.clone())
@@ -1322,7 +1330,17 @@ pub(crate) fn compile_entity(
                                     Type::StructureRef(name.clone())
                                 }
                             })
-                        } else {
+                        }
+                        reify_ast::TypeExprKind::Auto { free, bound } => {
+                            auto_clauses.push(AutoClause {
+                                position,
+                                free: *free,
+                                bound: bound.clone(),
+                                span: ta.span,
+                            });
+                            Type::TypeParam(format!("__auto_{}", bound))
+                        }
+                        _ => {
                             diagnostics.push(
                                 Diagnostic::error(format!(
                                     "unexpected dimensional expression in type argument: {}",
@@ -1337,6 +1355,18 @@ pub(crate) fn compile_entity(
                         }
                     })
                     .collect();
+
+                // Defer `auto:` resolution to the post-pass: one request per Sub
+                // carrying every auto-clause, located by owner + sub name so the
+                // resolved candidate can be written back into the placeholder slot.
+                if !auto_clauses.is_empty() {
+                    pending_auto_resolutions.push(AutoResolutionRequest {
+                        target_name: sub.structure_name.clone(),
+                        auto_clauses,
+                        owner_structure: entity_name.to_string(),
+                        sub_name: sub.name.clone(),
+                    });
+                }
 
                 // SubComponent: defer bound checking to the post-compilation
                 // pass so forward-referenced structures are available in the
@@ -1736,6 +1766,7 @@ pub(crate) fn compile_entity(
                     &mut guard_index,
                     &mut sub_components,
                     pending_bound_checks,
+                    pending_auto_resolutions,
                     &type_param_names,
                     &clusters_with_outside_collision,
                     compiled_templates,
@@ -2339,6 +2370,7 @@ fn compile_match_arm_decl_group(
     guard_index: &mut u32,
     sub_components: &mut Vec<SubComponentDecl>,
     pending_bound_checks: &mut Vec<PendingBoundCheck>,
+    pending_auto_resolutions: &mut Vec<AutoResolutionRequest>,
     type_param_names: &HashSet<String>,
     clusters_with_outside_collision: &HashSet<String>,
     compiled_templates: &[TopologyTemplate],
@@ -2589,12 +2621,18 @@ fn compile_match_arm_decl_group(
 
             // suggestion 3: use .map() (not .filter_map()) so non-Named type-arg
             // entries emit a diagnostic and yield Type::Real, preserving positional
-            // alignment for subsequent bound checks.
+            // alignment for subsequent bound checks. `auto:` / `auto(free):` slots
+            // mirror the non-arm Sub path (entity.rs): lowered to a synthetic
+            // `Type::TypeParam("__auto_<bound>")` placeholder and recorded as an
+            // `AutoClause` for the deferred `phase_auto_type_param_resolution`
+            // (task 3558).
+            let mut auto_clauses: Vec<AutoClause> = Vec::new();
             let resolved_type_args: Vec<Type> = sub
                 .type_args
                 .iter()
-                .map(|ta| {
-                    if let reify_ast::TypeExprKind::Named { name, .. } = &ta.kind {
+                .enumerate()
+                .map(|(position, ta)| match &ta.kind {
+                    reify_ast::TypeExprKind::Named { name, .. } => {
                         resolve_type_name(name).unwrap_or_else(|| {
                             if type_param_names.contains(name) {
                                 Type::TypeParam(name.clone())
@@ -2602,7 +2640,17 @@ fn compile_match_arm_decl_group(
                                 Type::StructureRef(name.clone())
                             }
                         })
-                    } else {
+                    }
+                    reify_ast::TypeExprKind::Auto { free, bound } => {
+                        auto_clauses.push(AutoClause {
+                            position,
+                            free: *free,
+                            bound: bound.clone(),
+                            span: ta.span,
+                        });
+                        Type::TypeParam(format!("__auto_{}", bound))
+                    }
+                    _ => {
                         diagnostics.push(
                             Diagnostic::error(format!(
                                 "unexpected dimensional expression in type argument: {}",
@@ -2617,6 +2665,18 @@ fn compile_match_arm_decl_group(
                     }
                 })
                 .collect();
+
+            // Defer `auto:` resolution: one request per match-arm Sub, located by
+            // owner + sub name so the resolved candidate can be written back into
+            // the placeholder slot (mirrors the non-arm Sub path).
+            if !auto_clauses.is_empty() {
+                pending_auto_resolutions.push(AutoResolutionRequest {
+                    target_name: sub.structure_name.clone(),
+                    auto_clauses,
+                    owner_structure: entity_name.to_string(),
+                    sub_name: sub.name.clone(),
+                });
+            }
 
             // suggestion 2: push one PendingBoundCheck::SubComponent + one
             // TraitArgConformance per arg, mirroring the non-arm Sub path
@@ -2855,6 +2915,53 @@ pub(crate) enum PendingBoundCheck {
         compiled_arg: CompiledExpr,
         span: SourceSpan,
     },
+}
+
+/// A deferred `auto:` / `auto(free):` type-argument resolution request, raised
+/// at a sub-component instantiation site (`sub x = Foo<auto: Bound>()`) and
+/// drained by `compile_builder::auto_type_param_phase::phase_auto_type_param_resolution`
+/// after `phase_entities` has populated `ctx.templates`.
+///
+/// Mirrors the `PendingBoundCheck` deferred-resolution idiom: the request is
+/// pushed during template build (when only the calling structure's context is
+/// in scope) and resolved in a post-pass once the target template's
+/// `type_params` and the full template/trait registries are reachable — even
+/// when the target is forward-referenced from the use site.
+///
+/// `target_name` is the instantiated template (e.g. `"Bearing"`);
+/// `owner_structure` + `sub_name` locate the `SubComponentDecl` whose
+/// `type_args` placeholder slots are rewritten to concrete `Type::StructureRef`
+/// on a successful resolution.
+pub(crate) struct AutoResolutionRequest {
+    /// The template being instantiated (e.g. `"Bearing"`).
+    pub(crate) target_name: String,
+    /// One clause per `auto:` slot in this sub's `type_args`, in source order.
+    /// Each clause carries its own `span`; the resolver anchors per-param and
+    /// collective diagnostics on those clause spans, so no request-level span is
+    /// needed here.
+    pub(crate) auto_clauses: Vec<AutoClause>,
+    /// Name of the structure that owns this sub-component (e.g. `"Assembly"`).
+    pub(crate) owner_structure: String,
+    /// Name of the sub-component (e.g. `"b"` in `sub b = Bearing<auto: Seal>()`).
+    pub(crate) sub_name: String,
+}
+
+/// A single `auto:` / `auto(free):` type-argument clause within a
+/// sub-component instantiation's `type_args` list.
+///
+/// `position` is the index into the target template's `type_params` (and the
+/// matching `SubComponentDecl.type_args` placeholder slot). `bound` is the
+/// trait name the candidate must satisfy (e.g. `"Seal"`); `free` distinguishes
+/// strict `auto:` (`false`) from `auto(free):` (`true`).
+pub(crate) struct AutoClause {
+    /// Index into the target's `type_params` / the sub's `type_args` slots.
+    pub(crate) position: usize,
+    /// Strict (`false`) vs. free (`true`) resolution flag.
+    pub(crate) free: bool,
+    /// The required trait bound the resolved candidate must satisfy.
+    pub(crate) bound: String,
+    /// Span of the `auto:` clause, used for per-param diagnostic labels.
+    pub(crate) span: SourceSpan,
 }
 
 /// Recursively collect geometry-let and geometry-param initializer expressions

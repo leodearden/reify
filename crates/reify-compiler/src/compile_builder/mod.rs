@@ -1,6 +1,7 @@
 // phase submodules populated in later steps
 
 pub(crate) mod aliases_phase;
+pub(crate) mod auto_type_param_phase;
 pub(crate) mod ctx;
 pub(crate) mod defs_phase;
 pub(crate) mod dot_chain_lint;
