@@ -48,6 +48,10 @@ mod tests {
         [0.0, 0.0, 1.0],
     ];
 
+    fn read(m: &ElementStiffness, i: usize, j: usize) -> f64 {
+        m.data[i * m.n_dofs + j]
+    }
+
     #[test]
     fn consistent_mass_tet_p1_returns_12_by_12_element_stiffness() {
         let m_e = consistent_element_mass_tet_p1(&UNIT_TET, 1.0);
@@ -57,5 +61,26 @@ mod tests {
             144,
             "row-major 12×12 storage must have 144 entries"
         );
+    }
+
+    #[test]
+    fn consistent_mass_p1_off_axis_blocks_are_zero_block_diagonal_3x3_structure() {
+        // Each (a, b) node-pair block in M_e is `coef · I_3` — diagonal in
+        // axis-axis indexing. α ≠ β entries must be exactly 0. Mirrors the
+        // K_g pin `geometric_stiffness/tet.rs::off_axis_blocks_are_zero_block_diagonal_3x3_structure`.
+        let m_e = consistent_element_mass_tet_p1(&UNIT_TET, 1.0);
+        for a in 0..4 {
+            for b in 0..4 {
+                for alpha in 0..3 {
+                    for beta in 0..3 {
+                        if alpha == beta {
+                            continue;
+                        }
+                        let v = read(&m_e, 3 * a + alpha, 3 * b + beta);
+                        assert_eq!(v, 0.0, "(a,b,α,β) = ({a},{b},{alpha},{beta}) must be 0");
+                    }
+                }
+            }
+        }
     }
 }
