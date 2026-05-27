@@ -541,8 +541,21 @@ const App: Component = () => {
     ]);
   }
 
-  /** Stub — implemented in step-12. */
-  async function reloadFromDisk(_path: string) { /* step-12 */ }
+  /**
+   * Reload a file from disk, replacing the buffer with the current on-disk content.
+   * Called by the Reload action in the save conflict prompt.
+   * Mirrors the per-file reload logic in handleReload (without the dirty-overlap check
+   * since the user has explicitly chosen to discard the buffer).
+   */
+  async function reloadFromDisk(path: string) {
+    try {
+      const fileData = await bridgeOpenFile(path);
+      editorStore.updateFileContent(fileData.path, fileData.content);
+      editorStore.markClean(fileData.path);
+    } catch (err) {
+      showToast(`Reload failed: ${errorMessage(err)}`, 'error');
+    }
+  }
 
   /** Stub — implemented in step-14. */
   async function overwriteFile(_file: FileData) { /* step-14 */ }
