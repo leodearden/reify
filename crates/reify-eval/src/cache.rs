@@ -876,10 +876,18 @@ impl CacheStore {
     /// placeholder (Compute entries exist only to carry warm_state + cost;
     /// they never hold authoritative results — those live on output VCs)
     /// and the warm state + `cost_per_byte` are donated into it via
-    /// [`CacheStore::donate_warm_state_with_cost`]. The donation runs in
-    /// the same critical section as the output-VC flip (steps 1-3) so a
-    /// consumer cannot observe the output Final without the warm state
-    /// also being in place.
+    /// [`CacheStore::donate_warm_state_with_cost`].
+    ///
+    /// The donation runs in the same call as the output-VC flips, so any
+    /// caller observing a Final output through this `CacheStore` reference
+    /// will also see the donated warm state — there is no intervening
+    /// release of the `&mut self` borrow. This is NOT atomicity in the
+    /// strict cross-thread sense: `&mut self` only excludes simultaneous
+    /// mutators, not interleaved readers between two `&mut` calls. Within
+    /// a single call, the multi-output loop also flips later VCs only
+    /// after earlier ones, so a hypothetical multi-output consumer could
+    /// still observe partial progress (today this is moot: multi-output
+    /// dispatch is `debug_assert_eq!`-pinned to a single output).
     ///
     /// When `new_warm_state` is `None`, no Compute entry is created — the
     /// trampoline reported no state worth preserving, and the at-rest
