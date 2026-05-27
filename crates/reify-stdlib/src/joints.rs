@@ -6266,6 +6266,40 @@ mod tests {
 
     // ── motion_subspace_columns: fixed ────────────────────────────────────────
 
+    // ── motion_subspace_columns: spherical ───────────────────────────────────
+
+    /// PRD §4.2 pin: spherical is axis-isotropic — no stored axis. Motion-subspace
+    /// columns are the body-frame basis vectors (three pure-angular columns).
+    ///
+    ///   col[0] = [1,0,0, 0,0,0]  (angular about body-local +x)
+    ///   col[1] = [0,1,0, 0,0,0]  (angular about body-local +y)
+    ///   col[2] = [0,0,1, 0,0,0]  (angular about body-local +z)
+    ///
+    /// World-frame transformation is RNEA's responsibility via X_{p→i}.
+    #[test]
+    fn motion_subspace_columns_spherical_returns_three_pure_angular_columns() {
+        let joint = spherical_joint();
+        let cols = super::motion_subspace_columns(&joint)
+            .expect("motion_subspace_columns on spherical joint should return Some");
+        assert_eq!(cols.len(), 3, "spherical has 3 DOFs — expected 3 columns");
+
+        let expected: [[f64; 6]; 3] = [
+            [1.0, 0.0, 0.0, 0.0, 0.0, 0.0], // col[0]: angular about body +x
+            [0.0, 1.0, 0.0, 0.0, 0.0, 0.0], // col[1]: angular about body +y
+            [0.0, 0.0, 1.0, 0.0, 0.0, 0.0], // col[2]: angular about body +z
+        ];
+        for (ci, (col, exp)) in cols.iter().zip(expected.iter()).enumerate() {
+            let arr = col.as_array();
+            for (i, (&got, &e)) in arr.iter().zip(exp.iter()).enumerate() {
+                assert!(
+                    (got - e).abs() < 1e-12,
+                    "spherical col[{}][{}]: expected {}, got {}",
+                    ci, i, e, got
+                );
+            }
+        }
+    }
+
     // ── motion_subspace_columns: planar ──────────────────────────────────────
 
     /// PRD §5.1 pin: planar columns = `[linear_axis_x, linear_axis_y, angular_normal]`
