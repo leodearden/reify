@@ -624,19 +624,20 @@ fn resolve_joint_value_si(joint: &Value, bindings: &[Value]) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
-    use crate::loop_closure_value::{JointValue, flatten_dofs};
+    use crate::loop_closure_value::JointValue;
     use crate::test_fixtures::{
         angle_range_0_to_pi, axis_x_unit, axis_y_unit, axis_z_unit, cylindrical_z_joint,
         length_range_0_to_1m, planar_xy_joint, spherical_joint,
     };
     use reify_types::Value;
 
-    /// The subset of `crate::joints::JOINT_KINDS` whose motion variables cannot
-    /// be represented by a single f64 — `value_for_joint` and
-    /// `joint_range_midpoint` must return `None` for every kind in this list.
-    /// The complement (`prismatic`, `revolute`, `coupling`, `fixed`) returns
-    /// `Some` from `value_for_joint`. See the contract tests below for the
-    /// JOINT_KINDS-iteration partition guard.
+    /// The subset of `crate::joints::JOINT_KINDS` whose motion variables span
+    /// more than one f64 — planar (3), spherical (4 storage / 3 manifold DOF),
+    /// cylindrical (2).  After KCC-γ widening (PRD §5.2), every kind in this
+    /// list returns a non-Scalar `JointValue::{Planar,Sphere,Cyl}` from
+    /// `joint_range_midpoint` and the chain machinery accepts those variants
+    /// directly without bridging through a flat f64 vector.  See the contract
+    /// tests below for the JOINT_KINDS-iteration partition guard.
     const MULTI_DOF_KINDS: &[&str] = &["planar", "spherical", "cylindrical"];
 
     fn prismatic_x() -> Value {
@@ -691,13 +692,11 @@ mod tests {
     #[test]
     fn chain_transform_single_prismatic_x_at_half_metre() {
         let chain = vec![prismatic_x()];
-        // α-pre bridge: build chain motion values as `Vec<JointValue>` (all
-        // `Scalar` for this scalar-joint chain) and pass `&flatten_dofs(..)`
-        // at the still-`&[f64]` chain_transform boundary.  flatten_dofs of
-        // a single `Scalar(0.5)` is exactly `vec![0.5]`, so the test stays
-        // green while exercising the new helper end-to-end.
+        // KCC-γ: chain_transform now takes &[JointValue] directly — the
+        // f64-per-joint shim via `flatten_dofs` is gone; tests pass typed
+        // `JointValue::Scalar` slots straight through.
         let vals = vec![JointValue::Scalar(0.5)];
-        let result = super::chain_transform(&chain, &flatten_dofs(&vals)).expect("Transform");
+        let result = super::chain_transform(&chain, &vals).expect("Transform");
         let trans = translation_xyz(&result);
         assert!((trans[0] - 0.5).abs() < 1e-12);
         assert!(trans[1].abs() < 1e-12);
@@ -711,7 +710,7 @@ mod tests {
     fn chain_transform_two_prismatic_x_compose_left_to_right() {
         let chain = vec![prismatic_x(), prismatic_x()];
         let vals = vec![JointValue::Scalar(0.3), JointValue::Scalar(0.5)];
-        let result = super::chain_transform(&chain, &flatten_dofs(&vals)).expect("Transform");
+        let result = super::chain_transform(&chain, &vals).expect("Transform");
         let trans = translation_xyz(&result);
         assert!(
             (trans[0] - 0.8).abs() < 1e-12,
@@ -733,8 +732,7 @@ mod tests {
             JointValue::Scalar(0.5),
             JointValue::Scalar(std::f64::consts::FRAC_PI_2),
         ];
-        let result =
-            super::chain_transform(&chain, &flatten_dofs(&vals)).expect("Transform");
+        let result = super::chain_transform(&chain, &vals).expect("Transform");
         let trans = translation_xyz(&result);
         assert!((trans[0] - 0.5).abs() < 1e-12);
         assert!(trans[1].abs() < 1e-12);
@@ -754,8 +752,8 @@ mod tests {
             JointValue::Scalar(0.5),
             JointValue::Scalar(0.1),
         ];
-        assert!(super::chain_transform(&chain, &flatten_dofs(&short)).is_none());
-        assert!(super::chain_transform(&chain, &flatten_dofs(&long)).is_none());
+        assert!(super::chain_transform(&chain, &short).is_none());
+        assert!(super::chain_transform(&chain, &long).is_none());
     }
 
     // ── loop_residual_twist tests ────────────────────────────────────────
@@ -767,8 +765,7 @@ mod tests {
         let vals_a = vec![JointValue::Scalar(0.5)];
         let vals_b = vec![JointValue::Scalar(0.5)];
         let twist: [f64; 6] =
-            super::loop_residual_twist(&a, &flatten_dofs(&vals_a), &b, &flatten_dofs(&vals_b))
-                .expect("twist");
+            super::loop_residual_twist(&a, &vals_a, &b, &vals_b).expect("twist");
         for v in twist.iter() {
             assert!(v.abs() < 1e-12, "expected zero twist, got {twist:?}");
         }
@@ -784,8 +781,7 @@ mod tests {
         let vals_a = vec![JointValue::Scalar(0.5)];
         let vals_b = vec![JointValue::Scalar(0.3)];
         let twist =
-            super::loop_residual_twist(&a, &flatten_dofs(&vals_a), &b, &flatten_dofs(&vals_b))
-                .expect("twist");
+            super::loop_residual_twist(&a, &vals_a, &b, &vals_b).expect("twist");
         // [ω_x, ω_y, ω_z, v_x, v_y, v_z]
         assert!(twist[0].abs() < 1e-12);
         assert!(twist[1].abs() < 1e-12);
@@ -811,13 +807,8 @@ mod tests {
             JointValue::Scalar(0.5),
             JointValue::Scalar(std::f64::consts::FRAC_PI_2),
         ];
-        let twist: [f64; 6] = super::loop_residual_twist(
-            &a,
-            &flatten_dofs(&vals_a),
-            &b,
-            &flatten_dofs(&vals_b),
-        )
-        .expect("twist");
+        let twist: [f64; 6] =
+            super::loop_residual_twist(&a, &vals_a, &b, &vals_b).expect("twist");
         for v in twist.iter() {
             assert!(v.abs() < 1e-10, "expected ~zero twist, got {twist:?}");
         }
@@ -831,25 +822,9 @@ mod tests {
         let vals_one_short = vec![JointValue::Scalar(0.3)];
         let vals_two = vec![JointValue::Scalar(0.3), JointValue::Scalar(0.1)];
         // chain_a length mismatches vals_a
-        assert!(
-            super::loop_residual_twist(
-                &a,
-                &flatten_dofs(&vals_one),
-                &b,
-                &flatten_dofs(&vals_one_short),
-            )
-            .is_none()
-        );
+        assert!(super::loop_residual_twist(&a, &vals_one, &b, &vals_one_short).is_none());
         // chain_b length mismatches vals_b
-        assert!(
-            super::loop_residual_twist(
-                &b,
-                &flatten_dofs(&vals_one),
-                &b,
-                &flatten_dofs(&vals_two),
-            )
-            .is_none()
-        );
+        assert!(super::loop_residual_twist(&b, &vals_one, &b, &vals_two).is_none());
     }
 
     // ── joint_range_midpoint tests ───────────────────────────────────────
@@ -1094,7 +1069,7 @@ mod tests {
         let chain = vec![prismatic_x()];
         let analytic = super::per_joint_jacobian_local(&chain[0]).unwrap();
         let vals = vec![JointValue::Scalar(0.5)];
-        let cols = super::chain_jacobian_fd(&chain, &flatten_dofs(&vals), &[0], 1e-6).expect("cols");
+        let cols = super::chain_jacobian_fd(&chain, &vals, &[0], 1e-6).expect("cols");
         assert_eq!(cols.len(), 1);
         assert_columns_close(&cols, &[analytic], 1e-7, "single_prismatic");
     }
@@ -1104,7 +1079,7 @@ mod tests {
         let chain = vec![revolute_z()];
         let analytic = super::per_joint_jacobian_local(&chain[0]).unwrap();
         let vals = vec![JointValue::Scalar(0.0)];
-        let cols = super::chain_jacobian_fd(&chain, &flatten_dofs(&vals), &[0], 1e-6).expect("cols");
+        let cols = super::chain_jacobian_fd(&chain, &vals, &[0], 1e-6).expect("cols");
         assert_eq!(cols.len(), 1);
         assert_columns_close(&cols, &[analytic], 1e-7, "single_revolute");
     }
@@ -1113,8 +1088,7 @@ mod tests {
     fn chain_jacobian_fd_two_joint_returns_two_columns() {
         let chain = vec![prismatic_x(), revolute_z()];
         let vals = vec![JointValue::Scalar(0.5), JointValue::Scalar(0.0)];
-        let cols =
-            super::chain_jacobian_fd(&chain, &flatten_dofs(&vals), &[0, 1], 1e-6).expect("cols");
+        let cols = super::chain_jacobian_fd(&chain, &vals, &[0, 1], 1e-6).expect("cols");
         assert_eq!(cols.len(), 2);
         for col in &cols {
             for v in col.iter() {
@@ -1127,14 +1101,14 @@ mod tests {
     fn chain_jacobian_fd_out_of_range_returns_none() {
         let chain = vec![prismatic_x()];
         let vals = vec![JointValue::Scalar(0.5)];
-        assert!(super::chain_jacobian_fd(&chain, &flatten_dofs(&vals), &[5], 1e-6).is_none());
+        assert!(super::chain_jacobian_fd(&chain, &vals, &[5], 1e-6).is_none());
     }
 
     #[test]
     fn chain_jacobian_fd_zero_eps_returns_none() {
         let chain = vec![prismatic_x()];
         let vals = vec![JointValue::Scalar(0.5)];
-        assert!(super::chain_jacobian_fd(&chain, &flatten_dofs(&vals), &[0], 0.0).is_none());
+        assert!(super::chain_jacobian_fd(&chain, &vals, &[0], 0.0).is_none());
     }
 
     #[test]
@@ -1146,7 +1120,7 @@ mod tests {
         );
         let chain = vec![Value::Map(bogus)];
         let vals = vec![JointValue::Scalar(0.5)];
-        assert!(super::chain_jacobian_fd(&chain, &flatten_dofs(&vals), &[0], 1e-6).is_none());
+        assert!(super::chain_jacobian_fd(&chain, &vals, &[0], 1e-6).is_none());
     }
 
     #[test]
@@ -1158,8 +1132,7 @@ mod tests {
         // axis-aligned structure here).
         let chain = vec![prismatic_x(), revolute_z()];
         let vals = vec![JointValue::Scalar(0.5), JointValue::Scalar(0.0)];
-        let cols =
-            super::chain_jacobian_fd(&chain, &flatten_dofs(&vals), &[1], 1e-6).expect("cols");
+        let cols = super::chain_jacobian_fd(&chain, &vals, &[1], 1e-6).expect("cols");
         assert_eq!(cols.len(), 1);
         let col = cols[0];
         for v in col.iter() {
@@ -1189,10 +1162,7 @@ mod tests {
         let a = vec![Value::Map(bogus)];
         let b = vec![prismatic_x()];
         let vals = vec![JointValue::Scalar(0.0)];
-        assert!(
-            super::loop_residual_twist(&a, &flatten_dofs(&vals), &b, &flatten_dofs(&vals))
-                .is_none()
-        );
+        assert!(super::loop_residual_twist(&a, &vals, &b, &vals).is_none());
     }
 
     #[test]
@@ -1205,7 +1175,7 @@ mod tests {
         );
         let chain = vec![Value::Map(m)];
         let vals = vec![JointValue::Scalar(0.5)];
-        assert!(super::chain_transform(&chain, &flatten_dofs(&vals)).is_none());
+        assert!(super::chain_transform(&chain, &vals).is_none());
     }
 
     // ── fixed-joint chain integration tests ─────────────────────────────
@@ -1220,7 +1190,7 @@ mod tests {
     fn chain_transform_single_fixed_joint_returns_identity() {
         let chain = vec![fixed_joint()];
         let vals = vec![JointValue::Scalar(0.0)];
-        let result = super::chain_transform(&chain, &flatten_dofs(&vals))
+        let result = super::chain_transform(&chain, &vals)
             .expect("chain_transform must return Some for a fixed joint");
         let trans = translation_xyz(&result);
         assert!(
@@ -1248,15 +1218,15 @@ mod tests {
         // Expected: total translation_x ≈ 0.8m regardless of the fixed slot's value.
         let chain = vec![prismatic_x(), fixed_joint(), prismatic_x()];
         // The middle Scalar(1234.5) is the fixed joint's placeholder slot —
-        // value_for_joint discards it.  Keeping the garbage scalar after the
-        // JointValue rewrap proves the bridge preserves the same "ignored
-        // value" semantics the test originally pinned.
+        // value_for_joint discards it.  Keeping the garbage scalar in the
+        // JointValue slot proves the widened signature preserves the same
+        // "ignored value" semantics the test originally pinned.
         let vals = vec![
             JointValue::Scalar(0.3),
             JointValue::Scalar(1234.5),
             JointValue::Scalar(0.5),
         ];
-        let result = super::chain_transform(&chain, &flatten_dofs(&vals))
+        let result = super::chain_transform(&chain, &vals)
             .expect("chain_transform must return Some with fixed joint in the middle");
         let trans = translation_xyz(&result);
         assert!(
@@ -1286,7 +1256,7 @@ mod tests {
             JointValue::Scalar(0.0),
             JointValue::Scalar(0.0),
         ];
-        let cols = super::chain_jacobian_fd(&chain, &flatten_dofs(&vals), &[0, 2], 1e-6)
+        let cols = super::chain_jacobian_fd(&chain, &vals, &[0, 2], 1e-6)
             .expect("chain_jacobian_fd must return Some when fixed joint is not in free_indices");
         assert_eq!(cols.len(), 2, "expected 2 columns for 2 free indices");
         for col in &cols {
@@ -1301,7 +1271,7 @@ mod tests {
         let vals_ref = vec![JointValue::Scalar(0.5), JointValue::Scalar(0.0)];
         let cols_no_fixed = super::chain_jacobian_fd(
             &[prismatic_x(), revolute_z()],
-            &flatten_dofs(&vals_ref),
+            &vals_ref,
             &[0, 1],
             1e-6,
         )
@@ -1323,7 +1293,7 @@ mod tests {
     fn chain_jacobian_fd_with_fixed_joint_in_free_indices_yields_zero_column() {
         let chain = vec![fixed_joint()];
         let vals = vec![JointValue::Scalar(0.0)];
-        let cols = super::chain_jacobian_fd(&chain, &flatten_dofs(&vals), &[0], 1e-6)
+        let cols = super::chain_jacobian_fd(&chain, &vals, &[0], 1e-6)
             .expect("chain_jacobian_fd must return Some for a fixed-only chain");
         assert_eq!(cols.len(), 1, "expected 1 column");
         let col = cols[0];
@@ -1337,7 +1307,7 @@ mod tests {
         }
     }
 
-    // ── planar joint pin tests ────────────────────────────────────────────
+    // ── planar joint widened tests (KCC-γ step-3) ────────────────────────
 
     /// `joint_range_midpoint` returns `Some(JointValue::Planar([mid_x, mid_y, mid_θ]))`
     /// for a planar joint.
@@ -1365,84 +1335,95 @@ mod tests {
         }
     }
 
-    /// `chain_transform` returns `None` when the chain contains a planar joint.
-    ///
-    /// Pins the contract that the f64-per-joint chain machinery short-circuits
-    /// gracefully on planar (no panic, deterministic None). `value_for_joint`
-    /// cannot map a scalar f64 to planar's 3-element List motion variable, so
-    /// the chain aborts. Multi-DOF chain support is deferred to PRD v0.2
-    /// kinematic task 2 (taskmaster #2670).
+    /// KCC-γ (PRD §5.2): `value_for_joint(planar, Planar([x,y,θ]))` returns
+    /// the canonical 3-element `Value::List([length(x), length(y), angle(θ)])`
+    /// surface that `transform_at("planar", _)` consumes.
     #[test]
-    fn chain_transform_with_planar_returns_none() {
-        // Single scalar bridged through flatten_dofs — α-pre keeps the
-        // f64-per-joint chain machinery unchanged, so the planar None
-        // contract still holds (value_for_joint can't map a single f64 to
-        // planar's 3-element motion variable).
-        let vals = vec![JointValue::Scalar(0.0)];
-        assert!(
-            super::chain_transform(&[planar_xy_joint()], &flatten_dofs(&vals)).is_none(),
-            "chain_transform must return None for a chain containing a planar joint"
-        );
+    fn value_for_joint_planar_returns_value_list() {
+        let jv = JointValue::Planar([0.5, 0.5, std::f64::consts::FRAC_PI_2]);
+        let result = super::value_for_joint(&planar_xy_joint(), &jv)
+            .expect("value_for_joint must wrap a planar JointValue into a 3-element List");
+        match result {
+            Value::List(items) => {
+                assert_eq!(items.len(), 3, "expected 3-element list, got {items:?}");
+                assert_eq!(items[0], Value::length(0.5));
+                assert_eq!(items[1], Value::length(0.5));
+                assert_eq!(items[2], Value::angle(std::f64::consts::FRAC_PI_2));
+            }
+            other => panic!("expected Value::List, got {other:?}"),
+        }
     }
 
-    /// `chain_jacobian_fd` returns `None` when the chain contains a planar joint.
-    ///
-    /// Pins the contract that the FD Jacobian assembler short-circuits gracefully
-    /// on planar (no panic, deterministic None). The FD perturbation relies on
-    /// `chain_transform` which itself short-circuits for planar, so the whole
-    /// Jacobian returns None. Deferred to PRD v0.2 kinematic task 2 (#2670).
+    /// KCC-γ: a chain containing only a planar joint with a non-zero x
+    /// motion variable composes to a pure +X translation Transform with
+    /// identity rotation.
     #[test]
-    fn chain_jacobian_fd_with_planar_returns_none() {
-        let vals = vec![JointValue::Scalar(0.0)];
-        assert!(
-            super::chain_jacobian_fd(&[planar_xy_joint()], &flatten_dofs(&vals), &[0], 1e-6)
-                .is_none(),
-            "chain_jacobian_fd must return None for a chain containing a planar joint"
-        );
+    fn chain_transform_planar_only_chain_returns_transform() {
+        let chain = vec![planar_xy_joint()];
+        let vals = vec![JointValue::Planar([0.5, 0.0, 0.0])];
+        let result = super::chain_transform(&chain, &vals)
+            .expect("chain_transform must return Some for a planar-only chain");
+        let trans = translation_xyz(&result);
+        assert!((trans[0] - 0.5).abs() < 1e-12, "expected tx = 0.5, got {}", trans[0]);
+        assert!(trans[1].abs() < 1e-12, "expected ty = 0, got {}", trans[1]);
+        assert!(trans[2].abs() < 1e-12, "expected tz = 0, got {}", trans[2]);
+        let (w, x, y, z) = rotation_wxyz(&result);
+        assert!((w - 1.0).abs() < 1e-12, "expected identity rotation w=1, got {w}");
+        assert!(x.abs() < 1e-12 && y.abs() < 1e-12 && z.abs() < 1e-12);
     }
 
-    /// `chain_transform` returns `None` for a mixed chain where planar is not
-    /// the only element — pins the stronger contract that *any* planar joint in
-    /// the chain short-circuits, regardless of its position or the other kinds
-    /// present.
-    ///
-    /// A [prismatic_x @ 0.5m, planar_xy] chain with two scalar entries must
-    /// still return `None` because `value_for_joint` has no f64-scalar mapping
-    /// for planar regardless of how many valid joints precede it.
+    /// KCC-γ: a mixed `[prismatic_x @ 0.5m, planar_xy @ (0.25, 0, 0)]` chain
+    /// composes the two translations along +X for total 0.75m.
     #[test]
-    fn chain_transform_mixed_prismatic_planar_returns_none() {
-        let vals = vec![JointValue::Scalar(0.5), JointValue::Scalar(0.0)];
-        assert!(
-            super::chain_transform(&[prismatic_x(), planar_xy_joint()], &flatten_dofs(&vals))
-                .is_none(),
-            "chain_transform must return None when any joint in the chain is planar"
-        );
+    fn chain_transform_mixed_prismatic_planar_returns_transform() {
+        let chain = vec![prismatic_x(), planar_xy_joint()];
+        let vals = vec![
+            JointValue::Scalar(0.5),
+            JointValue::Planar([0.25, 0.0, 0.0]),
+        ];
+        let result = super::chain_transform(&chain, &vals)
+            .expect("chain_transform must return Some for a mixed prismatic+planar chain");
+        let trans = translation_xyz(&result);
+        assert!((trans[0] - 0.75).abs() < 1e-12, "expected tx = 0.75, got {}", trans[0]);
+        assert!(trans[1].abs() < 1e-12);
+        assert!(trans[2].abs() < 1e-12);
     }
 
-    /// `chain_jacobian_fd` returns `None` for a mixed chain containing a planar
-    /// joint — the same stronger contract as
-    /// `chain_transform_mixed_prismatic_planar_returns_none`.
-    ///
-    /// Even with two free indices `[0, 1]`, the FD loop calls `chain_transform`
-    /// for the perturbed chains; the first call with a perturbed prismatic value
-    /// will still encounter the planar slot and return `None`, killing the whole
-    /// Jacobian.
+    /// KCC-γ: `chain_jacobian_fd` for a planar-only chain returns 3 columns
+    /// (one per planar storage f64 — flat_len = 3).  This matches the
+    /// Newton-state-width-by-flat_len contract used by `solve_loop_closure`
+    /// (step-12).  Per-column finiteness is the only structural assertion
+    /// here; sign/magnitude pins are deferred to the analytic-J widening
+    /// in step-6 (joints.rs:785 planar arm).
     #[test]
-    fn chain_jacobian_fd_mixed_prismatic_planar_returns_none() {
-        let vals = vec![JointValue::Scalar(0.5), JointValue::Scalar(0.0)];
-        assert!(
-            super::chain_jacobian_fd(
-                &[prismatic_x(), planar_xy_joint()],
-                &flatten_dofs(&vals),
-                &[0, 1],
-                1e-6,
-            )
-            .is_none(),
-            "chain_jacobian_fd must return None when any joint in the chain is planar"
-        );
+    fn chain_jacobian_fd_planar_only_emits_three_columns() {
+        let chain = vec![planar_xy_joint()];
+        let vals = vec![JointValue::Planar([0.0, 0.0, 0.0])];
+        let cols = super::chain_jacobian_fd(&chain, &vals, &[0], 1e-6)
+            .expect("chain_jacobian_fd must return Some for a planar-only chain");
+        assert_eq!(cols.len(), 3, "planar slot must produce flat_len=3 columns");
+        for col in &cols {
+            for v in col.iter() {
+                assert!(v.is_finite(), "expected finite, got {col:?}");
+            }
+        }
     }
 
-    // ── spherical joint pin tests ────────────────────────────────────────
+    /// KCC-γ: `loop_residual_twist` on two identical planar chains is zero.
+    /// Sanity check on the multi-DOF residual path.
+    #[test]
+    fn loop_residual_twist_planar_chain_zero_for_identical_configurations() {
+        let a = vec![planar_xy_joint()];
+        let b = vec![planar_xy_joint()];
+        let vals = vec![JointValue::Planar([0.3, 0.4, std::f64::consts::FRAC_PI_3])];
+        let twist = super::loop_residual_twist(&a, &vals, &b, &vals)
+            .expect("loop_residual_twist must return Some for identical planar chains");
+        for v in twist.iter() {
+            assert!(v.abs() < 1e-10, "expected ~zero twist, got {twist:?}");
+        }
+    }
+
+    // ── spherical joint widened tests (KCC-γ step-3) ──────────────────────
 
     /// `joint_range_midpoint` returns `Some(JointValue::Sphere([1, 0, 0, 0]))`
     /// for a spherical joint — the identity quaternion (PRD §5.2).
@@ -1467,148 +1448,46 @@ mod tests {
         }
     }
 
-    /// `chain_transform` returns `None` when the chain contains a spherical joint.
-    ///
-    /// Pins the contract that the f64-per-joint chain machinery short-circuits
-    /// gracefully on spherical (no panic, deterministic None). `value_for_joint`
-    /// cannot map a scalar f64 to spherical's `Value::Orientation` motion
-    /// variable, so the chain aborts. Multi-DOF chain support is deferred
-    /// to PRD v0.2 kinematic task 2 (taskmaster #2670). The catch-all
-    /// `_ => None` arm in `value_for_joint` makes this test pass already;
-    /// step-18 adds an explicit `"spherical" => None` arm so the contract
-    /// becomes source-visible.
+    /// KCC-γ (PRD §5.2): `value_for_joint(spherical, Sphere([w,x,y,z]))` returns
+    /// the canonical `Value::Orientation { w, x, y, z }` surface that
+    /// `transform_at("spherical", _)` consumes.
     #[test]
-    fn chain_transform_with_spherical_returns_none() {
-        let vals = vec![JointValue::Scalar(0.0)];
-        assert!(
-            super::chain_transform(&[spherical_joint()], &flatten_dofs(&vals)).is_none(),
-            "chain_transform must return None for a chain containing a spherical joint"
-        );
+    fn value_for_joint_spherical_returns_value_orientation() {
+        // Use a non-identity unit quaternion (rotate +π/2 about Z):
+        //   w = cos(π/4), x = 0, y = 0, z = sin(π/4)
+        let half = std::f64::consts::FRAC_PI_4;
+        let jv = JointValue::Sphere([half.cos(), 0.0, 0.0, half.sin()]);
+        let result = super::value_for_joint(&spherical_joint(), &jv)
+            .expect("value_for_joint must wrap a spherical JointValue into Value::Orientation");
+        match result {
+            Value::Orientation { w, x, y, z } => {
+                assert!((w - half.cos()).abs() < 1e-12, "expected w ≈ cos(π/4), got {w}");
+                assert!(x.abs() < 1e-12);
+                assert!(y.abs() < 1e-12);
+                assert!((z - half.sin()).abs() < 1e-12);
+            }
+            other => panic!("expected Value::Orientation, got {other:?}"),
+        }
     }
 
-    /// `chain_jacobian_fd` returns `None` when the chain contains a spherical joint.
-    ///
-    /// Pins the contract that the FD Jacobian assembler short-circuits gracefully
-    /// on spherical (no panic, deterministic None). The FD perturbation relies on
-    /// `chain_transform` which itself short-circuits for spherical, so the whole
-    /// Jacobian returns None. Deferred to PRD v0.2 kinematic task 2 (#2670).
+    /// KCC-γ: a spherical-only chain composed at the identity quaternion
+    /// yields the identity Transform.
     #[test]
-    fn chain_jacobian_fd_with_spherical_returns_none() {
-        let vals = vec![JointValue::Scalar(0.0)];
-        assert!(
-            super::chain_jacobian_fd(&[spherical_joint()], &flatten_dofs(&vals), &[0], 1e-6)
-                .is_none(),
-            "chain_jacobian_fd must return None for a chain containing a spherical joint"
-        );
+    fn chain_transform_spherical_only_chain_returns_transform() {
+        let chain = vec![spherical_joint()];
+        let vals = vec![JointValue::Sphere([1.0, 0.0, 0.0, 0.0])];
+        let result = super::chain_transform(&chain, &vals)
+            .expect("chain_transform must return Some for a spherical-only chain");
+        let trans = translation_xyz(&result);
+        assert!(trans[0].abs() < 1e-12);
+        assert!(trans[1].abs() < 1e-12);
+        assert!(trans[2].abs() < 1e-12);
+        let (w, x, y, z) = rotation_wxyz(&result);
+        assert!((w - 1.0).abs() < 1e-12);
+        assert!(x.abs() < 1e-12 && y.abs() < 1e-12 && z.abs() < 1e-12);
     }
 
-    /// `chain_transform` returns `None` for a mixed chain where spherical is not
-    /// the only element — pins the stronger contract that *any* spherical joint
-    /// in the chain short-circuits, regardless of its position or the other
-    /// kinds present.
-    ///
-    /// A `[prismatic_x @ 0.5m, spherical]` chain with two scalar entries must
-    /// still return `None` because `value_for_joint` has no f64-scalar mapping
-    /// for spherical regardless of how many valid joints precede it.
-    #[test]
-    fn chain_transform_mixed_prismatic_spherical_returns_none() {
-        let vals = vec![JointValue::Scalar(0.5), JointValue::Scalar(0.0)];
-        assert!(
-            super::chain_transform(&[prismatic_x(), spherical_joint()], &flatten_dofs(&vals))
-                .is_none(),
-            "chain_transform must return None when any joint in the chain is spherical"
-        );
-    }
-
-    /// `chain_jacobian_fd` returns `None` for a mixed chain containing a
-    /// spherical joint — the same stronger contract as
-    /// `chain_transform_mixed_prismatic_spherical_returns_none`.
-    ///
-    /// Even with two free indices `[0, 1]`, the FD loop calls `chain_transform`
-    /// for the perturbed chains; the first call with a perturbed prismatic value
-    /// will still encounter the spherical slot and return `None`, killing the
-    /// whole Jacobian.
-    #[test]
-    fn chain_jacobian_fd_mixed_prismatic_spherical_returns_none() {
-        let vals = vec![JointValue::Scalar(0.5), JointValue::Scalar(0.0)];
-        assert!(
-            super::chain_jacobian_fd(
-                &[prismatic_x(), spherical_joint()],
-                &flatten_dofs(&vals),
-                &[0, 1],
-                1e-6,
-            )
-            .is_none(),
-            "chain_jacobian_fd must return None when any joint in the chain is spherical"
-        );
-    }
-
-    // ── cylindrical joint pin tests (step-17 / step-19) ─────────────────────
-    //
-    // Multi-DOF deferred-integration contract: chain_transform's single-f64-
-    // per-joint signature cannot represent the (translation, rotation) tuple
-    // for cylindrical, so `value_for_joint` returns None and any chain
-    // containing cylindrical short-circuits to None. Full chain integration
-    // is deferred to PRD v0.2 kinematic task 9/10 (closed-chain mechanism).
-
-    /// `value_for_joint` returns `None` for a cylindrical joint.
-    #[test]
-    fn value_for_joint_cylindrical_returns_none() {
-        assert!(
-            super::value_for_joint(&cylindrical_z_joint(), 0.5).is_none(),
-            "value_for_joint must return None for a cylindrical joint"
-        );
-    }
-
-    /// `chain_transform` returns `None` when the chain contains a cylindrical joint.
-    #[test]
-    fn chain_transform_with_cylindrical_returns_none() {
-        let vals = vec![JointValue::Scalar(0.0)];
-        assert!(
-            super::chain_transform(&[cylindrical_z_joint()], &flatten_dofs(&vals)).is_none(),
-            "chain_transform must return None for a chain containing a cylindrical joint"
-        );
-    }
-
-    /// `chain_jacobian_fd` returns `None` when the chain contains a cylindrical joint.
-    #[test]
-    fn chain_jacobian_fd_with_cylindrical_returns_none() {
-        let vals = vec![JointValue::Scalar(0.0)];
-        assert!(
-            super::chain_jacobian_fd(&[cylindrical_z_joint()], &flatten_dofs(&vals), &[0], 1e-6)
-                .is_none(),
-            "chain_jacobian_fd must return None for a chain containing a cylindrical joint"
-        );
-    }
-
-    /// `chain_transform` returns `None` for a mixed `[prismatic, cylindrical]`
-    /// chain — same stronger contract as the planar/spherical mixed pins.
-    #[test]
-    fn chain_transform_mixed_prismatic_cylindrical_returns_none() {
-        let vals = vec![JointValue::Scalar(0.5), JointValue::Scalar(0.0)];
-        assert!(
-            super::chain_transform(&[prismatic_x(), cylindrical_z_joint()], &flatten_dofs(&vals))
-                .is_none(),
-            "chain_transform must return None when any joint in the chain is cylindrical"
-        );
-    }
-
-    /// `chain_jacobian_fd` returns `None` for a mixed chain containing a
-    /// cylindrical joint.
-    #[test]
-    fn chain_jacobian_fd_mixed_prismatic_cylindrical_returns_none() {
-        let vals = vec![JointValue::Scalar(0.5), JointValue::Scalar(0.0)];
-        assert!(
-            super::chain_jacobian_fd(
-                &[prismatic_x(), cylindrical_z_joint()],
-                &flatten_dofs(&vals),
-                &[0, 1],
-                1e-6,
-            )
-            .is_none(),
-            "chain_jacobian_fd must return None when any joint in the chain is cylindrical"
-        );
-    }
+    // ── cylindrical joint widened tests (KCC-γ step-3) ────────────────────
 
     /// `joint_range_midpoint` returns `Some(JointValue::Cyl([mid_d, mid_θ]))`
     /// for a cylindrical joint.
@@ -1634,20 +1513,54 @@ mod tests {
         }
     }
 
-    // ── multi-DOF None contract: JOINT_KINDS-iteration partition (step-21) ──
+    /// KCC-γ (PRD §5.2): `value_for_joint(cylindrical, Cyl([d,θ]))` returns
+    /// the canonical 2-element `Value::List([length(d), angle(θ)])` surface
+    /// that `transform_at("cylindrical", _)` consumes.
+    #[test]
+    fn value_for_joint_cylindrical_returns_value_list() {
+        let jv = JointValue::Cyl([0.5, std::f64::consts::FRAC_PI_2]);
+        let result = super::value_for_joint(&cylindrical_z_joint(), &jv)
+            .expect("value_for_joint must wrap a cylindrical JointValue into a 2-element List");
+        match result {
+            Value::List(items) => {
+                assert_eq!(items.len(), 2, "expected 2-element list, got {items:?}");
+                assert_eq!(items[0], Value::length(0.5));
+                assert_eq!(items[1], Value::angle(std::f64::consts::FRAC_PI_2));
+            }
+            other => panic!("expected Value::List, got {other:?}"),
+        }
+    }
+
+    /// KCC-γ: a cylindrical-only chain composed at d=0.5m, θ=0 yields a pure
+    /// translation along the joint's axis (+Z), identity rotation.
+    #[test]
+    fn chain_transform_cylindrical_only_chain_returns_transform() {
+        let chain = vec![cylindrical_z_joint()];
+        let vals = vec![JointValue::Cyl([0.5, 0.0])];
+        let result = super::chain_transform(&chain, &vals)
+            .expect("chain_transform must return Some for a cylindrical-only chain");
+        let trans = translation_xyz(&result);
+        assert!(trans[0].abs() < 1e-12);
+        assert!(trans[1].abs() < 1e-12);
+        assert!((trans[2] - 0.5).abs() < 1e-12, "expected tz = 0.5, got {}", trans[2]);
+        let (w, x, y, z) = rotation_wxyz(&result);
+        assert!((w - 1.0).abs() < 1e-12);
+        assert!(x.abs() < 1e-12 && y.abs() < 1e-12 && z.abs() < 1e-12);
+    }
+
+    // ── widened JOINT_KINDS-iteration partition (KCC-γ step-3) ────────────
     //
     // Pins the contract that `value_for_joint` and `joint_range_midpoint`
-    // partition `crate::joints::JOINT_KINDS` cleanly:
-    //   - MULTI_DOF_KINDS (planar, spherical, cylindrical): both fns return None
-    //   - the complement (prismatic, revolute, coupling, fixed): value_for_joint
-    //     returns Some; joint_range_midpoint returns Some for prismatic/revolute/
-    //     coupling and None for fixed (0-DOF empty range).
+    // partition `crate::joints::JOINT_KINDS` cleanly after the KCC-γ widening:
+    //   - `value_for_joint`: every kind returns Some when the JointValue
+    //     variant matches the kind (Scalar for prismatic/revolute/coupling/fixed,
+    //     Planar for planar, Sphere for spherical, Cyl for cylindrical).
+    //   - `joint_range_midpoint`: every kind returns Some EXCEPT `fixed`
+    //     (0-DOF, empty free-variable space).
     //
     // Any future kind addition is forced through this partition: an unhandled
     // kind triggers `minimal_joint`'s panic (with a remediation message) and
-    // the assertions cleanly fail if multi-DOF/single-DOF classification needs
-    // updating. This is the structural safety net that lets step-23
-    // consolidate the per-arm prose into a single function-level block.
+    // the assertions cleanly fail if the classification needs updating.
 
     /// Build a minimal well-formed joint for each kind in JOINT_KINDS.
     /// Mirrors `joints::tests::joint_kind_minimal_fixture` but joint-only
@@ -1666,19 +1579,28 @@ mod tests {
             _ => panic!(
                 "minimal_joint: unknown kind '{kind}' — JOINT_KINDS contains a \
                  kind that loop_closure's tests have no fixture for. Add a \
-                 fixture row here and decide whether the kind belongs in \
-                 MULTI_DOF_KINDS or the single-DOF complement."
+                 fixture row here and decide which JointValue variant pairs \
+                 with the new kind."
             ),
         }
     }
 
-    #[test]
-    fn value_for_joint_returns_none_for_all_multi_dof_kinds() {
-        for &kind in MULTI_DOF_KINDS {
-            assert!(
-                super::value_for_joint(&minimal_joint(kind), 0.0).is_none(),
-                "value_for_joint must return None for multi-DOF kind '{kind}'"
-            );
+    /// Per-kind canonical JointValue used by the post-γ partition tests.
+    /// Mirrors `joint_range_midpoint`'s per-kind output shape — every kind in
+    /// `JOINT_KINDS` has a matching JointValue variant (Scalar for the four
+    /// single-DOF kinds; Planar/Sphere/Cyl for the three multi-DOF kinds).
+    /// Used by `value_for_joint_partition_covers_joint_kinds` to drive the
+    /// widened `value_for_joint(&Value, &JointValue)` signature.
+    fn minimal_jointvalue(kind: &str) -> JointValue {
+        match kind {
+            "prismatic" | "revolute" | "coupling" | "fixed" => JointValue::Scalar(0.0),
+            "planar" => JointValue::Planar([0.0, 0.0, 0.0]),
+            "spherical" => JointValue::Sphere([1.0, 0.0, 0.0, 0.0]),
+            "cylindrical" => JointValue::Cyl([0.0, 0.0]),
+            _ => panic!(
+                "minimal_jointvalue: unknown kind '{kind}' — JOINT_KINDS contains a \
+                 kind without a matching JointValue variant. Add a fixture row here."
+            ),
         }
     }
 
@@ -1697,34 +1619,27 @@ mod tests {
         }
     }
 
-    /// Partition contract for `value_for_joint`: every kind in JOINT_KINDS is
-    /// in exactly one of two buckets — multi-DOF (None) or single-DOF (Some).
-    /// Asserts MULTI_DOF_KINDS is a subset of JOINT_KINDS so a stale entry
-    /// can't slip through.
+    /// KCC-γ widening: every JOINT_KINDS entry returns Some from the widened
+    /// `value_for_joint(&Value, &JointValue)` when the JointValue variant
+    /// matches the kind.  The old multi-DOF None contract is dropped.
     #[test]
     fn value_for_joint_partition_covers_joint_kinds() {
         use crate::joints::JOINT_KINDS;
-        // Subset guard
+        // Subset guard: MULTI_DOF_KINDS must be in JOINT_KINDS.
         for &k in MULTI_DOF_KINDS {
             assert!(
                 JOINT_KINDS.contains(&k),
                 "MULTI_DOF_KINDS member '{k}' must also be in JOINT_KINDS"
             );
         }
-        // Partition: multi-DOF → None, single-DOF → Some.
         for &kind in JOINT_KINDS {
-            let result = super::value_for_joint(&minimal_joint(kind), 0.0);
-            if MULTI_DOF_KINDS.contains(&kind) {
-                assert!(
-                    result.is_none(),
-                    "value_for_joint must return None for multi-DOF kind '{kind}'"
-                );
-            } else {
-                assert!(
-                    result.is_some(),
-                    "value_for_joint must return Some for single-DOF kind '{kind}'"
-                );
-            }
+            let jv = minimal_jointvalue(kind);
+            let result = super::value_for_joint(&minimal_joint(kind), &jv);
+            assert!(
+                result.is_some(),
+                "value_for_joint must return Some for kind '{kind}' with matching \
+                 JointValue variant (KCC-γ widening — PRD §5.2)"
+            );
         }
     }
 
