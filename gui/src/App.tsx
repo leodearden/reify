@@ -552,6 +552,15 @@ const App: Component = () => {
       const fileData = await bridgeOpenFile(path);
       editorStore.updateFileContent(fileData.path, fileData.content);
       editorStore.markClean(fileData.path);
+      // Keep the App-level changedFiles Set in sync with the store-level dirty/
+      // externallyChanged state. Without this, the "N files changed — Reload"
+      // banner stays visible after the user resolves the conflict via the prompt,
+      // and clicking the banner would re-fetch the file unnecessarily.
+      setChangedFiles((prev) => {
+        const next = new Set(prev);
+        next.delete(fileData.path);
+        return next;
+      });
     } catch (err) {
       showToast(`Reload failed: ${errorMessage(err)}`, 'error');
     }
@@ -565,6 +574,13 @@ const App: Component = () => {
     try {
       await bridgeSaveFile(file.path, file.content);
       editorStore.markClean(file.path);
+      // Same changedFiles cleanup as reloadFromDisk — prevents the banner from
+      // remaining visible after the user chose to Overwrite the disk content.
+      setChangedFiles((prev) => {
+        const next = new Set(prev);
+        next.delete(file.path);
+        return next;
+      });
     } catch (err) {
       showToast(`Save failed: ${errorMessage(err)}`, 'error');
     }
