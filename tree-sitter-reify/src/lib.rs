@@ -371,6 +371,71 @@ mod tests {
         );
     }
 
+    // ── Task 3935: fixture-driven tests (step-3) ─────────────────────────────
+    // These two tests embed the fixture files via include_str! and are RED until
+    // the fixtures are created in step-4.  They fail at compile time when the
+    // files are absent (compile-time include_str! path resolution).
+
+    /// Fixture test: default assoc fn (with body) parses cleanly.
+    /// Embeds `test/fixtures/trait_assoc_fn_default.ri` via include_str!.
+    #[test]
+    fn test_trait_assoc_fn_default_fixture_parses_cleanly() {
+        let mut parser = make_parser();
+        let source = include_str!("../test/fixtures/trait_assoc_fn_default.ri");
+        let tree = parser
+            .parse(source.as_bytes(), None)
+            .expect("parse failed");
+        let root = tree.root_node();
+        let kinds = collect_kinds(root);
+
+        // No parse errors
+        assert!(
+            !root.has_error(),
+            "unexpected parse error in trait_assoc_fn_default.ri: {kinds:?}"
+        );
+
+        // function_definition appears as a descendant of trait_member
+        let trait_member = find_node_by_kind(root, "trait_member")
+            .expect("trait_member not found in trait_assoc_fn_default.ri");
+        assert!(
+            find_node_by_kind(trait_member, "function_definition").is_some(),
+            "expected function_definition under trait_member in default fixture: {kinds:?}"
+        );
+    }
+
+    /// Fixture test: required (bodyless) assoc fn parses cleanly as function_signature.
+    /// Embeds `test/fixtures/trait_assoc_fn_required.ri` via include_str!.
+    #[test]
+    fn test_trait_assoc_fn_required_fixture_parses_cleanly() {
+        let mut parser = make_parser();
+        let source = include_str!("../test/fixtures/trait_assoc_fn_required.ri");
+        let tree = parser
+            .parse(source.as_bytes(), None)
+            .expect("parse failed");
+        let root = tree.root_node();
+        let kinds = collect_kinds(root);
+
+        // No parse errors
+        assert!(
+            !root.has_error(),
+            "unexpected parse error in trait_assoc_fn_required.ri: {kinds:?}"
+        );
+
+        // function_signature appears as a descendant of trait_member
+        let trait_member = find_node_by_kind(root, "trait_member")
+            .expect("trait_member not found in trait_assoc_fn_required.ri");
+        assert!(
+            find_node_by_kind(trait_member, "function_signature").is_some(),
+            "expected function_signature under trait_member in required fixture: {kinds:?}"
+        );
+
+        // function_definition must NOT appear — required fixture covers bodyless form only
+        assert!(
+            !kinds.contains(&"function_definition".to_string()),
+            "required fixture should contain only function_signature, not function_definition: {kinds:?}"
+        );
+    }
+
     /// (4) REGRESSION: top-level bodyless fn must still produce an ERROR.
     /// Source: `fn f(x: Int) -> Int` (no body, at source_file scope)
     /// function_signature is scoped to trait_member only (not in _declaration),
