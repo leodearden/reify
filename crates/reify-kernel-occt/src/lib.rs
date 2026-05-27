@@ -8006,7 +8006,9 @@ mod tests {
 
     /// Non-uniform scale (diag(1,1,2)) + translation (10,0,0) applied to a centered
     /// 2×2×2 box.  Analytically: corner (±1,±1,±1) → (10±1, ±1, ±2).
-    /// Expected AABB: [9,11] × [-1,1] × [-2,2], each bound within 1e-9.
+    /// Expected AABB: [9,11] × [-1,1] × [-2,2], each bound within 1e-6.
+    /// (BRepBndLib::Add adds a gap of ~Precision::Confusion() ≈ 1e-7, so 1e-6 is the
+    /// tightest reliable tolerance for vertex-level checks through query_bbox.)
     #[test]
     fn gtransform_shape_non_uniform_scale_and_translation_maps_aabb() {
         let shape = ffi::ffi::make_box(2.0, 2.0, 2.0).expect("make_box should succeed");
@@ -8023,7 +8025,7 @@ mod tests {
         )
         .expect("gtransform_shape (non-uniform) should succeed");
         let bb = ffi::ffi::query_bbox(&transformed).expect("query_bbox should succeed");
-        let tol = 1e-9;
+        let tol = 1e-6;
         assert!(
             (bb.xmin - 9.0).abs() < tol,
             "xmin expected 9.0, got {}", bb.xmin
@@ -8050,7 +8052,9 @@ mod tests {
         );
     }
 
-    /// Identity affine (I, 0) must leave the source AABB unchanged within 1e-12.
+    /// Identity affine (I, 0) must leave the source AABB unchanged within 1e-6.
+    /// (BRepBndLib::Add adds ~Precision::Confusion() ≈ 1e-7 gap, so 1e-6 is the
+    /// tightest reliable tolerance through query_bbox.)
     #[test]
     fn gtransform_shape_identity_preserves_aabb() {
         let shape = ffi::ffi::make_box(2.0, 2.0, 2.0).expect("make_box should succeed");
@@ -8063,7 +8067,7 @@ mod tests {
         )
         .expect("gtransform_shape (identity) should succeed");
         let bb = ffi::ffi::query_bbox(&transformed).expect("query_bbox should succeed");
-        let tol = 1e-12;
+        let tol = 1e-6;
         assert!(
             (bb.xmin - (-1.0)).abs() < tol,
             "identity xmin expected -1.0, got {}", bb.xmin

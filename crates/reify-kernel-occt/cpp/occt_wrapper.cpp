@@ -79,7 +79,9 @@
 
 // OCCT transforms
 #include <BRepBuilderAPI_Transform.hxx>
+#include <BRepBuilderAPI_GTransform.hxx>
 #include <gp_Trsf.hxx>
+#include <gp_GTrsf.hxx>
 #include <gp_Vec.hxx>
 #include <gp_Ax1.hxx>
 #include <gp_Ax2.hxx>
@@ -1674,6 +1676,29 @@ std::unique_ptr<OcctShape> rotate_around_shape(const OcctShape& shape,
         }
         auto result = std::make_unique<OcctShape>();
         result->shape = transform.Shape();
+        return result;
+    });
+}
+
+std::unique_ptr<OcctShape> gtransform_shape(const OcctShape& shape,
+    double m00, double m01, double m02,
+    double m10, double m11, double m12,
+    double m20, double m21, double m22,
+    double tx, double ty, double tz) {
+    return wrap_occt_call("gtransform_shape", [&]() {
+        // Build gp_GTrsf from 3×3 linear matrix (row-major) + translation XYZ.
+        gp_Mat linear(m00, m01, m02,
+                      m10, m11, m12,
+                      m20, m21, m22);
+        gp_XYZ translation(tx, ty, tz);
+        gp_GTrsf gtrsf(linear, translation);
+        BRepBuilderAPI_GTransform gtransform(shape.shape, gtrsf, /*Copy=*/true);
+        gtransform.Build();
+        if (!gtransform.IsDone()) {
+            throw std::runtime_error("BRepBuilderAPI_GTransform failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = gtransform.Shape();
         return result;
     });
 }
