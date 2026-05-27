@@ -20,7 +20,8 @@
 //! production. This mirrors the helper trio in `solver_elastic_tests.rs`.
 
 use reify_compiler::*;
-use reify_types::*;
+use reify_core::*;
+use reify_ir::*;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 

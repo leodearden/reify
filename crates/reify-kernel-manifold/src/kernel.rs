@@ -37,11 +37,7 @@
 use std::collections::HashMap;
 
 use manifold3d::Manifold;
-use reify_types::{
-    ExportError, ExportFormat, FeatureId, GeometryError, GeometryHandle, GeometryHandleId,
-    GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, KernelAttributeOutcome, Mesh,
-    QueryError, TessError, TopologyAttributeTable, Value,
-};
+use reify_ir::{ExportError, ExportFormat, FeatureId, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, KernelAttributeOutcome, Mesh, QueryError, TessError, TopologyAttributeTable, Value};
 
 /// Error message used by the v0.2 stub paths (`query`/`export`) that
 /// have not yet been wired to real FFI. Boolean ops (`Union`,
@@ -354,7 +350,7 @@ mod tests {
     fn manifold_kernel_implements_geometry_kernel_trait() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<ManifoldKernel>();
-        let _boxed: Box<dyn reify_types::GeometryKernel> = Box::new(ManifoldKernel::new());
+        let _boxed: Box<dyn reify_ir::GeometryKernel> = Box::new(ManifoldKernel::new());
     }
 
     // The `unit_cube_mesh` helper used by the boolean-op tests below
@@ -639,7 +635,7 @@ mod tests {
     #[test]
     fn manifold_kernel_advertises_attribute_hook_via_geometry_kernel_trait() {
         let kernel = ManifoldKernel::new();
-        let kernel_ref: &dyn reify_types::GeometryKernel = &kernel;
+        let kernel_ref: &dyn reify_ir::GeometryKernel = &kernel;
         assert!(
             kernel_ref.attribute_hook().is_some(),
             "ManifoldKernel must override `attribute_hook()` to return Some(self) — \
@@ -666,7 +662,7 @@ mod tests {
     #[test]
     fn manifold_kernel_attribute_hook_returns_discarded_and_emits_warn_diagnostic() {
         use reify_test_support::CountingSubscriberBuilder;
-        use reify_types::TopologyAttributeTable;
+        use reify_ir::TopologyAttributeTable;
         use std::sync::atomic::Ordering;
 
         let kernel = ManifoldKernel::new();

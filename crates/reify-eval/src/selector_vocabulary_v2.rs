@@ -70,10 +70,7 @@
 
 use std::collections::HashSet;
 
-use reify_types::{
-    EdgeCurveKind, FaceSurfaceKind, FeatureId, GeometryHandleId, GeometryKernel, GeometryQuery,
-    QueryError, TopologyAttributeTable, Value,
-};
+use reify_ir::{EdgeCurveKind, FaceSurfaceKind, FeatureId, GeometryHandleId, GeometryKernel, GeometryQuery, QueryError, TopologyAttributeTable, Value};
 
 use crate::topology_selectors::{
     dot3, filter_by_value, normalize3, parse_bbox_axis_extents, parse_xyz_value,

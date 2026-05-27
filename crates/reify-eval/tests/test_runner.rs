@@ -2,7 +2,8 @@ use reify_constraints::SimpleConstraintChecker;
 use reify_eval::run_tests;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::parse_and_compile;
-use reify_types::{Satisfaction, Severity};
+use reify_core::Severity;
+use reify_ir::Satisfaction;
 
 #[test]
 fn run_tests_on_module_with_no_tests_returns_empty_vec() {

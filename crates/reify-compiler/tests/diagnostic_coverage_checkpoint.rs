@@ -38,7 +38,7 @@
 //!   lib.rs              — duplicate entity/unit/type-alias declarations
 
 use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only, warnings_only};
-use reify_types::DiagnosticCode;
+use reify_core::DiagnosticCode;
 
 // ── Smoke test ────────────────────────────────────────────────────────────────
 

@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
-use reify_types::{DimensionVector, Value, quaternion_is_finite};
+use reify_core::DimensionVector;
+use reify_ir::{Value, quaternion_is_finite};
 
 use crate::helpers::{sanitize_value, tensor_components_f64, trig_input};
 
@@ -608,7 +609,8 @@ fn vec3_norm(x: f64, y: f64, z: f64) -> f64 {
 mod tests {
     use super::{elementary_rotation_quat, normalize_quaternion};
     use crate::eval_builtin;
-    use reify_types::{DimensionVector, Value};
+    use reify_core::DimensionVector;
+    use reify_ir::Value;
 
     // ── assert_orientation_approx diagnostic tests ──────────────────────────
 

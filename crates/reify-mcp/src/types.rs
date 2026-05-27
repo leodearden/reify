@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 // Re-export presentation types that live in reify-types so the engine layer
 // can import them without depending on the MCP adapter crate.
-pub use reify_types::{DiagnosticInfo, SourceLocationInfo};
+pub use reify_core::{DiagnosticInfo, SourceLocationInfo};
 
 /// Error types returned by MCP tool handlers.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]

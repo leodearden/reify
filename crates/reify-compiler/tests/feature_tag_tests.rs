@@ -6,12 +6,12 @@
 //!   step-9: parallel-array invariant held for all representative inputs
 
 use reify_compiler::compile_with_stdlib;
-use reify_types::{FeatureTag, StepKind};
+use reify_ir::{FeatureTag, StepKind};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_feature_tag"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_feature_tag"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -21,7 +21,7 @@ fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(errors.is_empty(), "compile errors: {:#?}", errors);
     compiled

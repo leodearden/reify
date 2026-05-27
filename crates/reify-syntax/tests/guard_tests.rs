@@ -7,7 +7,7 @@ use reify_syntax::*;
 
 /// Helper: parse source and return the first structure's members.
 fn parse_members(source: &str) -> (Vec<MemberDecl>, Vec<ParseError>) {
-    let module = reify_syntax::parse(source, reify_types::ModulePath::single("guard_test"));
+    let module = reify_syntax::parse(source, reify_core::ModulePath::single("guard_test"));
     let structure = match &module.declarations[0] {
         Declaration::Structure(s) => s,
         other => panic!("expected Structure, got {:?}", other),
@@ -295,7 +295,7 @@ fn parse_guarded_block_complex_expression() {
 #[test]
 fn bracket_backward_compat_no_guards() {
     let source = reify_test_support::bracket_source();
-    let module = reify_syntax::parse(source, reify_types::ModulePath::single("bracket"));
+    let module = reify_syntax::parse(source, reify_core::ModulePath::single("bracket"));
     assert!(
         module.errors.is_empty(),
         "parse errors: {:?}",
@@ -361,7 +361,7 @@ fn bracket_backward_compat_no_guards() {
     }
 
     // Content hashes unchanged (source didn't change)
-    let module2 = reify_syntax::parse(source, reify_types::ModulePath::single("bracket"));
+    let module2 = reify_syntax::parse(source, reify_core::ModulePath::single("bracket"));
     let s2 = match &module2.declarations[0] {
         Declaration::Structure(s) => s,
         _ => panic!(),

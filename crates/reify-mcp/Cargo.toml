@@ -6,15 +6,16 @@ license.workspace = true
 description = "MCP (Model Context Protocol) server for Reify"
 
 [dependencies]
+reify-core = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio.workspace = true
 thiserror = "2"
-reify-types = { workspace = true, features = ["serde"] }
 
 [features]
 test-support = []
 
 [dev-dependencies]
+reify-core = { workspace = true, features = ["serde"] }
 reify-mcp = { path = ".", features = ["test-support"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-std", "io-util", "test-util"] }

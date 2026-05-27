@@ -31,7 +31,7 @@
 //! No bug today — just a flag for the perf-tuning pass that follows
 //! once the OpenVDB FFI is wired in.
 
-use reify_types::value::SampledField;
+use reify_ir::value::SampledField;
 
 use crate::grid_validation::{GridValidationError, validate_regular3d};
 
@@ -981,7 +981,7 @@ fn normalize3(v: [f64; 3]) -> Option<[f64; 3]> {
 mod tests {
     use super::*;
     use crate::grid_validation::GridValidationError;
-    use reify_types::value::{InterpolationKind, SampledGridKind};
+    use reify_ir::value::{InterpolationKind, SampledGridKind};
     use std::sync::atomic::AtomicBool;
 
     /// Build a trivial 1×1×1 Regular3D `SampledField` with the given

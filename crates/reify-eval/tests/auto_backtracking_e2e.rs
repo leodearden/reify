@@ -46,10 +46,8 @@ use reify_compiler::auto_type_param::{
 };
 use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
 use reify_test_support::{MockConstraintChecker, TopologyTemplateBuilder, parse_and_compile};
-use reify_types::{
-    CompiledExpr, CompiledFunction, DiagnosticCode, Satisfaction, SourceSpan, Type, Value,
-    ValueCellId,
-};
+use reify_core::{DiagnosticCode, SourceSpan, Type, ValueCellId};
+use reify_ir::{CompiledExpr, CompiledFunction, Satisfaction, Value};
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 

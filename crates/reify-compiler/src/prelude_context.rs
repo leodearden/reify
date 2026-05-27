@@ -73,7 +73,7 @@
 //! - *functions first-wins-silent*: no diagnostic to pin; stdlib-level review
 //!   is the guard.
 
-use reify_types::EnumDef;
+use reify_ir::EnumDef;
 use std::collections::HashMap;
 
 use crate::CompiledModule;

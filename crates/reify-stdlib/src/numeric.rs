@@ -1,4 +1,5 @@
-use reify_types::{DimensionVector, Value};
+use reify_core::DimensionVector;
+use reify_ir::Value;
 
 use crate::helpers::{binary, quinary_f64, sanitize_value, ternary, unary, unary_f64};
 
@@ -280,7 +281,8 @@ fn lerp_f64(a: f64, b: f64, t: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
-    use reify_types::{DimensionVector, Value};
+    use reify_core::DimensionVector;
+    use reify_ir::Value;
 
     #[test]
     fn abs_real_negative() {
@@ -451,7 +453,7 @@ mod tests {
 
     #[test]
     fn sqrt_scalar_length_to_fractional_exponent() {
-        use reify_types::Rational;
+        use reify_core::Rational;
         // sqrt(Scalar{4.0, LENGTH}) must return Scalar{2.0, LENGTH^(1/2)}
         let result = eval_builtin(
             "sqrt",

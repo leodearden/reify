@@ -672,7 +672,7 @@ fn match_no_arms_emits_diagnostic() {
     "#;
     let parsed = reify_syntax::parse(
         source,
-        reify_types::ModulePath::single("silent_defaults_test"),
+        reify_core::ModulePath::single("silent_defaults_test"),
     );
     if !parsed.errors.is_empty() {
         // Grammar does not allow empty match — expr.rs:1046 is an ICE path

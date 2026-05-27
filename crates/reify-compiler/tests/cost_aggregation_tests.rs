@@ -13,7 +13,7 @@
 mod common;
 
 use reify_compiler::{DefaultKind, RequirementKind, stdlib_loader};
-use reify_types::{DimensionVector, ModulePath, Severity, Type};
+use reify_core::{DimensionVector, ModulePath, Severity, Type};
 
 // ─── Helper: locate the std/io module ────────────────────────────────────────
 

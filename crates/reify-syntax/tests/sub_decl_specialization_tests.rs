@@ -16,11 +16,8 @@
 //! (2369: diagnostic emission; 2370: comprehensive forbidden/permitted
 //! coverage) build on this AST contract.
 
-use reify_syntax::{
-    ConstraintDecl, Declaration, Expr, ExprKind, GuardedGroupDecl, LetDecl,
-    MAX_MEMBER_NESTING_DEPTH, MemberDecl, ParamDecl, SubDecl, walk_specialization_scope_members,
-};
-use reify_types::{ContentHash, ModulePath, SourceSpan};
+use reify_ast::{ConstraintDecl, Declaration, Expr, ExprKind, GuardedGroupDecl, LetDecl, MAX_MEMBER_NESTING_DEPTH, MemberDecl, ParamDecl, SubDecl, walk_specialization_scope_members};
+use reify_core::{ContentHash, ModulePath, SourceSpan};
 
 // ── (a) AST regression: parsed sub forms have body == None ───────────────
 

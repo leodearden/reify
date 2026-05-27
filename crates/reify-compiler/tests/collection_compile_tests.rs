@@ -1,13 +1,14 @@
 //! Collection compilation tests (step-29 through step-36).
 
 use reify_test_support::parse_and_compile;
-use reify_types::{CompiledExprKind, Type, Value, ValueMap};
+use reify_core::Type;
+use reify_ir::{CompiledExprKind, Value, ValueMap};
 
 /// Helper: get the default_expr for a value cell by member name.
 fn get_cell_expr<'a>(
     compiled: &'a reify_compiler::CompiledModule,
     member: &str,
-) -> &'a reify_types::CompiledExpr {
+) -> &'a reify_ir::CompiledExpr {
     let template = &compiled.templates[0];
     let cell = template
         .value_cells
@@ -303,7 +304,7 @@ fn e2e_list_count() {
     let n_expr = get_cell_expr(&compiled, "n");
 
     let mut values = ValueMap::new();
-    let items_id = reify_types::ValueCellId::new("S", "items");
+    let items_id = reify_core::ValueCellId::new("S", "items");
     let items_val = reify_expr::eval_expr(items_expr, &reify_expr::EvalContext::simple(&values));
     values.insert(items_id, items_val);
 
@@ -318,7 +319,7 @@ fn e2e_list_index_access() {
     let x_expr = get_cell_expr(&compiled, "x");
 
     let mut values = ValueMap::new();
-    let items_id = reify_types::ValueCellId::new("S", "items");
+    let items_id = reify_core::ValueCellId::new("S", "items");
     let items_val = reify_expr::eval_expr(items_expr, &reify_expr::EvalContext::simple(&values));
     values.insert(items_id, items_val);
 
@@ -334,7 +335,7 @@ fn e2e_map_index_access() {
     let x_expr = get_cell_expr(&compiled, "x");
 
     let mut values = ValueMap::new();
-    let m_id = reify_types::ValueCellId::new("S", "m");
+    let m_id = reify_core::ValueCellId::new("S", "m");
     let m_val = reify_expr::eval_expr(m_expr, &reify_expr::EvalContext::simple(&values));
     values.insert(m_id, m_val);
 
@@ -349,7 +350,7 @@ fn e2e_list_sum() {
     let s_expr = get_cell_expr(&compiled, "s");
 
     let mut values = ValueMap::new();
-    let items_id = reify_types::ValueCellId::new("S", "items");
+    let items_id = reify_core::ValueCellId::new("S", "items");
     let items_val = reify_expr::eval_expr(items_expr, &reify_expr::EvalContext::simple(&values));
     values.insert(items_id, items_val);
 

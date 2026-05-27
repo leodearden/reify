@@ -3,10 +3,8 @@
 use std::sync::Arc;
 
 use reify_expr::{EvalContext, eval_expr};
-use reify_types::{
-    BinOp, CompiledExpr, CompiledExprKind, ContentHash, FieldSourceKind, ResolvedFunction, Type,
-    Value, ValueCellId, ValueMap,
-};
+use reify_core::{ContentHash, Type, ValueCellId};
+use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, FieldSourceKind, ResolvedFunction, Value, ValueMap};
 
 /// Helper to build a Value::Lambda with (name, id) param pairs.
 fn make_value_lambda(
@@ -368,7 +366,7 @@ structure S {
     let f = |x| x * factor
 }
 "#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_integration"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_integration"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -379,7 +377,7 @@ structure S {
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
@@ -432,7 +430,8 @@ structure S {
 #[test]
 fn apply_lambda_with_user_function_registry() {
     use reify_expr::apply_lambda;
-    use reify_types::{CompiledExprKind, CompiledFnBody, CompiledFunction, ContentHash};
+    use reify_core::ContentHash;
+    use reify_ir::{CompiledExprKind, CompiledFnBody, CompiledFunction};
 
     // Define user function: double(x) = x * 2
     let params = vec![("x".to_string(), Type::Int)];
@@ -488,7 +487,8 @@ fn apply_lambda_with_user_function_registry() {
 #[test]
 fn apply_lambda_user_fn_not_in_registry_returns_undef() {
     use reify_expr::apply_lambda;
-    use reify_types::{CompiledExprKind, ContentHash};
+    use reify_core::ContentHash;
+    use reify_ir::CompiledExprKind;
 
     // Lambda body: unknown_fn(x) via UserFunctionCall — not in registry
     let x_id = ValueCellId::new("$lambda_uf.S", "x");
@@ -519,7 +519,8 @@ fn apply_lambda_user_fn_not_in_registry_returns_undef() {
 #[test]
 fn nested_lambda_calls_user_function() {
     use reify_expr::apply_lambda;
-    use reify_types::{CompiledExprKind, CompiledFnBody, CompiledFunction, ContentHash};
+    use reify_core::ContentHash;
+    use reify_ir::{CompiledExprKind, CompiledFnBody, CompiledFunction};
 
     // Define user function: double(x) = x * 2
     let params = vec![("x".to_string(), Type::Int)];

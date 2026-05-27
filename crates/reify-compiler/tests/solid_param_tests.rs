@@ -4,12 +4,12 @@
 //! realization (like a geometry let) rather than a scalar ValueCellDecl.
 
 use reify_compiler::{BooleanOp, CompiledGeometryOp, PrimitiveKind, ValueCellKind};
-use reify_types::{RealizationNodeId, Severity, Type};
+use reify_core::{RealizationNodeId, Severity, Type};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 fn parse_and_compile(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_solid_param"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_solid_param"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",

@@ -5,7 +5,7 @@ mod common;
 use common::stdlib_param_si_value;
 use reify_compiler::{CompiledUnit, compile, si_units};
 use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only};
-use reify_types::{DimensionVector, ModulePath};
+use reify_core::{DimensionVector, ModulePath};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 

@@ -8,7 +8,7 @@ use reify_test_support::{compile_source, errors_only, warnings_only};
 fn annotation_warnings<'a>(
     module: &'a reify_compiler::CompiledModule,
     substr: &str,
-) -> Vec<&'a reify_types::Diagnostic> {
+) -> Vec<&'a reify_core::Diagnostic> {
     warnings_only(module)
         .into_iter()
         .filter(|d| d.message.contains(substr))
@@ -62,7 +62,7 @@ fn annotation_with_args_on_function_propagates() {
     assert_eq!(func.annotations[0].args.len(), 1);
     assert_eq!(
         func.annotations[0].args[0],
-        reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::String("use new_calc".into()))
+        reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::String("use new_calc".into()))
     );
 }
 
@@ -250,7 +250,7 @@ fn multiple_annotations_all_preserved() {
     assert_eq!(template.annotations[1].args.len(), 1);
     assert_eq!(
         template.annotations[1].args[0],
-        reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::String("old".into()))
+        reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::String("old".into()))
     );
 }
 
@@ -269,13 +269,13 @@ fn annotation_arg_types_lowered() {
     assert_eq!(template.annotations.len(), 1);
     let args = &template.annotations[0].args;
     assert_eq!(args.len(), 5, "expected 5 args, got {:?}", args);
-    assert_eq!(args[0], reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::String("name".into())));
-    assert_eq!(args[1], reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::Int(42)));
-    assert_eq!(args[2], reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::Real(1.5)));
-    assert_eq!(args[3], reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::Bool(true)));
+    assert_eq!(args[0], reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::String("name".into())));
+    assert_eq!(args[1], reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::Int(42)));
+    assert_eq!(args[2], reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::Real(1.5)));
+    assert_eq!(args[3], reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::Bool(true)));
     assert_eq!(
         args[4],
-        reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::Ident("mechanical".into()))
+        reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::Ident("mechanical".into()))
     );
 }
 
@@ -335,17 +335,17 @@ fn shell_non_literal_expr_arg_lowers_to_expr_variant_and_still_warns() {
 
     // IR shape: positional arg whose value is the unevaluated `linear_taper(1.0)` call.
     match &ann.args[0] {
-        reify_types::AnnotationArg {
+        reify_ir::AnnotationArg {
             name: None,
-            value: reify_types::AnnotationArgValue::Expr(expr),
+            value: reify_ir::AnnotationArgValue::Expr(expr),
         } => match &expr.kind {
-            reify_syntax::ExprKind::FunctionCall { name, args } => {
+            reify_ast::ExprKind::FunctionCall { name, args } => {
                 assert_eq!(name, "linear_taper", "unexpected call target");
                 assert_eq!(args.len(), 1, "expected linear_taper(<1 arg>)");
                 assert!(
                     matches!(
                         args[0].kind,
-                        reify_syntax::ExprKind::NumberLiteral { value, .. } if value == 1.0
+                        reify_ast::ExprKind::NumberLiteral { value, .. } if value == 1.0
                     ),
                     "expected literal 1.0 argument, got {:?}",
                     args[0].kind

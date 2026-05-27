@@ -10,7 +10,7 @@
 //! diagnostic emission — runtime poison propagates as `Undef` through the
 //! evaluation graph.
 
-use reify_types::Value;
+use reify_ir::Value;
 
 /// Evaluate a list-helper builtin by name. Returns `None` if the name is not
 /// a list helper, signalling `eval_builtin` to fall through to the next
@@ -40,7 +40,7 @@ pub(crate) fn eval_list(name: &str, args: &[Value]) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
-    use reify_types::Value;
+    use reify_ir::Value;
 
     #[test]
     fn single_one_element_returns_inner() {

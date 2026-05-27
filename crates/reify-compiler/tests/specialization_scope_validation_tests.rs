@@ -24,15 +24,15 @@
 //! to isolate the relevant diagnostics from unrelated noise (e.g. unresolved-name
 //! diagnostics from stub types like `"Foo"`).
 
-use reify_syntax::{Expr, ExprKind, MatchArmDeclArmDecl, MatchArmDeclGroupDecl, MemberDecl};
+use reify_ast::{Expr, ExprKind, MatchArmDeclArmDecl, MatchArmDeclGroupDecl, MemberDecl};
 use reify_test_support::specialization_fixtures::*;
-use reify_types::{DiagnosticCode, Severity, SourceSpan};
+use reify_core::{DiagnosticCode, Severity, SourceSpan};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Filter a slice of diagnostics to only those with
 /// `code == DiagnosticCode::SpecializationForbiddenDecl`.
-fn forbidden_diagnostics(diagnostics: &[reify_types::Diagnostic]) -> Vec<&reify_types::Diagnostic> {
+fn forbidden_diagnostics(diagnostics: &[reify_core::Diagnostic]) -> Vec<&reify_core::Diagnostic> {
     diagnostics
         .iter()
         .filter(|d| d.code == Some(DiagnosticCode::SpecializationForbiddenDecl))

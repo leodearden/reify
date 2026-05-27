@@ -10,7 +10,8 @@
 
 use std::sync::Arc;
 
-use reify_types::{DimensionVector, FieldSourceKind, Type, Value};
+use reify_core::{DimensionVector, Type};
+use reify_ir::{FieldSourceKind, Value};
 
 use super::{EvalContext, apply_lambda_with_point_unpacking};
 

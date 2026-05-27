@@ -11,15 +11,15 @@ use reify_test_support::{compile_source, errors_only, warnings_only};
 fn annotation_warnings<'a>(
     module: &'a reify_compiler::CompiledModule,
     substr: &str,
-) -> Vec<&'a reify_types::Diagnostic> {
+) -> Vec<&'a reify_core::Diagnostic> {
     warnings_only(module)
         .into_iter()
         .filter(|d| d.message.contains(substr))
         .collect()
 }
 
-fn parse_first_constraint_def(source: &str) -> reify_syntax::ConstraintDef {
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_marker_test"));
+fn parse_first_constraint_def(source: &str) -> reify_ast::ConstraintDef {
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_marker_test"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -29,7 +29,7 @@ fn parse_first_constraint_def(source: &str) -> reify_syntax::ConstraintDef {
         .declarations
         .into_iter()
         .find_map(|d| {
-            if let reify_syntax::Declaration::Constraint(c) = d {
+            if let reify_ast::Declaration::Constraint(c) = d {
                 Some(c)
             } else {
                 None
@@ -340,7 +340,7 @@ fn multiple_annotations_with_test_marks_template() {
     assert_eq!(template.annotations[1].args.len(), 1);
     assert_eq!(
         template.annotations[1].args[0],
-        reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::String("old".into()))
+        reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::String("old".into()))
     );
 }
 
@@ -360,7 +360,7 @@ fn multiple_annotations_with_test_marks_constraint_def() {
     assert_eq!(def.annotations[1].name, "deprecated");
     assert_eq!(def.annotations[1].args.len(), 1);
     assert!(
-        matches!(&def.annotations[1].args[0].kind, reify_syntax::ExprKind::StringLiteral(s) if s == "old"),
+        matches!(&def.annotations[1].args[0].kind, reify_ast::ExprKind::StringLiteral(s) if s == "old"),
         "expected StringLiteral(\"old\") arg on @deprecated, got: {:?}",
         def.annotations[1].args[0].kind
     );

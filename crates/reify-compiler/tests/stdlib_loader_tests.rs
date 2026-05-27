@@ -1,15 +1,13 @@
 //! Tests for stdlib_loader — embedded .ri stdlib loading, compilation, and caching.
 
 use reify_compiler::stdlib_loader;
-use reify_syntax::Pragma;
+use reify_ast::Pragma;
 use reify_test_support::{
     CompiledModuleBuilder, EXPECTED_GEOMETRY_TRAITS, EXPECTED_MATERIAL_TRAITS, collect_errors,
     steel_elastic_source, steel_strong_source,
 };
-use reify_types::{
-    BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, ContentHash,
-    ModulePath, SourceSpan, Type,
-};
+use reify_core::{ContentHash, ModulePath, SourceSpan, Type};
+use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction};
 
 /// Recursively collect ValueRef member names from a compiled expression tree.
 fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<&str> {
@@ -191,11 +189,11 @@ fn std_units_module_has_expected_units() {
 
     // Verify dimensions for a few key units.
     let cm = units_module.units.iter().find(|u| u.name == "cm").unwrap();
-    assert_eq!(cm.dimension, reify_types::DimensionVector::LENGTH);
+    assert_eq!(cm.dimension, reify_core::DimensionVector::LENGTH);
     assert!((cm.factor - 0.01).abs() < 1e-12);
 
     let deg = units_module.units.iter().find(|u| u.name == "deg").unwrap();
-    assert_eq!(deg.dimension, reify_types::DimensionVector::ANGLE);
+    assert_eq!(deg.dimension, reify_core::DimensionVector::ANGLE);
     assert!(
         (deg.factor - std::f64::consts::PI / 180.0).abs() < 1e-15,
         "deg factor should be PI/180, got {}",
@@ -203,11 +201,11 @@ fn std_units_module_has_expected_units() {
     );
 
     let kg = units_module.units.iter().find(|u| u.name == "kg").unwrap();
-    assert_eq!(kg.dimension, reify_types::DimensionVector::MASS);
+    assert_eq!(kg.dimension, reify_core::DimensionVector::MASS);
     assert!((kg.factor - 1.0).abs() < 1e-12);
 
     let s = units_module.units.iter().find(|u| u.name == "s").unwrap();
-    assert_eq!(s.dimension, reify_types::DimensionVector::TIME);
+    assert_eq!(s.dimension, reify_core::DimensionVector::TIME);
     assert!((s.factor - 1.0).abs() < 1e-12);
 }
 
@@ -379,7 +377,7 @@ fn assert_no_prelude_pragma_invariant_bidirectional(
     // materials_mechanical.ri). The check is bidirectional so that both
     // adding #no_prelude to the wrong file and removing it from a bootstrap
     // file are caught.
-    let mut violations: Vec<(String, &reify_syntax::Pragma)> = Vec::new();
+    let mut violations: Vec<(String, &reify_ast::Pragma)> = Vec::new();
     for module in modules {
         let path_str = module.path.to_string();
         if targets.contains(&path_str.as_str()) {
@@ -715,7 +713,7 @@ fn prelude_function_merging_path() {
         body: CompiledFnBody {
             let_bindings: vec![],
             result_expr: CompiledExpr {
-                kind: CompiledExprKind::Literal(reify_types::Value::Real(0.0)),
+                kind: CompiledExprKind::Literal(reify_ir::Value::Real(0.0)),
                 result_type: Type::Real,
                 content_hash: ContentHash::of_str("double_stub"),
             },

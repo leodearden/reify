@@ -3,7 +3,7 @@
 //!
 //! PRD: docs/prds/v0_3/trajectory-input-shaping.md §4.1, §11 Phase 1 β.
 
-use reify_types::Value;
+use reify_ir::Value;
 
 mod spline;
 

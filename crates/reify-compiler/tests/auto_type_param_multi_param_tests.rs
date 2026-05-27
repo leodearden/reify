@@ -28,10 +28,8 @@ use reify_compiler::auto_type_param::{
 };
 use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
 use reify_test_support::{MockConstraintChecker, TopologyTemplateBuilder, parse_and_compile};
-use reify_types::{
-    CompiledExpr, CompiledFunction, ConstraintNodeId, DiagnosticCode, Satisfaction, Severity,
-    SourceSpan, Value,
-};
+use reify_core::{ConstraintNodeId, DiagnosticCode, Severity, SourceSpan};
+use reify_ir::{CompiledExpr, CompiledFunction, Satisfaction, Value};
 
 /// Build a Reify source with `trait Seal {}` and `count` structures
 /// `S00`..`S{count-1}` each declaring `: Seal`. Zero-padded to two digits
@@ -928,7 +926,7 @@ structure def ORingSeal : Seal {
     // Parameterized template carries one top-level constraint (Coupling#0) so
     // Phase B has something to check. The mock ignores expression content; the
     // literal is only needed so the builder has a value to store.
-    let expr = CompiledExpr::literal(Value::Bool(true), reify_types::Type::Bool);
+    let expr = CompiledExpr::literal(Value::Bool(true), reify_core::Type::Bool);
     let template = TopologyTemplateBuilder::new("Coupling")
         .constraint("Coupling", 0, None, expr)
         .build();

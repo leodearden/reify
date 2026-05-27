@@ -14,7 +14,8 @@
 use reify_test_support::{
     assert_no_eval_errors, make_simple_engine, parse_and_compile_with_stdlib,
 };
-use reify_types::{Satisfaction, Severity, Value, ValueCellId};
+use reify_core::{Severity, ValueCellId};
+use reify_ir::{Satisfaction, Value};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(

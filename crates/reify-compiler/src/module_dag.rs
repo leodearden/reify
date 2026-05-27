@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use indexmap::IndexSet;
 
-use reify_types::{Diagnostic, ModulePathParseError};
+use reify_core::{Diagnostic, ModulePathParseError};
 
 use crate::CompiledModule;
 
@@ -353,7 +353,7 @@ impl ModuleDag {
                 // confirming the module exists there — an unknown std.* path (e.g. a
                 // typo like "std.unknonwn") must not taint the mode for subsequent
                 // valid imports.
-                let target = reify_types::ModulePath::from_dotted(module_path)
+                let target = reify_core::ModulePath::from_dotted(module_path)
                     .map_err(|e| diag_invalid_path(module_path, e))?;
                 let stdlib = crate::stdlib_loader::load_stdlib();
                 if let Some(idx) = stdlib.iter().position(|m| m.path == target) {
@@ -405,7 +405,7 @@ impl ModuleDag {
 
         let parsed = reify_syntax::parse(
             &source,
-            reify_types::ModulePath::from_dotted(module_path)
+            reify_core::ModulePath::from_dotted(module_path)
                 .map_err(|e| diag_invalid_path(module_path, e))?,
         );
 
@@ -427,7 +427,7 @@ impl ModuleDag {
             // into one iteration over parsed.declarations.
             let mut import_paths: Vec<String> = Vec::new();
             for decl in &parsed.declarations {
-                if let reify_syntax::Declaration::Import(import) = decl {
+                if let reify_ast::Declaration::Import(import) = decl {
                     self.compile_module(&import.path, resolver)?;
                     import_paths.push(import.path.clone());
                 }
@@ -567,7 +567,7 @@ mod tests {
 
     #[test]
     fn diag_invalid_path_formats_message() {
-        use reify_types::Severity;
+        use reify_core::Severity;
         // Calls the 2-arg form; "resolving import" is now inlined into the format string.
         let diags = diag_invalid_path("some.path", ModulePathParseError::Empty);
         assert_eq!(diags.len(), 1);
@@ -624,7 +624,7 @@ pub fn compile_project_with_entry_source(
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("main");
-    let module_path = reify_types::ModulePath::single(entry_name);
+    let module_path = reify_core::ModulePath::single(entry_name);
     let parsed = reify_syntax::parse(entry_source, module_path);
 
     if !parsed.errors.is_empty() {
@@ -639,7 +639,7 @@ pub fn compile_project_with_entry_source(
 
     // Recursively compile all imports
     for decl in &parsed.declarations {
-        if let reify_syntax::Declaration::Import(import) = decl {
+        if let reify_ast::Declaration::Import(import) = decl {
             dag.compile_module(&import.path, resolver)?;
         }
     }
@@ -657,7 +657,7 @@ pub fn compile_project_with_entry_source(
             .declarations
             .iter()
             .filter_map(|d| {
-                if let reify_syntax::Declaration::Import(import) = d {
+                if let reify_ast::Declaration::Import(import) = d {
                     Some(import)
                 } else {
                     None

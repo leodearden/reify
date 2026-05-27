@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use reify_types::{DimensionVector, FieldSourceKind, Type, Value};
+use reify_core::{DimensionVector, Type};
+use reify_ir::{FieldSourceKind, Value};
 
 use super::{EvalContext, apply_lambda};
 
@@ -1368,7 +1369,8 @@ pub(crate) fn compute_numerical_laplacian_at_point(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::{CompiledExpr, ValueCellId, ValueMap};
+    use reify_core::ValueCellId;
+    use reify_ir::{CompiledExpr, ValueMap};
 
     /// Helper: build a minimal 1-param identity lambda `|param_name: Real| param_name`
     /// with an empty capture map.

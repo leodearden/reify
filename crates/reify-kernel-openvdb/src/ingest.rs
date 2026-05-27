@@ -26,11 +26,9 @@
 //! - [`lower_to_sampled`] — orchestrates the in-memory lowering pipeline.
 //! - [`read_vdb_file`] — v0.2 stub that returns `FfiNotImplemented`.
 
-use reify_types::sampled::{LINSPACE_MAX_INTERVALS, LinspaceError, linspace_inclusive};
-use reify_types::{
-    Diagnostic, DiagnosticCode, DimensionVector, InterpolationKind, SampledField, SampledGridKind,
-    Type,
-};
+use reify_ir::sampled::{LINSPACE_MAX_INTERVALS, LinspaceError, linspace_inclusive};
+use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, Type};
+use reify_ir::{InterpolationKind, SampledField, SampledGridKind};
 
 /// Spatial-grid shape of an OpenVDB source grid.
 ///
@@ -276,7 +274,7 @@ pub struct IngestOutcome {
     /// Non-fatal warnings emitted during lowering. Currently used for
     /// interpolation-deferral diagnostics; will be expanded in
     /// follow-up steps (units / unsupported-codomain warnings).
-    pub warnings: Vec<reify_types::Diagnostic>,
+    pub warnings: Vec<reify_core::Diagnostic>,
 }
 
 /// Lower an in-memory OpenVDB grid to a [`SampledField`].

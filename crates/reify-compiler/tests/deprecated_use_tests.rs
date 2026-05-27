@@ -4,13 +4,13 @@
 //! is referenced at a use-site (not at its definition site).
 
 use reify_test_support::{compile_source, errors_only, warnings_only};
-use reify_types::CompiledExprKind;
+use reify_ir::CompiledExprKind;
 
 /// Helper: filter warnings whose message contains the given substring.
 fn deprecation_warnings<'a>(
     module: &'a reify_compiler::CompiledModule,
     substr: &str,
-) -> Vec<&'a reify_types::Diagnostic> {
+) -> Vec<&'a reify_core::Diagnostic> {
     warnings_only(module)
         .into_iter()
         .filter(|d| d.message.contains("deprecated") && d.message.contains(substr))

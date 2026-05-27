@@ -5,7 +5,7 @@
 //! `docs/prds/v0_3/compute-node-infrastructure.md` §"Cache key".
 
 use crate::graph::{ComputeNodeData, EvaluationGraph};
-use reify_types::ContentHash;
+use reify_core::ContentHash;
 
 /// Compose a deterministic cache key over a `ComputeNode`'s inputs.
 ///
@@ -94,7 +94,7 @@ pub fn compute_cache_key(node: &ComputeNodeData, ctx: &EvaluationGraph) -> Conte
     // insertion-order variation in node.value_inputs.
     // Sort references rather than owned values to avoid allocating Strings per input.
     let value_bucket_hash: ContentHash = {
-        let mut sorted_refs: Vec<&reify_types::ValueCellId> = node.value_inputs.iter().collect();
+        let mut sorted_refs: Vec<&reify_core::ValueCellId> = node.value_inputs.iter().collect();
         sorted_refs.sort(); // ValueCellId derives Ord via (entity, member)
         debug_assert!(
             sorted_refs.windows(2).all(|w| w[0] != w[1]),
@@ -123,7 +123,7 @@ pub fn compute_cache_key(node: &ComputeNodeData, ctx: &EvaluationGraph) -> Conte
     // lexicographic ordering that a derived Ord would produce.
     // Sort references rather than owned values to avoid allocating Strings per input.
     let realization_bucket_hash: ContentHash = {
-        let mut sorted_refs: Vec<&reify_types::RealizationNodeId> =
+        let mut sorted_refs: Vec<&reify_core::RealizationNodeId> =
             node.realization_inputs.iter().collect();
         sorted_refs.sort_by(|a, b| (a.entity.as_str(), a.index).cmp(&(b.entity.as_str(), b.index)));
         debug_assert!(
@@ -162,7 +162,8 @@ mod tests {
     use super::compute_cache_key;
 
     use reify_compiler::ValueCellKind;
-    use reify_types::{ComputeNodeId, ContentHash, RealizationNodeId, ReprKind, Type, ValueCellId};
+    use reify_core::{ComputeNodeId, ContentHash, RealizationNodeId, Type, ValueCellId};
+    use reify_ir::ReprKind;
 
     use crate::graph::{ComputeNodeData, EvaluationGraph, RealizationNodeData, ValueCellNode};
 

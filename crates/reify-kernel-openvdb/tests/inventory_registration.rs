@@ -17,7 +17,7 @@
 //! `crates/reify-kernel-fidget/tests/inventory_registration.rs:1-122`.
 
 use reify_kernel_openvdb::register::OPENVDB_KERNEL_NAME;
-use reify_types::{CapabilityDescriptor, KernelRegistration, Operation, ReprKind};
+use reify_ir::{CapabilityDescriptor, KernelRegistration, Operation, ReprKind};
 
 /// OpenVDB's capability descriptor must enumerate exactly the three
 /// Voxel-Boolean operations OpenVDB supports.

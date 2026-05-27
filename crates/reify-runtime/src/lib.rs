@@ -9,7 +9,7 @@ pub use warm_startable_assert::assert_warm_startable_coextensive;
 use std::collections::HashSet;
 
 use reify_eval::cache::{EvalOutcome, NodeId};
-use reify_types::ValueCellId;
+use reify_core::ValueCellId;
 
 /// Task scheduling priority.
 ///
@@ -90,7 +90,7 @@ mod tests {
 
     #[test]
     fn test_task_creation() {
-        let id = reify_types::ValueCellId::new("Bracket", "width");
+        let id = reify_core::ValueCellId::new("Bracket", "width");
         let task = Task {
             node_id: id.clone(),
             priority: Priority::P1Fast,
@@ -108,19 +108,19 @@ mod tests {
     fn test_tasks_sort_by_priority() {
         let tasks = vec![
             Task {
-                node_id: reify_types::ValueCellId::new("B", "z"),
+                node_id: reify_core::ValueCellId::new("B", "z"),
                 priority: Priority::P3Speculative,
             },
             Task {
-                node_id: reify_types::ValueCellId::new("B", "y"),
+                node_id: reify_core::ValueCellId::new("B", "y"),
                 priority: Priority::P0Interactive,
             },
             Task {
-                node_id: reify_types::ValueCellId::new("B", "x"),
+                node_id: reify_core::ValueCellId::new("B", "x"),
                 priority: Priority::P1Slow,
             },
             Task {
-                node_id: reify_types::ValueCellId::new("B", "w"),
+                node_id: reify_core::ValueCellId::new("B", "w"),
                 priority: Priority::P1Fast,
             },
         ];
@@ -186,7 +186,7 @@ mod tests {
 
         let scheduler = SequentialScheduler;
         let mut evaluator = AlwaysChanged;
-        let node = NodeId::Value(reify_types::ValueCellId::new("A", "x"));
+        let node = NodeId::Value(reify_core::ValueCellId::new("A", "x"));
         let eval_set = vec![node.clone()];
         let changed = scheduler.execute(eval_set, &mut evaluator);
         assert_eq!(changed.len(), 1);
@@ -226,8 +226,8 @@ mod tests {
             }
         }
 
-        let a = NodeId::Value(reify_types::ValueCellId::new("X", "a"));
-        let b = NodeId::Constraint(reify_types::ConstraintNodeId::new("X", 0));
+        let a = NodeId::Value(reify_core::ValueCellId::new("X", "a"));
+        let b = NodeId::Constraint(reify_core::ConstraintNodeId::new("X", 0));
 
         let scheduler = SequentialScheduler;
         let mut evaluator = CutoffEvaluator {
@@ -256,9 +256,9 @@ mod tests {
             }
         }
 
-        let width = NodeId::Value(reify_types::ValueCellId::new("B", "width"));
-        let volume = NodeId::Value(reify_types::ValueCellId::new("B", "volume"));
-        let c1 = NodeId::Constraint(reify_types::ConstraintNodeId::new("B", 1));
+        let width = NodeId::Value(reify_core::ValueCellId::new("B", "width"));
+        let volume = NodeId::Value(reify_core::ValueCellId::new("B", "volume"));
+        let c1 = NodeId::Constraint(reify_core::ConstraintNodeId::new("B", 1));
 
         let scheduler = SequentialScheduler;
         let mut evaluator = AllChanged;
@@ -287,7 +287,7 @@ mod tests {
         use reify_eval::dirty::{compute_dirty_cone, compute_eval_set};
         use reify_eval::graph::EvaluationGraph;
         use reify_test_support::bracket_compiled_module;
-        use reify_types::{ConstraintNodeId, ValueCellId};
+        use reify_core::{ConstraintNodeId, ValueCellId};
         use std::collections::HashSet;
 
         // 1. Build graph
@@ -320,7 +320,7 @@ mod tests {
         assert!(dirty.contains(&NodeId::Value(ValueCellId::new(e, "volume"))));
         assert!(dirty.contains(&c1));
         assert!(
-            dirty.contains(&NodeId::Realization(reify_types::RealizationNodeId::new(
+            dirty.contains(&NodeId::Realization(reify_core::RealizationNodeId::new(
                 e, 0
             )))
         );

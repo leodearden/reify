@@ -13,8 +13,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use reify_syntax::ParsedModule;
-use reify_types::{ContentHash, Diagnostic, DiagnosticLabel, SourceSpan};
+use reify_ast::ParsedModule;
+use reify_core::{ContentHash, Diagnostic, DiagnosticLabel, SourceSpan};
 
 use crate::entity::PendingBoundCheck;
 use crate::type_resolution::TypeAliasRegistry;
@@ -23,7 +23,7 @@ use crate::types::{
     CompiledPurpose, CompiledTrait, CompiledUnit, TopologyTemplate,
 };
 use crate::units::UnitRegistry;
-use reify_types::CompiledFunction;
+use reify_ir::CompiledFunction;
 
 /// Durable mutable state threaded through every phase of
 /// [`crate::compile_with_prelude_refs`].
@@ -41,7 +41,7 @@ pub(crate) struct CompilationCtx {
     pub(crate) functions: Vec<CompiledFunction>,
     pub(crate) fields: Vec<CompiledField>,
     pub(crate) templates: Vec<TopologyTemplate>,
-    pub(crate) enum_defs: Vec<reify_types::EnumDef>,
+    pub(crate) enum_defs: Vec<reify_ir::EnumDef>,
     pub(crate) trait_defs: Vec<CompiledTrait>,
     pub(crate) constraint_defs: Vec<CompiledConstraintDef>,
     pub(crate) compiled_units: Vec<CompiledUnit>,
@@ -54,7 +54,7 @@ pub(crate) struct CompilationCtx {
     pub(crate) alias_registry: TypeAliasRegistry,
     /// Enum defs available for resolution: prelude enum_defs chained with
     /// module-local `enum_defs`. Populated by `enums_phase::build_resolution_enums_from_cache`.
-    pub(crate) resolution_enums: Vec<reify_types::EnumDef>,
+    pub(crate) resolution_enums: Vec<reify_ir::EnumDef>,
     /// Function table available for resolution: user functions merged with
     /// prelude functions via [`crate::merge_prelude_functions`]. Populated by
     /// `functions_phase::phase_functions`.

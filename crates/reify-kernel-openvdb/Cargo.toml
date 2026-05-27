@@ -40,7 +40,8 @@ stub_register = []
 test-fixtures = []
 
 [dependencies]
-reify-types.workspace = true
+reify-core.workspace = true
+reify-ir.workspace = true
 inventory.workspace = true
 cxx = "1"
 
@@ -58,6 +59,8 @@ reify-build-utils.workspace = true
 # into the link closure of the `tests/dispatcher_integration.rs` test binary;
 # the production library stays free of the eval dependency.
 [dev-dependencies]
+reify-core.workspace = true
+reify-ir.workspace = true
 reify-eval.workspace = true
 reify-expr.workspace = true
 reify-test-support.workspace = true

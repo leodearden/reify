@@ -64,7 +64,7 @@
 //! pattern. Only the kernel name string, supports table contents (Voxel vs
 //! Sdf), the stub error string, and the doc comments' references differ.
 
-use reify_types::{CapabilityDescriptor, GeometryKernel, KernelRegistration, Operation, ReprKind};
+use reify_ir::{CapabilityDescriptor, GeometryKernel, KernelRegistration, Operation, ReprKind};
 
 /// Stable identifier for the OpenVDB kernel in the v0.2 multi-kernel registry.
 ///

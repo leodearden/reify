@@ -21,7 +21,7 @@
 #![cfg(has_occt)]
 
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle, revolve_synthesis_post_sort_for_test};
-use reify_types::GeometryQuery;
+use reify_ir::GeometryQuery;
 
 /// 5×10mm rectangular face profile, expressed in SI metres. Centered at
 /// `(17.5mm, 0, 0)` so its left edge sits at x=15mm — clear of the z-axis,
@@ -34,7 +34,7 @@ const RECT_CX_M: f64 = 17.5e-3;
 /// The kernel-thread fixture method `make_rect_profile_at_for_test` is
 /// gated on the `test-fixtures` cargo feature; this is the canonical way
 /// to construct a planar profile for sweep history integration tests.
-fn make_offset_rect_profile(kernel: &mut OcctKernelHandle) -> reify_types::GeometryHandleId {
+fn make_offset_rect_profile(kernel: &mut OcctKernelHandle) -> reify_ir::GeometryHandleId {
     kernel
         .make_rect_profile_at_for_test(RECT_WIDTH_M, RECT_HEIGHT_M, RECT_CX_M, 0.0, 0.0)
         .expect("offset rect profile should build")

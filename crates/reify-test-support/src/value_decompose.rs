@@ -1,4 +1,4 @@
-use reify_types::Value;
+use reify_ir::Value;
 
 /// Read a numeric component (Real, Scalar, or Int) as f64 SI value.
 pub fn read_f64(v: &Value, label: &str) -> f64 {
@@ -25,7 +25,8 @@ pub fn decompose_point3(v: &Value, label: &str) -> [f64; 3] {
 
 #[cfg(test)]
 mod tests {
-    use reify_types::{Value, dimension::DimensionVector};
+    use reify_core::dimension::DimensionVector;
+    use reify_ir::Value;
 
     use super::{decompose_point3, read_f64};
 

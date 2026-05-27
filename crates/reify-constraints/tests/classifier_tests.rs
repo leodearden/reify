@@ -3,9 +3,8 @@
 
 use reify_constraints::ConstraintClassifier;
 use reify_test_support::*;
-use reify_types::{
-    CompiledExpr, CompiledExprKind, ConstraintDomain, ContentHash, ResolvedFunction, Type, Value,
-};
+use reify_core::{ContentHash, Type};
+use reify_ir::{CompiledExpr, CompiledExprKind, ConstraintDomain, ResolvedFunction, Value};
 
 // --- Helper: build a geometry function call expression ---
 fn geometry_function_call(name: &str) -> CompiledExpr {

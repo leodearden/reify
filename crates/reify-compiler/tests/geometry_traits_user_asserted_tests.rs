@@ -16,7 +16,7 @@
 use reify_test_support::{
     EXPECTED_GEOMETRY_TRAITS, compile_source_with_stdlib, errors_only, warnings_only,
 };
-use reify_types::{DiagnosticCode, Severity};
+use reify_core::{DiagnosticCode, Severity};
 
 /// A structure with a single Watertight bound must emit exactly one
 /// `W_TRAIT_USER_ASSERTED` warning with the correct code, severity, message

@@ -7,7 +7,8 @@
 //!   - .span method
 
 use reify_expr::{EvalContext, eval_expr};
-use reify_types::{CompiledExpr, DimensionVector, Type, Value, ValueMap};
+use reify_core::{DimensionVector, Type};
+use reify_ir::{CompiledExpr, Value, ValueMap};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 

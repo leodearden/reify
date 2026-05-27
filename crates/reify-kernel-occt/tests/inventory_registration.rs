@@ -7,7 +7,7 @@
 //! kernel itself in `crates/reify-kernel-occt/src/lib.rs:22-83`.
 
 use reify_kernel_occt::register::OCCT_KERNEL_NAME;
-use reify_types::{GeometryKernel, KernelRegistration, Operation, ReprKind};
+use reify_ir::{GeometryKernel, KernelRegistration, Operation, ReprKind};
 
 /// OCCT's capability descriptor must enumerate every operation routed
 /// through `OcctKernelHandle::execute`, paired with `ReprKind::BRep`.
@@ -153,7 +153,7 @@ fn occt_kernel_registration_appears_in_inventory_iter() {
     // literal entries get reordered while still calling the same fn.
     // `std::ptr::fn_addr_eq` is the explicit, intent-revealing comparison.
     let inventory_fn = occt_entries[0].descriptor;
-    let direct_fn: fn() -> reify_types::CapabilityDescriptor =
+    let direct_fn: fn() -> reify_ir::CapabilityDescriptor =
         reify_kernel_occt::register::occt_capability_descriptor;
     assert!(
         std::ptr::fn_addr_eq(inventory_fn, direct_fn),

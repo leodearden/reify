@@ -12,17 +12,15 @@
 use reify_compiler::compile_with_stdlib;
 use reify_eval::topology_selectors;
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
-use reify_types::{
-    ExportFormat, FeatureTag, FeatureTagTable, GeometryOp, ModulePath, Severity, SourceSpan,
-    StepKind, Value,
-};
+use reify_core::{ModulePath, Severity, SourceSpan};
+use reify_ir::{ExportFormat, FeatureTag, FeatureTagTable, GeometryOp, StepKind, Value};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 /// Build a 10×10×10 mm box via a direct OcctKernelHandle and return the
 /// (kernel, box_id) pair. Matches the `box_handle(10.0, 10.0, 10.0)` pattern
 /// in `topology_filtered_selectors.rs`.
-fn box_10mm() -> (OcctKernelHandle, reify_types::GeometryHandleId) {
+fn box_10mm() -> (OcctKernelHandle, reify_ir::GeometryHandleId) {
     let kernel = OcctKernelHandle::spawn();
     let id = kernel
         .execute(&GeometryOp::Box {

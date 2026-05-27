@@ -4,7 +4,8 @@
 //! bound checking at instantiation, and default type parameter handling.
 
 use reify_test_support::compile_source;
-use reify_types::*;
+use reify_core::*;
+use reify_ir::*;
 
 // ── Step 1: generic trait stores type params ───────────────────────
 

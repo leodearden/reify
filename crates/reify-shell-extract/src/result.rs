@@ -28,8 +28,8 @@
 use crate::mid_surface::MidSurfaceMesh;
 use crate::mid_surface_naming::{MidSurfaceAttributes, MidSurfaceEdgeRecord};
 use crate::segmentation::{RegionClassification, RegionInfo, SegmentationResult};
-use reify_types::diagnostics::{Diagnostic, DiagnosticLabel, Severity, SourceSpan};
-use reify_types::geometry::{AxisSign, CapKind, FeatureId, ModEntry, Role, TopologyAttribute};
+use reify_core::diagnostics::{Diagnostic, DiagnosticLabel, Severity, SourceSpan};
+use reify_ir::geometry::{AxisSign, CapKind, FeatureId, ModEntry, Role, TopologyAttribute};
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 
@@ -1409,7 +1409,7 @@ mod tests {
     // Diagnostic / DiagnosticLabel / SourceSpan / FeatureId / Role / etc.
     // are already pulled in via `super::*`; only re-import the items not
     // re-exported by super.
-    use reify_types::geometry::{CapKind, ModEntry};
+    use reify_ir::geometry::{CapKind, ModEntry};
 
     /// Build a non-trivial `ShellExtractionResult` exercising every wire-format
     /// path: special-value f64 components (NaN / ±Inf / -0.0), non-empty u32

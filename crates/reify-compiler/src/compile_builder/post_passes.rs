@@ -9,8 +9,8 @@
 
 use std::collections::HashMap;
 
-use reify_syntax::ParsedModule;
-use reify_types::{ContentHash, Diagnostic, Type};
+use reify_ast::ParsedModule;
+use reify_core::{ContentHash, Diagnostic, Type};
 
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::functions::{check_field_composition_types, collect_composed_field_dependencies};
@@ -117,7 +117,7 @@ pub(crate) fn phase_augment_composed_captures(ctx: &mut CompilationCtx) {
     // single-arg shape while keeping the registry build O(n) total.
     let mut registry: HashMap<&str, &CompiledField> =
         ctx.fields.iter().map(|f| (f.name.as_str(), f)).collect();
-    let mut deps_to_add: Vec<(usize, Vec<reify_types::ValueCellId>)> = Vec::new();
+    let mut deps_to_add: Vec<(usize, Vec<reify_core::ValueCellId>)> = Vec::new();
 
     for (idx, field) in ctx.fields.iter().enumerate() {
         if let CompiledFieldSource::Composed { expr } = &field.source {
@@ -142,7 +142,7 @@ pub(crate) fn phase_augment_composed_captures(ctx: &mut CompilationCtx) {
     for (idx, new_caps) in deps_to_add {
         let field = &mut ctx.fields[idx];
         if let CompiledFieldSource::Composed { expr } = &mut field.source
-            && let reify_types::CompiledExprKind::Lambda { captures, .. } = &mut expr.kind
+            && let reify_ir::CompiledExprKind::Lambda { captures, .. } = &mut expr.kind
         {
             for cap in new_caps {
                 if !captures.contains(&cap) {
@@ -173,7 +173,7 @@ pub(crate) fn phase_purposes(
 
     let mut purposes = Vec::new();
     for decl in &parsed.declarations {
-        if let reify_syntax::Declaration::Purpose(purpose_def) = decl {
+        if let reify_ast::Declaration::Purpose(purpose_def) = decl {
             let compiled = compile_purpose(
                 purpose_def,
                 &ctx.resolution_enums,

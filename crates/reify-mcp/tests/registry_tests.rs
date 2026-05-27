@@ -436,8 +436,8 @@ fn diagnostic_info_is_reexported_from_reify_types() {
     // accidentally breaking the identity.
     assert_eq!(
         TypeId::of::<reify_mcp::DiagnosticInfo>(),
-        TypeId::of::<reify_types::DiagnosticInfo>(),
-        "reify_mcp::DiagnosticInfo must be the same type as reify_types::DiagnosticInfo"
+        TypeId::of::<reify_core::DiagnosticInfo>(),
+        "reify_mcp::DiagnosticInfo must be the same type as reify_core::DiagnosticInfo"
     );
 }
 
@@ -448,7 +448,7 @@ fn source_location_info_is_reexported_from_reify_types() {
     // resolve to the *same* type (same TypeId).
     assert_eq!(
         TypeId::of::<reify_mcp::SourceLocationInfo>(),
-        TypeId::of::<reify_types::SourceLocationInfo>(),
-        "reify_mcp::SourceLocationInfo must be the same type as reify_types::SourceLocationInfo"
+        TypeId::of::<reify_core::SourceLocationInfo>(),
+        "reify_mcp::SourceLocationInfo must be the same type as reify_core::SourceLocationInfo"
     );
 }

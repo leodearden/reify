@@ -24,7 +24,7 @@
 
 use crate::constitutive::IsotropicElastic;
 use crate::result::{StressElement, recover_nodal_stress_p1};
-use reify_types::VolumeMesh;
+use reify_ir::VolumeMesh;
 
 /// Output of the Z-Z-style energy-norm error indicator.
 ///
@@ -243,7 +243,7 @@ mod tests {
     use super::*;
     use crate::constitutive::IsotropicElastic;
     use crate::result::StressElement;
-    use reify_types::{ElementOrderTag, VolumeMesh};
+    use reify_ir::{ElementOrderTag, VolumeMesh};
 
     fn dimensionless_steel_like() -> IsotropicElastic {
         IsotropicElastic {

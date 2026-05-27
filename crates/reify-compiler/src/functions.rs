@@ -4,8 +4,8 @@ use crate::types::TopologyTemplate;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_function(
-    fn_def: &reify_syntax::FnDef,
-    enum_defs: &[reify_types::EnumDef],
+    fn_def: &reify_ast::FnDef,
+    enum_defs: &[reify_ir::EnumDef],
     functions: &[CompiledFunction],
     alias_registry: &TypeAliasRegistry,
     structure_names: &HashSet<String>,
@@ -240,7 +240,7 @@ pub(crate) fn compile_function(
 /// resolved from the built-in set.
 pub(crate) fn resolve_field_type_name(
     name: &str,
-    span: reify_types::SourceSpan,
+    span: reify_core::SourceSpan,
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Type {
@@ -287,8 +287,8 @@ fn field_codomain_compatible(body_ty: &Type, codomain_ty: &Type) -> bool {
 
 /// Compile a field declaration into a CompiledField.
 pub(crate) fn compile_field(
-    field_def: &reify_syntax::FieldDef,
-    enum_defs: &[reify_types::EnumDef],
+    field_def: &reify_ast::FieldDef,
+    enum_defs: &[reify_ir::EnumDef],
     functions: &[CompiledFunction],
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
@@ -298,13 +298,13 @@ pub(crate) fn compile_field(
     // sentinel "<unknown>" string to resolve_field_type_name (which would push a second
     // confusing diagnostic for the placeholder name).
     let domain_type = match &field_def.domain_type.kind {
-        reify_syntax::TypeExprKind::Named { name, .. } => resolve_field_type_name(
+        reify_ast::TypeExprKind::Named { name, .. } => resolve_field_type_name(
             name.as_str(),
             field_def.domain_type.span,
             alias_registry,
             diagnostics,
         ),
-        reify_syntax::TypeExprKind::DimensionalOp { .. } => {
+        reify_ast::TypeExprKind::DimensionalOp { .. } => {
             diagnostics.push(
                 Diagnostic::error(format!("unresolved field type: {}", field_def.domain_type))
                     .with_code(DiagnosticCode::UnresolvedType)
@@ -315,7 +315,7 @@ pub(crate) fn compile_field(
             );
             Type::Real
         }
-        reify_syntax::TypeExprKind::IntegerLiteral(_) => {
+        reify_ast::TypeExprKind::IntegerLiteral(_) => {
             diagnostics.push(
                 Diagnostic::error(format!("unresolved field type: {}", field_def.domain_type))
                     .with_code(DiagnosticCode::UnresolvedType)
@@ -327,7 +327,7 @@ pub(crate) fn compile_field(
             Type::Real
         }
         // Auto type-args cannot appear as a field domain type; resolution deferred to task 3477/3558.
-        reify_syntax::TypeExprKind::Auto { .. } => {
+        reify_ast::TypeExprKind::Auto { .. } => {
             diagnostics.push(
                 Diagnostic::error(format!("unresolved field type: {}", field_def.domain_type))
                     .with_code(DiagnosticCode::UnresolvedType)
@@ -340,13 +340,13 @@ pub(crate) fn compile_field(
         }
     };
     let codomain_type = match &field_def.codomain_type.kind {
-        reify_syntax::TypeExprKind::Named { name, .. } => resolve_field_type_name(
+        reify_ast::TypeExprKind::Named { name, .. } => resolve_field_type_name(
             name.as_str(),
             field_def.codomain_type.span,
             alias_registry,
             diagnostics,
         ),
-        reify_syntax::TypeExprKind::DimensionalOp { .. } => {
+        reify_ast::TypeExprKind::DimensionalOp { .. } => {
             diagnostics.push(
                 Diagnostic::error(format!(
                     "unresolved field type: {}",
@@ -360,7 +360,7 @@ pub(crate) fn compile_field(
             );
             Type::Real
         }
-        reify_syntax::TypeExprKind::IntegerLiteral(_) => {
+        reify_ast::TypeExprKind::IntegerLiteral(_) => {
             diagnostics.push(
                 Diagnostic::error(format!(
                     "unresolved field type: {}",
@@ -375,7 +375,7 @@ pub(crate) fn compile_field(
             Type::Real
         }
         // Auto type-args cannot appear as a field codomain type; resolution deferred to task 3477/3558.
-        reify_syntax::TypeExprKind::Auto { .. } => {
+        reify_ast::TypeExprKind::Auto { .. } => {
             diagnostics.push(
                 Diagnostic::error(format!(
                     "unresolved field type: {}",
@@ -395,7 +395,7 @@ pub(crate) fn compile_field(
     let scope = CompilationScope::new(&field_def.name);
 
     let source = match &field_def.source {
-        reify_syntax::FieldSource::Analytical { expr } => {
+        reify_ast::FieldSource::Analytical { expr } => {
             let compiled_expr = compile_expr(expr, &scope, enum_defs, functions, diagnostics);
             // Codomain type-check: the lambda body's inferred type must implicitly
             // convert to the declared codomain. Skip the check when either type is
@@ -411,12 +411,12 @@ pub(crate) fn compile_field(
             debug_assert!(
                 matches!(
                     compiled_expr.kind,
-                    reify_types::CompiledExprKind::Lambda { .. }
+                    reify_ir::CompiledExprKind::Lambda { .. }
                 ) || compiled_expr.result_type.is_error(),
                 "analytical field source compiled to non-Lambda with non-Error result type — \
                  this indicates a compiler bug"
             );
-            if let reify_types::CompiledExprKind::Lambda { body, .. } = &compiled_expr.kind {
+            if let reify_ir::CompiledExprKind::Lambda { body, .. } = &compiled_expr.kind {
                 let body_ty = &body.result_type;
                 if !body_ty.is_error()
                     && !codomain_type.is_error()
@@ -440,7 +440,7 @@ pub(crate) fn compile_field(
                 expr: compiled_expr,
             }
         }
-        reify_syntax::FieldSource::Sampled { config } => {
+        reify_ast::FieldSource::Sampled { config } => {
             // v0.2 (task 2341): walk the AST config entries and compile each value
             // expression. Runtime parsing of the resulting Values into a
             // `SampledField` is performed in `engine_eval::elaborate_field`; this
@@ -475,7 +475,7 @@ pub(crate) fn compile_field(
             // data) after the walk so that diagnostics referencing the same
             // source span are grouped together.
             const REQUIRED_KEYS: [&str; 5] = ["grid", "bounds", "spacing", "interpolation", "data"];
-            let mut compiled_config: Vec<(String, reify_types::CompiledExpr)> = Vec::new();
+            let mut compiled_config: Vec<(String, reify_ir::CompiledExpr)> = Vec::new();
             let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
             for (key, expr) in config {
                 let key_str = key.as_str();
@@ -532,13 +532,13 @@ pub(crate) fn compile_field(
                 config: compiled_config,
             }
         }
-        reify_syntax::FieldSource::Composed { expr } => {
+        reify_ast::FieldSource::Composed { expr } => {
             let compiled_expr = compile_expr(expr, &scope, enum_defs, functions, diagnostics);
             CompiledFieldSource::Composed {
                 expr: compiled_expr,
             }
         }
-        reify_syntax::FieldSource::Imported { .. } => {
+        reify_ast::FieldSource::Imported { .. } => {
             diagnostics.push(
                 Diagnostic::error(
                     "imported field sources are deferred to v0.2; v0.1 supports analytical and composed only",

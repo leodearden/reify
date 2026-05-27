@@ -5,7 +5,8 @@
 
 use reify_compiler::{CompiledGeometryOp, GeomRef, PrimitiveKind, SweepKind};
 use reify_test_support::*;
-use reify_types::{ExportFormat, GeometryOp, Type};
+use reify_core::Type;
+use reify_ir::{ExportFormat, GeometryOp};
 
 /// Exercises the full compile -> eval path for ExtrudeSymmetric.
 ///
@@ -19,7 +20,7 @@ use reify_types::{ExportFormat, GeometryOp, Type};
 #[test]
 fn extrude_symmetric_through_full_eval_pipeline() {
     let e = "TestExtrudeSymmetric";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Sphere (produces handle at step index 0)
     let sphere_op = CompiledGeometryOp::Primitive {
@@ -41,7 +42,7 @@ fn extrude_symmetric_through_full_eval_pipeline() {
         .realization(e, 0, vec![sphere_op, extrude_sym_op])
         .build();
 
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_extsym"))
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single("test_extsym"))
         .template(template)
         .build();
 
@@ -91,13 +92,13 @@ fn extrude_symmetric_through_full_eval_pipeline() {
 #[test]
 fn extrude_symmetric_non_finite_distance_is_dropped() {
     let e = "TestExtrudeSymNaN";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
     // Construct a NaN Value::Scalar for distance.
-    let nan_val = reify_types::Value::Scalar {
+    let nan_val = reify_ir::Value::Scalar {
         si_value: f64::NAN,
-        dimension: reify_types::DimensionVector::LENGTH,
+        dimension: reify_core::DimensionVector::LENGTH,
     };
-    let nan_expr = reify_types::CompiledExpr::literal(nan_val, Type::length());
+    let nan_expr = reify_ir::CompiledExpr::literal(nan_val, Type::length());
 
     let sphere_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Sphere,
@@ -115,7 +116,7 @@ fn extrude_symmetric_non_finite_distance_is_dropped() {
     let template = TopologyTemplateBuilder::new(e)
         .realization(e, 0, vec![sphere_op, extrude_sym_op])
         .build();
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_extsym_nan"))
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single("test_extsym_nan"))
         .template(template)
         .build();
 
@@ -151,13 +152,13 @@ fn extrude_symmetric_non_finite_distance_is_dropped() {
 #[test]
 fn extrude_symmetric_per_side_just_below_threshold_rejected() {
     let e = "TestExtrudeSymPerSideBelow";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
     // distance = 1.5e-12 m; per-side = 0.75e-12 m — below the DEGENERATE_LENGTH_M floor.
-    let tiny_val = reify_types::Value::Scalar {
+    let tiny_val = reify_ir::Value::Scalar {
         si_value: 1.5e-12,
-        dimension: reify_types::DimensionVector::LENGTH,
+        dimension: reify_core::DimensionVector::LENGTH,
     };
-    let tiny_expr = reify_types::CompiledExpr::literal(tiny_val, Type::length());
+    let tiny_expr = reify_ir::CompiledExpr::literal(tiny_val, Type::length());
 
     let sphere_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Sphere,
@@ -175,7 +176,7 @@ fn extrude_symmetric_per_side_just_below_threshold_rejected() {
     let template = TopologyTemplateBuilder::new(e)
         .realization(e, 0, vec![sphere_op, extrude_sym_op])
         .build();
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single(
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single(
         "test_extsym_per_side_below",
     ))
     .template(template)
@@ -203,7 +204,7 @@ fn extrude_symmetric_per_side_just_below_threshold_rejected() {
     // understand that halving a small total distance is what triggered the
     // drop — a plain "distance degenerate" message would be misleading.
     let has_per_side_warning = result.diagnostics.iter().any(|d| {
-        matches!(d.severity, reify_types::Severity::Warning)
+        matches!(d.severity, reify_core::Severity::Warning)
             && d.message.contains("extrude_symmetric")
             && (d.message.contains("per-side") || d.message.contains("half-distance"))
     });
@@ -220,7 +221,7 @@ fn extrude_symmetric_per_side_just_below_threshold_rejected() {
     // the two diagnostic channels stay in sync. Locks the Err-string fix so a
     // future refactor can't silently regress the Err back to "extrude distance ...".
     let has_extsym_error = result.diagnostics.iter().any(|d| {
-        matches!(d.severity, reify_types::Severity::Error)
+        matches!(d.severity, reify_core::Severity::Error)
             && d.message
                 .contains("extrude_symmetric distance is degenerate")
     });
@@ -239,13 +240,13 @@ fn extrude_symmetric_per_side_just_below_threshold_rejected() {
 #[test]
 fn extrude_symmetric_per_side_at_threshold_accepted() {
     let e = "TestExtrudeSymPerSideAt";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
     // distance = 2e-12 m; per-side = 1e-12 m — exactly at the DEGENERATE_LENGTH_M floor.
-    let at_val = reify_types::Value::Scalar {
+    let at_val = reify_ir::Value::Scalar {
         si_value: 2e-12,
-        dimension: reify_types::DimensionVector::LENGTH,
+        dimension: reify_core::DimensionVector::LENGTH,
     };
-    let at_expr = reify_types::CompiledExpr::literal(at_val, Type::length());
+    let at_expr = reify_ir::CompiledExpr::literal(at_val, Type::length());
 
     let sphere_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Sphere,
@@ -264,7 +265,7 @@ fn extrude_symmetric_per_side_at_threshold_accepted() {
         .realization(e, 0, vec![sphere_op, extrude_sym_op])
         .build();
     let module =
-        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_extsym_per_side_at"))
+        CompiledModuleBuilder::new(reify_core::ModulePath::single("test_extsym_per_side_at"))
             .template(template)
             .build();
 
@@ -298,12 +299,12 @@ fn extrude_symmetric_per_side_at_threshold_accepted() {
 #[test]
 fn extrude_symmetric_negative_per_side_just_below_threshold_rejected() {
     let e = "TestExtrudeSymNegBelow";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
-    let neg_val = reify_types::Value::Scalar {
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
+    let neg_val = reify_ir::Value::Scalar {
         si_value: -1.5e-12,
-        dimension: reify_types::DimensionVector::LENGTH,
+        dimension: reify_core::DimensionVector::LENGTH,
     };
-    let neg_expr = reify_types::CompiledExpr::literal(neg_val, Type::length());
+    let neg_expr = reify_ir::CompiledExpr::literal(neg_val, Type::length());
 
     let sphere_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Sphere,
@@ -322,7 +323,7 @@ fn extrude_symmetric_negative_per_side_just_below_threshold_rejected() {
         .realization(e, 0, vec![sphere_op, extrude_sym_op])
         .build();
     let module =
-        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_extsym_neg_below"))
+        CompiledModuleBuilder::new(reify_core::ModulePath::single("test_extsym_neg_below"))
             .template(template)
             .build();
 
@@ -354,7 +355,7 @@ fn extrude_symmetric_negative_per_side_just_below_threshold_rejected() {
 #[test]
 fn extrude_symmetric_distance_negative_above_threshold_accepted() {
     let e = "TestExtrudeSymNegAbove";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     let sphere_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Sphere,
@@ -374,7 +375,7 @@ fn extrude_symmetric_distance_negative_above_threshold_accepted() {
         .realization(e, 0, vec![sphere_op, extrude_sym_op])
         .build();
     let module =
-        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_extsym_neg_above"))
+        CompiledModuleBuilder::new(reify_core::ModulePath::single("test_extsym_neg_above"))
             .template(template)
             .build();
 

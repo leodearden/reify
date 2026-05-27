@@ -8,11 +8,7 @@ use crate::{
     BooleanOpHistoryRecords, Curvature, LocalFeatureOpHistoryRecords, LoftOpHistoryRecords,
     SweepOpHistoryRecords,
 };
-use reify_types::{
-    AttributeHistory, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId,
-    GeometryKernel, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, TessError, Value,
-    WarmStartable,
-};
+use reify_ir::{AttributeHistory, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, TessError, Value, WarmStartable};
 
 /// Stub topology cache build counts (OCCT not available).
 #[derive(Debug, PartialEq, Eq)]
@@ -473,10 +469,7 @@ impl Drop for OcctKernelHandle {
 #[cfg(all(test, not(has_occt)))]
 mod tests {
     use super::*;
-    use reify_types::{
-        ExportFormat, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, Value,
-        WarmStartable,
-    };
+    use reify_ir::{ExportFormat, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, Value, WarmStartable};
 
     #[test]
     fn stub_kernel_new_succeeds() {
@@ -502,7 +495,7 @@ mod tests {
     #[test]
     fn stub_kernel_query_returns_error() {
         let kernel = OcctKernel::new();
-        let result = kernel.query(&reify_types::GeometryQuery::Volume(GeometryHandleId(1)));
+        let result = kernel.query(&reify_ir::GeometryQuery::Volume(GeometryHandleId(1)));
         assert!(result.is_err());
     }
 
@@ -616,7 +609,7 @@ mod tests {
     #[test]
     fn stub_kernel_query_edge_length_returns_error() {
         let kernel = OcctKernel::new();
-        let result = kernel.query(&reify_types::GeometryQuery::EdgeLength(GeometryHandleId(1)));
+        let result = kernel.query(&reify_ir::GeometryQuery::EdgeLength(GeometryHandleId(1)));
         let err = result.expect_err("stub query EdgeLength should error");
         assert_stub_message(&format!("{err:?}"));
     }
@@ -624,7 +617,7 @@ mod tests {
     #[test]
     fn stub_kernel_query_face_normal_returns_error() {
         let kernel = OcctKernel::new();
-        let result = kernel.query(&reify_types::GeometryQuery::FaceNormal(GeometryHandleId(1)));
+        let result = kernel.query(&reify_ir::GeometryQuery::FaceNormal(GeometryHandleId(1)));
         let err = result.expect_err("stub query FaceNormal should error");
         assert_stub_message(&format!("{err:?}"));
     }
@@ -632,7 +625,7 @@ mod tests {
     #[test]
     fn stub_kernel_query_edge_tangent_returns_error() {
         let kernel = OcctKernel::new();
-        let result = kernel.query(&reify_types::GeometryQuery::EdgeTangent(GeometryHandleId(
+        let result = kernel.query(&reify_ir::GeometryQuery::EdgeTangent(GeometryHandleId(
             1,
         )));
         let err = result.expect_err("stub query EdgeTangent should error");
@@ -695,7 +688,7 @@ mod tests {
             0.0,
             0.0,
             0.0,
-            reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
+            reify_ir::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
         );
         let err = result.expect_err("stub point_on_shape should error");
         assert_stub_message(&format!("{err:?}"));

@@ -6,7 +6,7 @@
 
 use reify_compiler::CompiledTypeAlias;
 use reify_test_support::{compile_source, errors_only};
-use reify_types::{ContentHash, SourceSpan, Type};
+use reify_core::{ContentHash, SourceSpan, Type};
 
 // ─── step-1: CompiledTypeAlias data structures ──────────────────────────────
 
@@ -17,7 +17,7 @@ fn compiled_type_alias_fields_exist() {
     let alias = CompiledTypeAlias {
         name: "Stress".to_string(),
         resolved_type: Some(Type::Scalar {
-            dimension: reify_types::DimensionVector::LENGTH,
+            dimension: reify_core::DimensionVector::LENGTH,
         }),
         type_params: vec![],
         is_pub: true,
@@ -115,7 +115,7 @@ fn dimensional_alias_force_div_area() {
         .iter()
         .find(|c| c.id.member == "p")
         .expect("p not found");
-    let expected_dim = reify_types::dimension::FORCE.div(&reify_types::DimensionVector::AREA);
+    let expected_dim = reify_core::dimension::FORCE.div(&reify_core::DimensionVector::AREA);
     assert_eq!(
         p_cell.cell_type,
         Type::Scalar {
@@ -150,7 +150,7 @@ fn dimensional_alias_force_mul_length() {
         .iter()
         .find(|c| c.id.member == "e")
         .expect("e not found");
-    let expected_dim = reify_types::dimension::FORCE.mul(&reify_types::DimensionVector::LENGTH);
+    let expected_dim = reify_core::dimension::FORCE.mul(&reify_core::DimensionVector::LENGTH);
     assert_eq!(
         e_cell.cell_type,
         Type::Scalar {
@@ -191,8 +191,8 @@ fn chained_dimensional_alias_acceleration() {
         .expect("a not found");
     // LENGTH / TIME = Velocity, then Velocity / TIME = LENGTH / TIME^2
     let velocity_dim =
-        reify_types::DimensionVector::LENGTH.div(&reify_types::DimensionVector::TIME);
-    let expected_dim = velocity_dim.div(&reify_types::DimensionVector::TIME);
+        reify_core::DimensionVector::LENGTH.div(&reify_core::DimensionVector::TIME);
+    let expected_dim = velocity_dim.div(&reify_core::DimensionVector::TIME);
     assert_eq!(
         a_cell.cell_type,
         Type::Scalar {
@@ -293,7 +293,7 @@ fn parameterized_alias_substitution() {
     assert_eq!(
         p_cell.cell_type,
         Type::Scalar {
-            dimension: reify_types::dimension::FORCE,
+            dimension: reify_core::dimension::FORCE,
         },
         "Measure<Force> alias should resolve to Scalar{{FORCE}}"
     );
@@ -331,7 +331,7 @@ fn parameterized_alias_with_default() {
     assert_eq!(
         p_cell.cell_type,
         Type::Scalar {
-            dimension: reify_types::dimension::FORCE,
+            dimension: reify_core::dimension::FORCE,
         },
         "Measure (defaulting Q=Force) should resolve to Scalar{{FORCE}}"
     );
@@ -367,7 +367,7 @@ fn multi_param_alias_with_partial_defaults() {
     assert_eq!(
         p_cell.cell_type,
         Type::Scalar {
-            dimension: reify_types::DimensionVector::MASS,
+            dimension: reify_core::DimensionVector::MASS,
         },
         "BiMeasure<Mass> (A=Mass, B=Length default) should resolve to Scalar{{MASS}}"
     );
@@ -397,7 +397,7 @@ fn alias_as_function_param_type() {
     assert_eq!(
         func.params[0].1,
         Type::Scalar {
-            dimension: reify_types::dimension::FORCE,
+            dimension: reify_core::dimension::FORCE,
         },
         "function param typed as Stress alias should resolve to Scalar{{FORCE}}"
     );
@@ -424,7 +424,7 @@ fn alias_as_function_return_type() {
     assert_eq!(
         func.return_type,
         Type::Scalar {
-            dimension: reify_types::dimension::FORCE,
+            dimension: reify_core::dimension::FORCE,
         },
         "function return type Stress alias should resolve to Scalar{{FORCE}}"
     );
@@ -452,7 +452,7 @@ fn alias_as_field_domain_codomain_type() {
     assert_eq!(
         field.codomain_type,
         Type::Scalar {
-            dimension: reify_types::dimension::FORCE,
+            dimension: reify_core::dimension::FORCE,
         },
         "field codomain typed as Stress alias should resolve to Scalar{{FORCE}}"
     );
@@ -616,7 +616,7 @@ fn alias_interop_mixed_declarations() {
     assert_eq!(
         p_cell.cell_type,
         Type::Scalar {
-            dimension: reify_types::dimension::FORCE,
+            dimension: reify_core::dimension::FORCE,
         },
         "Tank.pressure should resolve to Scalar{{FORCE}}"
     );
@@ -629,7 +629,7 @@ fn alias_interop_mixed_declarations() {
     assert_eq!(
         func.params[0].1,
         Type::Scalar {
-            dimension: reify_types::dimension::FORCE,
+            dimension: reify_core::dimension::FORCE,
         },
         "function param typed as Stress should resolve to Scalar{{FORCE}}"
     );
@@ -665,7 +665,7 @@ fn alias_declared_after_use_forward_reference() {
     assert_eq!(
         p_cell.cell_type,
         Type::Scalar {
-            dimension: reify_types::dimension::FORCE,
+            dimension: reify_core::dimension::FORCE,
         },
         "forward-referenced Stress alias should resolve to Scalar{{FORCE}}"
     );
@@ -693,7 +693,7 @@ fn alias_forward_ref_function() {
     assert_eq!(
         func.params[0].1,
         Type::Scalar {
-            dimension: reify_types::DimensionVector::LENGTH,
+            dimension: reify_core::DimensionVector::LENGTH,
         },
         "forward-referenced Velocity alias should resolve to Scalar{{LENGTH}}"
     );
@@ -791,7 +791,7 @@ fn parameterized_alias_with_list_type_arg() {
         .find(|f| f.name == "take_wrapped")
         .expect("take_wrapped function not found");
     let expected = Type::Option(Box::new(Type::List(Box::new(Type::Scalar {
-        dimension: reify_types::dimension::FORCE,
+        dimension: reify_core::dimension::FORCE,
     }))));
     assert_eq!(
         func.params[0].1, expected,

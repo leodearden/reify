@@ -16,7 +16,7 @@
 mod common;
 
 use common::compile_with_stdlib_helper;
-use reify_types::{DimensionVector, Severity, Type};
+use reify_core::{DimensionVector, Severity, Type};
 
 /// End-to-end fixture: a structure with three params whose annotated types
 /// exercise every new resolution arm shipped under task 2696.
@@ -131,12 +131,12 @@ structure def Demo {
     param x : Tensor<2, 3, MomentOfInertia>
 }
 "#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     let demo = parsed
         .declarations
         .iter()
         .find_map(|d| match d {
-            reify_syntax::Declaration::Structure(s) if s.name == "Demo" => Some(s),
+            reify_ast::Declaration::Structure(s) if s.name == "Demo" => Some(s),
             _ => None,
         })
         .expect("structure `Demo` not found");
@@ -144,7 +144,7 @@ structure def Demo {
         .members
         .iter()
         .find_map(|m| match m {
-            reify_syntax::MemberDecl::Param(p) if p.name == "x" => Some(p),
+            reify_ast::MemberDecl::Param(p) if p.name == "x" => Some(p),
             _ => None,
         })
         .expect("param `x` not found");

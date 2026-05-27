@@ -6,10 +6,8 @@ use crate::journal::EventJournal;
 use crate::snapshot::Snapshot;
 use crate::{Engine, EvaluationState};
 use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
-use reify_types::{
-    CompiledFunction, ConstraintChecker, ConstraintSolver, Diagnostic, FeatureTagTable,
-    GeometryKernel, OptimizedImpl, TopologyAttributeTable,
-};
+use reify_core::Diagnostic;
+use reify_ir::{CompiledFunction, ConstraintChecker, ConstraintSolver, FeatureTagTable, GeometryKernel, OptimizedImpl, TopologyAttributeTable};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -38,8 +36,8 @@ pub(crate) enum ParamOverrideRejection {
     /// unboxed.  Consistent with the directly-downstream
     /// `EngineError::DimensionMismatch` (task 2430 / lib.rs:50-54).
     ScalarDimensionMismatch {
-        expected: Box<reify_types::dimension::DimensionVector>,
-        got: Box<reify_types::dimension::DimensionVector>,
+        expected: Box<reify_core::dimension::DimensionVector>,
+        got: Box<reify_core::dimension::DimensionVector>,
     },
 }
 
@@ -87,7 +85,7 @@ fn module_has_auto_cells(module: &CompiledModule) -> bool {
 /// that field exists. `source` is `None` (templates carry no single decl
 /// span; per-cell spans live on `value_cells`).
 pub(crate) fn populate_structure_registry(
-    registry: &mut reify_types::StructureRegistry,
+    registry: &mut reify_ir::StructureRegistry,
     modules: &[CompiledModule],
 ) {
     for module in modules {
@@ -95,7 +93,7 @@ pub(crate) fn populate_structure_registry(
             if tmpl.entity_kind != EntityKind::Structure {
                 continue;
             }
-            let field_layout: Vec<(String, reify_types::Type)> = tmpl
+            let field_layout: Vec<(String, reify_core::Type)> = tmpl
                 .value_cells
                 .iter()
                 .filter(|c| matches!(c.kind, ValueCellKind::Param))
@@ -103,7 +101,7 @@ pub(crate) fn populate_structure_registry(
                 .collect();
             registry.intern(
                 &tmpl.name,
-                reify_types::StructureMeta {
+                reify_ir::StructureMeta {
                     name: tmpl.name.clone(),
                     version: 1,
                     declared_trait_bounds: tmpl.trait_bounds.clone(),
@@ -116,8 +114,8 @@ pub(crate) fn populate_structure_registry(
 }
 
 pub(crate) fn validate_param_override(
-    value: &reify_types::Value,
-    cell_type: &reify_types::Type,
+    value: &reify_ir::Value,
+    cell_type: &reify_core::Type,
 ) -> Result<(), ParamOverrideRejection> {
     // `registry: None` for now — param-override validation does not yet
     // consult the per-Engine structure side-table. Trait-bound conformance
@@ -126,10 +124,10 @@ pub(crate) fn validate_param_override(
     if !crate::value_type_kind_matches(value, cell_type, None) {
         return Err(ParamOverrideRejection::TypeKindMismatch);
     }
-    if let reify_types::Type::Scalar {
+    if let reify_core::Type::Scalar {
         dimension: expected,
     } = cell_type
-        && let reify_types::Value::Scalar { dimension: got, .. } = value
+        && let reify_ir::Value::Scalar { dimension: got, .. } = value
         && *got != *expected
     {
         return Err(ParamOverrideRejection::ScalarDimensionMismatch {
@@ -224,7 +222,7 @@ impl Engine {
         // Seed the structure side-table from the prelude's `structure def`
         // templates (task 3540 / SIR-α step-12). Refreshed incrementally per
         // `eval()` from the user module's templates.
-        let mut structure_registry = reify_types::StructureRegistry::new();
+        let mut structure_registry = reify_ir::StructureRegistry::new();
         populate_structure_registry(&mut structure_registry, prelude);
         Self {
             constraint_checker,
@@ -346,7 +344,7 @@ impl Engine {
     /// public surface. Only available under
     /// `#[cfg(any(test, feature = "test-instrumentation"))]`.
     #[cfg(any(test, feature = "test-instrumentation"))]
-    pub fn structure_registry(&self) -> &reify_types::StructureRegistry {
+    pub fn structure_registry(&self) -> &reify_ir::StructureRegistry {
         &self.structure_registry
     }
 
@@ -370,7 +368,7 @@ impl Engine {
     #[cfg(any(test, feature = "test-instrumentation"))]
     pub fn realization_cache(
         &self,
-    ) -> &crate::realization_cache::RealizationCache<reify_types::GeometryHandleId> {
+    ) -> &crate::realization_cache::RealizationCache<reify_ir::GeometryHandleId> {
         &self.realization_cache
     }
 
@@ -787,11 +785,11 @@ impl Engine {
     pub fn dispatch_compute_node(
         &self,
         target: &str,
-        value_inputs: &[reify_types::Value],
+        value_inputs: &[reify_ir::Value],
         realization_inputs: &[crate::engine_compute::RealizationReadHandle],
-        options: &reify_types::Value,
-        prior_warm_state: Option<&reify_types::OpaqueState>,
-    ) -> Result<(reify_types::Value, Vec<reify_types::Diagnostic>), Vec<reify_types::Diagnostic>>
+        options: &reify_ir::Value,
+        prior_warm_state: Option<&reify_ir::OpaqueState>,
+    ) -> Result<(reify_ir::Value, Vec<reify_core::Diagnostic>), Vec<reify_core::Diagnostic>>
     {
         use crate::engine_compute::ComputeOutcome;
         use crate::graph::CancellationHandle;
@@ -812,7 +810,7 @@ impl Engine {
                         ..
                     } => Ok((result, diagnostics)),
                     ComputeOutcome::Failed { diagnostics } => Err(diagnostics),
-                    ComputeOutcome::Cancelled => Err(vec![reify_types::Diagnostic::error(
+                    ComputeOutcome::Cancelled => Err(vec![reify_core::Diagnostic::error(
                         format!(
                             "@optimized target {:?}: compute trampoline was cancelled",
                             target
@@ -827,7 +825,7 @@ impl Engine {
             // so the diagnostic would be misleading. The lowering site in
             // `engine_eval.rs` emits its own diagnostic that DOES mention
             // body-inline fallback, where that wording is accurate.
-            None => Err(vec![reify_types::Diagnostic::error(format!(
+            None => Err(vec![reify_core::Diagnostic::error(format!(
                 "@optimized target {:?}: no registered compute trampoline",
                 target
             ))]),
@@ -1214,7 +1212,7 @@ impl Engine {
     /// entry — identical to [`CacheStore::freshness`]'s own default behaviour,
     /// so that "unknown = Final" is enforced in one place and callers never
     /// need to handle a missing-node error path.
-    pub fn freshness(&self, node: &NodeId) -> reify_types::Freshness {
+    pub fn freshness(&self, node: &NodeId) -> reify_ir::Freshness {
         self.cache.freshness(node)
     }
 
@@ -1279,7 +1277,7 @@ impl Engine {
     /// Intermediate, producing incorrect freshness results.
     pub fn propagate_freshness_only<'a>(
         &mut self,
-        changed: impl IntoIterator<Item = &'a reify_types::ValueCellId>,
+        changed: impl IntoIterator<Item = &'a reify_core::ValueCellId>,
         generation: u64,
     ) -> std::collections::HashSet<crate::cache::NodeId> {
         // `eval_state` and `cache` are disjoint Engine fields, so the
@@ -1357,7 +1355,7 @@ impl Engine {
     /// `test-instrumentation` feature enabled (see
     /// `crates/reify-eval/Cargo.toml`).
     #[cfg(any(test, feature = "test-instrumentation"))]
-    pub fn set_panic_on_eval(&mut self, cell: reify_types::ValueCellId) {
+    pub fn set_panic_on_eval(&mut self, cell: reify_core::ValueCellId) {
         self.panic_on_eval_cells.insert(cell);
     }
 
@@ -1371,7 +1369,7 @@ impl Engine {
     ///
     /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
     #[cfg(any(test, feature = "test-instrumentation"))]
-    pub fn remove_panic_on_eval(&mut self, cell: &reify_types::ValueCellId) -> bool {
+    pub fn remove_panic_on_eval(&mut self, cell: &reify_core::ValueCellId) -> bool {
         self.panic_on_eval_cells.remove(cell)
     }
 
@@ -1415,7 +1413,7 @@ impl Engine {
         &mut self,
     ) -> Vec<crate::warm_pool::WarmPoolEvent> {
         let events = self.warm_pool.drain_events();
-        let version = reify_types::VersionId(self.next_version_id.saturating_sub(1));
+        let version = reify_core::VersionId(self.next_version_id.saturating_sub(1));
         let timestamp = std::time::Instant::now();
         for ev in &events {
             let eval_event =
@@ -1528,7 +1526,7 @@ mod tests {
     #[test]
     fn panic_on_eval_set_remove_and_clear_round_trip() {
         use reify_test_support::mocks::MockConstraintChecker;
-        use reify_types::ValueCellId;
+        use reify_core::ValueCellId;
 
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
         let a = ValueCellId::new("M", "a");
@@ -1604,7 +1602,8 @@ mod tests {
         use crate::cache::NodeId;
         use reify_test_support::mocks::MockConstraintChecker;
         use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
-        use reify_types::{Freshness, ModulePath, Type, Value, ValueCellId};
+        use reify_core::{ModulePath, Type, ValueCellId};
+        use reify_ir::{Freshness, Value};
 
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
 
@@ -1670,7 +1669,8 @@ mod tests {
         use reify_test_support::builders::{binop, literal, value_ref};
         use reify_test_support::mocks::MockConstraintChecker;
         use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
-        use reify_types::{BinOp, ModulePath, Type, Value, ValueCellId};
+        use reify_core::{ModulePath, Type, ValueCellId};
+        use reify_ir::{BinOp, Value};
 
         let a_id = ValueCellId::new("T", "a");
         let b_id = ValueCellId::new("T", "b");
@@ -1761,9 +1761,8 @@ mod tests {
         use crate::cache::{CachedResult, NodeCache, NodeId};
         use crate::deps::DependencyTrace;
         use reify_test_support::mocks::MockConstraintChecker;
-        use reify_types::{
-            ComputeNodeId, DeterminacyState, Freshness, Value, ValueCellId, VersionId,
-        };
+        use reify_core::{ComputeNodeId, ValueCellId, VersionId};
+        use reify_ir::{DeterminacyState, Freshness, Value};
 
         let v_id = ValueCellId::new("T", "v");
         let v_node = NodeId::Value(v_id.clone());

@@ -6,7 +6,8 @@
 //! Uses examples/m9_combined.ri as the source file.
 
 use reify_test_support::{check_source, eval_source, parse_and_compile};
-use reify_types::{ModulePath, Satisfaction, ValueCellId};
+use reify_core::{ModulePath, ValueCellId};
+use reify_ir::Satisfaction;
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/m9_combined.ri");
@@ -95,7 +96,7 @@ fn trait_values() {
         .get(&length_id)
         .unwrap_or_else(|| panic!("Bracket.length not found"));
     match length_val {
-        reify_types::Value::Scalar { si_value, .. } => {
+        reify_ir::Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 0.1).abs() < 1e-12,
                 "expected 0.1 SI for Bracket.length (100mm), got {si_value}"
@@ -111,7 +112,7 @@ fn trait_values() {
         .get(&half_id)
         .unwrap_or_else(|| panic!("Bracket.half_length not found"));
     match half_val {
-        reify_types::Value::Scalar { si_value, .. } => {
+        reify_ir::Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 0.05).abs() < 1e-12,
                 "expected 0.05 SI for Bracket.half_length (50mm), got {si_value}"
@@ -127,7 +128,7 @@ fn trait_values() {
         .get(&mass_id)
         .unwrap_or_else(|| panic!("Bracket.mass not found"));
     match mass_val {
-        reify_types::Value::Scalar { si_value, .. } => {
+        reify_ir::Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 2.0).abs() < 1e-12,
                 "expected 2.0 SI for Bracket.mass (2kg), got {si_value}"
@@ -152,7 +153,7 @@ fn default_injection() {
         .get(&mass_id)
         .unwrap_or_else(|| panic!("Plate.mass not found"));
     match mass_val {
-        reify_types::Value::Scalar { si_value, .. } => {
+        reify_ir::Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 1.0).abs() < 1e-12,
                 "expected 1.0 SI for Plate.mass (1kg default from Weighted), got {si_value}"
@@ -248,7 +249,7 @@ fn custom_unit_value() {
         .get(&clearance_id)
         .unwrap_or_else(|| panic!("Bracket.clearance not found"));
     match clearance_val {
-        reify_types::Value::Scalar { si_value, .. } => {
+        reify_ir::Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 0.0127).abs() < 1e-9,
                 "expected ~0.0127 SI for Bracket.clearance (500mil), got {si_value}"
@@ -274,7 +275,7 @@ fn meta_access_values() {
         .unwrap_or_else(|| panic!("Bracket.label not found"));
     assert_eq!(
         label_val,
-        &reify_types::Value::String("steel".to_string()),
+        &reify_ir::Value::String("steel".to_string()),
         "Bracket.label should be String(\"steel\") via meta.material"
     );
 
@@ -286,7 +287,7 @@ fn meta_access_values() {
         .unwrap_or_else(|| panic!("Bracket.rev not found"));
     assert_eq!(
         rev_val,
-        &reify_types::Value::String("A".to_string()),
+        &reify_ir::Value::String("A".to_string()),
         "Bracket.rev should be String(\"A\") via meta.revision"
     );
 }
@@ -308,7 +309,7 @@ fn recursive_unfold_depth() {
         .get(&child_span_id)
         .unwrap_or_else(|| panic!("BracketTree.child.span not found"));
     match child_span {
-        reify_types::Value::Scalar { si_value, .. } => {
+        reify_ir::Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 0.1).abs() < 1e-9,
                 "expected ~0.1 SI for BracketTree.child.span (100mm), got {si_value}"
@@ -327,7 +328,7 @@ fn recursive_unfold_depth() {
         .get(&grandchild_span_id)
         .unwrap_or_else(|| panic!("BracketTree.child.child.span not found"));
     match grandchild_span {
-        reify_types::Value::Scalar { si_value, .. } => {
+        reify_ir::Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 0.05).abs() < 1e-9,
                 "expected ~0.05 SI for BracketTree.child.child.span (50mm), got {si_value}"

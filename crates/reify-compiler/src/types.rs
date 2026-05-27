@@ -1,17 +1,15 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use reify_types::{
-    CompiledExpr, ConstraintDomain, ConstraintNodeId, ContentHash, DimensionVector,
-    OptimizationObjective, RealizationNodeId, SourceSpan, Type, ValueCellId,
-};
+use reify_core::{ConstraintNodeId, ContentHash, DimensionVector, RealizationNodeId, SourceSpan, Type, ValueCellId};
+use reify_ir::{CompiledExpr, ConstraintDomain, OptimizationObjective};
 
-pub use reify_types::{CompiledFnBody, CompiledFunction};
+pub use reify_ir::{CompiledFnBody, CompiledFunction};
 
 /// A compiled import declaration.
 #[derive(Debug, Clone)]
 pub struct CompiledImport {
     pub path: String,
-    pub kind: reify_syntax::ImportKind,
+    pub kind: reify_ast::ImportKind,
     pub is_pub: bool,
     pub span: SourceSpan,
 }
@@ -24,7 +22,7 @@ pub struct CompiledTrait {
     /// Doc comment extracted from the `///` lines preceding the declaration.
     pub doc: Option<String>,
     /// Type parameters declared on this trait (e.g., `<T: Rigid>`).
-    pub type_params: Vec<reify_types::TypeParam>,
+    pub type_params: Vec<reify_ir::TypeParam>,
     /// Names of traits this trait refines (parent traits).
     pub refinements: Vec<String>,
     /// Members that conforming structures must provide (no default).
@@ -33,9 +31,9 @@ pub struct CompiledTrait {
     pub defaults: Vec<TraitDefault>,
     pub content_hash: ContentHash,
     /// Compiled annotations carried over from the parsed declaration.
-    pub annotations: Vec<reify_types::Annotation>,
+    pub annotations: Vec<reify_ir::Annotation>,
     /// Block-level pragmas from the parsed declaration (e.g., `#precision(bits=32)`).
-    pub pragmas: Vec<reify_syntax::Pragma>,
+    pub pragmas: Vec<reify_ast::Pragma>,
 }
 
 /// A required member in a trait — conforming structures must provide this.
@@ -76,17 +74,17 @@ pub enum DefaultKind {
     /// A param with a default expression: `param x : Length = 10mm`
     Param {
         cell_type: Type,
-        default_decl: reify_syntax::ParamDecl,
+        default_decl: reify_ast::ParamDecl,
     },
     /// A let with a value expression: `let x = expr`
     Let {
         /// The resolved type from the annotation (e.g. `let x : Length = …` → `Some(Type::length())`).
         /// `None` when no annotation is present.
-        cell_type: Option<reify_types::Type>,
-        let_decl: reify_syntax::LetDecl,
+        cell_type: Option<reify_core::Type>,
+        let_decl: reify_ast::LetDecl,
     },
     /// A constraint with an expression: `constraint label : expr`
-    Constraint(reify_syntax::ConstraintDecl),
+    Constraint(reify_ast::ConstraintDecl),
 }
 
 /// The compiled source of a field.
@@ -112,7 +110,7 @@ pub struct CompiledField {
     pub source: CompiledFieldSource,
     pub content_hash: ContentHash,
     /// Compiled annotations carried over from the parsed declaration.
-    pub annotations: Vec<reify_types::Annotation>,
+    pub annotations: Vec<reify_ir::Annotation>,
 }
 
 /// A compiled purpose parameter — binds an entity reference.
@@ -145,9 +143,9 @@ pub struct CompiledPurpose {
     pub resolved_queries: Vec<ResolvedSchemaQuery>,
     pub content_hash: ContentHash,
     /// Compiled annotations carried over from the parsed declaration.
-    pub annotations: Vec<reify_types::Annotation>,
+    pub annotations: Vec<reify_ir::Annotation>,
     /// Block-level pragmas from the parsed declaration (e.g., `#solver(method="gradient")`).
-    pub pragmas: Vec<reify_syntax::Pragma>,
+    pub pragmas: Vec<reify_ast::Pragma>,
 }
 
 /// Resolved `auto:` type-parameter substitutions for a compiled module, in
@@ -211,9 +209,9 @@ impl std::ops::Deref for AutoTypeSubstitution {
 /// A compiled module — the output of the compiler.
 #[derive(Debug, Clone)]
 pub struct CompiledModule {
-    pub path: reify_types::ModulePath,
+    pub path: reify_core::ModulePath,
     pub imports: Vec<CompiledImport>,
-    pub enum_defs: Vec<reify_types::EnumDef>,
+    pub enum_defs: Vec<reify_ir::EnumDef>,
     pub functions: Vec<CompiledFunction>,
     pub trait_defs: Vec<CompiledTrait>,
     pub fields: Vec<CompiledField>,
@@ -231,7 +229,7 @@ pub struct CompiledModule {
     pub constraint_defs: Vec<CompiledConstraintDef>,
     /// Module-level pragmas declared in this module (e.g., `#no_prelude`, `#precision`).
     /// All pragmas are stored here, including consumed ones like `#no_prelude`.
-    pub pragmas: Vec<reify_syntax::Pragma>,
+    pub pragmas: Vec<reify_ast::Pragma>,
     /// Module-level `#precision` value in metres, or None when absent / when the
     /// pragma was malformed.
     ///
@@ -280,7 +278,7 @@ pub struct CompiledModule {
     /// See [`AutoTypeSubstitution`] for the uniqueness invariant, panic semantics,
     /// and the producer/consumer documentation.
     pub auto_type_substitution: AutoTypeSubstitution,
-    pub diagnostics: Vec<reify_types::Diagnostic>,
+    pub diagnostics: Vec<reify_core::Diagnostic>,
     pub content_hash: ContentHash,
 }
 
@@ -298,7 +296,7 @@ pub struct SolverPragma {
     /// User-declared back-end identifier (verbatim).
     pub name: String,
     /// Optional `key = value` arguments, in alphabetical key order.
-    pub options: BTreeMap<String, reify_syntax::PragmaValue>,
+    pub options: BTreeMap<String, reify_ast::PragmaValue>,
 }
 
 impl CompiledModule {
@@ -485,7 +483,7 @@ pub enum CompiledForallBody {
         /// Substituted left-side port name (e.g. `"vents[0].inlet"`).
         left_port_template: String,
         /// Direction operator from the source `connect` declaration.
-        operator: reify_syntax::ConnectOp,
+        operator: reify_ast::ConnectOp,
         /// Substituted right-side port name (e.g. `"air_channel"`).
         right_port_template: String,
         /// Optional explicit connector type name (e.g. `BoltSet`).
@@ -513,7 +511,7 @@ pub struct TopologyTemplate {
     pub entity_kind: EntityKind,
     pub visibility: Visibility,
     /// Type parameters declared on this structure (e.g., `<T: Rigid>`).
-    pub type_params: Vec<reify_types::TypeParam>,
+    pub type_params: Vec<reify_ir::TypeParam>,
     /// Names of traits this structure declares conformance to (e.g., `["Rigid"]`).
     pub trait_bounds: Vec<String>,
     pub value_cells: Vec<ValueCellDecl>,
@@ -554,9 +552,9 @@ pub struct TopologyTemplate {
     /// builder, and test files. See task 205 review / task 424 for the rationale.
     pub is_recursive: bool,
     /// Compiled annotations carried over from the parsed declaration.
-    pub annotations: Vec<reify_types::Annotation>,
+    pub annotations: Vec<reify_ir::Annotation>,
     /// Block-level pragmas from the parsed declaration (e.g., `#solver(backend="ipopt")`).
-    pub pragmas: Vec<reify_syntax::Pragma>,
+    pub pragmas: Vec<reify_ast::Pragma>,
     /// Match-arm decl clusters registered during compilation (task 2372, step-10).
     ///
     /// Populated by `compile_match_arm_decl_group` in `entity.rs`.  Empty for
@@ -591,7 +589,7 @@ impl TopologyTemplate {
     /// so the per-call cost is negligible; if profiling ever flags this,
     /// a cached `bool` field can be reintroduced.
     pub fn is_test(&self) -> bool {
-        reify_types::annotation::has_test_annotation(&self.annotations)
+        reify_ir::annotation::has_test_annotation(&self.annotations)
     }
 
     /// The declared structure version from a `@version(N)` annotation, or `1`
@@ -629,7 +627,7 @@ pub fn find_template<'a>(
 #[derive(Debug, Clone)]
 pub struct CompiledConnection {
     pub left_port: String,
-    pub operator: reify_syntax::ConnectOp,
+    pub operator: reify_ast::ConnectOp,
     pub right_port: String,
     pub connector_sub: Option<String>,
     pub compatibility_constraint: ConstraintNodeId,
@@ -642,7 +640,7 @@ pub struct CompiledConnection {
 #[derive(Debug, Clone)]
 pub struct CompiledPort {
     pub name: String,
-    pub direction: reify_types::PortDirection,
+    pub direction: reify_core::PortDirection,
     pub type_name: String,
     pub members: Vec<ValueCellDecl>,
     pub constraints: Vec<CompiledConstraint>,
@@ -889,7 +887,7 @@ pub struct RealizationDecl {
     /// via `debug_assert!` at construction sites (all of which call
     /// `derive_feature_tags`).  Tests in `feature_tag_tests.rs` lock this
     /// invariant against future refactors.
-    pub feature_tags: Vec<reify_types::FeatureTag>,
+    pub feature_tags: Vec<reify_ir::FeatureTag>,
     pub span: SourceSpan,
 }
 
@@ -1161,7 +1159,7 @@ pub struct CompiledTypeAlias {
     /// The resolved type for non-parameterized aliases; `None` for parameterized aliases.
     pub resolved_type: Option<Type>,
     /// Type parameters for parameterized aliases (empty for simple aliases).
-    pub type_params: Vec<reify_types::TypeParam>,
+    pub type_params: Vec<reify_ir::TypeParam>,
     pub is_pub: bool,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
@@ -1176,7 +1174,7 @@ pub struct CompiledConstraintParam {
     pub name: String,
     /// Original default expression, kept as AST so it can be substituted into the
     /// calling entity's scope at instantiation time.
-    pub default: Option<reify_syntax::Expr>,
+    pub default: Option<reify_ast::Expr>,
     pub span: SourceSpan,
 }
 
@@ -1191,19 +1189,19 @@ pub struct CompiledConstraintDef {
     /// `true` if declared with the `pub` modifier (exported to importing modules).
     pub is_pub: bool,
     /// Type parameters declared on this constraint def (e.g., `<T: Rigid>`).
-    pub type_params: Vec<reify_types::TypeParam>,
+    pub type_params: Vec<reify_ir::TypeParam>,
     /// Parameters of the constraint def, compiled from `ParamDecl`s.
     pub params: Vec<CompiledConstraintParam>,
     /// Predicates kept as AST: param substitution is call-site-local, and compilation
     /// requires the calling entity's scope. This keeps the public type boundary clean
     /// (no `reify_syntax::ConstraintDef` in `CompiledModule`) while deferring full lowering.
-    pub predicates: Vec<reify_syntax::Expr>,
+    pub predicates: Vec<reify_ast::Expr>,
     pub span: SourceSpan,
-    pub content_hash: reify_types::ContentHash,
+    pub content_hash: reify_core::ContentHash,
     /// Block-level pragmas from the parsed declaration.
-    pub pragmas: Vec<reify_syntax::Pragma>,
+    pub pragmas: Vec<reify_ast::Pragma>,
     /// Lowered annotations (validated at def-compile time).
-    pub annotations: Vec<reify_types::Annotation>,
+    pub annotations: Vec<reify_ir::Annotation>,
     /// Cached `@optimized("target")` value extracted from `annotations` once at
     /// def-compile time so every instantiation can read it without re-scanning.
     pub annotations_optimized_target: Option<String>,
@@ -1212,7 +1210,7 @@ pub struct CompiledConstraintDef {
 impl CompiledConstraintDef {
     /// Returns `true` if this constraint def is tagged with the `@test` annotation.
     pub fn is_test(&self) -> bool {
-        reify_types::annotation::has_test_annotation(&self.annotations)
+        reify_ir::annotation::has_test_annotation(&self.annotations)
     }
 }
 
@@ -1331,7 +1329,7 @@ mod guarded_decl_group_tests {
     //! Tests for `GuardedDeclArm` and `GuardedDeclGroup` structs (task 2372, step-1).
     //! RED until the structs are added in step-2.
     use super::*;
-    use reify_types::Value;
+    use reify_ir::Value;
 
     #[test]
     fn guarded_decl_group_struct_carries_name_and_arms() {

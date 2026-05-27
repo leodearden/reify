@@ -33,9 +33,8 @@
 use reify_compiler::compile_with_stdlib;
 use reify_eval::Engine;
 use reify_test_support::MockGeometryKernel;
-use reify_types::{
-    DimensionVector, ExportFormat, GeometryHandleId, ModulePath, Severity, Value, ValueCellId,
-};
+use reify_core::{DimensionVector, ModulePath, Severity, ValueCellId};
+use reify_ir::{ExportFormat, GeometryHandleId, Value};
 
 /// Parse and compile a source string with the stdlib prelude.
 /// Asserts the parse and compile pipelines produce no errors.
@@ -129,7 +128,7 @@ fn is_on_let_resolves_to_bool_true_via_kernel_reply_with_default_tolerance() {
         k.with_point_on_shape_result(
             GeometryHandleId(1),
             [0.005, 0.0, 0.0],
-            reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
+            reify_ir::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
             Value::Bool(true),
         )
     });
@@ -233,7 +232,7 @@ fn is_on_with_literal_int_arg_falls_through_to_undef() {
         k.with_point_on_shape_result(
             GeometryHandleId(1),
             [42.0, 0.0, 0.0],
-            reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
+            reify_ir::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
             Value::Bool(true),
         )
     });
@@ -970,7 +969,7 @@ fn edges_and_faces_of_box_via_occt_return_canonical_counts() {
     let compiled = compile_no_errors(source);
 
     let checker = reify_constraints::SimpleConstraintChecker;
-    let kernel: Box<dyn reify_types::GeometryKernel> =
+    let kernel: Box<dyn reify_ir::GeometryKernel> =
         Box::new(reify_kernel_occt::OcctKernelHandle::spawn());
     let mut engine = Engine::new(Box::new(checker), Some(kernel));
 

@@ -4,11 +4,8 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 
 use reify_compiler::{CompiledConstraint, CompiledModule, TopologyTemplate};
-use reify_types::{
-    CompiledExpr, CompiledFunction, ConstraintInput, ConstraintNodeId, ConstraintResult,
-    DeterminacyState, Diagnostic, OptimizedImplInput, PersistentMap, Severity, Value, ValueCellId,
-    ValueMap,
-};
+use reify_core::{ConstraintNodeId, Diagnostic, Severity, ValueCellId};
+use reify_ir::{CompiledExpr, CompiledFunction, ConstraintInput, ConstraintResult, DeterminacyState, OptimizedImplInput, PersistentMap, Value, ValueMap};
 
 use crate::{CheckResult, ConstraintCheckEntry, Engine, EngineError};
 
@@ -212,7 +209,7 @@ impl Engine {
     /// mutates existing ones.
     pub(crate) fn labeled_diagnostics(
         messages: &mut [Diagnostic],
-        id: &reify_types::ConstraintNodeId,
+        id: &reify_core::ConstraintNodeId,
         label: Option<&str>,
     ) {
         let Some(lbl) = label else {

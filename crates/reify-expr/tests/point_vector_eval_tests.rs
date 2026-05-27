@@ -1,7 +1,8 @@
 //! Point/Vector component access and arithmetic evaluation tests.
 
 use reify_expr::{EvalContext, eval_expr};
-use reify_types::{BinOp, CompiledExpr, DimensionVector, Type, UnOp, Value, ValueCellId, ValueMap};
+use reify_core::{DimensionVector, Type, ValueCellId};
+use reify_ir::{BinOp, CompiledExpr, UnOp, Value, ValueMap};
 
 // --- Construction ---
 

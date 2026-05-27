@@ -43,7 +43,8 @@ stub_register = []
 mesh-morph = []
 
 [dependencies]
-reify-types.workspace = true
+reify-core.workspace = true
+reify-ir.workspace = true
 inventory.workspace = true
 tracing.workspace = true
 
@@ -60,6 +61,8 @@ reify-build-utils.workspace = true
 # `tests/dispatcher_integration.rs` test binary; the production library stays
 # free of the eval dependency.
 [dev-dependencies]
+reify-core.workspace = true
+reify-ir.workspace = true
 reify-eval.workspace = true
 reify-test-support.workspace = true
 # Self-dev-dep: activates `stub_register` for ALL integration test binaries in

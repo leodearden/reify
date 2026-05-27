@@ -24,7 +24,8 @@ use reify_test_support::mocks::MockGeometryKernel;
 use reify_test_support::{
     MockConstraintChecker, manufacturing_purpose, mm, step_output_template,
 };
-use reify_types::{CompiledExpr, ExportFormat, ModulePath, ReprKind, Type};
+use reify_core::{ModulePath, Type};
+use reify_ir::{CompiledExpr, ExportFormat, ReprKind};
 
 /// `Engine::with_registered_kernels(checker)` must build an engine whose
 /// `registered_kernel_names()` set matches the inventory registry: when
@@ -89,7 +90,7 @@ fn engine_new_with_single_mock_kernel_builds_one_box_realization() {
     let compile_errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| matches!(d.severity, reify_types::Severity::Error))
+        .filter(|d| matches!(d.severity, reify_core::Severity::Error))
         .collect();
     assert!(
         compile_errors.is_empty(),
@@ -113,7 +114,7 @@ fn engine_new_with_single_mock_kernel_builds_one_box_realization() {
     let errors: Vec<_> = result
         .diagnostics
         .iter()
-        .filter(|d| matches!(d.severity, reify_types::Severity::Error))
+        .filter(|d| matches!(d.severity, reify_core::Severity::Error))
         .collect();
     assert!(
         errors.is_empty(),
@@ -215,7 +216,7 @@ fn executor_writes_produced_repr_brep_on_build_snapshot() {
     let compile_errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| matches!(d.severity, reify_types::Severity::Error))
+        .filter(|d| matches!(d.severity, reify_core::Severity::Error))
         .collect();
     assert!(
         compile_errors.is_empty(),
@@ -456,7 +457,7 @@ fn with_registered_kernels_end_to_end_two_boxes_plus_union() {
     let compile_errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| matches!(d.severity, reify_types::Severity::Error))
+        .filter(|d| matches!(d.severity, reify_core::Severity::Error))
         .collect();
     assert!(
         compile_errors.is_empty(),
@@ -490,7 +491,7 @@ fn with_registered_kernels_end_to_end_two_boxes_plus_union() {
     let errors: Vec<_> = result
         .diagnostics
         .iter()
-        .filter(|d| matches!(d.severity, reify_types::Severity::Error))
+        .filter(|d| matches!(d.severity, reify_core::Severity::Error))
         .collect();
     assert!(
         errors.is_empty(),

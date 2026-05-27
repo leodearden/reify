@@ -88,7 +88,7 @@ macro_rules! assert_stub_kernel_errors {
             let kernel = ($factory)();
             assert_send_sync(&kernel);
             // Move `kernel` into the Box rather than constructing a second instance.
-            let _boxed: ::std::boxed::Box<dyn ::reify_types::GeometryKernel> =
+            let _boxed: ::std::boxed::Box<dyn ::reify_ir::GeometryKernel> =
                 ::std::boxed::Box::new(kernel);
         }
 
@@ -98,23 +98,23 @@ macro_rules! assert_stub_kernel_errors {
         fn stub_kernel_execute_returns_descriptive_error() {
             let mut kernel = ($factory)();
             let ops = [
-                ::reify_types::GeometryOp::Union {
-                    left: ::reify_types::GeometryHandleId(1),
-                    right: ::reify_types::GeometryHandleId(2),
+                ::reify_ir::GeometryOp::Union {
+                    left: ::reify_ir::GeometryHandleId(1),
+                    right: ::reify_ir::GeometryHandleId(2),
                 },
-                ::reify_types::GeometryOp::Difference {
-                    left: ::reify_types::GeometryHandleId(1),
-                    right: ::reify_types::GeometryHandleId(2),
+                ::reify_ir::GeometryOp::Difference {
+                    left: ::reify_ir::GeometryHandleId(1),
+                    right: ::reify_ir::GeometryHandleId(2),
                 },
-                ::reify_types::GeometryOp::Intersection {
-                    left: ::reify_types::GeometryHandleId(1),
-                    right: ::reify_types::GeometryHandleId(2),
+                ::reify_ir::GeometryOp::Intersection {
+                    left: ::reify_ir::GeometryHandleId(1),
+                    right: ::reify_ir::GeometryHandleId(2),
                 },
             ];
             for op in &ops {
-                let result = ::reify_types::GeometryKernel::execute(&mut kernel, op);
+                let result = ::reify_ir::GeometryKernel::execute(&mut kernel, op);
                 match result {
-                    Err(::reify_types::GeometryError::OperationFailed(msg)) => {
+                    Err(::reify_ir::GeometryError::OperationFailed(msg)) => {
                         assert!(
                             msg.contains($substr),
                             "execute error message must contain {:?} for op {:?}, got: {:?}",
@@ -137,11 +137,11 @@ macro_rules! assert_stub_kernel_errors {
         fn stub_kernel_query_export_tessellate_all_error() {
             let kernel = ($factory)();
 
-            match ::reify_types::GeometryKernel::query(
+            match ::reify_ir::GeometryKernel::query(
                 &kernel,
-                &::reify_types::GeometryQuery::Volume(::reify_types::GeometryHandleId(1)),
+                &::reify_ir::GeometryQuery::Volume(::reify_ir::GeometryHandleId(1)),
             ) {
-                Err(::reify_types::QueryError::QueryFailed(msg)) => {
+                Err(::reify_ir::QueryError::QueryFailed(msg)) => {
                     assert!(
                         msg.contains($substr),
                         "query error message must contain {:?}, got: {:?}",
@@ -155,13 +155,13 @@ macro_rules! assert_stub_kernel_errors {
                 ),
             }
 
-            match ::reify_types::GeometryKernel::export(
+            match ::reify_ir::GeometryKernel::export(
                 &kernel,
-                ::reify_types::GeometryHandleId(1),
-                ::reify_types::ExportFormat::Step,
+                ::reify_ir::GeometryHandleId(1),
+                ::reify_ir::ExportFormat::Step,
                 &mut ::std::vec::Vec::<u8>::new(),
             ) {
-                Err(::reify_types::ExportError::FormatError(msg)) => {
+                Err(::reify_ir::ExportError::FormatError(msg)) => {
                     assert!(
                         msg.contains($substr),
                         "export error message must contain {:?}, got: {:?}",
@@ -175,12 +175,12 @@ macro_rules! assert_stub_kernel_errors {
                 ),
             }
 
-            match ::reify_types::GeometryKernel::tessellate(
+            match ::reify_ir::GeometryKernel::tessellate(
                 &kernel,
-                ::reify_types::GeometryHandleId(1),
+                ::reify_ir::GeometryHandleId(1),
                 0.1,
             ) {
-                Err(::reify_types::TessError::TessellationFailed(msg)) => {
+                Err(::reify_ir::TessError::TessellationFailed(msg)) => {
                     assert!(
                         msg.contains($substr),
                         "tessellate error message must contain {:?}, got: {:?}",
@@ -199,10 +199,7 @@ macro_rules! assert_stub_kernel_errors {
 
 #[cfg(test)]
 mod tests {
-    use reify_types::{
-        ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
-        GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value,
-    };
+    use reify_ir::{ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value};
 
     const STUB_MSG: &str = "TestStub kernel not available — fixture only";
 

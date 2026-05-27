@@ -5,7 +5,8 @@ use reify_eval::cache::NodeId;
 use reify_eval::journal::EventKind;
 use reify_test_support::bracket_compiled_module;
 use reify_test_support::mocks::MockConstraintChecker;
-use reify_types::{Value, ValueCellId, VersionId};
+use reify_core::{ValueCellId, VersionId};
+use reify_ir::Value;
 
 /// After eval(), the journal should contain events for all evaluated nodes.
 #[test]
@@ -82,7 +83,7 @@ fn edit_param_records_journal_events() {
     let e = "Bracket";
     let width_id = ValueCellId::new(e, "width");
     engine
-        .edit_param(width_id.clone(), reify_types::Value::length(0.1))
+        .edit_param(width_id.clone(), reify_ir::Value::length(0.1))
         .unwrap();
 
     let journal = engine.journal();

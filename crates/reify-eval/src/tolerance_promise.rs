@@ -23,10 +23,8 @@
 //! syntax is required and the user supplies the promise via a normal
 //! `param tolerance : Length = 50um` declaration.
 
-use reify_types::{
-    DeterminacyState, Diagnostic, DiagnosticCode, DimensionVector, PersistentMap, Value,
-    ValueCellId,
-};
+use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, ValueCellId};
+use reify_ir::{DeterminacyState, PersistentMap, Value};
 
 /// Extract the imported-geometry tolerance promise carried by an `Input`
 /// occurrence template's `param tolerance : Length = …` declaration.
@@ -337,7 +335,8 @@ pub fn imported_tolerance_promise_diagnostic(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::{DeterminacyState, DimensionVector, PersistentMap, Value, ValueCellId};
+    use reify_core::{DimensionVector, ValueCellId};
+    use reify_ir::{DeterminacyState, PersistentMap, Value};
 
     /// Pinned by the recognition-shape contract: the post-`eval()`
     /// `Snapshot.values` map carries an entry at
@@ -786,7 +785,7 @@ mod tests {
     #[test]
     fn input_tolerance_promise_is_zero_diagnostic_builds_warning_with_code_template_name_and_human_readable_demanded()
      {
-        use reify_types::{DiagnosticCode, Severity};
+        use reify_core::{DiagnosticCode, Severity};
 
         let diag = input_tolerance_promise_is_zero_diagnostic("STEPInput", 1e-6);
 
@@ -837,7 +836,7 @@ mod tests {
     /// protecting any real consumer contract.
     #[test]
     fn imported_tolerance_promise_diagnostic_builds_warning_with_code_and_template_name() {
-        use reify_types::{DiagnosticCode, Severity};
+        use reify_core::{DiagnosticCode, Severity};
 
         let diag = imported_tolerance_promise_diagnostic("STEPInput", 1e-6, 50e-6);
 

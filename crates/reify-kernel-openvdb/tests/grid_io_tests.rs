@@ -21,7 +21,8 @@
 #[test]
 fn vdb_grid_round_trip_preserves_metadata_and_active_count() {
     use reify_kernel_openvdb::{OpenVdbKernel, ingest::read_vdb_file};
-    use reify_types::{SampledGridKind, Type};
+    use reify_core::Type;
+    use reify_ir::SampledGridKind;
 
     // ---------------------------------------------------------------------------
     // Octahedron unit-sphere mesh fixture (6 verts, 8 tris)
@@ -298,7 +299,7 @@ fn slab_mesh() -> (Vec<[f32; 3]>, Vec<[u32; 3]>) {
 fn vdb_round_trip_data_layout_is_axis0_x_outermost() {
     use reify_expr::interp::{InterpolationMethod, interpolate_3d};
     use reify_kernel_openvdb::{OpenVdbKernel, ingest::read_vdb_file};
-    use reify_types::Type;
+    use reify_core::Type;
 
     let (verts, tris) = slab_mesh();
 

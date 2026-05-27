@@ -1,4 +1,5 @@
-use reify_types::{DimensionVector, Value};
+use reify_core::DimensionVector;
+use reify_ir::Value;
 
 use crate::helpers::{binary, sanitize_value, tensor_components_f64, unary};
 
@@ -352,7 +353,8 @@ fn build_matrix_value(nrows: usize, ncols: usize, data: &[f64], dim: DimensionVe
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
-    use reify_types::{DimensionVector, Value};
+    use reify_core::DimensionVector;
+    use reify_ir::Value;
 
     use super::matrix_components_f64;
 
@@ -413,7 +415,7 @@ mod tests {
     #[test]
     fn det_dimensioned_3x3() {
         // det(Force_mat) has dimension Force³ for 3×3
-        let force_dim = reify_types::dimension::FORCE;
+        let force_dim = reify_core::dimension::FORCE;
         let m = make_dimensioned_matrix(
             &[&[1.0, 0.0, 0.0], &[0.0, 1.0, 0.0], &[0.0, 0.0, 1.0]],
             force_dim,
@@ -585,7 +587,7 @@ mod tests {
     #[test]
     fn outer_dimensioned_vectors() {
         let length_dim = DimensionVector::LENGTH;
-        let force_dim = reify_types::dimension::FORCE;
+        let force_dim = reify_core::dimension::FORCE;
         let a = Value::Tensor(vec![
             Value::Scalar {
                 si_value: 1.0,

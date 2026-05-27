@@ -7,7 +7,7 @@ use reify_syntax::*;
 
 /// Helper: parse source and return the first structure's members and errors.
 fn parse_members(source: &str) -> (Vec<MemberDecl>, Vec<ParseError>) {
-    let module = reify_syntax::parse(source, reify_types::ModulePath::single("forall_test"));
+    let module = reify_syntax::parse(source, reify_core::ModulePath::single("forall_test"));
     let structure = match &module
         .declarations
         .iter()
@@ -155,7 +155,7 @@ structure S {
     );
     assert_ne!(
         decl.content_hash,
-        reify_types::ContentHash(0),
+        reify_core::ContentHash(0),
         "content_hash should be non-zero"
     );
 }
@@ -277,7 +277,7 @@ structure S {
     );
     assert_ne!(
         decl.content_hash,
-        reify_types::ContentHash(0),
+        reify_core::ContentHash(0),
         "content_hash should be non-zero"
     );
 }

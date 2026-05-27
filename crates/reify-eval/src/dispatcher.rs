@@ -46,7 +46,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::time::Duration;
 
-use reify_types::{CapabilityDescriptor, Diagnostic, DiagnosticCode, Operation, ReprKind};
+use reify_core::{Diagnostic, DiagnosticCode};
+use reify_ir::{CapabilityDescriptor, Operation, ReprKind};
 
 use crate::tolerance_budget::per_stage_tolerance;
 
@@ -684,7 +685,7 @@ pub fn dispatch(
 mod tests {
     use std::collections::{BTreeMap, HashSet};
 
-    use reify_types::{CapabilityDescriptor, Operation, ReprKind};
+    use reify_ir::{CapabilityDescriptor, Operation, ReprKind};
 
     use super::{
         DispatchPlan, LONG_CHAIN_DEFAULT_THRESHOLD_MS, LONG_CHAIN_MIN_STAGES,
@@ -855,7 +856,7 @@ mod tests {
     /// (tolerance_promise.rs:557-580).
     #[test]
     fn long_chain_diagnostic_carries_warning_severity_and_code_when_emitted() {
-        use reify_types::{DiagnosticCode, Severity};
+        use reify_core::{DiagnosticCode, Severity};
 
         let plan_three = DispatchPlan {
             kernel: "kernel_d".to_string(),
@@ -1663,7 +1664,7 @@ mod tests {
     /// "failing closed is the failure mode".
     #[test]
     fn no_kernel_chain_diagnostic_carries_error_severity_and_code() {
-        use reify_types::{DiagnosticCode, Severity};
+        use reify_core::{DiagnosticCode, Severity};
 
         let diag = no_kernel_chain_diagnostic(
             Operation::BooleanUnion,
@@ -1742,7 +1743,7 @@ mod tests {
     /// the user's design still evaluates". Consumed by task ο (ID 3443).
     #[test]
     fn kernel_pragma_unsatisfiable_diagnostic_carries_warning_severity_and_code() {
-        use reify_types::{DiagnosticCode, Severity};
+        use reify_core::{DiagnosticCode, Severity};
 
         let diag = kernel_pragma_unsatisfiable_diagnostic(
             "manifold",
@@ -1794,7 +1795,7 @@ mod tests {
     /// engine refuses to start". Consumed by task π (ID 3444).
     #[test]
     fn pinned_kernel_missing_diagnostic_carries_error_severity_and_code() {
-        use reify_types::{DiagnosticCode, Severity};
+        use reify_core::{DiagnosticCode, Severity};
 
         let diag = pinned_kernel_missing_diagnostic("truck");
 
@@ -1836,7 +1837,7 @@ mod tests {
     /// only weakens the determinism contract. Consumed by task π (ID 3444).
     #[test]
     fn unpinned_kernel_loaded_diagnostic_carries_warning_severity_and_code() {
-        use reify_types::{DiagnosticCode, Severity};
+        use reify_core::{DiagnosticCode, Severity};
 
         let diag = unpinned_kernel_loaded_diagnostic("fidget");
 
@@ -1879,7 +1880,7 @@ mod tests {
     /// (ID 3444).
     #[test]
     fn kernel_version_mismatch_diagnostic_carries_error_severity_and_code() {
-        use reify_types::{DiagnosticCode, Severity};
+        use reify_core::{DiagnosticCode, Severity};
 
         let diag = kernel_version_mismatch_diagnostic("manifold", "1.2.0", "1.3.0");
 

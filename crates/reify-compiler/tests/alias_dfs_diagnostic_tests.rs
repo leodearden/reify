@@ -23,7 +23,7 @@
 mod common;
 
 use common::compile_with_stdlib_helper;
-use reify_types::Severity;
+use reify_core::Severity;
 
 /// Shared source for the two Scalar-with-use-site regression tests below.
 ///

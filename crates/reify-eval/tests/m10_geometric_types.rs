@@ -6,7 +6,8 @@
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::parse_and_compile_with_stdlib;
-use reify_types::{ModulePath, Satisfaction, Severity};
+use reify_core::{ModulePath, Severity};
+use reify_ir::Satisfaction;
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(

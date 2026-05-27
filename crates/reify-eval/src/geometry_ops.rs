@@ -5,7 +5,8 @@
 
 use std::collections::HashMap;
 
-use reify_types::{CompiledFunction, Diagnostic, GeometryHandleId, ValueMap};
+use reify_core::Diagnostic;
+use reify_ir::{CompiledFunction, GeometryHandleId, ValueMap};
 
 use crate::eval_ctx_with_meta;
 
@@ -93,12 +94,13 @@ pub(crate) enum CapabilityRoute {
 /// compile error at this site.
 #[allow(dead_code)] // used in #[cfg(test)] and by downstream dispatcher tasks (KGQ-ο/π/ρ)
 pub(crate) fn gate_query_capability(
-    query: &reify_types::GeometryQuery,
-    produced_repr: reify_types::ReprKind,
+    query: &reify_ir::GeometryQuery,
+    produced_repr: reify_ir::ReprKind,
     query_display_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CapabilityRoute {
-    use reify_types::{DiagnosticCode, QueryCapability, ReprKind};
+    use reify_core::DiagnosticCode;
+    use reify_ir::{QueryCapability, ReprKind};
 
     let capability = query.capability_kind();
 
@@ -155,12 +157,12 @@ pub(crate) fn gate_query_capability(
 pub(crate) fn eval_named_arg(
     name: &str,
     kind_label: impl std::fmt::Display,
-    args: &[(String, reify_types::CompiledExpr)],
+    args: &[(String, reify_ir::CompiledExpr)],
     values: &ValueMap,
     functions: &[CompiledFunction],
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<reify_types::Value> {
+) -> Option<reify_ir::Value> {
     match args.iter().find(|(n, _)| n == name) {
         Some((_, expr)) => Some(reify_expr::eval_expr(
             expr,
@@ -189,7 +191,7 @@ pub(crate) fn eval_named_arg(
 pub(crate) fn eval_named_arg_f64(
     name: &str,
     kind_label: impl std::fmt::Display + Copy,
-    args: &[(String, reify_types::CompiledExpr)],
+    args: &[(String, reify_ir::CompiledExpr)],
     values: &ValueMap,
     functions: &[CompiledFunction],
     meta_map: &HashMap<String, HashMap<String, String>>,
@@ -223,7 +225,7 @@ pub(crate) fn eval_named_arg_f64(
 /// and NurbsCurve to avoid duplicating the same eval-and-collect loop.
 pub(crate) fn eval_all_args_to_f64(
     label: &str,
-    args: &[(String, reify_types::CompiledExpr)],
+    args: &[(String, reify_ir::CompiledExpr)],
     values: &ValueMap,
     functions: &[CompiledFunction],
     meta_map: &HashMap<String, HashMap<String, String>>,
@@ -327,7 +329,7 @@ pub(crate) fn compile_geometry_op(
     meta_map: &HashMap<String, HashMap<String, String>>,
     named_steps: &HashMap<String, GeometryHandleId>,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Result<reify_types::GeometryOp, String> {
+) -> Result<reify_ir::GeometryOp, String> {
     use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
 
     // Helper: resolve a GeomRef to a handle.
@@ -378,25 +380,25 @@ pub(crate) fn compile_geometry_op(
 
     match op {
         CompiledGeometryOp::Primitive { kind, args } => {
-            let mut eval_arg = |name: &str| -> Result<reify_types::Value, String> {
+            let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
                 eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
                     .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
             };
 
             match kind {
-                PrimitiveKind::Box => Ok(reify_types::GeometryOp::Box {
+                PrimitiveKind::Box => Ok(reify_ir::GeometryOp::Box {
                     width: eval_arg("width")?,
                     height: eval_arg("height")?,
                     depth: eval_arg("depth")?,
                 }),
-                PrimitiveKind::Cylinder => Ok(reify_types::GeometryOp::Cylinder {
+                PrimitiveKind::Cylinder => Ok(reify_ir::GeometryOp::Cylinder {
                     radius: eval_arg("radius")?,
                     height: eval_arg("height")?,
                 }),
-                PrimitiveKind::Sphere => Ok(reify_types::GeometryOp::Sphere {
+                PrimitiveKind::Sphere => Ok(reify_ir::GeometryOp::Sphere {
                     radius: eval_arg("radius")?,
                 }),
-                PrimitiveKind::Tube => Ok(reify_types::GeometryOp::Tube {
+                PrimitiveKind::Tube => Ok(reify_ir::GeometryOp::Tube {
                     outer_r: eval_arg("outer_r")?,
                     inner_r: eval_arg("inner_r")?,
                     height: eval_arg("height")?,
@@ -412,15 +414,15 @@ pub(crate) fn compile_geometry_op(
             let left_id = resolve_geom_ref(left, step_handles)?;
             let right_id = resolve_geom_ref(right, step_handles)?;
             match op {
-                BooleanOp::Union => Ok(reify_types::GeometryOp::Union {
+                BooleanOp::Union => Ok(reify_ir::GeometryOp::Union {
                     left: left_id,
                     right: right_id,
                 }),
-                BooleanOp::Difference => Ok(reify_types::GeometryOp::Difference {
+                BooleanOp::Difference => Ok(reify_ir::GeometryOp::Difference {
                     left: left_id,
                     right: right_id,
                 }),
-                BooleanOp::Intersection => Ok(reify_types::GeometryOp::Intersection {
+                BooleanOp::Intersection => Ok(reify_ir::GeometryOp::Intersection {
                     left: left_id,
                     right: right_id,
                 }),
@@ -428,16 +430,16 @@ pub(crate) fn compile_geometry_op(
         }
         CompiledGeometryOp::Modify { kind, target, args } => {
             let target_id = resolve_geom_ref(target, step_handles)?;
-            let mut eval_arg = |name: &str| -> Result<reify_types::Value, String> {
+            let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
                 eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
                     .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
             };
             match kind {
-                reify_compiler::ModifyKind::Fillet => Ok(reify_types::GeometryOp::Fillet {
+                reify_compiler::ModifyKind::Fillet => Ok(reify_ir::GeometryOp::Fillet {
                     target: target_id,
                     radius: eval_arg("radius")?,
                 }),
-                reify_compiler::ModifyKind::Chamfer => Ok(reify_types::GeometryOp::Chamfer {
+                reify_compiler::ModifyKind::Chamfer => Ok(reify_ir::GeometryOp::Chamfer {
                     target: target_id,
                     distance: eval_arg("distance")?,
                 }),
@@ -491,7 +493,7 @@ pub(crate) fn compile_geometry_op(
                             }
                         }
                     }
-                    Ok(reify_types::GeometryOp::Shell {
+                    Ok(reify_ir::GeometryOp::Shell {
                         target: target_id,
                         thickness,
                         faces_to_remove,
@@ -509,7 +511,7 @@ pub(crate) fn compile_geometry_op(
                         .copied()
                         .filter(|h| *h != GeometryHandleId::INVALID)
                         .ok_or_else(|| "no valid plane handle available for Draft".to_string())?;
-                    Ok(reify_types::GeometryOp::Draft {
+                    Ok(reify_ir::GeometryOp::Draft {
                         target: target_id,
                         angle,
                         plane: plane_id,
@@ -517,7 +519,7 @@ pub(crate) fn compile_geometry_op(
                 }
                 reify_compiler::ModifyKind::Thicken => {
                     let offset = eval_arg("offset")?;
-                    Ok(reify_types::GeometryOp::Thicken {
+                    Ok(reify_ir::GeometryOp::Thicken {
                         target: target_id,
                         offset,
                     })
@@ -534,14 +536,14 @@ pub(crate) fn compile_geometry_op(
             };
             match kind {
                 reify_compiler::TransformKind::Translate => {
-                    Ok(reify_types::GeometryOp::Translate {
+                    Ok(reify_ir::GeometryOp::Translate {
                         target: target_id,
                         dx: f64_arg("dx")?,
                         dy: f64_arg("dy")?,
                         dz: f64_arg("dz")?,
                     })
                 }
-                reify_compiler::TransformKind::Rotate => Ok(reify_types::GeometryOp::Rotate {
+                reify_compiler::TransformKind::Rotate => Ok(reify_ir::GeometryOp::Rotate {
                     target: target_id,
                     axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
                     // NOTE: bare numeric angle is passed through as-is (radians).
@@ -570,13 +572,13 @@ pub(crate) fn compile_geometry_op(
                         ));
                         return Err("scale factor is zero (degenerate)".into());
                     }
-                    Ok(reify_types::GeometryOp::Scale {
+                    Ok(reify_ir::GeometryOp::Scale {
                         target: target_id,
                         factor,
                     })
                 }
                 reify_compiler::TransformKind::RotateAround => {
-                    Ok(reify_types::GeometryOp::RotateAround {
+                    Ok(reify_ir::GeometryOp::RotateAround {
                         target: target_id,
                         point: [f64_arg("px")?, f64_arg("py")?, f64_arg("pz")?],
                         axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
@@ -619,7 +621,7 @@ pub(crate) fn compile_geometry_op(
                         diagnostics,
                     )
                     .ok_or_else(|| format!("missing required argument 'spacing' for {}", kind))?;
-                    Ok(reify_types::GeometryOp::LinearPattern {
+                    Ok(reify_ir::GeometryOp::LinearPattern {
                         target: target_id,
                         direction,
                         count,
@@ -660,21 +662,21 @@ pub(crate) fn compile_geometry_op(
                     // interpreted as degrees and converted to radians.  Values
                     // that already carry an ANGLE dimension (from `deg`/`rad`
                     // suffixes in source) pass through unchanged.
-                    let mut convert_bare_angle = |deg: f64| -> reify_types::Value {
+                    let mut convert_bare_angle = |deg: f64| -> reify_ir::Value {
                         let rad = deg * std::f64::consts::PI / 180.0;
                         diagnostics.push(Diagnostic::warning(format!(
                             "circular_pattern: bare numeric angle `{}` interpreted as {}°; \
                              use `{}deg` or `{:.6}rad` for explicit units",
                             deg, deg, deg, rad
                         )));
-                        reify_types::Value::angle(rad)
+                        reify_ir::Value::angle(rad)
                     };
                     let angle = match raw_angle {
-                        reify_types::Value::Real(v) => convert_bare_angle(v),
-                        reify_types::Value::Int(i) => convert_bare_angle(i as f64),
+                        reify_ir::Value::Real(v) => convert_bare_angle(v),
+                        reify_ir::Value::Int(i) => convert_bare_angle(i as f64),
                         other => other,
                     };
-                    Ok(reify_types::GeometryOp::CircularPattern {
+                    Ok(reify_ir::GeometryOp::CircularPattern {
                         target: target_id,
                         axis_origin,
                         axis_dir,
@@ -698,7 +700,7 @@ pub(crate) fn compile_geometry_op(
                             format!("missing or non-finite argument '{}' for {}", name, kind)
                         })
                     };
-                    Ok(reify_types::GeometryOp::Mirror {
+                    Ok(reify_ir::GeometryOp::Mirror {
                         target: target_id,
                         plane_origin: [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?],
                         plane_normal: [f64_arg("nx")?, f64_arg("ny")?, f64_arg("nz")?],
@@ -759,7 +761,7 @@ pub(crate) fn compile_geometry_op(
                         diagnostics,
                     )
                     .ok_or_else(|| format!("missing required argument 'spacing2' for {}", kind))?;
-                    Ok(reify_types::GeometryOp::LinearPattern2D {
+                    Ok(reify_ir::GeometryOp::LinearPattern2D {
                         target: target_id,
                         direction1,
                         count1,
@@ -802,7 +804,7 @@ pub(crate) fn compile_geometry_op(
                     if transforms.is_empty() {
                         return Err("ArbitraryPattern has no transforms".into());
                     }
-                    Ok(reify_types::GeometryOp::ArbitraryPattern {
+                    Ok(reify_ir::GeometryOp::ArbitraryPattern {
                         target: target_id,
                         transforms,
                     })
@@ -821,7 +823,7 @@ pub(crate) fn compile_geometry_op(
                         .iter()
                         .map(|r| resolve_geom_ref(r, step_handles))
                         .collect();
-                    Ok(reify_types::GeometryOp::Loft {
+                    Ok(reify_ir::GeometryOp::Loft {
                         profiles: resolved?,
                     })
                 }
@@ -868,7 +870,7 @@ pub(crate) fn compile_geometry_op(
                         }
                         None => return Err("extrude distance is non-numeric".into()),
                     }
-                    Ok(reify_types::GeometryOp::Extrude {
+                    Ok(reify_ir::GeometryOp::Extrude {
                         profile: profile_handle,
                         distance,
                     })
@@ -935,7 +937,7 @@ pub(crate) fn compile_geometry_op(
                         return Err(format!("revolve angle is degenerate: {} rad", angle_rad));
                     }
                     let axis_origin = [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?];
-                    Ok(reify_types::GeometryOp::Revolve {
+                    Ok(reify_ir::GeometryOp::Revolve {
                         profile: profile_handle,
                         axis_origin,
                         axis_dir,
@@ -955,7 +957,7 @@ pub(crate) fn compile_geometry_op(
                             .ok_or_else(|| "no path GeomRef supplied".to_string())?,
                         step_handles,
                     )?;
-                    Ok(reify_types::GeometryOp::Sweep {
+                    Ok(reify_ir::GeometryOp::Sweep {
                         profile: profile_handle,
                         path: path_handle,
                     })
@@ -1009,7 +1011,7 @@ pub(crate) fn compile_geometry_op(
                         }
                         None => return Err("extrude_symmetric distance is non-numeric".into()),
                     }
-                    Ok(reify_types::GeometryOp::ExtrudeSymmetric {
+                    Ok(reify_ir::GeometryOp::ExtrudeSymmetric {
                         profile: profile_handle,
                         distance,
                     })
@@ -1033,7 +1035,7 @@ pub(crate) fn compile_geometry_op(
                             .ok_or_else(|| "no guide GeomRef supplied".to_string())?,
                         step_handles,
                     )?;
-                    Ok(reify_types::GeometryOp::SweepGuided {
+                    Ok(reify_ir::GeometryOp::SweepGuided {
                         profile: profile_handle,
                         path: path_handle,
                         guide: guide_handle,
@@ -1067,7 +1069,7 @@ pub(crate) fn compile_geometry_op(
                         .collect();
                     let resolved_profiles = resolved_profiles?;
                     let resolved_guide = resolve_geom_ref(guide_ref, step_handles)?;
-                    Ok(reify_types::GeometryOp::LoftGuided {
+                    Ok(reify_ir::GeometryOp::LoftGuided {
                         profiles: resolved_profiles,
                         guides: vec![resolved_guide],
                     })
@@ -1092,7 +1094,7 @@ pub(crate) fn compile_geometry_op(
                         diagnostics,
                     )
                     .ok_or_else(|| format!("missing required argument 'radius' for {}", kind))?;
-                    Ok(reify_types::GeometryOp::Pipe {
+                    Ok(reify_ir::GeometryOp::Pipe {
                         path: path_handle,
                         radius,
                     })
@@ -1117,7 +1119,7 @@ pub(crate) fn compile_geometry_op(
                             format!("missing or non-finite argument '{}' for {}", name, kind)
                         })
                     };
-                    Ok(reify_types::GeometryOp::LineSegment {
+                    Ok(reify_ir::GeometryOp::LineSegment {
                         x1: f64_arg("x1")?,
                         y1: f64_arg("y1")?,
                         z1: f64_arg("z1")?,
@@ -1141,7 +1143,7 @@ pub(crate) fn compile_geometry_op(
                             format!("missing or non-finite argument '{}' for {}", name, kind)
                         })
                     };
-                    Ok(reify_types::GeometryOp::Arc {
+                    Ok(reify_ir::GeometryOp::Arc {
                         center: [f64_arg("cx")?, f64_arg("cy")?, f64_arg("cz")?],
                         radius: f64_arg("radius")?,
                         start_angle: f64_arg("start_angle")?,
@@ -1164,7 +1166,7 @@ pub(crate) fn compile_geometry_op(
                             format!("missing or non-finite argument '{}' for {}", name, kind)
                         })
                     };
-                    Ok(reify_types::GeometryOp::Helix {
+                    Ok(reify_ir::GeometryOp::Helix {
                         radius: f64_arg("radius")?,
                         pitch: f64_arg("pitch")?,
                         height: f64_arg("height")?,
@@ -1182,7 +1184,7 @@ pub(crate) fn compile_geometry_op(
                     .ok_or_else(|| "failed to evaluate all interp args to f64".to_string())?;
                     let points: Vec<[f64; 3]> =
                         coords.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
-                    Ok(reify_types::GeometryOp::InterpCurve { points })
+                    Ok(reify_ir::GeometryOp::InterpCurve { points })
                 }
                 CurveKind::BezierCurve => {
                     let coords = eval_all_args_to_f64(
@@ -1196,7 +1198,7 @@ pub(crate) fn compile_geometry_op(
                     .ok_or_else(|| "failed to evaluate all bezier args to f64".to_string())?;
                     let control_points: Vec<[f64; 3]> =
                         coords.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
-                    Ok(reify_types::GeometryOp::BezierCurve { control_points })
+                    Ok(reify_ir::GeometryOp::BezierCurve { control_points })
                 }
                 CurveKind::NurbsCurve => {
                     // For NURBS, all args are passed positionally as c0,c1,...
@@ -1278,7 +1280,7 @@ pub(crate) fn compile_geometry_op(
                             knots.len()
                         ));
                     }
-                    Ok(reify_types::GeometryOp::NurbsCurve {
+                    Ok(reify_ir::GeometryOp::NurbsCurve {
                         control_points,
                         weights,
                         knots,
@@ -1327,12 +1329,12 @@ pub(crate) fn compile_geometry_op(
 //                          unresolvable cell-member name).  Callers fall
 //                          through to the cell's compiled default.
 pub(crate) fn try_eval_conformance_query(
-    expr: &reify_types::CompiledExpr,
+    expr: &reify_ir::CompiledExpr,
     template_trait_bounds: &[String],
     named_steps: &HashMap<String, GeometryHandleId>,
-    kernel: &dyn reify_types::GeometryKernel,
+    kernel: &dyn reify_ir::GeometryKernel,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<reify_types::Value> {
+) -> Option<reify_ir::Value> {
     // Early-return ordering audit (task 2320 step-8): the kernel is the last
     // step. Each guard below either short-circuits via `return None` (for
     // unsupported shapes) or short-circuits via `return Some(Bool(true))`
@@ -1349,7 +1351,7 @@ pub(crate) fn try_eval_conformance_query(
 
     // (1) Must be a FunctionCall — anything else is unsupported.
     let (function, args) = match &expr.kind {
-        reify_types::CompiledExprKind::FunctionCall { function, args } => (function, args),
+        reify_ir::CompiledExprKind::FunctionCall { function, args } => (function, args),
         _ => return None,
     };
 
@@ -1368,7 +1370,7 @@ pub(crate) fn try_eval_conformance_query(
     // user-assertion semantic holds even when the arg is otherwise
     // unresolvable.
     if template_trait_bounds.iter().any(|t| t == marker_trait) {
-        return Some(reify_types::Value::Bool(true));
+        return Some(reify_ir::Value::Bool(true));
     }
 
     // (4) Arg shape: we only resolve `is_watertight(<entity>.<member>)`
@@ -1382,7 +1384,7 @@ pub(crate) fn try_eval_conformance_query(
         return None;
     }
     let cell_id = match &args[0].kind {
-        reify_types::CompiledExprKind::ValueRef(id) => id,
+        reify_ir::CompiledExprKind::ValueRef(id) => id,
         // Defensive fall-through (task 2320 step-14): literals, nested
         // expressions, and any non-`ValueRef` shape bail to `None` *before*
         // any `named_steps` lookup or `kernel.query(...)` round-trip — so
@@ -1400,28 +1402,28 @@ pub(crate) fn try_eval_conformance_query(
 
     // (6) All guards passed: build the matching kernel query and dispatch.
     let query = match function.name.as_str() {
-        "is_watertight" => reify_types::GeometryQuery::IsWatertight(handle),
-        "is_manifold" => reify_types::GeometryQuery::IsManifold(handle),
-        "is_orientable" => reify_types::GeometryQuery::IsOrientable(handle),
+        "is_watertight" => reify_ir::GeometryQuery::IsWatertight(handle),
+        "is_manifold" => reify_ir::GeometryQuery::IsManifold(handle),
+        "is_orientable" => reify_ir::GeometryQuery::IsOrientable(handle),
         // Unreachable — the earlier match already filtered to these three names.
         _ => return None,
     };
 
     match kernel.query(&query) {
-        Ok(reify_types::Value::Bool(b)) => Some(reify_types::Value::Bool(b)),
+        Ok(reify_ir::Value::Bool(b)) => Some(reify_ir::Value::Bool(b)),
         Ok(other) => {
             diagnostics.push(Diagnostic::warning(format!(
                 "{}({}) kernel returned non-Bool value {:?}; treating as undefined",
                 function.name, cell_id.member, other
             )));
-            Some(reify_types::Value::Undef)
+            Some(reify_ir::Value::Undef)
         }
         Err(err) => {
             diagnostics.push(Diagnostic::warning(format!(
                 "{}({}) kernel query failed: {}",
                 function.name, cell_id.member, err
             )));
-            Some(reify_types::Value::Undef)
+            Some(reify_ir::Value::Undef)
         }
     }
 }
@@ -1470,15 +1472,15 @@ pub(crate) fn try_eval_conformance_query(
 //                            snapshot in `values`). Callers fall through to
 //                            the cell's compiled default (`Value::Undef`).
 pub(crate) fn try_eval_kinematic_query(
-    expr: &reify_types::CompiledExpr,
+    expr: &reify_ir::CompiledExpr,
     named_steps: &HashMap<String, GeometryHandleId>,
-    values: &reify_types::ValueMap,
-    kernel: &dyn reify_types::GeometryKernel,
+    values: &reify_ir::ValueMap,
+    kernel: &dyn reify_ir::GeometryKernel,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<reify_types::Value> {
+) -> Option<reify_ir::Value> {
     // (1) Must be a FunctionCall — anything else is unsupported.
     let (function, args) = match &expr.kind {
-        reify_types::CompiledExprKind::FunctionCall { function, args } => (function, args),
+        reify_ir::CompiledExprKind::FunctionCall { function, args } => (function, args),
         _ => return None,
     };
 
@@ -1501,7 +1503,7 @@ pub(crate) fn try_eval_kinematic_query(
     // stays at its compiled default (`Value::Undef`) — mirrors the
     // `try_eval_conformance_query` arg-shape contract.
     let snapshot_cell = match &args[0].kind {
-        reify_types::CompiledExprKind::ValueRef(id) => id,
+        reify_ir::CompiledExprKind::ValueRef(id) => id,
         _ => return None,
     };
     let snapshot_value = values.get(snapshot_cell)?;
@@ -1525,7 +1527,7 @@ pub(crate) fn try_eval_kinematic_query(
     // falling back to the compiled default.
     let bodies = match extract_snapshot_bodies(snapshot_value) {
         Some(b) => b,
-        None => return Some(reify_types::Value::Undef),
+        None => return Some(reify_ir::Value::Undef),
     };
 
     // (6) Build (id → handle) by resolving each body's `solid` String against
@@ -1536,15 +1538,15 @@ pub(crate) fn try_eval_kinematic_query(
     let mut id_to_handle: Vec<(i64, GeometryHandleId)> = Vec::with_capacity(bodies.len());
     for body in bodies {
         let body_map = match body {
-            reify_types::Value::Map(m) => m,
-            _ => return Some(reify_types::Value::Undef),
+            reify_ir::Value::Map(m) => m,
+            _ => return Some(reify_ir::Value::Undef),
         };
-        let id = match body_map.get(&reify_types::Value::String("id".to_string())) {
-            Some(reify_types::Value::Int(n)) => *n,
-            _ => return Some(reify_types::Value::Undef),
+        let id = match body_map.get(&reify_ir::Value::String("id".to_string())) {
+            Some(reify_ir::Value::Int(n)) => *n,
+            _ => return Some(reify_ir::Value::Undef),
         };
-        let solid_name = match body_map.get(&reify_types::Value::String("solid".to_string())) {
-            Some(reify_types::Value::String(s)) => s,
+        let solid_name = match body_map.get(&reify_ir::Value::String("solid".to_string())) {
+            Some(reify_ir::Value::String(s)) => s,
             // Non-string `solid` (e.g. a stale `Value::Undef` from a body whose
             // source-let was a geometry call) is not resolvable here — skip the
             // body silently rather than collapsing the entire query to Undef.
@@ -1573,11 +1575,11 @@ pub(crate) fn try_eval_kinematic_query(
                         // Kernel error already emitted a Warning diagnostic
                         // — collapse the whole query to Undef so the cell
                         // exposes the failure rather than a partial list.
-                        None => return Some(reify_types::Value::Undef),
+                        None => return Some(reify_ir::Value::Undef),
                     }
                 }
             }
-            Some(reify_types::Value::List(pairs))
+            Some(reify_ir::Value::List(pairs))
         }
         KinematicHelper::InterferesWith => {
             let (id_a, id_b) = body_id_args.expect("3-arg form populated body_id_args");
@@ -1585,19 +1587,19 @@ pub(crate) fn try_eval_kinematic_query(
             // with itself is not reported". Returning Bool(false) here is a
             // defensive fallback — typical user-code uses distinct ids.
             if id_a == id_b {
-                return Some(reify_types::Value::Bool(false));
+                return Some(reify_ir::Value::Bool(false));
             }
             let handle_a = match handle_for_id(&id_to_handle, id_a) {
                 Some(h) => h,
-                None => return Some(reify_types::Value::Undef),
+                None => return Some(reify_ir::Value::Undef),
             };
             let handle_b = match handle_for_id(&id_to_handle, id_b) {
                 Some(h) => h,
-                None => return Some(reify_types::Value::Undef),
+                None => return Some(reify_ir::Value::Undef),
             };
             match kernel_distance(kernel, handle_a, handle_b, diagnostics, &function.name) {
-                Some(d) => Some(reify_types::Value::Bool(d <= 0.0)),
-                None => Some(reify_types::Value::Undef),
+                Some(d) => Some(reify_ir::Value::Bool(d <= 0.0)),
+                None => Some(reify_ir::Value::Undef),
             }
         }
         KinematicHelper::MinClearance => {
@@ -1606,19 +1608,19 @@ pub(crate) fn try_eval_kinematic_query(
             // a degenerate input. Returning Undef pushes the user toward
             // distinct ids; pinned by the smoke-test self-pair arm.
             if id_a == id_b {
-                return Some(reify_types::Value::Undef);
+                return Some(reify_ir::Value::Undef);
             }
             let handle_a = match handle_for_id(&id_to_handle, id_a) {
                 Some(h) => h,
-                None => return Some(reify_types::Value::Undef),
+                None => return Some(reify_ir::Value::Undef),
             };
             let handle_b = match handle_for_id(&id_to_handle, id_b) {
                 Some(h) => h,
-                None => return Some(reify_types::Value::Undef),
+                None => return Some(reify_ir::Value::Undef),
             };
             match kernel_distance(kernel, handle_a, handle_b, diagnostics, &function.name) {
-                Some(d) => Some(reify_types::Value::length(d)),
-                None => Some(reify_types::Value::Undef),
+                Some(d) => Some(reify_ir::Value::length(d)),
+                None => Some(reify_ir::Value::Undef),
             }
         }
     }
@@ -1645,15 +1647,15 @@ impl KinematicHelper {
 /// payload — caller maps this to the "unsupported arg shape → fall through"
 /// behaviour of `try_eval_kinematic_query`.
 fn resolve_int_value_ref(
-    expr: &reify_types::CompiledExpr,
-    values: &reify_types::ValueMap,
+    expr: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
 ) -> Option<i64> {
     let id = match &expr.kind {
-        reify_types::CompiledExprKind::ValueRef(id) => id,
+        reify_ir::CompiledExprKind::ValueRef(id) => id,
         _ => return None,
     };
     match values.get(id) {
-        Some(reify_types::Value::Int(n)) => Some(*n),
+        Some(reify_ir::Value::Int(n)) => Some(*n),
         _ => None,
     }
 }
@@ -1661,18 +1663,18 @@ fn resolve_int_value_ref(
 /// Extract the `bodies` list from a Snapshot Map, validating
 /// `kind="snapshot"`. Mirrors `reify_stdlib::snapshot::snapshot_bodies` —
 /// duplicated here because the stdlib helper is module-private.
-fn extract_snapshot_bodies(snap: &reify_types::Value) -> Option<Vec<reify_types::Value>> {
+fn extract_snapshot_bodies(snap: &reify_ir::Value) -> Option<Vec<reify_ir::Value>> {
     let map = match snap {
-        reify_types::Value::Map(m) => m,
+        reify_ir::Value::Map(m) => m,
         _ => return None,
     };
-    if map.get(&reify_types::Value::String("kind".to_string()))
-        != Some(&reify_types::Value::String("snapshot".to_string()))
+    if map.get(&reify_ir::Value::String("kind".to_string()))
+        != Some(&reify_ir::Value::String("snapshot".to_string()))
     {
         return None;
     }
-    match map.get(&reify_types::Value::String("bodies".to_string())) {
-        Some(reify_types::Value::List(b)) => Some(b.clone()),
+    match map.get(&reify_ir::Value::String("bodies".to_string())) {
+        Some(reify_ir::Value::List(b)) => Some(b.clone()),
         _ => None,
     }
 }
@@ -1684,17 +1686,17 @@ fn handle_for_id(pairs: &[(i64, GeometryHandleId)], id: i64) -> Option<GeometryH
 /// Build the `{ "a": Int, "b": Int }` pair Map returned by `interferes`.
 /// Alphabetical key order matches `BTreeMap` iteration so that List
 /// equality used in the smoke tests is stable across iterations.
-fn make_pair_map(id_a: i64, id_b: i64) -> reify_types::Value {
+fn make_pair_map(id_a: i64, id_b: i64) -> reify_ir::Value {
     let mut m = std::collections::BTreeMap::new();
     m.insert(
-        reify_types::Value::String("a".to_string()),
-        reify_types::Value::Int(id_a),
+        reify_ir::Value::String("a".to_string()),
+        reify_ir::Value::Int(id_a),
     );
     m.insert(
-        reify_types::Value::String("b".to_string()),
-        reify_types::Value::Int(id_b),
+        reify_ir::Value::String("b".to_string()),
+        reify_ir::Value::Int(id_b),
     );
-    reify_types::Value::Map(m)
+    reify_ir::Value::Map(m)
 }
 
 /// Issue a `GeometryQuery::Distance` against the kernel and reduce to a raw
@@ -1702,21 +1704,21 @@ fn make_pair_map(id_a: i64, id_b: i64) -> reify_types::Value {
 /// error or when the kernel returns a non-numeric `Value` — caller maps
 /// `None` to a defensive `Value::Undef`.
 fn kernel_distance(
-    kernel: &dyn reify_types::GeometryKernel,
+    kernel: &dyn reify_ir::GeometryKernel,
     from: GeometryHandleId,
     to: GeometryHandleId,
     diagnostics: &mut Vec<Diagnostic>,
     helper_name: &str,
 ) -> Option<f64> {
-    let query = reify_types::GeometryQuery::Distance { from, to };
+    let query = reify_ir::GeometryQuery::Distance { from, to };
     match kernel.query(&query) {
-        Ok(reify_types::Value::Real(d)) => Some(d),
+        Ok(reify_ir::Value::Real(d)) => Some(d),
         // Some kernels (e.g. test-support `MockGeometryKernel::with_distance_result`)
         // store the value as a length-dimensioned `Scalar` instead of a raw
         // `Real`. Read the SI value either way so the dispatch stays kernel-
         // agnostic; the dimension itself is unused (the helpers' return-side
         // dimension is fixed by the helper, not the kernel reply).
-        Ok(reify_types::Value::Scalar { si_value, .. }) => Some(si_value),
+        Ok(reify_ir::Value::Scalar { si_value, .. }) => Some(si_value),
         Ok(other) => {
             diagnostics.push(Diagnostic::warning(format!(
                 "{} kernel Distance({:?}, {:?}) returned non-numeric value {:?}; treating as undefined",
@@ -1798,15 +1800,15 @@ fn kernel_distance(
 //                          unsupported. Callers fall through to the cell's
 //                          compiled default.
 pub(crate) fn try_eval_topology_selector(
-    expr: &reify_types::CompiledExpr,
+    expr: &reify_ir::CompiledExpr,
     named_steps: &HashMap<String, GeometryHandleId>,
-    values: &reify_types::ValueMap,
-    kernel: &mut dyn reify_types::GeometryKernel,
+    values: &reify_ir::ValueMap,
+    kernel: &mut dyn reify_ir::GeometryKernel,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<reify_types::Value> {
+) -> Option<reify_ir::Value> {
     // (1) Must be a FunctionCall — anything else is unsupported.
     let (function, args) = match &expr.kind {
-        reify_types::CompiledExprKind::FunctionCall { function, args } => (function, args),
+        reify_ir::CompiledExprKind::FunctionCall { function, args } => (function, args),
         _ => return None,
     };
 
@@ -1847,7 +1849,7 @@ pub(crate) fn try_eval_topology_selector(
 
             match helper {
                 TopologySelectorHelper::ClosestPoint => {
-                    let query = reify_types::GeometryQuery::ClosestPointOnShape {
+                    let query = reify_ir::GeometryQuery::ClosestPointOnShape {
                         handle,
                         px: point[0],
                         py: point[1],
@@ -1864,12 +1866,12 @@ pub(crate) fn try_eval_topology_selector(
                     // (`crates/reify-kernel-occt/src/lib.rs`).  A future explicit-
                     // tolerance overload `is_on(point, geometry, tol)` will plumb the
                     // user-supplied tolerance through here.
-                    let query = reify_types::GeometryQuery::PointOnShape {
+                    let query = reify_ir::GeometryQuery::PointOnShape {
                         handle,
                         px: point[0],
                         py: point[1],
                         pz: point[2],
-                        tolerance: reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
+                        tolerance: reify_ir::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
                     };
                     dispatch_point_on_shape(kernel, &query, &function.name, diagnostics)
                 }
@@ -1899,7 +1901,7 @@ pub(crate) fn try_eval_topology_selector(
             // Both args: geometry ValueRefs → named_steps map → GeometryHandleId.
             let face_a = resolve_geometry_handle_arg(&args[0], named_steps)?;
             let face_b = resolve_geometry_handle_arg(&args[1], named_steps)?;
-            let query = reify_types::GeometryQuery::SurfaceAngle { face_a, face_b };
+            let query = reify_ir::GeometryQuery::SurfaceAngle { face_a, face_b };
             dispatch_surface_angle(kernel, &query, &function.name, diagnostics)
         }
         TopologySelectorHelper::Angle => {
@@ -1924,7 +1926,7 @@ pub(crate) fn try_eval_topology_selector(
                     "angle: degenerate input — zero-length or non-finite vector \
                      (|a|={na}, |b|={nb}); cell left at Undef"
                 )));
-                return Some(reify_types::Value::Undef);
+                return Some(reify_ir::Value::Undef);
             }
             let cos_theta = (dot / (na * nb)).clamp(-1.0, 1.0);
             // Secondary degenerate guard: catch NaN from subnormal magnitude
@@ -1938,10 +1940,10 @@ pub(crate) fn try_eval_topology_selector(
                      (|a|={na}, |b|={nb}, dot={dot}); \
                      possible subnormal magnitude underflow; cell left at Undef"
                 )));
-                return Some(reify_types::Value::Undef);
+                return Some(reify_ir::Value::Undef);
             }
             let theta = cos_theta.acos();
-            Some(reify_types::Value::angle(theta))
+            Some(reify_ir::Value::angle(theta))
         }
         TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => {
             // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
@@ -1977,7 +1979,7 @@ pub(crate) fn try_eval_topology_selector(
             let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
             // args[1]: density ValueRef → values map → Real / dimensionless Scalar.
             let density = resolve_real_scalar_arg(&args[1], values)?;
-            let query = reify_types::GeometryQuery::CenterOfMass { handle, density };
+            let query = reify_ir::GeometryQuery::CenterOfMass { handle, density };
             dispatch_point3_length_reply(kernel, &query, &function.name, diagnostics)
         }
         TopologySelectorHelper::MomentOfInertia => {
@@ -1985,7 +1987,7 @@ pub(crate) fn try_eval_topology_selector(
             let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
             // args[1]: density ValueRef → values map → Real / dimensionless Scalar.
             let density = resolve_real_scalar_arg(&args[1], values)?;
-            let query = reify_types::GeometryQuery::InertiaTensor { handle, density };
+            let query = reify_ir::GeometryQuery::InertiaTensor { handle, density };
             dispatch_inertia_tensor(kernel, &query, &function.name, diagnostics)
         }
         TopologySelectorHelper::EdgesByLength => {
@@ -1993,7 +1995,7 @@ pub(crate) fn try_eval_topology_selector(
             let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
             // args[1]: Range<Length> ValueRef/Literal → (lo_m, hi_m).
             let (lo, hi) =
-                resolve_range_dim_arg(&args[1], values, reify_types::DimensionVector::LENGTH)?;
+                resolve_range_dim_arg(&args[1], values, reify_core::DimensionVector::LENGTH)?;
             dispatch_filtered_list(
                 crate::topology_selectors::edges_by_length(kernel, handle, lo, hi),
                 &function.name,
@@ -2006,7 +2008,7 @@ pub(crate) fn try_eval_topology_selector(
             // args[1]: Range<Area> ValueRef/Literal → (lo_m2, hi_m2). `mm*mm`
             // canonicalises to AREA (LENGTH² == AREA per dimension algebra).
             let (lo, hi) =
-                resolve_range_dim_arg(&args[1], values, reify_types::DimensionVector::AREA)?;
+                resolve_range_dim_arg(&args[1], values, reify_core::DimensionVector::AREA)?;
             dispatch_filtered_list(
                 crate::topology_selectors::faces_by_area(kernel, handle, lo, hi),
                 &function.name,
@@ -2100,12 +2102,12 @@ pub(crate) fn try_eval_topology_selector(
 ///      failure mode — see design-doc §4.3 for the rationale).
 ///   6. Return `Value::List(Vec<Value::Int>)` of edge handle ids.
 fn dispatch_shared_edges(
-    kernel: &mut dyn reify_types::GeometryKernel,
+    kernel: &mut dyn reify_ir::GeometryKernel,
     face_a: GeometryHandleId,
     face_b: GeometryHandleId,
     helper_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<reify_types::Value> {
+) -> Option<reify_ir::Value> {
     // (1) Derive parents via OwnerBody.
     let parent_a = match crate::selector_vocabulary_v2::owner_body_of(kernel, face_a) {
         Ok(p) => p,
@@ -2114,7 +2116,7 @@ fn dispatch_shared_edges(
                 "{} OwnerBody({:?}) failed: {}",
                 helper_name, face_a, err
             )));
-            return Some(reify_types::Value::Undef);
+            return Some(reify_ir::Value::Undef);
         }
     };
     let parent_b = match crate::selector_vocabulary_v2::owner_body_of(kernel, face_b) {
@@ -2124,7 +2126,7 @@ fn dispatch_shared_edges(
                 "{} OwnerBody({:?}) failed: {}",
                 helper_name, face_b, err
             )));
-            return Some(reify_types::Value::Undef);
+            return Some(reify_ir::Value::Undef);
         }
     };
 
@@ -2135,7 +2137,7 @@ fn dispatch_shared_edges(
             "{}: faces have different parent solids ({:?} vs {:?}); returning empty list",
             helper_name, parent_a, parent_b
         )));
-        return Some(reify_types::Value::List(Vec::new()));
+        return Some(reify_ir::Value::List(Vec::new()));
     }
 
     // (3) Recover 0-based face indices via extract_faces(parent).
@@ -2146,7 +2148,7 @@ fn dispatch_shared_edges(
                 "{} extract_faces({:?}) failed: {}",
                 helper_name, parent_a, err
             )));
-            return Some(reify_types::Value::Undef);
+            return Some(reify_ir::Value::Undef);
         }
     };
     let idx_a = match faces.iter().position(|h| *h == face_a) {
@@ -2156,7 +2158,7 @@ fn dispatch_shared_edges(
                 "{}: face_a {:?} is not a child of parent {:?} (was extract_faces called?)",
                 helper_name, face_a, parent_a
             )));
-            return Some(reify_types::Value::Undef);
+            return Some(reify_ir::Value::Undef);
         }
     };
     let idx_b = match faces.iter().position(|h| *h == face_b) {
@@ -2166,12 +2168,12 @@ fn dispatch_shared_edges(
                 "{}: face_b {:?} is not a child of parent {:?} (was extract_faces called?)",
                 helper_name, face_b, parent_a
             )));
-            return Some(reify_types::Value::Undef);
+            return Some(reify_ir::Value::Undef);
         }
     };
 
     // (4) Dispatch SharedEdges query.
-    let reply = match kernel.query(&reify_types::GeometryQuery::SharedEdges {
+    let reply = match kernel.query(&reify_ir::GeometryQuery::SharedEdges {
         shape: parent_a,
         face_a: idx_a,
         face_b: idx_b,
@@ -2182,17 +2184,17 @@ fn dispatch_shared_edges(
                 "{} SharedEdges query failed: {}",
                 helper_name, err
             )));
-            return Some(reify_types::Value::Undef);
+            return Some(reify_ir::Value::Undef);
         }
     };
     let int_indices = match reply {
-        reify_types::Value::List(items) => items,
+        reify_ir::Value::List(items) => items,
         other => {
             diagnostics.push(Diagnostic::warning(format!(
                 "{}: expected Value::List from SharedEdges, got {:?}",
                 helper_name, other
             )));
-            return Some(reify_types::Value::Undef);
+            return Some(reify_ir::Value::Undef);
         }
     };
 
@@ -2204,19 +2206,19 @@ fn dispatch_shared_edges(
                 "{} extract_edges({:?}) failed: {}",
                 helper_name, parent_a, err
             )));
-            return Some(reify_types::Value::Undef);
+            return Some(reify_ir::Value::Undef);
         }
     };
     let mut out: Vec<GeometryHandleId> = Vec::with_capacity(int_indices.len());
     for item in int_indices {
         let idx = match item {
-            reify_types::Value::Int(i) => i,
+            reify_ir::Value::Int(i) => i,
             other => {
                 diagnostics.push(Diagnostic::warning(format!(
                     "{}: expected Value::Int element in SharedEdges list, got {:?}",
                     helper_name, other
                 )));
-                return Some(reify_types::Value::Undef);
+                return Some(reify_ir::Value::Undef);
             }
         };
         let usize_idx: usize = match idx.try_into() {
@@ -2226,7 +2228,7 @@ fn dispatch_shared_edges(
                     "{}: SharedEdges returned negative index {}",
                     helper_name, idx
                 )));
-                return Some(reify_types::Value::Undef);
+                return Some(reify_ir::Value::Undef);
             }
         };
         // Defensive: silently skip out-of-range indices rather than failing
@@ -2246,10 +2248,10 @@ fn dispatch_shared_edges(
 /// Int handle ids; `Err` → Warning diagnostic + `Value::Undef`. Shared by all
 /// `topology_selectors::*` delegating arms (task 3560).
 fn dispatch_filtered_list(
-    result: Result<Vec<GeometryHandleId>, reify_types::QueryError>,
+    result: Result<Vec<GeometryHandleId>, reify_ir::QueryError>,
     helper_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<reify_types::Value> {
+) -> Option<reify_ir::Value> {
     match result {
         Ok(handles) => Some(handle_list_value(handles)),
         Err(err) => {
@@ -2257,7 +2259,7 @@ fn dispatch_filtered_list(
                 "{} kernel query failed: {}",
                 helper_name, err
             )));
-            Some(reify_types::Value::Undef)
+            Some(reify_ir::Value::Undef)
         }
     }
 }
@@ -2265,11 +2267,11 @@ fn dispatch_filtered_list(
 /// Wrap a `Vec<GeometryHandleId>` as `Value::List(Vec<Value::Int>)` whose
 /// elements are the raw u64 handle ids cast to `i64`. Shared by all
 /// list-returning topology selectors (task 3560).
-fn handle_list_value(handles: Vec<GeometryHandleId>) -> reify_types::Value {
-    reify_types::Value::List(
+fn handle_list_value(handles: Vec<GeometryHandleId>) -> reify_ir::Value {
+    reify_ir::Value::List(
         handles
             .into_iter()
-            .map(|h| reify_types::Value::Int(h.0 as i64))
+            .map(|h| reify_ir::Value::Int(h.0 as i64))
             .collect(),
     )
 }
@@ -2369,12 +2371,12 @@ enum ExtractKind {
 /// Sibling to `dispatch_point3_length_reply` / `dispatch_point_on_shape` /
 /// `dispatch_surface_angle` — same defensive-downgrade contract.
 fn dispatch_extract_subshapes(
-    kernel: &mut dyn reify_types::GeometryKernel,
+    kernel: &mut dyn reify_ir::GeometryKernel,
     handle: GeometryHandleId,
     kind: ExtractKind,
     helper_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<reify_types::Value> {
+) -> Option<reify_ir::Value> {
     let result = match kind {
         ExtractKind::Edges => kernel.extract_edges(handle),
         ExtractKind::Faces => kernel.extract_faces(handle),
@@ -2386,7 +2388,7 @@ fn dispatch_extract_subshapes(
                 "{}({:?}): kernel error: {}",
                 helper_name, handle, err
             )));
-            Some(reify_types::Value::Undef)
+            Some(reify_ir::Value::Undef)
         }
     }
 }
@@ -2397,16 +2399,16 @@ fn dispatch_extract_subshapes(
 /// payload, wrong length, or non-scalar component — caller maps to the
 /// "unsupported arg shape → fall through" behaviour.
 fn resolve_point3_length_arg(
-    expr: &reify_types::CompiledExpr,
-    values: &reify_types::ValueMap,
+    expr: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
 ) -> Option<[f64; 3]> {
     let id = match &expr.kind {
-        reify_types::CompiledExprKind::ValueRef(id) => id,
+        reify_ir::CompiledExprKind::ValueRef(id) => id,
         _ => return None,
     };
     let value = values.get(id)?;
     let components = match value {
-        reify_types::Value::Point(items) => items,
+        reify_ir::Value::Point(items) => items,
         _ => return None,
     };
     if components.len() != 3 {
@@ -2422,19 +2424,19 @@ fn resolve_point3_length_arg(
             // be reinterpreted as metres at the kernel boundary — debug-assert
             // to surface the violation in tests; in release we still fall
             // through to `None` rather than feeding the kernel garbage.
-            reify_types::Value::Scalar {
+            reify_ir::Value::Scalar {
                 si_value,
                 dimension,
             } => {
                 debug_assert!(
-                    *dimension == reify_types::DimensionVector::LENGTH,
+                    *dimension == reify_core::DimensionVector::LENGTH,
                     "resolve_point3_length_arg: expected LENGTH-dimensioned Scalar, \
                      got dimension {:?} (si_value={}); cell type is Point<Length> per \
                      compile-time wiring in expr.rs",
                     dimension,
                     si_value
                 );
-                if *dimension != reify_types::DimensionVector::LENGTH {
+                if *dimension != reify_core::DimensionVector::LENGTH {
                     return None;
                 }
                 out[i] = *si_value;
@@ -2453,19 +2455,19 @@ fn resolve_point3_length_arg(
 /// or a dimensioned Scalar — caller maps to the "unsupported arg shape →
 /// fall through" behaviour.
 fn resolve_real_scalar_arg(
-    expr: &reify_types::CompiledExpr,
-    values: &reify_types::ValueMap,
+    expr: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
 ) -> Option<f64> {
     let id = match &expr.kind {
-        reify_types::CompiledExprKind::ValueRef(id) => id,
+        reify_ir::CompiledExprKind::ValueRef(id) => id,
         _ => return None,
     };
     match values.get(id)? {
-        reify_types::Value::Real(v) => Some(*v),
-        reify_types::Value::Scalar {
+        reify_ir::Value::Real(v) => Some(*v),
+        reify_ir::Value::Scalar {
             si_value,
             dimension,
-        } if *dimension == reify_types::DimensionVector::DIMENSIONLESS => Some(*si_value),
+        } if *dimension == reify_core::DimensionVector::DIMENSIONLESS => Some(*si_value),
         _ => None,
     }
 }
@@ -2474,13 +2476,13 @@ fn resolve_real_scalar_arg(
 /// `Value::Scalar`. Returns `None` for any dimensioned Scalar or non-numeric
 /// payload — the direction/axis args of `faces_by_normal` / `edges_parallel_to`
 /// are pure unit-vector numerics in v0.1.
-fn vec3_component_si(value: &reify_types::Value) -> Option<f64> {
+fn vec3_component_si(value: &reify_ir::Value) -> Option<f64> {
     match value {
-        reify_types::Value::Real(v) => Some(*v),
-        reify_types::Value::Scalar {
+        reify_ir::Value::Real(v) => Some(*v),
+        reify_ir::Value::Scalar {
             si_value,
             dimension,
-        } if *dimension == reify_types::DimensionVector::DIMENSIONLESS => Some(*si_value),
+        } if *dimension == reify_core::DimensionVector::DIMENSIONLESS => Some(*si_value),
         _ => None,
     }
 }
@@ -2495,12 +2497,12 @@ fn vec3_component_si(value: &reify_types::Value) -> Option<f64> {
 /// through (the dispatcher has no recursive eval context); test fixtures
 /// let-bind the direction so it lands in `values` as a `Value::Vector`.
 fn resolve_vec3_arg(
-    expr: &reify_types::CompiledExpr,
-    values: &reify_types::ValueMap,
+    expr: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
 ) -> Option<[f64; 3]> {
-    let from_vector_value = |v: &reify_types::Value| -> Option<[f64; 3]> {
+    let from_vector_value = |v: &reify_ir::Value| -> Option<[f64; 3]> {
         match v {
-            reify_types::Value::Vector(items) if items.len() == 3 => Some([
+            reify_ir::Value::Vector(items) if items.len() == 3 => Some([
                 vec3_component_si(&items[0])?,
                 vec3_component_si(&items[1])?,
                 vec3_component_si(&items[2])?,
@@ -2509,8 +2511,8 @@ fn resolve_vec3_arg(
         }
     };
     match &expr.kind {
-        reify_types::CompiledExprKind::Literal(v) => from_vector_value(v),
-        reify_types::CompiledExprKind::ValueRef(id) => from_vector_value(values.get(id)?),
+        reify_ir::CompiledExprKind::Literal(v) => from_vector_value(v),
+        reify_ir::CompiledExprKind::ValueRef(id) => from_vector_value(values.get(id)?),
         _ => None,
     }
 }
@@ -2523,10 +2525,10 @@ fn resolve_vec3_arg(
 /// `resolve_scalar_bound_expr` but pins the ANGLE dimension for the angular-
 /// tolerance args of `faces_by_normal` / `edges_parallel_to`.
 fn resolve_angle_scalar_arg(
-    expr: &reify_types::CompiledExpr,
-    values: &reify_types::ValueMap,
+    expr: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
 ) -> Option<f64> {
-    resolve_scalar_bound_expr(expr, values, reify_types::DimensionVector::ANGLE)
+    resolve_scalar_bound_expr(expr, values, reify_core::DimensionVector::ANGLE)
 }
 
 /// Resolve a LENGTH-dimensioned scalar arg to its SI value (metres).
@@ -2537,17 +2539,17 @@ fn resolve_angle_scalar_arg(
 /// `resolve_angle_scalar_arg` but pins the LENGTH dimension for the
 /// z-plane / tolerance args of `edges_at_height`.
 fn resolve_length_scalar_arg(
-    expr: &reify_types::CompiledExpr,
-    values: &reify_types::ValueMap,
+    expr: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
 ) -> Option<f64> {
-    resolve_scalar_bound_expr(expr, values, reify_types::DimensionVector::LENGTH)
+    resolve_scalar_bound_expr(expr, values, reify_core::DimensionVector::LENGTH)
 }
 
 /// Read a `Value::Scalar` whose `dimension` is `expected_dim` and return its
 /// SI value. `None` for any other shape (wrong dimension, non-Scalar).
-fn scalar_si_with_dim(value: &reify_types::Value, expected_dim: reify_types::DimensionVector) -> Option<f64> {
+fn scalar_si_with_dim(value: &reify_ir::Value, expected_dim: reify_core::DimensionVector) -> Option<f64> {
     match value {
-        reify_types::Value::Scalar {
+        reify_ir::Value::Scalar {
             si_value,
             dimension,
         } if *dimension == expected_dim => Some(*si_value),
@@ -2559,13 +2561,13 @@ fn scalar_si_with_dim(value: &reify_types::Value, expected_dim: reify_types::Dim
 /// `RangeConstructor`) to its SI value, accepting a `Literal(Value::Scalar)`
 /// or a `ValueRef → Value::Scalar`, both dimensioned `expected_dim`.
 fn resolve_scalar_bound_expr(
-    expr: &reify_types::CompiledExpr,
-    values: &reify_types::ValueMap,
-    expected_dim: reify_types::DimensionVector,
+    expr: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
+    expected_dim: reify_core::DimensionVector,
 ) -> Option<f64> {
     match &expr.kind {
-        reify_types::CompiledExprKind::Literal(v) => scalar_si_with_dim(v, expected_dim),
-        reify_types::CompiledExprKind::ValueRef(id) => {
+        reify_ir::CompiledExprKind::Literal(v) => scalar_si_with_dim(v, expected_dim),
+        reify_ir::CompiledExprKind::ValueRef(id) => {
             scalar_si_with_dim(values.get(id)?, expected_dim)
         }
         _ => None,
@@ -2588,14 +2590,14 @@ fn resolve_scalar_bound_expr(
 /// dimensioned `expected_dim`. Returns `None` for any other shape — caller
 /// maps to the "unsupported arg shape → fall through" behaviour.
 fn resolve_range_dim_arg(
-    expr: &reify_types::CompiledExpr,
-    values: &reify_types::ValueMap,
-    expected_dim: reify_types::DimensionVector,
+    expr: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
+    expected_dim: reify_core::DimensionVector,
 ) -> Option<(f64, f64)> {
     // Range-from-Value: shared by the Literal and ValueRef arms.
-    let from_range_value = |v: &reify_types::Value| -> Option<(f64, f64)> {
+    let from_range_value = |v: &reify_ir::Value| -> Option<(f64, f64)> {
         match v {
-            reify_types::Value::Range {
+            reify_ir::Value::Range {
                 lower: Some(lo),
                 upper: Some(hi),
                 ..
@@ -2607,9 +2609,9 @@ fn resolve_range_dim_arg(
         }
     };
     match &expr.kind {
-        reify_types::CompiledExprKind::Literal(v) => from_range_value(v),
-        reify_types::CompiledExprKind::ValueRef(id) => from_range_value(values.get(id)?),
-        reify_types::CompiledExprKind::RangeConstructor {
+        reify_ir::CompiledExprKind::Literal(v) => from_range_value(v),
+        reify_ir::CompiledExprKind::ValueRef(id) => from_range_value(values.get(id)?),
+        reify_ir::CompiledExprKind::RangeConstructor {
             lower: Some(lo),
             upper: Some(hi),
             ..
@@ -2626,11 +2628,11 @@ fn resolve_range_dim_arg(
 /// `named_steps` entry — caller maps to the "unsupported arg shape → fall
 /// through" behaviour.
 fn resolve_geometry_handle_arg(
-    expr: &reify_types::CompiledExpr,
+    expr: &reify_ir::CompiledExpr,
     named_steps: &HashMap<String, GeometryHandleId>,
 ) -> Option<GeometryHandleId> {
     let cell_id = match &expr.kind {
-        reify_types::CompiledExprKind::ValueRef(id) => id,
+        reify_ir::CompiledExprKind::ValueRef(id) => id,
         _ => return None,
     };
     named_steps.get(&cell_id.member).copied()
@@ -2645,24 +2647,24 @@ fn resolve_geometry_handle_arg(
 /// encoding per the `GeometryQuery` doc, so a single decode path serves
 /// both.
 fn dispatch_point3_length_reply(
-    kernel: &mut dyn reify_types::GeometryKernel,
-    query: &reify_types::GeometryQuery,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    query: &reify_ir::GeometryQuery,
     helper_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<reify_types::Value> {
+) -> Option<reify_ir::Value> {
     match kernel.query(query) {
         Ok(value) => match crate::topology_selectors::parse_xyz_value(&value, helper_name) {
-            Ok([x, y, z]) => Some(reify_types::Value::Point(vec![
-                reify_types::Value::length(x),
-                reify_types::Value::length(y),
-                reify_types::Value::length(z),
+            Ok([x, y, z]) => Some(reify_ir::Value::Point(vec![
+                reify_ir::Value::length(x),
+                reify_ir::Value::length(y),
+                reify_ir::Value::length(z),
             ])),
             Err(err) => {
                 diagnostics.push(Diagnostic::warning(format!(
                     "{} kernel reply parse failed: {}",
                     helper_name, err
                 )));
-                Some(reify_types::Value::Undef)
+                Some(reify_ir::Value::Undef)
             }
         },
         Err(err) => {
@@ -2670,7 +2672,7 @@ fn dispatch_point3_length_reply(
                 "{} kernel query failed: {}",
                 helper_name, err
             )));
-            Some(reify_types::Value::Undef)
+            Some(reify_ir::Value::Undef)
         }
     }
 }
@@ -2691,17 +2693,17 @@ fn dispatch_point3_length_reply(
 /// element). Same defensive-downgrade contract as
 /// `dispatch_point3_length_reply`.
 fn dispatch_inertia_tensor(
-    kernel: &mut dyn reify_types::GeometryKernel,
-    query: &reify_types::GeometryQuery,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    query: &reify_ir::GeometryQuery,
     helper_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<reify_types::Value> {
+) -> Option<reify_ir::Value> {
     let malformed = |diagnostics: &mut Vec<Diagnostic>, detail: String| {
         diagnostics.push(Diagnostic::warning(format!(
             "{} kernel reply malformed: {}",
             helper_name, detail
         )));
-        Some(reify_types::Value::Undef)
+        Some(reify_ir::Value::Undef)
     };
     let reply = match kernel.query(query) {
         Ok(v) => v,
@@ -2710,17 +2712,17 @@ fn dispatch_inertia_tensor(
                 "{} kernel query failed: {}",
                 helper_name, err
             )));
-            return Some(reify_types::Value::Undef);
+            return Some(reify_ir::Value::Undef);
         }
     };
     let rows = match &reply {
-        reify_types::Value::List(rows) => rows,
+        reify_ir::Value::List(rows) => rows,
         other => return malformed(diagnostics, format!("expected Value::List, got {:?}", other)),
     };
     let mut tensor_rows = Vec::with_capacity(rows.len());
     for row in rows {
         let cols = match row {
-            reify_types::Value::List(cols) => cols,
+            reify_ir::Value::List(cols) => cols,
             other => {
                 return malformed(
                     diagnostics,
@@ -2735,12 +2737,12 @@ fn dispatch_inertia_tensor(
             // implementation agnostic (mirrors kernel_distance's
             // Real|Scalar leniency).
             let si = match col {
-                reify_types::Value::Real(v) => *v,
-                reify_types::Value::Scalar {
+                reify_ir::Value::Real(v) => *v,
+                reify_ir::Value::Scalar {
                     si_value,
                     dimension,
-                } if *dimension == reify_types::DimensionVector::DIMENSIONLESS
-                    || *dimension == reify_types::DimensionVector::MOMENT_OF_INERTIA =>
+                } if *dimension == reify_core::DimensionVector::DIMENSIONLESS
+                    || *dimension == reify_core::DimensionVector::MOMENT_OF_INERTIA =>
                 {
                     *si_value
                 }
@@ -2751,40 +2753,40 @@ fn dispatch_inertia_tensor(
                     );
                 }
             };
-            tensor_cols.push(reify_types::Value::Scalar {
+            tensor_cols.push(reify_ir::Value::Scalar {
                 si_value: si,
-                dimension: reify_types::DimensionVector::MOMENT_OF_INERTIA,
+                dimension: reify_core::DimensionVector::MOMENT_OF_INERTIA,
             });
         }
-        tensor_rows.push(reify_types::Value::Tensor(tensor_cols));
+        tensor_rows.push(reify_ir::Value::Tensor(tensor_cols));
     }
-    Some(reify_types::Value::Tensor(tensor_rows))
+    Some(reify_ir::Value::Tensor(tensor_rows))
 }
 
 /// Issue a `PointOnShape` query and unwrap to a `Value::Bool(_)`. Returns
 /// `Some(Value::Undef)` (with a Warning diagnostic) on a kernel error or a
 /// non-Bool reply.
 fn dispatch_point_on_shape(
-    kernel: &mut dyn reify_types::GeometryKernel,
-    query: &reify_types::GeometryQuery,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    query: &reify_ir::GeometryQuery,
     helper_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<reify_types::Value> {
+) -> Option<reify_ir::Value> {
     match kernel.query(query) {
-        Ok(reify_types::Value::Bool(b)) => Some(reify_types::Value::Bool(b)),
+        Ok(reify_ir::Value::Bool(b)) => Some(reify_ir::Value::Bool(b)),
         Ok(other) => {
             diagnostics.push(Diagnostic::warning(format!(
                 "{} kernel returned non-Bool value {:?}; treating as undefined",
                 helper_name, other
             )));
-            Some(reify_types::Value::Undef)
+            Some(reify_ir::Value::Undef)
         }
         Err(err) => {
             diagnostics.push(Diagnostic::warning(format!(
                 "{} kernel query failed: {}",
                 helper_name, err
             )));
-            Some(reify_types::Value::Undef)
+            Some(reify_ir::Value::Undef)
         }
     }
 }
@@ -2793,13 +2795,13 @@ fn dispatch_point_on_shape(
 /// `Some(Value::Undef)` (with a Warning diagnostic) on a kernel error or a
 /// non-numeric reply.
 fn dispatch_surface_angle(
-    kernel: &mut dyn reify_types::GeometryKernel,
-    query: &reify_types::GeometryQuery,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    query: &reify_ir::GeometryQuery,
     helper_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<reify_types::Value> {
+) -> Option<reify_ir::Value> {
     match kernel.query(query) {
-        Ok(reify_types::Value::Real(rad)) => Some(reify_types::Value::angle(rad)),
+        Ok(reify_ir::Value::Real(rad)) => Some(reify_ir::Value::angle(rad)),
         // Some mock kernels store the angle as an angle-dimensioned Scalar
         // — accept either form so the dispatch is kernel-implementation
         // agnostic (mirrors `kernel_distance`'s Real|Scalar leniency).
@@ -2816,44 +2818,44 @@ fn dispatch_surface_angle(
         // returning DIMENSIONLESS for an angle would itself violate the type
         // contract — this leniency is intentional test-support compatibility,
         // not because DIMENSIONLESS is a valid angle dimension in real kernels.
-        Ok(reify_types::Value::Scalar {
+        Ok(reify_ir::Value::Scalar {
             si_value,
             dimension,
         }) => {
             debug_assert!(
-                dimension == reify_types::DimensionVector::ANGLE
-                    || dimension == reify_types::DimensionVector::DIMENSIONLESS,
+                dimension == reify_core::DimensionVector::ANGLE
+                    || dimension == reify_core::DimensionVector::DIMENSIONLESS,
                 "dispatch_surface_angle: expected ANGLE- or DIMENSIONLESS-dimensioned Scalar, \
                  got dimension {:?} (si_value={}); kernel cell type is Type::angle() per \
                  compile-time wiring",
                 dimension,
                 si_value
             );
-            if dimension != reify_types::DimensionVector::ANGLE
-                && dimension != reify_types::DimensionVector::DIMENSIONLESS
+            if dimension != reify_core::DimensionVector::ANGLE
+                && dimension != reify_core::DimensionVector::DIMENSIONLESS
             {
                 diagnostics.push(Diagnostic::warning(format!(
                     "{} kernel returned wrong-dimensioned Scalar \
                      (dimension={}, si_value={}); treating as undefined",
                     helper_name, dimension, si_value
                 )));
-                return Some(reify_types::Value::Undef);
+                return Some(reify_ir::Value::Undef);
             }
-            Some(reify_types::Value::angle(si_value))
+            Some(reify_ir::Value::angle(si_value))
         }
         Ok(other) => {
             diagnostics.push(Diagnostic::warning(format!(
                 "{} kernel returned non-numeric value {:?}; treating as undefined",
                 helper_name, other
             )));
-            Some(reify_types::Value::Undef)
+            Some(reify_ir::Value::Undef)
         }
         Err(err) => {
             diagnostics.push(Diagnostic::warning(format!(
                 "{} kernel query failed: {}",
                 helper_name, err
             )));
-            Some(reify_types::Value::Undef)
+            Some(reify_ir::Value::Undef)
         }
     }
 }
@@ -2892,11 +2894,11 @@ impl FrameSubShapeKind {
     /// Narrow a `SelectorKind` to a kernel-aware sub-shape kind.
     /// Returns `None` for `SelectorKind::Point` so the caller can `?`-
     /// propagate the early-return-None invariant established by Layer-1.
-    fn from_selector_kind(k: &reify_types::SelectorKind) -> Option<Self> {
+    fn from_selector_kind(k: &reify_ir::SelectorKind) -> Option<Self> {
         match k {
-            reify_types::SelectorKind::Face => Some(FrameSubShapeKind::Face),
-            reify_types::SelectorKind::Edge => Some(FrameSubShapeKind::Edge),
-            reify_types::SelectorKind::Point => None,
+            reify_ir::SelectorKind::Face => Some(FrameSubShapeKind::Face),
+            reify_ir::SelectorKind::Edge => Some(FrameSubShapeKind::Edge),
+            reify_ir::SelectorKind::Point => None,
         }
     }
 }
@@ -2923,16 +2925,16 @@ impl FrameSubShapeKind {
 ///   `TopologyAttributeStale` Warning; kernel errors get a new Warning here).
 /// - `None` for non-AdHocSelector, Point-kind, or unsupported arg shapes.
 pub fn try_eval_ad_hoc_selector(
-    expr: &reify_types::CompiledExpr,
+    expr: &reify_ir::CompiledExpr,
     named_steps: &HashMap<String, GeometryHandleId>,
-    kernel: &mut dyn reify_types::GeometryKernel,
-    table: &reify_types::TopologyAttributeTable,
-    selector_span: reify_types::SourceSpan,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    table: &reify_ir::TopologyAttributeTable,
+    selector_span: reify_core::SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<reify_types::Value> {
+) -> Option<reify_ir::Value> {
     // (1) Must be an AdHocSelector — anything else is not applicable.
     let (base, selector_kind, args) = match &expr.kind {
-        reify_types::CompiledExprKind::AdHocSelector {
+        reify_ir::CompiledExprKind::AdHocSelector {
             base,
             selector_kind,
             args,
@@ -2969,7 +2971,7 @@ pub fn try_eval_ad_hoc_selector(
                 diagnostics.push(Diagnostic::warning(format!(
                     "@face(\"{label}\"): extract_faces({handle:?}) failed: {err}"
                 )));
-                return Some(reify_types::Value::Undef);
+                return Some(reify_ir::Value::Undef);
             }
         },
         FrameSubShapeKind::Edge => match kernel.extract_edges(handle) {
@@ -2978,7 +2980,7 @@ pub fn try_eval_ad_hoc_selector(
                 diagnostics.push(Diagnostic::warning(format!(
                     "@edge(\"{label}\"): extract_edges({handle:?}) failed: {err}"
                 )));
-                return Some(reify_types::Value::Undef);
+                return Some(reify_ir::Value::Undef);
             }
         },
     };
@@ -3006,7 +3008,7 @@ pub fn try_eval_ad_hoc_selector(
         crate::topology_attribute_resolver::AttributeResolution::Resolved(target_id) => {
             construct_frame_from_kernel(target_id, frame_sub_shape_kind, kernel, diagnostics)
         }
-        _ => Some(reify_types::Value::Undef),
+        _ => Some(reify_ir::Value::Undef),
     }
 }
 
@@ -3015,9 +3017,9 @@ pub fn try_eval_ad_hoc_selector(
 ///
 /// Used by `try_eval_ad_hoc_selector` to extract the base name and the label
 /// from an `AdHocSelector`'s `base` and `args[0]` respectively.
-fn resolve_string_literal_arg(expr: &reify_types::CompiledExpr) -> Option<&str> {
+fn resolve_string_literal_arg(expr: &reify_ir::CompiledExpr) -> Option<&str> {
     match &expr.kind {
-        reify_types::CompiledExprKind::Literal(reify_types::Value::String(s)) => Some(s.as_str()),
+        reify_ir::CompiledExprKind::Literal(reify_ir::Value::String(s)) => Some(s.as_str()),
         _ => None,
     }
 }
@@ -3043,8 +3045,8 @@ fn resolve_string_literal_arg(expr: &reify_types::CompiledExpr) -> Option<&str> 
 /// Any unrecognised label returns `None` — the query then relies entirely on
 /// `user_label` and will Unresolve if no `user_label` entry exists in the table.
 // G-allow: task #3463 cap/role vocabulary table; consumer is try_eval_ad_hoc_selector @face/@edge dispatch (same-file, task #3463) + ad_hoc_selector smoke tests
-pub(crate) fn cap_kind_translation(label: &str) -> Option<(reify_types::Role, u32)> {
-    use reify_types::{CapKind, Role};
+pub(crate) fn cap_kind_translation(label: &str) -> Option<(reify_ir::Role, u32)> {
+    use reify_ir::{CapKind, Role};
     match label {
         "top" => Some((Role::Cap(CapKind::Top), 0)),
         "bottom" => Some((Role::Cap(CapKind::Bottom), 0)),
@@ -3075,24 +3077,24 @@ pub(crate) fn cap_kind_translation(label: &str) -> Option<(reify_types::Role, u3
 fn construct_frame_from_kernel(
     target_id: GeometryHandleId,
     sub_shape_kind: FrameSubShapeKind,
-    kernel: &mut dyn reify_types::GeometryKernel,
+    kernel: &mut dyn reify_ir::GeometryKernel,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<reify_types::Value> {
+) -> Option<reify_ir::Value> {
     // ── Origin via Centroid ───────────────────────────────────────────────
     // `GeometryQuery::Centroid` is unified — works for faces, edges, AND solids.
-    let origin = match kernel.query(&reify_types::GeometryQuery::Centroid(target_id)) {
+    let origin = match kernel.query(&reify_ir::GeometryQuery::Centroid(target_id)) {
         Ok(value) => {
             match crate::topology_selectors::parse_xyz_value(&value, "Centroid") {
-                Ok([x, y, z]) => reify_types::Value::Point(vec![
-                    reify_types::Value::length(x),
-                    reify_types::Value::length(y),
-                    reify_types::Value::length(z),
+                Ok([x, y, z]) => reify_ir::Value::Point(vec![
+                    reify_ir::Value::length(x),
+                    reify_ir::Value::length(y),
+                    reify_ir::Value::length(z),
                 ]),
                 Err(err) => {
                     diagnostics.push(Diagnostic::warning(format!(
                         "@face/@edge centroid parse failed: {err}; cell left as Undef"
                     )));
-                    return Some(reify_types::Value::Undef);
+                    return Some(reify_ir::Value::Undef);
                 }
             }
         }
@@ -3100,7 +3102,7 @@ fn construct_frame_from_kernel(
             diagnostics.push(Diagnostic::warning(format!(
                 "@face/@edge centroid query failed: {err}; cell left as Undef"
             )));
-            return Some(reify_types::Value::Undef);
+            return Some(reify_ir::Value::Undef);
         }
     };
 
@@ -3108,8 +3110,8 @@ fn construct_frame_from_kernel(
     // Exhaustive over Face/Edge — Point is excluded by the FrameSubShapeKind
     // type, so no unreachable!() arm is needed here.
     let basis_query = match sub_shape_kind {
-        FrameSubShapeKind::Face => reify_types::GeometryQuery::FaceNormal(target_id),
-        FrameSubShapeKind::Edge => reify_types::GeometryQuery::EdgeTangent(target_id),
+        FrameSubShapeKind::Face => reify_ir::GeometryQuery::FaceNormal(target_id),
+        FrameSubShapeKind::Edge => reify_ir::GeometryQuery::EdgeTangent(target_id),
     };
     let query_label = match sub_shape_kind {
         FrameSubShapeKind::Face => "FaceNormal",
@@ -3125,7 +3127,7 @@ fn construct_frame_from_kernel(
                         "@face/@edge {query_label} parse failed: {err}; using identity basis"
                     )));
                     // Degrade gracefully: return a Frame with correct origin, identity basis.
-                    reify_types::Value::Orientation {
+                    reify_ir::Value::Orientation {
                         w: 1.0,
                         x: 0.0,
                         y: 0.0,
@@ -3139,7 +3141,7 @@ fn construct_frame_from_kernel(
                 "@face/@edge {query_label} query failed: {err}; using identity basis"
             )));
             // Degrade gracefully: origin was obtained, identity basis.
-            reify_types::Value::Orientation {
+            reify_ir::Value::Orientation {
                 w: 1.0,
                 x: 0.0,
                 y: 0.0,
@@ -3148,7 +3150,7 @@ fn construct_frame_from_kernel(
         }
     };
 
-    Some(reify_types::Value::Frame {
+    Some(reify_ir::Value::Frame {
         origin: Box::new(origin),
         basis: Box::new(basis),
     })
@@ -3177,7 +3179,7 @@ fn construct_frame_from_kernel(
 /// threshold further**: reducing it below ~`1e-13` would shrink the safety margin
 /// into f64 rounding noise and allow near-degenerate inputs to produce NaN-carrying
 /// quaternions.
-fn quaternion_from_z_to_axis(nx: f64, ny: f64, nz: f64) -> reify_types::Value {
+fn quaternion_from_z_to_axis(nx: f64, ny: f64, nz: f64) -> reify_ir::Value {
     let w_unnorm = 1.0 + nz;
     // Use `0.0 - ny` instead of `-ny` to avoid producing -0.0 when ny = 0.0.
     // In IEEE 754, `0.0 - 0.0 = +0.0` (round-to-nearest), whereas the unary
@@ -3192,7 +3194,7 @@ fn quaternion_from_z_to_axis(nx: f64, ny: f64, nz: f64) -> reify_types::Value {
 
     if len_sq < 1e-12 {
         // (nx, ny, nz) ≈ -Z: degenerate case. Rotate 180° around +X.
-        return reify_types::Value::Orientation {
+        return reify_ir::Value::Orientation {
             w: 0.0,
             x: 1.0,
             y: 0.0,
@@ -3201,7 +3203,7 @@ fn quaternion_from_z_to_axis(nx: f64, ny: f64, nz: f64) -> reify_types::Value {
     }
 
     let len = len_sq.sqrt();
-    reify_types::Value::Orientation {
+    reify_ir::Value::Orientation {
         w: w_unnorm / len,
         x: x_unnorm / len,
         y: y_unnorm / len,
@@ -3213,32 +3215,32 @@ fn quaternion_from_z_to_axis(nx: f64, ny: f64, nz: f64) -> reify_types::Value {
 mod tests {
     use super::*;
     use reify_compiler::{CompiledGeometryOp, GeomRef, PatternKind, SweepKind, TransformKind};
-    use reify_types::GeometryHandleId;
+    use reify_ir::GeometryHandleId;
 
     /// Helper: build a CompiledExpr literal from a constant f64.
-    fn literal_f64(v: f64) -> reify_types::CompiledExpr {
-        reify_types::CompiledExpr::literal(reify_types::Value::Real(v), reify_types::Type::Real)
+    fn literal_f64(v: f64) -> reify_ir::CompiledExpr {
+        reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), reify_core::Type::Real)
     }
 
     /// Helper: build a CompiledExpr literal from a Scalar with LENGTH dimension.
-    fn literal_length(meters: f64) -> reify_types::CompiledExpr {
-        reify_types::CompiledExpr::literal(
-            reify_types::Value::Scalar {
+    fn literal_length(meters: f64) -> reify_ir::CompiledExpr {
+        reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Scalar {
                 si_value: meters,
-                dimension: reify_types::DimensionVector::LENGTH,
+                dimension: reify_core::DimensionVector::LENGTH,
             },
-            reify_types::Type::length(),
+            reify_core::Type::length(),
         )
     }
 
     /// Helper: build a CompiledExpr literal from a Scalar with ANGLE dimension (radians).
-    fn literal_angle(radians: f64) -> reify_types::CompiledExpr {
-        reify_types::CompiledExpr::literal(
-            reify_types::Value::Scalar {
+    fn literal_angle(radians: f64) -> reify_ir::CompiledExpr {
+        reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Scalar {
                 si_value: radians,
-                dimension: reify_types::DimensionVector::ANGLE,
+                dimension: reify_core::DimensionVector::ANGLE,
             },
-            reify_types::Type::angle(),
+            reify_core::Type::angle(),
         )
     }
 
@@ -3251,18 +3253,18 @@ mod tests {
     /// `Value::Scalar { dimension: LENGTH, .. }`).
     #[test]
     fn resolve_point3_length_arg_bare_real_components_return_none() {
-        let cell = reify_types::ValueCellId::new("Bracket", "p");
-        let expr = reify_types::CompiledExpr::value_ref(
+        let cell = reify_core::ValueCellId::new("Bracket", "p");
+        let expr = reify_ir::CompiledExpr::value_ref(
             cell.clone(),
-            reify_types::Type::point3(reify_types::Type::length()),
+            reify_core::Type::point3(reify_core::Type::length()),
         );
-        let mut values = reify_types::ValueMap::new();
+        let mut values = reify_ir::ValueMap::new();
         values.insert(
             cell,
-            reify_types::Value::Point(vec![
-                reify_types::Value::Real(1.0),
-                reify_types::Value::Real(2.0),
-                reify_types::Value::Real(3.0),
+            reify_ir::Value::Point(vec![
+                reify_ir::Value::Real(1.0),
+                reify_ir::Value::Real(2.0),
+                reify_ir::Value::Real(3.0),
             ]),
         );
         assert_eq!(
@@ -3312,7 +3314,7 @@ mod tests {
         let result = result.expect("compile_geometry_op should return Ok for Scale");
 
         match result {
-            reify_types::GeometryOp::Scale { target, factor } => {
+            reify_ir::GeometryOp::Scale { target, factor } => {
                 assert_eq!(target, GeometryHandleId(42));
                 assert!((factor - 2.0).abs() < 1e-12);
             }
@@ -3351,7 +3353,7 @@ mod tests {
         let result = result.expect("compile_geometry_op should return Ok for RotateAround");
 
         match result {
-            reify_types::GeometryOp::RotateAround {
+            reify_ir::GeometryOp::RotateAround {
                 target,
                 point,
                 axis,
@@ -3395,7 +3397,7 @@ mod tests {
         let result = result.expect("compile_geometry_op should return Ok for Loft");
 
         match result {
-            reify_types::GeometryOp::Loft { profiles } => {
+            reify_ir::GeometryOp::Loft { profiles } => {
                 assert_eq!(
                     profiles,
                     vec![GeometryHandleId(100), GeometryHandleId(200)],
@@ -3429,18 +3431,18 @@ mod tests {
         let result = result.expect("compile_geometry_op should return Ok for Extrude");
 
         match result {
-            reify_types::GeometryOp::Extrude { profile, distance } => {
+            reify_ir::GeometryOp::Extrude { profile, distance } => {
                 assert_eq!(profile, GeometryHandleId(10));
                 // The distance must preserve Scalar type (not be converted to Value::Real)
                 match distance {
-                    reify_types::Value::Scalar {
+                    reify_ir::Value::Scalar {
                         si_value,
                         dimension,
                     } => {
                         assert!((si_value - 0.05).abs() < 1e-12, "SI value should be 0.05m");
                         assert_eq!(
                             dimension,
-                            reify_types::DimensionVector::LENGTH,
+                            reify_core::DimensionVector::LENGTH,
                             "dimension should be LENGTH"
                         );
                     }
@@ -3465,7 +3467,7 @@ mod tests {
         // Each iteration omits exactly one named arg; all other required args
         // remain present so that f64_arg? short-circuits on (and diagnoses)
         // only the omitted arg under test.
-        let full_args: Vec<(&'static str, reify_types::CompiledExpr)> = vec![
+        let full_args: Vec<(&'static str, reify_ir::CompiledExpr)> = vec![
             ("ox", literal_f64(0.0)),
             ("oy", literal_f64(0.0)),
             ("oz", literal_f64(0.0)),
@@ -3476,7 +3478,7 @@ mod tests {
         ];
 
         for omit in ["ox", "oy", "oz", "ax", "ay", "az", "angle"] {
-            let args: Vec<(String, reify_types::CompiledExpr)> = full_args
+            let args: Vec<(String, reify_ir::CompiledExpr)> = full_args
                 .iter()
                 .filter(|(name, _)| *name != omit)
                 .map(|(name, expr)| ((*name).into(), expr.clone()))
@@ -3515,7 +3517,7 @@ mod tests {
             );
             assert_eq!(
                 diagnostics[0].severity,
-                reify_types::Severity::Warning,
+                reify_core::Severity::Warning,
                 "missing '{omit}' should emit a Warning severity"
             );
             assert!(
@@ -3637,7 +3639,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|d| matches!(d.severity, reify_types::Severity::Warning)
+                .any(|d| matches!(d.severity, reify_core::Severity::Warning)
                     && d.message.contains("extrude dropped")
                     && d.message.contains("degenerate")),
             "expected degenerate-extrude warning, got {:?}",
@@ -3682,7 +3684,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|d| matches!(d.severity, reify_types::Severity::Warning)
+                .any(|d| matches!(d.severity, reify_core::Severity::Warning)
                     && d.message.contains("revolve dropped")
                     && d.message.contains("axis")),
             "expected degenerate-revolve-axis warning, got {:?}",
@@ -3723,7 +3725,7 @@ mod tests {
         assert!(result.is_err(), "NaN rotation axis should return None");
         assert!(
             diagnostics.iter().any(|d| {
-                matches!(d.severity, reify_types::Severity::Warning)
+                matches!(d.severity, reify_core::Severity::Warning)
                     && d.message.contains("non-numeric/non-finite")
                     && d.message.contains("ax")
                     && d.message.contains("revolve")
@@ -3770,7 +3772,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|d| matches!(d.severity, reify_types::Severity::Warning)
+                .any(|d| matches!(d.severity, reify_core::Severity::Warning)
                     && d.message.contains("revolve dropped")
                     && d.message.contains("angle")),
             "expected degenerate-revolve-angle warning, got {:?}",
@@ -3810,7 +3812,7 @@ mod tests {
             result.expect("compile_geometry_op should return Ok for Revolve with valid axis");
 
         match result {
-            reify_types::GeometryOp::Revolve {
+            reify_ir::GeometryOp::Revolve {
                 profile,
                 axis_origin,
                 axis_dir,
@@ -3852,10 +3854,10 @@ mod tests {
         let result = result.expect("compile_geometry_op should return Ok for Extrude");
 
         match result {
-            reify_types::GeometryOp::Extrude { profile, distance } => {
+            reify_ir::GeometryOp::Extrude { profile, distance } => {
                 assert_eq!(profile, GeometryHandleId(77));
                 match distance {
-                    reify_types::Value::Scalar {
+                    reify_ir::Value::Scalar {
                         si_value,
                         dimension,
                     } => {
@@ -3863,7 +3865,7 @@ mod tests {
                             (si_value - 0.03).abs() < 1e-12,
                             "SI value should be 0.03m (30mm)"
                         );
-                        assert_eq!(dimension, reify_types::DimensionVector::LENGTH);
+                        assert_eq!(dimension, reify_core::DimensionVector::LENGTH);
                     }
                     other => panic!("expected Value::Scalar for distance, got {:?}", other),
                 }
@@ -3905,7 +3907,7 @@ mod tests {
         );
         assert!(
             diagnostics.iter().any(|d| {
-                matches!(d.severity, reify_types::Severity::Warning)
+                matches!(d.severity, reify_core::Severity::Warning)
                     && d.message.contains("scale dropped")
                     && d.message.contains("negative")
             }),
@@ -3947,7 +3949,7 @@ mod tests {
         );
         assert!(
             diagnostics.iter().any(|d| {
-                matches!(d.severity, reify_types::Severity::Warning)
+                matches!(d.severity, reify_core::Severity::Warning)
                     && d.message.contains("scale dropped")
                     && d.message.contains("degenerate")
             }),
@@ -4013,7 +4015,7 @@ mod tests {
         );
         assert!(
             diagnostics.iter().any(|d| {
-                matches!(d.severity, reify_types::Severity::Warning)
+                matches!(d.severity, reify_core::Severity::Warning)
                     && d.message.contains("non-numeric/non-finite")
                     && d.message.contains("factor")
                     && d.message.contains("scale")
@@ -4151,7 +4153,7 @@ mod tests {
             &mut Vec::new(),
         );
         match result {
-            Ok(reify_types::GeometryOp::LinearPattern {
+            Ok(reify_ir::GeometryOp::LinearPattern {
                 target,
                 direction,
                 count,
@@ -4162,7 +4164,7 @@ mod tests {
                 assert_eq!(count, 3);
                 // spacing should be a Scalar value, not Undef
                 assert!(
-                    !matches!(spacing, reify_types::Value::Undef),
+                    !matches!(spacing, reify_ir::Value::Undef),
                     "spacing should not be Undef when arg is present"
                 );
             }
@@ -4203,7 +4205,7 @@ mod tests {
             &mut diagnostics,
         );
         match result {
-            Ok(reify_types::GeometryOp::CircularPattern {
+            Ok(reify_ir::GeometryOp::CircularPattern {
                 target,
                 axis_origin,
                 axis_dir,
@@ -4216,12 +4218,12 @@ mod tests {
                 assert_eq!(count, 4);
                 // angle should be a Scalar value (with ANGLE dimension), not Undef
                 assert!(
-                    !matches!(angle, reify_types::Value::Undef),
+                    !matches!(angle, reify_ir::Value::Undef),
                     "angle should not be Undef when arg is present"
                 );
                 // The explicit-unit path must NOT emit a degree-conversion warning
                 let has_deg_warning = diagnostics.iter().any(|d| {
-                    d.severity == reify_types::Severity::Warning
+                    d.severity == reify_core::Severity::Warning
                         && (d.message.contains("deg") || d.message.contains("degree"))
                 });
                 assert!(
@@ -4266,7 +4268,7 @@ mod tests {
             &mut Vec::new(),
         );
         match result {
-            Ok(reify_types::GeometryOp::CircularPattern { angle, .. }) => {
+            Ok(reify_ir::GeometryOp::CircularPattern { angle, .. }) => {
                 let angle_f64 = angle.as_f64().expect("angle should be numeric");
                 assert!(
                     (angle_f64 - std::f64::consts::TAU).abs() < 1e-9,
@@ -4284,9 +4286,9 @@ mod tests {
         let values = ValueMap::new();
 
         // Bare integer 360 — should be interpreted as 360° and converted to 2π rad.
-        let angle_int_expr = reify_types::CompiledExpr::literal(
-            reify_types::Value::Int(360),
-            reify_types::Type::Int,
+        let angle_int_expr = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Int(360),
+            reify_core::Type::Int,
         );
 
         let op = reify_compiler::CompiledGeometryOp::Pattern {
@@ -4314,7 +4316,7 @@ mod tests {
             &mut Vec::new(),
         );
         match result {
-            Ok(reify_types::GeometryOp::CircularPattern { angle, .. }) => {
+            Ok(reify_ir::GeometryOp::CircularPattern { angle, .. }) => {
                 let angle_f64 = angle.as_f64().expect("angle should be numeric");
                 assert!(
                     (angle_f64 - std::f64::consts::TAU).abs() < 1e-9,
@@ -4358,7 +4360,7 @@ mod tests {
         );
 
         let has_degree_warning = diagnostics.iter().any(|d| {
-            d.severity == reify_types::Severity::Warning
+            d.severity == reify_core::Severity::Warning
                 && (d.message.contains("deg") || d.message.contains("degree"))
         });
         assert!(
@@ -4403,7 +4405,7 @@ mod tests {
             &mut diagnostics,
         );
         match result {
-            Ok(reify_types::GeometryOp::CircularPattern { angle, .. }) => {
+            Ok(reify_ir::GeometryOp::CircularPattern { angle, .. }) => {
                 let angle_f64 = angle.as_f64().expect("angle should be numeric");
                 assert!(
                     (angle_f64 - std::f64::consts::PI).abs() < 1e-12,
@@ -4412,7 +4414,7 @@ mod tests {
                 );
                 // No degree-conversion warning should be emitted for explicit units
                 let has_deg_warning = diagnostics.iter().any(|d| {
-                    d.severity == reify_types::Severity::Warning
+                    d.severity == reify_core::Severity::Warning
                         && (d.message.contains("deg") || d.message.contains("degree"))
                 });
                 assert!(
@@ -4453,7 +4455,7 @@ mod tests {
             &mut Vec::new(),
         );
         match result {
-            Ok(reify_types::GeometryOp::Mirror {
+            Ok(reify_ir::GeometryOp::Mirror {
                 target,
                 plane_origin,
                 plane_normal,
@@ -4498,7 +4500,7 @@ mod tests {
             &mut Vec::new(),
         );
         match result {
-            Ok(reify_types::GeometryOp::LinearPattern2D {
+            Ok(reify_ir::GeometryOp::LinearPattern2D {
                 target,
                 direction1,
                 count1,
@@ -4511,13 +4513,13 @@ mod tests {
                 assert_eq!(direction1, [1.0, 0.0, 0.0]);
                 assert_eq!(count1, 3);
                 assert!(
-                    !matches!(spacing1, reify_types::Value::Undef),
+                    !matches!(spacing1, reify_ir::Value::Undef),
                     "spacing1 should not be Undef"
                 );
                 assert_eq!(direction2, [0.0, 1.0, 0.0]);
                 assert_eq!(count2, 4);
                 assert!(
-                    !matches!(spacing2, reify_types::Value::Undef),
+                    !matches!(spacing2, reify_ir::Value::Undef),
                     "spacing2 should not be Undef"
                 );
             }
@@ -4556,7 +4558,7 @@ mod tests {
             &mut Vec::new(),
         );
         match result {
-            Ok(reify_types::GeometryOp::ArbitraryPattern { target, transforms }) => {
+            Ok(reify_ir::GeometryOp::ArbitraryPattern { target, transforms }) => {
                 assert_eq!(target, GeometryHandleId(42));
                 assert_eq!(transforms.len(), 3);
                 assert_eq!(transforms[0], [0.01, 0.0, 0.0]);
@@ -4675,7 +4677,7 @@ mod tests {
         );
         assert_eq!(
             diagnostics[0].severity,
-            reify_types::Severity::Warning,
+            reify_core::Severity::Warning,
             "expected Warning severity"
         );
         assert!(
@@ -4730,7 +4732,7 @@ mod tests {
         );
         assert_eq!(
             diagnostics[0].severity,
-            reify_types::Severity::Warning,
+            reify_core::Severity::Warning,
             "expected Warning severity"
         );
         assert!(
@@ -4962,7 +4964,7 @@ mod tests {
         );
         assert_eq!(
             diagnostics[0].severity,
-            reify_types::Severity::Warning,
+            reify_core::Severity::Warning,
             "expected Warning severity"
         );
         assert!(
@@ -5023,7 +5025,7 @@ mod tests {
         );
         assert_eq!(
             diagnostics[0].severity,
-            reify_types::Severity::Warning,
+            reify_core::Severity::Warning,
             "expected Warning severity"
         );
         assert!(
@@ -5078,7 +5080,7 @@ mod tests {
         );
         assert_eq!(
             diagnostics[0].severity,
-            reify_types::Severity::Warning,
+            reify_core::Severity::Warning,
             "expected Warning severity"
         );
         assert!(
@@ -5107,9 +5109,9 @@ mod tests {
             args: vec![
                 (
                     "dx".into(),
-                    reify_types::CompiledExpr::literal(
-                        reify_types::Value::String("oops".into()),
-                        reify_types::Type::String,
+                    reify_ir::CompiledExpr::literal(
+                        reify_ir::Value::String("oops".into()),
+                        reify_core::Type::String,
                     ),
                 ),
                 ("dy".into(), literal_f64(0.0)),
@@ -5135,7 +5137,7 @@ mod tests {
         );
         assert!(
             diagnostics.iter().any(|d| {
-                matches!(d.severity, reify_types::Severity::Warning)
+                matches!(d.severity, reify_core::Severity::Warning)
                     && d.message.contains("non-numeric/non-finite")
                     && d.message.contains("dx")
                     && d.message.contains("translate")
@@ -5179,7 +5181,7 @@ mod tests {
         );
         assert!(
             diagnostics.iter().any(|d| {
-                matches!(d.severity, reify_types::Severity::Warning)
+                matches!(d.severity, reify_core::Severity::Warning)
                     && d.message.contains("non-numeric/non-finite")
                     && d.message.contains("dx")
                     && d.message.contains("translate")
@@ -5223,7 +5225,7 @@ mod tests {
         );
         assert!(
             diagnostics.iter().any(|d| {
-                matches!(d.severity, reify_types::Severity::Warning)
+                matches!(d.severity, reify_core::Severity::Warning)
                     && d.message.contains("non-numeric/non-finite")
                     && d.message.contains("dx")
                     && d.message.contains("translate")
@@ -5321,7 +5323,7 @@ mod tests {
         let result_ok = result_ok
             .expect("Boolean(Step(0), Step(2)) should succeed: both indices hold valid handles");
         match result_ok {
-            reify_types::GeometryOp::Union { left, right } => {
+            reify_ir::GeometryOp::Union { left, right } => {
                 assert_eq!(
                     left,
                     GeometryHandleId(42),
@@ -5375,9 +5377,9 @@ mod tests {
                 ("thickness".into(), literal_length(0.002)),
                 (
                     "face_0".into(),
-                    reify_types::CompiledExpr::literal(
-                        reify_types::Value::String("oops".into()),
-                        reify_types::Type::String,
+                    reify_ir::CompiledExpr::literal(
+                        reify_ir::Value::String("oops".into()),
+                        reify_core::Type::String,
                     ),
                 ),
             ],
@@ -5405,7 +5407,7 @@ mod tests {
         // compile_geometry_op_shell_string_face_diagnostic_excludes_non_finite test)
         assert!(
             diagnostics.iter().any(|d| {
-                matches!(d.severity, reify_types::Severity::Warning)
+                matches!(d.severity, reify_core::Severity::Warning)
                     && d.message.contains("face_0")
                     && d.message.contains("non-numeric")
             }),
@@ -5414,7 +5416,7 @@ mod tests {
         );
         // The resulting faces_to_remove should be empty (bad face skipped)
         match result.unwrap() {
-            reify_types::GeometryOp::Shell {
+            reify_ir::GeometryOp::Shell {
                 faces_to_remove, ..
             } => {
                 assert!(
@@ -5440,9 +5442,9 @@ mod tests {
                 ("thickness".into(), literal_length(0.002)),
                 (
                     "face_1".into(),
-                    reify_types::CompiledExpr::literal(
-                        reify_types::Value::Bool(true),
-                        reify_types::Type::Bool,
+                    reify_ir::CompiledExpr::literal(
+                        reify_ir::Value::Bool(true),
+                        reify_core::Type::Bool,
                     ),
                 ),
             ],
@@ -5466,7 +5468,7 @@ mod tests {
         );
         assert!(
             diagnostics.iter().any(|d| {
-                matches!(d.severity, reify_types::Severity::Warning)
+                matches!(d.severity, reify_core::Severity::Warning)
                     && d.message.contains("face_1")
                     && d.message.contains("non-numeric")
                     && !d.message.contains("non-finite")
@@ -5509,7 +5511,7 @@ mod tests {
         );
         assert!(
             diagnostics.iter().any(|d| {
-                matches!(d.severity, reify_types::Severity::Warning)
+                matches!(d.severity, reify_core::Severity::Warning)
                     && d.message.contains("face_0")
                     && d.message.contains("negative")
                     && !d.message.contains("non-finite")
@@ -5518,7 +5520,7 @@ mod tests {
             diagnostics
         );
         match result.unwrap() {
-            reify_types::GeometryOp::Shell {
+            reify_ir::GeometryOp::Shell {
                 faces_to_remove, ..
             } => {
                 assert!(
@@ -5564,7 +5566,7 @@ mod tests {
         );
         assert!(
             diagnostics.iter().any(|d| {
-                matches!(d.severity, reify_types::Severity::Warning)
+                matches!(d.severity, reify_core::Severity::Warning)
                     && d.message.contains("face_0")
                     && d.message.contains("non-finite")
                     && !d.message.contains("negative")
@@ -5573,7 +5575,7 @@ mod tests {
             diagnostics
         );
         match result.unwrap() {
-            reify_types::GeometryOp::Shell {
+            reify_ir::GeometryOp::Shell {
                 faces_to_remove, ..
             } => {
                 assert!(
@@ -5619,7 +5621,7 @@ mod tests {
         );
         assert!(
             diagnostics.iter().any(|d| {
-                matches!(d.severity, reify_types::Severity::Warning)
+                matches!(d.severity, reify_core::Severity::Warning)
                     && d.message.contains("face_0")
                     && d.message.contains("non-finite")
                     && !d.message.contains("negative")
@@ -5658,7 +5660,7 @@ mod tests {
         );
 
         match result {
-            Ok(reify_types::GeometryOp::Shell {
+            Ok(reify_ir::GeometryOp::Shell {
                 faces_to_remove, ..
             }) => {
                 assert_eq!(
@@ -5709,7 +5711,7 @@ mod tests {
         );
         assert!(
             diagnostics.iter().any(|d| {
-                matches!(d.severity, reify_types::Severity::Warning)
+                matches!(d.severity, reify_core::Severity::Warning)
                     && d.message.contains("face_0")
                     && (d.message.contains("integer") || d.message.contains("fractional"))
             }),
@@ -5717,7 +5719,7 @@ mod tests {
             diagnostics
         );
         match result.unwrap() {
-            reify_types::GeometryOp::Shell {
+            reify_ir::GeometryOp::Shell {
                 faces_to_remove, ..
             } => {
                 assert!(
@@ -5763,7 +5765,7 @@ mod tests {
         );
         assert!(
             diagnostics.iter().any(|d| {
-                matches!(d.severity, reify_types::Severity::Warning)
+                matches!(d.severity, reify_core::Severity::Warning)
                     && d.message.contains("face_0")
                     && (d.message.contains("upper bound") || d.message.contains("exceeds"))
             }),
@@ -5771,7 +5773,7 @@ mod tests {
             diagnostics
         );
         match result.unwrap() {
-            reify_types::GeometryOp::Shell {
+            reify_ir::GeometryOp::Shell {
                 faces_to_remove, ..
             } => {
                 assert!(
@@ -5800,9 +5802,9 @@ mod tests {
                 ("thickness".into(), literal_length(0.002)),
                 (
                     "face_0".into(),
-                    reify_types::CompiledExpr::literal(
-                        reify_types::Value::String("bad".into()),
-                        reify_types::Type::String,
+                    reify_ir::CompiledExpr::literal(
+                        reify_ir::Value::String("bad".into()),
+                        reify_core::Type::String,
                     ),
                 ),
             ],
@@ -5827,7 +5829,7 @@ mod tests {
         let face_0_warnings: Vec<_> = diagnostics
             .iter()
             .filter(|d| {
-                matches!(d.severity, reify_types::Severity::Warning) && d.message.contains("face_0")
+                matches!(d.severity, reify_core::Severity::Warning) && d.message.contains("face_0")
             })
             .collect();
         assert_eq!(
@@ -5883,7 +5885,7 @@ mod tests {
         let face_0_warnings: Vec<_> = diagnostics
             .iter()
             .filter(|d| {
-                matches!(d.severity, reify_types::Severity::Warning) && d.message.contains("face_0")
+                matches!(d.severity, reify_core::Severity::Warning) && d.message.contains("face_0")
             })
             .collect();
         assert_eq!(
@@ -5939,7 +5941,7 @@ mod tests {
         let face_0_warnings: Vec<_> = diagnostics
             .iter()
             .filter(|d| {
-                matches!(d.severity, reify_types::Severity::Warning) && d.message.contains("face_0")
+                matches!(d.severity, reify_core::Severity::Warning) && d.message.contains("face_0")
             })
             .collect();
         assert_eq!(
@@ -5996,7 +5998,7 @@ mod tests {
         let face_0_warnings: Vec<_> = diagnostics
             .iter()
             .filter(|d| {
-                matches!(d.severity, reify_types::Severity::Warning) && d.message.contains("face_0")
+                matches!(d.severity, reify_core::Severity::Warning) && d.message.contains("face_0")
             })
             .collect();
         assert_eq!(
@@ -6056,7 +6058,7 @@ mod tests {
         );
         assert!(
             diagnostics.iter().any(|d| {
-                matches!(d.severity, reify_types::Severity::Warning)
+                matches!(d.severity, reify_core::Severity::Warning)
                     && (d.message.contains("upper bound") || d.message.contains("exceeds"))
             }),
             "expected a Warning mentioning 'upper bound' or 'exceeds', got: {:?}",
@@ -6094,7 +6096,7 @@ mod tests {
         );
 
         match result {
-            Ok(reify_types::GeometryOp::LinearPattern { count, .. }) => {
+            Ok(reify_ir::GeometryOp::LinearPattern { count, .. }) => {
                 assert_eq!(count, 100_000, "count=100_000 should be accepted");
             }
             other => panic!(
@@ -6148,7 +6150,7 @@ mod tests {
         );
         assert!(
             diagnostics.iter().any(|d| {
-                matches!(d.severity, reify_types::Severity::Warning)
+                matches!(d.severity, reify_core::Severity::Warning)
                     && (d.message.contains("upper bound") || d.message.contains("exceeds"))
             }),
             "expected a Warning for count=100_001, got: {:?}",
@@ -6230,7 +6232,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         // Value::Undef is the universal no-value sentinel — `as_f64()` returns None.
         let undef_expr =
-            reify_types::CompiledExpr::literal(reify_types::Value::Undef, reify_types::Type::Real);
+            reify_ir::CompiledExpr::literal(reify_ir::Value::Undef, reify_core::Type::Real);
         let args = vec![("width".to_string(), undef_expr)];
 
         let result = eval_named_arg_f64(
@@ -6247,7 +6249,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|d| d.severity == reify_types::Severity::Warning
+                .any(|d| d.severity == reify_core::Severity::Warning
                     && d.message.contains("width")
                     && d.message.contains("box")
                     && d.message.contains("non-numeric/non-finite")),
@@ -6278,7 +6280,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|d| d.severity == reify_types::Severity::Warning
+                .any(|d| d.severity == reify_core::Severity::Warning
                     && d.message.contains("width")
                     && d.message.contains("box")
                     && d.message.contains("non-numeric/non-finite")),
@@ -6309,7 +6311,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|d| d.severity == reify_types::Severity::Warning
+                .any(|d| d.severity == reify_core::Severity::Warning
                     && d.message.contains("width")
                     && d.message.contains("box")
                     && d.message.contains("non-numeric/non-finite")),
@@ -6357,7 +6359,7 @@ mod tests {
 
         let geom_op = result.expect("Sub refs with known names should resolve successfully");
         match geom_op {
-            reify_types::GeometryOp::Difference { left, right } => {
+            reify_ir::GeometryOp::Difference { left, right } => {
                 assert_eq!(left, handle_a, "left should be body handle");
                 assert_eq!(right, handle_b, "right should be hole handle");
             }
@@ -6367,7 +6369,7 @@ mod tests {
         // No warnings should be emitted — named_steps lookup is silent-success
         let warnings: Vec<_> = diagnostics
             .iter()
-            .filter(|d| d.severity == reify_types::Severity::Warning)
+            .filter(|d| d.severity == reify_core::Severity::Warning)
             .collect();
         assert!(
             warnings.is_empty(),
@@ -6418,7 +6420,7 @@ mod tests {
         // explicitly forbidden by the feedback_silent_defaults_pattern norm.
         let warnings: Vec<_> = diagnostics
             .iter()
-            .filter(|d| d.severity == reify_types::Severity::Warning)
+            .filter(|d| d.severity == reify_core::Severity::Warning)
             .collect();
         assert!(
             warnings.is_empty(),
@@ -6441,23 +6443,23 @@ mod tests {
         helper_name: &str,
         entity: &str,
         member: &str,
-    ) -> reify_types::CompiledExpr {
-        let arg = reify_types::CompiledExpr::value_ref(
-            reify_types::ValueCellId::new(entity, member),
-            reify_types::Type::Geometry,
+    ) -> reify_ir::CompiledExpr {
+        let arg = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new(entity, member),
+            reify_core::Type::Geometry,
         );
-        let mut content_hash = reify_types::ContentHash::of(&[reify_types::TAG_FUNCTION_CALL])
-            .combine(reify_types::ContentHash::of_str(helper_name));
+        let mut content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str(helper_name));
         content_hash = content_hash.combine(arg.content_hash);
-        reify_types::CompiledExpr {
-            kind: reify_types::CompiledExprKind::FunctionCall {
-                function: reify_types::ResolvedFunction {
+        reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
                     name: helper_name.to_string(),
                     qualified_name: helper_name.to_string(),
                 },
                 args: vec![arg],
             },
-            result_type: reify_types::Type::Bool,
+            result_type: reify_core::Type::Bool,
             content_hash,
         }
     }
@@ -6465,11 +6467,11 @@ mod tests {
     #[test]
     fn try_eval_conformance_query_kernel_reply_true() {
         use reify_test_support::mocks::MockGeometryKernel;
-        let handle_id = reify_types::GeometryHandleId(7);
+        let handle_id = reify_ir::GeometryHandleId(7);
         let kernel =
-            MockGeometryKernel::new().with_query_result(handle_id, reify_types::Value::Bool(true));
+            MockGeometryKernel::new().with_query_result(handle_id, reify_ir::Value::Bool(true));
 
-        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
         named_steps.insert("body".to_string(), handle_id);
 
         let expr = conformance_call("is_watertight", "Bracket", "body");
@@ -6480,41 +6482,41 @@ mod tests {
 
         assert_eq!(
             result,
-            Some(reify_types::Value::Bool(true)),
+            Some(reify_ir::Value::Bool(true)),
             "is_watertight(body) with kernel returning Bool(true) must produce Some(Bool(true))"
         );
     }
 
     /// Build a `CompiledExpr` for `is_watertight(<literal_real>)`.
-    fn conformance_call_literal_arg(helper_name: &str) -> reify_types::CompiledExpr {
-        let arg = reify_types::CompiledExpr::literal(
-            reify_types::Value::Real(1.0),
-            reify_types::Type::Real,
+    fn conformance_call_literal_arg(helper_name: &str) -> reify_ir::CompiledExpr {
+        let arg = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Real(1.0),
+            reify_core::Type::Real,
         );
-        let mut content_hash = reify_types::ContentHash::of(&[reify_types::TAG_FUNCTION_CALL])
-            .combine(reify_types::ContentHash::of_str(helper_name));
+        let mut content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str(helper_name));
         content_hash = content_hash.combine(arg.content_hash);
-        reify_types::CompiledExpr {
-            kind: reify_types::CompiledExprKind::FunctionCall {
-                function: reify_types::ResolvedFunction {
+        reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
                     name: helper_name.to_string(),
                     qualified_name: helper_name.to_string(),
                 },
                 args: vec![arg],
             },
-            result_type: reify_types::Type::Bool,
+            result_type: reify_core::Type::Bool,
             content_hash,
         }
     }
 
     #[test]
     fn try_eval_conformance_query_non_helper_name_returns_none_no_kernel_call() {
-        let handle_id = reify_types::GeometryHandleId(7);
+        let handle_id = reify_ir::GeometryHandleId(7);
         let inner = reify_test_support::mocks::MockGeometryKernel::new()
-            .with_query_result(handle_id, reify_types::Value::Bool(true));
+            .with_query_result(handle_id, reify_ir::Value::Bool(true));
         let kernel = reify_test_support::mocks::CountingMockKernel::new(inner);
 
-        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
         named_steps.insert("body".to_string(), handle_id);
 
         // `volume` is a real stdlib function name but NOT one of the three
@@ -6539,12 +6541,12 @@ mod tests {
 
     #[test]
     fn try_eval_conformance_query_literal_arg_returns_none_no_kernel_call() {
-        let handle_id = reify_types::GeometryHandleId(7);
+        let handle_id = reify_ir::GeometryHandleId(7);
         let inner = reify_test_support::mocks::MockGeometryKernel::new()
-            .with_query_result(handle_id, reify_types::Value::Bool(true));
+            .with_query_result(handle_id, reify_ir::Value::Bool(true));
         let kernel = reify_test_support::mocks::CountingMockKernel::new(inner);
 
-        let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
 
         // `is_watertight(1.0)` — recognised helper name but the arg is a
         // literal, not a `ValueRef`. The dispatch must return None *and*
@@ -6572,12 +6574,12 @@ mod tests {
         // Kernel is configured to return Bool(false) — but the structure
         // declares `: Watertight`, so the dispatch must short-circuit to
         // Bool(true) WITHOUT consulting the kernel.
-        let handle_id = reify_types::GeometryHandleId(7);
+        let handle_id = reify_ir::GeometryHandleId(7);
         let inner = reify_test_support::mocks::MockGeometryKernel::new()
-            .with_query_result(handle_id, reify_types::Value::Bool(false));
+            .with_query_result(handle_id, reify_ir::Value::Bool(false));
         let kernel = reify_test_support::mocks::CountingMockKernel::new(inner);
 
-        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
         named_steps.insert("body".to_string(), handle_id);
 
         let expr = conformance_call("is_watertight", "TrustedShell", "body");
@@ -6593,7 +6595,7 @@ mod tests {
 
         assert_eq!(
             result,
-            Some(reify_types::Value::Bool(true)),
+            Some(reify_ir::Value::Bool(true)),
             "user-asserted Watertight must override kernel reply"
         );
         assert_eq!(
@@ -6605,12 +6607,12 @@ mod tests {
 
     #[test]
     fn try_eval_conformance_query_user_assertion_manifold_short_circuits() {
-        let handle_id = reify_types::GeometryHandleId(11);
+        let handle_id = reify_ir::GeometryHandleId(11);
         let inner = reify_test_support::mocks::MockGeometryKernel::new()
-            .with_query_result(handle_id, reify_types::Value::Bool(false));
+            .with_query_result(handle_id, reify_ir::Value::Bool(false));
         let kernel = reify_test_support::mocks::CountingMockKernel::new(inner);
 
-        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
         named_steps.insert("body".to_string(), handle_id);
 
         let expr = conformance_call("is_manifold", "TrustedShell", "body");
@@ -6624,18 +6626,18 @@ mod tests {
             &mut diagnostics,
         );
 
-        assert_eq!(result, Some(reify_types::Value::Bool(true)));
+        assert_eq!(result, Some(reify_ir::Value::Bool(true)));
         assert_eq!(kernel.total_query_count(), 0);
     }
 
     #[test]
     fn try_eval_conformance_query_user_assertion_orientable_short_circuits() {
-        let handle_id = reify_types::GeometryHandleId(13);
+        let handle_id = reify_ir::GeometryHandleId(13);
         let inner = reify_test_support::mocks::MockGeometryKernel::new()
-            .with_query_result(handle_id, reify_types::Value::Bool(false));
+            .with_query_result(handle_id, reify_ir::Value::Bool(false));
         let kernel = reify_test_support::mocks::CountingMockKernel::new(inner);
 
-        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
         named_steps.insert("body".to_string(), handle_id);
 
         let expr = conformance_call("is_orientable", "TrustedShell", "body");
@@ -6649,7 +6651,7 @@ mod tests {
             &mut diagnostics,
         );
 
-        assert_eq!(result, Some(reify_types::Value::Bool(true)));
+        assert_eq!(result, Some(reify_ir::Value::Bool(true)));
         assert_eq!(kernel.total_query_count(), 0);
     }
 
@@ -6659,12 +6661,12 @@ mod tests {
         // circuits ONLY on `Watertight` — declaring the (refined) `Closed`
         // bound is not sufficient. The kernel must be consulted and its
         // Bool(false) reply honoured.
-        let handle_id = reify_types::GeometryHandleId(17);
+        let handle_id = reify_ir::GeometryHandleId(17);
         let inner = reify_test_support::mocks::MockGeometryKernel::new()
-            .with_query_result(handle_id, reify_types::Value::Bool(false));
+            .with_query_result(handle_id, reify_ir::Value::Bool(false));
         let kernel = reify_test_support::mocks::CountingMockKernel::new(inner);
 
-        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
         named_steps.insert("body".to_string(), handle_id);
 
         let expr = conformance_call("is_watertight", "Bracket", "body");
@@ -6680,7 +6682,7 @@ mod tests {
 
         assert_eq!(
             result,
-            Some(reify_types::Value::Bool(false)),
+            Some(reify_ir::Value::Bool(false)),
             "is_watertight must NOT be short-circuited by ': Closed'"
         );
         assert_eq!(
@@ -6692,15 +6694,15 @@ mod tests {
 
     #[test]
     fn try_eval_conformance_query_unresolvable_member_returns_none_no_kernel_call() {
-        let handle_id = reify_types::GeometryHandleId(7);
+        let handle_id = reify_ir::GeometryHandleId(7);
         let inner = reify_test_support::mocks::MockGeometryKernel::new()
-            .with_query_result(handle_id, reify_types::Value::Bool(true));
+            .with_query_result(handle_id, reify_ir::Value::Bool(true));
         let kernel = reify_test_support::mocks::CountingMockKernel::new(inner);
 
         // `named_steps` contains "body" but the call references "ghost",
         // which is not present. The dispatch must return None and never
         // consult the kernel.
-        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
         named_steps.insert("body".to_string(), handle_id);
 
         let expr = conformance_call("is_watertight", "Bracket", "ghost");
@@ -6730,12 +6732,12 @@ mod tests {
     /// would be caught.
     #[test]
     fn try_eval_conformance_query_kernel_returns_non_bool_downgrades_with_warning() {
-        let handle_id = reify_types::GeometryHandleId(23);
+        let handle_id = reify_ir::GeometryHandleId(23);
         // Seed a non-Bool kernel reply for the IsWatertight query.
         let kernel = reify_test_support::mocks::MockGeometryKernel::new()
-            .with_query_result(handle_id, reify_types::Value::Real(1.0));
+            .with_query_result(handle_id, reify_ir::Value::Real(1.0));
 
-        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
         named_steps.insert("body".to_string(), handle_id);
 
         let expr = conformance_call("is_watertight", "Bracket", "body");
@@ -6746,7 +6748,7 @@ mod tests {
 
         assert_eq!(
             result,
-            Some(reify_types::Value::Undef),
+            Some(reify_ir::Value::Undef),
             "non-Bool kernel reply must downgrade to Some(Value::Undef), got {:?}",
             result
         );
@@ -6759,7 +6761,7 @@ mod tests {
         let diag = &diagnostics[0];
         assert_eq!(
             diag.severity,
-            reify_types::Severity::Warning,
+            reify_core::Severity::Warning,
             "non-Bool kernel reply must emit a Warning, got {:?}",
             diag.severity
         );
@@ -6778,12 +6780,12 @@ mod tests {
     /// panic (or losing the error context in the diagnostic) would fail.
     #[test]
     fn try_eval_conformance_query_kernel_query_error_downgrades_with_warning() {
-        let handle_id = reify_types::GeometryHandleId(29);
+        let handle_id = reify_ir::GeometryHandleId(29);
         // No `with_query_result` seeding → MockGeometryKernel.query() returns
         // `Err(QueryError::QueryFailed("no mock result for …"))` for any handle.
         let kernel = reify_test_support::mocks::MockGeometryKernel::new();
 
-        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
         named_steps.insert("body".to_string(), handle_id);
 
         let expr = conformance_call("is_manifold", "Bracket", "body");
@@ -6794,7 +6796,7 @@ mod tests {
 
         assert_eq!(
             result,
-            Some(reify_types::Value::Undef),
+            Some(reify_ir::Value::Undef),
             "kernel Err must downgrade to Some(Value::Undef), got {:?}",
             result
         );
@@ -6807,7 +6809,7 @@ mod tests {
         let diag = &diagnostics[0];
         assert_eq!(
             diag.severity,
-            reify_types::Severity::Warning,
+            reify_core::Severity::Warning,
             "kernel Err must emit a Warning, got {:?}",
             diag.severity
         );
@@ -6840,26 +6842,26 @@ mod tests {
         helper_name: &str,
         entity: &str,
         member_a: &str,
-        type_a: reify_types::Type,
+        type_a: reify_core::Type,
         member_b: &str,
-        type_b: reify_types::Type,
-        result_type: reify_types::Type,
-    ) -> reify_types::CompiledExpr {
-        let arg_a = reify_types::CompiledExpr::value_ref(
-            reify_types::ValueCellId::new(entity, member_a),
+        type_b: reify_core::Type,
+        result_type: reify_core::Type,
+    ) -> reify_ir::CompiledExpr {
+        let arg_a = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new(entity, member_a),
             type_a,
         );
-        let arg_b = reify_types::CompiledExpr::value_ref(
-            reify_types::ValueCellId::new(entity, member_b),
+        let arg_b = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new(entity, member_b),
             type_b,
         );
-        let mut content_hash = reify_types::ContentHash::of(&[reify_types::TAG_FUNCTION_CALL])
-            .combine(reify_types::ContentHash::of_str(helper_name));
+        let mut content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str(helper_name));
         content_hash = content_hash.combine(arg_a.content_hash);
         content_hash = content_hash.combine(arg_b.content_hash);
-        reify_types::CompiledExpr {
-            kind: reify_types::CompiledExprKind::FunctionCall {
-                function: reify_types::ResolvedFunction {
+        reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
                     name: helper_name.to_string(),
                     qualified_name: helper_name.to_string(),
                 },
@@ -6873,22 +6875,22 @@ mod tests {
     /// Build a `CompiledExpr` for `helper(<literal_real>, <literal_real>)` —
     /// used for the literal-arg fall-through defensive tests. Mirrors
     /// `conformance_call_literal_arg` above.
-    fn topology_selector_call_literal_args(helper_name: &str) -> reify_types::CompiledExpr {
-        let arg_a = reify_types::CompiledExpr::literal(
-            reify_types::Value::Real(1.0),
-            reify_types::Type::Real,
+    fn topology_selector_call_literal_args(helper_name: &str) -> reify_ir::CompiledExpr {
+        let arg_a = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Real(1.0),
+            reify_core::Type::Real,
         );
-        let arg_b = reify_types::CompiledExpr::literal(
-            reify_types::Value::Real(2.0),
-            reify_types::Type::Real,
+        let arg_b = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Real(2.0),
+            reify_core::Type::Real,
         );
-        let mut content_hash = reify_types::ContentHash::of(&[reify_types::TAG_FUNCTION_CALL])
-            .combine(reify_types::ContentHash::of_str(helper_name));
+        let mut content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str(helper_name));
         content_hash = content_hash.combine(arg_a.content_hash);
         content_hash = content_hash.combine(arg_b.content_hash);
-        reify_types::CompiledExpr {
-            kind: reify_types::CompiledExprKind::FunctionCall {
-                function: reify_types::ResolvedFunction {
+        reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
                     name: helper_name.to_string(),
                     qualified_name: helper_name.to_string(),
                 },
@@ -6897,18 +6899,18 @@ mod tests {
             // result_type is unused on the dispatch path — set to a
             // representative value to keep the literal hand-built expression
             // structurally well-formed.
-            result_type: reify_types::Type::Bool,
+            result_type: reify_core::Type::Bool,
             content_hash,
         }
     }
 
     /// Build a Value::Point with three Length scalars, mirroring how a
     /// let-bound `point3(x_mm, y_mm, z_mm)` realises in the `values` map.
-    fn point3_length_value(x_m: f64, y_m: f64, z_m: f64) -> reify_types::Value {
-        reify_types::Value::Point(vec![
-            reify_types::Value::length(x_m),
-            reify_types::Value::length(y_m),
-            reify_types::Value::length(z_m),
+    fn point3_length_value(x_m: f64, y_m: f64, z_m: f64) -> reify_ir::Value {
+        reify_ir::Value::Point(vec![
+            reify_ir::Value::length(x_m),
+            reify_ir::Value::length(y_m),
+            reify_ir::Value::length(z_m),
         ])
     }
 
@@ -6916,18 +6918,18 @@ mod tests {
     /// how a let-bound `vec3(x, y, z)` realises in the `values` map.
     /// Analogous to `point3_length_value` above. Used by the `angle` dispatch
     /// unit tests (task 3614, KGQ-ε).
-    fn vec3_value(x: f64, y: f64, z: f64) -> reify_types::Value {
-        reify_types::Value::Vector(vec![
-            reify_types::Value::Real(x),
-            reify_types::Value::Real(y),
-            reify_types::Value::Real(z),
+    fn vec3_value(x: f64, y: f64, z: f64) -> reify_ir::Value {
+        reify_ir::Value::Vector(vec![
+            reify_ir::Value::Real(x),
+            reify_ir::Value::Real(y),
+            reify_ir::Value::Real(z),
         ])
     }
 
     #[test]
     fn try_eval_topology_selector_closest_point_kernel_reply_parses_to_point3_length() {
         use reify_test_support::mocks::MockGeometryKernel;
-        let body_handle = reify_types::GeometryHandleId(7);
+        let body_handle = reify_ir::GeometryHandleId(7);
         // The kernel reply mirrors the `OcctKernel::query()` arm for
         // `ClosestPointOnShape` (lib.rs JSON-Point3 encoding). The dispatcher
         // is expected to parse it and produce a `Value::Point(vec![length(...),
@@ -6935,15 +6937,15 @@ mod tests {
         let mut kernel = MockGeometryKernel::new().with_closest_point_on_shape_result(
             body_handle,
             [10.0, 0.0, 0.0],
-            reify_types::Value::String("{\"x\":5.0,\"y\":0.0,\"z\":0.0}".to_string()),
+            reify_ir::Value::String("{\"x\":5.0,\"y\":0.0,\"z\":0.0}".to_string()),
         );
 
-        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
         named_steps.insert("body".to_string(), body_handle);
 
-        let mut values = reify_types::ValueMap::new();
+        let mut values = reify_ir::ValueMap::new();
         values.insert(
-            reify_types::ValueCellId::new("Bracket", "p"),
+            reify_core::ValueCellId::new("Bracket", "p"),
             point3_length_value(10.0, 0.0, 0.0),
         );
 
@@ -6951,10 +6953,10 @@ mod tests {
             "closest_point",
             "Bracket",
             "p",
-            reify_types::Type::point3(reify_types::Type::length()),
+            reify_core::Type::point3(reify_core::Type::length()),
             "body",
-            reify_types::Type::Geometry,
-            reify_types::Type::point3(reify_types::Type::length()),
+            reify_core::Type::Geometry,
+            reify_core::Type::point3(reify_core::Type::length()),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -6979,7 +6981,7 @@ mod tests {
     #[test]
     fn try_eval_topology_selector_is_on_kernel_reply_returns_bool_with_default_tolerance() {
         use reify_test_support::mocks::MockGeometryKernel;
-        let body_handle = reify_types::GeometryHandleId(11);
+        let body_handle = reify_ir::GeometryHandleId(11);
         // The dispatcher must use `DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` (≈ OCCT's
         // `Precision::Confusion()`, ~1e-7) for the 2-arg `is_on(point, geometry)`
         // form. Recording the mock under exactly this tolerance pins the contract —
@@ -6988,16 +6990,16 @@ mod tests {
         let mut kernel = MockGeometryKernel::new().with_point_on_shape_result(
             body_handle,
             [5.0, 0.0, 0.0],
-            reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
-            reify_types::Value::Bool(true),
+            reify_ir::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
+            reify_ir::Value::Bool(true),
         );
 
-        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
         named_steps.insert("body".to_string(), body_handle);
 
-        let mut values = reify_types::ValueMap::new();
+        let mut values = reify_ir::ValueMap::new();
         values.insert(
-            reify_types::ValueCellId::new("Bracket", "p"),
+            reify_core::ValueCellId::new("Bracket", "p"),
             point3_length_value(5.0, 0.0, 0.0),
         );
 
@@ -7005,10 +7007,10 @@ mod tests {
             "is_on",
             "Bracket",
             "p",
-            reify_types::Type::point3(reify_types::Type::length()),
+            reify_core::Type::point3(reify_core::Type::length()),
             "body",
-            reify_types::Type::Geometry,
-            reify_types::Type::Bool,
+            reify_core::Type::Geometry,
+            reify_core::Type::Bool,
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -7022,7 +7024,7 @@ mod tests {
 
         assert_eq!(
             result,
-            Some(reify_types::Value::Bool(true)),
+            Some(reify_ir::Value::Bool(true)),
             "is_on(p, body) with kernel reply Bool(true) must produce \
              Some(Value::Bool(true)) (default tolerance DEFAULT_POINT_ON_SHAPE_TOLERANCE_M); got {:?}",
             result
@@ -7032,31 +7034,31 @@ mod tests {
     #[test]
     fn try_eval_topology_selector_angle_between_surfaces_kernel_reply_returns_angle_scalar() {
         use reify_test_support::mocks::MockGeometryKernel;
-        let face_a = reify_types::GeometryHandleId(31);
-        let face_b = reify_types::GeometryHandleId(37);
+        let face_a = reify_ir::GeometryHandleId(31);
+        let face_b = reify_ir::GeometryHandleId(37);
         // Kernel returns a raw f64 (radians) — the dispatcher is expected to
         // wrap as `Value::angle(rad)` to match the cell type
         // `Type::angle()`.
         let mut kernel = MockGeometryKernel::new().with_surface_angle_result(
             face_a,
             face_b,
-            reify_types::Value::Real(std::f64::consts::FRAC_PI_2),
+            reify_ir::Value::Real(std::f64::consts::FRAC_PI_2),
         );
 
-        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
         named_steps.insert("face_a".to_string(), face_a);
         named_steps.insert("face_b".to_string(), face_b);
 
-        let values = reify_types::ValueMap::new();
+        let values = reify_ir::ValueMap::new();
 
         let expr = topology_selector_call_two_value_refs(
             "angle_between_surfaces",
             "Bracket",
             "face_a",
-            reify_types::Type::Geometry,
+            reify_core::Type::Geometry,
             "face_b",
-            reify_types::Type::Geometry,
-            reify_types::Type::angle(),
+            reify_core::Type::Geometry,
+            reify_core::Type::angle(),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -7070,7 +7072,7 @@ mod tests {
 
         assert_eq!(
             result,
-            Some(reify_types::Value::angle(std::f64::consts::FRAC_PI_2)),
+            Some(reify_ir::Value::angle(std::f64::consts::FRAC_PI_2)),
             "angle_between_surfaces(face_a, face_b) with kernel reply \
              Real(PI/2) must produce Some(Value::angle(PI/2)); got {:?}",
             result
@@ -7087,8 +7089,8 @@ mod tests {
         let inner = reify_test_support::mocks::MockGeometryKernel::new();
         let mut kernel = CountingMockKernel::new(inner);
 
-        let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
-        let values = reify_types::ValueMap::new();
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let values = reify_ir::ValueMap::new();
 
         let expr = topology_selector_call_literal_args("closest_point");
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -7119,8 +7121,8 @@ mod tests {
         let inner = reify_test_support::mocks::MockGeometryKernel::new();
         let mut kernel = CountingMockKernel::new(inner);
 
-        let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
-        let values = reify_types::ValueMap::new();
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let values = reify_ir::ValueMap::new();
 
         let expr = topology_selector_call_literal_args("is_on");
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -7151,8 +7153,8 @@ mod tests {
         let inner = reify_test_support::mocks::MockGeometryKernel::new();
         let mut kernel = CountingMockKernel::new(inner);
 
-        let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
-        let values = reify_types::ValueMap::new();
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let values = reify_ir::ValueMap::new();
 
         let expr = topology_selector_call_literal_args("angle_between_surfaces");
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -7183,12 +7185,12 @@ mod tests {
         let inner = reify_test_support::mocks::MockGeometryKernel::new();
         let mut kernel = CountingMockKernel::new(inner);
 
-        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
-        named_steps.insert("body".to_string(), reify_types::GeometryHandleId(7));
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        named_steps.insert("body".to_string(), reify_ir::GeometryHandleId(7));
 
-        let mut values = reify_types::ValueMap::new();
+        let mut values = reify_ir::ValueMap::new();
         values.insert(
-            reify_types::ValueCellId::new("Bracket", "p"),
+            reify_core::ValueCellId::new("Bracket", "p"),
             point3_length_value(0.0, 0.0, 0.0),
         );
 
@@ -7199,10 +7201,10 @@ mod tests {
             "volume",
             "Bracket",
             "p",
-            reify_types::Type::point3(reify_types::Type::length()),
+            reify_core::Type::point3(reify_core::Type::length()),
             "body",
-            reify_types::Type::Geometry,
-            reify_types::Type::dimensionless_scalar(),
+            reify_core::Type::Geometry,
+            reify_core::Type::dimensionless_scalar(),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -7236,31 +7238,31 @@ mod tests {
         // reply pinned by the sibling `..._returns_angle_scalar` test above. Mirrors
         // `kernel_distance`'s Real|Scalar leniency so a future kernel returning a
         // dimensioned Scalar does not regress silently.
-        let face_a = reify_types::GeometryHandleId(31);
-        let face_b = reify_types::GeometryHandleId(37);
+        let face_a = reify_ir::GeometryHandleId(31);
+        let face_b = reify_ir::GeometryHandleId(37);
         let mut kernel = MockGeometryKernel::new().with_surface_angle_result(
             face_a,
             face_b,
-            reify_types::Value::Scalar {
+            reify_ir::Value::Scalar {
                 si_value: std::f64::consts::FRAC_PI_2,
-                dimension: reify_types::DimensionVector::ANGLE,
+                dimension: reify_core::DimensionVector::ANGLE,
             },
         );
 
-        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
         named_steps.insert("face_a".to_string(), face_a);
         named_steps.insert("face_b".to_string(), face_b);
 
-        let values = reify_types::ValueMap::new();
+        let values = reify_ir::ValueMap::new();
 
         let expr = topology_selector_call_two_value_refs(
             "angle_between_surfaces",
             "Bracket",
             "face_a",
-            reify_types::Type::Geometry,
+            reify_core::Type::Geometry,
             "face_b",
-            reify_types::Type::Geometry,
-            reify_types::Type::angle(),
+            reify_core::Type::Geometry,
+            reify_core::Type::angle(),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -7274,7 +7276,7 @@ mod tests {
 
         assert_eq!(
             result,
-            Some(reify_types::Value::angle(std::f64::consts::FRAC_PI_2)),
+            Some(reify_ir::Value::angle(std::f64::consts::FRAC_PI_2)),
             "angle_between_surfaces with kernel Scalar(ANGLE, PI/2) reply must \
              resolve identically to a Real(PI/2) reply; got {:?}",
             result
@@ -7296,31 +7298,31 @@ mod tests {
     fn try_eval_topology_selector_angle_between_surfaces_kernel_reply_scalar_dimensionless_resolves_as_angle()
      {
         use reify_test_support::mocks::MockGeometryKernel;
-        let face_a = reify_types::GeometryHandleId(31);
-        let face_b = reify_types::GeometryHandleId(37);
+        let face_a = reify_ir::GeometryHandleId(31);
+        let face_b = reify_ir::GeometryHandleId(37);
         let mut kernel = MockGeometryKernel::new().with_surface_angle_result(
             face_a,
             face_b,
-            reify_types::Value::Scalar {
+            reify_ir::Value::Scalar {
                 si_value: std::f64::consts::FRAC_PI_2,
-                dimension: reify_types::DimensionVector::DIMENSIONLESS,
+                dimension: reify_core::DimensionVector::DIMENSIONLESS,
             },
         );
 
-        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
         named_steps.insert("face_a".to_string(), face_a);
         named_steps.insert("face_b".to_string(), face_b);
 
-        let values = reify_types::ValueMap::new();
+        let values = reify_ir::ValueMap::new();
 
         let expr = topology_selector_call_two_value_refs(
             "angle_between_surfaces",
             "Bracket",
             "face_a",
-            reify_types::Type::Geometry,
+            reify_core::Type::Geometry,
             "face_b",
-            reify_types::Type::Geometry,
-            reify_types::Type::angle(),
+            reify_core::Type::Geometry,
+            reify_core::Type::angle(),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -7334,7 +7336,7 @@ mod tests {
 
         assert_eq!(
             result,
-            Some(reify_types::Value::angle(std::f64::consts::FRAC_PI_2)),
+            Some(reify_ir::Value::angle(std::f64::consts::FRAC_PI_2)),
             "angle_between_surfaces with kernel Scalar(DIMENSIONLESS, PI/2) reply must \
              resolve to Some(Value::angle(PI/2)); got {:?}",
             result
@@ -7354,37 +7356,37 @@ mod tests {
     /// owns its own `diagnostics` Vec and call site, which is all that differs
     /// between the debug-panic and release-warn cases.
     fn wrong_dim_scalar_fixture() -> (
-        reify_types::CompiledExpr,
-        HashMap<String, reify_types::GeometryHandleId>,
-        reify_types::ValueMap,
+        reify_ir::CompiledExpr,
+        HashMap<String, reify_ir::GeometryHandleId>,
+        reify_ir::ValueMap,
         reify_test_support::mocks::MockGeometryKernel,
     ) {
         use reify_test_support::mocks::MockGeometryKernel;
-        let face_a = reify_types::GeometryHandleId(31);
-        let face_b = reify_types::GeometryHandleId(37);
+        let face_a = reify_ir::GeometryHandleId(31);
+        let face_b = reify_ir::GeometryHandleId(37);
         // LENGTH is the real-world bug class: metres silently reinterpreted as
         // radians. Using LENGTH (not e.g. MASS) ties the fixture to the actual
         // failure mode described in the task analysis.
         let kernel = MockGeometryKernel::new().with_surface_angle_result(
             face_a,
             face_b,
-            reify_types::Value::Scalar {
+            reify_ir::Value::Scalar {
                 si_value: 1.0,
-                dimension: reify_types::DimensionVector::LENGTH,
+                dimension: reify_core::DimensionVector::LENGTH,
             },
         );
-        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
         named_steps.insert("face_a".to_string(), face_a);
         named_steps.insert("face_b".to_string(), face_b);
-        let values = reify_types::ValueMap::new();
+        let values = reify_ir::ValueMap::new();
         let expr = topology_selector_call_two_value_refs(
             "angle_between_surfaces",
             "Bracket",
             "face_a",
-            reify_types::Type::Geometry,
+            reify_core::Type::Geometry,
             "face_b",
-            reify_types::Type::Geometry,
-            reify_types::Type::angle(),
+            reify_core::Type::Geometry,
+            reify_core::Type::angle(),
         );
         (expr, named_steps, values, kernel)
     }
@@ -7413,7 +7415,7 @@ mod tests {
 
         assert_eq!(
             result,
-            Some(reify_types::Value::Undef),
+            Some(reify_ir::Value::Undef),
             "angle_between_surfaces with LENGTH-dimensioned Scalar reply must yield \
              Some(Value::Undef), NOT Some(Value::angle(1.0)); got {:?}",
             result
@@ -7428,7 +7430,7 @@ mod tests {
         let diag = &diagnostics[0];
         assert_eq!(
             diag.severity,
-            reify_types::Severity::Warning,
+            reify_core::Severity::Warning,
             "diagnostic severity must be Warning, got {:?}",
             diag.severity
         );
@@ -7486,21 +7488,21 @@ mod tests {
         // `Some(Value::Undef)` with a Warning diagnostic naming the helper. Defends
         // the contract against a future kernel that mistakenly returns the
         // wrong-typed Value.
-        let body_handle = reify_types::GeometryHandleId(11);
+        let body_handle = reify_ir::GeometryHandleId(11);
         let mut kernel = MockGeometryKernel::new().with_point_on_shape_result(
             body_handle,
             [5.0, 0.0, 0.0],
-            reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
+            reify_ir::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
             // Wrong type — should trigger the non-Bool warning arm.
-            reify_types::Value::Real(0.5),
+            reify_ir::Value::Real(0.5),
         );
 
-        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
         named_steps.insert("body".to_string(), body_handle);
 
-        let mut values = reify_types::ValueMap::new();
+        let mut values = reify_ir::ValueMap::new();
         values.insert(
-            reify_types::ValueCellId::new("Bracket", "p"),
+            reify_core::ValueCellId::new("Bracket", "p"),
             point3_length_value(5.0, 0.0, 0.0),
         );
 
@@ -7508,10 +7510,10 @@ mod tests {
             "is_on",
             "Bracket",
             "p",
-            reify_types::Type::point3(reify_types::Type::length()),
+            reify_core::Type::point3(reify_core::Type::length()),
             "body",
-            reify_types::Type::Geometry,
-            reify_types::Type::Bool,
+            reify_core::Type::Geometry,
+            reify_core::Type::Bool,
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -7525,7 +7527,7 @@ mod tests {
 
         assert_eq!(
             result,
-            Some(reify_types::Value::Undef),
+            Some(reify_ir::Value::Undef),
             "is_on(...) with non-Bool kernel reply must yield Some(Value::Undef); got {:?}",
             result
         );
@@ -7539,7 +7541,7 @@ mod tests {
         let diag = &diagnostics[0];
         assert_eq!(
             diag.severity,
-            reify_types::Severity::Warning,
+            reify_core::Severity::Warning,
             "diagnostic severity must be Warning, got {:?}",
             diag.severity
         );
@@ -7564,21 +7566,21 @@ mod tests {
         // JSON-Point3 must produce `Some(Value::Undef)` with a Warning
         // diagnostic naming the helper. Defends the contract against a future
         // kernel that emits a malformed JSON string.
-        let body_handle = reify_types::GeometryHandleId(7);
+        let body_handle = reify_ir::GeometryHandleId(7);
         let mut kernel = MockGeometryKernel::new().with_closest_point_on_shape_result(
             body_handle,
             [10.0, 0.0, 0.0],
             // Not a JSON-Point3 payload — should trigger the parse-failure
             // warning arm.
-            reify_types::Value::String("not a valid json point".to_string()),
+            reify_ir::Value::String("not a valid json point".to_string()),
         );
 
-        let mut named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
         named_steps.insert("body".to_string(), body_handle);
 
-        let mut values = reify_types::ValueMap::new();
+        let mut values = reify_ir::ValueMap::new();
         values.insert(
-            reify_types::ValueCellId::new("Bracket", "p"),
+            reify_core::ValueCellId::new("Bracket", "p"),
             point3_length_value(10.0, 0.0, 0.0),
         );
 
@@ -7586,10 +7588,10 @@ mod tests {
             "closest_point",
             "Bracket",
             "p",
-            reify_types::Type::point3(reify_types::Type::length()),
+            reify_core::Type::point3(reify_core::Type::length()),
             "body",
-            reify_types::Type::Geometry,
-            reify_types::Type::point3(reify_types::Type::length()),
+            reify_core::Type::Geometry,
+            reify_core::Type::point3(reify_core::Type::length()),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -7603,7 +7605,7 @@ mod tests {
 
         assert_eq!(
             result,
-            Some(reify_types::Value::Undef),
+            Some(reify_ir::Value::Undef),
             "closest_point with malformed JSON reply must yield \
              Some(Value::Undef); got {:?}",
             result
@@ -7619,7 +7621,7 @@ mod tests {
         let diag = &diagnostics[0];
         assert_eq!(
             diag.severity,
-            reify_types::Severity::Warning,
+            reify_core::Severity::Warning,
             "diagnostic severity must be Warning, got {:?}",
             diag.severity
         );
@@ -7646,14 +7648,14 @@ mod tests {
         use reify_test_support::mocks::MockGeometryKernel;
         let mut kernel = MockGeometryKernel::new();
 
-        let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
-        let mut values = reify_types::ValueMap::new();
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let mut values = reify_ir::ValueMap::new();
         values.insert(
-            reify_types::ValueCellId::new("AngleSmoke", "a"),
+            reify_core::ValueCellId::new("AngleSmoke", "a"),
             vec3_value(1.0, 0.0, 0.0),
         );
         values.insert(
-            reify_types::ValueCellId::new("AngleSmoke", "b"),
+            reify_core::ValueCellId::new("AngleSmoke", "b"),
             vec3_value(0.0, 1.0, 0.0),
         );
 
@@ -7661,10 +7663,10 @@ mod tests {
             "angle",
             "AngleSmoke",
             "a",
-            reify_types::Type::vec3(reify_types::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::Real),
             "b",
-            reify_types::Type::vec3(reify_types::Type::Real),
-            reify_types::Type::angle(),
+            reify_core::Type::vec3(reify_core::Type::Real),
+            reify_core::Type::angle(),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -7678,7 +7680,7 @@ mod tests {
 
         assert_eq!(
             result,
-            Some(reify_types::Value::angle(std::f64::consts::FRAC_PI_2)),
+            Some(reify_ir::Value::angle(std::f64::consts::FRAC_PI_2)),
             "angle(vec3(1,0,0), vec3(0,1,0)) must return Some(Value::angle(PI/2)); got {:?}",
             result
         );
@@ -7696,14 +7698,14 @@ mod tests {
         use reify_test_support::mocks::MockGeometryKernel;
         let mut kernel = MockGeometryKernel::new();
 
-        let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
-        let mut values = reify_types::ValueMap::new();
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let mut values = reify_ir::ValueMap::new();
         values.insert(
-            reify_types::ValueCellId::new("AngleSmoke", "a"),
+            reify_core::ValueCellId::new("AngleSmoke", "a"),
             vec3_value(1.0, 0.0, 0.0),
         );
         values.insert(
-            reify_types::ValueCellId::new("AngleSmoke", "b"),
+            reify_core::ValueCellId::new("AngleSmoke", "b"),
             vec3_value(2.0, 0.0, 0.0),
         );
 
@@ -7711,10 +7713,10 @@ mod tests {
             "angle",
             "AngleSmoke",
             "a",
-            reify_types::Type::vec3(reify_types::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::Real),
             "b",
-            reify_types::Type::vec3(reify_types::Type::Real),
-            reify_types::Type::angle(),
+            reify_core::Type::vec3(reify_core::Type::Real),
+            reify_core::Type::angle(),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -7728,7 +7730,7 @@ mod tests {
 
         assert_eq!(
             result,
-            Some(reify_types::Value::angle(0.0)),
+            Some(reify_ir::Value::angle(0.0)),
             "angle(vec3(1,0,0), vec3(2,0,0)) (parallel) must return Some(Value::angle(0.0)); \
              got {:?}",
             result
@@ -7747,14 +7749,14 @@ mod tests {
         use reify_test_support::mocks::MockGeometryKernel;
         let mut kernel = MockGeometryKernel::new();
 
-        let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
-        let mut values = reify_types::ValueMap::new();
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let mut values = reify_ir::ValueMap::new();
         values.insert(
-            reify_types::ValueCellId::new("AngleSmoke", "a"),
+            reify_core::ValueCellId::new("AngleSmoke", "a"),
             vec3_value(1.0, 0.0, 0.0),
         );
         values.insert(
-            reify_types::ValueCellId::new("AngleSmoke", "b"),
+            reify_core::ValueCellId::new("AngleSmoke", "b"),
             vec3_value(-1.0, 0.0, 0.0),
         );
 
@@ -7762,10 +7764,10 @@ mod tests {
             "angle",
             "AngleSmoke",
             "a",
-            reify_types::Type::vec3(reify_types::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::Real),
             "b",
-            reify_types::Type::vec3(reify_types::Type::Real),
-            reify_types::Type::angle(),
+            reify_core::Type::vec3(reify_core::Type::Real),
+            reify_core::Type::angle(),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -7779,7 +7781,7 @@ mod tests {
 
         assert_eq!(
             result,
-            Some(reify_types::Value::angle(std::f64::consts::PI)),
+            Some(reify_ir::Value::angle(std::f64::consts::PI)),
             "angle(vec3(1,0,0), vec3(-1,0,0)) (antiparallel) must return \
              Some(Value::angle(PI)); got {:?}",
             result
@@ -7805,8 +7807,8 @@ mod tests {
         let inner = reify_test_support::mocks::MockGeometryKernel::new();
         let mut kernel = CountingMockKernel::new(inner);
 
-        let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
-        let values = reify_types::ValueMap::new();
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let values = reify_ir::ValueMap::new();
 
         let expr = topology_selector_call_literal_args("angle");
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -7841,31 +7843,31 @@ mod tests {
         use reify_test_support::mocks::MockGeometryKernel;
         let mut kernel = MockGeometryKernel::new();
 
-        let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
-        let values = reify_types::ValueMap::new(); // empty — args come from literals
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let values = reify_ir::ValueMap::new(); // empty — args come from literals
 
         // Build angle(Literal(vec3(1,0,0)), Literal(vec3(0,1,0))).
-        let arg_a = reify_types::CompiledExpr::literal(
+        let arg_a = reify_ir::CompiledExpr::literal(
             vec3_value(1.0, 0.0, 0.0),
-            reify_types::Type::vec3(reify_types::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::Real),
         );
-        let arg_b = reify_types::CompiledExpr::literal(
+        let arg_b = reify_ir::CompiledExpr::literal(
             vec3_value(0.0, 1.0, 0.0),
-            reify_types::Type::vec3(reify_types::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::Real),
         );
         let mut ch =
-            reify_types::ContentHash::of(&[reify_types::TAG_FUNCTION_CALL])
-                .combine(reify_types::ContentHash::of_str("angle"));
+            reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+                .combine(reify_core::ContentHash::of_str("angle"));
         ch = ch.combine(arg_a.content_hash).combine(arg_b.content_hash);
-        let expr = reify_types::CompiledExpr {
-            kind: reify_types::CompiledExprKind::FunctionCall {
-                function: reify_types::ResolvedFunction {
+        let expr = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
                     name: "angle".to_string(),
                     qualified_name: "angle".to_string(),
                 },
                 args: vec![arg_a, arg_b],
             },
-            result_type: reify_types::Type::angle(),
+            result_type: reify_core::Type::angle(),
             content_hash: ch,
         };
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -7880,7 +7882,7 @@ mod tests {
 
         assert_eq!(
             result,
-            Some(reify_types::Value::angle(std::f64::consts::FRAC_PI_2)),
+            Some(reify_ir::Value::angle(std::f64::consts::FRAC_PI_2)),
             "angle(literal vec3(1,0,0), literal vec3(0,1,0)) must resolve to \
              Some(Value::angle(π/2)); got {:?}",
             result
@@ -7900,14 +7902,14 @@ mod tests {
         use reify_test_support::mocks::MockGeometryKernel;
         let mut kernel = MockGeometryKernel::new();
 
-        let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
-        let mut values = reify_types::ValueMap::new();
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let mut values = reify_ir::ValueMap::new();
         values.insert(
-            reify_types::ValueCellId::new("AngleSmoke", "a"),
+            reify_core::ValueCellId::new("AngleSmoke", "a"),
             vec3_value(0.0, 0.0, 0.0),
         );
         values.insert(
-            reify_types::ValueCellId::new("AngleSmoke", "b"),
+            reify_core::ValueCellId::new("AngleSmoke", "b"),
             vec3_value(0.0, 1.0, 0.0),
         );
 
@@ -7915,10 +7917,10 @@ mod tests {
             "angle",
             "AngleSmoke",
             "a",
-            reify_types::Type::vec3(reify_types::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::Real),
             "b",
-            reify_types::Type::vec3(reify_types::Type::Real),
-            reify_types::Type::angle(),
+            reify_core::Type::vec3(reify_core::Type::Real),
+            reify_core::Type::angle(),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -7932,7 +7934,7 @@ mod tests {
 
         assert_eq!(
             result,
-            Some(reify_types::Value::Undef),
+            Some(reify_ir::Value::Undef),
             "angle(vec3(0,0,0), ...) with zero-length input must return \
              Some(Value::Undef); got {:?}",
             result
@@ -7947,7 +7949,7 @@ mod tests {
         let diag = &diagnostics[0];
         assert_eq!(
             diag.severity,
-            reify_types::Severity::Warning,
+            reify_core::Severity::Warning,
             "diagnostic severity must be Warning, got {:?}",
             diag.severity
         );
@@ -7972,24 +7974,24 @@ mod tests {
             ("INFINITY", f64::INFINITY, 0.0, 0.0),
         ] {
             let mut kernel = MockGeometryKernel::new();
-            let named_steps: HashMap<String, reify_types::GeometryHandleId> = HashMap::new();
-            let mut values = reify_types::ValueMap::new();
+            let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+            let mut values = reify_ir::ValueMap::new();
             values.insert(
-                reify_types::ValueCellId::new("T", "a"),
+                reify_core::ValueCellId::new("T", "a"),
                 vec3_value(ax, ay, az),
             );
             values.insert(
-                reify_types::ValueCellId::new("T", "b"),
+                reify_core::ValueCellId::new("T", "b"),
                 vec3_value(0.0, 1.0, 0.0),
             );
             let expr = topology_selector_call_two_value_refs(
                 "angle",
                 "T",
                 "a",
-                reify_types::Type::vec3(reify_types::Type::Real),
+                reify_core::Type::vec3(reify_core::Type::Real),
                 "b",
-                reify_types::Type::vec3(reify_types::Type::Real),
-                reify_types::Type::angle(),
+                reify_core::Type::vec3(reify_core::Type::Real),
+                reify_core::Type::angle(),
             );
             let mut diagnostics: Vec<Diagnostic> = Vec::new();
             let result = super::try_eval_topology_selector(
@@ -8001,7 +8003,7 @@ mod tests {
             );
             assert_eq!(
                 result,
-                Some(reify_types::Value::Undef),
+                Some(reify_ir::Value::Undef),
                 "angle(vec3({label},...), ...) must return Some(Value::Undef); got {result:?}"
             );
             assert_eq!(
@@ -8013,7 +8015,7 @@ mod tests {
             );
             assert_eq!(
                 diagnostics[0].severity,
-                reify_types::Severity::Warning,
+                reify_core::Severity::Warning,
                 "diagnostic severity must be Warning (label={label}), got {:?}",
                 diagnostics[0].severity
             );
@@ -8041,11 +8043,11 @@ mod tests {
     #[test]
     fn gate_query_capability_brep_only_on_brep_routes_occt_no_diag() {
         // branch-a: BRepOnly + BRep → Occt
-        let query = reify_types::GeometryQuery::EdgeLength(GeometryHandleId(1));
+        let query = reify_ir::GeometryQuery::EdgeLength(GeometryHandleId(1));
         let mut diags: Vec<Diagnostic> = Vec::new();
         let route = super::gate_query_capability(
             &query,
-            reify_types::ReprKind::BRep,
+            reify_ir::ReprKind::BRep,
             "edge_length",
             &mut diags,
         );
@@ -8064,14 +8066,14 @@ mod tests {
     #[test]
     fn gate_query_capability_brep_and_mesh_on_brep_routes_occt_no_diag() {
         // branch-b: BRepAndMesh + BRep → Occt
-        let query = reify_types::GeometryQuery::Distance {
+        let query = reify_ir::GeometryQuery::Distance {
             from: GeometryHandleId(1),
             to: GeometryHandleId(2),
         };
         let mut diags: Vec<Diagnostic> = Vec::new();
         let route = super::gate_query_capability(
             &query,
-            reify_types::ReprKind::BRep,
+            reify_ir::ReprKind::BRep,
             "distance",
             &mut diags,
         );
@@ -8090,14 +8092,14 @@ mod tests {
     #[test]
     fn gate_query_capability_brep_and_mesh_on_mesh_routes_manifold_no_diag() {
         // branch-c: BRepAndMesh + Mesh → Manifold
-        let query = reify_types::GeometryQuery::Distance {
+        let query = reify_ir::GeometryQuery::Distance {
             from: GeometryHandleId(1),
             to: GeometryHandleId(2),
         };
         let mut diags: Vec<Diagnostic> = Vec::new();
         let route = super::gate_query_capability(
             &query,
-            reify_types::ReprKind::Mesh,
+            reify_ir::ReprKind::Mesh,
             "distance",
             &mut diags,
         );
@@ -8116,11 +8118,11 @@ mod tests {
     #[test]
     fn gate_query_capability_brep_only_on_mesh_fails_closed_with_diag() {
         // branch-d: BRepOnly + Mesh → Unsupported + exactly-one Error diag
-        let query = reify_types::GeometryQuery::EdgeLength(GeometryHandleId(1));
+        let query = reify_ir::GeometryQuery::EdgeLength(GeometryHandleId(1));
         let mut diags: Vec<Diagnostic> = Vec::new();
         let route = super::gate_query_capability(
             &query,
-            reify_types::ReprKind::Mesh,
+            reify_ir::ReprKind::Mesh,
             "curvature",
             &mut diags,
         );
@@ -8139,13 +8141,13 @@ mod tests {
         let diag = &diags[0];
         assert_eq!(
             diag.severity,
-            reify_types::Severity::Error,
+            reify_core::Severity::Error,
             "diagnostic severity must be Error, got {:?}",
             diag.severity
         );
         assert_eq!(
             diag.code,
-            Some(reify_types::DiagnosticCode::QueryNotSupportedOnRepr),
+            Some(reify_core::DiagnosticCode::QueryNotSupportedOnRepr),
             "diagnostic code must be QueryNotSupportedOnRepr, got {:?}",
             diag.code
         );
@@ -8165,14 +8167,14 @@ mod tests {
     fn gate_query_capability_any_query_on_voxel_fails_closed() {
         // branch-e (Voxel): BRepAndMesh query + Voxel → Unsupported + one diag
         // Message must say "BRep or Mesh" (not just "BRep") because Distance is BRepAndMesh.
-        let query = reify_types::GeometryQuery::Distance {
+        let query = reify_ir::GeometryQuery::Distance {
             from: GeometryHandleId(1),
             to: GeometryHandleId(2),
         };
         let mut diags: Vec<Diagnostic> = Vec::new();
         let route = super::gate_query_capability(
             &query,
-            reify_types::ReprKind::Voxel,
+            reify_ir::ReprKind::Voxel,
             "distance",
             &mut diags,
         );
@@ -8180,7 +8182,7 @@ mod tests {
         assert_eq!(diags.len(), 1, "Voxel repr must emit one diag: {:?}", diags);
         assert_eq!(
             diags[0].code,
-            Some(reify_types::DiagnosticCode::QueryNotSupportedOnRepr)
+            Some(reify_core::DiagnosticCode::QueryNotSupportedOnRepr)
         );
         assert!(
             diags[0].message.contains("BRep or Mesh"),
@@ -8199,11 +8201,11 @@ mod tests {
     fn gate_query_capability_any_query_on_sdf_fails_closed() {
         // branch-e (Sdf): BRepAndMesh query + Sdf → Unsupported + one diag
         // Message must say "BRep or Mesh" because Volume is BRepAndMesh.
-        let query = reify_types::GeometryQuery::Volume(GeometryHandleId(1));
+        let query = reify_ir::GeometryQuery::Volume(GeometryHandleId(1));
         let mut diags: Vec<Diagnostic> = Vec::new();
         let route = super::gate_query_capability(
             &query,
-            reify_types::ReprKind::Sdf,
+            reify_ir::ReprKind::Sdf,
             "volume",
             &mut diags,
         );
@@ -8211,7 +8213,7 @@ mod tests {
         assert_eq!(diags.len(), 1, "Sdf repr must emit one diag: {:?}", diags);
         assert_eq!(
             diags[0].code,
-            Some(reify_types::DiagnosticCode::QueryNotSupportedOnRepr)
+            Some(reify_core::DiagnosticCode::QueryNotSupportedOnRepr)
         );
         assert!(
             diags[0].message.contains("BRep or Mesh"),
@@ -8229,11 +8231,11 @@ mod tests {
     fn gate_query_capability_any_query_on_volume_mesh_fails_closed() {
         // branch-e (VolumeMesh): BRepAndMesh query + VolumeMesh → Unsupported + one diag
         // Message must say "BRep or Mesh" because BoundingBox is BRepAndMesh.
-        let query = reify_types::GeometryQuery::BoundingBox(GeometryHandleId(1));
+        let query = reify_ir::GeometryQuery::BoundingBox(GeometryHandleId(1));
         let mut diags: Vec<Diagnostic> = Vec::new();
         let route = super::gate_query_capability(
             &query,
-            reify_types::ReprKind::VolumeMesh,
+            reify_ir::ReprKind::VolumeMesh,
             "bounding_box",
             &mut diags,
         );
@@ -8246,7 +8248,7 @@ mod tests {
         );
         assert_eq!(
             diags[0].code,
-            Some(reify_types::DiagnosticCode::QueryNotSupportedOnRepr)
+            Some(reify_core::DiagnosticCode::QueryNotSupportedOnRepr)
         );
         assert!(
             diags[0].message.contains("BRep or Mesh"),
@@ -8266,14 +8268,14 @@ mod tests {
         // (one BRepOnly, one BRepAndMesh); invariant: Unsupported ⟺ exactly
         // one diagnostic with code QueryNotSupportedOnRepr.
         let all_reprs = [
-            reify_types::ReprKind::BRep,
-            reify_types::ReprKind::Mesh,
-            reify_types::ReprKind::Sdf,
-            reify_types::ReprKind::Voxel,
-            reify_types::ReprKind::VolumeMesh,
+            reify_ir::ReprKind::BRep,
+            reify_ir::ReprKind::Mesh,
+            reify_ir::ReprKind::Sdf,
+            reify_ir::ReprKind::Voxel,
+            reify_ir::ReprKind::VolumeMesh,
         ];
-        let brep_only_query = reify_types::GeometryQuery::EdgeLength(GeometryHandleId(1));
-        let brep_and_mesh_query = reify_types::GeometryQuery::Distance {
+        let brep_only_query = reify_ir::GeometryQuery::EdgeLength(GeometryHandleId(1));
+        let brep_and_mesh_query = reify_ir::GeometryQuery::Distance {
             from: GeometryHandleId(1),
             to: GeometryHandleId(2),
         };
@@ -8294,7 +8296,7 @@ mod tests {
                     );
                     assert_eq!(
                         diags[0].code,
-                        Some(reify_types::DiagnosticCode::QueryNotSupportedOnRepr),
+                        Some(reify_core::DiagnosticCode::QueryNotSupportedOnRepr),
                         "Unsupported diag must carry QueryNotSupportedOnRepr code"
                     );
                 } else {
@@ -8335,9 +8337,9 @@ mod tests {
     }
 
     /// Helper: extract `(w, x, y, z)` from a `Value::Orientation`.
-    fn orientation_components(v: reify_types::Value) -> (f64, f64, f64, f64) {
+    fn orientation_components(v: reify_ir::Value) -> (f64, f64, f64, f64) {
         match v {
-            reify_types::Value::Orientation { w, x, y, z } => (w, x, y, z),
+            reify_ir::Value::Orientation { w, x, y, z } => (w, x, y, z),
             other => panic!("expected Value::Orientation, got {other:?}"),
         }
     }
@@ -8352,7 +8354,7 @@ mod tests {
         let q = super::quaternion_from_z_to_axis(0.0, 0.0, 1.0);
         assert_eq!(
             q,
-            reify_types::Value::Orientation {
+            reify_ir::Value::Orientation {
                 w: 1.0,
                 x: 0.0,
                 y: 0.0,
@@ -8369,7 +8371,7 @@ mod tests {
         let q = super::quaternion_from_z_to_axis(0.0, 0.0, -1.0);
         assert_eq!(
             q,
-            reify_types::Value::Orientation {
+            reify_ir::Value::Orientation {
                 w: 0.0,
                 x: 1.0,
                 y: 0.0,
@@ -8452,17 +8454,17 @@ mod tests {
     #[test]
     fn frame_sub_shape_kind_from_selector_kind_contract() {
         assert_eq!(
-            super::FrameSubShapeKind::from_selector_kind(&reify_types::SelectorKind::Face),
+            super::FrameSubShapeKind::from_selector_kind(&reify_ir::SelectorKind::Face),
             Some(super::FrameSubShapeKind::Face),
             "SelectorKind::Face should convert to Some(FrameSubShapeKind::Face)"
         );
         assert_eq!(
-            super::FrameSubShapeKind::from_selector_kind(&reify_types::SelectorKind::Edge),
+            super::FrameSubShapeKind::from_selector_kind(&reify_ir::SelectorKind::Edge),
             Some(super::FrameSubShapeKind::Edge),
             "SelectorKind::Edge should convert to Some(FrameSubShapeKind::Edge)"
         );
         assert!(
-            super::FrameSubShapeKind::from_selector_kind(&reify_types::SelectorKind::Point).is_none(),
+            super::FrameSubShapeKind::from_selector_kind(&reify_ir::SelectorKind::Point).is_none(),
             "SelectorKind::Point should convert to None — point selectors are \
              handled by Layer-1 eval_expr and must not reach kernel dispatch"
         );
@@ -8490,11 +8492,11 @@ mod tests {
     fn construct_frame_from_kernel_face_returns_frame_from_centroid_and_face_normal() {
         use reify_test_support::mocks::MockGeometryKernel;
 
-        let target = reify_types::GeometryHandleId(10);
+        let target = reify_ir::GeometryHandleId(10);
         let centroid_json =
-            reify_types::Value::String(r#"{"x":0.0,"y":0.0,"z":0.01}"#.to_string());
+            reify_ir::Value::String(r#"{"x":0.0,"y":0.0,"z":0.01}"#.to_string());
         let normal_json =
-            reify_types::Value::String(r#"{"x":0.0,"y":0.0,"z":1.0}"#.to_string());
+            reify_ir::Value::String(r#"{"x":0.0,"y":0.0,"z":1.0}"#.to_string());
         let mut kernel = MockGeometryKernel::new()
             .with_centroid_result(target, centroid_json)
             .with_face_normal_result(target, normal_json);
@@ -8507,7 +8509,7 @@ mod tests {
             &mut diagnostics,
         );
 
-        let Some(reify_types::Value::Frame { ref origin, ref basis }) = result else {
+        let Some(reify_ir::Value::Frame { ref origin, ref basis }) = result else {
             panic!(
                 "construct_frame_from_kernel(Face) should return Some(Value::Frame {{ .. }}); got {:?}",
                 result
@@ -8515,16 +8517,16 @@ mod tests {
         };
         assert_eq!(
             **origin,
-            reify_types::Value::Point(vec![
-                reify_types::Value::length(0.0),
-                reify_types::Value::length(0.0),
-                reify_types::Value::length(0.01),
+            reify_ir::Value::Point(vec![
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.01),
             ]),
             "Face: origin should be centroid (0m, 0m, 0.01m)"
         );
         assert_eq!(
             **basis,
-            reify_types::Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+            reify_ir::Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
             "Face: basis should be identity (FaceNormal +Z → +Z = zero rotation)"
         );
         assert!(
@@ -8546,11 +8548,11 @@ mod tests {
     fn construct_frame_from_kernel_edge_returns_frame_from_centroid_and_edge_tangent() {
         use reify_test_support::mocks::MockGeometryKernel;
 
-        let target = reify_types::GeometryHandleId(20);
+        let target = reify_ir::GeometryHandleId(20);
         let centroid_json =
-            reify_types::Value::String(r#"{"x":0.0,"y":0.0,"z":0.005}"#.to_string());
+            reify_ir::Value::String(r#"{"x":0.0,"y":0.0,"z":0.005}"#.to_string());
         let tangent_json =
-            reify_types::Value::String(r#"{"x":0.0,"y":0.0,"z":1.0}"#.to_string());
+            reify_ir::Value::String(r#"{"x":0.0,"y":0.0,"z":1.0}"#.to_string());
         let mut kernel = MockGeometryKernel::new()
             .with_centroid_result(target, centroid_json)
             .with_edge_tangent_result(target, tangent_json);
@@ -8563,7 +8565,7 @@ mod tests {
             &mut diagnostics,
         );
 
-        let Some(reify_types::Value::Frame { ref origin, ref basis }) = result else {
+        let Some(reify_ir::Value::Frame { ref origin, ref basis }) = result else {
             panic!(
                 "construct_frame_from_kernel(Edge) should return Some(Value::Frame {{ .. }}); got {:?}",
                 result
@@ -8571,16 +8573,16 @@ mod tests {
         };
         assert_eq!(
             **origin,
-            reify_types::Value::Point(vec![
-                reify_types::Value::length(0.0),
-                reify_types::Value::length(0.0),
-                reify_types::Value::length(0.005),
+            reify_ir::Value::Point(vec![
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.005),
             ]),
             "Edge: origin should be centroid (0m, 0m, 0.005m)"
         );
         assert_eq!(
             **basis,
-            reify_types::Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+            reify_ir::Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
             "Edge: basis should be identity (EdgeTangent +Z → +Z = zero rotation)"
         );
         assert!(
@@ -8592,7 +8594,7 @@ mod tests {
 
     #[test]
     fn cap_kind_translation_maps_all_canonical_labels_and_returns_none_for_unknown() {
-        use reify_types::{CapKind, Role};
+        use reify_ir::{CapKind, Role};
         let cases: &[(&str, Option<(Role, u32)>)] = &[
             ("top",         Some((Role::Cap(CapKind::Top), 0))),
             ("bottom",      Some((Role::Cap(CapKind::Bottom), 0))),

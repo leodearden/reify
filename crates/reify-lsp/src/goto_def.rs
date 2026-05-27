@@ -1,5 +1,5 @@
-use reify_syntax::ImportKind;
-use reify_types::ModulePath;
+use reify_ast::ImportKind;
+use reify_core::ModulePath;
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
 use crate::analysis::{enclosing_decl_at, find_named_member_span, module_name_from_uri};
@@ -25,10 +25,10 @@ pub fn compute_goto_definition(source: &str, uri: &Url, position: Position) -> O
     // first for scoped resolution.
     if let Some(enclosing) = enclosing_decl_at(&parsed.declarations, offset) {
         let members: &[_] = match enclosing {
-            reify_syntax::Declaration::Structure(s) => &s.members,
-            reify_syntax::Declaration::Occurrence(o) => &o.members,
-            reify_syntax::Declaration::Trait(t) => &t.members,
-            reify_syntax::Declaration::Purpose(p) => &p.members,
+            reify_ast::Declaration::Structure(s) => &s.members,
+            reify_ast::Declaration::Occurrence(o) => &o.members,
+            reify_ast::Declaration::Trait(t) => &t.members,
+            reify_ast::Declaration::Purpose(p) => &p.members,
             _ => &[], // Variants without members (Import, Enum, Function, etc.)
         };
         if let Some(info) = find_named_member_span(members, word) {
@@ -45,10 +45,10 @@ pub fn compute_goto_definition(source: &str, uri: &Url, position: Position) -> O
     // or enclosing declaration didn't contain the member).
     for decl in &parsed.declarations {
         let members = match decl {
-            reify_syntax::Declaration::Structure(s) => &s.members,
-            reify_syntax::Declaration::Occurrence(o) => &o.members,
-            reify_syntax::Declaration::Trait(t) => &t.members,
-            reify_syntax::Declaration::Purpose(p) => &p.members,
+            reify_ast::Declaration::Structure(s) => &s.members,
+            reify_ast::Declaration::Occurrence(o) => &o.members,
+            reify_ast::Declaration::Trait(t) => &t.members,
+            reify_ast::Declaration::Purpose(p) => &p.members,
             _ => continue,
         };
         if let Some(info) = find_named_member_span(members, word) {
@@ -89,7 +89,7 @@ pub fn compute_goto_definition_cross_file(
     // Phase 0: Check if cursor is within an import statement's span.
     // This takes priority — when the cursor is on an import, navigate to the target.
     for decl in &parsed.declarations {
-        if let reify_syntax::Declaration::Import(import) = decl
+        if let reify_ast::Declaration::Import(import) = decl
             && offset_u32 >= import.span.start
             && offset_u32 < import.span.end
             && let Some((target_uri, target_source)) = resolve_import(&import.path)
@@ -129,7 +129,7 @@ pub fn compute_goto_definition_cross_file(
     // Phase 2: Cross-file import resolution.
     // Check if the word matches an imported name.
     for decl in &parsed.declarations {
-        if let reify_syntax::Declaration::Import(import) = decl {
+        if let reify_ast::Declaration::Import(import) = decl {
             let target_name = match &import.kind {
                 ImportKind::Entity(name) if name == word => Some(name.as_str()),
                 ImportKind::EntityAliased { entity, alias } if alias == word => {
@@ -166,12 +166,12 @@ fn find_declaration_in_source(source: &str, name: &str, uri: &Url) -> Option<Loc
 
     for decl in &parsed.declarations {
         let (decl_name, span) = match decl {
-            reify_syntax::Declaration::Structure(s) => (s.name.as_str(), s.span),
-            reify_syntax::Declaration::Occurrence(o) => (o.name.as_str(), o.span),
-            reify_syntax::Declaration::Function(f) => (f.name.as_str(), f.span),
-            reify_syntax::Declaration::Enum(e) => (e.name.as_str(), e.span),
-            reify_syntax::Declaration::Trait(t) => (t.name.as_str(), t.span),
-            reify_syntax::Declaration::Field(f) => (f.name.as_str(), f.span),
+            reify_ast::Declaration::Structure(s) => (s.name.as_str(), s.span),
+            reify_ast::Declaration::Occurrence(o) => (o.name.as_str(), o.span),
+            reify_ast::Declaration::Function(f) => (f.name.as_str(), f.span),
+            reify_ast::Declaration::Enum(e) => (e.name.as_str(), e.span),
+            reify_ast::Declaration::Trait(t) => (t.name.as_str(), t.span),
+            reify_ast::Declaration::Field(f) => (f.name.as_str(), f.span),
             _ => continue,
         };
         if decl_name == name {
@@ -1018,14 +1018,14 @@ mod tests {
         let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param x: Bool = true\n    let y = x\n}";
         let uri = test_uri();
         let module_name = crate::analysis::module_name_from_uri(&uri);
-        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single(module_name));
+        let parsed = reify_syntax::parse(source, reify_core::ModulePath::single(module_name));
 
         // Offset inside B's 'let y = x'
         let offset = source.find("let y").unwrap();
         let decl = enclosing_decl_at(&parsed.declarations, offset);
         assert!(decl.is_some(), "offset inside B should find enclosing decl");
         match decl.unwrap() {
-            reify_syntax::Declaration::Structure(s) => {
+            reify_ast::Declaration::Structure(s) => {
                 assert_eq!(s.name, "B", "enclosing decl should be B");
                 // Verify we can extract members from the returned declaration
                 assert!(!s.members.is_empty(), "B should have members");
@@ -1042,7 +1042,7 @@ mod tests {
         let source = "structure A {\n    param x: Scalar = 5mm\n}\nx\nstructure B {\n    param y: Scalar = 20mm\n}";
         let uri = test_uri();
         let module_name = crate::analysis::module_name_from_uri(&uri);
-        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single(module_name));
+        let parsed = reify_syntax::parse(source, reify_core::ModulePath::single(module_name));
 
         // Offset on 'x' standalone between declarations
         let offset = source.find("\nx\n").unwrap() + 1;
@@ -1066,14 +1066,14 @@ mod tests {
         let source = "structure A {\n    param x: Scalar = 5mm\n    let z = y\n}\nstructure B {\n    param y: Scalar = 20mm\n}";
         let uri = test_uri();
         let module_name = crate::analysis::module_name_from_uri(&uri);
-        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single(module_name));
+        let parsed = reify_syntax::parse(source, reify_core::ModulePath::single(module_name));
 
         // Offset inside A
         let offset = source.find("let z").unwrap();
         let decl = enclosing_decl_at(&parsed.declarations, offset);
         assert!(decl.is_some());
         match decl.unwrap() {
-            reify_syntax::Declaration::Structure(s) => assert_eq!(s.name, "A"),
+            reify_ast::Declaration::Structure(s) => assert_eq!(s.name, "A"),
             _ => panic!("expected A"),
         }
 

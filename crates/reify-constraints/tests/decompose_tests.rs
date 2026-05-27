@@ -2,7 +2,8 @@
 
 use reify_constraints::decompose_into_components;
 use reify_test_support::*;
-use reify_types::{BinOp, Type};
+use reify_core::Type;
+use reify_ir::BinOp;
 
 /// 3 constraints each referencing a unique auto param → 3 components.
 #[test]
@@ -167,14 +168,14 @@ fn collect_value_refs_handles_nested_conditional() {
     let then_branch = gt(value_ref("Part", "c"), literal(mm(1.0)));
     let else_branch = gt(value_ref("Part", "d"), literal(mm(2.0)));
 
-    let conditional = reify_types::CompiledExpr {
-        kind: reify_types::CompiledExprKind::Conditional {
+    let conditional = reify_ir::CompiledExpr {
+        kind: reify_ir::CompiledExprKind::Conditional {
             condition: Box::new(condition),
             then_branch: Box::new(then_branch),
             else_branch: Box::new(else_branch),
         },
         result_type: Type::Bool,
-        content_hash: reify_types::ContentHash::of(b"test_cond"),
+        content_hash: reify_core::ContentHash::of(b"test_cond"),
     };
 
     // Single constraint using the conditional expression

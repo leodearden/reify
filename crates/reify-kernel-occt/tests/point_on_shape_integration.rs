@@ -32,10 +32,7 @@
 #![cfg(has_occt)]
 
 use reify_kernel_occt::OcctKernel;
-use reify_types::{
-    DEFAULT_POINT_ON_SHAPE_TOLERANCE_M, GeometryHandleId, GeometryOp, GeometryQuery, QueryError,
-    Value,
-};
+use reify_ir::{DEFAULT_POINT_ON_SHAPE_TOLERANCE_M, GeometryHandleId, GeometryOp, GeometryQuery, QueryError, Value};
 
 // ---------------------------------------------------------------------------
 // Fixture helpers

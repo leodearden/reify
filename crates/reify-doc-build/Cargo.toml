@@ -6,12 +6,15 @@ license.workspace = true
 description = "Compiler→doc-model lowering helpers for the reify doc tool"
 
 [dependencies]
+reify-ast.workspace = true
+reify-core.workspace = true
+reify-ir.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 reify-compiler.workspace = true
 reify-doc.workspace = true
-reify-types.workspace = true
 reify-syntax.workspace = true
 
 [dev-dependencies]
+reify-core.workspace = true
 reify-test-support.workspace = true

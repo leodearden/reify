@@ -91,8 +91,8 @@ const NON_DISPLACEMENT_KEYS: [&str; 4] = ["stress", "max_von_mises", "converged"
 /// and reused for every subsequent invocation. Once task 3382 (P3.3
 /// freshness-walk hook) routes filter calls through per-ComputeNode recompute,
 /// this avoids one `String` allocation per recompute.
-static DISPLACEMENT_KEY_VALUE: std::sync::LazyLock<reify_types::Value> =
-    std::sync::LazyLock::new(|| reify_types::Value::String(DISPLACEMENT_KEY.to_string()));
+static DISPLACEMENT_KEY_VALUE: std::sync::LazyLock<reify_ir::Value> =
+    std::sync::LazyLock::new(|| reify_ir::Value::String(DISPLACEMENT_KEY.to_string()));
 
 /// Cached `Value::String` BTreeMap lookup keys for the four non-displacement
 /// fields, in the same iteration order as [`NON_DISPLACEMENT_KEYS`].
@@ -100,9 +100,9 @@ static DISPLACEMENT_KEY_VALUE: std::sync::LazyLock<reify_types::Value> =
 /// See [`DISPLACEMENT_KEY_VALUE`] for the amortization rationale; this static
 /// caches the array of four keys (one allocation event per process instead of
 /// four per call).
-static NON_DISPLACEMENT_KEY_VALUES: std::sync::LazyLock<[reify_types::Value; 4]> =
+static NON_DISPLACEMENT_KEY_VALUES: std::sync::LazyLock<[reify_ir::Value; 4]> =
     std::sync::LazyLock::new(|| {
-        NON_DISPLACEMENT_KEYS.map(|k| reify_types::Value::String(k.to_string()))
+        NON_DISPLACEMENT_KEYS.map(|k| reify_ir::Value::String(k.to_string()))
     });
 
 /// Compare a compute node's previous and new result with per-purpose tolerance.
@@ -126,8 +126,8 @@ static NON_DISPLACEMENT_KEY_VALUES: std::sync::LazyLock<[reify_types::Value; 4]>
 /// | `NotOptedIn` | Target not in allowlist — MUST mark dirty |
 pub fn significance_filter(
     target: &str,
-    prev: &reify_types::Value,
-    new: &reify_types::Value,
+    prev: &reify_ir::Value,
+    new: &reify_ir::Value,
     length_tolerance_si: Option<f64>,
 ) -> FilterOutcome {
     // Opt-in guard: unknown targets never reach comparison logic.
@@ -160,7 +160,7 @@ pub fn significance_filter(
     // Map-shape guard: non-Map inputs are malformed — conservative fallback.
     // Exercises: significance_filter_returns_different_for_malformed_shapes (a)
     let (prev_map, new_map) = match (prev, new) {
-        (reify_types::Value::Map(p), reify_types::Value::Map(n)) => (p, n),
+        (reify_ir::Value::Map(p), reify_ir::Value::Map(n)) => (p, n),
         _ => return FilterOutcome::Different,
     };
 
@@ -193,21 +193,21 @@ pub fn significance_filter(
     // Displacement must be a Sampled Field wrapping a SampledField payload.
     // Any other variant (Analytical, Real, missing lambda, …) is malformed.
     // Exercises: significance_filter_returns_different_for_malformed_shapes (c), (d)
-    use reify_types::FieldSourceKind;
+    use reify_ir::FieldSourceKind;
     let (prev_sf, new_sf) = match (prev_disp, new_disp) {
         (
-            reify_types::Value::Field {
+            reify_ir::Value::Field {
                 source: FieldSourceKind::Sampled,
                 lambda: prev_lambda,
                 ..
             },
-            reify_types::Value::Field {
+            reify_ir::Value::Field {
                 source: FieldSourceKind::Sampled,
                 lambda: new_lambda,
                 ..
             },
         ) => match (prev_lambda.as_ref(), new_lambda.as_ref()) {
-            (reify_types::Value::SampledField(p), reify_types::Value::SampledField(n)) => (p, n),
+            (reify_ir::Value::SampledField(p), reify_ir::Value::SampledField(n)) => (p, n),
             _ => return FilterOutcome::Different,
         },
         _ => return FilterOutcome::Different,
@@ -251,9 +251,8 @@ pub fn significance_filter(
 #[cfg(test)]
 mod tests {
     use super::{FilterOutcome, is_opted_in, significance_filter};
-    use reify_types::{
-        FieldSourceKind, InterpolationKind, SampledField, SampledGridKind, Type, Value,
-    };
+    use reify_core::Type;
+    use reify_ir::{FieldSourceKind, InterpolationKind, SampledField, SampledGridKind, Value};
     use std::collections::BTreeMap;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
@@ -588,8 +587,8 @@ mod tests {
 
         // (d) new's displacement Field has source: Analytical (not Sampled).
         let analytical_field = Value::Field {
-            domain_type: reify_types::ty::Type::Real,
-            codomain_type: reify_types::ty::Type::Real,
+            domain_type: reify_core::ty::Type::Real,
+            codomain_type: reify_core::ty::Type::Real,
             source: FieldSourceKind::Analytical,
             lambda: Arc::new(Value::Undef),
         };

@@ -12,7 +12,8 @@ use reify_compiler::{
 };
 use reify_eval::SweptKind;
 use reify_test_support::*;
-use reify_types::{ExportFormat, Type, Value};
+use reify_core::Type;
+use reify_ir::{ExportFormat, Value};
 
 /// (a) Extrude-only realization populates the table with a single
 /// `SweptKind::Extrude` keyed by the realization's final handle.
@@ -27,7 +28,7 @@ use reify_types::{ExportFormat, Type, Value};
 #[test]
 fn engine_swept_kind_table_records_extrude_realization() {
     let e = "TestSweptExtrude";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Sphere — stand-in profile to produce a handle at step index 0.
     let sphere_op = CompiledGeometryOp::Primitive {
@@ -51,7 +52,7 @@ fn engine_swept_kind_table_records_extrude_realization() {
         .realization(e, 0, vec![sphere_op, extrude_op])
         .build();
 
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_swept_extrude"))
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single("test_swept_extrude"))
         .template(template)
         .build();
 
@@ -107,7 +108,7 @@ fn engine_swept_kind_table_records_extrude_realization() {
 #[test]
 fn engine_swept_kind_table_empty_for_realization_with_modify_after_extrude() {
     let e = "TestSweptModified";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     let sphere_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Sphere,
@@ -135,7 +136,7 @@ fn engine_swept_kind_table_empty_for_realization_with_modify_after_extrude() {
         .realization(e, 0, vec![sphere_op, extrude_op, fillet_op])
         .build();
 
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_swept_modified"))
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single("test_swept_modified"))
         .template(template)
         .build();
 
@@ -175,7 +176,7 @@ fn engine_swept_kind_table_empty_for_realization_with_modify_after_extrude() {
 /// so `is_empty()` returns false.
 #[test]
 fn engine_swept_kind_table_resets_between_builds() {
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // ── Module #1: extrude-only realization (populates the table) ────────
     let e1 = "TestSweptExtrude";
@@ -195,7 +196,7 @@ fn engine_swept_kind_table_resets_between_builds() {
         .realization(e1, 0, vec![sphere_op_1, extrude_op_1])
         .build();
     let module_1 =
-        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_swept_reset_build1"))
+        CompiledModuleBuilder::new(reify_core::ModulePath::single("test_swept_reset_build1"))
             .template(template_1)
             .build();
 
@@ -222,7 +223,7 @@ fn engine_swept_kind_table_resets_between_builds() {
         .realization(e2, 0, vec![sphere_op_2, extrude_op_2, fillet_op_2])
         .build();
     let module_2 =
-        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_swept_reset_build2"))
+        CompiledModuleBuilder::new(reify_core::ModulePath::single("test_swept_reset_build2"))
             .template(template_2)
             .build();
 
@@ -284,8 +285,8 @@ fn engine_swept_kind_table_resets_between_builds() {
 #[test]
 fn engine_swept_kind_table_records_revolve_realization() {
     let e = "TestSweptRevolve";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal = |v: f64| reify_types::CompiledExpr::literal(Value::Real(v), Type::Real);
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
+    let real_literal = |v: f64| reify_ir::CompiledExpr::literal(Value::Real(v), Type::Real);
 
     // Op 0: Sphere — stand-in profile to produce a handle at step index 0.
     // The classifier only inspects the *last* op, so any handle-producing op works.
@@ -315,7 +316,7 @@ fn engine_swept_kind_table_records_revolve_realization() {
         .realization(e, 0, vec![sphere_op, revolve_op])
         .build();
 
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_swept_revolve"))
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single("test_swept_revolve"))
         .template(template)
         .build();
 
@@ -387,7 +388,7 @@ fn engine_swept_kind_table_records_revolve_realization() {
 #[test]
 fn engine_swept_kind_table_records_sweep_along_line_segment_realization() {
     let e = "TestSweptSweepLine";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Sphere — stand-in profile to produce a handle at step index 0.
     // The classifier only inspects the *last* op, so any handle-producing op works here.
@@ -424,7 +425,7 @@ fn engine_swept_kind_table_records_sweep_along_line_segment_realization() {
         .build();
 
     let module =
-        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_swept_sweep_line"))
+        CompiledModuleBuilder::new(reify_core::ModulePath::single("test_swept_sweep_line"))
             .template(template)
             .build();
 

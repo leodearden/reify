@@ -6,7 +6,8 @@
 //! contract. This module is the `reify-eval`-side peer to
 //! [`crate::tolerance_promise`], following the same focused-module pattern.
 
-use reify_types::{ContentHash, FieldImportProvenance};
+use reify_core::ContentHash;
+use reify_ir::FieldImportProvenance;
 
 /// Build a [`FieldImportProvenance`] record for a field import event.
 ///
@@ -91,7 +92,7 @@ pub fn build_field_import_provenance(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::ContentHash;
+    use reify_core::ContentHash;
 
     #[test]
     fn build_field_import_provenance_filters_malformed_declared_tolerance_to_none() {

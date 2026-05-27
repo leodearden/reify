@@ -1,6 +1,6 @@
 //! Stress analysis builtins: von_mises, principal_stresses, max_shear, safety_factor.
 
-use reify_types::Value;
+use reify_ir::Value;
 
 use crate::helpers::{binary, sanitize_value, unary};
 use crate::matrix::matrix_components_f64;
@@ -233,7 +233,7 @@ fn safety_factor(args: &[Value]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::DimensionVector;
+    use reify_core::DimensionVector;
 
     #[test]
     fn unknown_function_returns_none() {

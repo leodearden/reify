@@ -12,7 +12,8 @@ use reify_eval::cache::{CachedResult, NodeId};
 use reify_eval::journal::EventKind;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::parse_and_compile;
-use reify_types::{DeterminacyState, DimensionVector, Severity, Value, ValueCellId};
+use reify_core::{DimensionVector, Severity, ValueCellId};
+use reify_ir::{DeterminacyState, Value};
 
 /// Build an Engine with an empty prelude for self-contained param-override tests.
 /// Uses `Engine::with_prelude(…, &[])` so the tests do not depend on stdlib state.
@@ -182,7 +183,7 @@ fn eval_skips_type_kind_mismatched_override_and_emits_warning_diagnostic() {
     );
 
     // (b) Exactly one Warning diagnostic calls out the mismatched cell.
-    let warnings: Vec<&reify_types::Diagnostic> = result_b
+    let warnings: Vec<&reify_core::Diagnostic> = result_b
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Warning && d.message.contains("S.width"))
@@ -252,7 +253,7 @@ fn eval_skips_dimension_mismatched_override_and_emits_warning_diagnostic() {
     );
 
     // (b) Exactly one Warning mentions the cell + the word "dimension".
-    let warnings: Vec<&reify_types::Diagnostic> = result_b
+    let warnings: Vec<&reify_core::Diagnostic> = result_b
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Warning && d.message.contains("S.width"))
@@ -329,7 +330,7 @@ fn eval_partial_mismatch_preserves_compatible_overrides_and_warns_only_for_misma
     );
 
     // (c) Exactly ONE warning diagnostic: about S.width, not S.thickness.
-    let warnings: Vec<&reify_types::Diagnostic> = result_b
+    let warnings: Vec<&reify_core::Diagnostic> = result_b
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Warning)
@@ -564,7 +565,7 @@ fn eval_skips_type_kind_mismatched_override_on_guarded_group_member_with_warning
     );
 
     // (b) Exactly one Warning diagnostic calls out the mismatched cell.
-    let warnings: Vec<&reify_types::Diagnostic> = result_b
+    let warnings: Vec<&reify_core::Diagnostic> = result_b
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Warning && d.message.contains("S.x"))
@@ -630,7 +631,7 @@ fn eval_skips_dimension_mismatched_override_on_guarded_group_member_with_warning
     );
 
     // (b) Exactly one Warning mentions the cell + the word "dimension".
-    let warnings: Vec<&reify_types::Diagnostic> = result_b
+    let warnings: Vec<&reify_core::Diagnostic> = result_b
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Warning && d.message.contains("S.x"))
@@ -711,7 +712,7 @@ fn eval_skips_type_kind_mismatched_override_on_guarded_group_else_member_with_wa
     );
 
     // (b) Exactly one Warning diagnostic calls out the mismatched cell.
-    let warnings: Vec<&reify_types::Diagnostic> = result_b
+    let warnings: Vec<&reify_core::Diagnostic> = result_b
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Warning && d.message.contains("S.y"))
@@ -788,7 +789,7 @@ fn eval_skips_dimension_mismatched_override_on_guarded_group_else_member_with_wa
     );
 
     // (b) Exactly one Warning mentions the cell + the word "dimension".
-    let warnings: Vec<&reify_types::Diagnostic> = result_b
+    let warnings: Vec<&reify_core::Diagnostic> = result_b
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Warning && d.message.contains("S.y"))
@@ -879,7 +880,7 @@ fn eval_inserts_undef_for_no_default_param_with_rejected_override() {
     );
 
     // (c) Exactly one Warning mentioning S.p and the word "type-kind".
-    let warnings: Vec<&reify_types::Diagnostic> = result_b
+    let warnings: Vec<&reify_core::Diagnostic> = result_b
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Warning && d.message.contains("S.p"))
@@ -963,7 +964,7 @@ fn eval_inserts_undef_for_no_default_param_with_dimension_rejected_override() {
     );
 
     // (c) Exactly one Warning mentioning S.p and the word "dimension".
-    let warnings: Vec<&reify_types::Diagnostic> = result_b
+    let warnings: Vec<&reify_core::Diagnostic> = result_b
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Warning && d.message.contains("S.p"))
@@ -1343,7 +1344,7 @@ fn eval_records_journal_pair_and_cache_entry_for_guarded_group_rejected_override
     }
 
     // (c) Exactly one Warning mentioning S.y and "type-kind".
-    let warnings: Vec<&reify_types::Diagnostic> = result_b
+    let warnings: Vec<&reify_core::Diagnostic> = result_b
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Warning && d.message.contains("S.y"))
@@ -1636,7 +1637,7 @@ fn param_override_dimension_mismatch_warning_renders_money_in_source_form() {
     let result_b = engine.eval(&module_b);
 
     // Exactly one Warning mentioning S.p must be emitted.
-    let warnings: Vec<&reify_types::Diagnostic> = result_b
+    let warnings: Vec<&reify_core::Diagnostic> = result_b
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Warning && d.message.contains("S.p"))

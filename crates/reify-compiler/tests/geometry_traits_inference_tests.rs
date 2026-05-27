@@ -28,10 +28,8 @@ use reify_compiler::{
     SweepKind, TransformKind,
 };
 use reify_test_support::{compile_source_with_stdlib, errors_only};
-use reify_types::{
-    CompiledExpr, CompiledExprKind, ContentHash, DiagnosticCode, ResolvedFunction, Type, Value,
-    ValueCellId,
-};
+use reify_core::{ContentHash, DiagnosticCode, Type, ValueCellId};
+use reify_ir::{CompiledExpr, CompiledExprKind, ResolvedFunction, Value};
 
 // ─── InferredTraits value type — flag math + has() accessor ─────────────────
 

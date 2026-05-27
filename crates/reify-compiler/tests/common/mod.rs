@@ -11,7 +11,7 @@
 use std::path::Path;
 
 use reify_compiler::{CompiledModule, module_dag::ModuleResolver, stdlib_loader};
-use reify_types::{Diagnostic, DimensionVector, Severity, SourceSpan};
+use reify_core::{Diagnostic, DimensionVector, Severity, SourceSpan};
 
 /// Parse `source` and compile it with the full stdlib prelude seeded into the
 /// unit registry.  Panics if the parser returns any errors.
@@ -103,9 +103,9 @@ pub const UNIT_EPSILON: f64 = 1e-9;
 /// the three-level `if let` / `else panic!` pattern that previously appeared
 /// at every scalar-assertion site.
 #[allow(dead_code)] // used by some, but not all, test binaries that include this module
-pub fn expect_scalar(expr: &reify_types::CompiledExpr) -> (f64, reify_types::DimensionVector) {
+pub fn expect_scalar(expr: &reify_ir::CompiledExpr) -> (f64, reify_core::DimensionVector) {
     match &expr.kind {
-        reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+        reify_ir::CompiledExprKind::Literal(reify_ir::Value::Scalar {
             si_value,
             dimension,
         }) => (*si_value, *dimension),
@@ -221,14 +221,14 @@ pub fn stdlib_param_si_value(param_type: &str, literal: &str) -> (f64, Dimension
 /// BinOp-assertion site.
 #[allow(dead_code)] // used by some, but not all, test binaries that include this module
 pub fn expect_binop(
-    expr: &reify_types::CompiledExpr,
+    expr: &reify_ir::CompiledExpr,
 ) -> (
-    &reify_types::BinOp,
-    &reify_types::CompiledExpr,
-    &reify_types::CompiledExpr,
+    &reify_ir::BinOp,
+    &reify_ir::CompiledExpr,
+    &reify_ir::CompiledExpr,
 ) {
     match &expr.kind {
-        reify_types::CompiledExprKind::BinOp { op, left, right } => (op, left, right),
+        reify_ir::CompiledExprKind::BinOp { op, left, right } => (op, left, right),
         other => panic!("expected CompiledExprKind::BinOp {{ .. }}, got {:?}", other),
     }
 }
@@ -252,7 +252,7 @@ pub fn assert_trait_constraint_binop(
     rhs_epsilon: f64,
 ) {
     use reify_compiler::DefaultKind;
-    use reify_syntax::ExprKind;
+    use reify_ast::ExprKind;
 
     let constraint_default = trait_def
         .defaults

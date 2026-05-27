@@ -4,7 +4,7 @@ use reify_syntax::*;
 
 /// Helper: parse source and return the first structure's members.
 fn parse_members(source: &str) -> (Vec<MemberDecl>, Vec<ParseError>) {
-    let module = reify_syntax::parse(source, reify_types::ModulePath::single("match_test"));
+    let module = reify_syntax::parse(source, reify_core::ModulePath::single("match_test"));
     let structure = match &module
         .declarations
         .iter()

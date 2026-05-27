@@ -30,7 +30,7 @@ description = "Manifold mesh-Boolean kernel adapter"
 test-fixtures = []
 
 [dependencies]
-reify-types.workspace = true
+reify-ir.workspace = true
 inventory.workspace = true
 tracing.workspace = true
 # Real Manifold C++ FFI. Default features pull in `parallel` (TBB) and the
@@ -49,6 +49,7 @@ manifold3d = "0.1"
 # link closure of the `tests/dispatcher_integration.rs` test binary; the
 # production library stays free of the eval dependency.
 [dev-dependencies]
+reify-ir.workspace = true
 reify-eval.workspace = true
 reify-test-support.workspace = true
 # Self-dev-dep: activates `test-fixtures` for all integration test binaries

@@ -10,7 +10,8 @@
 //! `lambda_eval_tests.rs` and `compute_dispatch_registry.rs`.
 
 use reify_expr::find_matching_compiled_function;
-use reify_types::{CompiledExpr, CompiledFnBody, CompiledFunction, ContentHash, Type, Value};
+use reify_core::{ContentHash, Type};
+use reify_ir::{CompiledExpr, CompiledFnBody, CompiledFunction, Value};
 
 /// Build a minimal `CompiledFunction` with the given name and a single
 /// parameter of the given type. The body is a constant `Int(0)` literal —

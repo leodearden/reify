@@ -12,7 +12,8 @@
 
 mod common;
 
-use reify_types::{CompiledExpr, DimensionVector, Type, Value, ValueMap};
+use reify_core::{DimensionVector, Type};
+use reify_ir::{CompiledExpr, Value, ValueMap};
 
 // ─── Test 1: STANDARD_GRAVITY present and has correct signature ───────────────
 

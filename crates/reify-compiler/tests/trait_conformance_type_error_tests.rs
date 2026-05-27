@@ -42,7 +42,7 @@
 //! the wildcard call-site that task-1936 targets.
 
 use reify_test_support::{compile_source, errors_only};
-use reify_types::Diagnostic;
+use reify_core::Diagnostic;
 
 // ── Shared assertion helper ───────────────────────────────────────────────────
 

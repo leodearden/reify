@@ -107,8 +107,8 @@ pub(crate) fn is_geometry_kinematic_query(name: &str) -> bool {
 ///
 /// Returns `None` for any other name (caller falls through to its default
 /// type-inference path).
-pub(crate) fn kinematic_query_result_type(name: &str) -> Option<reify_types::Type> {
-    use reify_types::Type;
+pub(crate) fn kinematic_query_result_type(name: &str) -> Option<reify_core::Type> {
+    use reify_core::Type;
     Some(match name {
         // List of pair Maps `{ "a": Int, "b": Int }`. We deliberately type as
         // List of generic Map (Type::String → Type::Int) rather than a
@@ -215,8 +215,8 @@ pub(crate) fn is_geometry_topology_selector(name: &str) -> bool {
 ///
 /// Returns `None` for any other name (caller falls through to its default
 /// type-inference path).
-pub(crate) fn topology_selector_result_type(name: &str) -> Option<reify_types::Type> {
-    use reify_types::Type;
+pub(crate) fn topology_selector_result_type(name: &str) -> Option<reify_core::Type> {
+    use reify_core::Type;
     Some(match name {
         // Task 2324 — eval dispatch fully implemented
         "closest_point" => Type::point3(Type::length()),
@@ -232,7 +232,7 @@ pub(crate) fn topology_selector_result_type(name: &str) -> Option<reify_types::T
             2,
             3,
             Type::Scalar {
-                dimension: reify_types::DimensionVector::MOMENT_OF_INERTIA,
+                dimension: reify_core::DimensionVector::MOMENT_OF_INERTIA,
             },
         ),
         _ => return None,
@@ -346,8 +346,8 @@ pub(crate) fn is_geometry_query(name: &str) -> bool {
 /// Returns `None` for any other name (caller falls through to its default
 /// type-inference path). Mirrors the contract of the sibling
 /// [`topology_selector_result_type`].
-pub(crate) fn geometry_query_result_type(name: &str) -> Option<reify_types::Type> {
-    use reify_types::{DimensionVector, Type};
+pub(crate) fn geometry_query_result_type(name: &str) -> Option<reify_core::Type> {
+    use reify_core::{DimensionVector, Type};
     Some(match name {
         "volume" => Type::Scalar {
             dimension: DimensionVector::VOLUME,
@@ -746,7 +746,7 @@ mod tests {
     fn topology_selector_result_type_closest_point_is_point3_length() {
         assert_eq!(
             topology_selector_result_type("closest_point"),
-            Some(reify_types::Type::point3(reify_types::Type::length()))
+            Some(reify_core::Type::point3(reify_core::Type::length()))
         );
     }
 
@@ -754,7 +754,7 @@ mod tests {
     fn topology_selector_result_type_is_on_is_bool() {
         assert_eq!(
             topology_selector_result_type("is_on"),
-            Some(reify_types::Type::Bool)
+            Some(reify_core::Type::Bool)
         );
     }
 
@@ -762,7 +762,7 @@ mod tests {
     fn topology_selector_result_type_angle_between_surfaces_is_angle() {
         assert_eq!(
             topology_selector_result_type("angle_between_surfaces"),
-            Some(reify_types::Type::angle())
+            Some(reify_core::Type::angle())
         );
     }
 
@@ -784,55 +784,55 @@ mod tests {
     // `is_geometry_topology_selector`, the other asserts
     // `topology_selector_result_type`. Adding a 12th task-2699 name is a
     // one-line table edit — no per-name boilerplate.
-    fn task_2699_topology_selector_cases() -> Vec<(&'static str, reify_types::Type)> {
+    fn task_2699_topology_selector_cases() -> Vec<(&'static str, reify_core::Type)> {
         vec![
             (
                 "edges",
-                reify_types::Type::List(Box::new(reify_types::Type::Geometry)),
+                reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
             ),
             (
                 "faces",
-                reify_types::Type::List(Box::new(reify_types::Type::Geometry)),
+                reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
             ),
             (
                 "edges_by_length",
-                reify_types::Type::List(Box::new(reify_types::Type::Geometry)),
+                reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
             ),
             (
                 "faces_by_area",
-                reify_types::Type::List(Box::new(reify_types::Type::Geometry)),
+                reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
             ),
             (
                 "faces_by_normal",
-                reify_types::Type::List(Box::new(reify_types::Type::Geometry)),
+                reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
             ),
             (
                 "edges_parallel_to",
-                reify_types::Type::List(Box::new(reify_types::Type::Geometry)),
+                reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
             ),
             (
                 "edges_at_height",
-                reify_types::Type::List(Box::new(reify_types::Type::Geometry)),
+                reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
             ),
             (
                 "adjacent_faces",
-                reify_types::Type::List(Box::new(reify_types::Type::Geometry)),
+                reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
             ),
             (
                 "shared_edges",
-                reify_types::Type::List(Box::new(reify_types::Type::Geometry)),
+                reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
             ),
             (
                 "center_of_mass",
-                reify_types::Type::point3(reify_types::Type::length()),
+                reify_core::Type::point3(reify_core::Type::length()),
             ),
             (
                 "moment_of_inertia",
-                reify_types::Type::tensor(
+                reify_core::Type::tensor(
                     2,
                     3,
-                    reify_types::Type::Scalar {
-                        dimension: reify_types::DimensionVector::MOMENT_OF_INERTIA,
+                    reify_core::Type::Scalar {
+                        dimension: reify_core::DimensionVector::MOMENT_OF_INERTIA,
                     },
                 ),
             ),
@@ -872,8 +872,8 @@ mod tests {
     // Phase 1 registers compile-time return types only; eval-time dispatch
     // arrives in Phase 6 (GHR-ζ). Until then, cells hold `Value::Undef`, which
     // `value_type_kind_matches` accepts for any type.
-    fn phase1_geometry_query_cases() -> Vec<(&'static str, reify_types::Type)> {
-        use reify_types::{DimensionVector, Type};
+    fn phase1_geometry_query_cases() -> Vec<(&'static str, reify_core::Type)> {
+        use reify_core::{DimensionVector, Type};
         vec![
             (
                 "volume",

@@ -19,9 +19,8 @@ use std::sync::OnceLock;
 use reify_compiler::CompiledModule;
 use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
-use reify_types::{
-    DeterminacyState, DimensionVector, ModulePath, Satisfaction, Severity, Value, ValueCellId,
-};
+use reify_core::{DimensionVector, ModulePath, Severity, ValueCellId};
+use reify_ir::{DeterminacyState, Satisfaction, Value};
 
 // ── Path constants ────────────────────────────────────────────────────────────
 

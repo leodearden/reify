@@ -37,11 +37,7 @@ use std::collections::BTreeMap;
 use fidget::context::Tree;
 use fidget::shape::EzShape;
 
-use reify_types::{
-    BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, ExportError, ExportFormat, GeometryError,
-    GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError,
-    SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, TessError, Value,
-};
+use reify_ir::{BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, TessError, Value};
 
 /// Tree-backed Fidget SDF kernel.
 ///
@@ -586,7 +582,7 @@ mod tests {
     /// looking like a generic catch-all.
     #[test]
     fn fidget_kernel_query_export_tessellate_each_emit_op_specific_message() {
-        use reify_types::GeometryQuery;
+        use reify_ir::GeometryQuery;
 
         let kernel = FidgetKernel::new();
 

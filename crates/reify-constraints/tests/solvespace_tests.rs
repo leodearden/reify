@@ -2,10 +2,8 @@
 
 use reify_constraints::SolveSpaceSolver;
 use reify_test_support::*;
-use reify_types::{
-    AutoParam, CompiledExpr, CompiledExprKind, ConstraintSolver, ContentHash, DiagnosticCode,
-    DimensionVector, ResolutionProblem, ResolvedFunction, SolveResult, Type, Value, ValueMap,
-};
+use reify_core::{ContentHash, DiagnosticCode, DimensionVector, Type};
+use reify_ir::{AutoParam, CompiledExpr, CompiledExprKind, ConstraintSolver, ResolutionProblem, ResolvedFunction, SolveResult, Value, ValueMap};
 
 // --- Helpers ---
 

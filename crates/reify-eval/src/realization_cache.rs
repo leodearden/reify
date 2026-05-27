@@ -68,7 +68,8 @@
 
 use std::collections::HashMap;
 
-use reify_types::{ContentHash, ReprKind};
+use reify_core::ContentHash;
+use reify_ir::ReprKind;
 
 use crate::tolerance_bucket::ToleranceBucket;
 
@@ -217,7 +218,8 @@ impl<V> RealizationCache<V> {
 
 #[cfg(test)]
 mod tests {
-    use reify_types::{ContentHash, ReprKind};
+    use reify_core::ContentHash;
+    use reify_ir::ReprKind;
 
     use super::RealizationCache;
 

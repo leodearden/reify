@@ -1,10 +1,7 @@
 use reify_compiler::{CompiledModule, RequirementKind, ValueCellDecl, ValueCellKind, Visibility};
-use reify_syntax::ParsedModule;
-use reify_types::{
-    BinOp, ConstraintSolver, ContentHash, DEPRECATED_ANNOTATION, DimensionVector, ModulePath,
-    OPTIMIZED_ANNOTATION, SOLVER_HINT_ANNOTATION, SolveResult, SourceSpan, TEST_ANNOTATION, Type,
-    Value, ValueCellId,
-};
+use reify_ast::ParsedModule;
+use reify_core::{ContentHash, DEPRECATED_ANNOTATION, DimensionVector, ModulePath, OPTIMIZED_ANNOTATION, SOLVER_HINT_ANNOTATION, SourceSpan, TEST_ANNOTATION, Type, ValueCellId};
+use reify_ir::{BinOp, ConstraintSolver, SolveResult, Value};
 
 use crate::builders::{
     CompiledFieldBuilder, CompiledModuleBuilder, CompiledPurposeBuilder, CompiledTraitBuilder,
@@ -75,7 +72,7 @@ pub fn bracket_source_violating() -> String {
 
 /// Create a `ParsedModule` matching the bracket source.
 pub fn bracket_parsed_module() -> ParsedModule {
-    use reify_syntax::*;
+    use reify_ast::*;
 
     let path = ModulePath::single("bracket");
     let content_hash = ContentHash::of_str(bracket_source());
@@ -360,7 +357,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
 
     ParsedModule {
         path,
-        declarations: vec![reify_syntax::Declaration::Structure(structure)],
+        declarations: vec![reify_ast::Declaration::Structure(structure)],
         errors: vec![],
         content_hash,
         pragmas: vec![],
@@ -371,7 +368,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
 /// Uses the test builders to construct a realistic compiled form.
 pub fn bracket_compiled_module() -> CompiledModule {
     use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
-    use reify_types::CompiledExpr;
+    use reify_ir::CompiledExpr;
 
     let e = "Bracket";
 
@@ -482,7 +479,8 @@ pub fn bracket_compiled_module() -> CompiledModule {
 ///
 /// Used to test generic trait conformance checking.
 pub fn generic_container_module() -> CompiledModule {
-    use reify_types::{DimensionVector, TraitBound, TraitRef, TypeParam};
+    use reify_core::DimensionVector;
+    use reify_ir::{TraitBound, TraitRef, TypeParam};
 
     let mass_type = Type::Scalar {
         dimension: DimensionVector::MASS,
@@ -554,8 +552,8 @@ pub fn generic_container_module() -> CompiledModule {
 /// Used to test trait conformance checking.
 pub fn rigid_trait_module() -> CompiledModule {
     use reify_compiler::DefaultKind;
-    use reify_syntax::{ConstraintDecl, Expr, ExprKind};
-    use reify_types::DimensionVector;
+    use reify_ast::{ConstraintDecl, Expr, ExprKind};
+    use reify_core::DimensionVector;
 
     let mass_type = Type::Scalar {
         dimension: DimensionVector::MASS,
@@ -619,7 +617,7 @@ pub fn rigid_trait_module() -> CompiledModule {
 /// The "Rigid" trait requires a `thickness: Scalar(LENGTH)` parameter.
 /// The "Plate" template has a single `thickness` parameter and satisfies the trait.
 pub fn trait_structure_module() -> CompiledModule {
-    use reify_types::CompiledExpr;
+    use reify_ir::CompiledExpr;
 
     let rigid_trait = CompiledTraitBuilder::new("Rigid")
         .require_param("thickness", Type::length())
@@ -642,7 +640,7 @@ pub fn trait_structure_module() -> CompiledModule {
 /// The "temp" field maps `Geometry -> Real` with an analytical source expression.
 /// The module also includes a "TempModel" structure template.
 pub fn field_module() -> CompiledModule {
-    use reify_types::CompiledExpr;
+    use reify_ir::CompiledExpr;
 
     // A simple constant analytical body: f(x) = 273.15 (temperature in Kelvin)
     let body = CompiledExpr::literal(Value::Real(273.15), Type::Real);
@@ -666,7 +664,7 @@ pub fn field_module() -> CompiledModule {
 /// The "mfg_ready" purpose has a single "subject" param (entity_kind "Structure")
 /// and a thickness constraint. The module also includes a "Part" structure template.
 pub fn purpose_module() -> CompiledModule {
-    use reify_types::CompiledExpr;
+    use reify_ir::CompiledExpr;
 
     let mm_literal = |v: f64| CompiledExpr::literal(crate::mm(v), Type::length());
 
@@ -705,7 +703,7 @@ pub fn purpose_module() -> CompiledModule {
 /// This fixture proves that `range_constraint` and `equality_constraint` work
 /// correctly when called multiple times for the same entity.
 pub fn constrained_structure_module() -> reify_compiler::CompiledModule {
-    use reify_types::CompiledExpr;
+    use reify_ir::CompiledExpr;
 
     let entity = "Beam";
     let mm_literal = |v: f64| CompiledExpr::literal(crate::mm(v), Type::length());
@@ -766,7 +764,7 @@ pub fn constrained_structure_module() -> reify_compiler::CompiledModule {
 ///
 /// Child is listed first so it can be found by structure_name lookup.
 pub fn parent_child_module() -> CompiledModule {
-    use reify_types::CompiledExpr;
+    use reify_ir::CompiledExpr;
 
     let child_entity = "Child";
     let parent_entity = "Parent";
@@ -1137,31 +1135,31 @@ pub fn wave2_flip_fixture() -> Wave2FlipFixture {
 mod tests {
     use super::*;
     use reify_compiler::{ValueCellKind, find_template};
-    use reify_types::Severity;
+    use reify_core::Severity;
 
     #[test]
     fn bracket_parsed_module_structure() {
         let module = bracket_parsed_module();
         assert_eq!(module.declarations.len(), 1);
         match &module.declarations[0] {
-            reify_syntax::Declaration::Structure(s) => {
+            reify_ast::Declaration::Structure(s) => {
                 assert_eq!(s.name, "Bracket");
                 // 5 params + 2 lets + 3 constraints = 10 members
                 assert_eq!(s.members.len(), 10);
                 let params: Vec<_> = s
                     .members
                     .iter()
-                    .filter(|m| matches!(m, reify_syntax::MemberDecl::Param(_)))
+                    .filter(|m| matches!(m, reify_ast::MemberDecl::Param(_)))
                     .collect();
                 let lets: Vec<_> = s
                     .members
                     .iter()
-                    .filter(|m| matches!(m, reify_syntax::MemberDecl::Let(_)))
+                    .filter(|m| matches!(m, reify_ast::MemberDecl::Let(_)))
                     .collect();
                 let constraints: Vec<_> = s
                     .members
                     .iter()
-                    .filter(|m| matches!(m, reify_syntax::MemberDecl::Constraint(_)))
+                    .filter(|m| matches!(m, reify_ast::MemberDecl::Constraint(_)))
                     .collect();
                 assert_eq!(params.len(), 5);
                 assert_eq!(lets.len(), 2); // volume + body
@@ -1312,8 +1310,8 @@ mod tests {
         assert_eq!(rigid.annotations[0].args.len(), 1);
         assert!(matches!(
             &rigid.annotations[0].args[0],
-            reify_types::AnnotationArg {
-                value: reify_types::AnnotationArgValue::String(s),
+            reify_ir::AnnotationArg {
+                value: reify_ir::AnnotationArgValue::String(s),
                 ..
             } if s == "use Rigid2"
         ));
@@ -1380,7 +1378,7 @@ mod tests {
 
     #[test]
     fn constrained_structure_module_constraint_indices_are_sequential() {
-        use reify_types::ConstraintNodeId;
+        use reify_core::ConstraintNodeId;
         let module = constrained_structure_module();
         let t = &module.templates[0];
         assert_eq!(t.name, "Beam");
@@ -1502,7 +1500,7 @@ mod tests {
     /// `Severity::Warning` mentioning both "unknown port type" and
     /// "NonExistentTrait". Returns the `CompiledModule` for further assertions.
     fn assert_warning_source_compiles_with_unknown_port_warning(source: &str) -> CompiledModule {
-        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+        let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
         assert!(
             parsed.errors.is_empty(),
             "parse errors: {:?}",

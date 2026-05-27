@@ -6,7 +6,7 @@
 
 use reify_compiler::find_template;
 use reify_test_support::parse_and_compile;
-use reify_types::Severity;
+use reify_core::Severity;
 
 // ─── step-1: direct self-reference ───
 
@@ -221,7 +221,7 @@ fn unknown_structure_reference_no_panic_no_false_positive() {
     "#;
     // Note: this may emit a warning about unresolved structure, but should NOT
     // emit a recursive structure cycle warning.
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_recursive"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_recursive"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",

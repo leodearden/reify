@@ -42,11 +42,11 @@
 //! either as evidence of runtime dispatchability, callers must also check
 //! `reify_eval::registry().contains_key(OCCT_KERNEL_NAME)`.
 
-use reify_types::{CapabilityDescriptor, Operation, ReprKind};
+use reify_ir::{CapabilityDescriptor, Operation, ReprKind};
 
-use reify_types::GeometryKernel;
+use reify_ir::GeometryKernel;
 #[cfg(has_occt)]
-use reify_types::KernelRegistration;
+use reify_ir::KernelRegistration;
 
 /// Stable identifier for the OCCT kernel in the v0.2 multi-kernel registry.
 ///

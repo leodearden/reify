@@ -20,7 +20,7 @@
 //! closure is responsible for whatever sub-expression traversal it needs
 //! (frame-aware in `shadow_lint`, chain-counting in `dot_chain_lint`).
 
-use reify_syntax::{Expr, ForallConnectBody, ForallConstraintBody};
+use reify_ast::{Expr, ForallConnectBody, ForallConstraintBody};
 
 /// Walk every expression-bearing position inside a [`ForallConnectBody`].
 ///

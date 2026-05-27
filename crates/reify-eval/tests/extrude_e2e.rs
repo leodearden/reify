@@ -5,7 +5,8 @@
 
 use reify_compiler::{CompiledGeometryOp, GeomRef, PrimitiveKind, SweepKind};
 use reify_test_support::*;
-use reify_types::{ExportFormat, GeometryOp, Type};
+use reify_core::Type;
+use reify_ir::{ExportFormat, GeometryOp};
 
 // ---------------------------------------------------------------------------
 // step-3: Compiler rejects wrong arg counts
@@ -19,7 +20,7 @@ fn extrude_compiler_rejects_one_arg() {
     param profile: Scalar = 5mm
     let result = extrude(profile)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_ext1"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_ext1"));
     let compiled = reify_compiler::compile(&parsed);
     // After step-4: should have diagnostics (wrong arg count)
     // Before step-4: no realization produced (extrude not recognized)
@@ -56,7 +57,7 @@ fn extrude_compiler_rejects_three_args() {
     param dist: Scalar = 10mm
     let result = extrude(profile, dist, dist)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_ext3"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_ext3"));
     let compiled = reify_compiler::compile(&parsed);
     let template = &compiled.templates[0];
     let realizations = &template.realizations;
@@ -90,7 +91,7 @@ fn extrude_compiler_accepts_two_args() {
     param dist: Scalar = 10mm
     let result = extrude(profile, dist)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_ext2"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_ext2"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -134,7 +135,7 @@ fn extrude_compiler_accepts_two_args() {
 #[test]
 fn extrude_through_full_eval_pipeline() {
     let e = "TestExtrude";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Sphere (produces handle at step index 0)
     let sphere_op = CompiledGeometryOp::Primitive {
@@ -156,7 +157,7 @@ fn extrude_through_full_eval_pipeline() {
         .realization(e, 0, vec![sphere_op, extrude_op])
         .build();
 
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_extrude"))
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single("test_extrude"))
         .template(template)
         .build();
 

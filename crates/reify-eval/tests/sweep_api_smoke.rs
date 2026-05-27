@@ -20,7 +20,8 @@
 use reify_test_support::{
     collect_errors, make_simple_engine, parse_and_compile_with_stdlib, read_f64,
 };
-use reify_types::{Value, ValueCellId, ValueMap};
+use reify_core::ValueCellId;
+use reify_ir::{Value, ValueMap};
 
 /// Resolve a binding by name from the eval result.
 fn get_value<'a>(values: &'a ValueMap, name: &str) -> &'a Value {

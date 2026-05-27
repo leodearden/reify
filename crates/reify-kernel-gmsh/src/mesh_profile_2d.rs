@@ -15,7 +15,7 @@
 //! recombine, `mesh_generate(2)`, read back triangles (element type 2) and
 //! quads (element type 3).
 
-use reify_types::GeometryError;
+use reify_ir::GeometryError;
 
 /// Marker substring embedded in the `GeometryError::OperationFailed` message
 /// returned by the stub-build (`cfg(not(has_gmsh))`) arm of [`mesh_plane_2d`].

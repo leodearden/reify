@@ -7,7 +7,8 @@
 //! logic (false ∧ Undef = false, true ∧ Undef = Undef).
 
 use reify_test_support::eval_source;
-use reify_types::{ModulePath, Severity, Value, ValueCellId};
+use reify_core::{ModulePath, Severity, ValueCellId};
+use reify_ir::Value;
 
 // ── step-1: chain_range_satisfied ─────────────────────────────────────────
 
@@ -324,7 +325,8 @@ structure S {
 /// right is Lt(ValueRef(thickness), Literal(10mm)), result_type is Bool.
 #[test]
 fn desugaring_structure_verified() {
-    use reify_types::{BinOp, CompiledExprKind, Type};
+    use reify_core::Type;
+    use reify_ir::{BinOp, CompiledExprKind};
 
     let source = r#"
 structure S {

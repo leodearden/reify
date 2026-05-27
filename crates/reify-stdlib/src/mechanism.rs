@@ -23,7 +23,7 @@
 
 use std::collections::BTreeMap;
 
-use reify_types::Value;
+use reify_ir::Value;
 
 use crate::joints::is_joint_value;
 
@@ -567,7 +567,7 @@ mod tests {
         angle_range_0_to_pi, axis_x_unit, axis_y_unit, axis_z_unit, identity_transform_value,
         length_range_0_to_1m,
     };
-    use reify_types::Value;
+    use reify_ir::Value;
     use std::collections::BTreeMap;
 
     // ── mechanism() constructor: happy path ────────────────────────────────

@@ -61,7 +61,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::OnceLock;
 
-use reify_types::{CapabilityDescriptor, KernelRegistration, Operation, ReprKind};
+use reify_ir::{CapabilityDescriptor, KernelRegistration, Operation, ReprKind};
 
 /// Memoized BTreeMap of every static-collected [`KernelRegistration`], keyed
 /// by `name`. Allocated once on first call and never rebuilt.
@@ -465,7 +465,7 @@ fn build_registry() -> BTreeMap<String, &'static KernelRegistration> {
 #[cfg(test)]
 mod test_synthetic_kernel {
     use super::*;
-    use reify_types::{GeometryKernel, Operation, ReprKind};
+    use reify_ir::{GeometryKernel, Operation, ReprKind};
 
     // ── __0_mesh_kernel ────────────────────────────────────────────────────
     // BTreeMap-minimum synthetic (task 3224). Uses BooleanUnion/Mesh so it
@@ -568,7 +568,7 @@ mod test_synthetic_kernel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::{Operation, ReprKind};
+    use reify_ir::{Operation, ReprKind};
 
     /// Shared assertion harness for the two `*_always_emits_warn_*` tests.
     ///

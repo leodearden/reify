@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
-use reify_types::{DimensionVector, Value, quaternion_is_finite};
+use reify_core::DimensionVector;
+use reify_ir::{Value, quaternion_is_finite};
 
 use crate::helpers::tensor_components_f64;
 
@@ -815,7 +816,8 @@ mod tests {
 
     use super::construct_point_or_vector;
     use crate::eval_builtin;
-    use reify_types::{DimensionVector, Value};
+    use reify_core::DimensionVector;
+    use reify_ir::Value;
 
     // --- Determinacy predicate stubs (step-7) ---
 
@@ -867,9 +869,9 @@ mod tests {
     fn gradient_scalar_field_returns_undef() {
         // gradient(field) on a scalar field should return Undef (stub).
         let field = Value::Field {
-            domain_type: reify_types::Type::StructureRef("Point3".into()),
-            codomain_type: reify_types::Type::length(),
-            source: reify_types::FieldSourceKind::Analytical,
+            domain_type: reify_core::Type::StructureRef("Point3".into()),
+            codomain_type: reify_core::Type::length(),
+            source: reify_ir::FieldSourceKind::Analytical,
             lambda: Arc::new(Value::Undef),
         };
         let result = eval_builtin("gradient", &[field]);
@@ -883,9 +885,9 @@ mod tests {
     #[test]
     fn divergence_field_returns_undef() {
         let field = Value::Field {
-            domain_type: reify_types::Type::StructureRef("Point3".into()),
-            codomain_type: reify_types::Type::StructureRef("Vector3".into()),
-            source: reify_types::FieldSourceKind::Analytical,
+            domain_type: reify_core::Type::StructureRef("Point3".into()),
+            codomain_type: reify_core::Type::StructureRef("Vector3".into()),
+            source: reify_ir::FieldSourceKind::Analytical,
             lambda: Arc::new(Value::Undef),
         };
         let result = eval_builtin("divergence", &[field]);
@@ -899,9 +901,9 @@ mod tests {
     #[test]
     fn curl_field_returns_undef() {
         let field = Value::Field {
-            domain_type: reify_types::Type::StructureRef("Point3".into()),
-            codomain_type: reify_types::Type::StructureRef("Vector3".into()),
-            source: reify_types::FieldSourceKind::Analytical,
+            domain_type: reify_core::Type::StructureRef("Point3".into()),
+            codomain_type: reify_core::Type::StructureRef("Vector3".into()),
+            source: reify_ir::FieldSourceKind::Analytical,
             lambda: Arc::new(Value::Undef),
         };
         let result = eval_builtin("curl", &[field]);
@@ -917,9 +919,9 @@ mod tests {
         // sample() in stdlib returns Undef because lambda application
         // needs an EvalContext (handled in reify-expr instead).
         let field = Value::Field {
-            domain_type: reify_types::Type::StructureRef("Point3".into()),
-            codomain_type: reify_types::Type::length(),
-            source: reify_types::FieldSourceKind::Analytical,
+            domain_type: reify_core::Type::StructureRef("Point3".into()),
+            codomain_type: reify_core::Type::length(),
+            source: reify_ir::FieldSourceKind::Analytical,
             lambda: Arc::new(Value::Undef),
         };
         let result = eval_builtin("sample", &[field, Value::Int(42)]);

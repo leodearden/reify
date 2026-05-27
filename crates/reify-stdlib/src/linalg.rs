@@ -1,4 +1,5 @@
-use reify_types::{DimensionVector, Value};
+use reify_core::DimensionVector;
+use reify_ir::Value;
 
 use crate::helpers::{binary, complex_abs, sanitize_value, tensor_components_f64, unary};
 
@@ -126,7 +127,8 @@ pub(crate) fn eval_linalg(name: &str, args: &[Value]) -> Option<Value> {
 mod tests {
     use crate::eval_builtin;
     use crate::test_macros::make_scalar_vec3;
-    use reify_types::{DimensionVector, Value};
+    use reify_core::DimensionVector;
+    use reify_ir::Value;
 
     // --- dot() tests: dimensionless vectors (step-1) ---
 
@@ -426,7 +428,7 @@ mod tests {
     #[test]
     fn cross_length_force_vectors() {
         // cross([1m,0,0], [0,1N,0]) == [0,0,1 m·N] each component has Length*Force dimension
-        let length_force = DimensionVector::LENGTH.mul(&reify_types::dimension::FORCE);
+        let length_force = DimensionVector::LENGTH.mul(&reify_core::dimension::FORCE);
         let a = Value::Tensor(vec![
             Value::Scalar {
                 si_value: 1.0,
@@ -444,15 +446,15 @@ mod tests {
         let b = Value::Tensor(vec![
             Value::Scalar {
                 si_value: 0.0,
-                dimension: reify_types::dimension::FORCE,
+                dimension: reify_core::dimension::FORCE,
             },
             Value::Scalar {
                 si_value: 1.0,
-                dimension: reify_types::dimension::FORCE,
+                dimension: reify_core::dimension::FORCE,
             },
             Value::Scalar {
                 si_value: 0.0,
-                dimension: reify_types::dimension::FORCE,
+                dimension: reify_core::dimension::FORCE,
             },
         ]);
         let result = eval_builtin("cross", &[a, b]);
@@ -493,7 +495,7 @@ mod tests {
     #[test]
     fn dot_length_force_vectors() {
         // dot([1m, 0, 0], [1N, 0, 0]) -> Scalar { si_value: 1.0, dimension: Length*Force }
-        let length_force = DimensionVector::LENGTH.mul(&reify_types::dimension::FORCE);
+        let length_force = DimensionVector::LENGTH.mul(&reify_core::dimension::FORCE);
         let a = Value::Tensor(vec![
             Value::Scalar {
                 si_value: 1.0,
@@ -511,15 +513,15 @@ mod tests {
         let b = Value::Tensor(vec![
             Value::Scalar {
                 si_value: 1.0,
-                dimension: reify_types::dimension::FORCE,
+                dimension: reify_core::dimension::FORCE,
             },
             Value::Scalar {
                 si_value: 0.0,
-                dimension: reify_types::dimension::FORCE,
+                dimension: reify_core::dimension::FORCE,
             },
             Value::Scalar {
                 si_value: 0.0,
-                dimension: reify_types::dimension::FORCE,
+                dimension: reify_core::dimension::FORCE,
             },
         ]);
         assert_scalar_approx!(eval_builtin("dot", &[a, b]), 1.0, length_force);
@@ -538,9 +540,9 @@ mod tests {
     #[test]
     fn dot_vector_dimensioned() {
         // dot(Vector([1m,0,0]), Vector([1N,0,0])) -> Scalar{1.0, Length*Force}
-        let length_force = DimensionVector::LENGTH.mul(&reify_types::dimension::FORCE);
+        let length_force = DimensionVector::LENGTH.mul(&reify_core::dimension::FORCE);
         let a = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::LENGTH);
-        let b = make_scalar_vec3([1.0, 0.0, 0.0], reify_types::dimension::FORCE);
+        let b = make_scalar_vec3([1.0, 0.0, 0.0], reify_core::dimension::FORCE);
         assert_scalar_approx!(eval_builtin("dot", &[a, b]), 1.0, length_force);
     }
 
@@ -559,9 +561,9 @@ mod tests {
     #[test]
     fn cross_vector_dimensioned_preserves_dimension() {
         // cross(Vector([1m,0,0]), Vector([0,1N,0])) each component has Length*Force dimension
-        let length_force = DimensionVector::LENGTH.mul(&reify_types::dimension::FORCE);
+        let length_force = DimensionVector::LENGTH.mul(&reify_core::dimension::FORCE);
         let a = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::LENGTH);
-        let b = make_scalar_vec3([0.0, 1.0, 0.0], reify_types::dimension::FORCE);
+        let b = make_scalar_vec3([0.0, 1.0, 0.0], reify_core::dimension::FORCE);
         let result = eval_builtin("cross", &[a, b]);
         match result {
             Value::Vector(items) => {

@@ -4,7 +4,7 @@ use reify_syntax::*;
 
 /// Helper: parse source and return declarations and errors.
 fn parse_decls(source: &str) -> (Vec<Declaration>, Vec<ParseError>) {
-    let module = reify_syntax::parse(source, reify_types::ModulePath::single("occ_test"));
+    let module = reify_syntax::parse(source, reify_core::ModulePath::single("occ_test"));
     (module.declarations, module.errors)
 }
 
@@ -64,7 +64,7 @@ occurrence def Welding {
     match &occ.members[1] {
         MemberDecl::Port(p) => {
             assert_eq!(p.name, "workpiece");
-            assert_eq!(p.direction, Some(reify_types::PortDirection::In));
+            assert_eq!(p.direction, Some(reify_core::PortDirection::In));
             assert_eq!(p.type_name, "StructurePort");
         }
         other => panic!("expected Port, got {:?}", other),
@@ -74,7 +74,7 @@ occurrence def Welding {
     match &occ.members[2] {
         MemberDecl::Port(p) => {
             assert_eq!(p.name, "result");
-            assert_eq!(p.direction, Some(reify_types::PortDirection::Out));
+            assert_eq!(p.direction, Some(reify_core::PortDirection::Out));
             assert_eq!(p.type_name, "StructurePort");
         }
         other => panic!("expected Port, got {:?}", other),

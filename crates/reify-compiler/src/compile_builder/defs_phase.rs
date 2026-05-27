@@ -14,8 +14,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use reify_syntax::ParsedModule;
-use reify_types::{Diagnostic, DiagnosticLabel};
+use reify_ast::ParsedModule;
+use reify_core::{Diagnostic, DiagnosticLabel};
 
 use crate::CompiledModule;
 use crate::annotations::{
@@ -51,9 +51,9 @@ pub(crate) fn format_shadow_warning(name: &str, winner: &str, loser: &str) -> St
 /// def-compile time anyway — entity.rs only reads `param.name` and
 /// `param.default` at instantiation time.
 fn compile_constraint_def(
-    c: &reify_syntax::ConstraintDef,
+    c: &reify_ast::ConstraintDef,
     alias_registry: &TypeAliasRegistry,
-    enum_defs: &[reify_types::EnumDef],
+    enum_defs: &[reify_ir::EnumDef],
     trait_names: &HashSet<String>,
     structure_names: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
@@ -96,7 +96,7 @@ fn compile_constraint_def(
                     trait_names,
                 )
                 .is_none()
-                && let reify_syntax::TypeExprKind::Named { name, .. } = &te.kind
+                && let reify_ast::TypeExprKind::Named { name, .. } = &te.kind
                 && resolve_enum_type(name, enum_defs).is_none()
                 && !structure_names.contains(name.as_str())
             {
@@ -156,7 +156,7 @@ pub(crate) fn phase_constraint_defs(
     let mut structure_names: Option<HashSet<String>> = None;
 
     for decl in &parsed.declarations {
-        if let reify_syntax::Declaration::Constraint(c) = decl {
+        if let reify_ast::Declaration::Constraint(c) = decl {
             let names = structure_names.get_or_insert_with(|| {
                 ctx.seen_entity_names
                     .iter()
@@ -258,7 +258,7 @@ mod tests {
     use super::build_constraint_def_registry;
     use crate::CompiledModule;
     use crate::types::{AutoTypeSubstitution, CompiledConstraintDef};
-    use reify_types::{ContentHash, ModulePath, SourceSpan};
+    use reify_core::{ContentHash, ModulePath, SourceSpan};
 
     fn mk_cd(name: &str, is_pub: bool, span: SourceSpan) -> CompiledConstraintDef {
         CompiledConstraintDef {

@@ -11,7 +11,7 @@ use reify_eval::{
     BijectionFailure, CorrespondenceMap, NamingLayerErrorReason, SubShapeKind, stage_a_eligible,
     stage_b_eligible,
 };
-use reify_types::{GeometryHandleId, TopologyAttributeTable, ValueMap};
+use reify_ir::{GeometryHandleId, TopologyAttributeTable, ValueMap};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -156,10 +156,8 @@ mod tests {
     use super::*;
     use reify_compiler::ValueCellKind;
     use reify_eval::graph::{EvaluationGraph, RealizationNodeData, ValueCellNode};
-    use reify_types::{
-        CapKind, ContentHash, FeatureId, RealizationNodeId, ReprKind, Role, TopologyAttribute,
-        TopologyAttributeTable, Type, Value, ValueCellId, ValueMap,
-    };
+    use reify_core::{ContentHash, RealizationNodeId, Type, ValueCellId};
+    use reify_ir::{CapKind, FeatureId, ReprKind, Role, TopologyAttribute, TopologyAttributeTable, Value, ValueMap};
 
     // ── Test fixture helpers ──────────────────────────────────────────────
 

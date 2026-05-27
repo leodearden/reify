@@ -35,7 +35,7 @@
 //!    emit a single warning naming the count, the thickness, and a
 //!    suggested smaller `mesh_size`.
 
-use reify_types::{Mesh, VolumeMesh};
+use reify_ir::{Mesh, VolumeMesh};
 
 /// Configuration for the [`through_thickness_check`] diagnostic.
 #[derive(Debug, Clone, Copy)]
@@ -118,8 +118,8 @@ pub fn through_thickness_check(
     //     thinnest direction is the v0.3 first-cut estimator).
     // -----------------------------------------------------------------
     let stride = match volume.element_order {
-        reify_types::ElementOrderTag::P1 => 4usize,
-        reify_types::ElementOrderTag::P2 => 10usize,
+        reify_ir::ElementOrderTag::P1 => 4usize,
+        reify_ir::ElementOrderTag::P2 => 10usize,
     };
     let n_tets = volume.tet_indices.len() / stride;
     if n_tets == 0 {

@@ -23,7 +23,8 @@ use reify_test_support::{
     CapturingSubscriberBuilder, collect_errors, make_simple_engine, parse_and_compile_with_stdlib,
     prime_tracing_callsite_cache,
 };
-use reify_types::{Value, ValueCellId, ValueMap};
+use reify_core::ValueCellId;
+use reify_ir::{Value, ValueMap};
 
 /// Source for the KCC-γ step-13 planar-in-loop e2e fixture: a structure with a
 /// revolute joint on one side and a planar joint on the other, mirroring the

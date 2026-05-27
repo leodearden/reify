@@ -26,15 +26,15 @@ use super::*;
 /// boolean op's argument list — used purely for the fallback diagnostic.
 #[allow(clippy::too_many_arguments)]
 fn resolve_boolean_arg(
-    arg: &reify_syntax::Expr,
+    arg: &reify_ast::Expr,
     op_name: &str,
     arg_idx_for_diag: usize,
     scope: &CompilationScope,
-    enum_defs: &[reify_types::EnumDef],
+    enum_defs: &[reify_ir::EnumDef],
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
     step_offset: usize,
-    geometry_lets: &HashMap<&str, &reify_syntax::Expr>,
+    geometry_lets: &HashMap<&str, &reify_ast::Expr>,
     visiting: &mut HashSet<String>,
 ) -> Option<(GeomRef, Vec<CompiledGeometryOp>)> {
     // Task 3441: cross-sub pre-check — `self.<sub>.<member>` for a
@@ -88,10 +88,10 @@ fn resolve_boolean_arg(
             // shape `compile_geometry_call` would have flagged (FunctionCall
             // or geometry-let Ident).  Preserves the pre-extraction call-site
             // diagnostic semantics.
-            if !matches!(arg.kind, reify_syntax::ExprKind::FunctionCall { .. })
+            if !matches!(arg.kind, reify_ast::ExprKind::FunctionCall { .. })
                 && !matches!(
                     &arg.kind,
-                    reify_syntax::ExprKind::Ident(n) if geometry_lets.contains_key(n.as_str())
+                    reify_ast::ExprKind::Ident(n) if geometry_lets.contains_key(n.as_str())
                 )
             {
                 diagnostics.push(Diagnostic::error(format!(
@@ -113,14 +113,14 @@ fn resolve_boolean_arg(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_boolean_op(
     name: &str,
-    args: &[reify_syntax::Expr],
+    args: &[reify_ast::Expr],
     expr_span: SourceSpan,
     scope: &CompilationScope,
-    enum_defs: &[reify_types::EnumDef],
+    enum_defs: &[reify_ir::EnumDef],
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
     step_offset: usize,
-    geometry_lets: &HashMap<&str, &reify_syntax::Expr>,
+    geometry_lets: &HashMap<&str, &reify_ast::Expr>,
     visiting: &mut HashSet<String>,
 ) -> Option<Vec<CompiledGeometryOp>> {
     match name {

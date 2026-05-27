@@ -14,9 +14,8 @@ use reify_eval::cache::{CachedResult, NodeCache, NodeId};
 use reify_eval::deps::DependencyTrace;
 use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, RealizationReadHandle};
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
-use reify_types::{
-    ComputeNodeId, DeterminacyState, Freshness, OpaqueState, Value, ValueCellId, VersionId,
-};
+use reify_core::{ComputeNodeId, ValueCellId, VersionId};
+use reify_ir::{DeterminacyState, Freshness, OpaqueState, Value};
 
 // ── step-8: RED — run_compute_dispatch begin→trampoline→complete pipeline ─────
 

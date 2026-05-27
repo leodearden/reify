@@ -2,24 +2,24 @@ use reify_compiler::{
     AutoTypeSubstitution, CompiledField, CompiledImport, CompiledModule, CompiledPurpose,
     CompiledTrait, CompiledTypeAlias, TopologyTemplate,
 };
-use reify_types::{ContentHash, SourceSpan};
+use reify_core::{ContentHash, SourceSpan};
 
 /// Builder for `CompiledModule`.
 pub struct CompiledModuleBuilder {
-    path: reify_types::ModulePath,
+    path: reify_core::ModulePath,
     imports: Vec<CompiledImport>,
-    functions: Vec<reify_types::CompiledFunction>,
+    functions: Vec<reify_ir::CompiledFunction>,
     trait_defs: Vec<CompiledTrait>,
     templates: Vec<TopologyTemplate>,
-    diagnostics: Vec<reify_types::Diagnostic>,
+    diagnostics: Vec<reify_core::Diagnostic>,
     fields: Vec<CompiledField>,
-    enum_defs: Vec<reify_types::EnumDef>,
+    enum_defs: Vec<reify_ir::EnumDef>,
     compiled_purposes: Vec<CompiledPurpose>,
     type_aliases: Vec<CompiledTypeAlias>,
 }
 
 impl CompiledModuleBuilder {
-    pub fn new(path: reify_types::ModulePath) -> Self {
+    pub fn new(path: reify_core::ModulePath) -> Self {
         Self {
             path,
             imports: Vec::new(),
@@ -39,7 +39,7 @@ impl CompiledModuleBuilder {
         self
     }
 
-    pub fn function(mut self, f: reify_types::CompiledFunction) -> Self {
+    pub fn function(mut self, f: reify_ir::CompiledFunction) -> Self {
         self.functions.push(f);
         self
     }
@@ -47,7 +47,7 @@ impl CompiledModuleBuilder {
     pub fn import(mut self, path: impl Into<String>) -> Self {
         self.imports.push(CompiledImport {
             path: path.into(),
-            kind: reify_syntax::ImportKind::Module,
+            kind: reify_ast::ImportKind::Module,
             is_pub: false,
             span: SourceSpan::new(0, 0),
         });
@@ -57,7 +57,7 @@ impl CompiledModuleBuilder {
     pub fn import_with(
         mut self,
         path: impl Into<String>,
-        kind: reify_syntax::ImportKind,
+        kind: reify_ast::ImportKind,
         is_pub: bool,
     ) -> Self {
         self.imports.push(CompiledImport {
@@ -74,7 +74,7 @@ impl CompiledModuleBuilder {
         self
     }
 
-    pub fn diagnostic(mut self, diag: reify_types::Diagnostic) -> Self {
+    pub fn diagnostic(mut self, diag: reify_core::Diagnostic) -> Self {
         self.diagnostics.push(diag);
         self
     }
@@ -84,7 +84,7 @@ impl CompiledModuleBuilder {
         self
     }
 
-    pub fn enum_def(mut self, e: reify_types::EnumDef) -> Self {
+    pub fn enum_def(mut self, e: reify_ir::EnumDef) -> Self {
         self.enum_defs.push(e);
         self
     }
@@ -164,7 +164,8 @@ mod tests {
         CompiledFieldBuilder, CompiledPurposeBuilder, CompiledTraitBuilder, TraitDefBuilder,
         literal,
     };
-    use reify_types::{EnumDef, ModulePath, Type, Value};
+    use reify_core::{ModulePath, Type};
+    use reify_ir::{EnumDef, Value};
 
     fn module_path() -> ModulePath {
         ModulePath::new(vec!["test".to_string()])
@@ -224,7 +225,7 @@ mod tests {
     #[test]
     fn module_builder_with_type_alias() {
         use reify_compiler::CompiledTypeAlias;
-        use reify_types::{ContentHash, SourceSpan, Type};
+        use reify_core::{ContentHash, SourceSpan, Type};
         let alias = CompiledTypeAlias {
             name: "Stress".to_string(),
             resolved_type: Some(Type::length()),
@@ -243,7 +244,7 @@ mod tests {
     #[test]
     fn module_builder_type_aliases_affect_content_hash() {
         use reify_compiler::CompiledTypeAlias;
-        use reify_types::{ContentHash, SourceSpan, Type};
+        use reify_core::{ContentHash, SourceSpan, Type};
         let module_no_aliases = CompiledModuleBuilder::new(module_path()).build();
         let alias = CompiledTypeAlias {
             name: "Foo".to_string(),

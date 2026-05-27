@@ -1,4 +1,4 @@
-use reify_types::{Diagnostic, DiagnosticLabel, SourceSpan};
+use reify_core::{Diagnostic, DiagnosticLabel, SourceSpan};
 
 /// Returns `true` when `got == expected`.
 ///

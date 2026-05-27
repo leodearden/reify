@@ -3,7 +3,8 @@
 //! Walks a `CompiledExpr` tree and determines which `ConstraintDomain`
 //! applies, based on the leaf value types and operators encountered.
 
-use reify_types::{CompiledExpr, CompiledExprKind, ConstraintDomain, Type};
+use reify_core::Type;
+use reify_ir::{CompiledExpr, CompiledExprKind, ConstraintDomain};
 
 /// Internal flags collected during expression tree traversal.
 #[derive(Default)]
@@ -108,7 +109,8 @@ impl ConstraintClassifier {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::{BinOp, ContentHash, DimensionVector, Value};
+    use reify_core::{ContentHash, DimensionVector};
+    use reify_ir::{BinOp, Value};
 
     #[test]
     fn literal_int_is_numeric() {
@@ -155,7 +157,7 @@ mod tests {
 
     #[test]
     fn geometry_function_sets_geometric_flag() {
-        use reify_types::ResolvedFunction;
+        use reify_ir::ResolvedFunction;
         let expr = CompiledExpr {
             kind: CompiledExprKind::FunctionCall {
                 function: ResolvedFunction {

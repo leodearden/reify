@@ -20,11 +20,8 @@ use reify_compiler::auto_type_param::{
 use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
 use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
 use reify_test_support::*;
-use reify_types::{
-    AutoParam, BinOp, CompiledExpr, CompiledFunction, ConstraintSolver, DiagnosticCode,
-    DimensionVector, OptimizationObjective, ResolutionProblem, Severity, SolveResult, SourceSpan,
-    Type, Value, ValueMap,
-};
+use reify_core::{DiagnosticCode, DimensionVector, Severity, SourceSpan, Type};
+use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledFunction, ConstraintSolver, OptimizationObjective, ResolutionProblem, SolveResult, Value, ValueMap};
 
 #[test]
 fn single_param_feasibility_via_trait_object() {

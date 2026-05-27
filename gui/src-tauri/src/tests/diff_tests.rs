@@ -1,4 +1,4 @@
-use reify_types::DiagnosticInfo;
+use reify_core::DiagnosticInfo;
 
 use crate::diff::{StateDelta, delta_to_events, diff_gui_state, push_serialized_event};
 use crate::types::*;

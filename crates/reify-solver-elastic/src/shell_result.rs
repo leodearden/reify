@@ -14,7 +14,7 @@
 
 use crate::constitutive::IsotropicElastic;
 use crate::shell_assembly::{build_shell_frame, plane_stress_d};
-use reify_types::Value;
+use reify_ir::Value;
 
 /// Returns the local-to-global rotation matrix for a three-node MITC3 shell element.
 ///
@@ -278,7 +278,7 @@ impl ShellStress {
 #[allow(clippy::identity_op)] // explicit `6 * node + dof` form mirrors the DOF layout
 mod tests {
     use super::*;
-    use reify_types::Value;
+    use reify_ir::Value;
     use crate::assembly::ElementStiffness;
     use crate::shell_assembly::shell_element_stiffness;
 

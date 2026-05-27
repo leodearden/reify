@@ -1,10 +1,8 @@
 use std::collections::HashMap;
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_types::{
-    ConstraintNodeId, ContentHash, Diagnostic, Freshness, ModulePath, Satisfaction, SourceSpan,
-    VersionId,
-};
+use reify_core::{ConstraintNodeId, ContentHash, Diagnostic, ModulePath, SourceSpan, VersionId};
+use reify_ir::{Freshness, Satisfaction};
 use tower_lsp::lsp_types::{self, Url};
 
 use crate::analysis::module_name_from_uri;
@@ -384,7 +382,8 @@ mod tests {
 
     // Additional imports for the eval-diagnostics regression-lock cluster.
     use reify_test_support::MockConstraintSolver;
-    use reify_types::{DimensionVector, Severity, Value, ValueCellId};
+    use reify_core::{DimensionVector, Severity, ValueCellId};
+    use reify_ir::Value;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -924,7 +923,7 @@ structure S {
     #[test]
     fn incremental_path_uses_eval_cached_when_content_unchanged() {
         use reify_eval::cache::NodeId;
-        use reify_types::ValueCellId;
+        use reify_core::ValueCellId;
 
         let uri = test_uri();
         let source = reify_test_support::bracket_source();
@@ -1837,7 +1836,7 @@ structure S {
     ///
     /// Pass `expected = &[]` to assert that no such diagnostic is emitted.
     fn assert_specialization_forbidden(
-        body: Vec<reify_syntax::MemberDecl>,
+        body: Vec<reify_ast::MemberDecl>,
         expected: &[(&str, &str, lsp_types::Position)],
     ) {
         use lsp_types::{DiagnosticSeverity, NumberOrString};

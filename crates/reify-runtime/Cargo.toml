@@ -6,7 +6,8 @@ license.workspace = true
 description = "Task scheduling runtime (stub in M1)"
 
 [dependencies]
-reify-types.workspace = true
+reify-core.workspace = true
+reify-ir.workspace = true
 reify-eval.workspace = true
 reify-expr.workspace = true
 reify-compiler.workspace = true
@@ -18,6 +19,8 @@ tracing.workspace = true
 test-utils = []
 
 [dev-dependencies]
+reify-core.workspace = true
+reify-ir.workspace = true
 reify-test-support.workspace = true
 reify-constraints.workspace = true
 # time feature intentionally dev-only: tests need sleep/timeout, production code should not

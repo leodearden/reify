@@ -25,11 +25,8 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use reify_expr::{EvalContext, eval_expr};
-use reify_types::{
-    CompiledExpr, CompiledExprKind, ContentHash, DimensionVector, FieldSourceKind,
-    InterpolationKind, ResolvedFunction, SampledField, SampledGridKind, Type, Value, ValueCellId,
-    ValueMap,
-};
+use reify_core::{ContentHash, DimensionVector, Type, ValueCellId};
+use reify_ir::{CompiledExpr, CompiledExprKind, FieldSourceKind, InterpolationKind, ResolvedFunction, SampledField, SampledGridKind, Value, ValueMap};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

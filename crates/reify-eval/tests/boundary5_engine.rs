@@ -3,7 +3,7 @@
 //! These tests verify the Engine API works correctly with mock implementations.
 
 use reify_test_support::*;
-use reify_types::Satisfaction;
+use reify_ir::Satisfaction;
 
 /// Full pipeline with mocks: compile → evaluate → expected ValueMap.
 #[test]
@@ -25,14 +25,15 @@ fn build_with_mock_kernel() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
-    let result = engine.build(&module, reify_types::ExportFormat::Step);
+    let result = engine.build(&module, reify_ir::ExportFormat::Step);
     assert!(result.geometry_output.is_some());
 }
 
 /// Auto param evaluates to (Undef, DeterminacyState::Auto) in snapshot.
 #[test]
 fn eval_auto_param_undef_auto() {
-    use reify_types::{CompiledExpr, DeterminacyState, ModulePath, Type, ValueCellId};
+    use reify_core::{ModulePath, Type, ValueCellId};
+    use reify_ir::{CompiledExpr, DeterminacyState};
 
     let template = TopologyTemplateBuilder::new("S")
         .auto_param("S", "x", Type::length())
@@ -87,7 +88,8 @@ fn eval_auto_param_undef_auto() {
 /// eval_cached: auto param gets (Undef, Auto), and override applies Determined.
 #[test]
 fn eval_cached_auto_param() {
-    use reify_types::{CompiledExpr, ModulePath, Type, ValueCellId, VersionId};
+    use reify_core::{ModulePath, Type, ValueCellId, VersionId};
+    use reify_ir::CompiledExpr;
 
     let template = TopologyTemplateBuilder::new("S")
         .auto_param("S", "x", Type::length())
@@ -136,7 +138,7 @@ fn eval_cached_auto_param() {
 /// Constraint on auto param → Indeterminate (Undef propagates).
 #[test]
 fn constraint_on_auto_param_indeterminate() {
-    use reify_types::{ModulePath, Type, ValueCellId};
+    use reify_core::{ModulePath, Type, ValueCellId};
 
     // Build module with auto param x and constraint x > 5mm
     let template = TopologyTemplateBuilder::new("S")
@@ -161,7 +163,7 @@ fn constraint_on_auto_param_indeterminate() {
     assert_eq!(result.constraint_results.len(), 1);
     assert_eq!(
         result.constraint_results[0].satisfaction,
-        reify_types::Satisfaction::Indeterminate,
+        reify_ir::Satisfaction::Indeterminate,
         "constraint on auto param should be Indeterminate"
     );
 }
@@ -169,7 +171,8 @@ fn constraint_on_auto_param_indeterminate() {
 /// End-to-end: parse → compile → eval → check with auto param.
 #[test]
 fn e2e_parse_compile_eval_auto_param() {
-    use reify_types::{DeterminacyState, ModulePath, Satisfaction, ValueCellId};
+    use reify_core::{ModulePath, ValueCellId};
+    use reify_ir::{DeterminacyState, Satisfaction};
 
     let source = r#"structure S {
     param x : Scalar = auto
@@ -284,7 +287,7 @@ fn engine_is_initialized_after_eval() {
 /// edit_param before eval() returns Err(EngineError::NotInitialized).
 #[test]
 fn edit_param_before_eval_returns_error() {
-    use reify_types::ValueCellId;
+    use reify_core::ValueCellId;
 
     let checker = MockConstraintChecker::new();
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
@@ -302,7 +305,8 @@ fn edit_param_before_eval_returns_error() {
 /// snapshot, reverse_index, and trace_map.
 #[test]
 fn eval_state_available_atomically_after_eval() {
-    use reify_types::{CompiledExpr, ModulePath, Type, ValueCellId};
+    use reify_core::{ModulePath, Type, ValueCellId};
+    use reify_ir::CompiledExpr;
 
     let template = TopologyTemplateBuilder::new("S")
         .param(
@@ -362,7 +366,8 @@ fn eval_state_available_atomically_after_eval() {
 /// for the let-binding evaluation helper extraction.
 #[test]
 fn let_binding_evaluation_produces_same_results_with_helper() {
-    use reify_types::{BinOp, CompiledExpr, ModulePath, Type, ValueCellId};
+    use reify_core::{ModulePath, Type, ValueCellId};
+    use reify_ir::{BinOp, CompiledExpr};
 
     // Build module: param p = 3, let a = b + 1, let b = p * 2
     // Forward ref: a references b which is declared after a.
@@ -373,7 +378,7 @@ fn let_binding_evaluation_produces_same_results_with_helper() {
             "p",
             Type::Real,
             Some(CompiledExpr::literal(
-                reify_types::Value::Real(3.0),
+                reify_ir::Value::Real(3.0),
                 Type::Real,
             )),
         )
@@ -384,7 +389,7 @@ fn let_binding_evaluation_produces_same_results_with_helper() {
             binop(
                 BinOp::Add,
                 value_ref("S", "b"),
-                CompiledExpr::literal(reify_types::Value::Real(1.0), Type::Real),
+                CompiledExpr::literal(reify_ir::Value::Real(1.0), Type::Real),
             ),
         )
         .let_binding(
@@ -394,7 +399,7 @@ fn let_binding_evaluation_produces_same_results_with_helper() {
             binop(
                 BinOp::Mul,
                 value_ref("S", "p"),
-                CompiledExpr::literal(reify_types::Value::Real(2.0), Type::Real),
+                CompiledExpr::literal(reify_ir::Value::Real(2.0), Type::Real),
             ),
         )
         .build();
@@ -423,7 +428,7 @@ fn let_binding_evaluation_produces_same_results_with_helper() {
 
     // Verify values also correct after edit_param
     let result2 = engine
-        .edit_param(p_id.clone(), reify_types::Value::Real(5.0))
+        .edit_param(p_id.clone(), reify_ir::Value::Real(5.0))
         .unwrap();
 
     let p_val2 = result2.values.get(&p_id).expect("p should be in values");
@@ -450,7 +455,7 @@ fn let_binding_evaluation_produces_same_results_with_helper() {
 /// Sub-component param values appear in the eval result with scoped IDs.
 #[test]
 fn sub_component_params_appear_in_eval_result() {
-    use reify_types::ValueCellId;
+    use reify_core::ValueCellId;
 
     let module = parent_child_module();
     let checker = MockConstraintChecker::new();
@@ -474,7 +479,7 @@ fn sub_component_params_appear_in_eval_result() {
 /// Sub-component child let-bindings are evaluated and appear in the result.
 #[test]
 fn sub_component_child_lets_evaluated() {
-    use reify_types::ValueCellId;
+    use reify_core::ValueCellId;
 
     let module = parent_child_module();
     let checker = MockConstraintChecker::new();
@@ -498,7 +503,8 @@ fn sub_component_child_lets_evaluated() {
 /// Sub-component with no args falls back to child's default param value.
 #[test]
 fn sub_component_default_param_when_no_arg() {
-    use reify_types::{CompiledExpr, ModulePath, Type, ValueCellId};
+    use reify_core::{ModulePath, Type, ValueCellId};
+    use reify_ir::CompiledExpr;
 
     // Child: param height = 10mm
     let child_template = TopologyTemplateBuilder::new("Child")
@@ -547,7 +553,8 @@ fn sub_component_default_param_when_no_arg() {
 /// Sub-component referencing a missing structure is skipped gracefully.
 #[test]
 fn sub_component_missing_structure_skipped_gracefully() {
-    use reify_types::{CompiledExpr, ModulePath, Type, ValueCellId};
+    use reify_core::{ModulePath, Type, ValueCellId};
+    use reify_ir::CompiledExpr;
 
     // Parent template with sub referencing nonexistent "NonExistent"
     let parent_template = TopologyTemplateBuilder::new("Parent")
@@ -603,7 +610,8 @@ fn sub_component_missing_structure_skipped_gracefully() {
 /// to reflect the new x value (y = 0.02 * 2 = 0.04).
 #[test]
 fn edit_param_second_wave_no_panic_after_solver_resolution() {
-    use reify_types::{BinOp, ModulePath, SolveResult, Type, Value, ValueCellId};
+    use reify_core::{ModulePath, Type, ValueCellId};
+    use reify_ir::{BinOp, SolveResult, Value};
     use std::collections::HashMap;
 
     let a_id = ValueCellId::new("S", "a");
@@ -683,7 +691,7 @@ fn edit_param_second_wave_no_panic_after_solver_resolution() {
 /// Engine-level verification: stdlib functions evaluate correctly in let-bindings.
 #[test]
 fn engine_eval_stdlib_function_in_let() {
-    use reify_types::{ModulePath, ValueCellId};
+    use reify_core::{ModulePath, ValueCellId};
 
     let source = r#"structure S {
     param w: Scalar = 80mm
@@ -721,7 +729,8 @@ fn engine_eval_stdlib_function_in_let() {
 /// Engine-level verification: imports are transparent to evaluation.
 #[test]
 fn engine_eval_with_import() {
-    use reify_types::{CompiledExpr, ModulePath, Type, ValueCellId};
+    use reify_core::{ModulePath, Type, ValueCellId};
+    use reify_ir::CompiledExpr;
 
     let template = TopologyTemplateBuilder::new("S")
         .param(
@@ -759,7 +768,7 @@ fn engine_eval_with_import() {
 /// Comprehensive E2E: all three features (import, stdlib, sub-component) through Engine.
 #[test]
 fn e2e_all_three_features_through_engine() {
-    use reify_types::{ModulePath, ValueCellId};
+    use reify_core::{ModulePath, ValueCellId};
 
     let source = r#"import std.math
 
@@ -855,7 +864,7 @@ structure Parent {
     let errors: Vec<_> = result
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(
         errors.is_empty(),
@@ -872,7 +881,8 @@ structure Parent {
 #[test]
 fn root_level_cyclic_let_bindings_emit_diagnostic() {
     use reify_test_support::builders::{binop, literal, value_ref_typed};
-    use reify_types::{BinOp, ModulePath, Severity, Type, Value, ValueCellId};
+    use reify_core::{ModulePath, Severity, Type, ValueCellId};
+    use reify_ir::{BinOp, Value};
 
     // Template S with cyclic lets: let a = b + 1, let b = a + 1
     // No sub-components, not recursive — exercises the root-level path.
@@ -936,7 +946,8 @@ fn root_level_cyclic_let_bindings_emit_diagnostic() {
 #[test]
 fn root_level_non_cyclic_lets_no_false_positive() {
     use reify_test_support::builders::{binop, literal, value_ref_typed};
-    use reify_types::{BinOp, CompiledExpr, ModulePath, Severity, Type, Value, ValueCellId};
+    use reify_core::{ModulePath, Severity, Type, ValueCellId};
+    use reify_ir::{BinOp, CompiledExpr, Value};
 
     let a_expr = binop(
         BinOp::Add,
@@ -1000,7 +1011,8 @@ fn root_level_non_cyclic_lets_no_false_positive() {
 #[test]
 fn evaluate_let_bindings_skips_let_cell_without_default_expr() {
     use reify_compiler::{ValueCellDecl, ValueCellKind, Visibility};
-    use reify_types::{ModulePath, SourceSpan, Type, Value, ValueCellId};
+    use reify_core::{ModulePath, SourceSpan, Type, ValueCellId};
+    use reify_ir::Value;
 
     // Build a template with one normal let-binding (the "good" cell).
     let mut template = TopologyTemplateBuilder::new("S")
@@ -1068,7 +1080,8 @@ fn evaluate_let_bindings_skips_let_cell_without_default_expr() {
 fn evaluate_let_bindings_cache_records_dependency_trace() {
     use reify_eval::cache::NodeId;
     use reify_test_support::builders::{binop, literal};
-    use reify_types::{BinOp, ModulePath, Type, Value, ValueCellId};
+    use reify_core::{ModulePath, Type, ValueCellId};
+    use reify_ir::{BinOp, Value};
 
     // let a = 1        (no reads — literal)
     // let b = 2        (no reads — literal)
@@ -1167,7 +1180,8 @@ fn evaluate_let_bindings_cache_records_dependency_trace() {
 fn evaluate_let_bindings_cache_preserves_duplicate_reads_for_same_cell() {
     use reify_eval::cache::NodeId;
     use reify_test_support::builders::{binop, literal, value_ref_typed};
-    use reify_types::{BinOp, ModulePath, Type, Value, ValueCellId};
+    use reify_core::{ModulePath, Type, ValueCellId};
+    use reify_ir::{BinOp, Value};
 
     // let a = 1        (no reads — literal)
     // let c = a + a    (two reads of S.a — same cell referenced twice)

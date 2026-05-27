@@ -215,7 +215,7 @@ fn relative_to_examples_dir_accepts_all_discovered_paths() {
 /// files are unambiguous in failure reports.
 fn smoke_one(path: &Path, rel_key: &str, failures: &mut Vec<(String, String)>) {
     use reify_compiler::{compile_with_stdlib, parse_with_stdlib};
-    use reify_types::{ModulePath, Severity};
+    use reify_core::{ModulePath, Severity};
 
     let source = std::fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("examples_smoke: cannot read '{}': {}", rel_key, e));

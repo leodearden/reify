@@ -28,7 +28,7 @@
 //! existing "type-error → `Value::Undef`" catch-all), and [`Value::from`] to
 //! convert back.
 
-use reify_types::Value;
+use reify_ir::Value;
 
 /// A three-valued Kleene truth value.
 ///

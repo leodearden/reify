@@ -18,10 +18,8 @@ use reify_test_support::{
 };
 
 use reify_compiler::CompiledModule;
-use reify_types::{
-    ConstraintNodeId, RealizationNodeId, Satisfaction, SnapshotProvenance, Value, ValueCellId,
-    ValueMap,
-};
+use reify_core::{ConstraintNodeId, RealizationNodeId, ValueCellId};
+use reify_ir::{Satisfaction, SnapshotProvenance, Value, ValueMap};
 
 use common::ten_bool_guarded_groups;
 
@@ -1820,7 +1818,8 @@ fn edit_source_refreshes_objectives_against_cold_eval() {
         CompiledModuleBuilder, MockConstraintChecker, MockConstraintSolver,
         MultiCallSpyConstraintSolver, TopologyTemplateBuilder, gt, literal, lt, mm, value_ref,
     };
-    use reify_types::{ModulePath, OptimizationObjective, SolveResult, Type};
+    use reify_core::{ModulePath, Type};
+    use reify_ir::{OptimizationObjective, SolveResult};
     use std::collections::HashMap;
 
     let thickness_id = ValueCellId::new("S", "thickness");
@@ -2939,7 +2938,8 @@ fn edit_source_wave2_guard_flip_activates_else_members() {
         CompiledModuleBuilder, MockConstraintChecker, SequencedMockConstraintSolver,
         TopologyTemplateBuilder, and, ge, gt, literal, mm, value_ref,
     };
-    use reify_types::{ModulePath, SolveResult, SourceSpan, Type};
+    use reify_core::{ModulePath, SourceSpan, Type};
+    use reify_ir::SolveResult;
     use std::collections::HashMap;
 
     let depth_id = ValueCellId::new("S", "depth");
@@ -3213,7 +3213,8 @@ fn edit_source_role_flip_wave2_and_phase3_dedup() {
         CompiledModuleBuilder, MockConstraintChecker, SequencedMockConstraintSolver,
         TopologyTemplateBuilder, eq, gt, literal, mm, value_ref, value_ref_typed,
     };
-    use reify_types::{ModulePath, SolveResult, SourceSpan, Type};
+    use reify_core::{ModulePath, SourceSpan, Type};
+    use reify_ir::SolveResult;
     use std::collections::HashMap;
 
     let depth_id = ValueCellId::new("S", "depth");
@@ -3704,7 +3705,7 @@ fn edit_source_role_flip_probe_memoised_across_multiple_groups() {
 #[allow(clippy::single_element_loop)]
 fn edit_source_panics_on_unrepresentable_cell_type() {
     use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
-    use reify_types::{ModulePath, Type};
+    use reify_core::{ModulePath, Type};
     use std::panic;
 
     for ty in [Type::TypeParam("T".into())] {

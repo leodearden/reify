@@ -31,7 +31,7 @@
 
 use std::fmt;
 
-use reify_types::Mesh;
+use reify_ir::Mesh;
 
 /// Configuration for the [`auto_mesh_size_from_features`] heuristic.
 #[derive(Debug, Clone, Copy)]

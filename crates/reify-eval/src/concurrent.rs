@@ -4,11 +4,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
-use reify_types::{
-    AutoParam, CompiledFunction, ContentHash, DeterminacyState, Diagnostic, OptimizationObjective,
-    PersistentMap, ResolutionProblem, SnapshotId, SnapshotProvenance, SolveResult, Value,
-    ValueCellId, ValueMap, VersionId,
-};
+use reify_core::{ContentHash, Diagnostic, SnapshotId, ValueCellId, VersionId};
+use reify_ir::{AutoParam, CompiledFunction, DeterminacyState, OptimizationObjective, PersistentMap, ResolutionProblem, SnapshotProvenance, SolveResult, Value, ValueMap};
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
 use crate::deps::{DependencyTrace, ReverseDependencyIndex, extract_dependency_trace};
@@ -638,7 +635,7 @@ mod tests {
 
         let new_volume = Value::Scalar {
             si_value: 5e-5,
-            dimension: reify_types::dimension::DimensionVector::VOLUME,
+            dimension: reify_core::dimension::DimensionVector::VOLUME,
         };
 
         let mut snapshot_values = setup.snapshot_values.clone();

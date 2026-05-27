@@ -10,7 +10,8 @@
 use std::fs;
 
 use reify_test_support::mocks::MockConstraintChecker;
-use reify_types::{DimensionVector, ModulePath, Severity, Value, ValueCellId};
+use reify_core::{DimensionVector, ModulePath, Severity, ValueCellId};
+use reify_ir::Value;
 
 // ── Helper ───────────────────────────────────────────────────────────────────
 
@@ -83,7 +84,7 @@ fn math_linalg_dot_product_work() {
         .get(&id)
         .unwrap_or_else(|| panic!("'work' not found in eval result"));
 
-    let expected_dim = reify_types::dimension::FORCE.mul(&DimensionVector::LENGTH);
+    let expected_dim = reify_core::dimension::FORCE.mul(&DimensionVector::LENGTH);
     match val {
         Value::Scalar {
             si_value,
@@ -116,7 +117,7 @@ fn math_linalg_cross_product_torque() {
         .get(&id)
         .unwrap_or_else(|| panic!("'torque' not found in eval result"));
 
-    let expected_dim = DimensionVector::LENGTH.mul(&reify_types::dimension::FORCE);
+    let expected_dim = DimensionVector::LENGTH.mul(&reify_core::dimension::FORCE);
     match val {
         Value::Vector(components) => {
             assert_eq!(components.len(), 3, "torque should have 3 components");
@@ -367,7 +368,7 @@ fn dim_dot_energy() {
         .get(&id)
         .unwrap_or_else(|| panic!("'dot_result' not found"));
 
-    let expected_dim = reify_types::dimension::FORCE.mul(&DimensionVector::LENGTH);
+    let expected_dim = reify_core::dimension::FORCE.mul(&DimensionVector::LENGTH);
     match val {
         Value::Scalar {
             si_value,
@@ -406,7 +407,7 @@ fn dim_cross_torque() {
         .get(&id)
         .unwrap_or_else(|| panic!("'cross_result' not found"));
 
-    let expected_dim = DimensionVector::LENGTH.mul(&reify_types::dimension::FORCE);
+    let expected_dim = DimensionVector::LENGTH.mul(&reify_core::dimension::FORCE);
     match val {
         Value::Vector(components) => {
             assert_eq!(components.len(), 3, "cross_result should have 3 components");
@@ -458,7 +459,7 @@ fn dim_gravity_force() {
             );
             assert_eq!(
                 *dimension,
-                reify_types::dimension::FORCE,
+                reify_core::dimension::FORCE,
                 "weight dimension should be FORCE (N = kg·m/s²), got {:?}",
                 dimension
             );

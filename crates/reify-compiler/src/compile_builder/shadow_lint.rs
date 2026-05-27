@@ -44,8 +44,8 @@
 
 use std::collections::HashMap;
 
-use reify_syntax::{Expr, ExprKind, ParsedModule};
-use reify_types::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
+use reify_ast::{Expr, ExprKind, ParsedModule};
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
 
 /// Stack-safety bound on the structural recursion in [`walk_expr_depth`].
 ///
@@ -103,8 +103,8 @@ pub(crate) fn lint_module(parsed: &ParsedModule, diagnostics: &mut Vec<Diagnosti
 
 /// Build the initial body frame for a top-level declaration and walk every
 /// expression position with that frame as the only ancestor.
-fn walk_declaration(decl: &reify_syntax::Declaration, diagnostics: &mut Vec<Diagnostic>) {
-    use reify_syntax::Declaration;
+fn walk_declaration(decl: &reify_ast::Declaration, diagnostics: &mut Vec<Diagnostic>) {
+    use reify_ast::Declaration;
     match decl {
         Declaration::Structure(s) => {
             // Spec §8.8 trait-merge exclusion: walk ONLY the structure's own
@@ -214,18 +214,18 @@ fn walk_declaration(decl: &reify_syntax::Declaration, diagnostics: &mut Vec<Diag
                 parent: None,
             };
             match &f.source {
-                reify_syntax::FieldSource::Analytical { expr }
-                | reify_syntax::FieldSource::Composed { expr } => {
+                reify_ast::FieldSource::Analytical { expr }
+                | reify_ast::FieldSource::Composed { expr } => {
                     walk_expr(expr, Some(&stack), diagnostics);
                 }
-                reify_syntax::FieldSource::Sampled { config } => {
+                reify_ast::FieldSource::Sampled { config } => {
                     for (_cfg_name, value) in config {
                         // _cfg_name is a sampled-config key (e.g. "resolution"),
                         // not a binder.
                         walk_expr(value, Some(&stack), diagnostics);
                     }
                 }
-                reify_syntax::FieldSource::Imported { .. } => {}
+                reify_ast::FieldSource::Imported { .. } => {}
             }
         }
         Declaration::Purpose(p) => {
@@ -267,15 +267,15 @@ fn walk_declaration(decl: &reify_syntax::Declaration, diagnostics: &mut Vec<Diag
 /// list; trait member sets are never injected here, so a structure that
 /// declares one member satisfying two traits has a single frame entry —
 /// no false-positive shadow.
-fn collect_body_frame(members: &[reify_syntax::MemberDecl]) -> Frame {
+fn collect_body_frame(members: &[reify_ast::MemberDecl]) -> Frame {
     let mut frame: Frame = HashMap::new();
     collect_body_frame_into(members, &mut frame, 0);
     frame
 }
 
-fn collect_body_frame_into(members: &[reify_syntax::MemberDecl], frame: &mut Frame, depth: usize) {
-    use reify_syntax::MemberDecl;
-    if depth > reify_syntax::MAX_MEMBER_NESTING_DEPTH {
+fn collect_body_frame_into(members: &[reify_ast::MemberDecl], frame: &mut Frame, depth: usize) {
+    use reify_ast::MemberDecl;
+    if depth > reify_ast::MAX_MEMBER_NESTING_DEPTH {
         return;
     }
     for member in members {
@@ -344,7 +344,7 @@ fn collect_body_frame_into(members: &[reify_syntax::MemberDecl], frame: &mut Fra
 /// Recurse through a member list, walking every expression-bearing position
 /// against the supplied frame stack.
 fn walk_members(
-    members: &[reify_syntax::MemberDecl],
+    members: &[reify_ast::MemberDecl],
     frames: Option<&FrameStack>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -352,13 +352,13 @@ fn walk_members(
 }
 
 fn walk_members_depth(
-    members: &[reify_syntax::MemberDecl],
+    members: &[reify_ast::MemberDecl],
     frames: Option<&FrameStack>,
     diagnostics: &mut Vec<Diagnostic>,
     depth: usize,
 ) {
-    use reify_syntax::MemberDecl;
-    if depth > reify_syntax::MAX_MEMBER_NESTING_DEPTH {
+    use reify_ast::MemberDecl;
+    if depth > reify_ast::MAX_MEMBER_NESTING_DEPTH {
         return;
     }
     for member in members {

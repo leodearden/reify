@@ -8,7 +8,8 @@ use std::fs;
 use reify_compiler::module_dag::{ModuleResolver, compile_project};
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{parse_and_compile, parse_and_compile_with_stdlib};
-use reify_types::{ExportFormat, Satisfaction, ValueCellId};
+use reify_core::ValueCellId;
+use reify_ir::{ExportFormat, Satisfaction};
 
 // ── Step 1: trait_implementing_structure ─────────────────────────────
 
@@ -46,7 +47,7 @@ fn trait_implementing_structure() {
         .get(&length_id)
         .unwrap_or_else(|| panic!("value for {:?} not found in result", length_id));
     match length_val {
-        reify_types::Value::Scalar { si_value, .. } => {
+        reify_ir::Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 0.1).abs() < 1e-12,
                 "expected 0.1 SI for length, got {}",
@@ -63,7 +64,7 @@ fn trait_implementing_structure() {
         .get(&diameter_id)
         .unwrap_or_else(|| panic!("value for {:?} not found in result", diameter_id));
     match diameter_val {
-        reify_types::Value::Scalar { si_value, .. } => {
+        reify_ir::Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 0.01).abs() < 1e-12,
                 "expected 0.01 SI for diameter, got {}",
@@ -80,7 +81,7 @@ fn trait_implementing_structure() {
         .get(&radius_id)
         .unwrap_or_else(|| panic!("value for {:?} not found in result", radius_id));
     match radius_val {
-        reify_types::Value::Scalar { si_value, .. } => {
+        reify_ir::Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 0.005).abs() < 1e-12,
                 "expected 0.005 SI for radius, got {}",
@@ -191,11 +192,11 @@ structure S {
         .get(&items_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", items_id));
     match items_val {
-        reify_types::Value::List(elems) => {
+        reify_ir::Value::List(elems) => {
             assert_eq!(elems.len(), 3, "expected 3 elements");
-            assert_eq!(elems[0], reify_types::Value::Int(10));
-            assert_eq!(elems[1], reify_types::Value::Int(20));
-            assert_eq!(elems[2], reify_types::Value::Int(30));
+            assert_eq!(elems[0], reify_ir::Value::Int(10));
+            assert_eq!(elems[1], reify_ir::Value::Int(20));
+            assert_eq!(elems[2], reify_ir::Value::Int(30));
         }
         other => panic!("expected List for items, got {:?}", other),
     }
@@ -208,7 +209,7 @@ structure S {
         .unwrap_or_else(|| panic!("value for {:?} not found", n_id));
     assert_eq!(
         *n_val,
-        reify_types::Value::Int(3),
+        reify_ir::Value::Int(3),
         "items.count should be 3"
     );
 
@@ -220,7 +221,7 @@ structure S {
         .unwrap_or_else(|| panic!("value for {:?} not found", total_id));
     assert_eq!(
         *total_val,
-        reify_types::Value::Int(60),
+        reify_ir::Value::Int(60),
         "items.sum should be 60"
     );
 
@@ -232,7 +233,7 @@ structure S {
         .unwrap_or_else(|| panic!("value for {:?} not found", second_id));
     assert_eq!(
         *second_val,
-        reify_types::Value::Int(20),
+        reify_ir::Value::Int(20),
         "items[1] should be 20"
     );
 }
@@ -293,7 +294,7 @@ fn connect_occurrence_chain() {
     for entry in &result.constraint_results {
         assert_eq!(
             entry.satisfaction,
-            reify_types::Satisfaction::Satisfied,
+            reify_ir::Satisfaction::Satisfied,
             "constraint {} should be satisfied, got {:?}",
             entry.id,
             entry.satisfaction
@@ -334,7 +335,7 @@ fn guarded_enum_declarations() {
         .get(&shape_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", shape_id));
     match shape_val {
-        reify_types::Value::Enum { variant, .. } => {
+        reify_ir::Value::Enum { variant, .. } => {
             assert_eq!(variant, "Round", "default shape should be Round");
         }
         other => panic!("expected Enum for shape, got {:?}", other),
@@ -347,7 +348,7 @@ fn guarded_enum_declarations() {
         .get(&size_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", size_id));
     match size_val {
-        reify_types::Value::Scalar { si_value, .. } => {
+        reify_ir::Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 0.01).abs() < 1e-12,
                 "expected 0.01 SI for size, got {}",
@@ -364,7 +365,7 @@ fn guarded_enum_declarations() {
         .get(&label_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", label_id));
     match label_val {
-        reify_types::Value::Int(v) => {
+        reify_ir::Value::Int(v) => {
             assert_eq!(*v, 1, "label should be 1 for Round");
         }
         other => panic!("expected Int for label, got {:?}", other),
@@ -379,14 +380,14 @@ fn guarded_enum_declarations() {
     );
     // diameter should equal size = 0.01 SI
     match diameter_val.unwrap() {
-        reify_types::Value::Scalar { si_value, .. } => {
+        reify_ir::Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 0.01).abs() < 1e-12,
                 "expected diameter = size = 0.01, got {}",
                 si_value
             );
         }
-        reify_types::Value::Undef => {
+        reify_ir::Value::Undef => {
             // Also acceptable — guard might not be evaluating enum comparison
         }
         other => panic!("expected Scalar or Undef for diameter, got {:?}", other),
@@ -434,10 +435,10 @@ fn user_fn_with_constraint() {
         .get(&width_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", width_id));
     match width_val {
-        reify_types::Value::Real(v) => {
+        reify_ir::Value::Real(v) => {
             assert!((v - 200.0).abs() < 1e-12, "expected 200.0, got {}", v);
         }
-        reify_types::Value::Int(v) => {
+        reify_ir::Value::Int(v) => {
             assert_eq!(*v, 200, "expected 200, got {}", v);
         }
         other => panic!("expected Real(200) or Int(200), got {:?}", other),
@@ -450,10 +451,10 @@ fn user_fn_with_constraint() {
         .get(&sa_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", sa_id));
     match sa_val {
-        reify_types::Value::Real(v) => {
+        reify_ir::Value::Real(v) => {
             assert!((v - 20000.0).abs() < 1e-9, "expected 20000.0, got {}", v);
         }
-        reify_types::Value::Int(v) => {
+        reify_ir::Value::Int(v) => {
             assert_eq!(*v, 20000, "expected 20000, got {}", v);
         }
         other => panic!("expected Real(20000) or Int(20000), got {:?}", other),
@@ -469,7 +470,7 @@ fn user_fn_with_constraint() {
     for entry in &result.constraint_results {
         assert_eq!(
             entry.satisfaction,
-            reify_types::Satisfaction::Satisfied,
+            reify_ir::Satisfaction::Satisfied,
             "constraint {} should be satisfied",
             entry.id
         );
@@ -609,7 +610,7 @@ structure def Widget : Sizable {
         .get(&kind_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", kind_id));
     match kind_val {
-        reify_types::Value::Enum { variant, .. } => {
+        reify_ir::Value::Enum { variant, .. } => {
             assert_eq!(variant, "Medium", "kind should be Medium");
         }
         other => panic!("expected Enum for kind, got {:?}", other),
@@ -622,10 +623,10 @@ structure def Widget : Sizable {
         .get(&size_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", size_id));
     match size_val {
-        reify_types::Value::Real(v) => {
+        reify_ir::Value::Real(v) => {
             assert!((v - 50.0).abs() < 1e-12, "expected 50.0, got {}", v);
         }
-        reify_types::Value::Int(v) => {
+        reify_ir::Value::Int(v) => {
             assert_eq!(*v, 50, "expected 50, got {}", v);
         }
         other => panic!("expected Real(50) or Int(50), got {:?}", other),
@@ -638,10 +639,10 @@ structure def Widget : Sizable {
         .get(&scaled_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", scaled_id));
     match scaled_val {
-        reify_types::Value::Real(v) => {
+        reify_ir::Value::Real(v) => {
             assert!((v - 100.0).abs() < 1e-9, "expected 100.0, got {}", v);
         }
-        reify_types::Value::Int(v) => {
+        reify_ir::Value::Int(v) => {
             assert_eq!(*v, 100, "expected 100, got {}", v);
         }
         other => panic!("expected Real(100) or Int(100), got {:?}", other),
@@ -654,7 +655,7 @@ structure def Widget : Sizable {
         .get(&lc_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", lc_id));
     match lc_val {
-        reify_types::Value::Int(v) => {
+        reify_ir::Value::Int(v) => {
             assert_eq!(*v, 20, "label_copy should be 20 for Medium");
         }
         other => panic!("expected Int for label_copy, got {:?}", other),
@@ -668,7 +669,7 @@ structure def Widget : Sizable {
         .unwrap_or_else(|| panic!("value for {:?} not found", n_id));
     assert_eq!(
         *n_val,
-        reify_types::Value::Int(5),
+        reify_ir::Value::Int(5),
         "items.count should be 5"
     );
 
@@ -728,7 +729,7 @@ fn trait_rigid_mass_conformance() {
         .get(&mass_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", mass_id));
     match mass_val {
-        reify_types::Value::Scalar { si_value, .. } => {
+        reify_ir::Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 0.5).abs() < 1e-12,
                 "expected 0.5 SI for mass (0.5kg), got {}",
@@ -745,7 +746,7 @@ fn trait_rigid_mass_conformance() {
         .get(&width_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", width_id));
     match width_val {
-        reify_types::Value::Scalar { si_value, .. } => {
+        reify_ir::Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 0.08).abs() < 1e-12,
                 "expected 0.08 SI for width (80mm), got {}",
@@ -894,7 +895,7 @@ fn guarded_enum_multi_branch() {
         .get(&ht_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", ht_id));
     match ht_val {
-        reify_types::Value::Enum { variant, .. } => {
+        reify_ir::Value::Enum { variant, .. } => {
             assert_eq!(variant, "Hex", "head_type should be Hex");
         }
         other => panic!("expected Enum for head_type, got {:?}", other),
@@ -909,14 +910,14 @@ fn guarded_enum_multi_branch() {
     );
     // across_flats should be 17mm = 0.017 SI (Hex branch)
     match af_val.unwrap() {
-        reify_types::Value::Scalar { si_value, .. } => {
+        reify_ir::Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 0.017).abs() < 1e-12,
                 "expected 0.017 SI for across_flats (17mm), got {}",
                 si_value
             );
         }
-        reify_types::Value::Undef => {
+        reify_ir::Value::Undef => {
             // Guard might not be evaluating enum comparison yet
         }
         other => panic!("expected Scalar or Undef for across_flats, got {:?}", other),
@@ -929,7 +930,7 @@ fn guarded_enum_multi_branch() {
         .get(&hl_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", hl_id));
     match hl_val {
-        reify_types::Value::Int(v) => {
+        reify_ir::Value::Int(v) => {
             assert_eq!(*v, 1, "head_label should be 1 for Hex");
         }
         other => panic!("expected Int for head_label, got {:?}", other),
@@ -942,7 +943,7 @@ fn guarded_enum_multi_branch() {
         .get(&sd_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", sd_id));
     match sd_val {
-        reify_types::Value::Scalar { si_value, .. } => {
+        reify_ir::Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 0.01).abs() < 1e-12,
                 "expected 0.01 SI for shaft_diameter (10mm), got {}",
@@ -997,12 +998,12 @@ fn collection_with_quantifier() {
         .get(&items_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", items_id));
     match items_val {
-        reify_types::Value::List(elems) => {
+        reify_ir::Value::List(elems) => {
             assert_eq!(elems.len(), 4, "expected 4 elements");
-            assert_eq!(elems[0], reify_types::Value::Int(5));
-            assert_eq!(elems[1], reify_types::Value::Int(10));
-            assert_eq!(elems[2], reify_types::Value::Int(15));
-            assert_eq!(elems[3], reify_types::Value::Int(20));
+            assert_eq!(elems[0], reify_ir::Value::Int(5));
+            assert_eq!(elems[1], reify_ir::Value::Int(10));
+            assert_eq!(elems[2], reify_ir::Value::Int(15));
+            assert_eq!(elems[3], reify_ir::Value::Int(20));
         }
         other => panic!("expected List for items, got {:?}", other),
     }
@@ -1015,7 +1016,7 @@ fn collection_with_quantifier() {
         .unwrap_or_else(|| panic!("value for {:?} not found", n_id));
     assert_eq!(
         *n_val,
-        reify_types::Value::Int(4),
+        reify_ir::Value::Int(4),
         "items.count should be 4"
     );
 
@@ -1027,7 +1028,7 @@ fn collection_with_quantifier() {
         .unwrap_or_else(|| panic!("value for {:?} not found", total_id));
     assert_eq!(
         *total_val,
-        reify_types::Value::Int(50),
+        reify_ir::Value::Int(50),
         "items.sum should be 50"
     );
 
@@ -1039,7 +1040,7 @@ fn collection_with_quantifier() {
         .unwrap_or_else(|| panic!("value for {:?} not found", first_id));
     assert_eq!(
         *first_val,
-        reify_types::Value::Int(5),
+        reify_ir::Value::Int(5),
         "items[0] should be 5"
     );
 
@@ -1051,7 +1052,7 @@ fn collection_with_quantifier() {
         .unwrap_or_else(|| panic!("value for {:?} not found", last_id));
     assert_eq!(
         *last_val,
-        reify_types::Value::Int(20),
+        reify_ir::Value::Int(20),
         "items[3] should be 20"
     );
 
@@ -1144,10 +1145,10 @@ fn occurrence_manufacturing_chain() {
         .get(&fr_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", fr_id));
     match fr_val {
-        reify_types::Value::Real(v) => {
+        reify_ir::Value::Real(v) => {
             assert!((v - 100.0).abs() < 1e-12, "expected 100.0, got {}", v);
         }
-        reify_types::Value::Int(v) => {
+        reify_ir::Value::Int(v) => {
             assert_eq!(*v, 100, "expected 100, got {}", v);
         }
         other => panic!(
@@ -1163,10 +1164,10 @@ fn occurrence_manufacturing_chain() {
         .get(&temp_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", temp_id));
     match temp_val {
-        reify_types::Value::Real(v) => {
+        reify_ir::Value::Real(v) => {
             assert!((v - 850.0).abs() < 1e-12, "expected 850.0, got {}", v);
         }
-        reify_types::Value::Int(v) => {
+        reify_ir::Value::Int(v) => {
             assert_eq!(*v, 850, "expected 850, got {}", v);
         }
         other => panic!(
@@ -1229,10 +1230,10 @@ fn user_fn_safety_factor() {
         .get(&stress_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", stress_id));
     match stress_val {
-        reify_types::Value::Real(v) => {
+        reify_ir::Value::Real(v) => {
             assert!((v - 100.0).abs() < 1e-12, "expected 100.0, got {}", v);
         }
-        reify_types::Value::Int(v) => {
+        reify_ir::Value::Int(v) => {
             assert_eq!(*v, 100, "expected 100, got {}", v);
         }
         other => panic!("expected Real(100) or Int(100) for stress, got {:?}", other),
@@ -1245,7 +1246,7 @@ fn user_fn_safety_factor() {
         .get(&sf_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", sf_id));
     match sf_val {
-        reify_types::Value::Real(v) => {
+        reify_ir::Value::Real(v) => {
             assert!((v - 2.5).abs() < 1e-9, "expected 2.5, got {}", v);
         }
         other => panic!("expected Real(2.5) for sf, got {:?}", other),
@@ -1395,10 +1396,10 @@ fn combined_all_features() {
         .get(&size_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", size_id));
     match size_val {
-        reify_types::Value::Real(v) => {
+        reify_ir::Value::Real(v) => {
             assert!((v - 25.0).abs() < 1e-12, "expected 25.0, got {}", v);
         }
-        reify_types::Value::Int(v) => {
+        reify_ir::Value::Int(v) => {
             assert_eq!(*v, 25, "expected 25, got {}", v);
         }
         other => panic!("expected Real(25) or Int(25), got {:?}", other),
@@ -1411,7 +1412,7 @@ fn combined_all_features() {
         .get(&quality_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", quality_id));
     match quality_val {
-        reify_types::Value::Enum { variant, .. } => {
+        reify_ir::Value::Enum { variant, .. } => {
             assert_eq!(variant, "Premium", "quality should be Premium");
         }
         other => panic!("expected Enum for quality, got {:?}", other),
@@ -1424,10 +1425,10 @@ fn combined_all_features() {
         .get(&grade_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", grade_id));
     match grade_val {
-        reify_types::Value::Int(v) => {
+        reify_ir::Value::Int(v) => {
             assert_eq!(*v, 30, "grade should be 30 (grading(3) = 3*10)");
         }
-        reify_types::Value::Real(v) => {
+        reify_ir::Value::Real(v) => {
             assert!(
                 (v - 30.0).abs() < 1e-12,
                 "expected 30.0 for grade, got {}",
@@ -1442,10 +1443,10 @@ fn combined_all_features() {
     let pl_val = result.values.get(&pl_id);
     assert!(pl_val.is_some(), "premium_label should be present");
     match pl_val.unwrap() {
-        reify_types::Value::Int(v) => {
+        reify_ir::Value::Int(v) => {
             assert_eq!(*v, 1, "premium_label should be 1 for Premium");
         }
-        reify_types::Value::Undef => {
+        reify_ir::Value::Undef => {
             // Guard may not evaluate enum comparison — acceptable
         }
         other => panic!(
@@ -1461,7 +1462,7 @@ fn combined_all_features() {
         .get(&qc_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", qc_id));
     match qc_val {
-        reify_types::Value::Int(v) => {
+        reify_ir::Value::Int(v) => {
             assert_eq!(*v, 200, "quality_code should be 200 for Premium");
         }
         other => panic!("expected Int(200) for quality_code, got {:?}", other),
@@ -1474,12 +1475,12 @@ fn combined_all_features() {
         .get(&items_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", items_id));
     match items_val {
-        reify_types::Value::List(elems) => {
+        reify_ir::Value::List(elems) => {
             assert_eq!(elems.len(), 4, "expected 4 items");
-            assert_eq!(elems[0], reify_types::Value::Int(10));
-            assert_eq!(elems[1], reify_types::Value::Int(20));
-            assert_eq!(elems[2], reify_types::Value::Int(30));
-            assert_eq!(elems[3], reify_types::Value::Int(40));
+            assert_eq!(elems[0], reify_ir::Value::Int(10));
+            assert_eq!(elems[1], reify_ir::Value::Int(20));
+            assert_eq!(elems[2], reify_ir::Value::Int(30));
+            assert_eq!(elems[3], reify_ir::Value::Int(40));
         }
         other => panic!("expected List for items, got {:?}", other),
     }
@@ -1492,7 +1493,7 @@ fn combined_all_features() {
         .unwrap_or_else(|| panic!("value for {:?} not found", ic_id));
     assert_eq!(
         *ic_val,
-        reify_types::Value::Int(4),
+        reify_ir::Value::Int(4),
         "item_count should be 4"
     );
 
@@ -1504,7 +1505,7 @@ fn combined_all_features() {
         .unwrap_or_else(|| panic!("value for {:?} not found", it_id));
     assert_eq!(
         *it_val,
-        reify_types::Value::Int(100),
+        reify_ir::Value::Int(100),
         "item_total should be 100"
     );
 

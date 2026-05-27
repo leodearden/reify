@@ -5,7 +5,8 @@
 //! Uses examples/m9_constraint_def.ri as the source file.
 
 use reify_test_support::{check_source, make_simple_engine, parse_and_compile};
-use reify_types::{ModulePath, Satisfaction, ValueCellId};
+use reify_core::{ModulePath, ValueCellId};
+use reify_ir::Satisfaction;
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(
@@ -92,7 +93,7 @@ fn single_predicate_values() {
         .get(&thickness_id)
         .unwrap_or_else(|| panic!("Wall.thickness not found in values"));
     match thickness_val {
-        reify_types::Value::Scalar { si_value, .. } => {
+        reify_ir::Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 0.005).abs() < 1e-12,
                 "expected 0.005 SI for Wall.thickness (5mm), got {si_value}"
@@ -143,7 +144,7 @@ fn multi_param_bounded_values() {
         .get(&diameter_id)
         .unwrap_or_else(|| panic!("Pipe.diameter not found in values"));
     match diameter_val {
-        reify_types::Value::Scalar { si_value, .. } => {
+        reify_ir::Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 0.020).abs() < 1e-12,
                 "expected 0.020 SI for Pipe.diameter (20mm), got {si_value}"

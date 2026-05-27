@@ -6,7 +6,7 @@ use reify_syntax::*;
 
 /// Helper: parse source and return the first declaration.
 fn parse_first_decl(source: &str) -> (Declaration, Vec<ParseError>) {
-    let module = reify_syntax::parse(source, reify_types::ModulePath::single("vis_test"));
+    let module = reify_syntax::parse(source, reify_core::ModulePath::single("vis_test"));
     let decl = module
         .declarations
         .into_iter()
@@ -17,7 +17,7 @@ fn parse_first_decl(source: &str) -> (Declaration, Vec<ParseError>) {
 
 /// Helper: parse source and return the first structure's members.
 fn parse_members(source: &str) -> (Vec<MemberDecl>, Vec<ParseError>) {
-    let module = reify_syntax::parse(source, reify_types::ModulePath::single("vis_test"));
+    let module = reify_syntax::parse(source, reify_core::ModulePath::single("vis_test"));
     let structure = match &module.declarations[0] {
         Declaration::Structure(s) => s,
         other => panic!("expected Structure, got {:?}", other),

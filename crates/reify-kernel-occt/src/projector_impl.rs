@@ -6,7 +6,7 @@
 //! `mesh-morphing-phase-2.md` §3.4 / §7.3.
 
 use reify_mesh_morph::{Projector, ProjectorPayload};
-use reify_types::{GeometryHandleId, QueryError};
+use reify_ir::{GeometryHandleId, QueryError};
 
 use crate::OcctKernel;
 

@@ -6,7 +6,8 @@
 
 use reify_compiler::{CompiledGeometryOp, CurveKind, GeomRef, PrimitiveKind, SweepKind};
 use reify_test_support::*;
-use reify_types::{ExportFormat, GeometryOp, GeometryQuery, ModulePath, Severity, Type, Value};
+use reify_core::{ModulePath, Severity, Type};
+use reify_ir::{ExportFormat, GeometryOp, GeometryQuery, Value};
 
 /// Exercises the full compile -> eval path for Tube.
 ///
@@ -17,7 +18,7 @@ use reify_types::{ExportFormat, GeometryOp, GeometryQuery, ModulePath, Severity,
 #[test]
 fn tube_through_mock_kernel_emits_geometry_op_tube() {
     let e = "TestTube";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     let tube_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Tube,
@@ -32,7 +33,7 @@ fn tube_through_mock_kernel_emits_geometry_op_tube() {
         .realization(e, 0, vec![tube_op])
         .build();
 
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_tube"))
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single("test_tube"))
         .template(template)
         .build();
 
@@ -91,7 +92,7 @@ fn tube_through_mock_kernel_emits_geometry_op_tube() {
 #[test]
 fn pipe_through_mock_kernel_emits_geometry_op_pipe() {
     let e = "TestPipe";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: LineSegment (produces a wire handle at step index 0)
     let line_op = CompiledGeometryOp::Curve {
@@ -120,7 +121,7 @@ fn pipe_through_mock_kernel_emits_geometry_op_pipe() {
         .realization(e, 0, vec![line_op, pipe_op])
         .build();
 
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_pipe"))
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single("test_pipe"))
         .template(template)
         .build();
 

@@ -6,10 +6,8 @@
 use std::sync::Arc;
 
 use reify_expr::{EvalContext, eval_expr};
-use reify_types::{
-    BinOp, CompiledExpr, CompiledExprKind, ContentHash, DimensionVector, FieldSourceKind,
-    ResolvedFunction, TAG_CONDITIONAL, Type, Value, ValueCellId, ValueMap,
-};
+use reify_core::{ContentHash, DimensionVector, Type, ValueCellId};
+use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, FieldSourceKind, ResolvedFunction, TAG_CONDITIONAL, Value, ValueMap};
 
 /// Helper to build a FunctionCall expression for stdlib functions.
 fn make_function_call(name: &str, args: Vec<CompiledExpr>, result_type: Type) -> CompiledExpr {
@@ -234,9 +232,9 @@ fn gradient_wrong_size_tensor_point_returns_undef() {
 
     // Lambda: |x, y, z| x + y + z  (expects 3 decomposed coordinate args)
     let body = CompiledExpr::binop(
-        reify_types::BinOp::Add,
+        reify_ir::BinOp::Add,
         CompiledExpr::binop(
-            reify_types::BinOp::Add,
+            reify_ir::BinOp::Add,
             CompiledExpr::value_ref(x_id.clone(), Type::Real),
             CompiledExpr::value_ref(y_id.clone(), Type::Real),
             Type::Real,
@@ -2667,7 +2665,7 @@ fn gradient_composed_field_returns_field() {
 
     // Lambda: |x| 2 * x
     let body = CompiledExpr::binop(
-        reify_types::BinOp::Mul,
+        reify_ir::BinOp::Mul,
         CompiledExpr::literal(Value::Real(2.0), Type::Real),
         CompiledExpr::value_ref(x_id.clone(), Type::Real),
         Type::Real,

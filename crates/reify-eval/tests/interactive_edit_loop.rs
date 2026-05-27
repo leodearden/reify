@@ -9,7 +9,7 @@ use reify_eval::cache::NodeId;
 use reify_eval::journal::EventKind;
 use reify_test_support::mocks::{MockConstraintChecker, MockGeometryKernel};
 use reify_test_support::{bracket_compiled_module, cnid, vcid};
-use reify_types::{ExportFormat, Satisfaction, Value};
+use reify_ir::{ExportFormat, Satisfaction, Value};
 
 #[test]
 fn check_snapshot_returns_constraint_results_from_current_values() {
@@ -280,7 +280,7 @@ fn edit_param_then_build_snapshot_updates_geometry() {
     let ops = ops_ref.lock().unwrap();
     let last_op = &ops[ops.len() - 1];
     match &last_op.op {
-        reify_types::GeometryOp::Box { width, .. } => {
+        reify_ir::GeometryOp::Box { width, .. } => {
             assert_eq!(
                 *width,
                 Value::length(0.1),

@@ -9,7 +9,8 @@
 //! - Complex<Impedance> real-world workflow
 
 use reify_stdlib::eval_builtin;
-use reify_types::{DimensionVector, Value};
+use reify_core::DimensionVector;
+use reify_ir::Value;
 
 const TOLERANCE: f64 = 1e-12;
 

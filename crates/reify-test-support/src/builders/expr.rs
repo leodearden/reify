@@ -1,10 +1,7 @@
 use std::sync::Arc;
 
-use reify_types::{
-    BinOp, CompiledExpr, CompiledExprKind, ContentHash, DimensionVector, FieldSourceKind,
-    ResolvedFunction, TAG_CONDITIONAL, TAG_FUNCTION_CALL, TAG_USER_FUNCTION_CALL, Type, UnOp,
-    Value, ValueCellId,
-};
+use reify_core::{ContentHash, DimensionVector, Type, ValueCellId};
+use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, FieldSourceKind, ResolvedFunction, TAG_CONDITIONAL, TAG_FUNCTION_CALL, TAG_USER_FUNCTION_CALL, UnOp, Value};
 
 // --- Expression builders ---
 
@@ -354,7 +351,7 @@ fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::CompiledExprKind;
+    use reify_ir::CompiledExprKind;
     use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
@@ -620,7 +617,7 @@ mod tests {
 
     #[test]
     fn field_literal_expr_produces_literal_with_field_type() {
-        use reify_types::FieldSourceKind;
+        use reify_ir::FieldSourceKind;
         let domain = Type::Geometry;
         let codomain = Type::Real;
         let lambda = Value::Undef;
@@ -645,7 +642,7 @@ mod tests {
 
     #[test]
     fn field_literal_expr_wraps_lambda() {
-        use reify_types::FieldSourceKind;
+        use reify_ir::FieldSourceKind;
         let domain = Type::Geometry;
         let codomain = Type::Real;
         let lambda = Value::Int(42);

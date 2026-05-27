@@ -4,7 +4,8 @@
 //! Test E — defaulted call compiles without errors and emits UserFunctionCall.
 //! Test F — param without a default still produces the unchanged NoMatch error.
 
-use reify_types::{CompiledExprKind, DiagnosticCode, ModulePath, Severity, Value};
+use reify_core::{DiagnosticCode, ModulePath, Severity};
+use reify_ir::{CompiledExprKind, Value};
 
 /// Test E: a call that omits all defaulted params compiles without errors
 /// and the resulting expression is a UserFunctionCall with the full arg count.
@@ -73,7 +74,7 @@ structure S {
     }
     assert_eq!(
         v_expr.result_type,
-        reify_types::Type::Real,
+        reify_core::Type::Real,
         "f() -> Real"
     );
 }

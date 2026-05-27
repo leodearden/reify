@@ -45,7 +45,7 @@ fn compile_linear_pattern_produces_realization() {
     param w: Scalar = 10mm
     let pattern = linear_pattern(w, 1, 0, 0, 4, 20)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_linpat"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_linpat"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -81,7 +81,7 @@ fn compile_mirror_produces_realization() {
     param w: Scalar = 10mm
     let mirrored = mirror(w, 0, 0, 0, 1, 0, 0)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_mirror"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_mirror"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -115,7 +115,7 @@ fn compile_linear_pattern_2d_produces_realization() {
     param w: Scalar = 10mm
     let pattern = linear_pattern_2d(w, 1, 0, 0, 3, 20, 0, 1, 0, 4, 30)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_linpat2d"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_linpat2d"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -160,7 +160,7 @@ fn compile_linear_pattern_2d_wrong_arity_produces_diagnostic() {
     param w: Scalar = 10mm
     let pattern = linear_pattern_2d(w, 1, 0, 0, 3, 20)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_linpat2d_err"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_linpat2d_err"));
     assert!(parsed.errors.is_empty());
     let compiled = compile(&parsed);
     assert!(
@@ -180,7 +180,7 @@ fn compile_arbitrary_pattern_produces_realization() {
     param w: Scalar = 10mm
     let pattern = arbitrary_pattern(w, 10, 0, 0, 0, 20, 0)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_arbpat"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_arbpat"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -224,7 +224,7 @@ fn compile_arbitrary_pattern_too_few_args_produces_diagnostic() {
     param w: Scalar = 10mm
     let pattern = arbitrary_pattern(w, 10, 0)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_arbpat_err1"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_arbpat_err1"));
     assert!(parsed.errors.is_empty());
     let compiled = compile(&parsed);
     assert!(
@@ -244,7 +244,7 @@ fn compile_arbitrary_pattern_non_triple_args_produces_diagnostic() {
     param w: Scalar = 10mm
     let pattern = arbitrary_pattern(w, 10, 0, 0, 5, 0)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_arbpat_err2"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_arbpat_err2"));
     assert!(parsed.errors.is_empty());
     let compiled = compile(&parsed);
     assert!(
@@ -263,7 +263,7 @@ fn compile_loft_produces_realization() {
     param r: Scalar = 10mm
     let swept = loft(r, r)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_loft"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_loft"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -297,7 +297,7 @@ fn compile_shell_produces_realization() {
     param w: Scalar = 10mm
     let hollowed = shell(w, 1)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_shell"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_shell"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -331,7 +331,7 @@ fn compile_thicken_produces_realization() {
     param w: Scalar = 10mm
     let thickened = thicken(w, 2)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_thicken"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_thicken"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -365,7 +365,7 @@ fn compile_draft_produces_realization() {
     param w: Scalar = 10mm
     let drafted = draft(w, 0.1, w)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_draft"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_draft"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -399,7 +399,7 @@ fn compile_circular_pattern_produces_realization() {
     param w: Scalar = 10mm
     let pattern = circular_pattern(w, 0, 0, 0, 0, 0, 1, 6, 360)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_circpat"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_circpat"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -434,7 +434,7 @@ fn compile_union_nested_calls_produces_three_ops() {
     let source = r#"structure S {
     let r = union(box(10mm, 10mm, 10mm), box(20mm, 20mm, 20mm))
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_union"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_union"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -506,7 +506,7 @@ fn compile_nested_boolean_produces_five_ops() {
     let source = r#"structure S {
     let r = union(difference(box(20mm, 20mm, 20mm), cylinder(5mm, 20mm)), sphere(10mm))
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_nested_bool"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_nested_bool"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -590,7 +590,7 @@ fn compile_union_wrong_arity_emits_diagnostic() {
     let source = r#"structure S {
     let r = union(box(10mm, 10mm, 10mm))
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_union_arity"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_union_arity"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -627,7 +627,7 @@ fn compile_union_non_geometry_arg_emits_diagnostic() {
 }"#;
     let parsed = reify_syntax::parse(
         source,
-        reify_types::ModulePath::single("test_union_nongeom"),
+        reify_core::ModulePath::single("test_union_nongeom"),
     );
     assert!(
         parsed.errors.is_empty(),
@@ -659,7 +659,7 @@ fn compile_union_all_three_args_produces_five_ops() {
     let source = r#"structure S {
     let r = union_all(box(10mm, 10mm, 10mm), box(10mm, 10mm, 10mm), box(10mm, 10mm, 10mm))
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_union_all"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_union_all"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -744,7 +744,7 @@ fn compile_difference_nested_calls_produces_three_ops() {
     let source = r#"structure S {
     let r = difference(box(20mm, 20mm, 20mm), box(10mm, 10mm, 10mm))
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_diff"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_diff"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -794,7 +794,7 @@ fn compile_intersection_nested_calls_produces_three_ops() {
     let source = r#"structure S {
     let r = intersection(box(10mm, 10mm, 10mm), box(10mm, 10mm, 10mm))
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_isect"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_isect"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -830,7 +830,7 @@ fn compile_sweep_produces_sweep_kind() {
     let source = r#"structure S {
     let result = sweep(sphere(5mm), line_segment(0mm, 0mm, 0mm, 0mm, 0mm, 10mm))
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_sweep"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_sweep"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -896,7 +896,7 @@ fn compile_sweep_wrong_arg_count() {
     param p: Scalar = 5mm
     let result = sweep(p)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_sweep_bad"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_sweep_bad"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -916,7 +916,7 @@ fn compile_sweep_rejects_three_args() {
     param p: Scalar = 5mm
     let result = sweep(p, p, p)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_sweep_3args"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_sweep_3args"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -966,7 +966,7 @@ fn compile_sweep_emits_empty_args() {
 }"#;
     let parsed = reify_syntax::parse(
         source,
-        reify_types::ModulePath::single("test_sweep_empty_args"),
+        reify_core::ModulePath::single("test_sweep_empty_args"),
     );
     assert!(
         parsed.errors.is_empty(),
@@ -1005,7 +1005,7 @@ fn compile_tube_produces_primitive_tube_kind() {
     let source = r#"structure S {
     let r = tube(10mm, 5mm, 20mm)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_tube"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_tube"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -1051,7 +1051,7 @@ fn compile_tube_wrong_arg_count() {
     param p: Scalar = 5mm
     let r = tube(p, p)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_tube_bad"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_tube_bad"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -1081,7 +1081,7 @@ fn compile_pipe_produces_sweep_pipe_kind_with_path_ref() {
     let source = r#"structure S {
     let r = pipe(line_segment(0mm, 0mm, 0mm, 0mm, 0mm, 10mm), 2mm)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_pipe"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_pipe"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -1148,7 +1148,7 @@ fn compile_pipe_omits_path_placeholder() {
 }"#;
     let parsed = reify_syntax::parse(
         source,
-        reify_types::ModulePath::single("test_pipe_no_path_arg"),
+        reify_core::ModulePath::single("test_pipe_no_path_arg"),
     );
     assert!(
         parsed.errors.is_empty(),
@@ -1193,7 +1193,7 @@ fn compile_sweep_guided_emits_empty_args() {
 }"#;
     let parsed = reify_syntax::parse(
         source,
-        reify_types::ModulePath::single("test_sweep_guided_empty_args"),
+        reify_core::ModulePath::single("test_sweep_guided_empty_args"),
     );
     assert!(
         parsed.errors.is_empty(),
@@ -1231,7 +1231,7 @@ fn compile_pipe_wrong_arg_count() {
     param p: Scalar = 5mm
     let r = pipe(p)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_pipe_bad"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_pipe_bad"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -1268,7 +1268,7 @@ structure S {
     param p: Scalar = 5mm
     let result = scale(p, 2)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_shadow_scale"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_shadow_scale"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -1291,7 +1291,7 @@ fn compile_translate_wrong_arg_count() {
 }"#;
     let parsed = reify_syntax::parse(
         source,
-        reify_types::ModulePath::single("test_translate_bad"),
+        reify_core::ModulePath::single("test_translate_bad"),
     );
     assert!(
         parsed.errors.is_empty(),
@@ -1315,7 +1315,7 @@ fn compile_rotate_wrong_arg_count() {
     param p: Scalar = 5mm
     let result = rotate(p, p)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_rotate_bad"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_rotate_bad"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -1338,7 +1338,7 @@ fn compile_scale_wrong_arg_count() {
     param p: Scalar = 5mm
     let result = scale(p, p, p)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_scale_bad"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_scale_bad"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -1363,7 +1363,7 @@ fn compile_rotate_around_wrong_arg_count() {
 }"#;
     let parsed = reify_syntax::parse(
         source,
-        reify_types::ModulePath::single("test_rotate_around_bad"),
+        reify_core::ModulePath::single("test_rotate_around_bad"),
     );
     assert!(
         parsed.errors.is_empty(),
@@ -1389,7 +1389,7 @@ fn compile_translate_arg_ordering() {
 }"#;
     let parsed = reify_syntax::parse(
         source,
-        reify_types::ModulePath::single("test_translate_args"),
+        reify_core::ModulePath::single("test_translate_args"),
     );
     assert!(
         parsed.errors.is_empty(),
@@ -1415,7 +1415,7 @@ fn compile_rotate_arg_ordering() {
     param p: Scalar = 5mm
     let result = rotate(p, p, p, p, p)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_rotate_args"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_rotate_args"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -1440,7 +1440,7 @@ fn compile_scale_arg_ordering() {
     param p: Scalar = 5mm
     let result = scale(p, p)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_scale_args"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_scale_args"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -1467,7 +1467,7 @@ fn compile_rotate_around_arg_ordering() {
 }"#;
     let parsed = reify_syntax::parse(
         source,
-        reify_types::ModulePath::single("test_rotate_around_args"),
+        reify_core::ModulePath::single("test_rotate_around_args"),
     );
     assert!(
         parsed.errors.is_empty(),
@@ -1500,7 +1500,7 @@ fn loft_nested_in_union_correct_step_refs() {
     param p: Scalar = 5mm
     let result = union(box(10mm, 10mm, 10mm), loft(p, p))
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_loft_union"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_loft_union"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -1557,7 +1557,7 @@ fn compile_boolean_op_union_via_compile() {
     let source = r#"structure S {
     let a = union(sphere(1), cylinder(1, 2))
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_bool_union"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_bool_union"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -1603,7 +1603,7 @@ fn compile_boolean_op_union_all_via_compile() {
 }"#;
     let parsed = reify_syntax::parse(
         source,
-        reify_types::ModulePath::single("test_bool_union_all"),
+        reify_core::ModulePath::single("test_bool_union_all"),
     );
     assert!(
         parsed.errors.is_empty(),
@@ -1668,7 +1668,7 @@ fn compile_boolean_op_difference_via_compile() {
 }"#;
     let parsed = reify_syntax::parse(
         source,
-        reify_types::ModulePath::single("test_bool_difference"),
+        reify_core::ModulePath::single("test_bool_difference"),
     );
     assert!(
         parsed.errors.is_empty(),
@@ -1715,7 +1715,7 @@ fn compile_boolean_op_intersection_all_via_compile() {
 }"#;
     let parsed = reify_syntax::parse(
         source,
-        reify_types::ModulePath::single("test_bool_intersection_all"),
+        reify_core::ModulePath::single("test_bool_intersection_all"),
     );
     assert!(
         parsed.errors.is_empty(),

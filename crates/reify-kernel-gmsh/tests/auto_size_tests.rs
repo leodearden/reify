@@ -9,7 +9,7 @@
 //! function returns only the auto-derived default.
 
 use reify_kernel_gmsh::auto_size::{AutoSizeConfig, AutoSizeError, auto_mesh_size_from_features};
-use reify_types::Mesh;
+use reify_ir::Mesh;
 
 /// With the default multiplier (1.0), the returned size equals the smallest
 /// triangle-edge length in the surface mesh.
@@ -65,7 +65,7 @@ fn multiplier_scales_size_proportionally() {
 #[test]
 fn out_of_bounds_index_returns_err() {
     // 3 vertices (9 floats) → n_vertices = 3. Index 99 is out of range.
-    let mesh = reify_types::Mesh {
+    let mesh = reify_ir::Mesh {
         vertices: vec![
             0.0, 0.0, 0.0, // v0
             1.0, 0.0, 0.0, // v1

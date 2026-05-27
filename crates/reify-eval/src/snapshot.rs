@@ -1,10 +1,8 @@
 // Snapshot: immutable evaluation state with provenance tracking.
 
 use reify_compiler::CompiledModule;
-use reify_types::{
-    ConstraintNodeId, ContentHash, DeterminacyState, PersistentMap, SnapshotId, SnapshotProvenance,
-    Value, ValueCellId, VersionId,
-};
+use reify_core::{ConstraintNodeId, ContentHash, SnapshotId, ValueCellId, VersionId};
+use reify_ir::{DeterminacyState, PersistentMap, SnapshotProvenance, Value};
 
 use crate::graph::EvaluationGraph;
 
@@ -82,7 +80,7 @@ impl Snapshot {
 
 #[cfg(test)]
 mod tests {
-    use reify_types::ValueCellId;
+    use reify_core::ValueCellId;
 
     use super::*;
 

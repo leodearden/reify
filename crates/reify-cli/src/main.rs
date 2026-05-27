@@ -14,7 +14,8 @@ extern crate reify_kernel_occt as _;
 
 mod cache;
 mod mcp_context;
-use reify_types::{ExportFormat, ModulePath, Satisfaction, Severity};
+use reify_core::{ModulePath, Severity};
+use reify_ir::{ExportFormat, Satisfaction};
 
 fn print_usage(out: &mut dyn std::io::Write) {
     let _ = writeln!(out, "Usage: reify <command> [options]");
@@ -837,7 +838,7 @@ fn report_constraint_results(
 /// second.
 fn report_eval_output(
     constraint_results: &[reify_eval::ConstraintCheckEntry],
-    diagnostics: &[reify_types::Diagnostic],
+    diagnostics: &[reify_core::Diagnostic],
     out: &mut impl std::io::Write,
     err: &mut impl std::io::Write,
 ) -> ConstraintOutcome {
@@ -905,7 +906,8 @@ fn cmd_mcp_server(args: &[String]) -> ExitCode {
 mod tests {
     use super::*;
     use reify_eval::ConstraintCheckEntry;
-    use reify_types::{ConstraintNodeId, Satisfaction};
+    use reify_core::ConstraintNodeId;
+    use reify_ir::Satisfaction;
 
     /// Helper: capture `report_constraint_results` output into an in-memory
     /// buffer and return the outcome plus the formatted output as a `String`.
@@ -1100,8 +1102,8 @@ mod tests {
             make_entry("Bracket", 1, Some("size_bound"), Satisfaction::Violated),
         ];
         let diagnostics = vec![
-            reify_types::Diagnostic::warning("some msg"),
-            reify_types::Diagnostic::error("bad thing"),
+            reify_core::Diagnostic::warning("some msg"),
+            reify_core::Diagnostic::error("bad thing"),
         ];
         let mut out = Vec::new();
         let mut err = Vec::new();
@@ -1178,7 +1180,7 @@ mod tests {
 
     #[test]
     fn report_eval_output_returns_correct_outcome_variants() {
-        let no_diags: Vec<reify_types::Diagnostic> = vec![];
+        let no_diags: Vec<reify_core::Diagnostic> = vec![];
 
         // AllSatisfied: all constraints OK
         {

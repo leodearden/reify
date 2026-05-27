@@ -21,7 +21,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use reify_types::{GeometryHandleId, TopologyAttributeTable};
+use reify_ir::{GeometryHandleId, TopologyAttributeTable};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -370,9 +370,7 @@ fn match_one_kind(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::{
-        AxisSign, CapKind, FeatureId, ModEntry, Role, TopologyAttribute, TopologyAttributeTable,
-    };
+    use reify_ir::{AxisSign, CapKind, FeatureId, ModEntry, Role, TopologyAttribute, TopologyAttributeTable};
 
     fn feat() -> FeatureId {
         FeatureId::new("Feature#realization[0]")

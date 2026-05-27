@@ -1,10 +1,9 @@
 //! Quantifier evaluation tests.
 
 use reify_expr::{EvalContext, eval_expr};
-use reify_types::{
-    BinOp, CompiledExpr, CompiledExprKind, DeterminacyPredicateKind, DeterminacyState,
-    PersistentMap, QuantifierKind, Type, Value, ValueCellId, ValueMap,
-};
+use reify_ast::QuantifierKind;
+use reify_core::{Type, ValueCellId};
+use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, DeterminacyPredicateKind, DeterminacyState, PersistentMap, Value, ValueMap};
 
 /// Helper: create a quantifier CompiledExpr.
 fn make_quantifier(
@@ -200,7 +199,7 @@ structure S {
     constraint forall g in grades: g >= 8.8
 }
 "#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("integ_test"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("integ_test"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -212,7 +211,7 @@ structure S {
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
@@ -463,7 +462,7 @@ structure S {
     let found = exists s in scores: s > 10
 }
 "#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("integ_test2"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("integ_test2"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -474,7 +473,7 @@ structure S {
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
@@ -595,7 +594,7 @@ fn forall_cell_iteration_with_determinacy_predicate_returns_false_when_one_undet
     values.insert(cell_a.clone(), Value::Real(1.0));
     values.insert(cell_b.clone(), Value::Undef);
 
-    let functions: Vec<reify_types::CompiledFunction> = Vec::new();
+    let functions: Vec<reify_ir::CompiledFunction> = Vec::new();
     let ctx = EvalContext::new(&values, &functions).with_determinacy(&snapshot);
 
     let result = eval_expr(&expr, &ctx);
@@ -645,7 +644,7 @@ fn exists_cell_iteration_with_determinacy_predicate_returns_true_when_one_determ
     values.insert(cell_a.clone(), Value::Real(1.0));
     values.insert(cell_b.clone(), Value::Undef);
 
-    let functions: Vec<reify_types::CompiledFunction> = Vec::new();
+    let functions: Vec<reify_ir::CompiledFunction> = Vec::new();
     let ctx = EvalContext::new(&values, &functions).with_determinacy(&snapshot);
 
     let result = eval_expr(&expr, &ctx);
@@ -810,7 +809,7 @@ fn forall_user_written_value_ref_list_uses_value_iteration_not_cell_iteration() 
     // No entry for loop_var: value-iteration binds it to the iterated value
     // (Real(1.0) / Real(2.0)), which the DeterminacyPredicate ignores.
 
-    let functions: Vec<reify_types::CompiledFunction> = Vec::new();
+    let functions: Vec<reify_ir::CompiledFunction> = Vec::new();
     let ctx = EvalContext::new(&values, &functions).with_determinacy(&snapshot);
 
     let result = eval_expr(&expr, &ctx);

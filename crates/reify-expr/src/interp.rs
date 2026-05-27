@@ -41,7 +41,7 @@
 //! IEEE 754 NaN-poisoning convention and matches the silent treatment of
 //! out-of-range queries.
 
-use reify_types::{Diagnostic, DiagnosticCode};
+use reify_core::{Diagnostic, DiagnosticCode};
 
 /// Selected interpolation method.
 ///

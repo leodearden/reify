@@ -4,10 +4,8 @@
 //! to domain-specific solvers.
 
 use crate::decompose::decompose_into_components;
-use reify_types::{
-    AutoParam, ConstraintDomain, ConstraintSolver, OptimizationObjective, ResolutionProblem,
-    SolveResult, Value, ValueCellId, ValueMap,
-};
+use reify_core::ValueCellId;
+use reify_ir::{AutoParam, ConstraintDomain, ConstraintSolver, OptimizationObjective, ResolutionProblem, SolveResult, Value, ValueMap};
 use std::collections::HashMap;
 
 /// A registry that dispatches constraint sub-problems to domain-specific solvers.

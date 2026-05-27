@@ -28,9 +28,8 @@
 
 use std::sync::atomic::Ordering;
 
-use reify_types::{
-    Diagnostic, DiagnosticCode, InterpolationKind, SampledField, SampledGridKind, Type, Value,
-};
+use reify_core::{Diagnostic, DiagnosticCode, Type};
+use reify_ir::{InterpolationKind, SampledField, SampledGridKind, Value};
 
 use crate::EvalContext;
 use crate::interp::{

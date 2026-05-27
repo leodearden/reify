@@ -31,10 +31,8 @@
 
 use std::collections::HashSet;
 
-use reify_types::{
-    Diagnostic, DiagnosticCode, DiagnosticLabel, FeatureTag, FeatureTagTable, GeometryHandleId,
-    GeometryKernel, GeometryQuery, QueryError, SourceSpan, Value,
-};
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
+use reify_ir::{FeatureTag, FeatureTagTable, GeometryHandleId, GeometryKernel, GeometryQuery, QueryError, Value};
 
 /// Extract a `Value::Real` payload from a `GeometryQuery` reply, returning a
 /// uniformly-formatted `QueryError::QueryFailed` on a non-`Real` reply.
@@ -920,9 +918,7 @@ pub(crate) fn parse_bbox_axis_extents_json(s: &str, axis: u8) -> Option<(f64, f6
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::{
-        ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryOp, Mesh, TessError,
-    };
+    use reify_ir::{ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryOp, Mesh, TessError};
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1479,7 +1475,8 @@ mod tests {
     /// Resolver must return `Some(matched_handle)` and push no diagnostics.
     #[test]
     fn resolve_unique_by_tag_one_match_returns_some_with_no_diagnostics() {
-        use reify_types::{Diagnostic, FeatureTag, FeatureTagTable, SourceSpan, StepKind};
+        use reify_core::{Diagnostic, SourceSpan};
+        use reify_ir::{FeatureTag, FeatureTagTable, StepKind};
 
         let id1 = GeometryHandleId(1);
         let id2 = GeometryHandleId(2);
@@ -1533,9 +1530,8 @@ mod tests {
     /// with labels pointing at both the selector call site and the tag origin.
     #[test]
     fn resolve_unique_by_tag_zero_matches_emits_warning_and_returns_none() {
-        use reify_types::{
-            Diagnostic, DiagnosticCode, FeatureTag, FeatureTagTable, Severity, SourceSpan, StepKind,
-        };
+        use reify_core::{Diagnostic, DiagnosticCode, Severity, SourceSpan};
+        use reify_ir::{FeatureTag, FeatureTagTable, StepKind};
 
         let id1 = GeometryHandleId(10);
         let id2 = GeometryHandleId(11);
@@ -1608,9 +1604,8 @@ mod tests {
     /// the message must name the count "3", and labels include both spans.
     #[test]
     fn resolve_unique_by_tag_multiple_matches_emits_warning_and_returns_none() {
-        use reify_types::{
-            Diagnostic, DiagnosticCode, FeatureTag, FeatureTagTable, Severity, SourceSpan, StepKind,
-        };
+        use reify_core::{Diagnostic, DiagnosticCode, Severity, SourceSpan};
+        use reify_ir::{FeatureTag, FeatureTagTable, StepKind};
 
         let id1 = GeometryHandleId(20);
         let id2 = GeometryHandleId(21);
@@ -1678,7 +1673,8 @@ mod tests {
     /// diagnostics.
     #[test]
     fn resolve_unique_by_tag_duplicate_candidate_does_not_inflate_match_count() {
-        use reify_types::{Diagnostic, FeatureTag, FeatureTagTable, SourceSpan, StepKind};
+        use reify_core::{Diagnostic, SourceSpan};
+        use reify_ir::{FeatureTag, FeatureTagTable, StepKind};
 
         let id1 = GeometryHandleId(50);
 
@@ -1860,7 +1856,8 @@ mod tests {
     /// Expected: `Some(id_match)`, zero diagnostics.
     #[test]
     fn resolve_unique_by_tag_interleaved_matching_and_nonmatching_duplicates() {
-        use reify_types::{Diagnostic, FeatureTag, FeatureTagTable, SourceSpan, StepKind};
+        use reify_core::{Diagnostic, SourceSpan};
+        use reify_ir::{FeatureTag, FeatureTagTable, StepKind};
 
         let id_match = GeometryHandleId(100);
         let id_nomatch = GeometryHandleId(200);

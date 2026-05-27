@@ -6,9 +6,8 @@
 
 use std::collections::HashMap;
 
-use reify_types::{
-    ComputeNodeId, Diagnostic, OpaqueState, RealizationNodeId, Value, ValueCellId, VersionId,
-};
+use reify_core::{ComputeNodeId, Diagnostic, RealizationNodeId, ValueCellId, VersionId};
+use reify_ir::{OpaqueState, Value};
 
 use crate::cache::NodeId;
 use crate::graph::CancellationHandle;
@@ -425,7 +424,8 @@ impl crate::Engine {
 #[cfg(test)]
 mod tests {
     use reify_test_support::mocks::MockConstraintChecker;
-    use reify_types::{OpaqueState, RealizationNodeId, Value};
+    use reify_core::RealizationNodeId;
+    use reify_ir::{OpaqueState, Value};
 
     use crate::Engine;
     use crate::engine_compute::{
@@ -494,7 +494,8 @@ mod tests {
 
     use crate::cache::{CachedResult, NodeCache, NodeId};
     use crate::deps::DependencyTrace;
-    use reify_types::{ComputeNodeId, DeterminacyState, Freshness, ValueCellId, VersionId};
+    use reify_core::{ComputeNodeId, ValueCellId, VersionId};
+    use reify_ir::{DeterminacyState, Freshness};
 
     /// Trampoline (a): polls is_cancelled() and returns Cancelled if set,
     /// otherwise Completed{Int(0)}.
@@ -526,7 +527,7 @@ mod tests {
         _cancellation: &CancellationHandle,
     ) -> ComputeOutcome {
         ComputeOutcome::Failed {
-            diagnostics: vec![reify_types::Diagnostic::error(
+            diagnostics: vec![reify_core::Diagnostic::error(
                 "test trampoline always fails",
             )],
         }

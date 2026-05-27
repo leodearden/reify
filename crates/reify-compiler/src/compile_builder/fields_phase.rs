@@ -5,7 +5,7 @@
 //! `ctx.alias_registry`. No cross-field dependency ordering is needed — the
 //! subsequent field composition check runs as a post-pass.
 
-use reify_syntax::FieldDef;
+use reify_ast::FieldDef;
 
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::functions::compile_field;

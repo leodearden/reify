@@ -42,11 +42,8 @@
 
 use std::collections::HashMap;
 
-use reify_types::{
-    AxisSign, BooleanOpHistoryRecords, BooleanOpParents, CapKind, Diagnostic, DiagnosticCode,
-    DiagnosticLabel, FeatureId, GeometryHandleId, HistoryRecord, LoftOpHistoryRecords, ModEntry,
-    QueryError, Role, SourceSpan, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable,
-};
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
+use reify_ir::{AxisSign, BooleanOpHistoryRecords, BooleanOpParents, CapKind, FeatureId, GeometryHandleId, HistoryRecord, LoftOpHistoryRecords, ModEntry, QueryError, Role, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable};
 
 /// Propagate parent topology attributes onto the result of a `BRepAlgoAPI`
 /// boolean operation, using the Modified / Generated / Deleted records the
@@ -1252,11 +1249,7 @@ mod tests {
     //! These error branches are pure given inputs, so they need no OCCT
     //! kernel — we hand-build a malformed `BooleanOpHistoryRecords` and
     //! check that each variant surfaces as `QueryFailed`.
-    use reify_types::{
-        BooleanOpHistoryRecords, BooleanOpParents, CapKind, FeatureId, GeometryHandleId,
-        HistoryRecord, LoftOpHistoryRecords, ModEntry, QueryError, Role, SweepOpHistoryRecords,
-        TopologyAttribute, TopologyAttributeTable,
-    };
+    use reify_ir::{BooleanOpHistoryRecords, BooleanOpParents, CapKind, FeatureId, GeometryHandleId, HistoryRecord, LoftOpHistoryRecords, ModEntry, QueryError, Role, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable};
 
     use super::{
         populate_extrude_attributes, populate_loft_attributes, populate_revolve_attributes,
@@ -3122,9 +3115,8 @@ mod tests {
     mod detect_local_index_reassignment {
         use std::collections::HashMap;
 
-        use reify_types::{
-            CapKind, FeatureId, GeometryHandleId, ModEntry, Role, SourceSpan, TopologyAttribute,
-        };
+        use reify_core::SourceSpan;
+        use reify_ir::{CapKind, FeatureId, GeometryHandleId, ModEntry, Role, TopologyAttribute};
 
         use super::super::{
             LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M, detect_local_index_reassignment_diagnostics,
@@ -3202,7 +3194,7 @@ mod tests {
 
         #[test]
         fn detect_local_index_reassignment_emits_diagnostic_when_two_entries_have_tied_centroids() {
-            use reify_types::Severity;
+            use reify_core::Severity;
             let attr0 = make_attr("F#realization[0]", Role::Side, 0);
             let attr1 = make_attr("F#realization[0]", Role::Side, 1);
             let h0 = GeometryHandleId(1);
@@ -3224,7 +3216,7 @@ mod tests {
             assert_eq!(diag.severity, Severity::Warning);
             assert_eq!(
                 diag.code,
-                Some(reify_types::DiagnosticCode::TopologyAttributeLocalIndexReassigned)
+                Some(reify_core::DiagnosticCode::TopologyAttributeLocalIndexReassigned)
             );
             assert!(
                 diag.message.contains("topology-attribute selector for"),

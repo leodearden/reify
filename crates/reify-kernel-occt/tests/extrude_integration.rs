@@ -6,7 +6,7 @@
 #![cfg(has_occt)]
 
 use reify_kernel_occt::OcctKernel;
-use reify_types::{GeometryError, GeometryHandleId, GeometryOp, Value};
+use reify_ir::{GeometryError, GeometryHandleId, GeometryOp, Value};
 
 /// Helper: create a kernel with a Box profile to use as an extrude target.
 fn kernel_with_box_profile() -> (OcctKernel, GeometryHandleId) {

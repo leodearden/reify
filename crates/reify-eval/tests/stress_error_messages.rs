@@ -15,7 +15,8 @@
 use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
 use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::*;
-use reify_types::{ExportFormat, ModulePath, Satisfaction, Severity, Type};
+use reify_core::{ModulePath, Severity, Type};
+use reify_ir::{ExportFormat, Satisfaction};
 
 // ---------------------------------------------------------------------------
 // step-25/26: parse_error_malformed_syntax
@@ -234,7 +235,7 @@ fn compile_error_trait_not_found() {
 #[test]
 fn eval_error_geometry_kernel_failure() {
     let e = "TestKernelFail";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     let sphere_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Sphere,

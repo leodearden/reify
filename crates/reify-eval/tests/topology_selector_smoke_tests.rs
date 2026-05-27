@@ -26,7 +26,8 @@
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::Engine;
 use reify_test_support::{MockGeometryKernel, errors_only, parse_and_compile_with_stdlib};
-use reify_types::{ExportFormat, GeometryOp, ModulePath, Value, ValueCellId};
+use reify_core::{ModulePath, ValueCellId};
+use reify_ir::{ExportFormat, GeometryOp, Value};
 
 const BLOCK_INERTIA_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -100,7 +101,7 @@ fn block_inertia_compiles_with_stdlib_no_errors() {
 /// with each leaf being a `Value::Scalar { dimension: MOMENT_OF_INERTIA, .. }`.
 #[test]
 fn block_inertia_evals_moment_of_inertia_to_tensor() {
-    use reify_types::GeometryHandleId;
+    use reify_ir::GeometryHandleId;
 
     let source = std::fs::read_to_string(BLOCK_INERTIA_PATH)
         .expect("examples/topology_selectors/block_inertia.ri should exist");

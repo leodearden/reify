@@ -10,11 +10,8 @@ use reify_test_support::{
     collect_errors, eval_source, make_engine, make_simple_engine, parse_and_compile,
     parse_and_compile_with_stdlib,
 };
-use reify_types::{
-    BinOp, CompiledExpr, CompiledExprKind, ContentHash, DiagnosticCode, FIELD_ENTITY_PREFIX,
-    FieldSourceKind, InterpolationKind, ResolvedFunction, SampledGridKind, Severity, Type, Value,
-    ValueCellId, ValueMap,
-};
+use reify_core::{ContentHash, DiagnosticCode, FIELD_ENTITY_PREFIX, Severity, Type, ValueCellId};
+use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, FieldSourceKind, InterpolationKind, ResolvedFunction, SampledGridKind, Value, ValueMap};
 
 /// Extract eigenvalues from a `Value::List` of three `Value::Real` items.
 ///
@@ -84,7 +81,7 @@ fn eval_analytical_field_at_point() {
             assert_eq!(format!("{}", codomain_type), "Scalar[m]");
             // Source should be Analytical
             assert!(
-                matches!(source, reify_types::FieldSourceKind::Analytical),
+                matches!(source, reify_ir::FieldSourceKind::Analytical),
                 "expected Analytical source, got: {:?}",
                 source
             );
@@ -178,7 +175,7 @@ fn eval_field_snapshot_consistency() {
     // Should be Determined
     assert_eq!(
         *det,
-        reify_types::DeterminacyState::Determined,
+        reify_ir::DeterminacyState::Determined,
         "field snapshot value should be Determined"
     );
 }
@@ -1465,7 +1462,7 @@ structure S {
     // The `W_FIELD_OUT_OF_BOUNDS` warning fires exactly once across all
     // three OOB queries in this session (suppression by AtomicBool on
     // SampledField).
-    let oob_warnings: Vec<&reify_types::Diagnostic> = result
+    let oob_warnings: Vec<&reify_core::Diagnostic> = result
         .diagnostics
         .iter()
         .filter(|d| {
@@ -1519,7 +1516,7 @@ structure S {
     );
 
     // (a) At least one InterpolationDeferred warning is emitted.
-    let deferred_warnings: Vec<&reify_types::Diagnostic> = result
+    let deferred_warnings: Vec<&reify_core::Diagnostic> = result
         .diagnostics
         .iter()
         .filter(|d| {
@@ -1575,7 +1572,7 @@ structure S {
         "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
     );
 
-    let deferred_warnings: Vec<&reify_types::Diagnostic> = result
+    let deferred_warnings: Vec<&reify_core::Diagnostic> = result
         .diagnostics
         .iter()
         .filter(|d| {
@@ -1638,7 +1635,7 @@ structure S {
     let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
 
-    let invalid_warnings: Vec<&reify_types::Diagnostic> = result
+    let invalid_warnings: Vec<&reify_core::Diagnostic> = result
         .diagnostics
         .iter()
         .filter(|d| {
@@ -1695,7 +1692,7 @@ structure S {
     let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
 
-    let invalid_warnings: Vec<&reify_types::Diagnostic> = result
+    let invalid_warnings: Vec<&reify_core::Diagnostic> = result
         .diagnostics
         .iter()
         .filter(|d| {
@@ -1751,7 +1748,7 @@ structure S {
     let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
 
-    let invalid_warnings: Vec<&reify_types::Diagnostic> = result
+    let invalid_warnings: Vec<&reify_core::Diagnostic> = result
         .diagnostics
         .iter()
         .filter(|d| {
@@ -1821,7 +1818,7 @@ structure S {
     // here as a panic message and fail the test (no `#[should_panic]`).
     let result = engine.eval(&compiled);
 
-    let invalid_warnings: Vec<&reify_types::Diagnostic> = result
+    let invalid_warnings: Vec<&reify_core::Diagnostic> = result
         .diagnostics
         .iter()
         .filter(|d| {
@@ -1880,7 +1877,7 @@ structure S {
     let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
 
-    let invalid_warnings: Vec<&reify_types::Diagnostic> = result
+    let invalid_warnings: Vec<&reify_core::Diagnostic> = result
         .diagnostics
         .iter()
         .filter(|d| {
@@ -1935,7 +1932,7 @@ structure S {
     let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
 
-    let invalid_warnings: Vec<&reify_types::Diagnostic> = result
+    let invalid_warnings: Vec<&reify_core::Diagnostic> = result
         .diagnostics
         .iter()
         .filter(|d| {
@@ -1996,7 +1993,7 @@ structure S {
     let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
 
-    let invalid_warnings: Vec<&reify_types::Diagnostic> = result
+    let invalid_warnings: Vec<&reify_core::Diagnostic> = result
         .diagnostics
         .iter()
         .filter(|d| {
@@ -2019,7 +2016,7 @@ structure S {
     // Pin the cap phrase rather than the bare cap value — `msg.contains(&cap)` is
     // fragile when bounds_max happens to be a numeric string that contains the cap
     // as a substring (e.g. `bounds_max=110000000` contains "10000000").
-    let cap = reify_types::sampled::LINSPACE_MAX_INTERVALS.to_string();
+    let cap = reify_ir::sampled::LINSPACE_MAX_INTERVALS.to_string();
     assert!(
         msg.contains(&format!("{cap} interval cap")),
         "diagnostic should contain '{cap} interval cap', got: {msg:?}"
@@ -2065,7 +2062,7 @@ structure S {
     let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
 
-    let invalid_warnings: Vec<&reify_types::Diagnostic> = result
+    let invalid_warnings: Vec<&reify_core::Diagnostic> = result
         .diagnostics
         .iter()
         .filter(|d| {
@@ -2144,7 +2141,7 @@ structure S {
 
 #[test]
 fn eval_field_reductions_on_sampled_field_returns_expected_values() {
-    use reify_types::DimensionVector;
+    use reify_core::DimensionVector;
 
     let source = r#"
 field def temperature : Length -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(4.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [1.0, 5.0, 3.0, 4.0, 2.0] } }

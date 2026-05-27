@@ -139,7 +139,7 @@ fn export_writes_file() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("test.step");
 
-    let result = session.export(reify_types::ExportFormat::Step, &path);
+    let result = session.export(reify_ir::ExportFormat::Step, &path);
     // MockGeometryKernel writes MOCK_EXPORT_DATA
     assert!(result.is_ok(), "export should succeed: {:?}", result.err());
 

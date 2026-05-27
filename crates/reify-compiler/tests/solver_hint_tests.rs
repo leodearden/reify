@@ -361,11 +361,11 @@ fn builder_param_with_solver_hints() {
     let hints = vec![reify_compiler::SolverHint {
         kind: reify_compiler::SolverHintKind::DiscreteSet,
         collection: "bolt_lengths".to_string(),
-        span: reify_types::SourceSpan::new(0, 0),
+        span: reify_core::SourceSpan::new(0, 0),
     }];
 
     let template = TopologyTemplateBuilder::new("S")
-        .param_with_solver_hints("S", "length", reify_types::Type::length(), None, hints)
+        .param_with_solver_hints("S", "length", reify_core::Type::length(), None, hints)
         .build();
 
     assert_eq!(template.value_cells.len(), 1);

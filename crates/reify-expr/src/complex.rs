@@ -1,4 +1,4 @@
-use reify_types::Value;
+use reify_ir::Value;
 
 use super::sanitize::sanitize_value;
 
@@ -81,7 +81,8 @@ pub(crate) fn eval_complex_method(obj: &Value, method: &str, args: &[Value]) -> 
 
 #[cfg(test)]
 mod tests {
-    use reify_types::{CompiledExpr, DimensionVector, Type, Value, ValueMap};
+    use reify_core::{DimensionVector, Type};
+    use reify_ir::{CompiledExpr, Value, ValueMap};
 
     use crate::{EvalContext, eval_expr};
 

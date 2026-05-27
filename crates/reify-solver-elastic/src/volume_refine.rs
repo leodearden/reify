@@ -26,7 +26,7 @@
 use std::fmt;
 
 use reify_kernel_gmsh::MeshingOptions;
-use reify_types::{ElementOrderTag, GeometryError, Mesh, VolumeMesh};
+use reify_ir::{ElementOrderTag, GeometryError, Mesh, VolumeMesh};
 
 // ---------------------------------------------------------------------------
 // Error type

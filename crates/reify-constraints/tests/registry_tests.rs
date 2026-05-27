@@ -2,11 +2,8 @@
 
 use reify_constraints::{DimensionalSolver, SolveSpaceSolver, SolverRegistry};
 use reify_test_support::*;
-use reify_types::{
-    AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, ContentHash,
-    DimensionVector, OptimizationObjective, ResolutionProblem, ResolvedFunction, SolveResult, Type,
-    Value, ValueMap,
-};
+use reify_core::{ContentHash, DimensionVector, Type};
+use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, OptimizationObjective, ResolutionProblem, ResolvedFunction, SolveResult, Value, ValueMap};
 
 /// Basic dispatch: SolverRegistry with DimensionalSolver as fallback
 /// produces same results as DimensionalSolver alone for a simple problem.

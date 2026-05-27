@@ -10,7 +10,7 @@ use common::{
     assert_eq_rel, assert_simple_unit, compile_with_stdlib_helper, stdlib_param_si_value,
     units_module,
 };
-use reify_types::{DimensionVector, Severity};
+use reify_core::{DimensionVector, Severity};
 
 // ─── step-1/2: yd — Length ────────────────────────────────────────────────────
 
@@ -165,7 +165,7 @@ fn lbf_times_mm_produces_energy_dimension_via_stdlib() {
     // The declared type must be Energy's dimension.
     assert_eq!(
         cell.cell_type,
-        reify_types::Type::Scalar {
+        reify_core::Type::Scalar {
             dimension: DimensionVector::ENERGY
         },
         "cell_type should be Scalar{{ENERGY}}"
@@ -177,7 +177,7 @@ fn lbf_times_mm_produces_energy_dimension_via_stdlib() {
     let expected_dim = DimensionVector::FORCE.mul(&DimensionVector::LENGTH);
     assert_eq!(
         expr.result_type,
-        reify_types::Type::Scalar {
+        reify_core::Type::Scalar {
             dimension: expected_dim
         },
         "BinOp result_type should be Scalar{{FORCE×LENGTH}}, got {:?}",
@@ -186,14 +186,14 @@ fn lbf_times_mm_produces_energy_dimension_via_stdlib() {
 
     // The outer expression must be a Multiply BinOp.
     match &expr.kind {
-        reify_types::CompiledExprKind::BinOp {
-            op: reify_types::BinOp::Mul,
+        reify_ir::CompiledExprKind::BinOp {
+            op: reify_ir::BinOp::Mul,
             left,
             right,
         } => {
             // Left operand: 2lbf → Scalar with FORCE dimension, si_value ≈ 2 * LBF_SI
             let left_si = match &left.kind {
-                reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+                reify_ir::CompiledExprKind::Literal(reify_ir::Value::Scalar {
                     si_value,
                     dimension,
                     ..
@@ -216,7 +216,7 @@ fn lbf_times_mm_produces_energy_dimension_via_stdlib() {
             };
             // Right operand: 3mm → Scalar with LENGTH dimension, si_value = 0.003
             let right_si = match &right.kind {
-                reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+                reify_ir::CompiledExprKind::Literal(reify_ir::Value::Scalar {
                     si_value,
                     dimension,
                     ..

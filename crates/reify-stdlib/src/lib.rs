@@ -4,7 +4,7 @@
 // but still triggers the `mutable_key_type` lint on every `BTreeMap<Value, _>`.
 #![allow(clippy::mutable_key_type)]
 
-use reify_types::Value;
+use reify_ir::Value;
 
 mod helpers;
 

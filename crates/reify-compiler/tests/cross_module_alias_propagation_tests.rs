@@ -10,9 +10,8 @@ use reify_compiler::{
     CompiledTypeAlias, compile_with_prelude, compile_with_stdlib, parse_with_stdlib,
 };
 use reify_test_support::CompiledModuleBuilder;
-use reify_types::{
-    ContentHash, DimensionVector, ModulePath, Severity, SourceSpan, Type, TypeParam,
-};
+use reify_core::{ContentHash, DimensionVector, ModulePath, Severity, SourceSpan, Type};
+use reify_ir::TypeParam;
 
 fn make_pub_alias(name: &str, resolved_type: Type) -> CompiledTypeAlias {
     CompiledTypeAlias {

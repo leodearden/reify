@@ -14,11 +14,8 @@
 //! producer-side tests symmetric.
 
 use reify_compiler::ValueCellDecl;
-use reify_syntax::{
-    Declaration, EnumDecl, Expr, ExprKind, LetDecl, MatchArmDeclArmDecl, MatchArmDeclGroupDecl,
-    MemberDecl, ParamDecl, ParsedModule, StructureDef, SubDecl, TypeExpr, TypeExprKind,
-};
-use reify_types::{ContentHash, ModulePath, Severity, SourceSpan, Type};
+use reify_ast::{Declaration, EnumDecl, Expr, ExprKind, LetDecl, MatchArmDeclArmDecl, MatchArmDeclGroupDecl, MemberDecl, ParamDecl, ParsedModule, StructureDef, SubDecl, TypeExpr, TypeExprKind};
+use reify_core::{ContentHash, ModulePath, Severity, SourceSpan, Type};
 
 // ─── AST construction helpers ────────────────────────────────────────────────
 
@@ -161,7 +158,7 @@ fn find_cell_type(
         .map(|c| c.cell_type.clone())
 }
 
-fn error_diagnostics(compiled: &reify_compiler::CompiledModule) -> Vec<&reify_types::Diagnostic> {
+fn error_diagnostics(compiled: &reify_compiler::CompiledModule) -> Vec<&reify_core::Diagnostic> {
     compiled
         .diagnostics
         .iter()
@@ -174,7 +171,7 @@ fn error_diagnostics(compiled: &reify_compiler::CompiledModule) -> Vec<&reify_ty
 /// Call this after verifying the *specific* diagnostic is present.  A second
 /// error here means `make_poison_literal` failed to suppress a cascading
 /// type-mismatch in the surrounding expression.
-fn assert_no_cascade(errors: &[&reify_types::Diagnostic]) {
+fn assert_no_cascade(errors: &[&reify_core::Diagnostic]) {
     assert_eq!(
         errors.len(),
         1,
@@ -479,7 +476,7 @@ fn self_dot_cluster_dot_arm_specific_field_emits_diagnostic_listing_missing_arms
     let compiled = reify_compiler::compile(&parsed);
 
     let errors = error_diagnostics(&compiled);
-    let matching: Vec<&&reify_types::Diagnostic> = errors
+    let matching: Vec<&&reify_core::Diagnostic> = errors
         .iter()
         .filter(|d| d.message.contains("'head_thickness'") && d.message.contains("SocketHead"))
         .collect();
@@ -640,7 +637,7 @@ fn self_dot_cluster_dot_divergent_types_emits_diagnostic_listing_arms() {
     let compiled = reify_compiler::compile(&parsed);
 
     let errors = error_diagnostics(&compiled);
-    let matching: Vec<&&reify_types::Diagnostic> = errors
+    let matching: Vec<&&reify_core::Diagnostic> = errors
         .iter()
         .filter(|d| {
             d.message.contains("divergent")
@@ -708,7 +705,7 @@ fn external_sub_dot_cluster_dot_arm_specific_field_emits_diagnostic() {
     let compiled = reify_compiler::compile(&parsed);
 
     let errors = error_diagnostics(&compiled);
-    let matching: Vec<&&reify_types::Diagnostic> = errors
+    let matching: Vec<&&reify_core::Diagnostic> = errors
         .iter()
         .filter(|d| d.message.contains("'head_thickness'") && d.message.contains("SocketHead"))
         .collect();
@@ -917,7 +914,7 @@ fn external_collection_sub_indexed_dot_cluster_dot_arm_specific_field_emits_diag
     let compiled = reify_compiler::compile(&parsed);
 
     let errors = error_diagnostics(&compiled);
-    let matching: Vec<&&reify_types::Diagnostic> = errors
+    let matching: Vec<&&reify_core::Diagnostic> = errors
         .iter()
         .filter(|d| d.message.contains("'head_thickness'") && d.message.contains("SocketHead"))
         .collect();
@@ -1005,7 +1002,7 @@ fn external_collection_sub_indexed_dot_cluster_dot_divergent_types_emits_diagnos
     let compiled = reify_compiler::compile(&parsed);
 
     let errors = error_diagnostics(&compiled);
-    let matching: Vec<&&reify_types::Diagnostic> = errors
+    let matching: Vec<&&reify_core::Diagnostic> = errors
         .iter()
         .filter(|d| {
             d.message.contains("divergent")
@@ -1071,7 +1068,7 @@ fn collection_sub_indexed_nan_emits_out_of_range_diagnostic() {
     let compiled = reify_compiler::compile(&parsed);
     let errors = error_diagnostics(&compiled);
 
-    let matching: Vec<&&reify_types::Diagnostic> = errors
+    let matching: Vec<&&reify_core::Diagnostic> = errors
         .iter()
         .filter(|d| d.message.contains("out of range or non-finite"))
         .collect();
@@ -1122,7 +1119,7 @@ fn collection_sub_indexed_infinity_emits_out_of_range_diagnostic() {
     let compiled = reify_compiler::compile(&parsed);
     let errors = error_diagnostics(&compiled);
 
-    let matching: Vec<&&reify_types::Diagnostic> = errors
+    let matching: Vec<&&reify_core::Diagnostic> = errors
         .iter()
         .filter(|d| d.message.contains("out of range or non-finite"))
         .collect();
@@ -1177,7 +1174,7 @@ fn collection_sub_indexed_1e20_emits_out_of_range_diagnostic() {
     let compiled = reify_compiler::compile(&parsed);
     let errors = error_diagnostics(&compiled);
 
-    let matching: Vec<&&reify_types::Diagnostic> = errors
+    let matching: Vec<&&reify_core::Diagnostic> = errors
         .iter()
         .filter(|d| d.message.contains("out of range or non-finite"))
         .collect();
@@ -1275,7 +1272,7 @@ fn cluster_routing_path_i64_max_boundary_emits_out_of_range_diagnostic() {
     let compiled = reify_compiler::compile(&parsed);
     let errors = error_diagnostics(&compiled);
 
-    let matching: Vec<&&reify_types::Diagnostic> = errors
+    let matching: Vec<&&reify_core::Diagnostic> = errors
         .iter()
         .filter(|d| d.message.contains("out of range or non-finite"))
         .collect();

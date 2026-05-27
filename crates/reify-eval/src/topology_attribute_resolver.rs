@@ -36,10 +36,8 @@
 
 use std::collections::HashSet;
 
-use reify_types::{
-    Diagnostic, DiagnosticCode, DiagnosticLabel, FeatureId, GeometryHandleId, Role, SourceSpan,
-    TopologyAttribute, TopologyAttributeTable,
-};
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
+use reify_ir::{FeatureId, GeometryHandleId, Role, TopologyAttribute, TopologyAttributeTable};
 
 /// Query used to pick a unique sub-shape out of a candidate slice.
 ///
@@ -450,7 +448,8 @@ fn emit_split_children_diagnostic(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::{CapKind, FeatureId, ModEntry, Severity};
+    use reify_core::Severity;
+    use reify_ir::{CapKind, FeatureId, ModEntry};
 
     fn span() -> SourceSpan {
         SourceSpan::empty(0)

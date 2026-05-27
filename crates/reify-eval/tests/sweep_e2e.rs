@@ -5,7 +5,8 @@
 
 use reify_compiler::{CompiledGeometryOp, GeomRef, PrimitiveKind, SweepKind};
 use reify_test_support::*;
-use reify_types::{ExportFormat, GeometryOp, Type};
+use reify_core::Type;
+use reify_ir::{ExportFormat, GeometryOp};
 
 /// Exercises the full compile -> eval path for Sweep.
 ///
@@ -19,7 +20,7 @@ use reify_types::{ExportFormat, GeometryOp, Type};
 #[test]
 fn sweep_through_full_eval_pipeline() {
     let e = "TestSweep";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Sphere (profile stand-in, produces handle at step index 0)
     let sphere_op_0 = CompiledGeometryOp::Primitive {
@@ -46,7 +47,7 @@ fn sweep_through_full_eval_pipeline() {
         .realization(e, 0, vec![sphere_op_0, sphere_op_1, sweep_op])
         .build();
 
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_sweep"))
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single("test_sweep"))
         .template(template)
         .build();
 

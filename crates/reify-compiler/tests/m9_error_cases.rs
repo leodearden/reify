@@ -15,7 +15,7 @@
 //!   - lib.rs          — duplicate entity definitions, duplicate unit declarations
 
 use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only};
-use reify_types::{Diagnostic, DiagnosticCode};
+use reify_core::{Diagnostic, DiagnosticCode};
 
 /// Assert that `errors` contains at least one diagnostic whose `code` is `code`
 /// and whose message contains every string in `msg_contains`.  That same

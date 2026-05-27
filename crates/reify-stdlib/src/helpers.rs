@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
-use reify_types::{DimensionVector, Value, quaternion_is_finite};
+use reify_core::DimensionVector;
+use reify_ir::{Value, quaternion_is_finite};
 
 /// Apply a function to a single argument (by reference, for pattern matching).
 pub(crate) fn unary(args: &[Value], f: impl FnOnce(&Value) -> Value) -> Value {
@@ -326,7 +327,7 @@ pub(crate) fn tensor_components_f64(v: &Value) -> Option<(Vec<f64>, DimensionVec
 // SYNC: mirror of reify-expr::sanitize.rs tests — keep in sync
 #[cfg(test)]
 mod tests {
-    use reify_types::DimensionVector;
+    use reify_core::DimensionVector;
 
     use super::*;
 

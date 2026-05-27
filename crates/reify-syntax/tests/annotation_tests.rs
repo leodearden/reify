@@ -6,7 +6,7 @@ use reify_syntax::*;
 
 /// Helper: parse source and return the ParsedModule.
 fn parse_module(source: &str) -> ParsedModule {
-    reify_syntax::parse(source, reify_types::ModulePath::single("annotation_test"))
+    reify_syntax::parse(source, reify_core::ModulePath::single("annotation_test"))
 }
 
 // ── Step 1/2: bare annotation on structure ───────────────────────────────────

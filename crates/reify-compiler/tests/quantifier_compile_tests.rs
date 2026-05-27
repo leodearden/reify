@@ -1,6 +1,6 @@
 //! Quantifier compilation tests.
 
-use reify_types::CompiledExprKind;
+use reify_ir::CompiledExprKind;
 
 /// step-3: Compile `forall x in [1,2,3]: x > 0` -> CompiledExprKind::Quantifier
 /// with ForAll kind, verify collection and predicate sub-expressions are compiled.
@@ -11,7 +11,7 @@ structure S {
     constraint forall x in [1, 2, 3]: x > 0
 }
 "#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_quant"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_quant"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -22,7 +22,7 @@ structure S {
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(
         errors.is_empty(),
@@ -46,7 +46,7 @@ structure S {
             collection,
             predicate,
         } => {
-            assert_eq!(*kind, reify_types::QuantifierKind::ForAll);
+            assert_eq!(*kind, reify_ast::QuantifierKind::ForAll);
             assert_eq!(variable, "x");
             assert!(
                 variable_id.entity.starts_with("$quant"),
@@ -58,7 +58,7 @@ structure S {
             // predicate should be a BinOp(Gt)
             match &predicate.kind {
                 CompiledExprKind::BinOp { op, .. } => {
-                    assert_eq!(*op, reify_types::BinOp::Gt);
+                    assert_eq!(*op, reify_ir::BinOp::Gt);
                 }
                 other => panic!("expected BinOp(Gt), got {:?}", other),
             }
@@ -75,7 +75,7 @@ structure S {
     let found = exists x in [1, 2, 3]: x == 2
 }
 "#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_quant2"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_quant2"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -86,7 +86,7 @@ structure S {
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(
         errors.is_empty(),
@@ -107,7 +107,7 @@ structure S {
         .expect("let should have expr");
     match &expr.kind {
         CompiledExprKind::Quantifier { kind, variable, .. } => {
-            assert_eq!(*kind, reify_types::QuantifierKind::Exists);
+            assert_eq!(*kind, reify_ast::QuantifierKind::Exists);
             assert_eq!(variable, "x");
         }
         other => panic!("expected Quantifier, got {:?}", other),
@@ -130,7 +130,7 @@ structure S {
     let checker = |items| forall x in [items]: x > 0
 }
 "#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_quant_cap"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_quant_cap"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -141,7 +141,7 @@ structure S {
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(
         errors.is_empty(),

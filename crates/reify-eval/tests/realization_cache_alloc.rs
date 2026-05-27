@@ -60,9 +60,9 @@ fn rejected_insert_under_existing_entity_does_not_allocate_key() {
     // Warm-up: the first insert legitimately allocates the entity String key once.
     let inserted = cache.insert(
         entity,
-        reify_types::ReprKind::BRep,
+        reify_ir::ReprKind::BRep,
         0.001,
-        reify_types::ContentHash(0),
+        reify_core::ContentHash(0),
         1u32,
     );
     assert!(inserted, "warm-up insert must succeed");
@@ -78,9 +78,9 @@ fn rejected_insert_under_existing_entity_does_not_allocate_key() {
     for _ in 0..256 {
         let inserted = cache.insert(
             entity,
-            reify_types::ReprKind::BRep,
+            reify_ir::ReprKind::BRep,
             0.1,
-            reify_types::ContentHash(0),
+            reify_core::ContentHash(0),
             999u32,
         );
         assert!(

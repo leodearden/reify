@@ -6,7 +6,7 @@ use reify_syntax::*;
 
 /// Helper: parse source and return declarations and errors.
 fn parse_decls(source: &str) -> (Vec<Declaration>, Vec<ParseError>) {
-    let module = reify_syntax::parse(source, reify_types::ModulePath::single("port_test"));
+    let module = reify_syntax::parse(source, reify_core::ModulePath::single("port_test"));
     (module.declarations, module.errors)
 }
 
@@ -55,7 +55,7 @@ fn parse_port_with_direction() {
 
     assert_eq!(port.name, "shaft");
     assert_eq!(port.type_name, "RotaryPort");
-    assert_eq!(port.direction, Some(reify_types::PortDirection::In));
+    assert_eq!(port.direction, Some(reify_core::PortDirection::In));
 }
 
 #[test]
@@ -73,7 +73,7 @@ fn parse_port_direction_out() {
         other => panic!("expected Port, got {:?}", other),
     };
 
-    assert_eq!(port.direction, Some(reify_types::PortDirection::Out));
+    assert_eq!(port.direction, Some(reify_core::PortDirection::Out));
 }
 
 #[test]
@@ -91,7 +91,7 @@ fn parse_port_direction_bidi() {
         other => panic!("expected Port, got {:?}", other),
     };
 
-    assert_eq!(port.direction, Some(reify_types::PortDirection::Bidi));
+    assert_eq!(port.direction, Some(reify_core::PortDirection::Bidi));
 }
 
 // ── Step 5: port with body ─────────────────────────────────────────
@@ -114,7 +114,7 @@ fn parse_port_with_body() {
 
     assert_eq!(port.name, "x");
     assert_eq!(port.type_name, "MechPort");
-    assert_eq!(port.direction, Some(reify_types::PortDirection::Out));
+    assert_eq!(port.direction, Some(reify_core::PortDirection::Out));
     assert!(port.frame_expr.is_none());
 
     // Should have param and constraint members
@@ -193,5 +193,5 @@ fn parse_port_direction_override() {
     };
 
     // Body direction (out) should override inline direction (in)
-    assert_eq!(port.direction, Some(reify_types::PortDirection::Out));
+    assert_eq!(port.direction, Some(reify_core::PortDirection::Out));
 }

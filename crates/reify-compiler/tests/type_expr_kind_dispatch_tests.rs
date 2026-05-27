@@ -8,7 +8,8 @@
 //! sites — that compile failure is the "red" phase that justifies step 4.
 
 use reify_syntax::*;
-use reify_types::*;
+use reify_core::*;
+use reify_ir::*;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

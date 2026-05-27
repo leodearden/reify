@@ -8,7 +8,7 @@
 #![cfg(has_gmsh)]
 
 use reify_kernel_gmsh::{MeshingOptions, refine_volume_with_size_field};
-use reify_types::{ElementOrderTag, Mesh};
+use reify_ir::{ElementOrderTag, Mesh};
 
 /// Inline copy of `crates/reify-kernel-gmsh/tests/mesh_to_volume_tests.rs:19-48`.
 ///

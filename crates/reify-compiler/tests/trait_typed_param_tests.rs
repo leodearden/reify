@@ -9,7 +9,7 @@
 
 use reify_compiler::RequirementKind;
 use reify_test_support::{compile_source, compile_source_with_stdlib};
-use reify_types::{DiagnosticCode, Severity, Type};
+use reify_core::{DiagnosticCode, Severity, Type};
 
 /// Structure member: `param m : MaterialSpec` should resolve to `Type::TraitObject("MaterialSpec")`.
 #[test]
@@ -1702,7 +1702,7 @@ fn trait_param_option_pressure_resolves_to_option_scalar() {
             assert_eq!(
                 ty,
                 &Type::Option(Box::new(Type::Scalar {
-                    dimension: reify_types::DimensionVector::PRESSURE,
+                    dimension: reify_core::DimensionVector::PRESSURE,
                 })),
                 "yield_stress trait member should resolve to Type::Option(Pressure-Scalar), got: {:?}",
                 ty

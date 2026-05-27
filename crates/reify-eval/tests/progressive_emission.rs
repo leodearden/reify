@@ -38,7 +38,8 @@ use reify_eval::freshness_walk;
 use reify_test_support::builders::{binop, literal, value_ref_typed};
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
-use reify_types::{BinOp, Freshness, ModulePath, NodeTraits, Type, Value, ValueCellId};
+use reify_core::{ModulePath, Type, ValueCellId};
+use reify_ir::{BinOp, Freshness, NodeTraits, Value};
 use std::collections::HashSet;
 
 /// Build the 2-cell synthetic module: param `a` + let `b = a * 2.0`.

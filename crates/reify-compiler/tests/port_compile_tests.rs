@@ -4,7 +4,8 @@
 
 use reify_compiler::*;
 use reify_test_support::compile_first_template;
-use reify_types::*;
+use reify_core::*;
+use reify_ir::*;
 
 // ── Step 11: compile_port_creates_value_cells ───────────────────────
 

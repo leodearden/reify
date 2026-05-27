@@ -29,7 +29,7 @@ mod sweep;
 #[test]
 fn plate_with_hole_fixture_returns_valid_p1_mesh_with_hole_at_center_and_positive_volume_tets() {
     use reify_mesh_morph::{MorphOptions, QualityVerdict, quality_check};
-    use reify_types::ElementOrderTag;
+    use reify_ir::ElementOrderTag;
 
     let side = 1.0;
     let hole_diameter = 0.3;
@@ -134,7 +134,7 @@ fn plate_with_hole_fixture_returns_valid_p1_mesh_with_hole_at_center_and_positiv
 #[test]
 fn bracket_fixture_returns_valid_p1_mesh_with_fillet_radius_respected_and_positive_volume_tets() {
     use reify_mesh_morph::{MorphOptions, QualityVerdict, quality_check};
-    use reify_types::ElementOrderTag;
+    use reify_ir::ElementOrderTag;
 
     let arm_length = 1.0_f64;
     let thickness = 0.2_f64;
@@ -671,7 +671,7 @@ fn procedural_fixture_baseline_distribution_pins_task_3451_empirical_capture() {
     // Helper: extract pct_below_025 from a mesh by comparing it against
     // itself under probe options. The AR result (fs_ar/fs_ar = 1.0 for
     // all tets) is discarded; we only want pct.
-    let fs_pct = |mesh: &reify_types::VolumeMesh| -> f64 {
+    let fs_pct = |mesh: &reify_ir::VolumeMesh| -> f64 {
         match quality_check(mesh, mesh, &probe) {
             QualityVerdict::SoftFail(d) => {
                 d.pct_below_025.expect("probe pct_below_025 must be Some under -1.0 threshold")

@@ -15,7 +15,8 @@
 //! because the source depends on stdlib-defined `Costed`, `USD`, and `h`.
 
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
-use reify_types::{DimensionVector, Severity, Value, ValueCellId};
+use reify_core::{DimensionVector, Severity, ValueCellId};
+use reify_ir::Value;
 
 /// Absolute path to the canonical cost-aggregation example fixture.
 /// Mirrors the CARGO_MANIFEST_DIR pattern from

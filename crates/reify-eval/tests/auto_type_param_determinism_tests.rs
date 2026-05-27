@@ -38,7 +38,8 @@ use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
 use reify_test_support::{
     MockConstraintChecker, check_source_with_stdlib, parse_and_compile_with_stdlib,
 };
-use reify_types::{DiagnosticCode, Satisfaction, Severity, SourceSpan};
+use reify_core::{DiagnosticCode, Severity, SourceSpan};
+use reify_ir::Satisfaction;
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -150,7 +151,7 @@ fn run_pipeline_with_default(
         .get("Bearing")
         .expect("Bearing template must exist in bearing_auto_seal.ri");
 
-    let functions: &[reify_types::CompiledFunction] = &[];
+    let functions: &[reify_ir::CompiledFunction] = &[];
     let checker = MockConstraintChecker::new().with_default(default);
 
     let mut diagnostics = Vec::new();

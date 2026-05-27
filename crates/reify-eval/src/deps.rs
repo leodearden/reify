@@ -10,7 +10,8 @@
 //! (Adapton-style) tracing in a pure language.
 
 use crate::cache::NodeId;
-use reify_types::{CompiledExpr, RealizationNodeId, ValueCellId};
+use reify_core::{RealizationNodeId, ValueCellId};
+use reify_ir::CompiledExpr;
 use std::collections::{HashMap, HashSet};
 
 /// Statically extracted value cell dependencies for a node.
@@ -132,7 +133,7 @@ impl ReverseDependencyIndex {
         fields: &[reify_compiler::CompiledField],
     ) -> Self {
         use reify_compiler::{CompiledFieldSource, ValueCellKind};
-        use reify_types::FIELD_ENTITY_PREFIX;
+        use reify_core::FIELD_ENTITY_PREFIX;
 
         let mut index = Self::new();
 
@@ -240,7 +241,7 @@ pub fn build_trace_map_and_fields(
     fields: &[reify_compiler::CompiledField],
 ) -> HashMap<NodeId, DependencyTrace> {
     use reify_compiler::{CompiledFieldSource, ValueCellKind};
-    use reify_types::FIELD_ENTITY_PREFIX;
+    use reify_core::FIELD_ENTITY_PREFIX;
 
     let mut traces = HashMap::new();
 
@@ -318,7 +319,8 @@ pub fn extract_realization_dependencies(
 mod tests {
     use super::*;
     use crate::cache::NodeId;
-    use reify_types::{BinOp, ConstraintNodeId, Type, Value, ValueCellId};
+    use reify_core::{ConstraintNodeId, Type, ValueCellId};
+    use reify_ir::{BinOp, Value};
 
     #[test]
     fn reverse_index_new_is_empty() {
@@ -377,7 +379,8 @@ mod tests {
     #[test]
     fn reverse_index_realization_dependents_of_returns_compute_consumers() {
         use crate::graph::{ComputeNodeData, EvaluationGraph, RealizationNodeData};
-        use reify_types::{ComputeNodeId, ContentHash, RealizationNodeId, ReprKind};
+        use reify_core::{ComputeNodeId, ContentHash, RealizationNodeId};
+        use reify_ir::ReprKind;
 
         let mut graph = EvaluationGraph::default();
         let e = "E";
@@ -427,7 +430,7 @@ mod tests {
     /// None / panicking, matching the existing dependents_of contract.
     #[test]
     fn reverse_index_realization_dependents_of_unknown_returns_empty() {
-        use reify_types::RealizationNodeId;
+        use reify_core::RealizationNodeId;
 
         let index = ReverseDependencyIndex::new();
         let unknown = RealizationNodeId::new("Z", 99);
@@ -447,7 +450,7 @@ mod tests {
     fn reverse_index_registers_value_input_edge_for_each_compute_node() {
         use crate::graph::{ComputeNodeData, EvaluationGraph, ValueCellNode};
         use reify_compiler::ValueCellKind;
-        use reify_types::{ComputeNodeId, ContentHash, Type};
+        use reify_core::{ComputeNodeId, ContentHash, Type};
 
         let mut graph = EvaluationGraph::default();
         let e = "E";
@@ -496,7 +499,7 @@ mod tests {
     fn reverse_index_includes_resolution_deps() {
         use crate::graph::{EvaluationGraph, ResolutionNodeData, ValueCellNode};
         use reify_compiler::ValueCellKind;
-        use reify_types::{ContentHash, ResolutionNodeId, Type};
+        use reify_core::{ContentHash, ResolutionNodeId, Type};
 
         let mut graph = EvaluationGraph::default();
 
@@ -520,9 +523,9 @@ mod tests {
             crate::graph::ConstraintNodeData {
                 id: c0_id.clone(),
                 label: None,
-                expr: reify_types::CompiledExpr::literal(
-                    reify_types::Value::Bool(true),
-                    reify_types::Type::Bool,
+                expr: reify_ir::CompiledExpr::literal(
+                    reify_ir::Value::Bool(true),
+                    reify_core::Type::Bool,
                 ),
                 content_hash: ContentHash::of_str("c0"),
                 optimized_target: None,
@@ -557,7 +560,7 @@ mod tests {
     fn build_trace_map_includes_resolution() {
         use crate::graph::{EvaluationGraph, ResolutionNodeData, ValueCellNode};
         use reify_compiler::ValueCellKind;
-        use reify_types::{ContentHash, ResolutionNodeId, Type};
+        use reify_core::{ContentHash, ResolutionNodeId, Type};
 
         let mut graph = EvaluationGraph::default();
 
@@ -619,7 +622,7 @@ mod tests {
         assert!(width_deps.contains(&NodeId::Value(ValueCellId::new(e, "volume"))));
         assert!(width_deps.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 1))));
         assert!(
-            width_deps.contains(&NodeId::Realization(reify_types::RealizationNodeId::new(
+            width_deps.contains(&NodeId::Realization(reify_core::RealizationNodeId::new(
                 e, 0
             )))
         );
@@ -660,7 +663,7 @@ mod tests {
         assert_eq!(height_deps.len(), 2, "height dependents: {:?}", height_deps);
         assert!(height_deps.contains(&NodeId::Value(ValueCellId::new(e, "volume"))));
         assert!(
-            height_deps.contains(&NodeId::Realization(reify_types::RealizationNodeId::new(
+            height_deps.contains(&NodeId::Realization(reify_core::RealizationNodeId::new(
                 e, 0
             )))
         );
@@ -909,7 +912,7 @@ mod tests {
     fn reverse_index_includes_composed_field_dependencies() {
         use crate::graph::EvaluationGraph;
         use reify_test_support::parse_and_compile;
-        use reify_types::FIELD_ENTITY_PREFIX;
+        use reify_core::FIELD_ENTITY_PREFIX;
 
         let module = parse_and_compile(
             r#"
@@ -972,7 +975,8 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
     #[test]
     fn invalidate_dependents_uses_static_dependency_trace_reads() {
         use crate::cache::{CacheStore, CachedResult};
-        use reify_types::{DeterminacyState, VersionId};
+        use reify_core::VersionId;
+        use reify_ir::DeterminacyState;
 
         // Build a static trace for a BinOp: z = x + y
         let x = ValueCellId::new("A", "x");
@@ -1020,7 +1024,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
 ///
 /// This is a thin wrapper around CompiledExpr::collect_value_refs() that additionally
 /// deduplicates and sorts the results for deterministic ordering.
-pub fn extract_value_deps(expr: &reify_types::CompiledExpr) -> Vec<ValueCellId> {
+pub fn extract_value_deps(expr: &reify_ir::CompiledExpr) -> Vec<ValueCellId> {
     let refs = expr.collect_value_refs();
     let unique: std::collections::HashSet<_> = refs.into_iter().collect();
     let mut sorted: Vec<_> = unique.into_iter().collect();
@@ -1031,13 +1035,14 @@ pub fn extract_value_deps(expr: &reify_types::CompiledExpr) -> Vec<ValueCellId> 
 #[cfg(test)]
 mod extract_value_deps_tests {
     use super::*;
-    use reify_types::{BinOp, CompiledExpr, Type, UnOp};
+    use reify_core::Type;
+    use reify_ir::{BinOp, CompiledExpr, UnOp};
 
     /// Step 1a: Verify literal expr returns empty vec.
     #[test]
     fn extract_value_deps_literal_returns_empty() {
         use std::f64::consts::PI;
-        let expr = CompiledExpr::literal(reify_types::Value::Real(PI), Type::Real);
+        let expr = CompiledExpr::literal(reify_ir::Value::Real(PI), Type::Real);
         let deps = extract_value_deps(&expr);
         assert!(
             deps.is_empty(),

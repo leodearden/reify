@@ -43,7 +43,7 @@
 //! `*_capability_descriptor()` factory, `*_factory()`, and `inventory::submit!`
 //! pattern. Only the kernel name string and supports table contents differ.
 
-use reify_types::{CapabilityDescriptor, GeometryKernel, KernelRegistration, Operation, ReprKind};
+use reify_ir::{CapabilityDescriptor, GeometryKernel, KernelRegistration, Operation, ReprKind};
 
 /// Factory invoked by the engine once at startup, returning a boxed
 /// [`ManifoldKernel`](crate::kernel::ManifoldKernel) backed by the

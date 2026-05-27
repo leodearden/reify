@@ -18,7 +18,7 @@
 
 use std::collections::BTreeMap;
 
-use reify_types::Value;
+use reify_ir::Value;
 
 use crate::eval_builtin;
 use crate::joints::is_joint_value;
@@ -1131,7 +1131,7 @@ mod tests {
     use crate::test_fixtures::{
         angle_range_0_to_pi, axis_x_unit, axis_z_unit, length_range_0_to_1m, planar_xy_joint,
     };
-    use reify_types::Value;
+    use reify_ir::Value;
     use std::collections::BTreeMap;
 
     // ── bind(joint, value): happy path ────────────────────────────────────
@@ -1980,7 +1980,7 @@ mod tests {
                     Value::Scalar { dimension, .. } => {
                         assert_eq!(
                             *dimension,
-                            reify_types::DimensionVector::LENGTH,
+                            reify_core::DimensionVector::LENGTH,
                             "{}: component[{}] should carry LENGTH dimension",
                             label,
                             i
@@ -2058,7 +2058,7 @@ mod tests {
                 Value::Scalar { dimension, .. } => {
                     assert_eq!(
                         *dimension,
-                        reify_types::DimensionVector::LENGTH,
+                        reify_core::DimensionVector::LENGTH,
                         "COM component[{}] should carry LENGTH dimension",
                         i
                     );

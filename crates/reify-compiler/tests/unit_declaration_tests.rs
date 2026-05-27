@@ -13,7 +13,7 @@
 //!   5. Unit with compound dimension         (tests 2)
 
 use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only};
-use reify_types::DimensionVector;
+use reify_core::DimensionVector;
 
 // ─── category 1: basic unit declaration ───────────────────────────────────────
 
@@ -94,7 +94,7 @@ fn offset_unit_degc_compiles_with_factor_and_offset() {
         .find(|c| c.id.member == "t")
         .expect("value cell 't' not found");
     if let Some(expr) = &t_cell.default_expr {
-        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+        if let reify_ir::CompiledExprKind::Literal(reify_ir::Value::Scalar {
             si_value, ..
         }) = &expr.kind
         {
@@ -177,7 +177,7 @@ fn user_unit_in_quantity_literal_evaluates_to_si_value_multiple_units() {
         .find(|c| c.id.member == "d")
         .expect("value cell 'd' not found");
     if let Some(expr) = &d_cell.default_expr {
-        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+        if let reify_ir::CompiledExprKind::Literal(reify_ir::Value::Scalar {
             si_value, ..
         }) = &expr.kind
         {
@@ -199,7 +199,7 @@ fn user_unit_in_quantity_literal_evaluates_to_si_value_multiple_units() {
         .find(|c| c.id.member == "t")
         .expect("value cell 't' not found");
     if let Some(expr) = &t_cell.default_expr {
-        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+        if let reify_ir::CompiledExprKind::Literal(reify_ir::Value::Scalar {
             si_value, ..
         }) = &expr.kind
         {
@@ -233,7 +233,7 @@ fn custom_unit_with_compound_dimension_force() {
         .expect("unit 'kN' not found");
     assert_eq!(
         unit.dimension,
-        reify_types::dimension::FORCE,
+        reify_core::dimension::FORCE,
         "kN should have FORCE dimension"
     );
     assert!(
@@ -280,7 +280,7 @@ fn negative_factor_unit_in_quantity_literal() {
         .find(|c| c.id.member == "x")
         .expect("value cell 'x' not found");
     if let Some(expr) = &x_cell.default_expr {
-        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+        if let reify_ir::CompiledExprKind::Literal(reify_ir::Value::Scalar {
             si_value,
             dimension,
             ..
@@ -340,7 +340,7 @@ fn compound_dimension_volume_unit_in_quantity_literal() {
         .find(|c| c.id.member == "v")
         .expect("value cell 'v' not found");
     if let Some(expr) = &v_cell.default_expr {
-        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+        if let reify_ir::CompiledExprKind::Literal(reify_ir::Value::Scalar {
             si_value,
             dimension,
             ..
@@ -388,7 +388,7 @@ fn custom_unit_with_compound_dimension_force_in_quantity_literal() {
         .find(|c| c.id.member == "f")
         .expect("value cell 'f' not found");
     if let Some(expr) = &f_cell.default_expr {
-        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+        if let reify_ir::CompiledExprKind::Literal(reify_ir::Value::Scalar {
             si_value,
             dimension,
             ..
@@ -401,7 +401,7 @@ fn custom_unit_with_compound_dimension_force_in_quantity_literal() {
             );
             assert_eq!(
                 *dimension,
-                reify_types::dimension::FORCE,
+                reify_core::dimension::FORCE,
                 "2kN quantity literal should carry FORCE dimension"
             );
         } else {
@@ -451,7 +451,7 @@ fn custom_unit_with_compound_dimension_area_in_quantity_literal() {
         .find(|c| c.id.member == "a")
         .expect("value cell 'a' not found");
     if let Some(expr) = &a_cell.default_expr {
-        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+        if let reify_ir::CompiledExprKind::Literal(reify_ir::Value::Scalar {
             si_value,
             dimension,
             ..

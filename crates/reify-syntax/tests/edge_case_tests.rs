@@ -7,13 +7,13 @@ use reify_syntax::*;
 
 /// Helper: parse source and return declarations and errors.
 fn parse_decls(source: &str) -> (Vec<Declaration>, Vec<ParseError>) {
-    let module = reify_syntax::parse(source, reify_types::ModulePath::single("edge_test"));
+    let module = reify_syntax::parse(source, reify_core::ModulePath::single("edge_test"));
     (module.declarations, module.errors)
 }
 
 /// Helper: parse source and return the first structure's members and errors.
 fn parse_members(source: &str) -> (Vec<MemberDecl>, Vec<ParseError>) {
-    let module = reify_syntax::parse(source, reify_types::ModulePath::single("edge_test"));
+    let module = reify_syntax::parse(source, reify_core::ModulePath::single("edge_test"));
     let structure = match &module
         .declarations
         .iter()
@@ -55,7 +55,7 @@ structure S {
 fn unclosed_string_does_not_panic() {
     let result = std::panic::catch_unwind(|| {
         let source = "structure S {\n    let s = \"hello\n}";
-        let _module = reify_syntax::parse(source, reify_types::ModulePath::single("edge_test"));
+        let _module = reify_syntax::parse(source, reify_core::ModulePath::single("edge_test"));
     });
     assert!(result.is_ok(), "parser panicked on unclosed string literal");
 }

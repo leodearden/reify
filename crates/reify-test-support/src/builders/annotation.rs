@@ -1,4 +1,5 @@
-use reify_types::{Annotation, AnnotationArg, AnnotationArgValue, SourceSpan};
+use reify_core::SourceSpan;
+use reify_ir::{Annotation, AnnotationArg, AnnotationArgValue};
 
 /// Create a positional `String`-valued annotation argument.
 pub fn ann_str(s: impl Into<String>) -> AnnotationArg {
@@ -46,7 +47,7 @@ pub fn annotation_with_args(name: impl Into<String>, args: Vec<AnnotationArg>) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::{DEPRECATED_ANNOTATION, TEST_ANNOTATION};
+    use reify_core::{DEPRECATED_ANNOTATION, TEST_ANNOTATION};
 
     #[test]
     fn ann_str_produces_string_arg() {

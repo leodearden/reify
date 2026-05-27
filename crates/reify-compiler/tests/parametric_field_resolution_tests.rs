@@ -21,7 +21,7 @@
 mod common;
 
 use common::compile_with_stdlib_helper;
-use reify_types::{DimensionVector, Severity, Type};
+use reify_core::{DimensionVector, Severity, Type};
 
 // ---------------------------------------------------------------------------
 // Helper: compile and assert resolved cell type

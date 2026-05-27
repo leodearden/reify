@@ -15,10 +15,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Mutex;
 
-use reify_types::{
-    AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, Diagnostic, DiagnosticCode,
-    DimensionVector, ResolutionProblem, SolveResult, Type, Value, ValueCellId, ValueMap,
-};
+use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, Type, ValueCellId};
+use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, ResolutionProblem, SolveResult, Value, ValueMap};
 
 use crate::slvs_sys::{
     self, SLVS_C_ANGLE, SLVS_C_PARALLEL, SLVS_C_PERPENDICULAR, SLVS_C_POINTS_COINCIDENT,

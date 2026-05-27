@@ -1,4 +1,4 @@
-use reify_types::Value;
+use reify_ir::Value;
 
 use crate::helpers::{binary, complex_abs, complex_phase, sanitize_value, unary};
 
@@ -133,7 +133,8 @@ pub(crate) fn eval_complex(name: &str, args: &[Value]) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
-    use reify_types::{DimensionVector, Value};
+    use reify_core::DimensionVector;
+    use reify_ir::Value;
 
     // ── complex() constructor tests (step-1) ──────────────────────────────────
 
@@ -778,7 +779,7 @@ mod tests {
     fn complex_impedance_integration() {
         // Impedance = kg·m²·s⁻³·A⁻² = MASS·LENGTH²·TIME⁻³·CURRENT⁻²
         // Build as MASS * LENGTH^2 * TIME^-3 * CURRENT^-2
-        use reify_types::DimensionVector;
+        use reify_core::DimensionVector;
         let mass_dim = DimensionVector::MASS;
         let length_dim = DimensionVector::LENGTH;
         let area = length_dim.mul(&length_dim);

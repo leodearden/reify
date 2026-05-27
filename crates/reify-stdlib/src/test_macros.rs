@@ -1,4 +1,5 @@
-use reify_types::{DimensionVector, Value};
+use reify_core::DimensionVector;
+use reify_ir::Value;
 
 /// Assert that an expression evaluates to `Value::Real(v)` where `|v - expected| < 1e-12`.
 macro_rules! assert_real_approx {

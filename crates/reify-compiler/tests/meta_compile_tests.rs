@@ -2,13 +2,14 @@
 
 use reify_compiler::TopologyTemplate;
 use reify_test_support::compile_first_template;
-use reify_types::{CompiledExpr, CompiledExprKind, Severity};
+use reify_core::Severity;
+use reify_ir::{CompiledExpr, CompiledExprKind};
 
 /// Helper: get the default_expr for a value cell by member name.
 fn get_cell_expr<'a>(
     template: &'a TopologyTemplate,
     member: &str,
-) -> &'a reify_types::CompiledExpr {
+) -> &'a reify_ir::CompiledExpr {
     let cell = template
         .value_cells
         .iter()
@@ -77,7 +78,7 @@ fn meta_access_compiles_to_string() {
         }
         other => panic!("expected MetaAccess, got {:?}", other),
     }
-    assert_eq!(expr.result_type, reify_types::Type::String);
+    assert_eq!(expr.result_type, reify_core::Type::String);
 }
 
 // ---------------------------------------------------------------------------
@@ -387,13 +388,13 @@ fn meta_access_in_constraint_context() {
     // The constraint is `meta.tag == "valid"`, so top-level should be BinOp::Eq
     match &constraint_expr.kind {
         CompiledExprKind::BinOp { op, left, .. } => {
-            assert_eq!(*op, reify_types::BinOp::Eq, "expected Eq comparison");
+            assert_eq!(*op, reify_ir::BinOp::Eq, "expected Eq comparison");
             // LHS should be the MetaAccess
             match &left.kind {
                 CompiledExprKind::MetaAccess { entity, key } => {
                     assert_eq!(entity, "Bracket");
                     assert_eq!(key, "tag");
-                    assert_eq!(left.result_type, reify_types::Type::String);
+                    assert_eq!(left.result_type, reify_core::Type::String);
                 }
                 other => panic!("expected MetaAccess as LHS of comparison, got {:?}", other),
             }

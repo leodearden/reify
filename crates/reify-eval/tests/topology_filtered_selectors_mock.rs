@@ -15,7 +15,7 @@
 
 use reify_eval::topology_selectors;
 use reify_test_support::MockGeometryKernel;
-use reify_types::{GeometryHandleId, QueryError, Value};
+use reify_ir::{GeometryHandleId, QueryError, Value};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // edges_by_length

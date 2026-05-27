@@ -10,7 +10,7 @@ use reify_compiler::{
     compile_with_stdlib,
 };
 use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only};
-use reify_types::{DimensionVector, ModulePath, SourceSpan};
+use reify_core::{DimensionVector, ModulePath, SourceSpan};
 
 // ─── step-1: UnitEntry and UnitRegistry data structures ───────────────────────
 
@@ -18,7 +18,7 @@ use reify_types::{DimensionVector, ModulePath, SourceSpan};
 fn unit_entry_fields_exist() {
     // Construct a UnitEntry directly to verify the struct fields are accessible.
     let dummy_span = SourceSpan::new(0, 0);
-    let hash = reify_types::ContentHash::of_str("meter");
+    let hash = reify_core::ContentHash::of_str("meter");
     let entry = UnitEntry {
         name: "meter".to_string(),
         dimension: DimensionVector::LENGTH,
@@ -53,7 +53,7 @@ fn unit_registry_register_and_lookup() {
         offset: None,
         is_pub: false,
         span: SourceSpan::new(0, 0),
-        content_hash: reify_types::ContentHash::of_str("mm"),
+        content_hash: reify_core::ContentHash::of_str("mm"),
         source_module: None,
     };
     reg.register(entry).expect("first register should succeed");
@@ -72,7 +72,7 @@ fn unit_registry_duplicate_returns_err() {
         offset: None,
         is_pub: false,
         span: SourceSpan::new(0, 0),
-        content_hash: reify_types::ContentHash::of_str("mm"),
+        content_hash: reify_core::ContentHash::of_str("mm"),
         source_module: None,
     };
     reg.register(make_entry()).expect("first register ok");
@@ -92,7 +92,7 @@ fn seed_prelude_unit_inserts_and_lookups() {
         offset: None,
         is_pub: true,
         span: SourceSpan::new(0, 0),
-        content_hash: reify_types::ContentHash::of_str("mm"),
+        content_hash: reify_core::ContentHash::of_str("mm"),
         source_module: None,
     };
     reg.seed_prelude_unit(entry);
@@ -113,7 +113,7 @@ fn seed_prelude_unit_overwrites_on_duplicate() {
         offset: None,
         is_pub: true,
         span: SourceSpan::new(0, 0),
-        content_hash: reify_types::ContentHash::of_str("mm-v1"),
+        content_hash: reify_core::ContentHash::of_str("mm-v1"),
         source_module: None,
     };
     let entry2 = UnitEntry {
@@ -123,7 +123,7 @@ fn seed_prelude_unit_overwrites_on_duplicate() {
         offset: None,
         is_pub: true,
         span: SourceSpan::new(10, 15),
-        content_hash: reify_types::ContentHash::of_str("mm-v2"),
+        content_hash: reify_core::ContentHash::of_str("mm-v2"),
         source_module: None,
     };
     reg.seed_prelude_unit(entry1);
@@ -263,7 +263,7 @@ fn resolve_dimension_type_force() {
         .iter()
         .find(|u| u.name == "newton")
         .expect("newton not found");
-    assert_eq!(unit.dimension, reify_types::dimension::FORCE);
+    assert_eq!(unit.dimension, reify_core::dimension::FORCE);
 }
 
 #[test]
@@ -1525,7 +1525,7 @@ fn prelude_unit_collision_diagnostic_mentions_stdlib() {
         "stdlib collision should emit two labels, got {:?}",
         dup_diag.labels
     );
-    let empty_span = reify_types::SourceSpan::empty(0);
+    let empty_span = reify_core::SourceSpan::empty(0);
     assert_ne!(
         dup_diag.labels[0].span, empty_span,
         "first label '{}' must not be SourceSpan::empty(0)",
@@ -1714,7 +1714,7 @@ fn test_expect_binop_extracts_op_and_operands() {
     let expr = cell.default_expr.as_ref().expect("x has no default_expr");
     let (op, _left, right) = common::expect_binop(expr);
     assert!(
-        matches!(op, reify_types::BinOp::Add),
+        matches!(op, reify_ir::BinOp::Add),
         "expected Add op for w + 5thou, got {:?}",
         op
     );
@@ -1789,7 +1789,7 @@ fn prelude_module_unit_collision_emits_warning() {
     let warnings: Vec<_> = user_module
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Warning)
+        .filter(|d| d.severity == reify_core::Severity::Warning)
         .collect();
     let collision_warns: Vec<_> = warnings
         .iter()
@@ -1885,7 +1885,7 @@ fn three_prelude_collision_emits_two_chained_warnings() {
     let warnings: Vec<_> = user_module
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Warning && d.message.contains("foo"))
+        .filter(|d| d.severity == reify_core::Severity::Warning && d.message.contains("foo"))
         .collect();
     assert_eq!(
         warnings.len(),
@@ -1948,7 +1948,7 @@ fn three_prelude_collision_emits_two_chained_warnings() {
 #[test]
 fn intra_module_duplicate_prelude_units_suppresses_nonsense_collision_warning() {
     use reify_compiler::{CompiledModule, CompiledUnit};
-    use reify_types::ContentHash;
+    use reify_core::ContentHash;
 
     // Hand-construct a malformed prelude module with two CompiledUnit entries
     // both named 'foo' — bypassing compile() which would reject the duplicate.
@@ -2010,7 +2010,7 @@ fn intra_module_duplicate_prelude_units_suppresses_nonsense_collision_warning() 
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == reify_types::Severity::Warning
+            d.severity == reify_core::Severity::Warning
                 && d.message.contains("'mod_a' and 'mod_a'")
         })
         .collect();
@@ -2027,7 +2027,7 @@ fn intra_module_duplicate_prelude_units_suppresses_nonsense_collision_warning() 
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == reify_types::Severity::Warning
+            d.severity == reify_core::Severity::Warning
                 && d.message.contains("foo")
                 && d.message.contains("declared in both")
         })
@@ -2063,7 +2063,7 @@ fn intra_module_duplicate_prelude_units_suppresses_nonsense_collision_warning() 
 #[test]
 fn from_compiled_for_prelude_populates_shared_fields_and_prelude_defaults() {
     use reify_compiler::CompiledUnit;
-    use reify_types::ContentHash;
+    use reify_core::ContentHash;
 
     let hash = ContentHash::of_str("newton");
     let cu = CompiledUnit {

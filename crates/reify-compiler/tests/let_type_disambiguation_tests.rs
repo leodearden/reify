@@ -12,7 +12,8 @@
 
 use reify_compiler::DefaultKind;
 use reify_test_support::{compile_source, errors_only};
-use reify_types::{CompiledExprKind, Diagnostic, DimensionVector, Type, Value};
+use reify_core::{Diagnostic, DimensionVector, Type};
+use reify_ir::{CompiledExprKind, Value};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 

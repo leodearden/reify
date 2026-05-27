@@ -16,7 +16,8 @@ use std::time::{Duration, Instant};
 
 use reify_compiler::CompiledModule;
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
-use reify_types::{ModulePath, Satisfaction, Severity, ValueCellId};
+use reify_core::{ModulePath, Severity, ValueCellId};
+use reify_ir::Satisfaction;
 
 /// Absolute path to the fixture file.
 const FIXTURE_PATH: &str = concat!(

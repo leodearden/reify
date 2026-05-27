@@ -20,7 +20,8 @@ use reify_eval::{
     LONG_CHAIN_THRESHOLD_ENV_VAR, is_long_chain_realization, long_chain_diagnostic,
     long_chain_threshold_from_env, long_chain_threshold_from_env_value,
 };
-use reify_types::{DiagnosticCode, ReprKind, Severity};
+use reify_core::{DiagnosticCode, Severity};
+use reify_ir::ReprKind;
 
 /// Smoke-test every long-chain item re-exported through the crate root.
 ///

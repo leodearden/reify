@@ -16,7 +16,7 @@
 //! `has_gmsh` because it calls `mesh_surface_to_volume_with_diagnostics` which
 //! only exists in the real FFI build.
 
-use reify_types::{BoundaryAssociation, GeometryError, GeometryHandleId, Mesh, NodeAttachment, VolumeMesh};
+use reify_ir::{BoundaryAssociation, GeometryError, GeometryHandleId, Mesh, NodeAttachment, VolumeMesh};
 
 // `ElementOrderTag` is only referenced inside `#[cfg(has_gmsh)]` functions
 // (`mesh_surface_to_volume_with_attribution`, `run_meshing_with_entity_queries`).
@@ -24,7 +24,7 @@ use reify_types::{BoundaryAssociation, GeometryError, GeometryHandleId, Mesh, No
 // `BoundaryAttributedReport::volume: VolumeMesh` must resolve in every build
 // mode (matches the `MeshSurfaceToVolumeReport` precedent in mesh_volume.rs).
 #[cfg(has_gmsh)]
-use reify_types::ElementOrderTag;
+use reify_ir::ElementOrderTag;
 #[cfg(has_gmsh)]
 use crate::{
     auto_size::AutoSizeConfig,

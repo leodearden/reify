@@ -5,10 +5,8 @@ use crate::cache::NodeId;
 use crate::deps::ReverseDependencyIndex;
 use crate::graph::ValueCellNode;
 use reify_compiler::{ResolvedSchemaQuery, ValueCellKind};
-use reify_types::{
-    CompiledExpr, CompiledExprKind, ConstraintNodeId, ContentHash, OptimizationObjective,
-    PersistentMap, Type, ValueCellId,
-};
+use reify_core::{ConstraintNodeId, ContentHash, Type, ValueCellId};
+use reify_ir::{CompiledExpr, CompiledExprKind, OptimizationObjective, PersistentMap};
 use std::sync::Arc;
 
 impl Engine {
@@ -1229,7 +1227,7 @@ mod tests {
     #[test]
     fn expand_recurses_through_branching_wrappers() {
         use reify_test_support::conditional_expr;
-        use reify_types::{CompiledMatchArm, Value};
+        use reify_ir::{CompiledMatchArm, Value};
 
         let wrappers: Vec<(&'static str, WrapFn)> = vec![
             (
@@ -1300,7 +1298,8 @@ mod tests {
     /// in the `Quantifier` match arm are exercised.
     #[test]
     fn expand_recurses_through_quantifier_components() {
-        use reify_types::{QuantifierKind, Value};
+        use reify_ast::QuantifierKind;
+        use reify_ir::Value;
 
         let variable_id = ValueCellId::new("Q", "i");
         let wrappers: Vec<(&'static str, WrapFn)> = vec![
@@ -1351,7 +1350,7 @@ mod tests {
     /// so the `UserFunctionCall arg` case exercises both code paths.
     #[test]
     fn expand_recurses_through_compound_wrappers() {
-        use reify_types::{BinOp, SelectorKind, UnOp, Value};
+        use reify_ir::{BinOp, SelectorKind, UnOp, Value};
 
         let wrappers: Vec<(&'static str, WrapFn)> = vec![
             (

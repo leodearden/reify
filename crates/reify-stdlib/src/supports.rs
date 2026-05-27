@@ -38,7 +38,8 @@
 //! `docs/prds/v0_4/structural-analysis-shells.md` § "BC framework" for the
 //! full design rationale.
 
-use reify_types::{DimensionVector, Value};
+use reify_core::DimensionVector;
+use reify_ir::Value;
 
 use crate::helpers::{
     make_kind_map, validate_dimensioned_vec3, validate_dimensionless_unit_axis_vec3,
@@ -153,7 +154,8 @@ pub(crate) fn eval_supports(name: &str, args: &[Value]) -> Option<Value> {
 mod tests {
     use crate::eval_builtin;
     use crate::test_macros::make_scalar_vec3;
-    use reify_types::{DimensionVector, Value};
+    use reify_core::DimensionVector;
+    use reify_ir::Value;
     use std::collections::BTreeMap;
 
     /// Build a simple opaque selector stub (Map with kind="point_stub").

@@ -14,7 +14,8 @@
 
 use reify_compiler::CompiledModule;
 use reify_test_support::{kg, make_simple_engine, mm, parse_and_compile_with_stdlib};
-use reify_types::{Satisfaction, SnapshotId, SnapshotProvenance, Value, ValueCellId};
+use reify_core::{SnapshotId, ValueCellId};
+use reify_ir::{Satisfaction, SnapshotProvenance, Value};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(
@@ -852,12 +853,12 @@ fn edit_param_dimension_mismatch_pins_cell_and_dimensions() {
     assert_eq!(cell, height_id, "cell should be the height cell id");
     assert_eq!(
         *expected,
-        reify_types::DimensionVector::LENGTH,
+        reify_core::DimensionVector::LENGTH,
         "expected dimension should be LENGTH (the cell's declared dimension)"
     );
     assert_eq!(
         *got,
-        reify_types::DimensionVector::MASS,
+        reify_core::DimensionVector::MASS,
         "got dimension should be MASS (from kg(5.0))"
     );
 }
@@ -902,8 +903,8 @@ fn edit_param_wrong_value_kind() {
     assert_eq!(cell, height_id, "cell should be the height cell id");
     assert_eq!(
         *expected,
-        reify_types::Type::Scalar {
-            dimension: reify_types::DimensionVector::LENGTH
+        reify_core::Type::Scalar {
+            dimension: reify_core::DimensionVector::LENGTH
         },
         "expected should be Type::Scalar[LENGTH] (the cell's declared type)"
     );
@@ -936,8 +937,8 @@ fn edit_check_wrong_value_kind() {
     assert_eq!(cell, height_id, "cell should be the height cell id");
     assert_eq!(
         *expected,
-        reify_types::Type::Scalar {
-            dimension: reify_types::DimensionVector::LENGTH
+        reify_core::Type::Scalar {
+            dimension: reify_core::DimensionVector::LENGTH
         },
         "expected should be Type::Scalar[LENGTH] (the cell's declared type)"
     );
@@ -974,7 +975,7 @@ fn edit_param_enum_cell_wrong_value_kind() {
     assert_eq!(cell, grade_id, "cell should be the grade cell id");
     assert_eq!(
         *expected,
-        reify_types::Type::Enum("Grade".to_string()),
+        reify_core::Type::Enum("Grade".to_string()),
         "expected should be Type::Enum(\"Grade\")"
     );
     assert_eq!(
@@ -1010,7 +1011,7 @@ fn edit_check_enum_cell_wrong_value_kind() {
     assert_eq!(cell, grade_id, "cell should be the grade cell id");
     assert_eq!(
         *expected,
-        reify_types::Type::Enum("Grade".to_string()),
+        reify_core::Type::Enum("Grade".to_string()),
         "expected should be Type::Enum(\"Grade\")"
     );
     assert_eq!(

@@ -111,11 +111,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use reify_compiler::{CompiledModule, CompiledPurpose};
-use reify_types::{
-    CompiledFunction, ConstraintChecker, ConstraintNodeId, ConstraintSolver, ContentHash,
-    Diagnostic, FeatureTagTable, GeometryHandleId, GeometryKernel, Mesh, OptimizationObjective,
-    OptimizedImpl, Satisfaction, TopologyAttributeTable, ValueCellId, ValueMap,
-};
+use reify_core::{ConstraintNodeId, ContentHash, Diagnostic, ValueCellId};
+use reify_ir::{CompiledFunction, ConstraintChecker, ConstraintSolver, FeatureTagTable, GeometryHandleId, GeometryKernel, Mesh, OptimizationObjective, OptimizedImpl, Satisfaction, TopologyAttributeTable, ValueMap};
 
 use crate::cache::{CacheStore, NodeId};
 use crate::demand::DemandRegistry;
@@ -130,10 +127,10 @@ pub enum EngineError {
     /// The engine has not been initialized — call eval() first.
     NotInitialized,
     /// The specified ValueCellId does not exist in the evaluation graph.
-    CellNotFound { cell: reify_types::ValueCellId },
+    CellNotFound { cell: reify_core::ValueCellId },
     /// The supplied value's dimension does not match the cell's declared type.
     DimensionMismatch {
-        cell: reify_types::ValueCellId,
+        cell: reify_core::ValueCellId,
         // Boxed to keep the variant — and therefore `Result<_, EngineError>` —
         // small enough to satisfy `clippy::result_large_err`. Task 2377 grew
         // `DimensionVector` from `[Rational; 9]` to `[Rational; 10]` (36→40
@@ -141,15 +138,15 @@ pub enum EngineError {
         // threshold). Boxing each `DimensionVector` keeps the variant ≤ 64
         // bytes so call-sites returning `EngineError` continue to compile
         // under `-Dclippy::result_large_err`.
-        expected: Box<reify_types::DimensionVector>,
-        got: Box<reify_types::DimensionVector>,
+        expected: Box<reify_core::DimensionVector>,
+        got: Box<reify_core::DimensionVector>,
     },
     /// The supplied value's type variant does not match the cell's declared type kind.
     /// (e.g., passing Value::Bool to a Type::Scalar cell.)
     TypeKindMismatch {
-        cell: reify_types::ValueCellId,
-        expected: Box<reify_types::Type>,
-        got: Box<reify_types::Value>,
+        cell: reify_core::ValueCellId,
+        expected: Box<reify_core::Type>,
+        got: Box<reify_ir::Value>,
     },
 }
 
@@ -205,11 +202,12 @@ impl std::error::Error for EngineError {}
 /// `reify_compiler::type_compat::{implicitly_converts_to, type_compatible}`
 /// (task-448 / task-1922).
 fn value_type_kind_matches(
-    value: &reify_types::Value,
-    ty: &reify_types::Type,
-    registry: Option<&reify_types::StructureRegistry>,
+    value: &reify_ir::Value,
+    ty: &reify_core::Type,
+    registry: Option<&reify_ir::StructureRegistry>,
 ) -> bool {
-    use reify_types::{Type, Value};
+    use reify_core::Type;
+    use reify_ir::Value;
     // Anti-cascade guard — see function doc.
     if ty.is_error() {
         return true;
@@ -365,9 +363,9 @@ pub struct Engine {
     /// name — existing ids stay stable, meta is overwritten). Backs
     /// `Value::StructureInstance` nominal-conformance and cache-key stability;
     /// ids are NOT stable across Engine restarts (cache keys use name+version).
-    structure_registry: reify_types::StructureRegistry,
+    structure_registry: reify_ir::StructureRegistry,
     /// Overridden param values (set by set_param_and_invalidate).
-    param_overrides: std::collections::HashMap<ValueCellId, reify_types::Value>,
+    param_overrides: std::collections::HashMap<ValueCellId, reify_ir::Value>,
     /// Consolidated evaluation state from last eval() or edit_param().
     /// None before the first eval() call; always Some after.
     eval_state: Option<EvaluationState>,
@@ -770,7 +768,7 @@ pub struct EvalResult {
     /// - Let / guarded-group cells → see their respective evaluators
     pub values: ValueMap,
     pub diagnostics: Vec<Diagnostic>,
-    pub resolved_params: HashMap<ValueCellId, reify_types::Value>,
+    pub resolved_params: HashMap<ValueCellId, reify_ir::Value>,
 }
 
 /// Result of checking constraints.
@@ -779,13 +777,13 @@ pub struct CheckResult {
     pub values: ValueMap,
     pub constraint_results: Vec<ConstraintCheckEntry>,
     pub diagnostics: Vec<Diagnostic>,
-    pub resolved_params: HashMap<ValueCellId, reify_types::Value>,
+    pub resolved_params: HashMap<ValueCellId, reify_ir::Value>,
 }
 
 /// A single constraint's check result.
 #[derive(Debug, Clone)]
 pub struct ConstraintCheckEntry {
-    pub id: reify_types::ConstraintNodeId,
+    pub id: reify_core::ConstraintNodeId,
     pub label: Option<String>,
     pub satisfaction: Satisfaction,
 }
@@ -797,7 +795,7 @@ pub struct BuildResult {
     pub constraint_results: Vec<ConstraintCheckEntry>,
     pub geometry_output: Option<Vec<u8>>,
     pub diagnostics: Vec<Diagnostic>,
-    pub resolved_params: HashMap<ValueCellId, reify_types::Value>,
+    pub resolved_params: HashMap<ValueCellId, reify_ir::Value>,
 }
 
 /// Result of tessellating all realizations in a module for GUI mesh rendering.
@@ -812,7 +810,7 @@ pub struct TessellateResult {
     /// Per-realization tessellated meshes: `(entity_path, mesh)`.
     pub meshes: Vec<(String, Mesh)>,
     pub diagnostics: Vec<Diagnostic>,
-    pub resolved_params: HashMap<ValueCellId, reify_types::Value>,
+    pub resolved_params: HashMap<ValueCellId, reify_ir::Value>,
 }
 
 // Concurrent edit structs and Engine methods live in concurrent.rs.
@@ -952,7 +950,7 @@ pub(crate) fn merge_functions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::Value;
+    use reify_ir::Value;
 
     // ── guard_state_fingerprint unit tests ────────────────────────────────────
 
@@ -1067,7 +1065,8 @@ mod tests {
     /// (expected-unchecked at this layer).
     #[test]
     fn value_type_kind_matches_matrix_value_into_tensor_type_returns_true() {
-        use reify_types::{Type, Value};
+        use reify_core::Type;
+        use reify_ir::Value;
         let v = Value::Matrix(vec![
             vec![Value::Real(1.0), Value::Real(0.0)],
             vec![Value::Real(0.0), Value::Real(1.0)],
@@ -1091,7 +1090,8 @@ mod tests {
     /// (expected-unchecked at this layer).
     #[test]
     fn value_type_kind_matches_tensor_value_into_matrix_type_returns_true() {
-        use reify_types::{Type, Value};
+        use reify_core::Type;
+        use reify_ir::Value;
         let v = Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
         let t = Type::Matrix {
             m: 3,
@@ -1110,7 +1110,8 @@ mod tests {
     /// trivially widened to `_ => true` without breaking this assertion.
     #[test]
     fn value_type_kind_matches_tensor_value_into_real_type_returns_false() {
-        use reify_types::{Type, Value};
+        use reify_core::Type;
+        use reify_ir::Value;
         let v = Value::Tensor(vec![]);
         let t = Type::Real;
         assert!(
@@ -1124,7 +1125,8 @@ mod tests {
     /// Tensor case above — confirms the `matches!` guard is not trivially dropped.
     #[test]
     fn value_type_kind_matches_matrix_value_into_real_type_returns_false() {
-        use reify_types::{Type, Value};
+        use reify_core::Type;
+        use reify_ir::Value;
         let v = Value::Matrix(vec![]);
         let t = Type::Real;
         assert!(
@@ -1145,7 +1147,8 @@ mod tests {
     /// `reify_compiler::type_compat::{implicitly_converts_to, type_compatible}`.
     #[test]
     fn value_type_kind_matches_real_value_into_error_type_returns_true() {
-        use reify_types::{Type, Value};
+        use reify_core::Type;
+        use reify_ir::Value;
         let v = Value::Real(1.0);
         let t = Type::Error;
         assert!(
@@ -1161,7 +1164,8 @@ mod tests {
     /// but a poisoned cell type must not trigger `TypeKindMismatch`.
     #[test]
     fn value_type_kind_matches_bool_value_into_error_type_returns_true() {
-        use reify_types::{Type, Value};
+        use reify_core::Type;
+        use reify_ir::Value;
         let v = Value::Bool(true);
         let t = Type::Error;
         assert!(
@@ -1177,7 +1181,8 @@ mod tests {
     /// but a poisoned cell type must not trigger `TypeKindMismatch`.
     #[test]
     fn value_type_kind_matches_list_value_into_error_type_returns_true() {
-        use reify_types::{Type, Value};
+        use reify_core::Type;
+        use reify_ir::Value;
         let v = Value::List(vec![Value::Int(1)]);
         let t = Type::Error;
         assert!(
@@ -1194,7 +1199,8 @@ mod tests {
     /// `Undef` arm — the guard fires first but the end result must remain `true`.
     #[test]
     fn value_type_kind_matches_undef_value_into_error_type_returns_true() {
-        use reify_types::{Type, Value};
+        use reify_core::Type;
+        use reify_ir::Value;
         let v = Value::Undef;
         let t = Type::Error;
         assert!(
@@ -1212,7 +1218,8 @@ mod tests {
     /// replacing `if ty.is_error()` with an always-true condition).
     #[test]
     fn value_type_kind_matches_bool_value_into_int_type_returns_false() {
-        use reify_types::{Type, Value};
+        use reify_core::Type;
+        use reify_ir::Value;
         let v = Value::Bool(true);
         let t = Type::Int;
         assert!(
@@ -1229,7 +1236,8 @@ mod tests {
     /// Negative lock for the Bool arm: non-Bool values must not satisfy Type::Bool.
     #[test]
     fn value_type_kind_matches_int_value_into_bool_type_returns_false() {
-        use reify_types::{Type, Value};
+        use reify_core::Type;
+        use reify_ir::Value;
         let v = Value::Int(1);
         let t = Type::Bool;
         assert!(
@@ -1241,7 +1249,8 @@ mod tests {
     /// Positive lock for the Bool arm: Bool values must satisfy Type::Bool.
     #[test]
     fn value_type_kind_matches_bool_value_into_bool_type_returns_true() {
-        use reify_types::{Type, Value};
+        use reify_core::Type;
+        use reify_ir::Value;
         let v = Value::Bool(true);
         let t = Type::Bool;
         assert!(
@@ -1264,8 +1273,8 @@ mod tests {
     fn structure_instance_with_registry(
         name: &str,
         bounds: &[&str],
-    ) -> (reify_types::Value, reify_types::StructureRegistry) {
-        use reify_types::{StructureInstanceData, StructureMeta, StructureRegistry, Value};
+    ) -> (reify_ir::Value, reify_ir::StructureRegistry) {
+        use reify_ir::{StructureInstanceData, StructureMeta, StructureRegistry, Value};
         let mut reg = StructureRegistry::new();
         let id = reg.intern(
             name,
@@ -1289,7 +1298,7 @@ mod tests {
     /// (a) StructureInstance against a StructureRef of the *same* name → true.
     #[test]
     fn value_type_kind_matches_structure_instance_into_matching_structure_ref_returns_true() {
-        use reify_types::Type;
+        use reify_core::Type;
         let (v, reg) = structure_instance_with_registry("Steel_AISI_1045", &["ElasticMaterial"]);
         let t = Type::StructureRef("Steel_AISI_1045".to_string());
         assert!(
@@ -1301,7 +1310,7 @@ mod tests {
     /// (a) StructureInstance against a StructureRef of a *different* name → false.
     #[test]
     fn value_type_kind_matches_structure_instance_into_mismatched_structure_ref_returns_false() {
-        use reify_types::Type;
+        use reify_core::Type;
         let (v, reg) = structure_instance_with_registry("Steel_AISI_1045", &["ElasticMaterial"]);
         let t = Type::StructureRef("Aluminium_6061_T6".to_string());
         assert!(
@@ -1313,7 +1322,7 @@ mod tests {
     /// (b) StructureInstance against a TraitObject in its declared bounds → true.
     #[test]
     fn value_type_kind_matches_structure_instance_into_declared_trait_object_returns_true() {
-        use reify_types::Type;
+        use reify_core::Type;
         let (v, reg) = structure_instance_with_registry("Steel_AISI_1045", &["ElasticMaterial"]);
         let t = Type::TraitObject("ElasticMaterial".to_string());
         assert!(
@@ -1325,7 +1334,7 @@ mod tests {
     /// (b) StructureInstance against a TraitObject NOT in its bounds → false.
     #[test]
     fn value_type_kind_matches_structure_instance_into_undeclared_trait_object_returns_false() {
-        use reify_types::Type;
+        use reify_core::Type;
         let (v, reg) = structure_instance_with_registry("Steel_AISI_1045", &["ElasticMaterial"]);
         let t = Type::TraitObject("Load".to_string());
         assert!(
@@ -1337,7 +1346,7 @@ mod tests {
     /// (c) StructureInstance against unrelated primitive types → false.
     #[test]
     fn value_type_kind_matches_structure_instance_into_unrelated_types_returns_false() {
-        use reify_types::Type;
+        use reify_core::Type;
         let (v, reg) = structure_instance_with_registry("Steel_AISI_1045", &["ElasticMaterial"]);
         for t in [Type::Int, Type::Real, Type::Bool, Type::String] {
             assert!(
@@ -1351,7 +1360,7 @@ mod tests {
     /// so a TraitObject match conservatively returns false.
     #[test]
     fn value_type_kind_matches_structure_instance_trait_object_without_registry_returns_false() {
-        use reify_types::Type;
+        use reify_core::Type;
         let (v, _reg) = structure_instance_with_registry("Steel_AISI_1045", &["ElasticMaterial"]);
         let t = Type::TraitObject("ElasticMaterial".to_string());
         assert!(
@@ -1365,7 +1374,8 @@ mod tests {
     /// GeometryHandle against Type::Geometry → true.
     #[test]
     fn value_type_kind_matches_geometry_handle_into_geometry_type_returns_true() {
-        use reify_types::{Type, Value, identity::RealizationNodeId, geometry::GeometryHandleId};
+        use reify_core::{Type, identity::RealizationNodeId};
+        use reify_ir::{Value, geometry::GeometryHandleId};
         let v = Value::GeometryHandle {
             realization_ref: RealizationNodeId::new("Bracket", 0),
             upstream_values_hash: [0u8; 32],
@@ -1380,7 +1390,8 @@ mod tests {
     /// GeometryHandle against non-Geometry types → false.
     #[test]
     fn value_type_kind_matches_geometry_handle_into_non_geometry_types_returns_false() {
-        use reify_types::{Type, Value, identity::RealizationNodeId, geometry::GeometryHandleId};
+        use reify_core::{Type, identity::RealizationNodeId};
+        use reify_ir::{Value, geometry::GeometryHandleId};
         let v = Value::GeometryHandle {
             realization_ref: RealizationNodeId::new("Bracket", 0),
             upstream_values_hash: [0u8; 32],
@@ -1467,7 +1478,7 @@ mod tests {
     #[test]
     fn eval_does_not_accumulate_functions() {
         use reify_test_support::mocks::MockConstraintChecker;
-        use reify_types::ModulePath;
+        use reify_core::ModulePath;
 
         let source = r#"
 fn symmetric_tolerance(nominal: Length, deviation: Length) -> Length {
@@ -1520,11 +1531,11 @@ structure S {
     /// not exist — `error[E0425]: cannot find function 'eval_ctx_with_meta'`.
     #[test]
     fn eval_ctx_with_meta_resolves_meta_access() {
-        use reify_types::{CompiledExpr, Value, ValueMap};
+        use reify_ir::{CompiledExpr, Value, ValueMap};
         use std::collections::HashMap;
 
         let values = ValueMap::new();
-        let functions: &[reify_types::CompiledFunction] = &[];
+        let functions: &[reify_ir::CompiledFunction] = &[];
         let mut widget_meta = HashMap::new();
         widget_meta.insert("description".to_string(), "A gadget".to_string());
         let mut meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
@@ -1554,7 +1565,8 @@ structure S {
     fn meta_map_arc_shared_with_concurrent_setup() {
         use reify_test_support::mocks::MockConstraintChecker;
         use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, literal};
-        use reify_types::{ModulePath, Type, Value, ValueCellId};
+        use reify_core::{ModulePath, Type, ValueCellId};
+        use reify_ir::Value;
         use std::sync::Arc;
 
         let meta_entries = {
@@ -1601,7 +1613,7 @@ structure S {
     #[test]
     fn build_meta_map_filters_empty_and_preserves_non_empty_meta() {
         use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
-        use reify_types::ModulePath;
+        use reify_core::ModulePath;
 
         let meta_entries = {
             let mut m = std::collections::HashMap::new();
@@ -1690,13 +1702,13 @@ structure S {
     /// calling test produces diagnostics as specific as the original inlined bodies.
     fn assert_problem_shares_functions_arc<F>(trigger_label: &str, drive: F)
     where
-        F: FnOnce(&mut Engine, reify_types::ValueCellId),
+        F: FnOnce(&mut Engine, reify_core::ValueCellId),
     {
         use reify_test_support::mocks::{MockConstraintChecker, SpyConstraintSolver};
         use reify_test_support::{
             CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, mm, value_ref,
         };
-        use reify_types::{ModulePath, Type, ValueCellId};
+        use reify_core::{ModulePath, Type, ValueCellId};
         use std::collections::HashMap;
         use std::sync::Arc;
 
@@ -1824,8 +1836,8 @@ structure S {
     fn engine_error_dimension_mismatch_display_uses_dimension_vector_display() {
         let err = EngineError::DimensionMismatch {
             cell: ValueCellId::new("Assembly", "height"),
-            expected: Box::new(reify_types::DimensionVector::LENGTH),
-            got: Box::new(reify_types::DimensionVector::MASS),
+            expected: Box::new(reify_core::DimensionVector::LENGTH),
+            got: Box::new(reify_core::DimensionVector::MASS),
         };
         assert_eq!(
             err.to_string(),
@@ -1945,7 +1957,7 @@ structure S {
     #[test]
     fn engine_drain_and_record_warm_pool_events_drains_records_and_returns() {
         use crate::warm_pool::WarmPoolEvent;
-        use reify_types::OpaqueState;
+        use reify_ir::OpaqueState;
         use reify_test_support::mocks::MockConstraintChecker;
 
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
@@ -1954,8 +1966,8 @@ structure S {
         // the second donate triggers an eviction (budget = 1 byte).
         *engine.warm_pool_mut() = crate::warm_pool::WarmStatePool::new(1);
 
-        let node_a = crate::cache::NodeId::Value(reify_types::ValueCellId::new("Beam", "length"));
-        let node_b = crate::cache::NodeId::Value(reify_types::ValueCellId::new("Plate", "width"));
+        let node_a = crate::cache::NodeId::Value(reify_core::ValueCellId::new("Beam", "length"));
+        let node_b = crate::cache::NodeId::Value(reify_core::ValueCellId::new("Plate", "width"));
 
         // Donate node_a (fits in budget = 1 byte) — size_bytes=1
         engine.warm_pool_mut().donate(node_a.clone(), OpaqueState::new(1i32, 1));

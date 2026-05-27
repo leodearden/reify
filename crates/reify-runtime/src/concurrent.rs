@@ -10,7 +10,8 @@ use std::sync::{Arc, Mutex};
 use reify_eval::cache::{CacheStore, EvalOutcome, NodeId};
 use reify_eval::deps::DependencyTrace;
 use reify_eval::gating;
-use reify_types::{NodeTraitsMap, ValueCellId, WarmStartableRegistry};
+use reify_core::ValueCellId;
+use reify_ir::{NodeTraitsMap, WarmStartableRegistry};
 
 use crate::Priority;
 use crate::commitment::{CommitmentTracker, NodeCommitmentOverride, NodePolicyOverrides};
@@ -498,7 +499,7 @@ mod tests {
     #[tokio::test]
     async fn async_node_evaluator_mock_compiles() {
         use reify_eval::cache::{EvalOutcome, NodeId};
-        use reify_types::ValueCellId;
+        use reify_core::ValueCellId;
 
         struct MockAsyncEvaluator {
             result: EvalOutcome,
@@ -532,7 +533,7 @@ mod tests {
     async fn cancellation_stops_evaluation() {
         use reify_eval::cache::{EvalOutcome, NodeId};
         use reify_eval::deps::DependencyTrace;
-        use reify_types::ValueCellId;
+        use reify_core::ValueCellId;
         use std::collections::HashMap;
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -603,7 +604,7 @@ mod tests {
         use crate::{NodeEvaluator, SequentialScheduler};
         use reify_eval::cache::{EvalOutcome, NodeId};
         use reify_eval::deps::DependencyTrace;
-        use reify_types::{ConstraintNodeId, ValueCellId};
+        use reify_core::{ConstraintNodeId, ValueCellId};
         use std::collections::HashMap;
         use std::sync::Arc;
 
@@ -688,7 +689,7 @@ mod tests {
     async fn concurrent_scheduler_skips_non_dirty() {
         use reify_eval::cache::{EvalOutcome, NodeId};
         use reify_eval::deps::DependencyTrace;
-        use reify_types::ValueCellId;
+        use reify_core::ValueCellId;
         use std::collections::{HashMap, HashSet};
         use std::sync::Arc;
 
@@ -744,7 +745,7 @@ mod tests {
     async fn concurrent_scheduler_multi_level_ordering() {
         use reify_eval::cache::{EvalOutcome, NodeId};
         use reify_eval::deps::DependencyTrace;
-        use reify_types::ValueCellId;
+        use reify_core::ValueCellId;
         use std::collections::{HashMap, HashSet};
         use std::sync::{Arc, Mutex};
 
@@ -826,7 +827,7 @@ mod tests {
 
         let scheduler = ConcurrentScheduler;
         let evaluator = Arc::new(AllChangedAsync);
-        let node = NodeId::Value(reify_types::ValueCellId::new("A", "x"));
+        let node = NodeId::Value(reify_core::ValueCellId::new("A", "x"));
         let eval_set = vec![node.clone()];
         let mut traces = HashMap::new();
         traces.insert(node.clone(), DependencyTrace::default());
@@ -859,7 +860,7 @@ mod tests {
 
         let scheduler = ConcurrentScheduler;
         let evaluator = Arc::new(PanickingAsyncEvaluator);
-        let node = NodeId::Value(reify_types::ValueCellId::new("P", "x"));
+        let node = NodeId::Value(reify_core::ValueCellId::new("P", "x"));
         let eval_set = vec![node.clone()];
         let mut traces = HashMap::new();
         traces.insert(node.clone(), DependencyTrace::default());
@@ -894,7 +895,7 @@ mod tests {
 
         let scheduler = ConcurrentScheduler;
         let evaluator = Arc::new(PanickingWithPayload);
-        let node = NodeId::Value(reify_types::ValueCellId::new("P", "y"));
+        let node = NodeId::Value(reify_core::ValueCellId::new("P", "y"));
         let eval_set = vec![node.clone()];
         let mut traces = HashMap::new();
         traces.insert(node.clone(), DependencyTrace::default());
@@ -954,7 +955,7 @@ mod tests {
     async fn priority_sort_from_config_orders_spawn_correctly() {
         use reify_eval::cache::{EvalOutcome, NodeId};
         use reify_eval::deps::DependencyTrace;
-        use reify_types::ValueCellId;
+        use reify_core::ValueCellId;
         use std::collections::{HashMap, HashSet};
         use std::sync::{Arc, Mutex};
 
@@ -1047,7 +1048,7 @@ mod tests {
     async fn cleanup_removes_all_nodes_from_promoter() {
         use reify_eval::cache::{EvalOutcome, NodeId};
         use reify_eval::deps::DependencyTrace;
-        use reify_types::ValueCellId;
+        use reify_core::ValueCellId;
         use std::collections::{HashMap, HashSet};
         use std::sync::Arc;
 
@@ -1113,7 +1114,7 @@ mod tests {
     async fn scheduler_precomputed_skip_three_parent_mixed_fan_in() {
         use reify_eval::cache::{EvalOutcome, NodeId};
         use reify_eval::deps::DependencyTrace;
-        use reify_types::ValueCellId;
+        use reify_core::ValueCellId;
         use std::collections::{HashMap, HashSet};
         use std::sync::Arc;
 
@@ -1213,7 +1214,7 @@ mod tests {
     async fn scheduler_precomputed_skip_all_unchanged_skips_downstream() {
         use reify_eval::cache::{EvalOutcome, NodeId};
         use reify_eval::deps::DependencyTrace;
-        use reify_types::ValueCellId;
+        use reify_core::ValueCellId;
         use std::collections::{HashMap, HashSet};
         use std::sync::Arc;
 
@@ -1300,7 +1301,7 @@ mod tests {
     async fn scheduler_changed_vcids_propagate_through_levels() {
         use reify_eval::cache::{EvalOutcome, NodeId};
         use reify_eval::deps::DependencyTrace;
-        use reify_types::ValueCellId;
+        use reify_core::ValueCellId;
         use std::collections::{HashMap, HashSet};
         use std::sync::Arc;
 
@@ -1374,7 +1375,7 @@ mod tests {
         use reify_eval::cache::NodeId;
         use reify_eval::deps::DependencyTrace;
         use reify_eval::dirty::compute_levels;
-        use reify_types::{ConstraintNodeId, ValueCellId};
+        use reify_core::{ConstraintNodeId, ValueCellId};
         use std::collections::{HashMap, HashSet};
 
         let e = "B";
@@ -1437,7 +1438,7 @@ mod tests {
     async fn error_path_aborts_in_flight_tasks() {
         use reify_eval::cache::{EvalOutcome, NodeId};
         use reify_eval::deps::DependencyTrace;
-        use reify_types::ValueCellId;
+        use reify_core::ValueCellId;
         use std::collections::{HashMap, HashSet};
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};

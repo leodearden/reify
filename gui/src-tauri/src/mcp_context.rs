@@ -278,8 +278,8 @@ impl ReifyToolContext for TauriToolContext {
 
     fn export(&self, format: &str, output_path: &str) -> Result<bool, ToolError> {
         let export_format = match format {
-            "step" | "stp" => reify_types::ExportFormat::Step,
-            "stl" => reify_types::ExportFormat::Stl,
+            "step" | "stp" => reify_ir::ExportFormat::Step,
+            "stl" => reify_ir::ExportFormat::Stl,
             _ => {
                 return Err(ToolError::InvalidParams(format!(
                     "Unknown export format: {}",

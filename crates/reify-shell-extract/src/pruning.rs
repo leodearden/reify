@@ -581,7 +581,7 @@ mod tests {
 
     use crate::medial::MedialMask;
     use crate::mid_surface::{MidSurfaceOptions, extract_mid_surface};
-    use reify_types::value::{InterpolationKind, SampledField, SampledGridKind};
+    use reify_ir::value::{InterpolationKind, SampledField, SampledGridKind};
     use std::sync::atomic::AtomicBool;
 
     /// Analytic-slab Regular3D SampledField: `φ(x,y,z) = |z| - half` on an

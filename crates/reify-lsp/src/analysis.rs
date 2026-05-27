@@ -1,9 +1,10 @@
 use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::CheckResult;
-use reify_syntax::{Declaration, ParsedModule};
-pub use reify_syntax::{MemberSpanInfo, find_named_member_span};
-use reify_types::{ModulePath, SourceSpan, Type, Value, ValueCellId};
+use reify_ast::{Declaration, ParsedModule};
+pub use reify_ast::{MemberSpanInfo, find_named_member_span};
+use reify_core::{ModulePath, SourceSpan, Type, ValueCellId};
+use reify_ir::Value;
 use tower_lsp::lsp_types::Url;
 
 /// Extract a module name from a file URI.
@@ -151,10 +152,10 @@ impl AnalysisContext {
     ) -> Option<(SourceSpan, Option<&str>, &str)> {
         for decl in &self.parsed.declarations {
             let (members, decl_name) = match decl {
-                reify_syntax::Declaration::Structure(s) => (&s.members, s.name.as_str()),
-                reify_syntax::Declaration::Occurrence(o) => (&o.members, o.name.as_str()),
-                reify_syntax::Declaration::Trait(t) => (&t.members, t.name.as_str()),
-                reify_syntax::Declaration::Purpose(p) => (&p.members, p.name.as_str()),
+                reify_ast::Declaration::Structure(s) => (&s.members, s.name.as_str()),
+                reify_ast::Declaration::Occurrence(o) => (&o.members, o.name.as_str()),
+                reify_ast::Declaration::Trait(t) => (&t.members, t.name.as_str()),
+                reify_ast::Declaration::Purpose(p) => (&p.members, p.name.as_str()),
                 _ => continue,
             };
             if let Some(target) = enclosing_decl
@@ -175,17 +176,17 @@ impl AnalysisContext {
     pub fn find_entity_doc(&self, name: &str) -> Option<&str> {
         for decl in &self.parsed.declarations {
             match decl {
-                reify_syntax::Declaration::Structure(s) if s.name == name => {
+                reify_ast::Declaration::Structure(s) if s.name == name => {
                     return s.doc.as_deref();
                 }
-                reify_syntax::Declaration::Occurrence(o) if o.name == name => {
+                reify_ast::Declaration::Occurrence(o) if o.name == name => {
                     return o.doc.as_deref();
                 }
-                reify_syntax::Declaration::Function(f) if f.name == name => {
+                reify_ast::Declaration::Function(f) if f.name == name => {
                     return f.doc.as_deref();
                 }
-                reify_syntax::Declaration::Trait(t) if t.name == name => return t.doc.as_deref(),
-                reify_syntax::Declaration::Enum(e) if e.name == name => return e.doc.as_deref(),
+                reify_ast::Declaration::Trait(t) if t.name == name => return t.doc.as_deref(),
+                reify_ast::Declaration::Enum(e) if e.name == name => return e.doc.as_deref(),
                 _ => {}
             }
         }
@@ -236,10 +237,10 @@ impl AnalysisContext {
         let mut result = Vec::new();
         for decl in &self.parsed.declarations {
             let (members, name, kind) = match decl {
-                reify_syntax::Declaration::Structure(s) => {
+                reify_ast::Declaration::Structure(s) => {
                     (&s.members, s.name.as_str(), EntityKind::Structure)
                 }
-                reify_syntax::Declaration::Occurrence(o) => {
+                reify_ast::Declaration::Occurrence(o) => {
                     (&o.members, o.name.as_str(), EntityKind::Occurrence)
                 }
                 _ => continue,
@@ -308,16 +309,16 @@ pub fn enclosing_decl_at(declarations: &[Declaration], offset: usize) -> Option<
 /// nested inside `GuardedGroup.members` and `GuardedGroup.else_members`.
 ///
 /// Returns `(param_count, let_count, constraint_count)`.
-pub fn count_members_recursive(members: &[reify_syntax::MemberDecl]) -> (usize, usize, usize) {
+pub fn count_members_recursive(members: &[reify_ast::MemberDecl]) -> (usize, usize, usize) {
     let mut params = 0;
     let mut lets = 0;
     let mut constraints = 0;
     for member in members {
         match member {
-            reify_syntax::MemberDecl::Param(_) => params += 1,
-            reify_syntax::MemberDecl::Let(_) => lets += 1,
-            reify_syntax::MemberDecl::Constraint(_) => constraints += 1,
-            reify_syntax::MemberDecl::GuardedGroup(g) => {
+            reify_ast::MemberDecl::Param(_) => params += 1,
+            reify_ast::MemberDecl::Let(_) => lets += 1,
+            reify_ast::MemberDecl::Constraint(_) => constraints += 1,
+            reify_ast::MemberDecl::GuardedGroup(g) => {
                 let (p, l, c) = count_members_recursive(&g.members);
                 params += p;
                 lets += l;
@@ -327,7 +328,7 @@ pub fn count_members_recursive(members: &[reify_syntax::MemberDecl]) -> (usize, 
                 lets += l;
                 constraints += c;
             }
-            reify_syntax::MemberDecl::Port(port) => {
+            reify_ast::MemberDecl::Port(port) => {
                 let (p, l, c) = count_members_recursive(&port.members);
                 params += p;
                 lets += l;
@@ -350,7 +351,7 @@ pub fn format_value(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::DimensionVector;
+    use reify_core::DimensionVector;
     use tower_lsp::lsp_types::Url;
 
     fn test_uri() -> Url {
@@ -1392,7 +1393,7 @@ mod tests {
 }"#;
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
         let structure = match &parsed.declarations[0] {
-            reify_syntax::Declaration::Structure(s) => s,
+            reify_ast::Declaration::Structure(s) => s,
             other => panic!("expected Structure, got {:?}", other),
         };
         let result = find_named_member_span(&structure.members, "d");
@@ -1449,7 +1450,7 @@ mod tests {
 }"#;
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
         let structure = match &parsed.declarations[0] {
-            reify_syntax::Declaration::Structure(s) => s,
+            reify_ast::Declaration::Structure(s) => s,
             other => panic!("expected Structure, got {:?}", other),
         };
         let result = find_named_member_span(&structure.members, "ratio");
@@ -1508,7 +1509,7 @@ mod tests {
         let decl = enclosing_decl_at(&parsed.declarations, a_x_offset);
         assert!(decl.is_some(), "offset inside A should return Some");
         match decl.unwrap() {
-            reify_syntax::Declaration::Structure(s) => assert_eq!(s.name, "A"),
+            reify_ast::Declaration::Structure(s) => assert_eq!(s.name, "A"),
             other => panic!("expected Structure A, got {:?}", other),
         }
     }
@@ -1522,7 +1523,7 @@ mod tests {
         let decl = enclosing_decl_at(&parsed.declarations, b_y_offset);
         assert!(decl.is_some(), "offset inside B should return Some");
         match decl.unwrap() {
-            reify_syntax::Declaration::Structure(s) => assert_eq!(s.name, "B"),
+            reify_ast::Declaration::Structure(s) => assert_eq!(s.name, "B"),
             other => panic!("expected Structure B, got {:?}", other),
         }
     }
@@ -1538,7 +1539,7 @@ mod tests {
             "offset inside occurrence should return Some"
         );
         match decl.unwrap() {
-            reify_syntax::Declaration::Occurrence(o) => assert_eq!(o.name, "Joint"),
+            reify_ast::Declaration::Occurrence(o) => assert_eq!(o.name, "Joint"),
             other => panic!("expected Occurrence Joint, got {:?}", other),
         }
     }
@@ -1574,9 +1575,9 @@ mod tests {
 
     /// Build a member tree with `depth` levels of GuardedGroup nesting,
     /// placing a single Param named `target` at the innermost level.
-    fn build_nested_guarded_members(depth: usize, target: &str) -> Vec<reify_syntax::MemberDecl> {
-        use reify_syntax::{Expr, ExprKind, GuardedGroupDecl, MemberDecl, ParamDecl};
-        use reify_types::{ContentHash, SourceSpan};
+    fn build_nested_guarded_members(depth: usize, target: &str) -> Vec<reify_ast::MemberDecl> {
+        use reify_ast::{Expr, ExprKind, GuardedGroupDecl, MemberDecl, ParamDecl};
+        use reify_core::{ContentHash, SourceSpan};
 
         let dummy_span = SourceSpan::new(0, 1);
         let dummy_hash = ContentHash(0);
@@ -1646,7 +1647,7 @@ mod tests {
             .compiled
             .diagnostics
             .iter()
-            .filter(|d| d.severity == reify_types::Severity::Error)
+            .filter(|d| d.severity == reify_core::Severity::Error)
             .collect();
         assert!(
             errors.is_empty(),

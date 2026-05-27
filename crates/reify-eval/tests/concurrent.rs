@@ -17,10 +17,8 @@ use reify_test_support::{
     CompiledModuleBuilder, TopologyTemplateBuilder, binop, bracket_compiled_module, gt, literal,
     mm, value_ref,
 };
-use reify_types::{
-    BinOp, ConstraintNodeId, DeterminacyState, Freshness, ModulePath, SnapshotProvenance,
-    SolveResult, Type, Value, ValueCellId,
-};
+use reify_core::{ConstraintNodeId, ModulePath, Type, ValueCellId};
+use reify_ir::{BinOp, DeterminacyState, Freshness, SnapshotProvenance, SolveResult, Value};
 
 /// Test that prepare_concurrent_edit returns ConcurrentEditSetup with correct state.
 #[test]
@@ -63,7 +61,7 @@ fn prepare_concurrent_edit_returns_correct_setup() {
     assert!(
         setup
             .eval_set
-            .contains(&NodeId::Realization(reify_types::RealizationNodeId::new(
+            .contains(&NodeId::Realization(reify_core::RealizationNodeId::new(
                 e, 0
             ))),
         "eval_set should contain R0"
@@ -133,7 +131,7 @@ fn apply_concurrent_edit_updates_engine_state() {
     // Volume = width * height * thickness = 0.1 * 0.1 * 0.005 = 5e-5
     let new_volume = Value::Scalar {
         si_value: 5e-5,
-        dimension: reify_types::dimension::DimensionVector::VOLUME,
+        dimension: reify_core::dimension::DimensionVector::VOLUME,
     };
 
     let mut snapshot_values = setup.snapshot_values.clone();
@@ -639,7 +637,7 @@ fn resolve_concurrent_edit_panics_on_prepopulated_diagnostics() {
 
     // resolved_params is empty (first debug_assert passes),
     // diagnostics has one stale warning (second debug_assert fires).
-    let stale_diag = reify_types::Diagnostic::warning("stale diagnostic".to_string());
+    let stale_diag = reify_core::Diagnostic::warning("stale diagnostic".to_string());
 
     let mut result = empty_result_from_setup(&setup);
     result.diagnostics = vec![stale_diag];
@@ -1041,7 +1039,7 @@ fn apply_concurrent_edit_journal_uses_eval_duration() {
 
     let new_volume = Value::Scalar {
         si_value: 5e-5,
-        dimension: reify_types::dimension::DimensionVector::VOLUME,
+        dimension: reify_core::dimension::DimensionVector::VOLUME,
     };
 
     let known_eval_duration = Duration::from_millis(100);

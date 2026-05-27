@@ -16,7 +16,8 @@
 
 use std::collections::BTreeMap;
 
-use reify_types::{DimensionVector, Value};
+use reify_core::DimensionVector;
+use reify_ir::Value;
 
 use crate::eval_builtin;
 
@@ -499,7 +500,7 @@ mod tests {
         angle_range_0_to_pi, axis_x_unit, axis_y_unit, axis_z_unit, length_range_0_to_1m,
         planar_xy_joint,
     };
-    use reify_types::Value;
+    use reify_ir::Value;
 
     // ── dim(joint, range, steps): happy path ─────────────────────────────
 

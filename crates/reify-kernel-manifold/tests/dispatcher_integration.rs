@@ -51,7 +51,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use reify_eval::{dispatcher, kernel_registry};
-use reify_types::{CapabilityDescriptor, Operation, ReprKind};
+use reify_ir::{CapabilityDescriptor, Operation, ReprKind};
 
 /// Proves that `reify_eval::kernel_registry::registry()` contains `"manifold"`
 /// when the manifold adapter is linked in (the `inventory::submit!` in

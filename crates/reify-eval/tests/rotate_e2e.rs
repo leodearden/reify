@@ -10,7 +10,8 @@
 
 use reify_eval::{BuildResult, Engine};
 use reify_test_support::{MockConstraintChecker, MockGeometryKernel, parse_and_compile};
-use reify_types::{ExportFormat, GeometryOp, Severity};
+use reify_core::Severity;
+use reify_ir::{ExportFormat, GeometryOp};
 
 // ── step-1 (RED) ─────────────────────────────────────────────────────────────
 

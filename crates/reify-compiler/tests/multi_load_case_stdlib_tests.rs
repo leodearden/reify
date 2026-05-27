@@ -14,7 +14,8 @@
 //!   `result_for(mcr, key)` — `mcr` is `args[0]`, `key` is `args[1]`.
 
 use reify_compiler::*;
-use reify_types::*;
+use reify_core::*;
+use reify_ir::*;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 

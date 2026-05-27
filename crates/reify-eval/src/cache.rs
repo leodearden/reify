@@ -1,11 +1,8 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use reify_types::{
-    CompiledExpr, ComputeNodeId, ConstraintNodeId, ContentHash, DeterminacyState, Freshness,
-    GeometryHandleId, OpaqueState, RealizationNodeId, ResolutionNodeId, ResultRef, Satisfaction,
-    Value, ValueCellId, ValueMap, VersionId,
-};
+use reify_core::{ComputeNodeId, ConstraintNodeId, ContentHash, RealizationNodeId, ResolutionNodeId, ValueCellId, VersionId};
+use reify_ir::{CompiledExpr, DeterminacyState, Freshness, GeometryHandleId, OpaqueState, ResultRef, Satisfaction, Value, ValueMap};
 
 use crate::deps::DependencyTrace;
 
@@ -60,7 +57,7 @@ impl From<ComputeNodeId> for NodeId {
 /// it is the unique orphan-rule-clean host: `NodeId` is local to this crate, and
 /// RFC 2451 permits `impl From<&LocalType> for ForeignType` when the local type
 /// appears in the `From` argument. See `docs/prds/v0_3/node-traits-unification.md §4`.
-impl From<&NodeId> for reify_types::NodeKind {
+impl From<&NodeId> for reify_ir::NodeKind {
     fn from(node_id: &NodeId) -> Self {
         match node_id {
             NodeId::Value(_) => Self::Value,
@@ -79,9 +76,9 @@ impl From<&NodeId> for reify_types::NodeKind {
 /// `reify-eval` for the same orphan-rule reason (`NodeId` is local to this crate,
 /// the destination trait/type is foreign). The body delegates to that existing `From`
 /// impl to avoid duplicating match arms. See PRD §5 B1.
-impl reify_types::HasNodeKind for NodeId {
-    fn node_kind(&self) -> reify_types::NodeKind {
-        reify_types::NodeKind::from(self)
+impl reify_ir::HasNodeKind for NodeId {
+    fn node_kind(&self) -> reify_ir::NodeKind {
+        reify_ir::NodeKind::from(self)
     }
 }
 
@@ -720,7 +717,7 @@ impl CacheStore {
     /// callers to skip recording the chain root and to leak a stale
     /// `pending_cause`. This precondition is enforced via `assert!` in all
     /// builds (task #2592, parity with the Pending guard from task #2451).
-    pub fn mark_failed(&mut self, node: &NodeId, error: reify_types::ErrorRef) -> bool {
+    pub fn mark_failed(&mut self, node: &NodeId, error: reify_ir::ErrorRef) -> bool {
         if let Some(entry) = self.caches.get_mut(node) {
             entry.freshness = Freshness::Failed { error };
             // Failed nodes are chain roots — pending_cause() reader contract
@@ -1612,7 +1609,7 @@ impl Default for CacheStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::{ConstraintNodeId, RealizationNodeId, Type, ValueCellId};
+    use reify_core::{ConstraintNodeId, RealizationNodeId, Type, ValueCellId};
 
     #[test]
     fn node_id_from_value_cell_id() {
@@ -1637,7 +1634,7 @@ mod tests {
 
     #[test]
     fn node_id_resolution_variant() {
-        use reify_types::ResolutionNodeId;
+        use reify_core::ResolutionNodeId;
 
         let res_id = ResolutionNodeId::new("A", 0);
         let res_node = NodeId::Resolution(res_id.clone());
@@ -1667,7 +1664,7 @@ mod tests {
     ///       overlapping entity strings
     #[test]
     fn node_id_compute_variant() {
-        use reify_types::{ComputeNodeId, ResolutionNodeId};
+        use reify_core::{ComputeNodeId, ResolutionNodeId};
 
         let cn_id = ComputeNodeId::new("E", 0);
         let cn_node = NodeId::Compute(cn_id.clone());
@@ -1700,7 +1697,7 @@ mod tests {
     /// pass-through contract.
     #[test]
     fn node_id_display_compute_forwards_to_inner_variant() {
-        use reify_types::ComputeNodeId;
+        use reify_core::ComputeNodeId;
 
         let inner = ComputeNodeId::new("E", 0);
         let node = NodeId::Compute(inner.clone());
@@ -1749,7 +1746,7 @@ mod tests {
 
     #[test]
     fn node_id_display_forwards_to_inner_variant() {
-        use reify_types::ResolutionNodeId;
+        use reify_core::ResolutionNodeId;
 
         // Value variant
         let inner_v = ValueCellId::new("Bracket", "x");
@@ -2050,7 +2047,7 @@ mod tests {
 
     #[test]
     fn compute_input_hash_deterministic_with_sorted_deps() {
-        use reify_types::BinOp;
+        use reify_ir::BinOp;
 
         // x + y where x < y in id order
         let x = ValueCellId::new("A", "a");
@@ -2111,7 +2108,7 @@ mod tests {
 
     #[test]
     fn compute_input_hash_different_expr_produce_different_hashes() {
-        use reify_types::BinOp;
+        use reify_ir::BinOp;
 
         let x = ValueCellId::new("A", "a");
 
@@ -2230,7 +2227,8 @@ mod tests {
 
     #[test]
     fn cache_store_resolution_result() {
-        use reify_types::{Freshness, ResolutionNodeId, Value, VersionId};
+        use reify_core::{ResolutionNodeId, VersionId};
+        use reify_ir::{Freshness, Value};
         use std::collections::HashMap;
 
         let mut store = CacheStore::new();
@@ -2285,7 +2283,8 @@ mod tests {
     #[test]
     fn node_cache_construction() {
         use crate::deps::DependencyTrace;
-        use reify_types::{DeterminacyState, Freshness, Value, VersionId};
+        use reify_core::VersionId;
+        use reify_ir::{DeterminacyState, Freshness, Value};
 
         let result = CachedResult::Value(Value::Int(42), DeterminacyState::Determined);
         let expected_hash = result.content_hash();
@@ -2304,7 +2303,8 @@ mod tests {
     #[test]
     fn node_cache_clone_and_debug() {
         use crate::deps::DependencyTrace;
-        use reify_types::{DeterminacyState, Freshness, Value, VersionId};
+        use reify_core::VersionId;
+        use reify_ir::{DeterminacyState, Freshness, Value};
 
         let result = CachedResult::Value(Value::Int(42), DeterminacyState::Determined);
         let cache = NodeCache::new(
@@ -2324,7 +2324,8 @@ mod tests {
     #[test]
     fn node_cache_result_hash_matches_content_hash() {
         use crate::deps::DependencyTrace;
-        use reify_types::{Freshness, Satisfaction, VersionId};
+        use reify_core::VersionId;
+        use reify_ir::{Freshness, Satisfaction};
 
         let result = CachedResult::Satisfaction(Satisfaction::Violated);
         let expected = result.content_hash();
@@ -2341,7 +2342,7 @@ mod tests {
 
     #[test]
     fn cached_result_value_variant() {
-        use reify_types::{DeterminacyState, Value};
+        use reify_ir::{DeterminacyState, Value};
         let result = CachedResult::Value(Value::Int(42), DeterminacyState::Determined);
         let cloned = result.clone();
         let debug = format!("{:?}", cloned);
@@ -2351,7 +2352,7 @@ mod tests {
 
     #[test]
     fn cached_result_satisfaction_variant() {
-        use reify_types::Satisfaction;
+        use reify_ir::Satisfaction;
         let result = CachedResult::Satisfaction(Satisfaction::Satisfied);
         let cloned = result.clone();
         let debug = format!("{:?}", cloned);
@@ -2360,7 +2361,7 @@ mod tests {
 
     #[test]
     fn cached_result_geometry_handle_variant() {
-        use reify_types::GeometryHandleId;
+        use reify_ir::GeometryHandleId;
         let result = CachedResult::GeometryHandle(GeometryHandleId(7));
         let cloned = result.clone();
         let debug = format!("{:?}", cloned);
@@ -2369,7 +2370,7 @@ mod tests {
 
     #[test]
     fn cached_result_content_hash_value_variant() {
-        use reify_types::{DeterminacyState, Value};
+        use reify_ir::{DeterminacyState, Value};
         let r1 = CachedResult::Value(Value::Int(42), DeterminacyState::Determined);
         let r2 = CachedResult::Value(Value::Int(42), DeterminacyState::Determined);
         assert_eq!(r1.content_hash(), r2.content_hash());
@@ -2385,7 +2386,7 @@ mod tests {
 
     #[test]
     fn cached_result_content_hash_satisfaction_variant() {
-        use reify_types::Satisfaction;
+        use reify_ir::Satisfaction;
         let r1 = CachedResult::Satisfaction(Satisfaction::Satisfied);
         let r2 = CachedResult::Satisfaction(Satisfaction::Satisfied);
         assert_eq!(r1.content_hash(), r2.content_hash());
@@ -2396,7 +2397,7 @@ mod tests {
 
     #[test]
     fn cached_result_content_hash_geometry_variant() {
-        use reify_types::GeometryHandleId;
+        use reify_ir::GeometryHandleId;
         let r1 = CachedResult::GeometryHandle(GeometryHandleId(7));
         let r2 = CachedResult::GeometryHandle(GeometryHandleId(7));
         assert_eq!(r1.content_hash(), r2.content_hash());
@@ -2407,7 +2408,7 @@ mod tests {
 
     #[test]
     fn cached_result_resolution_variant() {
-        use reify_types::Value;
+        use reify_ir::Value;
         use std::collections::HashMap;
 
         let mut values1 = HashMap::new();
@@ -2436,7 +2437,7 @@ mod tests {
     fn cached_result_content_hash_domain_separation() {
         // Ensure different variants produce different hashes even with
         // "similar" inner data
-        use reify_types::{DeterminacyState, GeometryHandleId, Satisfaction, Value};
+        use reify_ir::{DeterminacyState, GeometryHandleId, Satisfaction, Value};
         let val = CachedResult::Value(Value::Int(0), DeterminacyState::Determined);
         let sat = CachedResult::Satisfaction(Satisfaction::Satisfied);
         let geo = CachedResult::GeometryHandle(GeometryHandleId(0));
@@ -2508,7 +2509,8 @@ mod tests {
     fn cold_start_cache_miss() {
         use reify_test_support::builders::*;
         use reify_test_support::mocks::MockConstraintChecker;
-        use reify_types::{BinOp, ModulePath, Type, VersionId};
+        use reify_core::{ModulePath, Type, VersionId};
+        use reify_ir::BinOp;
 
         let e = "T";
         let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -2556,7 +2558,8 @@ mod tests {
     fn version_fast_path_100_percent_hits() {
         use reify_test_support::builders::*;
         use reify_test_support::mocks::MockConstraintChecker;
-        use reify_types::{BinOp, ModulePath, Type, VersionId};
+        use reify_core::{ModulePath, Type, VersionId};
+        use reify_ir::BinOp;
 
         let e = "T";
         let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -2605,7 +2608,8 @@ mod tests {
     fn selective_re_evaluation_on_param_change() {
         use reify_test_support::builders::*;
         use reify_test_support::mocks::MockConstraintChecker;
-        use reify_types::{BinOp, ModulePath, Type, VersionId};
+        use reify_core::{ModulePath, Type, VersionId};
+        use reify_ir::BinOp;
 
         let e = "T";
         // param a = 10, param b = 20, let x = a + 1, let y = b + 1
@@ -2680,9 +2684,8 @@ mod tests {
     fn early_cutoff_prevents_downstream_re_evaluation() {
         use reify_test_support::builders::*;
         use reify_test_support::mocks::MockConstraintChecker;
-        use reify_types::{
-            BinOp, CompiledExpr, CompiledExprKind, ContentHash, ModulePath, Type, VersionId,
-        };
+        use reify_core::{ContentHash, ModulePath, Type, VersionId};
+        use reify_ir::{BinOp, CompiledExpr, CompiledExprKind};
 
         let e = "T";
 
@@ -2770,9 +2773,8 @@ mod tests {
     fn diamond_dependency_early_cutoff_correctness() {
         use reify_test_support::builders::*;
         use reify_test_support::mocks::MockConstraintChecker;
-        use reify_types::{
-            BinOp, CompiledExpr, CompiledExprKind, ContentHash, ModulePath, Type, VersionId,
-        };
+        use reify_core::{ContentHash, ModulePath, Type, VersionId};
+        use reify_ir::{BinOp, CompiledExpr, CompiledExprKind};
 
         let e = "T";
 
@@ -2858,9 +2860,8 @@ mod tests {
     fn triple_fan_in_dirty_reasons_multiple_independent_reasons() {
         use reify_test_support::builders::*;
         use reify_test_support::mocks::MockConstraintChecker;
-        use reify_types::{
-            BinOp, CompiledExpr, CompiledExprKind, ContentHash, ModulePath, Type, VersionId,
-        };
+        use reify_core::{ContentHash, ModulePath, Type, VersionId};
+        use reify_ir::{BinOp, CompiledExpr, CompiledExprKind};
 
         let e = "T";
 
@@ -3015,7 +3016,7 @@ mod tests {
             DependencyTrace::default(),
             VersionId(1),
         );
-        let state = reify_types::OpaqueState::new(42i32, 4);
+        let state = reify_ir::OpaqueState::new(42i32, 4);
         cache.warm_state = Some(state);
         assert!(cache.warm_state.is_some());
         let val = cache.warm_state.unwrap().downcast::<i32>();
@@ -3032,7 +3033,7 @@ mod tests {
             DependencyTrace::default(),
             VersionId(1),
         );
-        cache.warm_state = Some(reify_types::OpaqueState::new(99i32, 4));
+        cache.warm_state = Some(reify_ir::OpaqueState::new(99i32, 4));
         store.put(node.clone(), cache);
 
         let entry = store.get(&node).unwrap();
@@ -3050,7 +3051,7 @@ mod tests {
         let node = NodeId::Value(ValueCellId::new("T", "x"));
         store.put(node.clone(), make_test_node_cache(42, 1));
 
-        let state = reify_types::OpaqueState::new(100i32, 4);
+        let state = reify_ir::OpaqueState::new(100i32, 4);
         let donated = store.donate_warm_state(&node, state);
         assert!(donated);
 
@@ -3076,7 +3077,7 @@ mod tests {
         // Donate warm state + cost.
         let donated = store.donate_warm_state_with_cost(
             &node,
-            reify_types::OpaqueState::new(7i32, 4),
+            reify_ir::OpaqueState::new(7i32, 4),
             0.75,
         );
         assert!(donated);
@@ -3107,7 +3108,7 @@ mod tests {
     fn donate_warm_state_on_nonexistent_node_returns_false() {
         let mut store = CacheStore::new();
         let node = NodeId::Value(ValueCellId::new("T", "missing"));
-        let state = reify_types::OpaqueState::new(42i32, 4);
+        let state = reify_ir::OpaqueState::new(42i32, 4);
         let donated = store.donate_warm_state(&node, state);
         assert!(!donated);
     }
@@ -3133,7 +3134,7 @@ mod tests {
         );
 
         // (b) The entry must accept warm state donation (entry exists → donate returns true).
-        let donated = store.donate_warm_state(&node, reify_types::OpaqueState::new(0xBEEFu32, 8));
+        let donated = store.donate_warm_state(&node, reify_ir::OpaqueState::new(0xBEEFu32, 8));
         assert!(
             donated,
             "donate_warm_state must return true for the synthetic realization entry"
@@ -3147,7 +3148,7 @@ mod tests {
         store.put(node.clone(), make_test_node_cache(42, 1));
 
         // Donate warm state
-        let state = reify_types::OpaqueState::new(100i32, 4);
+        let state = reify_ir::OpaqueState::new(100i32, 4);
         store.donate_warm_state(&node, state);
         assert!(store.get(&node).unwrap().warm_state.is_some());
 
@@ -3174,7 +3175,7 @@ mod tests {
         // would fail to compile since OpaqueState is not Clone — but documenting
         // intent is still valuable).
         let mut cache = make_test_node_cache(42, 1);
-        cache.warm_state = Some(reify_types::OpaqueState::new(42i32, 4));
+        cache.warm_state = Some(reify_ir::OpaqueState::new(42i32, 4));
         assert!(
             cache.warm_state.is_some(),
             "precondition: warm_state must be Some before cloning"
@@ -3191,7 +3192,7 @@ mod tests {
 
     #[test]
     fn cache_store_set_freshness_returns_false_for_missing_and_writes_for_present() {
-        use reify_types::Freshness;
+        use reify_ir::Freshness;
 
         // (a) Missing node → set_freshness returns false and store stays empty (no auto-create).
         let mut store = CacheStore::new();
@@ -3227,7 +3228,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "Pending")]
     fn set_freshness_panics_when_passed_pending() {
-        use reify_types::{ContentHash, Freshness, ResultRef};
+        use reify_core::ContentHash;
+        use reify_ir::{Freshness, ResultRef};
 
         let mut store = CacheStore::new();
         let node = NodeId::Value(ValueCellId::new("T", "x"));
@@ -3251,7 +3253,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "Failed")]
     fn set_freshness_panics_when_passed_failed() {
-        use reify_types::{ErrorRef, Freshness};
+        use reify_ir::{ErrorRef, Freshness};
 
         let mut store = CacheStore::new();
         let node = NodeId::Value(ValueCellId::new("T", "x"));
@@ -3274,7 +3276,7 @@ mod tests {
     ///   still_refining=false, all inputs == Final → Final
     #[test]
     fn derive_output_freshness_implements_arch_7_2_truth_table() {
-        use reify_types::Freshness;
+        use reify_ir::Freshness;
         let g = 7u64;
 
         // Row 1: still_refining=true, all inputs Final → Intermediate
@@ -3328,7 +3330,8 @@ mod tests {
     /// (not hardcoded Final) and that early-cutoff still updates freshness in place.
     #[test]
     fn record_evaluation_with_freshness_writes_supplied_freshness_and_preserves_early_cutoff() {
-        use reify_types::{DeterminacyState, Freshness, Value, VersionId};
+        use reify_core::VersionId;
+        use reify_ir::{DeterminacyState, Freshness, Value};
 
         let mut store = CacheStore::new();
         let node = NodeId::Value(ValueCellId::new("T", "x"));
@@ -3387,7 +3390,8 @@ mod tests {
     /// for a let-cell and delegates to derive_output_freshness correctly.
     #[test]
     fn derive_output_freshness_for_node_walks_cached_dependency_trace() {
-        use reify_types::{DeterminacyState, Freshness, Value, VersionId};
+        use reify_core::VersionId;
+        use reify_ir::{DeterminacyState, Freshness, Value};
 
         let mut store = CacheStore::new();
 
@@ -3461,7 +3465,7 @@ mod tests {
     /// `derive_output_freshness_with_cause_returns_failing_node` below.
     #[test]
     fn derive_output_freshness_classifies_pending_and_failed_inputs_as_non_final() {
-        use reify_types::{ErrorRef, Freshness, ResultRef};
+        use reify_ir::{ErrorRef, Freshness, ResultRef};
         let g = 9u64;
 
         // Intermediate input → Intermediate output (§7.2 unchanged for this row).
@@ -3514,7 +3518,7 @@ mod tests {
     /// forwards the upstream entry's `pending_cause`; all-Final inputs return None.
     #[test]
     fn derive_output_freshness_with_cause_returns_failing_node() {
-        use reify_types::{ErrorRef, Freshness, ResultRef};
+        use reify_ir::{ErrorRef, Freshness, ResultRef};
         let g = 9u64;
 
         let leaf = NodeId::Value(ValueCellId::new("T", "leaf"));
@@ -3585,7 +3589,8 @@ mod tests {
     /// (not whatever is cached for a node) and delegates to the §7.2 rule correctly.
     #[test]
     fn derive_output_freshness_from_trace_uses_supplied_trace() {
-        use reify_types::{DeterminacyState, Freshness, Value, VersionId};
+        use reify_core::VersionId;
+        use reify_ir::{DeterminacyState, Freshness, Value};
 
         let mut store = CacheStore::new();
 
@@ -3647,7 +3652,8 @@ mod tests {
     /// freshly-computed trace replaces the old one to keep the cache consistent.
     #[test]
     fn record_evaluation_with_freshness_early_cutoff_updates_trace() {
-        use reify_types::{DeterminacyState, Freshness, Value, VersionId};
+        use reify_core::VersionId;
+        use reify_ir::{DeterminacyState, Freshness, Value};
 
         let mut store = CacheStore::new();
         let node = NodeId::Value(ValueCellId::new("T", "x"));
@@ -3701,7 +3707,8 @@ mod tests {
     /// supplied trace (not the old cached trace) and writes it atomically.
     #[test]
     fn record_evaluation_propagating_freshness_derives_from_supplied_trace() {
-        use reify_types::{DeterminacyState, Freshness, Value, VersionId};
+        use reify_core::VersionId;
+        use reify_ir::{DeterminacyState, Freshness, Value};
 
         let mut store = CacheStore::new();
 
@@ -3749,7 +3756,8 @@ mod tests {
 
     #[test]
     fn cache_store_freshness_reader_defaults_final_for_missing_and_returns_cached_for_present() {
-        use reify_types::{Freshness, VersionId};
+        use reify_core::VersionId;
+        use reify_ir::Freshness;
 
         // (a) Absent node → freshness() must return Freshness::Final (via Default).
         let store = CacheStore::new();
@@ -3767,8 +3775,8 @@ mod tests {
             node.clone(),
             NodeCache::new(
                 CachedResult::Value(
-                    reify_types::Value::Int(1),
-                    reify_types::DeterminacyState::Determined,
+                    reify_ir::Value::Int(1),
+                    reify_ir::DeterminacyState::Determined,
                 ),
                 Freshness::Intermediate { generation: 7 },
                 DependencyTrace::default(),
@@ -3792,8 +3800,8 @@ mod tests {
     fn make_seed_entry() -> NodeCache {
         NodeCache::new(
             CachedResult::Value(
-                reify_types::Value::Int(42),
-                reify_types::DeterminacyState::Determined,
+                reify_ir::Value::Int(42),
+                reify_ir::DeterminacyState::Determined,
             ),
             Freshness::Final,
             DependencyTrace::default(),
@@ -3855,7 +3863,7 @@ mod tests {
 
     #[test]
     fn mark_failed_sets_failed_freshness_and_returns_true_only_for_existing() {
-        use reify_types::ErrorRef;
+        use reify_ir::ErrorRef;
 
         let mut store = CacheStore::new();
         let node = NodeId::Value(ValueCellId::new("T", "boom"));
@@ -3883,7 +3891,7 @@ mod tests {
 
     #[test]
     fn mark_pending_with_cause_sets_pending_freshness_cause_and_bumps_counter() {
-        use reify_types::ResultRef;
+        use reify_ir::ResultRef;
 
         let mut store = CacheStore::new();
         let mid_node = NodeId::Value(ValueCellId::new("T", "mid"));
@@ -3946,7 +3954,7 @@ mod tests {
     /// re-evaluated successfully on a later round.
     #[test]
     fn mark_pending_and_mark_failed_clear_stale_pending_cause() {
-        use reify_types::ErrorRef;
+        use reify_ir::ErrorRef;
 
         let mut store = CacheStore::new();
         let mid = NodeId::Value(ValueCellId::new("T", "mid"));
@@ -4023,7 +4031,8 @@ mod tests {
     /// diverge.
     #[test]
     fn derive_output_freshness_no_cause_variants_agree_with_with_cause() {
-        use reify_types::{DeterminacyState, ErrorRef, Freshness, Value, VersionId};
+        use reify_core::VersionId;
+        use reify_ir::{DeterminacyState, ErrorRef, Freshness, Value};
 
         let a_id = ValueCellId::new("T", "a");
         let b_id = ValueCellId::new("T", "b");
@@ -4256,7 +4265,7 @@ mod tests {
     /// variant-agnostic); made explicit per PRD §8 task α.
     #[test]
     fn cache_store_pending_cause_admits_compute_chain_root() {
-        use reify_types::ComputeNodeId;
+        use reify_core::ComputeNodeId;
 
         let compute_node = NodeId::Compute(ComputeNodeId::new("T", 0));
 
@@ -4285,7 +4294,8 @@ mod tests {
     /// forwarder branch is variant-agnostic; made explicit per PRD §8 task α.
     #[test]
     fn derive_output_freshness_with_cause_forwards_compute_chain_root() {
-        use reify_types::{ComputeNodeId, Freshness, ResultRef};
+        use reify_core::ComputeNodeId;
+        use reify_ir::{Freshness, ResultRef};
 
         let compute_node = NodeId::Compute(ComputeNodeId::new("T", 0));
         let mid_id = ValueCellId::new("T", "mid");
@@ -4320,7 +4330,8 @@ mod tests {
     /// the begin lifecycle (PRD §3 "Atomic completion" step 0 / §8 task δ).
     #[test]
     fn begin_compute_dispatch_marks_existing_output_pending_with_compute_cause() {
-        use reify_types::{ComputeNodeId, Freshness, ResultRef};
+        use reify_core::ComputeNodeId;
+        use reify_ir::{Freshness, ResultRef};
 
         let mut store = CacheStore::new();
         let b = ValueCellId::new("T", "b");
@@ -4368,7 +4379,8 @@ mod tests {
     /// GREEN does NOT yet handle — fails until step-5 extends the impl.
     #[test]
     fn begin_compute_dispatch_seeds_pending_entry_for_absent_output() {
-        use reify_types::{ComputeNodeId, Freshness, ResultRef};
+        use reify_core::ComputeNodeId;
+        use reify_ir::{Freshness, ResultRef};
 
         let mut store = CacheStore::new();
         let b = ValueCellId::new("T", "b");
@@ -4416,9 +4428,8 @@ mod tests {
     /// completion / §8 task δ).
     #[test]
     fn complete_compute_dispatch_atomically_writes_value_flips_freshness_clears_cause() {
-        use reify_types::{
-            ComputeNodeId, DeterminacyState, Freshness, ResultRef, Value, VersionId,
-        };
+        use reify_core::{ComputeNodeId, VersionId};
+        use reify_ir::{DeterminacyState, Freshness, ResultRef, Value};
 
         let mut store = CacheStore::new();
         let b = ValueCellId::new("T", "b");
@@ -4655,7 +4666,8 @@ mod tests {
     /// Pending→Final flip. RED until step-4 extends the helper signature.
     #[test]
     fn complete_compute_dispatch_atomically_with_some_new_warm_state_seeds_compute_entry() {
-        use reify_types::{ComputeNodeId, Value, VersionId};
+        use reify_core::{ComputeNodeId, VersionId};
+        use reify_ir::Value;
 
         let mut store = CacheStore::new();
         let vc = ValueCellId::new("T", "out");
@@ -4726,7 +4738,8 @@ mod tests {
     /// warm state means no seed). RED until step-4.
     #[test]
     fn complete_compute_dispatch_atomically_with_none_warm_state_does_not_seed_compute_entry() {
-        use reify_types::{ComputeNodeId, Value, VersionId};
+        use reify_core::{ComputeNodeId, VersionId};
+        use reify_ir::Value;
 
         let mut store = CacheStore::new();
         let vc = ValueCellId::new("T", "out2");

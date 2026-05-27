@@ -23,7 +23,7 @@
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::ptr;
 
-use reify_types::GeometryError;
+use reify_ir::GeometryError;
 
 // gmsh's C API types `size_t` for tags. `as_ptr() as *const usize` casts
 // would be UB on a hypothetical platform where `size_t != usize`. On every
@@ -276,12 +276,12 @@ macro_rules! gmsh_call {
         }
         if $ierr != 0 {
             let msg = $crate::ffi::last_error_message();
-            Err(::reify_types::GeometryError::OperationFailed(format!(
+            Err(::reify_ir::GeometryError::OperationFailed(format!(
                 "{}: ierr={} ({})",
                 $name, $ierr, msg
             )))
         } else {
-            Ok::<(), ::reify_types::GeometryError>(())
+            Ok::<(), ::reify_ir::GeometryError>(())
         }
     }};
 }

@@ -4,9 +4,8 @@
 //! union-find to identify independent sub-problems.
 
 use crate::classifier::ConstraintClassifier;
-use reify_types::{
-    AutoParam, CompiledExpr, CompiledExprKind, ConstraintDomain, ConstraintNodeId, ValueCellId,
-};
+use reify_core::{ConstraintNodeId, ValueCellId};
+use reify_ir::{AutoParam, CompiledExpr, CompiledExprKind, ConstraintDomain};
 use std::collections::{HashMap, HashSet};
 
 /// An independent sub-problem extracted from a larger constraint problem.
@@ -230,7 +229,8 @@ pub fn decompose_into_components(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::{BinOp, Type, Value};
+    use reify_core::Type;
+    use reify_ir::{BinOp, Value};
 
     #[test]
     fn collect_refs_from_value_ref() {

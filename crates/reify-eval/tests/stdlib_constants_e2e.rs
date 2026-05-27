@@ -6,7 +6,8 @@
 use reify_test_support::{
     assert_no_eval_errors, eval_source, make_engine, parse_and_compile_with_stdlib,
 };
-use reify_types::{Value, ValueCellId};
+use reify_core::ValueCellId;
+use reify_ir::Value;
 
 // ─── step-9: pi and tau evaluate to correct Real values ─────────────────────
 

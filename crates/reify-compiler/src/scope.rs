@@ -291,7 +291,7 @@ mod tests {
     // ── match-arm-group registration (task 2372, step-3) ─────────────────────
 
     fn make_test_group(name: &str) -> GuardedDeclGroup {
-        use reify_types::Value;
+        use reify_ir::Value;
         GuardedDeclGroup {
             name: name.to_string(),
             arms: vec![GuardedDeclArm {

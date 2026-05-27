@@ -8,7 +8,7 @@ use reify_syntax::*;
 fn parse_structure_members(source: &str) -> (Vec<MemberDecl>, Vec<ParseError>) {
     let module = reify_syntax::parse(
         source,
-        reify_types::ModulePath::single("constraint_inst_test"),
+        reify_core::ModulePath::single("constraint_inst_test"),
     );
     let errors = module.errors.clone();
     // Find the first structure declaration and return its members.

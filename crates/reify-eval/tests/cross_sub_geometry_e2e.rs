@@ -9,7 +9,8 @@
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::{FailingMockGeometryKernel, MockGeometryKernel, compile_source};
-use reify_types::{DimensionVector, ExportFormat, GeometryOp, Severity, Value};
+use reify_core::{DimensionVector, Severity};
+use reify_ir::{ExportFormat, GeometryOp, Value};
 
 /// Inner has `body = box(...)`; Outer has `sub inner = Inner()` and
 /// `placed = translate(self.inner.body, 10mm, 0mm, 0mm)`.

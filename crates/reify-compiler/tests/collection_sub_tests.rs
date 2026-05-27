@@ -1,7 +1,8 @@
 //! Collection sub-structure tests (task 64).
 
 use reify_test_support::{compile_source, parse_and_compile};
-use reify_types::{CompiledExprKind, DiagnosticCode, Severity};
+use reify_core::{DiagnosticCode, Severity};
+use reify_ir::CompiledExprKind;
 
 /// Helper: compile source and assert no error-severity diagnostics.
 fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
@@ -20,7 +21,7 @@ fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
 #[test]
 fn parse_collection_sub_form() {
     let source = "structure S { sub bolts : List<Bolt> }";
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -28,11 +29,11 @@ fn parse_collection_sub_form() {
     );
 
     let structure = match &parsed.declarations[0] {
-        reify_syntax::Declaration::Structure(s) => s,
+        reify_ast::Declaration::Structure(s) => s,
         other => panic!("expected Structure, got {:?}", other),
     };
     let sub = match &structure.members[0] {
-        reify_syntax::MemberDecl::Sub(s) => s,
+        reify_ast::MemberDecl::Sub(s) => s,
         other => panic!("expected Sub, got {:?}", other),
     };
     assert_eq!(sub.name, "bolts");
@@ -47,7 +48,7 @@ fn parse_collection_sub_form() {
 #[test]
 fn parse_instantiation_sub_form() {
     let source = "structure S { sub rib = Rib() }";
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -55,11 +56,11 @@ fn parse_instantiation_sub_form() {
     );
 
     let structure = match &parsed.declarations[0] {
-        reify_syntax::Declaration::Structure(s) => s,
+        reify_ast::Declaration::Structure(s) => s,
         other => panic!("expected Structure, got {:?}", other),
     };
     let sub = match &structure.members[0] {
-        reify_syntax::MemberDecl::Sub(s) => s,
+        reify_ast::MemberDecl::Sub(s) => s,
         other => panic!("expected Sub, got {:?}", other),
     };
     assert_eq!(sub.name, "rib");
@@ -141,7 +142,7 @@ fn compile_count_constraint() {
         .find(|vc| vc.id.member == "__count_bolts")
         .expect("should have __count_bolts value cell");
     assert_eq!(count_cell.kind, reify_compiler::ValueCellKind::Let);
-    assert_eq!(count_cell.cell_type, reify_types::Type::Int);
+    assert_eq!(count_cell.cell_type, reify_core::Type::Int);
 
     // Verify count cell is in structure_controlling
     assert!(
@@ -155,7 +156,7 @@ fn compile_count_constraint() {
         .as_ref()
         .expect("should have default_expr");
     match &expr.kind {
-        reify_types::CompiledExprKind::ValueRef(id) => {
+        reify_ir::CompiledExprKind::ValueRef(id) => {
             assert_eq!(id.member, "n", "count expression should reference param n");
         }
         other => panic!("expected ValueRef, got {:?}", other),
@@ -208,7 +209,7 @@ fn compile_indexed_collection_member_access() {
     // Result type should be Scalar (length) — resolved from child template's member type
     assert_eq!(
         expr.result_type,
-        reify_types::Type::length(),
+        reify_core::Type::length(),
         "indexed collection member access should preserve the member's actual type (Scalar/length)"
     );
 }
@@ -245,7 +246,7 @@ fn compile_indexed_collection_member_access_preserves_type() {
     // The result_type should be Int (matching Bolt.count_per_row's type), not Real
     assert_eq!(
         expr.result_type,
-        reify_types::Type::Int,
+        reify_core::Type::Int,
         "indexed collection member access should preserve the member's actual type"
     );
 }
@@ -336,7 +337,7 @@ fn compile_bolts_count_expression() {
     // Result type should be Int
     assert_eq!(
         expr.result_type,
-        reify_types::Type::Int,
+        reify_core::Type::Int,
         "bolts.count type should be Int"
     );
 }
@@ -377,7 +378,7 @@ fn compile_dynamic_index_collection_member_access() {
 
     // The expression should be IndexAccess(ValueRef(__list_bolts__diameter), idx)
     // where __list_bolts__diameter is a per-member synthetic list
-    fn find_list_ref(expr: &reify_types::CompiledExpr) -> bool {
+    fn find_list_ref(expr: &reify_ir::CompiledExpr) -> bool {
         match &expr.kind {
             CompiledExprKind::ValueRef(id) => {
                 id.entity == "S" && id.member == "__list_bolts__diameter"
@@ -395,9 +396,9 @@ fn compile_dynamic_index_collection_member_access() {
     );
 
     // Also verify it does NOT contain a Literal(Undef) as the collection base
-    fn contains_undef_literal(expr: &reify_types::CompiledExpr) -> bool {
+    fn contains_undef_literal(expr: &reify_ir::CompiledExpr) -> bool {
         match &expr.kind {
-            CompiledExprKind::Literal(reify_types::Value::Undef) => true,
+            CompiledExprKind::Literal(reify_ir::Value::Undef) => true,
             CompiledExprKind::MethodCall { object, .. } => contains_undef_literal(object),
             CompiledExprKind::IndexAccess { object, .. } => contains_undef_literal(object),
             _ => false,
@@ -464,7 +465,7 @@ fn compile_indexed_member_access_multi_member_child() {
     // (grade 8.8 is dimensionless in the physical world but Scalar → length() in Reify's type system.)
     assert_eq!(
         expr.result_type,
-        reify_types::Type::length(),
+        reify_core::Type::length(),
         "grade member should have Scalar/length type matching its 'Scalar' declaration"
     );
 
@@ -494,7 +495,7 @@ fn compile_indexed_member_access_multi_member_child() {
     }
     assert_eq!(
         d_expr.result_type,
-        reify_types::Type::length(),
+        reify_core::Type::length(),
         "diameter member should have Scalar/length type matching its 'Scalar' declaration"
     );
 }
@@ -546,7 +547,7 @@ fn compile_collection_sub_as_standalone_identifier() {
 
     // Result type should be List
     match &expr.result_type {
-        reify_types::Type::List(_) => {}
+        reify_core::Type::List(_) => {}
         other => panic!("expected List type, got {:?}", other),
     }
 }
@@ -631,7 +632,7 @@ fn mixed_sub_types_instance_qualified_access() {
     }
     assert_eq!(
         d1_expr.result_type,
-        reify_types::Type::length(),
+        reify_core::Type::length(),
         "d1 (non-collection sub InstanceQualifiedAccess) should resolve to Length"
     );
 
@@ -660,7 +661,7 @@ fn mixed_sub_types_instance_qualified_access() {
     }
     assert_eq!(
         d2_expr.result_type,
-        reify_types::Type::length(),
+        reify_core::Type::length(),
         "d2 (collection sub InstanceQualifiedAccess) should resolve to Length (element type; \
          list-expansion is handled by the evaluator at runtime)"
     );
@@ -724,7 +725,7 @@ fn compile_collection_identifier_after_noncollection_sub() {
 
     // Result type should be List
     match &expr.result_type {
-        reify_types::Type::List(_) => {}
+        reify_core::Type::List(_) => {}
         other => panic!(
             "expected List type for bare collection identifier, got {:?}",
             other

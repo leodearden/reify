@@ -20,7 +20,8 @@
 
 use reify_kernel_gmsh::cache_key::volume_mesh_cache_key;
 use reify_kernel_gmsh::options::MeshingOptions;
-use reify_types::{ContentHash, ElementOrderTag};
+use reify_core::ContentHash;
+use reify_ir::ElementOrderTag;
 
 /// Two calls with byte-identical `(surface_hash, options, element_order)`
 /// must return equal `ContentHash`. Without this, the cache never hits.

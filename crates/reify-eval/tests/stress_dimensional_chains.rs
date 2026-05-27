@@ -9,7 +9,8 @@
 use std::fs;
 
 use reify_test_support::mocks::MockConstraintChecker;
-use reify_types::{DimensionVector, ModulePath, Severity, Value, ValueCellId};
+use reify_core::{DimensionVector, ModulePath, Severity, ValueCellId};
+use reify_ir::Value;
 
 // ── Helper ────────────────────────────────────────────────────────────────────
 
@@ -234,7 +235,7 @@ fn chain_step8_force() {
             );
             assert_eq!(
                 *dimension,
-                reify_types::dimension::FORCE,
+                reify_core::dimension::FORCE,
                 "chain_F dimension should be FORCE"
             );
         }
@@ -251,7 +252,7 @@ fn chain_step9_energy() {
         .values
         .get(&id)
         .unwrap_or_else(|| panic!("'chain_E' not found"));
-    let expected_dim = reify_types::dimension::FORCE.mul(&DimensionVector::LENGTH);
+    let expected_dim = reify_core::dimension::FORCE.mul(&DimensionVector::LENGTH);
     match val {
         Value::Scalar {
             si_value,
@@ -502,7 +503,7 @@ fn pressure_dimension() {
         .values
         .get(&id)
         .unwrap_or_else(|| panic!("'pressure' not found"));
-    let expected_dim = reify_types::dimension::FORCE.div(&DimensionVector::AREA);
+    let expected_dim = reify_core::dimension::FORCE.div(&DimensionVector::AREA);
     match val {
         Value::Scalar {
             si_value,
@@ -531,7 +532,7 @@ fn power_dimension() {
         .values
         .get(&id)
         .unwrap_or_else(|| panic!("'power' not found"));
-    let expected_dim = reify_types::dimension::FORCE
+    let expected_dim = reify_core::dimension::FORCE
         .mul(&DimensionVector::LENGTH)
         .div(&DimensionVector::TIME);
     match val {
@@ -562,7 +563,7 @@ fn gravitational_pe_dimension() {
         .values
         .get(&id)
         .unwrap_or_else(|| panic!("'grav_pe' not found"));
-    let expected_dim = reify_types::dimension::FORCE.mul(&DimensionVector::LENGTH);
+    let expected_dim = reify_core::dimension::FORCE.mul(&DimensionVector::LENGTH);
     match val {
         Value::Scalar {
             si_value,
@@ -591,7 +592,7 @@ fn spring_energy_dimension() {
         .values
         .get(&id)
         .unwrap_or_else(|| panic!("'spring_e' not found"));
-    let expected_dim = reify_types::dimension::FORCE.mul(&DimensionVector::LENGTH);
+    let expected_dim = reify_core::dimension::FORCE.mul(&DimensionVector::LENGTH);
     match val {
         Value::Scalar {
             si_value,

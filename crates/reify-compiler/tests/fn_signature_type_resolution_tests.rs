@@ -11,7 +11,7 @@
 //! like `MaterialSpec`, `ElasticOptions`, `ElasticResult`).
 
 use reify_test_support::{compile_source, compile_source_with_stdlib};
-use reify_types::{Severity, Type};
+use reify_core::{Severity, Type};
 
 /// Module-local structure name in a fn parameter resolves to
 /// `Type::StructureRef("MyS")` with zero Error diagnostics.

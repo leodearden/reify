@@ -6,7 +6,8 @@
 //! All tests are guarded by `reify_kernel_occt::OCCT_AVAILABLE` and are skipped
 //! if the OCCT library is not present.
 
-use reify_types::{ExportFormat, ModulePath};
+use reify_core::ModulePath;
+use reify_ir::ExportFormat;
 
 /// Run a boolean-ops source string through the full pipeline and return the STEP output.
 /// Returns None if OCCT is not available.
@@ -29,7 +30,7 @@ fn run_boolean_e2e(source: &str) -> Option<String> {
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
@@ -135,7 +136,7 @@ fn boolean_multi_realization_nested_e2e() {
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
@@ -171,7 +172,7 @@ fn boolean_multi_realization_nested_e2e() {
     let geom_errors: Vec<_> = result
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(geom_errors.is_empty(), "geometry errors: {:?}", geom_errors);
 
@@ -226,7 +227,7 @@ fn boolean_multi_realization_step_index_e2e() {
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
@@ -250,7 +251,7 @@ fn boolean_multi_realization_step_index_e2e() {
     let geom_errors: Vec<_> = result
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(geom_errors.is_empty(), "geometry errors: {:?}", geom_errors);
 

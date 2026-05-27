@@ -1,5 +1,6 @@
 use reify_compiler::{CompiledField, CompiledFieldSource};
-use reify_types::{CompiledExpr, ContentHash, Type};
+use reify_core::{ContentHash, Type};
+use reify_ir::CompiledExpr;
 
 // --- CompiledFieldBuilder ---
 
@@ -10,7 +11,7 @@ pub struct CompiledFieldBuilder {
     domain_type: Type,
     codomain_type: Type,
     source: Option<CompiledFieldSource>,
-    annotations: Vec<reify_types::Annotation>,
+    annotations: Vec<reify_ir::Annotation>,
 }
 
 impl CompiledFieldBuilder {
@@ -26,13 +27,13 @@ impl CompiledFieldBuilder {
     }
 
     /// Push a single annotation onto this builder.
-    pub fn annotation(mut self, ann: reify_types::Annotation) -> Self {
+    pub fn annotation(mut self, ann: reify_ir::Annotation) -> Self {
         self.annotations.push(ann);
         self
     }
 
     /// Replace all annotations with the given vec.
-    pub fn annotations(mut self, anns: Vec<reify_types::Annotation>) -> Self {
+    pub fn annotations(mut self, anns: Vec<reify_ir::Annotation>) -> Self {
         self.annotations = anns;
         self
     }
@@ -108,12 +109,12 @@ impl CompiledFieldBuilder {
 mod annotation_tests {
     use super::*;
     use crate::builders::{ann_str, annotation, annotation_with_args};
-    use reify_types::{DEPRECATED_ANNOTATION, TEST_ANNOTATION};
+    use reify_core::{DEPRECATED_ANNOTATION, TEST_ANNOTATION};
 
     #[test]
     fn compiled_field_builder_single_annotation() {
         let field =
-            CompiledFieldBuilder::new("f", reify_types::Type::Geometry, reify_types::Type::Real)
+            CompiledFieldBuilder::new("f", reify_core::Type::Geometry, reify_core::Type::Real)
                 .imported()
                 .annotation(annotation(DEPRECATED_ANNOTATION))
                 .build();
@@ -124,7 +125,7 @@ mod annotation_tests {
     #[test]
     fn compiled_field_builder_annotation_with_args() {
         let field =
-            CompiledFieldBuilder::new("f", reify_types::Type::Geometry, reify_types::Type::Real)
+            CompiledFieldBuilder::new("f", reify_core::Type::Geometry, reify_core::Type::Real)
                 .imported()
                 .annotation(annotation_with_args(
                     DEPRECATED_ANNOTATION,
@@ -138,7 +139,7 @@ mod annotation_tests {
     #[test]
     fn compiled_field_builder_annotations_replace_all() {
         let field =
-            CompiledFieldBuilder::new("f", reify_types::Type::Geometry, reify_types::Type::Real)
+            CompiledFieldBuilder::new("f", reify_core::Type::Geometry, reify_core::Type::Real)
                 .imported()
                 .annotations(vec![annotation("a"), annotation("b")])
                 .build();
@@ -148,11 +149,11 @@ mod annotation_tests {
     #[test]
     fn compiled_field_builder_annotation_does_not_affect_content_hash() {
         let f1 =
-            CompiledFieldBuilder::new("f", reify_types::Type::Geometry, reify_types::Type::Real)
+            CompiledFieldBuilder::new("f", reify_core::Type::Geometry, reify_core::Type::Real)
                 .imported()
                 .build();
         let f2 =
-            CompiledFieldBuilder::new("f", reify_types::Type::Geometry, reify_types::Type::Real)
+            CompiledFieldBuilder::new("f", reify_core::Type::Geometry, reify_core::Type::Real)
                 .imported()
                 .annotation(annotation(TEST_ANNOTATION))
                 .build();
@@ -164,7 +165,7 @@ mod annotation_tests {
 mod tests {
     use super::*;
     use crate::builders::literal;
-    use reify_types::Value;
+    use reify_ir::Value;
 
     #[test]
     fn compiled_field_builder_analytical_produces_field() {

@@ -5,7 +5,8 @@ use std::collections::HashMap;
 use serde::ser::Error as SerError;
 use serde::{Deserialize, Serialize};
 
-use reify_types::{DeterminacyState, DiagnosticInfo, Freshness, Value};
+use reify_core::DiagnosticInfo;
+use reify_ir::{DeterminacyState, Freshness, Value};
 
 /// Custom serializer for `Vec<f32>` that rejects non-finite values.
 ///
@@ -889,7 +890,7 @@ pub struct FeaCaseChanged {
 #[cfg(test)]
 mod format_value_range_tests {
     use super::*;
-    use reify_types::Value;
+    use reify_ir::Value;
 
     #[test]
     fn both_bounds_exclusive() {
@@ -982,11 +983,11 @@ mod format_value_range_tests {
         // because Range display does not propagate unit info from its bounds.
         let lower = Value::Scalar {
             si_value: 0.001,
-            dimension: reify_types::DimensionVector::LENGTH,
+            dimension: reify_core::DimensionVector::LENGTH,
         };
         let upper = Value::Scalar {
             si_value: 0.01,
-            dimension: reify_types::DimensionVector::LENGTH,
+            dimension: reify_core::DimensionVector::LENGTH,
         };
         let range = Value::range(Some(lower), Some(upper), true, false);
         let (formatted, unit) = format_value(&range);

@@ -17,7 +17,7 @@ use reify_test_support::{
     make_engine, manufacturing_purpose, my_design_template, step_input_template,
     step_output_template,
 };
-use reify_types::{DiagnosticCode, ModulePath, Severity};
+use reify_core::{DiagnosticCode, ModulePath, Severity};
 
 /// Pinned by the imported-geometry-promise contract: after `eval()`, the
 /// `STEPInput` template's `param tolerance : Length = X m` declaration

@@ -6,7 +6,8 @@
 //! and evaluate without violations.
 
 use reify_test_support::{check_source, eval_source};
-use reify_types::{Satisfaction, Value, ValueCellId};
+use reify_core::ValueCellId;
+use reify_ir::{Satisfaction, Value};
 
 // ─── step-9: self.param eval produces correct value ───
 

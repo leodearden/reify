@@ -12,7 +12,7 @@
 #![cfg(has_occt)]
 
 use reify_kernel_occt::OcctKernel;
-use reify_types::{GeometryHandleId, QueryError};
+use reify_ir::{GeometryHandleId, QueryError};
 
 /// `vertex_point` on a stored vertex returns the exact coordinates the
 /// fixture placed it at, within `1e-9` (FP round-trip through the C++ `gp_Pnt`

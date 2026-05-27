@@ -5,11 +5,8 @@ use reify_compiler::{
     CompiledGuardedGroup, EntityKind, RealizationDecl, SolverHint, SubComponentDecl,
     TopologyTemplate, ValueCellDecl, ValueCellKind,
 };
-use reify_syntax;
-use reify_types::{
-    CompiledExpr, ConstraintNodeId, ContentHash, RealizationNodeId, SourceSpan, Type, TypeParam,
-    ValueCellId,
-};
+use reify_core::{ConstraintNodeId, ContentHash, RealizationNodeId, SourceSpan, Type, ValueCellId};
+use reify_ir::{CompiledExpr, TypeParam};
 
 /// Builder for `TopologyTemplate`.
 pub struct TopologyTemplateBuilder {
@@ -25,11 +22,11 @@ pub struct TopologyTemplateBuilder {
     sub_components: Vec<SubComponentDecl>,
     guarded_groups: Vec<CompiledGuardedGroup>,
     structure_controlling: HashSet<ValueCellId>,
-    objective: Option<reify_types::OptimizationObjective>,
+    objective: Option<reify_ir::OptimizationObjective>,
     meta: std::collections::HashMap<String, String>,
     is_recursive: bool,
-    annotations: Vec<reify_types::Annotation>,
-    pragmas: Vec<reify_syntax::Pragma>,
+    annotations: Vec<reify_ir::Annotation>,
+    pragmas: Vec<reify_ast::Pragma>,
     forall_templates: Vec<CompiledForallTemplate>,
     connections: Vec<CompiledConnection>,
 }
@@ -87,13 +84,13 @@ impl TopologyTemplateBuilder {
     }
 
     /// Push a single annotation onto this builder.
-    pub fn annotation(mut self, ann: reify_types::Annotation) -> Self {
+    pub fn annotation(mut self, ann: reify_ir::Annotation) -> Self {
         self.annotations.push(ann);
         self
     }
 
     /// Replace all annotations with the given vec.
-    pub fn annotations(mut self, anns: Vec<reify_types::Annotation>) -> Self {
+    pub fn annotations(mut self, anns: Vec<reify_ir::Annotation>) -> Self {
         self.annotations = anns;
         self
     }
@@ -268,7 +265,7 @@ impl TopologyTemplateBuilder {
         self
     }
 
-    pub fn objective(mut self, obj: reify_types::OptimizationObjective) -> Self {
+    pub fn objective(mut self, obj: reify_ir::OptimizationObjective) -> Self {
         self.objective = Some(obj);
         self
     }
@@ -459,7 +456,7 @@ impl TopologyTemplateBuilder {
 mod annotation_tests {
     use super::*;
     use crate::builders::{ann_str, annotation, annotation_with_args};
-    use reify_types::{DEPRECATED_ANNOTATION, OPTIMIZED_ANNOTATION};
+    use reify_core::{DEPRECATED_ANNOTATION, OPTIMIZED_ANNOTATION};
 
     #[test]
     fn topology_builder_single_annotation() {
@@ -540,7 +537,7 @@ mod tests {
 
     #[test]
     fn topology_with_type_param() {
-        use reify_types::{TraitBound, TraitRef};
+        use reify_ir::{TraitBound, TraitRef};
         let param = TypeParam {
             name: "T".to_string(),
             bounds: vec![TraitBound {

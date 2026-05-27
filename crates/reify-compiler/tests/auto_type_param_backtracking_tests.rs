@@ -53,10 +53,8 @@ use reify_compiler::auto_type_param::{
 };
 use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
 use reify_test_support::{MockConstraintChecker, TopologyTemplateBuilder, parse_and_compile};
-use reify_types::{
-    CompiledExpr, CompiledFunction, DiagnosticCode, Satisfaction, Severity, SourceSpan, Type,
-    Value, ValueCellId,
-};
+use reify_core::{DiagnosticCode, Severity, SourceSpan, Type, ValueCellId};
+use reify_ir::{CompiledExpr, CompiledFunction, Satisfaction, Value};
 
 /// Build the `(template_registry, trait_registry)` pair that
 /// `enumerate_candidates` consumes, borrowing from a single compiled module.

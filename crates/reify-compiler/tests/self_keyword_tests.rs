@@ -15,7 +15,7 @@
 //! is a cross-file artifact of the original task-153 plan.
 
 use reify_test_support::{compile_source, parse_and_compile};
-use reify_types::{Severity, ValueCellId};
+use reify_core::{Severity, ValueCellId};
 
 /// Returns `true` if any string in `messages` contains `word` as a whole token.
 ///
@@ -44,17 +44,17 @@ fn msgs_mention_self(msgs: &[String]) -> bool {
 /// Panics with a descriptive message if the type does not match.
 /// Extracted from duplicated match-assert blocks that appeared in the three
 /// collection-sub fallback tests added in task 1770.
-fn assert_list_of_struct_ref(ty: &reify_types::Type, expected_name: &str, label: &str) {
+fn assert_list_of_struct_ref(ty: &reify_core::Type, expected_name: &str, label: &str) {
     let prefix = if label.is_empty() {
         String::new()
     } else {
         format!("{} ", label)
     };
     match ty {
-        reify_types::Type::List(inner) => {
+        reify_core::Type::List(inner) => {
             assert_eq!(
                 inner.as_ref(),
-                &reify_types::Type::StructureRef(expected_name.to_string()),
+                &reify_core::Type::StructureRef(expected_name.to_string()),
                 "{}expected List(StructureRef({:?})), got List({:?})",
                 prefix,
                 expected_name,
@@ -110,7 +110,7 @@ fn test_mentions_word() {
 #[test]
 fn test_assert_list_of_struct_ref_valid() {
     // Calling with a List(StructureRef("Foo")) and expected name "Foo" should not panic.
-    let ty = reify_types::Type::List(Box::new(reify_types::Type::StructureRef("Foo".to_string())));
+    let ty = reify_core::Type::List(Box::new(reify_core::Type::StructureRef("Foo".to_string())));
     assert_list_of_struct_ref(&ty, "Foo", "");
 }
 
@@ -118,7 +118,7 @@ fn test_assert_list_of_struct_ref_valid() {
 #[should_panic(expected = "expected List type")]
 fn test_assert_list_of_struct_ref_non_list_panics() {
     // Calling with a non-List type should panic with "expected List type".
-    let ty = reify_types::Type::Bool;
+    let ty = reify_core::Type::Bool;
     assert_list_of_struct_ref(&ty, "Foo", "");
 }
 
@@ -127,7 +127,7 @@ fn test_assert_list_of_struct_ref_non_list_panics() {
 fn test_assert_list_of_struct_ref_wrong_name_panics() {
     // Calling with List(StructureRef("Bar")) but expecting "Foo" should panic with
     // a message that includes "expected List(StructureRef".
-    let ty = reify_types::Type::List(Box::new(reify_types::Type::StructureRef("Bar".into())));
+    let ty = reify_core::Type::List(Box::new(reify_core::Type::StructureRef("Bar".into())));
     assert_list_of_struct_ref(&ty, "Foo", "");
 }
 
@@ -138,7 +138,7 @@ fn test_assert_list_of_struct_ref_label_in_panic() {
     // message that includes the label prefix.  This exercises the `prefix` formatting
     // path (lines 48-52) together with the outer `other =>` panic branch (line 64),
     // producing "ctx: expected List type, got: Bool".
-    let ty = reify_types::Type::Bool;
+    let ty = reify_core::Type::Bool;
     assert_list_of_struct_ref(&ty, "Foo", "ctx:");
 }
 
@@ -315,7 +315,7 @@ fn bare_self_as_entity_reference() {
         .expect("me value cell");
     assert_eq!(
         me_cell.cell_type,
-        reify_types::Type::StructureRef("S".to_string()),
+        reify_core::Type::StructureRef("S".to_string()),
         "bare `self` should resolve to StructureRef(\"S\")"
     );
 }
@@ -397,7 +397,7 @@ fn self_error_in_fn_body() {
     let source = r#"fn f(x: Scalar) -> Scalar {
     self.x
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_self"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_self"));
 
     if parsed.errors.is_empty() {
         // Parsing succeeded — compiler must reject `self` in fn body
@@ -443,7 +443,7 @@ fn self_error_at_module_scope() {
     // The parser rejects `self` at module scope before the compiler sees it,
     // which is the correct behavior: self is never valid outside an entity body.
     let source = r#"let x = self.y"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_self"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_self"));
 
     if parsed.errors.is_empty() {
         // If parsing unexpectedly succeeds, compilation must still reject it
@@ -510,7 +510,7 @@ structure S {
         .expect("x default_expr")
         .result_type;
     assert!(
-        matches!(x_ty, reify_types::Type::List(_)),
+        matches!(x_ty, reify_core::Type::List(_)),
         "self.items should have List type, got: {:?}",
         x_ty
     );
@@ -577,7 +577,7 @@ structure S {
         .expect("b value cell");
     assert_eq!(
         b_cell.cell_type,
-        reify_types::Type::StructureRef("Bolt".to_string()),
+        reify_core::Type::StructureRef("Bolt".to_string()),
         "self.bolt on a non-collection sub should resolve to StructureRef(\"Bolt\")"
     );
 }
@@ -663,7 +663,7 @@ fn self_dot_param_inside_lambda_captures_entity_param() {
         .expect("f should have default_expr");
 
     match &f_expr.kind {
-        reify_types::CompiledExprKind::Lambda { captures, body, .. } => {
+        reify_ir::CompiledExprKind::Lambda { captures, body, .. } => {
             let expected_id = ValueCellId::new("S", "x");
             assert!(
                 captures.contains(&expected_id),
@@ -713,7 +713,7 @@ fn bare_self_inside_lambda_captures_entity_ref() {
         .expect("f should have default_expr");
 
     match &f_expr.kind {
-        reify_types::CompiledExprKind::Lambda { captures, body, .. } => {
+        reify_ir::CompiledExprKind::Lambda { captures, body, .. } => {
             let expected_self_id = ValueCellId::new("S", "__self");
             assert!(
                 captures.contains(&expected_self_id),
@@ -723,7 +723,7 @@ fn bare_self_inside_lambda_captures_entity_ref() {
             // The lambda body is `self`, which resolves to StructureRef("S").
             assert_eq!(
                 body.result_type,
-                reify_types::Type::StructureRef("S".to_string()),
+                reify_core::Type::StructureRef("S".to_string()),
                 "lambda body result_type should be StructureRef(\"S\") for bare self"
             );
         }
@@ -743,7 +743,7 @@ fn self_inside_lambda_in_fn_body_errors() {
     let g = |y| y + self.x
     g(x)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_self"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_self"));
 
     if parsed.errors.is_empty() {
         // Parsing succeeded — the compiler must reject `self` inside the lambda body.
@@ -851,12 +851,12 @@ structure S {
         .result_type;
 
     assert!(
-        matches!(self_ty, reify_types::Type::List(_)),
+        matches!(self_ty, reify_core::Type::List(_)),
         "via_self should have List type, got: {:?}",
         self_ty
     );
     assert!(
-        matches!(bare_ty, reify_types::Type::List(_)),
+        matches!(bare_ty, reify_core::Type::List(_)),
         "via_bare should have List type, got: {:?}",
         bare_ty
     );
@@ -1164,8 +1164,8 @@ structure S {
     // (Type::Scalar { dimension: DimensionVector::LENGTH })
     assert_eq!(
         d_cell.cell_type,
-        reify_types::Type::Scalar {
-            dimension: reify_types::DimensionVector::LENGTH
+        reify_core::Type::Scalar {
+            dimension: reify_core::DimensionVector::LENGTH
         },
         "self.items.diameter error fallback should be Scalar{{LENGTH}}, got {:?}",
         d_cell.cell_type

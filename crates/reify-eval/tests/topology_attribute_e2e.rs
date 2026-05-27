@@ -38,11 +38,8 @@ use reify_eval::{
     resolve_unique_by_attribute,
 };
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
-use reify_types::{
-    BooleanOpHistoryRecords, BooleanOpParents, Diagnostic, DiagnosticCode, ExportFormat, FeatureId,
-    GeometryHandleId, GeometryOp, ModEntry, ModulePath, RealizationNodeId, Role, Severity,
-    SourceSpan, TopologyAttribute, TopologyAttributeTable, Value,
-};
+use reify_core::{Diagnostic, DiagnosticCode, ModulePath, RealizationNodeId, Severity, SourceSpan};
+use reify_ir::{BooleanOpHistoryRecords, BooleanOpParents, ExportFormat, FeatureId, GeometryHandleId, GeometryOp, ModEntry, Role, TopologyAttribute, TopologyAttributeTable, Value};
 
 /// 10×10×10 mm box, expressed in SI metres at the kernel boundary.
 /// Same convention as `feature_tag_e2e.rs` and the other OCCT tests.

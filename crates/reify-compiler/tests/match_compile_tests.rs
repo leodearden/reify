@@ -8,7 +8,7 @@ structure S {
     let d = Direction.In
     let x = match d { In => 1, Out => 2, Bidi => 3 }
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_match"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_match"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -21,7 +21,7 @@ structure S {
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(
         errors.is_empty(),
@@ -39,10 +39,10 @@ structure S {
 
     let x_expr = x_cell.default_expr.as_ref().expect("let should have expr");
     match &x_expr.kind {
-        reify_types::CompiledExprKind::Match { discriminant, arms } => {
+        reify_ir::CompiledExprKind::Match { discriminant, arms } => {
             // Discriminant should be a ValueRef to 'd'
             match &discriminant.kind {
-                reify_types::CompiledExprKind::ValueRef(id) => {
+                reify_ir::CompiledExprKind::ValueRef(id) => {
                     assert_eq!(id.member, "d");
                 }
                 other => panic!("expected ValueRef, got {:?}", other),
@@ -61,7 +61,7 @@ structure S {
     let d = Direction.In
     let x = match d { In => 1, Out => 2 }
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_missing"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_missing"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -74,7 +74,7 @@ structure S {
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(
         !errors.is_empty(),
@@ -98,7 +98,7 @@ structure S {
     let d = Direction.In
     let x = match d { In => 1, _ => 0 }
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_wildcard"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_wildcard"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -111,7 +111,7 @@ structure S {
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(
         errors.is_empty(),

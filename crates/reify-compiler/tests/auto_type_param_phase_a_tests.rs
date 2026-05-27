@@ -18,7 +18,7 @@ use reify_compiler::auto_type_param::{
 };
 use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
 use reify_test_support::parse_and_compile;
-use reify_types::{DiagnosticCode, Severity, SourceSpan};
+use reify_core::{DiagnosticCode, Severity, SourceSpan};
 
 /// Build the `(template_registry, trait_registry)` pair that
 /// `enumerate_candidates` consumes, borrowing from a single compiled module.

@@ -58,8 +58,8 @@ fn rejected_insert_with_rotating_options_hash_does_not_allocate_entity_string() 
     );
 
     const N_HASHES: usize = 32;
-    let hashes: Vec<reify_types::ContentHash> = (0..N_HASHES)
-        .map(|i| reify_types::ContentHash::of_u64(i as u64))
+    let hashes: Vec<reify_core::ContentHash> = (0..N_HASHES)
+        .map(|i| reify_core::ContentHash::of_u64(i as u64))
         .collect();
 
     let mut cache = reify_eval::RealizationCache::<u32>::new();
@@ -68,7 +68,7 @@ fn rejected_insert_with_rotating_options_hash_does_not_allocate_entity_string() 
     // The first call allocates the entity String once; each subsequent call takes
     // the get_mut fast path and allocates only the new ToleranceBucket Vec.
     for (i, &hash) in hashes.iter().enumerate() {
-        let inserted = cache.insert(entity, reify_types::ReprKind::BRep, 0.001, hash, i as u32);
+        let inserted = cache.insert(entity, reify_ir::ReprKind::BRep, 0.001, hash, i as u32);
         assert!(inserted, "warm-up insert at hash {i} must succeed");
     }
 
@@ -80,7 +80,7 @@ fn rejected_insert_with_rotating_options_hash_does_not_allocate_entity_string() 
     // With the fix:    get_mut(entity) finds the key → zero entity String allocs.
     // Without the fix: entity.to_owned() runs → N entity String allocs (≈ 32).
     for &hash in &hashes {
-        let inserted = cache.insert(entity, reify_types::ReprKind::BRep, 0.1, hash, 999u32);
+        let inserted = cache.insert(entity, reify_ir::ReprKind::BRep, 0.1, hash, 999u32);
         assert!(
             !inserted,
             "looser insert must be rejected by ToleranceBucket"

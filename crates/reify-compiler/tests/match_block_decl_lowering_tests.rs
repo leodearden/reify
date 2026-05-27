@@ -9,7 +9,7 @@
 //! `lower_match_arm_decl_group` (ts_parser.rs, task 3564).
 
 use reify_compiler::GuardedDeclGroup;
-use reify_types::{ModulePath, Type};
+use reify_core::{ModulePath, Type};
 
 /// Source-based rewrite of `match_arm_decl_group_registers_cluster_without_duplicate_name_diagnostics`.
 ///
@@ -284,7 +284,7 @@ structure Bolt {
         .declarations
         .iter()
         .find_map(|d| match d {
-            reify_syntax::Declaration::Structure(s) if s.name == "Bolt" => Some(s),
+            reify_ast::Declaration::Structure(s) if s.name == "Bolt" => Some(s),
             _ => None,
         })
         .expect("Bolt structure should be in parsed declarations");
@@ -293,7 +293,7 @@ structure Bolt {
         .members
         .iter()
         .find_map(|m| match m {
-            reify_syntax::MemberDecl::MatchArmDeclGroup(g) => Some(g),
+            reify_ast::MemberDecl::MatchArmDeclGroup(g) => Some(g),
             _ => None,
         })
         .expect("match_arm_decl_block should be lowered to MatchArmDeclGroup in the parsed AST");

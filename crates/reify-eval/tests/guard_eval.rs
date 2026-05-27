@@ -15,7 +15,8 @@ use reify_test_support::{
     CompiledModuleBuilder, MockConstraintSolver, SequencedMockConstraintSolver,
     TopologyTemplateBuilder, mm, parse_and_compile, wave2_flip_fixture,
 };
-use reify_types::*;
+use reify_core::*;
+use reify_ir::*;
 
 use reify_compiler::{CompiledConstraint, ValueCellDecl, ValueCellKind, Visibility};
 

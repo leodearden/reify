@@ -12,16 +12,16 @@ pub(crate) struct EntityDefRef<'a> {
     /// `TopologyTemplate::doc` by `compile_entity`.
     pub(crate) doc: Option<String>,
     pub(crate) is_pub: bool,
-    pub(crate) type_params: &'a [reify_syntax::TypeParamDecl],
-    pub(crate) trait_bounds: &'a [reify_syntax::TraitBoundRef],
-    pub(crate) members: &'a [reify_syntax::MemberDecl],
-    pub(crate) annotations: &'a [reify_syntax::Annotation],
-    pub(crate) pragmas: &'a [reify_syntax::Pragma],
+    pub(crate) type_params: &'a [reify_ast::TypeParamDecl],
+    pub(crate) trait_bounds: &'a [reify_ast::TraitBoundRef],
+    pub(crate) members: &'a [reify_ast::MemberDecl],
+    pub(crate) annotations: &'a [reify_ast::Annotation],
+    pub(crate) pragmas: &'a [reify_ast::Pragma],
     pub(crate) span: SourceSpan,
 }
 
-impl<'a> From<&'a reify_syntax::StructureDef> for EntityDefRef<'a> {
-    fn from(s: &'a reify_syntax::StructureDef) -> Self {
+impl<'a> From<&'a reify_ast::StructureDef> for EntityDefRef<'a> {
+    fn from(s: &'a reify_ast::StructureDef) -> Self {
         EntityDefRef {
             name: &s.name,
             doc: s.doc.clone(),
@@ -36,8 +36,8 @@ impl<'a> From<&'a reify_syntax::StructureDef> for EntityDefRef<'a> {
     }
 }
 
-impl<'a> From<&'a reify_syntax::OccurrenceDef> for EntityDefRef<'a> {
-    fn from(o: &'a reify_syntax::OccurrenceDef) -> Self {
+impl<'a> From<&'a reify_ast::OccurrenceDef> for EntityDefRef<'a> {
+    fn from(o: &'a reify_ast::OccurrenceDef) -> Self {
         EntityDefRef {
             name: &o.name,
             doc: o.doc.clone(),
@@ -67,10 +67,10 @@ impl<'a> From<&'a reify_syntax::OccurrenceDef> for EntityDefRef<'a> {
 /// transparently; substitution applies to condition, then-branch, and
 /// else-branch alike.
 pub(crate) fn substitute_expr(
-    expr: &reify_syntax::Expr,
-    bindings: &HashMap<String, reify_syntax::Expr>,
-) -> reify_syntax::Expr {
-    use reify_syntax::{Expr, ExprKind, MatchArm};
+    expr: &reify_ast::Expr,
+    bindings: &HashMap<String, reify_ast::Expr>,
+) -> reify_ast::Expr {
+    use reify_ast::{Expr, ExprKind, MatchArm};
     let span = expr.span;
     let new_kind = match &expr.kind {
         // Leaf variants — no sub-expressions to recurse into.
@@ -332,7 +332,7 @@ fn emit_outside_match_collision(
 pub(crate) fn compile_entity(
     structure: &EntityDefRef<'_>,
     entity_kind: EntityKind,
-    enum_defs: &[reify_types::EnumDef],
+    enum_defs: &[reify_ir::EnumDef],
     functions: &[CompiledFunction],
     trait_registry: &HashMap<String, &CompiledTrait>,
     structure_names: &HashSet<String>,
@@ -473,7 +473,7 @@ pub(crate) fn compile_entity(
     let mut outside_decl_spans: HashMap<String, SourceSpan> = HashMap::new();
     for member in structure.members {
         match member {
-            reify_syntax::MemberDecl::Param(param) => {
+            reify_ast::MemberDecl::Param(param) => {
                 let ty = if let Some(type_expr) = &param.type_expr {
                     match resolve_type_expr_with_aliases(
                         type_expr,
@@ -486,7 +486,7 @@ pub(crate) fn compile_entity(
                         Some(t) => t,
                         None => {
                             // Check if it's an enum type defined in the same module or prelude
-                            if let reify_syntax::TypeExprKind::Named { name, type_args } =
+                            if let reify_ast::TypeExprKind::Named { name, type_args } =
                                 &type_expr.kind
                                 && let Some(t) = resolve_enum_type(name, enum_defs)
                             {
@@ -554,7 +554,7 @@ pub(crate) fn compile_entity(
                     );
                 }
             }
-            reify_syntax::MemberDecl::Let(let_decl) => {
+            reify_ast::MemberDecl::Let(let_decl) => {
                 // For lets, we need to infer the type from the expression.
                 // Geometry lets produce realizations (not value cells) but still
                 // need to be registered in scope so subsequent lets can reference them.
@@ -584,7 +584,7 @@ pub(crate) fn compile_entity(
                     );
                 }
             }
-            reify_syntax::MemberDecl::GuardedGroup(g) => {
+            reify_ast::MemberDecl::GuardedGroup(g) => {
                 // `known_geometry_lets` is intentionally shared across both branches
                 // (consistent with the same pattern in register_guarded_names/guards.rs).
                 register_guarded_names(
@@ -610,7 +610,7 @@ pub(crate) fn compile_entity(
                     &mut known_geometry_lets,
                 );
             }
-            reify_syntax::MemberDecl::MatchArmDeclGroup(m) => {
+            reify_ast::MemberDecl::MatchArmDeclGroup(m) => {
                 // Pre-pass: register per-arm member names so that the main pass
                 // and any forward references can resolve them.
                 // Sub-component type entries (used for `self.sub.member` qualified
@@ -677,7 +677,7 @@ pub(crate) fn compile_entity(
 
                 for arm in &m.arms {
                     match &*arm.member {
-                        reify_syntax::MemberDecl::Sub(sub) => {
+                        reify_ast::MemberDecl::Sub(sub) => {
                             scope
                                 .sub_component_types
                                 .insert(sub.name.clone(), sub.structure_name.clone());
@@ -733,7 +733,7 @@ pub(crate) fn compile_entity(
                     }
                 }
             }
-            reify_syntax::MemberDecl::Port(port_decl) => {
+            reify_ast::MemberDecl::Port(port_decl) => {
                 if let Some(first_span) = port_names.get(&port_decl.name) {
                     // Duplicate port name — emit error and skip registration
                     diagnostics.push(
@@ -752,7 +752,7 @@ pub(crate) fn compile_entity(
                 // Register port body members with composite names: port_name.member_name
                 for port_member in &port_decl.members {
                     match port_member {
-                        reify_syntax::MemberDecl::Param(param) => {
+                        reify_ast::MemberDecl::Param(param) => {
                             let composite_name = format!("{}.{}", port_decl.name, param.name);
                             let ty = if let Some(type_expr) = &param.type_expr {
                                 resolve_type_expr_with_aliases(
@@ -782,7 +782,7 @@ pub(crate) fn compile_entity(
                             let id = ValueCellId::new(entity_name, &composite_name);
                             scope.names.insert(composite_name, (id, ty, None));
                         }
-                        reify_syntax::MemberDecl::Let(let_decl) => {
+                        reify_ast::MemberDecl::Let(let_decl) => {
                             let composite_name = format!("{}.{}", port_decl.name, let_decl.name);
                             let id = ValueCellId::new(entity_name, &composite_name);
                             scope.names.insert(composite_name, (id, Type::Real, None));
@@ -791,7 +791,7 @@ pub(crate) fn compile_entity(
                     }
                 }
             }
-            reify_syntax::MemberDecl::Sub(sub) => {
+            reify_ast::MemberDecl::Sub(sub) => {
                 // Register sub-component type info for instance qualified access.
                 scope
                     .sub_component_types
@@ -882,7 +882,7 @@ pub(crate) fn compile_entity(
                     );
                 }
             }
-            reify_syntax::MemberDecl::MetaBlock(meta) => {
+            reify_ast::MemberDecl::MetaBlock(meta) => {
                 if let Some(first_span) = first_meta_span {
                     diagnostics.push(
                         Diagnostic::error("duplicate meta block".to_string())
@@ -973,7 +973,7 @@ pub(crate) fn compile_entity(
                     .type_args
                     .iter()
                     .map(|ta| {
-                        if let reify_syntax::TypeExprKind::Named { name, .. } = &ta.kind {
+                        if let reify_ast::TypeExprKind::Named { name, .. } = &ta.kind {
                             resolve_type_name(name).unwrap_or_else(|| {
                                 if type_param_names.contains(name) {
                                     Type::TypeParam(name.clone())
@@ -1021,11 +1021,11 @@ pub(crate) fn compile_entity(
     // `compile_count_constraint_before_sub_declaration` in collection_sub_tests).
     // Processing forall in source order would race with that population.
     // Task 2364: per-element elaboration moved to a deferred sub-pass below.
-    let mut pending_forall_constraint: Vec<&reify_syntax::ForallConstraintDecl> = Vec::new();
-    let mut pending_forall_connect: Vec<&reify_syntax::ForallConnectDecl> = Vec::new();
+    let mut pending_forall_constraint: Vec<&reify_ast::ForallConstraintDecl> = Vec::new();
+    let mut pending_forall_connect: Vec<&reify_ast::ForallConnectDecl> = Vec::new();
     for member in structure.members {
         match member {
-            reify_syntax::MemberDecl::Param(param) => {
+            reify_ast::MemberDecl::Param(param) => {
                 let id = ValueCellId::new(entity_name, &param.name);
                 let cell_type = scope
                     .resolve(&param.name)
@@ -1105,7 +1105,7 @@ pub(crate) fn compile_entity(
                     value_cells.push(decl);
                 }
             }
-            reify_syntax::MemberDecl::Let(let_decl) => {
+            reify_ast::MemberDecl::Let(let_decl) => {
                 // Skip geometry-producing function calls (and ident aliases to them)
                 if is_geometry_let(&let_decl.value, functions, &known_geometry_lets) {
                     continue;
@@ -1156,7 +1156,7 @@ pub(crate) fn compile_entity(
                 //   (compiler-side; asserts Warning severity + keywords)
                 // - `cross_sub_geometry_e2e.rs::bare_cross_sub_geometry_access_is_documented_v01_value_cell_only`
                 //   (eval-side; filters by Severity::Error only — Warning is invisible to it)
-                if let reify_types::CompiledExprKind::CrossSubGeometryRef(vid) = &compiled_expr.kind
+                if let reify_ir::CompiledExprKind::CrossSubGeometryRef(vid) = &compiled_expr.kind
                 {
                     // Extract `<sub>` from the synthetic entity stamp `"<parent>.<sub>"`.
                     // Entity names cannot contain '.' (the parser's identifier rule rejects
@@ -1226,7 +1226,7 @@ pub(crate) fn compile_entity(
                     value_cells.push(decl);
                 }
             }
-            reify_syntax::MemberDecl::Constraint(constraint) => {
+            reify_ast::MemberDecl::Constraint(constraint) => {
                 // Detect collection count constraint pattern:
                 //   `collection_name.count == expr`  or  `expr == collection_name.count`
                 if let Some((coll_name, count_expr)) =
@@ -1297,7 +1297,7 @@ pub(crate) fn compile_entity(
                     }
                 }
             }
-            reify_syntax::MemberDecl::Sub(sub) => {
+            reify_ast::MemberDecl::Sub(sub) => {
                 let compiled_args: Vec<(String, CompiledExpr)> = sub
                     .args
                     .iter()
@@ -1314,7 +1314,7 @@ pub(crate) fn compile_entity(
                     .type_args
                     .iter()
                     .map(|ta| {
-                        if let reify_syntax::TypeExprKind::Named { name, .. } = &ta.kind {
+                        if let reify_ast::TypeExprKind::Named { name, .. } = &ta.kind {
                             resolve_type_name(name).unwrap_or_else(|| {
                                 if type_param_names.contains(name) {
                                     Type::TypeParam(name.clone())
@@ -1412,17 +1412,17 @@ pub(crate) fn compile_entity(
                     content_hash: sub.content_hash,
                 });
             }
-            reify_syntax::MemberDecl::Minimize(min_decl) => {
+            reify_ast::MemberDecl::Minimize(min_decl) => {
                 let compiled_expr =
                     compile_expr(&min_decl.expr, &scope, enum_defs, functions, diagnostics);
                 objective = Some(OptimizationObjective::Minimize(compiled_expr));
             }
-            reify_syntax::MemberDecl::Maximize(max_decl) => {
+            reify_ast::MemberDecl::Maximize(max_decl) => {
                 let compiled_expr =
                     compile_expr(&max_decl.expr, &scope, enum_defs, functions, diagnostics);
                 objective = Some(OptimizationObjective::Maximize(compiled_expr));
             }
-            reify_syntax::MemberDecl::GuardedGroup(g) => {
+            reify_ast::MemberDecl::GuardedGroup(g) => {
                 compile_block_guard(
                     entity_name,
                     g,
@@ -1442,10 +1442,10 @@ pub(crate) fn compile_entity(
                     &known_geometry_lets,
                 );
             }
-            reify_syntax::MemberDecl::AssociatedType(_) => {
+            reify_ast::MemberDecl::AssociatedType(_) => {
                 // Associated type compilation deferred to a later milestone.
             }
-            reify_syntax::MemberDecl::Port(port_decl) => {
+            reify_ast::MemberDecl::Port(port_decl) => {
                 // Skip duplicate port names (already reported in first pass).
                 // The first occurrence is compiled; subsequent duplicates are skipped.
                 if duplicate_port_names.contains(&port_decl.name)
@@ -1457,7 +1457,7 @@ pub(crate) fn compile_entity(
                 }
                 let direction = port_decl
                     .direction
-                    .unwrap_or(reify_types::PortDirection::Bidi);
+                    .unwrap_or(reify_core::PortDirection::Bidi);
 
                 // Verify port type_name exists in the trait registry
                 if !trait_registry.contains_key(&port_decl.type_name) {
@@ -1478,7 +1478,7 @@ pub(crate) fn compile_entity(
 
                 for port_member in &port_decl.members {
                     match port_member {
-                        reify_syntax::MemberDecl::Param(param) => {
+                        reify_ast::MemberDecl::Param(param) => {
                             let composite_name = format!("{}.{}", port_decl.name, param.name);
                             let id = ValueCellId::new(entity_name, &composite_name);
                             let cell_type = scope
@@ -1530,7 +1530,7 @@ pub(crate) fn compile_entity(
                             };
                             port_members.push(decl);
                         }
-                        reify_syntax::MemberDecl::Let(let_decl) => {
+                        reify_ast::MemberDecl::Let(let_decl) => {
                             let composite_name = format!("{}.{}", port_decl.name, let_decl.name);
                             let mut compiled_expr = compile_expr(
                                 &let_decl.value,
@@ -1571,7 +1571,7 @@ pub(crate) fn compile_entity(
                                 span: let_decl.span,
                             });
                         }
-                        reify_syntax::MemberDecl::Constraint(constraint) => {
+                        reify_ast::MemberDecl::Constraint(constraint) => {
                             let compiled_expr = compile_expr(
                                 &constraint.expr,
                                 &scope,
@@ -1608,7 +1608,7 @@ pub(crate) fn compile_entity(
                     frame_expr,
                 });
             }
-            reify_syntax::MemberDecl::Connect(connect_decl) => {
+            reify_ast::MemberDecl::Connect(connect_decl) => {
                 let ctx = ConnectContext {
                     entity_name,
                     ports: &ports,
@@ -1639,7 +1639,7 @@ pub(crate) fn compile_entity(
                     &mut acc,
                 );
             }
-            reify_syntax::MemberDecl::Chain(chain_decl) => {
+            reify_ast::MemberDecl::Chain(chain_decl) => {
                 if chain_decl.elements.len() < 2 {
                     diagnostics.push(
                         Diagnostic::error("chain statement requires at least two elements")
@@ -1667,7 +1667,7 @@ pub(crate) fn compile_entity(
                         &ctx,
                         &ConnectInput {
                             left_expr: &pair[0],
-                            operator: reify_syntax::ConnectOp::Forward,
+                            operator: reify_ast::ConnectOp::Forward,
                             right_expr: &pair[1],
                             connector_type: None,
                             params: &[],
@@ -1679,10 +1679,10 @@ pub(crate) fn compile_entity(
                     );
                 }
             }
-            reify_syntax::MemberDecl::MetaBlock(_) => {
+            reify_ast::MemberDecl::MetaBlock(_) => {
                 // Meta blocks are collected in the first pass; skip in second pass.
             }
-            reify_syntax::MemberDecl::ConstraintInst(ci) => {
+            reify_ast::MemberDecl::ConstraintInst(ci) => {
                 // Delegate to the shared expansion helper. The helper owns
                 // every step (def lookup, arg validation, inst_idx allocation,
                 // per-predicate substitution + emission, where-clause routing).
@@ -1707,7 +1707,7 @@ pub(crate) fn compile_entity(
                     None,
                 );
             }
-            reify_syntax::MemberDecl::ForallConnect(f) => {
+            reify_ast::MemberDecl::ForallConnect(f) => {
                 // Defer to the post-loop forall elaboration sub-pass — see the
                 // `pending_forall_*` declarations above and the dispatch loop
                 // after the main second pass. Sub-components and count cells
@@ -1715,11 +1715,11 @@ pub(crate) fn compile_entity(
                 // counts (task 2364).
                 pending_forall_connect.push(f);
             }
-            reify_syntax::MemberDecl::ForallConstraint(f) => {
+            reify_ast::MemberDecl::ForallConstraint(f) => {
                 // Defer to the post-loop forall elaboration sub-pass (task 2364).
                 pending_forall_constraint.push(f);
             }
-            reify_syntax::MemberDecl::MatchArmDeclGroup(m) => {
+            reify_ast::MemberDecl::MatchArmDeclGroup(m) => {
                 // Compile each arm's guard and register a GuardedDeclGroup cluster
                 // in the scope (task 2372, spec §6.4).  Clusters that collided with
                 // an outside-of-match declaration are suppressed via
@@ -1804,7 +1804,7 @@ pub(crate) fn compile_entity(
     // (let-bound geometry variables) used as arguments to boolean ops.
     // `collect_geometry_exprs` recurses fully into nested GuardedGroupDecl members
     // so geometry params at any nesting depth are captured.
-    let geometry_lets: HashMap<&str, &reify_syntax::Expr> = {
+    let geometry_lets: HashMap<&str, &reify_ast::Expr> = {
         let mut map = HashMap::new();
         collect_geometry_exprs(structure.members, &known_geometry_lets, functions, &mut map);
         map
@@ -1815,7 +1815,7 @@ pub(crate) fn compile_entity(
 
     for member in structure.members {
         match member {
-            reify_syntax::MemberDecl::Let(let_decl)
+            reify_ast::MemberDecl::Let(let_decl)
                 if is_geometry_let(&let_decl.value, functions, &known_geometry_lets) =>
             {
                 if let Some(ops) = compile_geometry_call(
@@ -1841,7 +1841,7 @@ pub(crate) fn compile_entity(
             }
             // Solid-typed params with a geometry-call default are lowered into
             // realizations at the same position in source order.
-            reify_syntax::MemberDecl::Param(param)
+            reify_ast::MemberDecl::Param(param)
                 if known_geometry_lets.contains(param.name.as_str()) =>
             {
                 if let Some(default_expr) = &param.default
@@ -1872,7 +1872,7 @@ pub(crate) fn compile_entity(
             // known_geometry_lets by register_guarded_names). Guarded geometry
             // lets do NOT emit realizations here — that is a separate,
             // unimplemented feature.
-            reify_syntax::MemberDecl::GuardedGroup(g) => {
+            reify_ast::MemberDecl::GuardedGroup(g) => {
                 let deps = GeometryRealizationDeps {
                     entity_name,
                     scope: &scope,
@@ -2187,10 +2187,10 @@ pub(crate) fn compile_entity(
     if entity_kind == EntityKind::Occurrence {
         let has_in = ports
             .iter()
-            .any(|p| p.direction == reify_types::PortDirection::In);
+            .any(|p| p.direction == reify_core::PortDirection::In);
         let has_out = ports
             .iter()
-            .any(|p| p.direction == reify_types::PortDirection::Out);
+            .any(|p| p.direction == reify_core::PortDirection::Out);
         if !has_in {
             diagnostics.push(
                 Diagnostic::warning(format!(
@@ -2329,9 +2329,9 @@ fn realization_name_set_from_template(tmpl: &TopologyTemplate) -> BTreeSet<Strin
 #[allow(clippy::too_many_arguments)]
 fn compile_match_arm_decl_group(
     entity_name: &str,
-    m: &reify_syntax::MatchArmDeclGroupDecl,
+    m: &reify_ast::MatchArmDeclGroupDecl,
     scope: &mut CompilationScope,
-    enum_defs: &[reify_types::EnumDef],
+    enum_defs: &[reify_ir::EnumDef],
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
     guarded_groups: &mut Vec<CompiledGuardedGroup>,
@@ -2346,7 +2346,7 @@ fn compile_match_arm_decl_group(
     // Resolve the discriminant's enum type.  Only simple `Ident` discriminants
     // are supported in this task; complex expressions are deferred to task 2373.
     let (discriminant_cell_id, enum_type_name) = match &m.discriminant.kind {
-        reify_syntax::ExprKind::Ident(name) => match scope.resolve(name) {
+        reify_ast::ExprKind::Ident(name) => match scope.resolve(name) {
             Some((cell_id, Type::Enum(enum_name))) => (cell_id.clone(), enum_name.clone()),
             Some((_, other_ty)) => {
                 diagnostics.push(
@@ -2535,7 +2535,7 @@ fn compile_match_arm_decl_group(
         // Skip here to avoid a second misleading "could not resolve type" diagnostic
         // from arm_member_type attempting scope.resolve on an unregistered name.
         // (Suggestion 2 from review: suppress duplicate diagnostics for Param/Let arms.)
-        if !matches!(&*arm.member, reify_syntax::MemberDecl::Sub(_)) {
+        if !matches!(&*arm.member, reify_ast::MemberDecl::Sub(_)) {
             continue;
         }
 
@@ -2559,7 +2559,7 @@ fn compile_match_arm_decl_group(
         let arm_type = arm_member_type(&arm.member, scope, diagnostics, arm.span);
 
         // Compile Sub members directly into sub_components with the per-arm guard.
-        if let reify_syntax::MemberDecl::Sub(sub) = &*arm.member {
+        if let reify_ast::MemberDecl::Sub(sub) = &*arm.member {
             // suggestion 1: where_clause and body are not yet supported inside
             // match-arm subs — emit a diagnostic so users get explicit feedback
             // rather than silent data loss.
@@ -2594,7 +2594,7 @@ fn compile_match_arm_decl_group(
                 .type_args
                 .iter()
                 .map(|ta| {
-                    if let reify_syntax::TypeExprKind::Named { name, .. } = &ta.kind {
+                    if let reify_ast::TypeExprKind::Named { name, .. } = &ta.kind {
                         resolve_type_name(name).unwrap_or_else(|| {
                             if type_param_names.contains(name) {
                                 Type::TypeParam(name.clone())
@@ -2707,25 +2707,25 @@ fn compile_match_arm_decl_group(
 }
 
 /// Extract the shared logical name from an arm's `MemberDecl`.
-fn arm_member_name(member: &reify_syntax::MemberDecl) -> Option<&str> {
+fn arm_member_name(member: &reify_ast::MemberDecl) -> Option<&str> {
     match member {
-        reify_syntax::MemberDecl::Sub(s) => Some(&s.name),
-        reify_syntax::MemberDecl::Param(p) => Some(&p.name),
-        reify_syntax::MemberDecl::Let(l) => Some(&l.name),
+        reify_ast::MemberDecl::Sub(s) => Some(&s.name),
+        reify_ast::MemberDecl::Param(p) => Some(&p.name),
+        reify_ast::MemberDecl::Let(l) => Some(&l.name),
         _ => None,
     }
 }
 
 /// Determine the `Type` of an arm's declared member for `GuardedDeclArm::arm_type`.
 fn arm_member_type(
-    member: &reify_syntax::MemberDecl,
+    member: &reify_ast::MemberDecl,
     scope: &CompilationScope,
     diagnostics: &mut Vec<Diagnostic>,
     span: SourceSpan,
 ) -> Type {
     match member {
-        reify_syntax::MemberDecl::Sub(s) => Type::StructureRef(s.structure_name.clone()),
-        reify_syntax::MemberDecl::Param(p) => {
+        reify_ast::MemberDecl::Sub(s) => Type::StructureRef(s.structure_name.clone()),
+        reify_ast::MemberDecl::Param(p) => {
             // Pre-pass registers this name; resolution failure here is a pass-1 invariant
             // violation. See `emit_ice_unresolved` for the full rationale.
             scope
@@ -2735,7 +2735,7 @@ fn arm_member_type(
                     emit_ice_unresolved(UnresolvedKind::Name, &p.name, span, diagnostics)
                 })
         }
-        reify_syntax::MemberDecl::Let(l) => {
+        reify_ast::MemberDecl::Let(l) => {
             // Same pass-1 registration invariant as the Param arm above; the ICE guards
             // against a future refactor regressing to silent Type::Real. See `emit_ice_unresolved`.
             scope
@@ -2820,7 +2820,7 @@ pub(crate) enum PendingBoundCheck {
     /// Deferred check for trait conformance with type arguments.
     /// The type_params are known at construction time from the compiled trait.
     TraitConformance {
-        type_params: Vec<reify_types::TypeParam>,
+        type_params: Vec<reify_ir::TypeParam>,
         type_args: Vec<Type>,
         target_name: String,
         span: SourceSpan,
@@ -2868,24 +2868,24 @@ pub(crate) enum PendingBoundCheck {
 /// Used by `compile_entity`'s third pass to build the `geometry_lets` lookup
 /// table that `compile_geometry_call` uses to resolve Ident references.
 fn collect_geometry_exprs<'a>(
-    members: &'a [reify_syntax::MemberDecl],
+    members: &'a [reify_ast::MemberDecl],
     known: &HashSet<&str>,
     functions: &[CompiledFunction],
-    out: &mut HashMap<&'a str, &'a reify_syntax::Expr>,
+    out: &mut HashMap<&'a str, &'a reify_ast::Expr>,
 ) {
     for m in members {
         match m {
-            reify_syntax::MemberDecl::Let(let_decl)
+            reify_ast::MemberDecl::Let(let_decl)
                 if is_geometry_let(&let_decl.value, functions, known) =>
             {
                 out.insert(let_decl.name.as_str(), &let_decl.value);
             }
-            reify_syntax::MemberDecl::Param(param) if known.contains(param.name.as_str()) => {
+            reify_ast::MemberDecl::Param(param) if known.contains(param.name.as_str()) => {
                 if let Some(e) = &param.default {
                     out.insert(param.name.as_str(), e);
                 }
             }
-            reify_syntax::MemberDecl::GuardedGroup(g) => {
+            reify_ast::MemberDecl::GuardedGroup(g) => {
                 collect_geometry_exprs(&g.members, known, functions, out);
                 collect_geometry_exprs(&g.else_members, known, functions, out);
             }
@@ -2902,10 +2902,10 @@ fn collect_geometry_exprs<'a>(
 struct GeometryRealizationDeps<'a> {
     entity_name: &'a str,
     scope: &'a CompilationScope<'a>,
-    enum_defs: &'a [reify_types::EnumDef],
+    enum_defs: &'a [reify_ir::EnumDef],
     functions: &'a [CompiledFunction],
     known_geometry_lets: &'a HashSet<&'a str>,
-    geometry_lets: &'a HashMap<&'a str, &'a reify_syntax::Expr>,
+    geometry_lets: &'a HashMap<&'a str, &'a reify_ast::Expr>,
 }
 
 /// Mutable output sinks for [`emit_guarded_geometry_realizations`].
@@ -2926,13 +2926,13 @@ struct GeometryRealizationSink<'a> {
 /// realizations (that is a separate, unimplemented feature; see the existing
 /// comment in the GuardedGroup arm of the third-pass loop).
 fn emit_guarded_geometry_realizations(
-    members: &[reify_syntax::MemberDecl],
+    members: &[reify_ast::MemberDecl],
     deps: &GeometryRealizationDeps<'_>,
     sink: &mut GeometryRealizationSink<'_>,
 ) {
     for m in members {
         match m {
-            reify_syntax::MemberDecl::Param(param)
+            reify_ast::MemberDecl::Param(param)
                 if deps.known_geometry_lets.contains(param.name.as_str()) =>
             {
                 if let Some(default_expr) = &param.default
@@ -2958,7 +2958,7 @@ fn emit_guarded_geometry_realizations(
                     *sink.realization_index += 1;
                 }
             }
-            reify_syntax::MemberDecl::GuardedGroup(g) => {
+            reify_ast::MemberDecl::GuardedGroup(g) => {
                 emit_guarded_geometry_realizations(&g.members, deps, sink);
                 emit_guarded_geometry_realizations(&g.else_members, deps, sink);
             }
@@ -2977,7 +2977,7 @@ fn emit_guarded_geometry_realizations(
 /// If a type_param has no default and no arg is provided, emit an error.
 /// If type_args exceed type_params, emit an arity error.
 pub(crate) fn check_type_param_bounds(
-    type_params: &[reify_types::TypeParam],
+    type_params: &[reify_ir::TypeParam],
     type_args: &[Type],
     target_structure_name: &str,
     template_registry: &HashMap<String, &TopologyTemplate>,
@@ -3137,7 +3137,7 @@ pub(crate) fn fixup_option_none_for_param(compiled: &mut CompiledExpr, cell_type
 /// lets (entity.rs), and guarded member lets (guards.rs).
 pub(crate) fn fixup_option_none_for_let(
     compiled_expr: &mut CompiledExpr,
-    type_expr: Option<&reify_syntax::TypeExpr>,
+    type_expr: Option<&reify_ast::TypeExpr>,
     type_param_names: &HashSet<String>,
     alias_registry: &TypeAliasRegistry,
     structure_names: &HashSet<String>,
@@ -3192,11 +3192,11 @@ pub(crate) fn fixup_option_none_for_let(
 /// label format unchanged.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn expand_constraint_inst(
-    ci: &reify_syntax::ConstraintInstDecl,
+    ci: &reify_ast::ConstraintInstDecl,
     entity_name: &str,
     constraint_def_registry: &HashMap<String, &CompiledConstraintDef>,
     scope: &mut CompilationScope,
-    enum_defs: &[reify_types::EnumDef],
+    enum_defs: &[reify_ir::EnumDef],
     functions: &[CompiledFunction],
     constraints: &mut Vec<CompiledConstraint>,
     constraint_index: &mut u32,
@@ -3223,7 +3223,7 @@ pub(crate) fn expand_constraint_inst(
     };
 
     // Build name → Expr bindings map from the named args.
-    let arg_map: HashMap<String, reify_syntax::Expr> = ci
+    let arg_map: HashMap<String, reify_ast::Expr> = ci
         .args
         .iter()
         .map(|(name, expr)| (name.clone(), expr.clone()))
@@ -3343,10 +3343,10 @@ mod tests {
     fn arm_member_type_emits_ice_when_unresolved() {
         let span = SourceSpan::new(0, 0);
 
-        let cases: &[(&str, reify_syntax::MemberDecl)] = &[
+        let cases: &[(&str, reify_ast::MemberDecl)] = &[
             (
                 "Param",
-                reify_syntax::MemberDecl::Param(reify_syntax::ParamDecl {
+                reify_ast::MemberDecl::Param(reify_ast::ParamDecl {
                     name: "x".to_string(),
                     doc: None,
                     type_expr: None,
@@ -3354,24 +3354,24 @@ mod tests {
                     where_clause: None,
                     annotations: vec![],
                     span,
-                    content_hash: reify_types::ContentHash(0),
+                    content_hash: reify_core::ContentHash(0),
                 }),
             ),
             (
                 "Let",
-                reify_syntax::MemberDecl::Let(reify_syntax::LetDecl {
+                reify_ast::MemberDecl::Let(reify_ast::LetDecl {
                     name: "x".to_string(),
                     doc: None,
                     is_pub: false,
                     type_expr: None,
-                    value: reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::Ident("dummy".to_string()),
+                    value: reify_ast::Expr {
+                        kind: reify_ast::ExprKind::Ident("dummy".to_string()),
                         span,
                     },
                     where_clause: None,
                     annotations: vec![],
                     span,
-                    content_hash: reify_types::ContentHash(0),
+                    content_hash: reify_core::ContentHash(0),
                 }),
             ),
         ];

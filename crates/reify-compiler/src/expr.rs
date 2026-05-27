@@ -139,7 +139,7 @@ fn make_cross_sub_geometry_error(
     member: &str,
     sub_name: &str,
     child_struct: &str,
-    span: reify_types::SourceSpan,
+    span: reify_core::SourceSpan,
 ) -> CompiledExpr {
     make_poison_literal(
         diagnostics,
@@ -187,7 +187,7 @@ pub(crate) fn try_emit_cross_sub_geometry(
     scope: &CompilationScope<'_>,
     sub_name: &str,
     member: &str,
-    span: reify_types::SourceSpan,
+    span: reify_core::SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<CompiledExpr> {
     if scope
@@ -450,8 +450,8 @@ const WILDCARD_STRUCTURE_KIND: &str = "Structure";
 ///
 /// Returns `Some(free)` if the expression is `Auto { free }`, `None` for any other kind.
 /// Used to detect auto-solved parameters and build `ValueCellKind::Auto` declarations.
-pub(crate) fn extract_auto_free(expr: &reify_syntax::Expr) -> Option<bool> {
-    if let reify_syntax::ExprKind::Auto { free } = &expr.kind {
+pub(crate) fn extract_auto_free(expr: &reify_ast::Expr) -> Option<bool> {
+    if let reify_ast::ExprKind::Auto { free } = &expr.kind {
         Some(*free)
     } else {
         None
@@ -459,9 +459,9 @@ pub(crate) fn extract_auto_free(expr: &reify_syntax::Expr) -> Option<bool> {
 }
 
 pub(crate) fn compile_expr(
-    expr: &reify_syntax::Expr,
+    expr: &reify_ast::Expr,
     scope: &CompilationScope,
-    enum_defs: &[reify_types::EnumDef],
+    enum_defs: &[reify_ir::EnumDef],
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CompiledExpr {
@@ -558,35 +558,35 @@ fn build_user_function_call_expr(
 /// guard will produce a diagnostic error about unsafe unguarded references.
 #[allow(clippy::only_used_in_recursion)]
 pub(crate) fn compile_expr_guarded(
-    expr: &reify_syntax::Expr,
+    expr: &reify_ast::Expr,
     scope: &CompilationScope,
-    enum_defs: &[reify_types::EnumDef],
+    enum_defs: &[reify_ir::EnumDef],
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
     current_guard: Option<&ValueCellId>,
     lambda_counter: &mut u32,
 ) -> CompiledExpr {
     match &expr.kind {
-        reify_syntax::ExprKind::NumberLiteral { value, is_real } => {
+        reify_ast::ExprKind::NumberLiteral { value, is_real } => {
             // Int/Real classification (incl. integer-form overflow fallback) is
             // shared with `lower_annotations` via reify_syntax::classify_number_literal
             // so the boundary cannot drift between literal lowering and annotation
             // lowering.
-            match reify_syntax::classify_number_literal(*value, *is_real) {
-                reify_syntax::NumberClass::Int(i) => {
+            match reify_ast::classify_number_literal(*value, *is_real) {
+                reify_ast::NumberClass::Int(i) => {
                     CompiledExpr::literal(Value::Int(i), Type::Int)
                 }
-                reify_syntax::NumberClass::Real(f) => {
+                reify_ast::NumberClass::Real(f) => {
                     CompiledExpr::literal(Value::Real(f), Type::Real)
                 }
                 // Mirror site: lower_annotations in annotations.rs handles LossyReal the same way.
-                reify_syntax::NumberClass::LossyReal(f) => {
+                reify_ast::NumberClass::LossyReal(f) => {
                     diagnostics.push(crate::diagnostics::lossy_real_warning(expr.span));
                     CompiledExpr::literal(Value::Real(f), Type::Real)
                 }
             }
         }
-        reify_syntax::ExprKind::QuantityLiteral { value, unit } => {
+        reify_ast::ExprKind::QuantityLiteral { value, unit } => {
             // Check the unit registry first (for user-declared units), then fall back to hardcoded.
             let resolved = scope
                 .lookup_unit_in_registry(*value, unit)
@@ -630,13 +630,13 @@ pub(crate) fn compile_expr_guarded(
                 }
             }
         }
-        reify_syntax::ExprKind::BoolLiteral(b) => {
+        reify_ast::ExprKind::BoolLiteral(b) => {
             CompiledExpr::literal(Value::Bool(*b), Type::Bool)
         }
-        reify_syntax::ExprKind::StringLiteral(s) => {
+        reify_ast::ExprKind::StringLiteral(s) => {
             CompiledExpr::literal(Value::String(s.clone()), Type::String)
         }
-        reify_syntax::ExprKind::Ident(name) => {
+        reify_ast::ExprKind::Ident(name) => {
             // Intercept `self` in entity scope — bare `self` resolves to StructureRef(entity_name).
             // In function scopes (is_entity_scope == false), self falls through to "unresolved name".
             if name == "self" && scope.is_entity_scope {
@@ -683,11 +683,11 @@ pub(crate) fn compile_expr_guarded(
                 }
             }
         }
-        reify_syntax::ExprKind::BinOp { op, left, right } => {
+        reify_ast::ExprKind::BinOp { op, left, right } => {
             // Chained comparison desugaring: `a < b < c` → `And(Lt(a,b), Lt(b,c))`.
             // Detect when the outer op is a comparison and the left operand is also a comparison BinOp.
             if is_comparison_op(op)
-                && let reify_syntax::ExprKind::BinOp { op: inner_op, .. } = &left.kind
+                && let reify_ast::ExprKind::BinOp { op: inner_op, .. } = &left.kind
                 && is_comparison_op(inner_op)
             {
                 let (operands, ops) = flatten_comparison_chain(op, left, right);
@@ -817,7 +817,7 @@ pub(crate) fn compile_expr_guarded(
                 }
             }
         }
-        reify_syntax::ExprKind::UnOp { op, operand } => {
+        reify_ast::ExprKind::UnOp { op, operand } => {
             let compiled_operand = compile_expr_guarded(
                 operand,
                 scope,
@@ -845,7 +845,7 @@ pub(crate) fn compile_expr_guarded(
                 }
             }
         }
-        reify_syntax::ExprKind::Range {
+        reify_ast::ExprKind::Range {
             lower,
             upper,
             lower_inclusive,
@@ -931,7 +931,7 @@ pub(crate) fn compile_expr_guarded(
                 result_type,
             )
         }
-        reify_syntax::ExprKind::FunctionCall { name, args } => {
+        reify_ast::ExprKind::FunctionCall { name, args } => {
             // Intercept `some(expr)` before general function resolution.
             // some() is a language-level constructor, not a user-defined function.
             if name == "some" {
@@ -1010,7 +1010,7 @@ pub(crate) fn compile_expr_guarded(
                     .filter_map(|(n, d)| d.map(|e| ((*n).to_string(), e.clone())))
                     .collect();
                 return CompiledExpr::structure_instance_ctor(
-                    reify_types::StructureTypeId(0),
+                    reify_ir::StructureTypeId(0),
                     name.clone(),
                     template.version(),
                     ordered_args,
@@ -1276,11 +1276,11 @@ pub(crate) fn compile_expr_guarded(
                 }
             }
         }
-        reify_syntax::ExprKind::MemberAccess { object, member } => {
+        reify_ast::ExprKind::MemberAccess { object, member } => {
             // Check if this is a `self.member` or `self.sub.member` access in entity scope.
             if scope.is_entity_scope {
                 // Pattern: self.member
-                if let reify_syntax::ExprKind::Ident(obj_name) = &object.kind
+                if let reify_ast::ExprKind::Ident(obj_name) = &object.kind
                     && obj_name == "self"
                 {
                     // self.<match-arm cluster> — task 2373.
@@ -1353,11 +1353,11 @@ pub(crate) fn compile_expr_guarded(
                 // arm wins) — without an early intercept the merged-map path would
                 // mask per-arm differences. Step-14 extends this branch with
                 // diagnostics for arms missing the field.
-                if let reify_syntax::ExprKind::MemberAccess {
+                if let reify_ast::ExprKind::MemberAccess {
                     object: inner_obj,
                     member: group_name,
                 } = &object.kind
-                    && let reify_syntax::ExprKind::Ident(self_name) = &inner_obj.kind
+                    && let reify_ast::ExprKind::Ident(self_name) = &inner_obj.kind
                     && self_name == "self"
                     && scope.resolve_match_arm_group(group_name.as_str()).is_some()
                 {
@@ -1386,11 +1386,11 @@ pub(crate) fn compile_expr_guarded(
                 // Single match; branches internally on whether sub_name is a collection sub.
                 // Invariant: collection_sub_names ⊆ sub_component_types.keys(), so the outer
                 // sub_component_types guard is sufficient to cover both branches.
-                if let reify_syntax::ExprKind::MemberAccess {
+                if let reify_ast::ExprKind::MemberAccess {
                     object: inner_obj,
                     member: sub_name,
                 } = &object.kind
-                    && let reify_syntax::ExprKind::Ident(self_name) = &inner_obj.kind
+                    && let reify_ast::ExprKind::Ident(self_name) = &inner_obj.kind
                     && self_name == "self"
                     && scope.sub_component_types.contains_key(sub_name.as_str())
                 {
@@ -1547,11 +1547,11 @@ pub(crate) fn compile_expr_guarded(
                 // guard, the cluster-aware path would synthesize a non-list
                 // result type and bypass the collection semantics enforced
                 // for non-cluster `<sub>.<member>` access.
-                if let reify_syntax::ExprKind::MemberAccess {
+                if let reify_ast::ExprKind::MemberAccess {
                     object: inner_obj,
                     member: group_name,
                 } = &object.kind
-                    && let reify_syntax::ExprKind::Ident(sub_name) = &inner_obj.kind
+                    && let reify_ast::ExprKind::Ident(sub_name) = &inner_obj.kind
                     && !scope.collection_sub_names.contains(sub_name.as_str())
                     && let Some(clusters) = scope.sub_match_arm_groups.get(sub_name.as_str())
                     && let Some((_group, per_arm)) =
@@ -1571,7 +1571,7 @@ pub(crate) fn compile_expr_guarded(
             }
 
             // Check if this is a port member access (port_name.member_name)
-            if let reify_syntax::ExprKind::Ident(name) = &object.kind
+            if let reify_ast::ExprKind::Ident(name) = &object.kind
                 && scope.port_names.contains(name.as_str())
             {
                 let composite_key = format!("{}.{}", name, member);
@@ -1616,20 +1616,20 @@ pub(crate) fn compile_expr_guarded(
             // Cross-reference: scope.sub_match_arm_groups is populated for collection
             // subs in entity.rs:778–810 (the insert fires before the is_collection
             // check at entity.rs:813, so no change needed there).
-            if let reify_syntax::ExprKind::MemberAccess {
+            if let reify_ast::ExprKind::MemberAccess {
                 object: inner_obj,
                 member: group_name,
             } = &object.kind
-                && let reify_syntax::ExprKind::IndexAccess {
+                && let reify_ast::ExprKind::IndexAccess {
                     object: idx_obj,
                     index,
                 } = &inner_obj.kind
-                && let reify_syntax::ExprKind::Ident(col_sub_name) = &idx_obj.kind
+                && let reify_ast::ExprKind::Ident(col_sub_name) = &idx_obj.kind
                 && scope.collection_sub_names.contains(col_sub_name.as_str())
                 && let Some(clusters) = scope.sub_match_arm_groups.get(col_sub_name.as_str())
                 && let Some((_group, per_arm)) =
                     clusters.iter().find(|(g, _)| &g.name == group_name)
-                && let reify_syntax::ExprKind::NumberLiteral { value: n, .. } = &index.kind
+                && let reify_ast::ExprKind::NumberLiteral { value: n, .. } = &index.kind
             {
                 if !n.is_finite() || *n >= i64::MAX as f64 {
                     // Out-of-range or non-finite index in a cluster-routing pattern:
@@ -1667,11 +1667,11 @@ pub(crate) fn compile_expr_guarded(
             }
 
             // Check if this is an indexed collection member access: collection[i].member
-            if let reify_syntax::ExprKind::IndexAccess {
+            if let reify_ast::ExprKind::IndexAccess {
                 object: idx_obj,
                 index,
             } = &object.kind
-                && let reify_syntax::ExprKind::Ident(name) = &idx_obj.kind
+                && let reify_ast::ExprKind::Ident(name) = &idx_obj.kind
                 && scope.collection_sub_names.contains(name.as_str())
             {
                 // Resolve member type from pre-populated sub_member_types
@@ -1703,7 +1703,7 @@ pub(crate) fn compile_expr_guarded(
                 };
 
                 // For literal integer index, resolve directly to a scoped ValueRef
-                if let reify_syntax::ExprKind::NumberLiteral { value: n, .. } = &index.kind {
+                if let reify_ast::ExprKind::NumberLiteral { value: n, .. } = &index.kind {
                     // Task 3045: guard non-finite / out-of-representable-range values first.
                     // `*n as i64` silently saturates to i64::MAX for inputs like 1e20 or
                     // any finite float ≥ 2^63, producing a bogus scoped ValueRef with no
@@ -1763,7 +1763,7 @@ pub(crate) fn compile_expr_guarded(
             }
 
             // Check if this is a collection sub member access: collection.count
-            if let reify_syntax::ExprKind::Ident(name) = &object.kind
+            if let reify_ast::ExprKind::Ident(name) = &object.kind
                 && scope.collection_sub_names.contains(name.as_str())
                 && member == "count"
             {
@@ -1774,7 +1774,7 @@ pub(crate) fn compile_expr_guarded(
             }
 
             // Check if this is a meta block access: meta.key
-            if let reify_syntax::ExprKind::Ident(name) = &object.kind
+            if let reify_ast::ExprKind::Ident(name) = &object.kind
                 && name == "meta"
             {
                 if !scope.has_meta_block {
@@ -2057,7 +2057,7 @@ pub(crate) fn compile_expr_guarded(
                 )
             }
         }
-        reify_syntax::ExprKind::ListLiteral(elements) => {
+        reify_ast::ExprKind::ListLiteral(elements) => {
             let compiled_elems: Vec<CompiledExpr> = elements
                 .iter()
                 .map(|e| {
@@ -2088,7 +2088,7 @@ pub(crate) fn compile_expr_guarded(
             let result_type = Type::List(Box::new(elem_type));
             CompiledExpr::list_literal(compiled_elems, result_type)
         }
-        reify_syntax::ExprKind::SetLiteral(elements) => {
+        reify_ast::ExprKind::SetLiteral(elements) => {
             let compiled_elems: Vec<CompiledExpr> = elements
                 .iter()
                 .map(|e| {
@@ -2118,7 +2118,7 @@ pub(crate) fn compile_expr_guarded(
             let result_type = Type::Set(Box::new(elem_type));
             CompiledExpr::set_literal(compiled_elems, result_type)
         }
-        reify_syntax::ExprKind::MapLiteral(entries) => {
+        reify_ast::ExprKind::MapLiteral(entries) => {
             let compiled_entries: Vec<(CompiledExpr, CompiledExpr)> = entries
                 .iter()
                 .map(|(k, v)| {
@@ -2166,7 +2166,7 @@ pub(crate) fn compile_expr_guarded(
             let result_type = Type::Map(Box::new(key_type), Box::new(val_type));
             CompiledExpr::map_literal(compiled_entries, result_type)
         }
-        reify_syntax::ExprKind::IndexAccess { object, index } => {
+        reify_ast::ExprKind::IndexAccess { object, index } => {
             let compiled_obj = compile_expr_guarded(
                 object,
                 scope,
@@ -2212,7 +2212,7 @@ pub(crate) fn compile_expr_guarded(
             };
             CompiledExpr::index_access(compiled_obj, compiled_idx, result_type)
         }
-        reify_syntax::ExprKind::EnumAccess { type_name, variant } => {
+        reify_ast::ExprKind::EnumAccess { type_name, variant } => {
             // Look up the enum type in the registry
             if let Some(enum_def) = enum_defs.iter().find(|e| e.name == *type_name) {
                 if enum_def.contains_variant(variant) {
@@ -2242,7 +2242,7 @@ pub(crate) fn compile_expr_guarded(
                 )
             }
         }
-        reify_syntax::ExprKind::Match { discriminant, arms } => {
+        reify_ast::ExprKind::Match { discriminant, arms } => {
             let compiled_discriminant = compile_expr_guarded(
                 discriminant,
                 scope,
@@ -2252,7 +2252,7 @@ pub(crate) fn compile_expr_guarded(
                 current_guard,
                 lambda_counter,
             );
-            let compiled_arms: Vec<reify_types::CompiledMatchArm> = arms
+            let compiled_arms: Vec<reify_ir::CompiledMatchArm> = arms
                 .iter()
                 .map(|arm| {
                     let body = compile_expr_guarded(
@@ -2264,7 +2264,7 @@ pub(crate) fn compile_expr_guarded(
                         current_guard,
                         lambda_counter,
                     );
-                    reify_types::CompiledMatchArm {
+                    reify_ir::CompiledMatchArm {
                         patterns: arm.patterns.clone(),
                         body,
                     }
@@ -2343,13 +2343,13 @@ pub(crate) fn compile_expr_guarded(
                 content_hash,
             }
         }
-        reify_syntax::ExprKind::Auto { .. } => {
+        reify_ast::ExprKind::Auto { .. } => {
             // Auto expressions should not appear inside compile_expr — they are
             // handled at the param compilation level. If we reach here, emit an
             // Undef literal as a safe fallback.
             CompiledExpr::literal(Value::Undef, Type::Real)
         }
-        reify_syntax::ExprKind::Conditional {
+        reify_ast::ExprKind::Conditional {
             condition,
             then_branch,
             else_branch,
@@ -2398,7 +2398,7 @@ pub(crate) fn compile_expr_guarded(
                 content_hash,
             }
         }
-        reify_syntax::ExprKind::Lambda { params, body } => {
+        reify_ast::ExprKind::Lambda { params, body } => {
             let lambda_entity = format!("$lambda{}.{}", lambda_counter, scope.entity_name);
             *lambda_counter += 1;
 
@@ -2411,12 +2411,12 @@ pub(crate) fn compile_expr_guarded(
                 let ty = if let Some(type_expr) = &param.type_expr {
                     // Extract name from Named; DimensionalOp can't appear as a lambda param type.
                     let name_opt = match &type_expr.kind {
-                        reify_syntax::TypeExprKind::Named { name, .. } => Some(name.as_str()),
-                        reify_syntax::TypeExprKind::DimensionalOp { .. } => None,
-                        reify_syntax::TypeExprKind::IntegerLiteral(_) => None,
+                        reify_ast::TypeExprKind::Named { name, .. } => Some(name.as_str()),
+                        reify_ast::TypeExprKind::DimensionalOp { .. } => None,
+                        reify_ast::TypeExprKind::IntegerLiteral(_) => None,
                         // Auto type-args cannot be used as lambda param types;
                         // resolution semantics are deferred to task 3477/3558.
-                        reify_syntax::TypeExprKind::Auto { .. } => None,
+                        reify_ast::TypeExprKind::Auto { .. } => None,
                     };
                     if let Some(name) = name_opt {
                         match resolve_type_name(name) {
@@ -2495,7 +2495,7 @@ pub(crate) fn compile_expr_guarded(
                 result_type,
             )
         }
-        reify_syntax::ExprKind::Quantifier {
+        reify_ast::ExprKind::Quantifier {
             kind,
             variable,
             collection,
@@ -2559,8 +2559,8 @@ pub(crate) fn compile_expr_guarded(
             );
 
             let compiled_kind = match kind {
-                reify_syntax::QuantifierKind::ForAll => reify_types::QuantifierKind::ForAll,
-                reify_syntax::QuantifierKind::Exists => reify_types::QuantifierKind::Exists,
+                reify_ast::QuantifierKind::ForAll => reify_ast::QuantifierKind::ForAll,
+                reify_ast::QuantifierKind::Exists => reify_ast::QuantifierKind::Exists,
             };
 
             CompiledExpr::quantifier(
@@ -2571,7 +2571,7 @@ pub(crate) fn compile_expr_guarded(
                 compiled_predicate,
             )
         }
-        reify_syntax::ExprKind::AdHocSelector {
+        reify_ast::ExprKind::AdHocSelector {
             base,
             selector,
             args,
@@ -2613,7 +2613,7 @@ pub(crate) fn compile_expr_guarded(
                         return propagate_poison();
                     }
                     // Check that the argument is a string literal (type check)
-                    if let reify_syntax::ExprKind::NumberLiteral { .. } = &args[0].kind {
+                    if let reify_ast::ExprKind::NumberLiteral { .. } = &args[0].kind {
                         // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
                         return make_poison_literal(
                             diagnostics,
@@ -2647,7 +2647,7 @@ pub(crate) fn compile_expr_guarded(
             // Geometry availability check: @face/@edge on a direct port in the current
             // scope requires the structure to have geometry declarations.
             if matches!(selector_kind, SelectorKind::Face | SelectorKind::Edge) {
-                let is_direct_port = matches!(&base.kind, reify_syntax::ExprKind::Ident(name) if scope.port_names.contains(name.as_str()));
+                let is_direct_port = matches!(&base.kind, reify_ast::ExprKind::Ident(name) if scope.port_names.contains(name.as_str()));
                 if is_direct_port && !scope.has_geometry {
                     // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
                     return make_poison_literal(
@@ -2669,7 +2669,7 @@ pub(crate) fn compile_expr_guarded(
             // containing the port path. The evaluator (task 250) interprets
             // this to find the geometry context.
             let compiled_base = match &base.kind {
-                reify_syntax::ExprKind::Ident(name) => {
+                reify_ast::ExprKind::Ident(name) => {
                     // Validate: must be a known port or a scope variable (e.g. forall var)
                     if !scope.port_names.contains(name.as_str()) && scope.resolve(name).is_none() {
                         // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
@@ -2684,9 +2684,9 @@ pub(crate) fn compile_expr_guarded(
                     }
                     CompiledExpr::literal(Value::String(name.clone()), Type::String)
                 }
-                reify_syntax::ExprKind::MemberAccess { object, member } => {
+                reify_ast::ExprKind::MemberAccess { object, member } => {
                     // Sub-component or variable member: "sub.port" or "var.port"
-                    if let reify_syntax::ExprKind::Ident(obj_name) = &object.kind {
+                    if let reify_ast::ExprKind::Ident(obj_name) = &object.kind {
                         CompiledExpr::literal(
                             Value::String(format!("{}.{}", obj_name, member)),
                             Type::String,
@@ -2735,11 +2735,11 @@ pub(crate) fn compile_expr_guarded(
 
             CompiledExpr::ad_hoc_selector(compiled_base, selector_kind, compiled_args)
         }
-        reify_syntax::ExprKind::QualifiedAccess { qualifier, member } => {
+        reify_ast::ExprKind::QualifiedAccess { qualifier, member } => {
             // Resolve `TraitName::member` to the member's ValueCellId in the current scope.
             // Only simple `Ident::member` form is supported.
             let trait_name = match &qualifier.kind {
-                reify_syntax::ExprKind::Ident(name) => name.clone(),
+                reify_ast::ExprKind::Ident(name) => name.clone(),
                 _ => {
                     // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
                     return make_poison_literal(
@@ -2799,12 +2799,12 @@ pub(crate) fn compile_expr_guarded(
                 }
             }
         }
-        reify_syntax::ExprKind::InstanceQualifiedAccess { object, qualified } => {
+        reify_ast::ExprKind::InstanceQualifiedAccess { object, qualified } => {
             // Resolve `sub.(TraitName::member)` to a ValueCellId for the sub's member.
 
             // Extract the sub-component name.
             let sub_name = match &object.kind {
-                reify_syntax::ExprKind::Ident(name) => name.clone(),
+                reify_ast::ExprKind::Ident(name) => name.clone(),
                 _ => {
                     // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
                     return make_poison_literal(
@@ -2819,9 +2819,9 @@ pub(crate) fn compile_expr_guarded(
 
             // Extract trait_name and member from the qualified access part.
             let (trait_name, member) = match &qualified.kind {
-                reify_syntax::ExprKind::QualifiedAccess { qualifier, member } => {
+                reify_ast::ExprKind::QualifiedAccess { qualifier, member } => {
                     match &qualifier.kind {
-                        reify_syntax::ExprKind::Ident(name) => (name.clone(), member.clone()),
+                        reify_ast::ExprKind::Ident(name) => (name.clone(), member.clone()),
                         _ => {
                             // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
                             return make_poison_literal(
@@ -3077,7 +3077,7 @@ mod tests {
     #[test]
     fn cross_sub_geometry_diagnostic_names_child_structure_type() {
         use reify_test_support::compile_source;
-        use reify_types::Severity;
+        use reify_core::Severity;
         // "Bolt" (capital-B structure type) vs "bolts" (lower-case instance name).
         // The diagnostic's "compose geometry inside '...'" phrase must use the former.
         let source = r#"pub structure Bolt {
@@ -3167,7 +3167,7 @@ pub structure Rack {
             &scope,
             "inner",
             "body",
-            reify_types::SourceSpan::prelude(),
+            reify_core::SourceSpan::prelude(),
             &mut Vec::new(),
         );
     }
@@ -3376,7 +3376,7 @@ pub structure Rack {
     /// prevents future drift from reintroducing the duplication removed in task 2869.
     #[test]
     fn compile_expr_inner_cluster_missing_per_arm_returns_helper_diagnostic() {
-        use reify_types::Value;
+        use reify_ir::Value;
 
         // Build the scope: entity "Bolt" with a registered "head" cluster but no
         // per-arm type map — this is the bug-condition the test pins.
@@ -3394,19 +3394,19 @@ pub structure Rack {
         // Deliberately leave `match_arm_group_arm_member_types` empty for "head".
 
         // Build AST: self.head.across_flats (two nested MemberAccess nodes).
-        let self_expr = reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::Ident("self".to_string()),
+        let self_expr = reify_ast::Expr {
+            kind: reify_ast::ExprKind::Ident("self".to_string()),
             span: SourceSpan::prelude(),
         };
-        let self_head = reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::MemberAccess {
+        let self_head = reify_ast::Expr {
+            kind: reify_ast::ExprKind::MemberAccess {
                 object: Box::new(self_expr),
                 member: "head".to_string(),
             },
             span: SourceSpan::prelude(),
         };
-        let expr = reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::MemberAccess {
+        let expr = reify_ast::Expr {
+            kind: reify_ast::ExprKind::MemberAccess {
                 object: Box::new(self_head),
                 member: "across_flats".to_string(),
             },
@@ -3484,7 +3484,8 @@ pub structure Rack {
     #[test]
     fn try_resolve_cross_sub_geometry_value_ref_emits_typed_discriminator() {
         use std::collections::{BTreeMap, BTreeSet};
-        use reify_types::{CompiledExprKind, Type};
+        use reify_core::Type;
+        use reify_ir::CompiledExprKind;
 
         let mut scope = CompilationScope::new("Outer");
         scope
@@ -3589,9 +3590,9 @@ pub structure Rack {
         }
     }
 
-    fn call_expr(name: &str, args: Vec<reify_syntax::Expr>) -> reify_syntax::Expr {
-        reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::FunctionCall {
+    fn call_expr(name: &str, args: Vec<reify_ast::Expr>) -> reify_ast::Expr {
+        reify_ast::Expr {
+            kind: reify_ast::ExprKind::FunctionCall {
                 name: name.to_string(),
                 args,
             },
@@ -3599,9 +3600,9 @@ pub structure Rack {
         }
     }
 
-    fn num_expr(v: f64) -> reify_syntax::Expr {
-        reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::NumberLiteral {
+    fn num_expr(v: f64) -> reify_ast::Expr {
+        reify_ast::Expr {
+            kind: reify_ast::ExprKind::NumberLiteral {
                 value: v,
                 is_real: true,
             },

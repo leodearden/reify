@@ -49,7 +49,7 @@
 //! pattern. Only the kernel name string, supports table contents (Sdf vs Mesh),
 //! the kernel implementation, and the doc comments' references differ.
 
-use reify_types::{CapabilityDescriptor, GeometryKernel, KernelRegistration, Operation, ReprKind};
+use reify_ir::{CapabilityDescriptor, GeometryKernel, KernelRegistration, Operation, ReprKind};
 
 /// Factory invoked by the engine once at startup, returning a fresh
 /// [`FidgetKernel`](crate::kernel::FidgetKernel) backed by fidget 0.4's

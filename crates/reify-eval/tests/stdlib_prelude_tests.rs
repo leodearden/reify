@@ -3,7 +3,7 @@
 use reify_compiler::stdlib_loader;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{collect_errors, steel_elastic_source, steel_material_elastic_source};
-use reify_types::{ModulePath, ValueCellId};
+use reify_core::{ModulePath, ValueCellId};
 
 // ─── step-7: Engine stores prelude ──────────────────────────────────
 
@@ -465,7 +465,7 @@ structure S {
 #[test]
 fn prelude_function_resolves_in_downstream_dispatch_paths() {
     use reify_constraints::SimpleConstraintChecker;
-    use reify_types::Satisfaction;
+    use reify_ir::Satisfaction;
 
     let source = r#"
 structure S {
@@ -576,7 +576,7 @@ fn end_to_end_material_elastic_conformance() {
         "shear_modulus",
     ];
     for param in &expected_params {
-        let cell_id = reify_types::ValueCellId::new(entity, *param);
+        let cell_id = reify_core::ValueCellId::new(entity, *param);
         assert!(
             result.values.get(&cell_id).is_some(),
             "eval should produce a value for param '{}', but it was missing. \

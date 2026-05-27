@@ -11,7 +11,8 @@ use reify_eval::{
     CancellationHandle, ComputeDispatchRegistry, ComputeFn, ComputeOutcome, RealizationReadHandle,
 };
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
-use reify_types::{OpaqueState, Severity, Value, ValueCellId};
+use reify_core::{Severity, ValueCellId};
+use reify_ir::{OpaqueState, Value};
 
 // ── step-9: RED — public seam API-surface pin ─────────────────────────────────
 // Compile-time test that coerces a concrete fn to `reify_eval::ComputeFn`,
@@ -47,7 +48,7 @@ fn _seam_pin_api_surface() {
 
     // RealizationReadHandle is constructible
     let _handle = RealizationReadHandle {
-        node_id: reify_types::RealizationNodeId::new("test", 0),
+        node_id: reify_core::RealizationNodeId::new("test", 0),
     };
 
     // CancellationHandle: cancel() and is_cancelled()
@@ -81,7 +82,7 @@ fn failing_fn(
     _cancellation: &CancellationHandle,
 ) -> ComputeOutcome {
     ComputeOutcome::Failed {
-        diagnostics: vec![reify_types::Diagnostic::error("test trampoline failed")],
+        diagnostics: vec![reify_core::Diagnostic::error("test trampoline failed")],
     }
 }
 

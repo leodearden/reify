@@ -16,7 +16,7 @@
 //! See `docs/prds/v0_3/geometry-handle-runtime.md` §1 + §8.
 
 use reify_test_support::compile_source_with_stdlib;
-use reify_types::{DimensionVector, Severity, Type};
+use reify_core::{DimensionVector, Severity, Type};
 
 /// `volume(my_box)` where `my_box : Solid` typechecks to `Scalar<Volume>`.
 ///

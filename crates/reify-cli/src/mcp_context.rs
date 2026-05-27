@@ -9,7 +9,7 @@ use reify_mcp::{
     ConstraintInfo, DiagnosticInfo, EvalStatusInfo, OpenFileInfo, ParameterInfo, ReifyToolContext,
     SelectionInfo, SetParamResult, SourceContent, SourceLocationInfo, ToolError, UpdateResult,
 };
-use reify_types::{DeterminacyState, Value};
+use reify_ir::{DeterminacyState, Value};
 
 /// Tracks the state of an open file.
 struct FileEntry {
@@ -87,7 +87,7 @@ impl CliToolContext {
         // see task 2525.
         let parsed = reify_compiler::parse_with_stdlib(
             &source,
-            reify_types::ModulePath::single(module_name),
+            reify_core::ModulePath::single(module_name),
         );
 
         if !parsed.errors.is_empty() {
@@ -161,9 +161,9 @@ fn ensure_engine(state: &mut CliState) -> &mut reify_eval::Engine {
 }
 
 /// Format a dimension as a human-readable unit string.
-fn dimension_unit(ty: &reify_types::ty::Type) -> String {
+fn dimension_unit(ty: &reify_core::ty::Type) -> String {
     match ty {
-        reify_types::ty::Type::Scalar { dimension } => format!("{}", dimension),
+        reify_core::ty::Type::Scalar { dimension } => format!("{}", dimension),
         _ => String::new(),
     }
 }
@@ -229,9 +229,9 @@ impl ReifyToolContext for CliToolContext {
             // Use the first label's span if available, otherwise default to (1,1)
             let (line, column, end_line, end_column) = if let Some(label) = diag.labels.first() {
                 let (l, c) =
-                    reify_types::byte_offset_to_line_col(source, label.span.start as usize);
+                    reify_core::byte_offset_to_line_col(source, label.span.start as usize);
                 let (el, ec) =
-                    reify_types::byte_offset_to_line_col(source, label.span.end as usize);
+                    reify_core::byte_offset_to_line_col(source, label.span.end as usize);
                 (l as u32, c as u32, el as u32, ec as u32)
             } else {
                 (1, 1, 1, 1)
@@ -401,7 +401,7 @@ impl ReifyToolContext for CliToolContext {
         // see task 2525.
         let parsed = reify_compiler::parse_with_stdlib(
             content,
-            reify_types::ModulePath::single(module_name),
+            reify_core::ModulePath::single(module_name),
         );
 
         if !parsed.errors.is_empty() {
@@ -480,7 +480,7 @@ impl ReifyToolContext for CliToolContext {
             ))
         })?;
 
-        let cell_id_obj = reify_types::ValueCellId::new(entity, member);
+        let cell_id_obj = reify_core::ValueCellId::new(entity, member);
 
         // Parse the value as f64
         let numeric_val: f64 = value
@@ -508,12 +508,12 @@ impl ReifyToolContext for CliToolContext {
 
         // Construct the appropriate Value based on the cell's type
         let new_value = match &ty {
-            reify_types::ty::Type::Scalar { dimension } => Value::Scalar {
+            reify_core::ty::Type::Scalar { dimension } => Value::Scalar {
                 si_value: numeric_val,
                 dimension: *dimension,
             },
-            reify_types::ty::Type::Int => Value::Int(numeric_val as i64),
-            reify_types::ty::Type::Real => Value::Real(numeric_val),
+            reify_core::ty::Type::Int => Value::Int(numeric_val as i64),
+            reify_core::ty::Type::Real => Value::Real(numeric_val),
             _ => Value::Real(numeric_val),
         };
 
@@ -561,7 +561,7 @@ impl ReifyToolContext for CliToolContext {
             // see task 2525.
             let parsed = reify_compiler::parse_with_stdlib(
                 &source,
-                reify_types::ModulePath::single(module_name),
+                reify_core::ModulePath::single(module_name),
             );
 
             if parsed.errors.is_empty() {
@@ -1043,7 +1043,7 @@ mod tests {
         // Check 1: the syntax parser itself reports errors.
         let parsed = reify_syntax::parse(
             INVALID_PARSE_INPUT,
-            reify_types::ModulePath::single("probe"),
+            reify_core::ModulePath::single("probe"),
         );
         assert!(
             !parsed.errors.is_empty(),
@@ -1384,7 +1384,7 @@ mod tests {
     /// the final assertion below would fail explicitly here.
     #[test]
     fn get_diagnostics_severity_is_pascal_case_wire_format() {
-        use reify_types::Severity;
+        use reify_core::Severity;
 
         let ctx = fresh_ctx();
         ctx.load_file(BRACKET_COMPILE_ERROR_PATH)

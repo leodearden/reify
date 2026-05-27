@@ -1,6 +1,7 @@
 //! Helper utilities shared across engine_eval and engine_edit.
 
-use reify_types::{Value, ValueCellId, ValueMap};
+use reify_core::ValueCellId;
+use reify_ir::{Value, ValueMap};
 
 /// Build a synthetic per-member list value for a collection sub.
 ///
@@ -65,7 +66,8 @@ pub(crate) fn collect_member_list(
 
 #[cfg(test)]
 mod tests {
-    use reify_types::{Value, ValueCellId, ValueMap};
+    use reify_core::ValueCellId;
+    use reify_ir::{Value, ValueMap};
 
     use super::collect_member_list;
 

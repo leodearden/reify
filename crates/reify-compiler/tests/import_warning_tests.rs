@@ -5,7 +5,7 @@
 use std::fs;
 
 use reify_compiler::module_dag::{ModuleResolver, compile_project};
-use reify_types::Severity;
+use reify_core::Severity;
 
 /// Assert that compiling `b.ri` (with content `b_source`) alongside a canonical
 /// `a.ri` via `compile_project` produces no Warning diagnostic whose message
@@ -81,7 +81,7 @@ fn module_dag_resolved_user_import_emits_no_warning() {
 #[test]
 fn compile_with_stdlib_unresolved_user_import_emits_specific_warning() {
     let source = "import shapes\nstructure S {\n    param w: Scalar = 80mm\n}";
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -151,7 +151,7 @@ fn compile_with_stdlib_unresolved_user_import_emits_specific_warning() {
 #[test]
 fn compile_with_stdlib_resolved_std_import_emits_no_warning() {
     let source = "import std.units\nstructure S {\n    param x: Length = 5mm\n}";
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",

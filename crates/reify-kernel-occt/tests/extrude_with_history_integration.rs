@@ -14,7 +14,7 @@
 #![cfg(has_occt)]
 
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
-use reify_types::GeometryQuery;
+use reify_ir::GeometryQuery;
 
 /// 10×10mm rectangular face profile, expressed in SI metres.
 const RECT_WIDTH_M: f64 = 10.0e-3;
@@ -26,7 +26,7 @@ const PRISM_DISTANCE_M: f64 = 5.0e-3;
 /// constructor (the source language has no face primitive; this test
 /// uses the kernel-direct primitive, which is how `OcctKernel::execute`
 /// would build the profile at the FFI boundary).
-fn make_rect_profile(kernel: &mut OcctKernelHandle) -> reify_types::GeometryHandleId {
+fn make_rect_profile(kernel: &mut OcctKernelHandle) -> reify_ir::GeometryHandleId {
     // The kernel API exposes profile-construction via `make_rect_face`
     // through the kernel's internal FFI, but at the Rust handle level
     // there is no `GeometryOp::RectFace` source-level primitive. The

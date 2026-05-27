@@ -5,7 +5,8 @@
 use reify_test_support::{
     assert_has_diagnostic, assert_no_diagnostic, compile_first_template, compile_source,
 };
-use reify_types::*;
+use reify_core::*;
+use reify_ir::*;
 
 // ── Step 13: compile_connect_generates_connection ────────────────────
 
@@ -39,7 +40,7 @@ structure def S {
     assert_eq!(template.connections[0].right_port, "b");
     assert_eq!(
         template.connections[0].operator,
-        reify_syntax::ConnectOp::Forward
+        reify_ast::ConnectOp::Forward
     );
 
     // Should have a compatibility constraint
@@ -138,14 +139,14 @@ structure def S {
     assert_eq!(template.connections[0].right_port, "b");
     assert_eq!(
         template.connections[0].operator,
-        reify_syntax::ConnectOp::Forward
+        reify_ast::ConnectOp::Forward
     );
 
     assert_eq!(template.connections[1].left_port, "b");
     assert_eq!(template.connections[1].right_port, "c");
     assert_eq!(
         template.connections[1].operator,
-        reify_syntax::ConnectOp::Forward
+        reify_ast::ConnectOp::Forward
     );
 }
 
@@ -353,7 +354,7 @@ structure def S {
     assert_eq!(template.connections.len(), 1);
     assert_eq!(
         template.connections[0].operator,
-        reify_syntax::ConnectOp::Reverse
+        reify_ast::ConnectOp::Reverse
     );
 }
 
@@ -914,7 +915,7 @@ structure def S {
     assert_eq!(template.connections.len(), 1);
     assert_eq!(
         template.connections[0].operator,
-        reify_syntax::ConnectOp::Bidirectional
+        reify_ast::ConnectOp::Bidirectional
     );
     // Auto-match: same trait, same member `d` → identity mapping
     assert_eq!(
@@ -957,7 +958,7 @@ structure def S {
     assert_eq!(template.connections.len(), 1);
     assert_eq!(
         template.connections[0].operator,
-        reify_syntax::ConnectOp::Reverse
+        reify_ast::ConnectOp::Reverse
     );
     // Auto-match still produces identity mapping regardless of operator
     assert_eq!(
@@ -1094,7 +1095,7 @@ structure def S {
     assert_eq!(template.connections.len(), 1);
     assert_eq!(
         template.connections[0].operator,
-        reify_syntax::ConnectOp::Reverse,
+        reify_ast::ConnectOp::Reverse,
         "expected Reverse operator"
     );
     assert_eq!(
@@ -1127,7 +1128,7 @@ structure def S {
     assert_eq!(template.connections.len(), 1);
     assert_eq!(
         template.connections[0].operator,
-        reify_syntax::ConnectOp::Bidirectional,
+        reify_ast::ConnectOp::Bidirectional,
         "expected Bidirectional operator"
     );
     assert_eq!(

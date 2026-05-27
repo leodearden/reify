@@ -13,12 +13,14 @@ description = "Mesh morphing classifier and engine for Reify"
 testing = []
 
 [dependencies]
-reify-types.workspace = true
+reify-core.workspace = true
+reify-ir.workspace = true
 reify-eval.workspace = true
 reify-solver-elastic.workspace = true
 serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
+reify-ir.workspace = true
 reify-compiler.workspace = true
 reify-test-support.workspace = true
 serde_json = { workspace = true }

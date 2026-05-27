@@ -5,7 +5,7 @@
 use std::cell::RefCell;
 use std::collections::HashSet;
 
-use crate::*;
+use reify_ast::*;
 use reify_core::{ContentHash, ModulePath, PortDirection, SourceSpan, SpannedIdent};
 
 /// Check a child node for errors before lowering it. If the node has errors,

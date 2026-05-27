@@ -20,7 +20,7 @@
 //! truth without widening the production surface (the module is gated
 //! behind test-fixtures so it never reaches production link closures).
 
-use reify_types::Mesh;
+use reify_ir::Mesh;
 
 /// Closed unit cube as a `reify_types::Mesh`: 8 vertices, 12 outward-
 /// facing triangles. Used by the boolean-op tests in this crate to

@@ -10,7 +10,7 @@
 
 use reify_compiler::{CompiledConstraint, CompiledFunction, CompiledModule, TopologyTemplate};
 use reify_test_support::compile_source;
-use reify_types::{Diagnostic, Severity};
+use reify_core::{Diagnostic, Severity};
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 

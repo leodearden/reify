@@ -142,7 +142,7 @@ pub(crate) fn collect_body_refs_inner(expr: &CompiledExpr, refs: &mut Vec<ValueC
 /// Recursively handles nested guarded groups.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn register_guarded_names<'a>(
-    members: &'a [reify_syntax::MemberDecl],
+    members: &'a [reify_ast::MemberDecl],
     scope: &mut CompilationScope,
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
@@ -154,7 +154,7 @@ pub(crate) fn register_guarded_names<'a>(
 ) {
     for member in members {
         match member {
-            reify_syntax::MemberDecl::Param(param) => {
+            reify_ast::MemberDecl::Param(param) => {
                 let ty = if let Some(type_expr) = &param.type_expr {
                     resolve_type_expr_with_aliases(
                         type_expr,
@@ -191,7 +191,7 @@ pub(crate) fn register_guarded_names<'a>(
                 }
                 scope.register(&param.name, ty);
             }
-            reify_syntax::MemberDecl::Let(let_decl) => {
+            reify_ast::MemberDecl::Let(let_decl) => {
                 if is_geometry_let(&let_decl.value, functions, known_geometry_lets) {
                     scope.register(&let_decl.name, Type::Geometry);
                     known_geometry_lets.insert(let_decl.name.as_str());
@@ -199,7 +199,7 @@ pub(crate) fn register_guarded_names<'a>(
                     scope.register(&let_decl.name, Type::Real);
                 }
             }
-            reify_syntax::MemberDecl::GuardedGroup(g) => {
+            reify_ast::MemberDecl::GuardedGroup(g) => {
                 // `known_geometry_lets` is intentionally shared across both branches,
                 // consistent with how `scope` is shared: names registered in the
                 // if-branch are visible when processing the else-branch. As a result,
@@ -242,10 +242,10 @@ pub(crate) fn register_guarded_names<'a>(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_block_guard(
     entity_name: &str,
-    g: &reify_syntax::GuardedGroupDecl,
+    g: &reify_ast::GuardedGroupDecl,
     outer_guard: Option<&ValueCellId>,
     scope: &mut CompilationScope,
-    enum_defs: &[reify_types::EnumDef],
+    enum_defs: &[reify_ir::EnumDef],
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
     guarded_groups: &mut Vec<CompiledGuardedGroup>,
@@ -348,10 +348,10 @@ pub(crate) fn compile_block_guard(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_guarded_members(
     entity_name: &str,
-    ast_members: &[reify_syntax::MemberDecl],
+    ast_members: &[reify_ast::MemberDecl],
     current_guard: &ValueCellId,
     scope: &mut CompilationScope,
-    enum_defs: &[reify_types::EnumDef],
+    enum_defs: &[reify_ir::EnumDef],
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
     members: &mut Vec<ValueCellDecl>,
@@ -369,7 +369,7 @@ pub(crate) fn compile_guarded_members(
     let guard_ctx = Some(current_guard);
     for member in ast_members {
         match member {
-            reify_syntax::MemberDecl::Param(param) => {
+            reify_ast::MemberDecl::Param(param) => {
                 let id = ValueCellId::new(entity_name, &param.name);
                 let cell_type = scope
                     .resolve(&param.name)
@@ -432,7 +432,7 @@ pub(crate) fn compile_guarded_members(
                 };
                 members.push(decl);
             }
-            reify_syntax::MemberDecl::Let(let_decl) => {
+            reify_ast::MemberDecl::Let(let_decl) => {
                 if is_geometry_let(&let_decl.value, functions, known_geometry_lets) {
                     continue;
                 }
@@ -482,7 +482,7 @@ pub(crate) fn compile_guarded_members(
                     span: let_decl.span,
                 });
             }
-            reify_syntax::MemberDecl::Constraint(constraint) => {
+            reify_ast::MemberDecl::Constraint(constraint) => {
                 let compiled_expr = {
                     let mut lc = 0u32;
                     compile_expr_guarded(
@@ -515,7 +515,7 @@ pub(crate) fn compile_guarded_members(
                 });
                 *constraint_index += 1;
             }
-            reify_syntax::MemberDecl::GuardedGroup(nested) => {
+            reify_ast::MemberDecl::GuardedGroup(nested) => {
                 // Nested guard: compile with current guard as outer
                 compile_block_guard(
                     entity_name,
@@ -536,13 +536,13 @@ pub(crate) fn compile_guarded_members(
                     known_geometry_lets,
                 );
             }
-            reify_syntax::MemberDecl::Sub(s) => {
+            reify_ast::MemberDecl::Sub(s) => {
                 diagnostics.push(
                     Diagnostic::error("sub declarations in guarded blocks are not yet supported")
                         .with_label(DiagnosticLabel::new(s.span, "not yet supported")),
                 );
             }
-            reify_syntax::MemberDecl::Minimize(m) => {
+            reify_ast::MemberDecl::Minimize(m) => {
                 diagnostics.push(
                     Diagnostic::error(
                         "minimize declarations in guarded blocks are not yet supported",
@@ -550,7 +550,7 @@ pub(crate) fn compile_guarded_members(
                     .with_label(DiagnosticLabel::new(m.span, "not yet supported")),
                 );
             }
-            reify_syntax::MemberDecl::Maximize(m) => {
+            reify_ast::MemberDecl::Maximize(m) => {
                 diagnostics.push(
                     Diagnostic::error(
                         "maximize declarations in guarded blocks are not yet supported",
@@ -558,7 +558,7 @@ pub(crate) fn compile_guarded_members(
                     .with_label(DiagnosticLabel::new(m.span, "not yet supported")),
                 );
             }
-            reify_syntax::MemberDecl::ForallConnect(f) => {
+            reify_ast::MemberDecl::ForallConnect(f) => {
                 diagnostics.push(
                     Diagnostic::error(
                         "forall connect/chain statements in guarded blocks are not yet supported",
@@ -566,7 +566,7 @@ pub(crate) fn compile_guarded_members(
                     .with_label(DiagnosticLabel::new(f.span, "not yet supported")),
                 );
             }
-            reify_syntax::MemberDecl::ForallConstraint(f) => {
+            reify_ast::MemberDecl::ForallConstraint(f) => {
                 diagnostics.push(
                     Diagnostic::error(
                         "forall constraint statements in guarded blocks are not yet supported",
@@ -574,15 +574,15 @@ pub(crate) fn compile_guarded_members(
                     .with_label(DiagnosticLabel::new(f.span, "not yet supported")),
                 );
             }
-            reify_syntax::MemberDecl::Port(_)
-            | reify_syntax::MemberDecl::Connect(_)
-            | reify_syntax::MemberDecl::Chain(_)
-            | reify_syntax::MemberDecl::AssociatedType(_)
-            | reify_syntax::MemberDecl::MetaBlock(_)
-            | reify_syntax::MemberDecl::ConstraintInst(_)
+            reify_ast::MemberDecl::Port(_)
+            | reify_ast::MemberDecl::Connect(_)
+            | reify_ast::MemberDecl::Chain(_)
+            | reify_ast::MemberDecl::AssociatedType(_)
+            | reify_ast::MemberDecl::MetaBlock(_)
+            | reify_ast::MemberDecl::ConstraintInst(_)
             // task 2372: match-arm decl group members inside a where{} guard are
             // handled in the parent compile_entity loop, not here.
-            | reify_syntax::MemberDecl::MatchArmDeclGroup(_) => {
+            | reify_ast::MemberDecl::MatchArmDeclGroup(_) => {
                 // Not yet handled inside guarded blocks. Enumerated explicitly so
                 // adding a new MemberDecl variant produces a `non-exhaustive match`
                 // compile error here, forcing an intentional decision about how the
@@ -602,10 +602,10 @@ pub(crate) fn compile_guarded_members(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_per_decl_guard(
     entity_name: &str,
-    wc: &reify_syntax::WhereClause,
+    wc: &reify_ast::WhereClause,
     member_decl: ValueCellDecl,
     scope: &mut CompilationScope,
-    enum_defs: &[reify_types::EnumDef],
+    enum_defs: &[reify_ir::EnumDef],
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
     guarded_groups: &mut Vec<CompiledGuardedGroup>,
@@ -639,10 +639,10 @@ pub(crate) fn compile_per_decl_guard(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_per_decl_constraint_guard(
     entity_name: &str,
-    wc: &reify_syntax::WhereClause,
+    wc: &reify_ast::WhereClause,
     constraint: CompiledConstraint,
     scope: &mut CompilationScope,
-    enum_defs: &[reify_types::EnumDef],
+    enum_defs: &[reify_ir::EnumDef],
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
     guarded_groups: &mut Vec<CompiledGuardedGroup>,
@@ -723,7 +723,7 @@ pub(crate) fn narrow_arms_under_guard<'a>(
 #[cfg(test)]
 mod narrow_arms_under_guard_tests {
     use super::*;
-    use reify_types::Value;
+    use reify_ir::Value;
 
     fn make_arm(guard_member: &str, arm_struct: &str) -> GuardedDeclArm {
         GuardedDeclArm {
@@ -797,7 +797,7 @@ mod narrow_arms_under_guard_tests {
     /// arm cell), and narrowing under one arm cell reaches just that arm.
     #[test]
     fn narrow_arms_under_real_entity_parent_chain_shape() {
-        use reify_types::CompiledExpr;
+        use reify_ir::CompiledExpr;
 
         let outer_guard = ValueCellId::new("Bolt", "__guard_outer");
         let arm0_guard = ValueCellId::new("Bolt", "__guard_0");

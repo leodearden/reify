@@ -25,7 +25,8 @@
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::{compile_source_with_stdlib, errors_only};
-use reify_types::{DiagnosticCode, FIELD_ENTITY_PREFIX, FieldSourceKind, Value, ValueCellId};
+use reify_core::{DiagnosticCode, FIELD_ENTITY_PREFIX, ValueCellId};
+use reify_ir::{FieldSourceKind, Value};
 
 /// Embedded source fixture — an `imported` field in a minimal module.
 ///

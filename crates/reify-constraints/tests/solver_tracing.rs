@@ -9,10 +9,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use reify_constraints::DimensionalSolver;
 use reify_test_support::*;
-use reify_types::{
-    AutoParam, BinOp, ConstraintSolver, DimensionVector, OptimizationObjective, ResolutionProblem,
-    SolveResult, Type, Value, ValueMap,
-};
+use reify_core::{DimensionVector, Type};
+use reify_ir::{AutoParam, BinOp, ConstraintSolver, OptimizationObjective, ResolutionProblem, SolveResult, Value, ValueMap};
 
 /// Build a tracing subscriber that counts DEBUG and WARN level events from
 /// `reify_constraints` targets.

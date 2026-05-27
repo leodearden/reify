@@ -7,7 +7,8 @@
 use std::collections::{BTreeMap, HashMap};
 use std::time::Instant;
 
-use reify_types::{ErrorRef, VersionId};
+use reify_core::VersionId;
+use reify_ir::ErrorRef;
 
 use crate::cache::{EvalOutcome, NodeId};
 
@@ -232,7 +233,8 @@ pub fn translate_warm_pool_event_to_eval_event(
 mod tests {
     use std::time::Instant;
 
-    use reify_types::{ErrorRef, VersionId};
+    use reify_core::VersionId;
+    use reify_ir::ErrorRef;
 
     use crate::cache::{EvalOutcome, NodeId};
     use crate::journal::*;
@@ -333,7 +335,7 @@ mod tests {
     fn make_event(node_name: &str, kind: EventKind, version: u64) -> EvalEvent {
         EvalEvent {
             timestamp: Instant::now(),
-            node_id: NodeId::Value(reify_types::ValueCellId::new("Test", node_name)),
+            node_id: NodeId::Value(reify_core::ValueCellId::new("Test", node_name)),
             kind,
             version: VersionId(version),
             payload: None,
@@ -369,24 +371,24 @@ mod tests {
         assert_eq!(events.len(), 3);
         assert_eq!(
             events[0].node_id,
-            NodeId::Value(reify_types::ValueCellId::new("Test", "a"))
+            NodeId::Value(reify_core::ValueCellId::new("Test", "a"))
         );
         assert_eq!(
             events[1].node_id,
-            NodeId::Value(reify_types::ValueCellId::new("Test", "b"))
+            NodeId::Value(reify_core::ValueCellId::new("Test", "b"))
         );
         assert_eq!(
             events[2].node_id,
-            NodeId::Value(reify_types::ValueCellId::new("Test", "c"))
+            NodeId::Value(reify_core::ValueCellId::new("Test", "c"))
         );
     }
 
     #[test]
     fn events_for_node_returns_correct_events() {
         let mut journal = EventJournal::new();
-        let node_a = NodeId::Value(reify_types::ValueCellId::new("Test", "a"));
-        let node_b = NodeId::Value(reify_types::ValueCellId::new("Test", "b"));
-        let node_c = NodeId::Value(reify_types::ValueCellId::new("Test", "c"));
+        let node_a = NodeId::Value(reify_core::ValueCellId::new("Test", "a"));
+        let node_b = NodeId::Value(reify_core::ValueCellId::new("Test", "b"));
+        let node_c = NodeId::Value(reify_core::ValueCellId::new("Test", "c"));
 
         journal.record(make_event("a", EventKind::Started, 0));
         journal.record(make_event("b", EventKind::Started, 0));
@@ -427,7 +429,7 @@ mod tests {
     #[test]
     fn events_for_node_unknown_returns_empty() {
         let journal = EventJournal::new();
-        let unknown = NodeId::Value(reify_types::ValueCellId::new("Test", "unknown"));
+        let unknown = NodeId::Value(reify_core::ValueCellId::new("Test", "unknown"));
         assert!(journal.events_for_node(&unknown).is_empty());
     }
 
@@ -447,7 +449,7 @@ mod tests {
             2,
         ));
 
-        let node_x = NodeId::Value(reify_types::ValueCellId::new("Test", "x"));
+        let node_x = NodeId::Value(reify_core::ValueCellId::new("Test", "x"));
         let x_events = journal.events_for_node(&node_x);
         assert_eq!(x_events.len(), 3);
         assert!(matches!(x_events[0].kind, EventKind::Started));
@@ -461,7 +463,7 @@ mod tests {
         let t1 = Instant::now();
         journal.record(EvalEvent {
             timestamp: t1,
-            node_id: NodeId::Value(reify_types::ValueCellId::new("Test", "a")),
+            node_id: NodeId::Value(reify_core::ValueCellId::new("Test", "a")),
             kind: EventKind::Started,
             version: VersionId(0),
             payload: None,
@@ -471,7 +473,7 @@ mod tests {
         let t2 = Instant::now();
         journal.record(EvalEvent {
             timestamp: t2,
-            node_id: NodeId::Value(reify_types::ValueCellId::new("Test", "b")),
+            node_id: NodeId::Value(reify_core::ValueCellId::new("Test", "b")),
             kind: EventKind::Started,
             version: VersionId(0),
             payload: None,
@@ -480,7 +482,7 @@ mod tests {
         let t3 = Instant::now();
         journal.record(EvalEvent {
             timestamp: t3,
-            node_id: NodeId::Value(reify_types::ValueCellId::new("Test", "c")),
+            node_id: NodeId::Value(reify_core::ValueCellId::new("Test", "c")),
             kind: EventKind::Started,
             version: VersionId(0),
             payload: None,
@@ -491,11 +493,11 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(
             events[0].node_id,
-            NodeId::Value(reify_types::ValueCellId::new("Test", "a"))
+            NodeId::Value(reify_core::ValueCellId::new("Test", "a"))
         );
         assert_eq!(
             events[1].node_id,
-            NodeId::Value(reify_types::ValueCellId::new("Test", "b"))
+            NodeId::Value(reify_core::ValueCellId::new("Test", "b"))
         );
     }
 
@@ -505,7 +507,7 @@ mod tests {
         let t1 = Instant::now();
         journal.record(EvalEvent {
             timestamp: t1,
-            node_id: NodeId::Value(reify_types::ValueCellId::new("Test", "a")),
+            node_id: NodeId::Value(reify_core::ValueCellId::new("Test", "a")),
             kind: EventKind::Started,
             version: VersionId(0),
             payload: None,
@@ -514,7 +516,7 @@ mod tests {
         let t2 = Instant::now();
         journal.record(EvalEvent {
             timestamp: t2,
-            node_id: NodeId::Value(reify_types::ValueCellId::new("Test", "b")),
+            node_id: NodeId::Value(reify_core::ValueCellId::new("Test", "b")),
             kind: EventKind::Started,
             version: VersionId(0),
             payload: None,
@@ -525,7 +527,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(
             events[0].node_id,
-            NodeId::Value(reify_types::ValueCellId::new("Test", "b"))
+            NodeId::Value(reify_core::ValueCellId::new("Test", "b"))
         );
     }
 
@@ -564,11 +566,11 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(
             events[0].node_id,
-            NodeId::Value(reify_types::ValueCellId::new("Test", "c"))
+            NodeId::Value(reify_core::ValueCellId::new("Test", "c"))
         );
         assert_eq!(
             events[1].node_id,
-            NodeId::Value(reify_types::ValueCellId::new("Test", "d"))
+            NodeId::Value(reify_core::ValueCellId::new("Test", "d"))
         );
     }
 
@@ -605,7 +607,7 @@ mod tests {
         ));
         journal.record(make_event("x", EventKind::CacheHit, 1));
 
-        let node_x = NodeId::Value(reify_types::ValueCellId::new("Test", "x"));
+        let node_x = NodeId::Value(reify_core::ValueCellId::new("Test", "x"));
         let latest = journal.latest_for_node(&node_x);
         assert!(latest.is_some());
         assert!(matches!(latest.unwrap().kind, EventKind::CacheHit));
@@ -614,7 +616,7 @@ mod tests {
     #[test]
     fn latest_for_node_unknown_returns_none() {
         let journal = EventJournal::new();
-        let unknown = NodeId::Value(reify_types::ValueCellId::new("Test", "unknown"));
+        let unknown = NodeId::Value(reify_core::ValueCellId::new("Test", "unknown"));
         assert!(journal.latest_for_node(&unknown).is_none());
     }
 
@@ -638,7 +640,7 @@ mod tests {
             0,
         ));
 
-        let node_a = NodeId::Value(reify_types::ValueCellId::new("Test", "a"));
+        let node_a = NodeId::Value(reify_core::ValueCellId::new("Test", "a"));
         let latest_a = journal.latest_for_node(&node_a).unwrap();
         assert!(matches!(
             latest_a.kind,
@@ -647,7 +649,7 @@ mod tests {
             }
         ));
 
-        let node_b = NodeId::Value(reify_types::ValueCellId::new("Test", "b"));
+        let node_b = NodeId::Value(reify_core::ValueCellId::new("Test", "b"));
         let latest_b = journal.latest_for_node(&node_b).unwrap();
         assert!(matches!(
             latest_b.kind,
@@ -710,8 +712,8 @@ mod tests {
     #[test]
     fn journal_records_evicted_and_donated_events() {
         let mut journal = EventJournal::new();
-        let node_a = NodeId::Value(reify_types::ValueCellId::new("Test", "a"));
-        let node_b = NodeId::Value(reify_types::ValueCellId::new("Test", "b"));
+        let node_a = NodeId::Value(reify_core::ValueCellId::new("Test", "a"));
+        let node_b = NodeId::Value(reify_core::ValueCellId::new("Test", "b"));
 
         journal.record(make_event("a", EventKind::Evicted { size_bytes: 512 }, 0));
         journal.record(make_event("b", EventKind::Donated { size_bytes: 4096 }, 1));
@@ -735,7 +737,7 @@ mod tests {
     fn eval_event_construction() {
         let event = EvalEvent {
             timestamp: Instant::now(),
-            node_id: NodeId::Value(reify_types::ValueCellId::new("Test", "x")),
+            node_id: NodeId::Value(reify_core::ValueCellId::new("Test", "x")),
             kind: EventKind::Started,
             version: VersionId(0),
             payload: None,
@@ -746,7 +748,7 @@ mod tests {
         // With payload
         let event2 = EvalEvent {
             timestamp: Instant::now(),
-            node_id: NodeId::Value(reify_types::ValueCellId::new("Test", "y")),
+            node_id: NodeId::Value(reify_core::ValueCellId::new("Test", "y")),
             kind: EventKind::Completed {
                 outcome: EvalOutcome::Changed,
             },
@@ -761,7 +763,7 @@ mod tests {
 
     /// Helper: build a NodeId::Value for tests.
     fn node(entity: &str, member: &str) -> NodeId {
-        NodeId::Value(reify_types::ValueCellId::new(entity, member))
+        NodeId::Value(reify_core::ValueCellId::new(entity, member))
     }
 
     /// Evicted variant maps correctly:

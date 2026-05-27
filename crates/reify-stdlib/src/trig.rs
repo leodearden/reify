@@ -1,4 +1,5 @@
-use reify_types::{DimensionVector, Value};
+use reify_core::DimensionVector;
+use reify_ir::Value;
 
 use crate::helpers::{binary_f64, trig_input, unary, unary_f64};
 
@@ -45,7 +46,8 @@ pub(crate) fn eval_trig(name: &str, args: &[Value]) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
-    use reify_types::{DimensionVector, Value};
+    use reify_core::DimensionVector;
+    use reify_ir::Value;
 
     // --- Trig function tests ---
 

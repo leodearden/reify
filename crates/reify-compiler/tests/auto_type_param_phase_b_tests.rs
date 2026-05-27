@@ -36,10 +36,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use reify_compiler::auto_type_param::*;
 use reify_test_support::{MockConstraintChecker, TopologyTemplateBuilder};
-use reify_types::{
-    CompiledExpr, CompiledFunction, ConstraintChecker, ConstraintDiagnostics, ConstraintInput,
-    ConstraintNodeId, ConstraintResult, Satisfaction, Value,
-};
+use reify_core::ConstraintNodeId;
+use reify_ir::{CompiledExpr, CompiledFunction, ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Satisfaction, Value};
 
 /// Stateful mock whose verdict is keyed by *call number*, not by
 /// `ConstraintNodeId`. Used to detect single-broadcast regressions in
@@ -153,7 +151,7 @@ fn filter_accepts_single_candidate_when_template_has_no_constraints() {
 /// to store in the `CompiledConstraint::expr` field.
 #[test]
 fn filter_accepts_candidate_when_all_constraints_satisfied() {
-    let expr = CompiledExpr::literal(Value::Bool(true), reify_types::Type::Bool);
+    let expr = CompiledExpr::literal(Value::Bool(true), reify_core::Type::Bool);
     let template = TopologyTemplateBuilder::new("Bearing")
         .constraint("Bearing", 0, None, expr)
         .build();
@@ -187,7 +185,7 @@ fn filter_accepts_candidate_when_all_constraints_satisfied() {
 #[test]
 fn filter_rejects_candidate_when_any_constraint_violated() {
     let cnid = ConstraintNodeId::new("Bearing", 0);
-    let expr = CompiledExpr::literal(Value::Bool(true), reify_types::Type::Bool);
+    let expr = CompiledExpr::literal(Value::Bool(true), reify_core::Type::Bool);
     let template = TopologyTemplateBuilder::new("Bearing")
         .constraint("Bearing", 0, None, expr)
         .build();
@@ -223,7 +221,7 @@ fn filter_rejects_candidate_when_any_constraint_violated() {
 /// considered feasible (undef does not falsify)."
 #[test]
 fn filter_treats_indeterminate_as_feasible_per_arch_2_5() {
-    let expr = CompiledExpr::literal(Value::Bool(true), reify_types::Type::Bool);
+    let expr = CompiledExpr::literal(Value::Bool(true), reify_core::Type::Bool);
     let template = TopologyTemplateBuilder::new("Bearing")
         .constraint("Bearing", 0, None, expr)
         .build();
@@ -257,7 +255,7 @@ fn filter_treats_indeterminate_as_feasible_per_arch_2_5() {
 #[test]
 fn filter_only_violated_constraints_are_recorded_in_rejection() {
     let cnid_0 = ConstraintNodeId::new("Bearing", 0);
-    let expr = CompiledExpr::literal(Value::Bool(true), reify_types::Type::Bool);
+    let expr = CompiledExpr::literal(Value::Bool(true), reify_core::Type::Bool);
     let template = TopologyTemplateBuilder::new("Bearing")
         .constraint("Bearing", 0, None, expr.clone())
         // Constraint index 1 exists in the template but returns Indeterminate —
@@ -339,7 +337,7 @@ fn filter_preserves_input_order_in_both_accepted_and_rejected() {
 #[test]
 fn filter_partitions_mixed_candidates_into_accepted_and_rejected() {
     let cnid = ConstraintNodeId::new("T", 0);
-    let expr = CompiledExpr::literal(Value::Bool(true), reify_types::Type::Bool);
+    let expr = CompiledExpr::literal(Value::Bool(true), reify_core::Type::Bool);
     let template = TopologyTemplateBuilder::new("T")
         .constraint("T", 0, None, expr)
         .build();
@@ -411,7 +409,7 @@ fn filter_partitions_mixed_candidates_into_accepted_and_rejected() {
 #[test]
 fn filter_invokes_checker_independently_per_candidate() {
     let cnid = ConstraintNodeId::new("Bearing", 0);
-    let expr = CompiledExpr::literal(Value::Bool(true), reify_types::Type::Bool);
+    let expr = CompiledExpr::literal(Value::Bool(true), reify_core::Type::Bool);
     let template = TopologyTemplateBuilder::new("Bearing")
         .constraint("Bearing", 0, None, expr)
         .build();

@@ -23,10 +23,11 @@ use reify_compiler::CompiledModule;
 use reify_eval::Engine;
 use reify_eval::cache::NodeId;
 use reify_eval::snapshot::Snapshot;
-use reify_syntax::ConnectOp;
+use reify_ast::ConnectOp;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::parse_and_compile;
-use reify_types::{CompiledExprKind, ConstraintNodeId, Value, ValueCellId};
+use reify_core::{ConstraintNodeId, ValueCellId};
+use reify_ir::{CompiledExprKind, Value};
 
 /// Convenience: parse + compile a single-source string via the shared
 /// test-support helper. Mirrors the `compile_source` helper in
@@ -321,7 +322,8 @@ fn collect_forall_ids(snap: &Snapshot, variable: &str) -> Vec<ConstraintNodeId> 
 fn edit_param_count_change_invalidates_prior_forall_constraint_cache() {
     use reify_eval::cache::{CachedResult, NodeCache};
     use reify_eval::deps::DependencyTrace;
-    use reify_types::{DeterminacyState, Freshness, VersionId};
+    use reify_core::VersionId;
+    use reify_ir::{DeterminacyState, Freshness};
 
     let module = compile_source(FORALL_FIXTURE_SRC);
     let mut engine = fresh_engine();
@@ -1102,7 +1104,8 @@ fn collect_forall_connect_ids(snap: &Snapshot, variable: &str) -> Vec<Constraint
 fn edit_param_count_change_invalidates_prior_forall_connect_constraint_cache() {
     use reify_eval::cache::{CachedResult, NodeCache};
     use reify_eval::deps::DependencyTrace;
-    use reify_types::{DeterminacyState, Freshness, VersionId};
+    use reify_core::VersionId;
+    use reify_ir::{DeterminacyState, Freshness};
 
     let module = compile_source(FORALL_CONNECT_FIXTURE_SRC);
     let mut engine = fresh_engine();

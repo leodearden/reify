@@ -26,7 +26,7 @@
 
 use crate::options::MorphOptions;
 use crate::types::{InversionDetails, SoftFailDetails};
-use reify_types::VolumeMesh;
+use reify_ir::VolumeMesh;
 use std::f64::consts::SQRT_2;
 
 // ── Jacobian helpers ─────────────────────────────────────────────────────────
@@ -385,7 +385,7 @@ pub fn quality_check(
 mod tests {
     use super::*;
     use crate::options::MorphOptions;
-    use reify_types::{ElementOrderTag, VolumeMesh};
+    use reify_ir::{ElementOrderTag, VolumeMesh};
 
     fn empty_mesh() -> VolumeMesh {
         VolumeMesh {

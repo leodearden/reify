@@ -16,7 +16,7 @@
 #![cfg(has_occt)]
 
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
-use reify_types::{GeometryOp, GeometryQuery, Value};
+use reify_ir::{GeometryOp, GeometryQuery, Value};
 
 /// 10×10×10 mm box, expressed in SI metres at the kernel boundary.
 const BOX_SIDE_M: f64 = 10.0e-3;

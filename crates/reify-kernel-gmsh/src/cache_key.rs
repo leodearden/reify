@@ -32,7 +32,8 @@
 //! existing fields, since persistent caches that key on this hash would
 //! silently invalidate.
 
-use reify_types::{ContentHash, ElementOrderTag};
+use reify_core::ContentHash;
+use reify_ir::ElementOrderTag;
 
 use crate::options::MeshingOptions;
 

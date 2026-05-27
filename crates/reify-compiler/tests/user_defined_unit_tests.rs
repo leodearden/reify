@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use reify_compiler::{CompiledModule, compile_with_prelude};
 use reify_test_support::{compile_source, compile_source_named, errors_only};
-use reify_types::ModulePath;
+use reify_core::ModulePath;
 
 // ─── helpers ───────────────────────────────────────────────────────────────────
 
@@ -51,7 +51,7 @@ fn write_transitive_unit_chain(dir: &std::path::Path) {
 
 /// Assert that `errors` contains at least one diagnostic whose lowercased message
 /// contains both "unknown unit" and "mil". Used to pin the one-hop limitation.
-fn assert_unknown_unit_mil(errors: &[&reify_types::Diagnostic]) {
+fn assert_unknown_unit_mil(errors: &[&reify_core::Diagnostic]) {
     assert!(
         !errors.is_empty(),
         "expected 'unknown unit' error: `mil` should not be visible two hops away (one-hop limitation)"
@@ -102,7 +102,7 @@ fn user_unit_in_let_binding() {
         .expect("w_thou has no default_expr");
     let (op, _left, right) = common::expect_binop(expr);
     assert!(
-        matches!(op, reify_types::BinOp::Add),
+        matches!(op, reify_ir::BinOp::Add),
         "expected Add op for w + 5thou, got {:?}",
         op
     );
@@ -117,7 +117,7 @@ fn user_unit_in_let_binding() {
     );
     assert_eq!(
         dimension,
-        reify_types::DimensionVector::LENGTH,
+        reify_core::DimensionVector::LENGTH,
         "expected Length dimension for 5thou, got {:?}",
         dimension
     );

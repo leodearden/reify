@@ -5,10 +5,8 @@
 //! otherwise performing no compilation work — that happens in the later
 //! phase modules.
 
-use reify_syntax::{
-    Declaration, FieldDef, FnDef, ParsedModule, TraitDecl, TypeAliasDecl, UnitDecl,
-};
-use reify_types::{Diagnostic, DiagnosticLabel};
+use reify_ast::{Declaration, FieldDef, FnDef, ParsedModule, TraitDecl, TypeAliasDecl, UnitDecl};
+use reify_core::{Diagnostic, DiagnosticLabel};
 
 use crate::CompiledModule;
 use crate::annotations::is_known_module_pragma;
@@ -103,7 +101,7 @@ pub(crate) fn collect_decl_refs<'a>(
         // is equivalent to "name absent" here — the span-equality branch is unreachable.
         match decl {
             Declaration::Enum(e) => {
-                ctx.enum_defs.push(reify_types::EnumDef {
+                ctx.enum_defs.push(reify_ir::EnumDef {
                     name: e.name.clone(),
                     variants: e.variants.clone(),
                     doc: e.doc.clone(),

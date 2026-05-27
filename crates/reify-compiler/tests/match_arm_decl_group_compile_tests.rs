@@ -12,11 +12,8 @@
 //! populates it.
 
 use reify_compiler::GuardedDeclGroup;
-use reify_syntax::{
-    Declaration, EnumDecl, Expr, ExprKind, LetDecl, MatchArmDeclArmDecl, MatchArmDeclGroupDecl,
-    MemberDecl, ParamDecl, ParsedModule, StructureDef, SubDecl, TypeExpr, TypeExprKind,
-};
-use reify_types::{ContentHash, ModulePath, SourceSpan, Type};
+use reify_ast::{Declaration, EnumDecl, Expr, ExprKind, LetDecl, MatchArmDeclArmDecl, MatchArmDeclGroupDecl, MemberDecl, ParamDecl, ParsedModule, StructureDef, SubDecl, TypeExpr, TypeExprKind};
+use reify_core::{ContentHash, ModulePath, SourceSpan, Type};
 
 // ─── AST construction helpers ────────────────────────────────────────────────
 

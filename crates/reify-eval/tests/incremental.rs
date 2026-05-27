@@ -14,10 +14,8 @@ use reify_test_support::mocks::{
     MockConstraintChecker, MockConstraintSolver, SequencedMockConstraintSolver,
 };
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, mm};
-use reify_types::{
-    BinOp, CompiledExpr, CompiledExprKind, ConstraintNodeId, ContentHash, DeterminacyState,
-    Freshness, ModulePath, SnapshotId, SnapshotProvenance, Type, Value, ValueCellId, VersionId,
-};
+use reify_core::{ConstraintNodeId, ContentHash, ModulePath, SnapshotId, Type, ValueCellId, VersionId};
+use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, DeterminacyState, Freshness, SnapshotProvenance, Value};
 
 /// Canary backward-compatibility test: verifies that cold-start eval()
 /// produces the correct values for the bracket fixture.
@@ -1115,7 +1113,7 @@ fn edit_param_re_resolves_auto_params_when_constraints_dirty() {
 /// let bindings that depend on re-resolved auto params (no second propagation wave).
 #[test]
 fn edit_param_let_binding_re_evaluates_after_re_resolution() {
-    use reify_types::SolveResult;
+    use reify_ir::SolveResult;
 
     let a_id = ValueCellId::new("S", "a");
     let x_id = ValueCellId::new("S", "x");
@@ -1210,7 +1208,7 @@ fn edit_param_let_binding_re_evaluates_after_re_resolution() {
 /// Currently FAILS because edit_check() doesn't exist.
 #[test]
 fn edit_check_returns_incremental_constraint_satisfaction() {
-    use reify_types::Satisfaction;
+    use reify_ir::Satisfaction;
 
     let width_id = ValueCellId::new("S", "width");
 
@@ -1265,7 +1263,7 @@ fn edit_check_returns_incremental_constraint_satisfaction() {
 /// edit_check(width, mm(8.0)) → Satisfied again.
 #[test]
 fn edit_check_constraint_transitions_satisfied_to_violated_and_back() {
-    use reify_types::Satisfaction;
+    use reify_ir::Satisfaction;
 
     let width_id = ValueCellId::new("S", "width");
 
@@ -1315,7 +1313,8 @@ fn edit_check_constraint_transitions_satisfied_to_violated_and_back() {
 /// cone → solver re-runs → Infeasible → diagnostics in result.
 #[test]
 fn edit_param_solver_diagnostics_propagated() {
-    use reify_types::{Diagnostic, SolveResult};
+    use reify_core::Diagnostic;
+    use reify_ir::SolveResult;
 
     let a_id = ValueCellId::new("S", "a");
     let x_id = ValueCellId::new("S", "x");
@@ -1383,7 +1382,7 @@ fn edit_param_solver_diagnostics_propagated() {
 ///   (4) snapshot provenance is Edit (not Initial)
 #[test]
 fn edit_param_snapshot_updated_after_re_resolution() {
-    use reify_types::SolveResult;
+    use reify_ir::SolveResult;
 
     let a_id = ValueCellId::new("S", "a");
     let x_id = ValueCellId::new("S", "x");
@@ -1452,7 +1451,7 @@ fn edit_param_snapshot_updated_after_re_resolution() {
         "expected x = mm(20.0) = 0.02 SI in snapshot, got {:?}",
         x_val
     );
-    assert_eq!(*x_det, reify_types::DeterminacyState::Determined);
+    assert_eq!(*x_det, reify_ir::DeterminacyState::Determined);
 
     // (3) snapshot.values contains y with re-evaluated value
     let (y_val, y_det) = snap
@@ -1464,7 +1463,7 @@ fn edit_param_snapshot_updated_after_re_resolution() {
         "expected y = mm(20.0)*2 = 0.04 SI in snapshot, got {:?}",
         y_val
     );
-    assert_eq!(*y_det, reify_types::DeterminacyState::Determined);
+    assert_eq!(*y_det, reify_ir::DeterminacyState::Determined);
 }
 
 /// Regression guard: when editing a param that does NOT affect auto param
@@ -1563,7 +1562,7 @@ fn edit_param_no_re_resolution_when_auto_constraints_not_dirty() {
 #[test]
 fn edit_check_preserves_constraint_labels() {
     use reify_test_support::builders::lt;
-    use reify_types::Satisfaction;
+    use reify_ir::Satisfaction;
 
     let width_id = ValueCellId::new("S", "width");
 
@@ -1659,7 +1658,7 @@ fn edit_check_preserves_constraint_labels() {
     // label ("min_width") — not the raw ConstraintNodeId ("S#constraint[0]").
     // Only C0 is violated, so exactly its label should appear in the post-edit
     // diagnostics; C1 is satisfied and contributes nothing.
-    use reify_types::Severity;
+    use reify_core::Severity;
     let error_msgs: Vec<&str> = result2
         .diagnostics
         .iter()

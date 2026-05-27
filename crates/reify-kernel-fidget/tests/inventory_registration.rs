@@ -13,7 +13,7 @@
 //! `crates/reify-kernel-manifold/tests/inventory_registration.rs:1-112`.
 
 use reify_kernel_fidget::register::FIDGET_KERNEL_NAME;
-use reify_types::{CapabilityDescriptor, KernelRegistration, Operation, ReprKind};
+use reify_ir::{CapabilityDescriptor, KernelRegistration, Operation, ReprKind};
 
 /// Fidget's capability descriptor must enumerate exactly the three
 /// SDF-Boolean operations Fidget supports.

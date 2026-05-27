@@ -19,7 +19,7 @@
 
 use reify_eval::topology_selectors;
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
-use reify_types::{GeometryHandleId, GeometryOp, Value};
+use reify_ir::{GeometryHandleId, GeometryOp, Value};
 
 /// Helper: spawn a kernel handle, build a single box of the given mm
 /// dimensions (converted to SI metres at the kernel boundary so length

@@ -4,11 +4,8 @@
 //! tree-sitter grammar / ts_parser lowering for the new variant is deferred to a
 //! future task. This mirrors the pattern in `member_span_tests.rs`.
 
-use reify_syntax::{
-    Expr, ExprKind, MatchArmDeclArmDecl, MatchArmDeclGroupDecl, MemberDecl, SubDecl,
-    find_named_member_span, walk_specialization_scope_members,
-};
-use reify_types::{ContentHash, SourceSpan};
+use reify_ast::{Expr, ExprKind, MatchArmDeclArmDecl, MatchArmDeclGroupDecl, MemberDecl, SubDecl, find_named_member_span, walk_specialization_scope_members};
+use reify_core::{ContentHash, SourceSpan};
 
 fn dummy_span() -> SourceSpan {
     SourceSpan::new(0, 1)
@@ -125,7 +122,7 @@ fn find_named_member_span_descends_into_match_arm_decl_group() {
     );
 
     // Place a Param named "head" inside an arm's member to test actual descent.
-    use reify_syntax::ParamDecl;
+    use reify_ast::ParamDecl;
     let param_span = SourceSpan::new(42, 80);
     let group_with_param = MatchArmDeclGroupDecl {
         discriminant: dummy_ident_expr("head_type"),

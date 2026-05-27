@@ -11,7 +11,7 @@
 //! `import_warning_tests.rs` and `diagnostic_coverage_checkpoint.rs`.
 
 use reify_test_support::{compile_source, warnings_only};
-use reify_types::DiagnosticCode;
+use reify_core::DiagnosticCode;
 
 /// A chain at exactly the threshold (length 4 — `a.b.c.d`) must not warn.
 ///
