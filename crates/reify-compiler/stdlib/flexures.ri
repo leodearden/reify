@@ -1,0 +1,69 @@
+// Stdlib: Compliant Joints + Flexures  (`std.flexures`)
+//
+// PRD: docs/prds/v0_3/compliant-joints-flexures.md §4.2, §11 task β.
+//
+// Provides the named-type substrate for the v0.3 compliant-joints-flexures
+// PRD — every PRB-emitting ctor (γ / δ / ε / ζ / η / θ in PRD §11) caches a
+// populated `FlexureCompliance` record on the joint and the `flexure_compliance`
+// accessor surfaces it for user inspection (PRD §4.2). Scope is the type +
+// accessor surface only — no Rust evaluator and no per-primitive ctor side
+// effects (that is γ / δ / ε / ζ / η / θ).
+//
+// Surface (PRD §4.2):
+//   - pub type RotationalStiffness            (placeholder alias to `Real`;
+//                                              retargets to the dimensioned
+//                                              type when the compliant-joints-
+//                                              flexures α task lands the Joint
+//                                              surface extension)
+//   - structure def FlexureCompliance         (7 params per PRD §4.2;
+//                                              constraint yield_margin <= 1)
+//   - pub fn flexure_compliance(joint) ->
+//         FlexureCompliance                    (accessor stub; body retargets
+//                                              in λ when PRB ctors cache real
+//                                              records under the reserved hidden
+//                                              field `__flexure_compliance` on
+//                                              the joint Map)
+//
+// Module placement: registered last in `stdlib_loader.rs` after `std.fdm` —
+// `std.flexures` references only language primitives (Real, Pressure, Length,
+// Bool, Option) plus its own alias, so it has zero cross-module dependencies
+// on materials / structural / solver modules. The trailing position mirrors
+// the placement convention `std.trajectory` and `std.fdm` already use as
+// v0.3 cluster modules.
+//
+// Encoding notes (placeholder retargets):
+//   1. `RotationalStiffness` is declared here as `pub type RotationalStiffness
+//      = Real` because the dimensioned types `RotationalStiffness` /
+//      `TranslationalStiffness` / `RotationalDamping` / `TranslationalDamping`
+//      are owned by the un-filed compliant-joints-flexures α task (Joint
+//      surface extension; PRD §3 + §11 Phase 1 row α). Same placeholder
+//      posture as `trajectory.ri:56` (`pub type JointValue = Real` with
+//      TODO(joint-value-type)) and `analysis.ri:13` (`pub type Stress =
+//      Pressure`) — retargeting later is a single-line touch.
+//   2. `prb_validity_range` is encoded as `Real` (sentinel zero default)
+//      because `Range<Angle>` is not a resolvable parameterized builtin in
+//      `type_resolution.rs::resolve_parameterized_builtin_type` (no Range
+//      arm). Same placeholder posture as `fea_multi_case.ri:90`
+//      (`loads : List<Real>` with TODO(load-trait)) — adds a Range arm
+//      later without touching this structure_def body. See
+//      TODO(range-angle-type) on the param.
+//   3. `flexure_compliance(joint: Real)` uses `Real` for the joint parameter
+//      because `Joint` is not yet a typed structure — current joints are
+//      runtime `Value::Map` per `reify-stdlib/src/joints.rs`, and per-kind
+//      structures (Revolute, Prismatic, etc.) land in KCC-ζ (task 3845,
+//      in-progress). Same placeholder posture as
+//      `trajectory.ri::PiecewisePolynomialProfile.mechanism : Real` with
+//      TODO(mechanism-type) — retargets to `DrivingJoint` trait (or
+//      `Joint` marker) when KCC-ζ lands. See TODO(joint-type) on the
+//      accessor's joint parameter.
+//
+// Cache-on-joint convention (consumed by λ — task 3821):
+//   The PRB ctors (γ / δ / ε / ζ / η / θ) will store the populated
+//   `FlexureCompliance` record on the joint Map under the reserved hidden
+//   field `__flexure_compliance` (mirroring KCC's `__joint_*` reserved-name
+//   convention from task 3842 — `JointBinding::LiteralBound::synth_param_name
+//   = __joint_<id>_v`). The accessor body in this module is stubbed to
+//   return a default `FlexureCompliance()` until λ replaces the body with
+//   the cache-lookup logic (or wires Rust-side intrinsic dispatch). The
+//   reserved-name namespacing keeps the cache key discoverable and out of
+//   user-namespace collision.

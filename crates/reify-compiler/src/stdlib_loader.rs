@@ -115,6 +115,10 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 include_str!("../stdlib/trajectory.ri"),
             ),
             ("std.fdm", include_str!("../stdlib/fdm.ri")),
+            (
+                "std.flexures",
+                include_str!("../stdlib/flexures.ri"),
+            ),
         ];
 
         // SEQUENTIAL COMPILATION WITH GROWING PRELUDE: each module is compiled
