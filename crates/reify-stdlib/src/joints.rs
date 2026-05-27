@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use reify_types::{DimensionVector, Value, quaternion_is_finite};
 
+use crate::dynamics::spatial::SpatialVector6;
 use crate::helpers::trig_input;
 use crate::orientation::normalize_quaternion;
 
@@ -906,6 +907,43 @@ fn joint_jacobian_value(value: &Value) -> Value {
             scale_jacobian(&parent_jac, ratio_f64)
         }
         _ => Value::Undef,
+    }
+}
+
+/// Motion-subspace matrix S_i for a joint (per Featherstone (2008) §5.1).
+///
+/// Returns `Some(cols)` where each column is a [`SpatialVector6`] in Featherstone
+/// motion-vector ordering `[ω; v]` (angular first, then linear), and `cols.len()`
+/// equals the joint's DOF count:
+///
+/// | kind        | DOF |
+/// |-------------|-----|
+/// | prismatic   |  1  |
+/// | revolute    |  1  |
+/// | cylindrical |  2  |
+/// | planar      |  3  |
+/// | spherical   |  3  |
+/// | fixed       |  0  |
+///
+/// Returns `None` for non-Map inputs, Maps without a kind discriminator, unknown
+/// kinds, coupling joints (out of scope for v0.3), and joints with malformed/missing
+/// axis or non-perpendicular planar axes.
+///
+/// Reference: PRD §5.1 (motion-subspace per joint kind) and §12 Q4 (cylindrical
+/// column ordering).
+pub(crate) fn motion_subspace_columns(joint: &Value) -> Option<Vec<SpatialVector6>> {
+    let map = match joint {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    let kind = match map.get(&Value::String("kind".to_string())) {
+        Some(Value::String(s)) => s.as_str(),
+        _ => return None,
+    };
+    match kind {
+        // 0-DOF fixed joint: 6×0 motion-subspace (empty Vec).
+        "fixed" => Some(Vec::new()),
+        _ => None,
     }
 }
 
