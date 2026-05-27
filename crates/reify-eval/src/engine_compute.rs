@@ -808,12 +808,11 @@ mod tests {
         // The trampoline must have observed Some(42) — the prior warm
         // state was sourced from the cache, not from a (dead) caller-supplied
         // argument.
-        let observed = ZETA_OBSERVED_PRIOR
+        let observed = *ZETA_OBSERVED_PRIOR
             .get()
             .expect("trampoline must have set the static")
             .lock()
-            .unwrap()
-            .clone();
+            .unwrap();
         assert_eq!(
             observed,
             Some(42i32),
@@ -892,6 +891,18 @@ mod tests {
             "output VC must be Final after Completed dispatch",
         );
 
+        // The reported cost_per_byte=0.5 must round-trip through the cache.
+        // Read it BEFORE the take below: `get_warm_state` pairs the
+        // cost-clear with the warm-state take (cache.rs amendment), so the
+        // cost is only observable while the warm state is still present.
+        assert_eq!(
+            engine
+                .cache_store()
+                .cost_per_byte_of(&NodeId::Compute(c_id.clone())),
+            Some(0.5),
+            "cache cost_per_byte must reflect the trampoline's reported cost",
+        );
+
         // The trampoline's new_warm_state must be donated to the cache.
         let observed_warm = engine
             .cache_store_mut()
@@ -903,15 +914,16 @@ mod tests {
             "cache warm_state must contain the donated i32=7",
         );
 
-        // The reported cost_per_byte=0.5 must round-trip through the cache.
-        // (Note: get_warm_state above consumed the warm_state slot via take
-        // semantics, but the cost_per_byte field is separate and persists.)
+        // Pairing invariant: `get_warm_state` clears the companion
+        // `cost_per_byte`. After the take above, the cost must read 0.0
+        // (entry still exists — the cost wasn't dropped to None, it was
+        // reset to 0.0).
         assert_eq!(
             engine
                 .cache_store()
                 .cost_per_byte_of(&NodeId::Compute(c_id)),
-            Some(0.5),
-            "cache cost_per_byte must reflect the trampoline's reported cost",
+            Some(0.0),
+            "get_warm_state must pair the take with cost_per_byte = 0.0",
         );
     }
 
@@ -1328,12 +1340,11 @@ mod tests {
         );
         second.expect("second dispatch must Ok");
 
-        let observed = ZETA_IDEMPOTENT_OBSERVED_PRIOR
+        let observed = *ZETA_IDEMPOTENT_OBSERVED_PRIOR
             .get()
             .expect("tracer must have set the static")
             .lock()
-            .unwrap()
-            .clone();
+            .unwrap();
         assert_eq!(
             observed,
             Some(99i32),
@@ -1567,12 +1578,11 @@ mod tests {
         );
         second.expect("second dispatch must Ok");
 
-        let observed = ZETA_POOL_ONLY_IDEM_OBSERVED_PRIOR
+        let observed = *ZETA_POOL_ONLY_IDEM_OBSERVED_PRIOR
             .get()
             .expect("tracer must have set the static")
             .lock()
-            .unwrap()
-            .clone();
+            .unwrap();
         assert_eq!(
             observed,
             Some(99i32),

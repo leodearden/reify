@@ -202,11 +202,13 @@ pub struct NodeCache {
     /// Estimated `cost_per_byte` companion of `warm_state`
     /// (= `estimated_cold_compute_time_secs / size_bytes`, arch §4.3).
     ///
-    /// Paired with `warm_state` — both are reset together on `Clone` and in
-    /// `record_evaluation_with_freshness` since the cost is meaningful only
-    /// while the warm state it describes is still present. Sanitised by
-    /// [`CacheStore::donate_warm_state_with_cost`] so a future cost-weighted
-    /// LRU eviction policy can `partial_cmp` safely on the field.
+    /// Paired with `warm_state` — both are reset together on `Clone`, in
+    /// `record_evaluation_with_freshness`, AND in
+    /// [`CacheStore::get_warm_state`] (take semantics) since the cost is
+    /// meaningful only while the warm state it describes is still present.
+    /// Sanitised by [`CacheStore::donate_warm_state_with_cost`] so a future
+    /// cost-weighted LRU eviction policy can `partial_cmp` safely on the
+    /// field.
     pub cost_per_byte: f64,
     /// Diagnostic-chain side-table: when `freshness == Pending`, this carries
     /// the upstream `NodeId` that caused this node to be Pending. Valid
@@ -951,18 +953,15 @@ impl CacheStore {
         version: VersionId,
     ) {
         let compute_node = NodeId::Compute(c_id.clone());
-        if !self.caches.contains_key(&compute_node) {
+        self.caches.entry(compute_node).or_insert_with(|| {
             let sentinel = CachedResult::Value(Value::Undef, DeterminacyState::Determined);
-            self.caches.insert(
-                compute_node,
-                NodeCache::new(
-                    sentinel,
-                    Freshness::Final,
-                    DependencyTrace::default(),
-                    version,
-                ),
-            );
-        }
+            NodeCache::new(
+                sentinel,
+                Freshness::Final,
+                DependencyTrace::default(),
+                version,
+            )
+        });
     }
 
     /// Read the diagnostic-chain cause stored on a node's cache entry.
@@ -1138,8 +1137,24 @@ impl CacheStore {
     ///
     /// Returns the `OpaqueState` if present, leaving `None` in its place.
     /// A second call for the same node will return `None`.
+    ///
+    /// **Pairing invariant (ζ amendment).** The companion `cost_per_byte`
+    /// field is reset to `0.0` here whenever an entry exists, so a take
+    /// leaves the cache in a paired state: an entry with `warm_state: None`
+    /// also has `cost_per_byte: 0.0`. This prevents a stale cost from being
+    /// observed by a future cost-weighted-LRU comparator (or by
+    /// [`CacheStore::cost_per_byte_of`]) after the warm state it described
+    /// has already been taken. Callers that need to restore the prior cost
+    /// alongside the prior state (`engine_compute::run_compute_dispatch`)
+    /// must read [`CacheStore::cost_per_byte_of`] BEFORE calling this method.
     pub fn get_warm_state(&mut self, node: &NodeId) -> Option<OpaqueState> {
-        self.caches.get_mut(node)?.warm_state.take()
+        let entry = self.caches.get_mut(node)?;
+        let taken = entry.warm_state.take();
+        // Pair the take: cost_per_byte is meaningful only while the warm
+        // state is still present. Reset to 0.0 unconditionally so the
+        // pairing invariant holds even on a second (None) call.
+        entry.cost_per_byte = 0.0;
+        taken
     }
 
     /// Version fast path: if the node is cached and its basis_version matches
@@ -3013,6 +3028,45 @@ mod tests {
         // Second get: take semantics — returns None
         let retrieved2 = store.get_warm_state(&node);
         assert!(retrieved2.is_none());
+    }
+
+    /// ζ amendment: `get_warm_state` pairs the take with a
+    /// `cost_per_byte` reset to `0.0` so a stale cost cannot outlive the
+    /// warm state it describes (PRD §4.3 cost-weighted-LRU readiness).
+    #[test]
+    fn get_warm_state_pairs_take_with_cost_reset_to_zero() {
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("T", "pair"));
+        store.put(node.clone(), make_test_node_cache(42, 1));
+
+        // Donate warm state + cost.
+        let donated = store.donate_warm_state_with_cost(
+            &node,
+            reify_types::OpaqueState::new(7i32, 4),
+            0.75,
+        );
+        assert!(donated);
+        assert_eq!(store.cost_per_byte_of(&node), Some(0.75));
+
+        // Take the warm state — entry still exists, but BOTH fields must
+        // be cleared (pairing invariant).
+        let taken = store.get_warm_state(&node);
+        assert!(taken.is_some(), "first take returns the donated state");
+        assert_eq!(
+            store.cost_per_byte_of(&node),
+            Some(0.0),
+            "get_warm_state must reset cost_per_byte to 0.0 alongside the take",
+        );
+
+        // Second take returns None (warm state already taken) and cost
+        // stays at 0.0 (idempotent reset).
+        let taken_again = store.get_warm_state(&node);
+        assert!(taken_again.is_none(), "second take returns None");
+        assert_eq!(
+            store.cost_per_byte_of(&node),
+            Some(0.0),
+            "second take leaves cost_per_byte at 0.0 (idempotent)",
+        );
     }
 
     #[test]
