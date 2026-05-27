@@ -1,6 +1,6 @@
 //! Quantifier expression parsing tests.
 
-use reify_syntax::*;
+use reify_ast::*;
 
 /// Helper: parse source and return the first structure's members and errors.
 fn parse_members(source: &str) -> (Vec<MemberDecl>, Vec<ParseError>) {

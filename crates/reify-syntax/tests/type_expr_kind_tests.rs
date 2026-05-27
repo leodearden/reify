@@ -4,7 +4,7 @@
 //! until `TypeExprKind` and `DimOp` are introduced (Step 2).  That compile failure
 //! is the "red" phase that justifies the implementation step.
 
-use reify_syntax::*;
+use reify_ast::*;
 
 // ── Local helpers ─────────────────────────────────────────────────
 

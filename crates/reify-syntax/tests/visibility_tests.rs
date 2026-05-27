@@ -2,7 +2,7 @@
 //!
 //! Tests that `pub` keyword is correctly parsed on structure, let, and enum declarations.
 
-use reify_syntax::*;
+use reify_ast::*;
 
 /// Helper: parse source and return the first declaration.
 fn parse_first_decl(source: &str) -> (Declaration, Vec<ParseError>) {

@@ -2,7 +2,7 @@
 //!
 //! Tests for `constraint def Name { params, predicate_lines }` declarations.
 
-use reify_syntax::*;
+use reify_ast::*;
 
 /// Helper: parse source and return declarations and errors.
 fn parse_decls(source: &str) -> (Vec<Declaration>, Vec<ParseError>) {
