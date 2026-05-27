@@ -13,6 +13,8 @@ pub(crate) enum BoundaryCondition {
     Natural,
     /// Clamped: first derivatives at endpoints are prescribed.
     Clamped { start_vel: f64, end_vel: f64 },
+    /// Periodic: function and derivatives wrap around (C2 continuity across seam).
+    Periodic,
 }
 
 /// A single-joint cubic interpolating spline.
@@ -62,6 +64,7 @@ impl CubicSpline {
             BoundaryCondition::Clamped { start_vel, end_vel } => {
                 Self::fit_clamped(knots, values, *start_vel, *end_vel)
             }
+            BoundaryCondition::Periodic => Self::fit_periodic(knots, values),
         }
     }
 
@@ -285,6 +288,80 @@ impl CubicSpline {
         Self::from_second_derivatives(knots, values, &h, &m_vals)
     }
 
+    /// Periodic cubic spline: C2 at the wrap seam.
+    fn fit_periodic(knots: &[f64], values: &[f64]) -> Option<Self> {
+        let n = knots.len();
+        let m = n - 1;
+        let h: Vec<f64> = (0..m).map(|i| knots[i + 1] - knots[i]).collect();
+
+        // For periodic splines we require values[0] == values[n-1] (caller should
+        // ensure close-loop). The system is cyclic tridiagonal for M[0]..M[n-2]
+        // (n-1 unknowns, with M[n-1] = M[0]).
+        //
+        // For i = 0..n-2 (treating indices modulo n-1):
+        //   h[(i-1) mod (n-1)] * M[(i-1) mod (n-1)]
+        //   + 2*(h[(i-1) mod (n-1)] + h[i]) * M[i]
+        //   + h[i] * M[(i+1) mod (n-1)]
+        //   = 6*((values[i+1]-values[i])/h[i] - (values[i]-values[i-1])/h[(i-1) mod (n-1)])
+
+        let p = n - 1; // number of unknowns M[0]..M[p-1]
+        if p < 2 {
+            return None;
+        }
+
+        // Build cyclic system
+        let mut diag = vec![0.0_f64; p];
+        let mut upper = vec![0.0_f64; p - 1]; // upper[i] = coeff of M[i+1] in row i, i=0..p-2
+        let mut lower = vec![0.0_f64; p - 1]; // lower[i] = coeff of M[i] in row i+1, i=0..p-2
+        let mut rhs = vec![0.0_f64; p];
+
+        // Corner entries for the cyclic part (coupling M[0] and M[p-1])
+        let mut corner_ul = 0.0_f64; // top-right: coeff of M[p-1] in row 0
+        let mut corner_ll = 0.0_f64; // bottom-left: coeff of M[0] in row p-1
+
+        for i in 0..p {
+            let im1 = if i == 0 { p - 1 } else { i - 1 };
+            let ip1 = if i == p - 1 { 0 } else { i + 1 };
+            // value[i+1] for the segment starting at i (wrap: i+1 mod n, but since
+            // values[n-1]=values[0] for periodic we use values[(i+1) mod (n-1) + ???])
+            // Actually we use the original values array:
+            //   segment i: knots[i]..knots[i+1] with values[i] and values[i+1]
+            //   for i < p=n-1 this is fine since the arrays have length n.
+            let v_next = if i + 1 < n { values[i + 1] } else { values[0] };
+            let v_curr = values[i];
+            let v_prev = if i > 0 { values[i - 1] } else { values[n - 2] };
+            let h_prev = h[im1];
+            let h_curr = h[i];
+
+            diag[i] = 2.0 * (h_prev + h_curr);
+            rhs[i] = 6.0 * ((v_next - v_curr) / h_curr - (v_curr - v_prev) / h_prev);
+
+            if i + 1 < p {
+                upper[i] = h_curr;
+                lower[i] = h_curr;
+            } else {
+                // row p-1: M[ip1=0] entry → corner
+                corner_ll = h_curr;
+            }
+            if i == 0 {
+                // row 0: M[im1=p-1] entry → corner
+                corner_ul = h_prev;
+            }
+            let _ = ip1; // used only for documentation
+        }
+
+        let m_inner = solve_cyclic_tridiagonal(&lower, &diag, &upper, corner_ll, corner_ul, &rhs)?;
+
+        // Full second derivative array: M[i] for i=0..p-1, M[n-1]=M[0]
+        let mut m_vals = vec![0.0_f64; n];
+        for i in 0..p {
+            m_vals[i] = m_inner[i];
+        }
+        m_vals[n - 1] = m_inner[0];
+
+        Self::from_second_derivatives(knots, values, &h, &m_vals)
+    }
+
     /// Evaluate the first derivative at t.
     pub(crate) fn eval_dot(&self, t: f64) -> f64 {
         let i = self.segment(t);
@@ -351,6 +428,56 @@ fn solve_tridiagonal(lower: &[f64], diag: &[f64], upper: &[f64], rhs: &[f64]) ->
         x[i] = d_prime[i] - c_prime[i] * x[i + 1];
     }
 
+    Some(x)
+}
+
+/// Solve a cyclic tridiagonal system (Sherman-Morrison approach).
+///
+/// The system has the standard tridiagonal entries plus corner entries:
+/// A[0, p-1] = corner_ul  (top-right)
+/// A[p-1, 0] = corner_ll  (bottom-left)
+///
+/// Uses Sherman-Morrison: solve two tridiagonal systems, combine.
+fn solve_cyclic_tridiagonal(
+    lower: &[f64],  // length p-1
+    diag: &[f64],   // length p
+    upper: &[f64],  // length p-1
+    corner_ll: f64, // A[p-1, 0]
+    corner_ul: f64, // A[0, p-1]
+    rhs: &[f64],    // length p
+) -> Option<Vec<f64>> {
+    let p = diag.len();
+    if p < 3 {
+        return None;
+    }
+
+    // gamma chosen to avoid amplifying diag[0]
+    let gamma = -diag[0];
+
+    // Modified diagonal for the two sub-problems
+    let mut diag_mod = diag.to_vec();
+    diag_mod[0] -= gamma;
+    diag_mod[p - 1] -= corner_ll * corner_ul / gamma;
+
+    // Solve A' * u = rhs
+    let u = solve_tridiagonal(lower, &diag_mod, upper, rhs)?;
+
+    // Build vector v (perturbation)
+    let mut v_vec = vec![0.0_f64; p];
+    v_vec[0] = 1.0;
+    v_vec[p - 1] = corner_ll / gamma;
+
+    // Solve A' * z = v
+    let z = solve_tridiagonal(lower, &diag_mod, upper, &v_vec)?;
+
+    // Sherman-Morrison correction
+    // x = u - (u·v / (1 + z·v)) * z
+    // where v = (gamma, 0, ..., 0, corner_ul)
+    let uv = gamma * u[0] + corner_ul * u[p - 1];
+    let zv = gamma * z[0] + corner_ul * z[p - 1];
+    let factor = uv / (1.0 + zv);
+
+    let x: Vec<f64> = u.iter().zip(z.iter()).map(|(ui, zi)| ui - factor * zi).collect();
     Some(x)
 }
 
