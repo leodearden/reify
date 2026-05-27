@@ -1,5 +1,5 @@
 import { onMount, onCleanup, createEffect } from 'solid-js';
-import { EditorState, type Extension } from '@codemirror/state';
+import { EditorState, Transaction, type Extension } from '@codemirror/state';
 import { EditorView, keymap, lineNumbers } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { bracketMatching } from '@codemirror/language';
@@ -188,6 +188,17 @@ export function Editor(props: EditorProps) {
       ]),
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
+          // Bail out for sync-external transactions — these originate from the
+          // in-file content-sync effect (auto-reload, handleReload) and must be
+          // invisible to the dirty-tracking + backend-sync pipeline. Without this
+          // bail, every auto-reload would: (1) immediately re-mark the file dirty
+          // after markClean, and (2) echo the just-pushed content back to the
+          // backend as a phantom user edit via updateSource.
+          const isSyncOrigin = update.transactions.some(
+            (t) => t.annotation(Transaction.userEvent)?.startsWith('sync.external'),
+          );
+          if (isSyncOrigin) return;
+
           const path = props.store.state.activeFile;
           if (path) {
             props.store.markDirty(path);
@@ -360,8 +371,18 @@ export function Editor(props: EditorProps) {
 
     // Same active file, store content changed externally (e.g. auto-reload).
     // Dispatch only when there is an actual diff to prevent no-op transactions.
+    //
+    // The dispatch is doubly-protected:
+    // 1. Transaction.userEvent.of('sync.external') — the updateListener checks this
+    //    annotation and bails before calling markDirty + updateSource (anti-loop).
+    //    Step-22 adds the second protection:
+    // 2. Transaction.addToHistory.of(false) — excludes the transaction from
+    //    CodeMirror's undo stack so Ctrl+Z cannot revive the pre-reload stale buffer.
     if (view.state.doc.toString() !== storeContent) {
-      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: storeContent } });
+      view.dispatch({
+        changes: { from: 0, to: view.state.doc.length, insert: storeContent },
+        annotations: [Transaction.userEvent.of('sync.external')],
+      });
     }
   });
 
