@@ -3,7 +3,7 @@
 //! See PRD `docs/prds/v0_5/buckling-eigensolver.md` §13 task γ.
 
 use crate::assembly::ElementStiffness;
-use crate::elements::{tet_p1::TetP1, ReferenceCoord, ReferenceElement};
+use crate::elements::tet_p1::GRADS_REF;
 
 use super::InitialStress3;
 
@@ -62,9 +62,13 @@ fn inverse_transpose_3x3(m: &[[f64; 3]; 3], det: f64) -> [[f64; 3]; 3] {
 ///
 /// # Panics
 ///
-/// Panics under `debug_assertions` when `|det J| <= MIN_JACOBIAN_DET` or
-/// when `det J` is non-finite/subnormal — the same degeneracy-guard
-/// convention as [`crate::element_stiffness_p1`].
+/// Panics under `debug_assertions` when:
+/// - any component of `sigma` is non-finite (NaN or ±∞) — non-finite
+///   stress propagates non-physical values through the stiffness matrix.
+///   The check is finite-only (not finite-positive) because compressive
+///   stress is negative and zero stress is mathematically valid.
+/// - `|det J| <= MIN_JACOBIAN_DET` or `det J` is non-finite/subnormal —
+///   the same degeneracy-guard convention as [`crate::element_stiffness_p1`].
 ///
 /// Uses `|det J|` so left-handed (mirror-flipped) node orderings still
 /// produce the physically correct `V_e`; the strain-energy contribution
@@ -77,14 +81,17 @@ pub fn geometric_element_stiffness_tet_p1(
 ) -> ElementStiffness {
     const N_NODES: usize = 4;
     const N_DOFS: usize = 12;
+    debug_assert!(
+        sigma.sigma.iter().flatten().all(|x| x.is_finite()),
+        "stress must be entrywise finite, got {:?}",
+        sigma.sigma,
+    );
     let mut k_g = ElementStiffness::zeros(N_DOFS);
 
-    // P1 has constant gradients — evaluating at the centroid is just as
-    // valid as any other reference point; the centroid is the canonical
-    // 1-point Gauss location.
-    let centroid = ReferenceCoord::new(0.25, 0.25, 0.25);
-    let grads_ref = TetP1.shape_grad_at(centroid);
-    debug_assert_eq!(grads_ref.len(), N_NODES);
+    // P1 gradients are compile-time constants — use the shared const
+    // directly rather than calling TetP1::shape_grad_at (which allocates a
+    // Vec per call).
+    let grads_ref = &GRADS_REF;
 
     // Forward Jacobian J_ij = Σ_k phys_nodes[k][i] · grads_ref[k][j].
     // Inlined (rather than calling TetP1::jacobian) to avoid the
