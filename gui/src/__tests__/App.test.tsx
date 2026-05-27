@@ -5070,6 +5070,89 @@ describe('App handleSave aborts when file is externally changed', () => {
 });
 
 
+// ─── Conflict prompt: Reload from disk action ────────────────────────────────
+
+describe('App handleSave conflict prompt: Reload from disk', () => {
+  const testState: GuiState = {
+    meshes: [],
+    values: [],
+    constraints: [],
+    files: [
+      { path: '/project/bracket.ri', content: 'structure Bracket {}' },
+    ],
+    tessellation_diagnostics: [],
+    compile_diagnostics: [],
+  };
+
+  let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
+
+  beforeEach(() => {
+    fileChangedCallback = undefined;
+    vi.mocked(bridge.onFileChanged).mockImplementation(async (cb: any) => {
+      fileChangedCallback = cb;
+      return () => {};
+    });
+    vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
+  });
+
+  it('clicking Reload from disk calls bridgeOpenFile, updates content, and clears both dirty/externallyChanged flags', async () => {
+    const diskContent = 'structure Bracket { /* updated on disk */ }';
+    vi.mocked(bridge.openFile).mockResolvedValue({
+      path: '/project/bracket.ri',
+      content: diskContent,
+    });
+    vi.mocked(bridge.saveFile).mockResolvedValue(undefined);
+
+    render(() => <App />);
+    await waitFor(() => expect(fileChangedCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    // Set up dirty + externally-changed state
+    capturedEditorStore.setActiveFile('/project/bracket.ri');
+    capturedEditorStore.markDirty('/project/bracket.ri');
+    capturedEditorStore.markExternallyChanged('/project/bracket.ri');
+
+    // Trigger handleSave via Ctrl+S — should show conflict prompt (not blocked msg)
+    fireEvent.keyDown(document, { key: 's', ctrlKey: true });
+
+    // Wait for the conflict toast with Reload action to appear
+    let conflictToast: HTMLElement | undefined;
+    await waitFor(() => {
+      const toasts = screen.getAllByTestId('toast');
+      conflictToast = toasts.find((t) =>
+        t.textContent?.includes(EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG),
+      );
+      expect(conflictToast).toBeTruthy();
+    });
+
+    // Click the "Reload from disk" action button
+    const reloadBtn = within(conflictToast!).getByRole('button', { name: SAVE_CONFLICT_RELOAD_LABEL });
+    fireEvent.click(reloadBtn);
+
+    // bridgeOpenFile must be called with the file's path
+    await waitFor(() => {
+      expect(bridge.openFile).toHaveBeenCalledWith('/project/bracket.ri');
+    });
+
+    // After the reload promise resolves, the store's content is the new disk content
+    await waitFor(() => {
+      const file = capturedEditorStore.state.openFiles.find(
+        (f: any) => f.path === '/project/bracket.ri',
+      );
+      expect(file?.content).toBe(diskContent);
+    });
+
+    // markClean was called — both dirtyFiles and externallyChanged are cleared
+    await waitFor(() => {
+      expect(capturedEditorStore.state.dirtyFiles).not.toContain('/project/bracket.ri');
+      expect(capturedEditorStore.state.externallyChanged).not.toContain('/project/bracket.ri');
+    });
+
+    // bridgeSaveFile must NOT have been called
+    expect(bridge.saveFile).not.toHaveBeenCalled();
+  });
+});
+
 // Counts CSS grid tracks in a `grid-template-rows` value.
 // Whitespace separates tracks at depth 0; parens (e.g. minmax(160px, 1fr))
 // keep their internal whitespace from being mistaken for a track boundary.
