@@ -2384,3 +2384,204 @@ fn geometry_valued_if_then_else_translate_wraps_conditional_box() {
         other => panic!("ops[0]: expected Primitive{{Box}}, got {:?}", other),
     }
 }
+
+// ─── task-3815 step-5: enum-driven conditional + negative cases ───────────────
+
+/// step-5 IR positive: enum-driven geometry if-then-else compiles without error.
+///
+/// No OCCT required. Mirrors the task acceptance repro (Note3IfSolid) at the
+/// compiler IR level: a `param pick : Pick` drives a conditional between two
+/// structurally-identical boxes. The hoisting pass must recognise the two
+/// `box(…)` branches as compatible and produce a single `Primitive{Box}` op
+/// whose three scalar args are each `CompiledExprKind::Conditional`.
+#[test]
+fn geometry_valued_if_then_else_enum_pick_lowers_to_conditional_primitive() {
+    let source = r#"enum Pick { A, B }
+structure Note3IfSolid {
+    param pick : Pick = Pick.A
+    let body = if pick == Pick.A then box(40mm, 40mm, 40mm) else box(80mm, 20mm, 20mm)
+}"#;
+
+    let compiled = compile_with_diagnostics(source);
+    let errors = error_diagnostics(&compiled);
+
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = &compiled.templates[0];
+    assert_eq!(
+        template.realizations.len(),
+        1,
+        "expected exactly 1 realization (for 'body'), got {}",
+        template.realizations.len()
+    );
+
+    let ops = &template.realizations[0].operations;
+    assert_eq!(
+        ops.len(),
+        1,
+        "expected 1 compiled op (hoisted box), got {} ops: {:?}",
+        ops.len(),
+        ops
+    );
+
+    let (kind, args) = match &ops[0] {
+        CompiledGeometryOp::Primitive { kind, args } => (kind, args),
+        other => panic!("expected Primitive op, got {:?}", other),
+    };
+    assert_eq!(*kind, PrimitiveKind::Box, "expected Box primitive");
+    assert_eq!(args.len(), 3, "box should have 3 named args");
+
+    for (name, arg) in args {
+        assert!(
+            matches!(&arg.kind, CompiledExprKind::Conditional { .. }),
+            "box arg '{}' should be a Conditional (hoisted), got {:?}",
+            name,
+            arg.kind
+        );
+    }
+}
+
+/// step-5 negative: box vs sphere — different primitive name, should fall
+/// through the hoisting pass (returns `None`) and trigger the existing
+/// compile-time Error mentioning "if-then-else" and "geometry".
+#[test]
+fn geometry_valued_if_then_else_name_mismatch_emits_compile_error() {
+    let source = r#"structure S {
+    param a: Scalar = 10mm
+    param r: Scalar = 5mm
+    param cond: Scalar = 0
+    let body = if cond == 0 then box(a, a, a) else sphere(r)
+}"#;
+
+    let compiled = compile_with_diagnostics(source);
+    let errors = error_diagnostics(&compiled);
+
+    // At least one Error must mention "if-then-else" and "geometry".
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("if-then-else") && d.message.contains("geometry")),
+        "expected a compile-time Error containing 'if-then-else' and 'geometry', \
+         got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // The Error must have at least one DiagnosticLabel.
+    let target_error = errors
+        .iter()
+        .find(|d| d.message.contains("if-then-else") && d.message.contains("geometry"))
+        .unwrap();
+    assert!(
+        !target_error.labels.is_empty(),
+        "the if-then-else Error must have at least one DiagnosticLabel"
+    );
+
+    // The label span must start at the `if` keyword and extend to the end of
+    // the else branch.
+    let if_offset = source.find(" if ").expect("source must contain ' if '") + 1;
+    let else_branch = "sphere(r)";
+    let else_end = source
+        .find(else_branch)
+        .expect("source must contain 'sphere(r)'")
+        + else_branch.len();
+    let label = &target_error.labels[0];
+    assert_eq!(
+        label.span.start as usize,
+        if_offset,
+        "label start must equal the byte offset of the 'if' keyword (offset {}); \
+         got labels: {:?}",
+        if_offset,
+        target_error
+            .labels
+            .iter()
+            .map(|l| (l.span.start, l.span.end, &l.message))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        label.span.end as usize,
+        else_end,
+        "label end must equal the byte past the closing ')' of the else-branch \
+         sphere call (offset {}); got labels: {:?}",
+        else_end,
+        target_error
+            .labels
+            .iter()
+            .map(|l| (l.span.start, l.span.end, &l.message))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// step-5 negative: ident-let branches — `if c then a else b` where `a` and `b`
+/// are geometry `let` bindings (not inline calls). `try_hoist` returns `None`
+/// for `Ident` branches, so the existing compile-time Error path fires and must
+/// mention "if-then-else" and "geometry".
+#[test]
+fn geometry_valued_if_then_else_ident_let_branches_emits_compile_error() {
+    let source = r#"structure S {
+    param cond: Scalar = 0
+    let a = box(10mm, 10mm, 10mm)
+    let b = box(20mm, 20mm, 20mm)
+    let body = if cond == 0 then a else b
+}"#;
+
+    let compiled = compile_with_diagnostics(source);
+    let errors = error_diagnostics(&compiled);
+
+    // At least one Error must mention "if-then-else" and "geometry".
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("if-then-else") && d.message.contains("geometry")),
+        "expected a compile-time Error containing 'if-then-else' and 'geometry', \
+         got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // The Error must have at least one DiagnosticLabel.
+    let target_error = errors
+        .iter()
+        .find(|d| d.message.contains("if-then-else") && d.message.contains("geometry"))
+        .unwrap();
+    assert!(
+        !target_error.labels.is_empty(),
+        "the if-then-else Error must have at least one DiagnosticLabel"
+    );
+
+    // The label span must start at the `if` keyword and extend to the end of
+    // the else branch.
+    let if_offset = source.find(" if ").expect("source must contain ' if '") + 1;
+    let else_branch = "if cond == 0 then a else b";
+    let else_end = source
+        .find(else_branch)
+        .expect("source must contain the full if-then-else expression")
+        + else_branch.len();
+    let label = &target_error.labels[0];
+    assert_eq!(
+        label.span.start as usize,
+        if_offset,
+        "label start must equal the byte offset of the 'if' keyword (offset {}); \
+         got labels: {:?}",
+        if_offset,
+        target_error
+            .labels
+            .iter()
+            .map(|l| (l.span.start, l.span.end, &l.message))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        label.span.end as usize,
+        else_end,
+        "label end must equal the byte past the 'b' of the else branch \
+         (offset {}); got labels: {:?}",
+        else_end,
+        target_error
+            .labels
+            .iter()
+            .map(|l| (l.span.start, l.span.end, &l.message))
+            .collect::<Vec<_>>()
+    );
+}
