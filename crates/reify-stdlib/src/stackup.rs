@@ -93,6 +93,38 @@ mod tests {
     }
 
     #[test]
+    fn contributor_validation_returns_undef() {
+        let nom = len(0.010);
+        let tol = len(0.0001);
+
+        // (a) zero args
+        assert!(eval_stackup("contributor", &[]).unwrap().is_undef());
+        // (b) one arg
+        assert!(eval_stackup("contributor", &[nom.clone()]).unwrap().is_undef());
+        // (c) four args
+        assert!(eval_stackup("contributor", &[nom.clone(), tol.clone(), Value::Int(1), tol.clone()]).unwrap().is_undef());
+        // (d) nominal is Value::Real (not Scalar)
+        assert!(eval_stackup("contributor", &[Value::Real(0.010), tol.clone()]).unwrap().is_undef());
+        // (e) nominal is FORCE scalar (wrong dim)
+        let force = Value::Scalar { si_value: 10.0, dimension: DimensionVector::FORCE };
+        assert!(eval_stackup("contributor", &[force, tol.clone()]).unwrap().is_undef());
+        // (f) nominal has NaN si_value
+        let nan = Value::Scalar { si_value: f64::NAN, dimension: DimensionVector::LENGTH };
+        assert!(eval_stackup("contributor", &[nan, tol.clone()]).unwrap().is_undef());
+        // (g) tol is ANGLE scalar (wrong dim)
+        let angle = Value::Scalar { si_value: 0.1, dimension: DimensionVector::ANGLE };
+        assert!(eval_stackup("contributor", &[nom.clone(), angle]).unwrap().is_undef());
+        // (h) tol is Value::Int
+        assert!(eval_stackup("contributor", &[nom.clone(), Value::Int(1)]).unwrap().is_undef());
+        // (i) sign is Int(0)
+        assert!(eval_stackup("contributor", &[nom.clone(), tol.clone(), Value::Int(0)]).unwrap().is_undef());
+        // (j) sign is Int(2)
+        assert!(eval_stackup("contributor", &[nom.clone(), tol.clone(), Value::Int(2)]).unwrap().is_undef());
+        // (k) sign is Real(1.0) (not Int)
+        assert!(eval_stackup("contributor", &[nom.clone(), tol.clone(), Value::Real(1.0)]).unwrap().is_undef());
+    }
+
+    #[test]
     fn contributor_3arg_accepts_explicit_sign_negative() {
         let m = expect_map(eval_stackup("contributor", &[len(0.010), len(0.0001), Value::Int(-1)]));
         assert_eq!(m[&Value::String("sign".into())], Value::Int(-1));
