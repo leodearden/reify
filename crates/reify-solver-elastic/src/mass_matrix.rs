@@ -227,6 +227,32 @@ mod tests {
     }
 
     #[test]
+    fn consistent_mass_p1_volume_scaling_octuples_mass_when_edge_length_doubles() {
+        // V_e ∝ L³, so a uniform 2× scale yields M_e' = 8 · M_e. This is the
+        // canonical mass-vs-stiffness scaling difference (stiffness scales as
+        // L for P1, mass scales as L³). Pinned alongside
+        // `assembly/tet.rs::p1_volume_scaling_doubles_stiffness_when_edge_length_doubles`.
+        const SCALED_TET: [[f64; 3]; 4] = [
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0],
+            [0.0, 0.0, 2.0],
+        ];
+        let m_unit = consistent_element_mass_tet_p1(&UNIT_TET, 1.0);
+        let m_scaled = consistent_element_mass_tet_p1(&SCALED_TET, 1.0);
+        for i in 0..144 {
+            let want = 8.0 * m_unit.data[i];
+            let got = m_scaled.data[i];
+            let scale = want.abs().max(1.0);
+            assert!(
+                (got - want).abs() < 1e-12 * scale,
+                "volume scaling at idx {i}: got {got}, expected 8·{} = {want}",
+                m_unit.data[i],
+            );
+        }
+    }
+
+    #[test]
     fn consistent_mass_p1_off_axis_blocks_are_zero_block_diagonal_3x3_structure() {
         // Each (a, b) node-pair block in M_e is `coef · I_3` — diagonal in
         // axis-axis indexing. α ≠ β entries must be exactly 0. Mirrors the
