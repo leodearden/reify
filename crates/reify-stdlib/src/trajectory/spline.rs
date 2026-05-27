@@ -5,6 +5,13 @@
 //!
 //! This module has no `reify_types` dependency — all inputs and outputs are
 //! plain `f64` / `Vec<f64>`.  Value marshalling lives in `mod.rs`.
+//!
+//! # Dead-code suppression
+//!
+//! The spline types here are fully tested but not yet wired to `eval_trajectory`
+//! (Value marshalling is a later phase — γ/η/θ per the β PRD scope boundary).
+//! Suppress the lint rather than adding a premature marshalling layer.
+#![allow(dead_code)]
 
 /// Boundary condition for cubic interpolating splines.
 #[derive(Debug, Clone, PartialEq)]
@@ -119,9 +126,7 @@ impl CubicSpline {
 
         // Full second derivative array (M[0]=0, M[n-1]=0)
         let mut m_vals = vec![0.0_f64; n];
-        for i in 0..inner {
-            m_vals[i + 1] = m_inner[i];
-        }
+        m_vals[1..(inner + 1)].copy_from_slice(&m_inner[..inner]);
 
         Self::from_second_derivatives(knots, values, &h, &m_vals)
     }
@@ -169,7 +174,7 @@ impl CubicSpline {
         let mut lo = 0usize;
         let mut hi = segs - 1;
         while lo < hi {
-            let mid = (lo + hi + 1) / 2;
+            let mid = (lo + hi).div_ceil(2);
             if self.knots[mid] <= t {
                 lo = mid;
             } else {
@@ -354,9 +359,7 @@ impl CubicSpline {
 
         // Full second derivative array: M[i] for i=0..p-1, M[n-1]=M[0]
         let mut m_vals = vec![0.0_f64; n];
-        for i in 0..p {
-            m_vals[i] = m_inner[i];
-        }
+        m_vals[..p].copy_from_slice(&m_inner[..p]);
         m_vals[n - 1] = m_inner[0];
 
         Self::from_second_derivatives(knots, values, &h, &m_vals)
@@ -531,7 +534,7 @@ impl QuinticSpline {
         let mut lo = 0usize;
         let mut hi = segs - 1;
         while lo < hi {
-            let mid = (lo + hi + 1) / 2;
+            let mid = (lo + hi).div_ceil(2);
             if self.knots[mid] <= t {
                 lo = mid;
             } else {
