@@ -6246,6 +6246,40 @@ mod tests {
 
     // ── motion_subspace_columns: fixed ────────────────────────────────────────
 
+    // ── motion_subspace_columns: planar ──────────────────────────────────────
+
+    /// PRD §5.1 pin: planar columns = `[linear_axis_x, linear_axis_y, angular_normal]`
+    /// where `normal = axis_x × axis_y`. Ordering matches the `transform_at` planar
+    /// motion-var order `[x_length, y_length, theta_angle]`.
+    ///
+    /// For `planar_xy_joint()` (axis_x = e_x, axis_y = e_y):
+    ///   col[0] = [0,0,0, 1,0,0]  (linear along +X)
+    ///   col[1] = [0,0,0, 0,1,0]  (linear along +Y)
+    ///   col[2] = [0,0,1, 0,0,0]  (angular about +Z = e_x × e_y)
+    #[test]
+    fn motion_subspace_columns_planar_returns_three_columns_with_normal_angular() {
+        let joint = planar_xy_joint();
+        let cols = super::motion_subspace_columns(&joint)
+            .expect("motion_subspace_columns on planar joint should return Some");
+        assert_eq!(cols.len(), 3, "planar has 3 DOFs — expected 3 columns");
+
+        let expected: [[f64; 6]; 3] = [
+            [0.0, 0.0, 0.0, 1.0, 0.0, 0.0], // col[0]: linear along axis_x = +X
+            [0.0, 0.0, 0.0, 0.0, 1.0, 0.0], // col[1]: linear along axis_y = +Y
+            [0.0, 0.0, 1.0, 0.0, 0.0, 0.0], // col[2]: angular about normal = e_x × e_y = +Z
+        ];
+        for (ci, (col, exp)) in cols.iter().zip(expected.iter()).enumerate() {
+            let arr = col.as_array();
+            for (i, (&got, &e)) in arr.iter().zip(exp.iter()).enumerate() {
+                assert!(
+                    (got - e).abs() < 1e-12,
+                    "planar col[{}][{}]: expected {}, got {}",
+                    ci, i, e, got
+                );
+            }
+        }
+    }
+
     // ── motion_subspace_columns: cylindrical ─────────────────────────────────
 
     /// PRD §12 Q4 pin: cylindrical columns are `[translation, rotation]`.
