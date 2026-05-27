@@ -9,7 +9,7 @@
 //! substitution stays empty.
 
 use reify_core::*;
-use reify_test_support::parse_and_compile_with_stdlib;
+use reify_test_support::{compile_source_with_stdlib, parse_and_compile_with_stdlib};
 
 /// Single Seal-conformant candidate (`ORingSeal`) → the `auto: Seal` type-arg
 /// resolves deterministically and populates the module's
@@ -41,5 +41,46 @@ fn bearing_auto_seal_single_candidate_populates_substitution() {
         error_count, 0,
         "expected no error diagnostics, got: {:?}",
         compiled.diagnostics
+    );
+}
+
+/// No Seal-conformant structure exists, so the strict `auto: Seal` slot has an
+/// empty candidate pool → the resolver emits a single
+/// `AutoTypeParamNoCandidate` error and leaves the substitution empty. Pins the
+/// diagnostic-plumbing path: the resolver must be dispatched (and its
+/// diagnostics routed into `ctx.diagnostics`) even when `pending_auto_resolutions`
+/// resolves to nothing.
+#[test]
+fn auto_type_arg_no_candidate_emits_diagnostic() {
+    let source = r#"
+        trait Seal {}
+        structure def Bearing<T: Seal> { param x : Real = 1.0 }
+        structure def Assembly { sub b = Bearing<auto: Seal>() }
+    "#;
+
+    // Error-tolerant helper: we EXPECT an error diagnostic here.
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<&Diagnostic> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one error diagnostic, got: {:?}",
+        compiled.diagnostics
+    );
+    assert_eq!(
+        errors[0].code,
+        Some(DiagnosticCode::AutoTypeParamNoCandidate),
+        "the lone error must be the no-candidate diagnostic"
+    );
+
+    assert!(
+        compiled.auto_type_substitution.as_slice().is_empty(),
+        "a failed resolution must leave the substitution empty, got: {:?}",
+        compiled.auto_type_substitution.as_slice()
     );
 }
