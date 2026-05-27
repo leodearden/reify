@@ -4636,6 +4636,8 @@ describe('App externallyChanged store wiring', () => {
     await waitFor(() => expect(fileChangedCallback).toBeDefined());
     await waitFor(() => expect(capturedEditorStore).toBeTruthy());
 
+    // Must be dirty for the externally-changed path to trigger (non-dirty auto-reloads silently)
+    capturedEditorStore.markDirty('/project/bracket.ri');
     fileChangedCallback!({ path: '/project/bracket.ri', content: 'new' });
 
     await waitFor(() => {
@@ -4661,14 +4663,20 @@ describe('App externallyChanged store wiring', () => {
     await waitFor(() => expect(fileChangedCallback).toBeDefined());
     await waitFor(() => expect(capturedEditorStore).toBeTruthy());
 
+    // Must be dirty so the event triggers the externally-changed path (not silent auto-reload)
+    capturedEditorStore.markDirty('/project/bracket.ri');
     fileChangedCallback!({ path: '/project/bracket.ri', content: 'new' });
     await waitFor(() =>
       expect(capturedEditorStore.state.externallyChanged).toContain('/project/bracket.ri'),
     );
 
-    // Click Reload — no dirty files, so proceeds immediately
+    // The file is dirty, so clicking Reload first shows the "Reload Anyway" confirmation.
     await waitFor(() => expect(screen.getByText('Reload')).toBeTruthy());
     fireEvent.click(screen.getByText('Reload'));
+
+    // After the dirty-overlap confirmation appears, clicking "Reload Anyway" proceeds.
+    await waitFor(() => expect(screen.getByText('Reload Anyway')).toBeTruthy());
+    fireEvent.click(screen.getByText('Reload Anyway'));
 
     await waitFor(() => {
       expect(capturedEditorStore.state.externallyChanged).not.toContain('/project/bracket.ri');
@@ -4711,12 +4719,14 @@ describe('App externallyChanged store wiring', () => {
     await waitFor(() => expect(fileChangedCallback).toBeDefined());
     await waitFor(() => expect(capturedEditorStore).toBeTruthy());
 
+    // Must be dirty so the event triggers the externally-changed path (not silent auto-reload)
+    capturedEditorStore.markDirty('/project/bracket.ri');
     fileChangedCallback!({ path: '/project/bracket.ri', content: 'new' });
     await waitFor(() =>
       expect(capturedEditorStore.state.externallyChanged).toContain('/project/bracket.ri'),
     );
 
-    // Click Dismiss
+    // Click Dismiss — independent of dirty state, clears all changedFiles + externallyChanged
     await waitFor(() => expect(screen.getByText('Dismiss')).toBeTruthy());
     fireEvent.click(screen.getByText('Dismiss'));
 
@@ -4730,6 +4740,8 @@ describe('App externallyChanged store wiring', () => {
     await waitFor(() => expect(fileChangedCallback).toBeDefined());
     await waitFor(() => expect(capturedEditorStore).toBeTruthy());
 
+    // Must be dirty so the event triggers the externally-changed path (not silent auto-reload)
+    capturedEditorStore.markDirty('/project/bracket.ri');
     // Trigger changedFiles for bracket.ri so the Dismiss button appears
     fileChangedCallback!({ path: '/project/bracket.ri', content: 'new' });
     await waitFor(() =>
@@ -4751,6 +4763,88 @@ describe('App externallyChanged store wiring', () => {
     await waitFor(() => {
       expect(capturedEditorStore.state.externallyChanged).toEqual([]);
     });
+  });
+});
+
+// ─── Auto-reload non-dirty tabs on file-changed event ────────────────────────
+
+describe('App file-changed auto-reload (non-dirty)', () => {
+  const testState: GuiState = {
+    meshes: [],
+    values: [],
+    constraints: [],
+    files: [
+      { path: '/project/bracket.ri', content: 'structure Bracket {}' },
+    ],
+    tessellation_diagnostics: [],
+    compile_diagnostics: [],
+  };
+
+  let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
+
+  beforeEach(() => {
+    fileChangedCallback = undefined;
+    vi.mocked(bridge.onFileChanged).mockImplementation(async (cb: any) => {
+      fileChangedCallback = cb;
+      return () => {};
+    });
+    vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
+  });
+
+  it('(a) file-changed for a non-dirty open tab silently updates content without setting externallyChanged', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(fileChangedCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    // File is NOT dirty (no markDirty call)
+    fileChangedCallback!({ path: '/project/bracket.ri', content: 'auto-reloaded content' });
+
+    // Give reactivity a chance to settle
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Content should be updated in the store
+    const file = capturedEditorStore.state.openFiles.find(
+      (f: any) => f.path === '/project/bracket.ri',
+    );
+    expect(file?.content).toBe('auto-reloaded content');
+
+    // externallyChanged should remain empty — no conflict to surface
+    expect(capturedEditorStore.state.externallyChanged).not.toContain('/project/bracket.ri');
+
+    // No reload-prompt banner should be visible (changedFiles is empty)
+    expect(screen.queryByText('Reload')).toBeNull();
+  });
+
+  it('(b) file-changed for a DIRTY open tab still triggers externallyChanged and shows the Reload banner', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(fileChangedCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    // Mark the file as dirty (user has unsaved edits)
+    capturedEditorStore.markDirty('/project/bracket.ri');
+    fileChangedCallback!({ path: '/project/bracket.ri', content: 'disk changed' });
+
+    // Dirty path: externallyChanged should be set and the banner rendered
+    await waitFor(() => {
+      expect(capturedEditorStore.state.externallyChanged).toContain('/project/bracket.ri');
+    });
+    await waitFor(() => {
+      expect(screen.getByText('Reload')).toBeTruthy();
+    });
+  });
+
+  it('(c) file-changed for a path NOT in openFiles does nothing', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(fileChangedCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    fileChangedCallback!({ path: '/project/unknown.ri', content: 'some content' });
+
+    await new Promise((r) => setTimeout(r, 20));
+
+    // No state mutation, no banner, no toast
+    expect(capturedEditorStore.state.externallyChanged).toEqual([]);
+    expect(screen.queryByText('Reload')).toBeNull();
   });
 });
 
