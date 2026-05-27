@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use crate::diagnostics::SourceSpan;
-use crate::hash::ContentHash;
+use reify_core::diagnostics::SourceSpan;
+use reify_core::hash::ContentHash;
 use crate::value::Value;
 
 /// Unique identifier for a geometry handle within a kernel session.
@@ -1890,8 +1890,8 @@ impl fmt::Display for FeatureId {
     }
 }
 
-impl From<&crate::identity::RealizationNodeId> for FeatureId {
-    fn from(id: &crate::identity::RealizationNodeId) -> Self {
+impl From<&reify_core::identity::RealizationNodeId> for FeatureId {
+    fn from(id: &reify_core::identity::RealizationNodeId) -> Self {
         Self(id.to_string())
     }
 }
@@ -3259,7 +3259,7 @@ mod tests {
 
     #[test]
     fn feature_id_from_realization_node_id_matches_display() {
-        use crate::identity::RealizationNodeId;
+        use reify_core::identity::RealizationNodeId;
         let node = RealizationNodeId::new("Bracket", 0);
         let fid = FeatureId::from(&node);
         assert_eq!(format!("{}", fid), format!("{}", node));

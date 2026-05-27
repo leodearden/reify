@@ -4618,6 +4618,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "reify-ir"
+version = "0.1.0"
+dependencies = [
+ "im",
+ "inventory",
+ "reify-ast",
+ "reify-core",
+ "serde_json",
+ "xxhash-rust",
+]
+
+[[package]]
 name = "reify-kernel-fidget"
 version = "0.1.0"
 dependencies = [
@@ -4807,13 +4819,11 @@ dependencies = [
 name = "reify-types"
 version = "0.1.0"
 dependencies = [
- "im",
- "inventory",
  "reify-ast",
  "reify-core",
+ "reify-ir",
  "serde",
  "serde_json",
- "xxhash-rust",
 ]
 
 [[package]]

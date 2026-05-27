@@ -311,7 +311,7 @@ mod tests {
 
     #[test]
     fn works_with_value_cell_id_and_value() {
-        use crate::identity::ValueCellId;
+        use reify_core::identity::ValueCellId;
         use crate::value::Value;
 
         let mut map: PersistentMap<ValueCellId, Value> = PersistentMap::new();

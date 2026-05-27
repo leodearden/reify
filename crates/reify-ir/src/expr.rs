@@ -1,7 +1,7 @@
-use crate::ast::QuantifierKind;
-use crate::hash::ContentHash;
-use crate::identity::ValueCellId;
-use crate::ty::Type;
+use reify_ast::QuantifierKind;
+use reify_core::hash::ContentHash;
+use reify_core::identity::ValueCellId;
+use reify_core::ty::Type;
 use crate::value::Value;
 
 /// A compiled expression tree — fully resolved, ready for evaluation.
@@ -1687,8 +1687,8 @@ impl CompiledExpr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hash::ContentHash;
-    use crate::identity::ValueCellId;
+    use reify_core::hash::ContentHash;
+    use reify_core::identity::ValueCellId;
 
     fn make_conditional(
         condition: CompiledExpr,
@@ -2026,7 +2026,7 @@ mod tests {
         let one_mm = CompiledExpr::literal(
             Value::Scalar {
                 si_value: 0.001,
-                dimension: crate::DimensionVector::LENGTH,
+                dimension: reify_core::DimensionVector::LENGTH,
             },
             Type::length(),
         );
@@ -2035,7 +2035,7 @@ mod tests {
         let two_mm = CompiledExpr::literal(
             Value::Scalar {
                 si_value: 0.002,
-                dimension: crate::DimensionVector::LENGTH,
+                dimension: reify_core::DimensionVector::LENGTH,
             },
             Type::length(),
         );
@@ -2527,14 +2527,14 @@ mod tests {
         let from_id = ValueCellId::new("S.vents[0]", "mass");
         let to_id = ValueCellId::new("S.vents[2]", "mass");
         let mass_ty = Type::Scalar {
-            dimension: crate::DimensionVector::MASS,
+            dimension: reify_core::DimensionVector::MASS,
         };
 
         let lhs = CompiledExpr::value_ref(from_id.clone(), mass_ty.clone());
         let rhs = CompiledExpr::literal(
             Value::Scalar {
                 si_value: 50.0,
-                dimension: crate::DimensionVector::MASS,
+                dimension: reify_core::DimensionVector::MASS,
             },
             mass_ty.clone(),
         );
@@ -2588,7 +2588,7 @@ mod tests {
         let rhs2 = CompiledExpr::literal(
             Value::Scalar {
                 si_value: 50.0,
-                dimension: crate::DimensionVector::MASS,
+                dimension: reify_core::DimensionVector::MASS,
             },
             mass_ty,
         );

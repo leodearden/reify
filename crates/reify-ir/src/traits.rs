@@ -1,9 +1,9 @@
 //! M5 trait-related type definitions.
 //!
 //! Contains EnumDef, TraitDef, TraitMember, TraitRef, TraitBound, TypeParam.
-//! `PortDirection` lives in `crate::primitives` and is re-exported at the crate root.
+//! `PortDirection` lives in `reify_core::primitives` and is re-exported at the crate root.
 
-use crate::primitives::PortDirection;
+use reify_core::primitives::PortDirection;
 
 /// Definition of an enum type with named variants.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,7 +22,7 @@ pub struct TraitRef {
     /// The name of the referenced trait.
     pub name: String,
     /// Type arguments applied to the trait.
-    pub type_args: Vec<crate::ty::Type>,
+    pub type_args: Vec<reify_core::ty::Type>,
 }
 
 /// A type parameter with optional bounds and default.
@@ -33,7 +33,7 @@ pub struct TypeParam {
     /// Trait bounds on this type parameter.
     pub bounds: Vec<TraitBound>,
     /// Optional default type.
-    pub default: Option<crate::ty::Type>,
+    pub default: Option<reify_core::ty::Type>,
 }
 
 /// A trait bound constraining a type parameter.
@@ -49,13 +49,13 @@ pub enum TraitMember {
     /// A parameter with a type and optional default value.
     Param {
         name: String,
-        ty: crate::ty::Type,
+        ty: reify_core::ty::Type,
         default: Option<crate::value::Value>,
     },
     /// A port with direction and type.
     Port {
         name: String,
-        ty: crate::ty::Type,
+        ty: reify_core::ty::Type,
         direction: PortDirection,
     },
     /// A sub-structure reference.
@@ -63,7 +63,7 @@ pub enum TraitMember {
     /// A let binding with expression.
     Let {
         name: String,
-        ty: crate::ty::Type,
+        ty: reify_core::ty::Type,
         expr: String,
     },
     /// A constraint expression.
@@ -71,7 +71,7 @@ pub enum TraitMember {
     /// An associated type declaration.
     AssociatedType {
         name: String,
-        default: Option<crate::ty::Type>,
+        default: Option<reify_core::ty::Type>,
     },
 }
 

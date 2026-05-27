@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
-use crate::hash::ContentHash;
-use crate::identity::{SnapshotId, ValueCellId};
+use reify_core::hash::ContentHash;
+use reify_core::identity::{SnapshotId, ValueCellId};
 
 /// Provenance record for a field imported from an external file.
 ///
@@ -56,7 +56,7 @@ pub enum SnapshotProvenance {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hash::ContentHash;
+    use reify_core::hash::ContentHash;
 
     #[test]
     fn field_import_provenance_clone_eq_and_hash_inequality() {
