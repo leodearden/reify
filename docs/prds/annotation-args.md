@@ -33,7 +33,7 @@ The 2026-05-12 audit triage flagged both forms as "grammar fictions" together. G
 | `@shell(thickness = linear_taper(z))` | ❌ | n/a | Grammar + lowering + eval + schema |
 | `@solver_hint(method = "cg", max_iter = 1000)` | ❌ | n/a | Same |
 
-The grammar's annotation production is `'@' name optional('(' commaSep($._expression) ')')` (`tree-sitter-reify/grammar.js:898-905`). Arbitrary expressions are already admitted in arg position; the lowering side (`crates/reify-compiler/src/annotations.rs:14-49`) rejects anything beyond literals/idents and a closed-enum `AnnotationArg` (`crates/reify-types/src/annotation.rs:77`).
+The grammar's annotation production is `'@' name optional('(' commaSep($._expression) ')')` (`tree-sitter-reify/grammar.js:898-905`). Arbitrary expressions are already admitted in arg position; the lowering side (`crates/reify-compiler/src/annotations.rs:14-49`) rejects anything beyond literals/idents and a closed-enum `AnnotationArg` (`crates/reify-ir/src/annotation.rs`).
 
 **Consequence for design**: the audit's framing — "both forms are grammar fictions" — is inaccurate for flag-form. The true grammar fiction is **named-arg syntax** (`name = value` inside arg list). Flag-form is consumer-only work. The design carves into three orthogonal layers (grammar / lowering / consumer); they ship independently. The fixtures live under `/tmp/prd-gate-fixtures/annotation-args/` at session time; the production tests promote them to `tree-sitter-reify/tests/` per task ζ in §8.
 
@@ -62,10 +62,9 @@ The materialization-vs-compile-time timing decision (Q-AA-3) is the only nominal
 ## §3 — Contract: the annotation arg IR
 
 ```rust
-// crates/reify-types/src/annotation.rs (widened)
-// NOTE (task 3555): the `Expr` variant carries `reify_types::ast::Expr`, the
-// parsed AST relocated *into* reify-types — not `reify_syntax::Expr`. See the
-// cycle-break note below §3's invariants.
+// crates/reify-ir/src/annotation.rs (widened)
+// NOTE (task 3555 / η): the `Expr` variant carries `reify_ast::Expr` (the
+// parsed AST in its own crate, strictly below the IR).
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnnotationArg {
@@ -82,9 +81,9 @@ pub enum AnnotationArgValue {
     Bool(bool),
     Ident(String),
     /// Unevaluated expression. Evaluation timing + result type per
-    /// annotation schema (see ArgSchema in §4). Carries `reify_types::ast::Expr`
-    /// (re-exported as `reify_syntax::Expr`) — see the cycle-break note below.
-    Expr(reify_types::ast::Expr),
+    /// annotation schema (see ArgSchema in §4). Carries `reify_ast::Expr`
+    /// — see the cycle-break note below.
+    Expr(reify_ast::Expr),
 }
 
 #[derive(Debug, Clone)]
@@ -116,18 +115,17 @@ compiled annotation IR must remain reachable from reify-types.
 
 **Resolution (Option B).** The *parsed* expression AST (`Expr`, `ExprKind`, `TypeExpr`,
 `TypeExprKind`, `MatchArm`, `LambdaParam`, `DimOp`) was relocated *down* into
-`reify-types` as the `reify_types::ast` module and re-exported from `reify-syntax` (so
+`reify-ast` and re-exported from `reify-syntax` (so
 `reify_syntax::Expr` and every existing call site resolve unchanged). The annotation IR
-stays in `reify-types::annotation`; `AnnotationArgValue::Expr` therefore carries
-`reify_types::ast::Expr` with no cycle. The parsed `Expr` (not `CompiledExpr`) is the
+stays in `reify-ir::annotation`; `AnnotationArgValue::Expr` therefore carries
+`reify_ast::Expr` with no cycle. The parsed `Expr` (not `CompiledExpr`) is the
 correct representation: annotation exprs on instance hosts bind per-instance params
 (e.g. `@shell(thickness = linear_taper(z))`) and must stay unresolved until
 materialization (§4).
 
-This is a deliberate stepping stone. reify-types now holds core primitives, the parsed
-AST, *and* the compiled IR; the cleaner long-term layering is a `reify-core ← reify-ast
-← reify-ir` split that re-homes the AST into a dedicated crate strictly below the IR. A
-separate PRD tracks that transition.
+The cleaner three-layer split has since landed (`core-ast-ir-layering` PRD): the parsed
+AST now lives in `reify-ast`, the compiled IR in `reify-ir`, with `reify-core`
+underneath both.
 
 **Invariants.**
 
@@ -303,7 +301,7 @@ Tasks are labelled with Greek letters; orchestrator-assigned IDs land at decompo
 - **Task β — `@allow` schema entry + flag-form lowering plumbing.**
   - **What:** Add `@allow` to the registry with `flag_set = ["shadowing"]`. Wire `Annotation::has_flag` per §3. Wire the `W_UNKNOWN_FLAG` diagnostic when an unknown flag ident appears in an `@allow` arg.
   - **Observable signal:** A fixture `.ri` file with `@allow(shadowing) structure def Foo { param x : Real = 1 }` lowers without errors; the resulting Annotation IR contains a positional `AnnotationArg{name:None, value:Ident("shadowing")}` and `ann.has_flag("shadowing")` returns true. A second fixture with `@allow(future_flag)` emits W_UNKNOWN_FLAG via `reify check` and `ann.has_flag("future_flag")` still returns true. Both fixtures wired into the integration test suite.
-  - **Crates touched:** `reify-compiler` (annotations/schema.rs registry), `reify-types` (Annotation::has_flag).
+  - **Crates touched:** `reify-compiler` (annotations/schema.rs registry), `reify-ir` (Annotation::has_flag).
   - **Prereqs:** α.
 
 - **Task γ — Shadow-lint reads `@allow(shadowing)` (LEAF; G2 user-observable signal).**
@@ -317,13 +315,13 @@ Tasks are labelled with Greek letters; orchestrator-assigned IDs land at decompo
 - **Task δ — `AnnotationArgValue::Expr` variant.**
   - **What:** Widen `AnnotationArgValue` to include an `Expr(reify_syntax::Expr)` variant. Update `lower_annotations` to store any non-literal expression arg as `Expr(...)` instead of warning + dropping it (current `annotations.rs:38-46` behaviour). Schemas that don't declare `eval_time = AtMaterialization` for any arg still reject the Expr at validation (so existing annotations' behaviour is unchanged); only annotations whose schema accepts `eval_time = AtMaterialization` carry Expr through.
   - **Observable signal:** A fixture `.ri` file under `crates/reify-compiler/tests/fixtures/` containing `@shell(linear_taper(1.0)) structure def Plate { ... }` lowers — the resulting Annotation IR contains `args[0] = AnnotationArg{name:None, value:Expr(<call linear_taper(1.0)>)}`. Validation still emits the schema mismatch (because `@shell`'s Phase-1 schema doesn't accept Expr yet) — but the IR is preserved through lowering. Test pins both: the IR shape and the schema-mismatch diagnostic.
-  - **Crates touched:** `reify-types` (AnnotationArgValue widen), `reify-compiler` (annotations.rs lowering).
+  - **Crates touched:** `reify-ir` (AnnotationArgValue widen), `reify-compiler` (annotations.rs lowering).
   - **Prereqs:** α.
 
 - **Task ε — Materialization-time eval driver (LEAF).**
   - **What:** Implement the eval driver per §4: for every `AnnotationArgValue::Expr` arg on an instance-shaped host, evaluate at structure-instance materialization (post-GR-001 hook). Result becomes a per-instance `materialized_args` overlay attached to the instance. Type-check evaluated Value against the schema's declared type. Emit `Diagnostic::AnnotationEvalFailed` on failure.
   - **Observable signal:** A test fixture stdlib annotation `@test_eval(value: Real, eval_time = AtMaterialization)` declared in the test harness registry. A `.ri` file `crates/reify-compiler/tests/fixtures/eval_annotation_smoke.ri` with `@test_eval(value = 2.0 * 1.5) structure def Foo { param dummy : Real = 0 }` materializes; the materialized instance's `annotation("test_eval").arg_value("value")` returns `Value::Real(3.0)`. A second fixture with `@test_eval(value = undefined_ident)` produces `AnnotationEvalFailed` and the instance materialization fails. Both verified via integration test.
-  - **Crates touched:** `reify-eval` (materialization hook), `reify-types` (per-instance annotation overlay), `reify-compiler` (test fixture stdlib annotation).
+  - **Crates touched:** `reify-eval` (materialization hook), `reify-ir` (per-instance annotation overlay), `reify-compiler` (test fixture stdlib annotation).
   - **Prereqs:** δ. Plus GR-001 `Value::StructureInstance` runtime materialization hook (gates on `docs/prds/v0_3/structure-instance-runtime.md` landing).
 
 ### Phase 3 — Named-arg grammar (foundation for v0.5)
