@@ -4809,6 +4809,7 @@ version = "0.1.0"
 dependencies = [
  "im",
  "inventory",
+ "reify-ast",
  "reify-core",
  "serde",
  "serde_json",
