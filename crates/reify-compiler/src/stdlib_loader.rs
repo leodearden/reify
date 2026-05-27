@@ -115,6 +115,15 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 include_str!("../stdlib/trajectory.ri"),
             ),
             ("std.fdm", include_str!("../stdlib/fdm.ri")),
+            // `std.flexures.types` MUST precede `std.flexures` — the
+            // accessor fn body in `std.flexures` references the
+            // `FlexureCompliance` structure-def declared here via the
+            // prelude template registry built by
+            // functions_phase::phase_functions. esc-3851-32.
+            (
+                "std.flexures.types",
+                include_str!("../stdlib/flexures_types.ri"),
+            ),
             (
                 "std.flexures",
                 include_str!("../stdlib/flexures.ri"),

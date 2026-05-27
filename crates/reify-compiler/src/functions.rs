@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::types::TopologyTemplate;
+
 pub(crate) fn compile_function(
     fn_def: &reify_syntax::FnDef,
     enum_defs: &[reify_types::EnumDef],
@@ -7,6 +9,7 @@ pub(crate) fn compile_function(
     alias_registry: &TypeAliasRegistry,
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
+    prelude_template_registry: Option<&HashMap<String, &TopologyTemplate>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<CompiledFunction> {
     let empty_params = HashSet::new();
@@ -49,7 +52,15 @@ pub(crate) fn compile_function(
     // See `CompiledFunction::param_defaults` in `reify-types/src/expr.rs` for the
     // field-level doc and `docs/initial-design/name-resolution-and-scoping-design-decisions.md`
     // §2.3 for the full language-design rationale.
-    let neutral_scope = CompilationScope::new(&fn_def.name);
+    //
+    // Thread the prelude template registry through so that defaults written as
+    // `FieldFoo()` (a prelude structure-def constructor) lower to
+    // CompiledExprKind::StructureInstanceCtor rather than a generic
+    // FunctionCall (esc-3851-32). Same wiring applied to the body scope below.
+    let mut neutral_scope = CompilationScope::new(&fn_def.name);
+    if let Some(reg) = prelude_template_registry {
+        neutral_scope.set_template_registry(reg);
+    }
     let param_defaults: Vec<Option<CompiledExpr>> = fn_def
         .params
         .iter()
@@ -131,8 +142,22 @@ pub(crate) fn compile_function(
         None => Type::Real, // default return type
     };
 
-    // Create a scope with function params registered
+    // Create a scope with function params registered.
+    //
+    // The prelude template registry (passed from `phase_functions`) is threaded
+    // through here so that a same-stdlib-prelude structure-def referenced in
+    // the body — e.g. `pub fn flexure_compliance(...) -> FlexureCompliance
+    // { FlexureCompliance() }` where `FlexureCompliance` is defined in an
+    // earlier-loaded stdlib module — lowers to
+    // `CompiledExprKind::StructureInstanceCtor` rather than a generic
+    // `FunctionCall` (esc-3851-32). Same-module structure_def bodies are still
+    // not constructible because `phase_functions` runs before `phase_entities`
+    // and `ctx.templates` is empty at this point — that follow-up is filed
+    // separately.
     let mut scope = CompilationScope::new(&fn_def.name);
+    if let Some(reg) = prelude_template_registry {
+        scope.set_template_registry(reg);
+    }
     for (name, ty) in &params {
         scope.register(name, ty.clone());
     }

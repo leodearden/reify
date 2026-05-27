@@ -1,0 +1,156 @@
+// Stdlib: Compliant Joints + Flexures value types  (`std.flexures.types`)
+//
+// PRD: docs/prds/v0_3/compliant-joints-flexures.md §4.2, §11 task β.
+//
+// Holds the **value-type substrate** for the v0.3 compliant-joints-flexures
+// PRD: `RotationalStiffness` (alias placeholder) and `FlexureCompliance`
+// (structure_def with the PRD §4.2 seven-field contract).
+//
+// SPLIT RATIONALE (esc-3851-32):
+//   The β-task plan originally placed both the value types AND the
+//   `flexure_compliance(joint)` accessor in a single `std.flexures` module.
+//   That layout cannot compile today: `compile_function` (per
+//   `crates/reify-compiler/src/compile_builder/functions_phase.rs`) only
+//   threads a `prelude_template_registry` — i.e. structure_def templates
+//   built from earlier-loaded stdlib modules. Same-module structure_defs are
+//   NOT in that registry because `phase_functions` runs before
+//   `phase_entities`. So a stdlib fn body inside `std.flexures` cannot
+//   construct a `FlexureCompliance` declared in the same module.
+//
+//   The split puts FlexureCompliance into `std.flexures.types`, loaded first
+//   in `stdlib_loader.rs`. The accessor fn in `std.flexures` then sees the
+//   structure-def as a prelude template and lowers `FlexureCompliance()` to
+//   `CompiledExprKind::StructureInstanceCtor` correctly.
+//
+//   A follow-up task should remove this constraint (collect skeleton
+//   templates from parsed same-module structure_defs in a pre-pass before
+//   phase_functions) — at which point flexures.ri can be re-merged.
+
+// ── Type aliases ──────────────────────────────────────────────────────────
+
+// RotationalStiffness — torsional spring constant relating angular
+// displacement to restoring torque (N·m/rad in SI). PRD §4.2 names this as
+// the canonical type for `FlexureCompliance.effective_stiffness`.
+//
+// The proper dimensioned `RotationalStiffness` type lives in the compliant-
+// joints-flexures α task (Joint surface extension; PRD §3 + §11 Phase 1
+// row α), which has not been filed yet. β's only formal prereq is SIR-α
+// 3540 (REPORT-ONLY), so we ship the placeholder spelling now and retarget
+// later — exact mirror of the trajectory.ri:56 convention
+// (`pub type JointValue = Real` with `TODO(joint-value-type)` retargeting
+// comment), and analysis.ri:13 (`pub type Stress = Pressure`).
+//
+// `pub` so downstream modules (including `std.flexures` and user code) can
+// reference the canonical spelling at flexure call sites without
+// re-aliasing. Retargeting this one line propagates the type tightening to
+// every consumer (in-file + downstream) without touching any structure_def
+// or fn body.
+//
+// TODO(stiffness-type): retarget to the proper `RotationalStiffness` (and
+// add the sibling `TranslationalStiffness` / `RotationalDamping` /
+// `TranslationalDamping` aliases) as dimensioned types when the compliant-
+// joints-flexures α task lands the Joint surface extension.
+pub type RotationalStiffness = Real
+
+// ── FlexureCompliance ─────────────────────────────────────────────────────
+
+// FlexureCompliance — the seven-field PRD §4.2 contract surfacing every
+// flexure compliance metric a user (or downstream GUI panel) cares about
+// when inspecting a flexure-emitted joint. The PRB ctors (γ / δ / ε / ζ /
+// η / θ in PRD §11) populate one of these records per ctor call and cache
+// it on the joint Map under the reserved hidden field
+// `__flexure_compliance`; the `flexure_compliance(joint)` accessor in
+// `std.flexures` surfaces it.
+//
+// Field semantics (PRD §4.2):
+//   effective_stiffness   — the equivalent linear-spring rate of the
+//                           flexure-emitted joint (γ·E·I/L for a cantilever
+//                           per Howell §5.2; analogous closed-form for each
+//                           PRB primitive in PRD §5). `RotationalStiffness`
+//                           alias resolves to Real today; retargets to the
+//                           dimensioned type when the compliant-joints-
+//                           flexures α task lands (see TODO(stiffness-type)
+//                           on the alias declaration).
+//   max_stress            — peak bending stress at the declared range
+//                           endpoint (PRD §5.1: σ_max = E·(t/2)·θ/L for a
+//                           cantilever; analogous formula per PRB primitive).
+//                           Pressure-typed because bending stress is force
+//                           per unit area.
+//   max_stress_at_neutral — peak stress at the joint's neutral position
+//                           (rest). Zero unless preloaded (PRD §4.2);
+//                           Pressure-typed for the same reason.
+//   yield_margin          — dimensionless safety ratio
+//                           `(material.yield_stress - max_stress) /
+//                           material.yield_stress`. Bounded above by 1
+//                           (max_stress = 0 → margin = 1); unbounded below
+//                           (max_stress > yield → margin < 0 →
+//                           `at_yield = true`). The structure-level
+//                           constraint `yield_margin <= 1` encodes the
+//                           upper bound as an explicit contract — see PRD
+//                           §5.3 stress-check rationale.
+//   parasitic_error       — orthogonal-DOF motion produced by the flexure
+//                           at the declared range endpoint. Set on compound
+//                           flexures (parallelogram, double-parallelogram —
+//                           PRD §6.1, §6.2) where Roberts-approximation
+//                           parasitic rotation is meaningful; `none` for
+//                           single-blade flexures (PRD §5) where the
+//                           parasitic-error notion doesn't apply.
+//                           `Option<Length>` because the metric vanishes
+//                           rather than going to zero for single-blade
+//                           cases.
+//   prb_validity_range    — angular range where the PRB approximation is
+//                           accurate (~5% per PRD §5.1's
+//                           `theta_prb_limit = 5deg`). Encoded as `Real`
+//                           placeholder for `Range<Angle>` because the
+//                           `Range<Angle>` parameterized type has no arm in
+//                           `type_resolution.rs::resolve_parameterized_
+//                           builtin_type` today; same placeholder posture
+//                           as `fea_multi_case.ri:90 loads : List<Real>`
+//                           with TODO(load-trait). See TODO(range-angle-type)
+//                           below.
+//   at_yield              — true iff `max_stress >= material.yield_stress`.
+//                           PRB ctors emit `W_FlexureYielding` (PRD §5.3)
+//                           when this flips true; the field stays on the
+//                           record so user-side strict checks can read it
+//                           without re-running the comparison.
+//
+// Defaults are deliberately "sentinel-zero" so the stub
+// `flexure_compliance(joint)` accessor (in `std.flexures`) — which
+// currently returns a default `FlexureCompliance()` until λ wires real
+// cache lookup — has a well-typed value to return. PRB ctors (γ / δ / ε /
+// ζ / η / θ) override every field with computed values via named-field
+// ctor syntax `FlexureCompliance(effective_stiffness: ..., max_stress:
+// ..., ...)`, so the defaults never leak into populated records. Same
+// posture as `solver_elastic.ri::ElasticOptions` (every default-bearing
+// field overridable at call time).
+//
+// TODO(range-angle-type): tighten `prb_validity_range : Real` to
+// `Range<Angle>` when `type_resolution.rs::resolve_parameterized_builtin_
+// type` grows a Range arm (out of scope for β per the task description).
+structure def FlexureCompliance {
+    param effective_stiffness : RotationalStiffness = 0.0
+    param max_stress : Pressure = 0Pa
+    param max_stress_at_neutral : Pressure = 0Pa
+    param yield_margin : Real = 0.0
+    param parasitic_error : Option<Length> = none
+    param prb_validity_range : Real = 0.0
+    param at_yield : Bool = false
+
+    // Defense-in-depth: `yield_margin = (yield - max_stress) / yield` is
+    // mathematically bounded above by 1 (max attained at max_stress = 0).
+    // It is unbounded below (becomes negative when max_stress > yield,
+    // which is the "at_yield" regime per PRD §5.3 where PRB ctors emit
+    // `W_FlexureYielding` and set `at_yield = true`). A populated record
+    // with yield_margin > 1 indicates a PRB-ctor bug (e.g. swapped
+    // numerator/denominator) — declaring the upper bound at the
+    // structure-def level makes the contract explicit in production code
+    // rather than relying solely on test coverage (task 2544 convention;
+    // mirrors `BucklingOptions.n_modes > 0` in solver_buckling.ri:87 and
+    // `PiecewisePolynomialProfile.waypoints.count > 0` in
+    // trajectory.ri:230).
+    //
+    // SIR-α's `check_constraints_against_templates` machinery (task 3540,
+    // landed) evaluates structure-level constraints at the eval path, so
+    // this fires at construction with no further plumbing in β.
+    constraint yield_margin <= 1
+}

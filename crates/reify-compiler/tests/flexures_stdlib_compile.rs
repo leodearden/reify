@@ -44,16 +44,38 @@ fn load_stdlib_module() -> &'static CompiledModule {
         })
 }
 
-/// Look up a structure template by name within the `std/flexures` module.
+/// Return the `std/flexures.types` CompiledModule — value types
+/// (`RotationalStiffness` alias + `FlexureCompliance` structure_def) live
+/// in a separate stdlib module, loaded immediately before `std.flexures`.
+/// See SPLIT RATIONALE in `flexures_types.ri` (esc-3851-32).
+fn load_stdlib_types_module() -> &'static CompiledModule {
+    stdlib_loader::load_stdlib()
+        .iter()
+        .find(|m| m.path.to_string() == "std/flexures/types")
+        .unwrap_or_else(|| {
+            panic!(
+                "stdlib should contain std/flexures.types module; \
+                 available paths: {:?}",
+                stdlib_loader::load_stdlib()
+                    .iter()
+                    .map(|m| m.path.to_string())
+                    .collect::<Vec<_>>()
+            )
+        })
+}
+
+/// Look up a structure template by name within the `std/flexures.types`
+/// module (the value-types module — see `load_stdlib_types_module`).
 fn find_structure(name: &str) -> &'static TopologyTemplate {
-    let module = load_stdlib_module();
+    let module = load_stdlib_types_module();
     module
         .templates
         .iter()
         .find(|t| t.name == name && t.entity_kind == EntityKind::Structure)
         .unwrap_or_else(|| {
             panic!(
-                "expected `structure def {}` template in std/flexures, got templates: {:?}",
+                "expected `structure def {}` template in std/flexures.types, \
+                 got templates: {:?}",
                 name,
                 module
                     .templates
@@ -155,7 +177,10 @@ fn std_flexures_module_loads_with_no_errors() {
 /// `type_alias_compile_tests.rs:33-52` and `:481-498`.
 #[test]
 fn rotational_stiffness_alias_resolves_to_real() {
-    let module = load_stdlib_module();
+    // RotationalStiffness now lives in `std.flexures.types` after the
+    // split filed under esc-3851-32 — see SPLIT RATIONALE in
+    // `flexures_types.ri`.
+    let module = load_stdlib_types_module();
 
     let alias = module
         .type_aliases
@@ -163,8 +188,8 @@ fn rotational_stiffness_alias_resolves_to_real() {
         .find(|a| a.name == "RotationalStiffness")
         .unwrap_or_else(|| {
             panic!(
-                "expected `pub type RotationalStiffness` in std/flexures, got \
-                 type_aliases: {:?}",
+                "expected `pub type RotationalStiffness` in std/flexures.types, \
+                 got type_aliases: {:?}",
                 module
                     .type_aliases
                     .iter()
