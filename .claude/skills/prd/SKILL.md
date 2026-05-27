@@ -1,6 +1,6 @@
 ---
 name: prd
-description: "Author and decompose Reify PRDs under the 2026-05-12 audit-derived gates that prevent incomplete/ill-formed implementation chains. ALWAYS use this skill for: /prd commands, authoring a new Reify PRD, decomposing a committed PRD into tasks, queueing tasks from a PRD into the orchestrator. Triggers on requests like 'let's write a PRD for X', 'draft a PRD', 'decompose this PRD', 'queue tasks from <prd>.md', or any mention of starting/finishing PRD-shaped work in the Reify repo. Walks G1 (consumer named), G2 (user-observable leaf signal), G3 (grammar verified), G4 (cross-PRD seam ownership), G5 (design-first when stakes are high), and the meta-gate 'would this PRD produce a complete/coherent/cohesive/good design under decompose-and-queue without further oversight?' before saving or queueing. This is NOT for: editing existing PRDs without re-running gates, running tasks (use /orchestrate), reviewing landed code (use /review), unblocking tasks (use /unblock)."
+description: "Author and decompose Reify PRDs under the 2026-05-12 audit-derived gates that prevent incomplete/ill-formed implementation chains. ALWAYS use this skill for: /prd commands, authoring a new Reify PRD, decomposing a committed PRD into tasks, queueing tasks from a PRD into the orchestrator. Triggers on requests like 'let's write a PRD for X', 'draft a PRD', 'decompose this PRD', 'queue tasks from <prd>.md', or any mention of starting/finishing PRD-shaped work in the Reify repo. Walks G1 (consumer named), G2 (user-observable leaf signal), G3 (grammar verified), G4 (cross-PRD seam ownership), G5 (design-first when stakes are high), G6 (premise validity — signals' numeric/exactness/capability premises are true and achievable), and the meta-gate 'would this PRD produce a complete/coherent/cohesive/good design under decompose-and-queue without further oversight?' before saving or queueing. This is NOT for: editing existing PRDs without re-running gates, running tasks (use /orchestrate), reviewing landed code (use /review), unblocking tasks (use /unblock)."
 ---
 
 # PRD Authoring + Decomposition (Reify)
@@ -48,6 +48,7 @@ Each gate has a calibrated response level. See `references/gates.md` for what ea
 | **G3** | Novel syntax verified to parse OR queued as explicit prerequisite | **block** |
 | **G4** | Cross-PRD seams have a named owner; reciprocal "the other owns it" patterns resolved | **prompt** |
 | **G5** | High-stakes or architecturally-complex PRDs use approach **B + H** (contracts + boundary tests) rather than bare B | **prompt with heuristic** |
+| **G6** | Every signal asserting a number/exactness/end-to-end capability has its premise validated — achievable, true, and producible from the task's own dependency set | **block** |
 | **META** | The "yes" question above | **block** at PRD save |
 
 - `block` — the phase cannot complete until the gap is resolved.

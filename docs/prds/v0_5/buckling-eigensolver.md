@@ -362,9 +362,11 @@ each side.
 
 | Scenario | Preconditions | Postconditions |
 |---|---|---|
-| **Pinned-pinned Euler column.** Square box (20×20×800 mm), Steel_AISI_1045, 1 kN tip load, both ends pinned. | P1 tet mesh; elastic K assembled; pre-stress solve converged. | `result.modes[0].eigenvalue × 1 kN` is within 5% of `π² E I / L²`. Mode shape's largest displacement component aligns with one in-plane axis; transverse displacement at mid-span is the maximum (half-sine shape). |
-| **Fixed-free cantilever column.** Same geometry; bottom fixed, top free, tip load. | Same. | `eigenvalue × 1 kN` within 5% of `π² E I / (2L)²` (effective-length factor k=2). Mode shape is quarter-sine. |
-| **Fixed-fixed column.** Same geometry; both ends fixed; pre-stress via interior body force pattern. | Same. | `eigenvalue × 1 kN` within 5% of `4 π² E I / L²` (k=0.5). |
+| **Pinned-pinned Euler column.** Square box (20×20×800 mm), Steel_AISI_1045, 1 kN tip load, both ends pinned. | P1 tet mesh; elastic K assembled; pre-stress solve converged. | `result.modes[0].eigenvalue × 1 kN` is within **10%** of `π² E I / L²` (observed 9.2% at `nx=ny=8, nz=160`). Mode shape's largest displacement component aligns with one in-plane axis; transverse displacement at mid-span is the maximum (half-sine shape). |
+| **Fixed-free cantilever column.** Same geometry; bottom fixed, top free, tip load. | Same. | `eigenvalue × 1 kN` within **11%** of `π² E I / (2L)²` (effective-length factor k=2; observed 10.0%). Mode shape is quarter-sine. |
+| **Fixed-pin column.** Same geometry; bottom face fully clamped (all 3 DOFs/node), top face laterally clamped (`u_x=u_y=0`, `u_z` free/node). | Same. | `eigenvalue × 1 kN` within **10%** of `π² E I / (k L)²` with **k≈0.6992 (fixed-pin)**; observed `k_eff≈0.670`, 8.8% at current mesh. |
+
+> **P1-tet accuracy note (G6 / esc-3453-5,6).** The 5% bounds and the **fixed-fixed (k=0.5)** third variant originally stated here are *not achievable* at practical mesh density: P1-tet bending lock at this slenderness (L/r≈138) yields 9–10% error on every BC variant, and pointwise Dirichlet BCs impose no rotational restraint, so a clamped-clamped attempt realizes **fixed-pin (k≈0.6992)**, not fixed-fixed. Bounds reconciled to the shipped test (`euler_column_pin_pin.rs`: pin-pin 10%, fixed-free 11%, fixed-pin 10%). True fixed-fixed (k=0.5) within 5% requires multi-point constraints (`u_z` equal across the top face) or P2-tet K_g — a follow-up beyond v0.5 task δ.
 | **n_modes degeneracy on square cross-section.** Pinned-pinned column with square box (20×20×L). | Same. | First two eigenvalues are within tolerance of each other (in-plane / out-of-plane mode pair). `modes[0].mode_shape` and `modes[1].mode_shape` are orthogonal in displacement space. |
 | **Shell input emits clean diagnostic.** Call `solve_buckling` on a shell-classified body. | Body classifier returns Shell. | Trampoline returns `ComputeOutcome::Failed { diagnostics: [E_BucklingShellNotImplemented { cite_task: "3392", ... }] }`. No panic. |
 | **Cancellation under design loop.** Synthetic large-DOF column; auto-resolve drives a non-structural param; rapid input changes mid-solve. | Trampoline registered; ≥ 100 ms per Lanczos iteration. | Cancellation observed within 2× poll budget (≤ 200 ms). Prior cache entry intact. No orphaned solver threads. |
@@ -478,8 +480,11 @@ isolation are not acceptable (`feedback_task_chain_user_observable`).
   - **Observable signal:** Integration test
     `crates/reify-solver-elastic/tests/euler_column_pin_pin.rs` constructs a
     Steel_AISI_1045 box (20×20×800 mm), applies pin-pin BCs + 1 kN tip load, and
-    asserts `result.modes[0].eigenvalue × 1 kN` within 5% of `π²EI/L²`. Same test
-    file also covers fixed-free and fixed-fixed BC variants.
+    asserts `result.modes[0].eigenvalue × 1 kN` within **10%** of `π²EI/L²` (P1-tet
+    bending lock — see §9.1). Same test file also covers the fixed-free (11%) and
+    fixed-pin (10%) BC variants. The third variant is **fixed-pin, not fixed-fixed**:
+    P1-tet pointwise Dirichlet imposes no rotational restraint, so true fixed-fixed /
+    k=0.5 within 5% needs MPCs or P2 K_g (deferred). Bounds corrected per esc-3453-5/6 (G6).
   - **Prereqs:** β, γ.
   - **Crates touched:** reify-solver-elastic.
 

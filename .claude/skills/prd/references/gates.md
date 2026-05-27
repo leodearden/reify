@@ -1,4 +1,4 @@
-# Gates — G1, G2, G3, G4, G5, META
+# Gates — G1, G2, G3, G4, G5, G6, META
 
 Each gate's section names:
 - **What it catches** — the audit-data class of failure it prevents.
@@ -157,6 +157,41 @@ Default answer is **yes for high-stakes seams**, **no for self-contained feature
 
 ---
 
+## G6 — Premise validity
+
+**Level:** **block** (both modes; checked at PRD save and re-checked at decompose).
+
+**What it catches.** A failure class orthogonal to G1–G5: an observable / leaf signal whose **substantive quantitative premise** is false, unreachable, or misattributed. G1–G5 validate the *structure* of the implementation chain — a consumer exists, the signal is user-observable, the grammar parses, the seam has an owner. G6 validates the *truth* of the claim embedded in the signal. A signal can pass every other gate and still assert something impossible. Three caught-at-execution-time examples (2026-05-26/27):
+
+- **esc-3436-210** (`multi-kernel-phase-3.md` §8 task ε) — leaf signal demanded an end-to-end "BRep→Mesh intermediate + Manifold-Boolean output" observable on ε, but ε's dependency set (δ = the `Convert` capability *descriptor* only, α = the `produced_repr` field) cannot produce it; the Manifold execute arm (ζ) and OpenVDB consumer (η) both **depend on** ε. The signal belonged on a downstream leaf.
+- **esc-3453-5/6** (`buckling-eigensolver.md` §13 task δ) — RED tests baked a 5% accuracy bound and a "fixed-fixed ⇒ k=0.5" BC mapping. P1-tet cannot reach 5% at practical mesh density for slender columns (bending lock; L/r≈138 gave 9–10% on every variant), and pointwise Dirichlet BCs realize fixed-pin (k≈0.67–0.70), not fixed-fixed. The fixture's "Tuned" comment was aspirational — the tests never went green.
+- **esc-3770-1** (`trajectory-input-shaping.md` §11 task β) — step-1 RED asserted a **natural** cubic spline reproduces a general cubic off-knot to 1e-12. Provably impossible: natural BC forces `M[0]=M[N]=0` ⟹ `p''(endpoints)=0` ⟹ the reproduced polynomial is degree ≤ 1.
+
+In all three the false premise was frozen into a RED test (or end-to-end signal) and surfaced only when an agent tried — and provably couldn't — to GREEN it, costing an escalation, an architect/steward cycle, and sometimes a planner-tier amendment.
+
+**Application.** For every observable / leaf signal in the decomposition plan, classify its assertion and apply the matching check. Most signals — "emits diagnostic `E_*`", "compile test", "screenshot delta" — assert no quantitative premise and pass trivially.
+
+1. **Numeric bound / threshold** ("within X%", "≤ ε", "≥ N dB", "to M digits"). Cite an *achievability basis*:
+   - an existing validated test / reference that already hits that accuracy on a comparable problem, OR
+   - a back-of-envelope error estimate for the method at the planned resolution (element order × mesh density, iteration count, conditioning), OR
+   - a reference computation.
+   If none exists, the bound is a **guess** — either set it to a defensible value, or mark it provisional and file a calibration task. **Reject bare guessed thresholds.** A fixture comment claiming "Tuned" is not a basis.
+
+2. **Closed-form exactness / reproduction** ("exact within 1e-12", "reproduces P(t) exactly", "round-trips losslessly"). State the **mathematical identity** that makes it true, then confirm the asserted **configuration** satisfies it. Exactness is almost always configuration-dependent (boundary condition, element order, end conditions, basis degree) — name the configuration that earns it. (Natural vs. clamped cubic spline is the worked example: a cubic spline reproduces a cubic only under clamped / not-a-knot end conditions, never natural.)
+
+3. **End-to-end capability** ("produces a Mesh", "evaluates to `Value::X`", "the union renders"). Trace every capability the signal requires to the task's **dependency set**: each must be delivered by this task or one of its **prerequisites** — never by a task that **depends on** this one. If a required capability is owned by a downstream task, the signal belongs on that downstream leaf (the **C-as-integration-gate** pattern from G2), not here.
+
+**Resolution when a premise fails** (any one):
+- **(a)** Move the signal to the task that can actually produce it (fixes misattribution).
+- **(b)** Weaken the assertion to what's achievable now, and file a follow-up task for the stronger property.
+- **(c)** Change the asserted configuration (BC, element order, basis) so the claim becomes true.
+
+**In author mode:** as the decomposition plan takes shape, walk each leaf's drafted signal through the trichotomy. Substantive premises are where domain intuition is most fragile (FEA numerics, spline math, multi-kernel capability availability) — exactly what the structural gates cannot see.
+
+**In decompose mode:** re-check against the saved PRD before queueing. If a signal's premise cannot be substantiated, escalate before filing tasks (cheap) rather than letting an implementer discover it against a RED test (expensive).
+
+---
+
 ## META — "is this PRD good?"
 
 **Level:** **block** (author mode only; the final check before saving).
@@ -186,11 +221,13 @@ Walk in this rough order in conversation. Iterate freely as discussion surfaces 
 3. **G4 third.** Identify cross-PRD seams; resolve ownership before writing relationship table.
 4. **G5 fourth.** Decide B vs B+H; if H, draft contract + boundary-test sketch now (they shape the decomposition).
 5. **G2 stays in the decomposition plan** — author-mode draft of the decomposition names observable signals per task even though the hard check is at decompose time.
-6. **META last.** Final sanity check before save.
+6. **G6 alongside the G2 draft.** Validate each drafted leaf signal's substantive premise — numeric bound has an achievability basis, exactness names the configuration that earns it, end-to-end capability traces to the task's dependency set.
+7. **META last.** Final sanity check before save.
 
 ## Gate-application order (decompose mode)
 
 1. **G1, G3, G4 re-check** against the saved PRD (fast; mostly looking for drift between author and decompose).
 2. **G2 walk** — enumerate every task in the proposed DAG, classify leaf/intermediate, attach `user_observable_signal` / `consumer_ref`.
-3. **G5 informational** — note whether the PRD declared B or B+H; if B+H, verify the integration-gate task exists in the DAG and points at the boundary-test sketch.
-4. File the batch (see `references/decompose-mode.md`).
+3. **G6 re-check** — for each leaf signal, validate its substantive premise (numeric basis / exactness identity / dependency-set trace). If one can't be substantiated, escalate before filing — cheaper than an implementer discovering it against a RED test.
+4. **G5 informational** — note whether the PRD declared B or B+H; if B+H, verify the integration-gate task exists in the DAG and points at the boundary-test sketch.
+5. File the batch (see `references/decompose-mode.md`).

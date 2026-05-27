@@ -583,10 +583,17 @@ dogfood + companion.
 - **β — `piecewise_polynomial` ctor + B-spline evaluator (cubic +
   quintic).**
   - Crates: `reify-stdlib/src/trajectory/spline.rs` (NEW), unit
-    tests confirming evaluator accuracy on analytic functions
-    (cubic exactly fits a cubic; quintic exactly fits a quintic).
-  - Observable signal: evaluator returns exact values within
-    1e-12 for polynomial-source-data ground truths.
+    tests confirming evaluator accuracy on analytic functions.
+  - Observable signal: under **clamped / not-a-knot** end conditions
+    (exact endpoint derivatives supplied), the evaluator reproduces a
+    polynomial of matching degree to within 1e-12 off-knot (cubic↔cubic,
+    quintic↔quintic) — those end conditions uniquely pin the polynomial.
+    The **natural** BC test asserts only at-knot interpolation to 1e-12
+    plus endpoint second-derivative = 0 by construction: a natural cubic
+    spline does NOT reproduce a general cubic off-knot (natural BC forces
+    `M[0]=M[N]=0` ⟹ `p''(endpoints)=0` ⟹ the reproduced polynomial is
+    degree ≤ 1). (Premise corrected per esc-3770-1 / task 3816; G6 —
+    exactness is end-condition-dependent.)
   - Prereqs: α.
 
 - **γ — `to_trajectory_samples` bridge to rigid-body-dynamics
