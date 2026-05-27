@@ -107,6 +107,10 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
             ("std.io", include_str!("../stdlib/io.ri")),
             ("std.stock", include_str!("../stdlib/standard_stock.ri")),
             (
+                "std.modal.analysis",
+                include_str!("../stdlib/modal_analysis.ri"),
+            ),
+            (
                 "std.trajectory",
                 include_str!("../stdlib/trajectory.ri"),
             ),

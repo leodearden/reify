@@ -1,0 +1,394 @@
+// Stdlib: Modal Analysis Options, Modes & Results  (`std.modal.analysis`)
+//
+// PRD: docs/prds/v0_3/modal-analysis.md §4.1, §4.2, §4.3, §10 task α.
+//
+// Provides the named-type surface for the v0.3 modal-analysis kernel:
+//   - `DampingDescriptor`  — marker trait for damping-strategy variants
+//   - `NoDamping`          — marker structure refining `DampingDescriptor`
+//                            (undamped solve; default behaviour)
+//   - `RayleighDamping`    — proportional damping (alpha, beta) refining
+//                            `DampingDescriptor`
+//   - `Mode`               — single (frequency, shape, participation, damping)
+//                            modal eigenpair
+//   - `ModalResult`        — solver-output container (part, modes, BCs,
+//                            damping, mass-/stiffness-matrix-norms)
+//   - `ModalOptions`       — solver-input knobs (n_modes, BCs, damping,
+//                            sigma, tol, max_iters, reference_direction)
+//
+// Module placement: `std.modal.analysis` is the v0.3 sibling reserved by
+// `std.trajectory`'s header — "registered last … ready for the planned
+// `std.modal` / `std.dynamics` siblings". Registered immediately BEFORE
+// `std.trajectory` in `stdlib_loader.rs` so the v0.3 analysis cluster stays
+// grouped at the tail of the loader vec, and so `ModalResult` is in the
+// growing prelude for the future task that tightens trajectory.ri to consume
+// `ModalResult.modes` (kinematic-completion PRD; not yet landed).
+//
+// `trait Support` from the much-earlier `std.fea.multi_case` is already in
+// the growing prelude at this point, so `List<Support>` resolves on both
+// `ModalResult.boundary_conditions` and `ModalOptions.boundary_conditions`.
+//
+// Encoding notes:
+//   1. Number-literal grammar is `\d+(\.\d+)?` (no scientific notation).
+//      The PRD's `1e-9` default for `tol` therefore appears here as
+//      `0.000000001`, same convention as `solver_buckling.ri`'s `tol = 1e-8`
+//      → `0.00000001`.
+//   2. `ModalResult.part : String` is a PLACEHOLDER for the future `Part`
+//      structure_def from the v0.3 solver-elastic PRD (not yet landed; see
+//      `fea_multi_case.ri:269-273` placeholder convention). A FIXME comment
+//      on the param flags the future tighten target.
+//   3. `Mode.frequency : Real` is a placeholder for `Scalar<Frequency>` —
+//      `Frequency` (= s⁻¹) is an SI-derived dimension but has no named scalar
+//      alias yet. Same placeholder pattern as `fea_multi_case.ri::Load.force
+//      : Real` waiting for `Vector3<Force>`.
+//   4. `Mode.shape : List<Vector3<Dimensionless>>` encodes mass-normalized
+//      eigenvectors. Strictly, components of a mass-orthonormal mode shape
+//      carry units of 1/√mass — only the modal-mass scalar
+//      mᵢ = Φᵢᵀ·M·Φᵢ = kg · (1/√kg)² is dimensionless under `Φᵀ·M·Φ = I`
+//      (PRD §4.1 + §7.5). Reify's dimension grammar has no SI-root extension,
+//      so 1/√mass is not yet expressible; `Dimensionless` is the closest
+//      encoding available today. (`Vector3<Real>` is not valid .ri syntax —
+//      the `Vector3<Q>` resolver requires `Q` to resolve to a
+//      `DimensionVector`; `Real` is a primitive scalar, not a dimension
+//      name.) Tightening to a future `Scalar<InvRootMass>` (or equivalent)
+//      is left to the kinematic-completion sweep.
+//   5. `ModalOptions.reference_direction : Vector3<Dimensionless>` is the
+//      correct semantics (unit vector — dimensionless). The constraint
+//      `reference_direction.norm() > 0` is NOT expressible in Reify's
+//      `constraint` grammar (method-call on Vector3, not a scalar predicate)
+//      and is deferred to the runtime trampoline (future task ζ), mirroring
+//      `BucklingOptions.mode` allowlist-deferral precedent
+//      (solver_buckling.ri:97-107).
+
+// ── DampingDescriptor (marker trait) ─────────────────────────────────────────
+
+// `DampingDescriptor` is the marker trait for every damping-strategy variant
+// (PRD §4.2). The α phase declares two refining structures:
+//   - `NoDamping`        — undamped solve; semantically equivalent to
+//                          RayleighDamping(alpha: 0, beta: 0) but a distinct
+//                          type so the future `modal_analysis` trampoline can
+//                          discriminate the no-damping fast path at dispatch.
+//   - `RayleighDamping`  — proportional damping ζ_i = (α + β·ω_i²) / (2·ω_i),
+//                          where α (mass-proportional) and β (stiffness-
+//                          proportional) are user-supplied. Preserves mode-
+//                          shape orthogonality so transient response stays in
+//                          real arithmetic.
+//
+// Kept empty by design (no required members): each variant carries its own
+// per-strategy fields; the trait exists only to give the `damping` param on
+// `ModalResult` / `ModalOptions` a single nominal type, so the eval-time
+// dispatch matches via the SIR-α nominal type-tag. Same pattern as
+// `trait Support { }` (fea_multi_case.ri:288) and `trait BoundaryCondition
+// { }` (trajectory.ri).
+trait DampingDescriptor { }
+
+// ── NoDamping ────────────────────────────────────────────────────────────────
+
+// `NoDamping` is the zero-field marker structure for an undamped modal solve
+// (PRD §4.2). Semantically equivalent to `RayleighDamping(alpha: 0, beta: 0)`
+// but a distinct nominal type so the future `modal_analysis` trampoline can
+// discriminate the no-damping fast path at dispatch via the SIR-α nominal
+// type-tag — same dispatch mechanism `solve_elastic_static` uses to
+// discriminate `PointLoad` vs `FixedSupport` in `fea_multi_case.ri`.
+//
+// PRD reference: docs/prds/v0_3/modal-analysis.md §4.2.
+structure def NoDamping : DampingDescriptor { }
+
+// ── RayleighDamping ──────────────────────────────────────────────────────────
+
+// `RayleighDamping` is proportional damping parameterized by two scalars
+// (PRD §4.2). The per-mode damping ratio is:
+//
+//     ζ_i = (α + β · ω_i²) / (2 · ω_i)
+//
+// where ω_i is the natural angular frequency of mode i (rad/s). This form
+// preserves mode-shape orthogonality (the damping matrix C = α·M + β·K
+// commutes with M and K under the mass-orthonormal mode basis), so the
+// transient response can be integrated mode-by-mode in real arithmetic
+// rather than requiring a full complex-eigenvalue solve.
+//
+// Param semantics (PRD §4.2):
+//   alpha — mass-proportional damping coefficient (units 1/s). Damps low
+//           frequencies more than high. Often calibrated from measured
+//           damping ratio at the fundamental mode.
+//   beta  — stiffness-proportional damping coefficient (units s). Damps
+//           high frequencies more than low. Useful for suppressing
+//           high-frequency numerical noise from explicit time integration.
+//
+// Explicitly NOT constrained: alpha / beta are conventionally non-negative
+// but physically meaningful at zero ("stiffness-only" damping with α=0; or
+// "mass-only" damping with β=0). Imposing `alpha >= 0` or `beta >= 0` at
+// the structure-def level would forbid these special cases, so the contract
+// stays open here. Mirrors solver_buckling.ri:97-107 "sigma is explicitly
+// NOT constrained" discipline.
+//
+// PRD reference: docs/prds/v0_3/modal-analysis.md §4.2.
+structure def RayleighDamping : DampingDescriptor {
+    param alpha : Real
+    param beta : Real
+}
+
+// ── Mode ─────────────────────────────────────────────────────────────────────
+
+// `Mode` is one modal eigenpair returned by the modal-analysis solver
+// (PRD §4.1). Solver-populated only — no caller-supplied defaults are
+// meaningful, no scalar constraints (every field is solver-determined
+// from the geometry / boundary conditions / damping).
+//
+// `Mode` coexists with `std.solver.buckling`'s `Mode` (same simple name,
+// different modules). Per-module template storage and the first-wins
+// shadow rule make this safe; if dual-import ambiguity ever surfaces at
+// user call sites, the fallback rename is a one-line `.ri` change. See
+// plan design-decision-6.
+//
+// Field semantics (PRD §4.1):
+//   frequency          — natural frequency ω/(2π) in Hz. Encoded as `Real`
+//                        as a PLACEHOLDER for `Scalar<Frequency>` — the
+//                        named-frequency scalar alias has not landed yet.
+//                        Same placeholder convention as `Load.force : Real`
+//                        waiting for `Vector3<Force>` in
+//                        `fea_multi_case.ri:269-296`.
+//   shape              — mass-normalized eigenvector (Φᵀ·M·Φ = I) reshaped
+//                        as per-node displacement-shaped vectors. Encoded
+//                        as `List<Vector3<Dimensionless>>` as the closest
+//                        encoding available today: strictly, components of
+//                        a mass-orthonormal mode shape carry units of
+//                        1/√mass (only the modal-mass scalar
+//                        mᵢ = Φᵢᵀ·M·Φᵢ is dimensionless per PRD §4.1 +
+//                        §7.5). Reify's dimension grammar has no SI-root
+//                        extension, so 1/√mass is not yet expressible;
+//                        `Dimensionless` is the closest currently-resolvable
+//                        spelling. (`Vector3<Real>` is not valid .ri syntax
+//                        — the `Vector3<Q>` resolver requires `Q` to be a
+//                        dimension name; `Real` is a primitive scalar.)
+//                        Tightening to a future `Scalar<InvRootMass>` (or
+//                        equivalent) is left to the kinematic-completion
+//                        sweep. (Contrast with buckling's `Mode.mode_shape
+//                        : Field<Point3<Length>, Vector3<Length>>` where
+//                        the Length parameterization is a typing
+//                        convention, not a dimensional claim; see
+//                        solver_buckling.ri:127-145 dimensionality note.)
+//   participation_mass — effective modal mass projected along the user-
+//                        supplied reference_direction (PRD §4.3
+//                        ModalOptions.reference_direction). Used to rank
+//                        modes by importance for a given excitation
+//                        direction. Encoded as `Real` as a PLACEHOLDER for
+//                        `Scalar<Mass>` — participation mass has the
+//                        dimension of mass (kg under SI), but the
+//                        named-scalar `Scalar<X>` alias has not landed
+//                        anywhere in the stdlib yet. Same placeholder
+//                        convention as `Mode.frequency` waiting for
+//                        `Scalar<Frequency>`, and `Load.force : Real`
+//                        waiting for `Vector3<Force>` in
+//                        `fea_multi_case.ri:269-296`.
+//   damping_ratio      — ζ_i for this mode. Equals 0 for an undamped solve
+//                        (`damping = NoDamping()`) or
+//                        (α + β·ω_i²) / (2·ω_i) for proportional damping
+//                        (`damping = RayleighDamping(α, β)`).
+structure def Mode {
+    param frequency : Real
+    param shape : List<Vector3<Dimensionless>>
+    param participation_mass : Real
+    param damping_ratio : Real
+}
+
+// ── ModalResult ──────────────────────────────────────────────────────────────
+
+// `ModalResult` is the modal-analysis solver-output container (PRD §4.1) —
+// the parallel sibling of `BucklingResult` (`std.solver.buckling`). Each
+// instance bundles the computed eigenpairs together with the inputs they
+// were solved against (boundary conditions, damping strategy) plus two
+// matrix-norm diagnostics.
+//
+// Solver-populated only: every field is determined by the modal solve, so
+// no caller-supplied defaults are meaningful. No scalar constraints are
+// declared at the structure-def level — the meaningful invariants here are
+// COLLECTION invariants (`modes` non-empty, sorted ascending by frequency)
+// which Reify's `constraint` grammar cannot express (it admits only scalar
+// predicates over same-scope cells). These are producer-enforced by the
+// future `modal_analysis` runtime trampoline (task ζ), mirroring the
+// `BucklingResult.modes` discipline at solver_buckling.ri:196-205.
+//
+// Field semantics (PRD §4.1):
+//   part                 — the analysed part. FIXME(part-structdef): encoded
+//                          as `String` PLACEHOLDER for the future `Part`
+//                          structure_def from the v0.3 solver-elastic PRD
+//                          (not yet landed). `String` (not `Real`) because
+//                          `Part` semantically denotes a named entity /
+//                          handle, consistent with the `FixedSupport.target
+//                          : String` selector-placeholder precedent
+//                          (fea_multi_case.ri:269-273 placeholder
+//                          convention). Tightens to the `Part` type once it
+//                          lands; consumer task ζ reads `.modes`, not
+//                          `.part`, so this placeholder is non-blocking.
+//   modes                — the computed modal eigenpairs, one `Mode` per
+//                          extracted mode, ordered ascending by frequency.
+//                          `Mode` is module-local so this resolves to
+//                          `List<StructureRef("Mode")>`.
+//   boundary_conditions  — the support set the solve was constrained with.
+//                          `Support` is the marker trait from
+//                          `std.fea.multi_case`, already in the growing
+//                          prelude at modal-compile time, so this resolves
+//                          to `List<TraitObject("Support")>` (same shape as
+//                          trajectory's `List<BoundaryCondition>`).
+//   damping              — the damping strategy applied (`NoDamping` or
+//                          `RayleighDamping`); trait-typed so eval-time
+//                          dispatch matches via the SIR-α nominal type-tag.
+//   mass_matrix_norm     — ‖M‖ diagnostic (conditioning / sanity check).
+//   stiffness_matrix_norm — ‖K‖ diagnostic (conditioning / sanity check).
+//
+// PRD reference: docs/prds/v0_3/modal-analysis.md §4.1.
+structure def ModalResult {
+    param part : String
+    param modes : List<Mode>
+    param boundary_conditions : List<Support>
+    param damping : DampingDescriptor
+    param mass_matrix_norm : Real
+    param stiffness_matrix_norm : Real
+    // NOTE — explicitly NOT constrained:
+    //   modes               : List<Mode>    — collection invariants
+    //                                          (non-empty, sorted ascending by
+    //                                          frequency) are producer-enforced
+    //                                          by the future modal_analysis
+    //                                          trampoline (task ζ); Reify
+    //                                          constraint clauses express only
+    //                                          scalar predicates, not
+    //                                          collection invariants. Mirrors
+    //                                          BucklingResult.modes discipline
+    //                                          (solver_buckling.ri:196-205).
+    //   boundary_conditions : List<Support> — collection of trait objects; no
+    //                                          scalar invariant expressible.
+    //   damping             : DampingDescriptor — trait-typed; not scalar-
+    //                                          predicable.
+    //   part / *_norm       — solver-populated outputs; no caller invariant.
+}
+
+// ── ModalOptions ─────────────────────────────────────────────────────────────
+
+// `ModalOptions` is the configuration object passed to the v0.3 modal
+// eigensolver (PRD §4.3) — the parallel sibling of `BucklingOptions`
+// (`std.solver.buckling`). The scalar knobs carry sensible defaults (added
+// in a later wave) so a caller overrides only the fields they care about;
+// `boundary_conditions`, `damping`, and `reference_direction` are required
+// at construction (no canonical default).
+//
+// Param semantics (PRD §4.3):
+//   n_modes             — eigenpair count to extract. Default 10 (added in a
+//                          later step) covers the typical "first few modes"
+//                          inspection workflow, mirroring
+//                          `BucklingOptions.n_modes`.
+//   boundary_conditions — the support set constraining the eigenproblem.
+//                          `Support` is the marker trait from
+//                          `std.fea.multi_case`, in the growing prelude at
+//                          modal-compile time → `List<TraitObject("Support")>`.
+//                          Required at construction (no default).
+//   damping             — damping strategy (`NoDamping` for an undamped
+//                          solve, `RayleighDamping(α, β)` for proportional
+//                          damping). Trait-typed so the eval-time trampoline
+//                          dispatches via the SIR-α nominal type-tag.
+//                          Required at construction (no default in this wave;
+//                          a trait-typed `= NoDamping()` default is deferred
+//                          per plan design-decision-5).
+//   sigma               — spectral-shift origin (in eigenvalue units;
+//                          dimensionless). Default `0.0` (added later) targets
+//                          the smallest-|λ| cluster (lowest-frequency modes).
+//                          Explicitly NOT constrained: a shift can physically
+//                          be anywhere on the real line (mirrors
+//                          BucklingOptions.sigma).
+//   tol                 — eigensolver convergence tolerance. Default 1e-9
+//                          (added later) encoded as the decimal literal
+//                          `0.000000001` — Reify's number grammar has no
+//                          scientific notation (same convention as
+//                          solver_buckling.ri:60-64).
+//   max_iters           — upper bound on total solver iterations across
+//                          restarts. Default 200 (added later) per PRD §4.3
+//                          (NOT 1000 — modal converges faster than buckling).
+//                          Exists so a pathologically conditioned problem
+//                          fails loudly rather than running forever.
+//   reference_direction — unit excitation direction along which modal
+//                          participation mass is projected (PRD §4.3).
+//                          Encoded as `Vector3<Dimensionless>` — a unit
+//                          vector is genuinely dimensionless, so this is
+//                          mathematically accurate (unlike `Mode.shape`,
+//                          whose 1/√mass components are merely encoded as
+//                          Dimensionless pending an SI-root grammar
+//                          extension). `Vector3<Real>` is not valid .ri
+//                          syntax — the `Vector3<Q>` resolver requires `Q`
+//                          to be a dimension name. Required at construction
+//                          (no default — there is no canonical excitation
+//                          direction). The `reference_direction.norm() > 0`
+//                          invariant is NOT expressible in Reify's
+//                          `constraint` grammar (method-call on Vector3, not
+//                          a scalar predicate) and is deferred to the runtime
+//                          trampoline (future task ζ), mirroring
+//                          `BucklingOptions.mode` allowlist-deferral
+//                          (solver_buckling.ri:97-107). See plan
+//                          design-decision-4.
+//
+// Defaults (PRD §4.3) — literal-valued only, per plan design-decision-5:
+//   (a) `tol = 0.000000001` is the decimal spelling of 1e-9. Reify's
+//       number-literal grammar has no scientific notation, so the value is
+//       written out long-hand (same convention as solver_buckling.ri:60-64
+//       where `tol = 0.00000001` spells 1e-8). Strict-equality safe: the
+//       IEEE-754 round-to-nearest of this exact decimal literal is
+//       deterministic.
+//   (b) `boundary_conditions`, `damping`, `reference_direction` are LEFT
+//       DEFAULTLESS — they are required at construction. This matches the
+//       PRD §1 example usage, where every caller passes `boundary_conditions:`
+//       and `damping:` explicitly and supplies an excitation
+//       `reference_direction:` (there is no canonical default direction).
+//   (c) A trait-typed default `damping = NoDamping()` is intentionally
+//       DEFERRED to a follow-up: the trait-typed-default and Vector3-literal-
+//       default code-paths are not exercised by any existing stdlib
+//       structure_def, so adding them here would turn a 1-line .ri change
+//       into uncharted compiler territory (plan design-decision-5). Callers
+//       in PRD §1 already pass `damping:` explicitly, so there is no
+//       API-surface regression.
+//
+// NOTE: the three positivity constraints land in step-18 — declared
+// constraintless here so the step-17 RED test fails before that impl.
+//
+// PRD reference: docs/prds/v0_3/modal-analysis.md §4.3.
+structure def ModalOptions {
+    param n_modes : Int = 10
+    param boundary_conditions : List<Support>
+    param damping : DampingDescriptor
+    param sigma : Real = 0.0
+    param tol : Real = 0.000000001            // = 1e-9 (no scientific notation in Reify grammar)
+    param max_iters : Int = 200               // PRD §4.3 — NOT 1000 (modal converges faster than buckling)
+    param reference_direction : Vector3<Dimensionless>
+
+    // A non-positive `n_modes` requests zero eigenmodes — a degenerate solve.
+    // Declaring the lower bound at the structure-def level makes the contract
+    // explicit in production code rather than relying solely on test coverage
+    // (task-2544 convention, memory id 0773d3a8; mirrors
+    // `BucklingOptions.n_modes > 0`).
+    constraint n_modes > 0
+    // `tol` is the eigensolver convergence tolerance — must be strictly
+    // positive for the residual test to terminate. Zero or negative would
+    // silently exhaust `max_iters` on every solve. Mirrors
+    // `BucklingOptions.tol > 0`.
+    constraint tol > 0
+    // A non-positive `max_iters` would let the solver exit before doing any
+    // work — same degenerate failure mode as `BucklingOptions.max_iters <= 0`.
+    // Same task-2544 rationale as above.
+    constraint max_iters > 0
+    // NOTE — explicitly NOT constrained:
+    //   sigma               : Real                  — spectral-shift origin;
+    //                          any real is physically valid (negative shifts
+    //                          target the negative side of the spectrum).
+    //                          `sigma >= 0` would wrongly forbid that, so the
+    //                          contract stays open (mirrors
+    //                          BucklingOptions.sigma).
+    //   reference_direction : Vector3<Dimensionless> — the `norm() > 0`
+    //                          invariant is a method-call on Vector3, NOT a
+    //                          scalar predicate, so it is NOT expressible in
+    //                          Reify's `constraint` grammar. Deferred to the
+    //                          runtime trampoline (future task ζ) per plan
+    //                          design-decision-4, mirroring the
+    //                          `BucklingOptions.mode` allowlist-deferral
+    //                          precedent (solver_buckling.ri:97-107).
+    //   damping             : DampingDescriptor     — trait-typed; not
+    //                          scalar-predicable.
+    //   boundary_conditions : List<Support>         — collection of trait
+    //                          objects; not scalar-predicable.
+}
