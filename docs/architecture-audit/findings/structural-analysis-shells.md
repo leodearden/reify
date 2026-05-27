@@ -185,8 +185,8 @@
 
 - **State:** TODO
 - **Failure mode:** F6
-- **Evidence:** Task 3036 pending; expected file `examples/shells/thin_walled_bracket.ri` does not exist (no `examples/shells/` directory). Depends on M-018 (auto-classification routing), M-005 (correct shell accuracy — currently DRIFT), and M-021 (validation underpinning the accuracy claim — also affected by M-005). Also depends on `param thickness : Length = auto` (the auto-resolution backtracking PRD's surface), which is a cross-PRD breadcrumb — not chased here.
-- **Note:** The end-to-end demo's `minimize mass subject to max(stress.top.von_mises) < material.yield_stress` syntax depends on (a) GR-001 (`Steel_AISI_1045()` runtime structure ctor), (b) M-016 (`stress.top` field access on a runtime structure-instance), (c) M-005 underlying-element accuracy claim being credible, and (d) auto-resolution. Today none of (a)-(c) is wired.
+- **Evidence:** Task 3036 pending; expected file `examples/shells/thin_walled_bracket.ri` does not exist (no `examples/shells/` directory). Depends on M-018 (auto-classification routing), M-005 (correct shell accuracy — currently DRIFT), and M-021 (validation underpinning the accuracy claim — also affected by M-005).
+- **Note:** `param thickness : Length = auto` is grammar-supported at the param-default position via `auto_keyword` — this dependency is NOT a blocker. The end-to-end demo's `minimize mass subject to max(stress.top.von_mises) < material.yield_stress` syntax depends on (a) GR-001 (`Steel_AISI_1045()` runtime structure ctor), (b) M-016 (`stress.top` field access on a runtime structure-instance), (c) M-005 underlying-element accuracy claim being credible. Today none of (a)-(c) is wired. Broader `auto` binding-site coverage (beyond param-default) is being addressed by `docs/prds/auto-binding-site-positions.md` (α task 3802 landed; β–ε queued). *(2026-05-27 update)*
 
 ### M-024: `to_global(stress, frame)` stdlib helper (PRD §"Stress frame")
 
@@ -207,7 +207,7 @@
 ### M-026: `param thickness : Length = auto` for end-to-end example (T23)
 
 - **State:** Cross-PRD breadcrumb — not classified here
-- **Evidence:** PRD line 137 cites "param thickness : Length = auto" as the demo surface. Cross-PRD reference to auto-resolution-backtracking. Not chased.
+- **Evidence:** PRD line 137 cites `param thickness : Length = auto` as the demo surface. *(2026-05-27 update: the param-default `= auto` form is grammar-supported via `auto_keyword`; it is not a grammar fiction. The value-position auto coverage is owned by `docs/prds/auto-binding-site-positions.md`. The type-arg-position `auto:` gap — B1 chain — is owned by auto-resolution-backtracking. See breadcrumbs section for the ownership split.)*
 - **Note:** See breadcrumbs section.
 
 ## Cross-PRD breadcrumbs
@@ -217,7 +217,7 @@
 - **`compute-node-infrastructure.md`** — T18's "extraction cached as a ComputeNode keyed on geometry hash + extraction options" depends on the same `@optimized` → ComputeNode lowering for `fn` context that the FEA PRD's M-002 says is PARTIAL (field plumbing exists; `eval_user_function_call` ignores `optimized_target`).
 - **`multi-kernel.md` v0.2 PRD** — owns the OpenVDB FFI follow-up that M-025 depends on. Shells PRD's "Pre-conditions for activating" line 42 states this as a gate; reality is the gate is half-open.
 - **`persistent-naming-v2.md`** — M-020 (mid-surface naming) is structurally ready but folding into the OCCT-handle-keyed `TopologyAttributeTable` is deferred to T18. Note also that `Role::MidSurfaceEdge` and `FeatureId::derived_mid_surface` are present in `reify-types`, so the cross-PRD hook landed.
-- **`auto-resolution-backtracking.md`** — M-026 (`param thickness : Length = auto`) is owned there; not audited here.
+- **`auto-resolution-backtracking.md`** — owns the type-arg-position `auto:` gap (B1 chain); M-026's `param thickness : Length = auto` references the value-position form, which is grammar-supported and now owned by `docs/prds/auto-binding-site-positions.md`. *(2026-05-27 update: ownership split — value-position `= auto` → auto-binding-site-positions PRD; type-arg-position `auto:` → auto-resolution-backtracking.)*
 - **`fea-gui-rendering-shells.md`** — sibling PRD. PRD §85 defers GUI rendering of shell results (mid-surface display, top/mid/bottom stress toggle, shell-normal debug overlay) to that PRD; not in scope here.
 - **`mesh-morphing.md`** — PRD claims "mid-surface morphs alongside the original body geometry under parameter changes; warm-start preservation works the same way as for tet meshes." Today: no mid-surface morphing code path; depends on M-018 first.
 - **`a-posteriori-error-estimation.md`** — PRD claims "Z-Z indicator extends to shell elements with through-thickness sampling." Not verified here; cross-PRD.
