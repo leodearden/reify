@@ -50,7 +50,7 @@ pub mod morph_stage_b;
 pub mod multi_load_dispatch;
 pub mod persistent_cache;
 mod shell_extract_compute;
-pub use shell_extract_compute::register_shell_extract_compute_fns;
+pub use shell_extract_compute::{register_shell_extract_compute_fns, shell_extract_compute_fn};
 pub mod significance_filter;
 pub mod test_runner;
 pub mod tolerance_bucket;

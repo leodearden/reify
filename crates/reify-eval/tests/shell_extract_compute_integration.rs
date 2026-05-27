@@ -4,11 +4,16 @@
 //! See `docs/prds/v0_4/shell-extract-engine-bridge.md` §4–§8 and
 //! `docs/prds/v0_3/compute-node-contract.md` §4 for the full specification.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use reify_core::{DiagnosticCode, Severity};
-use reify_eval::register_shell_extract_compute_fns;
+use reify_eval::{
+    CancellationHandle, ComputeFn, ComputeOutcome, RealizationReadHandle,
+    register_shell_extract_compute_fns, shell_extract_compute_fn,
+};
 use reify_ir::{
-    InterpolationKind, PersistentMap, SampledField, SampledGridKind, StructureInstanceData,
-    StructureTypeId, Value,
+    InterpolationKind, OpaqueState, PersistentMap, SampledField, SampledGridKind,
+    StructureInstanceData, StructureTypeId, Value,
 };
 use reify_test_support::make_simple_engine;
 
@@ -203,5 +208,193 @@ fn shell_extract_invalid_threshold_returns_failed_with_e_shell_bad_threshold_cod
         msg.contains('0'),
         "expected diagnostic message to contain \"0\" (the bad threshold value); \
          got: {msg:?}"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Step-7 test (cache short-circuit / second-run cache state)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Number of times `counting_shell_extract_fn` was invoked.
+///
+/// **Single-test ownership invariant**: this static is touched exclusively by
+/// `counting_shell_extract_fn` (target `"test::shell-extract-counting"`), which
+/// in turn is registered only by
+/// `shell_extract_second_run_hits_in_memory_compute_node_cache`. Adding a second
+/// test in this binary that registers a trampoline calling
+/// `counting_shell_extract_fn` — directly or via `"test::shell-extract-counting"`
+/// — will silently corrupt the count. The test resets the static at entry as
+/// belt-and-suspenders against `cargo test` reusing a process across runs.
+static SHELL_INVOCATION_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Wrapper trampoline: increments `SHELL_INVOCATION_COUNT` then proxies to
+/// the production `shell_extract_compute_fn`.
+///
+/// Registered under target `"test::shell-extract-counting"` (not the
+/// production `"shell-extract::extract"`) to keep the test isolated.
+fn counting_shell_extract_fn(
+    value_inputs: &[Value],
+    realization_inputs: &[RealizationReadHandle],
+    options: &Value,
+    prior_warm_state: Option<&OpaqueState>,
+    cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    SHELL_INVOCATION_COUNT.fetch_add(1, Ordering::SeqCst);
+    shell_extract_compute_fn(
+        value_inputs,
+        realization_inputs,
+        options,
+        prior_warm_state,
+        cancellation,
+    )
+}
+
+/// Verify that `run_compute_dispatch` records the result in the cache correctly
+/// across two dispatches on the same inputs.
+///
+/// After the first dispatch:
+/// - The trampoline ran exactly once.
+/// - `engine.freshness(NodeId::Value(cell)) == Freshness::Final`.
+/// - The cache entry carries `Value::StructureInstance("ShellExtractionResult")`.
+/// - `result.content_hash()` is captured as `hash1`.
+///
+/// After the second dispatch (same inputs, VersionId(2)):
+/// - The trampoline ran a total of twice (`run_compute_dispatch` has no
+///   short-circuit at the helper level — that short-circuit lives in the
+///   eval loop at `engine_eval.rs:2169-2194`, tested by
+///   `compute_dispatch_registry.rs`).
+/// - `freshness` is still `Final`.
+/// - `result.content_hash() == hash1` — pinning that
+///   `shell_extraction_result_to_value` is **deterministic** for the same
+///   pipeline inputs.
+///
+/// RED in step-7 because `shell_extraction_result_to_value` currently projects
+/// the actual measured `solve_time_ms` into `Value::Int`, which can differ
+/// between the two runs and thus produces different content hashes. GREEN after
+/// step-8 ensures the projection is byte-stable across re-dispatches on the
+/// same inputs (solve_time_ms must not perturb the hash).
+///
+/// PRD §5 cache-key composition forward link:
+/// `docs/prds/v0_4/shell-extract-engine-bridge.md §5`.
+#[test]
+fn shell_extract_second_run_hits_in_memory_compute_node_cache() {
+    use reify_core::{ComputeNodeId, ValueCellId, VersionId};
+    use reify_eval::cache::NodeId;
+    use reify_ir::Freshness;
+
+    // Belt-and-suspenders: reset on entry in case cargo-test reuses a process.
+    SHELL_INVOCATION_COUNT.store(0, Ordering::SeqCst);
+
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn(
+        "test::shell-extract-counting",
+        counting_shell_extract_fn as ComputeFn,
+    );
+
+    let field = synthetic_slab_field();
+    let options = Value::Undef;
+    let sdf_value = Value::SampledField(field);
+    let value_inputs = vec![options, sdf_value];
+
+    let c_id = ComputeNodeId::new("ShellExtractFixture", 0);
+    let cell = ValueCellId::new("ShellExtractFixture", "result");
+    let node = NodeId::Value(cell.clone());
+
+    // ── First dispatch (VersionId 1) ─────────────────────────────────────────
+    let (result1, diags1) = engine
+        .run_compute_dispatch(
+            &c_id,
+            std::slice::from_ref(&cell),
+            "test::shell-extract-counting",
+            &value_inputs,
+            &[],
+            &Value::Undef,
+            &CancellationHandle::new(),
+            VersionId(1),
+        )
+        .expect("first run_compute_dispatch must return Ok on synthetic slab");
+
+    assert!(
+        diags1.is_empty(),
+        "first dispatch: unexpected diagnostics: {diags1:?}"
+    );
+    assert_eq!(
+        SHELL_INVOCATION_COUNT.load(Ordering::SeqCst),
+        1,
+        "trampoline must run exactly once after first dispatch"
+    );
+    assert_eq!(
+        engine.freshness(&node),
+        Freshness::Final,
+        "post-first-dispatch freshness must be Final"
+    );
+
+    let data1 = match &result1 {
+        Value::StructureInstance(d) => d,
+        other => {
+            panic!("expected Value::StructureInstance from first dispatch, got {other:?}")
+        }
+    };
+    assert_eq!(
+        data1.type_name, "ShellExtractionResult",
+        "first dispatch result must carry type_name == \"ShellExtractionResult\""
+    );
+
+    let hash1 = result1.content_hash();
+
+    // ── Second dispatch (VersionId 2) ─────────────────────────────────────────
+    let (result2, diags2) = engine
+        .run_compute_dispatch(
+            &c_id,
+            std::slice::from_ref(&cell),
+            "test::shell-extract-counting",
+            &value_inputs,
+            &[],
+            &Value::Undef,
+            &CancellationHandle::new(),
+            VersionId(2),
+        )
+        .expect("second run_compute_dispatch must return Ok on synthetic slab");
+
+    assert!(
+        diags2.is_empty(),
+        "second dispatch: unexpected diagnostics: {diags2:?}"
+    );
+    assert_eq!(
+        SHELL_INVOCATION_COUNT.load(Ordering::SeqCst),
+        2,
+        "trampoline must run exactly twice after second dispatch (no helper-level short-circuit)"
+    );
+    assert_eq!(
+        engine.freshness(&node),
+        Freshness::Final,
+        "post-second-dispatch freshness must still be Final"
+    );
+
+    // The two dispatches run on the same inputs — the projection must be
+    // deterministic so `hash(result2) == hash(result1)`.
+    //
+    // `shell_extraction_result_to_value` must NOT fold in timing-derived
+    // values (e.g. actual `solve_time_ms`) that differ between runs.
+    // Step-8 ensures the projected `solve_time_ms` field is always `Value::Int(0)`
+    // so the content hash is byte-stable across re-dispatches.
+    let hash2 = result2.content_hash();
+    assert_eq!(
+        hash2,
+        hash1,
+        "content hash must be identical across re-dispatches on the same inputs; \
+         `shell_extraction_result_to_value` must project a byte-stable Value \
+         (solve_time_ms must not perturb the content hash)"
+    );
+
+    // The cache entry after the second dispatch must carry the same hash.
+    let entry = engine
+        .cache_store()
+        .get(&node)
+        .expect("cache entry must exist after second dispatch");
+    assert_eq!(
+        entry.result_hash,
+        hash1,
+        "cache entry result_hash must match the deterministic content hash"
     );
 }
