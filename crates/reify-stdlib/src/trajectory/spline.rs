@@ -59,9 +59,20 @@ impl CubicSpline {
         if n < 2 || n != values.len() {
             return None;
         }
+        // Reject non-finite inputs early so NaN/Inf can never propagate into
+        // coefficients and produce nonsensical eval results downstream.
+        if !knots.iter().all(|k| k.is_finite()) || !values.iter().all(|v| v.is_finite()) {
+            return None;
+        }
         // Check strictly increasing
         for i in 0..n - 1 {
             if knots[i + 1] <= knots[i] {
+                return None;
+            }
+        }
+        // For Clamped BC, also reject non-finite velocity prescriptions.
+        if let BoundaryCondition::Clamped { start_vel, end_vel } = bc {
+            if !start_vel.is_finite() || !end_vel.is_finite() {
                 return None;
             }
         }
@@ -390,6 +401,12 @@ impl QuinticSpline {
         if n < 2 {
             return None;
         }
+        // Reject non-finite inputs early.
+        if knots.iter().any(|k| {
+            !k.t.is_finite() || !k.value.is_finite() || !k.vel.is_finite() || !k.accel.is_finite()
+        }) {
+            return None;
+        }
         for i in 0..n - 1 {
             if knots[i + 1].t <= knots[i].t {
                 return None;
@@ -554,6 +571,46 @@ pub(crate) enum MultiJointSpline {
 }
 
 impl MultiJointSpline {
+    /// Construct a multi-joint cubic spline, validating that all joints share
+    /// the same first and last knot time.
+    ///
+    /// Returns `None` if `joints` is empty or if any joint's knot range differs
+    /// from the first joint's.  Mismatched ranges cause `duration()` to return
+    /// only the first joint's span and per-joint eval to clamp independently —
+    /// silently masking the inconsistency — so we catch it here instead.
+    pub(crate) fn new_cubic(joints: Vec<CubicSpline>) -> Option<Self> {
+        if joints.is_empty() {
+            return None;
+        }
+        let t_start = joints[0].knots[0];
+        let t_end = *joints[0].knots.last().unwrap();
+        for j in &joints[1..] {
+            if j.knots[0] != t_start || *j.knots.last().unwrap() != t_end {
+                return None;
+            }
+        }
+        Some(MultiJointSpline::Cubic(joints))
+    }
+
+    /// Construct a multi-joint quintic spline, validating that all joints share
+    /// the same first and last knot time.
+    ///
+    /// Returns `None` if `joints` is empty or if any joint's knot range differs
+    /// from the first joint's.
+    pub(crate) fn new_quintic(joints: Vec<QuinticSpline>) -> Option<Self> {
+        if joints.is_empty() {
+            return None;
+        }
+        let t_start = joints[0].knots[0];
+        let t_end = *joints[0].knots.last().unwrap();
+        for j in &joints[1..] {
+            if j.knots[0] != t_start || *j.knots.last().unwrap() != t_end {
+                return None;
+            }
+        }
+        Some(MultiJointSpline::Quintic(joints))
+    }
+
     /// Evaluate position at t, returning one value per joint.
     pub(crate) fn eval(&self, t: f64) -> Vec<f64> {
         match self {
@@ -597,6 +654,18 @@ impl MultiJointSpline {
 
 // ── Linear algebra helpers ────────────────────────────────────────────────────
 
+/// Absolute singularity threshold for the Thomas algorithm pivot test.
+///
+/// Spline second-derivative systems are strictly diagonally dominant for any
+/// set of distinct knots (all diagonal entries ≥ 2·min(h) > 0; off-diagonal
+/// entries ≤ max(h)).  The pivot can only approach zero if knot spacing is
+/// sub-`f64::EPSILON` — i.e., if the caller violated the strict-monotonicity
+/// precondition that `CubicSpline::fit` already enforces.  An absolute
+/// threshold of `EPSILON * 1e6` (~2.2e-10) is therefore conservative for any
+/// physically meaningful knot spacing (sub-millisecond times would require
+/// h < 2.2e-10, which is below f64's representable spacing at t > 1 s).
+const SINGULAR_PIVOT: f64 = f64::EPSILON * 1_000_000.0;
+
 /// Solve a tridiagonal system Ax = rhs using the Thomas algorithm.
 ///
 /// - `lower`: sub-diagonal (length n-1), lower[i] is the coefficient in row i+1 col i
@@ -615,7 +684,7 @@ fn solve_tridiagonal(lower: &[f64], diag: &[f64], upper: &[f64], rhs: &[f64]) ->
 
     // Forward sweep
     let pivot = diag[0];
-    if pivot.abs() < f64::EPSILON * 1e6 {
+    if pivot.abs() < SINGULAR_PIVOT {
         return None;
     }
     c_prime[0] = upper[0] / pivot;
@@ -624,7 +693,7 @@ fn solve_tridiagonal(lower: &[f64], diag: &[f64], upper: &[f64], rhs: &[f64]) ->
     for i in 1..n {
         let m = lower[i - 1] * c_prime[i - 1];
         let denom = diag[i] - m;
-        if denom.abs() < f64::EPSILON * 1e6 {
+        if denom.abs() < SINGULAR_PIVOT {
             return None;
         }
         d_prime[i] = (rhs[i] - lower[i - 1] * d_prime[i - 1]) / denom;
@@ -997,6 +1066,122 @@ mod tests {
             (dot_end - dot_start).abs() < TOL_PERIODIC,
             "periodic C1 at seam: dot_end={dot_end}, dot_start={dot_start}, diff={}",
             (dot_end - dot_start).abs()
+        );
+    }
+
+    // ── Robustness: NaN/Inf rejection ────────────────────────────────────────
+
+    #[test]
+    fn cubic_fit_returns_none_for_nan_value() {
+        let ts = [0.0, 1.0, 2.0];
+        let vs = [1.0, f64::NAN, 3.0];
+        assert!(
+            CubicSpline::fit(&ts, &vs, &BoundaryCondition::Natural).is_none(),
+            "NaN in values should return None"
+        );
+    }
+
+    #[test]
+    fn cubic_fit_returns_none_for_inf_knot() {
+        let ts = [0.0, f64::INFINITY, 2.0];
+        let vs = [1.0, 2.0, 3.0];
+        assert!(
+            CubicSpline::fit(&ts, &vs, &BoundaryCondition::Natural).is_none(),
+            "Inf in knots should return None"
+        );
+    }
+
+    #[test]
+    fn cubic_clamped_fit_returns_none_for_nan_velocity() {
+        let ts = [0.0, 1.0, 2.0];
+        let vs: Vec<f64> = ts.iter().map(|&t| cubic_p(t)).collect();
+        assert!(
+            CubicSpline::fit(
+                &ts,
+                &vs,
+                &BoundaryCondition::Clamped { start_vel: f64::NAN, end_vel: 1.0 }
+            )
+            .is_none(),
+            "NaN start_vel should return None"
+        );
+    }
+
+    #[test]
+    fn quintic_fit_returns_none_for_nan_accel() {
+        let knots = vec![
+            KnotData { t: 0.0, value: 1.0, vel: 0.0, accel: f64::NAN },
+            KnotData { t: 1.0, value: 2.0, vel: 0.0, accel: 0.0 },
+        ];
+        assert!(
+            QuinticSpline::fit(&knots).is_none(),
+            "NaN accel should return None"
+        );
+    }
+
+    // ── Robustness: MultiJointSpline mismatched-knots rejection ──────────────
+
+    #[test]
+    fn multi_joint_new_cubic_rejects_mismatched_end_knot() {
+        let ts0 = [0.0, 1.0, 2.5, 4.0];
+        let vs0: Vec<f64> = ts0.iter().map(|&t| cubic_p(t)).collect();
+        let s0 = CubicSpline::fit(&ts0, &vs0, &BoundaryCondition::Natural).unwrap();
+
+        // Different end knot
+        let ts1 = [0.0, 1.0, 2.5, 5.0];
+        let vs1: Vec<f64> = ts1.iter().map(|&t| cubic_p(t)).collect();
+        let s1 = CubicSpline::fit(&ts1, &vs1, &BoundaryCondition::Natural).unwrap();
+
+        assert!(
+            MultiJointSpline::new_cubic(vec![s0, s1]).is_none(),
+            "mismatched end knots should return None"
+        );
+    }
+
+    #[test]
+    fn multi_joint_new_cubic_accepts_matching_knots() {
+        let ts = [0.0, 1.0, 2.5, 4.0];
+        let vs0: Vec<f64> = ts.iter().map(|&t| cubic_p(t)).collect();
+        let vs1: Vec<f64> = ts.iter().map(|&t| cubic_p(t) + 1.0).collect();
+        let s0 = CubicSpline::fit(&ts, &vs0, &BoundaryCondition::Natural).unwrap();
+        let s1 = CubicSpline::fit(&ts, &vs1, &BoundaryCondition::Natural).unwrap();
+        assert!(
+            MultiJointSpline::new_cubic(vec![s0, s1]).is_some(),
+            "matching knots should succeed"
+        );
+    }
+
+    #[test]
+    fn multi_joint_new_quintic_rejects_mismatched_end_knot() {
+        let ts0 = [0.0, 1.0, 2.5];
+        let knots0: Vec<KnotData> = ts0
+            .iter()
+            .map(|&t| KnotData { t, value: quintic_q(t), vel: quintic_dq(t), accel: quintic_ddq(t) })
+            .collect();
+        let s0 = QuinticSpline::fit(&knots0).unwrap();
+
+        // Different end knot
+        let ts1 = [0.0, 1.0, 3.0];
+        let knots1: Vec<KnotData> = ts1
+            .iter()
+            .map(|&t| KnotData { t, value: quintic_q(t), vel: quintic_dq(t), accel: quintic_ddq(t) })
+            .collect();
+        let s1 = QuinticSpline::fit(&knots1).unwrap();
+
+        assert!(
+            MultiJointSpline::new_quintic(vec![s0, s1]).is_none(),
+            "mismatched quintic end knots should return None"
+        );
+    }
+
+    #[test]
+    fn multi_joint_new_empty_returns_none() {
+        assert!(
+            MultiJointSpline::new_cubic(vec![]).is_none(),
+            "empty cubic joints should return None"
+        );
+        assert!(
+            MultiJointSpline::new_quintic(vec![]).is_none(),
+            "empty quintic joints should return None"
         );
     }
 
