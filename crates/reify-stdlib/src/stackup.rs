@@ -15,6 +15,7 @@ use crate::helpers::validate_dimensioned_scalar;
 pub(crate) fn eval_stackup(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {
         "contributor" => contributor(args),
+        "contributor_asym" => contributor_asym(args),
         _ => return None,
     })
 }
@@ -43,6 +44,28 @@ fn contributor(args: &[Value]) -> Value {
     let nominal = Value::Scalar { si_value: nominal_si, dimension: DimensionVector::LENGTH };
     let tol = Value::Scalar { si_value: tol_si, dimension: DimensionVector::LENGTH };
     make_contributor_map(nominal, tol.clone(), tol, sign, "Normal")
+}
+
+fn contributor_asym(args: &[Value]) -> Value {
+    if args.len() != 3 {
+        return Value::Undef;
+    }
+    let nominal_si = match validate_dimensioned_scalar(&args[0], DimensionVector::LENGTH) {
+        Some(v) => v,
+        None => return Value::Undef,
+    };
+    let plus_tol_si = match validate_dimensioned_scalar(&args[1], DimensionVector::LENGTH) {
+        Some(v) => v,
+        None => return Value::Undef,
+    };
+    let minus_tol_si = match validate_dimensioned_scalar(&args[2], DimensionVector::LENGTH) {
+        Some(v) => v,
+        None => return Value::Undef,
+    };
+    let nominal = Value::Scalar { si_value: nominal_si, dimension: DimensionVector::LENGTH };
+    let plus_tol = Value::Scalar { si_value: plus_tol_si, dimension: DimensionVector::LENGTH };
+    let minus_tol = Value::Scalar { si_value: minus_tol_si, dimension: DimensionVector::LENGTH };
+    make_contributor_map(nominal, plus_tol, minus_tol, 1, "Normal")
 }
 
 fn make_contributor_map(
