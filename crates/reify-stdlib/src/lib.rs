@@ -20,6 +20,7 @@ mod test_macros;
 mod test_fixtures;
 
 mod analysis;
+mod stackup;
 mod complex;
 mod fea;
 mod geometry;
