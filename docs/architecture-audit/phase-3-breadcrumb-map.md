@@ -179,7 +179,7 @@ Sorted alphabetically by source PRD. Each row is a directed edge; bidirectional 
 | structural-analysis-shells | compute-node-infrastructure | T18 extraction cached as ComputeNode keyed on geometry hash + extraction options; depends on @optimized→ComputeNode lowering for fn context that FEA M-002 says is PARTIAL | |
 | structural-analysis-shells | multi-kernel | Owns OpenVDB FFI follow-up M-025 depends on; PRD "Pre-conditions for activating" line 42 — gate is half-open | |
 | structural-analysis-shells | persistent-naming-v2 | M-020 mid-surface naming structurally ready but folding into OCCT-handle-keyed TopologyAttributeTable deferred to T18; Role::MidSurfaceEdge + FeatureId::derived_mid_surface present in reify-types | cross-PRD hook landed |
-| structural-analysis-shells | auto-resolution-backtracking | M-026 (`param thickness : Length = auto`) owned there | not audited here |
+| structural-analysis-shells | auto-resolution-backtracking | M-026 (`param thickness : Length = auto`) — type-arg-position `auto:` gap (B1 chain) owned there; value-position `= auto` at param-default is grammar-supported and now covered by `docs/prds/auto-binding-site-positions.md` | ownership split: value-position → auto-binding-site-positions; type-arg-position → auto-resolution-backtracking |
 | structural-analysis-shells | fea-gui-rendering-shells | Sibling PRD; PRD §85 defers GUI rendering to that PRD | |
 | structural-analysis-shells | mesh-morphing | PRD claims mid-surface morphs alongside body; today no mid-surface morphing code path; depends on M-018 first | |
 | structural-analysis-shells | a-posteriori-error-estimation | PRD claims Z-Z indicator extends to shell elements with through-thickness sampling | not verified |
