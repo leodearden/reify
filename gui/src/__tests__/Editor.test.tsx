@@ -1155,6 +1155,55 @@ describe('Editor theme integration', () => {
   });
 });
 
+describe('Editor view stays in sync with store content', () => {
+  it('updateFileContent for active file propagates to CodeMirror view', async () => {
+    const fileA: FileData = { path: '/a.ri', content: 'OLD' };
+    const store = setupStore([fileA]);
+
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Verify initial content is rendered correctly
+    expect(view.state.doc.toString()).toBe('OLD');
+    expect(container.querySelector('.cm-content')!.textContent).toContain('OLD');
+
+    // External store update — simulates auto-reload or handleReload writing to the store
+    store.updateFileContent('/a.ri', 'NEW');
+
+    // The content-sync createEffect should fire and dispatch the new content into the view
+    await vi.waitFor(() => {
+      expect(view.state.doc.toString()).toBe('NEW');
+    });
+
+    expect(container.querySelector('.cm-content')!.textContent).toContain('NEW');
+  });
+
+  it('user typing does NOT cause the sync effect to overwrite the typed content', () => {
+    const fileA: FileData = { path: '/a.ri', content: 'INITIAL' };
+    const store = setupStore([fileA]);
+    vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined as any);
+
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // User inserts 'X' at position 0 — changes the view but NOT the store's file.content
+    view.dispatch({ changes: { from: 0, insert: 'X' } });
+
+    // Advance past the debounce — triggers updateSource (backend), not store updateFileContent
+    vi.advanceTimersByTime(EDITOR_DEBOUNCE_MS);
+
+    // The view's typed edit must survive — sync effect must NOT have overwritten it
+    // (effect only re-runs when store's file.content changes, not when the view changes)
+    expect(view.state.doc.toString()).toBe('XINITIAL');
+
+    // Store content is unchanged — typing never calls updateFileContent
+    const openFile = store.state.openFiles.find((f) => f.path === '/a.ri');
+    expect(openFile!.content).toBe('INITIAL');
+  });
+});
+
 describe('Editor Mod-s exhaustiveness for SaveBlockedReason', () => {
   it('default arm logs to console.error (and does NOT fall through to saveFile) when canSave returns an unhandled reason', () => {
     const store = setupStore();
