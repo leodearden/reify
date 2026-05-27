@@ -1,7 +1,7 @@
 //! Integration tests for the multi-objective `ObjectiveSet` container (PRD §6.1).
 //!
 //! Step 1 (RED): asserts structural shape, defaults, and constructor behaviour.
-//! Steps 3/4 add the I2 round-trip test and wire `ResolutionProblem`.
+//! Step 3 (RED): I2 round-trip — `ResolutionProblem.objective: Option<ObjectiveSet>`.
 
 use reify_ir::{ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm};
 
@@ -171,4 +171,62 @@ fn objective_set_clone_produces_structurally_equal_set() {
     let d1 = format!("{:?}", set);
     let d2 = format!("{:?}", set2);
     assert_eq!(d1, d2, "Clone should produce a structurally equal ObjectiveSet");
+}
+
+// ── I2 round-trip: ResolutionProblem with Option<ObjectiveSet> ────────────────
+
+/// PRD §6.2 invariant I2: a 1-term WeightedSum with weight=1.0 is structurally
+/// equivalent (bit-identical solver input) to the old single Minimize/Maximize.
+///
+/// This test fails to compile until `ResolutionProblem.objective` is widened to
+/// `Option<ObjectiveSet>` in step 4 (currently `Option<OptimizationObjective>`).
+/// RED until then.
+#[test]
+fn single_term_objective_set_threads_through_resolution_problem_minimize() {
+    use reify_ir::{ResolutionProblem, value::ValueMap};
+    let expr = make_literal_expr();
+    let saved_hash = expr.content_hash.clone();
+    let set = ObjectiveSet::single(ObjectiveSense::Minimize, expr);
+
+    let problem = ResolutionProblem {
+        auto_params: vec![],
+        constraints: vec![],
+        current_values: ValueMap::new(),
+        objective: Some(set),
+        functions: vec![].into(),
+    };
+
+    assert!(problem.objective.is_some());
+    let obj = problem.objective.as_ref().unwrap();
+    assert_eq!(obj.terms.len(), 1, "I1: must be non-empty");
+    assert_eq!(obj.terms[0].sense, ObjectiveSense::Minimize);
+    assert_eq!(obj.terms[0].weight, 1.0, "I2: default weight must be 1.0");
+    assert_eq!(obj.terms[0].priority, 0, "I2: default priority must be 0");
+    assert_eq!(obj.terms[0].expr.content_hash, saved_hash);
+    assert_eq!(obj.combination, ObjectiveCombination::WeightedSum, "I2: single-term must be WeightedSum");
+}
+
+#[test]
+fn single_term_objective_set_threads_through_resolution_problem_maximize() {
+    use reify_ir::{ResolutionProblem, value::ValueMap};
+    let expr = make_literal_expr();
+    let saved_hash = expr.content_hash.clone();
+    let set = ObjectiveSet::single(ObjectiveSense::Maximize, expr);
+
+    let problem = ResolutionProblem {
+        auto_params: vec![],
+        constraints: vec![],
+        current_values: ValueMap::new(),
+        objective: Some(set),
+        functions: vec![].into(),
+    };
+
+    assert!(problem.objective.is_some());
+    let obj = problem.objective.as_ref().unwrap();
+    assert_eq!(obj.terms.len(), 1, "I1: must be non-empty");
+    assert_eq!(obj.terms[0].sense, ObjectiveSense::Maximize);
+    assert_eq!(obj.terms[0].weight, 1.0, "I2: default weight must be 1.0");
+    assert_eq!(obj.terms[0].priority, 0, "I2: default priority must be 0");
+    assert_eq!(obj.terms[0].expr.content_hash, saved_hash);
+    assert_eq!(obj.combination, ObjectiveCombination::WeightedSum, "I2: single-term must be WeightedSum");
 }
