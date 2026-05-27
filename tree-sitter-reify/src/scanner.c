@@ -29,7 +29,18 @@ enum TokenType {
   UNIT_MUL_OP,                /* index 1 — '*' inside unit_expr                */
   UNIT_DIV_OP,                /* index 2 — '/' inside unit_expr                */
   AUTO_TOKEN,                 /* index 3 — the bare 'auto' keyword token        */
-  AUTO_RESERVATION_SENTINEL,  /* index 4 — never emitted; keeps scanner active */
+  AUTO_RESERVATION_SENTINEL,  /* index 4 — NEVER emitted; keeps scanner active.
+                               *
+                               * TRIPWIRE: if you remove AUTO_RESERVATION_SENTINEL
+                               * from grammar.js `extras`, the external scanner will
+                               * no longer be invoked at operand positions.  `auto`
+                               * will silently lex as `identifier` there, and the
+                               * operand-rejection tests will pass for the WRONG
+                               * reason (no ERROR at all, not a parse failure).
+                               * Removal is caught by:
+                               *   - auto_operand_rejection.txt (:error fixtures)
+                               *   - section C of auto_binding_sites_grammar_tests.rs
+                               */
 };
 
 void *tree_sitter_reify_external_scanner_create(void) {
@@ -224,6 +235,9 @@ bool tree_sitter_reify_external_scanner_scan(void *payload, TSLexer *lexer,
       ch = lexer->lookahead;
     }
 
+    /* Early exit: the vast majority of tokens start with something other than
+     * 'a', so this is the hot path.  The per-position scanner overhead is
+     * minimal — one whitespace-skip loop + one character comparison. */
     if (ch != 'a') return false;
     lexer->advance(lexer, false); /* consume 'a' */
     if (lexer->lookahead != 'u') return false;
