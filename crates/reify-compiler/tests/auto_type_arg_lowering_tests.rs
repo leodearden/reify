@@ -84,3 +84,83 @@ fn auto_type_arg_no_candidate_emits_diagnostic() {
         compiled.auto_type_substitution.as_slice()
     );
 }
+
+/// Two Seal-conformant candidates under STRICT `auto:` → ambiguous. The
+/// resolver emits a single `AutoTypeParamAmbiguous` error and leaves the
+/// substitution empty (strict mode never auto-picks among ≥2 feasible).
+#[test]
+fn strict_auto_type_arg_ambiguous_emits_error_diagnostic() {
+    let source = r#"
+        trait Seal {}
+        structure def ORingSeal : Seal { param d : Real = 10.0 }
+        structure def GasketSeal : Seal { param w : Real = 2.0 }
+        structure def Bearing<T: Seal> { param bore : Real = 25.0 }
+        structure def Assembly { sub b = Bearing<auto: Seal>() }
+    "#;
+
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<&Diagnostic> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one error diagnostic, got: {:?}",
+        compiled.diagnostics
+    );
+    assert_eq!(
+        errors[0].code,
+        Some(DiagnosticCode::AutoTypeParamAmbiguous),
+        "the lone error must be the ambiguous diagnostic"
+    );
+
+    assert!(
+        compiled.auto_type_substitution.as_slice().is_empty(),
+        "strict ambiguous resolution must leave the substitution empty, got: {:?}",
+        compiled.auto_type_substitution.as_slice()
+    );
+}
+
+/// Two Seal-conformant candidates under FREE `auto(free):` → the resolver picks
+/// the lexicographically-first feasible candidate (`GasketSeal` < `ORingSeal`)
+/// and emits a single `AutoTypeParamNonUnique` *warning* (not an error), so the
+/// substitution is populated with the lex-first pick.
+#[test]
+fn free_auto_type_arg_ambiguous_selects_lex_first_with_warning() {
+    let source = r#"
+        trait Seal {}
+        structure def ORingSeal : Seal { param d : Real = 10.0 }
+        structure def GasketSeal : Seal { param w : Real = 2.0 }
+        structure def Bearing<T: Seal> { param bore : Real = 25.0 }
+        structure def Assembly { sub b = Bearing<auto(free): Seal>() }
+    "#;
+
+    // No Error-severity diagnostics expected (free mode warns, never errors).
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let nonunique: Vec<&Diagnostic> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::AutoTypeParamNonUnique))
+        .collect();
+    assert_eq!(
+        nonunique.len(),
+        1,
+        "expected exactly one non-unique warning, got: {:?}",
+        compiled.diagnostics
+    );
+    assert_eq!(
+        nonunique[0].severity,
+        Severity::Warning,
+        "auto(free) non-unique resolution must warn, not error"
+    );
+
+    assert_eq!(
+        compiled.auto_type_substitution.as_slice(),
+        &[("T".to_string(), "GasketSeal".to_string())],
+        "free mode must pick the lexicographically-first feasible candidate"
+    );
+}
