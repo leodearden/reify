@@ -258,16 +258,21 @@ impl crate::Engine {
         // where engine_edit step (9) parks the prior state in the pool
         // between source edits and run_compute_dispatch (called from
         // engine_eval's @optimized lowering site) is the natural reinsert
-        // seeding point. The captured `_prior_cost` is retained so the
-        // Cancelled / Failed arms (step-10) can restore it alongside the
-        // warm state (underscore-prefixed until step-10 consumes it).
+        // seeding point.
+        //
+        // ζ step-10: `prior_cost` and `prior_warm_state` are consumed by
+        // the non-Completed arms below (Cancelled / Failed / unregistered)
+        // to restore the prior to the cache via
+        // `donate_warm_state_with_cost`. PRD §5 "Idempotent under any
+        // number of cancel-and-redispatch cycles" requires this: the prior
+        // must survive any non-completing dispatch attempt.
         let compute_node = NodeId::Compute(c_id.clone());
-        let _prior_cost = self
+        let prior_cost = self
             .cache
             .cost_per_byte_of(&compute_node)
             .or_else(|| self.warm_pool.cost_per_byte_of(&compute_node))
             .unwrap_or(0.0);
-        let prior_warm_state: Option<OpaqueState> = self
+        let mut prior_warm_state: Option<OpaqueState> = self
             .cache
             .get_warm_state(&compute_node)
             .or_else(|| {
@@ -323,12 +328,28 @@ impl crate::Engine {
                 Ok((result, diagnostics))
             }
             // Step 3b: Cancelled — leave VCs in the already-correct Pending
-            // state from begin. No warm-state donation, no mark_failed.
+            // state from begin. No mark_failed, no new warm-state donation.
             // PRD §2 / §7.1: "cancelled dispatch leaves prior best on display,
-            // prior cache untouched, Pending until next dispatch completes."
-            Some(ComputeOutcome::Cancelled) => Err(DispatchError::Cancelled),
+            // Pending until next dispatch completes." ζ / step-10: restore
+            // the prior warm state + cost back to the cache so the next
+            // dispatch observes the same prior this one would have (PRD §5
+            // "Idempotent under any number of cancel-and-redispatch cycles").
+            // The donation creates only a Compute-node entry, not a VC entry,
+            // so there is no interference with the begin-set Pending state.
+            Some(ComputeOutcome::Cancelled) => {
+                if let Some(prior) = prior_warm_state.take() {
+                    self.cache
+                        .donate_warm_state_with_cost(&compute_node, prior, prior_cost);
+                }
+                Err(DispatchError::Cancelled)
+            }
             // Step 3c: Failed — also leave VCs Pending; caller owns mark_failed.
+            // ζ / step-10: same restore-prior arm as Cancelled.
             Some(ComputeOutcome::Failed { diagnostics }) => {
+                if let Some(prior) = prior_warm_state.take() {
+                    self.cache
+                        .donate_warm_state_with_cost(&compute_node, prior, prior_cost);
+                }
                 Err(DispatchError::Failed(diagnostics))
             }
             // Step 3d: Unregistered target — synthesise a Failed diagnostic.
@@ -341,10 +362,20 @@ impl crate::Engine {
             // future caller that does not pre-gate.  The synthesised diagnostic
             // text intentionally matches the `dispatch_compute_node` wording so
             // the two helper surfaces stay consistent.
-            None => Err(DispatchError::Failed(vec![Diagnostic::error(format!(
-                "@optimized target {:?}: no registered compute trampoline",
-                target
-            ))])),
+            //
+            // ζ / step-10: restore the prior just like Cancelled / Failed —
+            // an unregistered target is morally equivalent to a Failed
+            // dispatch from the caller's perspective.
+            None => {
+                if let Some(prior) = prior_warm_state.take() {
+                    self.cache
+                        .donate_warm_state_with_cost(&compute_node, prior, prior_cost);
+                }
+                Err(DispatchError::Failed(vec![Diagnostic::error(format!(
+                    "@optimized target {:?}: no registered compute trampoline",
+                    target
+                ))]))
+            }
         }
     }
 }

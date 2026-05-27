@@ -419,8 +419,10 @@ fn prior_cache_intact_after_cancelled_dispatch() {
         other => panic!("expected CachedResult::Value, got {other:?}"),
     }
 
-    // (D4) No warm-state was donated (warm-state lifecycle is deferred to ζ/3425;
-    // the cancel path must not accidentally create one).
+    // (D4) No warm-state on the OUTPUT VC's entry (no prior warm state was
+    // seeded for this dispatch — restore-prior is a no-op). ζ / step-10's
+    // restore-prior arm only touches the Compute(c_id) entry, never the
+    // output VC's entry.
     assert!(
         entry.warm_state.is_none(),
         "warm_state must be None after cancelled dispatch (no donation on cancel path)",
