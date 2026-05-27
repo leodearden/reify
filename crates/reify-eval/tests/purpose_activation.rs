@@ -877,7 +877,7 @@ purpose weight_target(subject : Structure) {
     let purpose = &compiled.compiled_purposes[0];
     assert_eq!(purpose.name, "weight_target");
 
-    // Pre-activation: ValueRef entity must equal the purpose name (pre-remap stamp).
+    // Pre-activation: ValueRef entity must equal "weight_target::subject" (post-β stamp).
     let constraint = &purpose.constraints[0];
     let pre_entity = match &constraint.expr.kind {
         CompiledExprKind::BinOp { left, .. } => match &left.kind {
@@ -893,8 +893,8 @@ purpose weight_target(subject : Structure) {
         ),
     };
     assert_eq!(
-        pre_entity, "weight_target",
-        "pre-activation: ValueRef entity must equal the purpose name"
+        pre_entity, "weight_target::subject",
+        "pre-activation: ValueRef entity must equal 'purpose::param' (post-β stamp)"
     );
 
     // Activate against Bracket — remap_entity fires inside activate_purpose.

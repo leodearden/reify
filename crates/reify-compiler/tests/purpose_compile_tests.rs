@@ -612,12 +612,12 @@ purpose lightweight(subject : Structure) {
                 "expected BinOp::Gt for 'subject.mass > 0', got {:?}",
                 op
             );
-            // left must be ValueRef with entity == purpose name and member == "mass"
+            // left must be ValueRef with entity == "lightweight::subject" and member == "mass"
             match &left.kind {
                 CompiledExprKind::ValueRef(id) => {
                     assert_eq!(
-                        id.entity, "lightweight",
-                        "ValueRef entity must equal purpose name (pre-remap), got {:?}",
+                        id.entity, "lightweight::subject",
+                        "ValueRef entity must equal `purpose::param` per task-2181 β stamp scheme, got {:?}",
                         id.entity
                     );
                     assert_eq!(
@@ -641,13 +641,13 @@ purpose lightweight(subject : Structure) {
         other => panic!("expected BinOp constraint expression, got {:?}", other),
     }
 
-    // (c) objective is Some(Minimize(ValueRef(lightweight.mass)))
+    // (c) objective is Some(Minimize(ValueRef(lightweight::subject.mass)))
     match &purpose.objective {
         Some(OptimizationObjective::Minimize(expr)) => match &expr.kind {
             CompiledExprKind::ValueRef(id) => {
                 assert_eq!(
-                    id.entity, "lightweight",
-                    "objective ValueRef entity must equal purpose name (pre-remap), got {:?}",
+                    id.entity, "lightweight::subject",
+                    "objective ValueRef entity must equal `purpose::param` per task-2181 β stamp scheme, got {:?}",
                     id.entity
                 );
                 assert_eq!(
@@ -830,7 +830,7 @@ purpose check(subject : Widget) {
     assert_eq!(purpose.name, "check");
     assert_eq!(purpose.constraints.len(), 1, "expected 1 constraint");
 
-    // Constraint must be BinOp(Gt, ValueRef(check.mass : Real), _).
+    // Constraint must be BinOp(Gt, ValueRef(check::subject.mass : Real), _).
     let constraint = &purpose.constraints[0];
     match &constraint.expr.kind {
         CompiledExprKind::BinOp { op, left, .. } => {
@@ -838,8 +838,8 @@ purpose check(subject : Widget) {
             match &left.kind {
                 CompiledExprKind::ValueRef(id) => {
                     assert_eq!(
-                        id.entity, "check",
-                        "ValueRef entity must equal purpose name (pre-remap), got {:?}",
+                        id.entity, "check::subject",
+                        "ValueRef entity must equal `purpose::param` per task-2181 β stamp scheme, got {:?}",
                         id.entity
                     );
                     assert_eq!(
@@ -1149,21 +1149,20 @@ purpose check(a : Structure, b : Structure) {
     );
 }
 
-/// GREEN regression guard (task-2201): a single-StructureRef-param purpose must
-/// NOT trigger the multi-param rejection, and must still compile its body with
-/// the purpose-name entity stamp on member refs (the invariant the rejection
-/// protects).
+/// Contract C6 regression lock (task-2181 β): a single-StructureRef-param purpose
+/// must NOT trigger the multi-param rejection, and must compile its body with the
+/// per-param `{purpose}::{param}` entity stamp on member refs.
 ///
 /// Pins: `subject.mass` in a single-param purpose compiles to
-/// `ValueRef { entity: "lightweight", member: "mass", result_type: Type::Real }`.
-/// This is the pre-remap form; activate_purpose rewrites the entity stamp to the
-/// actual entity_ref at eval time via `expr.remap_entity(purpose_name, entity_ref)`.
+/// `ValueRef { entity: "lightweight::subject", member: "mass", result_type: Type::Real }`.
+/// This is the pre-remap form; `activate_purpose` rewrites the entity stamp to the
+/// actual entity_ref at eval time via `expr.remap_entity("lightweight::subject", entity_ref)`.
 ///
-/// If a future Approach-2 refactor changes the entity stamp to
-/// `format!("{}::{}", purpose_name, param_name)` without updating
-/// `activate_purpose`, this assertion will fail immediately.
+/// Single-param purposes are behavior-identical before and after β for the
+/// activation remap (one stamp → one remap target), so all existing activation
+/// tests continue to pass after this change.
 #[test]
-fn compile_purpose_single_param_still_emits_purpose_name_stamped_valueref() {
+fn compile_purpose_single_param_emits_purpose_param_stamped_valueref() {
     // No structure template needed: subject : Structure is the wildcard kind and
     // member resolution falls through without consulting any template.  Including a
     // Bracket structure would be dead context that misleads the reader into thinking
@@ -1199,7 +1198,7 @@ purpose lightweight(subject : Structure) {
     assert_eq!(purpose.name, "lightweight");
     assert_eq!(purpose.constraints.len(), 1, "expected 1 constraint");
 
-    // (c) Constraint left side is ValueRef with entity == purpose name (pre-remap).
+    // (c) Constraint left side is ValueRef with entity == "lightweight::subject" (β stamp).
     let constraint = &purpose.constraints[0];
     match &constraint.expr.kind {
         CompiledExprKind::BinOp { op, left, .. } => {
@@ -1212,8 +1211,8 @@ purpose lightweight(subject : Structure) {
             match &left.kind {
                 CompiledExprKind::ValueRef(id) => {
                     assert_eq!(
-                        id.entity, "lightweight",
-                        "ValueRef entity must equal purpose name (pre-remap stamp), got {:?}",
+                        id.entity, "lightweight::subject",
+                        "ValueRef entity must equal `purpose::param` per task-2181 β stamp scheme, got {:?}",
                         id.entity
                     );
                     assert_eq!(
