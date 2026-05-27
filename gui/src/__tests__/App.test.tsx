@@ -951,9 +951,12 @@ describe('App changedFiles multi-file tracking (R-1)', () => {
   it('two different file changes show both in reload prompt', async () => {
     render(() => <App />);
     await waitFor(() => expect(fileChangedCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
 
     // Simulate two different files changing
+    capturedEditorStore.markDirty('/project/bracket.ri');
     fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
+    capturedEditorStore.markDirty('/project/gear.ri');
     fileChangedCallback!({ path: '/project/gear.ri', content: '' });
 
     await waitFor(() => {
@@ -964,7 +967,9 @@ describe('App changedFiles multi-file tracking (R-1)', () => {
   it('same file changed twice results in only one entry', async () => {
     render(() => <App />);
     await waitFor(() => expect(fileChangedCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
 
+    capturedEditorStore.markDirty('/project/bracket.ri');
     fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
     fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
 
@@ -980,11 +985,17 @@ describe('App changedFiles multi-file tracking (R-1)', () => {
   it('handleReload reloads all files in the changed set', async () => {
     render(() => <App />);
     await waitFor(() => expect(fileChangedCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
 
+    capturedEditorStore.markDirty('/project/bracket.ri');
     fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
+    capturedEditorStore.markDirty('/project/gear.ri');
     fileChangedCallback!({ path: '/project/gear.ri', content: '' });
 
     await waitFor(() => expect(screen.getByText(/2 files changed/)).toBeTruthy());
+
+    capturedEditorStore.markClean('/project/bracket.ri');
+    capturedEditorStore.markClean('/project/gear.ri');
 
     // Click Reload
     fireEvent.click(screen.getByText('Reload'));
@@ -998,8 +1009,11 @@ describe('App changedFiles multi-file tracking (R-1)', () => {
   it('handleDismissReload clears all changed files', async () => {
     render(() => <App />);
     await waitFor(() => expect(fileChangedCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
 
+    capturedEditorStore.markDirty('/project/bracket.ri');
     fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
+    capturedEditorStore.markDirty('/project/gear.ri');
     fileChangedCallback!({ path: '/project/gear.ri', content: '' });
 
     await waitFor(() => expect(screen.getByText(/2 files changed/)).toBeTruthy());
@@ -1044,9 +1058,13 @@ describe('App dirty-file check before reload (R-4)', () => {
   it('when no dirty files overlap, handleReload proceeds immediately', async () => {
     render(() => <App />);
     await waitFor(() => expect(fileChangedCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
 
+    capturedEditorStore.markDirty('/project/bracket.ri');
     fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
     await waitFor(() => expect(screen.getByTestId('reload-prompt')).toBeTruthy());
+
+    capturedEditorStore.markClean('/project/bracket.ri');
 
     // No dirty files — Reload should proceed immediately
     fireEvent.click(screen.getByText('Reload'));
@@ -1088,6 +1106,7 @@ describe('App dirty-file check before reload (R-4)', () => {
     capturedEditorStore.markDirty('/project/bracket.ri');
 
     fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
+    capturedEditorStore.markDirty('/project/gear.ri');
     fileChangedCallback!({ path: '/project/gear.ri', content: '' });
     await waitFor(() => expect(screen.getByText(/2 files changed/)).toBeTruthy());
 
@@ -1166,10 +1185,16 @@ describe('App handleReload partial failure', () => {
     await withSuppressedRejectionsAndErrorSpy(async () => {
       render(() => <App />);
       await waitFor(() => expect(fileChangedCallback).toBeDefined());
+      await waitFor(() => expect(capturedEditorStore).toBeTruthy());
 
+      capturedEditorStore.markDirty('/project/bracket.ri');
       fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
+      capturedEditorStore.markDirty('/project/gear.ri');
       fileChangedCallback!({ path: '/project/gear.ri', content: '' });
       await waitFor(() => expect(screen.getByText(/2 files changed/)).toBeTruthy());
+
+      capturedEditorStore.markClean('/project/bracket.ri');
+      capturedEditorStore.markClean('/project/gear.ri');
 
       fireEvent.click(screen.getByText('Reload'));
 
@@ -1199,6 +1224,7 @@ describe('App handleReload partial failure', () => {
       // Mark gear.ri as dirty so we enter confirmReload flow
       capturedEditorStore.markDirty('/project/gear.ri');
 
+      capturedEditorStore.markDirty('/project/bracket.ri');
       fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
       fileChangedCallback!({ path: '/project/gear.ri', content: '' });
       await waitFor(() => expect(screen.getByText(/2 files changed/)).toBeTruthy());
@@ -1232,10 +1258,16 @@ describe('App handleReload partial failure', () => {
     await withSuppressedRejectionsAndErrorSpy(async () => {
       render(() => <App />);
       await waitFor(() => expect(fileChangedCallback).toBeDefined());
+      await waitFor(() => expect(capturedEditorStore).toBeTruthy());
 
+      capturedEditorStore.markDirty('/project/bracket.ri');
       fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
+      capturedEditorStore.markDirty('/project/gear.ri');
       fileChangedCallback!({ path: '/project/gear.ri', content: '' });
       await waitFor(() => expect(screen.getByText(/2 files changed/)).toBeTruthy());
+
+      capturedEditorStore.markClean('/project/bracket.ri');
+      capturedEditorStore.markClean('/project/gear.ri');
 
       fireEvent.click(screen.getByText('Reload'));
 
@@ -1256,10 +1288,16 @@ describe('App handleReload partial failure', () => {
 
     render(() => <App />);
     await waitFor(() => expect(fileChangedCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
 
+    capturedEditorStore.markDirty('/project/bracket.ri');
     fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
+    capturedEditorStore.markDirty('/project/gear.ri');
     fileChangedCallback!({ path: '/project/gear.ri', content: '' });
     await waitFor(() => expect(screen.getByText(/2 files changed/)).toBeTruthy());
+
+    capturedEditorStore.markClean('/project/bracket.ri');
+    capturedEditorStore.markClean('/project/gear.ri');
 
     fireEvent.click(screen.getByText('Reload'));
 
@@ -1276,10 +1314,16 @@ describe('App handleReload partial failure', () => {
     await withSuppressedRejectionsAndErrorSpy(async () => {
       render(() => <App />);
       await waitFor(() => expect(fileChangedCallback).toBeDefined());
+      await waitFor(() => expect(capturedEditorStore).toBeTruthy());
 
+      capturedEditorStore.markDirty('/project/bracket.ri');
       fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
+      capturedEditorStore.markDirty('/project/gear.ri');
       fileChangedCallback!({ path: '/project/gear.ri', content: '' });
       await waitFor(() => expect(screen.getByText(/2 files changed/)).toBeTruthy());
+
+      capturedEditorStore.markClean('/project/bracket.ri');
+      capturedEditorStore.markClean('/project/gear.ri');
 
       fireEvent.click(screen.getByText('Reload'));
 
@@ -1334,11 +1378,17 @@ describe('App handleReload race condition', () => {
 
     render(() => <App />);
     await waitFor(() => expect(fileChangedCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
 
     // Two files change
+    capturedEditorStore.markDirty('/project/bracket.ri');
     fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
+    capturedEditorStore.markDirty('/project/gear.ri');
     fileChangedCallback!({ path: '/project/gear.ri', content: '' });
     await waitFor(() => expect(screen.getByText(/2 files changed/)).toBeTruthy());
+
+    capturedEditorStore.markClean('/project/bracket.ri');
+    capturedEditorStore.markClean('/project/gear.ri');
 
     // Click Reload — starts in-flight reload for bracket.ri and gear.ri
     fireEvent.click(screen.getByText('Reload'));
@@ -1349,6 +1399,7 @@ describe('App handleReload race condition', () => {
     });
 
     // DURING the in-flight reload, a new file-change event arrives for housing.ri
+    capturedEditorStore.markDirty('/project/housing.ri');
     fileChangedCallback!({ path: '/project/housing.ri', content: '' });
 
     // Now resolve both promises (both succeed)
@@ -1377,11 +1428,17 @@ describe('App handleReload race condition', () => {
     await withSuppressedRejectionsAndErrorSpy(async () => {
       render(() => <App />);
       await waitFor(() => expect(fileChangedCallback).toBeDefined());
+      await waitFor(() => expect(capturedEditorStore).toBeTruthy());
 
       // Two files change
+      capturedEditorStore.markDirty('/project/bracket.ri');
       fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
+      capturedEditorStore.markDirty('/project/gear.ri');
       fileChangedCallback!({ path: '/project/gear.ri', content: '' });
       await waitFor(() => expect(screen.getByText(/2 files changed/)).toBeTruthy());
+
+      capturedEditorStore.markClean('/project/bracket.ri');
+      capturedEditorStore.markClean('/project/gear.ri');
 
       // Click Reload
       fireEvent.click(screen.getByText('Reload'));
@@ -1391,6 +1448,7 @@ describe('App handleReload race condition', () => {
       });
 
       // Concurrent file-change event during in-flight reload
+      capturedEditorStore.markDirty('/project/housing.ri');
       fileChangedCallback!({ path: '/project/housing.ri', content: '' });
 
       // Resolve bracket (success), reject gear (failure)
@@ -1651,13 +1709,17 @@ describe('App reload error toast', () => {
         expect(screen.getByTestId('app-layout')).toBeTruthy();
         expect(fileChangedCb).toBeDefined();
       });
+      await waitFor(() => expect(capturedEditorStore).toBeTruthy());
 
       // Trigger file changed event to show the reload prompt
+      capturedEditorStore.markDirty('/project/bracket.ri');
       fileChangedCb({ path: '/project/bracket.ri', content: 'updated' });
 
       await waitFor(() => {
         expect(screen.getByTestId('reload-prompt')).toBeTruthy();
       });
+
+      capturedEditorStore.markClean('/project/bracket.ri');
 
       // Click the Reload button
       fireEvent.click(screen.getByText('Reload'));

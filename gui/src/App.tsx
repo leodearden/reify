@@ -753,11 +753,20 @@ const App: Component = () => {
     // Subscribe to file-changed events
     try {
       const unlistenFileChanged = await onFileChanged((data: FileData) => {
-        // Only show reload prompt if the file is currently open
-        const isOpen = editorStore.state.openFiles.some((f) => f.path === data.path);
-        if (isOpen) {
-          setChangedFiles((prev) => new Set([...prev, data.path]));
-          editorStore.markExternallyChanged(data.path);
+        // Only act when the file is currently open
+        const match = editorStore.state.openFiles.find((f) => f.path === data.path);
+        if (!match) return;
+
+        if (editorStore.state.dirtyFiles.includes(match.path)) {
+          // Dirty path: user has unsaved edits — surface the conflict so they
+          // can choose between Reload or Overwrite.
+          setChangedFiles((prev) => new Set([...prev, match.path]));
+          editorStore.markExternallyChanged(match.path);
+        } else {
+          // Non-dirty path: no local edits to protect — silently update the
+          // buffer so the view stays in sync with disk without any prompt.
+          editorStore.updateFileContent(match.path, data.content);
+          editorStore.markClean(match.path);
         }
       });
       if (!alive) {
