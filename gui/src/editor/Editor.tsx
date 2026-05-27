@@ -375,13 +375,17 @@ export function Editor(props: EditorProps) {
     // The dispatch is doubly-protected:
     // 1. Transaction.userEvent.of('sync.external') — the updateListener checks this
     //    annotation and bails before calling markDirty + updateSource (anti-loop).
-    //    Step-22 adds the second protection:
+    //    User typing produces normal user-event transactions; the bail does NOT fire
+    //    during typing, preserving the dirty-tracking pipeline for real edits.
     // 2. Transaction.addToHistory.of(false) — excludes the transaction from
     //    CodeMirror's undo stack so Ctrl+Z cannot revive the pre-reload stale buffer.
     if (view.state.doc.toString() !== storeContent) {
       view.dispatch({
         changes: { from: 0, to: view.state.doc.length, insert: storeContent },
-        annotations: [Transaction.userEvent.of('sync.external')],
+        annotations: [
+          Transaction.userEvent.of('sync.external'),
+          Transaction.addToHistory.of(false),
+        ],
       });
     }
   });
