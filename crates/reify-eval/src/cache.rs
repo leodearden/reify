@@ -822,8 +822,12 @@ impl CacheStore {
                 // happen to take the changed-path (correct by accident) and a
                 // trampoline that legitimately returned a value hashing to 0
                 // would mis-route through the early-cutoff branch.
-                let result =
-                    CachedResult::Value(Value::Undef, DeterminacyState::Determined);
+                //
+                // The placeholder shape is shared with
+                // `seed_compute_entry_if_absent` via
+                // `Self::dispatch_placeholder_result` — see that helper's
+                // docstring for the rationale.
+                let result = Self::dispatch_placeholder_result();
                 let result_hash = result.content_hash();
                 self.caches.insert(
                     node,
@@ -962,14 +966,36 @@ impl CacheStore {
     ) {
         let compute_node = NodeId::Compute(c_id.clone());
         self.caches.entry(compute_node).or_insert_with(|| {
-            let sentinel = CachedResult::Value(Value::Undef, DeterminacyState::Determined);
             NodeCache::new(
-                sentinel,
+                Self::dispatch_placeholder_result(),
                 Freshness::Final,
                 DependencyTrace::default(),
                 version,
             )
         });
+    }
+
+    /// Shared placeholder `CachedResult` used by the in-flight dispatch
+    /// lifecycle when no authoritative result is yet known.
+    ///
+    /// Used by:
+    ///
+    /// - [`CacheStore::begin_compute_dispatch`] when seeding a first-time
+    ///   Pending entry on a Value cell (the entry will be overwritten by
+    ///   the trampoline's output, but until then we need a content-hash-
+    ///   correct placeholder so the early-cutoff path of
+    ///   `record_evaluation_with_freshness` stays sound — see the
+    ///   in-line comment at that site).
+    /// - [`CacheStore::seed_compute_entry_if_absent`] when seeding a
+    ///   sentinel Compute entry to carry warm_state + cost_per_byte
+    ///   (Compute entries never hold authoritative results — those live
+    ///   on output VCs — so the placeholder is permanent for Compute
+    ///   nodes).
+    ///
+    /// Centralising the placeholder shape ensures both seed paths stay
+    /// in sync if `CachedResult` or its sentinel ever evolves.
+    fn dispatch_placeholder_result() -> CachedResult {
+        CachedResult::Value(Value::Undef, DeterminacyState::Determined)
     }
 
     /// Read the diagnostic-chain cause stored on a node's cache entry.
