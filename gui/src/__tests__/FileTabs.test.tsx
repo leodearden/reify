@@ -159,6 +159,38 @@ describe('FileTabs', () => {
     });
   });
 
+  describe('FileTabs externally-changed indicator', () => {
+    it('(a) tab with path in externallyChanged renders externally-changed-indicator', () => {
+      const store = setup([file1, file2]);
+      store.markExternallyChanged(file1.path);
+      render(() => <FileTabs store={store} />);
+      const indicators = screen.getAllByTestId('externally-changed-indicator');
+      expect(indicators).toHaveLength(1);
+    });
+
+    it('(b) tabs NOT in externallyChanged do NOT render the indicator', () => {
+      const store = setup([file1, file2]);
+      // Neither file is externally changed
+      render(() => <FileTabs store={store} />);
+      const indicators = screen.queryAllByTestId('externally-changed-indicator');
+      expect(indicators).toHaveLength(0);
+    });
+
+    it('(c) a tab that is BOTH dirty AND externally changed renders both indicators', () => {
+      const store = setup([file1, file2]);
+      store.markDirty(file1.path);
+      store.markExternallyChanged(file1.path);
+      render(() => <FileTabs store={store} />);
+      // The tab for file1 should have both indicators
+      const dirtyIndicators = screen.getAllByTestId('dirty-indicator');
+      const externallyChangedIndicators = screen.getAllByTestId('externally-changed-indicator');
+      expect(dirtyIndicators).toHaveLength(1);
+      expect(externallyChangedIndicators).toHaveLength(1);
+      // Confirm they are distinct elements (different data-testid)
+      expect(dirtyIndicators[0]).not.toBe(externallyChangedIndicators[0]);
+    });
+  });
+
   describe('unsaved changes confirmation', () => {
     it('clicking close on a dirty tab calls window.confirm with filename', () => {
       const store = setup([file1, file2], { dirty: [file1.path] });
