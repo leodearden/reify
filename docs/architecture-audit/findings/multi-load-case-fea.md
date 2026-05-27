@@ -129,7 +129,7 @@
 ### M-015: End-to-end example `examples/m6/multi_load_bracket.ri` with `param thickness = auto` + `minimize mass subject to max(envelope_von_mises(results)) < yield_stress`
 
 - **State:** FICTION (multiple sub-mechanisms; PRD treats as one demo)
-- **Failure mode:** F1 (entire example absent) + F4 (grammar drift on `subject to` / `BodyForce`)
+- **Failure mode:** F1 (entire example absent) + F4 (grammar drift on `subject to`) + F2 (stdlib type absence for `BodyForce`/`Gravity`)
 - **Evidence:** File `examples/m6/multi_load_bracket.ri` does not exist. Directory `examples/m6/` does not exist. Task 3018 status `deferred`. The `subject to` clause does not exist in the grammar — `minimize` accepts a `where_clause` per `crates/reify-syntax/src/ts_parser.rs:1624-1636`. PRD also references `BodyForce`/`Gravity` load types (5g acceleration case in task 3018 detail) which have no stdlib presence. *(2026-05-27 update: `param thickness : Length = auto` is grammar-supported at the param-default position via `auto_keyword`; this sub-mechanism is no longer a grammar fiction. The fictional sub-mechanisms here are `subject to` and `BodyForce`/`Gravity`. Broader `auto` binding-site coverage is in `docs/prds/auto-binding-site-positions.md`, α task 3802 landed.)*
 - **Blocks:** the design-loop story of the entire PRD (Goal section claim "should be a one-liner")
 - **Note:** Three distinct gaps bundled: (a) the example file itself awaits 3005 + 3007 + 2929; (b) `subject to` is fictional (use `where`); (c) `BodyForce`/`Gravity` load types have no stdlib presence. The `= auto` portion is NOT a grammar fiction and is not tracked as a blocker.
