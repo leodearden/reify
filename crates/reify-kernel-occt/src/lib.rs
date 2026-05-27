@@ -8001,4 +8001,137 @@ mod tests {
              Precision::Confusion() ({occt}) within 4 ULPs"
         );
     }
+
+    // --- gtransform_shape FFI smoke tests ---
+
+    /// Non-uniform scale (diag(1,1,2)) + translation (10,0,0) applied to a centered
+    /// 2×2×2 box.  Analytically: corner (±1,±1,±1) → (10±1, ±1, ±2).
+    /// Expected AABB: [9,11] × [-1,1] × [-2,2], each bound within 1e-9.
+    #[test]
+    fn gtransform_shape_non_uniform_scale_and_translation_maps_aabb() {
+        let shape = ffi::ffi::make_box(2.0, 2.0, 2.0).expect("make_box should succeed");
+        let transformed = ffi::ffi::gtransform_shape(
+            &shape,
+            // row 0: scale x=1
+            1.0, 0.0, 0.0,
+            // row 1: scale y=1
+            0.0, 1.0, 0.0,
+            // row 2: scale z=2
+            0.0, 0.0, 2.0,
+            // translation
+            10.0, 0.0, 0.0,
+        )
+        .expect("gtransform_shape (non-uniform) should succeed");
+        let bb = ffi::ffi::query_bbox(&transformed).expect("query_bbox should succeed");
+        let tol = 1e-9;
+        assert!(
+            (bb.xmin - 9.0).abs() < tol,
+            "xmin expected 9.0, got {}", bb.xmin
+        );
+        assert!(
+            (bb.xmax - 11.0).abs() < tol,
+            "xmax expected 11.0, got {}", bb.xmax
+        );
+        assert!(
+            (bb.ymin - (-1.0)).abs() < tol,
+            "ymin expected -1.0, got {}", bb.ymin
+        );
+        assert!(
+            (bb.ymax - 1.0).abs() < tol,
+            "ymax expected 1.0, got {}", bb.ymax
+        );
+        assert!(
+            (bb.zmin - (-2.0)).abs() < tol,
+            "zmin expected -2.0, got {}", bb.zmin
+        );
+        assert!(
+            (bb.zmax - 2.0).abs() < tol,
+            "zmax expected 2.0, got {}", bb.zmax
+        );
+    }
+
+    /// Identity affine (I, 0) must leave the source AABB unchanged within 1e-12.
+    #[test]
+    fn gtransform_shape_identity_preserves_aabb() {
+        let shape = ffi::ffi::make_box(2.0, 2.0, 2.0).expect("make_box should succeed");
+        let transformed = ffi::ffi::gtransform_shape(
+            &shape,
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 1.0,
+            0.0, 0.0, 0.0,
+        )
+        .expect("gtransform_shape (identity) should succeed");
+        let bb = ffi::ffi::query_bbox(&transformed).expect("query_bbox should succeed");
+        let tol = 1e-12;
+        assert!(
+            (bb.xmin - (-1.0)).abs() < tol,
+            "identity xmin expected -1.0, got {}", bb.xmin
+        );
+        assert!(
+            (bb.xmax - 1.0).abs() < tol,
+            "identity xmax expected 1.0, got {}", bb.xmax
+        );
+        assert!(
+            (bb.ymin - (-1.0)).abs() < tol,
+            "identity ymin expected -1.0, got {}", bb.ymin
+        );
+        assert!(
+            (bb.ymax - 1.0).abs() < tol,
+            "identity ymax expected 1.0, got {}", bb.ymax
+        );
+        assert!(
+            (bb.zmin - (-1.0)).abs() < tol,
+            "identity zmin expected -1.0, got {}", bb.zmin
+        );
+        assert!(
+            (bb.zmax - 1.0).abs() < tol,
+            "identity zmax expected 1.0, got {}", bb.zmax
+        );
+    }
+
+    /// `Copy=true` contract: the source shape AABB must be unchanged after the transform.
+    /// Applies diag(1,1,2)+(10,0,0) and re-queries the original shape.
+    #[test]
+    fn gtransform_shape_does_not_mutate_source_shape() {
+        let shape = ffi::ffi::make_box(2.0, 2.0, 2.0).expect("make_box should succeed");
+        // Record the original AABB.
+        let orig_bb = ffi::ffi::query_bbox(&shape).expect("query_bbox (original) should succeed");
+        // Apply a non-trivial transform.
+        let _transformed = ffi::ffi::gtransform_shape(
+            &shape,
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 2.0,
+            10.0, 0.0, 0.0,
+        )
+        .expect("gtransform_shape should succeed");
+        // Re-query the ORIGINAL shape — must still be [-1,1]³.
+        let post_bb = ffi::ffi::query_bbox(&shape).expect("query_bbox (post-transform) should succeed");
+        let tol = 1e-12;
+        assert!(
+            (post_bb.xmin - orig_bb.xmin).abs() < tol,
+            "source xmin mutated: before={}, after={}", orig_bb.xmin, post_bb.xmin
+        );
+        assert!(
+            (post_bb.xmax - orig_bb.xmax).abs() < tol,
+            "source xmax mutated: before={}, after={}", orig_bb.xmax, post_bb.xmax
+        );
+        assert!(
+            (post_bb.ymin - orig_bb.ymin).abs() < tol,
+            "source ymin mutated: before={}, after={}", orig_bb.ymin, post_bb.ymin
+        );
+        assert!(
+            (post_bb.ymax - orig_bb.ymax).abs() < tol,
+            "source ymax mutated: before={}, after={}", orig_bb.ymax, post_bb.ymax
+        );
+        assert!(
+            (post_bb.zmin - orig_bb.zmin).abs() < tol,
+            "source zmin mutated: before={}, after={}", orig_bb.zmin, post_bb.zmin
+        );
+        assert!(
+            (post_bb.zmax - orig_bb.zmax).abs() < tol,
+            "source zmax mutated: before={}, after={}", orig_bb.zmax, post_bb.zmax
+        );
+    }
 }
