@@ -2837,4 +2837,100 @@ mod tests {
             result.map(|e| format!("{:?}", e.kind))
         );
     }
+
+    // ─── task-3815 step-3: recursive union + else-if reduction unit tests ────
+
+    /// `merge_branches` recursion: union(box,box) vs union(box,box) produces
+    /// `union(box(C,C,C), box(C,C,C))` — a geometry FunctionCall with box sub-calls.
+    #[test]
+    fn merge_branches_union_tree_produces_geometry_call_with_conditional_box_args() {
+        let functions: Vec<CompiledFunction> = vec![];
+        let cond = bool_cond_expr();
+        // union(box(1,1,1), box(1,1,1))
+        let a = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::FunctionCall {
+                name: "union".to_string(),
+                args: vec![make_call_with_arity("box", 3), make_call_with_arity("box", 3)],
+            },
+            span: reify_types::SourceSpan::new(0, 1),
+        };
+        let b = a.clone();
+        let outer_span = reify_types::SourceSpan::new(0, 20);
+
+        let merged = merge_branches(&cond, &a, &b, &functions, outer_span);
+
+        // Merged root should be union(...)
+        let (name, args) = match &merged.kind {
+            reify_syntax::ExprKind::FunctionCall { name, args } => (name, args),
+            other => panic!("expected FunctionCall, got {:?}", other),
+        };
+        assert_eq!(name, "union");
+        assert_eq!(args.len(), 2, "union should have 2 args");
+
+        // Each sub-arg should be box(C,C,C)
+        for (i, sub) in args.iter().enumerate() {
+            let sub_args = match &sub.kind {
+                reify_syntax::ExprKind::FunctionCall { name, args } => {
+                    assert_eq!(name, "box", "sub-arg {} should be box", i);
+                    args
+                }
+                other => panic!("sub-arg {}: expected FunctionCall{{box}}, got {:?}", i, other),
+            };
+            assert_eq!(sub_args.len(), 3);
+            for sub_arg in sub_args {
+                assert!(
+                    matches!(&sub_arg.kind, reify_syntax::ExprKind::Conditional { .. }),
+                    "sub-arg {}: box arg should be Conditional, got {:?}",
+                    i,
+                    sub_arg.kind
+                );
+            }
+        }
+    }
+
+    /// `merge_branches` (step-3): else-branch is itself a Conditional.
+    /// `box(p)` vs `Conditional(c2, box(q), box(r))` should produce a scalar
+    /// Conditional under step-2 (no reduction), causing `try_hoist` to return None.
+    /// This is the RED case that step-4 will fix by reducing else-if chains.
+    #[test]
+    fn merge_branches_else_if_chain_is_scalar_conditional_before_step4() {
+        let functions: Vec<CompiledFunction> = vec![];
+        let cond1 = bool_cond_expr();
+        let cond2 = bool_cond_expr();
+        let box_p = make_call_with_arity("box", 3);
+        let box_q = make_call_with_arity("box", 3);
+        let box_r = make_call_with_arity("box", 3);
+
+        // else_branch is itself: `if cond2 then box(q) else box(r)`
+        let inner_cond = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::Conditional {
+                condition: Box::new(cond2.clone()),
+                then_branch: Box::new(box_q),
+                else_branch: Box::new(box_r),
+            },
+            span: reify_types::SourceSpan::new(0, 10),
+        };
+
+        let outer_span = reify_types::SourceSpan::new(0, 20);
+
+        // try_hoist on `if cond1 then box(p) else (if cond2 then box(q) else box(r))`
+        let cond_expr = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::Conditional {
+                condition: Box::new(cond1.clone()),
+                then_branch: Box::new(box_p),
+                else_branch: Box::new(inner_cond),
+            },
+            span: outer_span,
+        };
+
+        // Under step-2: returns None because else_branch is Conditional, not FunctionCall.
+        // Under step-4: returns Some(box with nested Conditional args).
+        // This test documents the step-2 failure that step-4 fixes.
+        let result_step2 = try_hoist_geometry_conditional(&cond_expr, &functions);
+        assert!(
+            result_step2.is_none(),
+            "step-2 else-if chain: expected None (not yet hoistable), got {:?}",
+            result_step2.map(|e| format!("{:?}", e.kind))
+        );
+    }
 }

@@ -2220,3 +2220,167 @@ fn geometry_valued_if_then_else_box_lowers_to_conditional_primitive() {
         );
     }
 }
+
+// ─── task-3815 step-3: recursive merge cases ──────────────────────────────────
+
+/// RED step-3a: boolean-op tree `union(box,box)` vs `union(box,box)` hoists to
+/// `[Primitive{Box}, Primitive{Box}, Boolean{Union}]` where each box op has
+/// `Conditional` scalar args.
+#[test]
+fn geometry_valued_if_then_else_union_tree_lowers_to_conditional_box_ops() {
+    let source = r#"structure S {
+    param a: Scalar = 10mm
+    param b: Scalar = 20mm
+    param c: Scalar = 30mm
+    param d: Scalar = 40mm
+    param axis: Scalar = 0
+    let body = if axis == 0 then union(box(a, a, a), box(b, b, b)) else union(box(c, c, c), box(d, d, d))
+}"#;
+
+    let compiled = compile_with_diagnostics(source);
+    let errors = error_diagnostics(&compiled);
+    assert!(
+        errors.is_empty(),
+        "expected no errors, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = &compiled.templates[0];
+    assert_eq!(template.realizations.len(), 1);
+    let ops = &template.realizations[0].operations;
+
+    // Expected: [Primitive{Box}, Primitive{Box}, Boolean{Union, Step(0), Step(1)}]
+    assert_op_sequence(
+        ops,
+        &[
+            ExpectedOp::Box_,
+            ExpectedOp::Box_,
+            ExpectedOp::BoolUnion(0, 1),
+        ],
+    );
+
+    // Each box op must have Conditional scalar args.
+    for (i, op) in ops.iter().enumerate().take(2) {
+        match op {
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args,
+            } => {
+                for (name, arg) in args {
+                    assert!(
+                        matches!(&arg.kind, CompiledExprKind::Conditional { .. }),
+                        "union-tree: box op[{}] arg '{}' should be Conditional, got {:?}",
+                        i,
+                        name,
+                        arg.kind
+                    );
+                }
+            }
+            other => panic!("ops[{}]: expected Primitive{{Box}}, got {:?}", i, other),
+        }
+    }
+}
+
+/// RED step-3b: nested else-if chain `if a then box(p) else if b then box(q) else box(r)`
+/// must hoist to a single `Primitive{Box}` whose args are nested `Conditional`s.
+/// This fails under step-2 because the else-branch is itself a Conditional.
+#[test]
+fn geometry_valued_if_then_else_chain_lowers_to_single_conditional_primitive() {
+    let source = r#"structure S {
+    param p: Scalar = 10mm
+    param q: Scalar = 20mm
+    param r: Scalar = 30mm
+    param axis: Scalar = 0
+    let body = if axis == 0 then box(p, p, p) else if axis == 1 then box(q, q, q) else box(r, r, r)
+}"#;
+
+    let compiled = compile_with_diagnostics(source);
+    let errors = error_diagnostics(&compiled);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for else-if chain, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = &compiled.templates[0];
+    assert_eq!(template.realizations.len(), 1);
+    let ops = &template.realizations[0].operations;
+
+    // A single Primitive{Box} — the else-if chain reduces to box with nested Conditionals.
+    assert_eq!(
+        ops.len(),
+        1,
+        "expected 1 op (hoisted box), got {} ops: {:?}",
+        ops.len(),
+        ops
+    );
+    match &ops[0] {
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args,
+        } => {
+            assert_eq!(args.len(), 3);
+            for (name, arg) in args {
+                assert!(
+                    matches!(&arg.kind, CompiledExprKind::Conditional { .. }),
+                    "else-if chain: box arg '{}' should be Conditional, got {:?}",
+                    name,
+                    arg.kind
+                );
+            }
+        }
+        other => panic!("expected Primitive{{Box}}, got {:?}", other),
+    }
+}
+
+/// RED step-3c: translate-wrapped `translate(box(a),tx,0,0)` vs `translate(box(b),tx,0,0)`
+/// hoists to `[Primitive{Box}, Transform{Translate}]` where the box has Conditional args.
+#[test]
+fn geometry_valued_if_then_else_translate_wraps_conditional_box() {
+    let source = r#"structure S {
+    param a: Scalar = 10mm
+    param b: Scalar = 20mm
+    param tx: Scalar = 5mm
+    param axis: Scalar = 0
+    let body = if axis == 0 then translate(box(a, a, a), tx, 0, 0) else translate(box(b, b, b), tx, 0, 0)
+}"#;
+
+    let compiled = compile_with_diagnostics(source);
+    let errors = error_diagnostics(&compiled);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for translate-wrapped conditional, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = &compiled.templates[0];
+    assert_eq!(template.realizations.len(), 1);
+    let ops = &template.realizations[0].operations;
+
+    // Expected: [Primitive{Box}, Transform{Translate, Step(0)}]
+    assert_op_sequence(
+        ops,
+        &[
+            ExpectedOp::Box_,
+            ExpectedOp::Transform(TransformKind::Translate, 0),
+        ],
+    );
+
+    // Box op must have Conditional scalar args.
+    match &ops[0] {
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args,
+        } => {
+            for (name, arg) in args {
+                assert!(
+                    matches!(&arg.kind, CompiledExprKind::Conditional { .. }),
+                    "translate-wrapped: box arg '{}' should be Conditional, got {:?}",
+                    name,
+                    arg.kind
+                );
+            }
+        }
+        other => panic!("ops[0]: expected Primitive{{Box}}, got {:?}", other),
+    }
+}
