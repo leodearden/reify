@@ -938,6 +938,7 @@ fn joint_jacobian_value(value: &Value) -> Value {
 ///
 /// Reference: PRD §5.1 (motion-subspace per joint kind) and §12 Q4 (cylindrical
 /// column ordering).
+#[allow(dead_code)] // consumed by RBD-ε RNEA (not yet landed)
 pub(crate) fn motion_subspace_columns(joint: &Value) -> Option<Vec<SpatialVector6>> {
     let map = match joint {
         Value::Map(m) => m,
