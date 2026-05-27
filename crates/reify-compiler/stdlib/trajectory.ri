@@ -427,4 +427,40 @@ structure def TOTSShaper : Shaper {
     // solver_buckling.ri:79 tol = 0.00000001 = 1e-8). IEEE-754 round-to-
     // nearest of this exact decimal literal is deterministic.
     param tol : Real = 0.000001
+
+    // PRD §5.2 "ctor constraints on numeric design params" + PRD §11 Phase 2 ε
+    // spec (vibration_tolerance ∈ (0, 1]).
+    //
+    // Makes the contract explicit in production code rather than relying solely
+    // on test coverage (task #2544 convention, memory id c8452b30). All six
+    // fire automatically at construction via SIR-α's
+    // `check_constraints_against_templates` machinery (task 3540, landed).
+    //
+    // velocity_limit, acceleration_limit: must be strictly positive — a zero or
+    // negative kinematic limit is non-physical (the robot cannot move at all if
+    // the velocity limit is zero, and a negative limit has no physical meaning).
+    constraint velocity_limit > 0
+    constraint acceleration_limit > 0
+
+    // vibration_tolerance ∈ (0, 1]: residual-vibration fraction. Zero would
+    // mean "no vibration allowed ever" (impossible in practice); values > 1
+    // would accept more residual vibration than the input itself (degenerate).
+    // Two scalar predicates because Reify's constraint grammar admits BinOp
+    // predicates but no interval form (PRD §11 Phase 2 ε spec).
+    constraint vibration_tolerance > 0
+    constraint vibration_tolerance <= 1
+
+    // max_iters: must be strictly positive — a zero iteration count means
+    // the solver never runs.
+    constraint max_iters > 0
+
+    // tol: convergence threshold must be strictly positive — a zero or
+    // negative tolerance would never converge (or converge trivially).
+    constraint tol > 0
+
+    // NOTE — explicitly NOT constrained:
+    //   `modes : List<Mode>` — collection invariants deferred to the κ-task
+    //   SQP-loop trampoline (same discipline as ModalResult.modes).
+    //   `actuator_limits : List<JointLimit>` — same collection-invariant
+    //   rationale (producer/consumer-enforced at the SQP loop).
 }
