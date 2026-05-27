@@ -46,6 +46,7 @@ import {
   openFileEngine as bridgeOpenFileEngine,
   saveFile as bridgeSaveFile,
   onFileChanged,
+  onFileRemoved,
   onSerializationError,
   onFocusEntity,
   onNavigateToSource,
@@ -790,6 +791,7 @@ const App: Component = () => {
   let alive = true;
   let unsub: (() => void) | undefined;
   let fileChangedUnsub: (() => void) | undefined;
+  let fileRemovedUnsub: (() => void) | undefined;
   let serializationErrorUnsub: (() => void) | undefined;
   let focusEntityUnsub: (() => void) | undefined;
   let navigateToSourceUnsub: (() => void) | undefined;
@@ -805,6 +807,8 @@ const App: Component = () => {
     unsub = undefined;
     fileChangedUnsub?.();
     fileChangedUnsub = undefined;
+    fileRemovedUnsub?.();
+    fileRemovedUnsub = undefined;
     serializationErrorUnsub?.();
     serializationErrorUnsub = undefined;
     focusEntityUnsub?.();
@@ -882,6 +886,24 @@ const App: Component = () => {
       fileChangedUnsub = unlistenFileChanged;
     } catch (_err) {
       showToast('File change monitoring unavailable — external edits may not be detected', 'error');
+    }
+
+    // Subscribe to file-removed events
+    try {
+      const unlistenFileRemoved = await onFileRemoved((data) => {
+        // Only act when the file is currently open — ignore deletions for files
+        // we don't have a tab for (avoids spurious missingFiles entries).
+        const isOpen = editorStore.state.openFiles.some((f) => isSameFile(f.path, data.path));
+        if (!isOpen) return;
+        editorStore.markMissing(data.path);
+      });
+      if (!alive) {
+        unlistenFileRemoved();
+        return;
+      }
+      fileRemovedUnsub = unlistenFileRemoved;
+    } catch (_err) {
+      showToast('File removal monitoring unavailable — deleted files may not be indicated', 'error');
     }
 
     // Subscribe to serialization error events
@@ -1035,6 +1057,7 @@ const App: Component = () => {
     alive = false;
     unsub?.();
     fileChangedUnsub?.();
+    fileRemovedUnsub?.();
     serializationErrorUnsub?.();
     focusEntityUnsub?.();
     navigateToSourceUnsub?.();
