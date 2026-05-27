@@ -76,7 +76,15 @@ pub fn consistent_element_mass_tet_p1(
     debug_assert_eq!(grads_ref.len(), N_NODES);
 
     // Forward Jacobian J_ij = Σ_k phys_nodes[k][i] · grads_ref[k][j].
-    // Inlined to avoid the intermediate Vec the trait default allocates.
+    // Built as a 3×3 stack array — we only need `det` here, so there is
+    // no benefit to constructing the full `ReferenceElement::jacobian()`
+    // `Jacobian` struct (which also computes the inverse transpose). Note
+    // that `grads_ref` from `shape_grad_at` is still a heap-allocated Vec
+    // per call; the same heap traffic exists in `element_stiffness_p1`
+    // and `geometric_element_stiffness_tet_p1`, and could be eliminated
+    // by a future sweep that replaces these with a const `[[f64;3];4]`
+    // across all three tet-P1 kernels (gradients are compile-time
+    // constants for P1).
     let mut j_mat = [[0.0_f64; 3]; 3];
     for k in 0..N_NODES {
         for i in 0..3 {
