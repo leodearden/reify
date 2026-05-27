@@ -93,6 +93,24 @@ mod tests {
     }
 
     #[test]
+    fn contributor_asym_3arg_returns_map_with_asymmetric_tols() {
+        let nominal = len(0.010);   // 10mm
+        let plus_tol = len(0.0001); // 0.1mm
+        let minus_tol = len(0.00005); // 0.05mm
+        let m = expect_map(eval_stackup("contributor_asym", &[nominal, plus_tol, minus_tol]));
+
+        assert_eq!(m.len(), 5);
+        assert_eq!(m[&Value::String("nominal".into())], len(0.010));
+        assert_eq!(m[&Value::String("plus_tol".into())], len(0.0001));
+        assert_eq!(m[&Value::String("minus_tol".into())], len(0.00005));
+        assert_eq!(m[&Value::String("sign".into())], Value::Int(1));
+        assert_eq!(
+            m[&Value::String("distribution".into())],
+            Value::Enum { type_name: "Distribution".into(), variant: "Normal".into() }
+        );
+    }
+
+    #[test]
     fn contributor_validation_returns_undef() {
         let nom = len(0.010);
         let tol = len(0.0001);
