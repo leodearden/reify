@@ -941,6 +941,19 @@ pub(crate) fn motion_subspace_columns(joint: &Value) -> Option<Vec<SpatialVector
         _ => return None,
     };
     match kind {
+        // 3-DOF spherical joint: PRD §4.2 — axis-isotropic (no stored axis).
+        // Columns are the body-frame basis vectors (pure-angular identity):
+        //   col[0] = [e_x; 0] = [1,0,0, 0,0,0]
+        //   col[1] = [e_y; 0] = [0,1,0, 0,0,0]
+        //   col[2] = [e_z; 0] = [0,0,1, 0,0,0]
+        // World-frame transformation is RNEA's responsibility via X_{p→i}.
+        // No field validation needed — result is constant w.r.t. range_angle
+        // (mirrors the joint_jacobian_value spherical arm pattern).
+        "spherical" => Some(vec![
+            SpatialVector6::from_angular_linear([1.0, 0.0, 0.0], [0.0; 3]),
+            SpatialVector6::from_angular_linear([0.0, 1.0, 0.0], [0.0; 3]),
+            SpatialVector6::from_angular_linear([0.0, 0.0, 1.0], [0.0; 3]),
+        ]),
         // 3-DOF planar joint: PRD §5.1 — columns are [linear_axis_x, linear_axis_y,
         // angular_normal] where normal = unit_axis_x × unit_axis_y (cross product).
         // Ordering matches the `transform_at` planar motion-var order [x, y, theta].
