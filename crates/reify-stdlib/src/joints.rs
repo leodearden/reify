@@ -6225,6 +6225,46 @@ mod tests {
 
     // ── motion_subspace_columns: fixed ────────────────────────────────────────
 
+    // ── motion_subspace_columns: revolute ────────────────────────────────────
+
+    /// PRD §5.1 pin: revolute column = `[unit_axis; 0]`.
+    /// `motion_subspace_columns` on a revolute +Z joint returns a single
+    /// column with angular = [0,0,1] and linear = [0,0,0].
+    #[test]
+    fn motion_subspace_columns_revolute_unit_axis_returns_axis_zero_column() {
+        let joint = revolute_z_joint();
+        let cols = super::motion_subspace_columns(&joint)
+            .expect("motion_subspace_columns on revolute joint should return Some");
+        assert_eq!(cols.len(), 1, "revolute has 1 DOF — expected 1 column");
+        let arr = cols[0].as_array();
+        for (i, (&got, exp)) in arr.iter().zip([0.0, 0.0, 1.0, 0.0, 0.0, 0.0]).enumerate() {
+            assert!(
+                (got - exp).abs() < 1e-12,
+                "revolute +Z column[{}]: expected {}, got {} (PRD §5.1: [unit_axis; 0])",
+                i, exp, got
+            );
+        }
+    }
+
+    /// Axis normalization: revolute with unnormalized axis `[0,0,2]` (magnitude 2)
+    /// still returns column `[0,0,1, 0,0,0]`.
+    #[test]
+    fn motion_subspace_columns_revolute_unnormalized_axis_normalizes() {
+        let axis = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(2.0)]);
+        let joint = eval_builtin("revolute", &[axis, angle_range_0_to_pi()]);
+        let cols = super::motion_subspace_columns(&joint)
+            .expect("motion_subspace_columns on revolute joint should return Some");
+        assert_eq!(cols.len(), 1, "revolute has 1 DOF — expected 1 column");
+        let arr = cols[0].as_array();
+        for (i, (&got, exp)) in arr.iter().zip([0.0, 0.0, 1.0, 0.0, 0.0, 0.0]).enumerate() {
+            assert!(
+                (got - exp).abs() < 1e-12,
+                "revolute axis-norm column[{}]: expected {}, got {}",
+                i, exp, got
+            );
+        }
+    }
+
     // ── motion_subspace_columns: prismatic ───────────────────────────────────
 
     /// PRD §5.1 pin: prismatic column = `[0; axis]`.
