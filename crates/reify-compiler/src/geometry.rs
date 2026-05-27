@@ -738,7 +738,8 @@ pub(crate) fn compile_geometry_call(
                     geom_refs.insert(*idx, sub_ref);
                     continue;
                 }
-                if let Some(ops) = compile_geometry_call(
+                let diag_len_before = diagnostics.len();
+                let inner_ops = compile_geometry_call(
                     &args[*idx],
                     scope,
                     enum_defs,
@@ -747,12 +748,21 @@ pub(crate) fn compile_geometry_call(
                     current_offset,
                     geometry_lets,
                     visiting,
-                ) {
+                );
+                if let Some(ops) = inner_ops {
                     let result_step = current_offset + ops.len() - 1;
                     current_offset += ops.len();
                     geom_refs.insert(*idx, GeomRef::Step(result_step));
                     sub_ops.extend(ops);
+                } else if diagnostics.len() > diag_len_before {
+                    // A diagnostic was pushed during geometry-arg compilation
+                    // (e.g. an incompatible if-then-else inside a transform arg).
+                    // Propagate the failure so callers see None rather than ops
+                    // built from a silent GeomRef::Step fallback.
+                    return None;
                 }
+                // else: silent fallback — arg is not a geometry expression and no
+                // diagnostic was pushed; existing behaviour for non-geometry args.
             }
         }
     }
