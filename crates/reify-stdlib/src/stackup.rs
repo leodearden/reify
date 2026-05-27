@@ -177,7 +177,7 @@ mod tests {
 
         // (a) arity: 0/1/2/6 args
         assert!(eval_stackup("contributor_asym", &[]).unwrap().is_undef());
-        assert!(eval_stackup("contributor_asym", &[nom.clone()]).unwrap().is_undef());
+        assert!(eval_stackup("contributor_asym", std::slice::from_ref(&nom)).unwrap().is_undef());
         assert!(eval_stackup("contributor_asym", &[nom.clone(), pt.clone()]).unwrap().is_undef());
         assert!(eval_stackup("contributor_asym", &[
             nom.clone(), pt.clone(), mt.clone(), Value::Int(1),
@@ -274,7 +274,7 @@ mod tests {
         // (a) zero args
         assert!(eval_stackup("contributor", &[]).unwrap().is_undef());
         // (b) one arg
-        assert!(eval_stackup("contributor", &[nom.clone()]).unwrap().is_undef());
+        assert!(eval_stackup("contributor", std::slice::from_ref(&nom)).unwrap().is_undef());
         // (c) four args
         assert!(eval_stackup("contributor", &[nom.clone(), tol.clone(), Value::Int(1), tol.clone()]).unwrap().is_undef());
         // (d) nominal is Value::Real (not Scalar)

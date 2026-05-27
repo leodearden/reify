@@ -93,6 +93,7 @@ mod core_state {
 
     #[cfg(test)]
     use reify_core::Diagnostic;
+    #[cfg(test)]
     use reify_ir::ConstraintSolver;
 
     /// Describes how `commit_state` should handle the `file_path` core field.
