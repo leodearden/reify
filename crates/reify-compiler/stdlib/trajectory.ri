@@ -20,6 +20,7 @@
 //                                        constraint waypoints.count > 0)
 //   - trait Shaper                      (marker for all input-shaper variants, PRD §5)
 //   - structure def JointLimit          (per-joint actuator constraint, PRD §5.2)
+//   - structure def TOTSShaper : Shaper  (time-optimal trajectory shaper, PRD §5.2)
 //
 // Module placement: registered last in `stdlib_loader.rs` — `std.trajectory`
 // has no compile-time dependency on any other stdlib module (every type it
@@ -365,4 +366,54 @@ structure def JointLimit {
     //   `joint : Real` — placeholder for an entity-handle type; no
     //   meaningful scalar predicate on a handle.
     constraint max_force > 0
+}
+
+// ── TOTSShaper (PRD §5.2) ─────────────────────────────────────────────────────
+
+// TOTSShaper — time-optimal trajectory shaping value type (PRD §5.2).
+// Solver-input bundle, not a result. Consumed by the future κ-task TOTS
+// SQP-loop trampoline that runs the time-optimal shaping algorithm.
+//
+// Refines the Shaper marker trait declared above — TOTSShaper is one of
+// several input-shaper variants; the future Phase 2 task δ adds ZVShaper /
+// ZVDShaper / EIShaper. All refine the same `trait Shaper { }`.
+//
+// Uniform-Real-placeholder encoding convention (modal_analysis.ri header §1):
+// All dimensioned scalars are encoded as Real with TODO(...) annotations
+// naming the future-tightening target, even when the named dimension IS in
+// NAMED_DIMENSIONS. This keeps constraint RHS literals plain (> 0, <= 1)
+// and lets the dimensional-tightening sweep retarget every placeholder in a
+// single pass.
+//
+// Fields:
+//   - modes              : List<Mode>        — vibration modes resolved via
+//                                              the growing-prelude cross-module
+//                                              mechanism (std.modal.analysis
+//                                              loaded before std.trajectory per
+//                                              stdlib_loader.rs:110-116).
+//   - actuator_limits    : List<JointLimit>  — per-joint force limits
+//                                              (JointLimit declared above).
+//   - velocity_limit     : Real              — TODO(velocity-scalar): Scalar<Velocity>
+//                                              (Velocity NOT in NAMED_DIMENSIONS,
+//                                              so Real is the only option anyway).
+//   - acceleration_limit : Real              — TODO(acceleration-scalar): Scalar<Acceleration>
+//   - vibration_tolerance: Real              — genuinely dimensionless (residual
+//                                              fraction); vibration_tolerance ∈ (0,1]
+//                                              per PRD §11 Phase 2 ε spec.
+//   - max_iters          : Int = 100         — solver iteration cap per PRD §5.2.
+//                                              Default 100 added in step-38.
+//   - tol                : Real = 0.000001   — convergence threshold (1e-6).
+//                                              Default added in step-38.
+//
+// Constraints (6 total) added in step-40.
+// NOT constrained: modes / actuator_limits (collection invariants deferred
+// to the κ-task SQP-loop trampoline, mirroring ModalResult.modes discipline).
+structure def TOTSShaper : Shaper {
+    param modes : List<Mode>
+    param actuator_limits : List<JointLimit>
+    param velocity_limit : Real
+    param acceleration_limit : Real
+    param vibration_tolerance : Real
+    param max_iters : Int
+    param tol : Real
 }
