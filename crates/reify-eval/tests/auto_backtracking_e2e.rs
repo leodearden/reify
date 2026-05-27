@@ -10,17 +10,22 @@
 //! algorithm fails."  Each test is a PRD-traceable regression guard so that
 //! any future regression to BFS-only behavior is caught by name-bearing tests.
 //!
-//! # Source-level syntax limitation
+//! # Source-level resolver-call-site gap
 //!
-//! The parser does not yet accept `auto: TraitName` in `type_arg_list`
-//! (`tree-sitter-reify/grammar.js:601-605`).  Tests therefore invoke
+//! The parser surface is now landed — `auto_type_arg` is admitted inside
+//! `type_arg_list` via `tree-sitter-reify/grammar.js:710-729` (corpus pin:
+//! `tree-sitter-reify/test/corpus/auto_type_arg.txt`). The residual gap is
+//! that no production caller of `resolve_auto_type_params_with_backtracking`
+//! exists in the compile pipeline, so `CompiledModule.auto_type_substitution`
+//! is never written by any non-test caller and engine-driven evaluation has
+//! nothing to consume.  Tests therefore invoke
 //! `resolve_auto_type_params_with_backtracking` directly on registries built
 //! by `parse_and_compile`, following the same convention as sibling files
 //! `auto_type_param_topology_trigger_tests.rs` and
 //! `auto_type_param_determinism_tests.rs`.  The "e2e" suffix is approximate:
 //! tests stop short of `Engine::eval` and are at the same orchestrator-level
-//! integration depth as those sibling files.  When source-level `auto:` syntax
-//! lands (separate task), tests in this file can be graduated to true
+//! integration depth as those sibling files.  When the compile-pipeline
+//! resolver call-site lands, tests in this file can be graduated to true
 //! Engine-driven form.
 //!
 //! # Per-leaf-differing verdicts via MockConstraintChecker

@@ -17,12 +17,20 @@
 //     file compiles cleanly under `parse_and_compile_with_stdlib` and is
 //     auto-discovered (and gated on no-error compile) by `examples_smoke.rs`.
 //
-// Note: source-level `Bearing<auto: Seal>` syntax is not yet supported by the
-// parser (`tree-sitter-reify/grammar.js` `type_arg_list` accepts only
-// `$.type_expr`). The determinism tests invoke `enumerate_candidates` /
-// `filter_feasible_candidates` / `select_candidate` directly on the registry
-// built from this file. A follow-up task will add the source-level smoke once
-// the parser learns `auto:` in type-arg position.
+// Note: the parser surface is now landed — `tree-sitter-reify/grammar.js:710-729`
+// admits `auto_type_arg` inside `type_arg_list` (corpus pin:
+// `tree-sitter-reify/test/corpus/auto_type_arg.txt`). The `BearingAssembly`
+// consumer below still uses the concrete `Bearing<ORingSeal>()` rather than
+// `Bearing<auto: Seal>()` because no production caller in
+// `crates/reify-compiler/src/lib.rs::compile_*` invokes
+// `resolve_auto_type_params`, so `Bearing<auto: Seal>()` would produce an
+// unresolved-type-arg error under `compile_with_stdlib` and break
+// `examples_smoke.rs` (which gates every `examples/*.ri` on zero
+// Error-severity diagnostics). The determinism tests invoke
+// `enumerate_candidates` / `filter_feasible_candidates` / `select_candidate`
+// directly on the registry built from this file. A follow-up task will flip
+// the consumer to `Bearing<auto: Seal>()` once the compile-pipeline call-site
+// of `resolve_auto_type_params` lands.
 
 // ── Bound trait ──────────────────────────────────────────────────────────────
 

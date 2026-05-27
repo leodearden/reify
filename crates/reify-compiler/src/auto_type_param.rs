@@ -98,12 +98,18 @@
 //! # Common Scope
 //!
 //! All three phases are delivered as **pure utility modules**: the parser
-//! does not yet accept `auto: TraitName` syntax inside `type_arg_list`
-//! (`tree-sitter-reify/grammar.js:601-605` only permits `$.type_expr`), so
-//! end-to-end source-level resolution is impossible until a follow-up parser
-//! task lands the new syntax. Functions in this module are unit-tested against
-//! compiler-built registries; a future task will wire them into the compile
-//! pipeline once the parser/AST learn `auto:` in type-arg position.
+//! surface is now landed — `auto_type_arg` is admitted inside `type_arg_list`
+//! via `tree-sitter-reify/grammar.js:710-729` (corpus pin:
+//! `tree-sitter-reify/test/corpus/auto_type_arg.txt`), and AST lowering routes
+//! `auto_type_arg` CST nodes to `TypeExprKind::Auto { free, bound }` via
+//! `crates/reify-syntax/src/ts_parser.rs:679-720`. The residual gap is the
+//! **compile-pipeline resolver call-site**: no production caller in
+//! `crates/reify-compiler/src/lib.rs::compile_*` invokes
+//! `resolve_auto_type_params` / `resolve_auto_type_params_with_backtracking`,
+//! so `CompiledModule.auto_type_substitution` is initialised to default and
+//! is never written by any non-test caller. End-to-end source-level resolution
+//! therefore remains impossible until the resolver invocation site lands.
+//! Functions in this module are unit-tested against compiler-built registries.
 //!
 //! Phase D (topology trigger / re-resolution on registry change) is
 //! explicitly deferred to a follow-up task.
