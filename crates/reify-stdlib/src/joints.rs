@@ -941,6 +941,17 @@ pub(crate) fn motion_subspace_columns(joint: &Value) -> Option<Vec<SpatialVector
         _ => return None,
     };
     match kind {
+        // 2-DOF cylindrical joint: PRD §12 Q4 — columns are [translation, rotation]
+        // matching JointValue::Cyl ordering.
+        // Column 0 (translation/prismatic-equivalent): [0; unit_axis] — linear along axis.
+        // Column 1 (rotation/revolute-equivalent): [unit_axis; 0] — angular about axis.
+        "cylindrical" => {
+            let [ax, ay, az] = unit_axis_from_map(map)?;
+            Some(vec![
+                SpatialVector6::from_angular_linear([0.0, 0.0, 0.0], [ax, ay, az]),
+                SpatialVector6::from_angular_linear([ax, ay, az], [0.0, 0.0, 0.0]),
+            ])
+        }
         // 1-DOF revolute joint: PRD §5.1 — column = [unit_axis; 0].
         // Angular component is along the (unit-normalized) joint axis;
         // linear component is zero (revolute has no translational DOF).
