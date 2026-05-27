@@ -234,61 +234,31 @@ impl CubicSpline {
         let mut lower = vec![0.0_f64; size - 1];
         let mut rhs = vec![0.0_f64; size];
 
-        // Endpoint rows
+        // First row (i=0): clamped BC
         diag[0] = h[0] / 3.0;
         upper[0] = h[0] / 6.0;
         rhs[0] = (values[1] - values[0]) / h[0] - start_vel;
 
+        // Last row (i=n-1): clamped BC
         diag[n - 1] = h[m - 1] / 3.0;
         lower[n - 2] = h[m - 1] / 6.0;
         rhs[n - 1] = end_vel - (values[n - 1] - values[n - 2]) / h[m - 1];
 
-        // Interior rows
-        for i in 1..n - 1 {
-            diag[i] = 2.0 * (h[i - 1] + h[i]);
-            let rhs_val = 6.0
-                * ((values[i + 1] - values[i]) / h[i]
-                    - (values[i] - values[i - 1]) / h[i - 1]);
-            rhs[i] = rhs_val;
-            if i + 1 < n - 1 {
-                upper[i] = h[i];
-            }
-            lower[i - 1] = h[i - 1];
-        }
-        // Fix: overwrite interior upper/lower after endpoint rows
-        // Actually rebuild cleanly:
-        let mut diag2 = vec![0.0_f64; size];
-        let mut upper2 = vec![0.0_f64; size - 1];
-        let mut lower2 = vec![0.0_f64; size - 1];
-        let mut rhs2 = vec![0.0_f64; size];
-
-        // First row (i=0): clamped BC
-        diag2[0] = h[0] / 3.0;
-        upper2[0] = h[0] / 6.0;
-        rhs2[0] = (values[1] - values[0]) / h[0] - start_vel;
-
-        // Last row (i=n-1): clamped BC
-        diag2[n - 1] = h[m - 1] / 3.0;
-        lower2[n - 2] = h[m - 1] / 6.0;
-        rhs2[n - 1] = end_vel - (values[n - 1] - values[n - 2]) / h[m - 1];
-
         // Interior rows i=1..n-2
         for i in 1..n - 1 {
-            diag2[i] = 2.0 * (h[i - 1] + h[i]);
-            rhs2[i] = 6.0
+            diag[i] = 2.0 * (h[i - 1] + h[i]);
+            rhs[i] = 6.0
                 * ((values[i + 1] - values[i]) / h[i]
                     - (values[i] - values[i - 1]) / h[i - 1]);
             if i < n - 1 {
-                upper2[i] = h[i];
+                upper[i] = h[i];
             }
             if i > 0 {
-                lower2[i - 1] = h[i - 1];
+                lower[i - 1] = h[i - 1];
             }
         }
 
-        let _ = (diag, upper, lower, rhs); // drop unused first build
-
-        let m_vals = solve_tridiagonal(&lower2[..n - 1], &diag2, &upper2[..n - 1], &rhs2)?;
+        let m_vals = solve_tridiagonal(&lower[..n - 1], &diag, &upper[..n - 1], &rhs)?;
 
         Self::from_second_derivatives(knots, values, &h, &m_vals)
     }
