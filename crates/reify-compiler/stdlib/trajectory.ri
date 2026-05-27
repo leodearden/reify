@@ -414,6 +414,17 @@ structure def TOTSShaper : Shaper {
     param velocity_limit : Real
     param acceleration_limit : Real
     param vibration_tolerance : Real
-    param max_iters : Int
-    param tol : Real
+
+    // max_iters = 100 per PRD §5.2 explicit default — solver iteration cap.
+    // Exists so a pathologically conditioned problem fails loudly (exceeds
+    // iteration budget) rather than running forever. Callers with tighter
+    // or looser convergence budgets can override.
+    param max_iters : Int = 100
+
+    // tol = 0.000001 = 1e-6 per PRD §5.2. Encoded as the decimal literal
+    // because Reify's number-literal grammar has no scientific notation (same
+    // convention as modal_analysis.ri:356 tol = 0.000000001 = 1e-9 and
+    // solver_buckling.ri:79 tol = 0.00000001 = 1e-8). IEEE-754 round-to-
+    // nearest of this exact decimal literal is deterministic.
+    param tol : Real = 0.000001
 }
