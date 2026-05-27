@@ -72,6 +72,72 @@ pub enum OptimizationObjective {
     Maximize(CompiledExpr),
 }
 
+/// The sense of an optimization objective term (PRD §6.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ObjectiveSense {
+    /// Minimize the value of the expression.
+    Minimize,
+    /// Maximize the value of the expression.
+    Maximize,
+}
+
+/// A single term in an `ObjectiveSet` (PRD §6.1). The defaults (`weight = 1.0`,
+/// `priority = 0`) are applied by `ObjectiveTerm::new`; the explicit struct-literal
+/// path is reserved for compiler lowering (β) and solver folding (δ).
+#[derive(Debug, Clone)]
+pub struct ObjectiveTerm {
+    pub sense: ObjectiveSense,
+    pub expr: CompiledExpr,
+    /// > 0; default 1.0 (PRD §6.1, invariant I3 — the WeightedSum cost contribution).
+    pub weight: f64,
+    /// default 0; higher = solved first in `Lexicographic` (PRD §6.1, invariant I4).
+    pub priority: u32,
+}
+
+impl ObjectiveTerm {
+    /// Build a term with default `weight = 1.0` and `priority = 0`.
+    pub fn new(sense: ObjectiveSense, expr: CompiledExpr) -> Self {
+        Self { sense, expr, weight: 1.0, priority: 0 }
+    }
+}
+
+/// How an `ObjectiveSet`'s terms are combined into a single solver cost (PRD §6.1).
+/// Closed set per invariant I6 — adding variants is a breaking change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ObjectiveCombination {
+    /// Scalar-weighted linear combination of all terms.
+    WeightedSum,
+    /// Solve terms in descending priority order; earlier terms dominate later ones.
+    Lexicographic,
+}
+
+/// A multi-objective container (PRD §6.1).
+///
+/// Invariant I1 (non-empty): `terms` always holds ≥ 1 term. Enforced by the
+/// `single` constructor; broader constructors land in later phases (β/γ).
+#[derive(Debug, Clone)]
+pub struct ObjectiveSet {
+    /// INVARIANT: non-empty.
+    pub terms: Vec<ObjectiveTerm>,
+    pub combination: ObjectiveCombination,
+}
+
+impl ObjectiveSet {
+    /// Build a 1-term `WeightedSum` set with `weight = 1.0` and `priority = 0`.
+    ///
+    /// This is the single-objective compat constructor (PRD §6.2 invariant I2):
+    /// `ObjectiveSet::single(sense, expr)` is the multi-objective replacement
+    /// for the old `OptimizationObjective::Minimize(expr)` /
+    /// `OptimizationObjective::Maximize(expr)` enum construction, and produces a
+    /// bit-identical solver input.
+    pub fn single(sense: ObjectiveSense, expr: CompiledExpr) -> Self {
+        Self {
+            terms: vec![ObjectiveTerm::new(sense, expr)],
+            combination: ObjectiveCombination::WeightedSum,
+        }
+    }
+}
+
 /// An auto parameter to be resolved by the constraint solver.
 #[derive(Debug, Clone)]
 pub struct AutoParam {
