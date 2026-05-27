@@ -5,7 +5,7 @@ use reify_compiler::{
     RealizationDecl, SweepKind, TopologyTemplate, TransformKind,
 };
 use reify_test_support::{compile_source, parse_and_compile};
-use reify_types::Severity;
+use reify_types::{CompiledExprKind, Severity};
 
 // ─── Source-string constants (shared between existing and op-level tests) ─────
 
@@ -1995,22 +1995,26 @@ fn realization_span_populated_from_let_decl_span() {
 // ─── task-3395 regression: if-then-else returning Solid emits clean Error ─────
 
 /// Regression pin: a geometry let whose initializer is a geometry-typed
-/// if-then-else must produce a clean compile-time Error mentioning
-/// "if-then-else" and "geometry" rather than crashing at eval time with the
-/// cryptic "unresolvable GeomRef::Step(0)" message.
+/// if-then-else with STRUCTURALLY-INCOMPATIBLE branches (box vs cylinder) must
+/// produce a clean compile-time Error mentioning "if-then-else" and "geometry"
+/// rather than crashing at eval time with the cryptic "unresolvable
+/// GeomRef::Step(0)" message.
 ///
-/// Mirrors the user's AirBearing repro:
-///   `let body = if axis == 0 then box(length, od, od) else box(od, od, length)`
+/// The source was repurposed from box-vs-box (which the scalar-arg hoisting pass
+/// now successfully compiles) to box-vs-cylinder so the graceful-error fallback
+/// path remains covered by a regression test.
 ///
-/// The test exercises the path: `is_geometry_let(Conditional)` → `true`
-/// (routes to compile_geometry_call) → new Error arm fires → diagnostic.
+/// The test exercises: `is_geometry_let(Conditional)` → `true`
+/// (routes to compile_geometry_call) → `try_hoist_geometry_conditional` returns
+/// `None` (incompatible names) → existing Error arm fires → diagnostic.
 #[test]
 fn conditional_returning_solid_in_let_emits_compile_error() {
+    // box(length, od, od)  vs  cylinder(od, length): different name — not hoistable.
     let source = r#"structure AirBearing {
     param length: Scalar = 100mm
     param od: Scalar = 50mm
     param axis: Scalar = 0
-    let body = if axis == 0 then box(length, od, od) else box(od, od, length)
+    let body = if axis == 0 then box(length, od, od) else cylinder(od, length)
 }"#;
 
     let compiled = compile_with_diagnostics(source);
@@ -2038,15 +2042,13 @@ fn conditional_returning_solid_in_let_emits_compile_error() {
     );
 
     // The label's span must start exactly at the `if` keyword and extend at
-    // least to the end of the else-branch `box(...)` call.  The parser sets
-    // the Conditional node's span to [start_of_if, end_of_else_branch), so
-    // these are deterministic byte offsets for this fixed source string.
+    // least to the end of the else-branch `cylinder(od, length)` call.
     let if_offset = source.find(" if ").expect("source must contain ' if '") + 1;
-    // End: byte past the closing `)` of `box(od, od, length)` in the else branch.
+    // End: byte past the closing `)` of `cylinder(od, length)` in the else branch.
     let else_end = source
-        .find("box(od, od, length)")
-        .expect("source must contain 'box(od, od, length)'")
-        + "box(od, od, length)".len();
+        .find("cylinder(od, length)")
+        .expect("source must contain 'cylinder(od, length)'")
+        + "cylinder(od, length)".len();
     assert!(
         !target_error.labels.is_empty(),
         "must have at least one label"
@@ -2067,8 +2069,8 @@ fn conditional_returning_solid_in_let_emits_compile_error() {
     assert_eq!(
         label.span.end as usize,
         else_end,
-        "label end must equal the byte past the closing ')' of the else-branch box \
-         call (offset {}); got labels: {:?}",
+        "label end must equal the byte past the closing ')' of the else-branch \
+         cylinder call (offset {}); got labels: {:?}",
         else_end,
         target_error
             .labels
@@ -2157,4 +2159,64 @@ structure AxisBox {
             .map(|l| (l.span.start, l.span.end, &l.message))
             .collect::<Vec<_>>()
     );
+}
+
+// ─── task-3815: geometry-valued if-then-else hoisting ─────────────────────────
+
+/// RED step-1 (step 1 of 6): structurally-identical box-vs-box branches must
+/// hoist to a single `Primitive{Box}` op whose three scalar args are each a
+/// `CompiledExprKind::Conditional`.
+///
+/// This test fails today (the existing rejection error fires instead of the
+/// hoist). It will pass after step-2 implements `try_hoist_geometry_conditional`.
+#[test]
+fn geometry_valued_if_then_else_box_lowers_to_conditional_primitive() {
+    let source = r#"structure S {
+    param length: Scalar = 100mm
+    param od: Scalar = 50mm
+    param axis: Scalar = 0
+    let body = if axis == 0 then box(length, od, od) else box(od, od, length)
+}"#;
+
+    let compiled = compile_with_diagnostics(source);
+    let errors = error_diagnostics(&compiled);
+
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let template = &compiled.templates[0];
+    assert_eq!(
+        template.realizations.len(),
+        1,
+        "expected exactly 1 realization (for 'body'), got {}",
+        template.realizations.len()
+    );
+
+    let ops = &template.realizations[0].operations;
+    assert_eq!(
+        ops.len(),
+        1,
+        "expected 1 compiled op (hoisted box), got {} ops: {:?}",
+        ops.len(),
+        ops
+    );
+
+    let (kind, args) = match &ops[0] {
+        CompiledGeometryOp::Primitive { kind, args } => (kind, args),
+        other => panic!("expected Primitive op, got {:?}", other),
+    };
+    assert_eq!(*kind, PrimitiveKind::Box, "expected Box primitive");
+    assert_eq!(args.len(), 3, "box should have 3 named args");
+
+    for (name, arg) in args {
+        assert!(
+            matches!(&arg.kind, CompiledExprKind::Conditional { .. }),
+            "box arg '{}' should be a Conditional (hoisted), got {:?}",
+            name,
+            arg.kind
+        );
+    }
 }
