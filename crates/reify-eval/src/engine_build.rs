@@ -133,6 +133,9 @@ impl<'a> RealizationOutputs<'a> {
 /// On the override path, kernel errors / compile errors for a realization's
 /// ops append a `Diagnostic::error` to `diagnostics` (mirroring
 /// `execute_realization_ops`) and skip the rest of that realization's ops.
+/// Error diagnostics carry a `DiagnosticLabel` at `sub.span` so the editor
+/// can underline the sub-component declaration site.
+///
 /// Per-instance ops intentionally skip `feature_tag_table` /
 /// `topology_attribute_table` / `swept_kind_table` population — those tables
 /// are populated for the PARENT's own realization ops; the per-instance
@@ -141,7 +144,22 @@ impl<'a> RealizationOutputs<'a> {
 ///
 /// **Scope boundary (v0.1):** one level of override depth only (parent →
 /// direct child).  Nested sub-of-sub override propagation (Outer→Mid→Inner
-/// where Mid passes args to Inner) is left for a follow-up task.
+/// where Mid passes args to Inner) is left for a follow-up task.  The
+/// `GeomRef::Sub` resolver inside child ops is intentionally given an EMPTY
+/// named-steps map, so any `self.<innersub>.body` reference inside the child's
+/// own realization will produce a clear "unresolvable GeomRef::Sub" diagnostic
+/// rather than accidentally resolving against the parent's scope.  Pinned by
+/// `cross_sub_nested_sub_in_override_path_produces_compile_error`.
+///
+/// **Performance note:** the override path runs `kernel.execute_with_history`
+/// for every op of every named realization of every overridden sub on EACH
+/// invocation of this helper — including the invocation from
+/// `tessellate_from_values`.  For the OCCT kernel, each call is real geometry
+/// compute.  A same-call deduplicate cache (`per_call_dedup`) inside this
+/// function eliminates redundant kernel ops when multiple subs of the same
+/// child template share identical override values within one invocation.
+/// Cross-call deduplication (across separate `build` / `tessellate_from_values`
+/// calls) is left for a follow-up task.
 #[allow(clippy::too_many_arguments)]
 fn seed_cross_sub_named_steps(
     template: &reify_compiler::TopologyTemplate,
@@ -156,6 +174,14 @@ fn seed_cross_sub_named_steps(
     templates: &[reify_compiler::TopologyTemplate],
 ) {
     use reify_types::identity::ValueCellId;
+
+    // Same-call dedup: (child_template_name, args_fingerprint, realization_name) → handle.
+    // Two subs of the same child with identical override declarations share one
+    // kernel-op sequence per invocation of this helper.  Uses Debug format of
+    // `sub.args` (a `Vec<(String, CompiledExpr)>`) as the fingerprint — safe
+    // because two syntactically-identical declarations always produce the same
+    // effective override values via `elaborate_child_instance`.
+    let mut per_call_dedup: HashMap<(String, String, String), GeometryHandleId> = HashMap::new();
 
     for sub in &template.sub_components {
         if sub.is_collection {
@@ -197,11 +223,34 @@ fn seed_cross_sub_named_steps(
             //    with the scoped override value already computed by
             //    `unfold.rs::elaborate_child_instance` and stored at
             //    `ValueCellId("<parent>.<sub_name>", param_name)`.
+            //
+            //    Invariant: for every `(param_name, _)` in `sub.args`, a
+            //    scoped cell `ValueCellId("<parent>.<sub>", param_name)` MUST
+            //    exist in `values` — `elaborate_child_params_only` in
+            //    `crates/reify-eval/src/unfold.rs:292-358` populates it
+            //    unconditionally (override present → override value; absent →
+            //    default value from child template).  A missing key means the
+            //    eval phase failed to populate that cell before `build` was
+            //    called, which would be a bug in the eval pipeline.
             let mut values_override = values.clone();
+            let args_fingerprint = format!("{:?}", sub.args);
             for (param_name, _) in &sub.args {
                 let scoped_key = ValueCellId::new(
                     format!("{}.{}", template.name, sub.name),
                     param_name.as_str(),
+                );
+                // `elaborate_child_params_only` guarantees this key exists.
+                // The debug_assert catches regressions in test builds; in
+                // release the silent fallback keeps child-template defaults.
+                debug_assert!(
+                    values.contains(&scoped_key),
+                    "expected scoped override cell {:?} in values map (populated by \
+                     unfold.rs::elaborate_child_params_only for sub {}.{} param {}); \
+                     missing cell means eval phase failed to seed this param before build",
+                    scoped_key,
+                    template.name,
+                    sub.name,
+                    param_name,
                 );
                 if let Some(val) = values.get(&scoped_key) {
                     let child_key =
@@ -218,18 +267,44 @@ fn seed_cross_sub_named_steps(
             //    multi-kernel dispatcher (no per-op routing needed here;
             //    the default kernel handles every primitive/transform op in
             //    the child's realization chain).
+            //
+            //    `GeomRef::Step(i)` within a realization is resolved against
+            //    the per-realization `per_instance_step_handles` accumulator,
+            //    so multi-op child realizations (e.g. `translate(box(...), …)`)
+            //    chain correctly even when the intermediate step handle was not
+            //    produced by the outer `Engine::execute_realization_ops`.
             for realization in &child_template.realizations {
                 let realization_name = match realization.name.as_deref() {
                     Some(n) => n,
                     None => continue, // unnamed realizations carry no user-visible handle
                 };
 
+                // Same-call dedup: reuse a previously computed per-instance
+                // handle when two subs of the same child have identical args.
+                let dedup_key = (
+                    child_template.name.clone(),
+                    args_fingerprint.clone(),
+                    realization_name.to_string(),
+                );
+                if let Some(&cached) = per_call_dedup.get(&dedup_key) {
+                    named_steps.insert(format!("{}.{}", sub.name, realization_name), cached);
+                    continue;
+                }
+
                 // Accumulates handles for `GeomRef::Step` resolution within
-                // this realization's ops (resets per-realization; child ops
-                // that reference `GeomRef::Sub` of the child's own subs will
-                // miss — one-level-deep scope boundary, see rustdoc above).
+                // this realization's ops (resets per-realization).
                 let mut per_instance_step_handles: Vec<GeometryHandleId> = Vec::new();
                 let mut realization_ok = true;
+
+                // v0.1 scope boundary: pass an EMPTY named-steps map to the
+                // child's op compiler so that any `self.<innersub>.body`
+                // reference inside the child's realization reliably produces
+                // "unresolvable GeomRef::Sub" rather than accidentally
+                // resolving against the parent's scope.  Nested sub-of-sub
+                // override propagation is out of scope for this task (see
+                // rustdoc above and the pinning test
+                // `cross_sub_nested_sub_in_override_path_produces_compile_error`).
+                let child_named_steps: HashMap<String, GeometryHandleId> = HashMap::new();
 
                 for op in &realization.operations {
                     let geom_op = match compile_geometry_op(
@@ -238,16 +313,22 @@ fn seed_cross_sub_named_steps(
                         &per_instance_step_handles,
                         functions,
                         meta_map,
-                        named_steps, // parent's named_steps for GeomRef::Sub resolution
+                        &child_named_steps,
                         diagnostics,
                     ) {
                         Ok(g) => g,
                         Err(msg) => {
-                            diagnostics.push(Diagnostic::error(format!(
-                                "per-instance re-realization compile error for \
-                                 {}.{}.{}: {}",
-                                template.name, sub.name, realization_name, msg
-                            )));
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "per-instance re-realization compile error for \
+                                     {}.{}.{}: {}",
+                                    template.name, sub.name, realization_name, msg
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    sub.span,
+                                    "sub-component override declared here",
+                                )),
+                            );
                             realization_ok = false;
                             break;
                         }
@@ -258,11 +339,17 @@ fn seed_cross_sub_named_steps(
                             per_instance_step_handles.push(handle.id);
                         }
                         Err(e) => {
-                            diagnostics.push(Diagnostic::error(format!(
-                                "per-instance re-realization kernel error for \
-                                 {}.{}.{}: {}",
-                                template.name, sub.name, realization_name, e
-                            )));
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "per-instance re-realization kernel error for \
+                                     {}.{}.{}: {}",
+                                    template.name, sub.name, realization_name, e
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    sub.span,
+                                    "sub-component override declared here",
+                                )),
+                            );
                             realization_ok = false;
                             break;
                         }
@@ -276,6 +363,7 @@ fn seed_cross_sub_named_steps(
                         format!("{}.{}", sub.name, realization_name),
                         final_handle,
                     );
+                    per_call_dedup.insert(dedup_key, final_handle);
                 }
             }
         }
