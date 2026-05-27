@@ -1108,6 +1108,29 @@ mod tests {
         }
     }
 
+    /// Regression pin (KCC-γ step-5): `per_joint_jacobian_local` returns `None`
+    /// for a planar joint because the analytic Jacobian is a `Value::List` of
+    /// three per-DOF columns (joints.rs:785 post-KCC-γ), not a single Map.
+    /// `twist_map_to_array` fails on the List shape, which is the contract that
+    /// triggers FD-fallback chain composition in `chain_jacobian_fd`. Mirrors
+    /// the unwritten cylindrical equivalent — preventing a future change to
+    /// joint_jacobian_value that flattens the multi-column List into a single
+    /// (incorrect) Map without us noticing.
+    #[test]
+    fn per_joint_jacobian_local_planar_returns_none() {
+        let pj = planar_xy_joint();
+        assert!(
+            super::per_joint_jacobian_local(&pj).is_none(),
+            "per_joint_jacobian_local(planar) must return None — the analytic \
+             joint_jacobian for planar is a Value::List of 3 per-DOF columns \
+             (the FD-fallback trigger), not a single Map. If this test fails, \
+             either joints.rs:785 collapsed the multi-column List into a single \
+             Map (incorrect), or per_joint_jacobian_local was widened to \
+             unpack multi-column Lists (which would change the chain Jacobian \
+             contract — see KCC-γ task 3843)."
+        );
+    }
+
     // ── chain_jacobian_fd tests ──────────────────────────────────────────
 
     fn assert_columns_close(actual: &[[f64; 6]], expected: &[[f64; 6]], tol: f64, label: &str) {

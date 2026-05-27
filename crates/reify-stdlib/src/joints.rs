@@ -4753,42 +4753,114 @@ mod tests {
         }
     }
 
-    // ── joint_jacobian for planar (step-13) ──────────────────────────────────
+    // ── joint_jacobian for planar (KCC-γ step-5 / step-6) ───────────────────
 
-    /// `joint_jacobian(planar_joint)` returns a zero-twist Map placeholder.
+    /// `joint_jacobian(planar_joint)` returns a `Value::List` of length 3 with
+    /// one analytic twist Map per DOF:
+    ///   [0] ∂x DOF:  { angular: [0,0,0], linear: unit_x }
+    ///   [1] ∂y DOF:  { angular: [0,0,0], linear: unit_y }
+    ///   [2] ∂θ DOF:  { angular: plane_normal, linear: [0,0,0] }
     ///
-    /// Design decision: planar is a 3-DOF joint; the analytic 3×6 Jacobian is
-    /// deferred (PRD task 2 design: "finite-difference fallback for spherical,
-    /// cylindrical, planar until analytic forms are derived"). A zero-column
-    /// Map `{ angular: [0,0,0], linear: [0,0,0] }` is returned to preserve the
-    /// uniform single-column shape across all kinds (matching the fixed-joint
-    /// pattern), so `joint_jacobian_dispatches_for_every_joint_kind` can assert
-    /// non-Undef for every kind in JOINT_KINDS.
+    /// where plane_normal = unit_x × unit_y (the joint's plane orientation).
+    /// For the canonical `planar_xy_joint()` fixture (axis_x = unit_x,
+    /// axis_y = unit_y) the plane normal is unit_z. Mirrors the cylindrical
+    /// pattern at joint_jacobian_value (joints.rs:815-823) — the `Value::List`
+    /// shape (vs. a single Map) preserves analytic per-DOF information and
+    /// naturally signals to `loop_closure::per_joint_jacobian_local` (which
+    /// expects a single Map) to fall back to FD via its `twist_map_to_array`
+    /// failure path (regression-pinned by
+    /// `per_joint_jacobian_local_planar_returns_none` in loop_closure.rs).
     #[test]
-    fn joint_jacobian_planar_returns_zero_column_placeholder() {
+    fn joint_jacobian_planar_returns_three_column_list_with_analytic_columns() {
         let pj = planar_xy_joint();
         let result = eval_builtin("joint_jacobian", &[pj]);
-        let map = match &result {
-            Value::Map(m) => m,
-            other => panic!("joint_jacobian(planar): expected Map, got {:?}", other),
+        assert_jacobian_list_three_columns_planar(
+            &result,
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            "planar xy axis-aligned",
+        );
+    }
+
+    /// Non-axis-aligned planar joint exercises the cross-product plane-normal
+    /// path: axis_x = [1, 0, 0] and axis_y = [0, 1/√2, 1/√2] (perpendicular to
+    /// axis_x). The plane normal is unit_x × axis_y = [0, -1/√2, 1/√2].
+    /// Pins that the analytic ∂θ column uses the cross product of the joint's
+    /// unit_x and unit_y axes (not a hard-coded unit_z).
+    #[test]
+    fn joint_jacobian_planar_non_axis_aligned_uses_cross_product_plane_normal() {
+        let inv_sqrt2 = 1.0 / std::f64::consts::SQRT_2;
+        let axis_y = Value::Vector(vec![
+            Value::Real(0.0),
+            Value::Real(inv_sqrt2),
+            Value::Real(inv_sqrt2),
+        ]);
+        let pj = eval_builtin(
+            "planar",
+            &[
+                axis_x_unit(),
+                axis_y,
+                length_range_0_to_1m(),
+                length_range_0_to_1m(),
+                angle_range_0_to_pi(),
+            ],
+        );
+        let result = eval_builtin("joint_jacobian", &[pj]);
+        // unit_x × axis_y = ([1,0,0]) × ([0, 1/√2, 1/√2])
+        //                 = [0*1/√2 - 0*1/√2, 0*0 - 1*1/√2, 1*1/√2 - 0*0]
+        //                 = [0, -1/√2, 1/√2]
+        assert_jacobian_list_three_columns_planar(
+            &result,
+            [1.0, 0.0, 0.0],
+            [0.0, inv_sqrt2, inv_sqrt2],
+            [0.0, -inv_sqrt2, inv_sqrt2],
+            "planar non-axis-aligned (axis_y = [0, 1/√2, 1/√2])",
+        );
+    }
+
+    /// Helper: assert that `result` is a `Value::List` of length 3 whose
+    /// elements are `Map { angular, linear }` columns matching the planar
+    /// joint_jacobian contract:
+    ///   [0] ∂x DOF:  angular=[0,0,0], linear=unit_x
+    ///   [1] ∂y DOF:  angular=[0,0,0], linear=unit_y
+    ///   [2] ∂θ DOF:  angular=plane_normal, linear=[0,0,0]
+    fn assert_jacobian_list_three_columns_planar(
+        result: &Value,
+        unit_x: [f64; 3],
+        unit_y: [f64; 3],
+        plane_normal: [f64; 3],
+        label: &str,
+    ) {
+        let items = match result {
+            Value::List(v) => v,
+            other => panic!("{label}: expected List, got {:?}", other),
         };
         assert_eq!(
-            map.get(&Value::String("angular".to_string())),
-            Some(&Value::Vector(vec![
-                Value::Real(0.0),
-                Value::Real(0.0),
-                Value::Real(0.0)
-            ])),
-            "angular twist column should be [0, 0, 0]"
+            items.len(),
+            3,
+            "{label}: List should have exactly 3 columns"
         );
-        assert_eq!(
-            map.get(&Value::String("linear".to_string())),
-            Some(&Value::Vector(vec![
-                Value::Real(0.0),
-                Value::Real(0.0),
-                Value::Real(0.0)
-            ])),
-            "linear twist column should be [0, 0, 0]"
+        // column [0]: ∂x DOF (linear = unit_x, angular = zero)
+        assert_jacobian_map_components(
+            &items[0],
+            [0.0, 0.0, 0.0],
+            unit_x,
+            &format!("{label} col[0] (∂x DOF)"),
+        );
+        // column [1]: ∂y DOF (linear = unit_y, angular = zero)
+        assert_jacobian_map_components(
+            &items[1],
+            [0.0, 0.0, 0.0],
+            unit_y,
+            &format!("{label} col[1] (∂y DOF)"),
+        );
+        // column [2]: ∂θ DOF (angular = plane_normal, linear = zero)
+        assert_jacobian_map_components(
+            &items[2],
+            plane_normal,
+            [0.0, 0.0, 0.0],
+            &format!("{label} col[2] (∂θ DOF)"),
         );
     }
 
