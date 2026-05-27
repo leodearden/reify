@@ -383,6 +383,197 @@ impl CubicSpline {
     }
 }
 
+/// A single-joint quintic Hermite spline.
+///
+/// Each segment is a degree-5 polynomial determined by endpoint
+/// value/velocity/acceleration. Per-segment coefficients stored as:
+///   p(s) = a + b*s + c*s^2 + d*s^3 + e*s^4 + f*s^5  where s = t - t[i]
+#[derive(Debug, Clone)]
+pub(crate) struct QuinticSpline {
+    knots: Vec<f64>,
+    a: Vec<f64>,
+    b: Vec<f64>,
+    c: Vec<f64>,
+    d: Vec<f64>,
+    e: Vec<f64>,
+    f: Vec<f64>,
+}
+
+/// Per-knot data for quintic Hermite fit.
+#[derive(Debug, Clone)]
+pub(crate) struct KnotData {
+    pub t: f64,
+    pub value: f64,
+    pub vel: f64,
+    pub accel: f64,
+}
+
+impl QuinticSpline {
+    /// Fit a quintic Hermite spline through the given knot data.
+    ///
+    /// Returns `None` if fewer than 2 knots or not strictly increasing.
+    pub(crate) fn fit(knots: &[KnotData]) -> Option<Self> {
+        let n = knots.len();
+        if n < 2 {
+            return None;
+        }
+        for i in 0..n - 1 {
+            if knots[i + 1].t <= knots[i].t {
+                return None;
+            }
+        }
+
+        let segs = n - 1;
+        let mut times = Vec::with_capacity(n);
+        let mut a = Vec::with_capacity(segs);
+        let mut b = Vec::with_capacity(segs);
+        let mut c = Vec::with_capacity(segs);
+        let mut d = Vec::with_capacity(segs);
+        let mut e = Vec::with_capacity(segs);
+        let mut f = Vec::with_capacity(segs);
+
+        for k in knots {
+            times.push(k.t);
+        }
+
+        for i in 0..segs {
+            let h = knots[i + 1].t - knots[i].t;
+            // Boundary values
+            let p0 = knots[i].value;
+            let v0 = knots[i].vel;
+            let a0 = knots[i].accel;
+            let p1 = knots[i + 1].value;
+            let v1 = knots[i + 1].vel;
+            let a1 = knots[i + 1].accel;
+
+            // Hermite coefficients for degree-5 polynomial on [0, h]
+            // p(0)=p0, p'(0)=v0, p''(0)=a0, p(h)=p1, p'(h)=v1, p''(h)=a1
+            // a = p0
+            // b = v0
+            // c = a0/2
+            // Then solve for d, e, f from the 3 endpoint conditions at h:
+            //   p(h)  = p0 + v0*h + a0/2*h^2 + d*h^3 + e*h^4 + f*h^5 = p1
+            //   p'(h) = v0 + a0*h + 3d*h^2 + 4e*h^3 + 5f*h^4 = v1
+            //   p''(h)= a0 + 6d*h + 12e*h^2 + 20f*h^3 = a1
+            //
+            // Let:
+            //   dp = p1 - p0 - v0*h - a0/2*h^2
+            //   dv = v1 - v0 - a0*h
+            //   da = a1 - a0
+            //
+            // System:
+            //   h^3    h^4    h^5   | dp
+            //   3h^2   4h^3   5h^4  | dv
+            //   6h     12h^2  20h^3 | da
+
+            let dp = p1 - p0 - v0 * h - 0.5 * a0 * h * h;
+            let dv = v1 - v0 - a0 * h;
+            let da = a1 - a0;
+
+            let h2 = h * h;
+            let h3 = h2 * h;
+            let h4 = h3 * h;
+            let h5 = h4 * h;
+
+            // Solve 3x3 system via direct elimination
+            // Row 1: h3*d + h4*e + h5*f = dp
+            // Row 2: 3h2*d + 4h3*e + 5h4*f = dv
+            // Row 3: 6h*d + 12h2*e + 20h3*f = da
+
+            // Eliminate d from rows 2 and 3:
+            // Row2' = Row2 - 3/h * Row1: (4h3 - 3h3)*e + (5h4 - 3h4)*f = dv - 3*dp/h
+            //   => h3*e + 2h4*f = dv - 3*dp/h
+            // Row3' = Row3 - 6/h2 * Row1: (12h2 - 6h2)*e + (20h3 - 6h3)*f = da - 6*dp/h2
+            //   => 6h2*e + 14h3*f = da - 6*dp/h2
+
+            let r1 = dv - 3.0 * dp / h;
+            let r2 = da - 6.0 * dp / h2;
+            // Row1': h3*e + 2h4*f = r1
+            // Row2': 6h2*e + 14h3*f = r2
+            // Eliminate e from Row2': 6h2*(h3*e + 2h4*f)/h3 = 6*(r1)/h
+            // Row2'' = Row2' - 6/h * Row1':
+            //   (14h3 - 12h3)*f = r2 - 6*r1/h
+            //   => 2h3*f = r2 - 6*r1/h
+
+            let fi = (r2 - 6.0 * r1 / h) / (2.0 * h3);
+            let ei = (r1 - 2.0 * h4 * fi) / h3;
+            let di = (dp - h4 * ei - h5 * fi) / h3;
+
+            a.push(p0);
+            b.push(v0);
+            c.push(0.5 * a0);
+            d.push(di);
+            e.push(ei);
+            f.push(fi);
+        }
+
+        Some(QuinticSpline {
+            knots: times,
+            a,
+            b,
+            c,
+            d,
+            e,
+            f,
+        })
+    }
+
+    /// Find the segment index for a given t (clamped to valid range).
+    fn segment(&self, t: f64) -> usize {
+        let n = self.knots.len();
+        let segs = n - 1;
+        if t <= self.knots[0] {
+            return 0;
+        }
+        if t >= self.knots[n - 1] {
+            return segs - 1;
+        }
+        let mut lo = 0usize;
+        let mut hi = segs - 1;
+        while lo < hi {
+            let mid = (lo + hi + 1) / 2;
+            if self.knots[mid] <= t {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        lo
+    }
+
+    /// Evaluate the spline at t.
+    pub(crate) fn eval(&self, t: f64) -> f64 {
+        let i = self.segment(t);
+        let s = t - self.knots[i];
+        self.a[i]
+            + s * (self.b[i]
+                + s * (self.c[i] + s * (self.d[i] + s * (self.e[i] + s * self.f[i]))))
+    }
+
+    /// Evaluate the first derivative at t.
+    pub(crate) fn eval_dot(&self, t: f64) -> f64 {
+        let i = self.segment(t);
+        let s = t - self.knots[i];
+        self.b[i]
+            + s * (2.0 * self.c[i]
+                + s * (3.0 * self.d[i] + s * (4.0 * self.e[i] + s * 5.0 * self.f[i])))
+    }
+
+    /// Evaluate the second derivative at t.
+    pub(crate) fn eval_ddot(&self, t: f64) -> f64 {
+        let i = self.segment(t);
+        let s = t - self.knots[i];
+        2.0 * self.c[i]
+            + s * (6.0 * self.d[i] + s * (12.0 * self.e[i] + s * 20.0 * self.f[i]))
+    }
+
+    /// Return the total duration.
+    pub(crate) fn duration(&self) -> f64 {
+        let n = self.knots.len();
+        self.knots[n - 1] - self.knots[0]
+    }
+}
+
 // ── Linear algebra helpers ────────────────────────────────────────────────────
 
 /// Solve a tridiagonal system Ax = rhs using the Thomas algorithm.
