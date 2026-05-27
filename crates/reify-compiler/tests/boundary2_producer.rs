@@ -215,6 +215,7 @@ fn content_hashes_present() {
 /// Type error detection: adding length to mass should fail.
 #[test]
 fn type_error_dimension_mismatch() {
+    use reify_ast::*;
     use reify_syntax::*;
     use reify_core::*;
     use reify_ir::*;
@@ -308,6 +309,7 @@ fn type_error_dimension_mismatch() {
 /// Constraint expression with non-Bool result type should produce a warning.
 #[test]
 fn constraint_non_bool_produces_warning() {
+    use reify_ast::*;
     use reify_syntax::*;
     use reify_core::*;
     use reify_ir::*;
@@ -721,6 +723,7 @@ fn bracket_compiles_with_zero_diagnostics() {
 /// Length * Length → Area, Length / Length → dimensionless Real.
 #[test]
 fn mul_div_different_dimensions_no_diagnostic() {
+    use reify_ast::*;
     use reify_syntax::*;
     use reify_core::*;
     use reify_ir::*;
@@ -1768,6 +1771,7 @@ fn compiled_constraint_domain_field() {
 /// Scalar + Int is a type error: adding dimensioned and dimensionless values.
 #[test]
 fn scalar_plus_int_type_error() {
+    use reify_ast::*;
     use reify_syntax::*;
     use reify_core::*;
     use reify_ir::*;

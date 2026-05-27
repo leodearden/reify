@@ -21,6 +21,7 @@ fn accept_well_formed_parsed_module() {
 /// Reject ParsedModule with unresolved type names → diagnostics, not panic.
 #[test]
 fn reject_unresolved_type_names() {
+    use reify_ast::*;
     use reify_syntax::*;
     use reify_core::*;
     use reify_ir::*;
@@ -221,6 +222,7 @@ fn compiled_let_spans_match_parsed_spans() {
 /// Handle ParsedModule with parse errors → process valid declarations.
 #[test]
 fn handle_parse_errors_gracefully() {
+    use reify_ast::*;
     use reify_syntax::*;
     use reify_core::*;
     use reify_ir::*;
@@ -286,6 +288,7 @@ fn handle_parse_errors_gracefully() {
 /// diagnostic is emitted.
 #[test]
 fn reject_unresolved_type_in_trait_conformance() {
+    use reify_ast::*;
     use reify_syntax::*;
     use reify_core::*;
     use reify_ir::*;
