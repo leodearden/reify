@@ -19,7 +19,7 @@ use reify_kernel_gmsh::mesh_volume::{
 };
 use reify_kernel_gmsh::repair::RepairConfig;
 use reify_kernel_gmsh::through_thickness::ThroughThicknessConfig;
-use reify_types::{ElementOrderTag, GeometryError, Mesh, VolumeMesh};
+use reify_ir::{ElementOrderTag, GeometryError, Mesh, VolumeMesh};
 
 // ---------------------------------------------------------------------------
 // Helpers shared across multiple tests in this file
@@ -639,7 +639,7 @@ mod with_libgmsh {
     use reify_kernel_gmsh::mesh_volume::mesh_surface_to_volume_with_diagnostics;
     use reify_kernel_gmsh::repair::RepairConfig;
     use reify_kernel_gmsh::through_thickness::ThroughThicknessConfig;
-    use reify_types::ElementOrderTag;
+    use reify_ir::ElementOrderTag;
 
     /// All diagnostic stages skipped (all `None` configs). Must produce a
     /// non-empty volume mesh and no through-thickness warnings.

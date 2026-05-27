@@ -12,10 +12,6 @@ tree-sitter.workspace = true
 tree-sitter-reify.workspace = true
 
 [dev-dependencies]
+reify-ast.workspace = true
+reify-core.workspace = true
 reify-test-support.workspace = true
-# reify-types kept in dev-deps only (not lib deps) so that test files using
-# reify_types::ModulePath::single(...) etc. keep compiling until task η
-# atomically rewrites all reify_syntax::<AST type> → reify_ast::<…> in
-# every call site including these test files.
-# REMOVE-AT: task η (PRD core-ast-ir-layering Phase 2)
-reify-types.workspace = true

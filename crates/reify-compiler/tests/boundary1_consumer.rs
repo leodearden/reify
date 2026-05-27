@@ -22,7 +22,8 @@ fn accept_well_formed_parsed_module() {
 #[test]
 fn reject_unresolved_type_names() {
     use reify_syntax::*;
-    use reify_types::*;
+    use reify_core::*;
+    use reify_ir::*;
 
     let module = ParsedModule {
         path: ModulePath::single("bad"),
@@ -68,11 +69,11 @@ fn reject_unresolved_type_names() {
 /// Compiled constraints should propagate spans from parsed ConstraintDecls.
 #[test]
 fn compiled_constraint_spans_match_parsed_spans() {
-    use reify_syntax::MemberDecl;
-    use reify_types::SourceSpan;
+    use reify_ast::MemberDecl;
+    use reify_core::SourceSpan;
 
     let source = bracket_source();
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("bracket"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("bracket"));
     let compiled = reify_compiler::compile(&parsed);
 
     assert_eq!(compiled.templates.len(), 1);
@@ -91,7 +92,7 @@ fn compiled_constraint_spans_match_parsed_spans() {
 
     // Extract parsed constraint spans for comparison
     let parsed_constraint_spans: Vec<SourceSpan> = match &parsed.declarations[0] {
-        reify_syntax::Declaration::Structure(s) => s
+        reify_ast::Declaration::Structure(s) => s
             .members
             .iter()
             .filter_map(|m| match m {
@@ -116,11 +117,11 @@ fn compiled_constraint_spans_match_parsed_spans() {
 /// Compiled param ValueCellDecls should propagate spans from parsed ParamDecls.
 #[test]
 fn compiled_param_spans_match_parsed_spans() {
-    use reify_syntax::MemberDecl;
-    use reify_types::SourceSpan;
+    use reify_ast::MemberDecl;
+    use reify_core::SourceSpan;
 
     let source = bracket_source();
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("bracket"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("bracket"));
     let compiled = reify_compiler::compile(&parsed);
 
     assert_eq!(compiled.templates.len(), 1);
@@ -146,7 +147,7 @@ fn compiled_param_spans_match_parsed_spans() {
 
     // Extract parsed param spans for comparison
     let parsed_param_spans: Vec<SourceSpan> = match &parsed.declarations[0] {
-        reify_syntax::Declaration::Structure(s) => s
+        reify_ast::Declaration::Structure(s) => s
             .members
             .iter()
             .filter_map(|m| match m {
@@ -171,11 +172,11 @@ fn compiled_param_spans_match_parsed_spans() {
 /// Compiled let ValueCellDecls should propagate spans from parsed LetDecls.
 #[test]
 fn compiled_let_spans_match_parsed_spans() {
-    use reify_syntax::MemberDecl;
-    use reify_types::SourceSpan;
+    use reify_ast::MemberDecl;
+    use reify_core::SourceSpan;
 
     let source = bracket_source();
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("bracket"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("bracket"));
     let compiled = reify_compiler::compile(&parsed);
 
     assert_eq!(compiled.templates.len(), 1);
@@ -198,7 +199,7 @@ fn compiled_let_spans_match_parsed_spans() {
 
     // Extract parsed let spans for non-geometry lets
     let parsed_let_spans: Vec<SourceSpan> = match &parsed.declarations[0] {
-        reify_syntax::Declaration::Structure(s) => s
+        reify_ast::Declaration::Structure(s) => s
             .members
             .iter()
             .filter_map(|m| match m {
@@ -221,7 +222,8 @@ fn compiled_let_spans_match_parsed_spans() {
 #[test]
 fn handle_parse_errors_gracefully() {
     use reify_syntax::*;
-    use reify_types::*;
+    use reify_core::*;
+    use reify_ir::*;
 
     let module = ParsedModule {
         path: ModulePath::single("partial"),
@@ -285,7 +287,8 @@ fn handle_parse_errors_gracefully() {
 #[test]
 fn reject_unresolved_type_in_trait_conformance() {
     use reify_syntax::*;
-    use reify_types::*;
+    use reify_core::*;
+    use reify_ir::*;
 
     let module = ParsedModule {
         path: ModulePath::single("bad_conformance"),

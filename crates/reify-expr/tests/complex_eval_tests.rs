@@ -1,7 +1,8 @@
 //! Complex<Q> arithmetic and method evaluation tests.
 
 use reify_expr::{EvalContext, eval_expr};
-use reify_types::{BinOp, CompiledExpr, DimensionVector, Type, UnOp, Value, ValueMap};
+use reify_core::{DimensionVector, Type};
+use reify_ir::{BinOp, CompiledExpr, UnOp, Value, ValueMap};
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 

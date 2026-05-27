@@ -9,10 +9,8 @@
 //! against the production type rather than a test stub.
 
 use reify_eval::cache::NodeId;
-use reify_types::{
-    ComputeNodeId, ConstraintNodeId, NodeKind, NodeTraits, NodeTraitsMap, RealizationNodeId,
-    ResolutionNodeId, ValueCellId,
-};
+use reify_core::{ComputeNodeId, ConstraintNodeId, RealizationNodeId, ResolutionNodeId, ValueCellId};
+use reify_ir::{NodeKind, NodeTraits, NodeTraitsMap};
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
@@ -122,7 +120,7 @@ mod t5 {
     use reify_runtime::concurrent::{
         AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerConfig,
     };
-    use reify_types::WarmStartableRegistry;
+    use reify_ir::WarmStartableRegistry;
 
     /// Minimal no-op evaluator: every node evaluates to `Changed`. The T5 cases
     /// don't care about the evaluation result — they care only whether the

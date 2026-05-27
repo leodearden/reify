@@ -2,7 +2,7 @@
 
 use crate::Engine;
 use reify_compiler::CompiledModule;
-use reify_types::Diagnostic;
+use reify_core::Diagnostic;
 
 impl Engine {
     /// Look up the imported-geometry tolerance promise carried by the

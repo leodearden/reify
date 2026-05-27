@@ -80,13 +80,8 @@ pub use units::{GEOMETRY_FUNCTION_NAMES, UnitEntry, UnitRegistry};
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
-use reify_types::{
-    BinOp, CompiledExpr, CompiledExprKind, ConstraintNodeId, ContentHash, DeterminacyPredicateKind,
-    Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector, FIELD_ENTITY_PREFIX,
-    OptimizationObjective, RealizationNodeId, ResolvedFunction, SelectorKind, Severity, SourceSpan,
-    TAG_CONDITIONAL, TAG_FUNCTION_CALL, TAG_MATCH, TAG_USER_FUNCTION_CALL, Type, UnOp, Value,
-    ValueCellId,
-};
+use reify_core::{ConstraintNodeId, ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector, FIELD_ENTITY_PREFIX, RealizationNodeId, Severity, SourceSpan, Type, ValueCellId};
+use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, DeterminacyPredicateKind, OptimizationObjective, ResolvedFunction, SelectorKind, TAG_CONDITIONAL, TAG_FUNCTION_CALL, TAG_MATCH, TAG_USER_FUNCTION_CALL, UnOp, Value};
 
 /// Expose `validate_annotations` to integration tests without plumbing a full
 /// compilation context.
@@ -101,9 +96,9 @@ use reify_types::{
 #[doc(hidden)]
 // G-allow: task #3530 parity shim — test-support-gated (feature = "test-support"), consumed by validate_annotations parity tests during schema-delegation migration; remove when delegation is complete
 pub fn __validate_annotations_for_parity_test(
-    annotations: &[reify_types::Annotation],
+    annotations: &[reify_ir::Annotation],
     context: &str,
-) -> Vec<reify_types::Diagnostic> {
+) -> Vec<reify_core::Diagnostic> {
     let mut diagnostics = Vec::new();
     annotations::validate_annotations(annotations, context, &mut diagnostics);
     diagnostics
@@ -132,7 +127,7 @@ pub fn __validate_annotations_for_parity_test(
 /// * [`compile_with_stdlib`] — full standard library prelude (recommended
 ///   default for user modules)
 /// * [`compile_with_prelude`] — caller-supplied prelude modules
-pub fn compile(parsed: &reify_syntax::ParsedModule) -> CompiledModule {
+pub fn compile(parsed: &reify_ast::ParsedModule) -> CompiledModule {
     compile_with_prelude(parsed, &[])
 }
 
@@ -143,7 +138,7 @@ pub fn compile(parsed: &reify_syntax::ParsedModule) -> CompiledModule {
 /// `&'static PreludeContext` that is built once (via [`stdlib_loader::load_stdlib_context`])
 /// and shared across all calls, avoiding re-flattening stdlib enum definitions
 /// on every compilation.
-pub fn compile_with_stdlib(parsed: &reify_syntax::ParsedModule) -> CompiledModule {
+pub fn compile_with_stdlib(parsed: &reify_ast::ParsedModule) -> CompiledModule {
     compile_with_prelude_context(parsed, stdlib_loader::load_stdlib_context())
 }
 
@@ -167,8 +162,8 @@ pub fn compile_with_stdlib(parsed: &reify_syntax::ParsedModule) -> CompiledModul
 /// zero per-call heap allocation.
 pub fn parse_with_stdlib(
     source: &str,
-    module_path: reify_types::ModulePath,
-) -> reify_syntax::ParsedModule {
+    module_path: reify_core::ModulePath,
+) -> reify_ast::ParsedModule {
     static NAMES: OnceLock<Vec<&'static str>> = OnceLock::new();
     let names: &Vec<&'static str> =
         NAMES.get_or_init(|| stdlib_loader::load_stdlib_context().enum_names().collect());
@@ -191,7 +186,7 @@ pub fn parse_with_stdlib(
 /// negligible, but crate-internal callers in a hot loop should use
 /// `compile_with_prelude_refs` directly to avoid repeated allocation.
 pub fn compile_with_prelude(
-    parsed: &reify_syntax::ParsedModule,
+    parsed: &reify_ast::ParsedModule,
     prelude: &[CompiledModule],
 ) -> CompiledModule {
     let refs: Vec<&CompiledModule> = prelude.iter().collect();
@@ -265,7 +260,7 @@ pub fn merge_prelude_functions(
 /// any prelude whose [`PreludeContext::from_slice`] was built from that
 /// same `prelude` slice.
 pub fn compile_with_prelude_context(
-    parsed: &reify_syntax::ParsedModule,
+    parsed: &reify_ast::ParsedModule,
     ctx: &PreludeContext,
 ) -> CompiledModule {
     let mut compile_ctx = compile_builder::ctx::CompilationCtx::new();
@@ -399,7 +394,7 @@ pub fn compile_with_prelude_context(
 ///
 /// External callers should use [`compile_with_prelude`] instead.
 pub(crate) fn compile_with_prelude_refs(
-    parsed: &reify_syntax::ParsedModule,
+    parsed: &reify_ast::ParsedModule,
     prelude: &[&CompiledModule],
 ) -> CompiledModule {
     let ctx = PreludeContext::new(prelude);

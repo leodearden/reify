@@ -46,7 +46,7 @@
 //! end-to-end tests for these four arms are included here; they are not stubs —
 //! they are simply absent because they cannot be triggered via the public parse API.
 
-use reify_types::{DiagnosticCode, ModulePath};
+use reify_core::{DiagnosticCode, ModulePath};
 
 // ── UnresolvedType emit-site tests ──────────────────────────────────────────
 

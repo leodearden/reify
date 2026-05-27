@@ -102,7 +102,7 @@ mod gui_tests {
         }
         use crate::engine::EngineSession;
         use reify_constraints::SimpleConstraintChecker;
-        use reify_types::ExportFormat;
+        use reify_ir::ExportFormat;
         let mut session = EngineSession::with_registered_kernel(Box::new(SimpleConstraintChecker));
         session
             .load_from_source(

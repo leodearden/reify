@@ -12,7 +12,8 @@
 use reify_eval::Engine;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::parse_and_compile_with_stdlib;
-use reify_types::{DimensionVector, ModulePath, Value, ValueCellId, VersionId};
+use reify_core::{DimensionVector, ModulePath, ValueCellId, VersionId};
+use reify_ir::Value;
 
 // ─── param_override_type_kind counter ────────────────────────────────────────
 

@@ -1,7 +1,4 @@
-use reify_types::{
-    ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
-    GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value,
-};
+use reify_ir::{ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value};
 
 /// A single-kernel holder that wraps an optional geometry kernel.
 ///
@@ -93,10 +90,7 @@ impl GeometryKernel for SingleKernelHolder {
 mod tests {
     use reify_test_support::MockGeometryKernel;
     use reify_test_support::mm3;
-    use reify_types::{
-        BRepKind, ExportError, ExportFormat, GeometryError, GeometryHandleId, GeometryKernel,
-        GeometryOp, GeometryQuery, QueryError, TessError, Value,
-    };
+    use reify_ir::{BRepKind, ExportError, ExportFormat, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, QueryError, TessError, Value};
 
     use super::*;
 

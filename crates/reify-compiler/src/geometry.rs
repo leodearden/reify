@@ -93,12 +93,12 @@ use super::*;
 /// `register_guarded_names` (guards.rs), and `compile_guarded_members`
 /// (guards.rs).
 pub(crate) fn is_geometry_let(
-    expr: &reify_syntax::Expr,
+    expr: &reify_ast::Expr,
     functions: &[CompiledFunction],
     known_geometry_lets: &HashSet<&str>,
 ) -> bool {
     match &expr.kind {
-        reify_syntax::ExprKind::FunctionCall { name, args } => {
+        reify_ast::ExprKind::FunctionCall { name, args } => {
             is_geometry_function(name)
                 && !functions.iter().any(|f| f.name == *name)
                 // Disambiguate the CSG `sweep(profile, path) -> Solid` (docs §3,
@@ -115,9 +115,9 @@ pub(crate) fn is_geometry_let(
         // populated only from let-binding names (never function names), and an Ident
         // expression is syntactically distinct from FunctionCall, so a user-defined
         // function cannot collide with a geometry let via this branch.
-        reify_syntax::ExprKind::Ident(name) => known_geometry_lets.contains(name.as_str()),
+        reify_ast::ExprKind::Ident(name) => known_geometry_lets.contains(name.as_str()),
         // Conditional — see rustdoc above for rationale (task 3395).
-        reify_syntax::ExprKind::Conditional {
+        reify_ast::ExprKind::Conditional {
             then_branch,
             else_branch,
             ..
@@ -126,7 +126,7 @@ pub(crate) fn is_geometry_let(
                 || is_geometry_let(else_branch, functions, known_geometry_lets)
         }
         // Match — see rustdoc above for rationale (task 3418).
-        reify_syntax::ExprKind::Match { arms, .. } => arms
+        reify_ast::ExprKind::Match { arms, .. } => arms
             .iter()
             .any(|arm| is_geometry_let(&arm.body, functions, known_geometry_lets)),
         // Future branching/wrapping ExprKinds (e.g. pipe expressions,
@@ -148,12 +148,12 @@ pub(crate) fn is_geometry_let(
 /// entity.rs pre-pass, entity.rs main Param loop, guards.rs
 /// `register_guarded_names`, and guards.rs `compile_guarded_members`.
 pub(crate) fn is_solid_geometry_param(
-    ty: &reify_types::Type,
-    default: Option<&reify_syntax::Expr>,
+    ty: &reify_core::Type,
+    default: Option<&reify_ast::Expr>,
     functions: &[CompiledFunction],
     known: &HashSet<&str>,
 ) -> bool {
-    ty == &reify_types::Type::Geometry
+    ty == &reify_core::Type::Geometry
         && default
             .map(|e| is_geometry_let(e, functions, known))
             .unwrap_or(false)
@@ -193,7 +193,7 @@ fn resolve_named_geom_arg(
     idx: usize,
     fn_name: &str,
     arg_label: &str,
-    args: &[reify_syntax::Expr],
+    args: &[reify_ast::Expr],
     geom_refs: &HashMap<usize, GeomRef>,
     diagnostics: &mut Vec<Diagnostic>,
     step_offset: usize,
@@ -297,14 +297,14 @@ fn resolve_loft_like_args(
 /// `collection_sub_names` check in `try_resolve_cross_sub_geom_ref`, or the
 /// `try_emit_cross_sub_geometry` call in `geometry_boolean.rs`).
 pub(crate) fn match_self_sub_member(
-    expr: &reify_syntax::Expr,
+    expr: &reify_ast::Expr,
 ) -> Option<(&str, &str)> {
-    if let reify_syntax::ExprKind::MemberAccess { object, member } = &expr.kind
-        && let reify_syntax::ExprKind::MemberAccess {
+    if let reify_ast::ExprKind::MemberAccess { object, member } = &expr.kind
+        && let reify_ast::ExprKind::MemberAccess {
             object: inner_obj,
             member: sub_name,
         } = &object.kind
-        && let reify_syntax::ExprKind::Ident(self_name) = &inner_obj.kind
+        && let reify_ast::ExprKind::Ident(self_name) = &inner_obj.kind
         && self_name == "self"
     {
         Some((sub_name.as_str(), member.as_str()))
@@ -314,7 +314,7 @@ pub(crate) fn match_self_sub_member(
 }
 
 pub(crate) fn try_resolve_cross_sub_geom_ref(
-    expr: &reify_syntax::Expr,
+    expr: &reify_ast::Expr,
     scope: &CompilationScope<'_>,
 ) -> Option<GeomRef> {
     if let Some((sub_name, member)) = match_self_sub_member(expr)
@@ -350,11 +350,11 @@ pub(crate) fn try_resolve_cross_sub_geom_ref(
 ///   →  box(if c then 40 else 80, if c then 40 else 20, if c then 40 else 20)
 /// ```
 pub(crate) fn try_hoist_geometry_conditional(
-    expr: &reify_syntax::Expr,
+    expr: &reify_ast::Expr,
     functions: &[CompiledFunction],
-) -> Option<reify_syntax::Expr> {
+) -> Option<reify_ast::Expr> {
     let (cond, then_branch, else_branch) = match &expr.kind {
-        reify_syntax::ExprKind::Conditional {
+        reify_ast::ExprKind::Conditional {
             condition,
             then_branch,
             else_branch,
@@ -375,7 +375,7 @@ pub(crate) fn try_hoist_geometry_conditional(
     // just distinguishes "a merged geometry call was produced" (FunctionCall
     // root) from "the scalar-Conditional fallback was returned" (Conditional).
     match &merged.kind {
-        reify_syntax::ExprKind::FunctionCall { .. } => Some(merged),
+        reify_ast::ExprKind::FunctionCall { .. } => Some(merged),
         _ => None,
     }
 }
@@ -389,22 +389,22 @@ pub(crate) fn try_hoist_geometry_conditional(
 /// (common for boilerplate zero-valued axes in 3D ops such as `translate`).
 /// Only the three leaf forms that are safe to compare structurally are matched;
 /// any other kind returns `false` to stay conservative.
-fn are_scalar_equal(a: &reify_syntax::Expr, b: &reify_syntax::Expr) -> bool {
+fn are_scalar_equal(a: &reify_ast::Expr, b: &reify_ast::Expr) -> bool {
     match (&a.kind, &b.kind) {
         (
-            reify_syntax::ExprKind::NumberLiteral {
+            reify_ast::ExprKind::NumberLiteral {
                 value: va,
                 is_real: ra,
             },
-            reify_syntax::ExprKind::NumberLiteral {
+            reify_ast::ExprKind::NumberLiteral {
                 value: vb,
                 is_real: rb,
             },
         ) => va == vb && ra == rb,
-        (reify_syntax::ExprKind::BoolLiteral(va), reify_syntax::ExprKind::BoolLiteral(vb)) => {
+        (reify_ast::ExprKind::BoolLiteral(va), reify_ast::ExprKind::BoolLiteral(vb)) => {
             va == vb
         }
-        (reify_syntax::ExprKind::Ident(na), reify_syntax::ExprKind::Ident(nb)) => na == nb,
+        (reify_ast::ExprKind::Ident(na), reify_ast::ExprKind::Ident(nb)) => na == nb,
         _ => false,
     }
 }
@@ -468,18 +468,18 @@ fn are_scalar_equal(a: &reify_syntax::Expr, b: &reify_syntax::Expr) -> bool {
 /// existing "if-then-else returning geometry" graceful error fires with a label
 /// at `outer_span`.
 fn merge_branches(
-    cond: &reify_syntax::Expr,
-    a: &reify_syntax::Expr,
-    b: &reify_syntax::Expr,
+    cond: &reify_ast::Expr,
+    a: &reify_ast::Expr,
+    b: &reify_ast::Expr,
     functions: &[CompiledFunction],
-    outer_span: reify_types::SourceSpan,
-) -> reify_syntax::Expr {
+    outer_span: reify_core::SourceSpan,
+) -> reify_ast::Expr {
     // Else-if chain reduction: if a branch is itself a Conditional, reduce it
     // to a (potentially geometry-typed) expression so the outer match can
     // compare geometry constructors.
     let a_owned;
-    let a_eff: &reify_syntax::Expr =
-        if let reify_syntax::ExprKind::Conditional {
+    let a_eff: &reify_ast::Expr =
+        if let reify_ast::ExprKind::Conditional {
             condition: c2,
             then_branch: t2,
             else_branch: e2,
@@ -492,8 +492,8 @@ fn merge_branches(
         };
 
     let b_owned;
-    let b_eff: &reify_syntax::Expr =
-        if let reify_syntax::ExprKind::Conditional {
+    let b_eff: &reify_ast::Expr =
+        if let reify_ast::ExprKind::Conditional {
             condition: c2,
             then_branch: t2,
             else_branch: e2,
@@ -506,11 +506,11 @@ fn merge_branches(
         };
 
     if let (
-        reify_syntax::ExprKind::FunctionCall {
+        reify_ast::ExprKind::FunctionCall {
             name: name_a,
             args: args_a,
         },
-        reify_syntax::ExprKind::FunctionCall {
+        reify_ast::ExprKind::FunctionCall {
             name: name_b,
             args: args_b,
         },
@@ -522,13 +522,13 @@ fn merge_branches(
     {
         // Use args from the EFFECTIVE (reduced) forms so scalar args
         // from collapsed else-if chains are properly threaded.
-        let merged_args: Vec<reify_syntax::Expr> = args_a
+        let merged_args: Vec<reify_ast::Expr> = args_a
             .iter()
             .zip(args_b.iter())
             .map(|(x, y)| merge_branches(cond, x, y, functions, outer_span))
             .collect();
-        return reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::FunctionCall {
+        return reify_ast::Expr {
+            kind: reify_ast::ExprKind::FunctionCall {
                 name: name_a.clone(),
                 args: merged_args,
             },
@@ -547,8 +547,8 @@ fn merge_branches(
         return a.clone();
     }
 
-    reify_syntax::Expr {
-        kind: reify_syntax::ExprKind::Conditional {
+    reify_ast::Expr {
+        kind: reify_ast::ExprKind::Conditional {
             condition: Box::new(cond.clone()),
             then_branch: Box::new(a.clone()),
             else_branch: Box::new(b.clone()),
@@ -570,20 +570,20 @@ fn merge_branches(
 /// index of the first op this call will emit in the flat step_handles array).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_geometry_call(
-    expr: &reify_syntax::Expr,
+    expr: &reify_ast::Expr,
     scope: &CompilationScope,
-    enum_defs: &[reify_types::EnumDef],
+    enum_defs: &[reify_ir::EnumDef],
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
     step_offset: usize,
-    geometry_lets: &HashMap<&str, &reify_syntax::Expr>,
+    geometry_lets: &HashMap<&str, &reify_ast::Expr>,
     visiting: &mut HashSet<String>,
 ) -> Option<Vec<CompiledGeometryOp>> {
     // Resolve let-bound geometry variable references: when the expression is an
     // Ident that names a geometry let, recursively compile the initializer.
     // Guard against cycles (e.g. `let a = difference(b, x); let b = difference(a, y);`)
     // by tracking which names are currently being resolved.
-    if let reify_syntax::ExprKind::Ident(name) = &expr.kind {
+    if let reify_ast::ExprKind::Ident(name) = &expr.kind {
         if let Some(init_expr) = geometry_lets.get(name.as_str()) {
             if !visiting.insert(name.clone()) {
                 diagnostics.push(Diagnostic::error(format!(
@@ -650,8 +650,8 @@ pub(crate) fn compile_geometry_call(
     // check fires regardless of whether the branching expr appears at the let's
     // root or as a sub-arg of another geometry call that recurses back here).
     let branching_kind_label = match &expr.kind {
-        reify_syntax::ExprKind::Conditional { .. } => Some("if-then-else"),
-        reify_syntax::ExprKind::Match { .. } => Some("match expression"),
+        reify_ast::ExprKind::Conditional { .. } => Some("if-then-else"),
+        reify_ast::ExprKind::Match { .. } => Some("match expression"),
         _ => None,
     };
     if let Some(kind) = branching_kind_label {
@@ -660,7 +660,7 @@ pub(crate) fn compile_geometry_call(
         // are NOT structurally-identical geometry constructors (different name,
         // different arity, or an Ident-let reference).  Tailor the hint
         // accordingly so users know *why* auto-hoisting did not fire.
-        let hint = if matches!(&expr.kind, reify_syntax::ExprKind::Conditional { .. }) {
+        let hint = if matches!(&expr.kind, reify_ast::ExprKind::Conditional { .. }) {
             "; automatic hoisting requires both branches to be the same \
              geometry constructor with the same arity (e.g. both `box(…)`) — \
              use structurally-identical constructors or select scalar arguments manually"
@@ -682,7 +682,7 @@ pub(crate) fn compile_geometry_call(
     }
 
     let (name, args) = match &expr.kind {
-        reify_syntax::ExprKind::FunctionCall { name, args } => (name.as_str(), args),
+        reify_ast::ExprKind::FunctionCall { name, args } => (name.as_str(), args),
         _ => return None,
     };
 
@@ -1119,7 +1119,7 @@ pub(crate) fn compile_geometry_call(
             let az = it.next().unwrap();
             // Inject literal 2π for the angle
             let tau_expr =
-                CompiledExpr::literal(Value::Real(std::f64::consts::TAU), reify_types::Type::Real);
+                CompiledExpr::literal(Value::Real(std::f64::consts::TAU), reify_core::Type::Real);
             let profile = geom_ref(0);
             let op = CompiledGeometryOp::Sweep {
                 kind: SweepKind::Revolve,
@@ -1299,10 +1299,10 @@ pub(crate) fn compile_geometry_call(
 ///   `collection_name.count == expr`  or  `expr == collection_name.count`
 /// Returns `(collection_name, count_expr)` where count_expr is the non-.count side.
 pub(crate) fn extract_count_constraint<'a>(
-    expr: &'a reify_syntax::Expr,
+    expr: &'a reify_ast::Expr,
     collection_sub_names: &HashSet<String>,
-) -> Option<(String, &'a reify_syntax::Expr)> {
-    if let reify_syntax::ExprKind::BinOp { op, left, right } = &expr.kind {
+) -> Option<(String, &'a reify_ast::Expr)> {
+    if let reify_ast::ExprKind::BinOp { op, left, right } = &expr.kind {
         if op != "==" {
             return None;
         }
@@ -1320,12 +1320,12 @@ pub(crate) fn extract_count_constraint<'a>(
 
 /// Check if an expression is `collection_name.count` for a known collection sub.
 pub(crate) fn extract_collection_count(
-    expr: &reify_syntax::Expr,
+    expr: &reify_ast::Expr,
     collection_sub_names: &HashSet<String>,
 ) -> Option<String> {
-    if let reify_syntax::ExprKind::MemberAccess { object, member } = &expr.kind
+    if let reify_ast::ExprKind::MemberAccess { object, member } = &expr.kind
         && member == "count"
-        && let reify_syntax::ExprKind::Ident(name) = &object.kind
+        && let reify_ast::ExprKind::Ident(name) = &object.kind
         && collection_sub_names.contains(name.as_str())
     {
         return Some(name.clone());
@@ -1368,22 +1368,22 @@ pub(crate) fn unsupported_geometry_fn_message(name: &str) -> String {
 /// up-to-date (single source of truth, similar to `ModifyKind::ALL`).
 pub fn derive_feature_tags(
     ops: &[CompiledGeometryOp],
-    span: reify_types::SourceSpan,
-) -> Vec<reify_types::FeatureTag> {
+    span: reify_core::SourceSpan,
+) -> Vec<reify_ir::FeatureTag> {
     let tags: Vec<_> = ops
         .iter()
         .enumerate()
         .map(|(i, op)| {
             let step_kind = match op {
-                CompiledGeometryOp::Primitive { .. } => reify_types::StepKind::Primitive,
-                CompiledGeometryOp::Boolean { .. } => reify_types::StepKind::Boolean,
-                CompiledGeometryOp::Modify { .. } => reify_types::StepKind::Modify,
-                CompiledGeometryOp::Transform { .. } => reify_types::StepKind::Transform,
-                CompiledGeometryOp::Pattern { .. } => reify_types::StepKind::Pattern,
-                CompiledGeometryOp::Sweep { .. } => reify_types::StepKind::Sweep,
-                CompiledGeometryOp::Curve { .. } => reify_types::StepKind::Curve,
+                CompiledGeometryOp::Primitive { .. } => reify_ir::StepKind::Primitive,
+                CompiledGeometryOp::Boolean { .. } => reify_ir::StepKind::Boolean,
+                CompiledGeometryOp::Modify { .. } => reify_ir::StepKind::Modify,
+                CompiledGeometryOp::Transform { .. } => reify_ir::StepKind::Transform,
+                CompiledGeometryOp::Pattern { .. } => reify_ir::StepKind::Pattern,
+                CompiledGeometryOp::Sweep { .. } => reify_ir::StepKind::Sweep,
+                CompiledGeometryOp::Curve { .. } => reify_ir::StepKind::Curve,
             };
-            reify_types::FeatureTag {
+            reify_ir::FeatureTag {
                 source_span: span,
                 step_kind,
                 sub_index: i as u32,
@@ -1574,7 +1574,7 @@ mod tests {
         // `push_diagnostic + return None` on arg-count/type mismatches, so no arm
         // panics on empty args — each generates its own arm-specific diagnostic, NOT
         // the wildcard marker.
-        let enum_defs: Vec<reify_types::EnumDef> = vec![];
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
         let functions: Vec<CompiledFunction> = vec![];
 
         for &name in GEOM_ARG_FUNCTIONS
@@ -1583,16 +1583,16 @@ mod tests {
             .chain(BOOLEAN_OP_FUNCTIONS.iter())
             .chain(LOFT_FUNCTIONS.iter())
         {
-            let expr = reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::FunctionCall {
+            let expr = reify_ast::Expr {
+                kind: reify_ast::ExprKind::FunctionCall {
                     name: name.to_string(),
                     args: vec![],
                 },
-                span: reify_types::SourceSpan::new(0, 1),
+                span: reify_core::SourceSpan::new(0, 1),
             };
             let scope = CompilationScope::new("test");
             let mut diagnostics: Vec<Diagnostic> = vec![];
-            let geometry_lets: HashMap<&str, &reify_syntax::Expr> = HashMap::new();
+            let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
             compile_geometry_call(
                 &expr,
@@ -1627,7 +1627,7 @@ mod tests {
     param profile: Scalar = 5mm
     let result = extrude_symmetric(profile)
 }"#;
-        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_extsym1"));
+        let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_extsym1"));
         let compiled = crate::compile(&parsed);
         let template = &compiled.templates[0];
         let has_op = template.realizations.iter().any(|r| {
@@ -1659,7 +1659,7 @@ mod tests {
     param dist: Scalar = 10mm
     let result = extrude_symmetric(profile, dist, dist)
 }"#;
-        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_extsym3"));
+        let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_extsym3"));
         let compiled = crate::compile(&parsed);
         let template = &compiled.templates[0];
         let has_op = template.realizations.iter().any(|r| {
@@ -1691,7 +1691,7 @@ mod tests {
     param b: Scalar = 1mm
     let result = sweep_guided(a, b)
 }"#;
-        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_swg2"));
+        let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_swg2"));
         let compiled = crate::compile(&parsed);
         let template = &compiled.templates[0];
         let has_op = template.realizations.iter().any(|r| {
@@ -1725,7 +1725,7 @@ mod tests {
     param d: Scalar = 1mm
     let result = sweep_guided(a, b, c, d)
 }"#;
-        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_swg4"));
+        let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_swg4"));
         let compiled = crate::compile(&parsed);
         let template = &compiled.templates[0];
         let has_op = template.realizations.iter().any(|r| {
@@ -1760,7 +1760,7 @@ mod tests {
     let result = sweep_guided(a, b, c)
 }"#;
         let parsed =
-            reify_syntax::parse(source, reify_types::ModulePath::single("test_swg_nongeom"));
+            reify_syntax::parse(source, reify_core::ModulePath::single("test_swg_nongeom"));
         let compiled = crate::compile(&parsed);
         // Expect three per-arg diagnostics mentioning the arg labels.
         let profile_diag = compiled
@@ -1802,7 +1802,7 @@ mod tests {
     let guide = sphere(2mm)
     let result = sweep_guided(profile, path, guide)
 }"#;
-        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_swg_ok"));
+        let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_swg_ok"));
         assert!(
             parsed.errors.is_empty(),
             "parse errors: {:?}",
@@ -1843,7 +1843,7 @@ mod tests {
     param dist: Scalar = 10mm
     let result = extrude_symmetric(profile, dist)
 }"#;
-        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_extsym2"));
+        let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_extsym2"));
         assert!(
             parsed.errors.is_empty(),
             "parse errors: {:?}",
@@ -1886,7 +1886,7 @@ mod tests {
     let p2 = sphere(3mm)
     let result = loft_guided(p1, p2)
 }"#;
-        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_lg2"));
+        let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_lg2"));
         let compiled = crate::compile(&parsed);
         let template = &compiled.templates[0];
         let has_op = template.realizations.iter().any(|r| {
@@ -1920,7 +1920,7 @@ mod tests {
     let guide = sphere(2mm)
     let result = loft_guided(p1, p2, guide)
 }"#;
-        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_lg3"));
+        let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_lg3"));
         assert!(
             parsed.errors.is_empty(),
             "parse errors: {:?}",
@@ -1979,7 +1979,7 @@ mod tests {
     let guide = sphere(2mm)
     let result = loft_guided(p1, p2, p3, guide)
 }"#;
-        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_lg4"));
+        let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_lg4"));
         assert!(
             parsed.errors.is_empty(),
             "parse errors: {:?}",
@@ -2033,7 +2033,7 @@ mod tests {
     let result = loft_guided(a, b, c)
 }"#;
         let parsed =
-            reify_syntax::parse(source, reify_types::ModulePath::single("test_lg_nongeom"));
+            reify_syntax::parse(source, reify_core::ModulePath::single("test_lg_nongeom"));
         let compiled = crate::compile(&parsed);
         let template = &compiled.templates[0];
         // An op should still be produced with fallback GeomRef::Step refs
@@ -2061,7 +2061,7 @@ mod tests {
     fn resolve_loft_like_args_debug_asserts_guide_suffix_requires_two_args() {
         let compiled_args = vec![CompiledExpr::literal(
             Value::Real(0.0),
-            reify_types::Type::Real,
+            reify_core::Type::Real,
         )];
         let geom_refs: HashMap<usize, GeomRef> = HashMap::new();
         // guide_suffix=true with only 1 arg must panic via debug_assert!
@@ -2088,7 +2088,7 @@ mod tests {
         // below.  Using identical 1.0 markers for every slot would hide such regressions.
         fn make_args(n: usize) -> Vec<CompiledExpr> {
             (0..n)
-                .map(|i| CompiledExpr::literal(Value::Real(i as f64), reify_types::Type::Real))
+                .map(|i| CompiledExpr::literal(Value::Real(i as f64), reify_core::Type::Real))
                 .collect()
         }
 
@@ -2174,25 +2174,25 @@ mod tests {
         // Fabricate a FunctionCall expr with a name that is NOT in the
         // compile_geometry_call match arms (e.g., "make_cube").  This directly
         // exercises the `_ =>` catch-all branch added in step-4.
-        let expr = reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::FunctionCall {
+        let expr = reify_ast::Expr {
+            kind: reify_ast::ExprKind::FunctionCall {
                 name: "make_cube".to_string(),
-                args: vec![reify_syntax::Expr {
-                    kind: reify_syntax::ExprKind::NumberLiteral {
+                args: vec![reify_ast::Expr {
+                    kind: reify_ast::ExprKind::NumberLiteral {
                         value: 1.0,
                         is_real: false,
                     },
-                    span: reify_types::SourceSpan::new(0, 1),
+                    span: reify_core::SourceSpan::new(0, 1),
                 }],
             },
-            span: reify_types::SourceSpan::new(0, 10),
+            span: reify_core::SourceSpan::new(0, 10),
         };
         let scope = CompilationScope::new("test");
-        let enum_defs: Vec<reify_types::EnumDef> = vec![];
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
         let functions: Vec<CompiledFunction> = vec![];
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let geometry_lets: HashMap<&str, &reify_syntax::Expr> = HashMap::new();
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
         let result = compile_geometry_call(
             &expr,
             &scope,
@@ -2224,33 +2224,33 @@ mod tests {
         // sweep() where the profile arg is a literal number (not a geometry expression).
         // When step_offset=3, the profile GeomRef fallback should be Step(3), not Step(0).
         // The path arg is also a literal, so it falls back to Step(step_offset + 1) = Step(4).
-        let expr = reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::FunctionCall {
+        let expr = reify_ast::Expr {
+            kind: reify_ast::ExprKind::FunctionCall {
                 name: "sweep".to_string(),
                 args: vec![
-                    reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::NumberLiteral {
+                    reify_ast::Expr {
+                        kind: reify_ast::ExprKind::NumberLiteral {
                             value: 1.0,
                             is_real: false,
                         },
-                        span: reify_types::SourceSpan::new(0, 1),
+                        span: reify_core::SourceSpan::new(0, 1),
                     },
-                    reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::NumberLiteral {
+                    reify_ast::Expr {
+                        kind: reify_ast::ExprKind::NumberLiteral {
                             value: 2.0,
                             is_real: false,
                         },
-                        span: reify_types::SourceSpan::new(0, 1),
+                        span: reify_core::SourceSpan::new(0, 1),
                     },
                 ],
             },
-            span: reify_types::SourceSpan::new(0, 10),
+            span: reify_core::SourceSpan::new(0, 10),
         };
         let scope = CompilationScope::new("test");
-        let enum_defs: Vec<reify_types::EnumDef> = vec![];
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
         let functions: Vec<CompiledFunction> = vec![];
         let mut diagnostics: Vec<Diagnostic> = vec![];
-        let geometry_lets: HashMap<&str, &reify_syntax::Expr> = HashMap::new();
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
         let result = compile_geometry_call(
             &expr,
@@ -2306,40 +2306,40 @@ mod tests {
         //   - The fallback is silent: no per-argument diagnostic is emitted, matching
         //     the geom_ref convention used by extrude/revolve/translate/etc.
         //   - Ops are still produced (fallback refs allow compilation to continue).
-        let expr = reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::FunctionCall {
+        let expr = reify_ast::Expr {
+            kind: reify_ast::ExprKind::FunctionCall {
                 name: "loft".to_string(),
                 args: vec![
-                    reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::NumberLiteral {
+                    reify_ast::Expr {
+                        kind: reify_ast::ExprKind::NumberLiteral {
                             value: 1.0,
                             is_real: false,
                         },
-                        span: reify_types::SourceSpan::new(0, 1),
+                        span: reify_core::SourceSpan::new(0, 1),
                     },
-                    reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::NumberLiteral {
+                    reify_ast::Expr {
+                        kind: reify_ast::ExprKind::NumberLiteral {
                             value: 2.0,
                             is_real: false,
                         },
-                        span: reify_types::SourceSpan::new(0, 1),
+                        span: reify_core::SourceSpan::new(0, 1),
                     },
-                    reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::NumberLiteral {
+                    reify_ast::Expr {
+                        kind: reify_ast::ExprKind::NumberLiteral {
                             value: 3.0,
                             is_real: false,
                         },
-                        span: reify_types::SourceSpan::new(0, 1),
+                        span: reify_core::SourceSpan::new(0, 1),
                     },
                 ],
             },
-            span: reify_types::SourceSpan::new(0, 10),
+            span: reify_core::SourceSpan::new(0, 10),
         };
         let scope = CompilationScope::new("test");
-        let enum_defs: Vec<reify_types::EnumDef> = vec![];
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
         let functions: Vec<CompiledFunction> = vec![];
         let mut diagnostics: Vec<Diagnostic> = vec![];
-        let geometry_lets: HashMap<&str, &reify_syntax::Expr> = HashMap::new();
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
         let result = compile_geometry_call(
             &expr,
@@ -2395,22 +2395,22 @@ mod tests {
     // --- Regression pin: CSG vs kinematic `sweep` arity disambiguation (task 2529) ---
 
     /// Helper: build a `FunctionCall` Expr with `n` numeric-literal args, named `name`.
-    fn make_call_with_arity(name: &str, n: usize) -> reify_syntax::Expr {
+    fn make_call_with_arity(name: &str, n: usize) -> reify_ast::Expr {
         let args = (0..n)
-            .map(|_| reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::NumberLiteral {
+            .map(|_| reify_ast::Expr {
+                kind: reify_ast::ExprKind::NumberLiteral {
                     value: 1.0,
                     is_real: false,
                 },
-                span: reify_types::SourceSpan::new(0, 1),
+                span: reify_core::SourceSpan::new(0, 1),
             })
             .collect();
-        reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::FunctionCall {
+        reify_ast::Expr {
+            kind: reify_ast::ExprKind::FunctionCall {
                 name: name.to_string(),
                 args,
             },
-            span: reify_types::SourceSpan::new(0, 1),
+            span: reify_core::SourceSpan::new(0, 1),
         }
     }
 
@@ -2463,19 +2463,19 @@ mod tests {
     #[test]
     fn compile_geometry_call_conditional_with_incompatible_branches_emits_error() {
         // Build: if true then box(1, 1, 1) else cylinder(1, 1) — incompatible.
-        let bool_cond = reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::BoolLiteral(true),
-            span: reify_types::SourceSpan::new(0, 4),
+        let bool_cond = reify_ast::Expr {
+            kind: reify_ast::ExprKind::BoolLiteral(true),
+            span: reify_core::SourceSpan::new(0, 4),
         };
         let box_expr = make_call_with_arity("box", 3);
         let cyl_expr = make_call_with_arity("cylinder", 2);
         let cond_expr = make_conditional(bool_cond, box_expr, cyl_expr);
 
         let scope = CompilationScope::new("test");
-        let enum_defs: Vec<reify_types::EnumDef> = vec![];
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
         let functions: Vec<CompiledFunction> = vec![];
         let mut diagnostics: Vec<Diagnostic> = vec![];
-        let geometry_lets: HashMap<&str, &reify_syntax::Expr> = HashMap::new();
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
         let result = compile_geometry_call(
             &cond_expr,
@@ -2497,7 +2497,7 @@ mod tests {
         // (b) Must emit exactly one Error-severity diagnostic.
         let error_diags: Vec<_> = diagnostics
             .iter()
-            .filter(|d| d.severity == reify_types::Severity::Error)
+            .filter(|d| d.severity == reify_core::Severity::Error)
             .collect();
         assert_eq!(
             error_diags.len(),
@@ -2525,17 +2525,17 @@ mod tests {
 
     /// Helper: build a `Conditional` Expr from three child Exprs.
     fn make_conditional(
-        cond: reify_syntax::Expr,
-        then_branch: reify_syntax::Expr,
-        else_branch: reify_syntax::Expr,
-    ) -> reify_syntax::Expr {
-        reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::Conditional {
+        cond: reify_ast::Expr,
+        then_branch: reify_ast::Expr,
+        else_branch: reify_ast::Expr,
+    ) -> reify_ast::Expr {
+        reify_ast::Expr {
+            kind: reify_ast::ExprKind::Conditional {
                 condition: Box::new(cond),
                 then_branch: Box::new(then_branch),
                 else_branch: Box::new(else_branch),
             },
-            span: reify_types::SourceSpan::new(0, 1),
+            span: reify_core::SourceSpan::new(0, 1),
         }
     }
 
@@ -2552,16 +2552,16 @@ mod tests {
         let functions: Vec<CompiledFunction> = vec![];
         let known: HashSet<&str> = HashSet::new();
 
-        let bool_cond = reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::BoolLiteral(true),
-            span: reify_types::SourceSpan::new(0, 1),
+        let bool_cond = reify_ast::Expr {
+            kind: reify_ast::ExprKind::BoolLiteral(true),
+            span: reify_core::SourceSpan::new(0, 1),
         };
-        let num_literal = reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::NumberLiteral {
+        let num_literal = reify_ast::Expr {
+            kind: reify_ast::ExprKind::NumberLiteral {
                 value: 1.0,
                 is_real: false,
             },
-            span: reify_types::SourceSpan::new(0, 1),
+            span: reify_core::SourceSpan::new(0, 1),
         };
 
         // (a) Both branches geometry → true
@@ -2612,9 +2612,9 @@ mod tests {
         // (e) Ident branch referencing a known geometry let — transitive recognition.
         let mut known_with_g: HashSet<&str> = HashSet::new();
         known_with_g.insert("g");
-        let ident_g = reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::Ident("g".to_string()),
-            span: reify_types::SourceSpan::new(0, 1),
+        let ident_g = reify_ast::Expr {
+            kind: reify_ast::ExprKind::Ident("g".to_string()),
+            span: reify_core::SourceSpan::new(0, 1),
         };
         let cond_ident = make_conditional(bool_cond.clone(), ident_g, num_literal.clone());
         assert!(
@@ -2635,9 +2635,9 @@ mod tests {
     #[test]
     fn compile_geometry_call_match_returning_solid_emits_error_and_returns_none() {
         // Build: match axis { X => box(1,1,1), Y => box(1,1,1) }
-        let discriminant = reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::Ident("axis".to_string()),
-            span: reify_types::SourceSpan::new(0, 4),
+        let discriminant = reify_ast::Expr {
+            kind: reify_ast::ExprKind::Ident("axis".to_string()),
+            span: reify_core::SourceSpan::new(0, 4),
         };
         let match_expr = make_match(
             discriminant,
@@ -2648,10 +2648,10 @@ mod tests {
         );
 
         let scope = CompilationScope::new("test");
-        let enum_defs: Vec<reify_types::EnumDef> = vec![];
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
         let functions: Vec<CompiledFunction> = vec![];
         let mut diagnostics: Vec<Diagnostic> = vec![];
-        let geometry_lets: HashMap<&str, &reify_syntax::Expr> = HashMap::new();
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
         let result = compile_geometry_call(
             &match_expr,
@@ -2673,7 +2673,7 @@ mod tests {
         // (b) Must emit exactly one Error-severity diagnostic.
         let error_diags: Vec<_> = diagnostics
             .iter()
-            .filter(|d| d.severity == reify_types::Severity::Error)
+            .filter(|d| d.severity == reify_core::Severity::Error)
             .collect();
         assert_eq!(
             error_diags.len(),
@@ -2702,25 +2702,25 @@ mod tests {
     /// Helper: build a `Match` Expr from a discriminant Expr and a slice of arm body Exprs.
     /// Each arm gets a single string pattern ("X", "Y", "Z", ...) assigned in order.
     fn make_match(
-        discriminant: reify_syntax::Expr,
-        bodies: Vec<reify_syntax::Expr>,
-    ) -> reify_syntax::Expr {
+        discriminant: reify_ast::Expr,
+        bodies: Vec<reify_ast::Expr>,
+    ) -> reify_ast::Expr {
         let pattern_names = ["X", "Y", "Z", "W", "V"];
         let arms = bodies
             .into_iter()
             .enumerate()
-            .map(|(i, body)| reify_syntax::MatchArm {
+            .map(|(i, body)| reify_ast::MatchArm {
                 patterns: vec![pattern_names[i % pattern_names.len()].to_string()],
                 body,
-                span: reify_types::SourceSpan::new(0, 1),
+                span: reify_core::SourceSpan::new(0, 1),
             })
             .collect();
-        reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::Match {
+        reify_ast::Expr {
+            kind: reify_ast::ExprKind::Match {
                 discriminant: Box::new(discriminant),
                 arms,
             },
-            span: reify_types::SourceSpan::new(0, 1),
+            span: reify_core::SourceSpan::new(0, 1),
         }
     }
 
@@ -2736,16 +2736,16 @@ mod tests {
         let functions: Vec<CompiledFunction> = vec![];
         let known: HashSet<&str> = HashSet::new();
 
-        let discriminant = reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::Ident("axis".to_string()),
-            span: reify_types::SourceSpan::new(0, 4),
+        let discriminant = reify_ast::Expr {
+            kind: reify_ast::ExprKind::Ident("axis".to_string()),
+            span: reify_core::SourceSpan::new(0, 4),
         };
-        let num_literal = reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::NumberLiteral {
+        let num_literal = reify_ast::Expr {
+            kind: reify_ast::ExprKind::NumberLiteral {
                 value: 1.0,
                 is_real: false,
             },
-            span: reify_types::SourceSpan::new(0, 1),
+            span: reify_core::SourceSpan::new(0, 1),
         };
 
         // (a) All arms geometry → true
@@ -2804,9 +2804,9 @@ mod tests {
         // (e) Ident arm referencing a known geometry let → transitive recognition.
         let mut known_with_g: HashSet<&str> = HashSet::new();
         known_with_g.insert("g");
-        let ident_g = reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::Ident("g".to_string()),
-            span: reify_types::SourceSpan::new(0, 1),
+        let ident_g = reify_ast::Expr {
+            kind: reify_ast::ExprKind::Ident("g".to_string()),
+            span: reify_core::SourceSpan::new(0, 1),
         };
         let match_ident = make_match(discriminant.clone(), vec![ident_g, num_literal.clone()]);
         assert!(
@@ -2819,39 +2819,39 @@ mod tests {
 
     /// Helper: build a numeric literal Expr with value 1.
     #[allow(dead_code)]
-    fn num_lit() -> reify_syntax::Expr {
-        reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::NumberLiteral {
+    fn num_lit() -> reify_ast::Expr {
+        reify_ast::Expr {
+            kind: reify_ast::ExprKind::NumberLiteral {
                 value: 1.0,
                 is_real: false,
             },
-            span: reify_types::SourceSpan::new(0, 1),
+            span: reify_core::SourceSpan::new(0, 1),
         }
     }
 
     /// Helper: build a bool-literal condition Expr (true).
-    fn bool_cond_expr() -> reify_syntax::Expr {
-        reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::BoolLiteral(true),
-            span: reify_types::SourceSpan::new(0, 4),
+    fn bool_cond_expr() -> reify_ast::Expr {
+        reify_ast::Expr {
+            kind: reify_ast::ExprKind::BoolLiteral(true),
+            span: reify_core::SourceSpan::new(0, 4),
         }
     }
 
     /// Helper: build a FunctionCall Expr named "box" with three specific numeric arg values.
-    fn make_box_with_values(w: f64, h: f64, d: f64) -> reify_syntax::Expr {
-        let num = |v: f64| reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::NumberLiteral {
+    fn make_box_with_values(w: f64, h: f64, d: f64) -> reify_ast::Expr {
+        let num = |v: f64| reify_ast::Expr {
+            kind: reify_ast::ExprKind::NumberLiteral {
                 value: v,
                 is_real: false,
             },
-            span: reify_types::SourceSpan::new(0, 1),
+            span: reify_core::SourceSpan::new(0, 1),
         };
-        reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::FunctionCall {
+        reify_ast::Expr {
+            kind: reify_ast::ExprKind::FunctionCall {
                 name: "box".to_string(),
                 args: vec![num(w), num(h), num(d)],
             },
-            span: reify_types::SourceSpan::new(0, 1),
+            span: reify_core::SourceSpan::new(0, 1),
         }
     }
 
@@ -2869,12 +2869,12 @@ mod tests {
         let b_vals = [40.0_f64, 50.0, 60.0];
         let a = make_box_with_values(a_vals[0], a_vals[1], a_vals[2]);
         let b = make_box_with_values(b_vals[0], b_vals[1], b_vals[2]);
-        let outer_span = reify_types::SourceSpan::new(0, 10);
+        let outer_span = reify_core::SourceSpan::new(0, 10);
 
         let merged = merge_branches(&cond, &a, &b, &functions, outer_span);
 
         let args = match &merged.kind {
-            reify_syntax::ExprKind::FunctionCall { name, args } => {
+            reify_ast::ExprKind::FunctionCall { name, args } => {
                 assert_eq!(name, "box");
                 assert_eq!(args.len(), 3);
                 args
@@ -2883,14 +2883,14 @@ mod tests {
         };
         for (i, arg) in args.iter().enumerate() {
             match &arg.kind {
-                reify_syntax::ExprKind::Conditional {
+                reify_ast::ExprKind::Conditional {
                     condition,
                     then_branch,
                     else_branch,
                 } => {
                     // condition must be the outer BoolLiteral(true)
                     assert!(
-                        matches!(&condition.kind, reify_syntax::ExprKind::BoolLiteral(true)),
+                        matches!(&condition.kind, reify_ast::ExprKind::BoolLiteral(true)),
                         "arg {i}: condition should be BoolLiteral(true), got {:?}",
                         condition.kind
                     );
@@ -2898,7 +2898,7 @@ mod tests {
                     assert!(
                         matches!(
                             &then_branch.kind,
-                            reify_syntax::ExprKind::NumberLiteral { value, .. }
+                            reify_ast::ExprKind::NumberLiteral { value, .. }
                             if (*value - a_vals[i]).abs() < 1e-12
                         ),
                         "arg {i}: then_branch should be NumberLiteral({:.1}), got {:?}",
@@ -2909,7 +2909,7 @@ mod tests {
                     assert!(
                         matches!(
                             &else_branch.kind,
-                            reify_syntax::ExprKind::NumberLiteral { value, .. }
+                            reify_ast::ExprKind::NumberLiteral { value, .. }
                             if (*value - b_vals[i]).abs() < 1e-12
                         ),
                         "arg {i}: else_branch should be NumberLiteral({:.1}), got {:?}",
@@ -2929,12 +2929,12 @@ mod tests {
         let cond = bool_cond_expr();
         let a = make_call_with_arity("box", 3);
         let b = make_call_with_arity("cylinder", 2);
-        let outer_span = reify_types::SourceSpan::new(0, 10);
+        let outer_span = reify_core::SourceSpan::new(0, 10);
 
         let merged = merge_branches(&cond, &a, &b, &functions, outer_span);
 
         assert!(
-            matches!(&merged.kind, reify_syntax::ExprKind::Conditional { .. }),
+            matches!(&merged.kind, reify_ast::ExprKind::Conditional { .. }),
             "box vs cylinder should produce a scalar Conditional, got {:?}",
             merged.kind
         );
@@ -2947,12 +2947,12 @@ mod tests {
         let cond = bool_cond_expr();
         let a = make_call_with_arity("box", 3);
         let b = make_call_with_arity("box", 2); // unusual but possible
-        let outer_span = reify_types::SourceSpan::new(0, 10);
+        let outer_span = reify_core::SourceSpan::new(0, 10);
 
         let merged = merge_branches(&cond, &a, &b, &functions, outer_span);
 
         assert!(
-            matches!(&merged.kind, reify_syntax::ExprKind::Conditional { .. }),
+            matches!(&merged.kind, reify_ast::ExprKind::Conditional { .. }),
             "box arity mismatch should produce a scalar Conditional, got {:?}",
             merged.kind
         );
@@ -2965,9 +2965,9 @@ mod tests {
         let cond = bool_cond_expr();
         let a = make_call_with_arity("box", 3);
         let b = make_call_with_arity("box", 3);
-        let outer_span = reify_types::SourceSpan::new(0, 20);
-        let cond_expr = reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::Conditional {
+        let outer_span = reify_core::SourceSpan::new(0, 20);
+        let cond_expr = reify_ast::Expr {
+            kind: reify_ast::ExprKind::Conditional {
                 condition: Box::new(cond),
                 then_branch: Box::new(a),
                 else_branch: Box::new(b),
@@ -2984,7 +2984,7 @@ mod tests {
         assert!(
             matches!(
                 &hoisted.kind,
-                reify_syntax::ExprKind::FunctionCall { name, .. } if name == "box"
+                reify_ast::ExprKind::FunctionCall { name, .. } if name == "box"
             ),
             "hoisted expr should be FunctionCall{{\"box\", ...}}, got {:?}",
             hoisted.kind
@@ -2998,9 +2998,9 @@ mod tests {
         let cond = bool_cond_expr();
         let a = make_call_with_arity("box", 3);
         let b = make_call_with_arity("cylinder", 2);
-        let outer_span = reify_types::SourceSpan::new(0, 20);
-        let cond_expr = reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::Conditional {
+        let outer_span = reify_core::SourceSpan::new(0, 20);
+        let cond_expr = reify_ast::Expr {
+            kind: reify_ast::ExprKind::Conditional {
                 condition: Box::new(cond),
                 then_branch: Box::new(a),
                 else_branch: Box::new(b),
@@ -3038,34 +3038,34 @@ mod tests {
         let functions: Vec<CompiledFunction> = vec![];
         let cond = bool_cond_expr();
         // a = union(box(1,1,1), box(1,1,1))  — "then" tree
-        let a = reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::FunctionCall {
+        let a = reify_ast::Expr {
+            kind: reify_ast::ExprKind::FunctionCall {
                 name: "union".to_string(),
                 args: vec![
                     make_box_with_values(1.0, 1.0, 1.0),
                     make_box_with_values(1.0, 1.0, 1.0),
                 ],
             },
-            span: reify_types::SourceSpan::new(0, 1),
+            span: reify_core::SourceSpan::new(0, 1),
         };
         // b = union(box(2,2,2), box(2,2,2))  — "else" tree (distinct values, args differ)
-        let b = reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::FunctionCall {
+        let b = reify_ast::Expr {
+            kind: reify_ast::ExprKind::FunctionCall {
                 name: "union".to_string(),
                 args: vec![
                     make_box_with_values(2.0, 2.0, 2.0),
                     make_box_with_values(2.0, 2.0, 2.0),
                 ],
             },
-            span: reify_types::SourceSpan::new(0, 1),
+            span: reify_core::SourceSpan::new(0, 1),
         };
-        let outer_span = reify_types::SourceSpan::new(0, 20);
+        let outer_span = reify_core::SourceSpan::new(0, 20);
 
         let merged = merge_branches(&cond, &a, &b, &functions, outer_span);
 
         // Merged root should be union(...)
         let (name, args) = match &merged.kind {
-            reify_syntax::ExprKind::FunctionCall { name, args } => (name, args),
+            reify_ast::ExprKind::FunctionCall { name, args } => (name, args),
             other => panic!("expected FunctionCall, got {:?}", other),
         };
         assert_eq!(name, "union");
@@ -3074,7 +3074,7 @@ mod tests {
         // Each sub-arg should be box(C,C,C)
         for (i, sub) in args.iter().enumerate() {
             let sub_args = match &sub.kind {
-                reify_syntax::ExprKind::FunctionCall { name, args } => {
+                reify_ast::ExprKind::FunctionCall { name, args } => {
                     assert_eq!(name, "box", "sub-arg {} should be box", i);
                     args
                 }
@@ -3083,7 +3083,7 @@ mod tests {
             assert_eq!(sub_args.len(), 3);
             for sub_arg in sub_args {
                 assert!(
-                    matches!(&sub_arg.kind, reify_syntax::ExprKind::Conditional { .. }),
+                    matches!(&sub_arg.kind, reify_ast::ExprKind::Conditional { .. }),
                     "sub-arg {}: box arg should be Conditional, got {:?}",
                     i,
                     sub_arg.kind
@@ -3109,20 +3109,20 @@ mod tests {
         let box_r = make_box_with_values(30.0, 30.0, 30.0);
 
         // else_branch is itself: `if cond2 then box(q) else box(r)`
-        let inner_cond = reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::Conditional {
+        let inner_cond = reify_ast::Expr {
+            kind: reify_ast::ExprKind::Conditional {
                 condition: Box::new(cond2.clone()),
                 then_branch: Box::new(box_q),
                 else_branch: Box::new(box_r),
             },
-            span: reify_types::SourceSpan::new(0, 10),
+            span: reify_core::SourceSpan::new(0, 10),
         };
 
-        let outer_span = reify_types::SourceSpan::new(0, 20);
+        let outer_span = reify_core::SourceSpan::new(0, 20);
 
         // try_hoist on `if cond1 then box(p) else (if cond2 then box(q) else box(r))`
-        let cond_expr = reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::Conditional {
+        let cond_expr = reify_ast::Expr {
+            kind: reify_ast::ExprKind::Conditional {
                 condition: Box::new(cond1.clone()),
                 then_branch: Box::new(box_p),
                 else_branch: Box::new(inner_cond),
@@ -3138,13 +3138,13 @@ mod tests {
         );
         let hoisted = result.unwrap();
         match &hoisted.kind {
-            reify_syntax::ExprKind::FunctionCall { name, args } => {
+            reify_ast::ExprKind::FunctionCall { name, args } => {
                 assert_eq!(name, "box", "hoisted should be box");
                 assert_eq!(args.len(), 3);
                 for arg in args {
                     // Each arg should be a (potentially nested) Conditional.
                     assert!(
-                        matches!(&arg.kind, reify_syntax::ExprKind::Conditional { .. }),
+                        matches!(&arg.kind, reify_ast::ExprKind::Conditional { .. }),
                         "else-if chain: box arg should be Conditional, got {:?}",
                         arg.kind
                     );
@@ -3165,21 +3165,21 @@ mod tests {
     fn merge_branches_identical_number_literal_args_not_wrapped_in_conditional() {
         let functions: Vec<CompiledFunction> = vec![];
         let cond = bool_cond_expr();
-        let zero_a = reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::NumberLiteral {
+        let zero_a = reify_ast::Expr {
+            kind: reify_ast::ExprKind::NumberLiteral {
                 value: 0.0,
                 is_real: false,
             },
-            span: reify_types::SourceSpan::new(0, 1),
+            span: reify_core::SourceSpan::new(0, 1),
         };
-        let zero_b = reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::NumberLiteral {
+        let zero_b = reify_ast::Expr {
+            kind: reify_ast::ExprKind::NumberLiteral {
                 value: 0.0,
                 is_real: false,
             },
-            span: reify_types::SourceSpan::new(0, 1),
+            span: reify_core::SourceSpan::new(0, 1),
         };
-        let outer_span = reify_types::SourceSpan::new(0, 10);
+        let outer_span = reify_core::SourceSpan::new(0, 10);
 
         let merged = merge_branches(&cond, &zero_a, &zero_b, &functions, outer_span);
 
@@ -3187,7 +3187,7 @@ mod tests {
         assert!(
             matches!(
                 &merged.kind,
-                reify_syntax::ExprKind::NumberLiteral { value, .. }
+                reify_ast::ExprKind::NumberLiteral { value, .. }
                 if (*value - 0.0_f64).abs() < 1e-12
             ),
             "identical 0.0 args should be returned as-is (no Conditional), got {:?}",
@@ -3206,9 +3206,9 @@ mod tests {
     fn try_hoist_geometry_conditional_returns_none_when_box_is_user_shadowed() {
         // Simulate `fn box(w, h, d) { … }` in user code.
         let params = vec![
-            ("w".to_string(), reify_types::Type::Real),
-            ("h".to_string(), reify_types::Type::Real),
-            ("d".to_string(), reify_types::Type::Real),
+            ("w".to_string(), reify_core::Type::Real),
+            ("h".to_string(), reify_core::Type::Real),
+            ("d".to_string(), reify_core::Type::Real),
         ];
         let box_shadow_fn = CompiledFunction {
             name: "box".to_string(),
@@ -3216,12 +3216,12 @@ mod tests {
             is_pub: false,
             param_defaults: CompiledFunction::no_defaults_for(&params),
             params,
-            return_type: reify_types::Type::Real,
+            return_type: reify_core::Type::Real,
             body: CompiledFnBody {
                 let_bindings: vec![],
                 result_expr: CompiledExpr {
                     kind: CompiledExprKind::Literal(Value::Real(0.0)),
-                    result_type: reify_types::Type::Real,
+                    result_type: reify_core::Type::Real,
                     content_hash: ContentHash::of_str("box_shadow_hoist_stub"),
                 },
             },
@@ -3235,9 +3235,9 @@ mod tests {
         // Both branches are box(…) with distinct values — would hoist with empty functions.
         let a = make_box_with_values(1.0, 2.0, 3.0);
         let b = make_box_with_values(4.0, 5.0, 6.0);
-        let outer_span = reify_types::SourceSpan::new(0, 20);
-        let cond_expr = reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::Conditional {
+        let outer_span = reify_core::SourceSpan::new(0, 20);
+        let cond_expr = reify_ast::Expr {
+            kind: reify_ast::ExprKind::Conditional {
                 condition: Box::new(cond),
                 then_branch: Box::new(a),
                 else_branch: Box::new(b),
@@ -3259,9 +3259,9 @@ mod tests {
     #[test]
     fn merge_branches_returns_scalar_conditional_when_box_is_user_shadowed() {
         let params = vec![
-            ("w".to_string(), reify_types::Type::Real),
-            ("h".to_string(), reify_types::Type::Real),
-            ("d".to_string(), reify_types::Type::Real),
+            ("w".to_string(), reify_core::Type::Real),
+            ("h".to_string(), reify_core::Type::Real),
+            ("d".to_string(), reify_core::Type::Real),
         ];
         let box_shadow_fn = CompiledFunction {
             name: "box".to_string(),
@@ -3269,12 +3269,12 @@ mod tests {
             is_pub: false,
             param_defaults: CompiledFunction::no_defaults_for(&params),
             params,
-            return_type: reify_types::Type::Real,
+            return_type: reify_core::Type::Real,
             body: CompiledFnBody {
                 let_bindings: vec![],
                 result_expr: CompiledExpr {
                     kind: CompiledExprKind::Literal(Value::Real(0.0)),
-                    result_type: reify_types::Type::Real,
+                    result_type: reify_core::Type::Real,
                     content_hash: ContentHash::of_str("box_shadow_merge_stub"),
                 },
             },
@@ -3287,13 +3287,13 @@ mod tests {
         let cond = bool_cond_expr();
         let a = make_box_with_values(1.0, 2.0, 3.0);
         let b = make_box_with_values(4.0, 5.0, 6.0);
-        let outer_span = reify_types::SourceSpan::new(0, 10);
+        let outer_span = reify_core::SourceSpan::new(0, 10);
 
         let merged = merge_branches(&cond, &a, &b, &functions, outer_span);
 
         // Must be a scalar Conditional, NOT a FunctionCall.
         assert!(
-            matches!(&merged.kind, reify_syntax::ExprKind::Conditional { .. }),
+            matches!(&merged.kind, reify_ast::ExprKind::Conditional { .. }),
             "user-shadowed 'box': merge_branches should return scalar Conditional, got {:?}",
             merged.kind
         );
@@ -3310,47 +3310,47 @@ mod tests {
     /// existing graceful-error path (try_hoist returns None for box vs cyl).
     #[test]
     fn compile_geometry_call_translate_with_mismatched_inner_geometry_emits_error() {
-        let zero = || reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::NumberLiteral {
+        let zero = || reify_ast::Expr {
+            kind: reify_ast::ExprKind::NumberLiteral {
                 value: 0.0,
                 is_real: false,
             },
-            span: reify_types::SourceSpan::new(0, 1),
+            span: reify_core::SourceSpan::new(0, 1),
         };
-        let one = || reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::NumberLiteral {
+        let one = || reify_ast::Expr {
+            kind: reify_ast::ExprKind::NumberLiteral {
                 value: 1.0,
                 is_real: false,
             },
-            span: reify_types::SourceSpan::new(0, 1),
+            span: reify_core::SourceSpan::new(0, 1),
         };
         // translate(box(1,1,1), 1, 0, 0)
-        let translate_box = reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::FunctionCall {
+        let translate_box = reify_ast::Expr {
+            kind: reify_ast::ExprKind::FunctionCall {
                 name: "translate".to_string(),
                 args: vec![make_box_with_values(1.0, 1.0, 1.0), one(), zero(), zero()],
             },
-            span: reify_types::SourceSpan::new(0, 1),
+            span: reify_core::SourceSpan::new(0, 1),
         };
         // translate(cylinder(1,1), 1, 0, 0)
-        let translate_cyl = reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::FunctionCall {
+        let translate_cyl = reify_ast::Expr {
+            kind: reify_ast::ExprKind::FunctionCall {
                 name: "translate".to_string(),
                 args: vec![make_call_with_arity("cylinder", 2), one(), zero(), zero()],
             },
-            span: reify_types::SourceSpan::new(0, 1),
+            span: reify_core::SourceSpan::new(0, 1),
         };
-        let bool_cond = reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::BoolLiteral(true),
-            span: reify_types::SourceSpan::new(0, 4),
+        let bool_cond = reify_ast::Expr {
+            kind: reify_ast::ExprKind::BoolLiteral(true),
+            span: reify_core::SourceSpan::new(0, 4),
         };
         let cond_expr = make_conditional(bool_cond, translate_box, translate_cyl);
 
         let scope = CompilationScope::new("test");
-        let enum_defs: Vec<reify_types::EnumDef> = vec![];
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
         let functions: Vec<CompiledFunction> = vec![];
         let mut diagnostics: Vec<Diagnostic> = vec![];
-        let geometry_lets: HashMap<&str, &reify_syntax::Expr> = HashMap::new();
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
         let result = compile_geometry_call(
             &cond_expr,
@@ -3369,7 +3369,7 @@ mod tests {
         );
         let error_diags: Vec<_> = diagnostics
             .iter()
-            .filter(|d| d.severity == reify_types::Severity::Error)
+            .filter(|d| d.severity == reify_core::Severity::Error)
             .collect();
         assert!(
             !error_diags.is_empty(),

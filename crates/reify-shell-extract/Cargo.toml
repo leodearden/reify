@@ -6,7 +6,8 @@ license.workspace = true
 description = "Voxel-medial mid-surface extraction for v0.4 shell-element FEA (PRD docs/prds/v0_4/structural-analysis-shells.md)"
 
 [dependencies]
-reify-types.workspace = true
+reify-core.workspace = true
+reify-ir.workspace = true
 # `PersistentlyCacheable` trait lives in `reify-eval::persistent_cache` (see
 # crates/reify-eval/src/persistent_cache.rs:399). Per Rust's orphan rule,
 # `impl PersistentlyCacheable for ShellExtractionResult` must live where either

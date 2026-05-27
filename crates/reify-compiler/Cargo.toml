@@ -13,12 +13,17 @@ description = "Name resolution and elaboration from ParsedModule to CompiledModu
 test-support = []
 
 [dependencies]
-reify-types.workspace = true
+reify-ast.workspace = true
+reify-core.workspace = true
+reify-ir.workspace = true
 reify-syntax.workspace = true
 indexmap.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+reify-ast.workspace = true
+reify-core.workspace = true
+reify-ir.workspace = true
 reify-test-support.workspace = true
 reify-expr.workspace = true
 tempfile.workspace = true

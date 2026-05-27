@@ -30,7 +30,8 @@
 #![allow(clippy::mutable_key_type)]
 
 use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_with_stdlib};
-use reify_types::{Value, ValueCellId, ValueMap};
+use reify_core::ValueCellId;
+use reify_ir::{Value, ValueMap};
 
 /// Reify source: a `SmokeFixture` structure that exercises `case_names` and
 /// `result_for` through the full compile+eval pipeline.
@@ -107,7 +108,7 @@ fn multi_load_case_stdlib_module_registers_without_errors() {
     let errors: Vec<_> = module
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
 
     assert!(

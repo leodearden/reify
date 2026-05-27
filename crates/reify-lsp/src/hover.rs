@@ -74,7 +74,7 @@ pub fn compute_hover(source: &str, uri: &Url, position: Position) -> Option<Hove
     // Try fn/trait/enum names
     for decl in &ctx.parsed.declarations {
         match decl {
-            reify_syntax::Declaration::Function(f) if f.name == word => {
+            reify_ast::Declaration::Function(f) if f.name == word => {
                 let params_str: Vec<String> = f
                     .params
                     .iter()
@@ -97,7 +97,7 @@ pub fn compute_hover(source: &str, uri: &Url, position: Position) -> Option<Hove
                 }
                 return Some(make_hover_markdown(md));
             }
-            reify_syntax::Declaration::Trait(t) if t.name == word => {
+            reify_ast::Declaration::Trait(t) if t.name == word => {
                 let mut md = format!("```reify\ntrait {}\n```", t.name);
                 if !t.refinements.is_empty() {
                     md = format!(
@@ -116,7 +116,7 @@ pub fn compute_hover(source: &str, uri: &Url, position: Position) -> Option<Hove
                 }
                 return Some(make_hover_markdown(md));
             }
-            reify_syntax::Declaration::Enum(e) if e.name == word => {
+            reify_ast::Declaration::Enum(e) if e.name == word => {
                 let mut md = format!("```reify\nenum {}\n```", e.name);
                 md.push_str(&format!("\n\n{} variants", e.variants.len()));
                 if let Some(doc) = ctx.find_entity_doc(word) {

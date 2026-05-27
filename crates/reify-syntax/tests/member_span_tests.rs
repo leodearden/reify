@@ -3,14 +3,14 @@
 //! These cover: basic param/let lookup, GuardedGroup recursion,
 //! Port body recursion, missing-name returns None, and depth limiting.
 
-use reify_syntax::{MAX_MEMBER_NESTING_DEPTH, find_named_member_span};
-use reify_types::ModulePath;
+use reify_ast::{MAX_MEMBER_NESTING_DEPTH, find_named_member_span};
+use reify_core::ModulePath;
 
 /// Helper: parse source and return the first structure's members.
-fn parse_first_structure_members(source: &str) -> Vec<reify_syntax::MemberDecl> {
+fn parse_first_structure_members(source: &str) -> Vec<reify_ast::MemberDecl> {
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
     match &parsed.declarations[0] {
-        reify_syntax::Declaration::Structure(s) => s.members.clone(),
+        reify_ast::Declaration::Structure(s) => s.members.clone(),
         other => panic!("expected Structure, got {:?}", other),
     }
 }
@@ -161,9 +161,9 @@ fn empty_members_returns_none() {
 
 /// Build a member tree with `depth` levels of GuardedGroup nesting,
 /// placing a single Param named `target` at the innermost level.
-fn build_nested_guarded_members(depth: usize, target: &str) -> Vec<reify_syntax::MemberDecl> {
-    use reify_syntax::{Expr, ExprKind, GuardedGroupDecl, MemberDecl, ParamDecl};
-    use reify_types::{ContentHash, SourceSpan};
+fn build_nested_guarded_members(depth: usize, target: &str) -> Vec<reify_ast::MemberDecl> {
+    use reify_ast::{Expr, ExprKind, GuardedGroupDecl, MemberDecl, ParamDecl};
+    use reify_core::{ContentHash, SourceSpan};
 
     let dummy_span = SourceSpan::new(0, 1);
     let dummy_hash = ContentHash(0);
@@ -238,7 +238,7 @@ fn find_named_member_span_hand_constructed_depth_2_match() {
     // hand-constructed slice (as opposed to parsed source). Complements
     // the parsed-source tests above by isolating the recursion to a
     // deterministic 2-level slice.
-    use reify_types::SourceSpan;
+    use reify_core::SourceSpan;
     let members = build_nested_guarded_members(2, "target");
     let result = find_named_member_span(&members, "target");
     assert!(result.is_some(), "param at depth-2 should be found");
@@ -258,8 +258,8 @@ fn find_named_member_span_hand_constructed_else_only_found() {
     // "target" in `else_members`. Complements the existing parsed-source
     // `guarded_group_else_members_found` test by isolating the else
     // recursion on a hand-constructed slice.
-    use reify_syntax::{Expr, ExprKind, GuardedGroupDecl, MemberDecl, ParamDecl};
-    use reify_types::{ContentHash, SourceSpan};
+    use reify_ast::{Expr, ExprKind, GuardedGroupDecl, MemberDecl, ParamDecl};
+    use reify_core::{ContentHash, SourceSpan};
 
     let param_span = SourceSpan::new(42, 77);
     let dummy_hash = ContentHash(0);
@@ -305,8 +305,8 @@ fn find_named_member_span_hand_constructed_both_branches_empty_returns_none() {
     // `empty_members_returns_none` test covers an empty top-level slice;
     // this adds coverage for an empty *GuardedGroup* with no declarations
     // in either branch.
-    use reify_syntax::{Expr, ExprKind, GuardedGroupDecl, MemberDecl};
-    use reify_types::{ContentHash, SourceSpan};
+    use reify_ast::{Expr, ExprKind, GuardedGroupDecl, MemberDecl};
+    use reify_core::{ContentHash, SourceSpan};
 
     let dummy_hash = ContentHash(0);
     let dummy_expr = Expr {

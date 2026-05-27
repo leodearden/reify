@@ -11,7 +11,7 @@
 
 use reify_kernel_occt::{OcctKernel, OcctProjector};
 use reify_mesh_morph::Projector;
-use reify_types::{GeometryHandleId, GeometryOp, Value};
+use reify_ir::{GeometryHandleId, GeometryOp, Value};
 
 /// Build a kernel with a single 10×10×10 box centred at the origin
 /// (`x∈[-5,5]`, `y∈[-5,5]`, `z∈[-5,5]`).

@@ -10,7 +10,8 @@
 
 use reify_compiler::PreludeContext;
 use reify_test_support::CompiledModuleBuilder;
-use reify_types::{EnumDef, ModulePath};
+use reify_core::ModulePath;
+use reify_ir::EnumDef;
 
 // ─── step-3: PreludeContext::enum_names() iterator parity ──────────────────
 
@@ -93,8 +94,8 @@ fn enum_names_empty_prelude_yields_no_items() {
 /// Test fails to compile until step-6 lands `reify_compiler::parse_with_stdlib`.
 #[test]
 fn parse_with_stdlib_resolves_stdlib_enum_access_without_inline_redecls() {
-    use reify_syntax::ExprKind;
-    use reify_types::Severity;
+    use reify_ast::ExprKind;
+    use reify_core::Severity;
 
     let source = r#"
 structure def TitaniumImplant : Biocompatible + CorrosionResistant {

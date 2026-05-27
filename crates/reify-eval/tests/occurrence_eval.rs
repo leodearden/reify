@@ -3,7 +3,7 @@
 //! Tests the complete pipeline: parse → compile → Engine.eval() → check values.
 
 use reify_test_support::mocks::MockConstraintChecker;
-use reify_types::{ModulePath, Severity, ValueCellId};
+use reify_core::{ModulePath, Severity, ValueCellId};
 
 /// Parse and compile an occurrence, eval via Engine, and verify
 /// that value cells are evaluated correctly.
@@ -53,7 +53,7 @@ occurrence def Welding {
         .get(&speed_id)
         .unwrap_or_else(|| panic!("value for {:?} not found in result", speed_id));
     match speed_val {
-        reify_types::Value::Scalar { si_value, .. } => {
+        reify_ir::Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 0.05).abs() < 1e-12,
                 "expected 0.05 SI, got {}",
@@ -70,7 +70,7 @@ occurrence def Welding {
         .get(&ds_id)
         .unwrap_or_else(|| panic!("value for {:?} not found in result", ds_id));
     match ds_val {
-        reify_types::Value::Scalar { si_value, .. } => {
+        reify_ir::Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 0.1).abs() < 1e-12,
                 "expected 0.1 SI, got {}",

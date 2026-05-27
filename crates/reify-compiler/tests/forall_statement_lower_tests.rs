@@ -21,7 +21,8 @@
 //!   * Non-iterable collection diagnostic.
 
 use reify_test_support::{compile_source, errors_only};
-use reify_types::{BinOp, CompiledExprKind, ModulePath, Value};
+use reify_core::ModulePath;
+use reify_ir::{BinOp, CompiledExprKind, Value};
 
 /// Parse `source`, walk declarations to find the structure named
 /// `structure_name`, locate the first `MemberDecl::ForallConnect`, and invoke
@@ -31,7 +32,7 @@ use reify_types::{BinOp, CompiledExprKind, ModulePath, Value};
 fn with_first_forall_connect<R>(
     source: &str,
     structure_name: &str,
-    f: impl FnOnce(&reify_syntax::ForallConnectDecl) -> R,
+    f: impl FnOnce(&reify_ast::ForallConnectDecl) -> R,
 ) -> R {
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
     assert!(
@@ -40,11 +41,11 @@ fn with_first_forall_connect<R>(
         parsed.errors
     );
     for decl in &parsed.declarations {
-        if let reify_syntax::Declaration::Structure(s) = decl
+        if let reify_ast::Declaration::Structure(s) = decl
             && s.name == structure_name
         {
             for m in &s.members {
-                if let reify_syntax::MemberDecl::ForallConnect(fc) = m {
+                if let reify_ast::MemberDecl::ForallConnect(fc) = m {
                     return f(fc);
                 }
             }
@@ -61,7 +62,7 @@ fn with_first_forall_connect<R>(
 fn with_first_forall_constraint<R>(
     source: &str,
     structure_name: &str,
-    f: impl FnOnce(&reify_syntax::ForallConstraintDecl) -> R,
+    f: impl FnOnce(&reify_ast::ForallConstraintDecl) -> R,
 ) -> R {
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
     assert!(
@@ -70,11 +71,11 @@ fn with_first_forall_constraint<R>(
         parsed.errors
     );
     for decl in &parsed.declarations {
-        if let reify_syntax::Declaration::Structure(s) = decl
+        if let reify_ast::Declaration::Structure(s) = decl
             && s.name == structure_name
         {
             for m in &s.members {
-                if let reify_syntax::MemberDecl::ForallConstraint(fc) = m {
+                if let reify_ast::MemberDecl::ForallConstraint(fc) = m {
                     return f(fc);
                 }
             }
@@ -86,14 +87,14 @@ fn with_first_forall_constraint<R>(
 /// Recover the `MemberDecl::ForallConstraint` span by re-parsing `source`,
 /// finding the structure named `structure_name`, and returning the span of
 /// the first ForallConstraint member encountered. Panics if not found.
-fn find_forall_constraint_span(source: &str, structure_name: &str) -> reify_types::SourceSpan {
+fn find_forall_constraint_span(source: &str, structure_name: &str) -> reify_core::SourceSpan {
     with_first_forall_constraint(source, structure_name, |f| f.span)
 }
 
 /// Recover the `MemberDecl::ForallConnect` span by re-parsing `source`,
 /// finding the structure named `structure_name`, and returning the span of
 /// the first ForallConnect member encountered. Panics if not found.
-fn find_forall_connect_span(source: &str, structure_name: &str) -> reify_types::SourceSpan {
+fn find_forall_connect_span(source: &str, structure_name: &str) -> reify_core::SourceSpan {
     with_first_forall_connect(source, structure_name, |f| f.span)
 }
 
@@ -197,7 +198,7 @@ impl Sides {
 ///   label AND its `span` equals `cd.left.expr.span`; otherwise zero.
 ///   Likewise for `sides.right` and `cd.right.expr.span`.
 fn assert_unsupported_port_shape_diagnostic(source: &str, structure_name: &str, sides: Sides) {
-    use reify_types::Severity;
+    use reify_core::Severity;
 
     let module = compile_source(source);
 
@@ -255,7 +256,7 @@ fn assert_unsupported_port_shape_diagnostic(source: &str, structure_name: &str, 
     // Recover all three spans in a single parse for sections (e) and (f).
     let (forall_span, left_expr_span, right_expr_span) =
         with_first_forall_connect(source, structure_name, |f| match &f.body {
-            reify_syntax::ForallConnectBody::Connect(cd) => {
+            reify_ast::ForallConnectBody::Connect(cd) => {
                 (f.span, cd.left.expr.span, cd.right.expr.span)
             }
             _ => panic!(
@@ -685,7 +686,7 @@ structure S {
 #[test]
 fn compile_time_forall_template_populated_for_undef_count_constraint() {
     use reify_compiler::CompiledForallBody;
-    use reify_types::ValueCellId;
+    use reify_core::ValueCellId;
 
     let source = r#"
 structure Vent {
@@ -800,7 +801,7 @@ structure S {
 #[test]
 fn forall_constraint_with_where_clause_over_undef_count_collection_sub_skips_capture_with_info_diagnostic()
  {
-    use reify_types::Severity;
+    use reify_core::Severity;
 
     let source = r#"
 structure Vent {
@@ -853,7 +854,7 @@ structure S {
 
     // (d) Exactly one info diagnostic flagging the limitation, with a stable
     //     substring pin.
-    let info_diags: Vec<&reify_types::Diagnostic> = module
+    let info_diags: Vec<&reify_core::Diagnostic> = module
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Info)
@@ -893,7 +894,7 @@ structure S {
 #[test]
 fn forall_constraint_inst_body_over_undef_count_collection_sub_skips_capture_with_info_diagnostic()
 {
-    use reify_types::Severity;
+    use reify_core::Severity;
 
     let source = r#"
 constraint def MinThreshold {
@@ -954,7 +955,7 @@ structure S {
     );
 
     // (d) Exactly one info diagnostic with stable substring "future scope".
-    let info_diags: Vec<&reify_types::Diagnostic> = module
+    let info_diags: Vec<&reify_core::Diagnostic> = module
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Info)
@@ -1009,8 +1010,8 @@ structure S {
 #[test]
 fn forall_connect_over_undef_count_collection_sub_captures_runtime_template() {
     use reify_compiler::CompiledForallBody;
-    use reify_syntax::ConnectOp;
-    use reify_types::{Severity, ValueCellId};
+    use reify_ast::ConnectOp;
+    use reify_core::{Severity, ValueCellId};
 
     let source = r#"
 trait Air { param d : Length }
@@ -1113,7 +1114,7 @@ structure def S {
     }
 
     // (f) The OLD info diagnostic must be gone.
-    let info_diags: Vec<&reify_types::Diagnostic> = module
+    let info_diags: Vec<&reify_core::Diagnostic> = module
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Info)
@@ -1157,7 +1158,7 @@ structure def S {
 #[test]
 fn forall_connect_rich_form_over_undef_count_collection_sub_emits_connector_drop_info_diagnostic() {
     use reify_compiler::CompiledForallBody;
-    use reify_types::Severity;
+    use reify_core::Severity;
 
     let source = r#"
 trait Air { param d : Length }
@@ -1246,7 +1247,7 @@ structure def S {
     }
 
     // (e) Exactly one info diagnostic mentioning the connector-spec drop.
-    let info_diags: Vec<&reify_types::Diagnostic> = module
+    let info_diags: Vec<&reify_core::Diagnostic> = module
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Info)
@@ -1274,7 +1275,7 @@ structure def S {
     // diagnostic's primary label points at it.
     let forall_span = find_forall_connect_span(source, "S");
     let diag = info_diags[0];
-    let label_spans: Vec<reify_types::SourceSpan> = diag.labels.iter().map(|l| l.span).collect();
+    let label_spans: Vec<reify_core::SourceSpan> = diag.labels.iter().map(|l| l.span).collect();
     assert!(
         label_spans.contains(&forall_span),
         "expected diagnostic label span to match the source forall span; \
@@ -1297,7 +1298,7 @@ structure def S {
 /// (d) Exactly one `Diagnostic::info` mentioning the future-scope task.
 #[test]
 fn forall_chain_over_undef_count_collection_sub_skips_capture_with_info_diagnostic() {
-    use reify_types::Severity;
+    use reify_core::Severity;
 
     let source = r#"
 trait T { param d : Length }
@@ -1341,7 +1342,7 @@ structure def S {
     );
 
     // (d) Exactly one info diagnostic mentioning future scope and chain.
-    let info_diags: Vec<&reify_types::Diagnostic> = module
+    let info_diags: Vec<&reify_core::Diagnostic> = module
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Info)
@@ -1838,7 +1839,7 @@ structure def S {
         );
         assert_eq!(
             conn.operator,
-            reify_syntax::ConnectOp::Forward,
+            reify_ast::ConnectOp::Forward,
             "expected ConnectOp::Forward for element {}, got {:?}",
             i,
             conn.operator
@@ -1935,7 +1936,7 @@ structure def S {
         );
         assert_eq!(
             conn.operator,
-            reify_syntax::ConnectOp::Forward,
+            reify_ast::ConnectOp::Forward,
             "expected ConnectOp::Forward for connection {}, got {:?}",
             k,
             conn.operator
@@ -1971,7 +1972,7 @@ structure S {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == reify_types::Severity::Error
+            d.severity == reify_core::Severity::Error
                 && d.message
                     .contains("cannot iterate over non-collection type")
         })
@@ -2620,7 +2621,7 @@ structure def S {
         // The critical assertion: operator must be Bidirectional, not Forward.
         assert_eq!(
             conn.operator,
-            reify_syntax::ConnectOp::Bidirectional,
+            reify_ast::ConnectOp::Bidirectional,
             "expected ConnectOp::Bidirectional for element {}, got {:?}",
             i,
             conn.operator

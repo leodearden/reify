@@ -15,7 +15,7 @@
 //! formula (tag byte, combine order, missing field) will surface here.
 
 use reify_test_support::{compile_source, get_let_expr};
-use reify_types::{CompiledExpr, CompiledExprKind};
+use reify_ir::{CompiledExpr, CompiledExprKind};
 
 // ── UserFunctionCall ─────────────────────────────────────────────────────────
 

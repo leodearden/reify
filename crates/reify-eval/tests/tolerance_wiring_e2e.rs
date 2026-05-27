@@ -23,10 +23,8 @@ use reify_test_support::{
     my_design_template, step_input_template, step_output_template,
 };
 #[allow(unused_imports)]
-use reify_types::{
-    CapabilityDescriptor, CompiledExpr, ContentHash, DiagnosticCode, ExportFormat,
-    GeometryHandleId, ModulePath, Operation, ReprKind, Severity, Type, Value, ValueCellId,
-};
+use reify_core::{ContentHash, DiagnosticCode, ModulePath, Severity, Type, ValueCellId};
+use reify_ir::{CapabilityDescriptor, CompiledExpr, ExportFormat, GeometryHandleId, Operation, ReprKind, Value};
 #[allow(unused_imports)]
 use std::collections::{BTreeMap, HashSet};
 

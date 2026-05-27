@@ -26,8 +26,8 @@
 //! chain inside `IndexAccess.index` or a `FunctionCall.args` element) are
 //! detected too.
 
-use reify_syntax::{Expr, ExprKind, ParsedModule};
-use reify_types::{Diagnostic, DiagnosticCode, DiagnosticLabel};
+use reify_ast::{Expr, ExprKind, ParsedModule};
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel};
 
 /// Maximum allowed chain length before the lint fires.
 ///
@@ -82,8 +82,8 @@ pub(crate) fn lint_module(parsed: &ParsedModule, diagnostics: &mut Vec<Diagnosti
 ///   * `Unit`: `annotations[*].args` + `conversion` + `offset`.
 ///   * `Enum`/`Import`/`TypeAlias`: `annotations[*].args` only (no other
 ///     embedded expressions today).
-fn walk_declaration(decl: &reify_syntax::Declaration, diagnostics: &mut Vec<Diagnostic>) {
-    use reify_syntax::{Declaration, FieldSource};
+fn walk_declaration(decl: &reify_ast::Declaration, diagnostics: &mut Vec<Diagnostic>) {
+    use reify_ast::{Declaration, FieldSource};
     match decl {
         Declaration::Structure(s) => {
             walk_annotations(&s.annotations, diagnostics);
@@ -181,12 +181,12 @@ fn walk_declaration(decl: &reify_syntax::Declaration, diagnostics: &mut Vec<Diag
 /// pathological input — mirrors `find_named_member_span_depth` in
 /// `reify-syntax`.
 fn walk_members(
-    members: &[reify_syntax::MemberDecl],
+    members: &[reify_ast::MemberDecl],
     diagnostics: &mut Vec<Diagnostic>,
     depth: usize,
 ) {
-    use reify_syntax::MemberDecl;
-    if depth > reify_syntax::MAX_MEMBER_NESTING_DEPTH {
+    use reify_ast::MemberDecl;
+    if depth > reify_ast::MAX_MEMBER_NESTING_DEPTH {
         return;
     }
     for member in members {
@@ -291,7 +291,7 @@ fn walk_members(
 /// expressions), so they require the same chain-detection pass as any other
 /// expression-bearing position. Depth-bounding is inherited for free from the
 /// existing [`walk_expr`] → [`walk_expr_depth`] entry point.
-fn walk_annotations(annotations: &[reify_syntax::Annotation], diagnostics: &mut Vec<Diagnostic>) {
+fn walk_annotations(annotations: &[reify_ast::Annotation], diagnostics: &mut Vec<Diagnostic>) {
     for ann in annotations {
         for arg in &ann.args {
             // Each annotation arg is an independent expression root:
@@ -504,7 +504,7 @@ fn render_chain_text(root: &Expr, members_outer_to_inner: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::SourceSpan;
+    use reify_core::SourceSpan;
 
     /// Table-driven depth-guard test: asserts that every structural-recursion arm
     /// in `walk_expr_depth` correctly forwards `next = depth + 1` to child nodes.
@@ -624,7 +624,7 @@ mod tests {
         }
 
         fn wrap_in_arm(arm: ArmKind, leaf: Expr, span: SourceSpan) -> Expr {
-            use reify_syntax::{MatchArm, QuantifierKind};
+            use reify_ast::{MatchArm, QuantifierKind};
             let kind = match arm {
                 ArmKind::UnOp => ExprKind::UnOp {
                     op: "-".to_string(),

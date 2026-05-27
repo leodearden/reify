@@ -6,7 +6,8 @@
 
 use reify_expr::{EvalContext, eval_expr};
 use reify_stdlib::eval_builtin;
-use reify_types::{BinOp, CompiledExpr, Type, Value, ValueMap};
+use reify_core::Type;
+use reify_ir::{BinOp, CompiledExpr, Value, ValueMap};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

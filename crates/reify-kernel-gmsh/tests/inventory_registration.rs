@@ -14,7 +14,7 @@
 //! `crates/reify-kernel-openvdb/tests/inventory_registration.rs:1-130`.
 
 use reify_kernel_gmsh::register::{GMSH_KERNEL_NAME, gmsh_capability_descriptor};
-use reify_types::{CapabilityDescriptor, KernelRegistration, Operation, ReprKind};
+use reify_ir::{CapabilityDescriptor, KernelRegistration, Operation, ReprKind};
 
 /// Gmsh's capability descriptor must enumerate exactly the
 /// `(Convert{from: Mesh}, VolumeMesh)` surface→volume meshing operation.

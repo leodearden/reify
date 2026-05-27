@@ -11,8 +11,9 @@
 
 use std::collections::BTreeMap;
 
-use reify_syntax::{ParsedModule, Pragma, PragmaArg, PragmaValue};
-use reify_types::{Diagnostic, DiagnosticLabel, DimensionVector, SourceSpan, Value};
+use reify_ast::{ParsedModule, Pragma, PragmaArg, PragmaValue};
+use reify_core::{Diagnostic, DiagnosticLabel, DimensionVector, SourceSpan};
+use reify_ir::Value;
 
 use crate::types::{CompiledModule, SolverPragma};
 use crate::units::unit_to_scalar;

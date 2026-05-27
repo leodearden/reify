@@ -152,10 +152,8 @@
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
 
-use reify_types::{
-    CompiledExprKind, CompiledFunction, ConstraintChecker, ConstraintInput, ConstraintNodeId,
-    Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, Type,
-};
+use reify_core::{ConstraintNodeId, Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, Type};
+use reify_ir::{CompiledExprKind, CompiledFunction, ConstraintChecker, ConstraintInput};
 
 use crate::entity::satisfies_trait_bound;
 use crate::types::{CompiledTrait, TopologyTemplate};
@@ -759,7 +757,7 @@ pub fn filter_feasible_candidates(
     constraint_checker: &dyn ConstraintChecker,
     functions: &[CompiledFunction],
 ) -> FeasibilityResult {
-    use reify_types::{Satisfaction, ValueMap};
+    use reify_ir::{Satisfaction, ValueMap};
 
     debug_assert!(
         !candidates.is_empty(),
@@ -1390,7 +1388,7 @@ pub fn resolve_auto_type_params_with_backtracking(
     // The empty ValueMap used by every DFS leaf: built once here alongside
     // `constraints_template` so `dfs_leaf_feasible` doesn't construct a new
     // (zero-heap-allocation but non-trivial stack init) empty map per call.
-    let leaf_values = reify_types::ValueMap::new();
+    let leaf_values = reify_ir::ValueMap::new();
 
     // Phase A enumeration runs ONCE per param up front (before recursion),
     // producing a `Vec<Vec<String>>` of per-param candidate vectors. This
@@ -2041,7 +2039,7 @@ enum DfsControl {
 /// Audit: docs/architecture-audit/findings/auto-resolution-backtracking.md M-005/M-013.
 fn build_constraints_template(
     template: &TopologyTemplate,
-) -> Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> {
+) -> Vec<(ConstraintNodeId, &reify_ir::CompiledExpr)> {
     template
         .constraints
         .iter()
@@ -2074,12 +2072,12 @@ fn build_constraints_template(
 /// Passes `constraints_template` through as `Cow::Borrowed`, so no per-leaf
 /// clone occurs (see task 2900).
 fn check_constraints_leaf(
-    constraints_template: &[(ConstraintNodeId, &reify_types::CompiledExpr)],
+    constraints_template: &[(ConstraintNodeId, &reify_ir::CompiledExpr)],
     checker: &dyn ConstraintChecker,
     functions: &[CompiledFunction],
-    values: &reify_types::ValueMap,
+    values: &reify_ir::ValueMap,
 ) -> LeafVerdict {
-    use reify_types::ConstraintInput;
+    use reify_ir::ConstraintInput;
     let input = ConstraintInput {
         constraints: Cow::Borrowed(constraints_template),
         values,
@@ -2089,7 +2087,7 @@ fn check_constraints_leaf(
     let results = checker.check(&input);
     let violated_constraints: Vec<ConstraintNodeId> = results
         .into_iter()
-        .filter(|r| r.satisfaction == reify_types::Satisfaction::Violated)
+        .filter(|r| r.satisfaction == reify_ir::Satisfaction::Violated)
         .map(|r| r.id)
         .collect();
     let feasible = violated_constraints.is_empty();
@@ -2206,8 +2204,8 @@ fn dfs_search(
     per_param_candidates: &[Vec<String>],
     current: &mut Vec<String>,
     feasible_assignments: &mut Vec<Vec<String>>,
-    constraints_template: &[(ConstraintNodeId, &reify_types::CompiledExpr)],
-    leaf_values: &reify_types::ValueMap,
+    constraints_template: &[(ConstraintNodeId, &reify_ir::CompiledExpr)],
+    leaf_values: &reify_ir::ValueMap,
     constraint_checker: &dyn ConstraintChecker,
     functions: &[CompiledFunction],
     max_feasible_to_collect: usize,
@@ -2305,10 +2303,11 @@ mod helper_tests {
         check_constraints_leaf, dfs_search,
     };
     use reify_test_support::MockConstraintChecker;
-    use reify_types::{CompiledFunction, ConstraintNodeId, Satisfaction, Type, Value};
+    use reify_core::{ConstraintNodeId, Type};
+    use reify_ir::{CompiledFunction, Satisfaction, Value};
 
-    fn literal_expr() -> reify_types::CompiledExpr {
-        reify_types::CompiledExpr::literal(Value::Bool(true), Type::Bool)
+    fn literal_expr() -> reify_ir::CompiledExpr {
+        reify_ir::CompiledExpr::literal(Value::Bool(true), Type::Bool)
     }
 
     /// Construct a bare-bones [`crate::TopologyTemplate`] for testing, enumerating every
@@ -2329,7 +2328,7 @@ mod helper_tests {
         constraints: Vec<crate::CompiledConstraint>,
         content_hash_seed: &[u8],
     ) -> crate::TopologyTemplate {
-        use reify_types::ContentHash;
+        use reify_core::ContentHash;
         crate::TopologyTemplate {
             name: name.into(),
             doc: None,
@@ -2361,7 +2360,7 @@ mod helper_tests {
     fn check_constraints_leaf_returns_feasible_for_empty_constraints() {
         let checker = MockConstraintChecker::new();
         let functions: &[CompiledFunction] = &[];
-        let values = reify_types::ValueMap::new();
+        let values = reify_ir::ValueMap::new();
 
         let result = check_constraints_leaf(&[], &checker, functions, &values);
         assert!(
@@ -2375,11 +2374,11 @@ mod helper_tests {
     fn check_constraints_leaf_returns_feasible_when_all_satisfied() {
         let expr = literal_expr();
         let id = ConstraintNodeId::new("C0", 0);
-        let constraints: Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> =
+        let constraints: Vec<(ConstraintNodeId, &reify_ir::CompiledExpr)> =
             vec![(id.clone(), &expr)];
         let checker = MockConstraintChecker::new(); // default: Satisfied
         let functions: &[CompiledFunction] = &[];
-        let values = reify_types::ValueMap::new();
+        let values = reify_ir::ValueMap::new();
 
         let result = check_constraints_leaf(&constraints, &checker, functions, &values);
         assert!(
@@ -2394,11 +2393,11 @@ mod helper_tests {
     fn check_constraints_leaf_returns_feasible_when_all_indeterminate_per_arch_2_5() {
         let expr = literal_expr();
         let id = ConstraintNodeId::new("C0", 0);
-        let constraints: Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> =
+        let constraints: Vec<(ConstraintNodeId, &reify_ir::CompiledExpr)> =
             vec![(id.clone(), &expr)];
         let checker = MockConstraintChecker::new().with_default(Satisfaction::Indeterminate);
         let functions: &[CompiledFunction] = &[];
-        let values = reify_types::ValueMap::new();
+        let values = reify_ir::ValueMap::new();
 
         let result = check_constraints_leaf(&constraints, &checker, functions, &values);
         assert!(
@@ -2413,11 +2412,11 @@ mod helper_tests {
         let expr = literal_expr();
         let id0 = ConstraintNodeId::new("C0", 0);
         let id1 = ConstraintNodeId::new("C1", 1);
-        let constraints: Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> =
+        let constraints: Vec<(ConstraintNodeId, &reify_ir::CompiledExpr)> =
             vec![(id0.clone(), &expr), (id1.clone(), &expr)];
         let checker = MockConstraintChecker::new().with_default(Satisfaction::Violated);
         let functions: &[CompiledFunction] = &[];
-        let values = reify_types::ValueMap::new();
+        let values = reify_ir::ValueMap::new();
 
         let result = check_constraints_leaf(&constraints, &checker, functions, &values);
         assert!(
@@ -2433,14 +2432,14 @@ mod helper_tests {
         let expr = literal_expr();
         let id0 = ConstraintNodeId::new("C0", 0);
         let id1 = ConstraintNodeId::new("C1", 1);
-        let constraints: Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> =
+        let constraints: Vec<(ConstraintNodeId, &reify_ir::CompiledExpr)> =
             vec![(id0.clone(), &expr), (id1.clone(), &expr)];
         // C0 → Satisfied (default), C1 → Violated
         let checker = MockConstraintChecker::new()
             .with_default(Satisfaction::Satisfied)
             .with_result(id1.clone(), Satisfaction::Violated);
         let functions: &[CompiledFunction] = &[];
-        let values = reify_types::ValueMap::new();
+        let values = reify_ir::ValueMap::new();
 
         let result = check_constraints_leaf(&constraints, &checker, functions, &values);
         assert!(
@@ -2454,10 +2453,10 @@ mod helper_tests {
     /// preserving order and borrowing (not cloning) the expr.
     #[test]
     fn build_constraints_template_returns_pairs_for_each_template_constraint() {
-        use reify_types::SourceSpan;
+        use reify_core::SourceSpan;
 
         let expr0 = literal_expr();
-        let expr1 = reify_types::CompiledExpr::literal(Value::Bool(false), Type::Bool);
+        let expr1 = reify_ir::CompiledExpr::literal(Value::Bool(false), Type::Bool);
 
         let template = make_topology_template(
             "Bearing",
@@ -2522,7 +2521,7 @@ mod helper_tests {
     /// is still in place; step-6's switch to `Cow::Borrowed` makes it `true`.
     #[test]
     fn check_constraints_leaf_passes_constraints_as_cow_borrowed() {
-        use reify_types::{ConstraintChecker, ConstraintInput, ConstraintResult};
+        use reify_ir::{ConstraintChecker, ConstraintInput, ConstraintResult};
         use std::sync::atomic::{AtomicBool, Ordering};
 
         struct BorrowAssertingChecker {
@@ -2538,8 +2537,8 @@ mod helper_tests {
         }
 
         let expr0 = literal_expr();
-        let expr1 = reify_types::CompiledExpr::literal(Value::Bool(false), Type::Bool);
-        let constraints: Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> = vec![
+        let expr1 = reify_ir::CompiledExpr::literal(Value::Bool(false), Type::Bool);
+        let constraints: Vec<(ConstraintNodeId, &reify_ir::CompiledExpr)> = vec![
             (ConstraintNodeId::new("C0", 0), &expr0),
             (ConstraintNodeId::new("C1", 1), &expr1),
         ];
@@ -2548,7 +2547,7 @@ mod helper_tests {
             saw_borrowed: AtomicBool::new(false),
         };
         let functions: &[CompiledFunction] = &[];
-        let values = reify_types::ValueMap::new();
+        let values = reify_ir::ValueMap::new();
 
         check_constraints_leaf(&constraints, &checker, functions, &values);
 
@@ -2577,13 +2576,13 @@ mod helper_tests {
 
         // 2-param search: only indices 0 and 1 are valid.
         let per_param_candidates = vec![vec!["A".into()], vec!["B".into()]];
-        let constraints_template: Vec<(ConstraintNodeId, &reify_types::CompiledExpr)> =
+        let constraints_template: Vec<(ConstraintNodeId, &reify_ir::CompiledExpr)> =
             vec![(id.clone(), &expr)];
 
         // Force the leaf to be infeasible so compute_deepest_blame_level is called.
         let checker = MockConstraintChecker::new().with_default(Satisfaction::Violated);
         let functions: &[CompiledFunction] = &[];
-        let leaf_values = reify_types::ValueMap::new();
+        let leaf_values = reify_ir::ValueMap::new();
 
         // Malformed blame_map: blame "C0" on out-of-range index 2.
         // By induction the production `compute_blame_map` cannot emit index 2 in a
@@ -2627,15 +2626,16 @@ mod helper_tests {
     ///
     #[test]
     fn build_constraint_blame_map_returns_param_indices_referenced_by_constraint_expression() {
-        use reify_types::{BinOp, SourceSpan, ValueCellId};
+        use reify_core::{SourceSpan, ValueCellId};
+        use reify_ir::BinOp;
         use std::collections::BTreeSet;
 
         let field_t = ValueCellId::new("Coupling", "field_t");
         let field_u = ValueCellId::new("Coupling", "field_u");
-        let expr = reify_types::CompiledExpr::binop(
+        let expr = reify_ir::CompiledExpr::binop(
             BinOp::Eq,
-            reify_types::CompiledExpr::value_ref(field_t.clone(), Type::TypeParam("T".into())),
-            reify_types::CompiledExpr::value_ref(field_u.clone(), Type::TypeParam("U".into())),
+            reify_ir::CompiledExpr::value_ref(field_t.clone(), Type::TypeParam("T".into())),
+            reify_ir::CompiledExpr::value_ref(field_u.clone(), Type::TypeParam("U".into())),
             Type::Bool,
         );
 
@@ -2723,7 +2723,7 @@ mod helper_tests {
     /// would incorrectly block backjumping even when no TypeParam blame exists.
     #[test]
     fn build_constraint_blame_map_excludes_out_of_scope_type_params_and_no_typeparam_constraints() {
-        use reify_types::{SourceSpan, ValueCellId};
+        use reify_core::{SourceSpan, ValueCellId};
 
         let field_t = ValueCellId::new("Coupling", "field_t");
         let field_u = ValueCellId::new("Coupling", "field_u");
@@ -2731,9 +2731,9 @@ mod helper_tests {
 
         // c0: ValueRef of field_z (typed TypeParam("Z"), out-of-scope)
         let expr_c0 =
-            reify_types::CompiledExpr::value_ref(field_z.clone(), Type::TypeParam("Z".into()));
+            reify_ir::CompiledExpr::value_ref(field_z.clone(), Type::TypeParam("Z".into()));
         // c1: literal Bool(true) — no ValueRef, no TypeParam
-        let expr_c1 = reify_types::CompiledExpr::literal(Value::Bool(true), Type::Bool);
+        let expr_c1 = reify_ir::CompiledExpr::literal(Value::Bool(true), Type::Bool);
 
         let template = make_topology_template(
             "Coupling",

@@ -6,8 +6,11 @@ license.workspace = true
 description = "Standard library: unit definitions and built-in functions"
 
 [dependencies]
-reify-types.workspace = true
+reify-core.workspace = true
+reify-ir.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+reify-core.workspace = true
+reify-ir.workspace = true
 reify-test-support.workspace = true

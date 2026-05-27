@@ -6,10 +6,8 @@
 
 use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
 use reify_test_support::*;
-use reify_types::{
-    Diagnostic, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId,
-    GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Type, Value,
-};
+use reify_core::{Diagnostic, Type};
+use reify_ir::{ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value};
 
 // ---------------------------------------------------------------------------
 // Shared helper: build a CompiledModule with fixed params and optional ops
@@ -25,7 +23,7 @@ use reify_types::{
 /// does not need to accept kernel or format parameters.
 fn build_module_with_ops(path: &str, ops: &[CompiledGeometryOp]) -> reify_compiler::CompiledModule {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     let mut builder = TopologyTemplateBuilder::new(e)
         .param(e, "width", Type::length(), Some(mm_literal(80.0)))
@@ -38,7 +36,7 @@ fn build_module_with_ops(path: &str, ops: &[CompiledGeometryOp]) -> reify_compil
 
     let template = builder.build();
 
-    CompiledModuleBuilder::new(reify_types::ModulePath::single(path))
+    CompiledModuleBuilder::new(reify_core::ModulePath::single(path))
         .template(template)
         .build()
 }
@@ -46,7 +44,7 @@ fn build_module_with_ops(path: &str, ops: &[CompiledGeometryOp]) -> reify_compil
 /// Creates a compiled module with a single structure containing one box
 /// primitive realization, so there is exactly one geometry operation to process.
 fn module_with_box_realization() -> reify_compiler::CompiledModule {
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
@@ -80,7 +78,7 @@ fn make_sentinel_module(
     std::sync::Arc<std::sync::Mutex<Vec<GeometryOpRecord>>>,
 ) {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     let sphere_op_0 = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Sphere,
@@ -100,7 +98,7 @@ fn make_sentinel_module(
         .realization(e, 0, vec![sphere_op_0, failing_op, sphere_op_2])
         .build();
 
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single(path))
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single(path))
         .template(template)
         .build();
 
@@ -316,7 +314,7 @@ fn loft_through_full_eval_pipeline() {
     use reify_compiler::{CompiledGeometryOp, GeomRef, PrimitiveKind, SweepKind};
 
     let e = "TestLoft";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Sphere (produces handle at step index 0)
     let sphere_op_0 = CompiledGeometryOp::Primitive {
@@ -341,7 +339,7 @@ fn loft_through_full_eval_pipeline() {
         .realization(e, 0, vec![sphere_op_0, sphere_op_1, loft_op])
         .build();
 
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_loft"))
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single("test_loft"))
         .template(template)
         .build();
 
@@ -408,7 +406,7 @@ fn loft_through_full_eval_pipeline() {
 #[test]
 fn cascading_compile_failures_aborted_after_first() {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Three Boolean(Union) ops, all referencing non-existent Step indices.
     // compile_geometry_op returns None for each because step_handles is empty.
@@ -434,7 +432,7 @@ fn cascading_compile_failures_aborted_after_first() {
         .realization(e, 0, vec![union_op_0, union_op_1, union_op_2])
         .build();
 
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_cascade"))
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single("test_cascade"))
         .template(template)
         .build();
 
@@ -476,7 +474,7 @@ fn cascading_compile_failures_aborted_after_first() {
 #[test]
 fn cascading_kernel_failures_aborted_after_first() {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Three Box primitives — all will compile successfully but fail at kernel.execute
     let box_op_0 = CompiledGeometryOp::Primitive {
@@ -509,7 +507,7 @@ fn cascading_kernel_failures_aborted_after_first() {
         .realization(e, 0, vec![box_op_0, box_op_1, box_op_2])
         .build();
 
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_kernel_cascade"))
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single("test_kernel_cascade"))
         .template(template)
         .build();
 
@@ -544,7 +542,7 @@ fn cascading_kernel_failures_aborted_after_first() {
 #[test]
 fn realization_abort_is_per_realization() {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Realization 0: Boolean union referencing non-existent steps → compile failure
     let union_op = CompiledGeometryOp::Boolean {
@@ -572,7 +570,7 @@ fn realization_abort_is_per_realization() {
         .build();
 
     let module =
-        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_per_realization"))
+        CompiledModuleBuilder::new(reify_core::ModulePath::single("test_per_realization"))
             .template(template)
             .build();
 
@@ -627,7 +625,7 @@ fn realization_abort_is_per_realization() {
 #[test]
 fn tessellate_aborts_cascading_compile_failures() {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Three Boolean(Union) ops, all referencing non-existent Step indices.
     // With the sentinel fix, all 3 are attempted → 3 compile-failure diagnostics.
@@ -652,7 +650,7 @@ fn tessellate_aborts_cascading_compile_failures() {
         .realization(e, 0, vec![union_op_0, union_op_1, union_op_2])
         .build();
 
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_tess_cascade"))
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single("test_tess_cascade"))
         .template(template)
         .build();
 
@@ -697,7 +695,7 @@ fn tessellate_aborts_cascading_compile_failures() {
 fn mixed_failure_then_dependent_ops_aborted() {
     use reify_compiler::ModifyKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Box (succeeds) → handle at step[0]
     let box_op = CompiledGeometryOp::Primitive {
@@ -732,7 +730,7 @@ fn mixed_failure_then_dependent_ops_aborted() {
         .realization(e, 0, vec![box_op, union_op, fillet_op])
         .build();
 
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_mixed_abort"))
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single("test_mixed_abort"))
         .template(template)
         .build();
 
@@ -797,7 +795,7 @@ fn mixed_failure_then_dependent_ops_aborted() {
 #[test]
 fn partial_failure_tessellate_produces_no_mesh() {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Box primitive (compiles and executes OK)
     let box_op = CompiledGeometryOp::Primitive {
@@ -823,7 +821,7 @@ fn partial_failure_tessellate_produces_no_mesh() {
         .realization(e, 0, vec![box_op, union_op])
         .build();
 
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_partial_tess"))
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single("test_partial_tess"))
         .template(template)
         .build();
 
@@ -900,7 +898,7 @@ fn tessellate_sentinel_placeholder_continues_independent_ops() {
 #[test]
 fn partial_failure_build_produces_no_geometry() {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Box primitive (compiles and executes OK)
     let box_op = CompiledGeometryOp::Primitive {
@@ -926,7 +924,7 @@ fn partial_failure_build_produces_no_geometry() {
         .realization(e, 0, vec![box_op, union_op])
         .build();
 
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_partial_build"))
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single("test_partial_build"))
         .template(template)
         .build();
 
@@ -974,7 +972,7 @@ fn partial_failure_build_produces_no_geometry() {
 #[test]
 fn partial_failure_does_not_contaminate_subsequent_realization() {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Realization 0: [Box (succeeds), Boolean union with bad refs (compile failure)]
     let box_op_0 = CompiledGeometryOp::Primitive {
@@ -1010,7 +1008,7 @@ fn partial_failure_does_not_contaminate_subsequent_realization() {
         .build();
 
     let module =
-        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_partial_contaminate"))
+        CompiledModuleBuilder::new(reify_core::ModulePath::single("test_partial_contaminate"))
             .template(template)
             .build();
 
@@ -1091,7 +1089,7 @@ fn partial_failure_does_not_contaminate_subsequent_realization() {
 #[test]
 fn build_primitive_missing_arg_no_kernel_error() {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Box with height and depth present, but 'width' deliberately omitted
     let box_op = CompiledGeometryOp::Primitive {
@@ -1109,7 +1107,7 @@ fn build_primitive_missing_arg_no_kernel_error() {
         .realization(e, 0, vec![box_op])
         .build();
 
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_missing_width"))
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single("test_missing_width"))
         .template(template)
         .build();
 
@@ -1155,7 +1153,7 @@ fn build_primitive_missing_arg_no_kernel_error() {
 #[test]
 fn build_primitive_missing_arg_emits_exactly_one_compile_warning() {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
@@ -1169,7 +1167,7 @@ fn build_primitive_missing_arg_emits_exactly_one_compile_warning() {
     let template = TopologyTemplateBuilder::new(e)
         .realization(e, 0, vec![box_op])
         .build();
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single(
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single(
         "test_anti_cascade_single_warning",
     ))
     .template(template)
@@ -1185,7 +1183,7 @@ fn build_primitive_missing_arg_emits_exactly_one_compile_warning() {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == reify_types::Severity::Warning
+            d.severity == reify_core::Severity::Warning
                 && d.message.contains("missing required geometry argument")
                 && d.message.contains("width")
         })
@@ -1206,7 +1204,7 @@ fn build_primitive_missing_arg_emits_exactly_one_compile_warning() {
     let warning_count = result
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Warning)
+        .filter(|d| d.severity == reify_core::Severity::Warning)
         .count();
     assert_eq!(
         warning_count,
@@ -1225,7 +1223,7 @@ fn build_primitive_missing_arg_emits_exactly_one_compile_warning() {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == reify_types::Severity::Error
+            d.severity == reify_core::Severity::Error
                 && d.message.contains("failed to compile geometry operation")
         })
         .collect();
@@ -1309,7 +1307,7 @@ fn build_modify_missing_arg_case(
     kind_name_for_warning: &str,
 ) {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Box primitive with all three required args — provides step_handles[0]
     // as the Modify op's target.
@@ -1336,7 +1334,7 @@ fn build_modify_missing_arg_case(
         "test_modify_{}_missing_{}",
         kind_name_for_warning, missing_arg_for_warning
     );
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single(&module_path))
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single(&module_path))
         .template(template)
         .build();
 
@@ -1351,7 +1349,7 @@ fn build_modify_missing_arg_case(
     assert_rejected_at_compile(
         &result,
         &ops_ref.lock().unwrap(),
-        Some(|op| matches!(op, reify_types::GeometryOp::Box { .. })),
+        Some(|op| matches!(op, reify_ir::GeometryOp::Box { .. })),
         &[
             "missing required geometry argument",
             missing_arg_for_warning,
@@ -1386,7 +1384,7 @@ fn build_modify_missing_arg_case(
 fn assert_rejected_at_compile(
     result: &reify_eval::BuildResult,
     ops: &[reify_test_support::GeometryOpRecord],
-    expected_primitive: Option<fn(&reify_types::GeometryOp) -> bool>,
+    expected_primitive: Option<fn(&reify_ir::GeometryOp) -> bool>,
     warning_needles: &[&str],
 ) {
     // (1) Kernel op count and identity
@@ -1423,7 +1421,7 @@ fn assert_rejected_at_compile(
 
     // (3) Warning containing all provided needles
     let has_warning = result.diagnostics.iter().any(|d| {
-        d.severity == reify_types::Severity::Warning
+        d.severity == reify_core::Severity::Warning
             && warning_needles
                 .iter()
                 .all(|needle| d.message.contains(needle))
@@ -1493,9 +1491,9 @@ fn assert_rejected_at_compile(
 fn build_scale_negative_factor_emits_diagnostic() {
     use reify_compiler::TransformKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
     let real_literal =
-        |v: f64| reify_types::CompiledExpr::literal(reify_types::Value::Real(v), Type::Real);
+        |v: f64| reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::Real);
 
     // Op 0: Box primitive with all three required args — provides step_handles[0]
     // as the Scale op's target
@@ -1523,7 +1521,7 @@ fn build_scale_negative_factor_emits_diagnostic() {
         .realization(e, 0, vec![box_op, scale_op])
         .build();
 
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_scale_negative"))
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single("test_scale_negative"))
         .template(template)
         .build();
 
@@ -1536,7 +1534,7 @@ fn build_scale_negative_factor_emits_diagnostic() {
     assert_rejected_at_compile(
         &result,
         &ops_ref.lock().unwrap(),
-        Some(|op| matches!(op, reify_types::GeometryOp::Box { .. })),
+        Some(|op| matches!(op, reify_ir::GeometryOp::Box { .. })),
         &["scale dropped", "negative"],
     );
 }
@@ -1562,7 +1560,7 @@ fn build_scale_negative_factor_emits_diagnostic() {
 fn build_extrude_nonfinite_distance_emits_diagnostic() {
     use reify_compiler::SweepKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Sphere primitive with radius — provides step_handles[0] as the
     // Extrude's profile handle
@@ -1572,10 +1570,10 @@ fn build_extrude_nonfinite_distance_emits_diagnostic() {
     };
 
     // Op 1: Extrude with NaN distance — rejected because NaN is non-finite
-    let nan_distance = reify_types::CompiledExpr::literal(
-        reify_types::Value::Scalar {
+    let nan_distance = reify_ir::CompiledExpr::literal(
+        reify_ir::Value::Scalar {
             si_value: f64::NAN,
-            dimension: reify_types::DimensionVector::LENGTH,
+            dimension: reify_core::DimensionVector::LENGTH,
         },
         Type::length(),
     );
@@ -1591,7 +1589,7 @@ fn build_extrude_nonfinite_distance_emits_diagnostic() {
         .build();
 
     let module =
-        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_extrude_nan_distance"))
+        CompiledModuleBuilder::new(reify_core::ModulePath::single("test_extrude_nan_distance"))
             .template(template)
             .build();
 
@@ -1604,7 +1602,7 @@ fn build_extrude_nonfinite_distance_emits_diagnostic() {
     assert_rejected_at_compile(
         &result,
         &ops_ref.lock().unwrap(),
-        Some(|op| matches!(op, reify_types::GeometryOp::Sphere { .. })),
+        Some(|op| matches!(op, reify_ir::GeometryOp::Sphere { .. })),
         &["extrude dropped", "degenerate", "NaN"],
     );
 }
@@ -1629,9 +1627,9 @@ fn build_extrude_nonfinite_distance_emits_diagnostic() {
 fn build_revolve_degenerate_axis_emits_diagnostic() {
     use reify_compiler::SweepKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
     let real_literal =
-        |v: f64| reify_types::CompiledExpr::literal(reify_types::Value::Real(v), Type::Real);
+        |v: f64| reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::Real);
 
     // Op 0: Sphere primitive — provides step_handles[0] as the Revolve's profile handle
     let sphere_op = CompiledGeometryOp::Primitive {
@@ -1659,7 +1657,7 @@ fn build_revolve_degenerate_axis_emits_diagnostic() {
         .realization(e, 0, vec![sphere_op, revolve_op])
         .build();
 
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single(
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single(
         "test_revolve_degenerate_axis",
     ))
     .template(template)
@@ -1674,7 +1672,7 @@ fn build_revolve_degenerate_axis_emits_diagnostic() {
     assert_rejected_at_compile(
         &result,
         &ops_ref.lock().unwrap(),
-        Some(|op| matches!(op, reify_types::GeometryOp::Sphere { .. })),
+        Some(|op| matches!(op, reify_ir::GeometryOp::Sphere { .. })),
         &["revolve dropped", "axis"],
     );
 }
@@ -1703,9 +1701,9 @@ fn build_revolve_degenerate_axis_emits_diagnostic() {
 fn build_revolve_zero_angle_emits_diagnostic() {
     use reify_compiler::SweepKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
     let real_literal =
-        |v: f64| reify_types::CompiledExpr::literal(reify_types::Value::Real(v), Type::Real);
+        |v: f64| reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::Real);
 
     // Op 0: Sphere primitive — provides step_handles[0] as the Revolve's profile handle
     let sphere_op = CompiledGeometryOp::Primitive {
@@ -1735,7 +1733,7 @@ fn build_revolve_zero_angle_emits_diagnostic() {
         .build();
 
     let module =
-        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_revolve_zero_angle"))
+        CompiledModuleBuilder::new(reify_core::ModulePath::single("test_revolve_zero_angle"))
             .template(template)
             .build();
 
@@ -1748,7 +1746,7 @@ fn build_revolve_zero_angle_emits_diagnostic() {
     assert_rejected_at_compile(
         &result,
         &ops_ref.lock().unwrap(),
-        Some(|op| matches!(op, reify_types::GeometryOp::Sphere { .. })),
+        Some(|op| matches!(op, reify_ir::GeometryOp::Sphere { .. })),
         &["revolve dropped", "angle"],
     );
 }
@@ -1796,7 +1794,7 @@ fn sentinel_placeholder_continues_independent_ops() {
 #[test]
 fn sentinel_had_failure_triggers_rollback_despite_partial_success() {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Sphere (compiles and executes OK) → valid handle in step_handles[0]
     let sphere_op = CompiledGeometryOp::Primitive {
@@ -1817,7 +1815,7 @@ fn sentinel_had_failure_triggers_rollback_despite_partial_success() {
         .build();
 
     let module =
-        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_had_failure_rollback"))
+        CompiledModuleBuilder::new(reify_core::ModulePath::single("test_had_failure_rollback"))
             .template(template)
             .build();
 
@@ -1880,9 +1878,9 @@ fn sentinel_had_failure_triggers_rollback_despite_partial_success() {
 fn draft_plane_invalid_sentinel_causes_compile_failure() {
     use reify_compiler::ModifyKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
     let real_literal =
-        |v: f64| reify_types::CompiledExpr::literal(reify_types::Value::Real(v), Type::Real);
+        |v: f64| reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::Real);
 
     // Op 0: Sphere — succeeds, produces a valid handle at step_handles[0]
     let sphere_op = CompiledGeometryOp::Primitive {
@@ -1922,7 +1920,7 @@ fn draft_plane_invalid_sentinel_causes_compile_failure() {
         .build();
 
     let module =
-        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_draft_invalid_plane"))
+        CompiledModuleBuilder::new(reify_core::ModulePath::single("test_draft_invalid_plane"))
             .template(template)
             .build();
 
@@ -2153,12 +2151,12 @@ fn build_all_ops_fail_diagnostic_emitted_after_refactor() {
 fn build_extrude_distance_just_below_threshold_rejected() {
     use reify_compiler::SweepKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
     let length_literal = |si_value: f64| {
-        reify_types::CompiledExpr::literal(
-            reify_types::Value::Scalar {
+        reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Scalar {
                 si_value,
-                dimension: reify_types::DimensionVector::LENGTH,
+                dimension: reify_core::DimensionVector::LENGTH,
             },
             Type::length(),
         )
@@ -2181,7 +2179,7 @@ fn build_extrude_distance_just_below_threshold_rejected() {
         .realization(e, 0, vec![sphere_op, extrude_op])
         .build();
 
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single(
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single(
         "test_extrude_below_threshold",
     ))
     .template(template)
@@ -2196,7 +2194,7 @@ fn build_extrude_distance_just_below_threshold_rejected() {
     assert_rejected_at_compile(
         &result,
         &ops_ref.lock().unwrap(),
-        Some(|op| matches!(op, reify_types::GeometryOp::Sphere { .. })),
+        Some(|op| matches!(op, reify_ir::GeometryOp::Sphere { .. })),
         &["extrude dropped", "degenerate"],
     );
 }
@@ -2209,12 +2207,12 @@ fn build_extrude_distance_just_below_threshold_rejected() {
 fn build_extrude_distance_at_threshold_accepted() {
     use reify_compiler::SweepKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
     let length_literal = |si_value: f64| {
-        reify_types::CompiledExpr::literal(
-            reify_types::Value::Scalar {
+        reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Scalar {
                 si_value,
-                dimension: reify_types::DimensionVector::LENGTH,
+                dimension: reify_core::DimensionVector::LENGTH,
             },
             Type::length(),
         )
@@ -2237,7 +2235,7 @@ fn build_extrude_distance_at_threshold_accepted() {
         .build();
 
     let module =
-        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_extrude_at_threshold"))
+        CompiledModuleBuilder::new(reify_core::ModulePath::single("test_extrude_at_threshold"))
             .template(template)
             .build();
 
@@ -2255,19 +2253,19 @@ fn build_extrude_distance_at_threshold_accepted() {
         ops.len()
     );
     assert!(
-        matches!(ops[0].op, reify_types::GeometryOp::Sphere { .. }),
+        matches!(ops[0].op, reify_ir::GeometryOp::Sphere { .. }),
         "expected ops[0] to be Sphere, got: {:?}",
         ops[0].op
     );
     assert!(
-        matches!(ops[1].op, reify_types::GeometryOp::Extrude { .. }),
+        matches!(ops[1].op, reify_ir::GeometryOp::Extrude { .. }),
         "expected ops[1] to be Extrude (accepted at threshold), got: {:?}",
         ops[1].op
     );
 
     // No 'extrude dropped' Warning should fire at the inclusive boundary
     let spurious_drop = result.diagnostics.iter().any(|d| {
-        d.severity == reify_types::Severity::Warning && d.message.contains("extrude dropped")
+        d.severity == reify_core::Severity::Warning && d.message.contains("extrude dropped")
     });
     assert!(
         !spurious_drop,
@@ -2293,9 +2291,9 @@ fn build_extrude_distance_at_threshold_accepted() {
 fn build_revolve_angle_just_below_threshold_rejected() {
     use reify_compiler::SweepKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
     let real_literal =
-        |v: f64| reify_types::CompiledExpr::literal(reify_types::Value::Real(v), Type::Real);
+        |v: f64| reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::Real);
 
     let sphere_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Sphere,
@@ -2322,7 +2320,7 @@ fn build_revolve_angle_just_below_threshold_rejected() {
         .realization(e, 0, vec![sphere_op, revolve_op])
         .build();
 
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single(
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single(
         "test_revolve_angle_below_threshold",
     ))
     .template(template)
@@ -2337,7 +2335,7 @@ fn build_revolve_angle_just_below_threshold_rejected() {
     assert_rejected_at_compile(
         &result,
         &ops_ref.lock().unwrap(),
-        Some(|op| matches!(op, reify_types::GeometryOp::Sphere { .. })),
+        Some(|op| matches!(op, reify_ir::GeometryOp::Sphere { .. })),
         &["revolve dropped", "angle", "degenerate"],
     );
 }
@@ -2351,9 +2349,9 @@ fn build_revolve_angle_just_below_threshold_rejected() {
 fn build_revolve_angle_negative_just_below_threshold_rejected() {
     use reify_compiler::SweepKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
     let real_literal =
-        |v: f64| reify_types::CompiledExpr::literal(reify_types::Value::Real(v), Type::Real);
+        |v: f64| reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::Real);
 
     let sphere_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Sphere,
@@ -2378,7 +2376,7 @@ fn build_revolve_angle_negative_just_below_threshold_rejected() {
         .realization(e, 0, vec![sphere_op, revolve_op])
         .build();
 
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single(
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single(
         "test_revolve_angle_negative_below_threshold",
     ))
     .template(template)
@@ -2393,7 +2391,7 @@ fn build_revolve_angle_negative_just_below_threshold_rejected() {
     assert_rejected_at_compile(
         &result,
         &ops_ref.lock().unwrap(),
-        Some(|op| matches!(op, reify_types::GeometryOp::Sphere { .. })),
+        Some(|op| matches!(op, reify_ir::GeometryOp::Sphere { .. })),
         &["revolve dropped", "angle", "degenerate"],
     );
 }
@@ -2409,8 +2407,8 @@ fn build_revolve_angle_negative_just_below_threshold_rejected() {
 fn build_circular_pattern_missing_count_no_kernel_error() {
     use reify_compiler::PatternKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal = |v: f64| reify_types::CompiledExpr::literal(Value::Real(v), Type::Real);
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
+    let real_literal = |v: f64| reify_ir::CompiledExpr::literal(Value::Real(v), Type::Real);
 
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
@@ -2439,7 +2437,7 @@ fn build_circular_pattern_missing_count_no_kernel_error() {
     let template = TopologyTemplateBuilder::new(e)
         .realization(e, 0, vec![box_op, circular_op])
         .build();
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single(
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single(
         "test_circular_missing_count",
     ))
     .template(template)
@@ -2454,7 +2452,7 @@ fn build_circular_pattern_missing_count_no_kernel_error() {
     assert_rejected_at_compile(
         &result,
         &ops_ref.lock().unwrap(),
-        Some(|op| matches!(op, reify_types::GeometryOp::Box { .. })),
+        Some(|op| matches!(op, reify_ir::GeometryOp::Box { .. })),
         &["missing required geometry argument", "count", "circular"],
     );
 }
@@ -2466,8 +2464,8 @@ fn build_circular_pattern_missing_count_no_kernel_error() {
 fn build_circular_pattern_missing_axis_no_kernel_error() {
     use reify_compiler::PatternKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal = |v: f64| reify_types::CompiledExpr::literal(Value::Real(v), Type::Real);
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
+    let real_literal = |v: f64| reify_ir::CompiledExpr::literal(Value::Real(v), Type::Real);
 
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
@@ -2497,7 +2495,7 @@ fn build_circular_pattern_missing_axis_no_kernel_error() {
         .realization(e, 0, vec![box_op, circular_op])
         .build();
     let module =
-        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_circular_missing_ax"))
+        CompiledModuleBuilder::new(reify_core::ModulePath::single("test_circular_missing_ax"))
             .template(template)
             .build();
 
@@ -2510,7 +2508,7 @@ fn build_circular_pattern_missing_axis_no_kernel_error() {
     assert_rejected_at_compile(
         &result,
         &ops_ref.lock().unwrap(),
-        Some(|op| matches!(op, reify_types::GeometryOp::Box { .. })),
+        Some(|op| matches!(op, reify_ir::GeometryOp::Box { .. })),
         &["missing required geometry argument", "ax", "circular"],
     );
 }
@@ -2522,8 +2520,8 @@ fn build_circular_pattern_missing_axis_no_kernel_error() {
 fn build_mirror_pattern_missing_plane_origin_no_kernel_error() {
     use reify_compiler::PatternKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal = |v: f64| reify_types::CompiledExpr::literal(Value::Real(v), Type::Real);
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
+    let real_literal = |v: f64| reify_ir::CompiledExpr::literal(Value::Real(v), Type::Real);
 
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
@@ -2550,7 +2548,7 @@ fn build_mirror_pattern_missing_plane_origin_no_kernel_error() {
         .realization(e, 0, vec![box_op, mirror_op])
         .build();
     let module =
-        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_mirror_missing_ox"))
+        CompiledModuleBuilder::new(reify_core::ModulePath::single("test_mirror_missing_ox"))
             .template(template)
             .build();
 
@@ -2563,7 +2561,7 @@ fn build_mirror_pattern_missing_plane_origin_no_kernel_error() {
     assert_rejected_at_compile(
         &result,
         &ops_ref.lock().unwrap(),
-        Some(|op| matches!(op, reify_types::GeometryOp::Box { .. })),
+        Some(|op| matches!(op, reify_ir::GeometryOp::Box { .. })),
         &["missing required geometry argument", "ox", "mirror"],
     );
 }
@@ -2627,7 +2625,7 @@ fn assert_boolean_unresolved_ref_rejected(
         ops.len()
     );
     assert!(
-        matches!(ops[0].op, reify_types::GeometryOp::Box { .. }),
+        matches!(ops[0].op, reify_ir::GeometryOp::Box { .. }),
         "expected the only recorded kernel op to be a Box, got: {:?}",
         ops[0].op
     );
@@ -2638,7 +2636,7 @@ fn assert_boolean_unresolved_ref_rejected(
     );
 
     let has_compile_error = result.diagnostics.iter().any(|d| {
-        d.severity == reify_types::Severity::Error
+        d.severity == reify_core::Severity::Error
             && d.message.contains("failed to compile geometry operation")
             && error_needles
                 .iter()
@@ -2682,7 +2680,7 @@ fn run_boolean_unresolved_ref_case(
     std::sync::Arc<std::sync::Mutex<Vec<GeometryOpRecord>>>,
 ) {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
@@ -2697,7 +2695,7 @@ fn run_boolean_unresolved_ref_case(
     let template = TopologyTemplateBuilder::new(e)
         .realization(e, 0, vec![box_op, boolean_op])
         .build();
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single(module_path))
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single(module_path))
         .template(template)
         .build();
 

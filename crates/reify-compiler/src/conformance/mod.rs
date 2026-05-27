@@ -17,7 +17,7 @@ pub(crate) fn check_trait_conformance(
     value_cells: &mut Vec<ValueCellDecl>,
     constraints: &mut Vec<CompiledConstraint>,
     constraint_index: &mut u32,
-    enum_defs: &[reify_types::EnumDef],
+    enum_defs: &[reify_ir::EnumDef],
     functions: &[CompiledFunction],
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
@@ -774,8 +774,8 @@ mod tests {
     /// and structure fixtures and then assert on the returned `Vec<Diagnostic>`.
     fn run_conformance(
         traits: &[CompiledTrait],
-        structure_def: &reify_syntax::StructureDef,
-        enum_defs: &[reify_types::EnumDef],
+        structure_def: &reify_ast::StructureDef,
+        enum_defs: &[reify_ir::EnumDef],
     ) -> Vec<Diagnostic> {
         let entity_ref = EntityDefRef::from(structure_def);
         let trait_registry: HashMap<String, &CompiledTrait> =
@@ -834,15 +834,15 @@ mod tests {
     #[test]
     fn check_trait_conformance_resolves_enum_typed_param_and_let() {
         // Direction enum defined in the same module
-        let enum_defs = vec![reify_types::EnumDef {
+        let enum_defs = vec![reify_ir::EnumDef {
             name: "Direction".to_string(),
             variants: vec!["In".to_string(), "Out".to_string()],
             doc: None,
         }];
 
         // TypeExpr for `Direction` (bare named type, no type_args)
-        let direction_type_expr = reify_syntax::TypeExpr {
-            kind: reify_syntax::TypeExprKind::Named {
+        let direction_type_expr = reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::Named {
                 name: "Direction".to_string(),
                 type_args: vec![],
             },
@@ -875,18 +875,18 @@ mod tests {
         };
 
         // Structure S : TraitDir { param dir : Direction; let kind : Direction = 0.0; }
-        let structure_def = reify_syntax::StructureDef {
+        let structure_def = reify_ast::StructureDef {
             name: "S".to_string(),
             doc: None,
             is_pub: false,
             type_params: vec![],
-            trait_bounds: vec![reify_syntax::TraitBoundRef {
+            trait_bounds: vec![reify_ast::TraitBoundRef {
                 name: "TraitDir".to_string(),
                 type_args: vec![],
                 span: SourceSpan::empty(0),
             }],
             members: vec![
-                reify_syntax::MemberDecl::Param(reify_syntax::ParamDecl {
+                reify_ast::MemberDecl::Param(reify_ast::ParamDecl {
                     name: "dir".to_string(),
                     doc: None,
                     type_expr: Some(direction_type_expr.clone()),
@@ -896,13 +896,13 @@ mod tests {
                     span: SourceSpan::empty(0),
                     content_hash: ContentHash(0),
                 }),
-                reify_syntax::MemberDecl::Let(reify_syntax::LetDecl {
+                reify_ast::MemberDecl::Let(reify_ast::LetDecl {
                     name: "kind".to_string(),
                     doc: None,
                     is_pub: false,
                     type_expr: Some(direction_type_expr),
-                    value: reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::NumberLiteral {
+                    value: reify_ast::Expr {
+                        kind: reify_ast::ExprKind::NumberLiteral {
                             value: 0.0,
                             is_real: false,
                         },
@@ -1022,7 +1022,7 @@ mod tests {
                 name: Some("x".to_string()),
                 kind: DefaultKind::Param {
                     cell_type: Type::length(),
-                    default_decl: reify_syntax::ParamDecl {
+                    default_decl: reify_ast::ParamDecl {
                         name: "x".to_string(),
                         doc: None,
                         type_expr: None,
@@ -1054,13 +1054,13 @@ mod tests {
                 name: Some("x".to_string()),
                 kind: DefaultKind::Let {
                     cell_type: None,
-                    let_decl: reify_syntax::LetDecl {
+                    let_decl: reify_ast::LetDecl {
                         name: "x".to_string(),
                         doc: None,
                         is_pub: false,
                         type_expr: None,
-                        value: reify_syntax::Expr {
-                            kind: reify_syntax::ExprKind::NumberLiteral {
+                        value: reify_ast::Expr {
+                            kind: reify_ast::ExprKind::NumberLiteral {
                                 value: 5.5,
                                 is_real: true,
                             },
@@ -1080,23 +1080,23 @@ mod tests {
         };
 
         // Structure S : TraitX + TraitY + TraitZ { } — no member overrides
-        let structure_def = reify_syntax::StructureDef {
+        let structure_def = reify_ast::StructureDef {
             name: "S".to_string(),
             doc: None,
             is_pub: false,
             type_params: vec![],
             trait_bounds: vec![
-                reify_syntax::TraitBoundRef {
+                reify_ast::TraitBoundRef {
                     name: "TraitX".to_string(),
                     type_args: vec![],
                     span: SourceSpan::empty(0),
                 },
-                reify_syntax::TraitBoundRef {
+                reify_ast::TraitBoundRef {
                     name: "TraitY".to_string(),
                     type_args: vec![],
                     span: SourceSpan::empty(0),
                 },
-                reify_syntax::TraitBoundRef {
+                reify_ast::TraitBoundRef {
                     name: "TraitZ".to_string(),
                     type_args: vec![],
                     span: SourceSpan::empty(0),
@@ -1213,13 +1213,13 @@ mod tests {
         // Annotated Let: `let x : Length = 1.0` — cell_type: Some(Type::length())
         // Pass 1 claims "x" -> Type::length() in the scope (uses cell_type directly;
         // the value expression is compiled later, in phase 6's inject_defaults).
-        let annotated_let_decl = reify_syntax::LetDecl {
+        let annotated_let_decl = reify_ast::LetDecl {
             name: "x".to_string(),
             doc: None,
             is_pub: false,
             type_expr: None, // cell_type carries the annotation; type_expr is the raw AST form
-            value: reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::NumberLiteral {
+            value: reify_ast::Expr {
+                kind: reify_ast::ExprKind::NumberLiteral {
                     value: 1.0,
                     is_real: false,
                 },
@@ -1233,13 +1233,13 @@ mod tests {
         // Unannotated Let: `let x = 5.5` — cell_type: None
         // Pass 2 compiles NumberLiteral(5.5) → Type::Real, finds "x" already in scope
         // (from the annotated Let above), and records "x" in pass2_skipped.
-        let unannotated_let_decl = reify_syntax::LetDecl {
+        let unannotated_let_decl = reify_ast::LetDecl {
             name: "x".to_string(),
             doc: None,
             is_pub: false,
             type_expr: None,
-            value: reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::NumberLiteral {
+            value: reify_ast::Expr {
+                kind: reify_ast::ExprKind::NumberLiteral {
                     value: 5.5,
                     is_real: true,
                 },
@@ -1280,7 +1280,7 @@ mod tests {
         }];
 
         // Minimal structure scaffolding (no members — requirement must be satisfied by default).
-        let structure_def = reify_syntax::StructureDef {
+        let structure_def = reify_ast::StructureDef {
             name: "S".to_string(),
             doc: None,
             is_pub: false,
@@ -1391,34 +1391,34 @@ mod tests {
     #[test]
     fn enum_with_type_args_emits_error_diagnostic() {
         // Direction<Something> — non-empty type_args that should trigger the diagnostic
-        let bogus_type_arg = reify_syntax::TypeExpr {
-            kind: reify_syntax::TypeExprKind::Named {
+        let bogus_type_arg = reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::Named {
                 name: "Something".to_string(),
                 type_args: vec![],
             },
             span: SourceSpan::empty(0),
         };
-        let direction_with_args = reify_syntax::TypeExpr {
-            kind: reify_syntax::TypeExprKind::Named {
+        let direction_with_args = reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::Named {
                 name: "Direction".to_string(),
                 type_args: vec![bogus_type_arg],
             },
             span: SourceSpan::empty(0),
         };
 
-        let enum_defs = vec![reify_types::EnumDef {
+        let enum_defs = vec![reify_ir::EnumDef {
             name: "Direction".to_string(),
             variants: vec!["In".to_string(), "Out".to_string()],
             doc: None,
         }];
 
-        let structure_def = reify_syntax::StructureDef {
+        let structure_def = reify_ast::StructureDef {
             name: "S".to_string(),
             doc: None,
             is_pub: false,
             type_params: vec![],
             trait_bounds: vec![],
-            members: vec![reify_syntax::MemberDecl::Param(reify_syntax::ParamDecl {
+            members: vec![reify_ast::MemberDecl::Param(reify_ast::ParamDecl {
                 name: "dir".to_string(),
                 doc: None,
                 type_expr: Some(direction_with_args),
@@ -1460,34 +1460,34 @@ mod tests {
     #[test]
     fn unknown_named_type_with_type_args_produces_unresolved_diagnostic() {
         // NotAnEnum<Something> — non-empty type_args but "NotAnEnum" is not in enum_defs
-        let bogus_type_arg = reify_syntax::TypeExpr {
-            kind: reify_syntax::TypeExprKind::Named {
+        let bogus_type_arg = reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::Named {
                 name: "Something".to_string(),
                 type_args: vec![],
             },
             span: SourceSpan::empty(0),
         };
-        let non_enum_with_args = reify_syntax::TypeExpr {
-            kind: reify_syntax::TypeExprKind::Named {
+        let non_enum_with_args = reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::Named {
                 name: "NotAnEnum".to_string(),
                 type_args: vec![bogus_type_arg],
             },
             span: SourceSpan::empty(0),
         };
 
-        let enum_defs = vec![reify_types::EnumDef {
+        let enum_defs = vec![reify_ir::EnumDef {
             name: "Direction".to_string(),
             variants: vec!["In".to_string(), "Out".to_string()],
             doc: None,
         }];
 
-        let structure_def = reify_syntax::StructureDef {
+        let structure_def = reify_ast::StructureDef {
             name: "S".to_string(),
             doc: None,
             is_pub: false,
             type_params: vec![],
             trait_bounds: vec![],
-            members: vec![reify_syntax::MemberDecl::Param(reify_syntax::ParamDecl {
+            members: vec![reify_ast::MemberDecl::Param(reify_ast::ParamDecl {
                 name: "p".to_string(),
                 doc: None,
                 type_expr: Some(non_enum_with_args),
@@ -1577,13 +1577,13 @@ mod tests {
                 name: Some("x".to_string()),
                 kind: DefaultKind::Let {
                     cell_type: None,
-                    let_decl: reify_syntax::LetDecl {
+                    let_decl: reify_ast::LetDecl {
                         name: "x".to_string(),
                         doc: None,
                         is_pub: false,
                         type_expr: None,
-                        value: reify_syntax::Expr {
-                            kind: reify_syntax::ExprKind::QuantityLiteral {
+                        value: reify_ast::Expr {
+                            kind: reify_ast::ExprKind::QuantityLiteral {
                                 value: 80.0,
                                 unit: "mm".to_string(),
                             },
@@ -1603,18 +1603,18 @@ mod tests {
         };
 
         // Structure S : TraitA + TraitB { } — no member overrides
-        let structure_def = reify_syntax::StructureDef {
+        let structure_def = reify_ast::StructureDef {
             name: "S".to_string(),
             doc: None,
             is_pub: false,
             type_params: vec![],
             trait_bounds: vec![
-                reify_syntax::TraitBoundRef {
+                reify_ast::TraitBoundRef {
                     name: "TraitA".to_string(),
                     type_args: vec![],
                     span: SourceSpan::empty(0),
                 },
-                reify_syntax::TraitBoundRef {
+                reify_ast::TraitBoundRef {
                     name: "TraitB".to_string(),
                     type_args: vec![],
                     span: SourceSpan::empty(0),
@@ -1696,13 +1696,13 @@ mod tests {
                 name: Some("x".to_string()),
                 kind: DefaultKind::Let {
                     cell_type: None,
-                    let_decl: reify_syntax::LetDecl {
+                    let_decl: reify_ast::LetDecl {
                         name: "x".to_string(),
                         doc: None,
                         is_pub: false,
                         type_expr: None,
-                        value: reify_syntax::Expr {
-                            kind: reify_syntax::ExprKind::NumberLiteral {
+                        value: reify_ast::Expr {
+                            kind: reify_ast::ExprKind::NumberLiteral {
                                 value: 5.5,
                                 is_real: true,
                             },
@@ -1722,18 +1722,18 @@ mod tests {
         };
 
         // Structure S : TraitA + TraitB { } — no member overrides
-        let structure_def = reify_syntax::StructureDef {
+        let structure_def = reify_ast::StructureDef {
             name: "S".to_string(),
             doc: None,
             is_pub: false,
             type_params: vec![],
             trait_bounds: vec![
-                reify_syntax::TraitBoundRef {
+                reify_ast::TraitBoundRef {
                     name: "TraitA".to_string(),
                     type_args: vec![],
                     span: SourceSpan::empty(0),
                 },
-                reify_syntax::TraitBoundRef {
+                reify_ast::TraitBoundRef {
                     name: "TraitB".to_string(),
                     type_args: vec![],
                     span: SourceSpan::empty(0),
@@ -1791,29 +1791,29 @@ mod tests {
     /// (TDD compile-tripwire) and pins the helper's return type signature.
     #[test]
     fn check_phase_resolve_structure_members_builds_member_and_constraint_maps() {
-        let real_type_expr = reify_syntax::TypeExpr {
-            kind: reify_syntax::TypeExprKind::Named {
+        let real_type_expr = reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::Named {
                 name: "Real".to_string(),
                 type_args: vec![],
             },
             span: SourceSpan::empty(0),
         };
-        let length_type_expr = reify_syntax::TypeExpr {
-            kind: reify_syntax::TypeExprKind::Named {
+        let length_type_expr = reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::Named {
                 name: "Length".to_string(),
                 type_args: vec![],
             },
             span: SourceSpan::empty(0),
         };
 
-        let structure_def = reify_syntax::StructureDef {
+        let structure_def = reify_ast::StructureDef {
             name: "S".to_string(),
             doc: None,
             is_pub: false,
             type_params: vec![],
             trait_bounds: vec![],
             members: vec![
-                reify_syntax::MemberDecl::Param(reify_syntax::ParamDecl {
+                reify_ast::MemberDecl::Param(reify_ast::ParamDecl {
                     name: "width".to_string(),
                     doc: None,
                     type_expr: Some(real_type_expr),
@@ -1823,13 +1823,13 @@ mod tests {
                     span: SourceSpan::empty(0),
                     content_hash: ContentHash(0),
                 }),
-                reify_syntax::MemberDecl::Let(reify_syntax::LetDecl {
+                reify_ast::MemberDecl::Let(reify_ast::LetDecl {
                     name: "length".to_string(),
                     doc: None,
                     is_pub: false,
                     type_expr: Some(length_type_expr),
-                    value: reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::NumberLiteral {
+                    value: reify_ast::Expr {
+                        kind: reify_ast::ExprKind::NumberLiteral {
                             value: 0.0,
                             is_real: false,
                         },
@@ -1840,10 +1840,10 @@ mod tests {
                     span: SourceSpan::empty(0),
                     content_hash: ContentHash(0),
                 }),
-                reify_syntax::MemberDecl::Constraint(reify_syntax::ConstraintDecl {
+                reify_ast::MemberDecl::Constraint(reify_ast::ConstraintDecl {
                     label: Some("bound".to_string()),
-                    expr: reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::NumberLiteral {
+                    expr: reify_ast::Expr {
+                        kind: reify_ast::ExprKind::NumberLiteral {
                             value: 1.0,
                             is_real: false,
                         },
@@ -1919,12 +1919,12 @@ mod tests {
             pragmas: vec![],
         };
 
-        let structure_def = reify_syntax::StructureDef {
+        let structure_def = reify_ast::StructureDef {
             name: "S".to_string(),
             doc: None,
             is_pub: false,
             type_params: vec![],
-            trait_bounds: vec![reify_syntax::TraitBoundRef {
+            trait_bounds: vec![reify_ast::TraitBoundRef {
                 name: "TraitA".to_string(),
                 type_args: vec![],
                 span: SourceSpan::empty(0),
@@ -1969,7 +1969,7 @@ mod tests {
     /// pins the helper's `PreRegisterOutput` return type.
     #[test]
     fn check_phase_pre_register_default_types_registers_annotated_param_into_scope() {
-        let param_decl = reify_syntax::ParamDecl {
+        let param_decl = reify_ast::ParamDecl {
             name: "x".to_string(),
             doc: None,
             type_expr: None,
@@ -2055,13 +2055,13 @@ mod tests {
     /// expression in `inferred_let_exprs` for phase 6 to reuse without double-compilation.
     #[test]
     fn check_phase_pre_register_default_types_caches_unannotated_let_in_inferred_map() {
-        let let_decl = reify_syntax::LetDecl {
+        let let_decl = reify_ast::LetDecl {
             name: "y".to_string(),
             doc: None,
             is_pub: false,
             type_expr: None, // unannotated — must go through Pass 2 inference
-            value: reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::NumberLiteral {
+            value: reify_ast::Expr {
+                kind: reify_ast::ExprKind::NumberLiteral {
                     value: 2.5,
                     is_real: true,
                 },
@@ -2150,7 +2150,7 @@ mod tests {
     /// phase 6) without inserting into `inferred_let_exprs`.
     #[test]
     fn check_phase_pre_register_default_types_records_collision_in_pass2_skipped() {
-        let param_decl = reify_syntax::ParamDecl {
+        let param_decl = reify_ast::ParamDecl {
             name: "x".to_string(),
             doc: None,
             type_expr: None,
@@ -2160,13 +2160,13 @@ mod tests {
             span: SourceSpan::empty(0),
             content_hash: ContentHash(0),
         };
-        let let_decl = reify_syntax::LetDecl {
+        let let_decl = reify_ast::LetDecl {
             name: "x".to_string(),
             doc: None,
             is_pub: false,
             type_expr: None, // unannotated — will be compiled in Pass 2
-            value: reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::NumberLiteral {
+            value: reify_ast::Expr {
+                kind: reify_ast::ExprKind::NumberLiteral {
                     value: 5.5,
                     is_real: true,
                 },
@@ -2274,7 +2274,7 @@ mod tests {
     /// - `diagnostics.is_empty()`: `register_if_absent` conflict is a debug-log only event.
     #[test]
     fn check_phase_pre_register_default_types_records_collision_in_pass1_skipped() {
-        let param_decl = reify_syntax::ParamDecl {
+        let param_decl = reify_ast::ParamDecl {
             name: "x".to_string(),
             doc: None,
             type_expr: None,
@@ -2286,13 +2286,13 @@ mod tests {
         };
         // Annotated Let: cell_type = Some(Type::length()) encodes the resolved type directly.
         // Pass 1 processes this because cell_type is Some(_); Pass 2 is bypassed.
-        let let_decl = reify_syntax::LetDecl {
+        let let_decl = reify_ast::LetDecl {
             name: "x".to_string(),
             doc: None,
             is_pub: false,
             type_expr: None, // type_expr in LetDecl is not consulted by Pass 1 — DefaultKind carries cell_type
-            value: reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::NumberLiteral {
+            value: reify_ast::Expr {
+                kind: reify_ast::ExprKind::NumberLiteral {
                     value: 80.0,
                     is_real: false,
                 },
@@ -2404,13 +2404,13 @@ mod tests {
     #[test]
     fn check_phase_pre_register_default_types_records_collision_in_pass1_param_skipped() {
         // Annotated Let: cell_type = Some(Type::length()) — wins the scope slot first.
-        let let_decl = reify_syntax::LetDecl {
+        let let_decl = reify_ast::LetDecl {
             name: "x".to_string(),
             doc: None,
             is_pub: false,
             type_expr: None, // type_expr in LetDecl is not consulted by Pass 1 — DefaultKind carries cell_type
-            value: reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::NumberLiteral {
+            value: reify_ast::Expr {
+                kind: reify_ast::ExprKind::NumberLiteral {
                     value: 80.0,
                     is_real: false,
                 },
@@ -2422,7 +2422,7 @@ mod tests {
             content_hash: ContentHash(0),
         };
         // Param: loses the scope slot because annotated Let appeared first.
-        let param_decl = reify_syntax::ParamDecl {
+        let param_decl = reify_ast::ParamDecl {
             name: "x".to_string(),
             doc: None,
             type_expr: None,
@@ -2539,13 +2539,13 @@ mod tests {
     ///       `Type::List(Real)` — verified via the non-mutating `scope.resolve("x")` probe.
     #[test]
     fn check_phase_pre_register_default_types_treats_warning_only_compile_as_success() {
-        let let_decl = reify_syntax::LetDecl {
+        let let_decl = reify_ast::LetDecl {
             name: "x".to_string(),
             doc: None,
             is_pub: false,
             type_expr: None, // unannotated — must go through Pass 2 inference
-            value: reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::ListLiteral(vec![]), // empty list → Warning, not Error
+            value: reify_ast::Expr {
+                kind: reify_ast::ExprKind::ListLiteral(vec![]), // empty list → Warning, not Error
                 span: SourceSpan::empty(0),
             },
             where_clause: None,
@@ -2693,13 +2693,13 @@ mod tests {
     #[test]
     fn chained_unannotated_lets_error_sentinel_suppresses_requirement_check_cascade() {
         // --- let a = b (b is undefined — will fail compile) ---
-        let let_decl_a = reify_syntax::LetDecl {
+        let let_decl_a = reify_ast::LetDecl {
             name: "a".to_string(),
             doc: None,
             is_pub: false,
             type_expr: None, // unannotated
-            value: reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::Ident("b".to_string()), // b is undefined
+            value: reify_ast::Expr {
+                kind: reify_ast::ExprKind::Ident("b".to_string()), // b is undefined
                 span: SourceSpan::empty(0),
             },
             where_clause: None,
@@ -2709,13 +2709,13 @@ mod tests {
         };
 
         // --- let c = a (a resolves to Type::Error from the scope sentinel) ---
-        let let_decl_c = reify_syntax::LetDecl {
+        let let_decl_c = reify_ast::LetDecl {
             name: "c".to_string(),
             doc: None,
             is_pub: false,
             type_expr: None, // unannotated
-            value: reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::Ident("a".to_string()), // a → Type::Error sentinel
+            value: reify_ast::Expr {
+                kind: reify_ast::ExprKind::Ident("a".to_string()), // a → Type::Error sentinel
                 span: SourceSpan::empty(0),
             },
             where_clause: None,
@@ -2761,12 +2761,12 @@ mod tests {
         };
 
         // --- Structure S : TraitT { } — no member overrides ---
-        let structure_def = reify_syntax::StructureDef {
+        let structure_def = reify_ast::StructureDef {
             name: "S".to_string(),
             doc: None,
             is_pub: false,
             type_params: vec![],
-            trait_bounds: vec![reify_syntax::TraitBoundRef {
+            trait_bounds: vec![reify_ast::TraitBoundRef {
                 name: "TraitT".to_string(),
                 type_args: vec![],
                 span: SourceSpan::empty(0),
@@ -2846,7 +2846,7 @@ mod tests {
     /// return type signature.
     #[test]
     fn check_phase_build_available_defaults_map_uses_composite_key() {
-        let param_decl = reify_syntax::ParamDecl {
+        let param_decl = reify_ast::ParamDecl {
             name: "x".to_string(),
             doc: None,
             type_expr: None,
@@ -2856,10 +2856,10 @@ mod tests {
             span: SourceSpan::empty(0),
             content_hash: ContentHash(0),
         };
-        let constraint_decl = reify_syntax::ConstraintDecl {
+        let constraint_decl = reify_ast::ConstraintDecl {
             label: Some("bound".to_string()),
-            expr: reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::BoolLiteral(true),
+            expr: reify_ast::Expr {
+                kind: reify_ast::ExprKind::BoolLiteral(true),
                 span: SourceSpan::empty(0),
             },
             where_clause: None,
@@ -2947,13 +2947,13 @@ mod tests {
     /// as the new third parameter of `check_phase_build_available_defaults_map`.
     #[test]
     fn check_phase_build_available_defaults_map_excludes_annotated_let_for_pass1_skipped_name() {
-        let let_decl = reify_syntax::LetDecl {
+        let let_decl = reify_ast::LetDecl {
             name: "x".to_string(),
             doc: None,
             is_pub: false,
             type_expr: None, // type_expr not consulted — DefaultKind carries cell_type directly
-            value: reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::NumberLiteral {
+            value: reify_ast::Expr {
+                kind: reify_ast::ExprKind::NumberLiteral {
                     value: 80.0,
                     is_real: false,
                 },
@@ -3047,7 +3047,7 @@ mod tests {
     /// `check_phase_build_available_defaults_map`.
     #[test]
     fn check_phase_build_available_defaults_map_excludes_param_for_pass1_param_skipped_name() {
-        let param_decl = reify_syntax::ParamDecl {
+        let param_decl = reify_ast::ParamDecl {
             name: "x".to_string(),
             doc: None,
             type_expr: None,
@@ -3123,7 +3123,7 @@ mod tests {
     /// pins the helper's signature.
     #[test]
     fn check_phase_check_members_against_requirements_emits_missing_member_when_unsatisfied() {
-        let structure_def = reify_syntax::StructureDef {
+        let structure_def = reify_ast::StructureDef {
             name: "S".to_string(),
             doc: None,
             is_pub: false,
@@ -3190,7 +3190,7 @@ mod tests {
     /// `structure_let_does_not_satisfy_param_requirement` in `trait_conformance_tests.rs`.
     #[test]
     fn param_member_does_not_satisfy_let_requirement() {
-        let structure_def = reify_syntax::StructureDef {
+        let structure_def = reify_ast::StructureDef {
             name: "S".to_string(),
             doc: None,
             is_pub: false,
@@ -3261,7 +3261,7 @@ mod tests {
     /// is false — the mismatch path inside the kind-routed map lookup.
     #[test]
     fn check_phase_check_members_against_requirements_emits_type_mismatch_for_wrong_member_type() {
-        let structure_def = reify_syntax::StructureDef {
+        let structure_def = reify_ast::StructureDef {
             name: "S".to_string(),
             doc: None,
             is_pub: false,
@@ -3325,7 +3325,7 @@ mod tests {
     /// false, so the "requirement expects …, available default has …" diagnostic fires.
     #[test]
     fn check_phase_check_members_against_requirements_emits_mismatch_for_wrong_default_type() {
-        let structure_def = reify_syntax::StructureDef {
+        let structure_def = reify_ast::StructureDef {
             name: "S".to_string(),
             doc: None,
             is_pub: false,
@@ -3392,7 +3392,7 @@ mod tests {
     /// "missing required sub-component" diagnostic is emitted.
     #[test]
     fn check_phase_check_members_against_requirements_emits_missing_sub_for_absent_sub_component() {
-        let structure_def = reify_syntax::StructureDef {
+        let structure_def = reify_ast::StructureDef {
             name: "S".to_string(),
             doc: None,
             is_pub: false,
@@ -3455,7 +3455,7 @@ mod tests {
     /// exists (TDD compile-tripwire) and pins the helper's signature.
     #[test]
     fn check_phase_inject_defaults_injects_param_cell_for_non_overridden_default() {
-        let param_decl = reify_syntax::ParamDecl {
+        let param_decl = reify_ast::ParamDecl {
             name: "x".to_string(),
             doc: None,
             type_expr: None,
@@ -3466,7 +3466,7 @@ mod tests {
             content_hash: ContentHash(0),
         };
 
-        let structure_def = reify_syntax::StructureDef {
+        let structure_def = reify_ast::StructureDef {
             name: "S".to_string(),
             doc: None,
             is_pub: false,
@@ -3589,13 +3589,13 @@ mod tests {
     #[test]
     fn check_phase_inject_defaults_skips_annotated_let_cell_for_pass1_skipped_name() {
         // Annotated Let "x": Length = 80.0 — cell_type carried in DefaultKind, not type_expr.
-        let let_decl = reify_syntax::LetDecl {
+        let let_decl = reify_ast::LetDecl {
             name: "x".to_string(),
             doc: None,
             is_pub: false,
             type_expr: None, // type_expr not consulted — DefaultKind::Let carries cell_type directly
-            value: reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::NumberLiteral {
+            value: reify_ast::Expr {
+                kind: reify_ast::ExprKind::NumberLiteral {
                     value: 80.0,
                     is_real: false,
                 },
@@ -3607,7 +3607,7 @@ mod tests {
             content_hash: ContentHash(0),
         };
 
-        let structure_def = reify_syntax::StructureDef {
+        let structure_def = reify_ast::StructureDef {
             name: "S".to_string(),
             doc: None,
             is_pub: false,
@@ -3716,7 +3716,7 @@ mod tests {
     /// (between `pass1_skipped` and `pass2_skipped`).
     #[test]
     fn check_phase_inject_defaults_skips_param_cell_for_pass1_param_skipped_name() {
-        let param_decl = reify_syntax::ParamDecl {
+        let param_decl = reify_ast::ParamDecl {
             name: "x".to_string(),
             doc: None,
             type_expr: None,
@@ -3727,7 +3727,7 @@ mod tests {
             content_hash: ContentHash(0),
         };
 
-        let structure_def = reify_syntax::StructureDef {
+        let structure_def = reify_ast::StructureDef {
             name: "S".to_string(),
             doc: None,
             is_pub: false,

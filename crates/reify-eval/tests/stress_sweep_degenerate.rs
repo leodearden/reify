@@ -13,7 +13,8 @@ use std::f64::consts::PI;
 
 use reify_compiler::{CompiledGeometryOp, GeomRef, PrimitiveKind, SweepKind};
 use reify_test_support::*;
-use reify_types::{ExportFormat, GeometryOp, ModulePath, Severity, Type, Value};
+use reify_core::{ModulePath, Severity, Type};
+use reify_ir::{ExportFormat, GeometryOp, Value};
 
 // ---------------------------------------------------------------------------
 // step-13: zero_extrude_distance — failing test
@@ -27,7 +28,7 @@ use reify_types::{ExportFormat, GeometryOp, ModulePath, Severity, Type, Value};
 #[test]
 fn zero_extrude_distance() {
     let e = "TestZeroExtrude";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Sphere (profile provider at Step(0))
     let sphere_op = CompiledGeometryOp::Primitive {
@@ -104,8 +105,8 @@ fn zero_extrude_distance() {
 #[test]
 fn revolve_720_degrees() {
     let e = "TestRevolve720";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal = |v: f64| reify_types::CompiledExpr::literal(Value::Real(v), Type::Real);
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
+    let real_literal = |v: f64| reify_ir::CompiledExpr::literal(Value::Real(v), Type::Real);
 
     // Op 0: Sphere (profile provider at Step(0))
     let sphere_op = CompiledGeometryOp::Primitive {
@@ -191,7 +192,7 @@ fn revolve_720_degrees() {
 #[test]
 fn negative_extrude_distance_is_valid() {
     let e = "TestNegExtrude";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Sphere (profile provider at Step(0))
     let sphere_op = CompiledGeometryOp::Primitive {
@@ -284,8 +285,8 @@ fn negative_extrude_distance_is_valid() {
 #[test]
 fn negative_revolve_angle_is_valid() {
     let e = "TestNegRevolve";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal = |v: f64| reify_types::CompiledExpr::literal(Value::Real(v), Type::Real);
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
+    let real_literal = |v: f64| reify_ir::CompiledExpr::literal(Value::Real(v), Type::Real);
 
     // Op 0: Sphere (profile provider at Step(0))
     let sphere_op = CompiledGeometryOp::Primitive {
@@ -451,7 +452,7 @@ fn loft_non_geometry_profiles_silent_fallback() {
 #[test]
 fn self_intersecting_path_sweep() {
     let e = "TestSelfIntersect";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Sphere (stand-in profile)
     let sphere_op_0 = CompiledGeometryOp::Primitive {

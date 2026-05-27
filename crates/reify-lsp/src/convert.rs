@@ -1,5 +1,5 @@
-use reify_syntax::ParseError;
-use reify_types::{Diagnostic, DiagnosticCode, Severity, SourceSpan};
+use reify_ast::ParseError;
+use reify_core::{Diagnostic, DiagnosticCode, Severity, SourceSpan};
 use tower_lsp::lsp_types::{self, DiagnosticRelatedInformation, DiagnosticSeverity, Position, Url};
 
 /// Convert a byte offset in `source` to an LSP Position (line, character).
@@ -259,7 +259,7 @@ pub fn convert_parse_error(err: &ParseError, source: &str, _uri: &Url) -> lsp_ty
 mod tests {
     use super::*;
     use reify_test_support::CountingSubscriberBuilder;
-    use reify_types::{DiagnosticCode, DiagnosticLabel};
+    use reify_core::{DiagnosticCode, DiagnosticLabel};
     use std::sync::atomic::Ordering;
     use tower_lsp::lsp_types::{DiagnosticSeverity, NumberOrString, Position, Url};
 

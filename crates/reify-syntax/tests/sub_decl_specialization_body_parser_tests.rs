@@ -10,7 +10,7 @@
 //! AST-shape assertions (lowering to `SubDecl.body: Some(...)`) are deferred to
 //! sibling task 3571.
 
-use reify_types::ModulePath;
+use reify_core::ModulePath;
 
 mod common;
 use common::{find_cst_node, make_ts_parser};
@@ -297,7 +297,7 @@ fn sub_decl_specialization_body_rejects_malformed_assignment() {
 /// with `is_collection == false`, `body.is_none()`, and `structure_name == "Foo"`.
 #[test]
 fn sub_decl_instantiation_form_regression() {
-    use reify_syntax::{Declaration, MemberDecl};
+    use reify_ast::{Declaration, MemberDecl};
     let source = "structure S { sub a = Foo() }";
     let module = reify_syntax::parse(source, ModulePath::single("test"));
     let Declaration::Structure(s) = &module.declarations[0] else {
@@ -315,7 +315,7 @@ fn sub_decl_instantiation_form_regression() {
 /// `is_collection == true`, `body.is_none()`, `structure_name == "Foo"`.
 #[test]
 fn sub_decl_collection_form_regression() {
-    use reify_syntax::{Declaration, MemberDecl};
+    use reify_ast::{Declaration, MemberDecl};
     let source = "structure S { sub a : List<Foo> }";
     let module = reify_syntax::parse(source, ModulePath::single("test"));
     let Declaration::Structure(s) = &module.declarations[0] else {
@@ -371,7 +371,7 @@ fn sub_decl_collection_form_regression() {
 /// exercises `sub a : Ident<…>` (the colon / type-args specialization form).
 #[test]
 fn sub_decl_non_list_specialization_arm() {
-    use reify_syntax::{Declaration, MemberDecl};
+    use reify_ast::{Declaration, MemberDecl};
     let source = "structure S { sub a : Foo<Bar> }";
     let module = reify_syntax::parse(source, ModulePath::single("test"));
     let Declaration::Structure(s) = &module.declarations[0] else {
@@ -403,7 +403,7 @@ fn sub_decl_non_list_specialization_arm() {
 /// (8 chars) over 'List' (4 chars) before any tie-break kicks in.
 #[test]
 fn sub_decl_listicle_longest_match() {
-    use reify_syntax::{Declaration, MemberDecl};
+    use reify_ast::{Declaration, MemberDecl};
     let source = "structure S { sub a : Listicle<Foo> }";
     let module = reify_syntax::parse(source, ModulePath::single("test"));
     let Declaration::Structure(s) = &module.declarations[0] else {

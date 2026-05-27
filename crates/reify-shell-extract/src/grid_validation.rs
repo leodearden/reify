@@ -3,7 +3,7 @@
 //! Extracted from the duplicated validation prelude in `medial.rs` and
 //! `mid_surface.rs`. See design decisions in the task plan.
 
-use reify_types::value::{SampledField, SampledGridKind};
+use reify_ir::value::{SampledField, SampledGridKind};
 
 /// Structural validation errors for Regular3D [`SampledField`] inputs,
 /// shared across the algorithms in this crate.
@@ -113,7 +113,7 @@ pub(crate) fn validate_regular3d(sdf: &SampledField) -> Result<(), GridValidatio
 #[cfg(test)]
 mod tests {
     use super::{GridValidationError, validate_regular3d};
-    use reify_types::value::{InterpolationKind, SampledField, SampledGridKind};
+    use reify_ir::value::{InterpolationKind, SampledField, SampledGridKind};
     use std::sync::atomic::AtomicBool;
 
     // ── Fixture helpers ───────────────────────────────────────────────────────

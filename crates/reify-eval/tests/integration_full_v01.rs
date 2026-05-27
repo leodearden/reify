@@ -15,7 +15,8 @@ use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::{
     check_source_with_stdlib as check_source, make_simple_engine, parse_and_compile_with_stdlib,
 };
-use reify_types::{Diagnostic, ModulePath, Satisfaction, Severity, Value, ValueCellId};
+use reify_core::{Diagnostic, ModulePath, Severity, ValueCellId};
+use reify_ir::{Satisfaction, Value};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(
@@ -127,7 +128,7 @@ fn integration_full_v01_ri_parses() {
         parsed.errors
     );
 
-    use reify_syntax::Declaration;
+    use reify_ast::Declaration;
 
     assert_min_count!(parsed, Declaration::Trait(_), "Trait", 2);
     assert_min_count!(parsed, Declaration::Structure(_), "Structure", 2);
@@ -1025,7 +1026,7 @@ fn check_no_error_diagnostics() {
 #[test]
 #[should_panic(expected = "expected >=1 Trait")]
 fn assert_min_count_macro_catches_unmet_threshold() {
-    use reify_syntax::Declaration;
+    use reify_ast::Declaration;
     let parsed = reify_syntax::parse("", ModulePath::single("empty"));
     assert_min_count!(parsed, Declaration::Trait(_), "Trait", 1);
 }
@@ -1036,7 +1037,7 @@ fn assert_min_count_macro_catches_unmet_threshold() {
 /// `assert_min_count_macro_catches_unmet_threshold`.
 #[test]
 fn assert_min_count_macro_passes_when_met() {
-    use reify_syntax::Declaration;
+    use reify_ast::Declaration;
     let src = "trait Foo {}";
     let parsed = reify_syntax::parse(src, ModulePath::single("one_trait"));
     assert_min_count!(parsed, Declaration::Trait(_), "Trait", 1);

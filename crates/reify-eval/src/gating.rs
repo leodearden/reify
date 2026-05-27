@@ -16,7 +16,7 @@
 use std::collections::HashSet;
 
 use crate::cache::{CacheStore, NodeCache, NodeId};
-use reify_types::ValueCellId;
+use reify_core::ValueCellId;
 
 /// Inner predicate: returns `true` iff any input listed in `entry`'s
 /// `dependency_trace.reads` is non-Final in `cache`.
@@ -119,9 +119,8 @@ mod tests {
     use super::*;
     use crate::cache::{CachedResult, NodeCache};
     use crate::deps::DependencyTrace;
-    use reify_types::{
-        DeterminacyState, ErrorRef, Freshness, ResultRef, Value, ValueCellId, VersionId,
-    };
+    use reify_core::{ValueCellId, VersionId};
+    use reify_ir::{DeterminacyState, ErrorRef, Freshness, ResultRef, Value};
 
     // ── helpers ───────────────────────────────────────────────────────────────
 

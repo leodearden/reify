@@ -3,13 +3,8 @@ use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use reify_types::{
-    AutoParam, BRepKind, ConstraintChecker, ConstraintDiagnostics, ConstraintInput,
-    ConstraintNodeId, ConstraintResult, ConstraintSolver, Diagnostic, ExportError, ExportFormat,
-    GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery,
-    Mesh, OptimizedImpl, OptimizedImplInput, OptimizedImplOutput, QueryError, ResolutionProblem,
-    Satisfaction, SolveResult, TessError, Type, Value, ValueCellId, ValueMap,
-};
+use reify_core::{ConstraintNodeId, Diagnostic, Type, ValueCellId};
+use reify_ir::{AutoParam, BRepKind, ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, ConstraintSolver, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, OptimizedImpl, OptimizedImplInput, OptimizedImplOutput, QueryError, ResolutionProblem, Satisfaction, SolveResult, TessError, Value, ValueMap};
 
 /// Create an empty `ResolutionProblem` with all fields set to empty/default values.
 pub fn empty_problem() -> ResolutionProblem {
@@ -1712,7 +1707,8 @@ mod tests {
     use super::*;
     use crate::assert_value_approx;
     use crate::values::{meters, mm2, mm3, point3};
-    use reify_types::{CompiledExpr, Type, Value, ValueMap};
+    use reify_core::Type;
+    use reify_ir::{CompiledExpr, Value, ValueMap};
     use std::borrow::Cow;
     use std::sync::Barrier;
     use std::sync::atomic::Ordering;
@@ -1876,7 +1872,7 @@ mod tests {
 
         let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
         let values = ValueMap::new();
-        let input = reify_types::OptimizedImplInput {
+        let input = reify_ir::OptimizedImplInput {
             constraints: vec![(cnid.clone(), &expr)],
             values: &values,
             functions: &[],
@@ -1899,7 +1895,7 @@ mod tests {
 
         let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
         let values = ValueMap::new();
-        let input = reify_types::OptimizedImplInput {
+        let input = reify_ir::OptimizedImplInput {
             constraints: vec![(a.clone(), &expr), (b.clone(), &expr)],
             values: &values,
             functions: &[],
@@ -1924,7 +1920,7 @@ mod tests {
 
         let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
         let values = ValueMap::new();
-        let input = reify_types::OptimizedImplInput {
+        let input = reify_ir::OptimizedImplInput {
             constraints: vec![(a.clone(), &expr), (b.clone(), &expr)],
             values: &values,
             functions: &[],
@@ -1943,7 +1939,7 @@ mod tests {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<MockOptimizedImpl>();
 
-        let _boxed: Box<dyn reify_types::OptimizedImpl> = Box::new(MockOptimizedImpl::new());
+        let _boxed: Box<dyn reify_ir::OptimizedImpl> = Box::new(MockOptimizedImpl::new());
     }
 
     #[test]
@@ -3493,7 +3489,7 @@ mod tests {
 
     #[test]
     fn multi_call_spy_records_all_calls_and_returns_sequenced_results() {
-        use reify_types::ValueMap;
+        use reify_ir::ValueMap;
 
         let mut values_a = HashMap::new();
         values_a.insert(ValueCellId::new("A", "x"), Value::length(0.005));
@@ -3911,7 +3907,7 @@ mod tests {
         let kernel = MockGeometryKernel::new().with_point_on_shape_result(
             handle,
             [5.0, 0.0, 0.0],
-            reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
+            reify_ir::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
             Value::Bool(true),
         );
         let result = kernel
@@ -3920,7 +3916,7 @@ mod tests {
                 px: 5.0,
                 py: 0.0,
                 pz: 0.0,
-                tolerance: reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
+                tolerance: reify_ir::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
             })
             .unwrap();
         assert_eq!(result, Value::Bool(true));

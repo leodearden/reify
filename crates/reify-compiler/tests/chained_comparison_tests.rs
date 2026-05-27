@@ -4,7 +4,8 @@
 //! into And-chains of pairwise comparisons: `And(Lt(a,b), Lt(b,c))`.
 
 use reify_test_support::compile_first_template;
-use reify_types::{BinOp, CompiledExprKind, Severity};
+use reify_core::Severity;
+use reify_ir::{BinOp, CompiledExprKind};
 
 /// step-1: `constraint a < b < c` desugars to `And(Lt(a,b), Lt(b,c))`.
 #[test]
@@ -422,7 +423,7 @@ structure S {
     // Result type should be Bool
     assert_eq!(
         expr.result_type,
-        reify_types::Type::Bool,
+        reify_core::Type::Bool,
         "constraint expression should have type Bool"
     );
 
@@ -468,7 +469,7 @@ structure S {
         .expect("in_range should have default_expr");
     assert_eq!(
         init.result_type,
-        reify_types::Type::Bool,
+        reify_core::Type::Bool,
         "in_range should have type Bool"
     );
     match &init.kind {

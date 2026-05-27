@@ -31,10 +31,7 @@ use std::sync::atomic::Ordering;
 
 use reify_kernel_manifold::ManifoldKernel;
 use reify_test_support::CountingSubscriberBuilder;
-use reify_types::{
-    FeatureId, GeometryHandleId, GeometryKernel, GeometryOp, KernelAttributeOutcome,
-    TopologyAttributeTable,
-};
+use reify_ir::{FeatureId, GeometryHandleId, GeometryKernel, GeometryOp, KernelAttributeOutcome, TopologyAttributeTable};
 
 /// PRD line 70 cross-crate contract: `ManifoldKernel` round-trips its
 /// `KernelAttributeHook` through the `&dyn GeometryKernel::attribute_hook()`

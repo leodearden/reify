@@ -23,7 +23,7 @@
 //! - `trait_refs` — populated by `pre_pass::collect_decl_refs`
 //! - `prelude.trait_defs` / `prelude.templates` — from the caller's prelude
 
-use reify_syntax::TraitDecl;
+use reify_ast::TraitDecl;
 
 use crate::CompiledModule;
 use crate::compile_builder::ctx::CompilationCtx;

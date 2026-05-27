@@ -19,7 +19,7 @@
 use reify_compiler::AutoTypeSubstitution;
 use reify_eval::graph::EvaluationGraph;
 use reify_test_support::TopologyTemplateBuilder;
-use reify_types::Type;
+use reify_core::Type;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -301,7 +301,7 @@ fn multi_param_resolution_outcome_substitution_drives_topology_fingerprint() {
     use reify_compiler::auto_type_param::{AutoTypeParam, resolve_auto_type_params};
     use reify_compiler::{CompiledTrait, TopologyTemplate};
     use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
-    use reify_types::SourceSpan;
+    use reify_core::SourceSpan;
 
     const EXAMPLE_PATH: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -335,7 +335,7 @@ fn multi_param_resolution_outcome_substitution_drives_topology_fingerprint() {
         use_site_span: SourceSpan::empty(0),
     }];
     let checker = MockConstraintChecker::new();
-    let functions: &[reify_types::CompiledFunction] = &[];
+    let functions: &[reify_ir::CompiledFunction] = &[];
     let mut diagnostics = Vec::new();
 
     let outcome = resolve_auto_type_params(

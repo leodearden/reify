@@ -4,9 +4,7 @@
 //! Actual OCCT tests go in reify-kernel-occt; here we test with MockGeometryKernel.
 
 use reify_test_support::*;
-use reify_types::{
-    ExportFormat, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Value,
-};
+use reify_ir::{ExportFormat, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Value};
 
 #[test]
 fn mock_kernel_create_box() {
@@ -137,9 +135,7 @@ fn mock_kernel_translate() {
 mod occt_tests {
     use reify_kernel_occt::OcctKernel;
     use reify_test_support::*;
-    use reify_types::{
-        ExportFormat, GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value,
-    };
+    use reify_ir::{ExportFormat, GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value};
     #[test]
     fn create_box_export_step() {
         if !reify_kernel_occt::OCCT_AVAILABLE {

@@ -3,7 +3,7 @@
 //! Tests for compiling `field def` declarations into CompiledField entries.
 
 use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only};
-use reify_types::{DiagnosticCode, FIELD_ENTITY_PREFIX, ValueCellId};
+use reify_core::{DiagnosticCode, FIELD_ENTITY_PREFIX, ValueCellId};
 
 // ── Step 13: compile analytical field ──────────────────────────────────
 
@@ -33,7 +33,7 @@ fn compile_field_analytical() {
         reify_compiler::CompiledFieldSource::Analytical { expr } => {
             // The expression should be a lambda
             assert!(
-                matches!(expr.kind, reify_types::CompiledExprKind::Lambda { .. }),
+                matches!(expr.kind, reify_ir::CompiledExprKind::Lambda { .. }),
                 "expected Lambda expression in analytical source, got: {:?}",
                 expr.kind
             );
@@ -386,7 +386,7 @@ field def composed : Point3 -> Scalar { source = composed { |p| f2(f1(p)) } }
         reify_compiler::CompiledFieldSource::Composed { expr } => {
             // Should have compiled the composition lambda
             assert!(
-                matches!(expr.kind, reify_types::CompiledExprKind::Lambda { .. }),
+                matches!(expr.kind, reify_ir::CompiledExprKind::Lambda { .. }),
                 "expected Lambda expression in composed source, got: {:?}",
                 expr.kind
             );
@@ -496,7 +496,7 @@ fn compile_field_analytical_codomain_dimension_mismatch_emits_diagnostic() {
         compile_source("field def temp : Real -> Scalar { source = analytical { |x| x } }");
 
     let has_mismatch = module.diagnostics.iter().any(|d| {
-        d.severity == reify_types::Severity::Error
+        d.severity == reify_core::Severity::Error
             && d.code == Some(DiagnosticCode::FieldCodomainMismatch)
     });
     assert!(
@@ -630,7 +630,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
 
     let captures = match &f3.source {
         reify_compiler::CompiledFieldSource::Composed { expr } => match &expr.kind {
-            reify_types::CompiledExprKind::Lambda { captures, .. } => captures.clone(),
+            reify_ir::CompiledExprKind::Lambda { captures, .. } => captures.clone(),
             other => panic!(
                 "expected composed source to wrap a Lambda expr, got: {:?}",
                 other
@@ -657,7 +657,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
     // did, only composed fields go through the augmentation pass).
     let f1 = module.fields.iter().find(|f| f.name == "f1").unwrap();
     if let reify_compiler::CompiledFieldSource::Analytical { expr } = &f1.source
-        && let reify_types::CompiledExprKind::Lambda { captures, .. } = &expr.kind
+        && let reify_ir::CompiledExprKind::Lambda { captures, .. } = &expr.kind
     {
         for cap in captures {
             assert_ne!(

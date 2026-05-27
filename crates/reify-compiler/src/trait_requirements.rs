@@ -620,14 +620,14 @@ mod tests {
     }
 
     /// Minimal `LetDecl` fixture; only `content_hash` varies between callers.
-    fn make_let_decl(name: &str, hash_val: u128) -> reify_syntax::LetDecl {
-        reify_syntax::LetDecl {
+    fn make_let_decl(name: &str, hash_val: u128) -> reify_ast::LetDecl {
+        reify_ast::LetDecl {
             name: name.to_string(),
             doc: None,
             is_pub: false,
             type_expr: None,
-            value: reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::NumberLiteral {
+            value: reify_ast::Expr {
+                kind: reify_ast::ExprKind::NumberLiteral {
                     value: 1.0,
                     is_real: false,
                 },
@@ -641,8 +641,8 @@ mod tests {
     }
 
     /// Minimal `ParamDecl` fixture (for `DefaultKind::Param` construction).
-    fn make_param_decl(name: &str) -> reify_syntax::ParamDecl {
-        reify_syntax::ParamDecl {
+    fn make_param_decl(name: &str) -> reify_ast::ParamDecl {
+        reify_ast::ParamDecl {
             name: name.to_string(),
             doc: None,
             type_expr: None,
@@ -655,11 +655,11 @@ mod tests {
     }
 
     /// Minimal `ConstraintDecl` fixture (for `DefaultKind::Constraint` construction).
-    fn make_constraint_decl() -> reify_syntax::ConstraintDecl {
-        reify_syntax::ConstraintDecl {
+    fn make_constraint_decl() -> reify_ast::ConstraintDecl {
+        reify_ast::ConstraintDecl {
             label: None,
-            expr: reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::BoolLiteral(true),
+            expr: reify_ast::Expr {
+                kind: reify_ast::ExprKind::BoolLiteral(true),
                 span: SourceSpan::empty(0),
             },
             where_clause: None,

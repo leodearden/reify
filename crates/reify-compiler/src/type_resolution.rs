@@ -14,9 +14,9 @@ pub(crate) struct TypeAliasEntry {
     /// (which require instantiation with concrete type arguments).
     pub(crate) resolved_type: Option<Type>,
     /// Type parameters for parameterized aliases (empty for simple aliases).
-    pub(crate) type_params: Vec<reify_types::TypeParam>,
+    pub(crate) type_params: Vec<reify_ir::TypeParam>,
     /// The original type expression, stored for parameterized alias substitution.
-    pub(crate) type_expr: Option<reify_syntax::TypeExpr>,
+    pub(crate) type_expr: Option<reify_ast::TypeExpr>,
     pub(crate) is_pub: bool,
     pub(crate) span: SourceSpan,
     pub(crate) content_hash: ContentHash,
@@ -233,19 +233,19 @@ impl Default for TypeAliasRegistry {
 /// Maps dimension type names to their corresponding `DimensionVector` constants.
 /// Returns `None` and emits a diagnostic for unrecognized names.
 pub(crate) fn resolve_dimension_type(
-    type_expr: &reify_syntax::TypeExpr,
+    type_expr: &reify_ast::TypeExpr,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<DimensionVector> {
     let name = match &type_expr.kind {
-        reify_syntax::TypeExprKind::Named { name, .. } => name.as_str(),
-        reify_syntax::TypeExprKind::DimensionalOp { .. } => return None,
-        reify_syntax::TypeExprKind::IntegerLiteral(_) => return None,
+        reify_ast::TypeExprKind::Named { name, .. } => name.as_str(),
+        reify_ast::TypeExprKind::DimensionalOp { .. } => return None,
+        reify_ast::TypeExprKind::IntegerLiteral(_) => return None,
         // Auto type-args (e.g. `auto: Seal`) cannot be resolved to a dimension;
         // resolution semantics are deferred to task 3477/3558.
-        reify_syntax::TypeExprKind::Auto { .. } => return None,
+        reify_ast::TypeExprKind::Auto { .. } => return None,
     };
     // Scan the shared table (name → dimension direction).
-    if let Some((dim, _)) = reify_types::NAMED_DIMENSIONS
+    if let Some((dim, _)) = reify_core::NAMED_DIMENSIONS
         .iter()
         .find(|(_, n)| *n == name)
     {
@@ -264,7 +264,7 @@ pub(crate) fn resolve_dimension_type(
     //
     // Build as Vec<&str> once so the prose join and the structured candidates share one
     // source of truth; with_candidates owns the &str→String conversion.
-    let candidate_strs: Vec<&str> = reify_types::NAMED_DIMENSIONS
+    let candidate_strs: Vec<&str> = reify_core::NAMED_DIMENSIONS
         .iter()
         .map(|(_, n)| *n)
         .chain(std::iter::once("Dimensionless"))
@@ -292,13 +292,13 @@ pub(crate) fn resolve_dimension_type(
 ///
 /// Returns `None` and emits a diagnostic for non-constant expressions.
 pub(crate) fn evaluate_const_expr(
-    expr: &reify_syntax::Expr,
+    expr: &reify_ast::Expr,
     registry: &UnitRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<f64> {
     match &expr.kind {
-        reify_syntax::ExprKind::NumberLiteral { value: v, .. } => Some(*v),
-        reify_syntax::ExprKind::BinOp { op, left, right } => {
+        reify_ast::ExprKind::NumberLiteral { value: v, .. } => Some(*v),
+        reify_ast::ExprKind::BinOp { op, left, right } => {
             let lhs = evaluate_const_expr(left, registry, diagnostics)?;
             let rhs = evaluate_const_expr(right, registry, diagnostics)?;
             let result = match op.as_str() {
@@ -338,7 +338,7 @@ pub(crate) fn evaluate_const_expr(
             }
             result
         }
-        reify_syntax::ExprKind::UnOp { op, operand } => {
+        reify_ast::ExprKind::UnOp { op, operand } => {
             let val = evaluate_const_expr(operand, registry, diagnostics)?;
             match op.as_str() {
                 "-" => Some(-val),
@@ -354,7 +354,7 @@ pub(crate) fn evaluate_const_expr(
                 }
             }
         }
-        reify_syntax::ExprKind::QuantityLiteral { value, unit } => {
+        reify_ast::ExprKind::QuantityLiteral { value, unit } => {
             // Try registry first, then hardcoded fallback.
             if let Some(entry) = registry.lookup(unit) {
                 // Affine (offset) units cannot be used in unit conversion expressions —
@@ -423,7 +423,7 @@ pub(crate) fn evaluate_const_expr(
 /// and computes a content hash. Returns `None` if the dimension type is unknown
 /// or if a conversion/offset expression fails to evaluate as a constant.
 pub(crate) fn compile_unit(
-    decl: &reify_syntax::UnitDecl,
+    decl: &reify_ast::UnitDecl,
     registry: &UnitRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<UnitEntry> {
@@ -525,7 +525,7 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
         }),
         // All named-dimension singletons: delegate to the shared NAMED_DIMENSIONS table so
         // future additions require only a one-line change there.
-        _ => reify_types::NAMED_DIMENSIONS
+        _ => reify_core::NAMED_DIMENSIONS
             .iter()
             .find(|(_, n)| *n == name)
             .map(|(dim, _)| Type::Scalar { dimension: *dim }),
@@ -603,7 +603,7 @@ pub(crate) fn resolve_type_with_aliases(
 /// before the loop and use `set.contains(name).then(|| Type::Enum(name.to_string()))`
 /// directly — the same lookup but O(1) per call.  This helper remains the right choice
 /// at callsites that resolve a single name.
-pub(crate) fn resolve_enum_type(name: &str, enum_defs: &[reify_types::EnumDef]) -> Option<Type> {
+pub(crate) fn resolve_enum_type(name: &str, enum_defs: &[reify_ir::EnumDef]) -> Option<Type> {
     if enum_defs.iter().any(|e| e.name == name) {
         Some(Type::Enum(name.to_string()))
     } else {
@@ -668,18 +668,18 @@ fn propagate_inner_diags_if_needed(
 /// `inner_diag_policy` controls whether inner-arg diagnostics are surfaced —
 /// see [`AliasInnerDiagPolicy`] for the two variants and their rationale.
 pub(crate) fn resolve_type_alias_expr(
-    type_expr: &reify_syntax::TypeExpr,
+    type_expr: &reify_ast::TypeExpr,
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
     inner_diag_policy: AliasInnerDiagPolicy,
 ) -> Option<Type> {
     match &type_expr.kind {
-        reify_syntax::TypeExprKind::DimensionalOp { op, left, right } => {
+        reify_ast::TypeExprKind::DimensionalOp { op, left, right } => {
             // Dimensional binary operator: left OP right
             let left_dim = resolve_type_alias_expr_to_dimension(left, alias_registry, diagnostics)?;
             let right_dim =
                 resolve_type_alias_expr_to_dimension(right, alias_registry, diagnostics)?;
-            let result_dim = if matches!(op, reify_syntax::DimOp::Mul) {
+            let result_dim = if matches!(op, reify_ast::DimOp::Mul) {
                 left_dim.mul(&right_dim)
             } else {
                 left_dim.div(&right_dim)
@@ -688,7 +688,7 @@ pub(crate) fn resolve_type_alias_expr(
                 dimension: result_dim,
             })
         }
-        reify_syntax::TypeExprKind::Named { name, type_args } => {
+        reify_ast::TypeExprKind::Named { name, type_args } => {
             // Check for parameterized builtin types (List<T>, Set<T>, Map<K,V>,
             // Option<T>, Scalar<Q>, Vector3<Q>, Point3<Q>, Tensor<…>, Matrix<…>).
             // Pass empty structure/trait name sets: this DFS runs before traits and
@@ -767,7 +767,7 @@ pub(crate) fn resolve_type_alias_expr(
             let empty_traits = HashSet::new();
             resolve_type_with_aliases(name, &empty, alias_registry, &empty_structs, &empty_traits)
         }
-        reify_syntax::TypeExprKind::IntegerLiteral(n) => {
+        reify_ast::TypeExprKind::IntegerLiteral(n) => {
             diagnostics.push(
                 Diagnostic::error(format!(
                     "integer literal `{}` is only allowed as a type argument of `Tensor` or `Matrix`",
@@ -779,29 +779,29 @@ pub(crate) fn resolve_type_alias_expr(
         }
         // Auto type-args (e.g. `auto: Seal`) cannot be resolved to a concrete type here;
         // resolution semantics are deferred to task 3477/3558.
-        reify_syntax::TypeExprKind::Auto { .. } => None,
+        reify_ast::TypeExprKind::Auto { .. } => None,
     }
 }
 
 /// Helper: resolve a TypeExpr to a DimensionVector (for dimensional algebra).
 /// Returns None if the type cannot be resolved to a dimension.
 pub(crate) fn resolve_type_alias_expr_to_dimension(
-    type_expr: &reify_syntax::TypeExpr,
+    type_expr: &reify_ast::TypeExpr,
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<DimensionVector> {
     match &type_expr.kind {
-        reify_syntax::TypeExprKind::DimensionalOp { op, left, right } => {
+        reify_ast::TypeExprKind::DimensionalOp { op, left, right } => {
             let left_dim = resolve_type_alias_expr_to_dimension(left, alias_registry, diagnostics)?;
             let right_dim =
                 resolve_type_alias_expr_to_dimension(right, alias_registry, diagnostics)?;
-            Some(if matches!(op, reify_syntax::DimOp::Mul) {
+            Some(if matches!(op, reify_ast::DimOp::Mul) {
                 left_dim.mul(&right_dim)
             } else {
                 left_dim.div(&right_dim)
             })
         }
-        reify_syntax::TypeExprKind::Named { name, .. } => {
+        reify_ast::TypeExprKind::Named { name, .. } => {
             // Try resolve_dimension_type for known dimension names
             // Use a temporary diagnostics vec to avoid polluting the main one
             let mut tmp_diags = Vec::new();
@@ -824,7 +824,7 @@ pub(crate) fn resolve_type_alias_expr_to_dimension(
             );
             None
         }
-        reify_syntax::TypeExprKind::IntegerLiteral(n) => {
+        reify_ast::TypeExprKind::IntegerLiteral(n) => {
             diagnostics.push(
                 Diagnostic::error(format!(
                     "integer literal `{}` cannot appear as a dimension type",
@@ -839,7 +839,7 @@ pub(crate) fn resolve_type_alias_expr_to_dimension(
         }
         // Auto type-args cannot be resolved to a dimension;
         // resolution semantics are deferred to task 3477/3558.
-        reify_syntax::TypeExprKind::Auto { .. } => None,
+        reify_ast::TypeExprKind::Auto { .. } => None,
     }
 }
 
@@ -849,7 +849,7 @@ pub(crate) fn resolve_type_alias_expr_to_dimension(
 /// parameterized aliases → trait names.
 /// Returns None if the type cannot be resolved (caller handles "unresolved" error).
 pub(crate) fn resolve_type_expr_with_aliases(
-    type_expr: &reify_syntax::TypeExpr,
+    type_expr: &reify_ast::TypeExpr,
     type_param_names: &HashSet<String>,
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
@@ -857,11 +857,11 @@ pub(crate) fn resolve_type_expr_with_aliases(
     trait_names: &HashSet<String>,
 ) -> Option<Type> {
     let (name, type_args) = match &type_expr.kind {
-        reify_syntax::TypeExprKind::Named { name, type_args } => {
+        reify_ast::TypeExprKind::Named { name, type_args } => {
             (name.as_str(), type_args.as_slice())
         }
-        reify_syntax::TypeExprKind::DimensionalOp { .. } => return None,
-        reify_syntax::TypeExprKind::IntegerLiteral(n) => {
+        reify_ast::TypeExprKind::DimensionalOp { .. } => return None,
+        reify_ast::TypeExprKind::IntegerLiteral(n) => {
             diagnostics.push(
                 Diagnostic::error(format!(
                     "integer literal `{}` is only allowed as a type argument of `Tensor` or `Matrix`",
@@ -873,7 +873,7 @@ pub(crate) fn resolve_type_expr_with_aliases(
         }
         // Auto type-args cannot be resolved to a concrete type here;
         // resolution semantics are deferred to task 3477/3558.
-        reify_syntax::TypeExprKind::Auto { .. } => return None,
+        reify_ast::TypeExprKind::Auto { .. } => return None,
     };
     // Check parameterized builtins (List<T>, Set<T>, Map<K,V>, Option<T>)
     if !type_args.is_empty()
@@ -951,7 +951,7 @@ const MAX_ALIAS_INSTANTIATION_DEPTH: usize = 64;
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_parameterized_alias(
     alias_entry: &TypeAliasEntry,
-    type_args: &[reify_syntax::TypeExpr],
+    type_args: &[reify_ast::TypeExpr],
     type_param_names: &HashSet<String>,
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
@@ -1043,7 +1043,7 @@ pub(crate) fn resolve_parameterized_alias(
 /// The `depth` parameter tracks alias expansion depth to prevent stack overflow
 /// from recursive parameterized type aliases.
 pub(crate) fn resolve_type_alias_expr_with_subst(
-    type_expr: &reify_syntax::TypeExpr,
+    type_expr: &reify_ast::TypeExpr,
     alias_registry: &TypeAliasRegistry,
     subst: &HashMap<String, Type>,
     diagnostics: &mut Vec<Diagnostic>,
@@ -1060,7 +1060,7 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
         return None;
     }
     match &type_expr.kind {
-        reify_syntax::TypeExprKind::DimensionalOp { op, left, right } => {
+        reify_ast::TypeExprKind::DimensionalOp { op, left, right } => {
             let left_dim = resolve_type_alias_expr_to_dim_with_subst(
                 left,
                 alias_registry,
@@ -1073,7 +1073,7 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
                 subst,
                 diagnostics,
             )?;
-            let result_dim = if matches!(op, reify_syntax::DimOp::Mul) {
+            let result_dim = if matches!(op, reify_ast::DimOp::Mul) {
                 left_dim.mul(&right_dim)
             } else {
                 left_dim.div(&right_dim)
@@ -1082,7 +1082,7 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
                 dimension: result_dim,
             })
         }
-        reify_syntax::TypeExprKind::Named { name, type_args } => {
+        reify_ast::TypeExprKind::Named { name, type_args } => {
             // Check substitution map first (type parameters)
             if let Some(ty) = subst.get(name.as_str()) {
                 return Some(ty.clone());
@@ -1155,7 +1155,7 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
             let empty_traits = HashSet::new();
             resolve_type_with_aliases(name, &empty, alias_registry, &empty_structs, &empty_traits)
         }
-        reify_syntax::TypeExprKind::IntegerLiteral(n) => {
+        reify_ast::TypeExprKind::IntegerLiteral(n) => {
             diagnostics.push(
                 Diagnostic::error(format!(
                     "integer literal `{}` is only allowed as a type argument of `Tensor` or `Matrix`",
@@ -1167,7 +1167,7 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
         }
         // Auto type-args cannot be resolved to a concrete type here;
         // resolution semantics are deferred to task 3477/3558.
-        reify_syntax::TypeExprKind::Auto { .. } => None,
+        reify_ast::TypeExprKind::Auto { .. } => None,
     }
 }
 
@@ -1218,7 +1218,7 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
 /// diagnostic first.
 pub(crate) fn resolve_parameterized_builtin_type(
     name: &str,
-    type_args: &[reify_syntax::TypeExpr],
+    type_args: &[reify_ast::TypeExpr],
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
     structure_names: &HashSet<String>,
@@ -1375,13 +1375,13 @@ pub(crate) fn resolve_parameterized_builtin_type(
 /// (`Tensor<rank, n, Q>`, `Matrix<m, n, Q>`). Emits a diagnostic and returns
 /// `None` when the arg is not a `TypeExprKind::IntegerLiteral`.
 fn expect_integer_literal_type_arg(
-    type_expr: &reify_syntax::TypeExpr,
+    type_expr: &reify_ast::TypeExpr,
     constructor: &str,
     slot: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<usize> {
     match &type_expr.kind {
-        reify_syntax::TypeExprKind::IntegerLiteral(n) => Some(*n as usize),
+        reify_ast::TypeExprKind::IntegerLiteral(n) => Some(*n as usize),
         _ => {
             diagnostics.push(
                 Diagnostic::error(format!(
@@ -1414,7 +1414,7 @@ fn expect_integer_literal_type_arg(
 /// **not** the dimension-only resolver — because Field's args are full Types.
 pub(crate) fn resolve_parameterized_builtin_type_with_subst(
     name: &str,
-    type_args: &[reify_syntax::TypeExpr],
+    type_args: &[reify_ast::TypeExpr],
     alias_registry: &TypeAliasRegistry,
     subst: &HashMap<String, Type>,
     diagnostics: &mut Vec<Diagnostic>,
@@ -1550,13 +1550,13 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
 
 /// Helper: resolve a TypeExpr to a DimensionVector with parameter substitutions.
 pub(crate) fn resolve_type_alias_expr_to_dim_with_subst(
-    type_expr: &reify_syntax::TypeExpr,
+    type_expr: &reify_ast::TypeExpr,
     alias_registry: &TypeAliasRegistry,
     subst: &HashMap<String, Type>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<DimensionVector> {
     match &type_expr.kind {
-        reify_syntax::TypeExprKind::DimensionalOp { op, left, right } => {
+        reify_ast::TypeExprKind::DimensionalOp { op, left, right } => {
             let left_dim = resolve_type_alias_expr_to_dim_with_subst(
                 left,
                 alias_registry,
@@ -1569,13 +1569,13 @@ pub(crate) fn resolve_type_alias_expr_to_dim_with_subst(
                 subst,
                 diagnostics,
             )?;
-            Some(if matches!(op, reify_syntax::DimOp::Mul) {
+            Some(if matches!(op, reify_ast::DimOp::Mul) {
                 left_dim.mul(&right_dim)
             } else {
                 left_dim.div(&right_dim)
             })
         }
-        reify_syntax::TypeExprKind::Named { name, .. } => {
+        reify_ast::TypeExprKind::Named { name, .. } => {
             // Check substitution map (type param → concrete Type → extract dimension)
             if let Some(Type::Scalar { dimension }) = subst.get(name.as_str()) {
                 return Some(*dimension);
@@ -1600,7 +1600,7 @@ pub(crate) fn resolve_type_alias_expr_to_dim_with_subst(
             );
             None
         }
-        reify_syntax::TypeExprKind::IntegerLiteral(n) => {
+        reify_ast::TypeExprKind::IntegerLiteral(n) => {
             diagnostics.push(
                 Diagnostic::error(format!(
                     "integer literal `{}` cannot appear as a dimension type",
@@ -1615,30 +1615,30 @@ pub(crate) fn resolve_type_alias_expr_to_dim_with_subst(
         }
         // Auto type-args cannot be resolved to a dimension;
         // resolution semantics are deferred to task 3477/3558.
-        reify_syntax::TypeExprKind::Auto { .. } => None,
+        reify_ast::TypeExprKind::Auto { .. } => None,
     }
 }
 
 /// Collect all leaf type names referenced in a TypeExpr tree.
 /// For `DimensionalOp`, recurses into both operands. For `Named`, returns the name
 /// followed by recursed type_args.
-pub(crate) fn collect_type_expr_names(type_expr: &reify_syntax::TypeExpr) -> Vec<String> {
+pub(crate) fn collect_type_expr_names(type_expr: &reify_ast::TypeExpr) -> Vec<String> {
     match &type_expr.kind {
-        reify_syntax::TypeExprKind::DimensionalOp { left, right, .. } => {
+        reify_ast::TypeExprKind::DimensionalOp { left, right, .. } => {
             collect_type_expr_names(left)
                 .into_iter()
                 .chain(collect_type_expr_names(right))
                 .collect()
         }
-        reify_syntax::TypeExprKind::Named { name, type_args } => std::iter::once(name.clone())
+        reify_ast::TypeExprKind::Named { name, type_args } => std::iter::once(name.clone())
             .chain(type_args.iter().flat_map(collect_type_expr_names))
             .collect(),
         // Integer-literal type-args contribute no type *names* to dependency graphs.
-        reify_syntax::TypeExprKind::IntegerLiteral(_) => Vec::new(),
+        reify_ast::TypeExprKind::IntegerLiteral(_) => Vec::new(),
         // Auto type-args contribute the bound name (e.g. `Seal` in `auto: Seal`) so that
         // trait/type-name references are preserved in dependency graphs.
         // Resolution semantics are deferred to task 3477/3558; only the name is surfaced here.
-        reify_syntax::TypeExprKind::Auto { bound, .. } => vec![bound.clone()],
+        reify_ast::TypeExprKind::Auto { bound, .. } => vec![bound.clone()],
     }
 }
 
@@ -1649,7 +1649,7 @@ pub(crate) fn collect_type_expr_names(type_expr: &reify_syntax::TypeExpr) -> Vec
 /// - Otherwise: resolve dependencies first, then resolve this alias.
 pub(crate) fn resolve_alias_dfs(
     name: &str,
-    alias_decls: &HashMap<String, &reify_syntax::TypeAliasDecl>,
+    alias_decls: &HashMap<String, &reify_ast::TypeAliasDecl>,
     alias_registry: &mut TypeAliasRegistry,
     resolving: &mut HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
@@ -1724,16 +1724,16 @@ pub(crate) fn resolve_alias_dfs(
 
 /// Convert parsed TypeParamDecl to compiled TypeParam structs.
 pub(crate) fn convert_type_params(
-    decls: &[reify_syntax::TypeParamDecl],
-) -> Vec<reify_types::TypeParam> {
+    decls: &[reify_ast::TypeParamDecl],
+) -> Vec<reify_ir::TypeParam> {
     decls
         .iter()
         .map(|d| {
             let bounds = d
                 .bounds
                 .iter()
-                .map(|b| reify_types::TraitBound {
-                    trait_ref: reify_types::TraitRef {
+                .map(|b| reify_ir::TraitBound {
+                    trait_ref: reify_ir::TraitRef {
                         name: b.clone(),
                         type_args: vec![],
                     },
@@ -1744,29 +1744,29 @@ pub(crate) fn convert_type_params(
             // DimensionalOp cannot appear as a type-parameter default — the grammar
             // only allows Named nodes in that position, so this arm is unreachable.
             let default = d.default.as_ref().map(|te| match &te.kind {
-                reify_syntax::TypeExprKind::Named { name, .. } => {
+                reify_ast::TypeExprKind::Named { name, .. } => {
                     resolve_type_name(name).unwrap_or_else(|| Type::StructureRef(name.clone()))
                 }
-                reify_syntax::TypeExprKind::DimensionalOp { .. } => {
+                reify_ast::TypeExprKind::DimensionalOp { .. } => {
                     unreachable!(
                         "dimensional operator cannot appear as a type-parameter default; \
                              the parser only emits Named nodes for type-param defaults"
                     )
                 }
-                reify_syntax::TypeExprKind::IntegerLiteral(_) => {
+                reify_ast::TypeExprKind::IntegerLiteral(_) => {
                     unreachable!(
                         "integer literal cannot appear as a type-parameter default; \
                              the grammar restricts integer literals to type_arg_list slots"
                     )
                 }
-                reify_syntax::TypeExprKind::Auto { .. } => {
+                reify_ast::TypeExprKind::Auto { .. } => {
                     unreachable!(
                         "auto type-arg cannot appear as a type-parameter default; \
                              the grammar restricts auto_type_arg to type_arg_list slots"
                     )
                 }
             });
-            reify_types::TypeParam {
+            reify_ir::TypeParam {
                 name: d.name.clone(),
                 bounds,
                 default,
@@ -1780,13 +1780,13 @@ mod tests {
     use super::*;
 
     /// Minimal helper: build a Named TypeExpr with a synthetic zero span.
-    fn named_type_expr(name: &str) -> reify_syntax::TypeExpr {
-        reify_syntax::TypeExpr {
-            kind: reify_syntax::TypeExprKind::Named {
+    fn named_type_expr(name: &str) -> reify_ast::TypeExpr {
+        reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::Named {
                 name: name.to_string(),
                 type_args: vec![],
             },
-            span: reify_types::SourceSpan::new(0, 0),
+            span: reify_core::SourceSpan::new(0, 0),
         }
     }
 
@@ -1884,7 +1884,7 @@ mod tests {
     /// one. It is expected to pass against both implementations.
     #[test]
     fn resolve_dimension_type_round_trips_all_named_dimensions() {
-        for &(dim, name) in reify_types::NAMED_DIMENSIONS {
+        for &(dim, name) in reify_core::NAMED_DIMENSIONS {
             let te = named_type_expr(name);
             let mut diagnostics = Vec::new();
             let result = resolve_dimension_type(&te, &mut diagnostics);
@@ -1928,7 +1928,7 @@ mod tests {
     /// one. It is expected to pass against both implementations.
     #[test]
     fn resolve_type_name_round_trips_all_named_dimensions() {
-        for &(dim, name) in reify_types::NAMED_DIMENSIONS {
+        for &(dim, name) in reify_core::NAMED_DIMENSIONS {
             assert_eq!(
                 resolve_type_name(name),
                 Some(Type::Scalar { dimension: dim }),
@@ -1965,7 +1965,7 @@ mod tests {
 
     #[test]
     fn resolve_enum_type_returns_some_for_matching_name() {
-        let enum_defs = vec![reify_types::EnumDef {
+        let enum_defs = vec![reify_ir::EnumDef {
             name: "Direction".to_string(),
             variants: vec!["In".to_string(), "Out".to_string()],
             doc: None,
@@ -1978,7 +1978,7 @@ mod tests {
 
     #[test]
     fn resolve_enum_type_returns_none_for_non_matching_name() {
-        let enum_defs = vec![reify_types::EnumDef {
+        let enum_defs = vec![reify_ir::EnumDef {
             name: "Direction".to_string(),
             variants: vec!["In".to_string(), "Out".to_string()],
             doc: None,
@@ -2015,7 +2015,7 @@ mod tests {
         let listed_names: std::collections::HashSet<&str> =
             diag.candidates.iter().map(String::as_str).collect();
 
-        let expected_names: std::collections::HashSet<&str> = reify_types::NAMED_DIMENSIONS
+        let expected_names: std::collections::HashSet<&str> = reify_core::NAMED_DIMENSIONS
             .iter()
             .map(|(_, n)| *n)
             .chain(std::iter::once("Dimensionless"))
@@ -2032,8 +2032,8 @@ mod tests {
         let mut reg = TypeAliasRegistry::new();
         reg.mark_skipped_parametric_prelude("Vec".to_string());
 
-        let span_a = reify_types::SourceSpan::new(10, 20);
-        let span_b = reify_types::SourceSpan::new(30, 40);
+        let span_a = reify_core::SourceSpan::new(10, 20);
+        let span_b = reify_core::SourceSpan::new(30, 40);
 
         // First call with span_a → true (newly inserted).
         assert!(
@@ -2062,7 +2062,7 @@ mod tests {
         // Non-skipped names must NOT pollute the emitted-spans set: a fresh span
         // (50..60) passed for "NotSkipped" must not prevent "Vec" from emitting
         // on that same span.
-        let span_c = reify_types::SourceSpan::new(50, 60);
+        let span_c = reify_core::SourceSpan::new(50, 60);
         assert!(
             !reg.should_emit_skipped_parametric_prelude_info("NotSkipped", span_c),
             "non-skipped name on span_c returns false"

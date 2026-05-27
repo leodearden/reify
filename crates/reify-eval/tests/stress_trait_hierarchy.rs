@@ -11,7 +11,8 @@
 use std::fs;
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_types::{ModulePath, Satisfaction, Severity, ValueCellId};
+use reify_core::{ModulePath, Severity, ValueCellId};
+use reify_ir::Satisfaction;
 
 // ── Helper ────────────────────────────────────────────────────────────────────
 
@@ -130,7 +131,7 @@ fn three_deep_chain_values() {
         .get(&x_id)
         .unwrap_or_else(|| panic!("ThreeDeepLeaf.x not found in result"));
     match x_val {
-        reify_types::Value::Scalar { si_value, .. } => {
+        reify_ir::Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 0.005).abs() < 1e-12,
                 "ThreeDeepLeaf.x should be 0.005 m (5mm), got {}",
@@ -147,7 +148,7 @@ fn three_deep_chain_values() {
         .get(&y_id)
         .unwrap_or_else(|| panic!("ThreeDeepLeaf.y not found in result"));
     match y_val {
-        reify_types::Value::Scalar { si_value, .. } => {
+        reify_ir::Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 0.003).abs() < 1e-12,
                 "ThreeDeepLeaf.y should be 0.003 m (3mm), got {}",
@@ -164,7 +165,7 @@ fn three_deep_chain_values() {
         .get(&z_id)
         .unwrap_or_else(|| panic!("ThreeDeepLeaf.z not found in result"));
     match z_val {
-        reify_types::Value::Scalar { si_value, .. } => {
+        reify_ir::Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 0.001).abs() < 1e-12,
                 "ThreeDeepLeaf.z should be 0.001 m (1mm), got {}",
@@ -181,7 +182,7 @@ fn three_deep_chain_values() {
         .get(&computed_id)
         .unwrap_or_else(|| panic!("ThreeDeepLeaf.computed not found in result"));
     match computed_val {
-        reify_types::Value::Scalar { si_value, .. } => {
+        reify_ir::Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 0.008).abs() < 1e-12,
                 "ThreeDeepLeaf.computed should be 0.008 m (x+y=5mm+3mm=8mm), got {}",
@@ -285,7 +286,7 @@ fn diamond_inheritance_merges_correctly() {
         panic!("DiamondStruct.d not found — diamond merge should produce single 'd'")
     });
     match d_val {
-        reify_types::Value::Scalar { si_value, .. } => {
+        reify_ir::Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 0.01).abs() < 1e-12,
                 "DiamondStruct.d should be 0.01 m (10mm), got {}",
@@ -358,7 +359,7 @@ fn multi_trait_impl_three_independent() {
         .get(&mass_id)
         .unwrap_or_else(|| panic!("TripleImpl.mass not found"));
     match mass_val {
-        reify_types::Value::Scalar { si_value, .. } => {
+        reify_ir::Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 2.0).abs() < 1e-12,
                 "TripleImpl.mass should be 2.0 kg SI, got {}",
@@ -375,7 +376,7 @@ fn multi_trait_impl_three_independent() {
         .get(&width_id)
         .unwrap_or_else(|| panic!("TripleImpl.width not found"));
     match width_val {
-        reify_types::Value::Scalar { si_value, .. } => {
+        reify_ir::Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 0.1).abs() < 1e-12,
                 "TripleImpl.width should be 0.1 m (100mm) SI, got {}",
@@ -392,18 +393,18 @@ fn multi_trait_impl_three_independent() {
         .get(&count_id)
         .unwrap_or_else(|| panic!("TripleImpl.count not found"));
     match count_val {
-        reify_types::Value::Real(v) => {
+        reify_ir::Value::Real(v) => {
             assert!(
                 (v - 5.0).abs() < 1e-12,
                 "TripleImpl.count should be 5.0, got {}",
                 v
             );
         }
-        reify_types::Value::Int(v) => {
+        reify_ir::Value::Int(v) => {
             // The evaluator may store whole-number Real literals as Int
             assert_eq!(*v, 5, "TripleImpl.count should be 5, got {}", v);
         }
-        reify_types::Value::Scalar { si_value, .. } => {
+        reify_ir::Value::Scalar { si_value, .. } => {
             // dimensionless scalar also acceptable
             assert!(
                 (si_value - 5.0).abs() < 1e-12,
@@ -481,7 +482,7 @@ fn diamond_with_extra_constraints() {
         .get(&x_id)
         .unwrap_or_else(|| panic!("ConstrainedDiamond.x not found"));
     match x_val {
-        reify_types::Value::Scalar { si_value, .. } => {
+        reify_ir::Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 0.01).abs() < 1e-12,
                 "ConstrainedDiamond.x should be 0.01 m (10mm), got {}",
@@ -498,7 +499,7 @@ fn diamond_with_extra_constraints() {
         .get(&l_id)
         .unwrap_or_else(|| panic!("ConstrainedDiamond.l_val not found"));
     match l_val {
-        reify_types::Value::Scalar { si_value, .. } => {
+        reify_ir::Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 0.005).abs() < 1e-12,
                 "ConstrainedDiamond.l_val should be 0.005 m (5mm), got {}",
@@ -515,7 +516,7 @@ fn diamond_with_extra_constraints() {
         .get(&r_id)
         .unwrap_or_else(|| panic!("ConstrainedDiamond.r_val not found"));
     match r_val {
-        reify_types::Value::Scalar { si_value, .. } => {
+        reify_ir::Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 0.005).abs() < 1e-12,
                 "ConstrainedDiamond.r_val should be 0.005 m (5mm), got {}",

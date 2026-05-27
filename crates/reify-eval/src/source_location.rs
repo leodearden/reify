@@ -16,7 +16,7 @@
 //! the `Entity.member` form.
 
 use reify_compiler::CompiledModule;
-use reify_types::SourceLocationInfo;
+use reify_core::SourceLocationInfo;
 
 /// Find the innermost (smallest-span) [`reify_syntax::Declaration::Structure`] or
 /// [`reify_syntax::Declaration::Occurrence`] in `parsed` whose byte span contains
@@ -29,14 +29,14 @@ use reify_types::SourceLocationInfo;
 /// the two traversals from drifting if a future `Declaration` variant is added
 /// and only one call site is updated.
 pub fn find_parsed_decl_containing_offset(
-    parsed: &reify_syntax::ParsedModule,
+    parsed: &reify_ast::ParsedModule,
     offset: u32,
-) -> Option<(&str, &str, reify_types::SourceSpan)> {
-    let mut best: Option<(&str, &str, reify_types::SourceSpan)> = None;
+) -> Option<(&str, &str, reify_core::SourceSpan)> {
+    let mut best: Option<(&str, &str, reify_core::SourceSpan)> = None;
     for decl in &parsed.declarations {
-        let (name, kind, span): (&str, &str, reify_types::SourceSpan) = match decl {
-            reify_syntax::Declaration::Structure(s) => (s.name.as_str(), "structure", s.span),
-            reify_syntax::Declaration::Occurrence(o) => (o.name.as_str(), "occurrence", o.span),
+        let (name, kind, span): (&str, &str, reify_core::SourceSpan) = match decl {
+            reify_ast::Declaration::Structure(s) => (s.name.as_str(), "structure", s.span),
+            reify_ast::Declaration::Occurrence(o) => (o.name.as_str(), "occurrence", o.span),
             _ => continue,
         };
         if offset >= span.start && offset < span.end {
@@ -97,7 +97,7 @@ fn narrow_to_member(template: &reify_compiler::TopologyTemplate, offset: usize) 
 /// Resolve the entity (and optionally member) at a given 1-based `(line, col)`
 /// source position within `source`.
 ///
-/// `line_offsets` must be the result of `reify_types::build_line_offsets(source)`.
+/// `line_offsets` must be the result of `reify_core::build_line_offsets(source)`.
 /// Passing a pre-built table makes the byte-offset conversion O(log M + line_length)
 /// instead of the O(M) character walk of the old local helper.
 ///
@@ -128,7 +128,7 @@ fn narrow_to_member(template: &reify_compiler::TopologyTemplate, offset: usize) 
 ///   template's source span, or when the position is past the end of `source`.
 pub fn resolve_entity_at_source_position(
     compiled: &CompiledModule,
-    parsed: &reify_syntax::ParsedModule,
+    parsed: &reify_ast::ParsedModule,
     source: &str,
     line_offsets: &[usize],
     line: u32,
@@ -143,7 +143,7 @@ pub fn resolve_entity_at_source_position(
     // The helper is infallible (returns source.len() for past-end positions);
     // the containment checks below filter those out, preserving the documented
     // None contract for past-end positions.
-    let offset = reify_types::line_col_to_byte_offset_with_offsets(source, line, col, line_offsets);
+    let offset = reify_core::line_col_to_byte_offset_with_offsets(source, line, col, line_offsets);
 
     // Step 1: Primary path — use the parsed declaration span (single O(D) scan).
     //
@@ -255,8 +255,8 @@ pub fn resolve_entity_source_location(
             .map(|vc| vc.span)?
     };
 
-    let (line, col) = reify_types::byte_offset_to_line_col(source, span.start as usize);
-    let (end_line, end_col) = reify_types::byte_offset_to_line_col(source, span.end as usize);
+    let (line, col) = reify_core::byte_offset_to_line_col(source, span.start as usize);
+    let (end_line, end_col) = reify_core::byte_offset_to_line_col(source, span.end as usize);
 
     Some(SourceLocationInfo {
         file_path: file_path.to_owned(),
@@ -270,12 +270,12 @@ pub fn resolve_entity_source_location(
 #[cfg(test)]
 mod tests {
     use super::{resolve_entity_at_source_position, resolve_entity_source_location};
-    use reify_types::ModulePath;
+    use reify_core::ModulePath;
 
     /// Build a (ParsedModule, CompiledModule) tuple from bracket_source() using
     /// the stdlib pipeline. Both are returned so tests can pass `&parsed` to
     /// `resolve_entity_at_source_position`.
-    fn bracket_parsed_and_compiled() -> (reify_syntax::ParsedModule, reify_compiler::CompiledModule) {
+    fn bracket_parsed_and_compiled() -> (reify_ast::ParsedModule, reify_compiler::CompiledModule) {
         let source = reify_test_support::bracket_source();
         let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("bracket"));
         let compiled = reify_compiler::compile_with_stdlib(&parsed);
@@ -455,7 +455,7 @@ mod tests {
     fn entity_at_source_position_width_cell_returns_bracket_width() {
         let (parsed, compiled) = bracket_parsed_and_compiled();
         let source = reify_test_support::bracket_source();
-        let line_offsets = reify_types::build_line_offsets(source);
+        let line_offsets = reify_core::build_line_offsets(source);
         let result = resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, 2, 11);
         assert_eq!(
             result,
@@ -471,7 +471,7 @@ mod tests {
     fn entity_at_source_position_thickness_cell_returns_bracket_thickness() {
         let (parsed, compiled) = bracket_parsed_and_compiled();
         let source = reify_test_support::bracket_source();
-        let line_offsets = reify_types::build_line_offsets(source);
+        let line_offsets = reify_core::build_line_offsets(source);
         let result = resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, 4, 11);
         assert_eq!(
             result,
@@ -489,7 +489,7 @@ mod tests {
     fn entity_at_source_position_constraint_line_returns_template_name() {
         let (parsed, compiled) = bracket_parsed_and_compiled();
         let source = reify_test_support::bracket_source();
-        let line_offsets = reify_types::build_line_offsets(source);
+        let line_offsets = reify_core::build_line_offsets(source);
         let result = resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, 10, 5);
         assert_eq!(
             result,
@@ -506,7 +506,7 @@ mod tests {
     fn entity_at_source_position_past_end_of_source_returns_none() {
         let (parsed, compiled) = bracket_parsed_and_compiled();
         let source = reify_test_support::bracket_source();
-        let line_offsets = reify_types::build_line_offsets(source);
+        let line_offsets = reify_core::build_line_offsets(source);
         let result = resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, 16, 1);
         assert!(
             result.is_none(),
@@ -521,7 +521,7 @@ mod tests {
     fn entity_at_source_position_zero_line_or_col_returns_none() {
         let (parsed, compiled) = bracket_parsed_and_compiled();
         let source = reify_test_support::bracket_source();
-        let line_offsets = reify_types::build_line_offsets(source);
+        let line_offsets = reify_core::build_line_offsets(source);
         assert!(
             resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, 0, 1).is_none(),
             "zero line should return None"
@@ -543,7 +543,7 @@ mod tests {
     fn entity_at_source_position_at_cell_span_start_returns_cell() {
         let (parsed, compiled) = bracket_parsed_and_compiled();
         let source = reify_test_support::bracket_source();
-        let line_offsets = reify_types::build_line_offsets(source);
+        let line_offsets = reify_core::build_line_offsets(source);
         let loc = resolve_entity_source_location(&compiled, source, "bracket.ri", "Bracket.width")
             .expect("forward lookup for Bracket.width must succeed");
         // loc.line and loc.column are 1-based and map to span.start of width cell.
@@ -567,7 +567,7 @@ mod tests {
     fn entity_at_source_position_at_cell_span_end_does_not_return_that_cell() {
         let (parsed, compiled) = bracket_parsed_and_compiled();
         let source = reify_test_support::bracket_source();
-        let line_offsets = reify_types::build_line_offsets(source);
+        let line_offsets = reify_core::build_line_offsets(source);
         let loc = resolve_entity_source_location(&compiled, source, "bracket.ri", "Bracket.width")
             .expect("forward lookup for Bracket.width must succeed");
         // loc.end_line and loc.end_column map to span.end (exclusive upper bound).
@@ -602,7 +602,7 @@ mod tests {
     fn entity_at_source_position_realization_body_returns_template_dot_realization() {
         let (parsed, compiled) = bracket_parsed_and_compiled();
         let source = reify_test_support::bracket_source();
-        let line_offsets = reify_types::build_line_offsets(source);
+        let line_offsets = reify_core::build_line_offsets(source);
         // line 14, col 9 = 'b' of "body" in "    let body = box(width, height, thickness)"
         let result = resolve_entity_at_source_position(&compiled, &parsed, source, &line_offsets, 14, 9);
         assert_eq!(
@@ -632,7 +632,7 @@ mod tests {
     fn entity_at_source_position_col_past_line_end_clamps_to_template_name() {
         let (parsed, compiled) = bracket_parsed_and_compiled();
         let source = reify_test_support::bracket_source();
-        let line_offsets = reify_types::build_line_offsets(source);
+        let line_offsets = reify_core::build_line_offsets(source);
         // line 2 = "    param width: Scalar = 80mm" (30 chars).
         // col=99 is well past the end; new helper clamps to the trailing '\n' of line 2,
         // which falls outside any value cell → enclosing template name.
@@ -687,7 +687,7 @@ pub structure Last {
             reify_compiler::parse_with_stdlib(THREE_STRUCT_SOURCE, ModulePath::single("multi"));
         assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
         let compiled = reify_compiler::compile_with_stdlib(&parsed);
-        let line_offsets = reify_types::build_line_offsets(THREE_STRUCT_SOURCE);
+        let line_offsets = reify_core::build_line_offsets(THREE_STRUCT_SOURCE);
 
         // Line 5, col 1 = 'p' in "pub structure Middle {".  Under the current
         // member-span-only resolver this is before Middle's min_start (line 6) → None.

@@ -9,7 +9,7 @@
 //! OCCT tests are guarded by reify_kernel_occt::OCCT_AVAILABLE.
 
 use reify_test_support::{MockGeometryKernel, mm};
-use reify_types::{GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Value};
+use reify_ir::{GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Value};
 
 // ── Helper: centroid JSON parser ───────────────────────────────────────────────
 

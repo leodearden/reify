@@ -1,5 +1,5 @@
 use crate::eval_builtin;
-use reify_types::Value;
+use reify_ir::Value;
 
 pub(crate) fn axis_x_unit() -> Value {
     Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)])

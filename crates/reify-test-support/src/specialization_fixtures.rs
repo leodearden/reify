@@ -17,11 +17,8 @@
 //! valid `LSP Position { line: 0, character: N }` without any out-of-bounds
 //! access.
 
-use reify_syntax::{
-    ConstraintDecl, Declaration, Expr, ExprKind, LetDecl, MemberDecl, ParamDecl, PortDecl,
-    StructureDef, SubDecl,
-};
-use reify_types::{ContentHash, ModulePath, SourceSpan};
+use reify_ast::{ConstraintDecl, Declaration, Expr, ExprKind, LetDecl, MemberDecl, ParamDecl, PortDecl, StructureDef, SubDecl};
+use reify_core::{ContentHash, ModulePath, SourceSpan};
 
 /// Dummy span for structure-level and default-use nodes: bytes 10–20.
 pub fn dummy_span() -> SourceSpan {
@@ -177,8 +174,8 @@ pub fn make_constraint() -> MemberDecl {
 /// spans), so a single default keeps every call site terse.
 pub fn parsed_module_with_structure_members(
     members: Vec<MemberDecl>,
-) -> reify_syntax::ParsedModule {
-    reify_syntax::ParsedModule {
+) -> reify_ast::ParsedModule {
+    reify_ast::ParsedModule {
         path: ModulePath::single("test"),
         declarations: vec![Declaration::Structure(StructureDef {
             name: "S".to_string(),
@@ -212,7 +209,7 @@ pub fn source_stub() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_syntax::{Declaration, ExprKind, MemberDecl};
+    use reify_ast::{Declaration, ExprKind, MemberDecl};
 
     /// Guard that every span constant's `end` fits inside [`source_stub()`]'s
     /// buffer.  This is the invariant consumers depend on: byte offset N maps to

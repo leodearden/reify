@@ -22,10 +22,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use reify_types::{
-    ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
-    GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value,
-};
+use reify_ir::{ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value};
 
 use crate::ffi::ffi as openvdb_ffi;
 use crate::init::ensure_initialized;

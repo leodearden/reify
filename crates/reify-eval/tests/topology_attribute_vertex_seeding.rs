@@ -23,10 +23,8 @@ use std::collections::{HashMap, HashSet};
 
 use reify_compiler::compile_with_stdlib;
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
-use reify_types::{
-    AxisSign, ExportFormat, FeatureId, GeometryOp, ModulePath, RealizationNodeId, Role, Severity,
-    Value,
-};
+use reify_core::{ModulePath, RealizationNodeId, Severity};
+use reify_ir::{AxisSign, ExportFormat, FeatureId, GeometryOp, Role, Value};
 
 // ─── helpers (copied from topology_attribute_primitives_e2e.rs convention) ──
 

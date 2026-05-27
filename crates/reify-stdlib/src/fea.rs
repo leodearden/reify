@@ -30,7 +30,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use reify_types::{FieldSourceKind, SampledField, Type, Value};
+use reify_core::Type;
+use reify_ir::{FieldSourceKind, SampledField, Value};
 
 /// Evaluate a multi-load-case FEA stdlib function by name.
 ///
@@ -1079,10 +1080,8 @@ mod tests {
     use std::sync::atomic::AtomicBool;
 
     use reify_test_support::multi_case_result_value;
-    use reify_types::{
-        DimensionVector, FieldSourceKind, InterpolationKind, SampledField, SampledGridKind, Type,
-        Value,
-    };
+    use reify_core::{DimensionVector, Type};
+    use reify_ir::{FieldSourceKind, InterpolationKind, SampledField, SampledGridKind, Value};
 
     // ── test helpers ────────────────────────────────────────────────────────
 

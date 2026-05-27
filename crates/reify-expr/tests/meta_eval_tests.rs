@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use reify_expr::{EvalContext, eval_expr};
-use reify_types::{CompiledExpr, Value, ValueMap};
+use reify_ir::{CompiledExpr, Value, ValueMap};
 
 // ── step-13: MetaAccess returns string value ────────────────────────────────
 

@@ -8,7 +8,7 @@
 #![cfg(has_gmsh)]
 
 use reify_kernel_gmsh::{GmshKernel, MeshingOptions};
-use reify_types::{ElementOrderTag, Mesh};
+use reify_ir::{ElementOrderTag, Mesh};
 
 /// Inline copy of `crates/reify-kernel-manifold/src/test_fixtures.rs:37-67`.
 ///
@@ -341,7 +341,7 @@ fn vertices_length_not_multiple_of_three_errors() {
 /// Indices.len() not divisible by 3 → caller-side error before any FFI work.
 #[test]
 fn indices_length_not_multiple_of_three_errors() {
-    let bad = reify_types::Mesh {
+    let bad = reify_ir::Mesh {
         vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
         indices: vec![0, 1], // 2 indices — not a triangle stride.
         normals: None,
@@ -361,7 +361,7 @@ fn indices_length_not_multiple_of_three_errors() {
 /// the diagnostic close to the real cause.
 #[test]
 fn empty_surface_mesh_errors() {
-    let bad = reify_types::Mesh {
+    let bad = reify_ir::Mesh {
         vertices: vec![],
         indices: vec![],
         normals: None,
@@ -380,7 +380,7 @@ fn empty_surface_mesh_errors() {
 /// before any FFI work.
 #[test]
 fn out_of_bounds_index_errors() {
-    let bad = reify_types::Mesh {
+    let bad = reify_ir::Mesh {
         vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0], // 3 vertices
         indices: vec![0, 1, 99],                                     // 99 ≥ 3
         normals: None,

@@ -142,11 +142,11 @@ pub fn eligible(old_brep: BRep, new_brep: BRep) -> bool {
 /// produced by this skeleton; the remaining three variants are wired in PRD
 /// tasks #7 and #9.
 pub fn morph(
-    old_mesh: &reify_types::VolumeMesh,
+    old_mesh: &reify_ir::VolumeMesh,
     old_brep: BRep,
     new_brep: BRep,
     options: &MorphOptions,
-) -> Result<reify_types::VolumeMesh, MorphFailure> {
+) -> Result<reify_ir::VolumeMesh, MorphFailure> {
     let _ = old_mesh;
     let _ = options;
     match eligibility::morph_eligible(old_brep, new_brep) {
@@ -164,10 +164,8 @@ mod tests {
     use super::*;
     use reify_compiler::ValueCellKind;
     use reify_eval::graph::{EvaluationGraph, RealizationNodeData, ValueCellNode};
-    use reify_types::{
-        CapKind, ContentHash, FeatureId, GeometryHandleId, RealizationNodeId, ReprKind, Role,
-        TopologyAttribute, TopologyAttributeTable, Type, Value, ValueCellId, ValueMap,
-    };
+    use reify_core::{ContentHash, RealizationNodeId, Type, ValueCellId};
+    use reify_ir::{CapKind, FeatureId, GeometryHandleId, ReprKind, Role, TopologyAttribute, TopologyAttributeTable, Value, ValueMap};
 
     // ── Test fixture helpers (mirrored from eligibility::tests) ───────────────
 
@@ -216,11 +214,11 @@ mod tests {
         }
     }
 
-    fn empty_mesh() -> reify_types::VolumeMesh {
-        reify_types::VolumeMesh {
+    fn empty_mesh() -> reify_ir::VolumeMesh {
+        reify_ir::VolumeMesh {
             vertices: Vec::new(),
             tet_indices: Vec::new(),
-            element_order: reify_types::ElementOrderTag::P1,
+            element_order: reify_ir::ElementOrderTag::P1,
             normals: None,
         }
     }
@@ -329,7 +327,7 @@ mod tests {
         #[allow(clippy::type_complexity)]
         // pinning the full public signature is the point of the fence
         let _fn_ref: fn(
-            &reify_types::VolumeMesh,
+            &reify_ir::VolumeMesh,
             &BoundaryAssociation,
             &reify_eval::CorrespondenceMap,
             &dyn Projector,
@@ -350,16 +348,16 @@ mod tests {
         #[allow(clippy::type_complexity)]
         // pinning the full public signature is the point of the fence
         let _fn_ref: fn(
-            &reify_types::VolumeMesh,
+            &reify_ir::VolumeMesh,
             &[(u32, [f64; 3])],
             u32,
-        ) -> Result<reify_types::VolumeMesh, LaplacianFailure> = laplacian_smooth;
+        ) -> Result<reify_ir::VolumeMesh, LaplacianFailure> = laplacian_smooth;
         // Variant mentions force the enum's variant set into the fence — adding
         // or removing a variant under the same names elsewhere would still
         // require these constructors to compile.
         let _: LaplacianFailure = LaplacianFailure::InvalidNodeIndex(0u32);
         let _: LaplacianFailure =
-            LaplacianFailure::UnsupportedElementOrder(reify_types::ElementOrderTag::P2);
+            LaplacianFailure::UnsupportedElementOrder(reify_ir::ElementOrderTag::P2);
     };
 
     // ── Step-17: lib re-exports make elasticity module public surface accessible ─
@@ -376,26 +374,26 @@ mod tests {
         #[allow(clippy::type_complexity)]
         // pinning the full public signature is the point of the fence
         let _fn_ref: fn(
-            &reify_types::VolumeMesh,
+            &reify_ir::VolumeMesh,
             &[(u32, [f64; 3])],
             &MorphOptions,
-        ) -> Result<reify_types::VolumeMesh, ElasticityFailure> = elasticity_morph;
+        ) -> Result<reify_ir::VolumeMesh, ElasticityFailure> = elasticity_morph;
         #[allow(clippy::type_complexity)]
         // pinning the full public signature is the point of the fence
         let _fn_with_opts: fn(
-            &reify_types::VolumeMesh,
+            &reify_ir::VolumeMesh,
             &[(u32, [f64; 3])],
             &MorphOptions,
             CgSolverOptions,
         )
-            -> Result<reify_types::VolumeMesh, ElasticityFailure> = elasticity_morph_with_cg_opts;
+            -> Result<reify_ir::VolumeMesh, ElasticityFailure> = elasticity_morph_with_cg_opts;
         let _ = _fn_with_opts;
         // Variant mentions force the enum's variant set into the fence —
         // adding or removing a variant under the same names elsewhere would
         // still require these constructors to compile.
         let _: ElasticityFailure = ElasticityFailure::InvalidNodeIndex(0u32);
         let _: ElasticityFailure =
-            ElasticityFailure::UnsupportedElementOrder(reify_types::ElementOrderTag::P2);
+            ElasticityFailure::UnsupportedElementOrder(reify_ir::ElementOrderTag::P2);
         let _: ElasticityFailure = ElasticityFailure::SolverNotConverged { iterations: 0 };
         let _: ElasticityFailure = ElasticityFailure::InvalidTetIndex(0u32);
         let _: ElasticityFailure = ElasticityFailure::NoElementsForPrescribedDisplacements;
@@ -411,8 +409,8 @@ mod tests {
     const _: fn() = || {
         use crate::{QualityVerdict, quality_check};
         let _fn_ref: fn(
-            &reify_types::VolumeMesh,
-            &reify_types::VolumeMesh,
+            &reify_ir::VolumeMesh,
+            &reify_ir::VolumeMesh,
             &MorphOptions,
         ) -> QualityVerdict = quality_check;
         // Variant mentions — exhaustive constructor coverage:
@@ -458,11 +456,11 @@ mod tests {
     #[allow(unused)]
     const _: fn() = || {
         let _fn_ref: fn(
-            &reify_types::VolumeMesh,
+            &reify_ir::VolumeMesh,
             BRep,
             BRep,
             &MorphOptions,
-        ) -> Result<reify_types::VolumeMesh, MorphFailure> = morph;
+        ) -> Result<reify_ir::VolumeMesh, MorphFailure> = morph;
         let _ = _fn_ref;
     };
 

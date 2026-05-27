@@ -18,11 +18,7 @@ use crate::{
     BooleanOpHistoryRecords, LocalFeatureOpHistoryRecords, LoftOpHistoryRecords,
     SweepOpHistoryRecords,
 };
-use reify_types::{
-    AttributeHistory, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId,
-    GeometryKernel, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, TessError, Value,
-    WarmStartable, debug_assert_query_many_invariant,
-};
+use reify_ir::{AttributeHistory, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, TessError, Value, WarmStartable, debug_assert_query_many_invariant};
 use tokio::sync::{mpsc, oneshot};
 
 /// Requests sent from `OcctKernelHandle` to the dedicated kernel thread.
@@ -1333,7 +1329,7 @@ impl GeometryKernel for OcctKernelHandle {
 
 #[cfg(all(test, has_occt))]
 mod tests {
-    use reify_types::{BRepKind, GeometryHandleId, GeometryOp, GeometryQuery, Value};
+    use reify_ir::{BRepKind, GeometryHandleId, GeometryOp, GeometryQuery, Value};
 
     /// Compile-time assertion: OcctKernelHandle must be Send + Sync.
     const _: fn() = || {
@@ -1371,7 +1367,7 @@ mod tests {
         };
         let gh = handle.execute(&op).unwrap();
         let result = handle
-            .query(&reify_types::GeometryQuery::Volume(gh.id))
+            .query(&reify_ir::GeometryQuery::Volume(gh.id))
             .unwrap();
         match result {
             Value::Real(v) => {
@@ -1385,10 +1381,10 @@ mod tests {
     #[test]
     fn query_invalid_handle_returns_error() {
         let handle = super::OcctKernelHandle::spawn();
-        let result = handle.query(&reify_types::GeometryQuery::Volume(GeometryHandleId(999)));
+        let result = handle.query(&reify_ir::GeometryQuery::Volume(GeometryHandleId(999)));
         assert!(result.is_err());
         match result.unwrap_err() {
-            reify_types::QueryError::InvalidHandle(id) => {
+            reify_ir::QueryError::InvalidHandle(id) => {
                 assert_eq!(id, GeometryHandleId(999));
             }
             other => panic!("expected InvalidHandle, got {:?}", other),
@@ -1443,7 +1439,7 @@ mod tests {
         ]);
         assert!(result.is_err(), "query_many must propagate the bad handle");
         match result.unwrap_err() {
-            reify_types::QueryError::InvalidHandle(id) => {
+            reify_ir::QueryError::InvalidHandle(id) => {
                 assert_eq!(id, GeometryHandleId(999));
             }
             other => panic!("expected InvalidHandle, got {:?}", other),
@@ -1477,7 +1473,7 @@ mod tests {
         let gh = handle.execute(&op).unwrap();
         let mut buf = Vec::new();
         handle
-            .export(gh.id, reify_types::ExportFormat::Step, &mut buf)
+            .export(gh.id, reify_ir::ExportFormat::Step, &mut buf)
             .unwrap();
         let content = String::from_utf8(buf).unwrap();
         assert!(
@@ -1496,13 +1492,13 @@ mod tests {
         };
         let gh = handle.execute(&op).unwrap();
         let mut buf = Vec::new();
-        let result = handle.export(gh.id, reify_types::ExportFormat::Stl, &mut buf);
+        let result = handle.export(gh.id, reify_ir::ExportFormat::Stl, &mut buf);
         assert!(result.is_err());
     }
 
     #[test]
     fn handle_implements_geometry_kernel_trait() {
-        use reify_types::GeometryKernel;
+        use reify_ir::GeometryKernel;
         let mut handle = super::OcctKernelHandle::spawn();
         // Use it through the trait interface as Box<dyn GeometryKernel>
         let kernel: &mut dyn GeometryKernel = &mut handle;
@@ -1564,7 +1560,7 @@ mod tests {
         // exporting to STEP and checking the ISO-10303-21 header is present.
         let mut buf = Vec::new();
         handle
-            .export(chamfered.id, reify_types::ExportFormat::Step, &mut buf)
+            .export(chamfered.id, reify_ir::ExportFormat::Step, &mut buf)
             .expect("chamfered shape should be exportable to STEP");
         let content = String::from_utf8(buf).expect("STEP output should be valid UTF-8");
         assert!(
@@ -1579,12 +1575,12 @@ mod tests {
         let mut buf = Vec::new();
         let result = handle.export(
             GeometryHandleId(999),
-            reify_types::ExportFormat::Step,
+            reify_ir::ExportFormat::Step,
             &mut buf,
         );
         assert!(result.is_err());
         match result.unwrap_err() {
-            reify_types::ExportError::InvalidHandle(id) => {
+            reify_ir::ExportError::InvalidHandle(id) => {
                 assert_eq!(id, GeometryHandleId(999));
             }
             other => panic!("expected InvalidHandle, got {:?}", other),
@@ -1597,7 +1593,7 @@ mod tests {
         let result = handle.tessellate(GeometryHandleId(999), 0.1);
         assert!(result.is_err());
         match result.unwrap_err() {
-            reify_types::TessError::InvalidHandle(id) => {
+            reify_ir::TessError::InvalidHandle(id) => {
                 assert_eq!(id, GeometryHandleId(999));
             }
             other => panic!("expected InvalidHandle, got {:?}", other),
@@ -1677,7 +1673,7 @@ mod tests {
 
         // Query volume
         let vol = handle
-            .query(&reify_types::GeometryQuery::Volume(fillet_h.id))
+            .query(&reify_ir::GeometryQuery::Volume(fillet_h.id))
             .unwrap();
         match vol {
             Value::Real(v) => assert!(v > 0.0, "volume should be positive, got {v}"),
@@ -1692,7 +1688,7 @@ mod tests {
         // Export STEP
         let mut buf = Vec::new();
         handle
-            .export(fillet_h.id, reify_types::ExportFormat::Step, &mut buf)
+            .export(fillet_h.id, reify_ir::ExportFormat::Step, &mut buf)
             .unwrap();
         let content = String::from_utf8(buf).unwrap();
         assert!(content.contains("ISO-10303-21"));
@@ -1742,7 +1738,7 @@ mod tests {
             .await;
         assert!(result.is_err());
         match result.unwrap_err() {
-            reify_types::QueryError::InvalidHandle(id) => {
+            reify_ir::QueryError::InvalidHandle(id) => {
                 assert_eq!(id, GeometryHandleId(999));
             }
             other => panic!("expected InvalidHandle, got {:?}", other),
@@ -1759,7 +1755,7 @@ mod tests {
         };
         let gh = handle.execute_async(&op).await.unwrap();
         let bytes = handle
-            .export_async(gh.id, reify_types::ExportFormat::Step)
+            .export_async(gh.id, reify_ir::ExportFormat::Step)
             .await
             .unwrap();
         let content = String::from_utf8(bytes).unwrap();
@@ -1773,11 +1769,11 @@ mod tests {
     async fn export_async_invalid_handle() {
         let handle = super::OcctKernelHandle::spawn();
         let result = handle
-            .export_async(GeometryHandleId(999), reify_types::ExportFormat::Step)
+            .export_async(GeometryHandleId(999), reify_ir::ExportFormat::Step)
             .await;
         assert!(result.is_err());
         match result.unwrap_err() {
-            reify_types::ExportError::InvalidHandle(id) => {
+            reify_ir::ExportError::InvalidHandle(id) => {
                 assert_eq!(id, GeometryHandleId(999));
             }
             other => panic!("expected InvalidHandle, got {:?}", other),
@@ -1866,7 +1862,7 @@ mod tests {
 
         // Export STEP via async (returns Vec<u8>)
         let bytes = handle
-            .export_async(fillet_h.id, reify_types::ExportFormat::Step)
+            .export_async(fillet_h.id, reify_ir::ExportFormat::Step)
             .await
             .unwrap();
         let content = String::from_utf8(bytes).unwrap();
@@ -1911,7 +1907,7 @@ mod tests {
 
     #[test]
     fn handle_warm_state_returns_some_after_op() {
-        use reify_types::WarmStartable;
+        use reify_ir::WarmStartable;
         let handle = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
             width: Value::Real(10.0),
@@ -1929,7 +1925,7 @@ mod tests {
 
     #[test]
     fn cross_handle_warm_start_transfer() {
-        use reify_types::WarmStartable;
+        use reify_ir::WarmStartable;
         // Handle A: create box
         let handle_a = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
@@ -1993,7 +1989,7 @@ mod tests {
 
     #[test]
     fn handle_warm_state_none_on_empty_kernel() {
-        use reify_types::WarmStartable;
+        use reify_ir::WarmStartable;
         let handle = super::OcctKernelHandle::spawn();
         // No ops executed — warm_state should return None
         let state = handle.warm_state();
@@ -2002,7 +1998,7 @@ mod tests {
 
     #[tokio::test]
     async fn warm_startable_trait_safe_in_async_context() {
-        use reify_types::WarmStartable;
+        use reify_ir::WarmStartable;
         // Calling the sync WarmStartable trait methods from an async context
         // must not panic (previously used blocking_send/blocking_recv which
         // panicked inside tokio runtime).
@@ -2054,7 +2050,7 @@ mod tests {
                         let gh = handle.execute(&op).unwrap();
                         let mut buf = Vec::new();
                         handle
-                            .export(gh.id, reify_types::ExportFormat::Step, &mut buf)
+                            .export(gh.id, reify_ir::ExportFormat::Step, &mut buf)
                             .expect("STEP export should succeed under concurrent access");
                         let content = String::from_utf8(buf).unwrap();
                         assert!(

@@ -20,7 +20,7 @@
 //! `auto_type_arg_clean_input_has_no_spurious_errors` (gated on task 3665; the
 //! `auto(free):` fixture was added to that test rather than kept as a separate test).
 
-use reify_types::ModulePath;
+use reify_core::ModulePath;
 
 mod common;
 use common::{find_cst_node, find_outermost_cst_nodes, make_ts_parser};
@@ -205,7 +205,7 @@ fn auto_type_arg_rejects_unrecognized_modifier() {
 
 /// Helper: parse `source`, find the single Function declaration, and return its
 /// return-type's `type_args` slice. Panics with a clear message if any step fails.
-fn get_return_type_args(source: &str) -> Vec<reify_syntax::TypeExpr> {
+fn get_return_type_args(source: &str) -> Vec<reify_ast::TypeExpr> {
     let m = reify_syntax::parse(source, ModulePath::single("t"));
     assert!(
         m.errors.is_empty(),
@@ -215,9 +215,9 @@ fn get_return_type_args(source: &str) -> Vec<reify_syntax::TypeExpr> {
     );
     let decls = &m.declarations;
     assert_eq!(decls.len(), 1, "expected exactly one declaration in {:?}", source);
-    if let reify_syntax::Declaration::Function(f) = &decls[0] {
+    if let reify_ast::Declaration::Function(f) = &decls[0] {
         let rt = f.return_type.as_ref().expect("expected a return type");
-        if let reify_syntax::TypeExprKind::Named { type_args, .. } = &rt.kind {
+        if let reify_ast::TypeExprKind::Named { type_args, .. } = &rt.kind {
             type_args.clone()
         } else {
             panic!("expected outer type to be Named, got {:?}", rt.kind);
@@ -234,7 +234,7 @@ fn auto_type_arg_lowers_to_ast_strict() {
     let args = get_return_type_args("fn f() -> Bearing<auto: Seal> { 0 }");
     assert_eq!(args.len(), 1, "expected exactly one type argument");
     match &args[0].kind {
-        reify_syntax::TypeExprKind::Auto { free, bound } => {
+        reify_ast::TypeExprKind::Auto { free, bound } => {
             assert!(!free, "strict auto: Seal must have free=false");
             assert_eq!(bound, "Seal", "bound must be 'Seal'");
         }
@@ -249,7 +249,7 @@ fn auto_type_arg_lowers_to_ast_free() {
     let args = get_return_type_args("fn g() -> Bearing<auto(free): Seal> { 0 }");
     assert_eq!(args.len(), 1, "expected exactly one type argument");
     match &args[0].kind {
-        reify_syntax::TypeExprKind::Auto { free, bound } => {
+        reify_ast::TypeExprKind::Auto { free, bound } => {
             assert!(*free, "free auto(free): Seal must have free=true");
             assert_eq!(bound, "Seal", "bound must be 'Seal'");
         }
@@ -327,14 +327,14 @@ fn auto_type_arg_multi_param_lowers_both() {
     let args = get_return_type_args("fn h() -> Coupling<auto: A, auto: B> { 0 }");
     assert_eq!(args.len(), 2, "expected exactly two type arguments");
     match &args[0].kind {
-        reify_syntax::TypeExprKind::Auto { free, bound } => {
+        reify_ast::TypeExprKind::Auto { free, bound } => {
             assert!(!free, "first arg must have free=false");
             assert_eq!(bound, "A", "first arg bound must be 'A'");
         }
         other => panic!("expected TypeExprKind::Auto for first arg, got {:?}", other),
     }
     match &args[1].kind {
-        reify_syntax::TypeExprKind::Auto { free, bound } => {
+        reify_ast::TypeExprKind::Auto { free, bound } => {
             assert!(!free, "second arg must have free=false");
             assert_eq!(bound, "B", "second arg bound must be 'B'");
         }
@@ -354,14 +354,14 @@ fn mixed_type_args_unaffected() {
     let args = get_return_type_args("fn f() -> Map<String, Int> { 0 }");
     assert_eq!(args.len(), 2, "Map<String, Int> must have 2 type args");
     match &args[0].kind {
-        reify_syntax::TypeExprKind::Named { name, type_args } => {
+        reify_ast::TypeExprKind::Named { name, type_args } => {
             assert_eq!(name, "String");
             assert!(type_args.is_empty());
         }
         other => panic!("expected Named for 'String', got {:?}", other),
     }
     match &args[1].kind {
-        reify_syntax::TypeExprKind::Named { name, type_args } => {
+        reify_ast::TypeExprKind::Named { name, type_args } => {
             assert_eq!(name, "Int");
             assert!(type_args.is_empty());
         }
@@ -372,19 +372,19 @@ fn mixed_type_args_unaffected() {
     let args2 = get_return_type_args("fn g() -> Tensor<2, 3, MomentOfInertia> { 0 }");
     assert_eq!(args2.len(), 3, "Tensor<2, 3, MomentOfInertia> must have 3 type args");
     match &args2[0].kind {
-        reify_syntax::TypeExprKind::IntegerLiteral(n) => {
+        reify_ast::TypeExprKind::IntegerLiteral(n) => {
             assert_eq!(*n, 2u32, "first arg must be 2");
         }
         other => panic!("expected IntegerLiteral(2), got {:?}", other),
     }
     match &args2[1].kind {
-        reify_syntax::TypeExprKind::IntegerLiteral(n) => {
+        reify_ast::TypeExprKind::IntegerLiteral(n) => {
             assert_eq!(*n, 3u32, "second arg must be 3");
         }
         other => panic!("expected IntegerLiteral(3), got {:?}", other),
     }
     match &args2[2].kind {
-        reify_syntax::TypeExprKind::Named { name, type_args } => {
+        reify_ast::TypeExprKind::Named { name, type_args } => {
             assert_eq!(name, "MomentOfInertia");
             assert!(type_args.is_empty());
         }
@@ -402,9 +402,9 @@ fn mixed_type_args_unaffected() {
 /// Strict `auto: Seal` — Display must render `"auto: Seal"`.
 #[test]
 fn auto_type_expr_display_strict() {
-    use reify_types::SourceSpan;
-    let te = reify_syntax::TypeExpr {
-        kind: reify_syntax::TypeExprKind::Auto {
+    use reify_core::SourceSpan;
+    let te = reify_ast::TypeExpr {
+        kind: reify_ast::TypeExprKind::Auto {
             free: false,
             bound: "Seal".to_string(),
         },
@@ -420,9 +420,9 @@ fn auto_type_expr_display_strict() {
 /// Free `auto(free): Seal` — Display must render `"auto(free): Seal"`.
 #[test]
 fn auto_type_expr_display_free() {
-    use reify_types::SourceSpan;
-    let te = reify_syntax::TypeExpr {
-        kind: reify_syntax::TypeExprKind::Auto {
+    use reify_core::SourceSpan;
+    let te = reify_ast::TypeExpr {
+        kind: reify_ast::TypeExprKind::Auto {
             free: true,
             bound: "Seal".to_string(),
         },

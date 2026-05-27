@@ -3,7 +3,8 @@ use std::sync::Arc;
 use serde_json::json;
 
 use crate::types::*;
-use reify_types::{DeterminacyState, DimensionVector, FieldSourceKind, Type, Value};
+use reify_core::{DimensionVector, Type};
+use reify_ir::{DeterminacyState, FieldSourceKind, Value};
 
 #[test]
 fn gui_state_empty_serializes_with_expected_keys() {
@@ -513,8 +514,8 @@ fn format_value_field() {
 fn format_value_lambda() {
     let v = Value::Lambda {
         params: vec![],
-        body: Box::new(reify_types::CompiledExpr::literal(Value::Undef, Type::Real)),
-        captures: reify_types::ValueMap::default(),
+        body: Box::new(reify_ir::CompiledExpr::literal(Value::Undef, Type::Real)),
+        captures: reify_ir::ValueMap::default(),
     };
     assert_eq!(format_value(&v), ("<lambda>".to_string(), String::new()));
 }
@@ -838,7 +839,7 @@ fn entity_tree_node_serializes_with_freshness_field() {
 #[test]
 fn format_freshness_returns_lowercase_strings() {
     use crate::types::format_freshness;
-    use reify_types::{ErrorRef, Freshness, ResultRef};
+    use reify_ir::{ErrorRef, Freshness, ResultRef};
 
     // Final → "final"
     assert_eq!(format_freshness(&Freshness::Final), "final");
@@ -2074,7 +2075,7 @@ fn warm_pool_event_serializes_with_expected_field_set() {
     //     and node_id stringified via NodeId Display.
     use reify_eval::cache::NodeId;
     use reify_eval::warm_pool::WarmPoolEvent as EngineWarmPoolEvent;
-    use reify_types::ValueCellId;
+    use reify_core::ValueCellId;
 
     let victim = NodeId::Value(ValueCellId::new("Body", "thickness"));
     let eng_ev = EngineWarmPoolEvent::Evicted {

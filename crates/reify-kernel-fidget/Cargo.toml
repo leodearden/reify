@@ -6,7 +6,7 @@ license.workspace = true
 description = "Fidget SDF-Boolean kernel adapter"
 
 [dependencies]
-reify-types.workspace = true
+reify-ir.workspace = true
 inventory.workspace = true
 
 # `default-features = false` excludes `shapes` and `rhai`. Both transitively
@@ -29,5 +29,6 @@ fidget = { version = "0.4", default-features = false, features = ["bytecode", "j
 # into the link closure of the `tests/dispatcher_integration.rs` test binary;
 # the production library stays free of the eval dependency.
 [dev-dependencies]
+reify-ir.workspace = true
 reify-eval.workspace = true
 reify-test-support.workspace = true

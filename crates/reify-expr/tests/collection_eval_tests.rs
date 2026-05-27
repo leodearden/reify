@@ -7,7 +7,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use reify_expr::{EvalContext, eval_expr};
-use reify_types::{BinOp, CompiledExpr, Type, Value, ValueCellId, ValueMap};
+use reify_core::{Type, ValueCellId};
+use reify_ir::{BinOp, CompiledExpr, Value, ValueMap};
 
 // ─── step-1: List literal evaluation ───
 
@@ -332,7 +333,7 @@ fn eval_method_sum_reals() {
 
 #[test]
 fn eval_method_sum_scalars() {
-    let dim = reify_types::DimensionVector::LENGTH;
+    let dim = reify_core::DimensionVector::LENGTH;
     let list = CompiledExpr::list_literal(
         vec![
             CompiledExpr::literal(
@@ -393,7 +394,7 @@ fn eval_method_sum_empty_real_list() {
 #[test]
 fn eval_method_sum_empty_scalar_list() {
     // [].sum() with result_type=Scalar{LENGTH} should return Scalar{0.0, LENGTH}
-    let dim = reify_types::DimensionVector::LENGTH;
+    let dim = reify_core::DimensionVector::LENGTH;
     let list = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::length())));
     let expr = CompiledExpr::method_call(list, "sum".to_string(), vec![], Type::length());
     let values = ValueMap::new();
@@ -1531,7 +1532,8 @@ fn eval_undef_map_method() {
 fn eval_method_map_with_user_function() {
     // Create a CompiledFunction 'double' that returns x * 2
     // Then create [1, 2, 3].map(|x| double(x)) and verify it produces [2, 4, 6]
-    use reify_types::{CompiledExprKind, CompiledFnBody, CompiledFunction, ContentHash};
+    use reify_core::ContentHash;
+    use reify_ir::{CompiledExprKind, CompiledFnBody, CompiledFunction};
 
     let params = vec![("x".to_string(), Type::Int)];
     let double_fn = CompiledFunction {
@@ -1599,7 +1601,8 @@ fn eval_method_map_with_user_function() {
 fn eval_method_filter_with_user_function() {
     // [1,2,3,4,5].filter(|x| is_even(x)) where is_even checks x % 2 == 0
     // With EvalContext::new containing is_even, should return [2, 4]
-    use reify_types::{CompiledExprKind, CompiledFnBody, CompiledFunction, ContentHash};
+    use reify_core::ContentHash;
+    use reify_ir::{CompiledExprKind, CompiledFnBody, CompiledFunction};
 
     // Define user function: is_even(x) = x % 2 == 0
     let params = vec![("x".to_string(), Type::Int)];
@@ -1675,7 +1678,8 @@ fn eval_method_filter_with_user_function() {
 fn eval_method_fold_with_user_function() {
     // [1,2,3].fold(0, |acc, x| add(acc, x)) where add(a, b) = a + b
     // With EvalContext::new containing add, should return Int(6)
-    use reify_types::{CompiledExprKind, CompiledFnBody, CompiledFunction, ContentHash};
+    use reify_core::ContentHash;
+    use reify_ir::{CompiledExprKind, CompiledFnBody, CompiledFunction};
 
     // Define user function: add(a, b) = a + b
     let params = vec![("a".to_string(), Type::Int), ("b".to_string(), Type::Int)];
@@ -1753,7 +1757,8 @@ fn eval_method_all_any_with_user_function() {
     // [2,4,6].all(|x| is_even(x)) → true
     // [1,2,3].any(|x| is_even(x)) → true
     // [1,3,5].any(|x| is_even(x)) → false
-    use reify_types::{CompiledExprKind, CompiledFnBody, CompiledFunction, ContentHash};
+    use reify_core::ContentHash;
+    use reify_ir::{CompiledExprKind, CompiledFnBody, CompiledFunction};
 
     // Define user function: is_even(x) = x % 2 == 0
     let params = vec![("x".to_string(), Type::Int)];

@@ -30,11 +30,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use reify_compiler::{CompiledConnection, CompiledForallBody, CompiledFunction, CompiledModule};
-use reify_types::{
-    AutoParam, CompiledExpr, ConstraintNodeId, ContentHash, DeterminacyState, Diagnostic,
-    PersistentMap, RealizationNodeId, ResolutionProblem, SnapshotId, SnapshotProvenance,
-    SolveResult, Type, Value, ValueCellId, ValueMap, VersionId,
-};
+use reify_core::{ConstraintNodeId, ContentHash, Diagnostic, RealizationNodeId, SnapshotId, Type, ValueCellId, VersionId};
+use reify_ir::{AutoParam, CompiledExpr, DeterminacyState, PersistentMap, ResolutionProblem, SnapshotProvenance, SolveResult, Value, ValueMap};
 
 use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
 use crate::deps::{DependencyTrace, extract_dependency_trace};
@@ -605,7 +602,7 @@ pub(crate) fn diff_realizations(
 /// re-borrow of the pool through the guard rather than accessing `self.warm_pool`
 /// directly.
 struct PendingWarmSeedsGuard<'a> {
-    map: HashMap<NodeId, (reify_types::OpaqueState, std::time::Instant)>,
+    map: HashMap<NodeId, (reify_ir::OpaqueState, std::time::Instant)>,
     pool: &'a mut WarmStatePool,
 }
 
@@ -629,7 +626,7 @@ impl<'a> PendingWarmSeedsGuard<'a> {
     fn insert(
         &mut self,
         nid: NodeId,
-        state: reify_types::OpaqueState,
+        state: reify_ir::OpaqueState,
         last_accessed: std::time::Instant,
     ) {
         self.map.insert(nid, (state, last_accessed));
@@ -830,7 +827,7 @@ fn donate_warm_state_and_invalidate<'a, I, T, F>(
 
 impl Engine {
     /// Set a parameter override and invalidate cache entries that depend on it.
-    pub fn set_param_and_invalidate(&mut self, param: &ValueCellId, value: reify_types::Value) {
+    pub fn set_param_and_invalidate(&mut self, param: &ValueCellId, value: reify_ir::Value) {
         self.param_overrides.insert(param.clone(), value);
         // Mark the param's own cache entry as dirty
         let param_node = NodeId::Value(param.clone());
@@ -852,7 +849,7 @@ impl Engine {
     pub fn edit_param(
         &mut self,
         cell: ValueCellId,
-        new_value: reify_types::Value,
+        new_value: reify_ir::Value,
     ) -> Result<EvalResult, EngineError> {
         // Arc::clone is O(1) — a refcount bump. The merged table (user functions +
         // prelude) was sealed into Arc<[CompiledFunction]> by eval() or edit_source().
@@ -1144,7 +1141,7 @@ impl Engine {
             let reify_compiler::CompiledFieldSource::Composed { expr } = &field.source else {
                 continue;
             };
-            let field_cell = ValueCellId::new(reify_types::FIELD_ENTITY_PREFIX, &field.name);
+            let field_cell = ValueCellId::new(reify_core::FIELD_ENTITY_PREFIX, &field.name);
             let field_node = NodeId::Value(field_cell.clone());
             if !dirty_cone.contains(&field_node) {
                 continue;
@@ -2323,7 +2320,7 @@ impl Engine {
         //      Collect ids into a Vec to drop the iter borrow on
         //      `eval_state.snapshot.graph.compute_nodes` before mutating
         //      `self.cache` inside the loop body.
-        let old_compute_ids: Vec<reify_types::ComputeNodeId> = eval_state
+        let old_compute_ids: Vec<reify_core::ComputeNodeId> = eval_state
             .snapshot
             .graph
             .compute_nodes
@@ -3273,7 +3270,7 @@ impl Engine {
     pub fn edit_check(
         &mut self,
         cell: ValueCellId,
-        new_value: reify_types::Value,
+        new_value: reify_ir::Value,
     ) -> Result<CheckResult, EngineError> {
         let eval_result = self.edit_param(cell, new_value)?;
         let (constraint_results, constraint_diagnostics) =
@@ -3294,10 +3291,8 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use reify_compiler::ValueCellKind;
-    use reify_types::{
-        CompiledExpr, ContentHash, DeterminacyState, PersistentMap, Type, Value, ValueCellId,
-        ValueMap,
-    };
+    use reify_core::{ContentHash, Type, ValueCellId};
+    use reify_ir::{CompiledExpr, DeterminacyState, PersistentMap, Value, ValueMap};
 
     use std::collections::HashMap;
 
@@ -4431,7 +4426,7 @@ mod tests {
         use super::PendingWarmSeedsGuard;
         use crate::cache::NodeId;
         use crate::warm_pool::WarmStatePool;
-        use reify_types::OpaqueState;
+        use reify_ir::OpaqueState;
 
         let mut pool = WarmStatePool::new(1024);
         assert_eq!(pool.used_bytes(), 0);
@@ -4476,7 +4471,8 @@ mod tests {
         use super::PendingWarmSeedsGuard;
         use crate::cache::{CacheStore, NodeId};
         use crate::warm_pool::WarmStatePool;
-        use reify_types::{ConstraintNodeId, OpaqueState};
+        use reify_core::ConstraintNodeId;
+        use reify_ir::OpaqueState;
 
         let mut pool = WarmStatePool::new(4096);
         let mut cache = CacheStore::new();
@@ -4533,7 +4529,8 @@ mod tests {
         use super::PendingWarmSeedsGuard;
         use crate::cache::NodeId;
         use crate::warm_pool::WarmStatePool;
-        use reify_types::{ConstraintNodeId, OpaqueState, RealizationNodeId};
+        use reify_core::{ConstraintNodeId, RealizationNodeId};
+        use reify_ir::OpaqueState;
 
         let mut pool = WarmStatePool::new(4096);
 
@@ -4609,7 +4606,8 @@ mod tests {
         use crate::cache::{CacheStore, CachedResult, NodeCache, NodeId};
         use crate::deps::DependencyTrace;
         use crate::warm_pool::WarmStatePool;
-        use reify_types::{DeterminacyState, Freshness, OpaqueState, Value, VersionId};
+        use reify_core::VersionId;
+        use reify_ir::{DeterminacyState, Freshness, OpaqueState, Value};
 
         const PAYLOAD: u32 = 0xCAFEBABE;
         const SIZE: usize = 8;
@@ -4696,7 +4694,7 @@ mod tests {
         use super::PendingWarmSeedsGuard;
         use crate::cache::{CacheStore, NodeId};
         use crate::warm_pool::WarmStatePool;
-        use reify_types::OpaqueState;
+        use reify_ir::OpaqueState;
 
         const PAYLOAD: u32 = 0xDEAD_BEEF;
         const SIZE: usize = 8;
@@ -4779,7 +4777,7 @@ mod tests {
         use super::PendingWarmSeedsGuard;
         use crate::cache::NodeId;
         use crate::warm_pool::WarmStatePool;
-        use reify_types::OpaqueState;
+        use reify_ir::OpaqueState;
         use std::panic::{self, AssertUnwindSafe};
 
         let mut pool = WarmStatePool::new(1024);
@@ -4835,7 +4833,7 @@ mod tests {
         use crate::cache::{CacheStore, NodeId};
         use crate::warm_pool::WarmStatePool;
         use reify_test_support::CountingSubscriberBuilder;
-        use reify_types::OpaqueState;
+        use reify_ir::OpaqueState;
         use std::sync::atomic::Ordering;
 
         // ---- Arm 1: safety-net fires (non-empty Drop) ----
@@ -4913,7 +4911,7 @@ mod tests {
         use crate::cache::NodeId;
         use crate::warm_pool::WarmStatePool;
         use reify_test_support::warn_capturing_subscriber;
-        use reify_types::OpaqueState;
+        use reify_ir::OpaqueState;
 
         // Inoculate against tracing's per-callsite Interest cache — see
         // `prime_tracing_callsite_cache` in reify-test-support for why.
@@ -4998,7 +4996,7 @@ mod tests {
         use super::PendingWarmSeedsGuard;
         use crate::cache::{CacheStore, NodeId};
         use crate::warm_pool::WarmStatePool;
-        use reify_types::OpaqueState;
+        use reify_ir::OpaqueState;
         use std::time::Duration;
 
         // Budget just fits X+Y (200) but not X+Y+Z (400).
@@ -5067,7 +5065,7 @@ mod tests {
         use super::PendingWarmSeedsGuard;
         use crate::cache::NodeId;
         use crate::warm_pool::WarmStatePool;
-        use reify_types::OpaqueState;
+        use reify_ir::OpaqueState;
         use std::panic::{self, AssertUnwindSafe};
         use std::time::Duration;
 
@@ -5143,7 +5141,7 @@ mod tests {
     fn dependent_still_present_in_graph_filters_removed_compute_node() {
         use crate::cache::NodeId;
         use crate::graph::ComputeNodeData;
-        use reify_types::{ComputeNodeId, ContentHash};
+        use reify_core::{ComputeNodeId, ContentHash};
 
         // Old graph contains Compute C.
         let mut old_graph = EvaluationGraph::default();
@@ -5201,7 +5199,7 @@ mod tests {
     fn dependent_still_present_in_graph_resolution_consults_new_graph_resolutions_map() {
         use crate::cache::NodeId;
         use crate::graph::ResolutionNodeData;
-        use reify_types::{ContentHash, ResolutionNodeId};
+        use reify_core::{ContentHash, ResolutionNodeId};
 
         // Graph containing Resolution R.
         let mut graph_with_resolution = EvaluationGraph::default();

@@ -5,7 +5,7 @@
 //! name as a name visible from an enclosing parent scope.
 
 use reify_test_support::{compile_source, compile_source_with_stdlib, warnings_only};
-use reify_types::{DiagnosticCode, Severity};
+use reify_core::{DiagnosticCode, Severity};
 
 /// Basic lambda-shadows-entity-param case: a lambda parameter `x` declared
 /// inside a structure that already declares `param x` MUST emit exactly one

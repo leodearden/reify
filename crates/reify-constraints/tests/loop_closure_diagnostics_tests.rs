@@ -22,7 +22,8 @@ use reify_constraints::{
 };
 use reify_stdlib::eval_builtin;
 use reify_stdlib::loop_closure_value::JointValue;
-use reify_types::{Diagnostic, DiagnosticCode, Severity, Value};
+use reify_core::{Diagnostic, DiagnosticCode, Severity};
+use reify_ir::Value;
 
 // ── Test fixtures (mirrors the inline helpers in loop_closure.rs) ──────
 

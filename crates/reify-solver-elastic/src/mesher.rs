@@ -10,7 +10,7 @@
 //! [`auto_mesh_size_from_boundary`]) live here so they remain unit-testable
 //! in stub builds without libgmsh present.
 
-use reify_types::GeometryError;
+use reify_ir::GeometryError;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -609,7 +609,7 @@ mod tests {
         let _degen = Mesh2dError::DegenerateBoundary;
         let _unavail = Mesh2dError::GmshUnavailable;
         // GmshFailed wraps a GeometryError — construct the simplest variant.
-        let _failed = Mesh2dError::GmshFailed(reify_types::GeometryError::OperationFailed(
+        let _failed = Mesh2dError::GmshFailed(reify_ir::GeometryError::OperationFailed(
             "test".to_string(),
         ));
     }

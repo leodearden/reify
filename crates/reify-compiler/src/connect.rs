@@ -1,11 +1,11 @@
 use super::*;
 use std::collections::{HashMap, HashSet};
 
-pub(crate) fn resolve_port_name(expr: &reify_syntax::Expr) -> Option<String> {
+pub(crate) fn resolve_port_name(expr: &reify_ast::Expr) -> Option<String> {
     match &expr.kind {
-        reify_syntax::ExprKind::Ident(name) => Some(name.clone()),
-        reify_syntax::ExprKind::MemberAccess { object, member } => match &object.kind {
-            reify_syntax::ExprKind::Ident(obj_name) => Some(format!("{}.{}", obj_name, member)),
+        reify_ast::ExprKind::Ident(name) => Some(name.clone()),
+        reify_ast::ExprKind::MemberAccess { object, member } => match &object.kind {
+            reify_ast::ExprKind::Ident(obj_name) => Some(format!("{}.{}", obj_name, member)),
             // Indexed sub-component port refs after `forall` substitution
             // (task 2364): e.g. `vents[0].inlet` parses as
             // `MemberAccess { object: IndexAccess { Ident("vents"),
@@ -15,13 +15,13 @@ pub(crate) fn resolve_port_name(expr: &reify_syntax::Expr) -> Option<String> {
             // branches in `compile_connection` (which skip entity-port
             // lookup and direction checks for refs containing '.') flow
             // unchanged.
-            reify_syntax::ExprKind::IndexAccess {
+            reify_ast::ExprKind::IndexAccess {
                 object: inner,
                 index,
             } => match (&inner.kind, &index.kind) {
                 (
-                    reify_syntax::ExprKind::Ident(obj_name),
-                    reify_syntax::ExprKind::NumberLiteral { value: n, .. },
+                    reify_ast::ExprKind::Ident(obj_name),
+                    reify_ast::ExprKind::NumberLiteral { value: n, .. },
                 ) => Some(format!("{}[{}].{}", obj_name, *n as i64, member)),
                 _ => None,
             },
@@ -33,24 +33,24 @@ pub(crate) fn resolve_port_name(expr: &reify_syntax::Expr) -> Option<String> {
         // only well-formed `Ident[NumberLiteral]` shapes are accepted; other
         // index expressions (non-literal index, non-Ident object) return
         // None so existing diagnostic behaviour is preserved.
-        reify_syntax::ExprKind::IndexAccess { object, index } => {
+        reify_ast::ExprKind::IndexAccess { object, index } => {
             match (&object.kind, &index.kind) {
                 (
-                    reify_syntax::ExprKind::Ident(obj_name),
-                    reify_syntax::ExprKind::NumberLiteral { value: n, .. },
+                    reify_ast::ExprKind::Ident(obj_name),
+                    reify_ast::ExprKind::NumberLiteral { value: n, .. },
                 ) => Some(format!("{}[{}]", obj_name, *n as i64)),
                 _ => None,
             }
         }
         // Ad-hoc selector: `port @ face("top")` — extract the base port name.
-        reify_syntax::ExprKind::AdHocSelector { base, .. } => resolve_port_name(base),
+        reify_ast::ExprKind::AdHocSelector { base, .. } => resolve_port_name(base),
         _ => None,
     }
 }
 
 /// Check if an expression is an ad-hoc selector.
-fn is_ad_hoc_selector(expr: &reify_syntax::Expr) -> bool {
-    matches!(&expr.kind, reify_syntax::ExprKind::AdHocSelector { .. })
+fn is_ad_hoc_selector(expr: &reify_ast::Expr) -> bool {
+    matches!(&expr.kind, reify_ast::ExprKind::AdHocSelector { .. })
 }
 
 /// Auto-match port members between two pre-looked-up ports when no explicit port_mappings given.
@@ -131,10 +131,10 @@ pub(crate) fn auto_match_port_members(
 
 /// Check if a source port direction is forward-compatible with a destination port direction.
 pub(crate) fn is_forward_compatible(
-    source: reify_types::PortDirection,
-    dest: reify_types::PortDirection,
+    source: reify_core::PortDirection,
+    dest: reify_core::PortDirection,
 ) -> bool {
-    use reify_types::PortDirection::*;
+    use reify_core::PortDirection::*;
     matches!(
         (source, dest),
         (Out, In) | (Out, Bidi) | (Bidi, In) | (Bidi, Bidi) | (Bidi, Out) | (In, Bidi)
@@ -155,7 +155,7 @@ pub(crate) struct ConnectContext<'a> {
     pub(crate) entity_name: &'a str,
     pub(crate) ports: &'a [CompiledPort],
     pub(crate) scope: &'a CompilationScope<'a>,
-    pub(crate) enum_defs: &'a [reify_types::EnumDef],
+    pub(crate) enum_defs: &'a [reify_ir::EnumDef],
     pub(crate) functions: &'a [CompiledFunction],
     /// Trait registry for transitive LocatedPort checking.
     pub(crate) trait_registry: &'a HashMap<String, &'a CompiledTrait>,
@@ -163,11 +163,11 @@ pub(crate) struct ConnectContext<'a> {
 
 /// Per-statement inputs for compiling a single connection.
 pub(crate) struct ConnectInput<'a> {
-    pub(crate) left_expr: &'a reify_syntax::Expr,
-    pub(crate) operator: reify_syntax::ConnectOp,
-    pub(crate) right_expr: &'a reify_syntax::Expr,
+    pub(crate) left_expr: &'a reify_ast::Expr,
+    pub(crate) operator: reify_ast::ConnectOp,
+    pub(crate) right_expr: &'a reify_ast::Expr,
     pub(crate) connector_type: Option<&'a str>,
-    pub(crate) params: &'a [(String, reify_syntax::Expr)],
+    pub(crate) params: &'a [(String, reify_ast::Expr)],
     pub(crate) port_mappings: &'a [(String, String)],
     pub(crate) span: SourceSpan,
 }
@@ -238,7 +238,7 @@ pub(crate) fn compile_connection(
 
     // Direction compatibility check
     let compatible = match operator {
-        reify_syntax::ConnectOp::Forward => {
+        reify_ast::ConnectOp::Forward => {
             match (left_dir, right_dir) {
                 (Some(l), Some(r)) => {
                     if is_forward_compatible(l, r) {
@@ -257,7 +257,7 @@ pub(crate) fn compile_connection(
                 _ => true, // Can't check unknown/dotted ports
             }
         }
-        reify_syntax::ConnectOp::Reverse => match (left_dir, right_dir) {
+        reify_ast::ConnectOp::Reverse => match (left_dir, right_dir) {
             (Some(l), Some(r)) => {
                 if is_forward_compatible(r, l) {
                     true
@@ -274,9 +274,9 @@ pub(crate) fn compile_connection(
             }
             _ => true,
         },
-        reify_syntax::ConnectOp::Bidirectional => match (left_dir, right_dir) {
+        reify_ast::ConnectOp::Bidirectional => match (left_dir, right_dir) {
             (Some(l), Some(r)) => {
-                if l == reify_types::PortDirection::Bidi && r == reify_types::PortDirection::Bidi {
+                if l == reify_core::PortDirection::Bidi && r == reify_core::PortDirection::Bidi {
                     true
                 } else {
                     diagnostics.push(
@@ -321,13 +321,13 @@ pub(crate) fn compile_connection(
                 let mut visited_r = HashSet::new();
                 let left_located = trait_satisfies(
                     lt,
-                    reify_types::LOCATED_PORT_TRAIT,
+                    reify_core::LOCATED_PORT_TRAIT,
                     ctx.trait_registry,
                     &mut visited_l,
                 );
                 let right_located = trait_satisfies(
                     rt,
-                    reify_types::LOCATED_PORT_TRAIT,
+                    reify_core::LOCATED_PORT_TRAIT,
                     ctx.trait_registry,
                     &mut visited_r,
                 );
@@ -443,7 +443,7 @@ pub(crate) fn compile_connection(
 
             // Frame alignment constraint: the two frames should coincide.
             let frame_eq =
-                CompiledExpr::binop(reify_types::BinOp::Eq, left_frame, right_frame, Type::Bool);
+                CompiledExpr::binop(reify_ir::BinOp::Eq, left_frame, right_frame, Type::Bool);
 
             let fc_id = ConstraintNodeId::new(ctx.entity_name, *acc.constraint_index);
             acc.constraints.push(CompiledConstraint {

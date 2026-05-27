@@ -9,7 +9,8 @@
 
 use crate::builders::{CompiledPurposeBuilder, TopologyTemplateBuilder};
 use reify_compiler::{CompiledPurpose, TopologyTemplate};
-use reify_types::{CompiledExpr, DimensionVector, Type, Value, ValueCellId};
+use reify_core::{DimensionVector, Type, ValueCellId};
+use reify_ir::{CompiledExpr, Value};
 
 /// Core builder for an `STEPOutput`-shaped [`TopologyTemplate`]. Callers
 /// supply the body [`CompiledExpr`]; the template name, `"subject"` param,
@@ -182,9 +183,8 @@ pub fn my_design_template() -> TopologyTemplate {
 mod tests {
     use super::*;
     use reify_compiler::ValueCellKind;
-    use reify_types::{
-        CompiledExprKind, ConstraintNodeId, DimensionVector, Type, Value, ValueCellId,
-    };
+    use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
+    use reify_ir::{CompiledExprKind, Value};
 
     // ── step_output_template ────────────────────────────────────────────────
 

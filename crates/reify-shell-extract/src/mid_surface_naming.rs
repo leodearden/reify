@@ -30,7 +30,7 @@ use std::collections::BTreeSet;
 
 use rustc_hash::FxHashMap;
 
-use reify_types::geometry::{FeatureId, Role, TopologyAttribute};
+use reify_ir::geometry::{FeatureId, Role, TopologyAttribute};
 
 use crate::mid_surface::MidSurfaceMesh;
 use crate::segmentation::SegmentationResult;
@@ -229,7 +229,7 @@ mod tests {
     use super::*;
     use crate::mid_surface::MidSurfaceMesh;
     use crate::segmentation::{RegionClassification, RegionInfo, SegmentationResult};
-    use reify_types::geometry::{FeatureId, Role};
+    use reify_ir::geometry::{FeatureId, Role};
 
     #[test]
     fn populate_mid_surface_attributes_returns_empty_records_when_segmentation_has_no_regions() {

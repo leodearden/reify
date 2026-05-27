@@ -16,7 +16,7 @@ use reify_eval::cache::NodeId;
 // (including reify_runtime::commitment::NodeKind in tests and concurrent_eval.rs)
 // continue to resolve transparently. The From<&NodeId> bridge impl lives in
 // reify-eval/src/cache.rs (the only orphan-rule-clean host; see PRD §4).
-pub use reify_types::NodeKind;
+pub use reify_ir::NodeKind;
 
 /// Project-level configuration for the dual-threshold commitment policy.
 ///
@@ -570,23 +570,23 @@ mod tests {
     // --- CommitmentTracker tests ---
 
     fn make_node(name: &str) -> NodeId {
-        NodeId::Value(reify_types::ValueCellId::new("T", name))
+        NodeId::Value(reify_core::ValueCellId::new("T", name))
     }
 
     fn make_constraint_node(entity: &str, idx: u32) -> NodeId {
-        NodeId::Constraint(reify_types::ConstraintNodeId::new(entity, idx))
+        NodeId::Constraint(reify_core::ConstraintNodeId::new(entity, idx))
     }
 
     fn make_realization_node(entity: &str, idx: u32) -> NodeId {
-        NodeId::Realization(reify_types::RealizationNodeId::new(entity, idx))
+        NodeId::Realization(reify_core::RealizationNodeId::new(entity, idx))
     }
 
     fn make_resolution_node(entity: &str, idx: u32) -> NodeId {
-        NodeId::Resolution(reify_types::ResolutionNodeId::new(entity, idx))
+        NodeId::Resolution(reify_core::ResolutionNodeId::new(entity, idx))
     }
 
     fn make_compute_node(entity: &str, idx: u32) -> NodeId {
-        NodeId::Compute(reify_types::ComputeNodeId::new(entity, idx))
+        NodeId::Compute(reify_core::ComputeNodeId::new(entity, idx))
     }
 
     // --- NodePolicyOverrides tests ---
@@ -754,7 +754,7 @@ mod tests {
         // Asserts that crate::commitment::NodeKind IS reify_types::NodeKind
         // (the same type, not a wrapper). After step-6, this compiles because
         // commitment re-exports via `pub use reify_types::NodeKind`.
-        let _: reify_types::NodeKind = crate::commitment::NodeKind::Value;
+        let _: reify_ir::NodeKind = crate::commitment::NodeKind::Value;
     }
 
     #[test]

@@ -42,7 +42,7 @@ compile_error!(
 );
 
 use reify_kernel_manifold::{kernel::ManifoldKernel, test_fixtures::unit_cube_mesh};
-use reify_types::{GeometryHandleId, GeometryKernel, GeometryOp};
+use reify_ir::{GeometryHandleId, GeometryKernel, GeometryOp};
 
 /// Round-trip integration: construct kernel → ingest two cubes → chain
 /// three boolean ops → tessellate the final result.

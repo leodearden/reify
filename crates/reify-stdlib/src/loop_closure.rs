@@ -51,7 +51,7 @@
 //! design rationale and convergence-tolerance defaults (1 µm position, 1 µrad
 //! rotation — surfaced as `NewtonConfig` knobs in `reify_constraints::loop_closure`).
 
-use reify_types::Value;
+use reify_ir::Value;
 
 use crate::eval_builtin;
 use crate::loop_closure_value::JointValue;
@@ -773,7 +773,7 @@ mod tests {
         angle_range_0_to_pi, axis_x_unit, axis_y_unit, axis_z_unit, cylindrical_z_joint,
         length_range_0_to_1m, planar_xy_joint, spherical_joint,
     };
-    use reify_types::Value;
+    use reify_ir::Value;
 
     /// The subset of `crate::joints::JOINT_KINDS` whose motion variables span
     /// more than one f64 — planar (3), spherical (4 storage / 3 manifold DOF),

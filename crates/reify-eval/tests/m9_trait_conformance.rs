@@ -5,7 +5,8 @@
 //! Uses examples/m9_trait_conformance.ri as the source file.
 
 use reify_test_support::{assert_no_eval_errors, make_simple_engine, parse_and_compile};
-use reify_types::{ModulePath, Satisfaction, ValueCellId};
+use reify_core::{ModulePath, ValueCellId};
+use reify_ir::Satisfaction;
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(
@@ -29,7 +30,7 @@ fn assert_scalar_si(result: &reify_eval::EvalResult, entity: &str, field: &str, 
         .get(&id)
         .unwrap_or_else(|| panic!("value for {:?} not found in result", id));
     match val {
-        reify_types::Value::Scalar { si_value, .. } => {
+        reify_ir::Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - expected_si).abs() < 1e-12,
                 "expected {} SI for {}.{}, got {}",
@@ -227,14 +228,14 @@ fn refinement_chain_values() {
         .get(&density_id)
         .unwrap_or_else(|| panic!("value for {:?} not found in result", density_id));
     match density_val {
-        reify_types::Value::Real(v) => {
+        reify_ir::Value::Real(v) => {
             assert!(
                 (v - 2.5).abs() < 1e-12,
                 "expected 2.5 for Component.density, got {}",
                 v
             );
         }
-        reify_types::Value::Scalar { si_value, .. } => {
+        reify_ir::Value::Scalar { si_value, .. } => {
             assert!(
                 (si_value - 2.5).abs() < 1e-12,
                 "expected 2.5 for Component.density, got {}",

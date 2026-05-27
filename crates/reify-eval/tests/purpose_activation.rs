@@ -31,10 +31,8 @@ use reify_eval::Engine;
 use reify_test_support::{
     make_engine, make_simple_engine, parse_and_compile, parse_and_compile_with_stdlib,
 };
-use reify_types::{
-    CompiledExprKind, ModulePath, OptimizationObjective, Satisfaction, Severity, Type, ValueCellId,
-    VersionId,
-};
+use reify_core::{ModulePath, Severity, Type, ValueCellId, VersionId};
+use reify_ir::{CompiledExprKind, OptimizationObjective, Satisfaction};
 
 const EXAMPLE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -1307,7 +1305,7 @@ purpose check(subject : Structure) {
 #[test]
 fn purpose_activation_preserves_composed_field_reverse_index() {
     use reify_eval::cache::NodeId;
-    use reify_types::FIELD_ENTITY_PREFIX;
+    use reify_core::FIELD_ENTITY_PREFIX;
 
     let source = r#"
 field def f1 : Real -> Real { source = analytical { |p| p * 2.0 } }

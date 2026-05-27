@@ -8,7 +8,7 @@
 //! field. The check uses `debug_assert_eq!` so release builds compile to a
 //! no-op.
 
-use reify_types::{NodeKind, NodeTraits, WarmStartableRegistry};
+use reify_ir::{NodeKind, NodeTraits, WarmStartableRegistry};
 
 /// Assert that the producer-side [`WarmStartableRegistry`] and the
 /// declaration-side `NodeKind::default_traits().contains(WARM_STARTABLE)`
@@ -44,7 +44,7 @@ pub fn assert_warm_startable_coextensive(registry: &WarmStartableRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::{NodeKind, WarmStartableRegistry};
+    use reify_ir::{NodeKind, WarmStartableRegistry};
 
     /// Helper: registry containing exactly the three declared-WARM_STARTABLE
     /// kinds (Realization, Resolution, Compute) — the positive case.

@@ -11,10 +11,8 @@ use std::borrow::Cow;
 
 use reify_eval::Engine;
 use reify_test_support::{make_engine, parse_and_compile};
-use reify_types::{
-    CompiledExpr, CompiledExprKind, ContentHash, DeterminacyPredicateKind, Satisfaction,
-    TAG_DETERMINACY_PREDICATE, Type, Value, ValueCellId,
-};
+use reify_core::{ContentHash, Type, ValueCellId};
+use reify_ir::{CompiledExpr, CompiledExprKind, DeterminacyPredicateKind, Satisfaction, TAG_DETERMINACY_PREDICATE, Value};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(
@@ -26,7 +24,7 @@ const EXAMPLE_PATH: &str = concat!(
 
 /// Parse, compile, eval, and return the result values map.
 /// Thin wrapper over reify_test_support::eval_source — returns ValueMap instead of EvalResult.
-fn eval_source(source: &str) -> reify_types::ValueMap {
+fn eval_source(source: &str) -> reify_ir::ValueMap {
     reify_test_support::eval_source(source).values
 }
 
@@ -99,7 +97,7 @@ fn determined_false_for_undetermined_param() {
 /// intermediate solver state, not reachable through the .ri eval pipeline.
 #[test]
 fn determined_false_for_provisional() {
-    use reify_types::PersistentMap;
+    use reify_ir::PersistentMap;
 
     let cell_id = ValueCellId::new("S", "a");
 
@@ -114,15 +112,15 @@ fn determined_false_for_provisional() {
     };
 
     // Inject Provisional state directly into a PersistentMap determinacy snapshot.
-    let mut det_map: PersistentMap<ValueCellId, (Value, reify_types::DeterminacyState)> =
+    let mut det_map: PersistentMap<ValueCellId, (Value, reify_ir::DeterminacyState)> =
         PersistentMap::new();
     det_map.insert(
         cell_id.clone(),
-        (Value::Real(2.5), reify_types::DeterminacyState::Provisional),
+        (Value::Real(2.5), reify_ir::DeterminacyState::Provisional),
     );
 
     // Build an EvalContext with the determinacy map and no values/functions.
-    let values = reify_types::ValueMap::new();
+    let values = reify_ir::ValueMap::new();
     let ctx = reify_expr::EvalContext::new(&values, &[]).with_determinacy(&det_map);
 
     // Evaluate directly — Provisional ≠ Determined, so result should be false.
@@ -414,7 +412,7 @@ fn partially_determined_false_for_undetermined_no_constraints() {
 /// reify-expr/src/lib.rs:286 would be completely untested.
 #[test]
 fn partially_determined_true_for_provisional() {
-    use reify_types::PersistentMap;
+    use reify_ir::PersistentMap;
 
     let cell_id = ValueCellId::new("S", "a");
 
@@ -429,15 +427,15 @@ fn partially_determined_true_for_provisional() {
     };
 
     // Inject Provisional state directly into a PersistentMap determinacy snapshot.
-    let mut det_map: PersistentMap<ValueCellId, (Value, reify_types::DeterminacyState)> =
+    let mut det_map: PersistentMap<ValueCellId, (Value, reify_ir::DeterminacyState)> =
         PersistentMap::new();
     det_map.insert(
         cell_id.clone(),
-        (Value::Real(2.5), reify_types::DeterminacyState::Provisional),
+        (Value::Real(2.5), reify_ir::DeterminacyState::Provisional),
     );
 
     // Build an EvalContext with the determinacy map and no values/functions.
-    let values = reify_types::ValueMap::new();
+    let values = reify_ir::ValueMap::new();
     let ctx = reify_expr::EvalContext::new(&values, &[]).with_determinacy(&det_map);
 
     // Evaluate directly — Provisional == Provisional, so result should be true.
@@ -815,7 +813,7 @@ fn determinacy_predicate_constructor_produces_stable_hash() {
     should_panic(expected = "wiring bug or eval-order violation")
 )]
 fn determinacy_predicate_missing_cell_panics_in_debug() {
-    use reify_types::PersistentMap;
+    use reify_ir::PersistentMap;
 
     let missing_cell = ValueCellId::new("S", "nonexistent");
 
@@ -830,10 +828,10 @@ fn determinacy_predicate_missing_cell_panics_in_debug() {
     };
 
     // Determinacy map does NOT contain missing_cell.
-    let det_map: PersistentMap<ValueCellId, (Value, reify_types::DeterminacyState)> =
+    let det_map: PersistentMap<ValueCellId, (Value, reify_ir::DeterminacyState)> =
         PersistentMap::new();
 
-    let values = reify_types::ValueMap::new();
+    let values = reify_ir::ValueMap::new();
     let ctx = reify_expr::EvalContext::new(&values, &[]).with_determinacy(&det_map);
 
     let result = reify_expr::eval_expr(&det_expr, &ctx);
@@ -858,7 +856,7 @@ fn determinacy_predicate_missing_cell_panics_in_debug() {
 #[test]
 fn simple_constraint_checker_evaluates_determinacy_predicate() {
     use reify_constraints::SimpleConstraintChecker;
-    use reify_types::{ConstraintChecker, ConstraintInput};
+    use reify_ir::{ConstraintChecker, ConstraintInput};
 
     let source = r#"
         structure S {

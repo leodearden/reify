@@ -8,9 +8,7 @@
 #![cfg(has_occt)]
 
 use reify_kernel_occt::OcctKernel;
-use reify_types::{
-    BRepKind, GeometryHandleId, GeometryOp, GeometryQuery, QueryError, Value, WarmStartable,
-};
+use reify_ir::{BRepKind, GeometryHandleId, GeometryOp, GeometryQuery, QueryError, Value, WarmStartable};
 
 /// Helper: build a kernel containing one box of the given mm dimensions
 /// (converted to SI metres at the kernel boundary so geometric queries

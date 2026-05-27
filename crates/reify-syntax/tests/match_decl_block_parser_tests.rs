@@ -7,7 +7,7 @@
 //! production and produces a well-formed CST (zero ERROR nodes). AST-shape assertions
 //! (lowering to `MatchArmDeclGroupDecl`) are deferred to sibling task 3564.
 
-use reify_types::ModulePath;
+use reify_core::ModulePath;
 
 mod common;
 use common::{find_cst_node, find_outermost_cst_nodes, make_ts_parser};

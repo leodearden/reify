@@ -10,7 +10,7 @@
 
 use std::collections::BTreeSet;
 
-use reify_types::{ElementOrderTag, VolumeMesh};
+use reify_ir::{ElementOrderTag, VolumeMesh};
 
 // ── LaplacianFailure ──────────────────────────────────────────────────────────
 
@@ -206,7 +206,7 @@ pub fn laplacian_smooth(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::{ElementOrderTag, VolumeMesh};
+    use reify_ir::{ElementOrderTag, VolumeMesh};
 
     fn empty_mesh() -> VolumeMesh {
         VolumeMesh {

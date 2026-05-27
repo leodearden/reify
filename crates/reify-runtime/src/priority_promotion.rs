@@ -197,7 +197,7 @@ impl Default for SharedPriorityPromoter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::ValueCellId;
+    use reify_core::ValueCellId;
 
     fn make_node(name: &str) -> NodeId {
         NodeId::Value(ValueCellId::new("T", name))

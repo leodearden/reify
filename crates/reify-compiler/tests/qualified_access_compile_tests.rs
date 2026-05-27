@@ -9,7 +9,8 @@
 //! project_regression_c88ca9635.md).
 
 use reify_test_support::{compile_first_template, compile_source};
-use reify_types::*;
+use reify_core::*;
+use reify_ir::*;
 
 // ── step-1 ────────────────────────────────────────────────────────────────────
 

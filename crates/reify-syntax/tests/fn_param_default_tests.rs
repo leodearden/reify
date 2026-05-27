@@ -107,7 +107,7 @@ use reify_syntax::*;
 #[test]
 fn fn_param_ast_with_default_carries_lowered_expr() {
     let source = "fn f(x : T = Foo.bar) -> T { x }";
-    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let module = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
 
     assert!(
         module.errors.is_empty(),
@@ -138,7 +138,7 @@ fn fn_param_ast_with_default_carries_lowered_expr() {
 #[test]
 fn fn_param_ast_without_default_is_none() {
     let source = "fn f(x : T) -> T { x }";
-    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let module = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
 
     assert!(
         module.errors.is_empty(),
@@ -164,7 +164,7 @@ fn fn_param_ast_without_default_is_none() {
 #[test]
 fn fn_param_ast_multi_param_mixed_defaults() {
     let source = "fn f(x : T = 1, y : U) -> T { x }";
-    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let module = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
 
     assert!(
         module.errors.is_empty(),
@@ -220,7 +220,7 @@ fn fn_param_rejects_default_without_type() {
     // any recovered function declaration has no param with a default expression.
     // This directly captures the "`:`+type stays mandatory; the optional default
     // does not make the colon/type optional" invariant at the lowering layer.
-    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let module = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     let recovered_fn_has_default = module
         .declarations
         .iter()

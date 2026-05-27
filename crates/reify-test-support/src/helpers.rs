@@ -1,7 +1,8 @@
 //! Pipeline helpers for parsing, compiling, and evaluating Reify source in tests.
 
 use reify_compiler::TopologyTemplate;
-use reify_types::{CompiledExpr, Diagnostic, ModulePath, Severity};
+use reify_core::{Diagnostic, ModulePath, Severity};
+use reify_ir::CompiledExpr;
 
 #[cfg(feature = "eval-helpers")]
 use crate::mocks::{MockConstraintChecker, MockGeometryKernel};
@@ -121,20 +122,20 @@ pub fn check_source_with_stdlib(source: &str) -> reify_eval::CheckResult {
 ///     }
 /// });
 /// ```
-pub fn visit_structure_member_root_exprs<F: FnMut(&reify_syntax::Expr)>(
-    module: &reify_syntax::ParsedModule,
+pub fn visit_structure_member_root_exprs<F: FnMut(&reify_ast::Expr)>(
+    module: &reify_ast::ParsedModule,
     mut visit: F,
 ) {
     for decl in &module.declarations {
-        if let reify_syntax::Declaration::Structure(s) = decl {
+        if let reify_ast::Declaration::Structure(s) = decl {
             for member in &s.members {
                 match member {
-                    reify_syntax::MemberDecl::Param(p) => {
+                    reify_ast::MemberDecl::Param(p) => {
                         if let Some(default) = &p.default {
                             visit(default);
                         }
                     }
-                    reify_syntax::MemberDecl::Let(l) => {
+                    reify_ast::MemberDecl::Let(l) => {
                         visit(&l.value);
                     }
                     _ => {}
@@ -148,7 +149,7 @@ pub fn visit_structure_member_root_exprs<F: FnMut(&reify_syntax::Expr)>(
 ///
 /// # Panics
 /// Panics if there are any parse errors.
-fn parse_or_panic_named(source: &str, module_name: &str) -> reify_syntax::ParsedModule {
+fn parse_or_panic_named(source: &str, module_name: &str) -> reify_ast::ParsedModule {
     let parsed = reify_syntax::parse(source, ModulePath::single(module_name));
     assert!(
         parsed.errors.is_empty(),
@@ -162,7 +163,7 @@ fn parse_or_panic_named(source: &str, module_name: &str) -> reify_syntax::Parsed
 ///
 /// # Panics
 /// Panics if there are any parse errors.
-fn parse_or_panic(source: &str) -> reify_syntax::ParsedModule {
+fn parse_or_panic(source: &str) -> reify_ast::ParsedModule {
     parse_or_panic_named(source, "test")
 }
 
@@ -173,7 +174,7 @@ fn parse_or_panic(source: &str) -> reify_syntax::ParsedModule {
 ///
 /// # Panics
 /// Panics if there are any parse errors.
-fn parse_with_stdlib_or_panic(source: &str) -> reify_syntax::ParsedModule {
+fn parse_with_stdlib_or_panic(source: &str) -> reify_ast::ParsedModule {
     let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
     assert!(
         parsed.errors.is_empty(),
@@ -535,13 +536,14 @@ pub fn assert_no_diagnostics(diagnostics: &[Diagnostic], context: &str) {
 #[track_caller]
 pub fn run_modify_pipeline(
     kind: reify_compiler::ModifyKind,
-    modify_args: Vec<(String, reify_types::CompiledExpr)>,
+    modify_args: Vec<(String, reify_ir::CompiledExpr)>,
 ) -> (reify_eval::BuildResult, Vec<crate::mocks::GeometryOpRecord>) {
     use reify_compiler::{CompiledGeometryOp, GeomRef, PrimitiveKind};
-    use reify_types::{ExportFormat, Type};
+    use reify_core::Type;
+    use reify_ir::ExportFormat;
 
     let mm_literal =
-        |v: f64| reify_types::CompiledExpr::literal(crate::values::mm(v), Type::length());
+        |v: f64| reify_ir::CompiledExpr::literal(crate::values::mm(v), Type::length());
 
     let entity_name = format!("Test{kind:?}");
 
@@ -564,7 +566,7 @@ pub fn run_modify_pipeline(
         .realization(&entity_name, 0, vec![box_op, modify_op])
         .build();
 
-    let module = crate::builders::CompiledModuleBuilder::new(reify_types::ModulePath::single(
+    let module = crate::builders::CompiledModuleBuilder::new(reify_core::ModulePath::single(
         format!("test_{}", entity_name.to_lowercase()),
     ))
     .template(template)
@@ -701,13 +703,13 @@ pub fn assert_no_type_cascade(diagnostics: &[Diagnostic], expected_root_fragment
 #[cfg(test)]
 mod tests {
     use crate::fixtures::bracket_source;
-    use reify_types::{Diagnostic, Severity};
+    use reify_core::{Diagnostic, Severity};
 
     /// assert_no_eval_errors should not panic when the result has no diagnostics.
     #[cfg(feature = "eval-helpers")]
     #[test]
     fn test_assert_no_eval_errors_passes_on_clean_result() {
-        use reify_types::ValueMap;
+        use reify_ir::ValueMap;
         use std::collections::HashMap;
         let result = reify_eval::EvalResult {
             values: ValueMap::new(),
@@ -723,7 +725,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "eval errors")]
     fn test_assert_no_eval_errors_panics_on_error_diagnostic() {
-        use reify_types::{Diagnostic, ValueMap};
+        use reify_core::Diagnostic;
+        use reify_ir::ValueMap;
         use std::collections::HashMap;
         let result = reify_eval::EvalResult {
             values: ValueMap::new(),
@@ -737,7 +740,7 @@ mod tests {
     #[cfg(feature = "eval-helpers")]
     #[test]
     fn test_assert_no_check_errors_passes_on_clean_result() {
-        use reify_types::ValueMap;
+        use reify_ir::ValueMap;
         use std::collections::HashMap;
         let result = reify_eval::CheckResult {
             values: ValueMap::new(),
@@ -754,7 +757,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "check errors")]
     fn test_assert_no_check_errors_panics_on_error_diagnostic() {
-        use reify_types::{Diagnostic, ValueMap};
+        use reify_core::Diagnostic;
+        use reify_ir::ValueMap;
         use std::collections::HashMap;
         let result = reify_eval::CheckResult {
             values: ValueMap::new(),
@@ -770,7 +774,8 @@ mod tests {
     #[cfg(feature = "eval-helpers")]
     #[test]
     fn test_assert_no_check_errors_passes_with_warnings_only() {
-        use reify_types::{Diagnostic, ValueMap};
+        use reify_core::Diagnostic;
+        use reify_ir::ValueMap;
         use std::collections::HashMap;
         let result = reify_eval::CheckResult {
             values: ValueMap::new(),
@@ -787,7 +792,8 @@ mod tests {
     #[cfg(feature = "eval-helpers")]
     #[test]
     fn test_assert_no_eval_errors_ignores_warnings() {
-        use reify_types::{Diagnostic, ValueMap};
+        use reify_core::Diagnostic;
+        use reify_ir::ValueMap;
         use std::collections::HashMap;
         let result = reify_eval::EvalResult {
             values: ValueMap::new(),
@@ -802,7 +808,7 @@ mod tests {
     #[cfg(feature = "eval-helpers")]
     #[test]
     fn test_assert_eval_clean_passes_on_empty_result() {
-        use reify_types::ValueMap;
+        use reify_ir::ValueMap;
         use std::collections::HashMap;
         let result = reify_eval::EvalResult {
             values: ValueMap::new(),
@@ -818,7 +824,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "expected no diagnostics")]
     fn test_assert_eval_clean_panics_on_warning() {
-        use reify_types::{Diagnostic, ValueMap};
+        use reify_core::Diagnostic;
+        use reify_ir::ValueMap;
         use std::collections::HashMap;
         let result = reify_eval::EvalResult {
             values: ValueMap::new(),
@@ -1083,7 +1090,7 @@ mod tests {
     #[cfg(feature = "eval-helpers")]
     #[test]
     fn test_make_simple_engine() {
-        use reify_types::Satisfaction;
+        use reify_ir::Satisfaction;
         let compiled = super::parse_and_compile(bracket_source());
         let mut engine = super::make_simple_engine();
         let result = engine.check(&compiled);
@@ -1108,7 +1115,7 @@ mod tests {
     #[cfg(feature = "eval-helpers")]
     #[test]
     fn test_make_simple_engine_violated_constraint() {
-        use reify_types::Satisfaction;
+        use reify_ir::Satisfaction;
 
         let source = r#"structure Bad {
             param a: Real = 1.0
@@ -1172,7 +1179,7 @@ mod tests {
     #[cfg(feature = "eval-helpers")]
     #[test]
     fn test_check_source_satisfied() {
-        use reify_types::Satisfaction;
+        use reify_ir::Satisfaction;
         let result = super::check_source(bracket_source());
         assert!(
             !result.constraint_results.is_empty(),
@@ -1344,7 +1351,7 @@ mod tests {
         let expr = super::get_let_expr_in(&module, "Beta", "w");
         assert_eq!(
             expr.result_type,
-            reify_types::Type::Real,
+            reify_core::Type::Real,
             "expected result_type == Type::Real for Beta.w, got {:?}",
             expr.result_type
         );
@@ -1380,7 +1387,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "has no default expr")]
     fn test_get_let_expr_in_panics_on_missing_default_expr() {
-        use reify_types::{ModulePath, Type};
+        use reify_core::{ModulePath, Type};
         let template = crate::builders::TopologyTemplateBuilder::new("S")
             .auto_param("S", "x", Type::Real)
             .build();
@@ -1415,7 +1422,7 @@ mod tests {
         let module = super::compile_source(source);
         // Alpha is first — cell `a` should be found.
         let expr = super::get_let_expr(&module, "a");
-        assert_eq!(expr.result_type, reify_types::Type::Real);
+        assert_eq!(expr.result_type, reify_core::Type::Real);
     }
 
     /// get_let_expr with a cell name that only exists in the SECOND template
@@ -1438,7 +1445,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "expected at least one template")]
     fn test_get_let_expr_panics_on_empty_templates() {
-        use reify_types::ModulePath;
+        use reify_core::ModulePath;
         let module =
             crate::builders::CompiledModuleBuilder::new(ModulePath::single("empty")).build();
         super::get_let_expr(&module, "anything");
@@ -1518,13 +1525,13 @@ mod tests {
     #[test]
     fn visit_structure_member_root_exprs_visits_param_default() {
         let source = "structure S { param x: Real = 1.5 }";
-        let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+        let module = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
         assert!(
             module.errors.is_empty(),
             "parse errors: {:?}",
             module.errors
         );
-        let mut visited: Vec<reify_syntax::Expr> = vec![];
+        let mut visited: Vec<reify_ast::Expr> = vec![];
         super::visit_structure_member_root_exprs(&module, |expr| {
             visited.push(expr.clone());
         });
@@ -1537,7 +1544,7 @@ mod tests {
         assert!(
             matches!(
                 visited[0].kind,
-                reify_syntax::ExprKind::NumberLiteral { .. }
+                reify_ast::ExprKind::NumberLiteral { .. }
             ),
             "expected NumberLiteral kind for param default, got {:?}",
             visited[0].kind
@@ -1550,13 +1557,13 @@ mod tests {
     #[test]
     fn visit_structure_member_root_exprs_visits_let_value() {
         let source = r#"structure S { let x = "hello" }"#;
-        let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+        let module = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
         assert!(
             module.errors.is_empty(),
             "parse errors: {:?}",
             module.errors
         );
-        let mut visited: Vec<reify_syntax::Expr> = vec![];
+        let mut visited: Vec<reify_ast::Expr> = vec![];
         super::visit_structure_member_root_exprs(&module, |expr| {
             visited.push(expr.clone());
         });
@@ -1567,7 +1574,7 @@ mod tests {
             visited.len()
         );
         assert!(
-            matches!(&visited[0].kind, reify_syntax::ExprKind::StringLiteral(s) if s == "hello"),
+            matches!(&visited[0].kind, reify_ast::ExprKind::StringLiteral(s) if s == "hello"),
             "expected StringLiteral(\"hello\") for let value, got {:?}",
             visited[0].kind
         );
@@ -1578,7 +1585,7 @@ mod tests {
     #[test]
     fn visit_structure_member_root_exprs_skips_param_without_default() {
         let source = "structure S { param x: Real }";
-        let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+        let module = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
         assert!(
             module.errors.is_empty(),
             "parse errors: {:?}",
@@ -1602,7 +1609,7 @@ mod tests {
     fn visit_structure_member_root_exprs_visits_each_member_in_declaration_order() {
         let source =
             "structure S {\n    param a: Real = 1.0\n    let b = 2.0\n    param c: Real = 3.0\n}";
-        let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+        let module = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
         assert!(
             module.errors.is_empty(),
             "parse errors: {:?}",
@@ -1610,7 +1617,7 @@ mod tests {
         );
         let mut values: Vec<f64> = vec![];
         super::visit_structure_member_root_exprs(&module, |expr| {
-            if let reify_syntax::ExprKind::NumberLiteral { value: v, .. } = &expr.kind {
+            if let reify_ast::ExprKind::NumberLiteral { value: v, .. } = &expr.kind {
                 values.push(*v);
             }
         });
@@ -1639,7 +1646,7 @@ mod tests {
     #[test]
     fn visit_structure_member_root_exprs_no_op_when_module_has_no_structure() {
         let source = "enum Foo { Bar }";
-        let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+        let module = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
         assert!(
             module.errors.is_empty(),
             "parse errors: {:?}",
@@ -1663,7 +1670,7 @@ mod tests {
     fn visit_structure_member_root_exprs_skips_non_targeted_member_kinds() {
         // param has no default → skipped; constraint → skipped; let → visited.
         let source = "structure S {\n    param x : Real\n    constraint x > 0\n    let y = 2.0\n}";
-        let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+        let module = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
         assert!(
             module.errors.is_empty(),
             "parse errors: {:?}",
@@ -1688,9 +1695,10 @@ mod tests {
     #[test]
     fn test_run_modify_pipeline_smoke() {
         use reify_compiler::ModifyKind;
-        use reify_types::{GeometryOp, Type};
+        use reify_core::Type;
+        use reify_ir::GeometryOp;
         let mm_literal =
-            |v: f64| reify_types::CompiledExpr::literal(crate::values::mm(v), Type::length());
+            |v: f64| reify_ir::CompiledExpr::literal(crate::values::mm(v), Type::length());
 
         // Chamfer: expect 2 ops, ops[1] is GeometryOp::Chamfer
         let (_result, ops) = super::run_modify_pipeline(

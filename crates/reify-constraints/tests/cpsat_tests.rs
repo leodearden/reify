@@ -3,10 +3,8 @@
 use reify_constraints::CpSatSolver;
 use reify_test_support::builders::*;
 use reify_test_support::values::*;
-use reify_types::{
-    AutoParam, ConstraintSolver, DiagnosticCode, ResolutionProblem, SolveResult, Type, Value,
-    ValueMap,
-};
+use reify_core::{DiagnosticCode, Type};
+use reify_ir::{AutoParam, ConstraintSolver, ResolutionProblem, SolveResult, Value, ValueMap};
 
 // ---------------------------------------------------------------------------
 // step-1: boolean SAT with 3 Bool auto params
@@ -292,7 +290,7 @@ fn cardinality_at_most_2_of_4() {
 /// Enum param x (Material): x != A and (x == B or x == C). Expect x = B or C.
 #[test]
 fn enum_constraint_excludes_one_variant() {
-    use reify_types::CompiledExpr;
+    use reify_ir::CompiledExpr;
 
     let solver = CpSatSolver;
 
@@ -364,7 +362,7 @@ fn enum_constraint_excludes_one_variant() {
 /// x + y == 10 with both in [0, 10]. Expect solved with x+y==10.
 #[test]
 fn integer_constraint_sum_equals_10() {
-    use reify_types::{BinOp, CompiledExpr};
+    use reify_ir::{BinOp, CompiledExpr};
 
     let solver = CpSatSolver;
 

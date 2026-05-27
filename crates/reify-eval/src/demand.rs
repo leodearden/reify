@@ -152,7 +152,7 @@ impl DemandRegistry {
 mod tests {
     use super::*;
     use crate::cache::NodeId;
-    use reify_types::{ConstraintNodeId, ValueCellId};
+    use reify_core::{ConstraintNodeId, ValueCellId};
 
     #[test]
     fn demand_registry_new_is_empty() {
@@ -165,7 +165,8 @@ mod tests {
     fn demand_registry_add_demand() {
         use crate::graph::EvaluationGraph;
         use reify_test_support::TopologyTemplateBuilder;
-        use reify_types::{CompiledExpr, Type, Value};
+        use reify_core::Type;
+        use reify_ir::{CompiledExpr, Value};
 
         let e = "M";
         // Build minimal graph: one standalone constraint with literal expr (no deps)
@@ -195,7 +196,8 @@ mod tests {
     fn demand_registry_remove_demand() {
         use crate::graph::EvaluationGraph;
         use reify_test_support::TopologyTemplateBuilder;
-        use reify_types::{CompiledExpr, Type, Value};
+        use reify_core::Type;
+        use reify_ir::{CompiledExpr, Value};
 
         let e = "M";
         let template = TopologyTemplateBuilder::new(e)
@@ -238,7 +240,8 @@ mod tests {
     fn demand_registry_add_demand_idempotent() {
         use crate::graph::EvaluationGraph;
         use reify_test_support::TopologyTemplateBuilder;
-        use reify_types::{CompiledExpr, Type, Value};
+        use reify_core::Type;
+        use reify_ir::{CompiledExpr, Value};
 
         let e = "M";
         let template = TopologyTemplateBuilder::new(e)
@@ -375,7 +378,8 @@ mod tests {
     fn rebuild_cone_includes_resolution_and_deps() {
         use crate::graph::{EvaluationGraph, ResolutionNodeData, ValueCellNode};
         use reify_compiler::ValueCellKind;
-        use reify_types::{CompiledExpr, ContentHash, ResolutionNodeId, Type, Value};
+        use reify_core::{ContentHash, ResolutionNodeId, Type};
+        use reify_ir::{CompiledExpr, Value};
 
         let mut graph = EvaluationGraph::default();
         let e = "R";
@@ -440,7 +444,8 @@ mod tests {
         // Demanding C0 → cone should include: C0, c, a, b (depth-2 transitive)
         use crate::graph::EvaluationGraph;
         use reify_test_support::{TopologyTemplateBuilder, gt};
-        use reify_types::{BinOp, CompiledExpr, Type, Value};
+        use reify_core::Type;
+        use reify_ir::{BinOp, CompiledExpr, Value};
 
         let e = "T";
 
@@ -503,9 +508,8 @@ mod tests {
     fn rebuild_cone_compute_with_realization_input_pulls_in_realization_and_its_reads() {
         use crate::graph::{ComputeNodeData, EvaluationGraph, RealizationNodeData, ValueCellNode};
         use reify_compiler::{CompiledGeometryOp, PrimitiveKind, ValueCellKind};
-        use reify_types::{
-            CompiledExpr, ComputeNodeId, ContentHash, RealizationNodeId, ReprKind, Type, Value,
-        };
+        use reify_core::{ComputeNodeId, ContentHash, RealizationNodeId, Type};
+        use reify_ir::{CompiledExpr, ReprKind, Value};
 
         let mut graph = EvaluationGraph::default();
         let e = "E";

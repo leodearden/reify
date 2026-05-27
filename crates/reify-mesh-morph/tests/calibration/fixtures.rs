@@ -4,7 +4,7 @@
 //! deterministic across parameter values, so a morph from `param_0` to
 //! `param_1` is a strict node-position update.
 
-use reify_types::{ElementOrderTag, VolumeMesh};
+use reify_ir::{ElementOrderTag, VolumeMesh};
 use std::collections::HashMap;
 use std::f64::consts::TAU;
 

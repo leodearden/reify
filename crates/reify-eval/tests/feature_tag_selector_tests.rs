@@ -18,9 +18,8 @@
 
 use reify_eval::topology_selectors;
 use reify_test_support::MockGeometryKernel;
-use reify_types::{
-    FeatureTag, FeatureTagTable, GeometryHandleId, QueryError, SourceSpan, StepKind, Value,
-};
+use reify_core::SourceSpan;
+use reify_ir::{FeatureTag, FeatureTagTable, GeometryHandleId, QueryError, StepKind, Value};
 
 // ─── edges_by_length_with_tags ────────────────────────────────────────────────
 

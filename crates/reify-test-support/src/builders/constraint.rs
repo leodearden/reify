@@ -1,4 +1,5 @@
-use reify_types::{CompiledExpr, Type};
+use reify_core::Type;
+use reify_ir::CompiledExpr;
 
 use super::expr::{eq, gt, lt, value_ref_typed};
 
@@ -43,7 +44,7 @@ pub fn equality_constraint(
 mod tests {
     use super::*;
     use crate::builders::literal;
-    use reify_types::{BinOp, CompiledExprKind, Value};
+    use reify_ir::{BinOp, CompiledExprKind, Value};
 
     #[test]
     fn equality_constraint_returns_single_bool_expr() {

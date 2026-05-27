@@ -30,7 +30,8 @@
 
 use reify_compiler::compile_with_stdlib;
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
-use reify_types::{ExportFormat, ModulePath, Severity, Value, ValueCellId};
+use reify_core::{ModulePath, Severity, ValueCellId};
+use reify_ir::{ExportFormat, Value};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -56,7 +57,7 @@ fn engine_with_occt() -> reify_eval::Engine {
     reify_eval::Engine::new(Box::new(checker), Some(Box::new(OcctKernelHandle::spawn())))
 }
 
-fn cell<'a>(values: &'a reify_types::ValueMap, entity: &str, name: &str) -> &'a Value {
+fn cell<'a>(values: &'a reify_ir::ValueMap, entity: &str, name: &str) -> &'a Value {
     let id = ValueCellId::new(entity, name);
     values
         .get(&id)

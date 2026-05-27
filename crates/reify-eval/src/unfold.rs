@@ -4,9 +4,8 @@ use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use reify_compiler::{TopologyTemplate, ValueCellKind, find_template};
-use reify_types::{
-    CompiledFunction, DeterminacyState, Diagnostic, Value, ValueCellId, ValueMap, VersionId,
-};
+use reify_core::{Diagnostic, ValueCellId, VersionId};
+use reify_ir::{CompiledFunction, DeterminacyState, Value, ValueMap};
 
 use crate::cache::{CacheStore, CachedResult, NodeId};
 use crate::deps::{DependencyTrace, extract_dependency_trace, take_trace};
@@ -115,7 +114,7 @@ pub(crate) fn unfold_recursive_sub<'t>(
 
     // Pre-evaluate args in the local context (so child uses current level's param values, not top-level).
     // Use the arg expression's declared result_type for the literal wrapper.
-    let concrete_args: Vec<(String, reify_types::CompiledExpr)> = sub
+    let concrete_args: Vec<(String, reify_ir::CompiledExpr)> = sub
         .args
         .iter()
         .map(|(name, arg_expr)| {
@@ -124,7 +123,7 @@ pub(crate) fn unfold_recursive_sub<'t>(
                 &eval_ctx_with_meta(&local_values, functions, meta_map),
             );
             let ty = arg_expr.result_type.clone();
-            (name.clone(), reify_types::CompiledExpr::literal(v, ty))
+            (name.clone(), reify_ir::CompiledExpr::literal(v, ty))
         })
         .collect();
 
@@ -251,7 +250,7 @@ pub(crate) fn elaborate_child_instance(
     version_id: u64,
     child_template: &TopologyTemplate,
     scoped_entity: &str,
-    args: &[(String, reify_types::CompiledExpr)],
+    args: &[(String, reify_ir::CompiledExpr)],
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -298,7 +297,7 @@ fn elaborate_child_params_only(
     version_id: u64,
     child_template: &TopologyTemplate,
     scoped_entity: &str,
-    args: &[(String, reify_types::CompiledExpr)],
+    args: &[(String, reify_ir::CompiledExpr)],
     meta_map: &HashMap<String, HashMap<String, String>>,
 ) -> ValueMap {
     let mut child_values = ValueMap::new();
@@ -482,7 +481,7 @@ fn elaborate_child_lets_only<'t>(
     }
 
     // Evaluate let-bindings in topological order.
-    let child_let_cells: HashMap<NodeId, &reify_types::CompiledExpr> = child_template
+    let child_let_cells: HashMap<NodeId, &reify_ir::CompiledExpr> = child_template
         .value_cells
         .iter()
         .filter(|c| c.kind == ValueCellKind::Let)

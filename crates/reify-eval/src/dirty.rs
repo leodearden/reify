@@ -10,7 +10,7 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use crate::cache::NodeId;
 use crate::demand::DemandRegistry;
 use crate::deps::{DependencyTrace, ReverseDependencyIndex};
-use reify_types::{RealizationNodeId, ValueCellId};
+use reify_core::{RealizationNodeId, ValueCellId};
 
 /// Compute the dirty cone: all nodes that transitively depend on any changed cell.
 ///
@@ -269,7 +269,7 @@ mod tests {
     use crate::cache::NodeId;
     use crate::deps::ReverseDependencyIndex;
     use crate::dirty::compute_dirty_cone;
-    use reify_types::{ConstraintNodeId, ValueCellId};
+    use reify_core::{ConstraintNodeId, ValueCellId};
     use std::collections::HashSet;
 
     #[test]
@@ -328,7 +328,7 @@ mod tests {
         assert!(dirty.contains(&NodeId::Value(ValueCellId::new(e, "volume"))));
         assert!(dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 1))));
         assert!(
-            dirty.contains(&NodeId::Realization(reify_types::RealizationNodeId::new(
+            dirty.contains(&NodeId::Realization(reify_core::RealizationNodeId::new(
                 e, 0
             )))
         );
@@ -360,7 +360,7 @@ mod tests {
         assert!(dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 1))));
         assert!(dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 2))));
         assert!(
-            dirty.contains(&NodeId::Realization(reify_types::RealizationNodeId::new(
+            dirty.contains(&NodeId::Realization(reify_core::RealizationNodeId::new(
                 e, 0
             )))
         );
@@ -401,7 +401,7 @@ mod tests {
     fn compute_dirty_cone_propagates_through_compute_node_to_output_value_cells() {
         use crate::graph::{ComputeNodeData, EvaluationGraph, ValueCellNode};
         use reify_compiler::ValueCellKind;
-        use reify_types::{ComputeNodeId, ContentHash, Type};
+        use reify_core::{ComputeNodeId, ContentHash, Type};
 
         let mut graph = EvaluationGraph::default();
         let e = "E";
@@ -475,7 +475,7 @@ mod tests {
     fn compute_dirty_cone_multi_hop_value_through_compute_to_constraint() {
         use crate::graph::{ComputeNodeData, EvaluationGraph, ValueCellNode};
         use reify_compiler::ValueCellKind;
-        use reify_types::{ComputeNodeId, ContentHash, Type};
+        use reify_core::{ComputeNodeId, ContentHash, Type};
 
         let mut graph = EvaluationGraph::default();
         let e = "E";
@@ -565,7 +565,8 @@ mod tests {
         use crate::dirty::compute_dirty_cone_with_realizations;
         use crate::graph::{ComputeNodeData, EvaluationGraph, RealizationNodeData, ValueCellNode};
         use reify_compiler::ValueCellKind;
-        use reify_types::{ComputeNodeId, ContentHash, RealizationNodeId, ReprKind, Type};
+        use reify_core::{ComputeNodeId, ContentHash, RealizationNodeId, Type};
+        use reify_ir::ReprKind;
 
         let mut graph = EvaluationGraph::default();
         let e = "E";
@@ -657,7 +658,8 @@ mod tests {
         use crate::dirty::compute_dirty_cone_with_realizations;
         use crate::graph::{ComputeNodeData, EvaluationGraph, RealizationNodeData, ValueCellNode};
         use reify_compiler::ValueCellKind;
-        use reify_types::{ComputeNodeId, ContentHash, RealizationNodeId, ReprKind, Type};
+        use reify_core::{ComputeNodeId, ContentHash, RealizationNodeId, Type};
+        use reify_ir::ReprKind;
 
         let mut graph = EvaluationGraph::default();
         let e = "E";
@@ -745,7 +747,8 @@ mod tests {
         use crate::dirty::compute_dirty_cone_with_realizations;
         use crate::graph::{ComputeNodeData, EvaluationGraph, RealizationNodeData, ValueCellNode};
         use reify_compiler::ValueCellKind;
-        use reify_types::{ComputeNodeId, ContentHash, RealizationNodeId, ReprKind, Type};
+        use reify_core::{ComputeNodeId, ContentHash, RealizationNodeId, Type};
+        use reify_ir::ReprKind;
 
         let mut graph = EvaluationGraph::default();
         let e = "E";
@@ -834,7 +837,7 @@ mod tests {
     fn dirty_cone_includes_resolution_node() {
         use crate::graph::{EvaluationGraph, ResolutionNodeData, ValueCellNode};
         use reify_compiler::ValueCellKind;
-        use reify_types::{ContentHash, ResolutionNodeId, Type};
+        use reify_core::{ContentHash, ResolutionNodeId, Type};
 
         let mut graph = EvaluationGraph::default();
 
@@ -1257,7 +1260,8 @@ mod tests {
         use crate::graph::EvaluationGraph;
         use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
         use reify_test_support::TopologyTemplateBuilder;
-        use reify_types::{BinOp, CompiledExpr, RealizationNodeId, Type, Value};
+        use reify_core::{RealizationNodeId, Type};
+        use reify_ir::{BinOp, CompiledExpr, Value};
 
         let e = "B";
         let width_ref = || CompiledExpr::value_ref(ValueCellId::new(e, "width"), Type::length());

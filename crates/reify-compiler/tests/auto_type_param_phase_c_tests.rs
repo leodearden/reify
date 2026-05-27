@@ -21,7 +21,7 @@
 //! tests from any Phase B / constraint-checker behavior.
 
 use reify_compiler::auto_type_param::*;
-use reify_types::{ConstraintNodeId, DiagnosticCode, Severity, SourceSpan};
+use reify_core::{ConstraintNodeId, DiagnosticCode, Severity, SourceSpan};
 
 // ─── NoCandidate arm — Empty feasibility → error + NoCandidate ────
 

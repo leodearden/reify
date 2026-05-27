@@ -236,7 +236,7 @@ fn mesh_plane_2d_with_hole_avoids_hole_interior() {
 #[cfg(not(has_gmsh))]
 #[test]
 fn mesh_plane_2d_returns_gmsh_not_available_in_stub_build() {
-    use reify_types::GeometryError;
+    use reify_ir::GeometryError;
 
     let outer: Vec<[f64; 2]> = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
     let holes: Vec<Vec<[f64; 2]>> = vec![];

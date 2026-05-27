@@ -37,7 +37,8 @@ use reify_eval::gating;
 use reify_test_support::builders::{binop, literal, value_ref_typed};
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
-use reify_types::{BinOp, Freshness, ModulePath, Type, Value, ValueCellId};
+use reify_core::{ModulePath, Type, ValueCellId};
+use reify_ir::{BinOp, Freshness, Value};
 use std::collections::HashSet;
 
 /// Build the 3-cell synthetic module: param `a = 5.0`, param `c = 3.0`,
@@ -162,7 +163,7 @@ fn freshness_walk_unblocks_gated_node_when_all_inputs_become_final() {
     assert_eq!(
         engine.cache_store().freshness(&b_node),
         Freshness::Pending {
-            last_substantive: reify_types::ResultRef::of_hash(b_snap_hash)
+            last_substantive: reify_ir::ResultRef::of_hash(b_snap_hash)
         },
         "b must be Pending after injection"
     );

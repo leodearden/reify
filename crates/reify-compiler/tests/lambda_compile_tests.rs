@@ -1,6 +1,6 @@
 //! Lambda compilation tests.
 
-use reify_types::ValueCellId;
+use reify_core::ValueCellId;
 
 /// step-7: Compile `|x| x * 2` in a let binding — produces CompiledExprKind::Lambda
 /// with 1 param, no captures, and correct body.
@@ -11,7 +11,7 @@ structure S {
     let f = |x| x * 2
 }
 "#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_lambda"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_lambda"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -23,7 +23,7 @@ structure S {
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(
         errors.is_empty(),
@@ -40,7 +40,7 @@ structure S {
 
     let f_expr = f_cell.default_expr.as_ref().expect("let should have expr");
     match &f_expr.kind {
-        reify_types::CompiledExprKind::Lambda {
+        reify_ir::CompiledExprKind::Lambda {
             params,
             param_ids,
             body,
@@ -57,8 +57,8 @@ structure S {
             assert_eq!(param_ids[0].member, "x");
             assert!(captures.is_empty(), "no captures for simple lambda");
             match &body.kind {
-                reify_types::CompiledExprKind::BinOp { op, .. } => {
-                    assert_eq!(*op, reify_types::BinOp::Mul);
+                reify_ir::CompiledExprKind::BinOp { op, .. } => {
+                    assert_eq!(*op, reify_ir::BinOp::Mul);
                 }
                 other => panic!("expected BinOp(Mul), got {:?}", other),
             }
@@ -77,7 +77,7 @@ structure S {
     let f = |x| x * factor
 }
 "#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_capture"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_capture"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -89,7 +89,7 @@ structure S {
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
@@ -102,7 +102,7 @@ structure S {
 
     let f_expr = f_cell.default_expr.as_ref().expect("let should have expr");
     match &f_expr.kind {
-        reify_types::CompiledExprKind::Lambda { captures, .. } => {
+        reify_ir::CompiledExprKind::Lambda { captures, .. } => {
             let factor_id = ValueCellId::new("S", "factor");
             assert!(
                 captures.contains(&factor_id),
@@ -123,7 +123,7 @@ structure S {
     let f = |x: Real| x + 1.0
 }
 "#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_typed"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_typed"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -135,7 +135,7 @@ structure S {
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
@@ -148,12 +148,12 @@ structure S {
 
     let f_expr = f_cell.default_expr.as_ref().expect("let should have expr");
     match &f_expr.kind {
-        reify_types::CompiledExprKind::Lambda { params, .. } => {
+        reify_ir::CompiledExprKind::Lambda { params, .. } => {
             assert_eq!(params.len(), 1);
             assert_eq!(params[0].0, "x");
             assert_eq!(
                 params[0].1,
-                Some(reify_types::Type::Real),
+                Some(reify_core::Type::Real),
                 "param type should be Real"
             );
         }
@@ -161,12 +161,12 @@ structure S {
     }
 
     match &f_expr.result_type {
-        reify_types::Type::Function {
+        reify_core::Type::Function {
             params,
             return_type,
         } => {
-            assert_eq!(params, &[reify_types::Type::Real]);
-            assert_eq!(**return_type, reify_types::Type::Real);
+            assert_eq!(params, &[reify_core::Type::Real]);
+            assert_eq!(**return_type, reify_core::Type::Real);
         }
         other => panic!("expected Function type, got {:?}", other),
     }
@@ -182,7 +182,7 @@ structure S {
     let f = |x| x * 2
 }
 "#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_shadow"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_shadow"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -193,7 +193,7 @@ structure S {
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
@@ -206,7 +206,7 @@ structure S {
 
     let f_expr = f_cell.default_expr.as_ref().expect("let should have expr");
     match &f_expr.kind {
-        reify_types::CompiledExprKind::Lambda { captures, .. } => {
+        reify_ir::CompiledExprKind::Lambda { captures, .. } => {
             assert!(
                 captures.is_empty(),
                 "lambda param 'x' should shadow outer 'x', so no captures. Got: {:?}",
@@ -225,7 +225,7 @@ structure MyStruct {
     let f = |a, b| a + b
 }
 "#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_synth"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_synth"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -242,7 +242,7 @@ structure MyStruct {
 
     let f_expr = f_cell.default_expr.as_ref().expect("let should have expr");
     match &f_expr.kind {
-        reify_types::CompiledExprKind::Lambda { param_ids, .. } => {
+        reify_ir::CompiledExprKind::Lambda { param_ids, .. } => {
             assert_eq!(param_ids.len(), 2);
             for id in param_ids {
                 assert!(

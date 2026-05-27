@@ -20,7 +20,7 @@ use reify_eval::{
     dispatch, per_stage_tolerance_for_plan,
     tolerance_budget::{SAFETY_FACTOR, per_stage_tolerance},
 };
-use reify_types::{CapabilityDescriptor, Operation, ReprKind};
+use reify_ir::{CapabilityDescriptor, Operation, ReprKind};
 
 /// Integration smoke: confirms `per_stage_tolerance_for_plan` is re-exported
 /// through the crate root and wired correctly to `dispatch()` output.

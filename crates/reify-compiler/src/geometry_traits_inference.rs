@@ -72,7 +72,8 @@
 //! `bounded` flag.
 
 use crate::types::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
-use reify_types::{CompiledExpr, CompiledExprKind, ValueCellId};
+use reify_core::ValueCellId;
+use reify_ir::{CompiledExpr, CompiledExprKind};
 
 /// The three compile-time-inferred geometry traits.
 ///
@@ -634,7 +635,7 @@ fn infer_traits_for_function_call_in_env(
 /// well-formed call site always has one).
 fn first_geometry_arg_in_env(args: &[CompiledExpr], env: &dyn LetBindingEnv) -> InferredTraits {
     args.iter()
-        .find(|a| a.result_type == reify_types::Type::Geometry)
+        .find(|a| a.result_type == reify_core::Type::Geometry)
         .map(|a| infer_traits_for_expr_in_env(a, env))
         .unwrap_or(InferredTraits::all())
 }
@@ -649,7 +650,7 @@ fn fold_geometry_args_in_env(
     env: &dyn LetBindingEnv,
 ) -> InferredTraits {
     args.iter()
-        .filter(|a| a.result_type == reify_types::Type::Geometry)
+        .filter(|a| a.result_type == reify_core::Type::Geometry)
         .map(|a| infer_traits_for_expr_in_env(a, env))
         .reduce(combine)
         .unwrap_or(InferredTraits::all())
@@ -663,7 +664,7 @@ fn first_two_geometry_args_in_env(
 ) -> (InferredTraits, InferredTraits) {
     let mut iter = args
         .iter()
-        .filter(|a| a.result_type == reify_types::Type::Geometry);
+        .filter(|a| a.result_type == reify_core::Type::Geometry);
     let a = iter
         .next()
         .map(|a| infer_traits_for_expr_in_env(a, env))

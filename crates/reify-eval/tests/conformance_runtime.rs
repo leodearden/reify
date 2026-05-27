@@ -21,7 +21,8 @@
 use reify_compiler::compile_with_stdlib;
 use reify_eval::Engine;
 use reify_test_support::{CountingMockKernel, MockGeometryKernel};
-use reify_types::{ExportFormat, GeometryHandleId, ModulePath, Severity, Value, ValueCellId};
+use reify_core::{ModulePath, Severity, ValueCellId};
+use reify_ir::{ExportFormat, GeometryHandleId, Value};
 
 /// Parse and compile a source string with the stdlib prelude.
 /// Asserts the parse and compile pipelines produce no errors.

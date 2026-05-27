@@ -4,11 +4,8 @@ use std::collections::HashMap;
 
 use argmin::core::{CostFunction, Error as ArgminError, Executor, State, TerminationReason};
 use argmin::solver::neldermead::NelderMead;
-use reify_types::{
-    AutoParam, BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, ConstraintNodeId,
-    ConstraintSolver, DiagnosticCode, DimensionVector, OptimizationObjective, ResolutionProblem,
-    SolveResult, Type, Value, ValueCellId, ValueMap,
-};
+use reify_core::{ConstraintNodeId, DiagnosticCode, DimensionVector, Type, ValueCellId};
+use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, ConstraintSolver, OptimizationObjective, ResolutionProblem, SolveResult, Value, ValueMap};
 
 /// Maximum iterations for Nelder-Mead.
 const MAX_ITERS: u64 = 5000;
@@ -671,7 +668,7 @@ fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
         }
         return SolveResult::Infeasible {
             diagnostics: vec![
-                reify_types::Diagnostic::error(format!(
+                reify_core::Diagnostic::error(format!(
                     "constraints could not be satisfied (max absolute residual: {:.2e})",
                     final_max_residual
                 ))
@@ -773,7 +770,7 @@ fn solutions_agree(
 ///
 /// Returns `(perturbed_anchors, missing_param_ids)`.
 fn build_perturbation_anchors(
-    auto_params: &[reify_types::AutoParam],
+    auto_params: &[reify_ir::AutoParam],
     solved_values: &HashMap<ValueCellId, Value>,
 ) -> (Vec<f64>, Vec<String>) {
     let mut missing: Vec<String> = Vec::new();
@@ -880,7 +877,7 @@ impl ConstraintSolver for DimensionalSolver {
                         // indicating the problem is underdetermined.
                         SolveResult::Infeasible {
                             diagnostics: vec![
-                                reify_types::Diagnostic::error(
+                                reify_core::Diagnostic::error(
                                     "strict auto parameter resolution is not uniquely \
                                           determined \u{2014} consider using auto(free) \
                                           for exploration",
@@ -906,17 +903,16 @@ impl ConstraintSolver for DimensionalSolver {
 
 #[cfg(test)]
 mod tests {
-    use reify_types::{
-        ConstraintSolver, ResolutionProblem, SolveResult, TAG_CONDITIONAL, ValueMap,
-    };
+    use reify_ir::{ConstraintSolver, ResolutionProblem, SolveResult, TAG_CONDITIONAL, ValueMap};
 
     // ---- shared solver test helpers ----
 
     /// Returns a canonical single-param tuple: (`ValueCellId::new("Part","x")`, one-element
     /// `Vec<AutoParam>` with `Type::length()`, bounds `(0.0, 1.0)`, `free: false`).
     /// Used by `solutions_agree_*` and `build_perturbation_anchors_*` tests that work with one parameter.
-    fn test_param() -> (reify_types::ValueCellId, Vec<reify_types::AutoParam>) {
-        use reify_types::{AutoParam, Type, ValueCellId};
+    fn test_param() -> (reify_core::ValueCellId, Vec<reify_ir::AutoParam>) {
+        use reify_core::{Type, ValueCellId};
+        use reify_ir::AutoParam;
         let id = ValueCellId::new("Part", "x");
         let params = vec![AutoParam {
             id: id.clone(),
@@ -930,8 +926,9 @@ mod tests {
     /// Returns a `Value::Scalar` with the given `si_value` and `DimensionVector::LENGTH`.
     /// `solutions_agree_*` and `build_perturbation_anchors_*` tests use `Type::length()`, so a
     /// fixed-dimension helper avoids repeating the dimension on every call site.
-    fn scalar(v: f64) -> reify_types::Value {
-        use reify_types::{DimensionVector, Value};
+    fn scalar(v: f64) -> reify_ir::Value {
+        use reify_core::DimensionVector;
+        use reify_ir::Value;
         Value::Scalar {
             si_value: v,
             dimension: DimensionVector::LENGTH,
@@ -960,7 +957,7 @@ mod tests {
     /// invoked on the missing/non-numeric path).
     fn assert_verify_uniqueness_aggregated_warn(
         problem: &ResolutionProblem,
-        solved_values: &std::collections::HashMap<reify_types::ValueCellId, reify_types::Value>,
+        solved_values: &std::collections::HashMap<reify_core::ValueCellId, reify_ir::Value>,
         expected_warn_substrings: &[&str],
     ) -> bool {
         use reify_test_support::warn_capturing_subscriber;
@@ -1017,7 +1014,8 @@ mod tests {
     #[test]
     fn build_trial_values_inserts_auto_params() {
         use super::build_trial_values;
-        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
+        use reify_core::{DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, Value};
 
         let thickness_id = ValueCellId::new("Bracket", "thickness");
         let width_id = ValueCellId::new("Bracket", "width");
@@ -1071,7 +1069,8 @@ mod tests {
     #[test]
     fn build_trial_values_multi_param_regression() {
         use super::build_trial_values;
-        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
+        use reify_core::{DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, Value};
 
         let thickness_id = ValueCellId::new("Bracket", "thickness");
         let angle_id = ValueCellId::new("Bracket", "angle");
@@ -1161,7 +1160,8 @@ mod tests {
     fn verify_uniqueness_aggregates_warn_for_multiple_missing_params() {
         use std::collections::HashMap;
 
-        use reify_types::{AutoParam, Type, ValueCellId};
+        use reify_core::{Type, ValueCellId};
+        use reify_ir::AutoParam;
 
         let param_x = ValueCellId::new("Part", "x");
         let param_y = ValueCellId::new("Part", "y");
@@ -1187,7 +1187,7 @@ mod tests {
         };
 
         // Empty solved_values: both params are missing → both hit the None branch
-        let solved_values: HashMap<ValueCellId, reify_types::Value> = HashMap::new();
+        let solved_values: HashMap<ValueCellId, reify_ir::Value> = HashMap::new();
 
         let unique = assert_verify_uniqueness_aggregated_warn(
             &problem,
@@ -1219,7 +1219,8 @@ mod tests {
         use std::sync::atomic::Ordering;
 
         use reify_test_support::CountingSubscriberBuilder;
-        use reify_types::{AutoParam, Type, ValueCellId};
+        use reify_core::{Type, ValueCellId};
+        use reify_ir::AutoParam;
 
         use super::verify_uniqueness;
 
@@ -1238,7 +1239,7 @@ mod tests {
         };
 
         // Empty solved_values: param is missing → early-return path should fire
-        let solved_values: HashMap<ValueCellId, reify_types::Value> = HashMap::new();
+        let solved_values: HashMap<ValueCellId, reify_ir::Value> = HashMap::new();
 
         let (subscriber, counters) = CountingSubscriberBuilder::new()
             .count_level(tracing::Level::WARN)
@@ -1293,7 +1294,8 @@ mod tests {
         use std::sync::atomic::Ordering;
 
         use reify_test_support::CountingSubscriberBuilder;
-        use reify_types::{AutoParam, Type, Value, ValueCellId};
+        use reify_core::{Type, ValueCellId};
+        use reify_ir::{AutoParam, Value};
 
         use super::verify_uniqueness;
 
@@ -1389,7 +1391,7 @@ mod tests {
 
         let (_id, params) = test_param();
         // Empty map: param is absent → None branch fires, mid is used as fallback
-        let solved_values: HashMap<reify_types::ValueCellId, reify_types::Value> = HashMap::new();
+        let solved_values: HashMap<reify_core::ValueCellId, reify_ir::Value> = HashMap::new();
 
         let (perturbed, missing) = build_perturbation_anchors(&params, &solved_values);
 
@@ -1410,10 +1412,10 @@ mod tests {
         use super::build_perturbation_anchors;
 
         let (id, params) = test_param();
-        let mut solved_values: HashMap<reify_types::ValueCellId, reify_types::Value> =
+        let mut solved_values: HashMap<reify_core::ValueCellId, reify_ir::Value> =
             HashMap::new();
         // Value::Undef: as_f64() returns None → same None-branch as missing
-        solved_values.insert(id, reify_types::Value::Undef);
+        solved_values.insert(id, reify_ir::Value::Undef);
 
         let (perturbed, missing) = build_perturbation_anchors(&params, &solved_values);
 
@@ -1436,7 +1438,8 @@ mod tests {
         use std::collections::HashMap;
 
         use super::build_perturbation_anchors;
-        use reify_types::{AutoParam, Type, ValueCellId};
+        use reify_core::{Type, ValueCellId};
+        use reify_ir::AutoParam;
 
         let param_x = ValueCellId::new("Part", "x");
         let param_y = ValueCellId::new("Part", "y");
@@ -1455,7 +1458,7 @@ mod tests {
             },
         ];
         // Both params absent → both hit the None branch
-        let solved_values: HashMap<reify_types::ValueCellId, reify_types::Value> = HashMap::new();
+        let solved_values: HashMap<reify_core::ValueCellId, reify_ir::Value> = HashMap::new();
 
         let (perturbed, missing) = build_perturbation_anchors(&params, &solved_values);
 
@@ -1516,7 +1519,8 @@ mod tests {
     #[test]
     fn build_trial_values_empty_params() {
         use super::build_trial_values;
-        use reify_types::{DimensionVector, Value, ValueCellId};
+        use reify_core::{DimensionVector, ValueCellId};
+        use reify_ir::Value;
 
         let width_id = ValueCellId::new("Bracket", "width");
 
@@ -1550,9 +1554,8 @@ mod tests {
     #[test]
     fn compute_violation_satisfied_constraint() {
         use super::compute_total_violation;
-        use reify_types::{
-            BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value, ValueCellId,
-        };
+        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
+        use reify_ir::{BinOp, CompiledExpr, Value};
 
         // thickness > 2mm, thickness = 5mm → satisfied, violation = 0
         let thickness_ref =
@@ -1587,9 +1590,8 @@ mod tests {
     #[test]
     fn compute_violation_violated_constraint() {
         use super::compute_total_violation;
-        use reify_types::{
-            BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value, ValueCellId,
-        };
+        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
+        use reify_ir::{BinOp, CompiledExpr, Value};
 
         // thickness > 2mm, thickness = 1mm → violated
         let thickness_ref =
@@ -1623,9 +1625,8 @@ mod tests {
     #[test]
     fn compute_violation_multiple_constraints() {
         use super::compute_total_violation;
-        use reify_types::{
-            BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value, ValueCellId,
-        };
+        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
+        use reify_ir::{BinOp, CompiledExpr, Value};
 
         // constraint 1: thickness > 2mm (satisfied, thickness=5mm)
         let thickness_ref =
@@ -1711,7 +1712,7 @@ mod tests {
         use std::collections::HashMap;
 
         use super::solutions_agree;
-        use reify_types::ValueCellId;
+        use reify_core::ValueCellId;
 
         let (param_id, params) = test_param();
 
@@ -1732,7 +1733,7 @@ mod tests {
         use std::collections::HashMap;
 
         use super::solutions_agree;
-        use reify_types::ValueCellId;
+        use reify_core::ValueCellId;
 
         let (param_id, params) = test_param();
 
@@ -1761,7 +1762,8 @@ mod tests {
         use std::collections::HashMap;
 
         use super::solutions_agree;
-        use reify_types::{Value, ValueCellId};
+        use reify_core::ValueCellId;
+        use reify_ir::Value;
 
         let (_param_id, params) = test_param();
 
@@ -1780,7 +1782,8 @@ mod tests {
         use std::collections::HashMap;
 
         use super::solutions_agree;
-        use reify_types::{Value, ValueCellId};
+        use reify_core::ValueCellId;
+        use reify_ir::Value;
 
         let (param_id, params) = test_param();
 
@@ -1804,7 +1807,8 @@ mod tests {
         use std::collections::HashMap;
 
         use super::solutions_agree;
-        use reify_types::{Value, ValueCellId};
+        use reify_core::ValueCellId;
+        use reify_ir::Value;
 
         let (param_id, params) = test_param();
 
@@ -1829,7 +1833,8 @@ mod tests {
         use std::collections::HashMap;
 
         use super::solutions_agree;
-        use reify_types::{Value, ValueCellId};
+        use reify_core::ValueCellId;
+        use reify_ir::Value;
 
         let (param_id, params) = test_param();
 
@@ -1856,7 +1861,7 @@ mod tests {
         use std::collections::HashMap;
 
         use super::solutions_agree;
-        use reify_types::ValueCellId;
+        use reify_core::ValueCellId;
 
         let (param_id, params) = test_param();
 
@@ -1880,7 +1885,7 @@ mod tests {
         use std::collections::HashMap;
 
         use super::solutions_agree;
-        use reify_types::ValueCellId;
+        use reify_core::ValueCellId;
 
         let (param_id, params) = test_param();
 
@@ -1903,7 +1908,8 @@ mod tests {
         use std::collections::HashMap;
 
         use super::solutions_agree;
-        use reify_types::{AutoParam, Type, ValueCellId};
+        use reify_core::{Type, ValueCellId};
+        use reify_ir::AutoParam;
 
         // Two params: 'x' agrees within tolerance, 'y' diverges sharply.
         // This verifies the for-loop iterates ALL params and does not
@@ -1946,10 +1952,8 @@ mod tests {
     #[test]
     fn single_param_feasibility() {
         use crate::DimensionalSolver;
-        use reify_types::{
-            AutoParam, BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value,
-            ValueCellId,
-        };
+        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, Value};
 
         let solver = DimensionalSolver;
         let thickness_id = ValueCellId::new("Bracket", "thickness");
@@ -2011,10 +2015,8 @@ mod tests {
     #[test]
     fn infeasible_constraints() {
         use crate::DimensionalSolver;
-        use reify_types::{
-            AutoParam, BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value,
-            ValueCellId,
-        };
+        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, Value};
 
         let solver = DimensionalSolver;
         let x_id = ValueCellId::new("Part", "x");
@@ -2071,10 +2073,8 @@ mod tests {
     #[test]
     fn minimize_objective() {
         use crate::DimensionalSolver;
-        use reify_types::{
-            AutoParam, BinOp, CompiledExpr, ConstraintNodeId, DimensionVector,
-            OptimizationObjective, Type, Value, ValueCellId,
-        };
+        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, OptimizationObjective, Value};
 
         let solver = DimensionalSolver;
         let thickness_id = ValueCellId::new("Bracket", "thickness");
@@ -2147,10 +2147,8 @@ mod tests {
     #[test]
     fn multi_param_solving() {
         use crate::DimensionalSolver;
-        use reify_types::{
-            AutoParam, BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value,
-            ValueCellId,
-        };
+        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, Value};
 
         let solver = DimensionalSolver;
         let width_id = ValueCellId::new("Part", "width");
@@ -2238,10 +2236,8 @@ mod tests {
     #[test]
     fn solution_stays_within_bounds() {
         use crate::DimensionalSolver;
-        use reify_types::{
-            AutoParam, BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value,
-            ValueCellId,
-        };
+        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, Value};
 
         let solver = DimensionalSolver;
         let x_id = ValueCellId::new("Part", "x");
@@ -2288,10 +2284,8 @@ mod tests {
     #[test]
     fn no_bounds_length_param() {
         use crate::DimensionalSolver;
-        use reify_types::{
-            AutoParam, BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value,
-            ValueCellId,
-        };
+        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, Value};
 
         let solver = DimensionalSolver;
         let x_id = ValueCellId::new("Part", "x");
@@ -2350,7 +2344,8 @@ mod tests {
     #[test]
     fn comparison_residual_gt_violated_small() {
         use super::comparison_residual;
-        use reify_types::{BinOp, CompiledExpr, DimensionVector, Type, Value};
+        use reify_core::{DimensionVector, Type};
+        use reify_ir::{BinOp, CompiledExpr, Value};
 
         // l=1.9999999, r=2.0: violated by 1e-7
         let l_expr = CompiledExpr::literal(
@@ -2379,7 +2374,8 @@ mod tests {
     #[test]
     fn comparison_residual_ge_satisfied() {
         use super::comparison_residual;
-        use reify_types::{BinOp, CompiledExpr, DimensionVector, Type, Value};
+        use reify_core::{DimensionVector, Type};
+        use reify_ir::{BinOp, CompiledExpr, Value};
 
         let l_expr = CompiledExpr::literal(
             Value::Scalar {
@@ -2403,7 +2399,8 @@ mod tests {
     #[test]
     fn comparison_residual_lt_violated() {
         use super::comparison_residual;
-        use reify_types::{BinOp, CompiledExpr, DimensionVector, Type, Value};
+        use reify_core::{DimensionVector, Type};
+        use reify_ir::{BinOp, CompiledExpr, Value};
 
         // l=0.010, r=0.005: Lt violated by 0.005
         let l_expr = CompiledExpr::literal(
@@ -2432,7 +2429,8 @@ mod tests {
     #[test]
     fn comparison_residual_le_satisfied() {
         use super::comparison_residual;
-        use reify_types::{BinOp, CompiledExpr, DimensionVector, Type, Value};
+        use reify_core::{DimensionVector, Type};
+        use reify_ir::{BinOp, CompiledExpr, Value};
 
         let l_expr = CompiledExpr::literal(
             Value::Scalar {
@@ -2456,7 +2454,8 @@ mod tests {
     #[test]
     fn comparison_residual_eq_difference() {
         use super::comparison_residual;
-        use reify_types::{BinOp, CompiledExpr, DimensionVector, Type, Value};
+        use reify_core::{DimensionVector, Type};
+        use reify_ir::{BinOp, CompiledExpr, Value};
 
         let l_expr = CompiledExpr::literal(
             Value::Scalar {
@@ -2484,7 +2483,8 @@ mod tests {
     #[test]
     fn constraint_residual_single_gt() {
         use super::constraint_residual;
-        use reify_types::{BinOp, CompiledExpr, DimensionVector, Type, Value, ValueCellId};
+        use reify_core::{DimensionVector, Type, ValueCellId};
+        use reify_ir::{BinOp, CompiledExpr, Value};
 
         // thickness > 2mm, thickness=1.9999999m (violated by 1e-7)
         let thickness_ref = CompiledExpr::value_ref(ValueCellId::new("B", "t"), Type::length());
@@ -2517,7 +2517,8 @@ mod tests {
     #[test]
     fn constraint_residual_and_returns_max() {
         use super::constraint_residual;
-        use reify_types::{BinOp, CompiledExpr, DimensionVector, Type, Value, ValueCellId};
+        use reify_core::{DimensionVector, Type, ValueCellId};
+        use reify_ir::{BinOp, CompiledExpr, Value};
 
         // And(x > 2.0 [violated by 1e-7], y > 1.0 [violated by 1e-5])
         let x_ref = CompiledExpr::value_ref(ValueCellId::new("P", "x"), Type::length());
@@ -2570,7 +2571,8 @@ mod tests {
     #[test]
     fn constraint_residual_or_returns_min() {
         use super::constraint_residual;
-        use reify_types::{BinOp, CompiledExpr, DimensionVector, Type, Value, ValueCellId};
+        use reify_core::{DimensionVector, Type, ValueCellId};
+        use reify_ir::{BinOp, CompiledExpr, Value};
 
         // Or(x > 2.0 [violated by 1e-3], y > 1.0 [satisfied])
         let x_ref = CompiledExpr::value_ref(ValueCellId::new("P", "x"), Type::length());
@@ -2618,9 +2620,8 @@ mod tests {
     #[test]
     fn max_constraint_residual_picks_worst() {
         use super::max_constraint_residual;
-        use reify_types::{
-            BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value, ValueCellId,
-        };
+        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
+        use reify_ir::{BinOp, CompiledExpr, Value};
 
         // Three constraints: satisfied, violated by 1e-7, violated by 1e-5
         let x_ref = CompiledExpr::value_ref(ValueCellId::new("P", "x"), Type::length());
@@ -2680,9 +2681,8 @@ mod tests {
     #[test]
     fn max_constraint_residual_all_satisfied() {
         use super::max_constraint_residual;
-        use reify_types::{
-            BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value, ValueCellId,
-        };
+        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
+        use reify_ir::{BinOp, CompiledExpr, Value};
 
         let x_ref = CompiledExpr::value_ref(ValueCellId::new("P", "x"), Type::length());
         let one = CompiledExpr::literal(
@@ -2722,7 +2722,8 @@ mod tests {
     #[test]
     fn constraint_residual_bool_literals() {
         use super::constraint_residual;
-        use reify_types::{CompiledExpr, Type, Value};
+        use reify_core::Type;
+        use reify_ir::{CompiledExpr, Value};
 
         let values = ValueMap::new();
 
@@ -2739,7 +2740,8 @@ mod tests {
     #[test]
     fn comparison_residual_non_numeric_fallback() {
         use super::comparison_residual;
-        use reify_types::{BinOp, CompiledExpr, Type, Value};
+        use reify_core::Type;
+        use reify_ir::{BinOp, CompiledExpr, Value};
 
         // Non-numeric (Undef) inputs should give fixed penalty 1.0
         let l_expr = CompiledExpr::literal(Value::Undef, Type::Bool);
@@ -2753,10 +2755,8 @@ mod tests {
     fn cost_function_penalizes_out_of_bounds() {
         use super::ConstraintCostFunction;
         use argmin::core::CostFunction;
-        use reify_types::{
-            AutoParam, BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value,
-            ValueCellId,
-        };
+        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, Value};
 
         let x_id = ValueCellId::new("Part", "x");
         let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
@@ -2804,10 +2804,8 @@ mod tests {
     fn cost_function_penalizes_undef_objective() {
         use super::ConstraintCostFunction;
         use argmin::core::CostFunction;
-        use reify_types::{
-            AutoParam, BinOp, CompiledExpr, ConstraintNodeId, DimensionVector,
-            OptimizationObjective, Type, Value, ValueCellId,
-        };
+        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, OptimizationObjective, Value};
 
         let x_id = ValueCellId::new("Part", "x");
         let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
@@ -2856,10 +2854,8 @@ mod tests {
     #[test]
     fn already_satisfied_returns_solved_immediately() {
         use crate::DimensionalSolver;
-        use reify_types::{
-            AutoParam, BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value,
-            ValueCellId,
-        };
+        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, Value};
 
         let solver = DimensionalSolver;
         let x_id = ValueCellId::new("Part", "x");
@@ -2916,7 +2912,8 @@ mod tests {
     #[test]
     fn simplex_has_n_plus_1_vertices() {
         use super::build_simplex;
-        use reify_types::{AutoParam, Type, ValueCellId};
+        use reify_core::{Type, ValueCellId};
+        use reify_ir::AutoParam;
 
         // 1-dimensional: simplex should have 2 vertices
         let params_1d = vec![AutoParam {
@@ -2985,7 +2982,8 @@ mod tests {
     fn optimization_converges_near_lower_bound() {
         use crate::DimensionalSolver;
         use reify_test_support::{cnid, gt, literal, mm, value_ref, vcid};
-        use reify_types::{AutoParam, OptimizationObjective, Type};
+        use reify_core::Type;
+        use reify_ir::{AutoParam, OptimizationObjective};
 
         let solver = DimensionalSolver;
         let x_id = vcid("Part", "x");
@@ -3043,7 +3041,8 @@ mod tests {
     fn termination_reason_extracted_without_panic() {
         use crate::DimensionalSolver;
         use reify_test_support::{cnid, gt, literal, lt, mm, value_ref, vcid};
-        use reify_types::{AutoParam, Type, Value};
+        use reify_core::Type;
+        use reify_ir::{AutoParam, Value};
 
         let solver = DimensionalSolver;
         let x_id = vcid("Part", "x");
@@ -3092,7 +3091,8 @@ mod tests {
     #[test]
     fn build_solved_values_builds_correct_hashmap() {
         use super::build_solved_values;
-        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
+        use reify_core::{DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, Value};
 
         let length_id = ValueCellId::new("Part", "length");
         let angle_id = ValueCellId::new("Part", "angle");
@@ -3170,7 +3170,8 @@ mod tests {
     #[test]
     fn build_solved_values_dimensionless_type() {
         use super::build_solved_values;
-        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
+        use reify_core::{DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, Value};
 
         let id = ValueCellId::new("Part", "ratio");
         let params = vec![AutoParam {
@@ -3208,7 +3209,8 @@ mod tests {
     #[should_panic(expected = "params and x must have the same length")]
     fn build_solved_values_panics_on_length_mismatch() {
         use super::build_solved_values;
-        use reify_types::{AutoParam, Type, ValueCellId};
+        use reify_core::{Type, ValueCellId};
+        use reify_ir::AutoParam;
 
         let params = vec![AutoParam {
             id: ValueCellId::new("Part", "length"),
@@ -3230,10 +3232,8 @@ mod tests {
     #[test]
     fn undefined_objective_at_feasible_initial_returns_no_progress() {
         use crate::DimensionalSolver;
-        use reify_types::{
-            AutoParam, BinOp, CompiledExpr, ConstraintNodeId, DimensionVector,
-            OptimizationObjective, Type, Value, ValueCellId,
-        };
+        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, OptimizationObjective, Value};
 
         let solver = DimensionalSolver;
         let x_id = ValueCellId::new("Part", "x");
@@ -3310,10 +3310,8 @@ mod tests {
     #[test]
     fn undefined_objective_at_fallback_triggers_no_progress() {
         use crate::DimensionalSolver;
-        use reify_types::{
-            AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintNodeId, DimensionVector,
-            OptimizationObjective, Type, Value, ValueCellId, hash::ContentHash,
-        };
+        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId, hash::ContentHash};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledExprKind, OptimizationObjective, Value};
 
         let solver = DimensionalSolver;
         let x_id = ValueCellId::new("Part", "x");
@@ -3424,10 +3422,8 @@ mod tests {
     #[test]
     fn defined_objective_at_fallback_returns_solved() {
         use crate::DimensionalSolver;
-        use reify_types::{
-            AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintNodeId, DimensionVector,
-            OptimizationObjective, Type, Value, ValueCellId, hash::ContentHash,
-        };
+        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId, hash::ContentHash};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledExprKind, OptimizationObjective, Value};
 
         let solver = DimensionalSolver;
         let x_id = ValueCellId::new("Part", "x");

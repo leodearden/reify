@@ -4,7 +4,8 @@
 //! Tests C/D (step-3): multi-param with provided-prefix + defaulted-suffix.
 
 use reify_test_support::mocks::MockConstraintChecker;
-use reify_types::{ModulePath, Severity, Value, ValueCellId};
+use reify_core::{ModulePath, Severity, ValueCellId};
+use reify_ir::Value;
 
 /// Test A: all-defaulted call evaluates to the default value.
 ///

@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
-use reify_types::{DimensionVector, Value, quaternion_is_finite};
+use reify_core::DimensionVector;
+use reify_ir::{Value, quaternion_is_finite};
 
 use crate::dynamics::spatial::SpatialVector6;
 use crate::helpers::trig_input;
@@ -1555,7 +1556,8 @@ mod tests {
         angle_range_0_to_pi, axis_x_unit, axis_y_unit, axis_z_unit, cylindrical_z_joint,
         length_range_0_to_1m, planar_xy_joint, spherical_joint,
     };
-    use reify_types::{DimensionVector, Value};
+    use reify_core::DimensionVector;
+    use reify_ir::Value;
 
     // ── prismatic constructor: happy path ────────────────────────────────────
 
@@ -2254,7 +2256,7 @@ mod tests {
 
     #[test]
     fn transform_at_revolute_with_mass_value_returns_undef() {
-        use reify_types::DimensionVector;
+        use reify_core::DimensionVector;
         let joint = revolute_z_joint();
         let mass = Value::Scalar {
             si_value: 1.0,
@@ -2779,7 +2781,7 @@ mod tests {
 
     #[test]
     fn couple_prismatic_wrong_offset_dim_returns_undef() {
-        use reify_types::DimensionVector;
+        use reify_core::DimensionVector;
         let mass_offset = Value::Scalar {
             si_value: 1.0,
             dimension: DimensionVector::MASS,
@@ -2838,7 +2840,7 @@ mod tests {
 
     #[test]
     fn couple_dimensionless_scalar_ratio_accepted() {
-        use reify_types::DimensionVector;
+        use reify_core::DimensionVector;
         // DIMENSIONLESS Scalar is accepted by ratio_input and stored as Real
         let ratio = Value::Scalar {
             si_value: 0.5,
@@ -2968,7 +2970,7 @@ mod tests {
 
     #[test]
     fn transform_at_coupling_mass_value_returns_undef() {
-        use reify_types::DimensionVector;
+        use reify_core::DimensionVector;
         let c = eval_builtin("couple", &[prismatic_x_joint(), Value::Real(1.0)]);
         let mass = Value::Scalar {
             si_value: 1.0,
@@ -3306,7 +3308,7 @@ mod tests {
     }
 
     /// Helper: dimension of a Map's vector value at `key`.
-    fn jac_vec3_dim(map: &Value, key: &str) -> reify_types::DimensionVector {
+    fn jac_vec3_dim(map: &Value, key: &str) -> reify_core::DimensionVector {
         let inner = match map {
             Value::Map(m) => m,
             other => panic!("expected Map, got {:?}", other),
@@ -3345,12 +3347,12 @@ mod tests {
         assert_vec3_close(lin, [1.0, 0.0, 0.0], 1e-12, "prismatic X linear");
         assert_eq!(
             jac_vec3_dim(&result, "angular"),
-            reify_types::DimensionVector::DIMENSIONLESS,
+            reify_core::DimensionVector::DIMENSIONLESS,
             "angular should be DIMENSIONLESS"
         );
         assert_eq!(
             jac_vec3_dim(&result, "linear"),
-            reify_types::DimensionVector::DIMENSIONLESS,
+            reify_core::DimensionVector::DIMENSIONLESS,
             "linear should be DIMENSIONLESS"
         );
     }
@@ -3366,12 +3368,12 @@ mod tests {
         assert_vec3_close(lin, [0.0, 0.0, 0.0], 1e-12, "revolute Z linear");
         assert_eq!(
             jac_vec3_dim(&result, "angular"),
-            reify_types::DimensionVector::DIMENSIONLESS,
+            reify_core::DimensionVector::DIMENSIONLESS,
             "angular should be DIMENSIONLESS"
         );
         assert_eq!(
             jac_vec3_dim(&result, "linear"),
-            reify_types::DimensionVector::DIMENSIONLESS,
+            reify_core::DimensionVector::DIMENSIONLESS,
             "linear should be DIMENSIONLESS"
         );
     }
@@ -3689,7 +3691,7 @@ mod tests {
 
     #[test]
     fn screw_validation_rejections() {
-        use reify_types::DimensionVector;
+        use reify_core::DimensionVector;
         use std::collections::BTreeMap;
         let parent = prismatic_x_joint();
         let lead = Value::length(1e-3);
@@ -3793,7 +3795,7 @@ mod tests {
 
     #[test]
     fn gear_validation_rejections() {
-        use reify_types::DimensionVector;
+        use reify_core::DimensionVector;
         let parent = revolute_z_joint();
         let ta = Value::Int(20);
         let tb = Value::Int(30);
@@ -3917,7 +3919,7 @@ mod tests {
 
     #[test]
     fn rack_and_pinion_validation_rejections() {
-        use reify_types::DimensionVector;
+        use reify_core::DimensionVector;
         use std::collections::BTreeMap;
         let parent = prismatic_x_joint();
         let pr = Value::length(0.01);

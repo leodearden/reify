@@ -106,7 +106,7 @@ fn realize_voxel_from_thin_slab_mesh_returns_handle_with_expected_active_count()
         .expect("realize_voxel_from_mesh should succeed for a valid slab mesh");
 
     // Handle must be valid.
-    use reify_types::GeometryHandleId;
+    use reify_ir::GeometryHandleId;
     assert!(
         handle != GeometryHandleId::INVALID,
         "expected a valid GeometryHandleId, got INVALID"

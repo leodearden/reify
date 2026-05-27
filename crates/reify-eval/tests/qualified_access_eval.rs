@@ -8,7 +8,8 @@
 //! 4e8d65153 (lost in the c88ca9635/3a248e07d regression cluster; see
 //! project_regression_c88ca9635.md).
 
-use reify_types::{ModulePath, Satisfaction, Severity, ValueCellId};
+use reify_core::{ModulePath, Severity, ValueCellId};
+use reify_ir::Satisfaction;
 
 // ── Helper ───────────────────────────────────────────────────────────────────
 

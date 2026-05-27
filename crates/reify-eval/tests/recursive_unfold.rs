@@ -8,7 +8,8 @@ use reify_eval::Engine;
 use reify_test_support::builders::{binop, conditional_expr, gt, literal, value_ref_typed};
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, assert_eval_clean};
-use reify_types::*;
+use reify_core::*;
+use reify_ir::*;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 

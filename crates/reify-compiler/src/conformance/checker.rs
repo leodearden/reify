@@ -74,7 +74,7 @@ pub(super) fn check_phase_resolve_structure_members(
     structure: &EntityDefRef<'_>,
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
-    enum_defs: &[reify_types::EnumDef],
+    enum_defs: &[reify_ir::EnumDef],
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> (
@@ -122,11 +122,11 @@ pub(super) fn check_phase_resolve_structure_members(
     // `type_args`, so `param x : Option<Pressure>` on a conforming structure was rejected
     // as "unresolved type" even though the same shape worked elsewhere. Mirrors the
     // parallel fix in `traits.rs` (commit 10481423b2).
-    let resolve_member_annotation_type = |te: &reify_syntax::TypeExpr,
+    let resolve_member_annotation_type = |te: &reify_ast::TypeExpr,
                                           diagnostics: &mut Vec<Diagnostic>|
      -> Type {
         match &te.kind {
-            reify_syntax::TypeExprKind::DimensionalOp { .. } => {
+            reify_ast::TypeExprKind::DimensionalOp { .. } => {
                 diagnostics.push(
                     Diagnostic::error(format!("unresolved type in conformance check: {}", te))
                         .with_code(DiagnosticCode::UnresolvedType)
@@ -137,7 +137,7 @@ pub(super) fn check_phase_resolve_structure_members(
                 );
                 return Type::Error;
             }
-            reify_syntax::TypeExprKind::IntegerLiteral(_) => {
+            reify_ast::TypeExprKind::IntegerLiteral(_) => {
                 // Let the resolver emit its specific "integer literal N is only
                 // allowed as a type argument of Tensor or Matrix" diagnostic by
                 // calling it once for its side effect, then return Error without
@@ -164,7 +164,7 @@ pub(super) fn check_phase_resolve_structure_members(
         ) {
             Some(t) => t,
             None => {
-                if let reify_syntax::TypeExprKind::Named { name, type_args } = &te.kind
+                if let reify_ast::TypeExprKind::Named { name, type_args } = &te.kind
                     && enum_names.contains(name.as_str())
                 {
                     if !type_args.is_empty() {
@@ -200,7 +200,7 @@ pub(super) fn check_phase_resolve_structure_members(
 
     for m in structure.members.iter() {
         match m {
-            reify_syntax::MemberDecl::Param(p) => {
+            reify_ast::MemberDecl::Param(p) => {
                 let ty = match p.type_expr.as_ref() {
                     Some(te) => resolve_member_annotation_type(te, diagnostics),
                     None => {
@@ -216,7 +216,7 @@ pub(super) fn check_phase_resolve_structure_members(
                 };
                 structure_param_members.insert(p.name.clone(), ty);
             }
-            reify_syntax::MemberDecl::Let(l) => {
+            reify_ast::MemberDecl::Let(l) => {
                 // let bindings get their type from expression inference, not annotations.
                 // Only include in structure_let_members when there is an explicit type
                 // annotation; omitting is safe because if a trait requires this member,
@@ -236,7 +236,7 @@ pub(super) fn check_phase_resolve_structure_members(
         .members
         .iter()
         .filter_map(|m| {
-            if let reify_syntax::MemberDecl::Constraint(c) = m {
+            if let reify_ast::MemberDecl::Constraint(c) = m {
                 c.label.clone()
             } else {
                 None
@@ -402,7 +402,7 @@ pub(super) fn check_phase_pre_register_default_types(
     structure_members: &HashMap<String, Type>,
     structure_name: &str,
     scope: &mut CompilationScope,
-    enum_defs: &[reify_types::EnumDef],
+    enum_defs: &[reify_ir::EnumDef],
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> PreRegisterOutput {
@@ -825,7 +825,7 @@ pub(super) fn check_phase_check_members_against_requirements(
             RequirementKind::Let(expected) => (AvailableDefaultKind::Let, expected),
             RequirementKind::Sub(structure_name) => {
                 let has_sub = structure.members.iter().any(|m| {
-                    if let reify_syntax::MemberDecl::Sub(s) = m {
+                    if let reify_ast::MemberDecl::Sub(s) = m {
                         s.name == req.name && s.structure_name == *structure_name
                     } else {
                         false
@@ -1019,7 +1019,7 @@ pub(super) fn check_phase_inject_defaults(
     value_cells: &mut Vec<ValueCellDecl>,
     constraints: &mut Vec<CompiledConstraint>,
     constraint_index: &mut u32,
-    enum_defs: &[reify_types::EnumDef],
+    enum_defs: &[reify_ir::EnumDef],
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
 ) {

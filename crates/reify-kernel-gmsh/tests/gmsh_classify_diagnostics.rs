@@ -24,7 +24,7 @@
 
 use reify_kernel_gmsh::MeshingOptions;
 use reify_kernel_gmsh::mesh_volume::mesh_surface_to_volume_with_diagnostics;
-use reify_types::{ElementOrderTag, Mesh};
+use reify_ir::{ElementOrderTag, Mesh};
 
 /// Build a 2×2-subdivided unit cube centred at the origin (side 1.0):
 /// 8 corners + 12 edge midpoints + 6 face centers = 26 unique vertices,
@@ -84,7 +84,7 @@ fn subdivided_unit_cube_surface() -> Mesh {
 
 /// Count how many of the 8 cube-corner positions are present in the output
 /// VolumeMesh's vertex array (within squared tolerance `1e-6`).
-fn count_corners_recovered(volume: &reify_types::VolumeMesh) -> usize {
+fn count_corners_recovered(volume: &reify_ir::VolumeMesh) -> usize {
     let corners: [[f32; 3]; 8] = [
         [-0.5, -0.5, -0.5], [ 0.5, -0.5, -0.5],
         [-0.5,  0.5, -0.5], [ 0.5,  0.5, -0.5],

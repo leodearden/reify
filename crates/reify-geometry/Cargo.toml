@@ -6,7 +6,7 @@ license.workspace = true
 description = "SingleKernelHolder wrapping a single geometry kernel for tests; production uses Engine::with_registered_kernel"
 
 [dependencies]
-reify-types.workspace = true
+reify-ir.workspace = true
 
 [dev-dependencies]
 reify-test-support.workspace = true

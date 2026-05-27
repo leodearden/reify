@@ -1,7 +1,8 @@
 use reify_compiler::{
     CompiledConstraint, CompiledPurpose, CompiledPurposeParam, ResolvedSchemaQuery,
 };
-use reify_types::{CompiledExpr, ConstraintNodeId, ContentHash, SourceSpan, ValueCellId};
+use reify_core::{ConstraintNodeId, ContentHash, SourceSpan, ValueCellId};
+use reify_ir::CompiledExpr;
 
 // --- CompiledPurposeBuilder ---
 
@@ -11,9 +12,9 @@ pub struct CompiledPurposeBuilder {
     is_pub: bool,
     params: Vec<CompiledPurposeParam>,
     constraints: Vec<CompiledConstraint>,
-    objective: Option<reify_types::OptimizationObjective>,
+    objective: Option<reify_ir::OptimizationObjective>,
     resolved_queries: Vec<ResolvedSchemaQuery>,
-    annotations: Vec<reify_types::Annotation>,
+    annotations: Vec<reify_ir::Annotation>,
 }
 
 impl CompiledPurposeBuilder {
@@ -30,13 +31,13 @@ impl CompiledPurposeBuilder {
     }
 
     /// Push a single annotation onto this builder.
-    pub fn annotation(mut self, ann: reify_types::Annotation) -> Self {
+    pub fn annotation(mut self, ann: reify_ir::Annotation) -> Self {
         self.annotations.push(ann);
         self
     }
 
     /// Replace all annotations with the given vec.
-    pub fn annotations(mut self, anns: Vec<reify_types::Annotation>) -> Self {
+    pub fn annotations(mut self, anns: Vec<reify_ir::Annotation>) -> Self {
         self.annotations = anns;
         self
     }
@@ -72,7 +73,7 @@ impl CompiledPurposeBuilder {
         self
     }
 
-    pub fn objective(mut self, obj: reify_types::OptimizationObjective) -> Self {
+    pub fn objective(mut self, obj: reify_ir::OptimizationObjective) -> Self {
         self.objective = Some(obj);
         self
     }
@@ -121,7 +122,7 @@ impl CompiledPurposeBuilder {
 mod annotation_tests {
     use super::*;
     use crate::builders::{ann_str, annotation, annotation_with_args};
-    use reify_types::{DEPRECATED_ANNOTATION, TEST_ANNOTATION};
+    use reify_core::{DEPRECATED_ANNOTATION, TEST_ANNOTATION};
 
     #[test]
     fn compiled_purpose_builder_single_annotation() {
@@ -166,7 +167,7 @@ mod annotation_tests {
 mod tests {
     use super::*;
     use crate::builders::literal;
-    use reify_types::{OptimizationObjective, Value};
+    use reify_ir::{OptimizationObjective, Value};
 
     #[test]
     fn purpose_builder_basic_param_and_constraint() {

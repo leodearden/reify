@@ -4,7 +4,8 @@
 
 use reify_compiler::*;
 use reify_test_support::parse_and_compile;
-use reify_types::*;
+use reify_core::*;
+use reify_ir::*;
 
 // ── Step 9: basic purpose compilation ───────────────────────────
 

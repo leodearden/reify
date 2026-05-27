@@ -29,7 +29,8 @@ mod reexport_contract_tests {
         neg, not, range_constraint, sample_call, set_expr, user_fn_call, value_ref,
         value_ref_typed,
     };
-    use reify_types::{BinOp, Type, Value};
+    use reify_core::Type;
+    use reify_ir::{BinOp, Value};
 
     #[test]
     fn expr_builders_accessible_via_module_path() {
@@ -98,7 +99,7 @@ mod reexport_contract_tests {
             .imported()
             .build();
         let _ = CompiledPurposeBuilder::new("p").build();
-        let _ = CompiledModuleBuilder::new(reify_types::ModulePath::new(vec!["t".into()])).build();
+        let _ = CompiledModuleBuilder::new(reify_core::ModulePath::new(vec!["t".into()])).build();
     }
 
     #[test]
@@ -108,7 +109,7 @@ mod reexport_contract_tests {
             field_literal_expr, laplacian_call, pragma, pragma_bare, pragma_bool, pragma_ident,
             pragma_kv, pragma_number, pragma_string, pragma_with_args,
         };
-        use reify_types::{DEPRECATED_ANNOTATION, TEST_ANNOTATION};
+        use reify_core::{DEPRECATED_ANNOTATION, TEST_ANNOTATION};
 
         // Annotation helpers
         let _ = ann_str("hello");
@@ -149,7 +150,7 @@ mod reexport_contract_tests {
         let field_expr = field_literal_expr(
             Type::Geometry,
             Type::Real,
-            reify_types::FieldSourceKind::Analytical,
+            reify_ir::FieldSourceKind::Analytical,
             Value::Bool(false),
         );
         let _ = laplacian_call(field_expr, Type::Real);

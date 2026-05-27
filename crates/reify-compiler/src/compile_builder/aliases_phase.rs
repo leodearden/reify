@@ -35,8 +35,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use reify_syntax::TypeAliasDecl;
-use reify_types::{Diagnostic, DiagnosticLabel};
+use reify_ast::TypeAliasDecl;
+use reify_core::{Diagnostic, DiagnosticLabel};
 
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::type_resolution::{TypeAliasEntry, resolve_alias_dfs};

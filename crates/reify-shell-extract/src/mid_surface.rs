@@ -15,7 +15,7 @@
 
 use std::collections::HashSet;
 
-use reify_types::value::SampledField;
+use reify_ir::value::SampledField;
 
 use crate::grid_validation::{GridValidationError, validate_regular3d};
 use crate::medial::{MedialMask, sample_at_index};
@@ -692,7 +692,7 @@ mod tests {
     use super::*;
     use crate::grid_validation::GridValidationError;
     use crate::medial::MedialMask;
-    use reify_types::value::{InterpolationKind, SampledField, SampledGridKind};
+    use reify_ir::value::{InterpolationKind, SampledField, SampledGridKind};
     use std::sync::atomic::AtomicBool;
 
     // ── Fixture helpers ───────────────────────────────────────────────────────

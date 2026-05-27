@@ -11,7 +11,8 @@
 //!     rather than fabricating a `ValueCellId`.
 
 use reify_test_support::{compile_source, errors_only, warnings_only};
-use reify_types::{CompiledExprKind, Severity, Type, Value};
+use reify_core::{Severity, Type};
+use reify_ir::{CompiledExprKind, Value};
 
 // ── step-1: characterization test for entity.rs dedup refactor ───────────────
 

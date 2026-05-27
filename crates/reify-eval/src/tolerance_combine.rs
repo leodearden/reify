@@ -16,9 +16,8 @@
 //! `tolerance_scope.rs`'s public surface (TODO).
 
 use crate::graph::ConstraintNodeData;
-use reify_types::{
-    CompiledExprKind, ConstraintNodeId, DimensionVector, PersistentMap, Type, Value,
-};
+use reify_core::{ConstraintNodeId, DimensionVector, Type};
+use reify_ir::{CompiledExprKind, PersistentMap, Value};
 
 /// Combine an output occurrence's tolerance bound with the active purpose's
 /// tolerance bound under partial-order "tighter satisfies looser" semantics.
@@ -215,10 +214,8 @@ pub fn extract_output_tolerance_bound(
 mod tests {
     use super::*;
     use crate::graph::ConstraintNodeData;
-    use reify_types::{
-        CompiledExpr, ConstraintNodeId, ContentHash, DimensionVector, PersistentMap, Type, Value,
-        ValueCellId,
-    };
+    use reify_core::{ConstraintNodeId, ContentHash, DimensionVector, Type, ValueCellId};
+    use reify_ir::{CompiledExpr, PersistentMap, Value};
 
     /// Build a `(ConstraintNodeId, ConstraintNodeData)` pair carrying the
     /// canonical `RepresentationWithin(<ValueRef typed StructureRef>,

@@ -62,8 +62,8 @@ pub fn update_source_impl(
 /// Export geometry to a file.
 pub fn export_impl(engine: &Mutex<EngineSession>, format: &str, path: &str) -> Result<(), String> {
     let export_format = match format {
-        "step" | "stp" => reify_types::ExportFormat::Step,
-        "stl" => reify_types::ExportFormat::Stl,
+        "step" | "stp" => reify_ir::ExportFormat::Step,
+        "stl" => reify_ir::ExportFormat::Stl,
         _ => return Err(format!("Unknown export format: {}", format)),
     };
     crate::engine_lock::with_engine_lock(engine, |s| s.export(export_format, Path::new(path)))

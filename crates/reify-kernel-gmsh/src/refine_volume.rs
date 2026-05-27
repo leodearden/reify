@@ -27,7 +27,7 @@
 
 use std::collections::HashMap;
 
-use reify_types::{ElementOrderTag, GeometryError, Mesh, VolumeMesh};
+use reify_ir::{ElementOrderTag, GeometryError, Mesh, VolumeMesh};
 
 use crate::options::MeshingOptions;
 

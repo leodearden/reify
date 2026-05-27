@@ -42,7 +42,7 @@ struct FixtureRow {
     label: &'static str,
     name: &'static str,
     context: &'static str,
-    args: Vec<reify_types::AnnotationArgValue>,
+    args: Vec<reify_ir::AnnotationArgValue>,
     expected: Vec<ExpectedDiag>,
 }
 
@@ -51,7 +51,7 @@ impl FixtureRow {
         label: &'static str,
         name: &'static str,
         context: &'static str,
-        args: Vec<reify_types::AnnotationArgValue>,
+        args: Vec<reify_ir::AnnotationArgValue>,
         expected: Vec<ExpectedDiag>,
     ) -> Self {
         Self {
@@ -67,7 +67,7 @@ impl FixtureRow {
         label: &'static str,
         name: &'static str,
         context: &'static str,
-        args: Vec<reify_types::AnnotationArgValue>,
+        args: Vec<reify_ir::AnnotationArgValue>,
     ) -> Self {
         Self::new(label, name, context, args, vec![])
     }
@@ -75,7 +75,7 @@ impl FixtureRow {
 
 #[test]
 fn annotation_schema_registry_parity() {
-    use reify_types::AnnotationArgValue::{Bool, Ident, Int, Real, String as Str};
+    use reify_ir::AnnotationArgValue::{Bool, Ident, Int, Real, String as Str};
 
     #[rustfmt::skip]
     let rows: Vec<FixtureRow> = vec![
@@ -202,15 +202,15 @@ fn annotation_schema_registry_parity() {
 
     // ── Single-annotation rows ────────────────────────────────────────────────
     for row in &rows {
-        let ann = reify_types::Annotation {
+        let ann = reify_ir::Annotation {
             name: row.name.to_string(),
             args: row
                 .args
                 .iter()
                 .cloned()
-                .map(reify_types::AnnotationArg::positional)
+                .map(reify_ir::AnnotationArg::positional)
                 .collect(),
-            span: reify_types::SourceSpan::empty(0),
+            span: reify_core::SourceSpan::empty(0),
         };
         let diags = reify_compiler::__validate_annotations_for_parity_test(
             std::slice::from_ref(&ann),
@@ -255,15 +255,15 @@ fn annotation_schema_registry_parity() {
 
     // Two valid @optimized on constraint_def → 1 duplicate warning
     {
-        let a1 = reify_types::Annotation {
+        let a1 = reify_ir::Annotation {
             name: "optimized".to_string(),
-            args: vec![reify_types::AnnotationArg::positional(Str("a".to_string()))],
-            span: reify_types::SourceSpan::empty(0),
+            args: vec![reify_ir::AnnotationArg::positional(Str("a".to_string()))],
+            span: reify_core::SourceSpan::empty(0),
         };
-        let a2 = reify_types::Annotation {
+        let a2 = reify_ir::Annotation {
             name: "optimized".to_string(),
-            args: vec![reify_types::AnnotationArg::positional(Str("b".to_string()))],
-            span: reify_types::SourceSpan::empty(10),
+            args: vec![reify_ir::AnnotationArg::positional(Str("b".to_string()))],
+            span: reify_core::SourceSpan::empty(10),
         };
         let anns = vec![a1, a2.clone()];
         let diags = reify_compiler::__validate_annotations_for_parity_test(&anns, "constraint_def");
@@ -288,15 +288,15 @@ fn annotation_schema_registry_parity() {
 
     // Two valid @optimized on function → 1 duplicate warning
     {
-        let a1 = reify_types::Annotation {
+        let a1 = reify_ir::Annotation {
             name: "optimized".to_string(),
-            args: vec![reify_types::AnnotationArg::positional(Str("a".to_string()))],
-            span: reify_types::SourceSpan::empty(0),
+            args: vec![reify_ir::AnnotationArg::positional(Str("a".to_string()))],
+            span: reify_core::SourceSpan::empty(0),
         };
-        let a2 = reify_types::Annotation {
+        let a2 = reify_ir::Annotation {
             name: "optimized".to_string(),
-            args: vec![reify_types::AnnotationArg::positional(Str("b".to_string()))],
-            span: reify_types::SourceSpan::empty(10),
+            args: vec![reify_ir::AnnotationArg::positional(Str("b".to_string()))],
+            span: reify_core::SourceSpan::empty(10),
         };
         let anns = vec![a1, a2.clone()];
         let diags = reify_compiler::__validate_annotations_for_parity_test(&anns, "function");
@@ -312,15 +312,15 @@ fn annotation_schema_registry_parity() {
 
     // Two valid @optimized on structure → 0 duplicate warnings
     {
-        let a1 = reify_types::Annotation {
+        let a1 = reify_ir::Annotation {
             name: "optimized".to_string(),
-            args: vec![reify_types::AnnotationArg::positional(Str("a".to_string()))],
-            span: reify_types::SourceSpan::empty(0),
+            args: vec![reify_ir::AnnotationArg::positional(Str("a".to_string()))],
+            span: reify_core::SourceSpan::empty(0),
         };
-        let a2 = reify_types::Annotation {
+        let a2 = reify_ir::Annotation {
             name: "optimized".to_string(),
-            args: vec![reify_types::AnnotationArg::positional(Str("b".to_string()))],
-            span: reify_types::SourceSpan::empty(10),
+            args: vec![reify_ir::AnnotationArg::positional(Str("b".to_string()))],
+            span: reify_core::SourceSpan::empty(10),
         };
         let anns = vec![a1, a2];
         let diags = reify_compiler::__validate_annotations_for_parity_test(&anns, "structure");
@@ -333,15 +333,15 @@ fn annotation_schema_registry_parity() {
 
     // Malformed then valid @optimized on constraint_def → 1 missing-target, 0 dup
     {
-        let a_malformed = reify_types::Annotation {
+        let a_malformed = reify_ir::Annotation {
             name: "optimized".to_string(),
             args: vec![],
-            span: reify_types::SourceSpan::empty(0),
+            span: reify_core::SourceSpan::empty(0),
         };
-        let a_valid = reify_types::Annotation {
+        let a_valid = reify_ir::Annotation {
             name: "optimized".to_string(),
-            args: vec![reify_types::AnnotationArg::positional(Str("b".to_string()))],
-            span: reify_types::SourceSpan::empty(10),
+            args: vec![reify_ir::AnnotationArg::positional(Str("b".to_string()))],
+            span: reify_core::SourceSpan::empty(10),
         };
         let anns = vec![a_malformed, a_valid];
         let diags = reify_compiler::__validate_annotations_for_parity_test(&anns, "constraint_def");

@@ -8,7 +8,7 @@ use reify_syntax::*;
 fn parse_decls(source: &str) -> (Vec<Declaration>, Vec<ParseError>) {
     let module = reify_syntax::parse(
         source,
-        reify_types::ModulePath::single("constraint_def_test"),
+        reify_core::ModulePath::single("constraint_def_test"),
     );
     (module.declarations, module.errors)
 }

@@ -5,7 +5,7 @@
 
 use std::sync::OnceLock;
 
-use reify_types::{ModulePath, Severity};
+use reify_core::{ModulePath, Severity};
 
 use crate::CompiledModule;
 use crate::PreludeContext;

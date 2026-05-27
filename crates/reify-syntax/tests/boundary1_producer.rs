@@ -49,7 +49,7 @@ fn error_recovery_partial_parse() {
     param !!!invalid!!!
     param height: Scalar = 100mm
 }"#;
-    let module = reify_syntax::parse(source, reify_types::ModulePath::single("broken"));
+    let module = reify_syntax::parse(source, reify_core::ModulePath::single("broken"));
     // Should have parse errors but also recovered declarations
     assert!(!module.errors.is_empty());
     assert!(!module.declarations.is_empty());
@@ -172,7 +172,7 @@ fn parse_auto_param() {
     let source = r#"structure T {
     param thickness: Scalar = auto
 }"#;
-    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let module = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
         module.errors.is_empty(),
         "expected no parse errors: {:?}",
@@ -210,7 +210,7 @@ fn parse_auto_free_param() {
     let source = r#"structure T {
     param x: Scalar = auto(free)
 }"#;
-    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let module = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
         module.errors.is_empty(),
         "expected no parse errors: {:?}",
@@ -250,7 +250,7 @@ fn parse_mixed_auto_and_normal_params() {
     param y: Scalar = auto
     param z: Scalar
 }"#;
-    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let module = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
         module.errors.is_empty(),
         "expected no parse errors: {:?}",
@@ -302,7 +302,7 @@ fn parse_mixed_auto_and_auto_free() {
     param b: Scalar = auto(free)
     param c: Scalar = 5mm
 }"#;
-    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let module = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
         module.errors.is_empty(),
         "expected no parse errors: {:?}",
@@ -373,7 +373,7 @@ fn parse_auto_unrecognized_modifier_is_error() {
     let source = r#"structure T {
     param x: Scalar = auto(constrained)
 }"#;
-    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let module = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
         !module.errors.is_empty(),
         "expected parse errors for unrecognized modifier 'constrained' in auto(...)"
@@ -405,7 +405,7 @@ fn parse_line_comment_double_slash() {
     // this is a comment
     param x: Scalar = 1mm
 }"#;
-    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let module = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
         module.errors.is_empty(),
         "expected no parse errors: {:?}",
@@ -419,7 +419,7 @@ fn parse_line_comment_after_member() {
     let source = r#"structure S {
     param x: Scalar = 1mm // inline comment
 }"#;
-    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let module = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
         module.errors.is_empty(),
         "expected no parse errors: {:?}",
@@ -434,7 +434,7 @@ fn parse_block_comment_simple() {
     /* a comment */
     param x: Scalar = 1mm
 }"#;
-    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let module = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
         module.errors.is_empty(),
         "expected no parse errors: {:?}",
@@ -452,7 +452,7 @@ fn parse_block_comment_multiline() {
      */
     param x: Scalar = 1mm
 }"#;
-    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let module = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
         module.errors.is_empty(),
         "expected no parse errors: {:?}",
@@ -467,7 +467,7 @@ fn parse_hash_comment_is_error() {
     # old style comment
     param x: Scalar = 1mm
 }"#;
-    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let module = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
         !module.errors.is_empty(),
         "# should no longer be a valid comment"
@@ -482,7 +482,7 @@ structure S {
     /// doc comment for a param
     param x: Scalar = 1mm
 }"#;
-    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let module = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
         module.errors.is_empty(),
         "expected no parse errors: {:?}",
@@ -494,7 +494,7 @@ structure S {
 #[test]
 fn parse_comments_preserve_ast() {
     // Parse bracket_source() normally (no comments)
-    let baseline = reify_syntax::parse(bracket_source(), reify_types::ModulePath::single("test"));
+    let baseline = reify_syntax::parse(bracket_source(), reify_core::ModulePath::single("test"));
 
     // Inject comments into bracket source
     let commented_source = bracket_source()
@@ -503,7 +503,7 @@ fn parse_comments_preserve_ast() {
             "// width parameter\nparam width: Scalar = 80mm",
         )
         .replace("let volume", "/* volume computation */ let volume");
-    let commented = reify_syntax::parse(&commented_source, reify_types::ModulePath::single("test"));
+    let commented = reify_syntax::parse(&commented_source, reify_core::ModulePath::single("test"));
 
     assert!(
         commented.errors.is_empty(),
@@ -527,7 +527,7 @@ fn parse_comments_preserve_ast() {
 #[test]
 fn all_spans_valid() {
     let source = bracket_source();
-    let module = reify_syntax::parse(source, reify_types::ModulePath::single("bracket"));
+    let module = reify_syntax::parse(source, reify_core::ModulePath::single("bracket"));
     let structure = match &module.declarations[0] {
         Declaration::Structure(s) => s,
         _ => panic!("expected Structure"),

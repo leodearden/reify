@@ -13,7 +13,7 @@ use common::{
     assert_eq_rel, assert_simple_unit, compile_with_stdlib_helper, stdlib_param_si_value,
     units_module,
 };
-use reify_types::{DimensionVector, Severity};
+use reify_core::{DimensionVector, Severity};
 
 // ─── (a) USD metadata: dimension = MONEY, factor ≈ 1.0, no offset ────────────
 
@@ -88,7 +88,7 @@ fn stdlib_USD_per_kg_compound_resolves_to_money_per_mass() {
     let expected_dim = DimensionVector::MONEY.div(&DimensionVector::MASS);
     assert_eq!(
         cell.cell_type,
-        reify_types::Type::Scalar {
+        reify_core::Type::Scalar {
             dimension: expected_dim
         },
         "cell_type should be Scalar{{MONEY/MASS}}"
@@ -99,7 +99,7 @@ fn stdlib_USD_per_kg_compound_resolves_to_money_per_mass() {
     // BinOp result type must be Money / Mass.
     assert_eq!(
         expr.result_type,
-        reify_types::Type::Scalar {
+        reify_core::Type::Scalar {
             dimension: expected_dim
         },
         "BinOp result_type should be Scalar{{MONEY/MASS}}, got {:?}",
@@ -108,14 +108,14 @@ fn stdlib_USD_per_kg_compound_resolves_to_money_per_mass() {
 
     // The outer expression must be a Divide BinOp.
     match &expr.kind {
-        reify_types::CompiledExprKind::BinOp {
-            op: reify_types::BinOp::Div,
+        reify_ir::CompiledExprKind::BinOp {
+            op: reify_ir::BinOp::Div,
             left,
             right,
         } => {
             // Left operand: 25USD → Scalar with MONEY dimension, si_value = 25.0
             match &left.kind {
-                reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+                reify_ir::CompiledExprKind::Literal(reify_ir::Value::Scalar {
                     si_value,
                     dimension,
                 }) => {
@@ -134,7 +134,7 @@ fn stdlib_USD_per_kg_compound_resolves_to_money_per_mass() {
             }
             // Right operand: 1kg → Scalar with MASS dimension, si_value = 1.0
             match &right.kind {
-                reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+                reify_ir::CompiledExprKind::Literal(reify_ir::Value::Scalar {
                     si_value,
                     dimension,
                 }) => {

@@ -14,7 +14,7 @@
 //! `crates/reify-kernel-occt/tests/inventory_registration.rs:1-152`.
 
 use reify_kernel_manifold::register::MANIFOLD_KERNEL_NAME;
-use reify_types::{GeometryKernel, KernelRegistration, Operation, ReprKind};
+use reify_ir::{GeometryKernel, KernelRegistration, Operation, ReprKind};
 
 /// Manifold's capability descriptor must enumerate exactly the three
 /// mesh-Boolean operations Manifold supports.
@@ -89,7 +89,7 @@ fn manifold_kernel_registration_appears_in_inventory_iter() {
     // `manifold_capability_descriptor` function the rest of the crate uses".
     // `std::ptr::fn_addr_eq` is the explicit, intent-revealing comparison.
     let inventory_fn = manifold_entries[0].descriptor;
-    let direct_fn: fn() -> reify_types::CapabilityDescriptor =
+    let direct_fn: fn() -> reify_ir::CapabilityDescriptor =
         reify_kernel_manifold::register::manifold_capability_descriptor;
     assert!(
         std::ptr::fn_addr_eq(inventory_fn, direct_fn),

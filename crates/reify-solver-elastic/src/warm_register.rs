@@ -18,7 +18,7 @@
 //! Mirrors the unconditional submission pattern used by
 //! `reify-kernel-occt/src/warm_register.rs`.
 
-use reify_types::{NodeKind, WarmStartableRegistration};
+use reify_ir::{NodeKind, WarmStartableRegistration};
 
 inventory::submit! {
     WarmStartableRegistration { kind: NodeKind::Compute }

@@ -19,7 +19,7 @@
 //! reflects production thresholds.
 
 use reify_mesh_morph::{MorphOptions, QualityVerdict, elasticity_morph, quality_check};
-use reify_types::VolumeMesh;
+use reify_ir::VolumeMesh;
 
 /// Canonical materiality factor for the "morph rejected only when from-scratch
 /// is materially better" calibration rule (PRD task #13 / task #2950).
@@ -246,7 +246,7 @@ pub fn ar_materially_better(report: &SweepReport) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::ElementOrderTag;
+    use reify_ir::ElementOrderTag;
 
     /// Build a synthetic `SweepReport` with hand-picked metric values and
     /// empty meshes. The predicate functions only read scalar fields, so

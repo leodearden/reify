@@ -13,7 +13,8 @@
 
 use reify_compiler::{EntityKind, stdlib_loader};
 use reify_test_support::compile_source_with_stdlib;
-use reify_types::{CompiledExprKind, Severity, Type};
+use reify_core::{Severity, Type};
+use reify_ir::CompiledExprKind;
 
 // ─── step-3: canonical Material struct is present in the stdlib ─────────────
 
@@ -57,10 +58,10 @@ fn material_struct_present_in_stdlib() {
     );
 
     // Check each expected (name, type) pair is present.
-    let expected: &[(&str, reify_types::Type)] = &[
-        ("name", reify_types::Type::String),
-        ("density", reify_types::Type::Real),
-        ("youngs_modulus", reify_types::Type::Real),
+    let expected: &[(&str, reify_core::Type)] = &[
+        ("name", reify_core::Type::String),
+        ("density", reify_core::Type::Real),
+        ("youngs_modulus", reify_core::Type::Real),
     ];
     for (expected_name, expected_type) in expected {
         let cell = param_cells

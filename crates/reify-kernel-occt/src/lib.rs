@@ -106,11 +106,7 @@ pub use stubs::{OcctKernel, OcctKernelHandle, TopologyCacheBuildCounts};
 use std::collections::HashMap;
 
 #[cfg(has_occt)]
-use reify_types::{
-    BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, BRepKind, ExportError, ExportFormat, GeometryError,
-    GeometryHandle, GeometryHandleId, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError,
-    SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, TessError, Value, WarmStartable,
-};
+use reify_ir::{BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, BRepKind, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, TessError, Value, WarmStartable};
 
 #[cfg(has_occt)]
 /// Send-safe payload for OCCT warm-start state.
@@ -259,10 +255,7 @@ fn centroid_json(p: ffi::ffi::Point3) -> String {
 // without taking a normal-dep on `reify-kernel-occt`. Re-exported here for
 // callers that already import from this crate; new call sites should prefer
 // `reify_types::{BooleanOpHistoryRecords, HistoryRecord, DeletedRecord}`.
-pub use reify_types::{
-    AttributeHistory, BooleanOpHistoryRecords, DeletedRecord, HistoryRecord, LoftOpHistoryRecords,
-    SweepOpHistoryRecords,
-};
+pub use reify_ir::{AttributeHistory, BooleanOpHistoryRecords, DeletedRecord, HistoryRecord, LoftOpHistoryRecords, SweepOpHistoryRecords};
 
 /// History records emitted by a local-feature operation (fillet or chamfer)
 /// at the OCCT FFI surface.
@@ -7998,7 +7991,7 @@ mod tests {
     #[test]
     fn default_point_on_shape_tolerance_m_pins_occt_precision_confusion() {
         let occt = ffi::ffi::precision_confusion();
-        let rust = reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M;
+        let rust = reify_ir::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M;
         // ~4 ULPs relative tolerance: permits arithmetic rounding if OCCT ever
         // computes `Precision::Confusion()` rather than returning a bare literal,
         // while still loudly catching any genuine change to its nominal value.

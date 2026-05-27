@@ -8,9 +8,9 @@ use reify_test_support::{
     bracket_source, bracket_source_violating, bracket_source_with_width,
     warn_source_with_unknown_port_type, warn_source_with_unknown_port_type_with_width,
 };
-use reify_types::ExportFormat;
+use reify_ir::ExportFormat;
 
-use reify_types::{DiagnosticInfo, ModulePath, SourceLocationInfo, Type, ValueCellId};
+use reify_core::{DiagnosticInfo, ModulePath, SourceLocationInfo, Type, ValueCellId};
 
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, mm, value_ref};
 
@@ -1692,7 +1692,8 @@ fn get_source_location_uses_explicit_key_lookup() {
 /// Verify all supported unit suffixes parse correctly.
 #[test]
 fn parse_value_string_all_units_correct() {
-    use reify_types::{DimensionVector, Value};
+    use reify_core::DimensionVector;
+    use reify_ir::Value;
 
     // mm → 0.001 * value, LENGTH
     let v = parse_value_string("5mm").expect("5mm should parse");
@@ -1780,7 +1781,8 @@ fn parse_value_string_all_units_correct() {
 /// '100cm' must produce si_value=1.0 (not 100.0 from 'm' matching 'cm' trailing).
 #[test]
 fn parse_value_string_m_does_not_shadow_longer_suffixes() {
-    use reify_types::{DimensionVector, Value};
+    use reify_core::DimensionVector;
+    use reify_ir::Value;
 
     let v = parse_value_string("100cm").expect("100cm should parse");
     match v {
@@ -1805,7 +1807,8 @@ fn parse_value_string_m_does_not_shadow_longer_suffixes() {
 /// These tests document the ordering contract and will catch regressions.
 #[test]
 fn parse_value_string_unit_table_ordering_invariant() {
-    use reify_types::{DimensionVector, Value};
+    use reify_core::DimensionVector;
+    use reify_ir::Value;
 
     // '5mm' must be recognized as millimeters, not meters
     let v = parse_value_string("5mm").expect("5mm should parse");
@@ -2289,7 +2292,7 @@ fn diagnostics_file_key_consistent_after_update_source() {
 /// a labelless diagnostic to verify the (1,1,1,1) fallback.
 #[test]
 fn engine_get_diagnostics_labelless_diagnostic_returns_default_span() {
-    use reify_types::Diagnostic;
+    use reify_core::Diagnostic;
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
@@ -2359,7 +2362,7 @@ fn engine_get_diagnostics_labelless_diagnostic_returns_default_span() {
 /// cannot silently diverge.
 #[test]
 fn get_diagnostics_severity_strings_match_as_wire_str() {
-    use reify_types::{Diagnostic, Severity};
+    use reify_core::{Diagnostic, Severity};
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
@@ -2556,8 +2559,8 @@ fn engine_get_diagnostics_cleared_after_update_to_clean_source() {
 
 #[test]
 fn get_diagnostics_empty_span_has_identical_start_end() {
-    use reify_types::byte_offset_to_line_col;
-    use reify_types::{Diagnostic, DiagnosticLabel, SourceSpan};
+    use reify_core::byte_offset_to_line_col;
+    use reify_core::{Diagnostic, DiagnosticLabel, SourceSpan};
 
     // Verify that a zero-length span (start == end) produces identical
     // start and end coordinates through the full get_diagnostics pipeline,
@@ -2630,7 +2633,7 @@ fn offset_to_line_col_fast_offset_zero() {
 #[test]
 fn offset_to_line_col_fast_matches_original_every_offset() {
     use crate::engine::{build_line_offsets, offset_to_line_col_fast};
-    use reify_types::byte_offset_to_line_col;
+    use reify_core::byte_offset_to_line_col;
     let source = "abc\ndef\nghi";
     let line_offsets = build_line_offsets(source);
     for offset in 0..source.len() {
@@ -2646,7 +2649,7 @@ fn offset_to_line_col_fast_matches_original_every_offset() {
     // prelude sentinel (SourceSpan::PRELUDE_SENTINEL_OFFSET).  Without the sentinel short-circuit, the
     // fast path computes line_offsets.len() + 1 (a past-last-line value) while
     // byte_offset_to_line_col returns (1, 1).
-    let sentinel = reify_types::SourceSpan::PRELUDE_SENTINEL_OFFSET;
+    let sentinel = reify_core::SourceSpan::PRELUDE_SENTINEL_OFFSET;
     let fast_sentinel = offset_to_line_col_fast(source, &line_offsets, sentinel);
     let orig_sentinel = byte_offset_to_line_col(source, sentinel);
     assert_eq!(
@@ -2710,7 +2713,7 @@ fn offset_to_line_col_fast_single_line() {
 #[test]
 fn offset_to_line_col_fast_at_eof_offset() {
     use crate::engine::{build_line_offsets, offset_to_line_col_fast};
-    use reify_types::byte_offset_to_line_col;
+    use reify_core::byte_offset_to_line_col;
     let source = "abc\ndef";
     let line_offsets = build_line_offsets(source);
     // source.len() is the EOF position — both implementations must agree here.
@@ -2739,7 +2742,7 @@ fn offset_to_line_col_fast_prelude_sentinel_returns_fallback() {
         offset_to_line_col_fast(
             source,
             &offsets,
-            reify_types::SourceSpan::PRELUDE_SENTINEL_OFFSET
+            reify_core::SourceSpan::PRELUDE_SENTINEL_OFFSET
         ),
         (1, 1),
         "prelude sentinel must return (1, 1), not a past-last-line value"
@@ -2756,8 +2759,8 @@ fn offset_to_line_col_fast_prelude_sentinel_returns_fallback() {
 /// then verify get_diagnostics returns the same line/col as the O(M) reference.
 #[test]
 fn get_diagnostics_multi_diagnostic_stress_matches_reference() {
-    use reify_types::byte_offset_to_line_col;
-    use reify_types::{Diagnostic, DiagnosticLabel, SourceSpan};
+    use reify_core::byte_offset_to_line_col;
+    use reify_core::{Diagnostic, DiagnosticLabel, SourceSpan};
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
@@ -2839,7 +2842,7 @@ fn get_diagnostics_multi_diagnostic_stress_matches_reference() {
 /// coverage of the labelless path specifically.
 #[test]
 fn get_diagnostics_labelless_fallback_unchanged_after_optimization() {
-    use reify_types::Diagnostic;
+    use reify_core::Diagnostic;
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
@@ -2876,7 +2879,7 @@ fn get_diagnostics_labelless_fallback_unchanged_after_optimization() {
 #[test]
 fn offset_to_line_col_fast_matches_original_multibyte_utf8() {
     use crate::engine::{build_line_offsets, offset_to_line_col_fast};
-    use reify_types::byte_offset_to_line_col;
+    use reify_core::byte_offset_to_line_col;
     let source = "héllo\nwörld";
     let line_offsets = build_line_offsets(source);
     // Iterate only char-boundary offsets.
@@ -2931,7 +2934,7 @@ fn offset_to_line_col_fast_two_byte_char_column_is_codepoint_not_byte() {
 #[test]
 fn offset_to_line_col_fast_matches_original_cjk_utf8() {
     use crate::engine::{build_line_offsets, offset_to_line_col_fast};
-    use reify_types::byte_offset_to_line_col;
+    use reify_core::byte_offset_to_line_col;
     let source = "ab\n\u{4F60}\u{597D}world";
     let line_offsets = build_line_offsets(source);
     for (byte_idx, _ch) in source.char_indices() {
@@ -3129,7 +3132,7 @@ fn resolve_source_returns_key_and_source_after_load() {
 #[cfg(not(debug_assertions))]
 #[test]
 fn get_diagnostics_returns_empty_when_module_name_broken() {
-    use reify_types::Diagnostic;
+    use reify_core::Diagnostic;
 
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
@@ -3163,7 +3166,7 @@ fn get_diagnostics_returns_empty_when_module_name_broken() {
 #[cfg(not(debug_assertions))]
 #[test]
 fn get_diagnostics_returns_empty_when_source_map_broken() {
-    use reify_types::Diagnostic;
+    use reify_core::Diagnostic;
 
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
@@ -3268,7 +3271,7 @@ fn get_diagnostics_returns_empty_when_source_map_broken_with_real_warning() {
 #[test]
 #[should_panic(expected = "invariant broken")]
 fn get_diagnostics_debug_asserts_when_module_name_broken() {
-    use reify_types::Diagnostic;
+    use reify_core::Diagnostic;
 
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
@@ -3293,7 +3296,7 @@ fn get_diagnostics_debug_asserts_when_module_name_broken() {
 #[test]
 #[should_panic(expected = "invariant broken")]
 fn get_diagnostics_debug_asserts_when_source_map_broken() {
-    use reify_types::Diagnostic;
+    use reify_core::Diagnostic;
 
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
@@ -3617,7 +3620,7 @@ structure Assembly { sub bolt = Bolt() }"#,
 
 #[test]
 fn get_entity_tree_collection_sub_has_list_type_name() {
-    use reify_types::{DimensionVector, ModulePath, Type};
+    use reify_core::{DimensionVector, ModulePath, Type};
 
     let mass_type = Type::Scalar {
         dimension: DimensionVector::MASS,
@@ -3630,7 +3633,7 @@ fn get_entity_tree_collection_sub_has_list_type_name() {
     // Use source-level test since we can't inject CompiledModule
     // Collection sub syntax: `sub bolts: List<Bolt>()`
     // Reify may or may not support this in the parser — test via compiled module builder
-    let count_cell = reify_types::ValueCellId::new("Assembly", "__count_bolts");
+    let count_cell = reify_core::ValueCellId::new("Assembly", "__count_bolts");
     let assembly_template = TopologyTemplateBuilder::new("Assembly")
         .collection_sub_component("bolts", "Bolt", count_cell)
         .build();
@@ -4277,7 +4280,7 @@ fn entity_tree_and_identity_map_entity_paths_are_consistent() {
 /// stack-overflow; the recursive sub node has empty children.
 #[test]
 fn build_template_node_self_reference_does_not_stack_overflow() {
-    use reify_types::ModulePath;
+    use reify_core::ModulePath;
 
     // Build template A: is_recursive=true, one sub x pointing back to "A"
     let template_a = TopologyTemplateBuilder::new("A")
@@ -4314,7 +4317,7 @@ fn build_template_node_self_reference_does_not_stack_overflow() {
 /// not stack-overflow; both sub nodes are leaf nodes (empty children).
 #[test]
 fn build_template_node_mutual_recursion_does_not_stack_overflow() {
-    use reify_types::ModulePath;
+    use reify_core::ModulePath;
 
     // A → sub b = B (B is recursive)
     let template_a = TopologyTemplateBuilder::new("A")
@@ -4371,7 +4374,7 @@ fn build_template_node_mutual_recursion_does_not_stack_overflow() {
 /// available as non-recursive (Container is not the recursive root).
 #[test]
 fn build_template_node_non_recursive_parent_stops_at_recursive_child() {
-    use reify_types::{ModulePath, Type};
+    use reify_core::{ModulePath, Type};
 
     // A is recursive (self-reference via sub x = A)
     let template_a = TopologyTemplateBuilder::new("A")
@@ -4473,7 +4476,7 @@ fn all_new_commands_callable_on_bracket_fixture() {
 #[test]
 fn get_entity_identity_map_value_cell_content_hash_is_identity_hash() {
     use crate::types::EntityIdentity;
-    use reify_types::ContentHash;
+    use reify_core::ContentHash;
     use std::collections::HashMap;
 
     let checker = SimpleConstraintChecker;
@@ -4497,7 +4500,7 @@ fn get_entity_identity_map_value_cell_content_hash_is_identity_hash() {
 /// contains two templates both named `"Dup"`.  Used by both the debug-mode
 /// panic test and the release-mode warn test so the setup is not duplicated.
 fn build_duplicate_template_session() -> EngineSession {
-    use reify_types::ModulePath;
+    use reify_core::ModulePath;
     let dup1 = TopologyTemplateBuilder::new("Dup").build();
     let dup2 = TopologyTemplateBuilder::new("Dup").build();
     let compiled = CompiledModuleBuilder::new(ModulePath::single("m"))
@@ -4596,7 +4599,7 @@ fn commit_state_populates_parsed_cache() {
         "parsed cache should contain at least one declaration"
     );
     let has_bracket = cached.declarations.iter().any(|d| {
-        if let reify_syntax::Declaration::Structure(s) = d {
+        if let reify_ast::Declaration::Structure(s) = d {
             s.name == "Bracket"
         } else {
             false
@@ -4974,7 +4977,7 @@ fn get_mechanism_descriptors_does_not_reinvoke_collect_on_cache_hit() {
 /// moves the WARN back inside the loop would emit 3, not 1, and fail here.
 #[test]
 fn get_mechanism_descriptors_warns_once_when_parsed_cache_missing_with_multiple_templates() {
-    use reify_types::ModulePath;
+    use reify_core::ModulePath;
 
     // Build a 3-template CompiledModule and inject it (no load → parsed_cache=None).
     // Call recheck_for_test to initialise last_check (required by get_mechanism_descriptors).
@@ -5018,9 +5021,9 @@ fn build_gui_state_tessellation_diagnostics_empty_on_clean_source() {
     // fixtures so task-2574's primitive-attribute seeder doesn't emit a
     // "no topology extraction fixture" warning into tessellation_diagnostics.
     let kernel = MockGeometryKernel::new()
-        .with_extracted_faces(reify_types::GeometryHandleId(1), vec![])
-        .with_extracted_edges(reify_types::GeometryHandleId(1), vec![])
-        .with_extracted_vertices(reify_types::GeometryHandleId(1), vec![]);
+        .with_extracted_faces(reify_ir::GeometryHandleId(1), vec![])
+        .with_extracted_edges(reify_ir::GeometryHandleId(1), vec![])
+        .with_extracted_vertices(reify_ir::GeometryHandleId(1), vec![]);
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
@@ -5182,8 +5185,8 @@ fn build_gui_state_compile_diagnostics_populated_from_warning() {
 fn build_gui_state_compile_diagnostics_empty_on_clean_source() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new()
-        .with_extracted_faces(reify_types::GeometryHandleId(1), vec![])
-        .with_extracted_edges(reify_types::GeometryHandleId(1), vec![]);
+        .with_extracted_faces(reify_ir::GeometryHandleId(1), vec![])
+        .with_extracted_edges(reify_ir::GeometryHandleId(1), vec![]);
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
 
     let state = session
@@ -5526,7 +5529,7 @@ fn extract_joints_from_mechanism_skips_non_map_at_value() {
     // non-Map "at" value (Value::String("not-a-map")).  extract_joints_from_mechanism
     // must return empty (joints, seen_joints) — no phantom row, no panic.
     use crate::engine::extract_joints_from_mechanism;
-    use reify_types::Value;
+    use reify_ir::Value;
     use std::collections::BTreeMap;
 
     let mut body_map: BTreeMap<Value, Value> = BTreeMap::new();
@@ -5566,7 +5569,7 @@ fn extract_joints_from_mechanism_handles_malformed_axis_length() {
     // The descriptor must still be produced (kind=="prismatic", dimension=="length")
     // but axis must be None.
     use crate::engine::extract_joints_from_mechanism;
-    use reify_types::Value;
+    use reify_ir::Value;
     use std::collections::BTreeMap;
 
     // Build the joint map with a 2-element axis vector.
@@ -7174,7 +7177,7 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_load_file_with_pri
 /// (without needing a real source that emits warnings) before triggering the live failure.
 #[test]
 fn build_gui_state_surfaces_prior_warning_and_live_error_together_in_append_order() {
-    use reify_types::Diagnostic;
+    use reify_core::Diagnostic;
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
@@ -7811,7 +7814,7 @@ fn engine_session_auto_resolve_emitter_fires_on_set_parameter_when_solver_presen
 #[test]
 fn engine_session_auto_resolve_emitter_emits_nan_sentinel_for_non_scalar_resolved_param() {
     use std::sync::Arc;
-    use reify_types::Value;
+    use reify_ir::Value;
 
     let thickness_id = ValueCellId::new("S", "thickness");
     let mut solved = std::collections::HashMap::new();
@@ -7890,7 +7893,7 @@ fn engine_session_auto_resolve_emitter_emits_nan_sentinel_for_non_scalar_resolve
 #[test]
 fn engine_session_auto_resolve_emitter_emits_real_entry_for_option_some_scalar_resolved_param() {
     use std::sync::Arc;
-    use reify_types::Value;
+    use reify_ir::Value;
 
     let thickness_id = ValueCellId::new("S", "thickness");
     let mut solved = std::collections::HashMap::new();
@@ -8318,9 +8321,9 @@ impl crate::engine::WarmPoolEventEmitter for RecordingWarmPoolEventEmitter {
 #[test]
 fn engine_session_warm_pool_event_emitter_captures_donated_and_evicted_events() {
     use std::sync::Arc;
-    use reify_types::OpaqueState;
+    use reify_ir::OpaqueState;
     use reify_eval::cache::NodeId;
-    use reify_types::ValueCellId;
+    use reify_core::ValueCellId;
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
@@ -8471,9 +8474,10 @@ impl crate::engine::FeaCaseEmitter for RecordingFeaCaseEmitter {
 fn fea_case_emitter_fires_when_multi_case_value_present() {
     use std::sync::Arc;
     use reify_eval::CheckResult;
-    use reify_types::{ValueCellId, ValueMap};
+    use reify_core::ValueCellId;
+    use reify_ir::ValueMap;
     use reify_test_support::multi_case_result_value;
-    use reify_types::Value;
+    use reify_ir::Value;
 
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
@@ -8516,8 +8520,9 @@ fn fea_case_emitter_fires_when_multi_case_value_present() {
 fn fea_case_emitter_no_fire_when_no_multi_case() {
     use std::sync::Arc;
     use reify_eval::CheckResult;
-    use reify_types::{ValueCellId, ValueMap};
-    use reify_types::Value;
+    use reify_core::ValueCellId;
+    use reify_ir::ValueMap;
+    use reify_ir::Value;
 
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
@@ -8558,9 +8563,10 @@ fn fea_case_emitter_no_fire_when_no_multi_case() {
 fn fea_case_emitter_re_fires_on_each_check() {
     use std::sync::Arc;
     use reify_eval::CheckResult;
-    use reify_types::{ValueCellId, ValueMap};
+    use reify_core::ValueCellId;
+    use reify_ir::ValueMap;
     use reify_test_support::multi_case_result_value;
-    use reify_types::Value;
+    use reify_ir::Value;
 
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
@@ -8644,9 +8650,9 @@ fn fea_case_emitter_wires_through_real_commit_path() {
 /// kind→binding dispatch; other fields are not required by extract_joint_descriptor).
 fn make_single_body_mechanism_map(
     joint_kind: &str,
-) -> std::collections::BTreeMap<reify_types::Value, reify_types::Value> {
+) -> std::collections::BTreeMap<reify_ir::Value, reify_ir::Value> {
     use std::collections::BTreeMap;
-    use reify_types::Value;
+    use reify_ir::Value;
 
     let mut joint_map: BTreeMap<Value, Value> = BTreeMap::new();
     joint_map.insert(
@@ -8720,7 +8726,7 @@ fn extract_joint_descriptor_assigns_kind_based_binding_defaults_prismatic() {
     use std::collections::BTreeMap;
     use crate::engine::extract_joints_from_mechanism;
     use crate::types::JointBinding;
-    use reify_types::Value;
+    use reify_ir::Value;
 
     // Build a mechanism with 3 distinct prismatic joints so the third has joint_index=2.
     let make_prismatic = |tag: u8| -> Value {

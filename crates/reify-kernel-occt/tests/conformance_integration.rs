@@ -15,7 +15,7 @@
 #![cfg(all(has_occt, feature = "test-fixtures"))]
 
 use reify_kernel_occt::OcctKernel;
-use reify_types::{GeometryHandleId, GeometryOp, GeometryQuery, QueryError, Value};
+use reify_ir::{GeometryHandleId, GeometryOp, GeometryQuery, QueryError, Value};
 
 /// TAU = 2π for a full-circle arc.
 const TAU: f64 = std::f64::consts::TAU;

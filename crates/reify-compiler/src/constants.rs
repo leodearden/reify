@@ -5,7 +5,8 @@
 //! so both user-defined `let pi = ...` and collection sub-names shadow
 //! the builtins.
 
-use reify_types::{CompiledExpr, Type, Value};
+use reify_core::Type;
+use reify_ir::{CompiledExpr, Value};
 
 /// Canonical names of all built-in mathematical constants.
 ///

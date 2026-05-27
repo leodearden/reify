@@ -65,7 +65,7 @@ use std::collections::HashMap;
 ///   * `Skip` — non-iterable / type error (diagnostic already emitted, or
 ///     anti-cascade): emit zero decls.
 pub(crate) enum ResolveForallOutcome {
-    Resolved(Vec<reify_syntax::Expr>),
+    Resolved(Vec<reify_ast::Expr>),
     Deferred {
         count_cell: ValueCellId,
         sub_name: String,
@@ -102,15 +102,15 @@ pub(crate) enum ResolveForallOutcome {
 /// type '<ty>' in forall: expected List<_> or Set<_>` with label
 /// `not iterable` anchored at the collection expression's span.
 fn resolve_forall_elements(
-    collection: &reify_syntax::Expr,
+    collection: &reify_ast::Expr,
     sub_components: &[SubComponentDecl],
     value_cells: &[ValueCellDecl],
     scope: &CompilationScope,
-    enum_defs: &[reify_types::EnumDef],
+    enum_defs: &[reify_ir::EnumDef],
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> ResolveForallOutcome {
-    use reify_syntax::{Expr, ExprKind};
+    use reify_ast::{Expr, ExprKind};
 
     match &collection.kind {
         ExprKind::ListLiteral(items) => ResolveForallOutcome::Resolved(items.clone()),
@@ -186,9 +186,9 @@ fn resolve_forall_elements(
 /// count isn't statically known, defer silently — re-elaboration on count
 /// change is future SchemaNode work (PRD criterion 7).
 fn diagnose_non_iterable_or_skip(
-    collection: &reify_syntax::Expr,
+    collection: &reify_ast::Expr,
     scope: &CompilationScope,
-    enum_defs: &[reify_types::EnumDef],
+    enum_defs: &[reify_ir::EnumDef],
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -259,10 +259,10 @@ fn resolve_count_cell_literal(
 /// (see plan steps 6, 8, 12, 14, 20).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn elaborate_forall_constraint(
-    decl: &reify_syntax::ForallConstraintDecl,
+    decl: &reify_ast::ForallConstraintDecl,
     entity_name: &str,
     scope: &mut CompilationScope,
-    enum_defs: &[reify_types::EnumDef],
+    enum_defs: &[reify_ir::EnumDef],
     functions: &[CompiledFunction],
     constraint_def_registry: &HashMap<String, &CompiledConstraintDef>,
     value_cells: &[ValueCellDecl],
@@ -276,7 +276,7 @@ pub(crate) fn elaborate_forall_constraint(
     forall_templates_out: &mut Vec<CompiledForallTemplate>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    use reify_syntax::ForallConstraintBody;
+    use reify_ast::ForallConstraintBody;
 
     // Resolve the collection expression. The shared helper now distinguishes
     // four shapes: Resolved (iterate elements), Deferred (capture runtime
@@ -328,14 +328,14 @@ pub(crate) fn elaborate_forall_constraint(
                     // runtime engine rewrites cell IDs [0] -> [i] per
                     // emission via map_value_refs.
                     let coll_span = decl.collection.span;
-                    let placeholder = reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::IndexAccess {
-                            object: Box::new(reify_syntax::Expr {
-                                kind: reify_syntax::ExprKind::Ident(sub_name.clone()),
+                    let placeholder = reify_ast::Expr {
+                        kind: reify_ast::ExprKind::IndexAccess {
+                            object: Box::new(reify_ast::Expr {
+                                kind: reify_ast::ExprKind::Ident(sub_name.clone()),
                                 span: coll_span,
                             }),
-                            index: Box::new(reify_syntax::Expr {
-                                kind: reify_syntax::ExprKind::NumberLiteral {
+                            index: Box::new(reify_ast::Expr {
+                                kind: reify_ast::ExprKind::NumberLiteral {
                                     value: 0.0,
                                     is_real: false,
                                 },
@@ -344,7 +344,7 @@ pub(crate) fn elaborate_forall_constraint(
                         },
                         span: coll_span,
                     };
-                    let mut bindings: HashMap<String, reify_syntax::Expr> = HashMap::new();
+                    let mut bindings: HashMap<String, reify_ast::Expr> = HashMap::new();
                     bindings.insert(decl.variable.clone(), placeholder);
 
                     let substituted_body = substitute_expr(&body_constraint.expr, &bindings);
@@ -375,7 +375,7 @@ pub(crate) fn elaborate_forall_constraint(
     };
 
     for (i, element) in elements.iter().enumerate() {
-        let mut bindings: HashMap<String, reify_syntax::Expr> = HashMap::new();
+        let mut bindings: HashMap<String, reify_ast::Expr> = HashMap::new();
         bindings.insert(decl.variable.clone(), element.clone());
 
         match &decl.body {
@@ -407,7 +407,7 @@ pub(crate) fn elaborate_forall_constraint(
                     // structure-level Bool flag), in which case substitution is a
                     // no-op — but in general the spec allows the condition to
                     // reference the per-element value, so we always substitute.
-                    let substituted_wc = reify_syntax::WhereClause {
+                    let substituted_wc = reify_ast::WhereClause {
                         condition: substitute_expr(&wc.condition, &bindings),
                         span: wc.span,
                     };
@@ -446,7 +446,7 @@ pub(crate) fn elaborate_forall_constraint(
                 // is never called and no `inst_idx` is allocated. A future
                 // refactor that pre-allocates `inst_idx` outside the loop would
                 // break tests pinning PRD criterion 6; see tests for this module.
-                let substituted_args: Vec<(String, reify_syntax::Expr)> = ci
+                let substituted_args: Vec<(String, reify_ast::Expr)> = ci
                     .args
                     .iter()
                     .map(|(n, e)| (n.clone(), substitute_expr(e, &bindings)))
@@ -454,11 +454,11 @@ pub(crate) fn elaborate_forall_constraint(
                 let substituted_wc = ci
                     .where_clause
                     .as_ref()
-                    .map(|wc| reify_syntax::WhereClause {
+                    .map(|wc| reify_ast::WhereClause {
                         condition: substitute_expr(&wc.condition, &bindings),
                         span: wc.span,
                     });
-                let substituted_ci = reify_syntax::ConstraintInstDecl {
+                let substituted_ci = reify_ast::ConstraintInstDecl {
                     name: ci.name.clone(),
                     args: substituted_args,
                     where_clause: substituted_wc,
@@ -508,11 +508,11 @@ pub(crate) fn elaborate_forall_constraint(
 /// `sub_components` is borrowed mutably via the `ConnectAccumulator`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn elaborate_forall_connect(
-    decl: &reify_syntax::ForallConnectDecl,
+    decl: &reify_ast::ForallConnectDecl,
     entity_name: &str,
     ports: &[CompiledPort],
     scope: &CompilationScope,
-    enum_defs: &[reify_types::EnumDef],
+    enum_defs: &[reify_ir::EnumDef],
     functions: &[CompiledFunction],
     trait_registry: &HashMap<String, &CompiledTrait>,
     value_cells: &[ValueCellDecl],
@@ -524,7 +524,7 @@ pub(crate) fn elaborate_forall_connect(
     forall_templates_out: &mut Vec<CompiledForallTemplate>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    use reify_syntax::ForallConnectBody;
+    use reify_ast::ForallConnectBody;
 
     // Resolve the collection expression via the shared helper. See
     // `resolve_forall_elements` for the three-case semantics: Resolved,
@@ -556,14 +556,14 @@ pub(crate) fn elaborate_forall_connect(
                         // Build the placeholder element AST (`<sub_name>[0]`) and
                         // substitute every expression-bearing position.
                         let coll_span = decl.collection.span;
-                        let placeholder = reify_syntax::Expr {
-                            kind: reify_syntax::ExprKind::IndexAccess {
-                                object: Box::new(reify_syntax::Expr {
-                                    kind: reify_syntax::ExprKind::Ident(sub_name.clone()),
+                        let placeholder = reify_ast::Expr {
+                            kind: reify_ast::ExprKind::IndexAccess {
+                                object: Box::new(reify_ast::Expr {
+                                    kind: reify_ast::ExprKind::Ident(sub_name.clone()),
                                     span: coll_span,
                                 }),
-                                index: Box::new(reify_syntax::Expr {
-                                    kind: reify_syntax::ExprKind::NumberLiteral {
+                                index: Box::new(reify_ast::Expr {
+                                    kind: reify_ast::ExprKind::NumberLiteral {
                                         value: 0.0,
                                         is_real: false,
                                     },
@@ -572,7 +572,7 @@ pub(crate) fn elaborate_forall_connect(
                             },
                             span: coll_span,
                         };
-                        let mut bindings: HashMap<String, reify_syntax::Expr> = HashMap::new();
+                        let mut bindings: HashMap<String, reify_ast::Expr> = HashMap::new();
                         bindings.insert(decl.variable.clone(), placeholder);
 
                         let left_substituted = substitute_expr(&cd.left.expr, &bindings);
@@ -727,7 +727,7 @@ pub(crate) fn elaborate_forall_connect(
     // handled by the `let Some(elements) = … else { return; }` early-return
     // above — it never reaches this loop.
     for (i, element) in elements.iter().enumerate() {
-        let mut bindings: HashMap<String, reify_syntax::Expr> = HashMap::new();
+        let mut bindings: HashMap<String, reify_ast::Expr> = HashMap::new();
         bindings.insert(decl.variable.clone(), element.clone());
 
         match &decl.body {
@@ -735,7 +735,7 @@ pub(crate) fn elaborate_forall_connect(
                 // Substitute every expression-bearing position in the body.
                 let left_substituted = substitute_expr(&cd.left.expr, &bindings);
                 let right_substituted = substitute_expr(&cd.right.expr, &bindings);
-                let params_substituted: Vec<(String, reify_syntax::Expr)> = cd
+                let params_substituted: Vec<(String, reify_ast::Expr)> = cd
                     .params
                     .iter()
                     .map(|(n, e)| (n.clone(), substitute_expr(e, &bindings)))
@@ -806,7 +806,7 @@ pub(crate) fn elaborate_forall_connect(
                     continue;
                 }
 
-                let substituted_elements: Vec<reify_syntax::Expr> = cd
+                let substituted_elements: Vec<reify_ast::Expr> = cd
                     .elements
                     .iter()
                     .map(|e| substitute_expr(e, &bindings))
@@ -824,7 +824,7 @@ pub(crate) fn elaborate_forall_connect(
                         &ctx,
                         &ConnectInput {
                             left_expr: &pair[0],
-                            operator: reify_syntax::ConnectOp::Forward,
+                            operator: reify_ast::ConnectOp::Forward,
                             right_expr: &pair[1],
                             connector_type: None,
                             params: &[],

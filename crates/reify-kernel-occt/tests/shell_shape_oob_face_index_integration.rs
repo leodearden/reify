@@ -7,7 +7,7 @@
 #![cfg(has_occt)]
 
 use reify_kernel_occt::OcctKernel;
-use reify_types::{GeometryError, GeometryHandleId, GeometryOp, Value};
+use reify_ir::{GeometryError, GeometryHandleId, GeometryOp, Value};
 
 /// Build a kernel that contains a 10×10×10 box (6 faces) and return its handle.
 fn kernel_with_box() -> (OcctKernel, GeometryHandleId) {

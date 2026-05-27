@@ -19,11 +19,9 @@ use reify_doc::model::{
     AnnotationDoc, ConstraintDoc, DocModel, ItemDoc, ItemHeader, ItemKind, ModuleDoc, ParamDoc,
     PortDoc, PragmaDoc, RealizationDoc, SubComponentDoc,
 };
-use reify_types::{
-    annotation::{AnnotationArg, AnnotationArgValue},
-    byte_offset_to_line_col, OptimizationObjective, SourceSpan, Type,
-};
-use reify_syntax::{Pragma, PragmaArg, PragmaValue};
+use reify_core::{SourceSpan, Type, byte_offset_to_line_col};
+use reify_ir::{AnnotationArg, AnnotationArgValue, OptimizationObjective};
+use reify_ast::{Pragma, PragmaArg, PragmaValue};
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -222,7 +220,7 @@ fn lower_param(vc: &ValueCellDecl, source: &str) -> ParamDoc {
 // ---------------------------------------------------------------------------
 
 fn lower_port(p: &reify_compiler::CompiledPort) -> PortDoc {
-    use reify_types::PortDirection;
+    use reify_core::PortDirection;
     let direction = match p.direction {
         PortDirection::In => "in",
         PortDirection::Out => "out",
@@ -427,7 +425,7 @@ fn lower_purpose(p: &CompiledPurpose, source: &str) -> ItemDoc {
 // EnumDef → ItemKind::Enum
 // ---------------------------------------------------------------------------
 
-fn lower_enum(e: &reify_types::EnumDef) -> ItemDoc {
+fn lower_enum(e: &reify_ir::EnumDef) -> ItemDoc {
     ItemDoc {
         header: ItemHeader {
             name: e.name.clone(),
@@ -512,7 +510,7 @@ fn lower_constraint_def(cd: &CompiledConstraintDef, source: &str) -> ItemDoc {
 // ---------------------------------------------------------------------------
 
 /// Lower a `reify_types::Annotation` to an `AnnotationDoc`.
-fn lower_annotation(ann: &reify_types::annotation::Annotation) -> AnnotationDoc {
+fn lower_annotation(ann: &reify_ir::annotation::Annotation) -> AnnotationDoc {
     let args: Vec<String> = ann.args.iter().map(render_annotation_arg).collect();
     AnnotationDoc {
         name: ann.name.clone(),
@@ -520,7 +518,7 @@ fn lower_annotation(ann: &reify_types::annotation::Annotation) -> AnnotationDoc 
     }
 }
 
-fn lower_annotations(anns: &[reify_types::annotation::Annotation]) -> Vec<AnnotationDoc> {
+fn lower_annotations(anns: &[reify_ir::annotation::Annotation]) -> Vec<AnnotationDoc> {
     anns.iter().map(lower_annotation).collect()
 }
 

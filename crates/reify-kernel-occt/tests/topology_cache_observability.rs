@@ -8,7 +8,7 @@
 #![cfg(has_occt)]
 
 use reify_kernel_occt::{OcctKernel, TopologyCacheBuildCounts};
-use reify_types::{GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value};
+use reify_ir::{GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value};
 
 /// Helper: build a kernel containing one 10×10×10 box, return the kernel and
 /// the handle id of the box.

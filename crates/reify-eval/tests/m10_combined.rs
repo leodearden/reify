@@ -11,7 +11,8 @@ use reify_eval::Engine;
 use reify_test_support::{
     check_source_with_stdlib, make_simple_engine, parse_and_compile_with_stdlib,
 };
-use reify_types::{ModulePath, Satisfaction, Value, ValueCellId};
+use reify_core::{ModulePath, ValueCellId};
+use reify_ir::{Satisfaction, Value};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(
@@ -83,7 +84,7 @@ fn m10_combined_ri_parses() {
         parsed.errors
     );
 
-    use reify_syntax::Declaration;
+    use reify_ast::Declaration;
 
     let trait_count = parsed
         .declarations

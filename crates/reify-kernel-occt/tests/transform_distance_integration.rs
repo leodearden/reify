@@ -12,7 +12,7 @@
 use std::f64::consts::PI;
 
 use reify_kernel_occt::{OcctKernel, Transform3};
-use reify_types::{GeometryHandleId, GeometryOp, QueryError, Value};
+use reify_ir::{GeometryHandleId, GeometryOp, QueryError, Value};
 
 // ---------------------------------------------------------------------------
 // Fixture helpers

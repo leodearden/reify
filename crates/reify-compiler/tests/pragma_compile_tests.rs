@@ -5,13 +5,13 @@
 use reify_test_support::{
     compile_source, compile_source_with_stdlib, errors_only, steel_elastic_source, warnings_only,
 };
-use reify_types::Severity;
+use reify_core::Severity;
 
 /// Helper: filter warnings whose message contains the given substring.
 fn pragma_warnings<'a>(
     module: &'a reify_compiler::CompiledModule,
     substr: &str,
-) -> Vec<&'a reify_types::Diagnostic> {
+) -> Vec<&'a reify_core::Diagnostic> {
     warnings_only(module)
         .into_iter()
         .filter(|d| d.message.contains(substr))
@@ -53,9 +53,9 @@ fn module_pragmas_stored_on_compiled_module() {
     let precision = precision.unwrap();
     assert_eq!(precision.args.len(), 1, "expected 1 arg on #precision");
     match &precision.args[0] {
-        reify_syntax::PragmaArg::KeyValue { key, value } => {
+        reify_ast::PragmaArg::KeyValue { key, value } => {
             assert_eq!(key, "value");
-            assert_eq!(value, &reify_syntax::PragmaValue::Number(64.0));
+            assert_eq!(value, &reify_ast::PragmaValue::Number(64.0));
         }
         other => panic!("expected KeyValue arg on #precision, got: {:?}", other),
     }
@@ -68,7 +68,7 @@ fn module_pragmas_stored_on_compiled_module() {
     let version = version.unwrap();
     assert_eq!(version.args.len(), 1, "expected 1 arg on #version");
     match &version.args[0] {
-        reify_syntax::PragmaArg::Bare(reify_syntax::PragmaValue::Number(n)) => {
+        reify_ast::PragmaArg::Bare(reify_ast::PragmaValue::Number(n)) => {
             assert_eq!(n, &0.1_f64, "expected version 0.1, got {n}");
         }
         other => panic!("expected Bare(Number) arg on #version, got: {:?}", other),
@@ -212,9 +212,9 @@ fn trait_pragma_propagated_to_compiled_trait() {
     );
     assert_eq!(precision.args.len(), 1, "expected 1 arg on #precision");
     match &precision.args[0] {
-        reify_syntax::PragmaArg::KeyValue { key, value } => {
+        reify_ast::PragmaArg::KeyValue { key, value } => {
             assert_eq!(key, "bits");
-            assert_eq!(value, &reify_syntax::PragmaValue::Number(32.0));
+            assert_eq!(value, &reify_ast::PragmaValue::Number(32.0));
         }
         other => panic!("expected KeyValue arg on #precision, got: {:?}", other),
     }
@@ -249,11 +249,11 @@ fn purpose_pragma_propagated_to_compiled_purpose() {
     assert_eq!(solver.name, "solver", "expected pragma name 'solver'");
     assert_eq!(solver.args.len(), 1, "expected 1 arg on #solver");
     match &solver.args[0] {
-        reify_syntax::PragmaArg::KeyValue { key, value } => {
+        reify_ast::PragmaArg::KeyValue { key, value } => {
             assert_eq!(key, "method");
             assert_eq!(
                 value,
-                &reify_syntax::PragmaValue::String("gradient".to_string())
+                &reify_ast::PragmaValue::String("gradient".to_string())
             );
         }
         other => panic!("expected KeyValue arg on #solver, got: {:?}", other),
@@ -284,11 +284,11 @@ fn structure_pragma_propagated_to_topology_template() {
     assert_eq!(solver.name, "solver", "expected pragma name 'solver'");
     assert_eq!(solver.args.len(), 1, "expected 1 arg on #solver");
     match &solver.args[0] {
-        reify_syntax::PragmaArg::KeyValue { key, value } => {
+        reify_ast::PragmaArg::KeyValue { key, value } => {
             assert_eq!(key, "backend");
             assert_eq!(
                 value,
-                &reify_syntax::PragmaValue::String("ipopt".to_string())
+                &reify_ast::PragmaValue::String("ipopt".to_string())
             );
         }
         other => panic!("expected KeyValue arg on #solver, got: {:?}", other),
@@ -443,7 +443,7 @@ fn known_block_pragma_kernel_no_warning_on_purpose() {
 /// so two sources differing only in `#precision(value=...)` produce identical hashes.
 #[test]
 fn module_pragma_change_changes_module_content_hash() {
-    let path = reify_types::ModulePath::single("m");
+    let path = reify_core::ModulePath::single("m");
 
     let source_a = "#precision(value=32)\nstructure S { param x : Real }";
     let parsed_a = reify_syntax::parse(source_a, path.clone());
@@ -492,7 +492,7 @@ fn module_pragma_change_changes_module_content_hash() {
 /// entity.rs:1530-1543). This is a passing regression guard — not a known-failing test.
 #[test]
 fn block_pragma_change_changes_module_content_hash() {
-    let path = reify_types::ModulePath::single("m");
+    let path = reify_core::ModulePath::single("m");
 
     let source_a = "structure S { #precision(bits=32) param x : Real }";
     let parsed_a = reify_syntax::parse(source_a, path.clone());
@@ -545,7 +545,7 @@ fn block_pragma_change_changes_module_content_hash() {
 /// path is independently verified by `block_pragma_change_changes_module_content_hash`.
 #[test]
 fn pragma_value_variants_produce_distinct_content_hashes() {
-    let path = reify_types::ModulePath::single("m");
+    let path = reify_core::ModulePath::single("m");
 
     let cases: &[(&str, &str, &str)] = &[
         // Bare + Ident: #precision(bare_ident_a) vs #precision(bare_ident_b)
@@ -633,11 +633,11 @@ fn occurrence_pragma_propagated_to_topology_template() {
     assert_eq!(solver.name, "solver", "expected pragma name 'solver'");
     assert_eq!(solver.args.len(), 1, "expected 1 arg on #solver");
     match &solver.args[0] {
-        reify_syntax::PragmaArg::KeyValue { key, value } => {
+        reify_ast::PragmaArg::KeyValue { key, value } => {
             assert_eq!(key, "backend");
             assert_eq!(
                 value,
-                &reify_syntax::PragmaValue::String("ipopt".to_string())
+                &reify_ast::PragmaValue::String("ipopt".to_string())
             );
         }
         other => panic!("expected KeyValue arg on #solver, got: {:?}", other),
@@ -953,7 +953,7 @@ fn precision_pragma_with_keyvalue_arg_warns_unrecognised_form() {
 
 /// Helper: filter warnings that match the block-level "deferred to v0.2"
 /// shape — message contains "ignored in v0.1" AND ("v0.2" OR "per-block").
-fn deferred_v02_warnings(module: &reify_compiler::CompiledModule) -> Vec<&reify_types::Diagnostic> {
+fn deferred_v02_warnings(module: &reify_compiler::CompiledModule) -> Vec<&reify_core::Diagnostic> {
     warnings_only(module)
         .into_iter()
         .filter(|d| {
@@ -1338,21 +1338,21 @@ fn precision_pragma_with_negative_or_nan_quantity_emits_error_via_injection() {
     // Helper: build a ParsedModule with a single #precision pragma whose
     // PragmaValue::Quantity has a custom value (bypassing the parser).
     fn injected_precision_module(value: f64) -> reify_compiler::CompiledModule {
-        let pragma = reify_syntax::Pragma {
+        let pragma = reify_ast::Pragma {
             name: "precision".to_string(),
-            args: vec![reify_syntax::PragmaArg::Bare(
-                reify_syntax::PragmaValue::Quantity {
+            args: vec![reify_ast::PragmaArg::Bare(
+                reify_ast::PragmaValue::Quantity {
                     value,
                     unit: "m".to_string(),
                 },
             )],
-            span: reify_types::SourceSpan::new(0, 10),
+            span: reify_core::SourceSpan::new(0, 10),
         };
-        let parsed = reify_syntax::ParsedModule {
-            path: reify_types::ModulePath::single("test-injection"),
+        let parsed = reify_ast::ParsedModule {
+            path: reify_core::ModulePath::single("test-injection"),
             declarations: vec![],
             errors: vec![],
-            content_hash: reify_types::ContentHash(0),
+            content_hash: reify_core::ContentHash(0),
             pragmas: vec![pragma],
         };
         reify_compiler::compile(&parsed)
@@ -1872,7 +1872,7 @@ structure S { param x : Real }"#,
     assert_eq!(solver_pragma.name, "argmin");
 
     // BTreeMap iteration is alphabetical: mode, strict, threads.
-    let pairs: Vec<(&String, &reify_syntax::PragmaValue)> = solver_pragma.options.iter().collect();
+    let pairs: Vec<(&String, &reify_ast::PragmaValue)> = solver_pragma.options.iter().collect();
     assert_eq!(
         pairs.len(),
         3,
@@ -1883,12 +1883,12 @@ structure S { param x : Real }"#,
     assert_eq!(pairs[0].0, "mode");
     assert_eq!(
         pairs[0].1,
-        &reify_syntax::PragmaValue::String("fast".to_string())
+        &reify_ast::PragmaValue::String("fast".to_string())
     );
     assert_eq!(pairs[1].0, "strict");
-    assert_eq!(pairs[1].1, &reify_syntax::PragmaValue::Bool(true));
+    assert_eq!(pairs[1].1, &reify_ast::PragmaValue::Bool(true));
     assert_eq!(pairs[2].0, "threads");
-    assert_eq!(pairs[2].1, &reify_syntax::PragmaValue::Number(4.0));
+    assert_eq!(pairs[2].1, &reify_ast::PragmaValue::Number(4.0));
 }
 
 /// Malformed `#solver` arg shapes leave `solver_pragma` as `None`, produce
@@ -2068,7 +2068,7 @@ fn malformed_then_valid_solver_pragmas_recover() {
 /// "per-block").
 fn deferred_v02_solver_warnings(
     module: &reify_compiler::CompiledModule,
-) -> Vec<&reify_types::Diagnostic> {
+) -> Vec<&reify_core::Diagnostic> {
     warnings_only(module)
         .into_iter()
         .filter(|d| {
@@ -2618,7 +2618,7 @@ fn malformed_first_kernel_blocks_valid_second_first_wins_consumes_slot() {
 /// ("v0.2" OR "per-block"). Sibling of `deferred_v02_solver_warnings`.
 fn deferred_v02_kernel_warnings(
     module: &reify_compiler::CompiledModule,
-) -> Vec<&reify_types::Diagnostic> {
+) -> Vec<&reify_core::Diagnostic> {
     warnings_only(module)
         .into_iter()
         .filter(|d| {

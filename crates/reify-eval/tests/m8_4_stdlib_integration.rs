@@ -15,7 +15,8 @@
 //!                        subs, and geometry (box) for export-ready parts
 
 use reify_test_support::make_simple_engine;
-use reify_types::{DimensionVector, Severity, Value, ValueCellId};
+use reify_core::{DimensionVector, Severity, ValueCellId};
+use reify_ir::Value;
 
 // ── File paths (resolved at compile time from this crate's root) ─────────────
 
@@ -38,7 +39,7 @@ fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
     let source =
         std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
 
-    let parsed = reify_syntax::parse(&source, reify_types::ModulePath::single(module_name));
+    let parsed = reify_syntax::parse(&source, reify_core::ModulePath::single(module_name));
     assert!(
         parsed.errors.is_empty(),
         "parse errors in {}: {:?}",

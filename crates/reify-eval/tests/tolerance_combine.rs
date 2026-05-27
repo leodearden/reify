@@ -13,7 +13,7 @@ use reify_test_support::{
     make_engine, manufacturing_purpose, my_design_template, step_output_template,
     step_output_template_without_rep_within,
 };
-use reify_types::ModulePath;
+use reify_core::ModulePath;
 
 #[test]
 fn engine_demanded_tolerance_for_output_handles_partial_inputs() {

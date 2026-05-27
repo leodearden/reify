@@ -19,9 +19,9 @@ use super::*;
 /// trait machinery has a concrete type to work with.
 #[allow(clippy::too_many_arguments)]
 fn resolve_trait_member_type_annotation(
-    type_expr: &reify_syntax::TypeExpr,
-    trait_decl: &reify_syntax::TraitDecl,
-    enum_defs: &[reify_types::EnumDef],
+    type_expr: &reify_ast::TypeExpr,
+    trait_decl: &reify_ast::TraitDecl,
+    enum_defs: &[reify_ir::EnumDef],
     empty_params: &HashSet<String>,
     alias_registry: &TypeAliasRegistry,
     structure_names: &HashSet<String>,
@@ -29,7 +29,7 @@ fn resolve_trait_member_type_annotation(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Type {
     match &type_expr.kind {
-        reify_syntax::TypeExprKind::DimensionalOp { .. } => {
+        reify_ast::TypeExprKind::DimensionalOp { .. } => {
             diagnostics.push(
                 Diagnostic::error(format!(
                     "unresolved type in trait '{}': {}",
@@ -43,7 +43,7 @@ fn resolve_trait_member_type_annotation(
             );
             return Type::Real;
         }
-        reify_syntax::TypeExprKind::IntegerLiteral(_) => {
+        reify_ast::TypeExprKind::IntegerLiteral(_) => {
             // Let the resolver emit its specific diagnostic by calling it once for
             // its side effect, then return Real without adding a cascade.
             let _ = resolve_type_expr_with_aliases(
@@ -68,7 +68,7 @@ fn resolve_trait_member_type_annotation(
     ) {
         Some(t) => t,
         None => {
-            if let reify_syntax::TypeExprKind::Named { name, type_args } = &type_expr.kind
+            if let reify_ast::TypeExprKind::Named { name, type_args } = &type_expr.kind
                 && let Some(t) = resolve_enum_type(name, enum_defs)
             {
                 if !type_args.is_empty() {
@@ -100,8 +100,8 @@ fn resolve_trait_member_type_annotation(
 }
 
 pub(crate) fn compile_trait(
-    trait_decl: &reify_syntax::TraitDecl,
-    enum_defs: &[reify_types::EnumDef],
+    trait_decl: &reify_ast::TraitDecl,
+    enum_defs: &[reify_ir::EnumDef],
     alias_registry: &TypeAliasRegistry,
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
@@ -113,7 +113,7 @@ pub(crate) fn compile_trait(
 
     for member in &trait_decl.members {
         match member {
-            reify_syntax::MemberDecl::Param(param) => {
+            reify_ast::MemberDecl::Param(param) => {
                 let ty = if let Some(type_expr) = &param.type_expr {
                     resolve_trait_member_type_annotation(
                         type_expr,
@@ -148,7 +148,7 @@ pub(crate) fn compile_trait(
                     });
                 }
             }
-            reify_syntax::MemberDecl::Let(let_decl) => {
+            reify_ast::MemberDecl::Let(let_decl) => {
                 // Let bindings always have a value expression → default.
                 // Resolve the annotation type when present; None when absent.
                 // Shares the trait Param resolver so let-typed annotations support the
@@ -176,7 +176,7 @@ pub(crate) fn compile_trait(
                     span: let_decl.span,
                 });
             }
-            reify_syntax::MemberDecl::Constraint(constraint_decl) => {
+            reify_ast::MemberDecl::Constraint(constraint_decl) => {
                 if let Some(label) = &constraint_decl.label {
                     // Labeled constraint with expression in trait → default
                     // (override detection uses label matching at injection site)
@@ -194,7 +194,7 @@ pub(crate) fn compile_trait(
                     });
                 }
             }
-            reify_syntax::MemberDecl::Sub(sub_decl) => {
+            reify_ast::MemberDecl::Sub(sub_decl) => {
                 required_members.push(TraitRequirement {
                     name: sub_decl.name.clone(),
                     kind: RequirementKind::Sub(sub_decl.structure_name.clone()),
@@ -236,8 +236,8 @@ pub(crate) fn compile_trait(
 
 /// Compile a parsed purpose declaration into a CompiledPurpose.
 pub(crate) fn compile_purpose(
-    purpose_def: &reify_syntax::PurposeDef,
-    enum_defs: &[reify_types::EnumDef],
+    purpose_def: &reify_ast::PurposeDef,
+    enum_defs: &[reify_ir::EnumDef],
     functions: &[CompiledFunction],
     template_registry: &HashMap<String, &TopologyTemplate>,
     unit_registry: &UnitRegistry,
@@ -306,7 +306,7 @@ pub(crate) fn compile_purpose(
 
     for member in &purpose_def.members {
         match member {
-            reify_syntax::MemberDecl::Constraint(constraint) => {
+            reify_ast::MemberDecl::Constraint(constraint) => {
                 let compiled_expr =
                     compile_expr(&constraint.expr, &scope, enum_defs, functions, diagnostics);
                 let id = ConstraintNodeId::new(purpose_name, constraint_index);
@@ -320,17 +320,17 @@ pub(crate) fn compile_purpose(
                 });
                 constraint_index += 1;
             }
-            reify_syntax::MemberDecl::Minimize(min_decl) => {
+            reify_ast::MemberDecl::Minimize(min_decl) => {
                 let compiled_expr =
                     compile_expr(&min_decl.expr, &scope, enum_defs, functions, diagnostics);
                 objective = Some(OptimizationObjective::Minimize(compiled_expr));
             }
-            reify_syntax::MemberDecl::Maximize(max_decl) => {
+            reify_ast::MemberDecl::Maximize(max_decl) => {
                 let compiled_expr =
                     compile_expr(&max_decl.expr, &scope, enum_defs, functions, diagnostics);
                 objective = Some(OptimizationObjective::Maximize(compiled_expr));
             }
-            reify_syntax::MemberDecl::Let(let_decl) => {
+            reify_ast::MemberDecl::Let(let_decl) => {
                 // Let bindings in purpose bodies are not yet supported:
                 // CompiledPurpose has no storage for let expressions, and
                 // activate_purpose only injects constraints. Any constraint
@@ -348,7 +348,7 @@ pub(crate) fn compile_purpose(
                     )),
                 );
             }
-            reify_syntax::MemberDecl::GuardedGroup(g) => {
+            reify_ast::MemberDecl::GuardedGroup(g) => {
                 diagnostics.push(
                     Diagnostic::error(
                         "guarded blocks in purpose bodies are not yet supported".to_string(),
@@ -359,7 +359,7 @@ pub(crate) fn compile_purpose(
                     )),
                 );
             }
-            reify_syntax::MemberDecl::Param(p) => {
+            reify_ast::MemberDecl::Param(p) => {
                 diagnostics.push(
                     Diagnostic::error(
                         "param declarations in purpose bodies are not supported".to_string(),
@@ -370,7 +370,7 @@ pub(crate) fn compile_purpose(
                     )),
                 );
             }
-            reify_syntax::MemberDecl::Sub(s) => {
+            reify_ast::MemberDecl::Sub(s) => {
                 diagnostics.push(
                     Diagnostic::error(
                         "sub declarations in purpose bodies are not supported".to_string(),
@@ -381,7 +381,7 @@ pub(crate) fn compile_purpose(
                     )),
                 );
             }
-            reify_syntax::MemberDecl::Port(p) => {
+            reify_ast::MemberDecl::Port(p) => {
                 diagnostics.push(
                     Diagnostic::error(
                         "port declarations in purpose bodies are not supported".to_string(),
@@ -392,7 +392,7 @@ pub(crate) fn compile_purpose(
                     )),
                 );
             }
-            reify_syntax::MemberDecl::Connect(c) => {
+            reify_ast::MemberDecl::Connect(c) => {
                 diagnostics.push(
                     Diagnostic::error(
                         "connect declarations in purpose bodies are not supported".to_string(),
@@ -403,7 +403,7 @@ pub(crate) fn compile_purpose(
                     )),
                 );
             }
-            reify_syntax::MemberDecl::Chain(c) => {
+            reify_ast::MemberDecl::Chain(c) => {
                 diagnostics.push(
                     Diagnostic::error(
                         "chain declarations in purpose bodies are not supported".to_string(),
@@ -414,7 +414,7 @@ pub(crate) fn compile_purpose(
                     )),
                 );
             }
-            reify_syntax::MemberDecl::AssociatedType(a) => {
+            reify_ast::MemberDecl::AssociatedType(a) => {
                 diagnostics.push(
                     Diagnostic::error(
                         "associated type declarations in purpose bodies are not supported"
@@ -426,7 +426,7 @@ pub(crate) fn compile_purpose(
                     )),
                 );
             }
-            reify_syntax::MemberDecl::MetaBlock(m) => {
+            reify_ast::MemberDecl::MetaBlock(m) => {
                 diagnostics.push(
                     Diagnostic::error(
                         "meta blocks in purpose bodies are not supported".to_string(),
@@ -437,7 +437,7 @@ pub(crate) fn compile_purpose(
                     )),
                 );
             }
-            reify_syntax::MemberDecl::ConstraintInst(ci) => {
+            reify_ast::MemberDecl::ConstraintInst(ci) => {
                 diagnostics.push(
                     Diagnostic::error(
                         "constraint instantiations in purpose bodies are not supported".to_string(),
@@ -448,7 +448,7 @@ pub(crate) fn compile_purpose(
                     )),
                 );
             }
-            reify_syntax::MemberDecl::ForallConnect(f) => {
+            reify_ast::MemberDecl::ForallConnect(f) => {
                 diagnostics.push(
                     Diagnostic::error(
                         "forall connect/chain statements in purpose bodies are not supported"
@@ -460,7 +460,7 @@ pub(crate) fn compile_purpose(
                     )),
                 );
             }
-            reify_syntax::MemberDecl::ForallConstraint(f) => {
+            reify_ast::MemberDecl::ForallConstraint(f) => {
                 diagnostics.push(
                     Diagnostic::error(
                         "forall constraint statements in purpose bodies are not supported"
@@ -472,7 +472,7 @@ pub(crate) fn compile_purpose(
                     )),
                 );
             }
-            reify_syntax::MemberDecl::MatchArmDeclGroup(m) => {
+            reify_ast::MemberDecl::MatchArmDeclGroup(m) => {
                 diagnostics.push(
                     Diagnostic::error(
                         "match-arm decl groups in purpose bodies are not supported".to_string(),

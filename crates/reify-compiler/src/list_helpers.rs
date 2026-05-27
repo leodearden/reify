@@ -1,4 +1,5 @@
-use reify_types::{CompiledExpr, Type};
+use reify_core::Type;
+use reify_ir::CompiledExpr;
 
 /// Infer the return type of a list-helper stdlib call from the compiled
 /// argument list.
@@ -64,7 +65,8 @@ pub(crate) fn infer_list_helper_return_type(
 #[cfg(test)]
 mod tests {
     use super::infer_list_helper_return_type;
-    use reify_types::{CompiledExpr, Type, Value};
+    use reify_core::Type;
+    use reify_ir::{CompiledExpr, Value};
 
     // Helper: build a cheap synthetic CompiledExpr with the given result_type.
     fn arg(ty: Type) -> CompiledExpr {

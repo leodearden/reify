@@ -4,7 +4,8 @@
 //! and evaluate them correctly.
 
 use reify_test_support::*;
-use reify_types::{Satisfaction, Type, ValueMap};
+use reify_core::Type;
+use reify_ir::{Satisfaction, ValueMap};
 
 /// Accept well-formed CompiledModule → evaluate to values.
 #[test]
@@ -100,10 +101,10 @@ fn bracket_constraints_satisfied() {
 fn undef_propagation_through_eval_expr() {
     // This test uses eval_expr directly (doesn't need Engine implementation)
     let thickness_ref =
-        reify_types::CompiledExpr::value_ref(vcid("Bracket", "thickness"), Type::length());
-    let two_mm = reify_types::CompiledExpr::literal(mm(2.0), Type::length());
+        reify_ir::CompiledExpr::value_ref(vcid("Bracket", "thickness"), Type::length());
+    let two_mm = reify_ir::CompiledExpr::literal(mm(2.0), Type::length());
     let expr =
-        reify_types::CompiledExpr::binop(reify_types::BinOp::Gt, thickness_ref, two_mm, Type::Bool);
+        reify_ir::CompiledExpr::binop(reify_ir::BinOp::Gt, thickness_ref, two_mm, Type::Bool);
 
     // Empty value map → thickness is Undef
     let values = ValueMap::new();

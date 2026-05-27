@@ -11,7 +11,7 @@ use reify_syntax::*;
 fn parse_single_type_alias(source: &str) -> TypeAliasDecl {
     let module = reify_syntax::parse(
         source,
-        reify_types::ModulePath::single("type_expr_kind_test"),
+        reify_core::ModulePath::single("type_expr_kind_test"),
     );
     assert!(
         module.errors.is_empty(),
@@ -114,8 +114,8 @@ fn type_expr_kind_simple_named() {
 // ensuring the design decision to use `{type_expr}` instead of
 // `{type_expr.name}` preserves readable output for both variants.
 
-fn span() -> reify_types::SourceSpan {
-    reify_types::SourceSpan::new(0, 0)
+fn span() -> reify_core::SourceSpan {
+    reify_core::SourceSpan::new(0, 0)
 }
 
 fn named_te(name: &str, args: Vec<TypeExpr>) -> TypeExpr {

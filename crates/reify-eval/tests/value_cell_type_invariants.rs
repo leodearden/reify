@@ -11,7 +11,7 @@
 //! builtins), and Undef is accepted by the kind-match for any type.
 
 use reify_compiler::{CompiledModule, TopologyTemplate, ValueCellDecl};
-use reify_types::{ModulePath, Severity};
+use reify_core::{ModulePath, Severity};
 
 /// Walk every ValueCellDecl in a CompiledModule — primary template cells,
 /// guarded-group member/else-member cells, and (via sub_components) any

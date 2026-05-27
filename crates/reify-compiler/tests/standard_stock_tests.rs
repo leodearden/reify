@@ -3,7 +3,8 @@
 
 use reify_compiler::stdlib_loader;
 use reify_test_support::collect_errors;
-use reify_types::{DimensionVector, ModulePath, Type, Value, ValueMap};
+use reify_core::{DimensionVector, ModulePath, Type};
+use reify_ir::{Value, ValueMap};
 
 /// Helper: load the stdlib and find the std.stock CompiledModule.
 fn stock_module() -> &'static reify_compiler::CompiledModule {
@@ -48,7 +49,7 @@ fn assert_length_constant(
         name
     );
 
-    let call_expr = reify_types::CompiledExpr::user_function_call(
+    let call_expr = reify_ir::CompiledExpr::user_function_call(
         name.to_string(),
         vec![],
         Type::List(Box::new(Type::length())),

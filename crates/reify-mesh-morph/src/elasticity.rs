@@ -22,7 +22,7 @@ use reify_solver_elastic::{
     IsotropicElastic, SolverMode, apply_dirichlet_row_elimination, assemble_global_stiffness,
     element_stiffness, solve_cg, tet_volume_p1,
 };
-use reify_types::{ElementOrderTag, VolumeMesh};
+use reify_ir::{ElementOrderTag, VolumeMesh};
 
 use crate::MorphOptions;
 use crate::options::StiffnessRule;
@@ -453,7 +453,7 @@ pub fn elasticity_morph(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::{ElementOrderTag, VolumeMesh};
+    use reify_ir::{ElementOrderTag, VolumeMesh};
 
     fn empty_mesh() -> VolumeMesh {
         VolumeMesh {
@@ -786,8 +786,8 @@ mod tests {
     /// (2, 0, 0)). Shared by the `InverseVolume vs Uniform` test (step-5) and
     /// the `InverseEdgeLengthSquared distinctness + determinism` test (step-7)
     /// — single source of truth for the fixture definition.
-    fn asymmetric_cone_fixture() -> (reify_types::VolumeMesh, Vec<(u32, [f64; 3])>) {
-        let mesh = reify_types::VolumeMesh {
+    fn asymmetric_cone_fixture() -> (reify_ir::VolumeMesh, Vec<(u32, [f64; 3])>) {
+        let mesh = reify_ir::VolumeMesh {
             vertices: vec![
                 0.0_f32, 0.0, 0.0, // 0: a
                 1.0, 0.0, 0.0, // 1: b
@@ -805,7 +805,7 @@ mod tests {
                 0, 2, 3, 4, // a, c, d, p  — small vol
                 1, 2, 3, 4, // b, c, d, p  — large vol
             ],
-            element_order: reify_types::ElementOrderTag::P1,
+            element_order: reify_ir::ElementOrderTag::P1,
             normals: None,
         };
         let prescribed: Vec<(u32, [f64; 3])> = vec![

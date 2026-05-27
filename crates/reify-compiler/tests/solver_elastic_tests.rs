@@ -15,7 +15,8 @@
 //! production. This mirrors the helper trio in `materials_fea_tests.rs`.
 
 use reify_compiler::*;
-use reify_types::*;
+use reify_core::*;
+use reify_ir::*;
 
 /// Look up a structure template by name within the `std/solver/elastic` module.
 ///

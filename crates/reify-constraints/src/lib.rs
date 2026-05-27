@@ -38,10 +38,8 @@ pub use reify_stdlib::loop_closure_value::{JointKind, JointValue};
 pub use solver::DimensionalSolver;
 pub use solvespace::SolveSpaceSolver;
 
-use reify_types::{
-    ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Diagnostic,
-    DiagnosticCode, Satisfaction, Value,
-};
+use reify_core::{Diagnostic, DiagnosticCode};
+use reify_ir::{ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Satisfaction, Value};
 
 /// Simple constraint checker for M1: evaluates constraint expressions
 /// and checks whether they are satisfied (true), violated (false), or
@@ -115,10 +113,8 @@ mod tests {
     use std::borrow::Cow;
 
     use super::*;
-    use reify_types::{
-        BinOp, CompiledExpr, ConstraintNodeId, DiagnosticCode, DimensionVector, Severity, Type,
-        Value, ValueCellId, ValueMap,
-    };
+    use reify_core::{ConstraintNodeId, DiagnosticCode, DimensionVector, Severity, Type, ValueCellId};
+    use reify_ir::{BinOp, CompiledExpr, Value, ValueMap};
 
     fn mm(v: f64) -> Value {
         Value::Scalar {

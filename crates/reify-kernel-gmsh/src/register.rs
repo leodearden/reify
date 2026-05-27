@@ -57,7 +57,7 @@
 //! (`(Convert{from: Mesh}, VolumeMesh)` instead of three Voxel Booleans),
 //! and the doc-comment references differ.
 
-use reify_types::{CapabilityDescriptor, GeometryKernel, KernelRegistration, Operation, ReprKind};
+use reify_ir::{CapabilityDescriptor, GeometryKernel, KernelRegistration, Operation, ReprKind};
 
 /// Stable identifier for the Gmsh kernel in the v0.3 multi-kernel registry.
 ///

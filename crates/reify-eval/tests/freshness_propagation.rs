@@ -8,7 +8,8 @@ use reify_eval::cache::NodeId;
 use reify_test_support::builders::{binop, literal, value_ref_typed};
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
-use reify_types::{BinOp, ErrorRef, Freshness, ModulePath, ResultRef, Type, Value, ValueCellId};
+use reify_core::{ModulePath, Type, ValueCellId};
+use reify_ir::{BinOp, ErrorRef, Freshness, ResultRef, Value};
 
 /// Build the 2-cell synthetic module: param `a` + let `b = a * 2.0`.
 fn two_cell_module() -> reify_compiler::CompiledModule {

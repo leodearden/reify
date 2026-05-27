@@ -13,10 +13,8 @@ use reify_runtime::concurrent_eval::poison_fields;
 use reify_runtime::concurrent_eval::{ConcurrentEvalAdapter, edit_param_concurrent};
 use reify_test_support::TopologyTemplateBuilder;
 use reify_test_support::mocks::MockConstraintChecker;
-use reify_types::{
-    BinOp, DeterminacyState, PersistentMap, SnapshotId, Type, Value, ValueCellId, ValueMap,
-    VersionId,
-};
+use reify_core::{SnapshotId, Type, ValueCellId, VersionId};
+use reify_ir::{BinOp, DeterminacyState, PersistentMap, Value, ValueMap};
 
 /// Helper: build a simple topology (param a, let b = a * 2) and return
 /// a ConcurrentEditSetup as if a was changed from 5 to 10.
@@ -24,16 +22,16 @@ fn simple_setup() -> ConcurrentEditSetup {
     let e = "T";
 
     // Build graph from template
-    let a_ref = reify_types::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real);
-    let two = reify_types::CompiledExpr::literal(Value::Real(2.0), Type::Real);
-    let b_expr = reify_types::CompiledExpr::binop(BinOp::Mul, a_ref, two, Type::Real);
+    let a_ref = reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real);
+    let two = reify_ir::CompiledExpr::literal(Value::Real(2.0), Type::Real);
+    let b_expr = reify_ir::CompiledExpr::binop(BinOp::Mul, a_ref, two, Type::Real);
 
     let template = TopologyTemplateBuilder::new(e)
         .param(
             e,
             "a",
             Type::Real,
-            Some(reify_types::CompiledExpr::literal(
+            Some(reify_ir::CompiledExpr::literal(
                 Value::Real(5.0),
                 Type::Real,
             )),
@@ -107,7 +105,7 @@ fn simple_setup() -> ConcurrentEditSetup {
 
 /// Helper to build a compiled module from a template for Engine tests.
 fn build_module(template: reify_compiler::TopologyTemplate) -> reify_compiler::CompiledModule {
-    reify_test_support::CompiledModuleBuilder::new(reify_types::ModulePath::single("test"))
+    reify_test_support::CompiledModuleBuilder::new(reify_core::ModulePath::single("test"))
         .template(template)
         .build()
 }
@@ -154,16 +152,16 @@ async fn adapter_evaluates_single_value_node() {
 #[tokio::test]
 async fn edit_param_concurrent_linear_chain() {
     let e = "T";
-    let a_ref = reify_types::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real);
-    let two = reify_types::CompiledExpr::literal(Value::Real(2.0), Type::Real);
-    let b_expr = reify_types::CompiledExpr::binop(BinOp::Mul, a_ref, two, Type::Real);
+    let a_ref = reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real);
+    let two = reify_ir::CompiledExpr::literal(Value::Real(2.0), Type::Real);
+    let b_expr = reify_ir::CompiledExpr::binop(BinOp::Mul, a_ref, two, Type::Real);
 
     let template = TopologyTemplateBuilder::new(e)
         .param(
             e,
             "a",
             Type::Real,
-            Some(reify_types::CompiledExpr::literal(
+            Some(reify_ir::CompiledExpr::literal(
                 Value::Real(5.0),
                 Type::Real,
             )),
@@ -205,23 +203,23 @@ async fn concurrent_three_independent_lets() {
     let e = "T";
 
     // param a, let x = a+1, let y = a+2, let z = a+3
-    let a_ref = || reify_types::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real);
-    let x_expr = reify_types::CompiledExpr::binop(
+    let a_ref = || reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real);
+    let x_expr = reify_ir::CompiledExpr::binop(
         BinOp::Add,
         a_ref(),
-        reify_types::CompiledExpr::literal(Value::Real(1.0), Type::Real),
+        reify_ir::CompiledExpr::literal(Value::Real(1.0), Type::Real),
         Type::Real,
     );
-    let y_expr = reify_types::CompiledExpr::binop(
+    let y_expr = reify_ir::CompiledExpr::binop(
         BinOp::Add,
         a_ref(),
-        reify_types::CompiledExpr::literal(Value::Real(2.0), Type::Real),
+        reify_ir::CompiledExpr::literal(Value::Real(2.0), Type::Real),
         Type::Real,
     );
-    let z_expr = reify_types::CompiledExpr::binop(
+    let z_expr = reify_ir::CompiledExpr::binop(
         BinOp::Add,
         a_ref(),
-        reify_types::CompiledExpr::literal(Value::Real(3.0), Type::Real),
+        reify_ir::CompiledExpr::literal(Value::Real(3.0), Type::Real),
         Type::Real,
     );
 
@@ -230,7 +228,7 @@ async fn concurrent_three_independent_lets() {
             e,
             "a",
             Type::Real,
-            Some(reify_types::CompiledExpr::literal(
+            Some(reify_ir::CompiledExpr::literal(
                 Value::Real(5.0),
                 Type::Real,
             )),
@@ -289,30 +287,30 @@ async fn concurrent_diamond_dependency() {
     let e = "T";
 
     // param a, let b = a * 2, let c = a + 1, let d = b + c
-    let a_ref = || reify_types::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real);
-    let b_ref = || reify_types::CompiledExpr::value_ref(ValueCellId::new(e, "b"), Type::Real);
-    let c_ref = || reify_types::CompiledExpr::value_ref(ValueCellId::new(e, "c"), Type::Real);
+    let a_ref = || reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real);
+    let b_ref = || reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "b"), Type::Real);
+    let c_ref = || reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "c"), Type::Real);
 
-    let b_expr = reify_types::CompiledExpr::binop(
+    let b_expr = reify_ir::CompiledExpr::binop(
         BinOp::Mul,
         a_ref(),
-        reify_types::CompiledExpr::literal(Value::Real(2.0), Type::Real),
+        reify_ir::CompiledExpr::literal(Value::Real(2.0), Type::Real),
         Type::Real,
     );
-    let c_expr = reify_types::CompiledExpr::binop(
+    let c_expr = reify_ir::CompiledExpr::binop(
         BinOp::Add,
         a_ref(),
-        reify_types::CompiledExpr::literal(Value::Real(1.0), Type::Real),
+        reify_ir::CompiledExpr::literal(Value::Real(1.0), Type::Real),
         Type::Real,
     );
-    let d_expr = reify_types::CompiledExpr::binop(BinOp::Add, b_ref(), c_ref(), Type::Real);
+    let d_expr = reify_ir::CompiledExpr::binop(BinOp::Add, b_ref(), c_ref(), Type::Real);
 
     let template = TopologyTemplateBuilder::new(e)
         .param(
             e,
             "a",
             Type::Real,
-            Some(reify_types::CompiledExpr::literal(
+            Some(reify_ir::CompiledExpr::literal(
                 Value::Real(5.0),
                 Type::Real,
             )),
@@ -358,14 +356,14 @@ async fn concurrent_early_cutoff() {
     let e = "T";
 
     // param a, let x = a - a (always 0), let y = x + 1
-    let a_ref = || reify_types::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real);
-    let x_ref = || reify_types::CompiledExpr::value_ref(ValueCellId::new(e, "x"), Type::Real);
+    let a_ref = || reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real);
+    let x_ref = || reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "x"), Type::Real);
 
-    let x_expr = reify_types::CompiledExpr::binop(BinOp::Sub, a_ref(), a_ref(), Type::Real);
-    let y_expr = reify_types::CompiledExpr::binop(
+    let x_expr = reify_ir::CompiledExpr::binop(BinOp::Sub, a_ref(), a_ref(), Type::Real);
+    let y_expr = reify_ir::CompiledExpr::binop(
         BinOp::Add,
         x_ref(),
-        reify_types::CompiledExpr::literal(Value::Real(1.0), Type::Real),
+        reify_ir::CompiledExpr::literal(Value::Real(1.0), Type::Real),
         Type::Real,
     );
 
@@ -374,7 +372,7 @@ async fn concurrent_early_cutoff() {
             e,
             "a",
             Type::Real,
-            Some(reify_types::CompiledExpr::literal(
+            Some(reify_ir::CompiledExpr::literal(
                 Value::Real(5.0),
                 Type::Real,
             )),
@@ -444,19 +442,19 @@ async fn concurrent_cancellation_between_levels() {
     let e = "T";
 
     // param a → let b = a * 2 (level 0), b → let c = b + 1 (level 1)
-    let a_ref = || reify_types::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real);
-    let b_ref = || reify_types::CompiledExpr::value_ref(ValueCellId::new(e, "b"), Type::Real);
+    let a_ref = || reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real);
+    let b_ref = || reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "b"), Type::Real);
 
-    let b_expr = reify_types::CompiledExpr::binop(
+    let b_expr = reify_ir::CompiledExpr::binop(
         BinOp::Mul,
         a_ref(),
-        reify_types::CompiledExpr::literal(Value::Real(2.0), Type::Real),
+        reify_ir::CompiledExpr::literal(Value::Real(2.0), Type::Real),
         Type::Real,
     );
-    let c_expr = reify_types::CompiledExpr::binop(
+    let c_expr = reify_ir::CompiledExpr::binop(
         BinOp::Add,
         b_ref(),
-        reify_types::CompiledExpr::literal(Value::Real(1.0), Type::Real),
+        reify_ir::CompiledExpr::literal(Value::Real(1.0), Type::Real),
         Type::Real,
     );
 
@@ -465,7 +463,7 @@ async fn concurrent_cancellation_between_levels() {
             e,
             "a",
             Type::Real,
-            Some(reify_types::CompiledExpr::literal(
+            Some(reify_ir::CompiledExpr::literal(
                 Value::Real(5.0),
                 Type::Real,
             )),
@@ -606,19 +604,19 @@ async fn bracket_concurrent_matches_sequential() {
 #[tokio::test]
 async fn rollback_on_task_panicked_restores_engine_state() {
     use reify_runtime::concurrent::SchedulerError;
-    use reify_types::Freshness;
+    use reify_ir::Freshness;
 
     let e = "T";
-    let a_ref = reify_types::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real);
-    let two = reify_types::CompiledExpr::literal(Value::Real(2.0), Type::Real);
-    let b_expr = reify_types::CompiledExpr::binop(BinOp::Mul, a_ref, two, Type::Real);
+    let a_ref = reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real);
+    let two = reify_ir::CompiledExpr::literal(Value::Real(2.0), Type::Real);
+    let b_expr = reify_ir::CompiledExpr::binop(BinOp::Mul, a_ref, two, Type::Real);
 
     let template = TopologyTemplateBuilder::new(e)
         .param(
             e,
             "a",
             Type::Real,
-            Some(reify_types::CompiledExpr::literal(
+            Some(reify_ir::CompiledExpr::literal(
                 Value::Real(5.0),
                 Type::Real,
             )),
@@ -692,24 +690,24 @@ async fn rollback_on_task_panicked_restores_engine_state() {
 #[tokio::test]
 async fn repeated_error_then_success_cycle() {
     use reify_runtime::concurrent::SchedulerError;
-    use reify_types::Freshness;
+    use reify_ir::Freshness;
 
     let e = "T";
 
     // param a, let b = a * 2, let c = b + 1
-    let a_ref = || reify_types::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real);
-    let b_ref = || reify_types::CompiledExpr::value_ref(ValueCellId::new(e, "b"), Type::Real);
+    let a_ref = || reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real);
+    let b_ref = || reify_ir::CompiledExpr::value_ref(ValueCellId::new(e, "b"), Type::Real);
 
-    let b_expr = reify_types::CompiledExpr::binop(
+    let b_expr = reify_ir::CompiledExpr::binop(
         BinOp::Mul,
         a_ref(),
-        reify_types::CompiledExpr::literal(Value::Real(2.0), Type::Real),
+        reify_ir::CompiledExpr::literal(Value::Real(2.0), Type::Real),
         Type::Real,
     );
-    let c_expr = reify_types::CompiledExpr::binop(
+    let c_expr = reify_ir::CompiledExpr::binop(
         BinOp::Add,
         b_ref(),
-        reify_types::CompiledExpr::literal(Value::Real(1.0), Type::Real),
+        reify_ir::CompiledExpr::literal(Value::Real(1.0), Type::Real),
         Type::Real,
     );
 
@@ -718,7 +716,7 @@ async fn repeated_error_then_success_cycle() {
             e,
             "a",
             Type::Real,
-            Some(reify_types::CompiledExpr::literal(
+            Some(reify_ir::CompiledExpr::literal(
                 Value::Real(5.0),
                 Type::Real,
             )),
@@ -834,7 +832,8 @@ async fn repeated_error_then_success_cycle() {
 /// Edit a → 10: x re-evals to 1 (Unchanged), y MUST re-eval to 11.
 #[tokio::test]
 async fn mixed_fan_in_concurrent_unchanged_upstream_does_not_skip_shared_downstream() {
-    use reify_types::{CompiledExpr, CompiledExprKind, ContentHash};
+    use reify_core::ContentHash;
+    use reify_ir::{CompiledExpr, CompiledExprKind};
 
     let e = "T";
 
@@ -918,7 +917,8 @@ async fn mixed_fan_in_concurrent_unchanged_upstream_does_not_skip_shared_downstr
 /// Edit a → 10: x=1, z=2 (both Unchanged), y MUST re-eval to 13.
 #[tokio::test]
 async fn concurrent_triple_fan_in_mixed_early_cutoff() {
-    use reify_types::{CompiledExpr, CompiledExprKind, ContentHash};
+    use reify_core::ContentHash;
+    use reify_ir::{CompiledExpr, CompiledExprKind};
 
     let e = "T";
 
@@ -1028,7 +1028,7 @@ async fn edit_param_concurrent_re_resolves_auto_params() {
     use reify_test_support::builders::{binop, gt, literal, value_ref};
     use reify_test_support::mm;
     use reify_test_support::mocks::SequencedMockConstraintSolver;
-    use reify_types::SolveResult;
+    use reify_ir::SolveResult;
 
     let a_id = ValueCellId::new("S", "a");
     let x_id = ValueCellId::new("S", "x");
@@ -1118,7 +1118,7 @@ async fn concurrent_edit_result_includes_resolved_params() {
     use reify_test_support::builders::{binop, gt, literal, value_ref};
     use reify_test_support::mm;
     use reify_test_support::mocks::SequencedMockConstraintSolver;
-    use reify_types::SolveResult;
+    use reify_ir::SolveResult;
 
     let a_id = ValueCellId::new("S", "a");
     let x_id = ValueCellId::new("S", "x");
@@ -1207,7 +1207,8 @@ async fn concurrent_edit_result_includes_diagnostics_on_infeasible() {
     use reify_test_support::builders::{gt, literal, value_ref};
     use reify_test_support::mm;
     use reify_test_support::mocks::SequencedMockConstraintSolver;
-    use reify_types::{Diagnostic, SolveResult};
+    use reify_core::Diagnostic;
+    use reify_ir::SolveResult;
 
     let a_id = ValueCellId::new("S", "a");
     let x_id = ValueCellId::new("S", "x");
@@ -1283,7 +1284,7 @@ async fn edit_check_concurrent_reports_constraint_satisfaction() {
     use reify_runtime::concurrent_eval::edit_check_concurrent;
     use reify_test_support::builders::{gt, literal, value_ref};
     use reify_test_support::mm;
-    use reify_types::Satisfaction;
+    use reify_ir::Satisfaction;
 
     let width_id = ValueCellId::new("S", "width");
 
@@ -1346,7 +1347,7 @@ async fn edit_check_concurrent_constraint_transitions() {
     use reify_runtime::concurrent_eval::edit_check_concurrent;
     use reify_test_support::builders::{gt, literal, value_ref};
     use reify_test_support::mm;
-    use reify_types::Satisfaction;
+    use reify_ir::Satisfaction;
 
     let width_id = ValueCellId::new("S", "width");
 
@@ -1409,7 +1410,7 @@ async fn edit_check_concurrent_with_resolution_and_constraints() {
     use reify_test_support::builders::{binop, gt, literal, lt, value_ref};
     use reify_test_support::mm;
     use reify_test_support::mocks::SequencedMockConstraintSolver;
-    use reify_types::{Satisfaction, SolveResult};
+    use reify_ir::{Satisfaction, SolveResult};
 
     let a_id = ValueCellId::new("S", "a");
     let x_id = ValueCellId::new("S", "x");
@@ -1522,7 +1523,8 @@ async fn edit_check_concurrent_preserves_constraint_labels() {
     use reify_runtime::concurrent_eval::edit_check_concurrent;
     use reify_test_support::builders::{gt, literal, value_ref};
     use reify_test_support::mm;
-    use reify_types::{ConstraintNodeId, Satisfaction};
+    use reify_core::ConstraintNodeId;
+    use reify_ir::Satisfaction;
 
     let width_id = ValueCellId::new("S", "width");
 
@@ -1601,7 +1603,7 @@ async fn edit_check_concurrent_with_meta_access() {
     use reify_runtime::concurrent_eval::edit_check_concurrent;
     use reify_test_support::builders::{conditional_expr, eq, gt, literal, value_ref};
     use reify_test_support::mm;
-    use reify_types::{CompiledExpr, Satisfaction};
+    use reify_ir::{CompiledExpr, Satisfaction};
 
     let width_id = ValueCellId::new("S", "width");
     let grade_label_id = ValueCellId::new("S", "grade_label");
@@ -1962,7 +1964,8 @@ mod poison_recovery {
 /// 20 + 1 + 2 = 23.
 #[tokio::test]
 async fn three_plus_parent_mixed_fan_in_no_direct_param_read() {
-    use reify_types::{CompiledExpr, CompiledExprKind, ContentHash};
+    use reify_core::ContentHash;
+    use reify_ir::{CompiledExpr, CompiledExprKind};
 
     let e = "T";
 
@@ -2082,7 +2085,8 @@ async fn three_plus_parent_mixed_fan_in_no_direct_param_read() {
 /// Edit a: 5→10. Assert d is in actual_eval_set with value 20+1+2+3+4=30.
 #[tokio::test]
 async fn five_parent_fan_in_one_changed() {
-    use reify_types::{CompiledExpr, CompiledExprKind, ContentHash};
+    use reify_core::ContentHash;
+    use reify_ir::{CompiledExpr, CompiledExprKind};
 
     let e = "T";
 
@@ -2957,7 +2961,8 @@ mod execute_with_config_tests {
     #[tokio::test]
     async fn test_only_run_on_final_inputs_skipped() {
         use reify_eval::cache::{CacheStore, CachedResult, NodeCache};
-        use reify_types::{DeterminacyState, Freshness, Value, VersionId};
+        use reify_core::VersionId;
+        use reify_ir::{DeterminacyState, Freshness, Value};
 
         let e = "SKIP";
         let node_a = NodeId::Value(ValueCellId::new(e, "a"));
@@ -3689,7 +3694,8 @@ mod execute_with_config_tests {
     #[tokio::test]
     async fn test_only_run_on_final_inputs_runs_when_final_with_cache() {
         use reify_eval::cache::{CacheStore, CachedResult, NodeCache};
-        use reify_types::{DeterminacyState, Freshness, Value, VersionId};
+        use reify_core::VersionId;
+        use reify_ir::{DeterminacyState, Freshness, Value};
 
         let e = "FINAL_CACHE";
         let node_a = NodeId::Value(ValueCellId::new(e, "a"));
@@ -3788,7 +3794,8 @@ mod execute_with_config_tests {
     #[tokio::test]
     async fn test_type_level_override_routes_through_resolve() {
         use reify_eval::cache::{CacheStore, CachedResult, NodeCache};
-        use reify_types::{DeterminacyState, Freshness, Value, VersionId};
+        use reify_core::VersionId;
+        use reify_ir::{DeterminacyState, Freshness, Value};
 
         let e = "TYPE_OVERRIDE";
         let node_a = NodeId::Value(ValueCellId::new(e, "a"));
@@ -3890,7 +3897,7 @@ async fn adapter_evaluate_returns_unchanged_for_cell_without_default_expr() {
             e,
             "a",
             Type::Real,
-            Some(reify_types::CompiledExpr::literal(
+            Some(reify_ir::CompiledExpr::literal(
                 Value::Real(1.0),
                 Type::Real,
             )),
@@ -3967,7 +3974,7 @@ async fn adapter_evaluate_returns_changed_for_let_cell_with_default_expr() {
     let e = "T";
 
     // A literal expression — no dependencies on other cells.
-    let lit_expr = reify_types::CompiledExpr::literal(Value::Int(42), Type::Int);
+    let lit_expr = reify_ir::CompiledExpr::literal(Value::Int(42), Type::Int);
 
     let template = TopologyTemplateBuilder::new(e)
         .let_binding(e, "x", Type::Int, lit_expr)
@@ -4059,7 +4066,8 @@ mod poison_fields_constants {
 fn scheduler_config_default_node_traits_resolves_kind_defaults() {
     use reify_eval::cache::NodeId;
     use reify_runtime::concurrent::SchedulerConfig;
-    use reify_types::{ComputeNodeId, NodeKind, NodeTraits, ValueCellId};
+    use reify_core::{ComputeNodeId, ValueCellId};
+    use reify_ir::{NodeKind, NodeTraits};
 
     let config = SchedulerConfig::default();
 

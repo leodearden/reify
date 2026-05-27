@@ -16,7 +16,7 @@
 // `OCCT_AVAILABLE` import in
 // `reify-kernel-occt/tests/warm_startable_registration.rs`).
 use reify_solver_elastic::CgWarmState;
-use reify_types::{NodeKind, WarmStartableRegistry};
+use reify_ir::{NodeKind, WarmStartableRegistry};
 
 // Silence dead-code lints on the linkage-forcing reference — its only
 // purpose is to keep the solver-elastic lib's static-init records from

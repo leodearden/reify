@@ -5,7 +5,8 @@ use reify_compiler::{
     RealizationDecl, SweepKind, TopologyTemplate, TransformKind,
 };
 use reify_test_support::{compile_source, parse_and_compile};
-use reify_types::{CompiledExprKind, Severity};
+use reify_core::Severity;
+use reify_ir::CompiledExprKind;
 
 // ─── Source-string constants (shared between existing and op-level tests) ─────
 
@@ -221,7 +222,7 @@ fn realization_named<'a>(
 
 /// Helper: parse + compile source, assert no errors, return compiled output.
 fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_let_scope"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_let_scope"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -245,7 +246,7 @@ fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
 
 /// Helper: parse + compile source, return compiled output (may have errors).
 fn compile_with_diagnostics(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_let_scope"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_let_scope"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -255,7 +256,7 @@ fn compile_with_diagnostics(source: &str) -> reify_compiler::CompiledModule {
 }
 
 /// Helper: collect all error-severity diagnostics from a compiled module.
-fn error_diagnostics(compiled: &reify_compiler::CompiledModule) -> Vec<&reify_types::Diagnostic> {
+fn error_diagnostics(compiled: &reify_compiler::CompiledModule) -> Vec<&reify_core::Diagnostic> {
     compiled
         .diagnostics
         .iter()

@@ -15,7 +15,8 @@
 //! until the topology-selector variants land — see that helper's doc-comment
 //! for the full narrowed contract and PRD task 16 deadline reference.
 
-use reify_types::{DimensionVector, Value};
+use reify_core::DimensionVector;
+use reify_ir::Value;
 
 use crate::helpers::{
     make_kind_map, validate_dimensioned_scalar, validate_dimensioned_vec3,
@@ -199,7 +200,8 @@ pub(crate) fn eval_loads(name: &str, args: &[Value]) -> Option<Value> {
 mod tests {
     use crate::eval_builtin;
     use crate::test_macros::make_scalar_vec3;
-    use reify_types::{DimensionVector, Value};
+    use reify_core::DimensionVector;
+    use reify_ir::Value;
     use std::collections::BTreeMap;
 
     /// Build a simple opaque selector stub (Map with the given `kind`).

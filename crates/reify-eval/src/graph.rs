@@ -8,10 +8,8 @@ use reify_compiler::{
     CompiledConnection, CompiledForallTemplate, CompiledGeometryOp, TopologyTemplate,
     ValueCellKind, find_template,
 };
-use reify_types::{
-    CompiledExpr, ComputeNodeId, ConstraintNodeId, ContentHash, OpaqueState, PersistentMap,
-    RealizationNodeId, ReprKind, ResolutionNodeId, Type, Value, ValueCellId, ValueMap,
-};
+use reify_core::{ComputeNodeId, ConstraintNodeId, ContentHash, RealizationNodeId, ResolutionNodeId, Type, ValueCellId};
+use reify_ir::{CompiledExpr, OpaqueState, PersistentMap, ReprKind, Value, ValueMap};
 
 /// A value cell node in the evaluation graph.
 /// Corresponds to a param or let binding in the topology.
@@ -349,13 +347,13 @@ impl EvaluationGraph {
                             .and_then(|vc| vc.default_expr.as_ref())
                             .and_then(|expr| {
                                 // If the count expr is a literal Int, use it directly
-                                if let reify_types::CompiledExprKind::Literal(Value::Int(n)) =
+                                if let reify_ir::CompiledExprKind::Literal(Value::Int(n)) =
                                     &expr.kind
                                 {
                                     Some(*n)
                                 } else {
                                     // For ValueRef expressions, look up the referenced cell's default
-                                    if let reify_types::CompiledExprKind::ValueRef(ref_id) =
+                                    if let reify_ir::CompiledExprKind::ValueRef(ref_id) =
                                         &expr.kind
                                     {
                                         template
@@ -364,7 +362,7 @@ impl EvaluationGraph {
                                             .find(|vc| vc.id == *ref_id)
                                             .and_then(|vc| vc.default_expr.as_ref())
                                             .and_then(|e| {
-                                                if let reify_types::CompiledExprKind::Literal(
+                                                if let reify_ir::CompiledExprKind::Literal(
                                                     Value::Int(n),
                                                 ) = &e.kind
                                                 {
@@ -832,9 +830,8 @@ impl EvaluationGraph {
 #[cfg(test)]
 mod tests {
     use reify_compiler::{CompiledGeometryOp, PrimitiveKind, ValueCellKind};
-    use reify_types::{
-        CompiledExpr, ConstraintNodeId, ContentHash, RealizationNodeId, Type, Value, ValueCellId,
-    };
+    use reify_core::{ConstraintNodeId, ContentHash, RealizationNodeId, Type, ValueCellId};
+    use reify_ir::{CompiledExpr, Value};
 
     use super::*;
 
@@ -939,7 +936,7 @@ mod tests {
             id: id.clone(),
             operations: ops,
             content_hash: hash,
-            produced_repr: reify_types::ReprKind::BRep,
+            produced_repr: reify_ir::ReprKind::BRep,
         };
 
         assert_eq!(node.id, id);
@@ -957,7 +954,7 @@ mod tests {
     #[test]
     fn realization_node_data_carries_produced_repr_brep_default() {
         use reify_test_support::TopologyTemplateBuilder;
-        use reify_types::ReprKind;
+        use reify_ir::ReprKind;
 
         // from_templates must initialize produced_repr to ReprKind::BRep (v0.2 OCCT default).
         let template = TopologyTemplateBuilder::new("A")
@@ -978,7 +975,7 @@ mod tests {
 
     #[test]
     fn resolution_node_data_construction() {
-        use reify_types::ResolutionNodeId;
+        use reify_core::ResolutionNodeId;
 
         let id = ResolutionNodeId::new("Bracket", 0);
         let auto_params = vec![ValueCellId::new("Bracket", "x")];
@@ -1013,7 +1010,7 @@ mod tests {
 
     #[test]
     fn compute_node_data_construction() {
-        use reify_types::{ComputeNodeId, RealizationNodeId as RnId};
+        use reify_core::{ComputeNodeId, RealizationNodeId as RnId};
 
         let computation_id = ComputeNodeId::new("Bracket", 0);
         let data = ComputeNodeData {
@@ -1053,7 +1050,8 @@ mod tests {
 
     #[test]
     fn compute_node_data_clone_drops_opaque_state() {
-        use reify_types::{ComputeNodeId, OpaqueState, RealizationNodeId as RnId};
+        use reify_core::{ComputeNodeId, RealizationNodeId as RnId};
+        use reify_ir::OpaqueState;
 
         let data = ComputeNodeData {
             computation_id: ComputeNodeId::new("Bracket", 0),
@@ -1088,7 +1086,7 @@ mod tests {
 
     #[test]
     fn compute_node_data_fields_match_prd_spec() {
-        use reify_types::ComputeNodeId;
+        use reify_core::ComputeNodeId;
 
         let data = ComputeNodeData {
             computation_id: ComputeNodeId::new("Bracket", 0),
@@ -1135,7 +1133,7 @@ mod tests {
 
     #[test]
     fn evaluation_graph_insert_compute_node_round_trip() {
-        use reify_types::{ComputeNodeId, RealizationNodeId as RnId};
+        use reify_core::{ComputeNodeId, RealizationNodeId as RnId};
         let mut graph = EvaluationGraph::default();
         let computation_id = ComputeNodeId::new("Bracket", 0);
         let data = ComputeNodeData {
@@ -1161,7 +1159,7 @@ mod tests {
 
     #[test]
     fn evaluation_graph_get_compute_node_mut_returns_mutable_reference() {
-        use reify_types::ComputeNodeId;
+        use reify_core::ComputeNodeId;
         let mut graph = EvaluationGraph::default();
         let data = ComputeNodeData {
             computation_id: ComputeNodeId::new("Bracket", 0),
@@ -1183,7 +1181,7 @@ mod tests {
 
     #[test]
     fn evaluation_graph_get_compute_node_missing_returns_none() {
-        use reify_types::ComputeNodeId;
+        use reify_core::ComputeNodeId;
         let graph = EvaluationGraph::default();
         assert!(
             graph
@@ -1194,7 +1192,7 @@ mod tests {
 
     #[test]
     fn evaluation_graph_multiple_compute_nodes_coexist() {
-        use reify_types::ComputeNodeId;
+        use reify_core::ComputeNodeId;
         let mut graph = EvaluationGraph::default();
 
         let id_a = graph.insert_compute_node(ComputeNodeData {
@@ -1237,7 +1235,8 @@ mod tests {
 
     #[test]
     fn evaluation_graph_clone_preserves_compute_nodes() {
-        use reify_types::{ComputeNodeId, OpaqueState};
+        use reify_core::ComputeNodeId;
+        use reify_ir::OpaqueState;
         let mut graph = EvaluationGraph::default();
 
         let id = graph.insert_compute_node(ComputeNodeData {
@@ -1281,7 +1280,7 @@ mod tests {
 
     #[test]
     fn evaluation_graph_compute_nodes_iter_yields_all_inserted() {
-        use reify_types::ComputeNodeId;
+        use reify_core::ComputeNodeId;
         use std::collections::HashSet;
         let mut graph = EvaluationGraph::default();
 
@@ -1357,7 +1356,7 @@ mod tests {
             id: rnid.clone(),
             operations: vec![],
             content_hash: ContentHash::of_str("r0"),
-            produced_repr: reify_types::ReprKind::BRep,
+            produced_repr: reify_ir::ReprKind::BRep,
         };
         graph.realizations.insert(rnid.clone(), rnode);
         assert_eq!(graph.realizations.len(), 1);
@@ -1818,7 +1817,7 @@ mod tests {
                 id: RealizationNodeId::new("X", 0),
                 operations: vec![],
                 content_hash: hash_h,
-                produced_repr: reify_types::ReprKind::BRep,
+                produced_repr: reify_ir::ReprKind::BRep,
             },
         );
 
@@ -1843,7 +1842,7 @@ mod tests {
 
     #[test]
     fn evaluation_graph_resolution_clone_independence() {
-        use reify_types::ResolutionNodeId;
+        use reify_core::ResolutionNodeId;
 
         let mut graph = EvaluationGraph::default();
         let r0_id = ResolutionNodeId::new("A", 0);
@@ -1884,7 +1883,8 @@ mod tests {
     #[test]
     fn topology_fingerprint_includes_resolutions() {
         use reify_test_support::TopologyTemplateBuilder;
-        use reify_types::{CompiledExpr, ResolutionNodeId, Type, Value};
+        use reify_core::{ResolutionNodeId, Type};
+        use reify_ir::{CompiledExpr, Value};
 
         // Build two identical graphs from same template
         let template1 = TopologyTemplateBuilder::new("A")
@@ -1949,7 +1949,7 @@ mod tests {
     #[test]
     fn fingerprint_domain_separates_resolution_from_others() {
         let hash_h = ContentHash::of_str("same");
-        use reify_types::ResolutionNodeId;
+        use reify_core::ResolutionNodeId;
 
         let mut graph_a = EvaluationGraph::default();
         graph_a.value_cells.insert(
@@ -1985,7 +1985,8 @@ mod tests {
     #[test]
     fn sub_component_nodes_in_evaluation_graph() {
         use reify_test_support::TopologyTemplateBuilder;
-        use reify_types::{BinOp, CompiledExpr, Type, Value};
+        use reify_core::Type;
+        use reify_ir::{BinOp, CompiledExpr, Value};
 
         // Child: param height, let half_h = height / 2
         let height_ref =
@@ -2195,7 +2196,7 @@ mod tests {
     fn evaluation_graph_carries_forall_templates() {
         use reify_compiler::{CompiledForallBody, CompiledForallTemplate};
         use reify_test_support::TopologyTemplateBuilder;
-        use reify_types::SourceSpan;
+        use reify_core::SourceSpan;
 
         let body_expr = CompiledExpr::value_ref(
             ValueCellId::new("S.vents[0]", "mass"),
@@ -2251,9 +2252,9 @@ mod tests {
     #[test]
     fn evaluation_graph_carries_connections() {
         use reify_compiler::CompiledConnection;
-        use reify_syntax::ConnectOp;
+        use reify_ast::ConnectOp;
         use reify_test_support::TopologyTemplateBuilder;
-        use reify_types::SourceSpan;
+        use reify_core::SourceSpan;
 
         let conn = CompiledConnection {
             left_port: "vents[0].inlet".to_string(),
@@ -2293,8 +2294,8 @@ mod tests {
         left: &str,
         right: &str,
     ) -> reify_compiler::CompiledConnection {
-        use reify_syntax::ConnectOp;
-        use reify_types::SourceSpan;
+        use reify_ast::ConnectOp;
+        use reify_core::SourceSpan;
         reify_compiler::CompiledConnection {
             left_port: left.to_string(),
             operator: ConnectOp::Forward,
@@ -2386,8 +2387,8 @@ mod tests {
     /// fingerprints.
     #[test]
     fn topology_fingerprint_includes_connector_sub() {
-        use reify_syntax::ConnectOp;
-        use reify_types::SourceSpan;
+        use reify_ast::ConnectOp;
+        use reify_core::SourceSpan;
 
         let base_conn = reify_compiler::CompiledConnection {
             left_port: "p".to_string(),
@@ -2447,8 +2448,8 @@ mod tests {
     /// fingerprints.
     #[test]
     fn topology_fingerprint_includes_frame_constraint() {
-        use reify_syntax::ConnectOp;
-        use reify_types::SourceSpan;
+        use reify_ast::ConnectOp;
+        use reify_core::SourceSpan;
 
         let base_conn = reify_compiler::CompiledConnection {
             left_port: "p".to_string(),

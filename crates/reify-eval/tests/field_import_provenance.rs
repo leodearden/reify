@@ -8,7 +8,8 @@
 //! behaviour; this file covers reachability.
 
 use reify_eval::field_import_provenance::build_field_import_provenance;
-use reify_types::{ContentHash, FieldImportProvenance};
+use reify_core::ContentHash;
+use reify_ir::FieldImportProvenance;
 
 #[test]
 fn build_field_import_provenance_pins_cross_crate_public_api_surface() {

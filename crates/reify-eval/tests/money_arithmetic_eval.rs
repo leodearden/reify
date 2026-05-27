@@ -13,7 +13,8 @@
 //! units), and 2378 (`unit USD : Money` instances).
 
 use reify_test_support::eval_source;
-use reify_types::{DimensionVector, Value, ValueCellId};
+use reify_core::{DimensionVector, ValueCellId};
+use reify_ir::Value;
 
 // ─── test 1: runtime `(25USD/1kg) * 2kg → 50.0 USD` ──────────────────────────
 

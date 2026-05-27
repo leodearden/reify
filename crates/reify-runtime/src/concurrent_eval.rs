@@ -44,9 +44,8 @@ use reify_eval::cache::{CachedResult, EvalOutcome, NodeId};
 use reify_eval::deps::extract_dependency_trace;
 use reify_eval::graph::EvaluationGraph;
 use reify_eval::{CheckResult, ConcurrentEditResult, ConcurrentEditSetup, ConcurrentNodeResult};
-use reify_types::{
-    CompiledFunction, ContentHash, DeterminacyState, PersistentMap, Value, ValueCellId, ValueMap,
-};
+use reify_core::{ContentHash, ValueCellId};
+use reify_ir::{CompiledFunction, DeterminacyState, PersistentMap, Value, ValueMap};
 
 use crate::concurrent::{
     AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerError,

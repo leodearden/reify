@@ -214,7 +214,7 @@ pub struct LoopClosureReport {
     /// Typed diagnostic entries the wrapper emitted (over-/under-constrained
     /// pre-checks and singular post-process).  Empty for a balanced,
     /// non-singular solve.
-    pub diagnostics: Vec<reify_types::Diagnostic>,
+    pub diagnostics: Vec<reify_core::Diagnostic>,
 }
 
 impl LoopClosureReport {
@@ -584,9 +584,9 @@ where
 ///
 /// [`DiagnosticCode::KinematicSingularity`]: reify_types::DiagnosticCode::KinematicSingularity
 pub fn solve_loop_closure(
-    chain_a: &[reify_types::Value],
+    chain_a: &[reify_ir::Value],
     vals_a: &[crate::loop_closure_value::JointValue],
-    chain_b: &[reify_types::Value],
+    chain_b: &[reify_ir::Value],
     vals_b_initial: &[crate::loop_closure_value::JointValue],
     free_b: &[usize],
     strategy: &StartStrategy,
@@ -788,7 +788,7 @@ const SPHERE_TIKHONOV_DAMPING: f64 = 1e-8;
 /// `is_joint_value`, but a hand-built fixture might slip a malformed
 /// joint Map through).
 fn free_joint_shapes(
-    chain_b: &[reify_types::Value],
+    chain_b: &[reify_ir::Value],
     free_b: &[usize],
 ) -> Option<Vec<crate::loop_closure_value::JointKind>> {
     let mut out = Vec::with_capacity(free_b.len());
@@ -797,11 +797,11 @@ fn free_joint_shapes(
             return None;
         }
         let map = match &chain_b[i] {
-            reify_types::Value::Map(m) => m,
+            reify_ir::Value::Map(m) => m,
             _ => return None,
         };
-        let kind = match map.get(&reify_types::Value::String("kind".to_string())) {
-            Some(reify_types::Value::String(s)) => s.as_str(),
+        let kind = match map.get(&reify_ir::Value::String("kind".to_string())) {
+            Some(reify_ir::Value::String(s)) => s.as_str(),
             _ => return None,
         };
         out.push(crate::loop_closure_value::JointKind::from_str(kind)?);
@@ -862,13 +862,13 @@ pub enum LoopClosureChain {
     /// Produced by the parent-conflict branch of `append_body`.
     /// Solver-feedable via `chain_transform` / `solve_loop_closure`.
     WellFormed {
-        chain_a: Vec<reify_types::Value>,
-        chain_b: Vec<reify_types::Value>,
+        chain_a: Vec<reify_ir::Value>,
+        chain_b: Vec<reify_ir::Value>,
         /// The closing joint: propagated from the loop-closure record's
         /// `closing_joint` field so callers do not need `chain_b.last().unwrap()`
         /// (a partial function). Equals the last element of both `chain_a` and
         /// `chain_b` by the path invariant.
-        closing_joint: reify_types::Value,
+        closing_joint: reify_ir::Value,
     },
     /// `chain_b` contains the closing joint more than once — at the end
     /// (the appended closing edge) and once mid-walk (as an ancestor of
@@ -876,13 +876,13 @@ pub enum LoopClosureChain {
     /// self-loop case). NOT a valid linear kinematic chain. Produced by
     /// the cycle/self-loop branch of `append_body`.
     Cycle {
-        chain_a: Vec<reify_types::Value>,
-        chain_b: Vec<reify_types::Value>,
+        chain_a: Vec<reify_ir::Value>,
+        chain_b: Vec<reify_ir::Value>,
         /// The closing joint: propagated from the loop-closure record's
         /// `closing_joint` field so callers do not need `chain_b.last().unwrap()`
         /// (a partial function). Equals the last element of both `chain_a` and
         /// `chain_b` by the path invariant.
-        closing_joint: reify_types::Value,
+        closing_joint: reify_ir::Value,
     },
 }
 
@@ -920,9 +920,9 @@ pub enum LoopClosureChain {
 /// Downstream contract: chains terminate at the closing joint (the last
 /// element equals `loop_closure.closing_joint`), world sentinel stripped.
 pub fn mechanism_loop_closure_chains(
-    mech_map: &reify_types::Value,
+    mech_map: &reify_ir::Value,
 ) -> Option<Vec<LoopClosureChain>> {
-    use reify_types::Value;
+    use reify_ir::Value;
 
     // Validate kind="mechanism".
     let map = match mech_map {
@@ -1002,8 +1002,8 @@ pub fn mechanism_loop_closure_chains(
 ///   would not terminate at a closing joint, which violates the caller's
 ///   downstream contract — an empty chain cannot be fed to
 ///   `chain_transform` / `solve_loop_closure`).
-fn strip_world_sentinel(path: &[reify_types::Value]) -> Option<Vec<reify_types::Value>> {
-    use reify_types::Value;
+fn strip_world_sentinel(path: &[reify_ir::Value]) -> Option<Vec<reify_ir::Value>> {
+    use reify_ir::Value;
 
     // Reject `[world]` and shorter — the stripped tail would be empty,
     // violating the contract that returned chains terminate at the
@@ -1087,9 +1087,9 @@ const SINGLE_LOOP_RESIDUAL_COUNT: usize = 6;
 /// [`DiagnosticCode::KinematicUnderconstrained`]: reify_types::DiagnosticCode::KinematicUnderconstrained
 /// [`DiagnosticCode::KinematicSingularity`]: reify_types::DiagnosticCode::KinematicSingularity
 pub fn solve_loop_closure_with_diagnostics(
-    chain_a: &[reify_types::Value],
+    chain_a: &[reify_ir::Value],
     vals_a: &[crate::loop_closure_value::JointValue],
-    chain_b: &[reify_types::Value],
+    chain_b: &[reify_ir::Value],
     vals_b_initial: &[crate::loop_closure_value::JointValue],
     free_b: &[usize],
     strategy: &StartStrategy,
@@ -1110,7 +1110,7 @@ pub fn solve_loop_closure_with_diagnostics(
         };
     }
 
-    let mut diagnostics: Vec<reify_types::Diagnostic> = Vec::new();
+    let mut diagnostics: Vec<reify_core::Diagnostic> = Vec::new();
 
     // KCC-γ step-12: count manifold DOF (`dof_count`) rather than free_b
     // slots so a 3-DOF planar joint balances correctly against the 6-component
@@ -1148,12 +1148,12 @@ pub fn solve_loop_closure_with_diagnostics(
         // spherical/cylindrical) skip this branch and delegate to the solver
         // even when free_dof_count < 6 — see the comment above the
         // `(free_dof_count, any_multi_dof)` derivation.
-        let diag = reify_types::Diagnostic::error(format!(
+        let diag = reify_core::Diagnostic::error(format!(
             "kinematic system over-constrained: {} free DOFs vs {} loop residuals",
             free_dof_count,
             SINGLE_LOOP_RESIDUAL_COUNT
         ))
-        .with_code(reify_types::DiagnosticCode::KinematicOverconstrained);
+        .with_code(reify_core::DiagnosticCode::KinematicOverconstrained);
         diagnostics.push(diag);
 
         // Resolve the returned `x` from the strategy.  Inputs are validated
@@ -1192,12 +1192,12 @@ pub fn solve_loop_closure_with_diagnostics(
         // that IS the PRD's "closest-to-previous config" semantics).  The
         // warning gives the user a signal that the mechanism is structurally
         // under-determined and might want an explicit binding.
-        let diag = reify_types::Diagnostic::warning(format!(
+        let diag = reify_core::Diagnostic::warning(format!(
             "kinematic system under-constrained: {} free DOFs vs {} loop residuals; consider adding an explicit binding",
             free_dof_count,
             SINGLE_LOOP_RESIDUAL_COUNT
         ))
-        .with_code(reify_types::DiagnosticCode::KinematicUnderconstrained);
+        .with_code(reify_core::DiagnosticCode::KinematicUnderconstrained);
         diagnostics.push(diag);
     } else if free_dof_count < SINGLE_LOOP_RESIDUAL_COUNT && any_multi_dof {
         // KCC-γ step-12: multi-DOF free joint(s) with total DOF count below
@@ -1207,12 +1207,12 @@ pub fn solve_loop_closure_with_diagnostics(
         // Newton solve discovers whether the loop's actual residual is
         // reachable).  Emit an under-constrained warning so the user sees
         // the structural imbalance signal regardless of solver outcome.
-        let diag = reify_types::Diagnostic::warning(format!(
+        let diag = reify_core::Diagnostic::warning(format!(
             "kinematic system under-constrained: {} free DOFs vs {} loop residuals; multi-DOF joint(s) may still satisfy a reduced-subspace residual",
             free_dof_count,
             SINGLE_LOOP_RESIDUAL_COUNT
         ))
-        .with_code(reify_types::DiagnosticCode::KinematicUnderconstrained);
+        .with_code(reify_core::DiagnosticCode::KinematicUnderconstrained);
         diagnostics.push(diag);
     }
 
@@ -1237,10 +1237,10 @@ pub fn solve_loop_closure_with_diagnostics(
     // InvalidInput) add no singularity entry; `is_singular()` derives from
     // the `outcome` tag at the type level — one source of truth.
     if matches!(outcome, NewtonOutcome::Singular { .. }) {
-        let diag = reify_types::Diagnostic::warning(
+        let diag = reify_core::Diagnostic::warning(
             "kinematic singularity detected: rank-deficient Jacobian; last-converged config returned",
         )
-        .with_code(reify_types::DiagnosticCode::KinematicSingularity);
+        .with_code(reify_core::DiagnosticCode::KinematicSingularity);
         diagnostics.push(diag);
     }
 
@@ -1262,7 +1262,7 @@ pub fn solve_loop_closure_with_diagnostics(
 /// malformed input surfaces `InvalidInput` (the more accurate signal) rather
 /// than `KinematicOverconstrained`.
 fn validate_loop_closure_inputs(
-    chain_b: &[reify_types::Value],
+    chain_b: &[reify_ir::Value],
     vals_b_initial: &[crate::loop_closure_value::JointValue],
     free_b: &[usize],
     strategy: &StartStrategy,
@@ -1700,7 +1700,7 @@ mod tests {
     // ── solve_loop_closure tests (step-15, step-17, step-19) ────────────
 
     use crate::eval_builtin;
-    use reify_types::Value;
+    use reify_ir::Value;
 
     fn axis_x() -> Value {
         Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)])

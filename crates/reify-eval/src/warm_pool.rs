@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use crate::cache::NodeId;
-use reify_types::OpaqueState;
+use reify_ir::OpaqueState;
 
 /// Environment variable that overrides the warm-state pool memory budget.
 ///
@@ -558,7 +558,7 @@ impl WarmStatePool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::ValueCellId;
+    use reify_core::ValueCellId;
 
     #[test]
     fn donate_and_checkout_roundtrip() {
@@ -1235,7 +1235,7 @@ mod tests {
         // Build a pool with effectively unlimited memory budget so LRU eviction
         // never interferes.  We are testing the events-buffer tripwire, not eviction.
         let mut pool = WarmStatePool::unlimited();
-        let template = NodeId::Value(reify_types::ValueCellId::new("T", "n"));
+        let template = NodeId::Value(reify_core::ValueCellId::new("T", "n"));
 
         // Fill the buffer to exactly MAX_BUFFERED_EVENTS by donating that many
         // distinct nodes (each donate() emits exactly one Donated event).
@@ -1243,7 +1243,7 @@ mod tests {
         // MAX_BUFFERED_EVENTS items without draining.
         let _ = pool.drain_events();
         for i in 0..WarmStatePool::MAX_BUFFERED_EVENTS {
-            let node = NodeId::Value(reify_types::ValueCellId::new("T", format!("n{i}")));
+            let node = NodeId::Value(reify_core::ValueCellId::new("T", format!("n{i}")));
             pool.donate(node, OpaqueState::new(0u8, 1));
         }
         // Buffer is now at capacity.  One more donation must fire the debug_assert!.
@@ -1277,9 +1277,9 @@ mod tests {
         let mut pool = WarmStatePool::unlimited();
 
         let total = WarmStatePool::MAX_BUFFERED_EVENTS + 100;
-        let mut last_node = NodeId::Value(reify_types::ValueCellId::new("T", "n0"));
+        let mut last_node = NodeId::Value(reify_core::ValueCellId::new("T", "n0"));
         for i in 0..total {
-            let node = NodeId::Value(reify_types::ValueCellId::new("T", format!("n{i}")));
+            let node = NodeId::Value(reify_core::ValueCellId::new("T", format!("n{i}")));
             last_node = node.clone();
             pool.donate(node, OpaqueState::new(0u8, 1));
         }
@@ -1354,7 +1354,7 @@ mod tests {
 
             // Donate enough events to overflow at least twice.
             for i in 0..(WarmStatePool::MAX_BUFFERED_EVENTS * 2 + 100) {
-                let node = NodeId::Value(reify_types::ValueCellId::new("T", format!("n{i}")));
+                let node = NodeId::Value(reify_core::ValueCellId::new("T", format!("n{i}")));
                 pool.donate(node, OpaqueState::new(0u8, 1));
             }
         });
@@ -1396,7 +1396,7 @@ mod tests {
         // Trigger the first trim: donate MAX+1 events (the (MAX+1)-th push takes
         // events.len() to MAX+1 > MAX, firing the trim and dropping MAX/2 events).
         for i in 0..=WarmStatePool::MAX_BUFFERED_EVENTS {
-            let node = NodeId::Value(reify_types::ValueCellId::new("T", format!("n{i}")));
+            let node = NodeId::Value(reify_core::ValueCellId::new("T", format!("n{i}")));
             pool.donate(node, OpaqueState::new(0u8, 1));
         }
         assert_eq!(
@@ -1408,7 +1408,7 @@ mod tests {
         // After the first trim, events.len() == MAX/2 + 1.  Donate MAX/2 more events
         // to push len back to MAX+1 and trigger a second trim.
         for i in 0..WarmStatePool::MAX_BUFFERED_EVENTS / 2 {
-            let node = NodeId::Value(reify_types::ValueCellId::new("T", format!("m{i}")));
+            let node = NodeId::Value(reify_core::ValueCellId::new("T", format!("m{i}")));
             pool.donate(node, OpaqueState::new(0u8, 1));
         }
         assert_eq!(
@@ -1458,7 +1458,7 @@ mod tests {
             // Donate TEST_CAP+1 events: the (TEST_CAP+1)-th push takes events.len()
             // to TEST_CAP+1 > TEST_CAP, firing exactly one auto-trim round and one warn.
             for i in 0..=TEST_CAP {
-                let node = NodeId::Value(reify_types::ValueCellId::new("T", format!("n{i}")));
+                let node = NodeId::Value(reify_core::ValueCellId::new("T", format!("n{i}")));
                 pool.donate(node, OpaqueState::new(0u8, 1));
             }
         });

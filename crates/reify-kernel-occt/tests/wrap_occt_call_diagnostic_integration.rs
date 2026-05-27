@@ -19,7 +19,7 @@
 #![cfg(has_occt)]
 
 use reify_kernel_occt::OcctKernel;
-use reify_types::{GeometryHandleId, GeometryOp, GeometryQuery, QueryError, Value};
+use reify_ir::{GeometryHandleId, GeometryOp, GeometryQuery, QueryError, Value};
 
 // ---------------------------------------------------------------------------
 // Fixture helper

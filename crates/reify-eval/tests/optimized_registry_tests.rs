@@ -14,9 +14,8 @@
 use reify_test_support::{
     BrokenCountOptimizedImpl, MockOptimizedImpl, make_simple_engine, parse_and_compile,
 };
-use reify_types::{
-    ConstraintDiagnostics, ConstraintNodeId, ConstraintResult, Diagnostic, Satisfaction, Severity,
-};
+use reify_core::{ConstraintNodeId, Diagnostic, Severity};
+use reify_ir::{ConstraintDiagnostics, ConstraintResult, Satisfaction};
 
 /// Assert that `diagnostics` contains an `Error`-severity diagnostic describing
 /// the OptimizedImpl-count-mismatch fallback for `expected_target`. Used by tests

@@ -14,7 +14,7 @@
 mod common;
 
 use reify_kernel_occt::{HistoryRecord, LocalFeatureOpHistoryRecords, OcctKernelHandle};
-use reify_types::GeometryHandleId;
+use reify_ir::GeometryHandleId;
 
 /// Verify the helper panics with a message containing "face_generated
 /// parent_subshape_index" when a `face_generated` record has

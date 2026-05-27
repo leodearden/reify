@@ -13,7 +13,8 @@
 //! strings for focused per-scenario assertions.
 
 use reify_test_support::{check_source, eval_source, make_simple_engine, parse_and_compile};
-use reify_types::{ModulePath, Satisfaction, Severity, Value, ValueCellId};
+use reify_core::{ModulePath, Severity, ValueCellId};
+use reify_ir::{Satisfaction, Value};
 
 /// Absolute path to the integration example file, resolved at compile time from crate root.
 const EXAMPLE_PATH: &str = concat!(

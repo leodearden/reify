@@ -14,7 +14,7 @@
 use reify_kernel_occt::{
     DeletedRecord, HistoryRecord, LocalFeatureOpHistoryRecords, OcctKernelHandle,
 };
-use reify_types::{GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value};
+use reify_ir::{GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value};
 
 /// Private trait implemented by both [`HistoryRecord`] and [`DeletedRecord`]
 /// so that [`assert_records_in_range`] can operate on slices of either type.

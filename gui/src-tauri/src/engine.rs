@@ -9,15 +9,13 @@ use tracing::warn;
 use reify_compiler::{CompiledModule, ValueCellKind, Visibility};
 use reify_eval::cache::NodeId;
 use reify_eval::{CheckResult, Engine};
-use reify_types::{
-    ConstraintChecker, ContentHash, DeterminacyState, DimensionVector, ExportFormat, GeometryKernel,
-    ModulePath, Satisfaction, Severity, Value, ValueCellId,
-};
+use reify_core::{ContentHash, DimensionVector, ModulePath, Severity, ValueCellId};
+use reify_ir::{ConstraintChecker, DeterminacyState, ExportFormat, GeometryKernel, Satisfaction, Value};
 
 #[cfg(test)]
-use reify_types::ConstraintSolver;
+use reify_ir::ConstraintSolver;
 
-use reify_types::{Diagnostic, DiagnosticInfo, DiagnosticLabel, SourceLocationInfo, SourceSpan};
+use reify_core::{Diagnostic, DiagnosticInfo, DiagnosticLabel, SourceLocationInfo, SourceSpan};
 
 use crate::types::{
     AutoResolveConstraintProgress, AutoResolveIteration, AutoResolveParameterValue, ConstraintData,
@@ -94,7 +92,8 @@ mod core_state {
     use reify_eval::{CheckResult, Engine};
 
     #[cfg(test)]
-    use reify_types::{ConstraintSolver, Diagnostic};
+    use reify_core::Diagnostic;
+    use reify_ir::ConstraintSolver;
 
     /// Describes how `commit_state` should handle the `file_path` core field.
     ///
@@ -433,7 +432,7 @@ pub struct EngineSession {
     /// cycle.  Set to `None` until the first load; overwritten (not appended) on
     /// every subsequent `commit_state` call.  Used by `get_containing_definition`
     /// to avoid re-parsing the source on every cursor/hover event.
-    parsed_cache: Option<reify_syntax::ParsedModule>,
+    parsed_cache: Option<reify_ast::ParsedModule>,
     /// Cached line-offset table for the currently-loaded source.
     ///
     /// Each entry is the byte position of a `\n` character in the source text.
@@ -579,7 +578,7 @@ fn build_err_payload(
 /// helper wraps each one in a synthetic `Diagnostic::error` with a label so
 /// [`diagnostics_to_info`] can resolve spans to line/column numbers.
 fn parse_errs_to_payload(
-    errors: &[reify_syntax::ParseError],
+    errors: &[reify_ast::ParseError],
     file_path: &str,
     source: &str,
 ) -> (String, Vec<DiagnosticInfo>) {
@@ -606,7 +605,7 @@ fn parse_errs_to_payload(
 fn compile_single_file_with_stdlib(
     content: &str,
     module_name: &str,
-) -> Result<(reify_syntax::ParsedModule, CompiledModule), (String, Vec<DiagnosticInfo>)> {
+) -> Result<(reify_ast::ParsedModule, CompiledModule), (String, Vec<DiagnosticInfo>)> {
     // Prelude-aware parse so stdlib enum references like `CorrosionClass.C5`
     // disambiguate to `EnumAccess` rather than `MemberAccess`.  See task 2525.
     let parsed = reify_compiler::parse_with_stdlib(content, ModulePath::single(module_name));
@@ -698,7 +697,7 @@ fn compile_entry_with_imports(
     entry_path: &Path,
     source: &str,
     module_name: &str,
-) -> Result<(CompiledModule, reify_syntax::ParsedModule), (String, Vec<DiagnosticInfo>)> {
+) -> Result<(CompiledModule, reify_ast::ParsedModule), (String, Vec<DiagnosticInfo>)> {
     // Parse with stdlib enum pre-seeding (same as load_from_source / update_source).
     let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
     if !parsed.errors.is_empty() {
@@ -718,7 +717,7 @@ fn compile_entry_with_imports(
         .declarations
         .iter()
         .filter_map(|decl| {
-            if let reify_syntax::Declaration::Import(imp) = decl {
+            if let reify_ast::Declaration::Import(imp) = decl {
                 Some(imp.path.clone())
             } else {
                 None
@@ -1416,7 +1415,7 @@ impl EngineSession {
     /// drifting apart.
     fn commit_state(
         &mut self,
-        parsed: reify_syntax::ParsedModule,
+        parsed: reify_ast::ParsedModule,
         compiled: CompiledModule,
         check_result: CheckResult,
         module_name: &str,
@@ -2313,7 +2312,7 @@ fn build_values(
             let val = check.values.get_or_undef(&cell.id);
             let (formatted_value, unit) = format_value(&val);
             let determinacy = match &val {
-                reify_types::Value::Undef => {
+                reify_ir::Value::Undef => {
                     if cell.kind.is_auto() {
                         DeterminacyState::Auto
                     } else {
@@ -2593,7 +2592,7 @@ enum BindValue {
     Param(String),
     /// A literal expression providing an immediate SI-convertible value
     /// (e.g. `bind(j, 50mm)` or `bind(j, 0.5)`).
-    Literal(reify_syntax::Expr),
+    Literal(reify_ast::Expr),
 }
 
 /// Walk the parsed declarations looking for `snapshot(mech, [bind(joint, param), …])`
@@ -2620,13 +2619,13 @@ enum BindValue {
 fn resolve_driving_params_from_ast(
     descriptors: &mut [MechanismDescriptor],
     seen_joints_cache: &HashMap<String, Vec<Value>>,
-    parsed: &reify_syntax::ParsedModule,
+    parsed: &reify_ast::ParsedModule,
     check: &CheckResult,
     compiled: &CompiledModule,
 ) {
     for decl in &parsed.declarations {
         let structure = match decl {
-            reify_syntax::Declaration::Structure(s) => s,
+            reify_ast::Declaration::Structure(s) => s,
             _ => continue,
         };
         let structure_name = &structure.name;
@@ -2645,7 +2644,7 @@ fn resolve_driving_params_from_ast(
         let mut bind_pairs: Vec<(String, BindValue)> = Vec::new();
         for member in &structure.members {
             let expr = match member {
-                reify_syntax::MemberDecl::Let(l) => &l.value,
+                reify_ast::MemberDecl::Let(l) => &l.value,
                 _ => continue,
             };
             collect_snapshot_bind_pairs(expr, &mut bind_pairs);
@@ -2724,7 +2723,7 @@ fn resolve_driving_params_from_ast(
 
                 BindValue::Literal(literal_expr) => {
                     // Evaluate the literal expression to SI value using UNIT_TABLE.
-                    use reify_syntax::ExprKind;
+                    use reify_ast::ExprKind;
                     let initial_value_si = match &literal_expr.kind {
                         ExprKind::QuantityLiteral { value, unit } => {
                             // Look up the unit in UNIT_TABLE for SI scale.
@@ -2797,10 +2796,10 @@ fn resolve_driving_params_from_ast(
 /// centralises that skeleton so a third AST-driven feature can register its
 /// match logic via the callback without duplicating the traversal again.
 fn walk_function_calls(
-    expr: &reify_syntax::Expr,
-    on_call: &mut dyn FnMut(&str, &[reify_syntax::Expr]),
+    expr: &reify_ast::Expr,
+    on_call: &mut dyn FnMut(&str, &[reify_ast::Expr]),
 ) {
-    use reify_syntax::ExprKind;
+    use reify_ast::ExprKind;
     match &expr.kind {
         ExprKind::FunctionCall { name, args } => {
             on_call(name, args);
@@ -2866,8 +2865,8 @@ fn walk_function_calls(
 /// Calls with fewer than two arguments (`args.len() < 2`) are also **silent**
 /// — they cannot contribute pairs regardless of shadowing, so they are
 /// excluded from the anomaly surface intentionally.
-fn collect_snapshot_bind_pairs(expr: &reify_syntax::Expr, pairs: &mut Vec<(String, BindValue)>) {
-    use reify_syntax::ExprKind;
+fn collect_snapshot_bind_pairs(expr: &reify_ast::Expr, pairs: &mut Vec<(String, BindValue)>) {
+    use reify_ast::ExprKind;
     walk_function_calls(expr, &mut |name, args| {
         if name != "snapshot" || args.len() < 2 {
             return;
@@ -2945,21 +2944,21 @@ fn collect_snapshot_bind_pairs(expr: &reify_syntax::Expr, pairs: &mut Vec<(Strin
 /// "Terminal-mechanism filter narrows the suggestion text to body() consumption
 /// only."
 fn collect_consumed_mechanism_idents(
-    parsed: &reify_syntax::ParsedModule,
+    parsed: &reify_ast::ParsedModule,
     structure_name: &str,
 ) -> HashSet<String> {
-    use reify_syntax::ExprKind;
+    use reify_ast::ExprKind;
     let mut consumed = HashSet::new();
 
     for decl in &parsed.declarations {
         let structure = match decl {
-            reify_syntax::Declaration::Structure(s) if s.name == structure_name => s,
+            reify_ast::Declaration::Structure(s) if s.name == structure_name => s,
             _ => continue,
         };
 
         for member in &structure.members {
             let expr = match member {
-                reify_syntax::MemberDecl::Let(l) => &l.value,
+                reify_ast::MemberDecl::Let(l) => &l.value,
                 _ => continue,
             };
             walk_function_calls(expr, &mut |name, args| {
@@ -3206,7 +3205,7 @@ impl EngineSession {
     ///
     /// # Panics
     /// Panics if no module is currently loaded (`self.compiled` is `None`).
-    pub(crate) fn inject_diagnostic_for_test(&mut self, diag: reify_types::Diagnostic) {
+    pub(crate) fn inject_diagnostic_for_test(&mut self, diag: reify_core::Diagnostic) {
         self.core.inject_diagnostic(diag);
     }
 
@@ -3261,7 +3260,7 @@ impl EngineSession {
     ///
     /// Intended only for tests that need to inspect cache state without widening
     /// the production API.
-    pub(crate) fn parsed_cache_for_test(&self) -> Option<&reify_syntax::ParsedModule> {
+    pub(crate) fn parsed_cache_for_test(&self) -> Option<&reify_ast::ParsedModule> {
         self.parsed_cache.as_ref()
     }
 
@@ -3280,7 +3279,7 @@ impl EngineSession {
     /// stripped `ParsedModule` (with `declarations: Vec::new()`) and verify that
     /// `get_containing_definition` reads from the cache rather than re-parsing
     /// the source text.
-    pub(crate) fn override_parsed_cache_for_test(&mut self, parsed: reify_syntax::ParsedModule) {
+    pub(crate) fn override_parsed_cache_for_test(&mut self, parsed: reify_ast::ParsedModule) {
         self.parsed_cache = Some(parsed);
     }
 
@@ -3354,7 +3353,7 @@ impl EngineSession {
     /// `reify-eval` (enabled unconditionally for `gui/src-tauri` dev-deps
     /// per task #2337 pre-1).  Call `recheck_for_test` after this to
     /// re-run the evaluation with the forced panic in effect.
-    pub(crate) fn set_panic_on_eval_for_test(&mut self, cell: reify_types::ValueCellId) {
+    pub(crate) fn set_panic_on_eval_for_test(&mut self, cell: reify_core::ValueCellId) {
         self.core.engine_mut().set_panic_on_eval(cell);
     }
 
@@ -3414,14 +3413,14 @@ impl EngineSession {
     /// `gui/src-tauri` dev-deps unconditionally per task #2337 pre-1).
     pub(crate) fn mark_value_cell_failed_for_test(
         &mut self,
-        cell: reify_types::ValueCellId,
+        cell: reify_core::ValueCellId,
         error_msg: &str,
     ) {
         let node = reify_eval::cache::NodeId::Value(cell);
         self.core
             .engine_mut()
             .cache_store_mut()
-            .mark_failed(&node, reify_types::ErrorRef::new(error_msg));
+            .mark_failed(&node, reify_ir::ErrorRef::new(error_msg));
     }
 }
 
@@ -3501,8 +3500,8 @@ pub fn parse_value_string(s: &str) -> Result<Value, String> {
 }
 
 /// Format a compiled expression as a human-readable string.
-fn format_expr(expr: &reify_types::CompiledExpr) -> String {
-    use reify_types::CompiledExprKind;
+fn format_expr(expr: &reify_ir::CompiledExpr) -> String {
+    use reify_ir::CompiledExprKind;
 
     match &expr.kind {
         CompiledExprKind::Literal(v) => {
@@ -3520,27 +3519,27 @@ fn format_expr(expr: &reify_types::CompiledExpr) -> String {
         }
         CompiledExprKind::BinOp { op, left, right } => {
             let op_str = match op {
-                reify_types::BinOp::Add => "+",
-                reify_types::BinOp::Sub => "-",
-                reify_types::BinOp::Mul => "*",
-                reify_types::BinOp::Div => "/",
-                reify_types::BinOp::Mod => "%",
-                reify_types::BinOp::Pow => "**",
-                reify_types::BinOp::Eq => "==",
-                reify_types::BinOp::Ne => "!=",
-                reify_types::BinOp::Lt => "<",
-                reify_types::BinOp::Le => "<=",
-                reify_types::BinOp::Gt => ">",
-                reify_types::BinOp::Ge => ">=",
-                reify_types::BinOp::And => "&&",
-                reify_types::BinOp::Or => "||",
+                reify_ir::BinOp::Add => "+",
+                reify_ir::BinOp::Sub => "-",
+                reify_ir::BinOp::Mul => "*",
+                reify_ir::BinOp::Div => "/",
+                reify_ir::BinOp::Mod => "%",
+                reify_ir::BinOp::Pow => "**",
+                reify_ir::BinOp::Eq => "==",
+                reify_ir::BinOp::Ne => "!=",
+                reify_ir::BinOp::Lt => "<",
+                reify_ir::BinOp::Le => "<=",
+                reify_ir::BinOp::Gt => ">",
+                reify_ir::BinOp::Ge => ">=",
+                reify_ir::BinOp::And => "&&",
+                reify_ir::BinOp::Or => "||",
             };
             format!("{} {} {}", format_expr(left), op_str, format_expr(right))
         }
         CompiledExprKind::UnOp { op, operand } => {
             let op_str = match op {
-                reify_types::UnOp::Neg => "-",
-                reify_types::UnOp::Not => "!",
+                reify_ir::UnOp::Neg => "-",
+                reify_ir::UnOp::Not => "!",
             };
             format!("{}{}", op_str, format_expr(operand))
         }
@@ -3624,8 +3623,8 @@ fn format_expr(expr: &reify_types::CompiledExpr) -> String {
             ..
         } => {
             let keyword = match kind {
-                reify_types::QuantifierKind::ForAll => "forall",
-                reify_types::QuantifierKind::Exists => "exists",
+                reify_ast::QuantifierKind::ForAll => "forall",
+                reify_ast::QuantifierKind::Exists => "exists",
             };
             format!(
                 "{} {} in {}: {}",
@@ -3640,10 +3639,10 @@ fn format_expr(expr: &reify_types::CompiledExpr) -> String {
         CompiledExprKind::MetaAccess { entity, key } => format!("{}.meta.{}", entity, key),
         CompiledExprKind::DeterminacyPredicate { kind, cell } => {
             let fn_name = match kind {
-                reify_types::DeterminacyPredicateKind::Determined => "determined",
-                reify_types::DeterminacyPredicateKind::Undetermined => "undetermined",
-                reify_types::DeterminacyPredicateKind::Constrained => "constrained",
-                reify_types::DeterminacyPredicateKind::PartiallyDetermined => {
+                reify_ir::DeterminacyPredicateKind::Determined => "determined",
+                reify_ir::DeterminacyPredicateKind::Undetermined => "undetermined",
+                reify_ir::DeterminacyPredicateKind::Constrained => "constrained",
+                reify_ir::DeterminacyPredicateKind::PartiallyDetermined => {
                     "partially_determined"
                 }
             };
@@ -3675,9 +3674,9 @@ fn format_expr(expr: &reify_types::CompiledExpr) -> String {
             args,
         } => {
             let kind_str = match selector_kind {
-                reify_types::SelectorKind::Face => "face",
-                reify_types::SelectorKind::Point => "point",
-                reify_types::SelectorKind::Edge => "edge",
+                reify_ir::SelectorKind::Face => "face",
+                reify_ir::SelectorKind::Point => "point",
+                reify_ir::SelectorKind::Edge => "edge",
             };
             let args_str: Vec<String> = args.iter().map(format_expr).collect();
             format!(
@@ -3713,7 +3712,7 @@ fn format_expr(expr: &reify_types::CompiledExpr) -> String {
 }
 
 /// Collect all ValueCellId references from a compiled expression.
-fn collect_value_refs(expr: &reify_types::CompiledExpr) -> Vec<String> {
+fn collect_value_refs(expr: &reify_ir::CompiledExpr) -> Vec<String> {
     let mut refs: Vec<String> = expr
         .collect_value_refs()
         .into_iter()
@@ -3784,7 +3783,7 @@ fn diagnostics_to_info(
 // moved to `reify_types::source_location` so that `reify-eval` can use them
 // without depending on `reify-gui`.  Re-export here as `pub(crate)` so all
 // existing callers inside this crate (and engine_tests.rs) compile unchanged.
-pub(crate) use reify_types::{build_line_offsets, line_col_to_byte_offset_with_offsets};
+pub(crate) use reify_core::{build_line_offsets, line_col_to_byte_offset_with_offsets};
 
 /// Binary-search for the (line, column) of `offset` using a pre-built newline table.
 ///
@@ -3812,7 +3811,7 @@ pub(crate) fn offset_to_line_col_fast(
     // cross-prelude collision warnings).  Return (1, 1) — matching
     // reify_types::byte_offset_to_line_col so the two convergent
     // implementations agree at the sentinel.
-    if offset == reify_types::SourceSpan::PRELUDE_SENTINEL_OFFSET {
+    if offset == reify_core::SourceSpan::PRELUDE_SENTINEL_OFFSET {
         return (1, 1);
     }
     // Count newlines that appear *strictly before* `offset`.

@@ -11,22 +11,8 @@
 
 mod ts_parser;
 
+use reify_ast::ParsedModule;
 use reify_core::ModulePath;
-
-// Transient re-exports — retired by task η.
-pub use reify_ast::{
-    Annotation, AssociatedTypeDecl, ChainDecl, ConnectDecl, ConnectOp, ConstraintDecl,
-    ConstraintDef, ConstraintInstDecl, Declaration, DimOp, EnumDecl, Expr, ExprKind, FieldDef,
-    FieldSource, FnBody, FnDef, FnParam, ForallConnectBody, ForallConnectDecl,
-    ForallConstraintBody, ForallConstraintDecl, GuardedGroupDecl, ImportDecl, ImportKind,
-    LambdaParam, LetDecl, MatchArm, MatchArmDeclArmDecl, MatchArmDeclGroupDecl, MaximizeDecl,
-    MAX_MEMBER_NESTING_DEPTH, MemberDecl, MemberSpanInfo, MetaBlockDecl, MinimizeDecl,
-    NumberClass, OccurrenceDef, ParamDecl, ParseError, ParsedModule, PortDecl, PortRef, Pragma,
-    PragmaArg, PragmaValue, PurposeDef, PurposeParam, QuantifierKind, StructureDef, SubDecl,
-    TraitBoundRef, TraitDecl, TypeAliasDecl, TypeExpr, TypeExprKind, TypeParamDecl, UnitDecl,
-    WhereClause, classify_number_literal, find_named_member_span, has_test_annotation,
-    walk_specialization_scope_members,
-};
 
 /// Parse a source string into a `ParsedModule` (re-exported from reify-ast).
 ///

@@ -1,13 +1,13 @@
 //! Tests for import declaration parsing with dot-path syntax.
 
-use reify_syntax::{ImportDecl, ImportKind};
+use reify_ast::{ImportDecl, ImportKind};
 
 // ── Step 1: Basic dot-path module import ──────────────────────────
 
 #[test]
 fn parse_basic_module_import() {
     let source = "import std.math";
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -18,7 +18,7 @@ fn parse_basic_module_import() {
         .declarations
         .iter()
         .filter_map(|d| {
-            if let reify_syntax::Declaration::Import(i) = d {
+            if let reify_ast::Declaration::Import(i) = d {
                 Some(i)
             } else {
                 None
@@ -35,7 +35,7 @@ fn parse_basic_module_import() {
 #[test]
 fn parse_deep_module_import() {
     let source = "import std.mechanical.fasteners";
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -46,7 +46,7 @@ fn parse_deep_module_import() {
         .declarations
         .iter()
         .find_map(|d| {
-            if let reify_syntax::Declaration::Import(i) = d {
+            if let reify_ast::Declaration::Import(i) = d {
                 Some(i)
             } else {
                 None
@@ -65,7 +65,7 @@ fn parse_deep_module_import() {
 #[test]
 fn parse_entity_import() {
     let source = "import std.math.Sqrt";
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -76,7 +76,7 @@ fn parse_entity_import() {
         .declarations
         .iter()
         .find_map(|d| {
-            if let reify_syntax::Declaration::Import(i) = d {
+            if let reify_ast::Declaration::Import(i) = d {
                 Some(i)
             } else {
                 None
@@ -93,7 +93,7 @@ fn parse_entity_import() {
 #[test]
 fn parse_destructured_import() {
     let source = "import std.mech.{Bolt, Nut}";
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -104,7 +104,7 @@ fn parse_destructured_import() {
         .declarations
         .iter()
         .find_map(|d| {
-            if let reify_syntax::Declaration::Import(i) = d {
+            if let reify_ast::Declaration::Import(i) = d {
                 Some(i)
             } else {
                 None
@@ -122,7 +122,7 @@ fn parse_destructured_import() {
 #[test]
 fn parse_destructured_import_single_item() {
     let source = "import std.mech.{Bolt}";
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -133,7 +133,7 @@ fn parse_destructured_import_single_item() {
         .declarations
         .iter()
         .find_map(|d| {
-            if let reify_syntax::Declaration::Import(i) = d {
+            if let reify_ast::Declaration::Import(i) = d {
                 Some(i)
             } else {
                 None
@@ -152,7 +152,7 @@ fn parse_destructured_import_single_item() {
 #[test]
 fn parse_aliased_module_import() {
     let source = "import std.mech as m";
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -163,7 +163,7 @@ fn parse_aliased_module_import() {
         .declarations
         .iter()
         .find_map(|d| {
-            if let reify_syntax::Declaration::Import(i) = d {
+            if let reify_ast::Declaration::Import(i) = d {
                 Some(i)
             } else {
                 None
@@ -185,7 +185,7 @@ fn parse_aliased_module_import() {
 #[test]
 fn parse_entity_aliased_import() {
     let source = "import std.mech.Bolt as StdBolt";
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -196,7 +196,7 @@ fn parse_entity_aliased_import() {
         .declarations
         .iter()
         .find_map(|d| {
-            if let reify_syntax::Declaration::Import(i) = d {
+            if let reify_ast::Declaration::Import(i) = d {
                 Some(i)
             } else {
                 None
@@ -219,7 +219,7 @@ fn parse_entity_aliased_import() {
 #[test]
 fn parse_pub_import() {
     let source = "pub import internal.Helper";
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -230,7 +230,7 @@ fn parse_pub_import() {
         .declarations
         .iter()
         .find_map(|d| {
-            if let reify_syntax::Declaration::Import(i) = d {
+            if let reify_ast::Declaration::Import(i) = d {
                 Some(i)
             } else {
                 None
@@ -246,7 +246,7 @@ fn parse_pub_import() {
 #[test]
 fn parse_pub_module_import() {
     let source = "pub import std.math";
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -257,7 +257,7 @@ fn parse_pub_module_import() {
         .declarations
         .iter()
         .find_map(|d| {
-            if let reify_syntax::Declaration::Import(i) = d {
+            if let reify_ast::Declaration::Import(i) = d {
                 Some(i)
             } else {
                 None
@@ -275,7 +275,7 @@ fn parse_pub_module_import() {
 #[test]
 fn import_has_content_hash() {
     let source = "import std.math";
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -286,7 +286,7 @@ fn import_has_content_hash() {
         .declarations
         .iter()
         .find_map(|d| {
-            if let reify_syntax::Declaration::Import(i) = d {
+            if let reify_ast::Declaration::Import(i) = d {
                 Some(i)
             } else {
                 None
@@ -295,6 +295,6 @@ fn import_has_content_hash() {
         .expect("should have an import");
 
     // Content hash should be non-zero (not default)
-    let zero = reify_types::ContentHash::of_str("");
+    let zero = reify_core::ContentHash::of_str("");
     assert_ne!(import.content_hash, zero, "content_hash should be computed");
 }

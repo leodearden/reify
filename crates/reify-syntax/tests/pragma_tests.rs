@@ -6,7 +6,7 @@ use reify_syntax::*;
 
 /// Helper: parse source and return the ParsedModule.
 fn parse_module(source: &str) -> ParsedModule {
-    reify_syntax::parse(source, reify_types::ModulePath::single("pragma_test"))
+    reify_syntax::parse(source, reify_core::ModulePath::single("pragma_test"))
 }
 
 // ── Step 1: bare pragma at module level ────────────────────────────
@@ -155,7 +155,7 @@ fn parse_block_pragma_in_structure() {
 
     // Find S and check block-level pragma
     let s = module.declarations.iter().find_map(|d| {
-        if let reify_syntax::Declaration::Structure(s) = d {
+        if let reify_ast::Declaration::Structure(s) = d {
             if s.name == "S" { Some(s) } else { None }
         } else {
             None
@@ -188,7 +188,7 @@ fn parse_block_pragma_in_occurrence() {
     );
 
     let p = module.declarations.iter().find_map(|d| {
-        if let reify_syntax::Declaration::Occurrence(p) = d {
+        if let reify_ast::Declaration::Occurrence(p) = d {
             if p.name == "P" { Some(p) } else { None }
         } else {
             None
@@ -221,7 +221,7 @@ fn parse_block_pragma_in_trait() {
     );
 
     let r = module.declarations.iter().find_map(|d| {
-        if let reify_syntax::Declaration::Trait(r) = d {
+        if let reify_ast::Declaration::Trait(r) = d {
             if r.name == "R" { Some(r) } else { None }
         } else {
             None
@@ -260,7 +260,7 @@ fn parse_pragma_scoping_isolation() {
 
     // Block-level pragma on S: only "block_level"
     let s = module.declarations.iter().find_map(|d| {
-        if let reify_syntax::Declaration::Structure(s) = d {
+        if let reify_ast::Declaration::Structure(s) = d {
             if s.name == "S" { Some(s) } else { None }
         } else {
             None
@@ -335,7 +335,7 @@ fn parse_block_pragma_in_purpose() {
     );
 
     let p = module.declarations.iter().find_map(|d| {
-        if let reify_syntax::Declaration::Purpose(p) = d {
+        if let reify_ast::Declaration::Purpose(p) = d {
             if p.name == "Optimize" { Some(p) } else { None }
         } else {
             None
@@ -376,7 +376,7 @@ fn parse_block_pragma_in_constraint() {
     );
 
     let c = module.declarations.iter().find_map(|d| {
-        if let reify_syntax::Declaration::Constraint(c) = d {
+        if let reify_ast::Declaration::Constraint(c) = d {
             if c.name == "Positive" { Some(c) } else { None }
         } else {
             None

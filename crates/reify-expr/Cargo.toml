@@ -6,10 +6,15 @@ license.workspace = true
 description = "Expression evaluator for Reify compiled expressions"
 
 [dependencies]
-reify-types.workspace = true
+reify-ast.workspace = true
+reify-core.workspace = true
+reify-ir.workspace = true
 reify-stdlib.workspace = true
 
 [dev-dependencies]
+reify-ast.workspace = true
+reify-core.workspace = true
+reify-ir.workspace = true
 reify-test-support.workspace = true
 reify-syntax.workspace = true
 reify-compiler.workspace = true

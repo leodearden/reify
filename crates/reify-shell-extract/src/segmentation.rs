@@ -512,7 +512,7 @@ mod tests {
         MedialMask, MidSurfaceMesh, RegionClassification, RegionInfo, SegmentationError,
         SegmentationOptions, SegmentationResult, SingleBodyMask, segment_regions,
     };
-    use reify_types::value::{InterpolationKind, SampledField, SampledGridKind};
+    use reify_ir::value::{InterpolationKind, SampledField, SampledGridKind};
     use std::sync::atomic::AtomicBool;
 
     // ── Test helpers (mirrored from mid_surface.rs) ───────────────────────────

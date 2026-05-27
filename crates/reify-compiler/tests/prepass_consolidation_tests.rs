@@ -91,7 +91,7 @@ fn all_declaration_types_order_independent() {
         .expect("should have 'v' value cell");
     let v_expr = v_cell.default_expr.as_ref().expect("let should have expr");
     match &v_expr.kind {
-        reify_types::CompiledExprKind::UserFunctionCall { function_name, .. } => {
+        reify_ir::CompiledExprKind::UserFunctionCall { function_name, .. } => {
             assert_eq!(function_name, "classify");
         }
         other => panic!("expected UserFunctionCall for classify, got {:?}", other),
@@ -146,7 +146,7 @@ fn function_before_enum_match_compiles() {
         .expect("should have 'x' value cell");
     let x_expr = x_cell.default_expr.as_ref().expect("let should have expr");
     match &x_expr.kind {
-        reify_types::CompiledExprKind::Match { arms, .. } => {
+        reify_ir::CompiledExprKind::Match { arms, .. } => {
             assert_eq!(arms.len(), 3, "expected 3 match arms for Direction");
         }
         other => panic!("expected Match expr, got {:?}", other),
@@ -160,7 +160,7 @@ fn function_before_enum_match_compiles() {
         .expect("should have 'd' value cell");
     let d_expr = d_cell.default_expr.as_ref().expect("let should have expr");
     match &d_expr.kind {
-        reify_types::CompiledExprKind::Literal(reify_types::Value::Enum { type_name, variant }) => {
+        reify_ir::CompiledExprKind::Literal(reify_ir::Value::Enum { type_name, variant }) => {
             assert_eq!(type_name, "Direction");
             assert_eq!(variant, "In");
         }
@@ -201,8 +201,8 @@ fn field_before_function_compiles() {
         reify_compiler::CompiledFieldSource::Analytical { expr } => {
             // The lambda body should contain a UserFunctionCall
             match &expr.kind {
-                reify_types::CompiledExprKind::Lambda { body, .. } => match &body.kind {
-                    reify_types::CompiledExprKind::UserFunctionCall { function_name, .. } => {
+                reify_ir::CompiledExprKind::Lambda { body, .. } => match &body.kind {
+                    reify_ir::CompiledExprKind::UserFunctionCall { function_name, .. } => {
                         assert_eq!(function_name, "scale");
                     }
                     other => panic!("expected UserFunctionCall in lambda body, got {:?}", other),

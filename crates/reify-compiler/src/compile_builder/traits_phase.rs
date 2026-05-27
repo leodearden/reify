@@ -11,7 +11,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use reify_syntax::TraitDecl;
+use reify_ast::TraitDecl;
 
 use crate::CompiledModule;
 use crate::annotations::{deprecation_message, emit_deprecation_warning};

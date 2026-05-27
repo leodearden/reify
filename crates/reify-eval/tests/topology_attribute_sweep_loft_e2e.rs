@@ -35,12 +35,8 @@ use std::sync::{Arc, Mutex};
 
 use reify_compiler::{CompiledGeometryOp, CurveKind, GeomRef, SweepKind};
 use reify_test_support::*;
-use reify_types::{
-    AttributeHistory, CapKind, CompiledExpr, ExportFormat, FeatureId, GeometryError,
-    GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, HistoryRecord,
-    LoftOpHistoryRecords, Mesh, ModulePath, QueryError, Role, SweepOpHistoryRecords, TessError,
-    TopologyAttribute, Type, Value,
-};
+use reify_core::{ModulePath, Type};
+use reify_ir::{AttributeHistory, CapKind, CompiledExpr, ExportFormat, FeatureId, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, HistoryRecord, LoftOpHistoryRecords, Mesh, QueryError, Role, SweepOpHistoryRecords, TessError, TopologyAttribute, Value};
 
 // ─── HistoryMockKernel ────────────────────────────────────────────────────────
 
@@ -222,7 +218,7 @@ impl GeometryKernel for HistoryMockKernel {
         handle: GeometryHandleId,
         format: ExportFormat,
         writer: &mut dyn std::io::Write,
-    ) -> Result<(), reify_types::ExportError> {
+    ) -> Result<(), reify_ir::ExportError> {
         self.inner.export(handle, format, writer)
     }
 

@@ -19,9 +19,8 @@ use std::fs;
 use std::sync::OnceLock;
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_types::{
-    Diagnostic, DimensionVector, ModulePath, Satisfaction, Severity, Value, ValueCellId,
-};
+use reify_core::{Diagnostic, DimensionVector, ModulePath, Severity, ValueCellId};
+use reify_ir::{Satisfaction, Value};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(

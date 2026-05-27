@@ -19,7 +19,7 @@
 //! signature is stable enough that swapping implementations is a contained
 //! follow-up.
 
-use reify_types::Mesh;
+use reify_ir::Mesh;
 
 /// Configuration for the [`repair_surface_mesh`] pre-stage.
 ///

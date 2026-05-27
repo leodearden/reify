@@ -8,7 +8,7 @@
 use reify_expr::interp::{
     InterpolationMethod, InterpolationResult, interpolate_1d, interpolate_2d, interpolate_3d,
 };
-use reify_types::{DiagnosticCode, Severity};
+use reify_core::{DiagnosticCode, Severity};
 
 const TOL: f64 = 1e-12;
 
@@ -991,7 +991,7 @@ fn linear_2d_4x4_cell_midpoint_is_corner_mean() {
 
 /// Helper: assert a single deferred-method warning whose message mentions both
 /// the method name and "Linear".
-fn assert_deferred_warning(diags: &[reify_types::Diagnostic], method_name: &str) {
+fn assert_deferred_warning(diags: &[reify_core::Diagnostic], method_name: &str) {
     assert_eq!(
         diags.len(),
         1,

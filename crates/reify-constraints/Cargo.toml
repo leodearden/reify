@@ -6,7 +6,8 @@ license.workspace = true
 description = "Constraint checking implementation for Reify"
 
 [dependencies]
-reify-types.workspace = true
+reify-core.workspace = true
+reify-ir.workspace = true
 reify-expr.workspace = true
 reify-stdlib.workspace = true
 argmin = "0.10"
@@ -18,5 +19,7 @@ tracing.workspace = true
 pkg-config = "0.3"
 
 [dev-dependencies]
+reify-core.workspace = true
+reify-ir.workspace = true
 reify-compiler.workspace = true
 reify-test-support.workspace = true

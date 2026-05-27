@@ -24,7 +24,8 @@ use reify_eval::cache::{CachedResult, NodeId};
 use reify_test_support::builders::{binop, literal, value_ref_typed};
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
-use reify_types::{BinOp, Freshness, ModulePath, Type, Value, ValueCellId};
+use reify_core::{ModulePath, Type, ValueCellId};
+use reify_ir::{BinOp, Freshness, Value};
 use std::collections::HashSet;
 
 /// Build the 3-cell synthetic module: param `a` + let `b = a * 2.0` +

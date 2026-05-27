@@ -7,10 +7,8 @@
 use std::sync::Arc;
 
 use reify_expr::{EvalContext, eval_expr};
-use reify_types::{
-    CompiledExpr, CompiledExprKind, ContentHash, DimensionVector, FieldSourceKind,
-    ResolvedFunction, Type, Value, ValueCellId, ValueMap,
-};
+use reify_core::{ContentHash, DimensionVector, Type, ValueCellId};
+use reify_ir::{CompiledExpr, CompiledExprKind, FieldSourceKind, ResolvedFunction, Value, ValueMap};
 
 /// Helper to build a FunctionCall expression for stdlib functions.
 fn make_function_call(name: &str, args: Vec<CompiledExpr>, result_type: Type) -> CompiledExpr {
@@ -60,13 +58,13 @@ fn make_xyz_sum_field(domain_type: Type) -> (Value, Type) {
 
     // Lambda body: (x + y) + z  (left-associative; BinOp is binary)
     let xy = CompiledExpr::binop(
-        reify_types::BinOp::Add,
+        reify_ir::BinOp::Add,
         CompiledExpr::value_ref(x_id.clone(), Type::Real),
         CompiledExpr::value_ref(y_id.clone(), Type::Real),
         Type::Real,
     );
     let body = CompiledExpr::binop(
-        reify_types::BinOp::Add,
+        reify_ir::BinOp::Add,
         xy,
         CompiledExpr::value_ref(z_id.clone(), Type::Real),
         Type::Real,
@@ -189,7 +187,7 @@ fn sample_temperature_over_length_field() {
 
     // Lambda: |x| 2.0 * x  (linear temperature field over length domain)
     let body = CompiledExpr::binop(
-        reify_types::BinOp::Mul,
+        reify_ir::BinOp::Mul,
         CompiledExpr::literal(Value::Real(2.0), Type::Real),
         CompiledExpr::value_ref(x_id.clone(), Type::Real),
         Type::Real,
@@ -856,7 +854,7 @@ fn gradient_of_gradient_returns_undef() {
 
     // Lambda: |x| x * x  (simple scalar field)
     let body = CompiledExpr::binop(
-        reify_types::BinOp::Mul,
+        reify_ir::BinOp::Mul,
         CompiledExpr::value_ref(x_id.clone(), Type::Real),
         CompiledExpr::value_ref(x_id.clone(), Type::Real),
         Type::Real,
@@ -967,7 +965,7 @@ fn gradient_temperature_over_length_returns_field() {
 
     // Lambda: |x| 2.0 * x  (linear temperature field over length domain)
     let body = CompiledExpr::binop(
-        reify_types::BinOp::Mul,
+        reify_ir::BinOp::Mul,
         CompiledExpr::literal(Value::Real(2.0), Type::Real),
         CompiledExpr::value_ref(x_id.clone(), Type::Real),
         Type::Real,
@@ -1213,7 +1211,7 @@ fn sample_propagates_undef_point_argument() {
 
     // Lambda: |x| x + 1.0  (well-defined for any Real input)
     let body = CompiledExpr::binop(
-        reify_types::BinOp::Add,
+        reify_ir::BinOp::Add,
         CompiledExpr::value_ref(x_id.clone(), Type::Real),
         CompiledExpr::literal(Value::Real(1.0), Type::Real),
         Type::Real,
@@ -1271,7 +1269,7 @@ fn sample_propagates_undef_from_lambda_body_division_by_zero() {
 
     // Lambda: |x| 1.0 / x  (Undef when x == 0.0 due to division-by-zero)
     let body = CompiledExpr::binop(
-        reify_types::BinOp::Div,
+        reify_ir::BinOp::Div,
         CompiledExpr::literal(Value::Real(1.0), Type::Real),
         CompiledExpr::value_ref(x_id.clone(), Type::Real),
         Type::Real,
@@ -1322,7 +1320,7 @@ fn sample_propagates_undef_from_lambda_body_division_by_zero() {
         lambda: {
             let x_id2 = ValueCellId::new("$lambda0.S", "x");
             let body2 = CompiledExpr::binop(
-                reify_types::BinOp::Div,
+                reify_ir::BinOp::Div,
                 CompiledExpr::literal(Value::Real(1.0), Type::Real),
                 CompiledExpr::value_ref(x_id2.clone(), Type::Real),
                 Type::Real,

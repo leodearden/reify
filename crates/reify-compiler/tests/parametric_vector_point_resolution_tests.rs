@@ -12,7 +12,7 @@
 mod common;
 
 use common::compile_with_stdlib_helper;
-use reify_types::{DimensionVector, Severity, Type};
+use reify_core::{DimensionVector, Severity, Type};
 
 /// Compile `source`, assert no Error-severity diagnostics, then find `template`
 /// and return the resolved type of cell `member`.

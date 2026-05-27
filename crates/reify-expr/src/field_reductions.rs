@@ -33,7 +33,8 @@
 //! return `Value::Undef`. This matches the `safety_factor` poison
 //! convention and the `sanitize_value` discipline elsewhere in stdlib.
 
-use reify_types::{FieldSourceKind, SampledField, Type, Value};
+use reify_core::Type;
+use reify_ir::{FieldSourceKind, SampledField, Value};
 
 /// Compute `max(field)` — return the maximum codomain value of a
 /// `Sampled`-source field, wrapped per the field's `codomain_type`.

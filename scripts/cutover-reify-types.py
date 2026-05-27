@@ -234,7 +234,7 @@ def apply_bare_path_subs_to_content(
 
         code_part = re.sub(r'\breify_types::([a-z_]+)::', repl_module, code_part)
 
-        # 4g: reify_types::SYM (flat paths in code body, PascalCase or ALL_CAPS)
+        # 4g: reify_types::SYM (flat paths in code body, any case)
         def repl_flat(m):
             sym = m.group(1)
             if sym in flat_sym_to_crate:
@@ -242,7 +242,7 @@ def apply_bare_path_subs_to_content(
             # Unknown symbol — leave as-is (use statements will abort, bare refs warn)
             return m.group(0)
 
-        code_part = re.sub(r'\breify_types::([A-Z_][A-Za-z0-9_]*)', repl_flat, code_part)
+        code_part = re.sub(r'\breify_types::([A-Za-z_][A-Za-z0-9_]*)', repl_flat, code_part)
 
         # 4j: reify_syntax::Sym → reify_ast::Sym (for Sym in syntax_ast_set)
         def repl_syntax(m):
@@ -251,7 +251,7 @@ def apply_bare_path_subs_to_content(
                 return f"reify_ast::{sym}"
             return m.group(0)
 
-        code_part = re.sub(r'\breify_syntax::([A-Z][A-Za-z0-9_]*)', repl_syntax, code_part)
+        code_part = re.sub(r'\breify_syntax::([A-Za-z_][A-Za-z0-9_]*)', repl_syntax, code_part)
 
         out_lines.append(code_part + comment_part)
 

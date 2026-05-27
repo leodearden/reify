@@ -6,12 +6,13 @@
 
 use reify_compiler::{CompiledGuardedGroup, ValueCellDecl};
 use reify_test_support::compile_first_template;
-use reify_types::{CompiledExprKind, DimensionVector, Severity, Type};
+use reify_core::{DimensionVector, Severity, Type};
+use reify_ir::CompiledExprKind;
 
 /// Helper: compile source and extract the value cell named `cell_name`'s default_expr.
 /// Panics if there are errors or the cell is missing.
-fn compile_and_get_expr(source: &str, cell_name: &str) -> reify_types::CompiledExpr {
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_option"));
+fn compile_and_get_expr(source: &str, cell_name: &str) -> reify_ir::CompiledExpr {
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_option"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -23,7 +24,7 @@ fn compile_and_get_expr(source: &str, cell_name: &str) -> reify_types::CompiledE
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(
         errors.is_empty(),
@@ -46,7 +47,7 @@ fn compile_and_get_expr(source: &str, cell_name: &str) -> reify_types::CompiledE
 
 /// Helper: compile source and expect diagnostics (errors allowed). Returns compiled module.
 fn compile_expecting_errors(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_option"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_option"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -106,7 +107,7 @@ structure S {
     match &expr.kind {
         CompiledExprKind::OptionSome(inner) => {
             assert!(
-                matches!(&inner.kind, CompiledExprKind::Literal(v) if matches!(v, reify_types::Value::Int(42))),
+                matches!(&inner.kind, CompiledExprKind::Literal(v) if matches!(v, reify_ir::Value::Int(42))),
                 "expected Literal(Int(42)), got {:?}",
                 inner.kind
             );
@@ -158,7 +159,7 @@ structure S {
     param x: Option<Int> = none
 }
 "#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_option"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_option"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -170,7 +171,7 @@ structure S {
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(
         errors.is_empty(),
@@ -224,7 +225,7 @@ structure S {
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(
         !errors.is_empty(),
@@ -250,7 +251,7 @@ structure S {
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(
         !errors.is_empty(),
@@ -286,7 +287,7 @@ structure S {
             match &outer_inner.kind {
                 CompiledExprKind::OptionSome(innermost) => {
                     assert!(
-                        matches!(&innermost.kind, CompiledExprKind::Literal(v) if matches!(v, reify_types::Value::Int(42))),
+                        matches!(&innermost.kind, CompiledExprKind::Literal(v) if matches!(v, reify_ir::Value::Int(42))),
                         "expected Literal(Int(42)), got {:?}",
                         innermost.kind
                     );
@@ -342,7 +343,7 @@ structure S {
     let x = none
 }
 "#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_option"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_option"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -354,7 +355,7 @@ structure S {
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(
         errors.is_empty(),

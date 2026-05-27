@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-use reify_types::DiagnosticInfo;
+use reify_core::DiagnosticInfo;
 
 use crate::types::{ConstraintData, GuiState, MeshData, ValueData};
 

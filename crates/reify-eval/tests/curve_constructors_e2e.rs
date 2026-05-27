@@ -5,7 +5,8 @@
 
 use reify_compiler::{CompiledGeometryOp, CurveKind};
 use reify_test_support::*;
-use reify_types::{ExportFormat, GeometryOp, Type};
+use reify_core::Type;
+use reify_ir::{ExportFormat, GeometryOp};
 
 // ---------------------------------------------------------------------------
 // Compiler: line_segment recognized and produces correct Curve op
@@ -16,7 +17,7 @@ fn line_segment_compiler_accepts_6_args() {
     let source = r#"structure S {
     let wire = line_segment(0mm, 0mm, 0mm, 10mm, 0mm, 0mm)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_ls"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_ls"));
     let compiled = reify_compiler::compile(&parsed);
     let template = &compiled.templates[0];
     assert_eq!(template.realizations.len(), 1);
@@ -44,7 +45,7 @@ fn line_segment_compiler_rejects_wrong_arg_count() {
     let source = r#"structure S {
     let wire = line_segment(0mm, 0mm, 0mm)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_ls_bad"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_ls_bad"));
     let compiled = reify_compiler::compile(&parsed);
     assert!(
         !compiled.diagnostics.is_empty(),
@@ -59,7 +60,7 @@ fn line_segment_compiler_rejects_wrong_arg_count() {
 #[test]
 fn line_segment_through_full_eval_pipeline() {
     let e = "TestLineSegment";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     let curve_op = CompiledGeometryOp::Curve {
         kind: CurveKind::LineSegment,
@@ -77,7 +78,7 @@ fn line_segment_through_full_eval_pipeline() {
         .realization(e, 0, vec![curve_op])
         .build();
 
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_ls_eval"))
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single("test_ls_eval"))
         .template(template)
         .build();
 
@@ -126,7 +127,7 @@ fn arc_compiler_accepts_9_args() {
     let source = r#"structure S {
     let wire = arc(0mm, 0mm, 0mm, 10mm, 0rad, 1.5708rad, 0mm, 0mm, 1mm)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_arc"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_arc"));
     let compiled = reify_compiler::compile(&parsed);
     let template = &compiled.templates[0];
     assert_eq!(template.realizations.len(), 1);
@@ -149,7 +150,7 @@ fn helix_compiler_accepts_3_args() {
     let source = r#"structure S {
     let wire = helix(5mm, 2mm, 20mm)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_helix"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_helix"));
     let compiled = reify_compiler::compile(&parsed);
     let template = &compiled.templates[0];
     assert_eq!(template.realizations.len(), 1);
@@ -174,12 +175,12 @@ fn helix_compiler_accepts_3_args() {
 #[test]
 fn arc_through_full_eval_pipeline() {
     let e = "TestArc";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
     let rad_literal = |v: f64| {
-        reify_types::CompiledExpr::literal(
-            reify_types::Value::Scalar {
+        reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Scalar {
                 si_value: v,
-                dimension: reify_types::DimensionVector::ANGLE,
+                dimension: reify_core::DimensionVector::ANGLE,
             },
             Type::angle(),
         )
@@ -187,10 +188,10 @@ fn arc_through_full_eval_pipeline() {
     // Axis direction is a dimensionless unit vector, not a length quantity.
     // Using dimensionless literals documents the intended semantics.
     let dim_literal = |v: f64| {
-        reify_types::CompiledExpr::literal(
-            reify_types::Value::Scalar {
+        reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Scalar {
                 si_value: v,
-                dimension: reify_types::DimensionVector::DIMENSIONLESS,
+                dimension: reify_core::DimensionVector::DIMENSIONLESS,
             },
             Type::dimensionless_scalar(),
         )
@@ -215,7 +216,7 @@ fn arc_through_full_eval_pipeline() {
         .realization(e, 0, vec![curve_op])
         .build();
 
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_arc_eval"))
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single("test_arc_eval"))
         .template(template)
         .build();
 
@@ -263,7 +264,7 @@ fn arc_through_full_eval_pipeline() {
 #[test]
 fn helix_through_full_eval_pipeline() {
     let e = "TestHelix";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     let curve_op = CompiledGeometryOp::Curve {
         kind: CurveKind::Helix,
@@ -278,7 +279,7 @@ fn helix_through_full_eval_pipeline() {
         .realization(e, 0, vec![curve_op])
         .build();
 
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_helix_eval"))
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single("test_helix_eval"))
         .template(template)
         .build();
 
@@ -308,7 +309,7 @@ fn helix_through_full_eval_pipeline() {
 #[test]
 fn interp_through_full_eval_pipeline() {
     let e = "TestInterp";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // 4 points = 12 coordinate args
     let curve_op = CompiledGeometryOp::Curve {
@@ -333,7 +334,7 @@ fn interp_through_full_eval_pipeline() {
         .realization(e, 0, vec![curve_op])
         .build();
 
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_interp_eval"))
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single("test_interp_eval"))
         .template(template)
         .build();
 
@@ -359,7 +360,7 @@ fn interp_through_full_eval_pipeline() {
 #[test]
 fn bezier_through_full_eval_pipeline() {
     let e = "TestBezier";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // 4 control points = 12 coordinate args
     let curve_op = CompiledGeometryOp::Curve {
@@ -384,7 +385,7 @@ fn bezier_through_full_eval_pipeline() {
         .realization(e, 0, vec![curve_op])
         .build();
 
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_bezier_eval"))
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single("test_bezier_eval"))
         .template(template)
         .build();
 
@@ -415,15 +416,15 @@ fn bezier_through_full_eval_pipeline() {
 fn nurbs_through_full_eval_pipeline() {
     let e = "TestNurbs";
     let dim_literal = |v: f64| {
-        reify_types::CompiledExpr::literal(
-            reify_types::Value::Scalar {
+        reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Scalar {
                 si_value: v,
-                dimension: reify_types::DimensionVector::DIMENSIONLESS,
+                dimension: reify_core::DimensionVector::DIMENSIONLESS,
             },
             Type::dimensionless_scalar(),
         )
     };
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // degree=2, n_points=3
     // 3 control points: (0,0,0), (10mm,20mm,0), (20mm,0,0)
@@ -464,7 +465,7 @@ fn nurbs_through_full_eval_pipeline() {
         .realization(e, 0, vec![curve_op])
         .build();
 
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_nurbs_eval"))
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single("test_nurbs_eval"))
         .template(template)
         .build();
 
@@ -479,7 +480,7 @@ fn nurbs_through_full_eval_pipeline() {
     let errors: Vec<_> = result
         .diagnostics
         .iter()
-        .filter(|d| matches!(d.severity, reify_types::Severity::Error))
+        .filter(|d| matches!(d.severity, reify_core::Severity::Error))
         .collect();
     assert!(
         errors.is_empty(),
@@ -547,7 +548,7 @@ fn arc_compiler_rejects_wrong_arg_count() {
     let source = r#"structure S {
     let wire = arc(0mm, 0mm, 0mm, 10mm)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_arc_bad"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_arc_bad"));
     let compiled = reify_compiler::compile(&parsed);
     assert!(
         compiled
@@ -565,7 +566,7 @@ fn interp_compiler_rejects_non_triple_arg_count() {
     let source = r#"structure S {
     let wire = interp(0mm, 0mm, 0mm, 10mm, 10mm, 0mm, 20mm)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_interp_bad"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_interp_bad"));
     let compiled = reify_compiler::compile(&parsed);
     assert!(
         compiled
@@ -583,7 +584,7 @@ fn bezier_compiler_rejects_non_triple_arg_count() {
     let source = r#"structure S {
     let wire = bezier(0mm, 0mm, 0mm, 10mm, 10mm, 0mm, 20mm)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_bezier_bad"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_bezier_bad"));
     let compiled = reify_compiler::compile(&parsed);
     assert!(
         compiled
@@ -603,7 +604,7 @@ fn nurbs_compiler_rejects_fewer_than_10_args() {
 }"#;
     let parsed = reify_syntax::parse(
         source,
-        reify_types::ModulePath::single("test_nurbs_comp_bad"),
+        reify_core::ModulePath::single("test_nurbs_comp_bad"),
     );
     let compiled = reify_compiler::compile(&parsed);
     assert!(
@@ -624,10 +625,10 @@ fn nurbs_compiler_rejects_fewer_than_10_args() {
 fn nurbs_fewer_than_2_args_emits_diagnostic() {
     let e = "TestNurbsTooFew";
     let dim_literal = |v: f64| {
-        reify_types::CompiledExpr::literal(
-            reify_types::Value::Scalar {
+        reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Scalar {
                 si_value: v,
-                dimension: reify_types::DimensionVector::DIMENSIONLESS,
+                dimension: reify_core::DimensionVector::DIMENSIONLESS,
             },
             Type::dimensionless_scalar(),
         )
@@ -643,7 +644,7 @@ fn nurbs_fewer_than_2_args_emits_diagnostic() {
         .realization(e, 0, vec![curve_op])
         .build();
 
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_nurbs_too_few"))
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single("test_nurbs_too_few"))
         .template(template)
         .build();
 
@@ -682,10 +683,10 @@ fn nurbs_fewer_than_2_args_emits_diagnostic() {
 fn nurbs_insufficient_coordinate_args_emits_diagnostic() {
     let e = "TestNurbsShortCoords";
     let dim_literal = |v: f64| {
-        reify_types::CompiledExpr::literal(
-            reify_types::Value::Scalar {
+        reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Scalar {
                 si_value: v,
-                dimension: reify_types::DimensionVector::DIMENSIONLESS,
+                dimension: reify_core::DimensionVector::DIMENSIONLESS,
             },
             Type::dimensionless_scalar(),
         )
@@ -708,7 +709,7 @@ fn nurbs_insufficient_coordinate_args_emits_diagnostic() {
         .realization(e, 0, vec![curve_op])
         .build();
 
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_nurbs_short"))
+    let module = CompiledModuleBuilder::new(reify_core::ModulePath::single("test_nurbs_short"))
         .template(template)
         .build();
 

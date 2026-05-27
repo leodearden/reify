@@ -10,7 +10,7 @@ use reify_test_support::builders::{CompiledModuleBuilder, TopologyTemplateBuilde
 use reify_test_support::{
     make_engine, manufacturing_purpose_with_inner_name, my_design_template_with_subs,
 };
-use reify_types::{ModulePath, Type};
+use reify_core::{ModulePath, Type};
 
 /// Build a minimal CompiledModule with templates `MyDesign` (sub `head: Head`)
 /// and `Head`, plus a `manufacturing` purpose whose sole constraint is

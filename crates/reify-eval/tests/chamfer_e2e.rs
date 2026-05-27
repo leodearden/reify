@@ -5,7 +5,8 @@
 
 use reify_compiler::ModifyKind;
 use reify_test_support::*;
-use reify_types::{GeometryOp, Type};
+use reify_core::Type;
+use reify_ir::GeometryOp;
 
 // ---------------------------------------------------------------------------
 // step-1: Compiler rejects wrong arg counts, accepts correct count
@@ -19,7 +20,7 @@ fn chamfer_compiler_rejects_one_arg() {
     param target: Scalar = 5mm
     let result = chamfer(target)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_ch1"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_ch1"));
     let compiled = reify_compiler::compile(&parsed);
     let template = &compiled.templates[0];
     let realizations = &template.realizations;
@@ -52,7 +53,7 @@ fn chamfer_compiler_rejects_three_args() {
     param dist: Scalar = 2mm
     let result = chamfer(target, dist, dist)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_ch3"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_ch3"));
     let compiled = reify_compiler::compile(&parsed);
     let template = &compiled.templates[0];
     let realizations = &template.realizations;
@@ -86,7 +87,7 @@ fn chamfer_compiler_accepts_two_args() {
     param dist: Scalar = 2mm
     let result = chamfer(target, dist)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_ch2"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_ch2"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -136,7 +137,7 @@ fn chamfer_compiler_accepts_two_args() {
 /// ModifyKind::Chamfer correctly (reify-eval/src/lib.rs).
 #[test]
 fn chamfer_through_full_eval_pipeline() {
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 1 args: mirrors what the compiler emits (geometry.rs:882-884).
     // The eval layer resolves the target from GeomRef::Step(0), not from 'target' in args.
@@ -189,7 +190,7 @@ fn chamfer_through_full_eval_pipeline() {
 /// verifies that eval still produces the correct Chamfer geometry op.
 #[test]
 fn chamfer_modify_only_needs_distance_arg() {
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Only 'distance' in args — no 'target' entry.
     // "target" handle is resolved from GeomRef::Step(0), not from args.

@@ -7,13 +7,8 @@ use reify_compiler::CompiledModule;
 use reify_solver_elastic::{
     Mesh2d, Mesh2dError, Mesh2dReport, SweepError, SweepParams, SweptMesh3d,
 };
-use reify_types::{
-    AttributeHistory, CapabilityDescriptor, CompiledFunction, Diagnostic, DiagnosticLabel,
-    ErrorRef, ExportFormat, FeatureId, FeatureTag, FeatureTagTable, Freshness, GeometryError,
-    GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, LoftOpHistoryRecords, Mesh,
-    Operation, RealizationNodeId, ReprKind, SourceSpan, SweepOpHistoryRecords, TopologyAttribute,
-    TopologyAttributeTable, ValueMap, VersionId, VolumeMesh,
-};
+use reify_core::{Diagnostic, DiagnosticLabel, RealizationNodeId, SourceSpan, VersionId};
+use reify_ir::{AttributeHistory, CapabilityDescriptor, CompiledFunction, ErrorRef, ExportFormat, FeatureId, FeatureTag, FeatureTagTable, Freshness, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, LoftOpHistoryRecords, Mesh, Operation, ReprKind, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable, ValueMap, VolumeMesh};
 
 use crate::cache::{CacheStore, CachedResult, FAILED_REALIZATION_STUB_HANDLE, NodeCache, NodeId};
 use crate::deps::DependencyTrace;
@@ -173,7 +168,7 @@ fn seed_cross_sub_named_steps(
     diagnostics: &mut Vec<Diagnostic>,
     templates: &[reify_compiler::TopologyTemplate],
 ) {
-    use reify_types::identity::ValueCellId;
+    use reify_core::identity::ValueCellId;
 
     // Same-call dedup: (child_template_name, args_fingerprint, realization_name) → handle.
     // Two subs of the same child with identical override declarations share one
@@ -409,14 +404,14 @@ fn populate_attribute_history(
     geom_op: &GeometryOp,
     result_handle: GeometryHandleId,
     attribute_history: &AttributeHistory,
-) -> Result<(), reify_types::QueryError> {
+) -> Result<(), reify_ir::QueryError> {
     match attribute_history {
         AttributeHistory::None => Ok(()),
         AttributeHistory::Extrude(history) => {
             let profile_handle = match geom_op {
                 GeometryOp::Extrude { profile, .. } => *profile,
                 _ => {
-                    return Err(reify_types::QueryError::QueryFailed(format!(
+                    return Err(reify_ir::QueryError::QueryFailed(format!(
                         "AttributeHistory::Extrude returned for non-Extrude GeometryOp: {:?}",
                         geom_op
                     )));
@@ -436,7 +431,7 @@ fn populate_attribute_history(
             let profile_handle = match geom_op {
                 GeometryOp::Revolve { profile, .. } => *profile,
                 _ => {
-                    return Err(reify_types::QueryError::QueryFailed(format!(
+                    return Err(reify_ir::QueryError::QueryFailed(format!(
                         "AttributeHistory::Revolve returned for non-Revolve GeometryOp: {:?}",
                         geom_op
                     )));
@@ -459,7 +454,7 @@ fn populate_attribute_history(
             let profile_handle = match geom_op {
                 GeometryOp::Sweep { profile, .. } => *profile,
                 _ => {
-                    return Err(reify_types::QueryError::QueryFailed(format!(
+                    return Err(reify_ir::QueryError::QueryFailed(format!(
                         "AttributeHistory::Sweep returned for non-Sweep GeometryOp: {:?}",
                         geom_op
                     )));
@@ -482,7 +477,7 @@ fn populate_attribute_history(
             let profiles = match geom_op {
                 GeometryOp::Loft { profiles } => profiles,
                 _ => {
-                    return Err(reify_types::QueryError::QueryFailed(format!(
+                    return Err(reify_ir::QueryError::QueryFailed(format!(
                         "AttributeHistory::Loft returned for non-Loft GeometryOp: {:?}",
                         geom_op
                     )));
@@ -528,14 +523,14 @@ fn build_cap_vertex_index_lists(
     result_faces: &[GeometryHandleId],
     result_vertex_positions: &[(f64, f64, f64)],
     cap_face_indices: &[u32],
-) -> Result<Vec<Vec<u32>>, reify_types::QueryError> {
+) -> Result<Vec<Vec<u32>>, reify_ir::QueryError> {
     let mut index_lists: Vec<Vec<u32>> = Vec::with_capacity(cap_face_indices.len());
     for &cap_idx in cap_face_indices {
         let cap_face_handle = result_faces
             .get(cap_idx as usize)
             .copied()
             .ok_or_else(|| {
-                reify_types::QueryError::QueryFailed(format!(
+                reify_ir::QueryError::QueryFailed(format!(
                     "cap vertex index list: cap face index {cap_idx} is out of range \
                      for result_faces of len {}",
                     result_faces.len()
@@ -583,7 +578,7 @@ fn try_extract_sweep_cap_vertex_data(
     end_cap_face_indices: &[u32],
 ) -> Result<
     (Vec<GeometryHandleId>, Vec<Vec<u32>>, Vec<Vec<u32>>),
-    reify_types::QueryError,
+    reify_ir::QueryError,
 > {
     let result_vertices = kernel.extract_vertices(result_handle)?;
     let result_vertex_positions: Vec<(f64, f64, f64)> = result_vertices
@@ -628,7 +623,7 @@ fn populate_single_parent_sweep_op(
     result_handle: GeometryHandleId,
     history: &SweepOpHistoryRecords,
     kind: SingleParentSweepKind,
-) -> Result<(), reify_types::QueryError> {
+) -> Result<(), reify_ir::QueryError> {
     let profile_faces = kernel.extract_faces(profile_handle)?;
     let profile_edges = kernel.extract_edges(profile_handle)?;
     let result_faces = kernel.extract_faces(result_handle)?;
@@ -726,7 +721,7 @@ fn populate_loft_op(
     profile_handles: &[GeometryHandleId],
     result_handle: GeometryHandleId,
     history: &LoftOpHistoryRecords,
-) -> Result<(), reify_types::QueryError> {
+) -> Result<(), reify_ir::QueryError> {
     let mut section_faces: Vec<Vec<GeometryHandleId>> = Vec::with_capacity(profile_handles.len());
     let mut section_edges: Vec<Vec<GeometryHandleId>> = Vec::with_capacity(profile_handles.len());
     for &profile_handle in profile_handles {
@@ -3896,7 +3891,8 @@ mod tests {
     fn execute_realization_ops_happy_path_appends_handle() {
         use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
         use reify_test_support::mocks::MockGeometryKernel;
-        use reify_types::{CompiledExpr, Type};
+        use reify_core::Type;
+        use reify_ir::CompiledExpr;
 
         let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
 
@@ -3931,7 +3927,7 @@ mod tests {
         let errors: Vec<_> = state
             .diagnostics
             .iter()
-            .filter(|d| matches!(d.severity, reify_types::Severity::Error))
+            .filter(|d| matches!(d.severity, reify_core::Severity::Error))
             .collect();
         assert!(
             errors.is_empty(),
@@ -3947,7 +3943,7 @@ mod tests {
         let warnings: Vec<_> = state
             .diagnostics
             .iter()
-            .filter(|d| matches!(d.severity, reify_types::Severity::Warning))
+            .filter(|d| matches!(d.severity, reify_core::Severity::Warning))
             .collect();
         assert_eq!(
             warnings.len(),
@@ -4028,7 +4024,8 @@ mod tests {
     fn execute_realization_ops_kernel_error_truncates_handles() {
         use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
         use reify_test_support::mocks::FailingMockGeometryKernel;
-        use reify_types::{CompiledExpr, Type};
+        use reify_core::Type;
+        use reify_ir::CompiledExpr;
 
         let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
 
@@ -4079,7 +4076,8 @@ mod tests {
     fn execute_realization_ops_partial_success_then_failure_discards_earlier_handles() {
         use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
         use reify_test_support::mocks::MockGeometryKernel;
-        use reify_types::{CompiledExpr, Type};
+        use reify_core::Type;
+        use reify_ir::CompiledExpr;
 
         let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
 
@@ -4186,7 +4184,7 @@ mod tests {
             .iter()
             .find(|d| {
                 d.message.contains("failed to compile geometry operation")
-                    && matches!(d.severity, reify_types::Severity::Error)
+                    && matches!(d.severity, reify_core::Severity::Error)
             })
             .expect("expected an Error diagnostic with 'failed to compile geometry operation'");
 
@@ -4212,7 +4210,8 @@ mod tests {
     fn execute_realization_ops_named_realization_populates_named_steps() {
         use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
         use reify_test_support::mocks::MockGeometryKernel;
-        use reify_types::{CompiledExpr, Type};
+        use reify_core::Type;
+        use reify_ir::CompiledExpr;
 
         let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
 
@@ -4242,7 +4241,7 @@ mod tests {
         let errors: Vec<_> = state
             .diagnostics
             .iter()
-            .filter(|d| matches!(d.severity, reify_types::Severity::Error))
+            .filter(|d| matches!(d.severity, reify_core::Severity::Error))
             .collect();
         assert!(
             errors.is_empty(),
@@ -4254,7 +4253,7 @@ mod tests {
         let warnings: Vec<_> = state
             .diagnostics
             .iter()
-            .filter(|d| matches!(d.severity, reify_types::Severity::Warning))
+            .filter(|d| matches!(d.severity, reify_core::Severity::Warning))
             .collect();
         assert_eq!(
             warnings.len(),
@@ -4342,7 +4341,8 @@ mod tests {
     fn execute_realization_ops_duplicate_name_shadows_previous() {
         use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
         use reify_test_support::mocks::MockGeometryKernel;
-        use reify_types::{CompiledExpr, Type};
+        use reify_core::Type;
+        use reify_ir::CompiledExpr;
 
         let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
 
@@ -4426,7 +4426,7 @@ mod tests {
         let errors: Vec<_> = state
             .diagnostics
             .iter()
-            .filter(|d| matches!(d.severity, reify_types::Severity::Error))
+            .filter(|d| matches!(d.severity, reify_core::Severity::Error))
             .collect();
         assert!(
             errors.is_empty(),
@@ -4439,7 +4439,7 @@ mod tests {
         let warnings: Vec<_> = state
             .diagnostics
             .iter()
-            .filter(|d| matches!(d.severity, reify_types::Severity::Warning))
+            .filter(|d| matches!(d.severity, reify_core::Severity::Warning))
             .collect();
         assert_eq!(
             warnings.len(),
@@ -4474,7 +4474,8 @@ mod tests {
     fn execute_realization_ops_failed_shadow_does_not_overwrite_previous() {
         use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
         use reify_test_support::mocks::MockGeometryKernel;
-        use reify_types::{CompiledExpr, Type};
+        use reify_core::Type;
+        use reify_ir::CompiledExpr;
 
         let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
 
@@ -4513,7 +4514,7 @@ mod tests {
         let errors: Vec<_> = state
             .diagnostics
             .iter()
-            .filter(|d| matches!(d.severity, reify_types::Severity::Error))
+            .filter(|d| matches!(d.severity, reify_core::Severity::Error))
             .collect();
         assert!(
             errors.is_empty(),
@@ -4525,7 +4526,7 @@ mod tests {
         let warnings_after_first: Vec<_> = state
             .diagnostics
             .iter()
-            .filter(|d| matches!(d.severity, reify_types::Severity::Warning))
+            .filter(|d| matches!(d.severity, reify_core::Severity::Warning))
             .collect();
         assert_eq!(
             warnings_after_first.len(),
@@ -4567,7 +4568,7 @@ mod tests {
         let warnings_after_second: Vec<_> = state
             .diagnostics
             .iter()
-            .filter(|d| matches!(d.severity, reify_types::Severity::Warning))
+            .filter(|d| matches!(d.severity, reify_core::Severity::Warning))
             .collect();
         assert_eq!(
             warnings_after_second.len(),
@@ -4597,7 +4598,7 @@ mod tests {
     fn execute_realization_ops_compile_failure_diagnostic_has_realization_span_label() {
         use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef};
         use reify_test_support::mocks::MockGeometryKernel;
-        use reify_types::{Severity, SourceSpan};
+        use reify_core::{Severity, SourceSpan};
 
         // Step(99) is out-of-bounds when step_handles is empty →
         // compile_geometry_op returns Err("unresolvable GeomRef::Step(99) …")
@@ -4662,7 +4663,8 @@ mod tests {
     fn execute_realization_ops_kernel_error_diagnostic_has_realization_span_label() {
         use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
         use reify_test_support::mocks::FailingMockGeometryKernel;
-        use reify_types::{CompiledExpr, Severity, SourceSpan, Type};
+        use reify_core::{Severity, SourceSpan, Type};
+        use reify_ir::CompiledExpr;
 
         let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
 
@@ -4736,36 +4738,36 @@ mod tests {
         log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     }
 
-    impl reify_types::GeometryKernel for NamedRecordingKernel {
+    impl reify_ir::GeometryKernel for NamedRecordingKernel {
         fn execute(
             &mut self,
-            op: &reify_types::GeometryOp,
-        ) -> Result<reify_types::GeometryHandle, reify_types::GeometryError> {
+            op: &reify_ir::GeometryOp,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
             self.log.lock().unwrap().push(self.name.clone());
             self.inner.execute(op)
         }
 
         fn query(
             &self,
-            q: &reify_types::GeometryQuery,
-        ) -> Result<reify_types::Value, reify_types::QueryError> {
+            q: &reify_ir::GeometryQuery,
+        ) -> Result<reify_ir::Value, reify_ir::QueryError> {
             self.inner.query(q)
         }
 
         fn export(
             &self,
-            handle: reify_types::GeometryHandleId,
-            format: reify_types::ExportFormat,
+            handle: reify_ir::GeometryHandleId,
+            format: reify_ir::ExportFormat,
             writer: &mut dyn std::io::Write,
-        ) -> Result<(), reify_types::ExportError> {
+        ) -> Result<(), reify_ir::ExportError> {
             self.inner.export(handle, format, writer)
         }
 
         fn tessellate(
             &self,
-            handle: reify_types::GeometryHandleId,
+            handle: reify_ir::GeometryHandleId,
             tolerance: f64,
-        ) -> Result<reify_types::Mesh, reify_types::TessError> {
+        ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
             self.inner.tessellate(handle, tolerance)
         }
     }
@@ -4785,14 +4787,15 @@ mod tests {
     fn execute_realization_ops_routes_to_dispatcher_picked_kernel() {
         use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
         use reify_test_support::mocks::MockGeometryKernel;
-        use reify_types::{CapabilityDescriptor, CompiledExpr, Operation, ReprKind, Type};
+        use reify_core::Type;
+        use reify_ir::{CapabilityDescriptor, CompiledExpr, Operation, ReprKind};
 
         let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
 
         let log: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
 
-        let mut kernels: BTreeMap<String, Box<dyn reify_types::GeometryKernel>> = BTreeMap::new();
+        let mut kernels: BTreeMap<String, Box<dyn reify_ir::GeometryKernel>> = BTreeMap::new();
         kernels.insert(
             "aaa".to_string(),
             Box::new(NamedRecordingKernel {
@@ -4864,14 +4867,15 @@ mod tests {
     fn execute_realization_ops_routes_to_default_when_only_default_registered() {
         use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
         use reify_test_support::mocks::MockGeometryKernel;
-        use reify_types::{CapabilityDescriptor, CompiledExpr, Operation, ReprKind, Type};
+        use reify_core::Type;
+        use reify_ir::{CapabilityDescriptor, CompiledExpr, Operation, ReprKind};
 
         let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
 
         let log: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
 
-        let mut kernels: BTreeMap<String, Box<dyn reify_types::GeometryKernel>> = BTreeMap::new();
+        let mut kernels: BTreeMap<String, Box<dyn reify_ir::GeometryKernel>> = BTreeMap::new();
         kernels.insert(
             "default".to_string(),
             Box::new(NamedRecordingKernel {
@@ -4917,7 +4921,7 @@ mod tests {
         let errors: Vec<_> = state
             .diagnostics
             .iter()
-            .filter(|d| matches!(d.severity, reify_types::Severity::Error))
+            .filter(|d| matches!(d.severity, reify_core::Severity::Error))
             .collect();
         assert!(
             errors.is_empty(),
@@ -4938,16 +4942,15 @@ mod tests {
     fn execute_realization_ops_emits_no_kernel_chain_diagnostic_when_dispatch_returns_none() {
         use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
         use reify_test_support::mocks::MockGeometryKernel;
-        use reify_types::{
-            CapabilityDescriptor, CompiledExpr, DiagnosticCode, Operation, ReprKind, Type,
-        };
+        use reify_core::{DiagnosticCode, Type};
+        use reify_ir::{CapabilityDescriptor, CompiledExpr, Operation, ReprKind};
 
         let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
 
-        let mut kernels: BTreeMap<String, Box<dyn reify_types::GeometryKernel>> = BTreeMap::new();
+        let mut kernels: BTreeMap<String, Box<dyn reify_ir::GeometryKernel>> = BTreeMap::new();
         kernels.insert(
             "default".to_string(),
-            Box::new(MockGeometryKernel::new()) as Box<dyn reify_types::GeometryKernel>,
+            Box::new(MockGeometryKernel::new()) as Box<dyn reify_ir::GeometryKernel>,
         );
 
         // Registry deliberately does NOT support PrimitiveBox/BRep: every
@@ -4993,7 +4996,7 @@ mod tests {
             state.diagnostics
         );
         assert!(
-            matches!(no_chain[0].severity, reify_types::Severity::Error),
+            matches!(no_chain[0].severity, reify_core::Severity::Error),
             "NoKernelChain must be an Error-severity diagnostic; got {:?}",
             no_chain[0].severity,
         );
@@ -5064,9 +5067,8 @@ mod tests {
     fn execute_realization_ops_writes_produced_repr_brep_in_none_fallback_backward_compat() {
         use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
         use reify_test_support::mocks::MockGeometryKernel;
-        use reify_types::{
-            CapabilityDescriptor, CompiledExpr, DiagnosticCode, Operation, ReprKind, Type,
-        };
+        use reify_core::{DiagnosticCode, Type};
+        use reify_ir::{CapabilityDescriptor, CompiledExpr, Operation, ReprKind};
 
         let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
 
@@ -5105,7 +5107,7 @@ mod tests {
         //     supplied kernel under (engine_admin.rs:197).
         let log: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let mut kernels: BTreeMap<String, Box<dyn reify_types::GeometryKernel>> = BTreeMap::new();
+        let mut kernels: BTreeMap<String, Box<dyn reify_ir::GeometryKernel>> = BTreeMap::new();
         kernels.insert(
             Engine::DEFAULT_KERNEL_NAME.to_string(),
             Box::new(NamedRecordingKernel {
@@ -5230,7 +5232,7 @@ mod tests {
     #[test]
     fn effective_tessellation_tolerance_uses_module_default_when_set() {
         use reify_test_support::builders::CompiledModuleBuilder;
-        use reify_types::ModulePath;
+        use reify_core::ModulePath;
 
         let mut module = CompiledModuleBuilder::new(ModulePath::single("t")).build();
         module.default_tolerance = Some(0.005);
@@ -5249,7 +5251,7 @@ mod tests {
     #[test]
     fn effective_tessellation_tolerance_falls_back_to_default_when_none() {
         use reify_test_support::builders::CompiledModuleBuilder;
-        use reify_types::ModulePath;
+        use reify_core::ModulePath;
 
         let module = CompiledModuleBuilder::new(ModulePath::single("t")).build();
         assert!(
@@ -5286,35 +5288,35 @@ mod tests {
         recorded_tolerances: std::sync::Arc<std::sync::Mutex<Vec<f64>>>,
     }
 
-    impl reify_types::GeometryKernel for RecordingTessellationKernel {
+    impl reify_ir::GeometryKernel for RecordingTessellationKernel {
         fn execute(
             &mut self,
-            op: &reify_types::GeometryOp,
-        ) -> Result<reify_types::GeometryHandle, reify_types::GeometryError> {
+            op: &reify_ir::GeometryOp,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
             self.inner.execute(op)
         }
 
         fn query(
             &self,
-            query: &reify_types::GeometryQuery,
-        ) -> Result<reify_types::Value, reify_types::QueryError> {
+            query: &reify_ir::GeometryQuery,
+        ) -> Result<reify_ir::Value, reify_ir::QueryError> {
             self.inner.query(query)
         }
 
         fn export(
             &self,
-            handle: reify_types::GeometryHandleId,
-            format: reify_types::ExportFormat,
+            handle: reify_ir::GeometryHandleId,
+            format: reify_ir::ExportFormat,
             writer: &mut dyn std::io::Write,
-        ) -> Result<(), reify_types::ExportError> {
+        ) -> Result<(), reify_ir::ExportError> {
             self.inner.export(handle, format, writer)
         }
 
         fn tessellate(
             &self,
-            handle: reify_types::GeometryHandleId,
+            handle: reify_ir::GeometryHandleId,
             tolerance: f64,
-        ) -> Result<reify_types::Mesh, reify_types::TessError> {
+        ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
             self.recorded_tolerances.lock().unwrap().push(tolerance);
             self.inner.tessellate(handle, tolerance)
         }
@@ -5326,7 +5328,8 @@ mod tests {
     fn module_with_one_box_realization() -> reify_compiler::CompiledModule {
         use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
         use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, mm};
-        use reify_types::{CompiledExpr, ModulePath, Type};
+        use reify_core::{ModulePath, Type};
+        use reify_ir::CompiledExpr;
 
         let e = "TestShape";
         let mm_lit = |v: f64| CompiledExpr::literal(mm(v), Type::length());
@@ -5403,7 +5406,7 @@ mod tests {
     /// family is enough to guard against misclassification.
     #[test]
     fn parent_handles_for_op_returns_expected_handles_per_variant_family() {
-        use reify_types::Value;
+        use reify_ir::Value;
 
         struct Case {
             op: GeometryOp,
@@ -5666,7 +5669,7 @@ mod tests {
         use reify_test_support::{
             CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder,
         };
-        use reify_types::ModulePath;
+        use reify_core::ModulePath;
 
         let checker = MockConstraintChecker::new();
         // `mut` required for the positive-path sub-scenario where we seed
@@ -5768,7 +5771,7 @@ mod tests {
     /// RED before step-4 impl: `geometry_op_to_operation` does not exist yet.
     #[test]
     fn geometry_op_to_operation_maps_every_variant_family() {
-        use reify_types::{Operation, Value};
+        use reify_ir::{Operation, Value};
 
         let h = |id| GeometryHandleId(id);
         let r = |v| Value::Real(v);
@@ -6221,7 +6224,7 @@ mod tests {
         use reify_test_support::{
             CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder,
         };
-        use reify_types::ModulePath;
+        use reify_core::ModulePath;
 
         let checker = MockConstraintChecker::new();
         // `mut` required for sub-scenario (b) where we seed
@@ -6511,7 +6514,8 @@ mod tests {
     #[test]
     fn collect_centroids_with_failure_summary_coalesces_query_errors() {
         use reify_test_support::mocks::MockGeometryKernel;
-        use reify_types::{Role, Severity};
+        use reify_core::Severity;
+        use reify_ir::Role;
 
         let realization_id = RealizationNodeId::new("TestEntity", 0);
         let feature_id = FeatureId::from(&realization_id);
@@ -6592,7 +6596,8 @@ mod tests {
     #[test]
     fn collect_centroids_with_failure_summary_coalesces_parse_errors() {
         use reify_test_support::mocks::MockGeometryKernel;
-        use reify_types::{Role, Severity, Value};
+        use reify_core::Severity;
+        use reify_ir::{Role, Value};
 
         let realization_id = RealizationNodeId::new("TestEntity", 0);
         let feature_id = FeatureId::from(&realization_id);
@@ -6678,7 +6683,8 @@ mod tests {
     fn collect_centroids_with_failure_summary_separates_failure_classes_and_preserves_first_message()
      {
         use reify_test_support::mocks::MockGeometryKernel;
-        use reify_types::{Role, Severity, Value};
+        use reify_core::Severity;
+        use reify_ir::{Role, Value};
 
         let realization_id = RealizationNodeId::new("TestEntity", 0);
         let feature_id = FeatureId::from(&realization_id);
@@ -6804,7 +6810,7 @@ mod dispatch_volume_mesh_tests {
     use reify_solver_elastic::{
         Mesh2d, Mesh2dError, Mesh2dReport, SweepError, SweepParams, SweptMesh3d,
     };
-    use reify_types::{ElementOrderTag, GeometryError, VolumeMesh};
+    use reify_ir::{ElementOrderTag, GeometryError, VolumeMesh};
 
     fn make_empty_volume_mesh() -> VolumeMesh {
         VolumeMesh {
@@ -6836,7 +6842,7 @@ mod dispatch_volume_mesh_tests {
     }
 
     fn extrude_kind() -> crate::sweep_classifier::SweptKind {
-        use reify_types::Value;
+        use reify_ir::Value;
         crate::sweep_classifier::SweptKind::Extrude {
             axis: [0.0, 0.0, 1.0],
             length: Value::length(0.01),
@@ -7112,7 +7118,7 @@ mod dispatch_volume_mesh_tests {
 pub(crate) fn p2_substitution_diagnostic(
     swept_kind: Option<&SweptKind>,
     force_tet: bool,
-    element_order: reify_types::ElementOrderTag,
+    element_order: reify_ir::ElementOrderTag,
     body_label: &str,
 ) -> Option<Diagnostic> {
     // Three suppression guards — ordered cheapest first for short-circuit:
@@ -7123,7 +7129,7 @@ pub(crate) fn p2_substitution_diagnostic(
     if force_tet {
         return None;
     }
-    if element_order != reify_types::ElementOrderTag::P2 {
+    if element_order != reify_ir::ElementOrderTag::P2 {
         return None;
     }
     Some(Diagnostic::info(format!(
@@ -7137,10 +7143,11 @@ pub(crate) fn p2_substitution_diagnostic(
 #[cfg(test)]
 mod p2_substitution_diagnostic_tests {
     use super::*;
-    use reify_types::{ElementOrderTag, Severity};
+    use reify_core::Severity;
+    use reify_ir::ElementOrderTag;
 
     fn extrude_kind() -> crate::sweep_classifier::SweptKind {
-        use reify_types::Value;
+        use reify_ir::Value;
         crate::sweep_classifier::SweptKind::Extrude {
             axis: [0.0, 0.0, 1.0],
             length: Value::length(0.01),

@@ -16,7 +16,7 @@
 //! There is no closest-face fallback.
 
 use reify_eval::{CorrespondenceMap, SubShapeKind};
-use reify_types::{GeometryHandleId, VolumeMesh};
+use reify_ir::{GeometryHandleId, VolumeMesh};
 
 // ── NodeAttachment / BoundaryAssociation ──────────────────────────────────────
 //
@@ -27,7 +27,7 @@ use reify_types::{GeometryHandleId, VolumeMesh};
 // `reify-kernel-gmsh`. Re-exported here so existing consumers that import via
 // `reify_mesh_morph::boundary::{NodeAttachment, BoundaryAssociation}` keep
 // working unchanged.
-pub use reify_types::{BoundaryAssociation, NodeAttachment};
+pub use reify_ir::{BoundaryAssociation, NodeAttachment};
 
 // ── ProjectorPayload ──────────────────────────────────────────────────────────
 
@@ -219,7 +219,7 @@ mod tests {
     use std::sync::Mutex;
 
     use reify_eval::CorrespondenceMap;
-    use reify_types::{ElementOrderTag, GeometryHandleId, VolumeMesh};
+    use reify_ir::{ElementOrderTag, GeometryHandleId, VolumeMesh};
 
     use super::*;
 

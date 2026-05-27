@@ -10,10 +10,8 @@
 use std::sync::Arc;
 
 use reify_expr::{EvalContext, eval_expr};
-use reify_types::{
-    BinOp, CompiledExpr, CompiledExprKind, ContentHash, DimensionVector, FieldSourceKind,
-    ResolvedFunction, Type, UnOp, Value, ValueCellId, ValueMap,
-};
+use reify_core::{ContentHash, DimensionVector, Type, ValueCellId};
+use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, FieldSourceKind, ResolvedFunction, UnOp, Value, ValueMap};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

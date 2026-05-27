@@ -7,8 +7,9 @@
 //! Module pragmas are appended last (in declaration order) so pragma-free
 //! modules retain identical hashes to pre-pragma-hashing compilations.
 
-use reify_syntax::ParsedModule;
-use reify_types::{CompiledFunction, ContentHash};
+use reify_ast::ParsedModule;
+use reify_core::ContentHash;
+use reify_ir::CompiledFunction;
 
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::types::CompiledPurpose;
@@ -90,7 +91,7 @@ pub(crate) fn compute_module_hash(
 /// Encoding the count explicitly guards against collisions when a pragma has
 /// optional arguments that could be absent vs. present as an empty value.
 /// Source span is intentionally excluded — it is positional metadata, not content.
-pub(crate) fn hash_pragma(p: &reify_syntax::Pragma) -> ContentHash {
+pub(crate) fn hash_pragma(p: &reify_ast::Pragma) -> ContentHash {
     let mut h = ContentHash::of_str(&p.name).combine(ContentHash::of_u64(p.args.len() as u64));
     for arg in &p.args {
         h = h.combine(hash_pragma_arg(arg));
@@ -98,31 +99,31 @@ pub(crate) fn hash_pragma(p: &reify_syntax::Pragma) -> ContentHash {
     h
 }
 
-fn hash_pragma_arg(arg: &reify_syntax::PragmaArg) -> ContentHash {
+fn hash_pragma_arg(arg: &reify_ast::PragmaArg) -> ContentHash {
     match arg {
-        reify_syntax::PragmaArg::KeyValue { key, value } => ContentHash::of_str("kv")
+        reify_ast::PragmaArg::KeyValue { key, value } => ContentHash::of_str("kv")
             .combine(ContentHash::of_str(key))
             .combine(hash_pragma_value(value)),
-        reify_syntax::PragmaArg::Bare(value) => {
+        reify_ast::PragmaArg::Bare(value) => {
             ContentHash::of_str("bare").combine(hash_pragma_value(value))
         }
     }
 }
 
-fn hash_pragma_value(v: &reify_syntax::PragmaValue) -> ContentHash {
+fn hash_pragma_value(v: &reify_ast::PragmaValue) -> ContentHash {
     match v {
-        reify_syntax::PragmaValue::Ident(s) => {
+        reify_ast::PragmaValue::Ident(s) => {
             ContentHash::of_str("ident").combine(ContentHash::of_str(s))
         }
-        reify_syntax::PragmaValue::Number(n) => {
+        reify_ast::PragmaValue::Number(n) => {
             ContentHash::of_str("num").combine(ContentHash::of_u64(n.to_bits()))
         }
-        reify_syntax::PragmaValue::String(s) => {
+        reify_ast::PragmaValue::String(s) => {
             ContentHash::of_str("str").combine(ContentHash::of_str(s))
         }
-        reify_syntax::PragmaValue::Bool(b) => ContentHash::of_str("bool")
+        reify_ast::PragmaValue::Bool(b) => ContentHash::of_str("bool")
             .combine(ContentHash::of_str(if *b { "true" } else { "false" })),
-        reify_syntax::PragmaValue::Quantity { value, unit } => ContentHash::of_str("quantity")
+        reify_ast::PragmaValue::Quantity { value, unit } => ContentHash::of_str("quantity")
             .combine(ContentHash::of_u64(value.to_bits()))
             .combine(ContentHash::of_str(unit)),
     }
@@ -136,8 +137,8 @@ mod tests {
     /// hash differently because their kind-tags differ (`"ident"` vs `"bool"`).
     #[test]
     fn pragma_value_ident_vs_bool_differ() {
-        let h_ident = hash_pragma_value(&reify_syntax::PragmaValue::Ident("true".to_string()));
-        let h_bool = hash_pragma_value(&reify_syntax::PragmaValue::Bool(true));
+        let h_ident = hash_pragma_value(&reify_ast::PragmaValue::Ident("true".to_string()));
+        let h_bool = hash_pragma_value(&reify_ast::PragmaValue::Bool(true));
         assert_ne!(
             h_ident, h_bool,
             "Ident(\"true\") and Bool(true) must produce distinct hashes"
@@ -148,8 +149,8 @@ mod tests {
     /// must hash differently because their kind-tags differ (`"ident"` vs `"num"`).
     #[test]
     fn pragma_value_ident_vs_number_differ() {
-        let h_ident = hash_pragma_value(&reify_syntax::PragmaValue::Ident("42".to_string()));
-        let h_num = hash_pragma_value(&reify_syntax::PragmaValue::Number(42.0_f64));
+        let h_ident = hash_pragma_value(&reify_ast::PragmaValue::Ident("42".to_string()));
+        let h_num = hash_pragma_value(&reify_ast::PragmaValue::Number(42.0_f64));
         assert_ne!(
             h_ident, h_num,
             "Ident(\"42\") and Number(42) must produce distinct hashes"
@@ -160,8 +161,8 @@ mod tests {
     /// hash differently because their kind-tags differ (`"bool"` vs `"str"`).
     #[test]
     fn pragma_value_bool_vs_string_differ() {
-        let h_bool = hash_pragma_value(&reify_syntax::PragmaValue::Bool(true));
-        let h_str = hash_pragma_value(&reify_syntax::PragmaValue::String("true".to_string()));
+        let h_bool = hash_pragma_value(&reify_ast::PragmaValue::Bool(true));
+        let h_str = hash_pragma_value(&reify_ast::PragmaValue::String("true".to_string()));
         assert_ne!(
             h_bool, h_str,
             "Bool(true) and String(\"true\") must produce distinct hashes"
@@ -182,9 +183,9 @@ mod tests {
     /// collide with the Bare variant and silently invalidate cache keys.
     #[test]
     fn pragma_arg_bare_vs_keyvalue_differ_for_same_value() {
-        let v = reify_syntax::PragmaValue::Ident("x".to_string());
-        let h_bare = hash_pragma_arg(&reify_syntax::PragmaArg::Bare(v.clone()));
-        let h_kv = hash_pragma_arg(&reify_syntax::PragmaArg::KeyValue {
+        let v = reify_ast::PragmaValue::Ident("x".to_string());
+        let h_bare = hash_pragma_arg(&reify_ast::PragmaArg::Bare(v.clone()));
+        let h_kv = hash_pragma_arg(&reify_ast::PragmaArg::KeyValue {
             key: "".to_string(),
             value: v,
         });
@@ -212,17 +213,17 @@ mod tests {
     /// irrelevant to the assertion.
     #[test]
     fn pragma_arg_count_encoded_distinctly() {
-        let p_empty = reify_syntax::Pragma {
+        let p_empty = reify_ast::Pragma {
             name: "foo".to_string(),
             args: vec![],
-            span: reify_types::SourceSpan::new(0, 0),
+            span: reify_core::SourceSpan::new(0, 0),
         };
-        let p_one = reify_syntax::Pragma {
+        let p_one = reify_ast::Pragma {
             name: "foo".to_string(),
-            args: vec![reify_syntax::PragmaArg::Bare(
-                reify_syntax::PragmaValue::Ident("x".to_string()),
+            args: vec![reify_ast::PragmaArg::Bare(
+                reify_ast::PragmaValue::Ident("x".to_string()),
             )],
-            span: reify_types::SourceSpan::new(0, 0),
+            span: reify_core::SourceSpan::new(0, 0),
         };
         assert_ne!(
             hash_pragma(&p_empty),

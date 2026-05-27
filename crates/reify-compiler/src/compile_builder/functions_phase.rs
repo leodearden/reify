@@ -3,8 +3,8 @@
 
 use std::collections::HashMap;
 
-use reify_syntax::FnDef;
-use reify_types::CompiledFunction;
+use reify_ast::FnDef;
+use reify_ir::CompiledFunction;
 
 use crate::CompiledModule;
 use crate::compile_builder::ctx::CompilationCtx;

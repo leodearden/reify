@@ -20,7 +20,7 @@
 
 use std::borrow::Cow;
 
-use reify_types::Mesh;
+use reify_ir::Mesh;
 
 use crate::auto_size::{AutoSizeConfig, auto_mesh_size_from_features};
 use crate::options::MeshingOptions;
@@ -41,7 +41,7 @@ use crate::through_thickness::{
 #[derive(Debug, Clone)]
 pub struct MeshSurfaceToVolumeReport {
     /// The produced volume mesh (tetrahedral).
-    pub volume: reify_types::VolumeMesh,
+    pub volume: reify_ir::VolumeMesh,
     /// Through-thickness under-resolution warnings from the post-stage.
     /// Empty when the post-stage was skipped (`thickness_cfg = None`) or when
     /// no under-resolved regions were found.
@@ -92,7 +92,7 @@ pub fn resolve_mesh_size(
     surface: &Mesh,
     options: &MeshingOptions,
     auto_cfg: Option<AutoSizeConfig>,
-) -> Result<Option<f64>, reify_types::GeometryError> {
+) -> Result<Option<f64>, reify_ir::GeometryError> {
     // AutoSizeConfig: Copy — auto_cfg is not consumed by the match below.
     let result = match (options.mesh_size, auto_cfg) {
         (Some(s), _) => Ok(Some(s)),
@@ -100,7 +100,7 @@ pub fn resolve_mesh_size(
         (None, Some(cfg)) => match auto_mesh_size_from_features(surface, cfg) {
             Ok(0.0) => Ok(None),
             Ok(v) => Ok(Some(v)),
-            Err(e) => Err(reify_types::GeometryError::OperationFailed(format!(
+            Err(e) => Err(reify_ir::GeometryError::OperationFailed(format!(
                 "auto_mesh_size_from_features failed: {e}"
             ))),
         },
@@ -128,7 +128,7 @@ pub fn resolve_mesh_size(
 /// - `None` — returns an empty `Vec` immediately (stage skipped).
 /// - `Some(cfg)` — delegates to `through_thickness_check(volume, surface, cfg)`.
 pub fn compute_thickness_warnings(
-    volume: &reify_types::VolumeMesh,
+    volume: &reify_ir::VolumeMesh,
     surface: &Mesh,
     cfg: Option<ThroughThicknessConfig>,
 ) -> Vec<ThroughThicknessWarning> {
@@ -161,11 +161,11 @@ pub fn compute_thickness_warnings(
 pub fn mesh_surface_to_volume_with_diagnostics(
     surface: &Mesh,
     options: &MeshingOptions,
-    order: reify_types::ElementOrderTag,
+    order: reify_ir::ElementOrderTag,
     repair_cfg: Option<RepairConfig>,
     auto_size_cfg: Option<AutoSizeConfig>,
     thickness_cfg: Option<ThroughThicknessConfig>,
-) -> Result<MeshSurfaceToVolumeReport, reify_types::GeometryError> {
+) -> Result<MeshSurfaceToVolumeReport, reify_ir::GeometryError> {
     // Stage 1: repair pre-stage (Cow avoids clone when skipped)
     let repaired = apply_repair_if_requested(surface, repair_cfg);
 

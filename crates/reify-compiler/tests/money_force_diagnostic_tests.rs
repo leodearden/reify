@@ -9,7 +9,7 @@
 //! (step-8 for binary-op, step-10 for range).
 
 use reify_test_support::{compile_source_with_stdlib, errors_only};
-use reify_types::DiagnosticCode;
+use reify_core::DiagnosticCode;
 
 /// Helper: assert exactly one error diagnostic carries `code == DimensionMismatch`.
 ///
@@ -17,7 +17,7 @@ use reify_types::DiagnosticCode;
 /// where the dimension-mismatch diagnostic is emitted twice — e.g. once from the
 /// binary-op site and once from a wrapper coercion — which would otherwise pass
 /// silently.
-fn has_dimension_mismatch_code(errors: &[&reify_types::Diagnostic]) -> bool {
+fn has_dimension_mismatch_code(errors: &[&reify_core::Diagnostic]) -> bool {
     errors
         .iter()
         .filter(|d| d.code == Some(DiagnosticCode::DimensionMismatch))
@@ -30,7 +30,7 @@ fn has_dimension_mismatch_code(errors: &[&reify_types::Diagnostic]) -> bool {
 /// Uses `any()` (existence check) rather than `count()` because having the hint
 /// appear in more than one label is redundant but not incorrect — the primary and
 /// secondary labels may both be informative.
-fn has_money_and_force_label(errors: &[&reify_types::Diagnostic]) -> bool {
+fn has_money_and_force_label(errors: &[&reify_core::Diagnostic]) -> bool {
     errors.iter().any(|d| {
         d.labels
             .iter()
@@ -46,7 +46,7 @@ fn has_money_and_force_label(errors: &[&reify_types::Diagnostic]) -> bool {
 ///
 /// Substring-based rather than code-based because the duplicate-unit producer in
 /// `compile_builder/units_phase.rs` does not currently attach a `DiagnosticCode`.
-fn has_no_duplicate_unit_declaration(errors: &[&reify_types::Diagnostic]) -> bool {
+fn has_no_duplicate_unit_declaration(errors: &[&reify_core::Diagnostic]) -> bool {
     !errors
         .iter()
         .any(|d| d.message.contains("duplicate unit declaration"))

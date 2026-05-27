@@ -399,11 +399,11 @@ pub(crate) fn is_comparison_op(op: &str) -> bool {
 /// Precondition: `outer_op` is a comparison op and `left` is a comparison BinOp.
 pub(crate) fn flatten_comparison_chain<'a>(
     outer_op: &'a str,
-    left: &'a reify_syntax::Expr,
-    right: &'a reify_syntax::Expr,
-) -> (Vec<&'a reify_syntax::Expr>, Vec<&'a str>) {
+    left: &'a reify_ast::Expr,
+    right: &'a reify_ast::Expr,
+) -> (Vec<&'a reify_ast::Expr>, Vec<&'a str>) {
     match &left.kind {
-        reify_syntax::ExprKind::BinOp {
+        reify_ast::ExprKind::BinOp {
             op: inner_op,
             left: ll,
             right: lr,

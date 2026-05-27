@@ -11,7 +11,7 @@
 
 use crate::ffi::ffi::{OcctShape, Transform3Props};
 use crate::Transform3;
-use reify_types::QueryError;
+use reify_ir::QueryError;
 
 /// Conversion from `Transform3` (always-compiled public type) to the cxx-bridge
 /// `Transform3Props` POD (available only under `has_occt`).

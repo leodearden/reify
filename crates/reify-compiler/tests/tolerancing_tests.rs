@@ -5,7 +5,8 @@
 //! conformance works via the production prelude.
 
 use reify_compiler::*;
-use reify_types::*;
+use reify_core::*;
+use reify_ir::*;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 

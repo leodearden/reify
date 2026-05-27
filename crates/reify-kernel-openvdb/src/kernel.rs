@@ -18,10 +18,7 @@
 // already guarantees this; the explicit `cfg` attributes below make the
 // intent clear inline (mirrors OCCT's `src/stubs.rs` pattern).
 
-use reify_types::{
-    ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
-    GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value,
-};
+use reify_ir::{ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value};
 
 const STUB_MSG: &str = "OpenVDB voxel kernel not yet implemented; \
     reify-kernel-openvdb is a registration-only scaffold for v0.2 task 2645. \

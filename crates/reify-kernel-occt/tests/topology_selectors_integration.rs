@@ -10,7 +10,7 @@
 #![cfg(has_occt)]
 
 use reify_kernel_occt::OcctKernel;
-use reify_types::{GeometryHandleId, GeometryOp, GeometryQuery, QueryError, Value};
+use reify_ir::{GeometryHandleId, GeometryOp, GeometryQuery, QueryError, Value};
 
 /// Helper: build a kernel containing one 10×10×10 box, return the kernel
 /// and the handle id of the box.

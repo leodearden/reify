@@ -11,7 +11,7 @@
 // (unconditional) and `#[cfg(has_gmsh)] pub use mesh_boundary::{BoundaryAttributedReport,
 // mesh_surface_to_volume_with_attribution}` to lib.rs.
 use reify_kernel_gmsh::EntityAttribution;
-use reify_types::{GeometryHandleId, Mesh, NodeAttachment};
+use reify_ir::{GeometryHandleId, Mesh, NodeAttachment};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -124,7 +124,7 @@ fn entity_attribution_stores_anchor_positions_and_handles() {
 fn mesh_surface_to_volume_with_attribution_attributes_surface_nodes_by_brep_entity() {
     use reify_kernel_gmsh::mesh_surface_to_volume_with_attribution;
     use reify_kernel_gmsh::MeshingOptions;
-    use reify_types::ElementOrderTag;
+    use reify_ir::ElementOrderTag;
     use std::collections::BTreeSet;
 
     let surface = subdivided_unit_cube_surface();
@@ -248,7 +248,7 @@ fn mesh_surface_to_volume_with_attribution_attributes_surface_nodes_by_brep_enti
 fn attributed_boundary_nodes_lie_on_locus_of_attributed_handle() {
     use reify_kernel_gmsh::mesh_surface_to_volume_with_attribution;
     use reify_kernel_gmsh::MeshingOptions;
-    use reify_types::ElementOrderTag;
+    use reify_ir::ElementOrderTag;
     use std::collections::{BTreeSet, HashMap};
 
     let surface = subdivided_unit_cube_surface();

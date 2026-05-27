@@ -16,10 +16,7 @@ use reify_eval::selector_vocabulary_v2::{
     owner_body_of, siblings_of_face, split_by_feature, union, user_label_eq,
 };
 use reify_test_support::MockGeometryKernel;
-use reify_types::{
-    CapKind, EdgeCurveKind, FaceSurfaceKind, FeatureId, GeometryHandleId, ModEntry, QueryError,
-    Role, TopologyAttribute, TopologyAttributeTable, Value,
-};
+use reify_ir::{CapKind, EdgeCurveKind, FaceSurfaceKind, FeatureId, GeometryHandleId, ModEntry, QueryError, Role, TopologyAttribute, TopologyAttributeTable, Value};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // intersect — set intersection over Vec<GeometryHandleId>

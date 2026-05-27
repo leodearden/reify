@@ -5,10 +5,8 @@
 //! with eval_expr as the constraint checker.
 
 use reify_expr::{EvalContext, eval_expr};
-use reify_types::{
-    AutoParam, CompiledExpr, CompiledExprKind, ConstraintNodeId, ConstraintSolver, Diagnostic,
-    DiagnosticCode, ResolutionProblem, SolveResult, Type, Value, ValueCellId, ValueMap,
-};
+use reify_core::{ConstraintNodeId, Diagnostic, DiagnosticCode, Type, ValueCellId};
+use reify_ir::{AutoParam, CompiledExpr, CompiledExprKind, ConstraintSolver, ResolutionProblem, SolveResult, Value, ValueMap};
 use std::collections::{HashMap, HashSet};
 
 /// Maximum number of integer domain values to enumerate.
@@ -134,7 +132,7 @@ fn backtrack(
     assignment: &mut ValueMap,
     constraints: &[(ConstraintNodeId, CompiledExpr, HashSet<ValueCellId>)],
     auto_param_ids: &HashSet<ValueCellId>,
-    functions: &[reify_types::CompiledFunction],
+    functions: &[reify_ir::CompiledFunction],
 ) -> Option<HashMap<ValueCellId, Value>> {
     // Base case: all variables assigned
     if var_index >= variables.len() {

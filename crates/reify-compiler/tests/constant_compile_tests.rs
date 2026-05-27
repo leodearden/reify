@@ -1,13 +1,14 @@
 //! Compiler tests for built-in mathematical constants (pi, tau).
 
 use reify_test_support::{compile_source, errors_only, parse_and_compile};
-use reify_types::{BinOp, CompiledExprKind, Type, Value};
+use reify_core::Type;
+use reify_ir::{BinOp, CompiledExprKind, Value};
 
 /// Helper: get the default_expr for a value cell by member name.
 fn get_cell_expr<'a>(
     compiled: &'a reify_compiler::CompiledModule,
     member: &str,
-) -> &'a reify_types::CompiledExpr {
+) -> &'a reify_ir::CompiledExpr {
     let template = &compiled.templates[0];
     let cell = template
         .value_cells

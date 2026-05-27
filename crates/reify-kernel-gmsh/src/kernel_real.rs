@@ -22,10 +22,7 @@
 
 use std::collections::HashMap;
 
-use reify_types::{
-    ElementOrderTag, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId,
-    GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value, VolumeMesh,
-};
+use reify_ir::{ElementOrderTag, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value, VolumeMesh};
 
 use crate::auto_size::{AutoSizeConfig, auto_mesh_size_from_features};
 use crate::ffi;

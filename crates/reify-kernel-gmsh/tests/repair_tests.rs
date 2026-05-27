@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use reify_kernel_gmsh::repair::{RepairConfig, repair_surface_mesh};
-use reify_types::Mesh;
+use reify_ir::Mesh;
 
 /// Sliver triangles below the area threshold are collapsed. The output
 /// mesh's `indices` array drops the three sliver indices, leaving only the

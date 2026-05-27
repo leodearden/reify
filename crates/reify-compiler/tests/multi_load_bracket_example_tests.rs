@@ -25,7 +25,7 @@
 //! pattern at `cost_aggregation_tests.rs:218-283`, including the typed value-cell
 //! assertion (`AssemblyBOM.total_cost: Scalar<MONEY>` → here `width: Scalar<LENGTH>`).
 
-use reify_types::{DimensionVector, ModulePath, Severity, Type};
+use reify_core::{DimensionVector, ModulePath, Severity, Type};
 
 // ─── examples/multi_load_bracket.ri compiles clean and pins leaf signals ─────
 

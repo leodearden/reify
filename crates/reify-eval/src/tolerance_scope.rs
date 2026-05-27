@@ -20,7 +20,8 @@
 
 use crate::graph::ValueCellNode;
 use reify_compiler::CompiledPurpose;
-use reify_types::{CompiledExprKind, DimensionVector, PersistentMap, Type, Value, ValueCellId};
+use reify_core::{DimensionVector, Type, ValueCellId};
+use reify_ir::{CompiledExprKind, PersistentMap, Value};
 use std::collections::{BTreeSet, HashMap};
 
 /// One extracted tolerance scope root: the entity-ref the purpose was bound
@@ -221,9 +222,8 @@ mod tests {
     use crate::graph::ValueCellNode;
     use reify_compiler::ValueCellKind;
     use reify_test_support::builders::CompiledPurposeBuilder;
-    use reify_types::{
-        BinOp, CompiledExpr, ContentHash, DimensionVector, PersistentMap, Type, Value, ValueCellId,
-    };
+    use reify_core::{ContentHash, DimensionVector, Type, ValueCellId};
+    use reify_ir::{BinOp, CompiledExpr, PersistentMap, Value};
     use std::collections::HashMap;
 
     /// Build a one-cell `PersistentMap` entry shaped like the existing

@@ -18,7 +18,9 @@ path = "src/lib.rs"
 gui = ["dep:tauri", "dep:reify-kernel-occt", "dep:tauri-plugin-dialog", "dep:tauri-plugin-shell", "dep:reify-mesh-morph"]
 
 [dependencies]
-reify-types.workspace = true
+reify-ast.workspace = true
+reify-core.workspace = true
+reify-ir.workspace = true
 reify-mesh-morph = { workspace = true, optional = true }
 reify-syntax.workspace = true
 reify-compiler.workspace = true

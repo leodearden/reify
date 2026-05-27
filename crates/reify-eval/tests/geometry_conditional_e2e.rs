@@ -13,13 +13,14 @@
 //! All tests are guarded by `reify_kernel_occt::OCCT_AVAILABLE` and are
 //! skipped if the OCCT library is not present.
 
-use reify_types::{ModulePath, Severity, Value, ValueCellId};
+use reify_core::{ModulePath, Severity, ValueCellId};
+use reify_ir::Value;
 
 /// Compute the axis-aligned bounding-box of a mesh.
 ///
 /// Returns `(min: [f32; 3], max: [f32; 3])` over the flat vertex buffer.
 /// Panics if the mesh has no vertices.
-fn mesh_aabb(mesh: &reify_types::Mesh) -> ([f32; 3], [f32; 3]) {
+fn mesh_aabb(mesh: &reify_ir::Mesh) -> ([f32; 3], [f32; 3]) {
     assert!(
         !mesh.vertices.is_empty(),
         "mesh_aabb: vertex buffer is empty"

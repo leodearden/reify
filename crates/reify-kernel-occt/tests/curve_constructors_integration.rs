@@ -4,7 +4,7 @@
 
 use reify_kernel_occt::OcctKernel;
 use reify_kernel_occt::RUST_GUARD_MARKER;
-use reify_types::{BRepKind, GeometryError, GeometryOp};
+use reify_ir::{BRepKind, GeometryError, GeometryOp};
 
 // --- LineSegment ---
 

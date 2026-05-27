@@ -6,9 +6,8 @@ use std::borrow::Cow;
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::*;
-use reify_types::{
-    BinOp, CompiledExpr, ConstraintChecker, ConstraintInput, Satisfaction, Type, Value, ValueMap,
-};
+use reify_core::Type;
+use reify_ir::{BinOp, CompiledExpr, ConstraintChecker, ConstraintInput, Satisfaction, Value, ValueMap};
 
 fn thickness_gt_2mm() -> CompiledExpr {
     let thickness = CompiledExpr::value_ref(vcid("Bracket", "thickness"), Type::length());

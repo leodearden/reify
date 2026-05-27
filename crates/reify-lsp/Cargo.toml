@@ -6,7 +6,9 @@ license.workspace = true
 description = "Language server protocol implementation for Reify"
 
 [dependencies]
-reify-types = { workspace = true, features = ["serde"] }
+reify-ast = { workspace = true, features = ["serde"] }
+reify-core = { workspace = true, features = ["serde"] }
+reify-ir = { workspace = true, features = ["serde"] }
 reify-syntax.workspace = true
 reify-compiler.workspace = true
 reify-eval.workspace = true

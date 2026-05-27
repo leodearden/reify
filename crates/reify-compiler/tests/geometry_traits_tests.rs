@@ -12,7 +12,7 @@
 
 use reify_compiler::*;
 use reify_test_support::{compile_source_with_stdlib, errors_only};
-use reify_types::Type;
+use reify_core::Type;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -359,7 +359,7 @@ fn task_2699_topology_selector_cells_typed_per_registry() {
                 2,
                 3,
                 Type::Scalar {
-                    dimension: reify_types::DimensionVector::MOMENT_OF_INERTIA,
+                    dimension: reify_core::DimensionVector::MOMENT_OF_INERTIA,
                 },
             ),
         ),

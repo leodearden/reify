@@ -20,7 +20,7 @@
 // its static so the const path likely works too, but a true symbol reference
 // is the unambiguous shape.
 use reify_kernel_occt::register::occt_capability_descriptor;
-use reify_types::{CapabilityDescriptor, NodeKind, WarmStartableRegistry};
+use reify_ir::{CapabilityDescriptor, NodeKind, WarmStartableRegistry};
 
 // Silence dead-code lints on the linkage-forcing reference — its only purpose
 // is to keep the OCCT lib's static-init records from being stripped.

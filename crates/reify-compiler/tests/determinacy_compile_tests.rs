@@ -1,8 +1,7 @@
 //! Determinacy predicate compilation tests.
 
-use reify_types::{
-    CompiledExprKind, ContentHash, DeterminacyPredicateKind, Severity, TAG_DETERMINACY_PREDICATE,
-};
+use reify_core::{ContentHash, Severity};
+use reify_ir::{CompiledExprKind, DeterminacyPredicateKind, TAG_DETERMINACY_PREDICATE};
 
 /// step-27: Compile `constraint determined(x)` and verify its content_hash
 /// matches the canonical stable-byte formula:
@@ -20,7 +19,7 @@ structure S {
     constraint determined(x)
 }
 "#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_det_hash"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_det_hash"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -80,7 +79,7 @@ structure S {
     constraint determined()
 }
 "#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_det_err0"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_det_err0"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -116,7 +115,7 @@ structure S {
     constraint determined(a, b)
 }
 "#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_det_err2"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_det_err2"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -151,7 +150,7 @@ structure S {
     constraint determined(x + 1.0)
 }
 "#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_det_err_ref"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_det_err_ref"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",

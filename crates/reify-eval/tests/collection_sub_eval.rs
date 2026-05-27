@@ -10,7 +10,8 @@ use reify_eval::{Engine, EvalResult};
 use reify_test_support::builders::value_ref_typed;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
-use reify_types::*;
+use reify_core::*;
+use reify_ir::*;
 
 /// Build the canonical Bolt + Parent (collection sub) templates and return
 /// `(TopologyTemplate, TopologyTemplate)` in `(parent, bolt)` order.
@@ -395,7 +396,7 @@ fn eval_dynamic_index_collection_member_access_from_source() {
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
@@ -445,7 +446,7 @@ fn eval_collection_aggregate_from_source() {
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 

@@ -14,7 +14,7 @@ fn no_match_error_lists_candidates_when_int_arg_misses_real_param() {
 fn f(x: Real) -> Real { x }
 structure S { let v = f(3) }
 "#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_no_match"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_no_match"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -27,7 +27,7 @@ structure S { let v = f(3) }
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert_eq!(
         errors.len(),
@@ -60,7 +60,7 @@ fn f(x: Int) -> Int { x }
 fn f(x: Int, y: Int) -> Int { x + y }
 structure S { let v = f(5) }
 "#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_arity_disam"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_arity_disam"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -72,7 +72,7 @@ structure S { let v = f(5) }
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 
@@ -85,7 +85,7 @@ structure S { let v = f(5) }
     let v_expr = v_cell.default_expr.as_ref().expect("let should have expr");
 
     match &v_expr.kind {
-        reify_types::CompiledExprKind::UserFunctionCall {
+        reify_ir::CompiledExprKind::UserFunctionCall {
             function_name,
             args,
         } => {
@@ -96,7 +96,7 @@ structure S { let v = f(5) }
     }
     assert_eq!(
         v_expr.result_type,
-        reify_types::Type::Int,
+        reify_core::Type::Int,
         "1-arity overload returns Int"
     );
 }
@@ -110,7 +110,7 @@ fn f(x: Int) -> Int { x }
 fn f(x: Int, y: Int) -> Int { x + y }
 structure S { let v = f(1, 2) }
 "#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_arity_disam2"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_arity_disam2"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -122,7 +122,7 @@ structure S { let v = f(1, 2) }
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 
@@ -135,7 +135,7 @@ structure S { let v = f(1, 2) }
     let v_expr = v_cell.default_expr.as_ref().expect("let should have expr");
 
     match &v_expr.kind {
-        reify_types::CompiledExprKind::UserFunctionCall {
+        reify_ir::CompiledExprKind::UserFunctionCall {
             function_name,
             args,
         } => {
@@ -146,7 +146,7 @@ structure S { let v = f(1, 2) }
     }
     assert_eq!(
         v_expr.result_type,
-        reify_types::Type::Int,
+        reify_core::Type::Int,
         "2-arity overload returns Int"
     );
 }
@@ -161,7 +161,7 @@ structure S { let v = sqrt(4.14) }
 "#;
     let parsed = reify_syntax::parse(
         source,
-        reify_types::ModulePath::single("test_stdlib_fallback"),
+        reify_core::ModulePath::single("test_stdlib_fallback"),
     );
     assert!(
         parsed.errors.is_empty(),
@@ -175,7 +175,7 @@ structure S { let v = sqrt(4.14) }
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 
@@ -189,7 +189,7 @@ structure S { let v = sqrt(4.14) }
 
     // Should be stdlib FunctionCall, not UserFunctionCall
     match &v_expr.kind {
-        reify_types::CompiledExprKind::FunctionCall { function, .. } => {
+        reify_ir::CompiledExprKind::FunctionCall { function, .. } => {
             assert_eq!(function.qualified_name, "std::sqrt");
             assert_eq!(function.name, "sqrt");
         }
@@ -207,7 +207,7 @@ fn f(x: Int) -> Int { x }
 fn f(x: Int) -> Real { x + 0.0 }
 structure S { let v = f(3) }
 "#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_ambiguous"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_ambiguous"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -220,7 +220,7 @@ structure S { let v = f(3) }
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(
         !errors.is_empty(),
@@ -267,7 +267,7 @@ structure S {
     let b = double(1.5)
 }
 "#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_e2e_double"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_e2e_double"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -280,7 +280,7 @@ structure S {
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(
         errors.is_empty(),
@@ -313,7 +313,7 @@ structure S {
         .expect("'b' let should have expr");
 
     // Evaluate with EvalContext that includes the compiled functions
-    let values = reify_types::ValueMap::new();
+    let values = reify_ir::ValueMap::new();
     let ctx = reify_expr::EvalContext::new(&values, &compiled.functions);
 
     let a_val = reify_expr::eval_expr(a_expr, &ctx);
@@ -322,7 +322,7 @@ structure S {
     // a = double(3) should call the Int overload → Int(6)
     assert_eq!(
         a_val,
-        reify_types::Value::Int(6),
+        reify_ir::Value::Int(6),
         "double(3) should return Int(6), got {:?}",
         a_val
     );
@@ -330,7 +330,7 @@ structure S {
     // b = double(1.5) should call the Real overload → Real(3.0)
     assert_eq!(
         b_val,
-        reify_types::Value::Real(3.0),
+        reify_ir::Value::Real(3.0),
         "double(1.5) should return Real(3.0), got {:?}",
         b_val
     );
@@ -350,7 +350,7 @@ structure S { let v = f(3) }
 "#;
     let parsed = reify_syntax::parse(
         source,
-        reify_types::ModulePath::single("test_overload_int_real"),
+        reify_core::ModulePath::single("test_overload_int_real"),
     );
     assert!(
         parsed.errors.is_empty(),
@@ -364,7 +364,7 @@ structure S { let v = f(3) }
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 
@@ -379,7 +379,7 @@ structure S { let v = f(3) }
 
     // Should be UserFunctionCall with return type Int (not Real, not error)
     match &v_expr.kind {
-        reify_types::CompiledExprKind::UserFunctionCall {
+        reify_ir::CompiledExprKind::UserFunctionCall {
             function_name,
             args,
         } => {
@@ -390,7 +390,7 @@ structure S { let v = f(3) }
     }
     assert_eq!(
         v_expr.result_type,
-        reify_types::Type::Int,
+        reify_core::Type::Int,
         "f(3) should select the Int overload, returning Int"
     );
 }

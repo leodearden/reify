@@ -28,7 +28,8 @@
 //! production. This mirrors the helper trio in `buckling_stdlib_compile.rs`.
 
 use reify_compiler::*;
-use reify_types::*;
+use reify_core::*;
+use reify_ir::*;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 

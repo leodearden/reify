@@ -2,10 +2,8 @@
 
 use reify_eval::snapshot::Snapshot;
 use reify_test_support::bracket_compiled_module;
-use reify_types::{
-    ContentHash, DeterminacyState, RealizationNodeId, SnapshotId, SnapshotProvenance, Value,
-    ValueCellId, VersionId,
-};
+use reify_core::{ContentHash, RealizationNodeId, SnapshotId, ValueCellId, VersionId};
+use reify_ir::{DeterminacyState, SnapshotProvenance, Value};
 
 #[test]
 fn snapshot_from_bracket_compiled_module() {
@@ -59,7 +57,7 @@ fn snapshot_from_bracket_compiled_module() {
 
     // Verify specific constraints exist
     for i in 0..3 {
-        let cnid = reify_types::ConstraintNodeId::new("Bracket", i);
+        let cnid = reify_core::ConstraintNodeId::new("Bracket", i);
         assert!(
             snap.graph.constraints.get(&cnid).is_some(),
             "Missing constraint: Bracket#constraint[{}]",
@@ -109,7 +107,8 @@ fn snapshot_from_template_with_realizations() {
     use reify_test_support::{
         CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, value_ref,
     };
-    use reify_types::{CompiledExpr, ModulePath, Type};
+    use reify_core::{ModulePath, Type};
+    use reify_ir::CompiledExpr;
     use std::collections::HashSet;
 
     let ops = vec![CompiledGeometryOp::Primitive {

@@ -12,7 +12,7 @@ use std::sync::atomic::Ordering;
 use reify_kernel_gmsh::through_thickness::{
     ThroughThicknessConfig, ThroughThicknessWarning, through_thickness_check,
 };
-use reify_types::{ElementOrderTag, Mesh, VolumeMesh};
+use reify_ir::{ElementOrderTag, Mesh, VolumeMesh};
 
 /// Surface mesh of an axis-aligned 10×10×0.5 slab — six faces, two
 /// triangles per face = 12 triangles. The thickness direction is Z.

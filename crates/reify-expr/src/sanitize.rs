@@ -1,4 +1,4 @@
-use reify_types::{Value, quaternion_is_finite};
+use reify_ir::{Value, quaternion_is_finite};
 
 /// Convert a Value that carries NaN or Inf to Undef.
 ///
@@ -31,7 +31,7 @@ pub(crate) fn sanitize_value(v: Value) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use reify_types::DimensionVector;
+    use reify_core::DimensionVector;
 
     use super::*;
 

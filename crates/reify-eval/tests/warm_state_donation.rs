@@ -37,7 +37,8 @@ use reify_eval::Engine;
 use reify_eval::cache::NodeId;
 use reify_eval::warm_pool::WarmStatePool;
 use reify_test_support::{bracket_compiled_module, parse_and_compile};
-use reify_types::{OpaqueState, RealizationNodeId, ValueCellId};
+use reify_core::{RealizationNodeId, ValueCellId};
+use reify_ir::OpaqueState;
 
 /// Build a fresh Engine (no prior eval) backed by the real constraint checker.
 fn fresh_engine() -> Engine {

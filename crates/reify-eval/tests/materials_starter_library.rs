@@ -13,7 +13,8 @@
 #![allow(clippy::mutable_key_type)]
 
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
-use reify_types::{PersistentMap, Value, ValueCellId};
+use reify_core::ValueCellId;
+use reify_ir::{PersistentMap, Value};
 
 /// `PersistentMap<String, Value>::get` is keyed by `&String`; this lets tests
 /// index `StructureInstance.fields` with a string literal.

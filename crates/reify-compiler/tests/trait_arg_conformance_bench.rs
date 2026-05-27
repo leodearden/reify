@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 
 use reify_compiler::CompiledModule;
 use reify_test_support::compile_source_with_stdlib;
-use reify_types::Severity;
+use reify_core::Severity;
 
 /// Builds the Reify source for a design that embeds `n` `some(Steel())` elements
 /// in a `List<Option<MaterialSpec>>` arg.

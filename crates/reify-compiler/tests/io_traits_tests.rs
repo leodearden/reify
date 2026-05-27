@@ -12,7 +12,7 @@
 //! presence is implicitly exercised by the `io_module()` `expect(...)` panic.
 
 use reify_compiler::{RequirementKind, stdlib_loader};
-use reify_types::{DimensionVector, Type};
+use reify_core::{DimensionVector, Type};
 
 // Helper: find the std/io module (panics with a clear message if absent).
 fn io_module() -> &'static reify_compiler::CompiledModule {

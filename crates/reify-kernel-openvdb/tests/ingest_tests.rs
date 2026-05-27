@@ -14,9 +14,8 @@ use reify_kernel_openvdb::ingest::{
     IngestError, IngestOutcome, OpenVdbGridKind, OpenVdbGridSource, OpenVdbInterpolation,
     lower_to_sampled, read_vdb_file,
 };
-use reify_types::{
-    DiagnosticCode, DimensionVector, InterpolationKind, SampledGridKind, Severity, Type,
-};
+use reify_core::{DiagnosticCode, DimensionVector, Severity, Type};
+use reify_ir::{InterpolationKind, SampledGridKind};
 
 /// Step-1 happy path: a 1D `Length` grid lowered with linear interpolation
 /// produces a `SampledField` whose semantic content (kind, bounds, spacing,
@@ -586,7 +585,7 @@ fn lower_to_sampled_spacing_exceeds_span_returns_degenerate_axis() {
 ///   - axis_grids: linspace_inclusive → Err(Excessive { n_intervals }) → ExcessiveAxisLength
 #[test]
 fn lower_to_sampled_excessive_axis_returns_excessive_axis_length() {
-    use reify_types::sampled::LINSPACE_MAX_INTERVALS;
+    use reify_ir::sampled::LINSPACE_MAX_INTERVALS;
     let grid = OpenVdbGridSource {
         kind: OpenVdbGridKind::Regular1D,
         bounds_min: vec![0.0],

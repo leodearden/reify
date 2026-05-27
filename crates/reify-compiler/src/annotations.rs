@@ -4,9 +4,9 @@ pub(crate) mod schema;
 
 /// Lower parsed syntax annotations to compiled annotation types.
 pub(crate) fn lower_annotations(
-    parsed: &[reify_syntax::Annotation],
+    parsed: &[reify_ast::Annotation],
     diagnostics: &mut Vec<Diagnostic>,
-) -> Vec<reify_types::Annotation> {
+) -> Vec<reify_ir::Annotation> {
     parsed
         .iter()
         .map(|ann| {
@@ -14,32 +14,32 @@ pub(crate) fn lower_annotations(
                 .args
                 .iter()
                 .map(|expr| {
-                    use reify_syntax::ExprKind;
+                    use reify_ast::ExprKind;
                     let value = match &expr.kind {
                         ExprKind::NumberLiteral { value, is_real } => {
                             // Int/Real classification (incl. integer-form overflow fallback) is
                             // shared with `compile_expr_guarded` via
                             // reify_syntax::classify_number_literal so the two sites cannot drift.
-                            match reify_syntax::classify_number_literal(*value, *is_real) {
-                                reify_syntax::NumberClass::Int(i) => {
-                                    reify_types::AnnotationArgValue::Int(i)
+                            match reify_ast::classify_number_literal(*value, *is_real) {
+                                reify_ast::NumberClass::Int(i) => {
+                                    reify_ir::AnnotationArgValue::Int(i)
                                 }
-                                reify_syntax::NumberClass::Real(f) => {
-                                    reify_types::AnnotationArgValue::Real(f)
+                                reify_ast::NumberClass::Real(f) => {
+                                    reify_ir::AnnotationArgValue::Real(f)
                                 }
                                 // Mirror site: compile_expr_guarded in expr.rs handles LossyReal the same way.
-                                reify_syntax::NumberClass::LossyReal(f) => {
+                                reify_ast::NumberClass::LossyReal(f) => {
                                     diagnostics.push(crate::diagnostics::lossy_real_warning(expr.span));
-                                    reify_types::AnnotationArgValue::Real(f)
+                                    reify_ir::AnnotationArgValue::Real(f)
                                 }
                             }
                         }
                         ExprKind::StringLiteral(s) => {
-                            reify_types::AnnotationArgValue::String(s.clone())
+                            reify_ir::AnnotationArgValue::String(s.clone())
                         }
-                        ExprKind::BoolLiteral(b) => reify_types::AnnotationArgValue::Bool(*b),
+                        ExprKind::BoolLiteral(b) => reify_ir::AnnotationArgValue::Bool(*b),
                         ExprKind::Ident(name) => {
-                            reify_types::AnnotationArgValue::Ident(name.clone())
+                            reify_ir::AnnotationArgValue::Ident(name.clone())
                         }
                         // Non-literal expression: preserve it unevaluated as `Expr`
                         // (task 3555 / annotation-args δ). Previously this warned and
@@ -49,12 +49,12 @@ pub(crate) fn lower_annotations(
                         // Schemas that do not accept an Expr still reject it at
                         // validation (e.g. @shell's non-numeric-thickness diagnostic),
                         // so existing annotations' behaviour is unchanged.
-                        _ => reify_types::AnnotationArgValue::Expr(expr.clone()),
+                        _ => reify_ir::AnnotationArgValue::Expr(expr.clone()),
                     };
-                    reify_types::AnnotationArg::positional(value)
+                    reify_ir::AnnotationArg::positional(value)
                 })
                 .collect();
-            reify_types::Annotation {
+            reify_ir::Annotation {
                 name: ann.name.clone(),
                 args,
                 span: ann.span,
@@ -70,7 +70,7 @@ pub(crate) fn lower_annotations(
 /// valid-context lists and arg-shape rules. See
 /// `crates/reify-compiler/src/annotations/schema.rs` for the full listing.
 pub(crate) fn validate_annotations(
-    annotations: &[reify_types::Annotation],
+    annotations: &[reify_ir::Annotation],
     context: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -79,12 +79,12 @@ pub(crate) fn validate_annotations(
 
 /// Return `true` if `ann` is a well-formed `@optimized("target")` annotation —
 /// i.e. its name is `"optimized"` and its first argument is a string literal.
-pub(crate) fn is_valid_optimized(ann: &reify_types::Annotation) -> bool {
-    ann.name == reify_types::OPTIMIZED_ANNOTATION
+pub(crate) fn is_valid_optimized(ann: &reify_ir::Annotation) -> bool {
+    ann.name == reify_core::OPTIMIZED_ANNOTATION
         && matches!(
             ann.args.first(),
-            Some(reify_types::AnnotationArg {
-                value: reify_types::AnnotationArgValue::String(_),
+            Some(reify_ir::AnnotationArg {
+                value: reify_ir::AnnotationArgValue::String(_),
                 ..
             })
         )
@@ -144,7 +144,7 @@ fn classify_pragma(name: &str) -> PragmaKind {
 /// module level" warning.
 /// All other pragma names: generic `"unknown pragma #<name>"` warning.
 pub(crate) fn validate_pragmas(
-    pragmas: &[reify_syntax::Pragma],
+    pragmas: &[reify_ast::Pragma],
     context: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -180,12 +180,12 @@ pub(crate) fn validate_pragmas(
 /// Returns `Some(message)` if there is an `@deprecated("message")` annotation with a
 /// `String` first arg, `Some("")` if `@deprecated` has no args, or `None` if there
 /// is no `@deprecated` annotation at all.
-pub(crate) fn deprecation_message(annotations: &[reify_types::Annotation]) -> Option<&str> {
+pub(crate) fn deprecation_message(annotations: &[reify_ir::Annotation]) -> Option<&str> {
     for ann in annotations {
-        if ann.name == reify_types::DEPRECATED_ANNOTATION {
+        if ann.name == reify_core::DEPRECATED_ANNOTATION {
             return Some(match ann.args.first() {
-                Some(reify_types::AnnotationArg {
-                    value: reify_types::AnnotationArgValue::String(s),
+                Some(reify_ir::AnnotationArg {
+                    value: reify_ir::AnnotationArgValue::String(s),
                     ..
                 }) => s.as_str(),
                 _ => "",
@@ -204,11 +204,11 @@ pub(crate) fn deprecation_message(annotations: &[reify_types::Annotation]) -> Op
 /// deliberately total — it never panics and always yields a usable version —
 /// so the structure registry can be populated unconditionally even in the
 /// presence of a (already-diagnosed) malformed annotation.
-pub(crate) fn annotation_version(annotations: &[reify_types::Annotation]) -> u32 {
+pub(crate) fn annotation_version(annotations: &[reify_ir::Annotation]) -> u32 {
     for ann in annotations {
         if ann.name == "version"
-            && let Some(reify_types::AnnotationArg {
-                value: reify_types::AnnotationArgValue::Int(n),
+            && let Some(reify_ir::AnnotationArg {
+                value: reify_ir::AnnotationArgValue::Int(n),
                 ..
             }) = ann.args.first()
             && *n >= 1
@@ -230,11 +230,11 @@ pub(crate) fn annotation_version(annotations: &[reify_types::Annotation]) -> u32
 ///
 /// Operates on parsed `reify_syntax::Annotation`s because the helper runs against
 /// `ConstraintDef.annotations` before lowering.
-pub(crate) fn optimized_target(annotations: &[reify_syntax::Annotation]) -> Option<String> {
+pub(crate) fn optimized_target(annotations: &[reify_ast::Annotation]) -> Option<String> {
     for ann in annotations {
-        if ann.name == reify_types::OPTIMIZED_ANNOTATION
+        if ann.name == reify_core::OPTIMIZED_ANNOTATION
             && let Some(first) = ann.args.first()
-            && let reify_syntax::ExprKind::StringLiteral(s) = &first.kind
+            && let reify_ast::ExprKind::StringLiteral(s) = &first.kind
         {
             return Some(s.clone());
         }
@@ -248,18 +248,18 @@ pub(crate) fn optimized_target(annotations: &[reify_syntax::Annotation]) -> Opti
 /// string ("discrete_set" or "prefer_stock") and the second arg as an identifier
 /// naming the collection. Emits warnings for unrecognized kinds or missing args.
 pub(crate) fn extract_solver_hints(
-    annotations: &[reify_types::Annotation],
+    annotations: &[reify_ir::Annotation],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Vec<SolverHint> {
     let mut hints = Vec::new();
     for ann in annotations {
-        if ann.name != reify_types::SOLVER_HINT_ANNOTATION {
+        if ann.name != reify_core::SOLVER_HINT_ANNOTATION {
             continue;
         }
         // First arg: string literal for hint kind
         let kind = match ann.args.first() {
-            Some(reify_types::AnnotationArg {
-                value: reify_types::AnnotationArgValue::String(s),
+            Some(reify_ir::AnnotationArg {
+                value: reify_ir::AnnotationArgValue::String(s),
                 ..
             }) => match s.as_str() {
                 "discrete_set" => SolverHintKind::DiscreteSet,
@@ -289,8 +289,8 @@ pub(crate) fn extract_solver_hints(
         };
         // Second arg: identifier for collection name
         let collection = match ann.args.get(1) {
-            Some(reify_types::AnnotationArg {
-                value: reify_types::AnnotationArgValue::Ident(name),
+            Some(reify_ir::AnnotationArg {
+                value: reify_ir::AnnotationArgValue::Ident(name),
                 ..
             }) => name.clone(),
             _ => {
@@ -390,19 +390,19 @@ pub(crate) fn emit_deprecation_warning(
 mod tests {
     use super::*;
 
-    fn ann(name: &str, args: Vec<reify_types::AnnotationArg>) -> reify_types::Annotation {
-        reify_types::Annotation {
+    fn ann(name: &str, args: Vec<reify_ir::AnnotationArg>) -> reify_ir::Annotation {
+        reify_ir::Annotation {
             name: name.to_string(),
             args,
-            span: reify_types::SourceSpan::empty(0),
+            span: reify_core::SourceSpan::empty(0),
         }
     }
 
     #[test]
     fn is_valid_optimized_true_for_string_arg() {
         let a = ann(
-            reify_types::OPTIMIZED_ANNOTATION,
-            vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::String(
+            reify_core::OPTIMIZED_ANNOTATION,
+            vec![reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::String(
                 "kernel::foo".to_string(),
             ))],
         );
@@ -411,15 +411,15 @@ mod tests {
 
     #[test]
     fn is_valid_optimized_false_for_no_args() {
-        let a = ann(reify_types::OPTIMIZED_ANNOTATION, vec![]);
+        let a = ann(reify_core::OPTIMIZED_ANNOTATION, vec![]);
         assert!(!is_valid_optimized(&a));
     }
 
     #[test]
     fn is_valid_optimized_false_for_int_arg() {
         let a = ann(
-            reify_types::OPTIMIZED_ANNOTATION,
-            vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::Int(123))],
+            reify_core::OPTIMIZED_ANNOTATION,
+            vec![reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::Int(123))],
         );
         assert!(!is_valid_optimized(&a));
     }
@@ -428,7 +428,7 @@ mod tests {
     fn is_valid_optimized_false_for_wrong_name() {
         let a = ann(
             "other",
-            vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::String("foo".to_string()))],
+            vec![reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::String("foo".to_string()))],
         );
         assert!(!is_valid_optimized(&a));
     }
@@ -437,10 +437,10 @@ mod tests {
     #[test]
     fn is_valid_optimized_true_for_string_first_arg_with_trailing_args() {
         let a = ann(
-            reify_types::OPTIMIZED_ANNOTATION,
+            reify_core::OPTIMIZED_ANNOTATION,
             vec![
-                reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::String("kernel::foo".to_string())),
-                reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::Int(42)),
+                reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::String("kernel::foo".to_string())),
+                reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::Int(42)),
             ],
         );
         assert!(is_valid_optimized(&a));
@@ -449,8 +449,8 @@ mod tests {
     #[test]
     fn is_valid_optimized_false_for_bool_arg() {
         let a = ann(
-            reify_types::OPTIMIZED_ANNOTATION,
-            vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::Bool(true))],
+            reify_core::OPTIMIZED_ANNOTATION,
+            vec![reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::Bool(true))],
         );
         assert!(!is_valid_optimized(&a));
     }
@@ -461,7 +461,7 @@ mod tests {
         SolverHint {
             kind,
             collection: collection.to_string(),
-            span: reify_types::SourceSpan::empty(0),
+            span: reify_core::SourceSpan::empty(0),
         }
     }
 
@@ -516,21 +516,21 @@ mod tests {
         let hints = vec![make_hint(SolverHintKind::DiscreteSet, "fn_collection")];
         let scope = CompilationScope::new("Test");
         let params: Vec<(String, Type)> = vec![];
-        let stub_fn = reify_types::CompiledFunction {
+        let stub_fn = reify_ir::CompiledFunction {
             name: "fn_collection".to_string(),
             doc: None,
             is_pub: false,
-            param_defaults: reify_types::CompiledFunction::no_defaults_for(&params),
+            param_defaults: reify_ir::CompiledFunction::no_defaults_for(&params),
             params,
             return_type: Type::Real,
             body: CompiledFnBody {
                 let_bindings: vec![],
-                result_expr: reify_types::CompiledExpr::literal(
-                    reify_types::Value::Real(0.0),
+                result_expr: reify_ir::CompiledExpr::literal(
+                    reify_ir::Value::Real(0.0),
                     Type::Real,
                 ),
             },
-            content_hash: reify_types::ContentHash::of_str("fn_collection_stub"),
+            content_hash: reify_core::ContentHash::of_str("fn_collection_stub"),
             annotations: vec![],
             optimized_target: None,
         };
@@ -554,7 +554,7 @@ mod tests {
         validate_solver_hint_collections(&hints, &scope, functions, &mut diagnostics);
         assert_eq!(diagnostics.len(), 1, "expected exactly 1 diagnostic");
         let d = &diagnostics[0];
-        assert_eq!(d.severity, reify_types::Severity::Error, "should be Error");
+        assert_eq!(d.severity, reify_core::Severity::Error, "should be Error");
         assert!(
             d.message.contains("unresolved name") && d.message.contains("ghost_collection"),
             "unexpected message: {}",
@@ -570,7 +570,7 @@ mod tests {
     #[test]
     fn solid_valid_on_entity_contexts() {
         for context in ["structure", "occurrence"] {
-            let anns = vec![ann(reify_types::SOLID_ANNOTATION, vec![])];
+            let anns = vec![ann(reify_core::SOLID_ANNOTATION, vec![])];
             let mut diagnostics = Vec::new();
             validate_annotations(&anns, context, &mut diagnostics);
             assert!(
@@ -585,7 +585,7 @@ mod tests {
     /// diagnostic whose message mentions `"@solid is not valid on function"`.
     #[test]
     fn solid_on_function_context_warns() {
-        let anns = vec![ann(reify_types::SOLID_ANNOTATION, vec![])];
+        let anns = vec![ann(reify_core::SOLID_ANNOTATION, vec![])];
         let mut diagnostics = Vec::new();
         validate_annotations(&anns, "function", &mut diagnostics);
         assert_eq!(
@@ -613,8 +613,8 @@ mod tests {
     #[test]
     fn solid_on_function_with_args_emits_one_warning() {
         let anns = vec![ann(
-            reify_types::SOLID_ANNOTATION,
-            vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::Real(0.5))],
+            reify_core::SOLID_ANNOTATION,
+            vec![reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::Real(0.5))],
         )];
         let mut diagnostics = Vec::new();
         validate_annotations(&anns, "function", &mut diagnostics);
@@ -642,28 +642,28 @@ mod tests {
     /// args (e.g. `@optimized` requires a string literal target).
     #[test]
     fn solid_with_any_arg_warns() {
-        let arg_shapes: &[(&str, Vec<reify_types::AnnotationArg>)] = &[
-            ("Real(0.5)", vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::Real(0.5))]),
-            ("Int(2)", vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::Int(2))]),
+        let arg_shapes: &[(&str, Vec<reify_ir::AnnotationArg>)] = &[
+            ("Real(0.5)", vec![reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::Real(0.5))]),
+            ("Int(2)", vec![reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::Int(2))]),
             (
                 "String(foo)",
-                vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::String("foo".into()))],
+                vec![reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::String("foo".into()))],
             ),
-            ("Bool(true)", vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::Bool(true))]),
+            ("Bool(true)", vec![reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::Bool(true))]),
             (
                 "Ident(id)",
-                vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::Ident("ident".into()))],
+                vec![reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::Ident("ident".into()))],
             ),
             (
                 "two reals",
                 vec![
-                    reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::Real(0.5)),
-                    reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::Real(0.6)),
+                    reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::Real(0.5)),
+                    reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::Real(0.6)),
                 ],
             ),
         ];
         for (label, args) in arg_shapes {
-            let anns = vec![ann(reify_types::SOLID_ANNOTATION, args.clone())];
+            let anns = vec![ann(reify_core::SOLID_ANNOTATION, args.clone())];
             let mut diagnostics = Vec::new();
             validate_annotations(&anns, "structure", &mut diagnostics);
             assert_eq!(
@@ -683,22 +683,22 @@ mod tests {
     // ── @version annotation tests (task 3540, step-13) ───────────────────────
 
     /// Build a parsed `reify_syntax::Annotation` for `lower_annotations` tests.
-    fn syn_ann(name: &str, args: Vec<reify_syntax::Expr>) -> reify_syntax::Annotation {
-        reify_syntax::Annotation {
+    fn syn_ann(name: &str, args: Vec<reify_ast::Expr>) -> reify_ast::Annotation {
+        reify_ast::Annotation {
             name: name.to_string(),
             args,
-            span: reify_types::SourceSpan::empty(0),
+            span: reify_core::SourceSpan::empty(0),
         }
     }
 
     /// Build a parsed integer-form numeric-literal expression.
-    fn syn_int(value: i64) -> reify_syntax::Expr {
-        reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::NumberLiteral {
+    fn syn_int(value: i64) -> reify_ast::Expr {
+        reify_ast::Expr {
+            kind: reify_ast::ExprKind::NumberLiteral {
                 value: value as f64,
                 is_real: false,
             },
-            span: reify_types::SourceSpan::empty(0),
+            span: reify_core::SourceSpan::empty(0),
         }
     }
 
@@ -719,7 +719,7 @@ mod tests {
         assert_eq!(lowered[0].name, "version");
         assert_eq!(
             lowered[0].args,
-            vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::Int(2))]
+            vec![reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::Int(2))]
         );
     }
 
@@ -732,7 +732,7 @@ mod tests {
     fn version_annotation_string_arg_rejected_on_structure() {
         let anns = vec![ann(
             "version",
-            vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::String("foo".to_string()))],
+            vec![reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::String("foo".to_string()))],
         )];
         let mut diagnostics = Vec::new();
         validate_annotations(&anns, "structure", &mut diagnostics);
@@ -742,7 +742,7 @@ mod tests {
             "expected exactly 1 diagnostic, got: {:?}",
             diagnostics
         );
-        assert_eq!(diagnostics[0].severity, reify_types::Severity::Error);
+        assert_eq!(diagnostics[0].severity, reify_core::Severity::Error);
         assert!(
             diagnostics[0]
                 .message
@@ -758,7 +758,7 @@ mod tests {
     #[test]
     fn version_annotation_warns_on_non_structure_context() {
         for context in ["function", "occurrence", "trait", "purpose"] {
-            let anns = vec![ann("version", vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::Int(2))])];
+            let anns = vec![ann("version", vec![reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::Int(2))])];
             let mut diagnostics = Vec::new();
             validate_annotations(&anns, context, &mut diagnostics);
             assert_eq!(
@@ -767,7 +767,7 @@ mod tests {
                 "context={context}: expected exactly 1 diagnostic, got: {:?}",
                 diagnostics
             );
-            assert_eq!(diagnostics[0].severity, reify_types::Severity::Warning);
+            assert_eq!(diagnostics[0].severity, reify_core::Severity::Warning);
             assert!(
                 diagnostics[0]
                     .message
@@ -783,7 +783,7 @@ mod tests {
     /// a warning.
     #[test]
     fn version_annotation_valid_on_structure_is_clean() {
-        let anns = vec![ann("version", vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::Int(3))])];
+        let anns = vec![ann("version", vec![reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::Int(3))])];
         let mut diagnostics = Vec::new();
         validate_annotations(&anns, "structure", &mut diagnostics);
         assert!(
@@ -798,11 +798,11 @@ mod tests {
     #[test]
     fn annotation_version_defaults_to_one_and_reads_int() {
         assert_eq!(annotation_version(&[]), 1);
-        let v3 = vec![ann("version", vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::Int(3))])];
+        let v3 = vec![ann("version", vec![reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::Int(3))])];
         assert_eq!(annotation_version(&v3), 3);
         let bad = vec![ann(
             "version",
-            vec![reify_types::AnnotationArg::positional(reify_types::AnnotationArgValue::String("x".to_string()))],
+            vec![reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::String("x".to_string()))],
         )];
         assert_eq!(annotation_version(&bad), 1);
     }

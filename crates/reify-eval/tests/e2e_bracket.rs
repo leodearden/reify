@@ -7,7 +7,8 @@
 //! These tests must run single-threaded (cargo test -- --test-threads=1)
 //! or be structured to avoid concurrent OCCT access.
 
-use reify_types::{ExportFormat, ModulePath, Satisfaction};
+use reify_core::ModulePath;
+use reify_ir::{ExportFormat, Satisfaction};
 
 fn run_bracket_e2e(source: &str) {
     if !reify_kernel_occt::OCCT_AVAILABLE {
@@ -27,7 +28,7 @@ fn run_bracket_e2e(source: &str) {
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 

@@ -13,8 +13,8 @@
 //! last-wins/warns; aliases = first-wins/warns; functions =
 //! first-wins/silent).
 
-use reify_syntax::UnitDecl;
-use reify_types::{Diagnostic, DiagnosticLabel, SourceSpan};
+use reify_ast::UnitDecl;
+use reify_core::{Diagnostic, DiagnosticLabel, SourceSpan};
 
 use crate::CompiledModule;
 use crate::compile_builder::ctx::CompilationCtx;

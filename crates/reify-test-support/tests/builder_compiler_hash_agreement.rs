@@ -7,10 +7,8 @@
 /// the test-support builders and assert the hashes are equal.  Any tag-byte
 /// or string divergence between the two code paths will be caught immediately.
 use reify_test_support::builders::{conditional_expr, fn_call, literal, user_fn_call};
-use reify_types::{
-    CompiledExpr, CompiledExprKind, CompiledMatchArm, ContentHash, ModulePath, TAG_MATCH, Type,
-    Value,
-};
+use reify_core::{ContentHash, ModulePath, Type};
+use reify_ir::{CompiledExpr, CompiledExprKind, CompiledMatchArm, TAG_MATCH, Value};
 
 /// Conditional: `fn t() -> Int { if true then 1 else 2 }`
 ///

@@ -1,4 +1,5 @@
-use reify_types::{ContentHash, SourceSpan, Type, TypeParam};
+use reify_core::{ContentHash, SourceSpan, Type};
+use reify_ir::TypeParam;
 
 use reify_compiler::{CompiledTrait, DefaultKind, RequirementKind, TraitDefault, TraitRequirement};
 
@@ -13,7 +14,7 @@ pub struct TraitDefBuilder {
     refinements: Vec<String>,
     required_members: Vec<TraitRequirement>,
     defaults: Vec<TraitDefault>,
-    annotations: Vec<reify_types::Annotation>,
+    annotations: Vec<reify_ir::Annotation>,
 }
 
 impl TraitDefBuilder {
@@ -37,13 +38,13 @@ impl TraitDefBuilder {
     }
 
     /// Push a single annotation onto this builder.
-    pub fn annotation(mut self, ann: reify_types::Annotation) -> Self {
+    pub fn annotation(mut self, ann: reify_ir::Annotation) -> Self {
         self.annotations.push(ann);
         self
     }
 
     /// Replace all annotations with the given vec.
-    pub fn annotations(mut self, anns: Vec<reify_types::Annotation>) -> Self {
+    pub fn annotations(mut self, anns: Vec<reify_ir::Annotation>) -> Self {
         self.annotations = anns;
         self
     }
@@ -67,7 +68,7 @@ impl TraitDefBuilder {
         self.required_members.push(TraitRequirement {
             name: name.into(),
             kind,
-            span: reify_types::SourceSpan::new(0, 0),
+            span: reify_core::SourceSpan::new(0, 0),
         });
         self
     }
@@ -76,7 +77,7 @@ impl TraitDefBuilder {
         self.defaults.push(TraitDefault {
             name: name.map(|n| n.into()),
             kind,
-            span: reify_types::SourceSpan::new(0, 0),
+            span: reify_core::SourceSpan::new(0, 0),
         });
         self
     }
@@ -135,11 +136,11 @@ pub struct CompiledTraitBuilder {
     name: String,
     is_pub: bool,
     doc: Option<String>,
-    type_params: Vec<reify_types::TypeParam>,
+    type_params: Vec<reify_ir::TypeParam>,
     refinements: Vec<String>,
     required_members: Vec<TraitRequirement>,
     defaults: Vec<reify_compiler::TraitDefault>,
-    annotations: Vec<reify_types::Annotation>,
+    annotations: Vec<reify_ir::Annotation>,
 }
 
 impl CompiledTraitBuilder {
@@ -163,13 +164,13 @@ impl CompiledTraitBuilder {
     }
 
     /// Push a single annotation onto this builder.
-    pub fn annotation(mut self, ann: reify_types::Annotation) -> Self {
+    pub fn annotation(mut self, ann: reify_ir::Annotation) -> Self {
         self.annotations.push(ann);
         self
     }
 
     /// Replace all annotations with the given vec.
-    pub fn annotations(mut self, anns: Vec<reify_types::Annotation>) -> Self {
+    pub fn annotations(mut self, anns: Vec<reify_ir::Annotation>) -> Self {
         self.annotations = anns;
         self
     }
@@ -268,7 +269,7 @@ impl CompiledTraitBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::DimensionVector;
+    use reify_core::DimensionVector;
 
     // step-1: failing test for TraitDefBuilder minimal
     #[test]
@@ -281,7 +282,7 @@ mod tests {
         assert!(ct.refinements.is_empty());
         assert!(ct.type_params.is_empty());
         // content_hash should be non-zero (derived from name)
-        assert_ne!(ct.content_hash, reify_types::ContentHash(0));
+        assert_ne!(ct.content_hash, reify_core::ContentHash(0));
     }
 
     // step-3: failing tests for TraitDefBuilder members
@@ -314,7 +315,7 @@ mod tests {
 
     #[test]
     fn trait_def_builder_with_type_param() {
-        use reify_types::{TraitBound, TraitRef};
+        use reify_ir::{TraitBound, TraitRef};
         let param = TypeParam {
             name: "T".to_string(),
             bounds: vec![TraitBound {
@@ -350,10 +351,10 @@ mod tests {
         let ct = TraitDefBuilder::new("Rigid")
             .add_default(
                 Some("mass_positive"),
-                DefaultKind::Constraint(reify_syntax::ConstraintDecl {
+                DefaultKind::Constraint(reify_ast::ConstraintDecl {
                     label: Some("mass_positive".to_string()),
-                    expr: reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::BoolLiteral(true),
+                    expr: reify_ast::Expr {
+                        kind: reify_ast::ExprKind::BoolLiteral(true),
                         span: SourceSpan::new(0, 0),
                     },
                     where_clause: None,
@@ -368,7 +369,7 @@ mod tests {
 
     #[test]
     fn trait_def_content_hash_differs_by_type_param() {
-        use reify_types::{TraitBound, TraitRef};
+        use reify_ir::{TraitBound, TraitRef};
         let ct1 = TraitDefBuilder::new("Container").build();
         let ct2 = TraitDefBuilder::new("Container")
             .type_param(TypeParam {
@@ -409,7 +410,7 @@ mod tests {
                 Some("d"),
                 DefaultKind::Param {
                     cell_type: Type::Real,
-                    default_decl: reify_syntax::ParamDecl {
+                    default_decl: reify_ast::ParamDecl {
                         name: "d".to_string(),
                         doc: None,
                         type_expr: None,
@@ -425,10 +426,10 @@ mod tests {
         let ct2 = TraitDefBuilder::new("Rigid")
             .add_default(
                 Some("d"),
-                DefaultKind::Constraint(reify_syntax::ConstraintDecl {
+                DefaultKind::Constraint(reify_ast::ConstraintDecl {
                     label: Some("d".to_string()),
-                    expr: reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::BoolLiteral(true),
+                    expr: reify_ast::Expr {
+                        kind: reify_ast::ExprKind::BoolLiteral(true),
                         span: SourceSpan::new(0, 0),
                     },
                     where_clause: None,
@@ -449,10 +450,10 @@ mod tests {
         let ct2 = TraitDefBuilder::new("Rigid")
             .add_default(
                 Some("mass_positive"),
-                DefaultKind::Constraint(reify_syntax::ConstraintDecl {
+                DefaultKind::Constraint(reify_ast::ConstraintDecl {
                     label: Some("mass_positive".to_string()),
-                    expr: reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::BoolLiteral(true),
+                    expr: reify_ast::Expr {
+                        kind: reify_ast::ExprKind::BoolLiteral(true),
                         span: SourceSpan::new(0, 0),
                     },
                     where_clause: None,
@@ -474,7 +475,7 @@ mod tests {
 mod trait_def_annotation_tests {
     use super::*;
     use crate::builders::{ann_str, annotation, annotation_with_args};
-    use reify_types::{DEPRECATED_ANNOTATION, TEST_ANNOTATION};
+    use reify_core::{DEPRECATED_ANNOTATION, TEST_ANNOTATION};
 
     #[test]
     fn trait_def_builder_single_annotation() {
@@ -521,7 +522,7 @@ mod trait_def_annotation_tests {
 mod compiled_trait_annotation_tests {
     use super::*;
     use crate::builders::{ann_str, annotation, annotation_with_args};
-    use reify_types::{DEPRECATED_ANNOTATION, TEST_ANNOTATION};
+    use reify_core::{DEPRECATED_ANNOTATION, TEST_ANNOTATION};
 
     #[test]
     fn compiled_trait_builder_single_annotation() {
@@ -666,7 +667,7 @@ mod trait_builder_tests {
 
     #[test]
     fn compiled_trait_builder_hash_differs_by_type_param() {
-        use reify_types::{TraitBound, TraitRef, TypeParam};
+        use reify_ir::{TraitBound, TraitRef, TypeParam};
         let t1: CompiledTrait = CompiledTraitBuilder::new("Container").build();
         let t2: CompiledTrait = CompiledTraitBuilder::new("Container")
             .type_param(TypeParam {

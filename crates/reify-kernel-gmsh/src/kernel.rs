@@ -12,10 +12,7 @@
 //! (cfg(not(has_*))-gated stub, `_private: ()` field, `new()` constructor,
 //! all-error trait impl, `assert_stub_kernel_errors!` invocation).
 
-use reify_types::{
-    ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
-    GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value,
-};
+use reify_ir::{ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value};
 
 const STUB_MSG: &str = "Gmsh trait dispatch through GeometryKernel::execute is not yet \
     routed for Mesh→VolumeMesh; call `GmshKernel::mesh_to_volume` directly. \

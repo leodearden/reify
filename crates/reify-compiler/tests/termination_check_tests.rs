@@ -14,7 +14,8 @@
 
 use reify_compiler::*;
 use reify_test_support::{compile_first_template, compile_source};
-use reify_types::*;
+use reify_core::*;
+use reify_ir::*;
 
 /// Helper: compile and destructure into templates + diagnostics.
 fn compile_all(source: &str) -> (Vec<TopologyTemplate>, Vec<Diagnostic>) {
@@ -403,7 +404,7 @@ structure S {
     let unsupported_errors: Vec<_> = diagnostics
         .iter()
         .filter(|d| {
-            d.severity == reify_types::Severity::Error
+            d.severity == reify_core::Severity::Error
                 && d.message.to_lowercase().contains("not yet supported")
                 && d.message.to_lowercase().contains("sub")
         })

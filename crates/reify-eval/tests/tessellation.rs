@@ -2,16 +2,16 @@
 
 use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
 use reify_test_support::*;
-use reify_types::ModulePath;
+use reify_core::ModulePath;
 
 /// When the module has no realizations and no geometry kernel,
 /// tessellate_realizations() should return empty meshes and populated values.
 #[test]
 fn tessellate_no_realizations_no_kernel_returns_empty_meshes() {
-    use reify_types::Type;
+    use reify_core::Type;
 
     let e = "SimpleParam";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Module with a param but no realizations
     let template = TopologyTemplateBuilder::new(e)
@@ -42,10 +42,10 @@ fn tessellate_no_realizations_no_kernel_returns_empty_meshes() {
 
 /// Helper: build a CompiledModule with one box primitive realization.
 fn module_with_box_realization() -> reify_compiler::CompiledModule {
-    use reify_types::Type;
+    use reify_core::Type;
 
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
@@ -99,10 +99,10 @@ fn tessellate_single_box_realization() {
 /// tessellate_realizations with two realizations returns two meshes with distinct entity paths.
 #[test]
 fn tessellate_multiple_realizations() {
-    use reify_types::Type;
+    use reify_core::Type;
 
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,

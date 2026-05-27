@@ -1,5 +1,5 @@
-use reify_syntax::{Pragma, PragmaArg, PragmaValue};
-use reify_types::SourceSpan;
+use reify_ast::{Pragma, PragmaArg, PragmaValue};
+use reify_core::SourceSpan;
 
 /// Create a `PragmaValue::Ident` with the given identifier string.
 pub fn pragma_ident(s: impl Into<String>) -> PragmaValue {

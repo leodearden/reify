@@ -13,13 +13,13 @@
 //! to isolate the relevant diagnostics from unrelated noise (e.g. unresolved-name
 //! diagnostics from stub types like `"Foo"`).
 
-use reify_types::{DiagnosticCode, ModulePath, Severity};
+use reify_core::{DiagnosticCode, ModulePath, Severity};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Filter a slice of diagnostics to only those with
 /// `code == DiagnosticCode::SpecializationForbiddenDecl`.
-fn forbidden_diagnostics(diagnostics: &[reify_types::Diagnostic]) -> Vec<&reify_types::Diagnostic> {
+fn forbidden_diagnostics(diagnostics: &[reify_core::Diagnostic]) -> Vec<&reify_core::Diagnostic> {
     diagnostics
         .iter()
         .filter(|d| d.code == Some(DiagnosticCode::SpecializationForbiddenDecl))
@@ -94,7 +94,7 @@ fn specialization_body_with_param_lowers_to_ast_body_some() {
         .declarations
         .iter()
         .find_map(|d| match d {
-            reify_syntax::Declaration::Structure(s) if s.name == "S" => Some(s),
+            reify_ast::Declaration::Structure(s) if s.name == "S" => Some(s),
             _ => None,
         })
         .expect("structure S should be in parsed declarations");
@@ -103,7 +103,7 @@ fn specialization_body_with_param_lowers_to_ast_body_some() {
         .members
         .iter()
         .find_map(|m| match m {
-            reify_syntax::MemberDecl::Sub(sub) if sub.name == "scope" => Some(sub),
+            reify_ast::MemberDecl::Sub(sub) if sub.name == "scope" => Some(sub),
             _ => None,
         })
         .expect("sub 'scope' should be lowered into S.members");
@@ -121,7 +121,7 @@ fn specialization_body_with_param_lowers_to_ast_body_some() {
     );
 
     match &body[0] {
-        reify_syntax::MemberDecl::Param(p) => {
+        reify_ast::MemberDecl::Param(p) => {
             assert_eq!(p.name, "x", "expected param named 'x', got '{}'", p.name);
         }
         other => panic!("expected body[0] to be MemberDecl::Param, got: {:?}", other),
@@ -150,7 +150,7 @@ fn permitted_only_body_emits_zero_forbidden_diagnostics() {
         .declarations
         .iter()
         .find_map(|d| match d {
-            reify_syntax::Declaration::Structure(s) if s.name == "S" => Some(s),
+            reify_ast::Declaration::Structure(s) if s.name == "S" => Some(s),
             _ => None,
         })
         .expect("structure S should be in parsed declarations");
@@ -159,7 +159,7 @@ fn permitted_only_body_emits_zero_forbidden_diagnostics() {
         .members
         .iter()
         .find_map(|m| match m {
-            reify_syntax::MemberDecl::Sub(sub) if sub.name == "motor" => Some(sub),
+            reify_ast::MemberDecl::Sub(sub) if sub.name == "motor" => Some(sub),
             _ => None,
         })
         .expect("sub 'motor' should be lowered into S.members");
@@ -177,13 +177,13 @@ fn permitted_only_body_emits_zero_forbidden_diagnostics() {
     );
 
     assert!(
-        matches!(&body[0], reify_syntax::MemberDecl::Let(_)),
+        matches!(&body[0], reify_ast::MemberDecl::Let(_)),
         "body[0] should be MemberDecl::Let, got: {:?}",
         &body[0]
     );
 
     assert!(
-        matches!(&body[1], reify_syntax::MemberDecl::Constraint(_)),
+        matches!(&body[1], reify_ast::MemberDecl::Constraint(_)),
         "body[1] should be MemberDecl::Constraint, got: {:?}",
         &body[1]
     );
@@ -222,7 +222,7 @@ fn where_guard_before_body_preserves_both_fields() {
         .declarations
         .iter()
         .find_map(|d| match d {
-            reify_syntax::Declaration::Structure(s) if s.name == "S" => Some(s),
+            reify_ast::Declaration::Structure(s) if s.name == "S" => Some(s),
             _ => None,
         })
         .expect("structure S should be in parsed declarations");
@@ -231,7 +231,7 @@ fn where_guard_before_body_preserves_both_fields() {
         .members
         .iter()
         .find_map(|m| match m {
-            reify_syntax::MemberDecl::Sub(sub) if sub.name == "left" => Some(sub),
+            reify_ast::MemberDecl::Sub(sub) if sub.name == "left" => Some(sub),
             _ => None,
         })
         .expect("sub 'left' should be lowered into S.members");
@@ -273,7 +273,7 @@ fn bare_colon_no_body_lowers_to_body_none() {
         .declarations
         .iter()
         .find_map(|d| match d {
-            reify_syntax::Declaration::Structure(s) if s.name == "S" => Some(s),
+            reify_ast::Declaration::Structure(s) if s.name == "S" => Some(s),
             _ => None,
         })
         .expect("structure S should be in parsed declarations");
@@ -282,7 +282,7 @@ fn bare_colon_no_body_lowers_to_body_none() {
         .members
         .iter()
         .find_map(|m| match m {
-            reify_syntax::MemberDecl::Sub(sub) if sub.name == "a" => Some(sub),
+            reify_ast::MemberDecl::Sub(sub) if sub.name == "a" => Some(sub),
             _ => None,
         })
         .expect("sub 'a' should be lowered into S.members");
@@ -310,7 +310,7 @@ fn instantiation_form_lowers_to_body_none() {
         .declarations
         .iter()
         .find_map(|d| match d {
-            reify_syntax::Declaration::Structure(s) if s.name == "S" => Some(s),
+            reify_ast::Declaration::Structure(s) if s.name == "S" => Some(s),
             _ => None,
         })
         .expect("structure S should be in parsed declarations");
@@ -319,7 +319,7 @@ fn instantiation_form_lowers_to_body_none() {
         .members
         .iter()
         .find_map(|m| match m {
-            reify_syntax::MemberDecl::Sub(sub) if sub.name == "a" => Some(sub),
+            reify_ast::MemberDecl::Sub(sub) if sub.name == "a" => Some(sub),
             _ => None,
         })
         .expect("sub 'a' should be lowered into S.members");
@@ -347,7 +347,7 @@ fn collection_form_lowers_to_body_none() {
         .declarations
         .iter()
         .find_map(|d| match d {
-            reify_syntax::Declaration::Structure(s) if s.name == "S" => Some(s),
+            reify_ast::Declaration::Structure(s) if s.name == "S" => Some(s),
             _ => None,
         })
         .expect("structure S should be in parsed declarations");
@@ -356,7 +356,7 @@ fn collection_form_lowers_to_body_none() {
         .members
         .iter()
         .find_map(|m| match m {
-            reify_syntax::MemberDecl::Sub(sub) if sub.name == "a" => Some(sub),
+            reify_ast::MemberDecl::Sub(sub) if sub.name == "a" => Some(sub),
             _ => None,
         })
         .expect("sub 'a' should be lowered into S.members");

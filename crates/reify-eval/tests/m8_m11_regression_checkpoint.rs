@@ -29,10 +29,8 @@ use std::sync::{Arc, OnceLock};
 
 use reify_compiler::CompiledModule;
 use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_with_stdlib};
-use reify_types::{
-    CompiledExpr, CompiledExprKind, ContentHash, DimensionVector, FieldSourceKind, ModulePath,
-    Satisfaction, Type, Value, ValueCellId, ValueMap,
-};
+use reify_core::{ContentHash, DimensionVector, ModulePath, Type, ValueCellId};
+use reify_ir::{CompiledExpr, CompiledExprKind, FieldSourceKind, Satisfaction, Value, ValueMap};
 
 // ── Cross-milestone inline source ─────────────────────────────────────────────
 //
@@ -372,8 +370,8 @@ fn checkpoint_m11_field_sample_at_three() {
 /// `#[allow(dead_code)]` — the live runtime call that drives exhaustiveness is
 /// added in step-4.
 #[allow(dead_code)]
-fn assert_all_type_variants_listed(t: &reify_types::Type) {
-    use reify_types::Type;
+fn assert_all_type_variants_listed(t: &reify_core::Type) {
+    use reify_core::Type;
     let _ = match t {
         // Primitive scalars
         Type::Bool | Type::Int | Type::Real | Type::String => true,
@@ -418,8 +416,8 @@ fn assert_all_type_variants_listed(t: &reify_types::Type) {
 /// (`reify_types::FieldSourceKind`) that hasn't been added to the `use`
 /// declaration yet — step-4 adds the necessary imports and makes this work.
 #[allow(dead_code)]
-fn assert_all_value_variants_listed(v: &reify_types::Value) {
-    use reify_types::Value;
+fn assert_all_value_variants_listed(v: &reify_ir::Value) {
+    use reify_ir::Value;
     let _ = match v {
         // Primitive scalars
         Value::Bool(_) | Value::Int(_) | Value::Real(_) | Value::String(_) => true,

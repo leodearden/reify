@@ -5,7 +5,7 @@
 //! `resolution_enums` is the strictly larger set (prelude ++ local) used
 //! for resolving enum type references from inside the user's decls.
 
-use reify_types::EnumDef;
+use reify_ir::EnumDef;
 
 use crate::CompiledModule;
 use crate::compile_builder::ctx::CompilationCtx;

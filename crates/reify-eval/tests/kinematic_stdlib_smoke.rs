@@ -21,7 +21,8 @@
 #![allow(clippy::mutable_key_type)]
 
 use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_with_stdlib};
-use reify_types::{DimensionVector, Value, ValueCellId, ValueMap};
+use reify_core::{DimensionVector, ValueCellId};
+use reify_ir::{Value, ValueMap};
 
 /// Source: a `Kinematic` structure that exercises every new builtin.
 ///

@@ -14,7 +14,8 @@ mod common;
 use common::assert_trait_constraint_binop;
 use reify_compiler::*;
 use reify_test_support::compile_source_with_stdlib;
-use reify_types::*;
+use reify_core::*;
+use reify_ir::*;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -416,7 +417,7 @@ structure def Glass : Insulating {
     // Value::Real after task 3184 added the int-vs-real syntactic distinction;
     // they sit at the head of the RHS spine, so walk the left spine to find
     // the leading coefficient.
-    fn rhs_coefficient(expr: &reify_types::expr::CompiledExpr) -> Option<f64> {
+    fn rhs_coefficient(expr: &reify_ir::expr::CompiledExpr) -> Option<f64> {
         let mut cursor = expr;
         loop {
             match &cursor.kind {

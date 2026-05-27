@@ -15,7 +15,7 @@
 //! the same `ToleranceBucket`, silently returning wrong cached geometry.
 //! Pinned by the unit test `default_content_hash_is_not_no_options_sentinel`.
 
-use reify_types::ContentHash;
+use reify_core::ContentHash;
 
 /// OCCT tessellation options for the BRep→Mesh conversion stage.
 ///

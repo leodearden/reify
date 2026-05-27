@@ -1,5 +1,6 @@
 use reify_compiler::{CompiledModule, TopologyTemplate};
-use reify_types::{ConstraintChecker, Diagnostic, Satisfaction};
+use reify_core::Diagnostic;
+use reify_ir::{ConstraintChecker, Satisfaction};
 
 use crate::{ConstraintCheckEntry, Engine};
 
@@ -147,8 +148,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    fn entry(sat: reify_types::Satisfaction) -> crate::ConstraintCheckEntry {
-        use reify_types::ConstraintNodeId;
+    fn entry(sat: reify_ir::Satisfaction) -> crate::ConstraintCheckEntry {
+        use reify_core::ConstraintNodeId;
         crate::ConstraintCheckEntry {
             id: ConstraintNodeId::new("E", 0),
             label: None,
@@ -165,7 +166,7 @@ mod tests {
     #[test]
     fn compute_status_all_satisfied_returns_pass() {
         use super::compute_status;
-        use reify_types::Satisfaction;
+        use reify_ir::Satisfaction;
         let entries = vec![
             entry(Satisfaction::Satisfied),
             entry(Satisfaction::Satisfied),
@@ -176,7 +177,7 @@ mod tests {
     #[test]
     fn compute_status_any_violated_returns_fail() {
         use super::compute_status;
-        use reify_types::Satisfaction;
+        use reify_ir::Satisfaction;
         let entries = vec![
             entry(Satisfaction::Satisfied),
             entry(Satisfaction::Violated),
@@ -187,7 +188,7 @@ mod tests {
     #[test]
     fn compute_status_only_indeterminate_returns_indeterminate() {
         use super::compute_status;
-        use reify_types::Satisfaction;
+        use reify_ir::Satisfaction;
         let entries = vec![entry(Satisfaction::Indeterminate)];
         assert_eq!(compute_status(&entries), super::TestStatus::Indeterminate);
     }
@@ -195,7 +196,7 @@ mod tests {
     #[test]
     fn compute_status_mix_satisfied_indeterminate_returns_indeterminate() {
         use super::compute_status;
-        use reify_types::Satisfaction;
+        use reify_ir::Satisfaction;
         let entries = vec![
             entry(Satisfaction::Satisfied),
             entry(Satisfaction::Indeterminate),
@@ -206,7 +207,7 @@ mod tests {
     #[test]
     fn compute_status_violated_dominates_indeterminate_returns_fail() {
         use super::compute_status;
-        use reify_types::Satisfaction;
+        use reify_ir::Satisfaction;
         let entries = vec![
             entry(Satisfaction::Indeterminate),
             entry(Satisfaction::Violated),
@@ -217,7 +218,7 @@ mod tests {
     #[test]
     fn compute_status_violated_dominates_satisfied_and_indeterminate_returns_fail() {
         use super::compute_status;
-        use reify_types::Satisfaction;
+        use reify_ir::Satisfaction;
         let entries = vec![
             entry(Satisfaction::Satisfied),
             entry(Satisfaction::Indeterminate),
@@ -227,7 +228,7 @@ mod tests {
     }
 
     fn parse_and_compile_inline(source: &str) -> reify_compiler::CompiledModule {
-        use reify_types::{ModulePath, Severity};
+        use reify_core::{ModulePath, Severity};
         let parsed = reify_syntax::parse(source, ModulePath::single("test_inline"));
         assert!(
             parsed.errors.is_empty(),
@@ -421,7 +422,7 @@ constraint def Positive {
         );
         assert_eq!(
             module.path,
-            reify_types::ModulePath::single("test_inline"),
+            reify_core::ModulePath::single("test_inline"),
             "module path must be non-trivially set in source module"
         );
         assert_eq!(isolated.path, module.path, "module path must be preserved");

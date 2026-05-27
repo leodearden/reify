@@ -16,7 +16,7 @@
 #![cfg(has_occt)]
 
 use reify_kernel_occt::OcctKernel;
-use reify_types::{GeometryHandleId, GeometryOp, GeometryQuery, Value};
+use reify_ir::{GeometryHandleId, GeometryOp, GeometryQuery, Value};
 
 /// Build a closed circular wire profile at z=0 of the given radius.
 fn make_circle_profile(kernel: &mut OcctKernel, radius: f64) -> GeometryHandleId {

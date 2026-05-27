@@ -10,7 +10,7 @@ use crate::TopologyTemplate;
 /// termination check pass.
 pub(crate) fn detect_recursive_structures(
     templates: &mut [TopologyTemplate],
-    diagnostics: &mut Vec<reify_types::Diagnostic>,
+    diagnostics: &mut Vec<reify_core::Diagnostic>,
 ) -> Vec<HashSet<String>> {
     // Build an index: name -> index in templates.
     // Use explicit insertion so that duplicates are detected and reported instead of
@@ -18,7 +18,7 @@ pub(crate) fn detect_recursive_structures(
     let mut name_to_idx: HashMap<&str, usize> = HashMap::new();
     for (i, t) in templates.iter().enumerate() {
         if let Some(&prev_idx) = name_to_idx.get(t.name.as_str()) {
-            diagnostics.push(reify_types::Diagnostic::error(format!(
+            diagnostics.push(reify_core::Diagnostic::error(format!(
                 "duplicate template name '{}': indices {} and {}",
                 t.name, prev_idx, i
             )));
@@ -82,7 +82,7 @@ pub(crate) fn detect_recursive_structures(
             }
             let cycle_path = reconstruct_scc_cycle(scc, &adjacency, templates);
             let scc_set: HashSet<usize> = scc.iter().copied().collect();
-            let mut diag = reify_types::Diagnostic::warning(format!(
+            let mut diag = reify_core::Diagnostic::warning(format!(
                 "recursive structure cycle detected: {}",
                 cycle_path
             ));
@@ -93,7 +93,7 @@ pub(crate) fn detect_recursive_structures(
                     if let Some(&target) = name_to_idx.get(sub.structure_name.as_str())
                         && scc_set.contains(&target)
                     {
-                        diag = diag.with_label(reify_types::DiagnosticLabel::new(
+                        diag = diag.with_label(reify_core::DiagnosticLabel::new(
                             sub.span,
                             format!("references {}", sub.structure_name),
                         ));
@@ -278,7 +278,7 @@ fn find_cycle_back_to(
 mod tests {
     use super::*;
     use crate::{EntityKind, GuardState, SubComponentDecl, Visibility};
-    use reify_types::{ContentHash, SourceSpan};
+    use reify_core::{ContentHash, SourceSpan};
     use std::collections::HashMap;
 
     /// Helper: build a minimal SubComponentDecl referencing `target`.
@@ -344,7 +344,7 @@ mod tests {
         let cycle_warnings: Vec<_> = diagnostics
             .iter()
             .filter(|d| {
-                d.severity == reify_types::Severity::Warning
+                d.severity == reify_core::Severity::Warning
                     && d.message.contains("recursive structure cycle")
             })
             .collect();

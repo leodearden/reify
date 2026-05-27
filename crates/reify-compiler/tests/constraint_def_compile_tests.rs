@@ -6,7 +6,8 @@
 use reify_compiler::module_dag::{ModuleDag, ModuleResolver};
 use reify_compiler::{CompiledConstraintDef, CompiledConstraintParam};
 use reify_test_support::{compile_source, compile_template};
-use reify_types::*;
+use reify_core::*;
+use reify_ir::*;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -593,7 +594,7 @@ fn cross_module_constraint_def_import() {
 #[test]
 fn pub_constraint_def_parsed() {
     let source = "pub constraint def Positive {\n    param v: Length\n    v > 0mm\n}\n";
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -604,7 +605,7 @@ fn pub_constraint_def_parsed() {
         .declarations
         .iter()
         .find_map(|d| {
-            if let reify_syntax::Declaration::Constraint(c) = d {
+            if let reify_ast::Declaration::Constraint(c) = d {
                 Some(c)
             } else {
                 None
@@ -813,7 +814,7 @@ fn cross_module_constraint_def_name_collision_emits_shadow_warning() {
     let errors: Vec<_> = compiled_main
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(
         errors.is_empty(),
@@ -827,7 +828,7 @@ fn cross_module_constraint_def_name_collision_emits_shadow_warning() {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == reify_types::Severity::Warning
+            d.severity == reify_core::Severity::Warning
                 && d.message.contains("MinThickness")
                 && d.message.contains("from 'a'")
                 && d.message.contains("from 'b'")
@@ -942,7 +943,7 @@ fn non_pub_constraint_def_not_instantiable_cross_module() {
     let a_errors: Vec<_> = compiled_a
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(
         a_errors.is_empty(),
@@ -955,7 +956,7 @@ fn non_pub_constraint_def_not_instantiable_cross_module() {
     let b_errors: Vec<_> = compiled_b
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(
         !b_errors.is_empty(),

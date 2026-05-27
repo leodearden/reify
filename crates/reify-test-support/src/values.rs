@@ -1,9 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use reify_types::{
-    ConstraintNodeId, DeterminacyState, Type, Value, ValueCellId,
-    dimension::{DimensionVector, FORCE},
-};
+use reify_core::{ConstraintNodeId, Type, ValueCellId};
+use reify_core::dimension::{DimensionVector, FORCE};
+use reify_ir::{DeterminacyState, Value};
 
 // --- Range value constructors ---
 
@@ -654,7 +653,7 @@ pub fn multi_case_result_value(cases: &[(&str, Value)]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::{DeterminacyState, Value};
+    use reify_ir::{DeterminacyState, Value};
     use std::collections::HashMap;
 
     // step-1: failing tests for range value constructors
@@ -1037,8 +1036,8 @@ mod tests {
     // step-9: failing tests for TypeAliasMap builder
     #[test]
     fn type_alias_map_builder_stores_entries() {
-        use reify_types::dimension::FORCE;
-        use reify_types::{DimensionVector, Type};
+        use reify_core::dimension::FORCE;
+        use reify_core::{DimensionVector, Type};
         let pressure_type = Type::Scalar {
             dimension: FORCE.div(&DimensionVector::AREA),
         };
@@ -1077,7 +1076,7 @@ mod tests {
                             );
                             assert_eq!(
                                 *dimension,
-                                reify_types::dimension::DimensionVector::LENGTH,
+                                reify_core::dimension::DimensionVector::LENGTH,
                                 "component {} should have LENGTH dimension",
                                 i
                             );
@@ -1111,7 +1110,7 @@ mod tests {
                             );
                             assert_eq!(
                                 *dimension,
-                                reify_types::dimension::DimensionVector::LENGTH,
+                                reify_core::dimension::DimensionVector::LENGTH,
                                 "component {} should have LENGTH dimension",
                                 i
                             );

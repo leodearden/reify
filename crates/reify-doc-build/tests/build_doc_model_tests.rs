@@ -194,7 +194,7 @@ structure OldWidget {
     let diag_errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| matches!(d.severity, reify_types::Severity::Error))
+        .filter(|d| matches!(d.severity, reify_core::Severity::Error))
         .collect();
     assert!(
         diag_errors.is_empty(),
@@ -306,7 +306,7 @@ structure Labeled {
     let diag_errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| matches!(d.severity, reify_types::Severity::Error))
+        .filter(|d| matches!(d.severity, reify_core::Severity::Error))
         .collect();
     assert!(
         diag_errors.is_empty(),
@@ -526,7 +526,7 @@ purpose with_maximize(subject: Structure) {
     let diag_errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| matches!(d.severity, reify_types::Severity::Error))
+        .filter(|d| matches!(d.severity, reify_core::Severity::Error))
         .collect();
     assert!(
         diag_errors.is_empty(),
@@ -607,7 +607,7 @@ trait HasLength {
     let diag_errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| matches!(d.severity, reify_types::Severity::Error))
+        .filter(|d| matches!(d.severity, reify_core::Severity::Error))
         .collect();
     assert!(
         diag_errors.is_empty(),

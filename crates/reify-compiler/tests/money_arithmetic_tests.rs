@@ -14,7 +14,8 @@ mod common;
 
 use common::{UNIT_EPSILON, expect_binop, expect_scalar};
 use reify_test_support::{compile_source, errors_only};
-use reify_types::{BinOp, DimensionVector, Type};
+use reify_core::{DimensionVector, Type};
+use reify_ir::BinOp;
 
 // ─── test 1: 25USD/1kg compound dimension via inline-decl path ───────────────
 

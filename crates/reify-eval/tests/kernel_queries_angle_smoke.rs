@@ -24,7 +24,8 @@
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::Engine;
 use reify_test_support::{MockGeometryKernel, errors_only, parse_and_compile_with_stdlib};
-use reify_types::{ExportFormat, Value, ValueCellId};
+use reify_core::ValueCellId;
+use reify_ir::{ExportFormat, Value};
 
 const ANGLE_SMOKE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -60,7 +61,7 @@ fn angle_smoke_evals_to_ninety_degrees() {
     // by ~1 ULP on some platforms) while requiring exact ANGLE dimension.
     match actual {
         Some(Value::Scalar { si_value, dimension })
-            if *dimension == reify_types::DimensionVector::ANGLE =>
+            if *dimension == reify_core::DimensionVector::ANGLE =>
         {
             let expected = std::f64::consts::FRAC_PI_2;
             let epsilon = 1e-12;

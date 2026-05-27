@@ -76,7 +76,8 @@ use std::collections::{HashSet, VecDeque};
 
 use crate::cache::{CacheStore, NodeId};
 use crate::deps::ReverseDependencyIndex;
-use reify_types::{Freshness, ValueCellId};
+use reify_core::ValueCellId;
+use reify_ir::Freshness;
 
 /// Propagate freshness forward through the dependents of `changed` cells
 /// without recomputing any value, per arch §3.5 lines 432-436.
@@ -338,10 +339,8 @@ mod tests {
     use crate::cache::{CacheStore, CachedResult, NodeCache, NodeId};
     use crate::deps::{DependencyTrace, ReverseDependencyIndex};
     use crate::graph::EvaluationGraph;
-    use reify_types::{
-        ContentHash, DeterminacyState, ErrorRef, Freshness, GeometryHandleId, RealizationNodeId,
-        ResultRef, Value, ValueCellId, VersionId,
-    };
+    use reify_core::{ContentHash, RealizationNodeId, ValueCellId, VersionId};
+    use reify_ir::{DeterminacyState, ErrorRef, Freshness, GeometryHandleId, ResultRef, Value};
     use std::collections::HashSet;
 
     /// Helper: insert a Value-cell entry with the given concrete `Value`,
@@ -1435,7 +1434,7 @@ mod tests {
     fn propagate_freshness_only_propagates_through_compute_node_to_output_value_cells() {
         use crate::graph::{ComputeNodeData, EvaluationGraph, ValueCellNode};
         use reify_compiler::ValueCellKind;
-        use reify_types::{ComputeNodeId, Type};
+        use reify_core::{ComputeNodeId, Type};
 
         let e = "T";
         let a = ValueCellId::new(e, "a");
@@ -1563,7 +1562,7 @@ mod tests {
     /// `derive_output_freshness_with_cause_forwards_compute_chain_root`.
     #[test]
     fn propagate_freshness_only_forwards_compute_chain_root_through_pending_output_to_downstream() {
-        use reify_types::ComputeNodeId;
+        use reify_core::ComputeNodeId;
 
         let e = "T";
         let b = ValueCellId::new(e, "b");

@@ -7,13 +7,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use reify_compiler::{CompiledModule, ValueCellDecl, ValueCellKind, find_template};
-use reify_types::sampled::{LinspaceError, linspace_inclusive};
-use reify_types::{
-    AutoParam, CompiledFunction, DeterminacyState, Diagnostic, DiagnosticCode, ErrorRef,
-    FIELD_ENTITY_PREFIX, Freshness, InterpolationKind, PersistentMap, ResolutionProblem,
-    SampledField, SampledGridKind, SnapshotId, SnapshotProvenance, SolveResult, Value, ValueCellId,
-    ValueMap, VersionId,
-};
+use reify_ir::sampled::{LinspaceError, linspace_inclusive};
+use reify_core::{Diagnostic, DiagnosticCode, FIELD_ENTITY_PREFIX, SnapshotId, ValueCellId, VersionId};
+use reify_ir::{AutoParam, CompiledFunction, DeterminacyState, ErrorRef, Freshness, InterpolationKind, PersistentMap, ResolutionProblem, SampledField, SampledGridKind, SnapshotProvenance, SolveResult, Value, ValueMap};
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
 use crate::demand::DemandRegistry;
@@ -62,8 +58,8 @@ pub const ASSERT_MSG_PREFIX: &str = "unrepresentable cell_type";
 ///
 /// Re-exported from the crate root with `#[doc(hidden)] pub use` so the
 /// integration test crate can reach it; not part of the documented public API.
-pub fn is_representable_cell_type(ty: &reify_types::Type) -> bool {
-    use reify_types::Type;
+pub fn is_representable_cell_type(ty: &reify_core::Type) -> bool {
+    use reify_core::Type;
     match ty {
         // Unrepresentable: no corresponding `Value` variant.
         Type::TypeParam(_) => false,
@@ -304,11 +300,11 @@ fn detect_let_cycle<'a>(
     template: &'a reify_compiler::TopologyTemplate,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> (
-    HashMap<NodeId, &'a reify_types::CompiledExpr>,
+    HashMap<NodeId, &'a reify_ir::CompiledExpr>,
     HashMap<NodeId, DependencyTrace>,
     Vec<NodeId>,
 ) {
-    let let_cells: HashMap<NodeId, &'a reify_types::CompiledExpr> = template
+    let let_cells: HashMap<NodeId, &'a reify_ir::CompiledExpr> = template
         .value_cells
         .iter()
         .filter(|c| c.kind == ValueCellKind::Let)
@@ -413,7 +409,7 @@ fn build_solver_problem(
 fn emit_param_override_rejection_warning(
     diagnostics: &mut Vec<Diagnostic>,
     cell_id: &ValueCellId,
-    cell_type: &reify_types::Type,
+    cell_type: &reify_core::Type,
     override_val: &Value,
     rejection: &ParamOverrideRejection,
     type_kind_counter: &mut usize,
@@ -622,15 +618,15 @@ pub(crate) fn elaborate_field(
 
     let source_kind = match &field.source {
         reify_compiler::CompiledFieldSource::Analytical { .. } => {
-            reify_types::FieldSourceKind::Analytical
+            reify_ir::FieldSourceKind::Analytical
         }
         reify_compiler::CompiledFieldSource::Sampled { .. } => {
-            reify_types::FieldSourceKind::Sampled
+            reify_ir::FieldSourceKind::Sampled
         }
         reify_compiler::CompiledFieldSource::Composed { .. } => {
-            reify_types::FieldSourceKind::Composed
+            reify_ir::FieldSourceKind::Composed
         }
-        reify_compiler::CompiledFieldSource::Imported => reify_types::FieldSourceKind::Imported,
+        reify_compiler::CompiledFieldSource::Imported => reify_ir::FieldSourceKind::Imported,
     };
 
     Value::Field {
@@ -669,14 +665,14 @@ pub(crate) fn elaborate_field(
 /// - File-path change with same content → same hash → `imported_file_hash_changed` returns
 ///   `false` → cache hit.
 #[allow(dead_code, reason = "wired into elaborate_field by PRD task 5")]
-pub(crate) fn hash_imported_file_content(path: &str) -> std::io::Result<reify_types::ContentHash> {
+pub(crate) fn hash_imported_file_content(path: &str) -> std::io::Result<reify_core::ContentHash> {
     // TODO(task-5-perf): `fs::read` allocates a `Vec<u8>` sized to the full file before
     // hashing.  For multi-MB .vdb assets on the hot evaluation path this is a noticeable
     // allocation per call.  If `ContentHash` (or `xxhash_rust::xxh3`) later exposes an
     // incremental/streaming constructor, replace this with `BufReader` + chunk-by-chunk
     // update to avoid the temporary buffer.  The wire site in PRD task 5 is the natural
     // place to evaluate whether the allocation cost is measurable in practice.
-    Ok(reify_types::ContentHash::of(&std::fs::read(path)?))
+    Ok(reify_core::ContentHash::of(&std::fs::read(path)?))
 }
 
 /// Look up a config entry by key.  `compile_field` validated that all five
@@ -684,9 +680,9 @@ pub(crate) fn hash_imported_file_content(path: &str) -> std::io::Result<reify_ty
 /// upstream — the helper returns `None` rather than panicking so callers
 /// can degrade gracefully.
 fn lookup_config<'a>(
-    config: &'a [(String, reify_types::CompiledExpr)],
+    config: &'a [(String, reify_ir::CompiledExpr)],
     key: &str,
-) -> Option<&'a reify_types::CompiledExpr> {
+) -> Option<&'a reify_ir::CompiledExpr> {
     config.iter().find(|(k, _)| k == key).map(|(_, e)| e)
 }
 
@@ -737,7 +733,7 @@ fn lookup_config<'a>(
 ///    `assert!` on flatten/shape mismatches.
 fn build_sampled_field(
     name: &str,
-    config: &[(String, reify_types::CompiledExpr)],
+    config: &[(String, reify_ir::CompiledExpr)],
     ctx: &reify_expr::EvalContext<'_>,
 ) -> Option<SampledField> {
     let grid_expr = lookup_config(config, "grid")?;
@@ -861,7 +857,7 @@ fn build_sampled_field(
                          exceeds the {} interval cap \
                          (bounds_min={} bounds_max={} spacing={}); \
                          reduce the span or increase the spacing",
-                        reify_types::sampled::LINSPACE_MAX_INTERVALS,
+                        reify_ir::sampled::LINSPACE_MAX_INTERVALS,
                         bounds_min[i],
                         bounds_max[i],
                         spacing[i],
@@ -1297,16 +1293,16 @@ impl Engine {
                         payload: None,
                     });
 
-                    values.insert(cell.id.clone(), reify_types::Value::Undef);
+                    values.insert(cell.id.clone(), reify_ir::Value::Undef);
                     snapshot.values.insert(
                         cell.id.clone(),
-                        (reify_types::Value::Undef, DeterminacyState::Auto),
+                        (reify_ir::Value::Undef, DeterminacyState::Auto),
                     );
 
                     // Record in cache
                     let trace = DependencyTrace::default();
                     let cached_result =
-                        CachedResult::Value(reify_types::Value::Undef, DeterminacyState::Auto);
+                        CachedResult::Value(reify_ir::Value::Undef, DeterminacyState::Auto);
                     let outcome = self.cache.record_evaluation(
                         node_id.clone(),
                         cached_result,
@@ -1790,8 +1786,8 @@ impl Engine {
                             fields.insert(cell.id.member.clone(), v.clone());
                         }
                     }
-                    let si = Value::StructureInstance(Box::new(reify_types::StructureInstanceData {
-                        type_id: reify_types::StructureTypeId(0),
+                    let si = Value::StructureInstance(Box::new(reify_ir::StructureInstanceData {
+                        type_id: reify_ir::StructureTypeId(0),
                         type_name: sub.structure_name.clone(),
                         version: child_template.version(),
                         fields,
@@ -2209,7 +2205,7 @@ impl Engine {
                     {
                         (override_val.clone(), DeterminacyState::Determined)
                     } else {
-                        (reify_types::Value::Undef, DeterminacyState::Auto)
+                        (reify_ir::Value::Undef, DeterminacyState::Auto)
                     };
 
                     let trace = DependencyTrace::default();
@@ -2367,7 +2363,7 @@ impl Engine {
                                     DeterminacyState::Determined,
                                 )
                             } else {
-                                (reify_types::Value::Undef, no_default_state)
+                                (reify_ir::Value::Undef, no_default_state)
                             }
                         };
                     let (val, det) = match override_entry {
@@ -2800,7 +2796,7 @@ impl Engine {
             // we insert a ComputeNode into the graph and invoke the trampoline synchronously
             // instead of body-inlining. Runs after the Pending gate; unregistered targets
             // fall through to the eval_expr path below (step-8 adds the fallback diagnostic).
-            if let reify_types::CompiledExprKind::UserFunctionCall {
+            if let reify_ir::CompiledExprKind::UserFunctionCall {
                 function_name,
                 args,
             } = &expr.kind
@@ -2860,10 +2856,10 @@ impl Engine {
                         // composition slice that consumes `value_inputs`).
                         // Crucially, the OUTPUT cell (`cell_id`) is NOT in
                         // this list — that would be a graph self-loop.
-                        let value_inputs: Vec<reify_types::ValueCellId> = args
+                        let value_inputs: Vec<reify_core::ValueCellId> = args
                             .iter()
                             .filter_map(|arg| match &arg.kind {
-                                reify_types::CompiledExprKind::ValueRef(
+                                reify_ir::CompiledExprKind::ValueRef(
                                     target_cell,
                                 ) => Some(target_cell.clone()),
                                 _ => None,
@@ -2880,7 +2876,7 @@ impl Engine {
                         // CacheStore is now the canonical at-rest store for the
                         // result (PRD §5); the prior γ wiring set it
                         // post-dispatch.
-                        let c_id = reify_types::ComputeNodeId::new(
+                        let c_id = reify_core::ComputeNodeId::new(
                             cell_id.entity.as_str(),
                             next_index,
                         );
@@ -2913,8 +2909,8 @@ impl Engine {
                                 target: target.clone(),
                                 value_inputs,
                                 realization_inputs: vec![],
-                                options_hash: reify_types::ContentHash(0),
-                                cache_key: reify_types::ContentHash(0),
+                                options_hash: reify_core::ContentHash(0),
+                                cache_key: reify_core::ContentHash(0),
                                 cached_result: None,
                                 result_content_hash: None,
                                 opaque_state: None,
@@ -3203,7 +3199,7 @@ impl Engine {
 #[cfg(all(test, debug_assertions))]
 mod invariant_tests {
     use reify_compiler::ValueCellKind;
-    use reify_types::{ContentHash, Type, ValueCellId};
+    use reify_core::{ContentHash, Type, ValueCellId};
 
     use crate::graph::{EvaluationGraph, ValueCellNode};
 
@@ -3327,7 +3323,7 @@ mod invariant_tests {
 /// the `TempDir` guard's `Drop` impl removes the directory unconditionally.
 #[cfg(test)]
 mod imported_file_hash_tests {
-    use reify_types::ContentHash;
+    use reify_core::ContentHash;
     use std::fs;
 
     use super::hash_imported_file_content;

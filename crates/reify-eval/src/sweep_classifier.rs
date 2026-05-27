@@ -42,7 +42,7 @@
 
 use std::collections::HashMap;
 
-use reify_types::{GeometryHandleId, GeometryOp, Value};
+use reify_ir::{GeometryHandleId, GeometryOp, Value};
 
 /// Tolerance for treating a [`GeometryOp::Revolve`]'s axis or angle as
 /// degenerate.
@@ -362,7 +362,7 @@ pub fn swept_kind_to_sweep_params(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::Value;
+    use reify_ir::Value;
 
     // ── Step-1: classifier API surface ─────────────────────────────────────
 

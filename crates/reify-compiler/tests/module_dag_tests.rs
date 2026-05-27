@@ -6,7 +6,7 @@ use std::fs;
 
 use reify_compiler::module_dag::{ModuleDag, ModuleResolver};
 use reify_compiler::stdlib_loader;
-use reify_types::Severity;
+use reify_core::Severity;
 
 // ── Step 19: Circular import detection ────────────────────────────
 
@@ -311,7 +311,7 @@ fn backward_compatible_single_module_no_imports() {
 }"#;
 
     // Via existing compile() — should work unchanged
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("bracket"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("bracket"));
     let compiled_single = reify_compiler::compile(&parsed);
     assert_eq!(compiled_single.templates.len(), 1);
     assert_eq!(compiled_single.templates[0].name, "Bracket");
@@ -420,13 +420,13 @@ fn compiled_import_preserves_kind_and_is_pub() {
     let imp0 = &b_module.imports[0];
     assert_eq!(
         imp0.kind,
-        reify_syntax::ImportKind::Entity("Helper".to_string())
+        reify_ast::ImportKind::Entity("Helper".to_string())
     );
     assert!(imp0.is_pub, "first import should be pub");
 
     // Second import: `import a` → Module, is_pub=false
     let imp1 = &b_module.imports[1];
-    assert_eq!(imp1.kind, reify_syntax::ImportKind::Module);
+    assert_eq!(imp1.kind, reify_ast::ImportKind::Module);
     assert!(!imp1.is_pub, "second import should not be pub");
 }
 
@@ -555,7 +555,7 @@ fn compile_project_stdlib_unit_collision_mentions_stdlib() {
         "stdlib collision should emit two labels, got {:?}",
         dup_diag.labels
     );
-    let empty_span = reify_types::SourceSpan::empty(0);
+    let empty_span = reify_core::SourceSpan::empty(0);
     assert_ne!(
         dup_diag.labels[0].span, empty_span,
         "first label '{}' must not be SourceSpan::empty(0)",

@@ -81,7 +81,7 @@ purpose check(subject : Structure) {
     let errs: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| matches!(d.severity, reify_types::Severity::Error))
+        .filter(|d| matches!(d.severity, reify_core::Severity::Error))
         .collect();
     assert!(
         errs.is_empty(),

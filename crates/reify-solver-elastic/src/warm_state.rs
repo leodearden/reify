@@ -60,16 +60,16 @@ impl CgWarmState {
 
     /// Wrap this warm state in an `OpaqueState` for storage in
     /// `WarmStatePool`. The size hint is `estimated_size_bytes()`.
-    pub fn into_opaque_state(self) -> reify_types::OpaqueState {
+    pub fn into_opaque_state(self) -> reify_ir::OpaqueState {
         let bytes = self.estimated_size_bytes();
-        reify_types::OpaqueState::new(self, bytes)
+        reify_ir::OpaqueState::new(self, bytes)
     }
 
     /// Attempt to recover a `CgWarmState` from an `OpaqueState`. Returns
     /// `None` if the inner type is not `CgWarmState` (the caller should
     /// silently treat that as a cold start, per the `WarmStartable`
     /// best-effort contract).
-    pub fn from_opaque_state(state: reify_types::OpaqueState) -> Option<Self> {
+    pub fn from_opaque_state(state: reify_ir::OpaqueState) -> Option<Self> {
         state.downcast::<Self>()
     }
 }
@@ -126,7 +126,7 @@ mod tests {
     #[test]
     fn cg_warm_state_from_opaque_state_returns_none_on_type_mismatch() {
         // OpaqueState wrapping an i32 — clearly not a CgWarmState.
-        let opaque = reify_types::OpaqueState::new(42_i32, std::mem::size_of::<i32>());
+        let opaque = reify_ir::OpaqueState::new(42_i32, std::mem::size_of::<i32>());
         let restored = CgWarmState::from_opaque_state(opaque);
         assert!(
             restored.is_none(),

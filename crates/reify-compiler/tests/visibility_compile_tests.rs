@@ -10,7 +10,7 @@ fn compile_param_visibility_public() {
     let source = r#"structure S {
     param w: Scalar = 80mm
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("vis_test"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("vis_test"));
     let compiled = reify_compiler::compile(&parsed);
 
     let template = &compiled.templates[0];
@@ -28,7 +28,7 @@ fn compile_let_visibility_private_by_default() {
     param a: Scalar = 1mm
     let vol = a * 2
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("vis_test"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("vis_test"));
     let compiled = reify_compiler::compile(&parsed);
 
     let template = &compiled.templates[0];
@@ -49,7 +49,7 @@ fn compile_pub_let_visibility_public() {
     param h: Scalar = 100mm
     pub let volume = w * h
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("vis_test"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("vis_test"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -76,7 +76,7 @@ fn compile_template_visibility() {
 structure Internal {
     param x: Scalar = 1mm
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("vis_test"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("vis_test"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -106,7 +106,7 @@ structure Parent {
     param w: Scalar = 80mm
     sub rib = Child(h: w)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("vis_test"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("vis_test"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -132,7 +132,7 @@ fn backward_compat_bracket_compiles_cleanly() {
     // The canonical bracket source has no pub keywords — verify it compiles
     // with zero error diagnostics and correct visibility defaults.
     let source = reify_test_support::bracket_source();
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("bracket"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("bracket"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -145,7 +145,7 @@ fn backward_compat_bracket_compiles_cleanly() {
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(
         errors.is_empty(),

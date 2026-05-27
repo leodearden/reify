@@ -7,7 +7,7 @@ use reify_syntax::*;
 
 /// Helper: parse source and return declarations and errors.
 fn parse_decls(source: &str) -> (Vec<Declaration>, Vec<ParseError>) {
-    let module = reify_syntax::parse(source, reify_types::ModulePath::single("trait_test"));
+    let module = reify_syntax::parse(source, reify_core::ModulePath::single("trait_test"));
     (module.declarations, module.errors)
 }
 
@@ -303,7 +303,7 @@ fn parse_trait_refinement_has_span() {
     assert_eq!(trait_decl.refinements[0].name, "Rigid");
     assert_eq!(
         trait_decl.refinements[0].span,
-        reify_types::SourceSpan::new(rigid_start as u32, (rigid_start + 5) as u32),
+        reify_core::SourceSpan::new(rigid_start as u32, (rigid_start + 5) as u32),
         "span should cover exactly the 'Rigid' token"
     );
 }
@@ -325,7 +325,7 @@ fn parse_trait_multiple_refinements_have_distinct_spans() {
     assert_eq!(trait_decl.refinements[0].name, "B");
     assert_eq!(
         trait_decl.refinements[0].span,
-        reify_types::SourceSpan::new(b_start as u32, (b_start + 1) as u32),
+        reify_core::SourceSpan::new(b_start as u32, (b_start + 1) as u32),
         "span for 'B' should cover exactly 1 byte"
     );
 
@@ -333,7 +333,7 @@ fn parse_trait_multiple_refinements_have_distinct_spans() {
     assert_eq!(trait_decl.refinements[1].name, "C");
     assert_eq!(
         trait_decl.refinements[1].span,
-        reify_types::SourceSpan::new(c_start as u32, (c_start + 1) as u32),
+        reify_core::SourceSpan::new(c_start as u32, (c_start + 1) as u32),
         "span for 'C' should cover exactly 1 byte"
     );
 }

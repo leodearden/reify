@@ -10,10 +10,8 @@ use reify_test_support::{
     MultiCallSpyConstraintSolver, SpyConstraintSolver, TopologyTemplateBuilder, binop, gt, literal,
     lt, make_simple_engine, mm, value_ref,
 };
-use reify_types::{
-    DeterminacyState, ModulePath, OptimizationObjective, SnapshotId, SnapshotProvenance, Type,
-    Value, ValueCellId,
-};
+use reify_core::{ModulePath, SnapshotId, Type, ValueCellId};
+use reify_ir::{DeterminacyState, OptimizationObjective, SnapshotProvenance, Value};
 
 #[test]
 fn engine_with_solver_accepts_solver() {
@@ -159,7 +157,7 @@ fn let_binding_re_evaluated_after_resolution() {
             "y",
             Type::length(),
             binop(
-                reify_types::BinOp::Mul,
+                reify_ir::BinOp::Mul,
                 value_ref("S", "x"),
                 literal(Value::Real(2.0)),
             ),
@@ -188,7 +186,7 @@ fn let_binding_re_evaluated_after_resolution() {
 
 #[test]
 fn check_reports_satisfied_after_resolution() {
-    use reify_types::Satisfaction;
+    use reify_ir::Satisfaction;
 
     let thickness_id = ValueCellId::new("S", "thickness");
 
@@ -274,7 +272,7 @@ fn resolve_multiple_auto_params() {
 
 #[test]
 fn solver_infeasible_produces_diagnostics() {
-    use reify_types::Diagnostic;
+    use reify_core::Diagnostic;
 
     let thickness_id = ValueCellId::new("S", "thickness");
 
@@ -416,7 +414,7 @@ fn no_solver_backward_compatible() {
 #[test]
 fn eval_result_tracks_resolved_params() {
     use reify_test_support::MockGeometryKernel;
-    use reify_types::ExportFormat;
+    use reify_ir::ExportFormat;
 
     let thickness_id = ValueCellId::new("S", "thickness");
 
@@ -494,7 +492,7 @@ fn resolution_cache_version_matches_snapshot() {
             "y",
             Type::length(),
             binop(
-                reify_types::BinOp::Mul,
+                reify_ir::BinOp::Mul,
                 value_ref("S", "x"),
                 literal(Value::Real(2.0)),
             ),
@@ -567,7 +565,7 @@ fn incremental_fast_path_works_after_resolution() {
             "y",
             Type::length(),
             binop(
-                reify_types::BinOp::Mul,
+                reify_ir::BinOp::Mul,
                 value_ref("S", "x"),
                 literal(Value::Real(2.0)),
             ),
@@ -578,7 +576,7 @@ fn incremental_fast_path_works_after_resolution() {
             "w",
             Type::length(),
             binop(
-                reify_types::BinOp::Mul,
+                reify_ir::BinOp::Mul,
                 value_ref("S", "z"),
                 literal(Value::Real(3.0)),
             ),
@@ -944,7 +942,7 @@ fn e2e_minimize_through_real_solver() {
 fn eval_resolves_per_template_independently() {
     // Two independent templates: Bracket (auto thickness, Minimize) and Bolt (auto diameter, Maximize).
     // eval() should call the solver once per template, each with only that template's params/constraints/objective.
-    use reify_types::SolveResult;
+    use reify_ir::SolveResult;
 
     let bracket_thickness = ValueCellId::new("Bracket", "thickness");
     let bolt_diameter = ValueCellId::new("Bolt", "diameter");
@@ -1072,7 +1070,7 @@ fn eval_resolves_per_template_independently() {
 fn edit_param_resolves_per_template_not_cross_template() {
     // After eval(), edit a param that affects Bracket's constraint.
     // The re-resolution should only involve Bracket's auto params, not Bolt's.
-    use reify_types::SolveResult;
+    use reify_ir::SolveResult;
 
     let bracket_thickness = ValueCellId::new("Bracket", "thickness");
     let bracket_limit = ValueCellId::new("Bracket", "limit");
@@ -1204,7 +1202,7 @@ fn concurrent_edit_resolves_per_template_not_cross_template() {
     // Same two-template module. After eval(), prepare_concurrent_edit on
     // Bracket.limit, then resolve_concurrent_edit. The solver call should
     // contain only Bracket's auto params.
-    use reify_types::SolveResult;
+    use reify_ir::SolveResult;
     use std::collections::HashSet;
 
     let bracket_thickness = ValueCellId::new("Bracket", "thickness");
@@ -1331,7 +1329,7 @@ fn edit_param_matches_eval_for_multi_template_module() {
     // Prove cold/hot path equivalence: the resolved params from edit_param
     // should match what eval() produces for a multi-template module.
     use reify_test_support::SequencedMockConstraintSolver;
-    use reify_types::SolveResult;
+    use reify_ir::SolveResult;
 
     let bracket_thickness = ValueCellId::new("Bracket", "thickness");
     let bracket_limit = ValueCellId::new("Bracket", "limit");
@@ -1472,7 +1470,7 @@ fn scope_name_deterministic_for_multi_template() {
     // Regression test: scope_name (and thus objective lookup) must be determined
     // by entity grouping, not HashMap iteration order. Edit two different params
     // (one per template) and verify each edit_param call gets the correct objective.
-    use reify_types::SolveResult;
+    use reify_ir::SolveResult;
 
     let bracket_thickness = ValueCellId::new("Bracket", "thickness");
     let bracket_limit = ValueCellId::new("Bracket", "limit");
@@ -1621,7 +1619,7 @@ fn edit_param_no_cross_group_value_contamination() {
     // When editing a param that dirties constraints in BOTH entity groups,
     // each group's solver call must receive the same pre-loop snapshot of
     // current_values — not a map contaminated by the other group's resolved values.
-    use reify_types::SolveResult;
+    use reify_ir::SolveResult;
 
     let bracket_thickness = ValueCellId::new("Bracket", "thickness");
     let bracket_clearance = ValueCellId::new("Bracket", "clearance");
@@ -1772,7 +1770,7 @@ fn resolve_concurrent_edit_no_cross_group_contamination() {
     // Same invariant as edit_param_no_cross_group_value_contamination but
     // exercised through the resolve_concurrent_edit path, which uses
     // result.values instead of a local values map.
-    use reify_types::SolveResult;
+    use reify_ir::SolveResult;
     use std::collections::HashSet;
 
     let bracket_thickness = ValueCellId::new("Bracket", "thickness");
@@ -2027,7 +2025,7 @@ fn auto_free_emits_warning_diagnostic() {
     let warning = warning.unwrap();
     assert_eq!(
         warning.severity,
-        reify_types::Severity::Warning,
+        reify_core::Severity::Warning,
         "expected Warning severity, got {:?}",
         warning.severity
     );
@@ -2086,7 +2084,7 @@ fn strict_auto_non_unique_emits_error_diagnostic() {
         .unwrap();
     assert_eq!(
         error_diag.severity,
-        reify_types::Severity::Error,
+        reify_core::Severity::Error,
         "expected Error severity, got {:?}",
         error_diag.severity
     );

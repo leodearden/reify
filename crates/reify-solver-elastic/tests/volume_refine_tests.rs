@@ -7,7 +7,7 @@
 
 use reify_kernel_gmsh::MeshingOptions;
 use reify_solver_elastic::volume_refine::{RefineError, refine_with_size_field};
-use reify_types::{ElementOrderTag, Mesh, VolumeMesh};
+use reify_ir::{ElementOrderTag, Mesh, VolumeMesh};
 
 // ---------------------------------------------------------------------------
 // Test fixture helpers
@@ -176,7 +176,7 @@ fn localized_size_reduction_refines_marked_region_only() {
         ..Default::default()
     };
 
-    use reify_types::ElementOrderTag;
+    use reify_ir::ElementOrderTag;
     let vm_baseline = kernel
         .mesh_to_volume(&cube, &opts, ElementOrderTag::P1)
         .expect("baseline mesh_to_volume must succeed");

@@ -7,10 +7,9 @@
 //! tests exercise (see step-12).
 
 use reify_test_support::{compile_source, get_let_expr};
-use reify_types::{
-    CompiledExpr, CompiledExprKind, CompiledMatchArm, QuantifierKind, SelectorKind, Severity, Type,
-    Value, ValueCellId,
-};
+use reify_ast::QuantifierKind;
+use reify_core::{Severity, Type, ValueCellId};
+use reify_ir::{CompiledExpr, CompiledExprKind, CompiledMatchArm, SelectorKind, Value};
 
 /// Walk a `CompiledExpr` tree and return the first node whose `result_type`
 /// satisfies the predicate, if any. Used to search for a `Type::Error`-typed

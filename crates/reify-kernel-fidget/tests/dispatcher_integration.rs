@@ -46,7 +46,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use reify_eval::{dispatcher, kernel_registry};
 use reify_kernel_fidget::FidgetKernel;
-use reify_types::{CapabilityDescriptor, GeometryKernel, GeometryOp, Operation, ReprKind, Value};
+use reify_ir::{CapabilityDescriptor, GeometryKernel, GeometryOp, Operation, ReprKind, Value};
 
 /// Proves that `reify_eval::kernel_registry::registry()` contains `"fidget"`
 /// when the fidget adapter is linked in (i.e. the `inventory::submit!` in
@@ -149,7 +149,7 @@ fn fidget_dispatcher_to_kernel_chain_realizes_sdf_without_occt() {
     // 2. The factory must produce a working `Box<dyn GeometryKernel>`.
     //    Use it to prove the boxed kernel can execute a Sphere op via the
     //    trait surface — that's the contract the dispatcher relies on.
-    let mut boxed: Box<dyn reify_types::GeometryKernel> = (fidget_entry.factory)();
+    let mut boxed: Box<dyn reify_ir::GeometryKernel> = (fidget_entry.factory)();
     let _sphere_via_factory = boxed
         .execute(&GeometryOp::Sphere {
             radius: Value::Real(1.0),

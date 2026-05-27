@@ -5,7 +5,8 @@
 
 use reify_compiler::ModifyKind;
 use reify_test_support::*;
-use reify_types::{GeometryOp, Type};
+use reify_core::Type;
+use reify_ir::GeometryOp;
 
 // ---------------------------------------------------------------------------
 // step-1: Compiler rejects wrong arg counts, accepts correct count
@@ -19,7 +20,7 @@ fn fillet_compiler_rejects_one_arg() {
     param target: Scalar = 5mm
     let result = fillet(target)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_fl1"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_fl1"));
     let compiled = reify_compiler::compile(&parsed);
     let template = &compiled.templates[0];
     let realizations = &template.realizations;
@@ -52,7 +53,7 @@ fn fillet_compiler_rejects_three_args() {
     param rad: Scalar = 2mm
     let result = fillet(target, rad, rad)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_fl3"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_fl3"));
     let compiled = reify_compiler::compile(&parsed);
     let template = &compiled.templates[0];
     let realizations = &template.realizations;
@@ -86,7 +87,7 @@ fn fillet_compiler_accepts_two_args() {
     param rad: Scalar = 2mm
     let result = fillet(target, rad)
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_fl2"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_fl2"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -140,7 +141,7 @@ fn fillet_compiler_accepts_two_args() {
 /// ModifyKind::Fillet correctly (reify-eval/src/lib.rs).
 #[test]
 fn fillet_through_full_eval_pipeline() {
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 1 args: mirrors what the compiler emits (geometry.rs:900-907).
     // The eval layer resolves the target from GeomRef::Step(0), not from 'target' in args.
@@ -188,7 +189,7 @@ fn fillet_through_full_eval_pipeline() {
 /// verifies that eval still produces the correct Fillet geometry op.
 #[test]
 fn fillet_modify_only_needs_radius_arg() {
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Only 'radius' in args — no 'target' entry.
     // "target" handle is resolved from GeomRef::Step(0), not from args.

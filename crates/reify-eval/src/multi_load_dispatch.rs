@@ -5,7 +5,7 @@
 //! (fea.rs:703): outer `Map{"cases" -> Map<Value::String, ElasticResult-Map>}`.
 //! Implements the engine-side detector for PRD §2.2 task η (`fea-case-changed`).
 
-use reify_types::Value;
+use reify_ir::Value;
 
 /// Detected multi-case result from a `Value::Map` cell.
 ///
@@ -64,7 +64,7 @@ pub fn detect_multi_case_result(value: &Value) -> Option<DetectedCases> {
 #[cfg(test)]
 mod tests {
     use reify_test_support::values::multi_case_result_value;
-    use reify_types::Value;
+    use reify_ir::Value;
     use std::collections::BTreeMap;
 
     use super::detect_multi_case_result;

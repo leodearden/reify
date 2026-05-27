@@ -32,7 +32,7 @@
 
 use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef};
 use reify_test_support::compile_source;
-use reify_types::Severity;
+use reify_core::Severity;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 

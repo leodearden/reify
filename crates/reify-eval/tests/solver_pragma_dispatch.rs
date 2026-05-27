@@ -17,7 +17,7 @@ use reify_test_support::mocks::{MockConstraintChecker, SpyConstraintSolver};
 use reify_test_support::{
     CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, mm, value_ref,
 };
-use reify_types::{ModulePath, Severity, Type};
+use reify_core::{ModulePath, Severity, Type};
 use std::collections::{BTreeMap, HashMap};
 
 /// Build a one-template CompiledModule with a single auto-param so the engine
@@ -104,7 +104,7 @@ fn eval_uses_named_solver_from_registry_when_solver_pragma_matches() {
 /// resolution policy is byte-identical between the two paths.
 #[test]
 fn eval_cached_uses_named_solver_from_registry_when_solver_pragma_matches() {
-    use reify_types::VersionId;
+    use reify_core::VersionId;
 
     let mut module = make_module_with_auto_param();
     module.solver_pragma = Some(SolverPragma {
@@ -168,7 +168,7 @@ fn eval_falls_back_to_default_solver_with_warning_when_named_solver_not_register
         "expected default solver to be invoked when named back-end 'libslvs' is not registered"
     );
 
-    let fallback_warnings: Vec<&reify_types::Diagnostic> = result
+    let fallback_warnings: Vec<&reify_core::Diagnostic> = result
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Warning)
@@ -204,7 +204,7 @@ fn eval_falls_back_to_default_solver_with_warning_when_named_solver_not_register
 /// `eval_cached` could regress silently.
 #[test]
 fn eval_cached_falls_back_to_default_solver_with_warning_when_named_solver_not_registered() {
-    use reify_types::VersionId;
+    use reify_core::VersionId;
 
     let mut module = make_module_with_two_auto_param_templates();
     module.solver_pragma = Some(SolverPragma {
@@ -228,7 +228,7 @@ fn eval_cached_falls_back_to_default_solver_with_warning_when_named_solver_not_r
 
     let result = engine.eval_cached(&module, VersionId(0));
 
-    let fallback_warnings: Vec<&reify_types::Diagnostic> = result
+    let fallback_warnings: Vec<&reify_core::Diagnostic> = result
         .eval_result
         .diagnostics
         .iter()

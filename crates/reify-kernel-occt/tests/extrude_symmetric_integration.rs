@@ -17,7 +17,7 @@
 #![cfg(has_occt)]
 
 use reify_kernel_occt::OcctKernel;
-use reify_types::{GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value};
+use reify_ir::{GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value};
 
 /// Helper: create a kernel with a horizontal line-segment wire at z=0 as
 /// profile. Extruding this along Z produces a vertical rectangular shell

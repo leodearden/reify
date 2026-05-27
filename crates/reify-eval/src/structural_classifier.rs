@@ -23,7 +23,8 @@
 
 use std::collections::HashSet;
 
-use reify_types::{ContentHash, Type, ValueCellId, ValueMap};
+use reify_core::{ContentHash, Type, ValueCellId};
+use reify_ir::ValueMap;
 
 use crate::graph::EvaluationGraph;
 
@@ -233,7 +234,7 @@ pub fn stage_a_eligible(
 mod tests {
     use super::*;
     use reify_compiler::ValueCellKind;
-    use reify_types::{ContentHash, Type, ValueCellId};
+    use reify_core::{ContentHash, Type, ValueCellId};
 
     use crate::graph::{CollectionSubInfo, EvaluationGraph, ValueCellNode};
 
@@ -326,7 +327,7 @@ mod tests {
 
     #[test]
     fn stage_a_eligible_dimensional_cell_only_in_new_returns_true() {
-        use reify_types::{Value, ValueMap};
+        use reify_ir::{Value, ValueMap};
 
         // Graphs are identical (same shape hash). new_values contains a
         // Scalar[LENGTH] entry absent from old_values. Dimensional cell →
@@ -345,7 +346,7 @@ mod tests {
 
     #[test]
     fn stage_a_eligible_structural_cell_only_in_new_returns_false() {
-        use reify_types::{Value, ValueMap};
+        use reify_ir::{Value, ValueMap};
 
         let id = ValueCellId::new("Part", "mode");
         let g1 = graph_with_cell(&id, Type::Enum("Mode".to_string()));
@@ -367,7 +368,7 @@ mod tests {
 
     #[test]
     fn stage_a_eligible_cell_only_in_old_dimensional_returns_true() {
-        use reify_types::{Value, ValueMap};
+        use reify_ir::{Value, ValueMap};
 
         let id = ValueCellId::new("Part", "height");
         let g1 = graph_with_cell(&id, Type::length());
@@ -383,7 +384,7 @@ mod tests {
 
     #[test]
     fn stage_a_eligible_cell_only_in_old_structural_returns_false() {
-        use reify_types::{Value, ValueMap};
+        use reify_ir::{Value, ValueMap};
 
         let id = ValueCellId::new("Part", "mode");
         let g1 = graph_with_cell(&id, Type::Enum("Mode".to_string()));
@@ -408,7 +409,8 @@ mod tests {
     #[test]
     fn stage_a_eligible_shape_hash_differs_returns_false() {
         use crate::graph::RealizationNodeData;
-        use reify_types::{RealizationNodeId, ReprKind, ValueMap};
+        use reify_core::RealizationNodeId;
+        use reify_ir::{ReprKind, ValueMap};
 
         let id = ValueCellId::new("Part", "width");
         let g1 = graph_with_cell(&id, Type::length());
@@ -435,7 +437,8 @@ mod tests {
     #[test]
     fn stage_a_eligible_shape_hash_differs_with_dimensional_value_diff_still_returns_false() {
         use crate::graph::RealizationNodeData;
-        use reify_types::{RealizationNodeId, ReprKind, Value, ValueMap};
+        use reify_core::RealizationNodeId;
+        use reify_ir::{ReprKind, Value, ValueMap};
 
         let width_id = ValueCellId::new("Part", "width");
         let g1 = graph_with_cell(&width_id, Type::length());
@@ -466,7 +469,7 @@ mod tests {
 
     #[test]
     fn stage_a_eligible_only_dimensional_value_differs_returns_true() {
-        use reify_types::{Value, ValueMap};
+        use reify_ir::{Value, ValueMap};
 
         let id = ValueCellId::new("Part", "width");
         let g1 = graph_with_cell(&id, Type::length());
@@ -483,7 +486,7 @@ mod tests {
 
     #[test]
     fn stage_a_eligible_structural_value_differs_returns_false() {
-        use reify_types::{Value, ValueMap};
+        use reify_ir::{Value, ValueMap};
 
         let id = ValueCellId::new("Part", "mode");
         let g1 = graph_with_cell(&id, Type::Enum("Mode".to_string()));
@@ -512,7 +515,7 @@ mod tests {
 
     #[test]
     fn stage_a_eligible_structure_controlling_value_differs_returns_false() {
-        use reify_types::{Value, ValueMap};
+        use reify_ir::{Value, ValueMap};
 
         // A Bool cell in structure_controlling must be Structural even
         // though Bool is otherwise handled by the conservative default.
@@ -532,7 +535,7 @@ mod tests {
 
     #[test]
     fn stage_a_eligible_collection_count_value_differs_returns_false() {
-        use reify_types::{Value, ValueMap};
+        use reify_ir::{Value, ValueMap};
 
         let id = ValueCellId::new("Part", "__count_bolts");
         let mut g1 = graph_with_cell(&id, Type::Int);
@@ -556,7 +559,7 @@ mod tests {
 
     #[test]
     fn stage_a_eligible_mixed_dimensional_and_structural_diff_returns_false() {
-        use reify_types::{Value, ValueMap};
+        use reify_ir::{Value, ValueMap};
 
         // Both a Length cell AND an Enum cell differ. The Enum makes it ineligible
         // even though the Length diff would be allowed in isolation.
@@ -607,13 +610,13 @@ mod tests {
 
     #[test]
     fn stage_a_eligible_identical_graph_and_values_returns_true() {
-        use reify_types::ValueMap;
+        use reify_ir::ValueMap;
 
         let id = ValueCellId::new("Part", "width");
         let g1 = graph_with_cell(&id, Type::length());
         let g2 = g1.clone(); // O(1) structural-sharing clone
         let mut v1 = ValueMap::new();
-        v1.insert(id.clone(), reify_types::Value::length(0.08));
+        v1.insert(id.clone(), reify_ir::Value::length(0.08));
         let v2 = v1.clone();
         assert!(
             stage_a_eligible(&g1, &g2, &v1, &v2),
@@ -639,7 +642,8 @@ mod tests {
     #[test]
     fn realization_graph_shape_hash_added_realization_diverges() {
         use crate::graph::RealizationNodeData;
-        use reify_types::{RealizationNodeId, ReprKind};
+        use reify_core::RealizationNodeId;
+        use reify_ir::ReprKind;
 
         let id = ValueCellId::new("Part", "width");
         let g1 = graph_with_cell(&id, Type::length());
@@ -651,7 +655,7 @@ mod tests {
             RealizationNodeData {
                 id: rid,
                 operations: vec![],
-                content_hash: reify_types::ContentHash::of_str("extra-realization"),
+                content_hash: reify_core::ContentHash::of_str("extra-realization"),
                 produced_repr: ReprKind::BRep,
             },
         );
@@ -756,7 +760,7 @@ mod tests {
 
     #[test]
     fn stage_a_eligible_some_undef_and_absent_are_equivalent_no_spurious_rejection() {
-        use reify_types::{Value, ValueMap};
+        use reify_ir::{Value, ValueMap};
 
         // Use an Enum cell (structural type) so that a *real* value diff on
         // this cell would produce false.  The Undef↔absent asymmetry must NOT

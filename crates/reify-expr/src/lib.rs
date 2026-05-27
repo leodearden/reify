@@ -16,12 +16,9 @@ mod sanitize;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use reify_types::{
-    BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyPredicateKind,
-    DeterminacyState, Diagnostic, DimensionVector, FIELD_ENTITY_PREFIX, FieldSourceKind,
-    PersistentMap, QuantifierKind, SelectorKind, Type, UnOp, Value, ValueCellId, ValueMap,
-    quaternion_is_finite,
-};
+use reify_ast::QuantifierKind;
+use reify_core::{Diagnostic, DimensionVector, FIELD_ENTITY_PREFIX, Type, ValueCellId};
+use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyPredicateKind, DeterminacyState, FieldSourceKind, PersistentMap, SelectorKind, UnOp, Value, ValueMap, quaternion_is_finite};
 
 /// Maximum recursion depth for user-defined function calls.
 const MAX_RECURSION_DEPTH: u32 = 256;
@@ -802,7 +799,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
 /// `FunctionCall`-style strict whole-value short-circuit).
 #[inline(never)]
 fn eval_structure_instance_ctor(
-    type_id: reify_types::StructureTypeId,
+    type_id: reify_ir::StructureTypeId,
     type_name: &str,
     version: u32,
     ordered_args: &[(String, CompiledExpr)],
@@ -818,7 +815,7 @@ fn eval_structure_instance_ctor(
             fields.insert(name.clone(), eval_expr(def, ctx));
         }
     }
-    Value::StructureInstance(Box::new(reify_types::StructureInstanceData {
+    Value::StructureInstance(Box::new(reify_ir::StructureInstanceData {
         type_id,
         type_name: type_name.to_string(),
         version,
@@ -2742,7 +2739,8 @@ fn eval_unop(op: UnOp, operand: &CompiledExpr, ctx: &EvalContext) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::{CompiledMatchArm, DimensionVector, Type, ValueCellId};
+    use reify_core::{DimensionVector, Type, ValueCellId};
+    use reify_ir::CompiledMatchArm;
 
     // Helper to build a literal expression
     fn lit(v: Value, ty: Type) -> CompiledExpr {
@@ -2948,7 +2946,7 @@ mod tests {
         let then_branch = lit(Value::Int(1), Type::Int);
         let else_branch = lit(Value::Int(2), Type::Int);
         let expr = CompiledExpr {
-            content_hash: reify_types::ContentHash::of(&[99]),
+            content_hash: reify_core::ContentHash::of(&[99]),
             result_type: Type::Int,
             kind: CompiledExprKind::Conditional {
                 condition: Box::new(cond),
@@ -2969,7 +2967,7 @@ mod tests {
         let then_branch = lit(Value::Int(1), Type::Int);
         let else_branch = lit(Value::Int(2), Type::Int);
         let expr = CompiledExpr {
-            content_hash: reify_types::ContentHash::of(&[99]),
+            content_hash: reify_core::ContentHash::of(&[99]),
             result_type: Type::Int,
             kind: CompiledExprKind::Conditional {
                 condition: Box::new(cond),
@@ -3056,10 +3054,10 @@ mod tests {
         // FunctionCall('abs', [Literal(Real(-3.0))]) should return Real(3.0), not Undef
         let arg = lit(Value::Real(-3.0), Type::Real);
         let expr = CompiledExpr {
-            content_hash: reify_types::ContentHash::of(&[42]),
+            content_hash: reify_core::ContentHash::of(&[42]),
             result_type: Type::Real,
             kind: CompiledExprKind::FunctionCall {
-                function: reify_types::ResolvedFunction {
+                function: reify_ir::ResolvedFunction {
                     name: "abs".to_string(),
                     qualified_name: "std::abs".to_string(),
                 },
@@ -3086,10 +3084,10 @@ mod tests {
             },
         );
         let expr = CompiledExpr {
-            content_hash: reify_types::ContentHash::of(&[43]),
+            content_hash: reify_core::ContentHash::of(&[43]),
             result_type: Type::Real,
             kind: CompiledExprKind::FunctionCall {
-                function: reify_types::ResolvedFunction {
+                function: reify_ir::ResolvedFunction {
                     name: "sin".to_string(),
                     qualified_name: "std::sin".to_string(),
                 },
@@ -3108,10 +3106,10 @@ mod tests {
     fn function_call_unknown_returns_undef() {
         let arg = lit(Value::Real(1.0), Type::Real);
         let expr = CompiledExpr {
-            content_hash: reify_types::ContentHash::of(&[44]),
+            content_hash: reify_core::ContentHash::of(&[44]),
             result_type: Type::Real,
             kind: CompiledExprKind::FunctionCall {
-                function: reify_types::ResolvedFunction {
+                function: reify_ir::ResolvedFunction {
                     name: "nonexistent".to_string(),
                     qualified_name: "std::nonexistent".to_string(),
                 },
@@ -3127,10 +3125,10 @@ mod tests {
         // abs(Undef) should return Undef (strict propagation)
         let arg = lit(Value::Undef, Type::Real);
         let expr = CompiledExpr {
-            content_hash: reify_types::ContentHash::of(&[45]),
+            content_hash: reify_core::ContentHash::of(&[45]),
             result_type: Type::Real,
             kind: CompiledExprKind::FunctionCall {
-                function: reify_types::ResolvedFunction {
+                function: reify_ir::ResolvedFunction {
                     name: "abs".to_string(),
                     qualified_name: "std::abs".to_string(),
                 },
@@ -3146,10 +3144,10 @@ mod tests {
         // abs(width) where width = -80mm
         let arg = vref("B", "width", Type::length());
         let expr = CompiledExpr {
-            content_hash: reify_types::ContentHash::of(&[46]),
+            content_hash: reify_core::ContentHash::of(&[46]),
             result_type: Type::length(),
             kind: CompiledExprKind::FunctionCall {
-                function: reify_types::ResolvedFunction {
+                function: reify_ir::ResolvedFunction {
                     name: "abs".to_string(),
                     qualified_name: "std::abs".to_string(),
                 },
@@ -3181,10 +3179,10 @@ mod tests {
     fn function_call_zero_args_returns_undef() {
         // abs() with no args should return Undef
         let expr = CompiledExpr {
-            content_hash: reify_types::ContentHash::of(&[47]),
+            content_hash: reify_core::ContentHash::of(&[47]),
             result_type: Type::Real,
             kind: CompiledExprKind::FunctionCall {
-                function: reify_types::ResolvedFunction {
+                function: reify_ir::ResolvedFunction {
                     name: "abs".to_string(),
                     qualified_name: "std::abs".to_string(),
                 },
@@ -3243,10 +3241,10 @@ mod tests {
 
     fn flat_map_call(list_arg: CompiledExpr, lambda_arg: CompiledExpr) -> CompiledExpr {
         CompiledExpr {
-            content_hash: reify_types::ContentHash::of(&[101]),
+            content_hash: reify_core::ContentHash::of(&[101]),
             result_type: Type::List(Box::new(Type::Int)),
             kind: CompiledExprKind::FunctionCall {
-                function: reify_types::ResolvedFunction {
+                function: reify_ir::ResolvedFunction {
                     name: "flat_map".to_string(),
                     qualified_name: "std::flat_map".to_string(),
                 },
@@ -3711,21 +3709,21 @@ mod tests {
         // match Direction.In { [In] => 1, [Out] => 2, [Bidi] => 3 }
         let discriminant = enum_lit("Direction", "In");
         let arms = vec![
-            reify_types::CompiledMatchArm {
+            reify_ir::CompiledMatchArm {
                 patterns: vec!["In".to_string()],
                 body: lit(Value::Int(1), Type::Int),
             },
-            reify_types::CompiledMatchArm {
+            reify_ir::CompiledMatchArm {
                 patterns: vec!["Out".to_string()],
                 body: lit(Value::Int(2), Type::Int),
             },
-            reify_types::CompiledMatchArm {
+            reify_ir::CompiledMatchArm {
                 patterns: vec!["Bidi".to_string()],
                 body: lit(Value::Int(3), Type::Int),
             },
         ];
         let expr = CompiledExpr {
-            content_hash: reify_types::ContentHash::of(&[100]),
+            content_hash: reify_core::ContentHash::of(&[100]),
             result_type: Type::Int,
             kind: CompiledExprKind::Match {
                 discriminant: Box::new(discriminant),
@@ -3742,12 +3740,12 @@ mod tests {
     #[test]
     fn eval_match_undef_discriminant() {
         let discriminant = lit(Value::Undef, Type::Int);
-        let arms = vec![reify_types::CompiledMatchArm {
+        let arms = vec![reify_ir::CompiledMatchArm {
             patterns: vec!["In".to_string()],
             body: lit(Value::Int(1), Type::Int),
         }];
         let expr = CompiledExpr {
-            content_hash: reify_types::ContentHash::of(&[101]),
+            content_hash: reify_core::ContentHash::of(&[101]),
             result_type: Type::Int,
             kind: CompiledExprKind::Match {
                 discriminant: Box::new(discriminant),
@@ -3763,17 +3761,17 @@ mod tests {
         // match Direction.Bidi { [In] => 1, [_] => 99 }
         let discriminant = enum_lit("Direction", "Bidi");
         let arms = vec![
-            reify_types::CompiledMatchArm {
+            reify_ir::CompiledMatchArm {
                 patterns: vec!["In".to_string()],
                 body: lit(Value::Int(1), Type::Int),
             },
-            reify_types::CompiledMatchArm {
+            reify_ir::CompiledMatchArm {
                 patterns: vec!["_".to_string()],
                 body: lit(Value::Int(99), Type::Int),
             },
         ];
         let expr = CompiledExpr {
-            content_hash: reify_types::ContentHash::of(&[102]),
+            content_hash: reify_core::ContentHash::of(&[102]),
             result_type: Type::Int,
             kind: CompiledExprKind::Match {
                 discriminant: Box::new(discriminant),
@@ -3792,17 +3790,17 @@ mod tests {
         // match Control.Button { [Socket, Button] => "recessed", [Slider] => "raised" }
         let discriminant = enum_lit("Control", "Button");
         let arms = vec![
-            reify_types::CompiledMatchArm {
+            reify_ir::CompiledMatchArm {
                 patterns: vec!["Socket".to_string(), "Button".to_string()],
                 body: lit(Value::String("recessed".to_string()), Type::String),
             },
-            reify_types::CompiledMatchArm {
+            reify_ir::CompiledMatchArm {
                 patterns: vec!["Slider".to_string()],
                 body: lit(Value::String("raised".to_string()), Type::String),
             },
         ];
         let expr = CompiledExpr {
-            content_hash: reify_types::ContentHash::of(&[103]),
+            content_hash: reify_core::ContentHash::of(&[103]),
             result_type: Type::String,
             kind: CompiledExprKind::Match {
                 discriminant: Box::new(discriminant),
@@ -3857,7 +3855,7 @@ mod tests {
         defaults: Vec<(&str, CompiledExpr)>,
     ) -> CompiledExpr {
         CompiledExpr::structure_instance_ctor(
-            reify_types::StructureTypeId(0),
+            reify_ir::StructureTypeId(0),
             name.to_string(),
             version,
             ordered
@@ -3886,7 +3884,7 @@ mod tests {
         let values = ValueMap::new();
         match eval_expr(&expr, &EvalContext::simple(&values)) {
             Value::StructureInstance(data) => {
-                assert_eq!(data.type_id, reify_types::StructureTypeId(0));
+                assert_eq!(data.type_id, reify_ir::StructureTypeId(0));
                 assert_eq!(data.type_name, "Steel_AISI_1045");
                 assert_eq!(data.version, 1);
                 assert_eq!(
@@ -3991,7 +3989,8 @@ mod tests {
 
     // ── User function evaluation tests ──────────────────────────────────
 
-    use reify_types::{CompiledFnBody, CompiledFunction, ContentHash};
+    use reify_core::ContentHash;
+    use reify_ir::{CompiledFnBody, CompiledFunction};
 
     fn make_double_fn() -> CompiledFunction {
         // fn double(x: Real) -> Real { x + x }
@@ -4894,10 +4893,10 @@ mod tests {
 
         // Synthesize a FunctionCall: `base(3.0)`.
         let call = CompiledExpr {
-            content_hash: reify_types::ContentHash::of(&[100]),
+            content_hash: reify_core::ContentHash::of(&[100]),
             result_type: Type::Real,
             kind: CompiledExprKind::FunctionCall {
-                function: reify_types::ResolvedFunction {
+                function: reify_ir::ResolvedFunction {
                     name: "base".to_string(),
                     qualified_name: "field::base".to_string(),
                 },
@@ -4927,10 +4926,10 @@ mod tests {
         // returns Real(3.0).
         let arg = lit(Value::Real(-3.0), Type::Real);
         let call = CompiledExpr {
-            content_hash: reify_types::ContentHash::of(&[101]),
+            content_hash: reify_core::ContentHash::of(&[101]),
             result_type: Type::Real,
             kind: CompiledExprKind::FunctionCall {
-                function: reify_types::ResolvedFunction {
+                function: reify_ir::ResolvedFunction {
                     name: "abs".to_string(),
                     qualified_name: "std::abs".to_string(),
                 },
@@ -4997,7 +4996,7 @@ mod tests {
     /// RED on HEAD: current arm returns `Value::Undef` unconditionally.
     #[test]
     fn ad_hoc_selector_point_constructs_frame_at_world_coords() {
-        use reify_types::SelectorKind;
+        use reify_ir::SelectorKind;
         let base = lit(Value::String("ignored".into()), Type::String);
         let args = vec![mm_lit(1.0), mm_lit(2.0), mm_lit(3.0)];
         let expr = CompiledExpr::ad_hoc_selector(base, SelectorKind::Point, args);
@@ -5057,7 +5056,7 @@ mod tests {
     /// Undef-propagation logic.
     #[test]
     fn ad_hoc_selector_point_with_undef_arg_returns_undef() {
-        use reify_types::SelectorKind;
+        use reify_ir::SelectorKind;
         let base = lit(Value::String("ignored".into()), Type::String);
         let args = vec![
             mm_lit(1.0),

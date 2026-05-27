@@ -7,7 +7,8 @@ description = "OpenCASCADE geometry kernel implementation"
 build = "build.rs"
 
 [dependencies]
-reify-types.workspace = true
+reify-core.workspace = true
+reify-ir.workspace = true
 cxx = "1"
 inventory.workspace = true
 tokio = { workspace = true }
@@ -46,6 +47,7 @@ reify-build-utils.workspace = true
 # the production library stays free of the eval dependency.
 #
 # The cycle with `reify-eval/Cargo.toml:40 [dev-dependencies]
+reify-ir.workspace = true
 # reify-kernel-occt.workspace = true` is allowed by Cargo because dev-deps
 # do not transitively propagate to consumers — verified safe by the existing
 # openvdb/manifold/gmsh adapters which already exercise this same pattern.

@@ -14,7 +14,8 @@
 //! unit / integration tests stay green.
 
 use reify_test_support::CountingSubscriberBuilder;
-use reify_types::{ExportFormat, ModulePath, Operation, ReprKind};
+use reify_core::ModulePath;
+use reify_ir::{ExportFormat, Operation, ReprKind};
 use std::sync::atomic::Ordering;
 
 /// `collect_registry()` must surface the OCCT submission with a descriptor
@@ -35,7 +36,7 @@ fn collect_registry_finds_occt_entry_with_brep_primitive_support() {
     // This catches regressions to `collect_registry`'s signature or its
     // inner inventory walk even in stub-mode CI builds, where the OCCT-
     // specific assertions below are skipped.
-    let _shape_pin: std::collections::BTreeMap<String, reify_types::CapabilityDescriptor> =
+    let _shape_pin: std::collections::BTreeMap<String, reify_ir::CapabilityDescriptor> =
         reify_eval::collect_registry();
 
     if !reify_kernel_occt::OCCT_AVAILABLE {
@@ -104,7 +105,7 @@ fn engine_with_registered_kernel_picks_occt_for_brep_box_build() {
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 

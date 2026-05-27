@@ -6,10 +6,8 @@
 //! - Individual satisfaction states per predicate
 
 use reify_test_support::{check_source, error_diags, parse_and_compile};
-use reify_types::{
-    ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Diagnostic,
-    DiagnosticLabel, Satisfaction, Severity, SourceSpan,
-};
+use reify_core::{Diagnostic, DiagnosticLabel, Severity, SourceSpan};
+use reify_ir::{ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Satisfaction};
 
 /// Shared fixture: violated single-predicate constraint def instantiation.
 /// `thickness = 1` means `wall > 2` is Violated, producing label `MinWall#0[0]`.

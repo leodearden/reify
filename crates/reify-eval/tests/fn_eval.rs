@@ -3,7 +3,7 @@
 //! Tests the complete pipeline: parse → compile → Engine.eval() → check values.
 
 use reify_test_support::mocks::MockConstraintChecker;
-use reify_types::{ModulePath, Severity, ValueCellId};
+use reify_core::{ModulePath, Severity, ValueCellId};
 
 /// Parse source with a user function, compile, eval via Engine,
 /// and verify the function result is accessible.
@@ -46,10 +46,10 @@ structure S {
         .get(&v_id)
         .unwrap_or_else(|| panic!("value for {:?} not found in result", v_id));
     match v_val {
-        reify_types::Value::Real(v) => {
+        reify_ir::Value::Real(v) => {
             assert!((v - 6.0).abs() < 1e-12, "expected 6.0, got {}", v);
         }
-        reify_types::Value::Int(v) => {
+        reify_ir::Value::Int(v) => {
             // Int(3) + Int(3) = Int(6) is also valid
             assert_eq!(*v, 6, "expected 6, got {}", v);
         }

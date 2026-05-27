@@ -11,7 +11,8 @@ use reify_compiler::{
     compile_with_prelude_context, compile_with_stdlib, stdlib_loader,
 };
 use reify_test_support::CompiledModuleBuilder;
-use reify_types::{ContentHash, DimensionVector, EnumDef, ModulePath, SourceSpan, Type};
+use reify_core::{ContentHash, DimensionVector, ModulePath, SourceSpan, Type};
+use reify_ir::EnumDef;
 
 // ─── step-3: PreludeContext::from_slice ergonomics ─────────────────────────
 
@@ -161,12 +162,12 @@ fn assert_compiled_module_parity(
     let actual_error_count = actual
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .count();
     let expected_error_count = expected
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == reify_core::Severity::Error)
         .count();
     assert_eq!(
         actual_error_count, expected_error_count,

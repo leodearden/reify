@@ -24,12 +24,8 @@ use std::sync::{Arc, Mutex};
 
 use reify_compiler::{BooleanOp, CompiledGeometryOp, CurveKind, GeomRef, PrimitiveKind, SweepKind};
 use reify_test_support::*;
-use reify_types::{
-    AttributeHistory, CompiledExpr, ExportFormat, FeatureId, GeometryError, GeometryHandle,
-    GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook,
-    KernelAttributeOutcome, Mesh, ModulePath, QueryError, RealizationNodeId, Severity,
-    SweepOpHistoryRecords, TessError, TopologyAttributeTable, Type, Value,
-};
+use reify_core::{ModulePath, RealizationNodeId, Severity, Type};
+use reify_ir::{AttributeHistory, CompiledExpr, ExportFormat, FeatureId, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, KernelAttributeOutcome, Mesh, QueryError, SweepOpHistoryRecords, TessError, TopologyAttributeTable, Value};
 
 // ─── Shared call-recording type ──────────────────────────────────────────────
 
@@ -139,7 +135,7 @@ impl<H: KernelAttributeHook> GeometryKernel for HookKernel<H> {
         handle: GeometryHandleId,
         format: ExportFormat,
         writer: &mut dyn std::io::Write,
-    ) -> Result<(), reify_types::ExportError> {
+    ) -> Result<(), reify_ir::ExportError> {
         self.inner.export(handle, format, writer)
     }
 
@@ -439,7 +435,7 @@ impl GeometryKernel for OrderingKernel {
         handle: GeometryHandleId,
         format: ExportFormat,
         writer: &mut dyn std::io::Write,
-    ) -> Result<(), reify_types::ExportError> {
+    ) -> Result<(), reify_ir::ExportError> {
         self.inner.export(handle, format, writer)
     }
 

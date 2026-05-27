@@ -15,7 +15,7 @@
 //! `reify-kernel-manifold/src/register.rs`. The registry tracks kind presence,
 //! not impl quality.
 
-use reify_types::{NodeKind, WarmStartableRegistration};
+use reify_ir::{NodeKind, WarmStartableRegistration};
 
 inventory::submit! {
     WarmStartableRegistration { kind: NodeKind::Realization }
