@@ -6,6 +6,240 @@
 //! This module has no `reify_types` dependency — all inputs and outputs are
 //! plain `f64` / `Vec<f64>`.  Value marshalling lives in `mod.rs`.
 
+/// Boundary condition for cubic interpolating splines.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum BoundaryCondition {
+    /// Natural: second derivatives at endpoints are zero.
+    Natural,
+}
+
+/// A single-joint cubic interpolating spline.
+///
+/// Represented as piecewise degree-3 polynomials stored as per-segment
+/// coefficients: for segment i in [t[i], t[i+1]], the value at t is
+///   a[i] + b[i]*s + c[i]*s^2 + d[i]*s^3  where s = t - t[i]
+#[derive(Debug, Clone)]
+pub(crate) struct CubicSpline {
+    /// Knot times (strictly increasing), length n.
+    knots: Vec<f64>,
+    /// Coefficient a[i] = value at knot i, length n-1.
+    a: Vec<f64>,
+    /// Coefficient b[i] (first deriv at knot i), length n-1.
+    b: Vec<f64>,
+    /// Coefficient c[i] (half second deriv at knot i), length n-1.
+    c: Vec<f64>,
+    /// Coefficient d[i], length n-1.
+    d: Vec<f64>,
+}
+
+impl CubicSpline {
+    /// Fit a cubic interpolating spline through (knots[i], values[i]).
+    ///
+    /// Returns `None` if:
+    /// - fewer than 2 knots
+    /// - knots not strictly increasing
+    /// - knots.len() != values.len()
+    pub(crate) fn fit(
+        knots: &[f64],
+        values: &[f64],
+        bc: &BoundaryCondition,
+    ) -> Option<Self> {
+        let n = knots.len();
+        if n < 2 || n != values.len() {
+            return None;
+        }
+        // Check strictly increasing
+        for i in 0..n - 1 {
+            if knots[i + 1] <= knots[i] {
+                return None;
+            }
+        }
+
+        match bc {
+            BoundaryCondition::Natural => Self::fit_natural(knots, values),
+        }
+    }
+
+    /// Natural cubic spline: second derivatives at endpoints = 0.
+    fn fit_natural(knots: &[f64], values: &[f64]) -> Option<Self> {
+        let n = knots.len();
+        let m = n - 1; // number of segments
+
+        if n == 2 {
+            // Linear spline for 2 points
+            let h = knots[1] - knots[0];
+            let slope = (values[1] - values[0]) / h;
+            return Some(CubicSpline {
+                knots: knots.to_vec(),
+                a: vec![values[0]],
+                b: vec![slope],
+                c: vec![0.0],
+                d: vec![0.0],
+            });
+        }
+
+        // Build and solve tridiagonal system for second derivatives M[i].
+        // Natural: M[0] = M[n-1] = 0.
+        // For i = 1..n-2:
+        //   h[i-1]*M[i-1] + 2*(h[i-1]+h[i])*M[i] + h[i]*M[i+1] = 6*((values[i+1]-values[i])/h[i] - (values[i]-values[i-1])/h[i-1])
+        let h: Vec<f64> = (0..m).map(|i| knots[i + 1] - knots[i]).collect();
+
+        let inner = n - 2; // number of interior knots
+        if inner == 0 {
+            unreachable!("handled by n==2 case above");
+        }
+
+        let mut diag = vec![0.0_f64; inner];
+        let mut upper = vec![0.0_f64; inner - 1];
+        let mut lower = vec![0.0_f64; inner - 1];
+        let mut rhs = vec![0.0_f64; inner];
+
+        for i in 0..inner {
+            let ki = i + 1; // knot index in full array
+            diag[i] = 2.0 * (h[ki - 1] + h[ki]);
+            let rhs_val = 6.0
+                * ((values[ki + 1] - values[ki]) / h[ki]
+                    - (values[ki] - values[ki - 1]) / h[ki - 1]);
+            rhs[i] = rhs_val;
+            if i + 1 < inner {
+                upper[i] = h[ki];
+                lower[i] = h[ki];
+            }
+        }
+
+        let m_inner = solve_tridiagonal(&lower, &diag, &upper, &rhs)?;
+
+        // Full second derivative array (M[0]=0, M[n-1]=0)
+        let mut m_vals = vec![0.0_f64; n];
+        for i in 0..inner {
+            m_vals[i + 1] = m_inner[i];
+        }
+
+        Self::from_second_derivatives(knots, values, &h, &m_vals)
+    }
+
+    /// Build segment coefficients from second derivatives M.
+    fn from_second_derivatives(
+        knots: &[f64],
+        values: &[f64],
+        h: &[f64],
+        m: &[f64],
+    ) -> Option<Self> {
+        let n = knots.len();
+        let segs = n - 1;
+        let mut a = Vec::with_capacity(segs);
+        let mut b = Vec::with_capacity(segs);
+        let mut c = Vec::with_capacity(segs);
+        let mut d = Vec::with_capacity(segs);
+        for i in 0..segs {
+            let hi = h[i];
+            a.push(values[i]);
+            b.push((values[i + 1] - values[i]) / hi - hi * (2.0 * m[i] + m[i + 1]) / 6.0);
+            c.push(m[i] / 2.0);
+            d.push((m[i + 1] - m[i]) / (6.0 * hi));
+        }
+        Some(CubicSpline {
+            knots: knots.to_vec(),
+            a,
+            b,
+            c,
+            d,
+        })
+    }
+
+    /// Find the segment index for a given t (clamped to valid range).
+    fn segment(&self, t: f64) -> usize {
+        let n = self.knots.len();
+        let segs = n - 1;
+        if t <= self.knots[0] {
+            return 0;
+        }
+        if t >= self.knots[n - 1] {
+            return segs - 1;
+        }
+        // Binary search
+        let mut lo = 0usize;
+        let mut hi = segs - 1;
+        while lo < hi {
+            let mid = (lo + hi + 1) / 2;
+            if self.knots[mid] <= t {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        lo
+    }
+
+    /// Evaluate the spline at t.
+    pub(crate) fn eval(&self, t: f64) -> f64 {
+        let i = self.segment(t);
+        let s = t - self.knots[i];
+        self.a[i] + s * (self.b[i] + s * (self.c[i] + s * self.d[i]))
+    }
+
+    /// Evaluate the second derivative at t.
+    pub(crate) fn eval_ddot(&self, t: f64) -> f64 {
+        let i = self.segment(t);
+        let s = t - self.knots[i];
+        2.0 * self.c[i] + s * 6.0 * self.d[i]
+    }
+
+    /// Return the total duration (last knot - first knot).
+    pub(crate) fn duration(&self) -> f64 {
+        let n = self.knots.len();
+        self.knots[n - 1] - self.knots[0]
+    }
+}
+
+// ── Linear algebra helpers ────────────────────────────────────────────────────
+
+/// Solve a tridiagonal system Ax = rhs using the Thomas algorithm.
+///
+/// - `lower`: sub-diagonal (length n-1), lower[i] is the coefficient in row i+1 col i
+/// - `diag`: main diagonal (length n)
+/// - `upper`: super-diagonal (length n-1), upper[i] is the coefficient in row i col i+1
+///
+/// Returns `None` if any pivot is zero (singular system).
+fn solve_tridiagonal(lower: &[f64], diag: &[f64], upper: &[f64], rhs: &[f64]) -> Option<Vec<f64>> {
+    let n = diag.len();
+    assert_eq!(lower.len(), n - 1);
+    assert_eq!(upper.len(), n - 1);
+    assert_eq!(rhs.len(), n);
+
+    let mut c_prime = vec![0.0_f64; n - 1];
+    let mut d_prime = vec![0.0_f64; n];
+
+    // Forward sweep
+    let pivot = diag[0];
+    if pivot.abs() < f64::EPSILON * 1e6 {
+        return None;
+    }
+    c_prime[0] = upper[0] / pivot;
+    d_prime[0] = rhs[0] / pivot;
+
+    for i in 1..n {
+        let m = lower[i - 1] * c_prime[i - 1];
+        let denom = diag[i] - m;
+        if denom.abs() < f64::EPSILON * 1e6 {
+            return None;
+        }
+        d_prime[i] = (rhs[i] - lower[i - 1] * d_prime[i - 1]) / denom;
+        if i < n - 1 {
+            c_prime[i] = upper[i] / denom;
+        }
+    }
+
+    // Back substitution
+    let mut x = vec![0.0_f64; n];
+    x[n - 1] = d_prime[n - 1];
+    for i in (0..n - 1).rev() {
+        x[i] = d_prime[i] - c_prime[i] * x[i + 1];
+    }
+
+    Some(x)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
