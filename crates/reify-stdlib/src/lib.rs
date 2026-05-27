@@ -38,6 +38,7 @@ mod orientation;
 mod snapshot;
 mod supports;
 mod sweep;
+mod trajectory;
 mod trig;
 
 /// Evaluate a built-in stdlib function by name.
@@ -90,6 +91,9 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         return v;
     }
     if let Some(v) = sweep::eval_sweep(name, args) {
+        return v;
+    }
+    if let Some(v) = trajectory::eval_trajectory(name, args) {
         return v;
     }
     Value::Undef
