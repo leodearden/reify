@@ -457,27 +457,25 @@ fn merge_branches(
             args: args_b,
         },
     ) = (&a_eff.kind, &b_eff.kind)
+        && name_a == name_b
+        && args_a.len() == args_b.len()
+        && is_geometry_function(name_a)
+        && !functions.iter().any(|f| f.name == *name_a)
     {
-        if name_a == name_b
-            && args_a.len() == args_b.len()
-            && is_geometry_function(name_a)
-            && !functions.iter().any(|f| f.name == *name_a)
-        {
-            // Use args from the EFFECTIVE (reduced) forms so scalar args
-            // from collapsed else-if chains are properly threaded.
-            let merged_args: Vec<reify_syntax::Expr> = args_a
-                .iter()
-                .zip(args_b.iter())
-                .map(|(x, y)| merge_branches(cond, x, y, functions, outer_span))
-                .collect();
-            return reify_syntax::Expr {
-                kind: reify_syntax::ExprKind::FunctionCall {
-                    name: name_a.clone(),
-                    args: merged_args,
-                },
-                span: a_eff.span,
-            };
-        }
+        // Use args from the EFFECTIVE (reduced) forms so scalar args
+        // from collapsed else-if chains are properly threaded.
+        let merged_args: Vec<reify_syntax::Expr> = args_a
+            .iter()
+            .zip(args_b.iter())
+            .map(|(x, y)| merge_branches(cond, x, y, functions, outer_span))
+            .collect();
+        return reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::FunctionCall {
+                name: name_a.clone(),
+                args: merged_args,
+            },
+            span: a_eff.span,
+        };
     }
     // Scalar leaf, incompatible names/arities, or Ident branch — emit a
     // plain scalar Conditional using the ORIGINAL a and b so that compile_expr
@@ -555,19 +553,17 @@ pub(crate) fn compile_geometry_call(
     // unaffected) and BEFORE the generic branching-error block below (so Match
     // remains rejected and the graceful-error fallback fires for incompatible
     // Conditional branches).
-    if matches!(&expr.kind, reify_syntax::ExprKind::Conditional { .. }) {
-        if let Some(hoisted) = try_hoist_geometry_conditional(expr, functions) {
-            return compile_geometry_call(
-                &hoisted,
-                scope,
-                enum_defs,
-                functions,
-                diagnostics,
-                step_offset,
-                geometry_lets,
-                visiting,
-            );
-        }
+    if let Some(hoisted) = try_hoist_geometry_conditional(expr, functions) {
+        return compile_geometry_call(
+            &hoisted,
+            scope,
+            enum_defs,
+            functions,
+            diagnostics,
+            step_offset,
+            geometry_lets,
+            visiting,
+        );
     }
 
     // Tasks 3395, 3418: emit a clean compile-time Error for branching expressions
@@ -592,12 +588,23 @@ pub(crate) fn compile_geometry_call(
         _ => None,
     };
     if let Some(kind) = branching_kind_label {
+        // For Conditional, this block is only reached when
+        // `try_hoist_geometry_conditional` returned `None` — i.e. the branches
+        // are NOT structurally-identical geometry constructors (different name,
+        // different arity, or an Ident-let reference).  Tailor the hint
+        // accordingly so users know *why* auto-hoisting did not fire.
+        let hint = if matches!(&expr.kind, reify_syntax::ExprKind::Conditional { .. }) {
+            "; automatic hoisting requires both branches to be the same \
+             geometry constructor with the same arity (e.g. both `box(…)`) — \
+             use structurally-identical constructors or select scalar arguments manually"
+        } else {
+            "; select scalar arguments first, then build the geometry \
+             unconditionally outside the match expression"
+        };
         diagnostics.push(
             Diagnostic::error(format!(
-                "{kind} returning a geometry value is not yet supported as a geometry \
-                 expression; branching/wrapping expressions returning a geometry value \
-                 must be hoisted out of geometry space (select scalar arguments first, \
-                 then build the geometry unconditionally outside the {kind})",
+                "{kind} returning a geometry value cannot be used as a geometry \
+                 expression{hint}",
             ))
             .with_label(DiagnosticLabel::new(
                 expr.span,
