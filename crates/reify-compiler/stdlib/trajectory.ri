@@ -7,7 +7,7 @@
 // and structure_def names declared here. Scope is the type surface only —
 // no Rust evaluator and no constructor side effects (that is β).
 //
-// Surface (PRD §4.1, §5):
+// Surface (PRD §4.1, §5, §5.2):
 //   - trait Profile                     (marker for all motion-profile variants)
 //   - trait BoundaryCondition           (marker for all spline boundary kinds)
 //   - enum  SplineKind                  (CubicSpline | QuinticSpline)
@@ -19,6 +19,7 @@
 //                                       (mechanism, waypoints, boundary, spline_kind;
 //                                        constraint waypoints.count > 0)
 //   - trait Shaper                      (marker for all input-shaper variants, PRD §5)
+//   - structure def JointLimit          (per-joint actuator constraint, PRD §5.2)
 //
 // Module placement: registered last in `stdlib_loader.rs` — `std.trajectory`
 // has no compile-time dependency on any other stdlib module (every type it
@@ -318,3 +319,37 @@ pub fn profile_duration(p: Profile) -> Time { 0.0 * 1s }
 // correctly. Same marker-trait discipline as `trait Profile { }` (:68) and
 // `trait BoundaryCondition { }` (:83).
 trait Shaper { }
+
+// ── JointLimit (PRD §5.2) ─────────────────────────────────────────────────────
+
+// JointLimit — per-joint actuator constraint consumed by TOTSShaper (PRD §5.2).
+//
+// Fields:
+//   - joint     : Real   — TODO(joint-type): placeholder for the future
+//                          kinematic-completion PRD's Joint type. Same
+//                          encoding as `PiecewisePolynomialProfile.mechanism :
+//                          Real` (:211, TODO(mechanism-type)) — both reference
+//                          kinematic-completion-PRD-owned types that have not
+//                          yet landed. When kinematic-completion lands, both
+//                          retarget via the same refactor sweep.
+//   - max_force : Real   — TODO(force-scalar): placeholder for `Scalar<Force>`
+//                          per the uniform-Real-placeholder convention
+//                          established in modal_analysis.ri header §1.
+//                          Force IS a named dimension but the convention
+//                          placeholders all dimensioned scalars uniformly so
+//                          the dimensional-tightening sweep retargets them in
+//                          a single pass.
+//
+// No defaults: both fields are caller-supplied. There is no canonical "default
+// max force" (the limit is entirely application-specific).
+//
+// Constraint `max_force > 0` is added in step-34. Explicitly NOT constrained:
+// `joint : Real` — placeholder for an entity-handle type; no meaningful scalar
+// predicate on a handle.
+//
+// Refines no trait (JointLimit is a plain data container, not a Shaper
+// variant or a BoundaryCondition).
+structure def JointLimit {
+    param joint : Real
+    param max_force : Real
+}
