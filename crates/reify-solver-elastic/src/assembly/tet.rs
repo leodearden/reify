@@ -329,6 +329,40 @@ pub fn element_stiffness_p2(
     element_stiffness_generic(&TetP2, &phys_nodes[..], material)
 }
 
+/// Compute the 30×30 element stiffness for a P2 (quadratic) tetrahedron
+/// with per-element material sampled from a [`MaterialField`].
+///
+/// The centroid is the mean of **the 4 corner phys-nodes only** (indices
+/// 0..4 in the canonical Hughes/Gmsh ordering — the 4 vertices of the
+/// underlying tetrahedron), not all 10 nodes. This matches the centroid
+/// of the geometric tetrahedron — the edge-midpoint nodes 4..10 are
+/// already at the vertex-pair midpoints, so including them would shift
+/// the centroid weight off the geometric centre.
+///
+/// Per-Gauss-point P2 sampling is **deferred** per PRD Q1 ("centroid
+/// for P1, per-Gauss-point optional for P2") and PRD design decision 5
+/// ("per-element-constant D + zone-conforming refinement"); β uses
+/// centroid uniformly across P1 and P2 to keep one D per element.
+///
+/// # Foundation β contract (PRD §C4)
+///
+/// When `field` is a constant lift of an identity-frame isotropic
+/// material, the returned `K_e` is **bitwise** equal to
+/// `element_stiffness_p2(phys_nodes, &iso)`.
+pub fn element_stiffness_p2_with_field<F: MaterialField>(
+    phys_nodes: &[[f64; 3]; 10],
+    field: &F,
+) -> ElementStiffness {
+    // Centroid = mean of the 4 corner vertices (indices 0..4 only).
+    let corners: &[[f64; 3]; 4] = phys_nodes[..4]
+        .try_into()
+        .expect("phys_nodes has 10 entries; the first 4 trivially convert to [[f64;3]; 4]");
+    let centroid = tet_p1_centroid(corners);
+    let mat = field.material_at(centroid);
+    let d_global = mat.d_matrix_global();
+    element_stiffness_generic_with_d_global(&TetP2, &phys_nodes[..], &d_global)
+}
+
 #[cfg(test)]
 #[allow(clippy::needless_range_loop)]
 mod tests {

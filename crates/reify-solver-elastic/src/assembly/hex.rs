@@ -2,6 +2,7 @@
 
 use super::ElementStiffness;
 use crate::constitutive::IsotropicElastic;
+use crate::material_field::MaterialField;
 
 /// Compute the 24×24 element stiffness for a P1 (trilinear) hexahedron.
 ///
@@ -33,6 +34,39 @@ pub fn element_stiffness_hex_p1(
         &crate::elements::hex_p1::HexP1,
         &phys_nodes[..],
         material,
+    )
+}
+
+/// Compute the 24×24 element stiffness for a P1 hex with per-element
+/// material sampled from a [`MaterialField`].
+///
+/// Centroid is the mean of all 8 corner phys-nodes (the canonical hex
+/// centroid in reference coords `(0,0,0)` for the `[−1,1]³` cube).
+/// Samples `field.material_at(centroid)` once, computes `d_global`,
+/// and dispatches to `element_stiffness_generic_with_d_global`.
+///
+/// # Foundation β contract (PRD §C4)
+///
+/// When `field` is a constant lift of an identity-frame isotropic
+/// material, the returned `K_e` is **bitwise** equal to
+/// `element_stiffness_hex_p1(phys_nodes, &iso)`.
+pub fn element_stiffness_hex_p1_with_field<F: MaterialField>(
+    phys_nodes: &[[f64; 3]; 8],
+    field: &F,
+) -> ElementStiffness {
+    let mut c = [0.0_f64; 3];
+    for n in phys_nodes {
+        c[0] += n[0];
+        c[1] += n[1];
+        c[2] += n[2];
+    }
+    let centroid = [0.125 * c[0], 0.125 * c[1], 0.125 * c[2]];
+    let mat = field.material_at(centroid);
+    let d_global = mat.d_matrix_global();
+    crate::assembly::tet::element_stiffness_generic_with_d_global(
+        &crate::elements::hex_p1::HexP1,
+        &phys_nodes[..],
+        &d_global,
     )
 }
 

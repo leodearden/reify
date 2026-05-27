@@ -26,7 +26,9 @@ pub use global::{
 // is wired (the hex/wedge legacy entries are already on crate root via
 // the `hex::element_stiffness_hex_p1` / `wedge::element_stiffness_wedge_p1`
 // paths in src/lib.rs).
-pub use tet::element_stiffness_p1_with_field;
+pub use hex::element_stiffness_hex_p1_with_field;
+pub use tet::{element_stiffness_p1_with_field, element_stiffness_p2_with_field};
+pub use wedge::element_stiffness_wedge_p1_with_field;
 
 #[cfg(test)]
 pub(crate) mod test_support;

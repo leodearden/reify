@@ -2,6 +2,7 @@
 
 use super::ElementStiffness;
 use crate::constitutive::IsotropicElastic;
+use crate::material_field::MaterialField;
 
 /// Compute the 18×18 element stiffness for a P1 (linear) wedge (prism).
 ///
@@ -34,6 +35,40 @@ pub fn element_stiffness_wedge_p1(
         &crate::elements::wedge_p1::WedgeP1,
         &phys_nodes[..],
         material,
+    )
+}
+
+/// Compute the 18×18 element stiffness for a P1 wedge with per-element
+/// material sampled from a [`MaterialField`].
+///
+/// Centroid is the mean of all 6 corner phys-nodes (top + bottom
+/// triangular faces). Samples `field.material_at(centroid)` once,
+/// computes `d_global`, and dispatches to
+/// `element_stiffness_generic_with_d_global`.
+///
+/// # Foundation β contract (PRD §C4)
+///
+/// When `field` is a constant lift of an identity-frame isotropic
+/// material, the returned `K_e` is **bitwise** equal to
+/// `element_stiffness_wedge_p1(phys_nodes, &iso)`.
+pub fn element_stiffness_wedge_p1_with_field<F: MaterialField>(
+    phys_nodes: &[[f64; 3]; 6],
+    field: &F,
+) -> ElementStiffness {
+    let mut c = [0.0_f64; 3];
+    for n in phys_nodes {
+        c[0] += n[0];
+        c[1] += n[1];
+        c[2] += n[2];
+    }
+    let inv6 = 1.0 / 6.0;
+    let centroid = [inv6 * c[0], inv6 * c[1], inv6 * c[2]];
+    let mat = field.material_at(centroid);
+    let d_global = mat.d_matrix_global();
+    crate::assembly::tet::element_stiffness_generic_with_d_global(
+        &crate::elements::wedge_p1::WedgeP1,
+        &phys_nodes[..],
+        &d_global,
     )
 }
 
