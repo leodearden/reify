@@ -47,7 +47,7 @@ fn contributor(args: &[Value]) -> Value {
 }
 
 fn contributor_asym(args: &[Value]) -> Value {
-    if !matches!(args.len(), 3 | 4 | 5) {
+    if !matches!(args.len(), 3..=5) {
         return Value::Undef;
     }
     let nominal_si = match validate_dimensioned_scalar(&args[0], DimensionVector::LENGTH) {
