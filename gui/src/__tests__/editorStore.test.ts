@@ -442,6 +442,73 @@ describe('editorStore externallyChanged', () => {
   });
 });
 
+// ─── editorStore canonical-key dedup (step-17) ───────────────────────────────
+
+describe('editorStore openFile canonical-key dedup', () => {
+  it('(a) file:///a/foo.ri then /a/foo.ri yields one tab; second call updates content', () => {
+    createRoot((dispose) => {
+      const { state, openFile } = createEditorStore();
+      openFile({ path: 'file:///a/foo.ri', content: 'v1' });
+      openFile({ path: '/a/foo.ri', content: 'v2' });
+      expect(state.openFiles).toHaveLength(1);
+      expect(state.openFiles[0].content).toBe('v2');
+      dispose();
+    });
+  });
+
+  it('(b) /a/./b/foo.ri then /a/b/foo.ri yields one tab', () => {
+    createRoot((dispose) => {
+      const { state, openFile } = createEditorStore();
+      openFile({ path: '/a/./b/foo.ri', content: 'v1' });
+      openFile({ path: '/a/b/foo.ri', content: 'v2' });
+      expect(state.openFiles).toHaveLength(1);
+      dispose();
+    });
+  });
+
+  it('(c) stored path is the canonical form', () => {
+    createRoot((dispose) => {
+      const { state, openFile } = createEditorStore();
+      openFile({ path: '/a/./b/foo.ri', content: 'x' });
+      expect(state.openFiles[0].path).toBe('/a/b/foo.ri');
+      dispose();
+    });
+  });
+
+  it('(d) closeFile with file:// form closes tab opened with bare path', () => {
+    createRoot((dispose) => {
+      const { state, openFile, closeFile } = createEditorStore();
+      openFile({ path: '/a/foo.ri', content: 'x' });
+      closeFile('file:///a/foo.ri');
+      expect(state.openFiles).toHaveLength(0);
+      dispose();
+    });
+  });
+
+  it('(d) markDirty with non-canonical path marks the canonicalized tab', () => {
+    createRoot((dispose) => {
+      const { state, openFile, markDirty } = createEditorStore();
+      openFile({ path: '/a/b/foo.ri', content: 'x' });
+      markDirty('file:///a/b/foo.ri');
+      expect(state.dirtyFiles).toContain('/a/b/foo.ri');
+      dispose();
+    });
+  });
+
+  it('(d) setActiveFile with non-canonical path activates the canonical tab', () => {
+    createRoot((dispose) => {
+      const { state, openFile, setActiveFile } = createEditorStore();
+      const f1: FileData = { path: '/a/b/foo.ri', content: 'x' };
+      const f2: FileData = { path: '/a/b/bar.ri', content: 'y' };
+      openFile(f1);
+      openFile(f2);
+      setActiveFile('file:///a/b/foo.ri');
+      expect(state.activeFile).toBe('/a/b/foo.ri');
+      dispose();
+    });
+  });
+});
+
 // ─── editorStore canSave ──────────────────────────────────────────────────────
 
 describe('editorStore canSave', () => {
