@@ -2,14 +2,14 @@
 //! (PRD `docs/prds/v0_4/shell-extract-engine-bridge.md` §2).
 //!
 //! [`ShellExtractionResult`] aggregates the five top-level outputs of the
-//! shell-extract producer pipeline so that the future shell-extract
-//! `ComputeNode` (task γ) has a single value type to persist via
-//! `reify_eval::persistent_cache::PersistentlyCacheable`.
+//! shell-extract producer pipeline so that the shell-extract `ComputeNode`
+//! (task γ, #3834) can persist it via
+//! `reify_core::persistent_cache::PersistentlyCacheable`.
 //!
 //! # Wire-format precedent
 //!
 //! The encoding pipeline mirrors `reify_eval::persistent_cache::ElasticResult`
-//! verbatim (see `crates/reify-eval/src/persistent_cache.rs:697-803`):
+//! verbatim (see `crates/reify-eval/src/persistent_cache.rs`):
 //! bincode 1.3 fixint-LE for the header, zstd 0.13 level-0 for the
 //! compressed body, bytemuck LE casts for the f64/u32 slabs. Reusing the
 //! precedent means every cacheable type in the engine shares one
@@ -116,9 +116,9 @@ fn check_len(field: &str, len: u64, max: u64) -> io::Result<usize> {
 /// Bundled producer-half output of the shell-extract pipeline.
 ///
 /// Per PRD `docs/prds/v0_4/shell-extract-engine-bridge.md` §2, this struct
-/// packages the five top-level outputs the future shell-extract `ComputeNode`
-/// (task γ) will persist via the
-/// [`reify_eval::persistent_cache::PersistentlyCacheable`] trait.
+/// packages the five top-level outputs the shell-extract `ComputeNode`
+/// (task γ, #3834) persists via the
+/// [`reify_core::persistent_cache::PersistentlyCacheable`] trait.
 ///
 /// Construct via [`ShellExtractionResult::new`] so the length invariant
 /// `mid_surface.vertices.len() == mid_surface.thickness.len()` is enforced
@@ -143,7 +143,7 @@ pub struct ShellExtractionResult {
     pub naming: MidSurfaceAttributes,
     /// Wall-clock cost of the producer pipeline in milliseconds. Surfaced
     /// to the persistent-cache layer for cost-weighted LRU eviction via
-    /// [`reify_eval::persistent_cache::PersistentlyCacheable::solve_time_ms`].
+    /// [`reify_core::persistent_cache::PersistentlyCacheable::solve_time_ms`].
     pub solve_time_ms: u64,
     /// Soft-warning diagnostics from the producer pipeline (e.g. clipped
     /// region, degenerate fan). Hard failures route through
@@ -882,11 +882,11 @@ fn read_i32x3_slab<R: Read>(r: &mut R, len: usize) -> io::Result<Vec<[i32; 3]>> 
 // enforced on every build, not only when `cargo test` links. Mirrors
 // `persistent_cache.rs:369-372`.
 const _: fn() = || {
-    fn assert_impl<T: reify_eval::persistent_cache::PersistentlyCacheable>() {}
+    fn assert_impl<T: reify_core::persistent_cache::PersistentlyCacheable>() {}
     assert_impl::<ShellExtractionResult>();
 };
 
-impl reify_eval::persistent_cache::PersistentlyCacheable for ShellExtractionResult {
+impl reify_core::persistent_cache::PersistentlyCacheable for ShellExtractionResult {
     const FORMAT_VERSION: u32 = 1;
 
     /// Encoding pipeline mirrors `ElasticResult::serialize_to_writer` at
@@ -1205,7 +1205,7 @@ mod tests {
     use crate::mid_surface::MidSurfaceMesh;
     use crate::mid_surface_naming::MidSurfaceAttributes;
     use crate::segmentation::SegmentationResult;
-    use reify_eval::persistent_cache::PersistentlyCacheable;
+    use reify_core::persistent_cache::PersistentlyCacheable;
 
     #[test]
     fn shell_extraction_result_public_surface_is_callable() {
