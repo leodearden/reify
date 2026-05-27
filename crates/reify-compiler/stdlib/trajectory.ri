@@ -352,4 +352,17 @@ trait Shaper { }
 structure def JointLimit {
     param joint : Real
     param max_force : Real
+
+    // max_force is a physical limit — only positive values are meaningful.
+    // A "max force" of zero or negative is degenerate (a zero-limit means
+    // the joint can exert no force, a negative limit is non-physical).
+    // Makes the contract explicit in production code rather than relying
+    // solely on test coverage (task #2544 convention, memory id c8452b30).
+    // Fires automatically at construction via SIR-α's
+    // `check_constraints_against_templates` machinery (task 3540, landed).
+    //
+    // NOTE — explicitly NOT constrained:
+    //   `joint : Real` — placeholder for an entity-handle type; no
+    //   meaningful scalar predicate on a handle.
+    constraint max_force > 0
 }
