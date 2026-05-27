@@ -1,4 +1,5 @@
 import { createStore } from 'solid-js/store';
+import { canonicalizeKey } from '../utils/pathUtils';
 import type { FileData } from '../types';
 
 /**
@@ -20,6 +21,8 @@ export interface EditorState {
   activeFile: string | null;
   dirtyFiles: string[];
   externallyChanged: string[];
+  /** Paths of open files whose backing disk entry has been deleted. */
+  missingFiles: string[];
   cursorPosition: { line: number; column: number } | null;
 }
 
@@ -29,47 +32,54 @@ export function createEditorStore() {
     activeFile: null,
     dirtyFiles: [],
     externallyChanged: [],
+    missingFiles: [],
     cursorPosition: null,
   });
 
   function openFile(file: FileData) {
-    const exists = state.openFiles.some((f) => f.path === file.path);
+    const key = canonicalizeKey(file.path);
+    const canonical: FileData = { ...file, path: key };
+    const exists = state.openFiles.some((f) => f.path === key);
     if (!exists) {
-      setState('openFiles', (files) => [...files, file]);
+      setState('openFiles', (files) => [...files, canonical]);
     } else {
-      updateFileContent(file.path, file.content);
+      updateFileContent(key, file.content);
     }
-    setState('activeFile', file.path);
+    setState('activeFile', key);
   }
 
   function updateFileContent(path: string, content: string) {
+    const key = canonicalizeKey(path);
     setState(
       'openFiles',
-      (f) => f.path === path,
+      (f) => f.path === key,
       'content',
       content,
     );
   }
 
   function closeFile(path: string) {
-    const closedIndex = state.openFiles.findIndex((f) => f.path === path);
-    const remaining = state.openFiles.filter((f) => f.path !== path);
+    const key = canonicalizeKey(path);
+    const closedIndex = state.openFiles.findIndex((f) => f.path === key);
+    const remaining = state.openFiles.filter((f) => f.path !== key);
     setState('openFiles', remaining);
-    setState('dirtyFiles', (dirty) => dirty.filter((p) => p !== path));
-    setState('externallyChanged', (ec) => ec.filter((p) => p !== path));
-    if (state.activeFile === path) {
+    setState('dirtyFiles', (dirty) => dirty.filter((p) => p !== key));
+    setState('externallyChanged', (ec) => ec.filter((p) => p !== key));
+    setState('missingFiles', (mf) => mf.filter((p) => p !== key));
+    if (state.activeFile === key) {
       const next = remaining[closedIndex] ?? remaining[closedIndex - 1] ?? null;
       setState('activeFile', next ? next.path : null);
     }
   }
 
   function setActiveFile(path: string) {
-    setState('activeFile', path);
+    setState('activeFile', canonicalizeKey(path));
   }
 
   function markDirty(path: string) {
-    if (!state.dirtyFiles.includes(path)) {
-      setState('dirtyFiles', (dirty) => [...dirty, path]);
+    const key = canonicalizeKey(path);
+    if (!state.dirtyFiles.includes(key)) {
+      setState('dirtyFiles', (dirty) => [...dirty, key]);
     }
   }
 
@@ -81,23 +91,38 @@ export function createEditorStore() {
     // conditions simultaneously.  Do NOT call markClean in a context where
     // only one flag should change; use clearExternallyChanged or markDirty
     // individually for narrower state transitions.
-    setState('dirtyFiles', (dirty) => dirty.filter((p) => p !== path));
-    setState('externallyChanged', (ec) => ec.filter((p) => p !== path));
+    const key = canonicalizeKey(path);
+    setState('dirtyFiles', (dirty) => dirty.filter((p) => p !== key));
+    setState('externallyChanged', (ec) => ec.filter((p) => p !== key));
   }
 
   function markExternallyChanged(path: string) {
-    if (!state.externallyChanged.includes(path)) {
-      setState('externallyChanged', (ec) => [...ec, path]);
+    const key = canonicalizeKey(path);
+    if (!state.externallyChanged.includes(key)) {
+      setState('externallyChanged', (ec) => [...ec, key]);
     }
   }
 
   function clearExternallyChanged(path: string) {
-    setState('externallyChanged', (ec) => ec.filter((p) => p !== path));
+    const key = canonicalizeKey(path);
+    setState('externallyChanged', (ec) => ec.filter((p) => p !== key));
   }
 
   function clearAllExternallyChanged() {
     if (state.externallyChanged.length === 0) return;
     setState('externallyChanged', []);
+  }
+
+  function markMissing(path: string) {
+    const key = canonicalizeKey(path);
+    if (!state.missingFiles.includes(key)) {
+      setState('missingFiles', (mf) => [...mf, key]);
+    }
+  }
+
+  function clearMissing(path: string) {
+    const key = canonicalizeKey(path);
+    setState('missingFiles', (mf) => mf.filter((p) => p !== key));
   }
 
   /**
@@ -114,9 +139,10 @@ export function createEditorStore() {
    * perspective.
    */
   function canSave(path: string): CanSaveResult {
-    const file = state.openFiles.find((f) => f.path === path);
+    const key = canonicalizeKey(path);
+    const file = state.openFiles.find((f) => f.path === key);
     if (!file) return { ok: false, reason: 'not-found' };
-    if (state.externallyChanged.includes(path)) return { ok: false, reason: 'externally-changed' };
+    if (state.externallyChanged.includes(key)) return { ok: false, reason: 'externally-changed' };
     return { ok: true, file };
   }
 
@@ -128,5 +154,5 @@ export function createEditorStore() {
     }
   }
 
-  return { state, openFile, updateFileContent, closeFile, setActiveFile, markDirty, markClean, markExternallyChanged, clearExternallyChanged, clearAllExternallyChanged, setCursorPosition, canSave };
+  return { state, openFile, updateFileContent, closeFile, setActiveFile, markDirty, markClean, markExternallyChanged, clearExternallyChanged, clearAllExternallyChanged, markMissing, clearMissing, setCursorPosition, canSave };
 }
