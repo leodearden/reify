@@ -215,3 +215,75 @@ fn sample_sdf_at_skipped_without_cfg() {
     println!("sample_sdf_at_returns_signed_distance: has_openvdb cfg not set, skip");
     assert!(true);
 }
+
+// ---------------------------------------------------------------------------
+// realize_voxel_from_mesh_with_options tests (task η wrapper)
+// ---------------------------------------------------------------------------
+
+/// Build a flat Mesh from the thin-slab triplets for use in the options-wrapper test.
+#[cfg(has_openvdb)]
+fn thin_slab_flat_mesh() -> reify_ir::Mesh {
+    let (verts, tris) = thin_slab_mesh();
+    reify_ir::Mesh {
+        vertices: verts.iter().flat_map(|v| v.iter().copied()).collect(),
+        indices: tris.iter().flat_map(|t| t.iter().copied()).collect(),
+        normals: None,
+    }
+}
+
+/// Verify that `realize_voxel_from_mesh_with_options` produces active voxels
+/// and returns a count consistent with a direct `realize_voxel_from_mesh` call
+/// on the same geometry (same FFI path, deterministic).
+#[cfg(has_openvdb)]
+#[test]
+fn realize_voxel_from_mesh_with_options_produces_active_voxels() {
+    use reify_kernel_openvdb::{MeshToVoxelOptions, OpenVdbKernel};
+
+    let mesh = thin_slab_flat_mesh();
+    let opts = MeshToVoxelOptions {
+        voxel_size: 0.1,
+        narrow_band: 3.0,
+    };
+
+    let mut kernel = OpenVdbKernel::new();
+
+    // Call the wrapper.
+    let handle = kernel
+        .realize_voxel_from_mesh_with_options(&mesh, &opts)
+        .expect("realize_voxel_from_mesh_with_options should succeed for a valid slab mesh");
+
+    use reify_ir::GeometryHandleId;
+    assert!(
+        handle != GeometryHandleId::INVALID,
+        "expected a valid GeometryHandleId, got INVALID"
+    );
+
+    let wrapper_count = kernel
+        .active_voxel_count(handle)
+        .expect("active_voxel_count should succeed for a registered handle");
+    assert!(wrapper_count > 0, "active voxel count must be non-zero");
+
+    // Consistency: direct call must produce the same count (same FFI, same params).
+    let (verts, tris) = thin_slab_mesh();
+    let direct_handle = kernel
+        .realize_voxel_from_mesh(&verts, &tris, opts.voxel_size, opts.narrow_band)
+        .expect("direct realize_voxel_from_mesh should succeed");
+    let direct_count = kernel
+        .active_voxel_count(direct_handle)
+        .expect("active_voxel_count should succeed for direct handle");
+
+    assert_eq!(
+        wrapper_count, direct_count,
+        "realize_voxel_from_mesh_with_options must produce the same active voxel count \
+         as a direct realize_voxel_from_mesh call with the same parameters; \
+         wrapper={wrapper_count}, direct={direct_count}",
+    );
+}
+
+/// `cfg(not(has_openvdb))` skip-stub for the options-wrapper test.
+#[cfg(not(has_openvdb))]
+#[test]
+fn realize_voxel_from_mesh_with_options_skipped_without_cfg() {
+    println!("realize_voxel_from_mesh_with_options: has_openvdb cfg not set, skip");
+    assert!(true);
+}

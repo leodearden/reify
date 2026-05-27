@@ -91,6 +91,47 @@ impl OpenVdbKernel {
         Ok(id)
     }
 
+    /// Convert a [`reify_ir::Mesh`] to a narrow-band SDF `FloatGrid` using
+    /// the parameters in `opts`, and register the result as a new handle.
+    ///
+    /// Reshapes the flat `mesh.vertices` (`Vec<f32>` in xyz order) and
+    /// `mesh.indices` (`Vec<u32>` in triangle order) into the `[[f32;3]]`/
+    /// `[[u32;3]]` slices expected by [`Self::realize_voxel_from_mesh`], then
+    /// delegates with `opts.voxel_size` and `opts.narrow_band`.
+    ///
+    /// Returns `Err(GeometryError::OperationFailed)` if either the vertex or
+    /// index count is not a multiple of 3 (malformed flat mesh), or if the
+    /// underlying FFI call fails (empty/degenerate mesh).
+    pub fn realize_voxel_from_mesh_with_options(
+        &mut self,
+        mesh: &Mesh,
+        opts: &crate::MeshToVoxelOptions,
+    ) -> Result<GeometryHandleId, GeometryError> {
+        if mesh.vertices.len() % 3 != 0 {
+            return Err(GeometryError::OperationFailed(format!(
+                "mesh.vertices length {} is not a multiple of 3 (expected flat xyz layout)",
+                mesh.vertices.len(),
+            )));
+        }
+        if mesh.indices.len() % 3 != 0 {
+            return Err(GeometryError::OperationFailed(format!(
+                "mesh.indices length {} is not a multiple of 3 (expected flat triangle layout)",
+                mesh.indices.len(),
+            )));
+        }
+        let verts: Vec<[f32; 3]> = mesh
+            .vertices
+            .chunks_exact(3)
+            .map(|c| [c[0], c[1], c[2]])
+            .collect();
+        let tris: Vec<[u32; 3]> = mesh
+            .indices
+            .chunks_exact(3)
+            .map(|c| [c[0], c[1], c[2]])
+            .collect();
+        self.realize_voxel_from_mesh(&verts, &tris, opts.voxel_size, opts.narrow_band)
+    }
+
     /// Return the number of active voxels in the grid registered under
     /// `handle`.
     ///
