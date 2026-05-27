@@ -617,4 +617,113 @@ mod tests {
             node_id: RealizationNodeId::new("test", 0),
         };
     }
+
+    // ── ζ / task 3425 step-5: cache as prior-warm-state source ─────────────
+    //
+    // The new run_compute_dispatch signature (step-6) drops the dead
+    // `prior_warm_state` parameter and sources the prior strictly from
+    // `cache.get_warm_state(&NodeId::Compute(c_id))` (with a warm_pool
+    // fallback). This test pre-seeds the Compute entry's warm_state and
+    // asserts the trampoline observes Some(42) — fails to compile until
+    // step-6 lands the new signature + cache-read.
+
+    use std::sync::{Mutex, OnceLock};
+
+    /// Tracer trampoline: stashes its observed `prior_warm_state` (decoded
+    /// as `Option<i32>`) into a file-scoped OnceLock so the test body can
+    /// assert on it after dispatch returns.
+    static ZETA_OBSERVED_PRIOR: OnceLock<Mutex<Option<i32>>> = OnceLock::new();
+
+    fn zeta_tracer_fn(
+        _value_inputs: &[Value],
+        _realization_inputs: &[RealizationReadHandle],
+        _options: &Value,
+        prior_warm_state: Option<&OpaqueState>,
+        _cancellation: &CancellationHandle,
+    ) -> ComputeOutcome {
+        let observed = prior_warm_state.and_then(|s| s.downcast_ref::<i32>().copied());
+        *ZETA_OBSERVED_PRIOR
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap() = observed;
+        ComputeOutcome::Completed {
+            result: Value::Int(0),
+            new_warm_state: None,
+            cost_per_byte: None,
+            diagnostics: vec![],
+        }
+    }
+
+    #[test]
+    fn run_compute_dispatch_reads_prior_warm_state_from_cache_and_passes_to_trampoline() {
+        // Reset the static for cross-process reuse.
+        if let Some(m) = ZETA_OBSERVED_PRIOR.get() {
+            *m.lock().unwrap() = None;
+        }
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn("test::zeta_tracer", zeta_tracer_fn as ComputeFn);
+
+        let cell = ValueCellId::new("T", "ztp");
+        let c_id = ComputeNodeId::new("T", 0);
+
+        // Seed an output VC with a Final entry so begin_compute_dispatch
+        // has a last_substantive to display.
+        engine.cache_store_mut().put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Int(0), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        // Seed a sentinel Compute entry, then donate warm_state(42i32) + cost.
+        engine.cache_store_mut().put(
+            NodeId::Compute(c_id.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Undef, DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+        let donated = engine.cache_store_mut().donate_warm_state_with_cost(
+            &NodeId::Compute(c_id.clone()),
+            OpaqueState::new(42i32, 4),
+            0.25,
+        );
+        assert!(donated, "seed donate must succeed (entry just inserted)");
+
+        // RED: the new run_compute_dispatch signature drops the
+        // `prior_warm_state` parameter — this call has 8 args (no None for
+        // prior_warm_state). Fails to compile until step-6.
+        let result = engine.run_compute_dispatch(
+            &c_id,
+            std::slice::from_ref(&cell),
+            "test::zeta_tracer",
+            &[Value::Int(0)],
+            &[],
+            &Value::Undef,
+            &CancellationHandle::new(),
+            VersionId(2),
+        );
+        let (_value, _diags) = result.expect("dispatch must Ok");
+
+        // The trampoline must have observed Some(42) — the prior warm
+        // state was sourced from the cache, not from a (dead) caller-supplied
+        // argument.
+        let observed = ZETA_OBSERVED_PRIOR
+            .get()
+            .expect("trampoline must have set the static")
+            .lock()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            observed,
+            Some(42i32),
+            "trampoline must observe prior=Some(42) sourced from cache",
+        );
+    }
 }
