@@ -15,14 +15,7 @@
 
 use crate::assembly::ElementStiffness;
 use crate::elements::{ReferenceCoord, ReferenceElement, tet_p1::TetP1};
-
-/// Conservative lower bound on `|det J|` mirroring the convention in
-/// `assembly::tet::MIN_JACOBIAN_DET` and
-/// `geometric_stiffness::tet::MIN_JACOBIAN_DET`. Anything at or below this
-/// trips a `debug_assert!` rather than silently dividing by it. Kept in
-/// sync by inspection — when the elastic-`K_e` and `K_g` paths move their
-/// constants into a shared `crate::math` module the mass path should follow.
-const MIN_JACOBIAN_DET: f64 = 1.0e-30;
+use crate::math::MIN_JACOBIAN_DET;
 
 /// Compute the 12×12 **consistent mass matrix** `M_e` for a P1 (linear,
 /// 4-node) tetrahedron with constant density `density`.
