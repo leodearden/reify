@@ -8,6 +8,8 @@
 //!   step-7/8  — cantilever stress magnitude assertion + real FEA impl
 //!   step-9/10 — cache-hit assertion + doc comments
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, RealizationReadHandle};
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 use reify_core::{DimensionVector, Severity, ValueCellId};
@@ -274,4 +276,126 @@ fn e2e_cantilever_max_von_mises_within_tolerance() {
         }
         other => panic!("expected iterations to be Value::Int, got: {:?}", other),
     }
+}
+
+// ── step-9: RED — cache-hit assertion ────────────────────────────────────────
+//
+// Verifies that the second eval() of the same compiled module does NOT
+// re-dispatch the trampoline. The significance_filter opt-in
+// (significance_filter.rs:76) plus the cache machinery should prevent
+// re-dispatch when inputs haven't changed.
+//
+// `counting_wrapper` is a module-level fn (required by the ComputeFn type alias,
+// which is a plain fn-pointer and cannot be a boxed closure). DISPATCH_COUNT is
+// a module-level AtomicU32 shared across all invocations.
+//
+// Expected: DISPATCH_COUNT == 1 after two eval() calls.
+// If the second eval() re-dispatches (DISPATCH_COUNT == 2), the test fails —
+// that would expose either a missing significance-filter opt-in OR a
+// cache-key non-determinism in the trampoline output (see step-10 for the fix).
+
+/// Dispatch counter incremented by `counting_wrapper` on every trampoline call.
+/// Module-level static so it is callable as a plain `ComputeFn` fn-pointer.
+static DISPATCH_COUNT: AtomicU32 = AtomicU32::new(0);
+
+/// Counting wrapper: increments `DISPATCH_COUNT` then calls through to
+/// the production trampoline.  Installed via `engine.register_compute_fn`
+/// (bypasses `register_compute_fns` to avoid the panic-on-double-registration).
+fn counting_wrapper(
+    value_inputs: &[Value],
+    realization_inputs: &[RealizationReadHandle],
+    options: &Value,
+    prior_warm_state: Option<&OpaqueState>,
+    cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    DISPATCH_COUNT.fetch_add(1, Ordering::SeqCst);
+    reify_eval::compute_targets::elastic_static::solve_elastic_static_trampoline(
+        value_inputs,
+        realization_inputs,
+        options,
+        prior_warm_state,
+        cancellation,
+    )
+}
+
+/// Cache-hit: second eval() of the same compiled module must NOT re-dispatch.
+///
+/// Step-9 RED: asserts `DISPATCH_COUNT == 1` after two sequential `engine.eval()`
+/// calls on the same `CompiledModule`.  Fails if the second eval re-dispatches
+/// the trampoline (DISPATCH_COUNT would be 2).
+#[test]
+fn e2e_cantilever_second_eval_hits_cache() {
+    // Reset counter for test isolation (guards against the test being re-run in
+    // the same process without reinitialising the static).
+    DISPATCH_COUNT.store(0, Ordering::SeqCst);
+
+    let source = cantilever_source();
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    // Register the counting wrapper directly (bypasses register_compute_fns so
+    // the engine holds exactly one registration for "solver::elastic_static").
+    engine.register_compute_fn("solver::elastic_static", counting_wrapper as ComputeFn);
+
+    // ── First eval: trampoline must be dispatched once (cold start) ───────────
+    let eval1 = engine.eval(&compiled);
+    let errors1: Vec<_> = eval1
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors1.is_empty(),
+        "first eval must have no Error diagnostics, got: {:?}",
+        errors1
+    );
+    assert_eq!(
+        DISPATCH_COUNT.load(Ordering::SeqCst),
+        1,
+        "first eval must dispatch the trampoline exactly once"
+    );
+
+    let result_cell = ValueCellId::new("FeaCantileverSmoke", "result");
+    let result1 = eval1
+        .values
+        .get(&result_cell)
+        .cloned()
+        .unwrap_or_else(|| panic!("first eval: cell FeaCantileverSmoke.result not found"));
+
+    // ── Second eval: cache hit — must NOT re-dispatch ─────────────────────────
+    let eval2 = engine.eval(&compiled);
+    let errors2: Vec<_> = eval2
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors2.is_empty(),
+        "second eval must have no Error diagnostics, got: {:?}",
+        errors2
+    );
+
+    assert_eq!(
+        DISPATCH_COUNT.load(Ordering::SeqCst),
+        1,
+        "second eval must hit the cache and NOT re-dispatch the trampoline \
+         (DISPATCH_COUNT must stay at 1); if this fails, investigate \
+         significance-filter opt-in or cache-key determinism — see step-10"
+    );
+
+    // ── Both evals must produce the same max_von_mises ────────────────────────
+    let result2 = eval2
+        .values
+        .get(&result_cell)
+        .cloned()
+        .unwrap_or_else(|| panic!("second eval: cell FeaCantileverSmoke.result not found"));
+    let mvm1 = extract_max_von_mises(&result1)
+        .unwrap_or_else(|| panic!("first eval: could not extract max_von_mises"));
+    let mvm2 = extract_max_von_mises(&result2)
+        .unwrap_or_else(|| panic!("second eval: could not extract max_von_mises"));
+    assert_eq!(
+        mvm1, mvm2,
+        "both evals must produce bit-identical max_von_mises \
+         (deterministic trampoline contract)"
+    );
 }
