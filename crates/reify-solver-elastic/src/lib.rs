@@ -376,6 +376,7 @@ pub mod elements;
 pub mod error_estimator;
 pub mod geometric_stiffness;
 pub mod interpolation;
+pub mod mass_matrix;
 pub mod material_field;
 pub mod math;
 pub mod mesher;
@@ -455,6 +456,11 @@ pub use geometric_stiffness::{
     InitialStress3, geometric_element_stiffness_hex_p1, geometric_element_stiffness_shell,
     geometric_element_stiffness_tet_p1, geometric_element_stiffness_wedge_p1,
 };
+// Task 3818: P1-tet consistent mass-matrix element kernel; reuses
+// `assemble_global_stiffness` for the global scatter (the assembler treats
+// `k_e` opaquely — K vs K_g vs M).
+// PRD: docs/prds/v0_3/modal-analysis.md §10 Phase 1 task δ.
+pub use mass_matrix::consistent_element_mass_tet_p1;
 pub use solver::{CgResult, CgSolverOptions, SolverMode, solve_cg, solve_cg_warm};
 pub use warm_state::{CgWarmState, solve_cg_with_warm_state};
 // Task 2987: 2D cross-section meshing surface for the hex/wedge swept-body
