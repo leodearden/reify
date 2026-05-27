@@ -159,3 +159,83 @@ fn named_argument_value_auto_free_lowers_to_expr_kind_auto_true() {
         expr.kind
     );
 }
+
+// ── Site 3: connect_param_assignment.value ───────────────────────────────────
+
+/// `connect a -> b { gain = auto }` — strict form lowers the `gain` param's
+/// value to `ExprKind::Auto { free: false }`.
+#[test]
+fn connect_param_value_auto_strict_lowers_to_expr_kind_auto_false() {
+    let source = "structure S { connect a -> b { gain = auto } }";
+    let module = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        module.errors.is_empty(),
+        "expected no parse errors: {:?}",
+        module.errors
+    );
+
+    let structure = match &module.declarations[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    let connect_decl = structure
+        .members
+        .iter()
+        .find_map(|m| match m {
+            MemberDecl::Connect(c) => Some(c),
+            _ => None,
+        })
+        .expect("expected a Connect member");
+
+    let (name, expr) = connect_decl
+        .params
+        .iter()
+        .find(|(n, _)| n == "gain")
+        .expect("expected a 'gain' connect param");
+    assert_eq!(name, "gain");
+    assert!(
+        matches!(expr.kind, ExprKind::Auto { free: false }),
+        "expected ExprKind::Auto {{ free: false }}, got {:?}",
+        expr.kind
+    );
+}
+
+/// `connect a -> b { gain = auto(free) }` — free form lowers the `gain` param's
+/// value to `ExprKind::Auto { free: true }`.
+#[test]
+fn connect_param_value_auto_free_lowers_to_expr_kind_auto_true() {
+    let source = "structure S { connect a -> b { gain = auto(free) } }";
+    let module = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        module.errors.is_empty(),
+        "expected no parse errors: {:?}",
+        module.errors
+    );
+
+    let structure = match &module.declarations[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    let connect_decl = structure
+        .members
+        .iter()
+        .find_map(|m| match m {
+            MemberDecl::Connect(c) => Some(c),
+            _ => None,
+        })
+        .expect("expected a Connect member");
+
+    let (name, expr) = connect_decl
+        .params
+        .iter()
+        .find(|(n, _)| n == "gain")
+        .expect("expected a 'gain' connect param");
+    assert_eq!(name, "gain");
+    assert!(
+        matches!(expr.kind, ExprKind::Auto { free: true }),
+        "expected ExprKind::Auto {{ free: true }}, got {:?}",
+        expr.kind
+    );
+}
