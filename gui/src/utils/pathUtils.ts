@@ -20,6 +20,62 @@ export function normalizePath(p: string): string {
 }
 
 /**
+ * Returns a canonical form of `path` suitable for use as a document-identity key
+ * in the editor store.
+ *
+ * Steps applied in order:
+ * 1. Strips `file://` prefix and decodes percent-encoding via {@link normalizePath}.
+ * 2. Collapses repeated `/` separators.
+ * 3. Resolves `.` (current-dir) and `..` (parent-dir) segments.
+ * 4. Removes a trailing `/` on non-root paths.
+ *
+ * **Limitation**: pure-TS code running in the webview cannot perform a true
+ * `realpath(3)` syscall, so symlinks and relative-to-absolute resolution are
+ * NOT handled here.  The Rust backend canonicalises those cases before emitting
+ * any path over IPC; this function provides defence-in-depth for residual `.`/
+ * `..` segments and `file://`-scheme variations that the backend may not strip.
+ *
+ * Relative paths (no leading `/`) are returned unchanged — the function cannot
+ * know the process CWD from inside the browser sandbox.
+ *
+ * @example
+ * canonicalizeKey('file:///a/./b/foo.ri')    // → '/a/b/foo.ri'
+ * canonicalizeKey('/a/b/../foo.ri')            // → '/a/foo.ri'
+ * canonicalizeKey('/a//b///foo.ri')            // → '/a/b/foo.ri'
+ * canonicalizeKey('relative/foo.ri')           // → 'relative/foo.ri'
+ */
+export function canonicalizeKey(path: string): string {
+  // Step 1: strip file:// and decode percent-encoding
+  let p = normalizePath(path);
+
+  // Only apply segment resolution to absolute paths (starts with '/')
+  if (!p.startsWith('/')) {
+    return p;
+  }
+
+  // Step 2–3: split on '/', collapse repeated slashes, resolve . and ..
+  const segments: string[] = [];
+  for (const seg of p.split('/')) {
+    if (seg === '' || seg === '.') {
+      // empty segment (from leading/repeated '/') or current-dir: skip
+      continue;
+    }
+    if (seg === '..') {
+      // parent-dir: pop last segment (don't go above root)
+      if (segments.length > 0) {
+        segments.pop();
+      }
+    } else {
+      segments.push(seg);
+    }
+  }
+
+  // Step 4: rebuild — always absolute, strip trailing slash (root stays '/')
+  const result = '/' + segments.join('/');
+  return result;
+}
+
+/**
  * Returns true if two file identifiers refer to the same file, normalizing
  * `file://` URI scheme vs bare path differences before comparison.
  *
