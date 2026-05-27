@@ -47,7 +47,7 @@ fn contributor(args: &[Value]) -> Value {
 }
 
 fn contributor_asym(args: &[Value]) -> Value {
-    if args.len() != 3 {
+    if !matches!(args.len(), 3 | 4 | 5) {
         return Value::Undef;
     }
     let nominal_si = match validate_dimensioned_scalar(&args[0], DimensionVector::LENGTH) {
@@ -62,10 +62,39 @@ fn contributor_asym(args: &[Value]) -> Value {
         Some(v) => v,
         None => return Value::Undef,
     };
+    let sign: i64 = if args.len() >= 4 {
+        match &args[3] {
+            Value::Int(1) => 1,
+            Value::Int(-1) => -1,
+            _ => return Value::Undef,
+        }
+    } else {
+        1
+    };
+    let dist_variant: &str = if args.len() == 5 {
+        match parse_distribution(&args[4]) {
+            Some(v) => v,
+            None => return Value::Undef,
+        }
+    } else {
+        "Normal"
+    };
     let nominal = Value::Scalar { si_value: nominal_si, dimension: DimensionVector::LENGTH };
     let plus_tol = Value::Scalar { si_value: plus_tol_si, dimension: DimensionVector::LENGTH };
     let minus_tol = Value::Scalar { si_value: minus_tol_si, dimension: DimensionVector::LENGTH };
-    make_contributor_map(nominal, plus_tol, minus_tol, 1, "Normal")
+    make_contributor_map(nominal, plus_tol, minus_tol, sign, dist_variant)
+}
+
+fn parse_distribution(v: &Value) -> Option<&str> {
+    match v {
+        Value::Enum { type_name, variant } if type_name == "Distribution" => {
+            match variant.as_str() {
+                s @ ("Normal" | "Uniform" | "Triangular") => Some(s),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
 }
 
 fn make_contributor_map(
