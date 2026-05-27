@@ -20,7 +20,7 @@ pub(crate) fn eval_stackup(name: &str, args: &[Value]) -> Option<Value> {
 }
 
 fn contributor(args: &[Value]) -> Value {
-    if args.len() != 2 {
+    if !matches!(args.len(), 2 | 3) {
         return Value::Undef;
     }
     let nominal_si = match validate_dimensioned_scalar(&args[0], DimensionVector::LENGTH) {
@@ -31,9 +31,18 @@ fn contributor(args: &[Value]) -> Value {
         Some(v) => v,
         None => return Value::Undef,
     };
+    let sign: i64 = if args.len() == 3 {
+        match &args[2] {
+            Value::Int(1) => 1,
+            Value::Int(-1) => -1,
+            _ => return Value::Undef,
+        }
+    } else {
+        1
+    };
     let nominal = Value::Scalar { si_value: nominal_si, dimension: DimensionVector::LENGTH };
     let tol = Value::Scalar { si_value: tol_si, dimension: DimensionVector::LENGTH };
-    make_contributor_map(nominal, tol.clone(), tol, 1, "Normal")
+    make_contributor_map(nominal, tol.clone(), tol, sign, "Normal")
 }
 
 fn make_contributor_map(
