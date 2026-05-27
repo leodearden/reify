@@ -1271,6 +1271,52 @@ describe('Editor view stays in sync with store content', () => {
   });
 });
 
+describe('Editor sync dispatch excluded from undo history', () => {
+  it('external auto-reload is excluded from CodeMirror undo history (Ctrl+Z cannot revive stale buffer)', async () => {
+    // Regression guard: the sync dispatch must include Transaction.addToHistory.of(false)
+    // so that undo after a silent auto-reload cannot revert the buffer to the
+    // pre-reload (stale) content.
+    //
+    // Failure mode (without addToHistory.of(false)):
+    //   1. user types 'X' → doc = 'XOLD'  (enters undo history)
+    //   2. external reload → doc = 'RELOADED' (also enters undo history — BUG)
+    //   3. undo → doc = 'XOLD'  ← user accidentally restores stale pre-reload state
+    //
+    // Expected (with addToHistory.of(false)):
+    //   Steps 1-2 same, but reload does NOT enter history.
+    //   3. undo → NOT 'XOLD' (the sync entry is skipped)
+    const fileA: FileData = { path: '/a.ri', content: 'OLD' };
+    const store = setupStore([fileA]);
+    vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined as any);
+
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    expect(view.state.doc.toString()).toBe('OLD');
+
+    // Step 1: user types 'X' — this IS added to undo history
+    view.dispatch({ changes: { from: 0, insert: 'X' } });
+    expect(view.state.doc.toString()).toBe('XOLD');
+
+    // Step 2: external auto-reload sets content to 'RELOADED' — must NOT enter undo history
+    store.updateFileContent('/a.ri', 'RELOADED');
+    await vi.waitFor(() => {
+      expect(view.state.doc.toString()).toBe('RELOADED');
+    });
+
+    // Step 3: Undo via the imported `undo` command (same as what historyKeymap binds to Mod-z).
+    // Without addToHistory.of(false), the sync transaction IS in the undo stack, so
+    // undo would yield 'XOLD'. With it excluded, undo is at most a no-op or reverts 'X'.
+    // The critical invariant: NEVER 'XOLD'.
+    undo(view);
+
+    // After undo, doc must not be the intermediate 'XOLD' state (which would
+    // mean the sync transaction was undoable and the user just reverted the reload).
+    expect(view.state.doc.toString()).not.toBe('XOLD');
+  });
+});
+
 describe('Editor Mod-s exhaustiveness for SaveBlockedReason', () => {
   it('default arm logs to console.error (and does NOT fall through to saveFile) when canSave returns an unhandled reason', () => {
     const store = setupStore();
