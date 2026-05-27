@@ -1692,6 +1692,35 @@ impl<'a> Lowering<'a> {
 
     // ── Member lowering ─────────────────────────────────────
 
+    /// Shared helper: lower a `_binding_value` CST node (grammar.js:752-755) to an `Expr`.
+    ///
+    /// This is the **single source of truth** for `auto_keyword` → `ExprKind::Auto` lowering
+    /// at the five `_binding_value` grammar slots:
+    ///
+    /// 1. `param_declaration.default`
+    /// 2. `let_declaration.value`
+    /// 3. `param_assignment.value`
+    /// 4. `connect_param_assignment.value`
+    /// 5. `named_argument.value`
+    ///
+    /// PRD §4.2 invariant: lowering must be **identical** across all five sites — same
+    /// `ExprKind::Auto { free }` shape, same `free`-flag rule (`modifier` field present?),
+    /// same span attribution (`self.span(node)` on the `auto_keyword` node).
+    ///
+    /// For non-`auto_keyword` nodes the call falls through to `self.lower_expr(node)`,
+    /// preserving current behavior at all five sites for ordinary expressions.
+    fn lower_binding_value(&self, node: tree_sitter::Node) -> Option<Expr> {
+        if node.kind() == "auto_keyword" {
+            let free = node.child_by_field_name("modifier").is_some();
+            Some(Expr {
+                kind: ExprKind::Auto { free },
+                span: self.span(node),
+            })
+        } else {
+            self.lower_expr(node)
+        }
+    }
+
     fn lower_param(&self, node: tree_sitter::Node) -> Option<ParamDecl> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
@@ -1705,17 +1734,9 @@ impl<'a> Lowering<'a> {
         // Silently drops unrecognised defaults via .and_then — intentional divergence
         // from lower_fn_param, which diagnoses them. structure/trait param defaults are
         // compiler-internal (auto_keyword handling) and not user-facing call-site defaults.
-        let default = node.child_by_field_name("default").and_then(|d| {
-            if d.kind() == "auto_keyword" {
-                let free = d.child_by_field_name("modifier").is_some();
-                Some(Expr {
-                    kind: ExprKind::Auto { free },
-                    span: self.span(d),
-                })
-            } else {
-                self.lower_expr(d)
-            }
-        });
+        let default = node
+            .child_by_field_name("default")
+            .and_then(|d| self.lower_binding_value(d));
 
         let where_clause = self.lower_where_clause(node);
 
@@ -1745,7 +1766,7 @@ impl<'a> Lowering<'a> {
             .map(|t| self.lower_type_expr_node(t));
 
         let value_node = node.child_by_field_name("value")?;
-        let value = self.lower_expr(value_node)?;
+        let value = self.lower_binding_value(value_node)?;
 
         let where_clause = self.lower_where_clause(node);
 
