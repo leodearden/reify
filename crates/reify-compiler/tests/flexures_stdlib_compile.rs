@@ -122,3 +122,54 @@ fn std_flexures_module_loads_with_no_errors() {
         errors
     );
 }
+
+// ─── step-3: RotationalStiffness alias ───────────────────────────────────────
+
+/// `RotationalStiffness` is the canonical PRD §4.2 type for
+/// `FlexureCompliance.effective_stiffness`. The proper dimensioned type
+/// (N·m/rad) is owned by the un-filed compliant-joints-flexures α task
+/// (Joint surface extension); β ships a `pub type RotationalStiffness =
+/// Real` placeholder so call sites can already spell the canonical name and
+/// the future α task retargets a single alias line — same placeholder
+/// posture as `trajectory.ri:56 pub type JointValue = Real`.
+///
+/// Test pins three invariants: (a) the alias is present in
+/// `module.type_aliases`, (b) `is_pub == true` so downstream modules /
+/// user code can reference the canonical spelling, (c) the alias resolves
+/// transitively to `Type::Real`. Assertion shape mirrors
+/// `type_alias_compile_tests.rs:33-52` and `:481-498`.
+#[test]
+fn rotational_stiffness_alias_resolves_to_real() {
+    let module = load_stdlib_module();
+
+    let alias = module
+        .type_aliases
+        .iter()
+        .find(|a| a.name == "RotationalStiffness")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected `pub type RotationalStiffness` in std/flexures, got \
+                 type_aliases: {:?}",
+                module
+                    .type_aliases
+                    .iter()
+                    .map(|a| &a.name)
+                    .collect::<Vec<_>>()
+            )
+        });
+
+    assert!(
+        alias.is_pub,
+        "RotationalStiffness must be `pub` so downstream modules / user code \
+         can reference the canonical spelling; got is_pub = {}",
+        alias.is_pub
+    );
+
+    assert_eq!(
+        alias.resolved_type,
+        Some(Type::Real),
+        "RotationalStiffness placeholder alias must resolve to Type::Real; \
+         got: {:?}",
+        alias.resolved_type
+    );
+}
