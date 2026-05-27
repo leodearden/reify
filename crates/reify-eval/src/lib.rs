@@ -6,6 +6,7 @@
 
 pub mod cache;
 pub mod compute_cache_key;
+pub mod compute_targets;
 pub use compute_cache_key::compute_cache_key;
 mod concurrent;
 pub use concurrent::{ConcurrentEditResult, ConcurrentEditSetup, ConcurrentNodeResult};
