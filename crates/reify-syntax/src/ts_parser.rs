@@ -1697,11 +1697,13 @@ impl<'a> Lowering<'a> {
     /// This is the **single source of truth** for `auto_keyword` → `ExprKind::Auto` lowering
     /// at the five `_binding_value` grammar slots:
     ///
-    /// 1. `param_declaration.default`
-    /// 2. `let_declaration.value`
-    /// 3. `param_assignment.value`
-    /// 4. `connect_param_assignment.value`
-    /// 5. `named_argument.value`
+    /// 1. `param_declaration.default`  — via `lower_param`
+    /// 2. `let_declaration.value`      — via `lower_let`
+    /// 3. `param_assignment.value`     — via `lower_sub` body loop (value discarded until γ=3806)
+    /// 4. `connect_param_assignment.value` — via `lower_connect_body`
+    /// 5. `named_argument.value`       — via **two** callers:
+    ///    - `lower_named_arg` (named_argument_list path, used by `sub` instantiations)
+    ///    - `lower_call_argument` (argument_list path, used by `function_call` / `ad_hoc_selector`)
     ///
     /// PRD §4.2 invariant: lowering must be **identical** across all five sites — same
     /// `ExprKind::Auto { free }` shape, same `free`-flag rule (`modifier` field present?),
@@ -2811,13 +2813,19 @@ impl<'a> Lowering<'a> {
     /// `_expression` or a `named_argument`. For named arguments, the name is
     /// stripped and only the value is kept as a positional arg — matching the
     /// positional-only shape of `ExprKind::FunctionCall`.
+    ///
+    /// The `named_argument` branch delegates to `lower_binding_value` (not
+    /// `lower_expr`), making this the **second AST-observable caller** of grammar
+    /// slot 5 (`named_argument.value`). The first caller is `lower_named_arg`
+    /// (via `named_argument_list` for `sub` instantiations). See
+    /// `lower_binding_value`'s doc-comment for the full two-caller enumeration.
     fn lower_call_argument(&self, node: tree_sitter::Node) -> Option<Expr> {
         if !node.is_named() {
             return None;
         }
         if node.kind() == "named_argument" {
             let value_node = node.child_by_field_name("value")?;
-            return self.lower_expr(value_node);
+            return self.lower_binding_value(value_node);
         }
         self.lower_expr(node)
     }
