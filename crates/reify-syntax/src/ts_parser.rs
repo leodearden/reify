@@ -2106,7 +2106,7 @@ impl<'a> Lowering<'a> {
                         );
                         continue;
                     };
-                    let Some(value) = self.lower_expr(value_node) else {
+                    let Some(value) = self.lower_binding_value(value_node) else {
                         self.push_error(
                             format!("invalid value in connect parameter '{}'", name),
                             self.span(value_node),
