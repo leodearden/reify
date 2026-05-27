@@ -532,7 +532,7 @@ fn sampled_module_accessible() {
     // `reify_ir::sampled::…` or `reify_types::sampled::…`.
     // We just verify the module path is accessible (no public items to pin here
     // beyond those already covered in the value tests above).
-    assert!(sampled::LINSPACE_MAX_INTERVALS > 0);
+    const { assert!(sampled::LINSPACE_MAX_INTERVALS > 0) };
 }
 
 #[test]
