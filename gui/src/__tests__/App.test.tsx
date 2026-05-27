@@ -1,7 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@solidjs/testing-library';
 import type { GuiState } from '../types';
-import { EXTERNALLY_CHANGED_SAVE_BLOCKED_MSG } from '../editor/messages';
+import {
+  EXTERNALLY_CHANGED_SAVE_BLOCKED_MSG,
+  EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG,
+  SAVE_CONFLICT_RELOAD_LABEL,
+  SAVE_CONFLICT_OVERWRITE_LABEL,
+} from '../editor/messages';
 import { flushMacrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy } from './test-utils';
 
 // Mock Tauri APIs before any component imports
@@ -4984,7 +4989,7 @@ describe('App handleSave aborts when file is externally changed', () => {
     vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
   });
 
-  it('(a) handleSave does NOT call bridgeSaveFile and shows error toast when active file is externally changed', async () => {
+  it('(a) handleSave does NOT call bridgeSaveFile and shows conflict prompt when active file is externally changed', async () => {
     vi.mocked(bridge.saveFile).mockResolvedValue(undefined);
 
     // Regression guard: neither handleSave nor the Editor keymap should emit
@@ -5021,19 +5026,20 @@ describe('App handleSave aborts when file is externally changed', () => {
           .some((arg: unknown) => typeof arg === 'string' && arg.includes('Save aborted')),
       ).toBe(false);
 
-      // An error toast containing the exact save-blocked message string must appear.
-      // We use .includes() rather than strict equality because the toast element's
-      // textContent also contains the dismiss-button "×" character appended after
-      // the message span.  Using the full constant (not a loose keyword regex)
-      // still enforces lockstep: a wording drift in messages.ts would break this test.
+      // A conflict toast (not a dead-end error) must appear with the prompt message
+      // and both action buttons. Using the full constant (not a loose keyword regex)
+      // enforces lockstep: a wording drift in messages.ts would break this test.
       await waitFor(() => {
         const toasts = screen.getAllByTestId('toast');
-        const errorToast = toasts.find((t) =>
-          t.textContent?.includes(EXTERNALLY_CHANGED_SAVE_BLOCKED_MSG),
+        const conflictToast = toasts.find((t) =>
+          t.textContent?.includes(EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG),
         );
-        expect(errorToast).toBeTruthy();
-        // Pin the toast variant — must be 'error', not 'warning' or 'info'
-        expect(errorToast?.dataset.type).toBe('error');
+        expect(conflictToast).toBeTruthy();
+        // Must be 'error' type (sticky, no auto-dismiss) — matches the old blocked toast
+        expect(conflictToast?.dataset.type).toBe('error');
+        // Both action buttons must be present within the toast
+        expect(within(conflictToast!).getByRole('button', { name: SAVE_CONFLICT_RELOAD_LABEL })).toBeTruthy();
+        expect(within(conflictToast!).getByRole('button', { name: SAVE_CONFLICT_OVERWRITE_LABEL })).toBeTruthy();
       });
     } finally {
       consoleErrorSpy.mockRestore();
