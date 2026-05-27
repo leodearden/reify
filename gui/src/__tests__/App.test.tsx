@@ -105,6 +105,7 @@ vi.mock('../bridge', () => ({
   onTessellationDiagnostics: vi.fn().mockResolvedValue(() => {}),
   onCompileDiagnostics: vi.fn().mockResolvedValue(() => {}),
   onFileChanged: vi.fn().mockResolvedValue(() => {}),
+  onFileRemoved: vi.fn().mockResolvedValue(() => {}),
   onSerializationError: vi.fn().mockResolvedValue(() => {}),
   onFocusEntity: vi.fn().mockResolvedValue(() => {}),
   onNavigateToSource: vi.fn().mockResolvedValue(() => {}),
@@ -175,6 +176,7 @@ beforeEach(() => {
   vi.mocked(bridge.onTessellationDiagnostics).mockResolvedValue(() => {});
   vi.mocked((bridge as any).onCompileDiagnostics).mockResolvedValue(() => {});
   vi.mocked(bridge.onFileChanged).mockResolvedValue(() => {});
+  vi.mocked((bridge as any).onFileRemoved).mockResolvedValue(() => {});
   vi.mocked(bridge.onSerializationError).mockResolvedValue(() => {});
   vi.mocked(bridge.onFocusEntity).mockResolvedValue(() => {});
   vi.mocked(bridge.onNavigateToSource).mockResolvedValue(() => {});
@@ -5560,5 +5562,71 @@ describe('App editor→selection wiring', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// ─── file-removed event handling (step-23) ───────────────────────────────────
+
+describe('App file-removed event handling', () => {
+  const testState: GuiState = {
+    meshes: [],
+    values: [],
+    constraints: [],
+    files: [
+      { path: '/project/bracket.ri', content: 'structure Bracket {}' },
+    ],
+    tessellation_diagnostics: [],
+    compile_diagnostics: [],
+  };
+
+  let fileRemovedCallback: ((data: { path: string }) => void) | undefined;
+
+  beforeEach(() => {
+    fileRemovedCallback = undefined;
+    vi.mocked((bridge as any).onFileRemoved).mockImplementation(async (cb: any) => {
+      fileRemovedCallback = cb;
+      return () => {};
+    });
+    vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
+  });
+
+  it('(a) onFileRemoved is subscribed to during initApp', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(fileRemovedCallback).toBeDefined());
+    expect(bridge.onFileRemoved).toHaveBeenCalled();
+  });
+
+  it('(b) firing with a path in openFiles adds it to missingFiles', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(fileRemovedCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    fileRemovedCallback!({ path: '/project/bracket.ri' });
+
+    await waitFor(() => {
+      expect(capturedEditorStore.state.missingFiles).toContain('/project/bracket.ri');
+    });
+  });
+
+  it('(c) firing with a path NOT in openFiles does NOT add to missingFiles', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(fileRemovedCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    fileRemovedCallback!({ path: '/project/other.ri' });
+
+    await new Promise((r) => setTimeout(r, 10));
+    expect(capturedEditorStore.state.missingFiles).not.toContain('/project/other.ri');
+  });
+
+  it('(d) unsub from onFileRemoved is called on App unmount', async () => {
+    const fileRemovedUnsub = vi.fn();
+    vi.mocked((bridge as any).onFileRemoved).mockResolvedValue(fileRemovedUnsub);
+
+    const { unmount } = render(() => <App />);
+    await waitFor(() => expect(screen.getByTestId('app-layout')).toBeTruthy());
+
+    unmount();
+    expect(fileRemovedUnsub).toHaveBeenCalled();
   });
 });
