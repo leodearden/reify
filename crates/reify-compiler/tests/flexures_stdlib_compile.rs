@@ -538,3 +538,288 @@ fn flexure_compliance_constrains_yield_margin_upper_bound() {
         ),
     }
 }
+
+// ─── step-11: flexure_compliance accessor fn signature + eval ────────────────
+
+/// `flexure_compliance(joint) -> FlexureCompliance` is the PRD §4.2 accessor
+/// surfacing the cached `FlexureCompliance` record from a joint. The β-task
+/// stub body returns a default `FlexureCompliance()` until λ (task 3821)
+/// replaces it with the cache-lookup logic that reads the reserved hidden
+/// field `__flexure_compliance` set by PRB ctors (γ / δ / ε / ζ / η / θ) on
+/// the joint Map. The joint parameter is typed as `Real` (placeholder per
+/// the module header §3 / `TODO(joint-type)`) until KCC-ζ (task 3845) lands
+/// the per-kind joint structures so we can retarget to `DrivingJoint` /
+/// `Joint`.
+///
+/// Test pins two contracts:
+///
+///   (a) Signature shape — the function is `pub`, takes one `joint : Real`
+///       parameter, and returns `Type::StructureRef("FlexureCompliance")`.
+///       The structure-ref return type pins the type-resolution path that
+///       `fn_signature_type_resolution_tests.rs::
+///       fn_signature_resolves_stdlib_structure_as_return_type` already
+///       exercises end-to-end on `ElasticResult` — here we pin the same
+///       contract for FlexureCompliance via the std/flexures embedded path.
+///
+///   (b) Eval shape — calling `flexure_compliance(0.0)` via the production
+///       `reify_expr::eval_expr` + `EvalContext::new(&values, &module.
+///       functions)` route (rather than reading `func.body.result_expr`
+///       directly) yields a `Value::StructureInstance(data)` whose
+///       `type_name == "FlexureCompliance"` and whose 7 fields carry the
+///       sentinel-zero defaults pinned in step-7 (so a future change that
+///       silently drops the body, mangles the ctor target, or shuffles the
+///       default population is caught here). Routing via `eval_expr`
+///       mirrors the discipline in `standard_stock_tests.rs::
+///       assert_length_constant` and `standard_gravity_tests.rs::
+///       standard_gravity_evaluates_to_9p80665_si_with_acceleration_
+///       dimension`: future `let`-bindings inside the body would silently
+///       evaporate under a `result_expr` short-circuit.
+#[test]
+fn flexure_compliance_accessor_fn_signature_and_eval() {
+    let module = load_stdlib_module();
+
+    // ── (a) Signature shape ────────────────────────────────────────────────
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "flexure_compliance")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected `pub fn flexure_compliance(...)` in std/flexures, \
+                 got functions: {:?}",
+                module
+                    .functions
+                    .iter()
+                    .map(|f| &f.name)
+                    .collect::<Vec<_>>()
+            )
+        });
+
+    assert!(
+        func.is_pub,
+        "flexure_compliance must be `pub` (PRD §4.2 accessor); got is_pub = {}",
+        func.is_pub
+    );
+
+    assert_eq!(
+        func.params.len(),
+        1,
+        "flexure_compliance should take exactly 1 param (joint); got: {:?}",
+        func.params
+    );
+
+    assert_eq!(
+        func.params[0].0, "joint",
+        "flexure_compliance param 0 should be named `joint` (PRD §4.2); got: {}",
+        func.params[0].0
+    );
+
+    // Joint param is `Real` per the module header §3 placeholder convention
+    // (`TODO(joint-type)` — retargets to `DrivingJoint` trait or `Joint`
+    // marker when KCC-ζ lands; task 3845). Same placeholder posture as
+    // `trajectory.ri::PiecewisePolynomialProfile.mechanism : Real`.
+    assert_eq!(
+        func.params[0].1,
+        Type::Real,
+        "flexure_compliance.joint param type should be Type::Real (PRD-β \
+         placeholder per module header §3; TODO(joint-type) retargets to \
+         DrivingJoint when KCC-ζ lands); got: {:?}",
+        func.params[0].1
+    );
+
+    assert_eq!(
+        func.return_type,
+        Type::StructureRef("FlexureCompliance".to_string()),
+        "flexure_compliance return type should be \
+         Type::StructureRef(\"FlexureCompliance\") (PRD §4.2); got: {:?}",
+        func.return_type
+    );
+
+    // ── (b) Eval shape ─────────────────────────────────────────────────────
+    // Build a `flexure_compliance(0.0)` call expression and route it through
+    // the production eval path (rather than reading `func.body.result_expr`
+    // directly) — robust against future `let`-binding refactors per the
+    // standard_stock_tests / standard_gravity_tests precedent.
+    let joint_arg = CompiledExpr::literal(Value::Real(0.0), Type::Real);
+    let call_expr = CompiledExpr::user_function_call(
+        "flexure_compliance".to_string(),
+        vec![joint_arg],
+        Type::StructureRef("FlexureCompliance".to_string()),
+    );
+    let values = ValueMap::new();
+    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    let result = reify_expr::eval_expr(&call_expr, &ctx);
+
+    let data = match &result {
+        Value::StructureInstance(data) => data,
+        other => panic!(
+            "flexure_compliance(0.0) should return Value::StructureInstance; \
+             got: {:?}",
+            other
+        ),
+    };
+
+    assert_eq!(
+        data.type_name, "FlexureCompliance",
+        "flexure_compliance(0.0) StructureInstance.type_name should be \
+         \"FlexureCompliance\"; got: {}",
+        data.type_name
+    );
+
+    // 7 fields per PRD §4.2; sentinel-zero defaults per step-7.
+    assert_eq!(
+        data.fields.len(),
+        7,
+        "flexure_compliance(0.0) StructureInstance.fields should have \
+         exactly 7 entries (PRD §4.2); got fields: {:?}",
+        data.fields
+            .iter()
+            .map(|(k, _)| k.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    // effective_stiffness = 0 (Real via the RotationalStiffness alias).
+    // Accept Int(0) or Real(0.0) per the literal-coercion future-proofing
+    // rationale established in step-7.
+    let effective_stiffness = data
+        .fields
+        .get(&"effective_stiffness".to_string())
+        .expect("flexure_compliance(0.0).effective_stiffness missing");
+    match effective_stiffness {
+        Value::Real(v) if *v == 0.0 => {}
+        Value::Int(0) => {}
+        other => panic!(
+            "flexure_compliance(0.0).effective_stiffness should be Real(0.0) \
+             or Int(0) (sentinel-zero default); got: {:?}",
+            other
+        ),
+    }
+
+    // max_stress = 0Pa.
+    let max_stress = data
+        .fields
+        .get(&"max_stress".to_string())
+        .expect("flexure_compliance(0.0).max_stress missing");
+    match max_stress {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(
+                *dimension,
+                DimensionVector::PRESSURE,
+                "flexure_compliance(0.0).max_stress should have PRESSURE \
+                 dimension; got: {:?}",
+                dimension
+            );
+            assert_eq!(
+                *si_value, 0.0,
+                "flexure_compliance(0.0).max_stress si_value should be \
+                 exactly 0.0 (= 0Pa sentinel-zero default); got: {}",
+                si_value
+            );
+        }
+        other => panic!(
+            "flexure_compliance(0.0).max_stress should be Value::Scalar \
+             {{ PRESSURE, 0.0 }} (= 0Pa); got: {:?}",
+            other
+        ),
+    }
+
+    // max_stress_at_neutral = 0Pa.
+    let max_stress_at_neutral = data
+        .fields
+        .get(&"max_stress_at_neutral".to_string())
+        .expect("flexure_compliance(0.0).max_stress_at_neutral missing");
+    match max_stress_at_neutral {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(
+                *dimension,
+                DimensionVector::PRESSURE,
+                "flexure_compliance(0.0).max_stress_at_neutral should have \
+                 PRESSURE dimension; got: {:?}",
+                dimension
+            );
+            assert_eq!(
+                *si_value, 0.0,
+                "flexure_compliance(0.0).max_stress_at_neutral si_value \
+                 should be exactly 0.0 (= 0Pa sentinel-zero default); got: {}",
+                si_value
+            );
+        }
+        other => panic!(
+            "flexure_compliance(0.0).max_stress_at_neutral should be \
+             Value::Scalar {{ PRESSURE, 0.0 }} (= 0Pa); got: {:?}",
+            other
+        ),
+    }
+
+    // yield_margin = 0 (Real). Accept Int(0) or Real(0.0).
+    let yield_margin = data
+        .fields
+        .get(&"yield_margin".to_string())
+        .expect("flexure_compliance(0.0).yield_margin missing");
+    match yield_margin {
+        Value::Real(v) if *v == 0.0 => {}
+        Value::Int(0) => {}
+        other => panic!(
+            "flexure_compliance(0.0).yield_margin should be Real(0.0) or \
+             Int(0) (sentinel-zero default); got: {:?}",
+            other
+        ),
+    }
+
+    // parasitic_error = none → Value::Option(None) per the Option default
+    // path (option_compile_tests.rs precedent).
+    let parasitic_error = data
+        .fields
+        .get(&"parasitic_error".to_string())
+        .expect("flexure_compliance(0.0).parasitic_error missing");
+    match parasitic_error {
+        Value::Option(None) => {}
+        other => panic!(
+            "flexure_compliance(0.0).parasitic_error should be \
+             Value::Option(None) (= `none`); got: {:?}",
+            other
+        ),
+    }
+
+    // prb_validity_range = 0 (Real placeholder for Range<Angle>). Accept
+    // Int(0) or Real(0.0).
+    let prb_validity_range = data
+        .fields
+        .get(&"prb_validity_range".to_string())
+        .expect("flexure_compliance(0.0).prb_validity_range missing");
+    match prb_validity_range {
+        Value::Real(v) if *v == 0.0 => {}
+        Value::Int(0) => {}
+        other => panic!(
+            "flexure_compliance(0.0).prb_validity_range should be Real(0.0) \
+             or Int(0) (sentinel-zero default; Range<Angle> placeholder); \
+             got: {:?}",
+            other
+        ),
+    }
+
+    // at_yield = false.
+    let at_yield = data
+        .fields
+        .get(&"at_yield".to_string())
+        .expect("flexure_compliance(0.0).at_yield missing");
+    match at_yield {
+        Value::Bool(v) => assert!(
+            !*v,
+            "flexure_compliance(0.0).at_yield should be false (PRB ctors \
+             flip this true on yield-exceedance only); got: {}",
+            v
+        ),
+        other => panic!(
+            "flexure_compliance(0.0).at_yield should be Value::Bool(false); \
+             got: {:?}",
+            other
+        ),
+    }
+}
