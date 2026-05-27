@@ -29,7 +29,7 @@
 //!
 //! where `<flavor>` is `strict` (bare `auto`) or `free` (`auto(free)`).
 
-use reify_syntax::*;
+use reify_ast::*;
 use reify_core::ModulePath;
 
 // ── Site-specific helpers ─────────────────────────────────────────────────────
