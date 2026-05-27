@@ -15,6 +15,25 @@
 
 use crate::assembly::ElementStiffness;
 
+/// Compute the 12×12 **consistent mass matrix** `M_e` for a P1 (linear,
+/// 4-node) tetrahedron with constant density `density`.
+///
+/// `phys_nodes` are the 4 vertex positions in the canonical reference-vertex
+/// ordering `(0,0,0), (1,0,0), (0,1,0), (0,0,1)` — same convention as
+/// [`crate::element_stiffness_p1`] and [`crate::geometric_element_stiffness_tet_p1`].
+///
+/// The returned matrix shares the row-major `(3·node_idx + axis)` layout of
+/// [`ElementStiffness`], so it can be fed into [`crate::assemble_global_stiffness`]
+/// without any repacking (the assembler treats `k_e` opaquely — K vs K_g vs M).
+///
+/// Step-2 stub: returns a zero 12×12 matrix; step-4 lands the real formula.
+pub fn consistent_element_mass_tet_p1(
+    _phys_nodes: &[[f64; 3]; 4],
+    _density: f64,
+) -> ElementStiffness {
+    ElementStiffness::zeros(12)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
