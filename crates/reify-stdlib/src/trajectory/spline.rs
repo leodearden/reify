@@ -71,10 +71,10 @@ impl CubicSpline {
             }
         }
         // For Clamped BC, also reject non-finite velocity prescriptions.
-        if let BoundaryCondition::Clamped { start_vel, end_vel } = bc {
-            if !start_vel.is_finite() || !end_vel.is_finite() {
-                return None;
-            }
+        if let BoundaryCondition::Clamped { start_vel, end_vel } = bc
+            && (!start_vel.is_finite() || !end_vel.is_finite())
+        {
+            return None;
         }
 
         match bc {
