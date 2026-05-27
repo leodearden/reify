@@ -409,3 +409,30 @@ fn shell_extract_second_run_hits_in_memory_compute_node_cache() {
         other => panic!("expected CachedResult::Value in cache after dispatch, got {other:?}"),
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Step-9 test (double-registration panic)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Verify that calling `register_shell_extract_compute_fns` twice on the same
+/// engine panics with a message containing `"shell-extract::extract"`.
+///
+/// Pins the PRD §4 hard-error contract propagated from
+/// `Engine::register_compute_fn`'s `Entry::Occupied → panic!` arm at
+/// `engine_admin.rs:739-746`.  This is a defensive pin against a future
+/// refactor that accidentally adds an early-return / `if !is_registered { … }`
+/// guard that would silently overwrite (or silently skip) a second registration.
+///
+/// RED in step-9 only if `register_shell_extract_compute_fns` accidentally
+/// guards double-registration.  With the current single-call implementation
+/// (step-2) the test is GREEN immediately after being written, because the
+/// underlying `Engine::register_compute_fn` already panics on duplicate targets.
+#[test]
+#[should_panic(expected = "shell-extract::extract")]
+fn shell_extract_double_registration_panics_naming_target() {
+    let mut engine = make_simple_engine();
+    // First registration — succeeds.
+    register_shell_extract_compute_fns(&mut engine);
+    // Second registration — must panic with a message containing the target name.
+    register_shell_extract_compute_fns(&mut engine);
+}
