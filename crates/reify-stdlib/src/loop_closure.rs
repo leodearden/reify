@@ -1829,11 +1829,17 @@ mod tests {
     ///
     /// Asserts:
     ///   * chain_a stripped of world sentinel: `[jA]`
-    ///   * vals_a populated from binding: `[0.5]` (SI metres)
+    ///   * vals_a populated from binding: `[JointValue::Scalar(0.5)]` (SI metres)
     ///   * chain_b stripped of world sentinel: `[jB]`
-    ///   * vals_b_initial seeded from jB's range midpoint: `[0.5]`
-    ///     (jB has range 0..1m → midpoint 0.5m).
+    ///   * vals_b_initial seeded from jB's range midpoint:
+    ///     `[JointValue::Scalar(0.5)]` (jB has range 0..1m → midpoint 0.5m).
     ///   * free_b indices: `[0]` (the only joint in chain_b is unbound).
+    ///
+    /// KCC-γ step-9: `LoopClosureSolverInputs` widens vals_a / vals_b_initial
+    /// from `Vec<f64>` to `Vec<JointValue>` so multi-DOF closing joints can
+    /// flow into the Newton solver without the f64-shim collapsing them to
+    /// None.  Single-DOF joints still produce `JointValue::Scalar(..)` for
+    /// continuity with the pre-widening test.
     #[test]
     fn extract_loop_closure_chains_returns_chains_vals_and_free_indices() {
         // jA and jB must be structurally distinct Maps so the binding for
@@ -1861,11 +1867,13 @@ mod tests {
             "chain_a should strip world sentinel"
         );
         assert_eq!(vals_a.len(), 1, "vals_a length must equal chain_a length");
-        assert!(
-            (vals_a[0] - 0.5).abs() < 1e-12,
-            "vals_a[0] expected 0.5 (bound), got {}",
-            vals_a[0]
-        );
+        match &vals_a[0] {
+            JointValue::Scalar(s) => assert!(
+                (s - 0.5).abs() < 1e-12,
+                "vals_a[0] expected JointValue::Scalar(0.5) (bound), got Scalar({s})"
+            ),
+            other => panic!("vals_a[0] expected JointValue::Scalar(0.5), got {other:?}"),
+        }
         assert_eq!(
             chain_b,
             vec![j_b.clone()],
@@ -1876,12 +1884,87 @@ mod tests {
             1,
             "vals_b_initial length must equal chain_b length"
         );
-        assert!(
-            (vals_b_initial[0] - 0.5).abs() < 1e-12,
-            "vals_b_initial[0] expected midpoint 0.5 (jB range 0..1m), got {}",
-            vals_b_initial[0]
-        );
+        match &vals_b_initial[0] {
+            JointValue::Scalar(s) => assert!(
+                (s - 0.5).abs() < 1e-12,
+                "vals_b_initial[0] expected JointValue::Scalar(0.5) (midpoint), got Scalar({s})"
+            ),
+            other => panic!(
+                "vals_b_initial[0] expected JointValue::Scalar(0.5), got {other:?}"
+            ),
+        }
         assert_eq!(free_b, vec![0], "free_b should mark jB (index 0) as free");
+    }
+
+    /// KCC-γ step-9: `extract_loop_closure_chains` must populate
+    /// `vals_b_initial` with a `JointValue::Planar([mid_x, mid_y, mid_θ])`
+    /// surface when a multi-DOF planar joint in chain_b has no direct
+    /// binding entry — exactly the case the pre-widening f64-tuple shim
+    /// collapsed to None (and through which `snapshot()` short-circuited
+    /// to Undef).  Multi-DOF closing joints are the user-observable signal
+    /// the KCC-γ widening turns from None to Some.
+    #[test]
+    fn extract_loop_closure_chains_returns_jointvalue_vectors() {
+        // jA is a single-DOF prismatic driven by an explicit binding;
+        // jB is a 3-DOF planar joint with NO direct binding.  Under
+        // KCC-γ widening, vals_b_initial[0] for jB must be the
+        // JointValue::Planar([0.5, 0.5, π/2]) range-midpoint surface
+        // (length_range_0_to_1m → midpoint 0.5; angle_range_0_to_pi →
+        // midpoint π/2).  Before widening the unbound multi-DOF joint
+        // collapsed extract_loop_closure_chains to None.
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = planar_xy_joint();
+        let bind_a = eval_builtin("bind", &[j_a.clone(), Value::length(0.5)]);
+        let bindings = vec![bind_a];
+        let record = loop_closure_record(
+            vec![world_sentinel(), j_a.clone()],
+            vec![world_sentinel(), j_b.clone()],
+            j_b.clone(),
+        );
+
+        let (chain_a, vals_a, chain_b, vals_b_initial, free_b) =
+            super::extract_loop_closure_chains(&record, &bindings).expect(
+                "extract_loop_closure_chains must return Some for a chain_b with an \
+                 unbound multi-DOF planar joint (KCC-γ widening — PRD §5.2)",
+            );
+
+        // chain_a / vals_a: same single-DOF prismatic shape as the
+        // single-DOF test above.
+        assert_eq!(chain_a, vec![j_a.clone()]);
+        match &vals_a[0] {
+            JointValue::Scalar(s) => assert!(
+                (s - 0.5).abs() < 1e-12,
+                "vals_a[0] expected JointValue::Scalar(0.5), got Scalar({s})"
+            ),
+            other => panic!("vals_a[0] expected JointValue::Scalar(0.5), got {other:?}"),
+        }
+
+        // chain_b carries the planar joint, vals_b_initial[0] is the
+        // 3-component planar midpoint surface.
+        assert_eq!(chain_b, vec![j_b.clone()]);
+        let pi_2 = std::f64::consts::FRAC_PI_2;
+        match &vals_b_initial[0] {
+            JointValue::Planar([x, y, theta]) => {
+                assert!(
+                    (x - 0.5).abs() < 1e-12,
+                    "vals_b_initial[0].x expected 0.5 (length midpoint), got {x}"
+                );
+                assert!(
+                    (y - 0.5).abs() < 1e-12,
+                    "vals_b_initial[0].y expected 0.5 (length midpoint), got {y}"
+                );
+                assert!(
+                    (theta - pi_2).abs() < 1e-12,
+                    "vals_b_initial[0].theta expected π/2 (angle midpoint), got {theta}"
+                );
+            }
+            other => panic!(
+                "vals_b_initial[0] expected JointValue::Planar([0.5, 0.5, π/2]), got {other:?}"
+            ),
+        }
+
+        // The planar joint is unbound → marked as free.
+        assert_eq!(free_b, vec![0], "free_b should mark planar jB as free");
     }
 
     /// Negative case: a malformed record missing the `path_b` key collapses
