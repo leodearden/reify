@@ -29,7 +29,7 @@ Breakdown by state: WIRED=6 (M-003,004,008,009,011,012), PARTIAL=4 (M-001,005,00
 
 - **State:** FICTION
 - **Failure mode:** F1 (compile-time / source-level contract → no parser backing)
-- **Evidence:** `tree-sitter-reify/grammar.js:601-610` admits only `type_expr | number_literal`; `auto_keyword` (line 430-433) is reserved for value defaults only; module doc at `auto_type_param.rs:100-106` and e2e test header at `crates/reify-eval/tests/auto_backtracking_e2e.rs:14-24` explicitly call out the gap. No task in the 2659-2664 sibling list owns parser work.
+- **Evidence:** `tree-sitter-reify/grammar.js:601-610` admits only `type_expr | number_literal` in `type_arg_list`; module doc at `auto_type_param.rs:100-106` and e2e test header at `crates/reify-eval/tests/auto_backtracking_e2e.rs:14-24` explicitly call out this type-arg-position gap. No task in the 2659-2664 sibling list owns parser work for `type_arg_list`. *(2026-05-27 update: `auto_keyword` is no longer "reserved for value defaults only" — after task 3802 (commit e411301f69), `auto_keyword` is admitted at all 5 binding-site value positions via the shared `_binding_value` rule (grammar.js ~line 752). The gap M-002 documents is specifically the `auto:` / `auto(free):` form in `type_arg_list` — a type-position gap that remains genuine and unchanged. Value-position `auto` coverage is owned by `docs/prds/auto-binding-site-positions.md`; type-arg-position remains the B1 chain here.)*
 - **Blocks:** Every user-visible v0.2 backtracking scenario. Without this, the entire orchestrator API is reachable only from tests.
 - **Note:** Both v0.1 and v0.2 PRDs assume this exists. Sibling v0.1 PRD `docs/prds/auto-type-param-resolution.md` does not surface this gap either.
 
