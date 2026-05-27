@@ -84,6 +84,18 @@ mod tests {
     }
 
     #[test]
+    fn contributor_3arg_accepts_explicit_sign_negative() {
+        let m = expect_map(eval_stackup("contributor", &[len(0.010), len(0.0001), Value::Int(-1)]));
+        assert_eq!(m[&Value::String("sign".into())], Value::Int(-1));
+    }
+
+    #[test]
+    fn contributor_3arg_accepts_explicit_sign_positive() {
+        let m = expect_map(eval_stackup("contributor", &[len(0.010), len(0.0001), Value::Int(1)]));
+        assert_eq!(m[&Value::String("sign".into())], Value::Int(1));
+    }
+
+    #[test]
     fn contributor_2arg_returns_map_with_default_sign_and_distribution() {
         let nominal = len(0.010); // 10mm
         let tol = len(0.0001);    // 0.1mm
