@@ -219,3 +219,54 @@ structure def FlexureCompliance {
     //                                                   constrained.
     constraint yield_margin <= 1
 }
+
+// ── flexure_compliance accessor ───────────────────────────────────────────
+
+// flexure_compliance(joint) — the PRD §4.2 FREE-function accessor that
+// surfaces the cached `FlexureCompliance` record from a joint produced by a
+// PRB-emitting ctor (γ / δ / ε / ζ / η / θ in PRD §11).
+//
+// FREE-function spelling (not method syntax) — Reify grammar has no
+// `x.foo()` method-call form for user-defined free functions; per-kind
+// `Joint` structures don't exist yet either (KCC-ζ owns that surface, task
+// 3845 in-progress). Matches the PRD §4.2 prescribed spelling
+// `flexure_compliance(joint) -> FlexureCompliance`.
+//
+// Cache-on-joint convention (consumed by λ — task 3821):
+//   PRB ctors (γ / δ / ε / ζ / η / θ) will store the populated
+//   `FlexureCompliance` record on the joint Map under the reserved hidden
+//   field `__flexure_compliance` (mirroring KCC's `__joint_*` reserved-name
+//   pattern from task 3842 — `JointBinding::LiteralBound::synth_param_name
+//   = __joint_<id>_v`). The body of this accessor stays as a default-ctor
+//   stub until λ replaces it with the cache-lookup logic (or wires Rust-
+//   side intrinsic dispatch via a `@optimized` annotation pointing at a
+//   reify-stdlib kernel handler). The reserved-name namespacing keeps the
+//   cache key discoverable and out of user-namespace collisions.
+//
+// Stub semantics (β — this task):
+//   The body returns `FlexureCompliance()` — a bare ctor call relying on
+//   every param's sentinel-zero default (added in step-8). This gives
+//   downstream β-consumers (the test file flexures_stdlib_compile.rs and
+//   any future PRD-§4.2 reference user code) a well-typed value to chain
+//   off even before PRB ctors exist. PRB ctors override every field via
+//   named-field ctor syntax `FlexureCompliance(effective_stiffness: ...,
+//   max_stress: ..., ...)`, so the defaults never leak into populated
+//   records once γ / δ / ε / ζ / η / θ land. Exact precedent: the bare
+//   `Steel_AISI_1045()` instantiation pattern in `materials_fea.ri:132+`
+//   (every field defaulted at the structure_def level, ctor call is bare).
+//
+// `pub` so user code can call `flexure_compliance(some_joint)` directly
+// without prefixing with the `std.flexures::` module path — same posture
+// as `pub fn STANDARD_GRAVITY()` in `units.ri:82` and `pub fn
+// standard_bolt_lengths()` in `standard_stock.ri:10`.
+//
+// TODO(joint-type): retarget the `joint` parameter type to `DrivingJoint`
+// (or the `Joint` marker trait) when KCC-ζ (task 3845) lands the per-kind
+// joint structures. Same placeholder posture as
+// `trajectory.ri::PiecewisePolynomialProfile.mechanism : Real` with
+// TODO(mechanism-type). The `Real` placeholder makes the signature
+// resolve today without depending on un-shipped types — α-task (Joint
+// surface extension) is REPORT-ONLY for β per the task description.
+pub fn flexure_compliance(joint: Real) -> FlexureCompliance {
+    FlexureCompliance()
+}
