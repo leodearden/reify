@@ -256,6 +256,9 @@ pub(crate) fn compile_purpose(
     // Use StructureRef so member access resolves correctly against the entity type.
     for param in &purpose_def.params {
         scope.register(&param.name, Type::StructureRef(param.entity_kind.clone()));
+        // Register as a purpose param so expr.rs can look up the param root for the
+        // per-param `{purpose}::{param}` entity stamp (task-2181 β, contract C1).
+        scope.register_purpose_param(&param.name);
         // Deprecation check: warn if the referenced entity kind is @deprecated.
         if let Some(template) = template_registry.get(&param.entity_kind)
             && let Some(msg) = deprecation_message(&template.annotations)

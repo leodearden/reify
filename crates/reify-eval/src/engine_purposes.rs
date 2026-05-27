@@ -94,18 +94,30 @@ impl Engine {
         // Build a unique entity prefix for the purpose-injected constraints
         let purpose_entity = format!("purpose:{}@{}", purpose_name, entity_ref);
 
-        // Rewrite compiled expressions: substitute ValueCellId(purpose_name, param)
-        // with ValueCellId(entity_ref, param) so references resolve to existing
-        // value cells in the evaluation graph.
+        // Rewrite compiled expressions: substitute each per-param stamp
+        // `ValueCellId("{purpose}::{param}", member)` with `ValueCellId(entity_ref, member)`
+        // so references resolve to existing value cells in the evaluation graph (task-2181 β).
+        //
+        // For single-param purposes this is one remap — behavior-identical to the
+        // pre-β `remap_entity(purpose_name, entity_ref)`. For multi-param purposes
+        // all per-param stamps are aliased to the same entity_ref under the
+        // single-bound-entity API; task γ adds `activate_purpose_with_bindings`
+        // for independent per-param entity bindings.
         let mut rewritten_constraints = purpose.constraints.clone();
         for constraint in &mut rewritten_constraints {
-            constraint.expr.remap_entity(purpose_name, entity_ref);
+            for param in &purpose.params {
+                let from_stamp = format!("{}::{}", purpose_name, param.name);
+                constraint.expr.remap_entity(&from_stamp, entity_ref);
+            }
         }
 
         let rewritten_objective = purpose.objective.clone().map(|mut obj| {
             match &mut obj {
                 OptimizationObjective::Minimize(expr) | OptimizationObjective::Maximize(expr) => {
-                    expr.remap_entity(purpose_name, entity_ref);
+                    for param in &purpose.params {
+                        let from_stamp = format!("{}::{}", purpose_name, param.name);
+                        expr.remap_entity(&from_stamp, entity_ref);
+                    }
                 }
             }
             obj

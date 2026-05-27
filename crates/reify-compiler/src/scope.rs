@@ -75,6 +75,16 @@ pub(crate) struct CompilationScope<'u> {
     /// Whether the current structure has at least one geometry-producing let binding
     /// (e.g., `let shape = box(...)`). Used to gate @face/@edge selectors at compile time.
     pub(crate) has_geometry: bool,
+    /// Names of purpose params registered in this scope (task-2181 β, contract C1).
+    ///
+    /// Isolated from `names` so that future let-bindings in purpose bodies (task δ)
+    /// cannot masquerade as purpose params in the `purpose_param_root` lookup.
+    /// Mirrors the precedent of `port_names`/`collection_sub_names` (dedicated typed
+    /// sets for category-specific lookups rather than overloading `names`).
+    ///
+    /// Only populated by `compile_purpose` via `register_purpose_param`; queried
+    /// by `purpose_param_root` from the purpose-subject member-ref arm in `expr.rs`.
+    pub(crate) purpose_param_names: HashSet<String>,
     /// Match-arm clusters keyed by their shared logical name (task 2372).
     ///
     /// Deliberately separate from `names` so that outside-match collision
@@ -144,6 +154,7 @@ impl<'u> CompilationScope<'u> {
             match_arm_groups: BTreeMap::new(),
             match_arm_group_arm_member_types: HashMap::new(),
             sub_match_arm_groups: HashMap::new(),
+            purpose_param_names: HashSet::new(),
         }
     }
 
@@ -159,6 +170,27 @@ impl<'u> CompilationScope<'u> {
         registry: &'u HashMap<String, &'u TopologyTemplate>,
     ) {
         self.template_registry = Some(registry);
+    }
+
+    /// Register an identifier as a purpose param in this scope (task-2181 β, contract C1).
+    ///
+    /// Call once per param from `compile_purpose`'s param loop, right after
+    /// `scope.register(&param.name, Type::StructureRef(...))`. This populates
+    /// `purpose_param_names` so `purpose_param_root` can distinguish purpose params
+    /// from future let-bindings (task δ) without changing the general `names` map.
+    pub(crate) fn register_purpose_param(&mut self, name: &str) {
+        self.purpose_param_names.insert(name.to_string());
+    }
+
+    /// Return the param name if `ident` is a registered purpose param, else `None` (task-2181 β).
+    ///
+    /// Used by `expr.rs`'s purpose-subject member-ref arm to obtain the `param_root` for the
+    /// per-param entity stamp `format!("{}::{}", purpose_name, param_root)`. Returns `None`
+    /// for any identifier that was not explicitly registered via `register_purpose_param`, which
+    /// forward-guards against future let-bindings in purpose bodies (task δ) accidentally
+    /// triggering the per-param stamp arm.
+    pub(crate) fn purpose_param_root(&self, ident: &str) -> Option<&str> {
+        self.purpose_param_names.get(ident).map(|s| s.as_str())
     }
 
     /// Look up a unit by name, applying factor and offset.
