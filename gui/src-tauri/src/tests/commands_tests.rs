@@ -1,11 +1,6 @@
-use std::sync::{Arc, Mutex, RwLock, OnceLock};
+use std::sync::{Arc, Mutex, RwLock};
 
-/// Lock to serialise tests that call `std::env::set_current_dir`.
-static CWD_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-fn cwd_lock() -> &'static Mutex<()> {
-    CWD_LOCK.get_or_init(|| Mutex::new(()))
-}
+use crate::tests::test_helpers::cwd_lock;
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_mcp::SelectionInfo;

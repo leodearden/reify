@@ -1,14 +1,12 @@
 // Tests for the resolve_initial_file_path helper used by main.rs to
 // canonicalise the argv path before loading it into the engine.
 //
-// CWD-mutating tests are serialised via the same CWD_LOCK Mutex used in
-// commands_tests.rs.  These tests live in a separate file so the module
-// boundary keeps main-helper concerns out of the general command tests.
+// CWD-mutating tests are serialised via the shared process-global Mutex at
+// `crate::tests::test_helpers::cwd_lock`.  These tests live in a separate
+// file so the module boundary keeps main-helper concerns out of the general
+// command tests.
 
-use std::sync::Mutex;
-
-/// Lock to serialise tests that call `std::env::set_current_dir`.
-static CWD_LOCK: Mutex<()> = Mutex::new(());
+use crate::tests::test_helpers::cwd_lock;
 
 /// (a) Given a CWD-relative argv path that exists on disk, returns
 /// `Some(canonical_absolute_pathbuf)`.
@@ -22,7 +20,7 @@ fn resolve_initial_file_path_relative_existing_returns_canonical() {
     let expected = std::fs::canonicalize(&file)
         .unwrap();
 
-    let _guard = CWD_LOCK.lock().unwrap();
+    let _guard = cwd_lock().lock().unwrap();
     let original = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 

@@ -1,13 +1,10 @@
 // Tests for path_key::canonicalize_document_key.
 //
-// Several tests mutate the process-wide current directory. A static Mutex
-// serialises those tests so parallel test threads don't interfere with each
-// other's CWD state.
+// Several tests mutate the process-wide current directory.  A shared
+// process-global Mutex (`crate::tests::test_helpers::cwd_lock`) serialises
+// those tests across ALL test files in this crate.
 
-use std::sync::Mutex;
-
-/// Lock to serialise tests that call `std::env::set_current_dir`.
-static CWD_LOCK: Mutex<()> = Mutex::new(());
+use crate::tests::test_helpers::cwd_lock;
 
 /// (a) Given a CWD-relative path that exists on disk, returns the absolute
 /// realpath (same as `fs::canonicalize`).
@@ -25,7 +22,7 @@ fn canonicalize_returns_absolute_realpath_for_cwd_relative() {
         .to_string_lossy()
         .into_owned();
 
-    let _guard = CWD_LOCK.lock().unwrap();
+    let _guard = cwd_lock().lock().unwrap();
     let original = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 
@@ -50,7 +47,7 @@ fn canonicalize_is_same_for_different_spellings() {
         .to_string_lossy()
         .into_owned();
 
-    let _guard = CWD_LOCK.lock().unwrap();
+    let _guard = cwd_lock().lock().unwrap();
     let original = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 
@@ -133,7 +130,7 @@ fn canonicalize_debug_open_path_relative_matches_absolute() {
         .to_string_lossy()
         .into_owned();
 
-    let _guard = CWD_LOCK.lock().unwrap();
+    let _guard = cwd_lock().lock().unwrap();
     let original = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 
