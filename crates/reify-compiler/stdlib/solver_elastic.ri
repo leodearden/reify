@@ -364,3 +364,58 @@ structure def ShellStress {
     param mid : Field<Point3<Length>, Tensor<2, 3, Pressure>>
     param bottom : Field<Point3<Length>, Tensor<2, 3, Pressure>>
 }
+
+// ── solve_elastic_static ──────────────────────────────────────────────────────
+//
+// First @optimized consumer in this stdlib — PRD §8 task η,
+// docs/prds/v0_3/compute-node-contract.md.
+//
+// At eval time the @optimized("solver::elastic_static") annotation causes the
+// engine (engine_eval.rs:2793-2944) to allocate a ComputeNode with
+//   target == "solver::elastic_static"
+// and dispatch to the registered trampoline in
+//   crates/reify-eval/src/compute_targets/elastic_static.rs
+// rather than inlining the body below.
+//
+// Body discipline: `{ ElasticResult() }` is the inline fallback path (PRD §9
+// Q1 body-inline-in-debug policy). In normal operation the trampoline is
+// always registered and the body is never executed. The bare constructor call
+// produces an ElasticResult with all fields at their defaults or Undef —
+// acceptable as a fallback sentinel per the Undef-for-Field convention
+// documented at the ElasticResult struct above.
+//
+// Signature notes:
+//
+//   `loads : List<Real>` and `supports : List<Real>`:
+//     Placeholder types for `List<Load>` and `List<Support>`. The `Load` and
+//     `Support` marker traits are declared in `std.fea.multi_case` which is
+//     compiled AFTER this module in the sequential prelude build (stdlib_loader.rs).
+//     The runtime value is a `Value::List` of `Value::StructureInstance` items
+//     regardless of the compile-time element-type annotation; the trampoline
+//     reads them correctly. Matches the same placeholder convention used by
+//     `LoadCase.loads : List<Real>` and `LoadCase.supports : List<Real>` in
+//     `std.fea.multi_case` (see that module's header note 1).
+//     TODO(load-trait): tighten to `List<Load>` and `List<Support>` when the
+//     trait declarations are moved to an earlier stdlib module.
+//
+//   `options : ElasticOptions` (no default):
+//     `phase_functions` runs before `phase_entities` in the Reify compiler, so
+//     a same-module structure constructor `ElasticOptions()` cannot be used as
+//     a fn param default (esc-3851-32, functions.rs:157 comment). The `none`
+//     sentinel is typed `Option<Real>`, not `Option<ElasticOptions>`, so it also
+//     fails the `fn_param_default_compatible` strict-equality check (type_compat.rs:269).
+//     Callers must pass `ElasticOptions()` explicitly (or a custom instance).
+//     TODO(phase-order): add `= ElasticOptions()` default once the
+//     phase-functions-before-phase-entities ordering is resolved.
+@optimized("solver::elastic_static")
+pub fn solve_elastic_static(
+    material  : ElasticMaterial,
+    length    : Length,
+    width     : Length,
+    height    : Length,
+    loads     : List<Real>,
+    supports  : List<Real>,
+    options   : ElasticOptions
+) -> ElasticResult {
+    ElasticResult()
+}
