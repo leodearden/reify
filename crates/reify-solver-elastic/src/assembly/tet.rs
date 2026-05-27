@@ -268,10 +268,23 @@ pub(crate) fn element_stiffness_generic_with_d_global<E: ReferenceElement>(
 /// Quadrature: P1 uses a 1-point centroid rule (degree-1 exact); for
 /// affine geometry that's exact for the constant-`B` integrand a P1
 /// element produces.
+///
+/// # Panics
+///
+/// Panics under `debug_assertions` when `material` violates its validity
+/// contract (`E > 0`, `-1 < ν < 0.5`), via
+/// [`IsotropicElastic::debug_assert_valid`] called at the kernel entry.
+/// This is structurally redundant with the validation performed inside
+/// `material.d_matrix()` (called one layer deeper inside the generic
+/// kernel) — the explicit entry-point call adds diagnostic clarity (stack
+/// trace points at the kernel entry) and matches the explicit-guard
+/// convention used by [`crate::consistent_element_mass_tet_p1`] and
+/// [`crate::geometric_element_stiffness_tet_p1`].
 pub fn element_stiffness_p1(
     phys_nodes: &[[f64; 3]; 4],
     material: &IsotropicElastic,
 ) -> ElementStiffness {
+    material.debug_assert_valid();
     element_stiffness_generic(&TetP1, &phys_nodes[..], material)
 }
 
