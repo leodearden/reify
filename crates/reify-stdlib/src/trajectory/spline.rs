@@ -443,6 +443,42 @@ mod tests {
         );
     }
 
+    const TOL_PERIODIC: f64 = 1e-10;
+
+    // ── Step-5: periodic cubic — C1 continuity at wrap seam ──────────────────
+
+    #[test]
+    fn cubic_periodic_spline_first_derivative_continuous_at_seam() {
+        let period = 4.0_f64;
+        let ts = [0.0, 1.0, 2.0, 3.0, 4.0];
+        let vs: Vec<f64> = ts
+            .iter()
+            .map(|&t| (2.0 * std::f64::consts::PI * t / period).sin())
+            .collect();
+        let n = ts.len();
+
+        // Sanity: sin over full period has equal endpoints
+        assert!(
+            (vs[0] - vs[n - 1]).abs() < 1e-15,
+            "closure precondition failed: vs[0]={} vs[n-1]={}",
+            vs[0],
+            vs[n - 1]
+        );
+
+        let spline = CubicSpline::fit(&ts, &vs, &BoundaryCondition::Periodic)
+            .expect("periodic fit should succeed");
+
+        // C1 continuity at seam: eval_dot(period - eps) ≈ eval_dot(0 + eps)
+        let eps = 1e-8;
+        let dot_end = spline.eval_dot(period - eps);
+        let dot_start = spline.eval_dot(eps);
+        assert!(
+            (dot_end - dot_start).abs() < TOL_PERIODIC,
+            "periodic C1 at seam: dot_end={dot_end}, dot_start={dot_start}, diff={}",
+            (dot_end - dot_start).abs()
+        );
+    }
+
     // ── Step-3: clamped cubic — exact reproduction of general cubic ───────────
 
     /// With clamped BC (endpoint slopes = exact cubic derivatives), the unique
