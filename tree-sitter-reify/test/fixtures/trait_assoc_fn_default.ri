@@ -1,0 +1,7 @@
+// Fixture for task 3935 (trait-assoc-fn α): default-providing assoc fn
+// — `fn` with body + leading `self` receiver inside a trait body.
+// The `param` member confirms function_definition cohabits trait_member with existing arms.
+trait WithDefault {
+    param x : Int
+    fn identity(self, n : Int) -> Int { n }
+}

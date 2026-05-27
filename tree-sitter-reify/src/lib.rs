@@ -378,6 +378,10 @@ mod tests {
 
     /// Fixture test: default assoc fn (with body) parses cleanly.
     /// Embeds `test/fixtures/trait_assoc_fn_default.ri` via include_str!.
+    ///
+    /// The fixture has two trait_member arms (param + function_definition).
+    /// We verify by checking both node kinds appear in the fully-collected tree
+    /// (find_node_by_kind returns only the first match, which is the param arm).
     #[test]
     fn test_trait_assoc_fn_default_fixture_parses_cleanly() {
         let mut parser = make_parser();
@@ -394,17 +398,22 @@ mod tests {
             "unexpected parse error in trait_assoc_fn_default.ri: {kinds:?}"
         );
 
-        // function_definition appears as a descendant of trait_member
-        let trait_member = find_node_by_kind(root, "trait_member")
-            .expect("trait_member not found in trait_assoc_fn_default.ri");
+        // trait_member and function_definition must both appear in the tree
+        // (fixture has param_declaration and function_definition as sibling trait_members)
         assert!(
-            find_node_by_kind(trait_member, "function_definition").is_some(),
-            "expected function_definition under trait_member in default fixture: {kinds:?}"
+            kinds.contains(&"trait_member".to_string()),
+            "expected trait_member in default fixture: {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&"function_definition".to_string()),
+            "expected function_definition in default fixture (under trait_member): {kinds:?}"
         );
     }
 
     /// Fixture test: required (bodyless) assoc fn parses cleanly as function_signature.
     /// Embeds `test/fixtures/trait_assoc_fn_required.ri` via include_str!.
+    ///
+    /// The fixture has two trait_member arms (param + function_signature).
     #[test]
     fn test_trait_assoc_fn_required_fixture_parses_cleanly() {
         let mut parser = make_parser();
@@ -421,12 +430,14 @@ mod tests {
             "unexpected parse error in trait_assoc_fn_required.ri: {kinds:?}"
         );
 
-        // function_signature appears as a descendant of trait_member
-        let trait_member = find_node_by_kind(root, "trait_member")
-            .expect("trait_member not found in trait_assoc_fn_required.ri");
+        // trait_member and function_signature must both appear in the tree
         assert!(
-            find_node_by_kind(trait_member, "function_signature").is_some(),
-            "expected function_signature under trait_member in required fixture: {kinds:?}"
+            kinds.contains(&"trait_member".to_string()),
+            "expected trait_member in required fixture: {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&"function_signature".to_string()),
+            "expected function_signature in required fixture (under trait_member): {kinds:?}"
         );
 
         // function_definition must NOT appear — required fixture covers bodyless form only

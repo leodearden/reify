@@ -1,0 +1,7 @@
+// Fixture for task 3935 (trait-assoc-fn α): required (bodyless) assoc fn
+// — `fn` with no body inside a trait body, parsed as function_signature.
+// The `param` member confirms function_signature cohabits trait_member with existing arms.
+trait Required {
+    param x : Int
+    fn must_implement(self, n : Int) -> Int
+}
