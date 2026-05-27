@@ -34,26 +34,21 @@
 //! # Cache-hit contract (§3 + significance_filter.rs)
 //!
 //! `significance_filter::is_opted_in("solver::elastic_static")` returns `true`
-//! (pinned at significance_filter.rs:76), opting this target into the output
+//! (pinned at `significance_filter.rs:76`), opting this target into the output
 //! significance filter.
 //!
-//! **Current status (task 3426):** the `evaluate_let_bindings` loop in
-//! `engine_eval.rs` does not yet carry a pre-dispatch Final-gate for `@optimized`
-//! cells — every `Engine::eval()` call re-dispatches the trampoline even when the
-//! output VC is already `Freshness::Final` from the previous eval. The comment at
-//! `engine_eval.rs:2891` ("The freshness gate above also short-circuits any re-eval
-//! of a Final node") is inaccurate: the Pending gate only fires when *inputs* are
-//! `Pending`, not when the *output* is already `Final`.
+//! **Cache-hit mechanism (§8-η / §3 Final-gate):** the `evaluate_let_bindings`
+//! loop in `engine_eval.rs` carries a pre-dispatch Final-gate at lines 2808-2860
+//! (§8-η comment label). When all inputs are `Freshness::Final` and the output VC
+//! is also already `Freshness::Final` from a prior `Engine::eval()`, the gate
+//! short-circuits re-dispatch and returns the cached `CachedResult::Value` directly.
+//! This is the in-memory cache-hit path that prevents redundant FEA solves across
+//! successive `eval()` calls on the same `CompiledModule`.
 //!
-//! **Required fix:** add a pre-dispatch cache check in `engine_eval.rs` at the
-//! `@optimized` lowering site (~line 2809). The check should:
-//!   1. Compute the cache key via `compute_cache_key` from the current `value_inputs`.
-//!   2. Look up the output VC in `self.cache`.
-//!   3. If the entry is `Freshness::Final` and the cache key matches, return the
-//!      cached result without calling `run_compute_dispatch`.
-//! Until that fix lands, `DISPATCH_COUNT` will be 2 (not 1) after two `eval()`
-//! calls on the same module — the failing assertion in
-//! `e2e_cantilever_second_eval_hits_cache` is the regression pin for this gap.
+//! The integration test `e2e_cantilever_second_eval_hits_cache` (step-9) verifies
+//! this contract: `DISPATCH_COUNT` must equal 1 after two sequential `engine.eval()`
+//! calls on the same module — the test passes as of the Final-gate landing in
+//! `engine_eval.rs:2809-2860`.
 //!
 //! # Placement rationale
 //!
