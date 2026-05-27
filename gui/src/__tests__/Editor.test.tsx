@@ -1054,12 +1054,13 @@ describe('Editor open (Ctrl+O)', () => {
 });
 
 describe('Editor Mod-s aborts when file is externally changed', () => {
-  it('(a) Mod-s does NOT call saveFile and calls onError when active file is externally changed', () => {
+  it('(a) Mod-s routes to onSaveConflict (NOT onError) when active file is externally changed', () => {
     const store = setupStore();
     const onError = vi.fn();
+    const onSaveConflict = vi.fn();
     const saveSpy = vi.spyOn(bridge, 'saveFile').mockResolvedValue(undefined);
     store.markExternallyChanged(file1.path);
-    render(() => <Editor store={store} onError={onError} />);
+    render(() => <Editor store={store} onError={onError} onSaveConflict={onSaveConflict} />);
     const container = screen.getByTestId('editor-container');
     const view = getEditorView(container);
 
@@ -1073,8 +1074,12 @@ describe('Editor Mod-s aborts when file is externally changed', () => {
 
     // saveFile must NOT be called
     expect(saveSpy).not.toHaveBeenCalled();
-    // onError must be called with the exact save-blocked message constant
-    expect(onError).toHaveBeenCalledWith(EXTERNALLY_CHANGED_SAVE_BLOCKED_MSG);
+    // onSaveConflict must be called exactly once with the matching FileData
+    expect(onSaveConflict).toHaveBeenCalledOnce();
+    expect(onSaveConflict).toHaveBeenCalledWith(file1);
+    // onError must NOT be called — the externally-changed branch no longer
+    // delegates to onError; it delegates to onSaveConflict instead.
+    expect(onError).not.toHaveBeenCalled();
   });
 
   it('(b) after clearExternallyChanged, Mod-s DOES call saveFile', async () => {
@@ -1095,6 +1100,29 @@ describe('Editor Mod-s aborts when file is externally changed', () => {
     view.contentDOM.dispatchEvent(event);
 
     expect(saveSpy).toHaveBeenCalledWith(file1.path, file1.content);
+  });
+
+  it('(c) regression: for a non-externally-changed file, Mod-s still saves normally (onSaveConflict is NOT called)', async () => {
+    const store = setupStore();
+    store.markDirty(file1.path);
+    const saveSpy = vi.spyOn(bridge, 'saveFile').mockResolvedValue(undefined);
+    const onSaveConflict = vi.fn();
+    render(() => <Editor store={store} onSaveConflict={onSaveConflict} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    const event = new KeyboardEvent('keydown', {
+      key: 's',
+      code: 'KeyS',
+      ctrlKey: true,
+      bubbles: true,
+    });
+    view.contentDOM.dispatchEvent(event);
+
+    // saveFile IS called — happy path unchanged by adding onSaveConflict prop
+    expect(saveSpy).toHaveBeenCalledWith(file1.path, file1.content);
+    // onSaveConflict is NOT called for a clean save
+    expect(onSaveConflict).not.toHaveBeenCalled();
   });
 });
 
