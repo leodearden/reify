@@ -465,10 +465,13 @@ impl<K: StiffnessOp, M: MetricOp> LinOp<f64> for CompositeShiftInvertOp<'_, K, M
 ///
 /// # Panics
 ///
-/// - `opts.n_modes == 0`
-/// - `opts.tol` not finite or ≤ 0
-/// - `opts.max_iters == 0`
-/// - `k_op.n() != m_op.n()` (dimension mismatch)
+/// Named-offending-value messages (Task-2544 convention), verified by
+/// `lanczos_shift_invert_panics_on_*` tests:
+///
+/// - `opts.n_modes == 0` → `"EigenSolverOptions.n_modes = 0 is invalid; must be >= 1"`
+/// - `opts.tol` not finite or ≤ 0 → `"EigenSolverOptions.tol = … must be a finite positive value"`
+/// - `opts.max_iters == 0` → `"EigenSolverOptions.max_iters = 0 is invalid; must be >= 1"`
+/// - `k_op.n() != m_op.n()` → `"lanczos_shift_invert: dimension mismatch — k_op.n() = … but m_op.n() = …"`
 pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
     k_op: &K,
     m_op: &M,
