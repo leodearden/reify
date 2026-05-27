@@ -295,6 +295,67 @@ mod tests {
     }
 
     #[test]
+    fn consistent_mass_p1_two_tets_via_assemble_global_stiffness_total_mass_equals_rho_sum_v_e() {
+        // Build a 2-tet shared-face mesh: conn0 = [0,1,2,3] is UNIT_TET (V=1/6),
+        // conn1 = [1,2,3,4] is a second tet with node 4 = (1,1,1) (V = 1/3
+        // computed below from the actual det.abs()/6). Wrap each M_e in
+        // AssemblyElement and feed the existing assemble_global_stiffness
+        // primitive. Pins the "FEA assembly pipeline" hook: the assembler
+        // treats k_e opaquely (K vs K_g vs M).
+        use crate::assembly::{AssemblyElement, AssemblyMode, assemble_global_stiffness};
+
+        let nodes: [[f64; 3]; 5] = [
+            [0.0, 0.0, 0.0], // 0
+            [1.0, 0.0, 0.0], // 1
+            [0.0, 1.0, 0.0], // 2
+            [0.0, 0.0, 1.0], // 3
+            [1.0, 1.0, 1.0], // 4
+        ];
+        let conn0 = [0_usize, 1, 2, 3];
+        let conn1 = [1_usize, 2, 3, 4];
+        let phys0 = [nodes[conn0[0]], nodes[conn0[1]], nodes[conn0[2]], nodes[conn0[3]]];
+        let phys1 = [nodes[conn1[0]], nodes[conn1[1]], nodes[conn1[2]], nodes[conn1[3]]];
+
+        let density = 1.0;
+        let m_e0 = consistent_element_mass_tet_p1(&phys0, density);
+        let m_e1 = consistent_element_mass_tet_p1(&phys1, density);
+
+        let elements = [
+            AssemblyElement { id: 0, connectivity: &conn0, k_e: &m_e0 },
+            AssemblyElement { id: 1, connectivity: &conn1, k_e: &m_e1 },
+        ];
+        let m_global = assemble_global_stiffness(5, &elements, AssemblyMode::Deterministic);
+        assert_eq!(m_global.nrows(), 15, "5 nodes × 3 axes = 15 rows");
+        assert_eq!(m_global.ncols(), 15, "5 nodes × 3 axes = 15 cols");
+
+        // Sum every axis-0 entry of M_global (the M_global[3i, 3j] entries for
+        // i, j ∈ 0..5). Since M is axis-block-diagonal, this is the total mass
+        // along axis 0, which equals ρ · (V_e0 + V_e1).
+        let dense = m_global.to_dense();
+        let mut total: f64 = 0.0;
+        for i in 0..5 {
+            for j in 0..5 {
+                total += dense[(3 * i, 3 * j)];
+            }
+        }
+
+        // V_e0 = 1/6; for V_e1 compute via the same det as the kernel.
+        // phys1 = [(1,0,0), (0,1,0), (0,0,1), (1,1,1)]
+        // J = phys[1]-phys[0], phys[2]-phys[0], phys[3]-phys[0]
+        //   = (-1,1,0), (-1,0,1), (0,1,1)
+        // det = -1·(0·1 - 1·1) - 1·(-1·1 - 1·0) + 0·…
+        //     = -1·(-1) -1·(-1)  + 0 = 1 + 1 = 2
+        // V_e1 = |2|/6 = 1/3
+        let v_e0 = 1.0 / 6.0;
+        let v_e1 = 1.0 / 3.0;
+        let expected = density * (v_e0 + v_e1);
+        assert!(
+            (total - expected).abs() < 1e-12,
+            "global axis-0 mass = {total}, expected ρ·(V_e0+V_e1) = {expected}",
+        );
+    }
+
+    #[test]
     fn consistent_mass_p1_is_positive_semidefinite_via_quadratic_form() {
         // M is a Gram matrix (integral of ρ·N·Nᵀ), so PSD is structural.
         // The strongest pin is (a) rigid-translation along an axis: the
