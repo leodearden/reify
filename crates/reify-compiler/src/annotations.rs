@@ -94,7 +94,14 @@ pub(crate) fn is_valid_optimized(ann: &reify_ir::Annotation) -> bool {
 pub(crate) const KNOWN_BLOCK_PRAGMAS: &[&str] = &["precision", "solver", "kernel"];
 
 /// Pragmas valid only at module level; not valid on any block-level declaration.
-pub(crate) const MODULE_ONLY_PRAGMAS: &[&str] = &["no_prelude", "version"];
+///
+/// `#cfg` is included here (conditional-compilation PRD
+/// `docs/prds/v0_6/conditional-compilation.md` task α): it is inherently
+/// module-scoped because it qualifies import declarations.  Placing it in
+/// this list also reuses the existing "module-only pragma on block" warning
+/// from `validate_pragmas` for free if a user misplaces `#cfg` inside a
+/// structure or other block-level declaration.
+pub(crate) const MODULE_ONLY_PRAGMAS: &[&str] = &["no_prelude", "version", "cfg"];
 
 /// Returns `true` if `name` is a known block-level pragma.
 pub(crate) fn is_known_block_pragma(name: &str) -> bool {
