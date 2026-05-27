@@ -5,6 +5,18 @@
 //! `reify_constraints::loop_closure` use to drive closed-chain mechanisms to
 //! consistency.  It is the value-side companion to `reify-constraints::loop_closure`.
 //!
+//! ## γ widening (PRD KCC-γ, 2026-05-27)
+//!
+//! The per-joint motion-variable type widened from `f64` to
+//! [`JointValue`](crate::loop_closure_value::JointValue), enabling planar
+//! (3-DOF), spherical (3-DOF), and cylindrical (2-DOF) joints to participate
+//! in closed-chain Newton solves.  Signatures of [`chain_transform`],
+//! [`loop_residual_twist`], [`value_for_joint`], [`joint_range_midpoint`],
+//! [`chain_jacobian_fd`], and [`extract_loop_closure_chains`] all changed
+//! shape; callers no longer bridge through `&flatten_dofs(&vals)`.  The
+//! Newton-state flat `Vec<f64>` boundary now lives entirely inside
+//! `solve_loop_closure` (see `loop_closure_solver.rs`).
+//!
 //! Public API surface:
 //!   * [`chain_transform`] — left-fold a sequence of joint Maps + motion
 //!     variables into a single composed `Value::Transform`.

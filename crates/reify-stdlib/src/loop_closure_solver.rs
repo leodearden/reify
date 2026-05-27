@@ -4,6 +4,18 @@
 //! loops: callers supply a residual+jacobian closure, the solver returns a
 //! [`NewtonOutcome`] describing convergence, divergence, or a singular Jacobian.
 //!
+//! ## γ widening (PRD KCC-γ, 2026-05-27)
+//!
+//! [`solve_loop_closure`] and [`solve_loop_closure_with_diagnostics`] now take
+//! `vals_a: &[JointValue]` / `vals_b_initial: &[JointValue]` instead of the
+//! prior `&[f64]`.  Multi-DOF joints (planar / spherical / cylindrical) can now
+//! participate in closed-chain Newton solves; the Newton state remains a flat
+//! `Vec<f64>` internally, with [`JointKind::flat_len`](crate::loop_closure_value::JointKind::flat_len)
+//! driving the storage width and a per-iteration `renormalize_quaternion`
+//! projecting Sphere slots back onto S³.  `StartStrategy::WarmStart(Vec<f64>)`
+//! still carries an already-flattened vector (Newton-state coordinates, not
+//! per-JointValue) for backward compatibility.
+//!
 //! Public API surface:
 //!   * [`NewtonConfig`] `{ tol_pos_m, tol_rot_rad, max_iters }` — defaults
 //!     1 µm position / 1 µrad rotation / 50 iters per the PRD.
@@ -596,6 +608,19 @@ pub fn solve_loop_closure(
             return NewtonOutcome::InvalidInput { reason };
         }
     };
+
+    // KCC-γ §11.1 producer-side signal: probe each free joint's analytic-J
+    // path once at solve start so the tracing event fires for callers / test
+    // captures.  For multi-DOF kinds (planar / spherical / cylindrical) the
+    // `joint_jacobian` builtin emits a `tracing::debug!` at target
+    // `reify_stdlib::joints` carrying `kind = <kind>` — see
+    // `joint_jacobian_value` in `joints.rs`.  The probe's return value is
+    // intentionally discarded: the chain Jacobian itself is still composed via
+    // FD inside the closure (see `chain_jacobian_fd`).  KCC-θ/ι will replace
+    // the FD path with SE(3) adjoint transport over these analytic columns.
+    for &i in free_b {
+        let _ = crate::eval_builtin("joint_jacobian", std::slice::from_ref(&chain_b[i]));
+    }
 
     // Resolve initial x0 from the strategy.  Inputs are validated above, so
     // each branch is infallible: WarmStart carries an already-flattened

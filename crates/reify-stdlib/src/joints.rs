@@ -795,6 +795,14 @@ fn joint_jacobian_value(value: &Value) -> Value {
             let col_x = make_jacobian([0.0, 0.0, 0.0], unit_x);
             let col_y = make_jacobian([0.0, 0.0, 0.0], unit_y);
             let col_theta = make_jacobian(plane_normal, [0.0, 0.0, 0.0]);
+            // KCC-γ §11.1 producer-side signal: log when the analytic-J path
+            // is engaged for a multi-DOF joint.  The `kind` field carries the
+            // joint kind so downstream consumers / test captures can filter.
+            tracing::debug!(
+                target: "reify_stdlib::joints",
+                kind = kind,
+                "joint_jacobian analytic columns emitted"
+            );
             Value::List(vec![col_x, col_y, col_theta])
         }
         // 3-DOF spherical joint: returns a `Value::List` of three analytic
@@ -829,6 +837,13 @@ fn joint_jacobian_value(value: &Value) -> Value {
             let col_x = make_jacobian([1.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
             let col_y = make_jacobian([0.0, 1.0, 0.0], [0.0, 0.0, 0.0]);
             let col_z = make_jacobian([0.0, 0.0, 1.0], [0.0, 0.0, 0.0]);
+            // KCC-γ §11.1 producer-side signal: log when the analytic-J path
+            // is engaged for a multi-DOF joint.
+            tracing::debug!(
+                target: "reify_stdlib::joints",
+                kind = kind,
+                "joint_jacobian analytic columns emitted"
+            );
             Value::List(vec![col_x, col_y, col_z])
         }
         // 2-DOF cylindrical joint: returns a `Value::List` of two analytic twist
@@ -852,6 +867,13 @@ fn joint_jacobian_value(value: &Value) -> Value {
             };
             let prismatic_col = make_jacobian([0.0, 0.0, 0.0], [nax, nay, naz]);
             let revolute_col = make_jacobian([nax, nay, naz], [0.0, 0.0, 0.0]);
+            // KCC-γ §11.1 producer-side signal: log when the analytic-J path
+            // is engaged for a multi-DOF joint.
+            tracing::debug!(
+                target: "reify_stdlib::joints",
+                kind = kind,
+                "joint_jacobian analytic columns emitted"
+            );
             Value::List(vec![prismatic_col, revolute_col])
         }
         "coupling" => {

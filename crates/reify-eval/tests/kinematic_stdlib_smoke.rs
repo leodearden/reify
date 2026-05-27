@@ -50,11 +50,11 @@ use reify_types::{DimensionVector, Value, ValueCellId, ValueMap};
 ///                     → Map { kind="planar", axis_x, axis_y, range_x, range_y, range_theta } (6 keys)
 ///   `planar_xform`   = `transform_at(planar_joint, [0.5m, 0.3m, 0.5rad])`
 ///                     → Transform { translation=[0.5m, 0.3m, 0], rotation=quat(+Z, 0.5rad) }
-///   `planar_jac`     = `joint_jacobian(planar_joint)` → zero-twist Map (FD-fallback placeholder)
+///   `planar_jac`     = `joint_jacobian(planar_joint)` → 3-element List of analytic twist columns
 ///   `sj`             = `spherical(0rad..pi)` → Map { kind="spherical", range_angle } (2 keys)
 ///   `q_z90`          = `orient_axis_angle([0,0,1], pi/2)` (canonical user-side construction)
 ///   `sj_xform`       = `transform_at(sj, q_z90)` → Transform { rotation=q_z90, translation=0 }
-///   `sj_jac`         = `joint_jacobian(sj)` → zero-twist Map (FD-fallback placeholder)
+///   `sj_jac`         = `joint_jacobian(sj)` → 3-element List of analytic body-basis angular columns
 ///   `q_euler_in`     = `orient_euler("xyz", 0.1, 0.2, 0.3)` → unit quaternion
 ///   `sj_xform_euler` = `transform_at(sj, q_euler_in)` → Transform { rotation=q_euler_in, translation=0 }
 ///   `sj_euler_back`  = `orient_to_euler("xyz", q_euler_in)` → List of 3 angle scalars (round-trips to 0.1, 0.2, 0.3)
@@ -548,21 +548,53 @@ fn kinematic_stdlib_smoke_e2e() {
         "planar_xform translation dim",
     );
 
-    // planar_jac = joint_jacobian(planar_joint) → zero-twist Map (FD-fallback placeholder)
-    // PRD task 2: "finite-difference fallback for spherical, cylindrical, planar until
-    // analytic forms are derived." Zero column preserves uniform { angular, linear } shape.
+    // planar_jac = joint_jacobian(planar_joint) → Value::List of three analytic
+    // twist columns (KCC-γ step-6):
+    //   [0] = ∂x DOF: angular=[0,0,0], linear=unit_x = [1,0,0]
+    //   [1] = ∂y DOF: angular=[0,0,0], linear=unit_y = [0,1,0]
+    //   [2] = ∂θ DOF: angular=plane_normal = unit_x × unit_y = [0,0,1], linear=[0,0,0]
+    // List shape (vs single Map) is the 3-DOF representation; per_joint_jacobian_local
+    // interprets the List as the FD-fallback signal in loop_closure.
     let planar_jac = get_value(v, "planar_jac");
+    let planar_jac_items = match planar_jac {
+        Value::List(items) if items.len() == 3 => items,
+        other => panic!("planar_jac: expected 3-element List, got {other:?}"),
+    };
     assert_vec3_close(
-        map_vec3(planar_jac, "angular", "planar_jac.angular"),
+        map_vec3(&planar_jac_items[0], "angular", "planar_jac[0].angular"),
         [0.0, 0.0, 0.0],
         1e-12,
-        "planar_jac.angular",
+        "planar_jac[0].angular (∂x DOF)",
     );
     assert_vec3_close(
-        map_vec3(planar_jac, "linear", "planar_jac.linear"),
+        map_vec3(&planar_jac_items[0], "linear", "planar_jac[0].linear"),
+        [1.0, 0.0, 0.0],
+        1e-12,
+        "planar_jac[0].linear (∂x DOF)",
+    );
+    assert_vec3_close(
+        map_vec3(&planar_jac_items[1], "angular", "planar_jac[1].angular"),
         [0.0, 0.0, 0.0],
         1e-12,
-        "planar_jac.linear",
+        "planar_jac[1].angular (∂y DOF)",
+    );
+    assert_vec3_close(
+        map_vec3(&planar_jac_items[1], "linear", "planar_jac[1].linear"),
+        [0.0, 1.0, 0.0],
+        1e-12,
+        "planar_jac[1].linear (∂y DOF)",
+    );
+    assert_vec3_close(
+        map_vec3(&planar_jac_items[2], "angular", "planar_jac[2].angular"),
+        [0.0, 0.0, 1.0],
+        1e-12,
+        "planar_jac[2].angular (∂θ DOF)",
+    );
+    assert_vec3_close(
+        map_vec3(&planar_jac_items[2], "linear", "planar_jac[2].linear"),
+        [0.0, 0.0, 0.0],
+        1e-12,
+        "planar_jac[2].linear (∂θ DOF)",
     );
 
     // ── spherical joint (3-DOF SO(3), quaternion-internal motion variable) ─
@@ -611,20 +643,53 @@ fn kinematic_stdlib_smoke_e2e() {
         "sj_xform translation dim",
     );
 
-    // sj_jac = joint_jacobian(sj) → zero-twist Map (FD-fallback placeholder).
-    // Analytic 3-column SO(3) Jacobian deferred to PRD task 2 / #2670.
+    // sj_jac = joint_jacobian(sj) → Value::List of three analytic angular
+    // body-basis twist columns (KCC-γ step-8):
+    //   [0] = ∂ω_x DOF: angular=[1,0,0], linear=[0,0,0]
+    //   [1] = ∂ω_y DOF: angular=[0,1,0], linear=[0,0,0]
+    //   [2] = ∂ω_z DOF: angular=[0,0,1], linear=[0,0,0]
+    // Spherical is axis-isotropic so the local-frame Jacobian columns at
+    // q = identity are exactly the body-frame basis vectors.
     let sj_jac = get_value(v, "sj_jac");
+    let sj_jac_items = match sj_jac {
+        Value::List(items) if items.len() == 3 => items,
+        other => panic!("sj_jac: expected 3-element List, got {other:?}"),
+    };
     assert_vec3_close(
-        map_vec3(sj_jac, "angular", "sj_jac.angular"),
-        [0.0, 0.0, 0.0],
+        map_vec3(&sj_jac_items[0], "angular", "sj_jac[0].angular"),
+        [1.0, 0.0, 0.0],
         1e-12,
-        "sj_jac.angular",
+        "sj_jac[0].angular (∂ω_x DOF)",
     );
     assert_vec3_close(
-        map_vec3(sj_jac, "linear", "sj_jac.linear"),
+        map_vec3(&sj_jac_items[0], "linear", "sj_jac[0].linear"),
         [0.0, 0.0, 0.0],
         1e-12,
-        "sj_jac.linear",
+        "sj_jac[0].linear (∂ω_x DOF)",
+    );
+    assert_vec3_close(
+        map_vec3(&sj_jac_items[1], "angular", "sj_jac[1].angular"),
+        [0.0, 1.0, 0.0],
+        1e-12,
+        "sj_jac[1].angular (∂ω_y DOF)",
+    );
+    assert_vec3_close(
+        map_vec3(&sj_jac_items[1], "linear", "sj_jac[1].linear"),
+        [0.0, 0.0, 0.0],
+        1e-12,
+        "sj_jac[1].linear (∂ω_y DOF)",
+    );
+    assert_vec3_close(
+        map_vec3(&sj_jac_items[2], "angular", "sj_jac[2].angular"),
+        [0.0, 0.0, 1.0],
+        1e-12,
+        "sj_jac[2].angular (∂ω_z DOF)",
+    );
+    assert_vec3_close(
+        map_vec3(&sj_jac_items[2], "linear", "sj_jac[2].linear"),
+        [0.0, 0.0, 0.0],
+        1e-12,
+        "sj_jac[2].linear (∂ω_z DOF)",
     );
 
     // ── Euler / axis-angle facade demonstration ───────────────────────────
