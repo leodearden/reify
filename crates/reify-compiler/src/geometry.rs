@@ -368,15 +368,44 @@ pub(crate) fn try_hoist_geometry_conditional(
 
     let merged = merge_branches(cond, then_branch, else_branch, functions, expr.span);
 
-    // Only hoist when the merged root is a geometry FunctionCall (not a scalar
-    // Conditional that merge_branches produced because the names/arities didn't match).
+    // `merge_branches` only emits a FunctionCall root when both branches were
+    // matching geometry constructors that were NOT user-shadowed — those checks
+    // are already enforced inside `merge_branches` (the `is_geometry_function +
+    // user-shadow` predicate at the FunctionCall-match site).  The guard here
+    // just distinguishes "a merged geometry call was produced" (FunctionCall
+    // root) from "the scalar-Conditional fallback was returned" (Conditional).
     match &merged.kind {
-        reify_syntax::ExprKind::FunctionCall { name, .. }
-            if is_geometry_function(name) && !functions.iter().any(|f| f.name == *name) =>
-        {
-            Some(merged)
-        }
+        reify_syntax::ExprKind::FunctionCall { .. } => Some(merged),
         _ => None,
+    }
+}
+
+/// Returns `true` when `a` and `b` are structurally identical scalar leaf
+/// expressions — `NumberLiteral`, `BoolLiteral`, or `Ident` with the same
+/// payload.
+///
+/// Used by [`merge_branches`] as a cheap peephole to avoid wrapping a
+/// shared-constant argument in a redundant `Conditional { cond, x, x }` node
+/// (common for boilerplate zero-valued axes in 3D ops such as `translate`).
+/// Only the three leaf forms that are safe to compare structurally are matched;
+/// any other kind returns `false` to stay conservative.
+fn are_scalar_equal(a: &reify_syntax::Expr, b: &reify_syntax::Expr) -> bool {
+    match (&a.kind, &b.kind) {
+        (
+            reify_syntax::ExprKind::NumberLiteral {
+                value: va,
+                is_real: ra,
+            },
+            reify_syntax::ExprKind::NumberLiteral {
+                value: vb,
+                is_real: rb,
+            },
+        ) => va == vb && ra == rb,
+        (reify_syntax::ExprKind::BoolLiteral(va), reify_syntax::ExprKind::BoolLiteral(vb)) => {
+            va == vb
+        }
+        (reify_syntax::ExprKind::Ident(na), reify_syntax::ExprKind::Ident(nb)) => na == nb,
+        _ => false,
     }
 }
 
@@ -409,6 +438,35 @@ pub(crate) fn try_hoist_geometry_conditional(
 /// approximately correct.  Scalar `Conditional` nodes reuse `outer_span`
 /// (the enclosing conditional's span) so diagnostic labels point at a
 /// sensible location if the scalar arg itself later triggers a type error.
+///
+/// **Condition cloning and runtime cost:** `cond` is cloned into every scalar
+/// `Conditional` leaf this function emits (one per differing scalar argument).
+/// Consequently `eval_expr` re-evaluates the condition once per geometry argument
+/// at run time, and `compile_expr` re-type-checks it once per clone at compile
+/// time.  If the condition itself emits a diagnostic (e.g. an unresolved
+/// identifier) the diagnostic may appear N times.  **Callers should ensure
+/// conditions are pure and inexpensive** (a parameter comparison, not a function
+/// call with side-effects).  Lifting the condition to a synthesised scalar `let`
+/// binding for single evaluation is a v2 optimisation.
+///
+/// **Peephole — identical scalar leaves:** when `a` and `b` are structurally
+/// identical scalar literals or Ident references the emitted `Conditional` would
+/// be redundant (both branches evaluate to the same value).  [`are_scalar_equal`]
+/// detects this case and returns `a.clone()` directly, keeping the compiled IR
+/// lean (common for shared-constant axes in 3D ops such as `translate`).
+///
+/// **Geometry-arg mismatch fall-through:** when matching outer constructors
+/// (e.g. two `translate(…)` calls) have a geometry sub-arg pair that differs by
+/// constructor (e.g. `translate(box(…), …)` vs `translate(cyl(…), …)`), the
+/// recursion produces `translate(Conditional{cond, box(…), cyl(…)}, …)`.  The
+/// outer `translate` FunctionCall root passes
+/// [`try_hoist_geometry_conditional`]'s check, so it IS returned as
+/// `Some(merged)`.  When `compile_geometry_call` re-enters on the synthesised
+/// `translate`, it encounters the inner `Conditional{cond, box, cyl}` as a
+/// geometry arg; that re-enters `compile_geometry_call`,
+/// `try_hoist_geometry_conditional` returns `None` (box vs cyl), and the
+/// existing "if-then-else returning geometry" graceful error fires with a label
+/// at `outer_span`.
 fn merge_branches(
     cond: &reify_syntax::Expr,
     a: &reify_syntax::Expr,
@@ -480,6 +538,15 @@ fn merge_branches(
     // Scalar leaf, incompatible names/arities, or Ident branch — emit a
     // plain scalar Conditional using the ORIGINAL a and b so that compile_expr
     // receives well-typed scalar AST nodes without geometry-call subexpressions.
+
+    // Peephole: if a and b are structurally identical scalar literals or Ident
+    // references the Conditional would be redundant — both branches evaluate to
+    // the same value regardless of the condition.  Return a.clone() directly to
+    // keep the compiled IR lean (see doc-comment for rationale and examples).
+    if are_scalar_equal(a, b) {
+        return a.clone();
+    }
+
     reify_syntax::Expr {
         kind: reify_syntax::ExprKind::Conditional {
             condition: Box::new(cond.clone()),
@@ -2379,10 +2446,12 @@ mod tests {
     /// (box vs cylinder — different names), rather than silently falling through
     /// to `_ => return None` with no message.
     ///
-    /// The source was updated from box-vs-box (which task 3815 now hoists) to
-    /// box-vs-cylinder so the graceful-error fallback path remains covered.
+    /// The tested source uses incompatible branches (box vs cylinder) so the
+    /// graceful-error fallback path is covered.  The box-vs-box case (compatible
+    /// branches, same arity) is now covered by the hoisting tests in
+    /// `let_scope_tests.rs` — this test exercises the non-hoistable path only.
     #[test]
-    fn compile_geometry_call_conditional_returning_solid_emits_error_and_returns_none() {
+    fn compile_geometry_call_conditional_with_incompatible_branches_emits_error() {
         // Build: if true then box(1, 1, 1) else cylinder(1, 1) — incompatible.
         let bool_cond = reify_syntax::Expr {
             kind: reify_syntax::ExprKind::BoolLiteral(true),
@@ -2757,30 +2826,88 @@ mod tests {
         }
     }
 
-    /// `merge_branches`: box(1,1,1) vs box(2,2,2) → FunctionCall{"box", [Conditional, Conditional, Conditional]}
+    /// Helper: build a FunctionCall Expr named "box" with three specific numeric arg values.
+    fn make_box_with_values(w: f64, h: f64, d: f64) -> reify_syntax::Expr {
+        let num = |v: f64| reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::NumberLiteral {
+                value: v,
+                is_real: false,
+            },
+            span: reify_types::SourceSpan::new(0, 1),
+        };
+        reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::FunctionCall {
+                name: "box".to_string(),
+                args: vec![num(w), num(h), num(d)],
+            },
+            span: reify_types::SourceSpan::new(0, 1),
+        }
+    }
+
+    /// `merge_branches`: box(10,20,30) vs box(40,50,60) →
+    /// FunctionCall{"box", [Conditional{cond,10,40}, Conditional{cond,20,50}, Conditional{cond,30,60}]}.
+    ///
+    /// Uses distinct per-arg values so a branch-swap bug or condition-threading
+    /// bug would fail the assertions — satisfies the requirement that tests
+    /// verify condition identity and then/else branch values, not just shape.
     #[test]
     fn merge_branches_box_vs_box_produces_geometry_call_with_conditional_args() {
         let functions: Vec<CompiledFunction> = vec![];
-        let cond = bool_cond_expr();
-        let a = make_call_with_arity("box", 3);
-        let b = make_call_with_arity("box", 3);
+        let cond = bool_cond_expr(); // BoolLiteral(true)
+        let a_vals = [10.0_f64, 20.0, 30.0];
+        let b_vals = [40.0_f64, 50.0, 60.0];
+        let a = make_box_with_values(a_vals[0], a_vals[1], a_vals[2]);
+        let b = make_box_with_values(b_vals[0], b_vals[1], b_vals[2]);
         let outer_span = reify_types::SourceSpan::new(0, 10);
 
         let merged = merge_branches(&cond, &a, &b, &functions, outer_span);
 
-        match &merged.kind {
+        let args = match &merged.kind {
             reify_syntax::ExprKind::FunctionCall { name, args } => {
                 assert_eq!(name, "box");
                 assert_eq!(args.len(), 3);
-                for arg in args {
-                    assert!(
-                        matches!(&arg.kind, reify_syntax::ExprKind::Conditional { .. }),
-                        "each arg should be a Conditional, got {:?}",
-                        arg.kind
-                    );
-                }
+                args
             }
             other => panic!("expected FunctionCall, got {:?}", other),
+        };
+        for (i, arg) in args.iter().enumerate() {
+            match &arg.kind {
+                reify_syntax::ExprKind::Conditional {
+                    condition,
+                    then_branch,
+                    else_branch,
+                } => {
+                    // condition must be the outer BoolLiteral(true)
+                    assert!(
+                        matches!(&condition.kind, reify_syntax::ExprKind::BoolLiteral(true)),
+                        "arg {i}: condition should be BoolLiteral(true), got {:?}",
+                        condition.kind
+                    );
+                    // then_branch must carry the a-side value
+                    assert!(
+                        matches!(
+                            &then_branch.kind,
+                            reify_syntax::ExprKind::NumberLiteral { value, .. }
+                            if (*value - a_vals[i]).abs() < 1e-12
+                        ),
+                        "arg {i}: then_branch should be NumberLiteral({:.1}), got {:?}",
+                        a_vals[i],
+                        then_branch.kind
+                    );
+                    // else_branch must carry the b-side value
+                    assert!(
+                        matches!(
+                            &else_branch.kind,
+                            reify_syntax::ExprKind::NumberLiteral { value, .. }
+                            if (*value - b_vals[i]).abs() < 1e-12
+                        ),
+                        "arg {i}: else_branch should be NumberLiteral({:.1}), got {:?}",
+                        b_vals[i],
+                        else_branch.kind
+                    );
+                }
+                other => panic!("arg {i}: expected Conditional, got {:?}", other),
+            }
         }
     }
 
@@ -2893,21 +3020,34 @@ mod tests {
 
     // ─── task-3815 step-3: recursive union + else-if reduction unit tests ────
 
-    /// `merge_branches` recursion: union(box,box) vs union(box,box) produces
-    /// `union(box(C,C,C), box(C,C,C))` — a geometry FunctionCall with box sub-calls.
+    /// `merge_branches` recursion: union(box,box) vs union(box,box) (distinct arg values)
+    /// produces `union(box(C,C,C), box(C,C,C))` — a geometry FunctionCall with box sub-calls.
     #[test]
     fn merge_branches_union_tree_produces_geometry_call_with_conditional_box_args() {
         let functions: Vec<CompiledFunction> = vec![];
         let cond = bool_cond_expr();
-        // union(box(1,1,1), box(1,1,1))
+        // a = union(box(1,1,1), box(1,1,1))  — "then" tree
         let a = reify_syntax::Expr {
             kind: reify_syntax::ExprKind::FunctionCall {
                 name: "union".to_string(),
-                args: vec![make_call_with_arity("box", 3), make_call_with_arity("box", 3)],
+                args: vec![
+                    make_box_with_values(1.0, 1.0, 1.0),
+                    make_box_with_values(1.0, 1.0, 1.0),
+                ],
             },
             span: reify_types::SourceSpan::new(0, 1),
         };
-        let b = a.clone();
+        // b = union(box(2,2,2), box(2,2,2))  — "else" tree (distinct values, args differ)
+        let b = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::FunctionCall {
+                name: "union".to_string(),
+                args: vec![
+                    make_box_with_values(2.0, 2.0, 2.0),
+                    make_box_with_values(2.0, 2.0, 2.0),
+                ],
+            },
+            span: reify_types::SourceSpan::new(0, 1),
+        };
         let outer_span = reify_types::SourceSpan::new(0, 20);
 
         let merged = merge_branches(&cond, &a, &b, &functions, outer_span);
@@ -2944,14 +3084,18 @@ mod tests {
     /// `try_hoist_geometry_conditional` (step-4): else-if chain
     /// `if c1 then box(p) else (if c2 then box(q) else box(r))` reduces to
     /// `box(nested_Conditional, ...)` via else-if chain reduction.
+    ///
+    /// Uses distinct arg values (p=10, q=20, r=30) so the peephole does not
+    /// short-circuit the Conditional wrapping and the nested structure is visible.
     #[test]
     fn try_hoist_geometry_conditional_else_if_chain_returns_some() {
         let functions: Vec<CompiledFunction> = vec![];
         let cond1 = bool_cond_expr();
         let cond2 = bool_cond_expr();
-        let box_p = make_call_with_arity("box", 3);
-        let box_q = make_call_with_arity("box", 3);
-        let box_r = make_call_with_arity("box", 3);
+        // Distinct dims so are_scalar_equal does not fire and Conditionals are emitted.
+        let box_p = make_box_with_values(10.0, 10.0, 10.0);
+        let box_q = make_box_with_values(20.0, 20.0, 20.0);
+        let box_r = make_box_with_values(30.0, 30.0, 30.0);
 
         // else_branch is itself: `if cond2 then box(q) else box(r)`
         let inner_cond = reify_syntax::Expr {
@@ -2997,5 +3141,238 @@ mod tests {
             }
             other => panic!("expected FunctionCall{{box}}, got {:?}", other),
         }
+    }
+
+    // ─── task-3815 amendments: peephole, shadow guard, geometry-arg mismatch ──
+
+    /// `are_scalar_equal` peephole: merge_branches with identical NumberLiteral
+    /// args returns the literal directly (no Conditional wrapper).
+    ///
+    /// Exercises the common case where `translate(box(…), tx, 0, 0)` appears in
+    /// both branches and the shared-constant `0` axis args are NOT wrapped.
+    #[test]
+    fn merge_branches_identical_number_literal_args_not_wrapped_in_conditional() {
+        let functions: Vec<CompiledFunction> = vec![];
+        let cond = bool_cond_expr();
+        let zero_a = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::NumberLiteral {
+                value: 0.0,
+                is_real: false,
+            },
+            span: reify_types::SourceSpan::new(0, 1),
+        };
+        let zero_b = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::NumberLiteral {
+                value: 0.0,
+                is_real: false,
+            },
+            span: reify_types::SourceSpan::new(0, 1),
+        };
+        let outer_span = reify_types::SourceSpan::new(0, 10);
+
+        let merged = merge_branches(&cond, &zero_a, &zero_b, &functions, outer_span);
+
+        // Peephole must return the literal directly, not a Conditional.
+        assert!(
+            matches!(
+                &merged.kind,
+                reify_syntax::ExprKind::NumberLiteral { value, .. }
+                if (*value - 0.0_f64).abs() < 1e-12
+            ),
+            "identical 0.0 args should be returned as-is (no Conditional), got {:?}",
+            merged.kind
+        );
+    }
+
+    /// Shadow-guard test: `try_hoist_geometry_conditional` must return `None`
+    /// when the constructor name is shadowed by a user-defined function in the
+    /// `functions` slice — even when both branches are structurally identical
+    /// geometry calls.
+    ///
+    /// This pin ensures the auto-hoisting rewrite is never applied to user
+    /// functions that happen to share a name with a built-in geometry primitive.
+    #[test]
+    fn try_hoist_geometry_conditional_returns_none_when_box_is_user_shadowed() {
+        // Simulate `fn box(w, h, d) { … }` in user code.
+        let params = vec![
+            ("w".to_string(), reify_types::Type::Real),
+            ("h".to_string(), reify_types::Type::Real),
+            ("d".to_string(), reify_types::Type::Real),
+        ];
+        let box_shadow_fn = CompiledFunction {
+            name: "box".to_string(),
+            doc: None,
+            is_pub: false,
+            param_defaults: CompiledFunction::no_defaults_for(&params),
+            params,
+            return_type: reify_types::Type::Real,
+            body: CompiledFnBody {
+                let_bindings: vec![],
+                result_expr: CompiledExpr {
+                    kind: CompiledExprKind::Literal(Value::Real(0.0)),
+                    result_type: reify_types::Type::Real,
+                    content_hash: ContentHash::of_str("box_shadow_hoist_stub"),
+                },
+            },
+            content_hash: ContentHash::of_str("fn_box_shadow_hoist"),
+            annotations: vec![],
+            optimized_target: None,
+        };
+        let functions = vec![box_shadow_fn];
+
+        let cond = bool_cond_expr();
+        // Both branches are box(…) with distinct values — would hoist with empty functions.
+        let a = make_box_with_values(1.0, 2.0, 3.0);
+        let b = make_box_with_values(4.0, 5.0, 6.0);
+        let outer_span = reify_types::SourceSpan::new(0, 20);
+        let cond_expr = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::Conditional {
+                condition: Box::new(cond),
+                then_branch: Box::new(a),
+                else_branch: Box::new(b),
+            },
+            span: outer_span,
+        };
+
+        let result = try_hoist_geometry_conditional(&cond_expr, &functions);
+        assert!(
+            result.is_none(),
+            "user-shadowed 'box' must NOT be auto-hoisted: expected None, got Some({:?})",
+            result.map(|e| format!("{:?}", e.kind))
+        );
+    }
+
+    /// Shadow-guard test: `merge_branches` with a user-shadowed constructor name
+    /// must return a scalar `Conditional` (not a `FunctionCall`) — the shadow
+    /// guard inside `merge_branches` prevents hoisting.
+    #[test]
+    fn merge_branches_returns_scalar_conditional_when_box_is_user_shadowed() {
+        let params = vec![
+            ("w".to_string(), reify_types::Type::Real),
+            ("h".to_string(), reify_types::Type::Real),
+            ("d".to_string(), reify_types::Type::Real),
+        ];
+        let box_shadow_fn = CompiledFunction {
+            name: "box".to_string(),
+            doc: None,
+            is_pub: false,
+            param_defaults: CompiledFunction::no_defaults_for(&params),
+            params,
+            return_type: reify_types::Type::Real,
+            body: CompiledFnBody {
+                let_bindings: vec![],
+                result_expr: CompiledExpr {
+                    kind: CompiledExprKind::Literal(Value::Real(0.0)),
+                    result_type: reify_types::Type::Real,
+                    content_hash: ContentHash::of_str("box_shadow_merge_stub"),
+                },
+            },
+            content_hash: ContentHash::of_str("fn_box_shadow_merge"),
+            annotations: vec![],
+            optimized_target: None,
+        };
+        let functions = vec![box_shadow_fn];
+
+        let cond = bool_cond_expr();
+        let a = make_box_with_values(1.0, 2.0, 3.0);
+        let b = make_box_with_values(4.0, 5.0, 6.0);
+        let outer_span = reify_types::SourceSpan::new(0, 10);
+
+        let merged = merge_branches(&cond, &a, &b, &functions, outer_span);
+
+        // Must be a scalar Conditional, NOT a FunctionCall.
+        assert!(
+            matches!(&merged.kind, reify_syntax::ExprKind::Conditional { .. }),
+            "user-shadowed 'box': merge_branches should return scalar Conditional, got {:?}",
+            merged.kind
+        );
+    }
+
+    /// Regression: `compile_geometry_call` on
+    /// `if cond then translate(box(…),…) else translate(cyl(…),…)` must emit a
+    /// clean "if-then-else" + "geometry" Error and return `None`.
+    ///
+    /// Path: `merge_branches` produces `translate(Conditional{cond,box,cyl},…)`;
+    /// `try_hoist` returns `Some` (outer `translate` root matches); re-entering
+    /// `compile_geometry_call` on the synthesised `translate` then encounters the
+    /// inner `Conditional{cond,box,cyl}` as a geometry arg, which fires the
+    /// existing graceful-error path (try_hoist returns None for box vs cyl).
+    #[test]
+    fn compile_geometry_call_translate_with_mismatched_inner_geometry_emits_error() {
+        let zero = || reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::NumberLiteral {
+                value: 0.0,
+                is_real: false,
+            },
+            span: reify_types::SourceSpan::new(0, 1),
+        };
+        let one = || reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::NumberLiteral {
+                value: 1.0,
+                is_real: false,
+            },
+            span: reify_types::SourceSpan::new(0, 1),
+        };
+        // translate(box(1,1,1), 1, 0, 0)
+        let translate_box = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::FunctionCall {
+                name: "translate".to_string(),
+                args: vec![make_box_with_values(1.0, 1.0, 1.0), one(), zero(), zero()],
+            },
+            span: reify_types::SourceSpan::new(0, 1),
+        };
+        // translate(cylinder(1,1), 1, 0, 0)
+        let translate_cyl = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::FunctionCall {
+                name: "translate".to_string(),
+                args: vec![make_call_with_arity("cylinder", 2), one(), zero(), zero()],
+            },
+            span: reify_types::SourceSpan::new(0, 1),
+        };
+        let bool_cond = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::BoolLiteral(true),
+            span: reify_types::SourceSpan::new(0, 4),
+        };
+        let cond_expr = make_conditional(bool_cond, translate_box, translate_cyl);
+
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_types::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_syntax::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &cond_expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        assert!(
+            result.is_none(),
+            "expected None for mismatched inner geometry (translate(box) vs translate(cyl)), got ops"
+        );
+        let error_diags: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.severity == reify_types::Severity::Error)
+            .collect();
+        assert!(
+            !error_diags.is_empty(),
+            "expected at least one Error diagnostic for inner geometry mismatch"
+        );
+        let msg = &error_diags[0].message;
+        assert!(
+            msg.contains("if-then-else") && msg.contains("geometry"),
+            "Error message must contain 'if-then-else' and 'geometry', got: {:?}",
+            msg
+        );
+        assert!(
+            !error_diags[0].labels.is_empty(),
+            "Error diagnostic must have a label at the conditional span"
+        );
     }
 }

@@ -2167,6 +2167,10 @@ structure AxisBox {
 /// hoist to a single `Primitive{Box}` op whose three scalar args are each a
 /// `CompiledExprKind::Conditional`.
 ///
+/// Uses `box(length, od, length) else box(od, length, od)` so every arg pair is
+/// distinct (length vs od or od vs length) and the peephole optimisation does not
+/// collapse any arg to a direct Ident — all three must be Conditionals.
+///
 /// This test fails today (the existing rejection error fires instead of the
 /// hoist). It will pass after step-2 implements `try_hoist_geometry_conditional`.
 #[test]
@@ -2175,7 +2179,7 @@ fn geometry_valued_if_then_else_box_lowers_to_conditional_primitive() {
     param length: Scalar = 100mm
     param od: Scalar = 50mm
     param axis: Scalar = 0
-    let body = if axis == 0 then box(length, od, od) else box(od, od, length)
+    let body = if axis == 0 then box(length, od, length) else box(od, length, od)
 }"#;
 
     let compiled = compile_with_diagnostics(source);
@@ -2211,6 +2215,8 @@ fn geometry_valued_if_then_else_box_lowers_to_conditional_primitive() {
     assert_eq!(*kind, PrimitiveKind::Box, "expected Box primitive");
     assert_eq!(args.len(), 3, "box should have 3 named args");
 
+    // All three args differ between branches (length vs od / od vs length), so
+    // the peephole does not fire and every arg is a Conditional.
     for (name, arg) in args {
         assert!(
             matches!(&arg.kind, CompiledExprKind::Conditional { .. }),
