@@ -560,15 +560,29 @@ pub fn solve_loop_closure(
             }
             vals_b_scratch[i] = x[k];
         }
+        // KCC-γ step-4 bridge: the chain machinery (loop_residual_twist /
+        // chain_jacobian_fd) now consumes `&[JointValue]`.  The f64-typed
+        // solver path is still single-DOF (Scalar-only) — every entry is
+        // wrapped as `JointValue::Scalar`.  KCC-γ step-12 widens this
+        // function to take `&[JointValue]` directly and reconstructs the
+        // multi-DOF JointValue payloads from `unflatten_dofs(&x, &shapes)`.
+        let vals_a_jv: Vec<crate::loop_closure_value::JointValue> = vals_a_vec
+            .iter()
+            .map(|&v| crate::loop_closure_value::JointValue::Scalar(v))
+            .collect();
+        let vals_b_jv: Vec<crate::loop_closure_value::JointValue> = vals_b_scratch
+            .iter()
+            .map(|&v| crate::loop_closure_value::JointValue::Scalar(v))
+            .collect();
         let twist = crate::loop_closure::loop_residual_twist(
             &chain_a_vec,
-            &vals_a_vec,
+            &vals_a_jv,
             &chain_b_vec,
-            &vals_b_scratch,
+            &vals_b_jv,
         )?;
         let cols = crate::loop_closure::chain_jacobian_fd(
             &chain_b_vec,
-            &vals_b_scratch,
+            &vals_b_jv,
             &free_b_vec,
             1e-6,
         )?;

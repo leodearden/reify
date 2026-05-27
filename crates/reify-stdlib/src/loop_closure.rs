@@ -47,17 +47,22 @@ use crate::loop_closure_value::JointValue;
 /// Fold a chain of joint Maps into a single composed Transform.
 ///
 /// `chain[i]` is a joint `Value::Map` (any kind in `joints::JOINT_KINDS`);
-/// `values[i]` is its motion variable in SI units (metres for prismatic,
-/// radians for revolute; for coupling, in the parent's input coordinate —
-/// the coupling's `transform_at` arm wraps it via the parent kind's helper;
-/// for fixed (0-DOF), `values[i]` is ignored and the joint contributes an
-/// identity Transform to the composition).
+/// `values[i]` is its per-DOF motion variable carried as a typed
+/// [`JointValue`]: `Scalar(v)` for single-DOF kinds (prismatic / revolute /
+/// coupling / fixed — fixed's value is ignored), `Planar([x,y,θ])` /
+/// `Sphere([w,x,y,z])` / `Cyl([d,θ])` for the three multi-DOF kinds.
 ///
 /// Composition is left-to-right: `T_total = T_0 * T_1 * ... * T_{n-1}`,
 /// matching the semantics of nesting joints from base outward.  Returns
 /// `None` if any joint produces `Value::Undef` from `transform_at` (invalid
-/// joint Map, dimension mismatch, etc.) or if `chain.len() != values.len()`.
-pub fn chain_transform(chain: &[Value], values: &[f64]) -> Option<Value> {
+/// joint Map, dimension mismatch, JointValue variant mismatched to the
+/// joint kind, etc.) or if `chain.len() != values.len()`.
+///
+/// KCC-γ (PRD §5.2) widened the per-joint type from `f64` to `JointValue` so
+/// the multi-DOF kinds participate in chain composition.  Single-DOF chains
+/// remain a strict subset: a `Vec<JointValue::Scalar(_)>` walks the same
+/// dispatch path the pre-widening `&[f64]` signature did.
+pub fn chain_transform(chain: &[Value], values: &[JointValue]) -> Option<Value> {
     if chain.len() != values.len() {
         return None;
     }
@@ -65,7 +70,7 @@ pub fn chain_transform(chain: &[Value], values: &[f64]) -> Option<Value> {
     if acc.is_undef() {
         return None;
     }
-    for (joint, &v) in chain.iter().zip(values.iter()) {
+    for (joint, v) in chain.iter().zip(values.iter()) {
         let v_value = value_for_joint(joint, v)?;
         let next = eval_builtin("transform_at", &[joint.clone(), v_value]);
         if next.is_undef() {
@@ -87,11 +92,15 @@ pub fn chain_transform(chain: &[Value], values: &[f64]) -> Option<Value> {
 ///
 /// Returns `None` if either chain produces a `None` from `chain_transform`,
 /// or if any underlying SE(3) operation produces `Value::Undef`.
+///
+/// KCC-γ (PRD §5.2): both `vals_a` / `vals_b` are typed `&[JointValue]`
+/// slices — the chain composition routes multi-DOF kinds through
+/// `chain_transform` without re-flattening to a scalar vector.
 pub fn loop_residual_twist(
     chain_a: &[Value],
-    vals_a: &[f64],
+    vals_a: &[JointValue],
     chain_b: &[Value],
-    vals_b: &[f64],
+    vals_b: &[JointValue],
 ) -> Option<[f64; 6]> {
     let t_a = chain_transform(chain_a, vals_a)?;
     let t_b = chain_transform(chain_b, vals_b)?;
@@ -255,24 +264,34 @@ pub fn per_joint_jacobian_local(joint: &Value) -> Option<[f64; 6]> {
 }
 
 /// Compute the chain Jacobian by finite difference: one twist column per
-/// free index.
+/// per-DOF storage component of every free joint.
 ///
-/// For each `i ∈ free_indices`, perturbs `values[i]` by `±eps`, evaluates
-/// `chain_transform` at both perturbed values, and computes
+/// For each `i ∈ free_indices`, the joint at `values[i]` contributes
+/// `JointValue::as_f64_slice().len()` columns (1 for Scalar, 2 for Cyl, 3 for
+/// Planar, 4 for Sphere — equal to `JointKind::flat_len()`).  Each column
+/// perturbs one storage f64 by `±eps`, evaluates `chain_transform` at both
+/// perturbed values, and computes
 /// `transform_log(transform_inverse(T_minus) ⋅ T_plus) / (2*eps)` to recover
 /// the central-difference column.  This is symmetric-error O(ε²) and works
-/// for all joint kinds that [`value_for_joint`] handles (currently prismatic,
-/// revolute, coupling, fixed); chains containing planar/spherical/cylindrical
-/// return `None` because `value_for_joint` has no arm for those multi-DOF
-/// kinds yet (deferred to PRD task 2 / taskmaster #2670). The analytic
-/// per-joint accessor is plumbed separately in [`per_joint_jacobian_local`].
+/// for every joint kind `value_for_joint` handles (all seven JOINT_KINDS post
+/// KCC-γ widening).
 ///
 /// Returns `None` if `eps <= 0`, any free index is out of range, the
 /// `chain.len() != values.len()`, or any `chain_transform` along the way
 /// produces `None`.
+///
+/// TODO(KCC-γ step-12): Sphere slots currently contribute 4 raw-storage
+/// columns (matching `flat_len = 4`).  The redundant fourth column reflects
+/// the off-manifold direction in unit-quaternion storage; step-12's solver
+/// wiring switches to 3 body-frame angular tangent columns
+/// (`δq = renormalize(q ⊗ exp(½·δω))`) per the dof_count = 3 manifold and
+/// composes the off-manifold projection via `renormalize_quaternion` after
+/// each Newton step.  Until that wiring lands, the redundant column is
+/// damped harmlessly by `transform_at`'s `normalize_quaternion` call (which
+/// projects every spherical input back to S³).
 pub fn chain_jacobian_fd(
     chain: &[Value],
-    values: &[f64],
+    values: &[JointValue],
     free_indices: &[usize],
     eps: f64,
 ) -> Option<Vec<[f64; 6]>> {
@@ -283,70 +302,101 @@ pub fn chain_jacobian_fd(
         return None;
     }
     let n = chain.len();
-    let mut cols: Vec<[f64; 6]> = Vec::with_capacity(free_indices.len());
+    let mut cols: Vec<[f64; 6]> = Vec::new();
     for &i in free_indices {
         if i >= n {
             return None;
         }
-        let mut plus = values.to_vec();
-        plus[i] += eps;
-        let mut minus = values.to_vec();
-        minus[i] -= eps;
-        let t_plus = chain_transform(chain, &plus)?;
-        let t_minus = chain_transform(chain, &minus)?;
-        let t_minus_inv = eval_builtin("transform_inverse", &[t_minus]);
-        if t_minus_inv.is_undef() {
-            return None;
+        let width = values[i].as_f64_slice().len();
+        for c in 0..width {
+            let mut plus = values.to_vec();
+            let mut minus = values.to_vec();
+            perturb_storage_component(&mut plus[i], c, eps);
+            perturb_storage_component(&mut minus[i], c, -eps);
+            let t_plus = chain_transform(chain, &plus)?;
+            let t_minus = chain_transform(chain, &minus)?;
+            let t_minus_inv = eval_builtin("transform_inverse", &[t_minus]);
+            if t_minus_inv.is_undef() {
+                return None;
+            }
+            let rel = eval_builtin("transform_compose", &[t_minus_inv, t_plus]);
+            if rel.is_undef() {
+                return None;
+            }
+            let twist_map = eval_builtin("transform_log", &[rel]);
+            if twist_map.is_undef() {
+                return None;
+            }
+            let twist = twist_map_to_array(&twist_map)?;
+            let scale = 1.0 / (2.0 * eps);
+            let mut col = [0.0; 6];
+            for k in 0..6 {
+                col[k] = twist[k] * scale;
+            }
+            cols.push(col);
         }
-        let rel = eval_builtin("transform_compose", &[t_minus_inv, t_plus]);
-        if rel.is_undef() {
-            return None;
-        }
-        let twist_map = eval_builtin("transform_log", &[rel]);
-        if twist_map.is_undef() {
-            return None;
-        }
-        let twist = twist_map_to_array(&twist_map)?;
-        let scale = 1.0 / (2.0 * eps);
-        let mut col = [0.0; 6];
-        for k in 0..6 {
-            col[k] = twist[k] * scale;
-        }
-        cols.push(col);
     }
     Some(cols)
 }
 
-/// Wrap a raw f64 motion variable in a dimensioned `Value` appropriate for
-/// the joint kind: `Value::length` for prismatic, `Value::angle` for revolute.
-/// Coupling joints delegate to their parent's kind.
+/// Add `delta` to the `c`-th storage f64 of a `JointValue` in place.
 ///
-/// Returns `None` for unknown kinds or malformed Maps.
+/// Used by [`chain_jacobian_fd`] to drive per-component central-difference
+/// perturbations.  Out-of-range `c` is a no-op (defence-in-depth — the caller
+/// derives `c` from `as_f64_slice().len()`, so this branch is unreachable
+/// from normal use).
+fn perturb_storage_component(jv: &mut JointValue, c: usize, delta: f64) {
+    match jv {
+        JointValue::Scalar(s) => {
+            if c == 0 {
+                *s += delta;
+            }
+        }
+        JointValue::Cyl(arr) => {
+            if c < 2 {
+                arr[c] += delta;
+            }
+        }
+        JointValue::Planar(arr) => {
+            if c < 3 {
+                arr[c] += delta;
+            }
+        }
+        JointValue::Sphere(arr) => {
+            if c < 4 {
+                arr[c] += delta;
+            }
+        }
+    }
+}
+
+/// Wrap a typed [`JointValue`] motion variable in the dimensioned `Value`
+/// shape `transform_at` consumes per joint kind:
 ///
-/// **Single-DOF / 0-DOF coverage**: `prismatic` returns `Some(length(scalar))`,
-/// `revolute` returns `Some(angle(scalar))`, `coupling` delegates to parent
-/// kind, and `fixed` returns `Some(Real(0.0))` (the second arg is ignored by
-/// `transform_at("fixed", _)` — any non-Undef sentinel works; we pick the
-/// conventional zero).
+///   * `prismatic`   ← `Scalar(s)`           → `Value::length(s)` (metres)
+///   * `revolute`    ← `Scalar(s)`           → `Value::angle(s)`  (radians)
+///   * `coupling`    ← `Scalar(s)`           → length/angle per parent kind
+///   * `fixed`       ← any                   → `Value::Real(0.0)` (ignored)
+///   * `planar`      ← `Planar([x,y,θ])`     → `Value::List([length(x), length(y), angle(θ)])`
+///   * `spherical`   ← `Sphere([w,x,y,z])`   → `Value::Orientation { w, x, y, z }`
+///   * `cylindrical` ← `Cyl([d,θ])`          → `Value::List([length(d), angle(θ)])`
 ///
-/// **Multi-DOF kinds** (`planar`, `spherical`, `cylindrical` — see
-/// `crate::joints::JOINT_KINDS` for the canonical kind list and the test
-/// module's `MULTI_DOF_KINDS` for the multi-DOF subset) return `None`
-/// because their motion variables are multi-element values
-/// (`Value::List`/`Value::Orientation`) that cannot be packed into the
-/// single-f64 signature of this function. Returning `None` here causes
-/// `chain_transform` / `chain_jacobian_fd` to short-circuit to `None` for any
-/// chain containing a multi-DOF joint. Multi-DOF chain support is deferred
-/// to PRD v0.2 kinematic task 2 (taskmaster #2670 — "FD fallback for
-/// spherical, cylindrical, planar"), which will refactor the f64-per-joint
-/// signature. Until that lands, callers needing multi-DOF transforms must
-/// use `transform_at(joint, motion_var)` or `joint_jacobian(joint)`
-/// directly, not the chain wrappers. The explicit per-arm `=> None`
-/// dispatch is retained (rather than relying on the catch-all `_ => None`)
-/// so a future kind addition cannot silently change this behaviour, and
-/// the JOINT_KINDS-iteration partition test in this module's `tests` block
-/// loud-fails any drift.
-fn value_for_joint(joint: &Value, scalar: f64) -> Option<Value> {
+/// Returns `None` for unknown kinds, malformed Maps, or when the
+/// `JointValue` variant does not match the joint kind (e.g. a `Planar`
+/// JointValue paired with a revolute joint — the chain machinery
+/// short-circuits to `None` so the caller's `transform_at` invocation never
+/// receives a mismatched motion variable).
+///
+/// KCC-γ (PRD §5.2): widened from `(joint, f64) -> Option<Value>` to
+/// `(joint, &JointValue) -> Option<Value>` to dispatch on the per-DOF
+/// surface shape rather than a single f64.  The multi-DOF arms now produce
+/// the exact `Value::List` / `Value::Orientation` shapes `transform_at`
+/// accepts (joints.rs:239-393); chain_transform can fold any JOINT_KINDS
+/// member without a parallel dispatch path.  The explicit per-arm match
+/// (rather than relying on a catch-all `_ => None`) is retained so a future
+/// kind addition cannot silently drift; the JOINT_KINDS-iteration partition
+/// test in this module's `tests` block loud-fails any unhandled kind.
+pub(crate) fn value_for_joint(joint: &Value, jv: &JointValue) -> Option<Value> {
     let map = match joint {
         Value::Map(m) => m,
         _ => return None,
@@ -355,10 +405,10 @@ fn value_for_joint(joint: &Value, scalar: f64) -> Option<Value> {
         Some(Value::String(s)) => s.as_str(),
         _ => return None,
     };
-    match kind {
-        "prismatic" => Some(Value::length(scalar)),
-        "revolute" => Some(Value::angle(scalar)),
-        "coupling" => {
+    match (kind, jv) {
+        ("prismatic", JointValue::Scalar(s)) => Some(Value::length(*s)),
+        ("revolute", JointValue::Scalar(s)) => Some(Value::angle(*s)),
+        ("coupling", JointValue::Scalar(s)) => {
             let parent_map = match map.get(&Value::String("parent".to_string())) {
                 Some(Value::Map(pm)) => pm,
                 _ => return None,
@@ -368,17 +418,32 @@ fn value_for_joint(joint: &Value, scalar: f64) -> Option<Value> {
                 _ => return None,
             };
             match parent_kind {
-                "prismatic" => Some(Value::length(scalar)),
-                "revolute" => Some(Value::angle(scalar)),
+                "prismatic" => Some(Value::length(*s)),
+                "revolute" => Some(Value::angle(*s)),
                 _ => None,
             }
         }
-        // 0-DOF — second arg ignored; see fn-doc.
-        "fixed" => Some(Value::Real(0.0)),
-        // Multi-DOF — see fn-doc / JOINT_KINDS / MULTI_DOF_KINDS.
-        "planar" => None,
-        "spherical" => None,
-        "cylindrical" => None,
+        // 0-DOF — JointValue ignored; sentinel `Real(0.0)` passes
+        // `transform_at("fixed", _)`'s numeric guard.
+        ("fixed", _) => Some(Value::Real(0.0)),
+        ("planar", JointValue::Planar([x, y, theta])) => Some(Value::List(vec![
+            Value::length(*x),
+            Value::length(*y),
+            Value::angle(*theta),
+        ])),
+        ("spherical", JointValue::Sphere([w, x, y, z])) => Some(Value::Orientation {
+            w: *w,
+            x: *x,
+            y: *y,
+            z: *z,
+        }),
+        ("cylindrical", JointValue::Cyl([d, theta])) => Some(Value::List(vec![
+            Value::length(*d),
+            Value::angle(*theta),
+        ])),
+        // Mismatched JointValue variant / joint kind (e.g. Planar paired
+        // with a revolute joint) — surface as None so the chain
+        // machinery short-circuits gracefully.
         _ => None,
     }
 }
