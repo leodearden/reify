@@ -17,3 +17,11 @@
 // the attribute from reify-core/reify-types to keep the crates' lint preludes
 // structurally identical for downstream reasoning.
 #![allow(clippy::mutable_key_type)]
+
+pub mod ast;
+
+// ── flat root re-exports ─────────────────────────────────────────────────────
+// Mirrors the flat surface previously in reify-types::ast so that code using
+// `reify_ast::Expr` (etc.) resolves correctly alongside the module-path form
+// `reify_ast::ast::Expr`.
+pub use ast::{DimOp, Expr, ExprKind, LambdaParam, MatchArm, QuantifierKind, TypeExpr, TypeExprKind};

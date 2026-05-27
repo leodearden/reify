@@ -1,31 +1,21 @@
 //! Parsed expression and type-expression AST.
 //!
 //! These types model *source as written* — identifiers unresolved, operators
-//! as strings, no types attached. Contrast [`crate::expr::CompiledExpr`], the
-//! name-resolved, type-checked form ready for evaluation. The parsed AST is
-//! produced by the parser in `reify-syntax` and re-exported from it (so
+//! as strings, no types attached. Contrast the name-resolved, type-checked
+//! form in `reify-types::expr::CompiledExpr` ready for evaluation. The parsed
+//! AST is produced by the parser in `reify-syntax` and re-exported from it (so
 //! `reify_syntax::Expr` etc. continue to resolve unchanged).
 //!
-//! ## Why the parsed AST lives in `reify-types`
+//! ## History
 //!
-//! Relocated here from `reify-syntax` (task 3555, annotation-args δ) so that
-//! compiled IR in this crate can embed an *unevaluated* parse fragment:
-//! [`crate::annotation::AnnotationArgValue::Expr`] carries a deferred annotation
-//! argument to be evaluated at structure-instance materialization (see
-//! `docs/prds/annotation-args.md` §4). `reify_syntax::Expr` could not stay in
-//! reify-syntax because the compiled IR that must hold it
-//! (`AnnotationArgValue`, `CompiledFunction::annotations`) lives in reify-types,
-//! and `reify-syntax → reify-types` already exists — the inverse edge would
-//! form a crate cycle.
-//!
-//! This is deliberately a stepping stone. The cleaner end-state is a
-//! `reify-core` ← `reify-ast` ← `reify-ir` split that would re-home this module
-//! into a dedicated AST crate strictly below the IR. Until then, reify-types is
-//! the foundational *core* crate — it already owns the compiled expr AST, the
-//! value model, and the source/identity primitives — and the parsed AST sits
-//! here too.
+//! Originally in `reify-syntax`, relocated to `reify-types` (task 3555,
+//! annotation-args δ) so that compiled IR could embed an *unevaluated* parse
+//! fragment. Relocated here to `reify-ast` (task 3772, core-ast-ir-layering δ)
+//! as Phase 2 of the three-layer split: `reify-core` ← `reify-ast` ← `reify-ir`.
+//! `reify-types` now re-exports this module transparently so no downstream crate
+//! requires changes until the η cutover sweep.
 
-use crate::diagnostics::SourceSpan;
+use reify_core::SourceSpan;
 use std::fmt;
 
 /// An expression in the AST (pre-compilation).
