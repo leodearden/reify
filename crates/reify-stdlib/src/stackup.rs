@@ -145,6 +145,49 @@ mod tests {
     }
 
     #[test]
+    fn contributor_asym_validation_returns_undef() {
+        let nom = len(0.010);
+        let pt = len(0.0001);
+        let mt = len(0.00005);
+
+        // (a) arity: 0/1/2/6 args
+        assert!(eval_stackup("contributor_asym", &[]).unwrap().is_undef());
+        assert!(eval_stackup("contributor_asym", &[nom.clone()]).unwrap().is_undef());
+        assert!(eval_stackup("contributor_asym", &[nom.clone(), pt.clone()]).unwrap().is_undef());
+        assert!(eval_stackup("contributor_asym", &[
+            nom.clone(), pt.clone(), mt.clone(), Value::Int(1),
+            Value::Enum { type_name: "Distribution".into(), variant: "Normal".into() },
+            nom.clone(),
+        ]).unwrap().is_undef());
+        // (b) nominal wrong dim
+        let force = Value::Scalar { si_value: 10.0, dimension: DimensionVector::FORCE };
+        assert!(eval_stackup("contributor_asym", &[force, pt.clone(), mt.clone()]).unwrap().is_undef());
+        // (c) plus_tol is Value::Int (not Scalar)
+        assert!(eval_stackup("contributor_asym", &[nom.clone(), Value::Int(1), mt.clone()]).unwrap().is_undef());
+        // (d) plus_tol has NaN si_value
+        let nan = Value::Scalar { si_value: f64::NAN, dimension: DimensionVector::LENGTH };
+        assert!(eval_stackup("contributor_asym", &[nom.clone(), nan, mt.clone()]).unwrap().is_undef());
+        // (e) sign=Int(0)
+        assert!(eval_stackup("contributor_asym", &[nom.clone(), pt.clone(), mt.clone(), Value::Int(0)]).unwrap().is_undef());
+        // (f) sign=Real(1.0)
+        assert!(eval_stackup("contributor_asym", &[nom.clone(), pt.clone(), mt.clone(), Value::Real(1.0)]).unwrap().is_undef());
+        // (g) distribution is String (not Enum)
+        assert!(eval_stackup("contributor_asym", &[
+            nom.clone(), pt.clone(), mt.clone(), Value::Int(1), Value::String("Normal".into()),
+        ]).unwrap().is_undef());
+        // (h) distribution Enum with wrong type_name
+        assert!(eval_stackup("contributor_asym", &[
+            nom.clone(), pt.clone(), mt.clone(), Value::Int(1),
+            Value::Enum { type_name: "Material".into(), variant: "Steel".into() },
+        ]).unwrap().is_undef());
+        // (i) distribution Enum with unrecognised variant
+        assert!(eval_stackup("contributor_asym", &[
+            nom.clone(), pt.clone(), mt.clone(), Value::Int(1),
+            Value::Enum { type_name: "Distribution".into(), variant: "Lognormal".into() },
+        ]).unwrap().is_undef());
+    }
+
+    #[test]
     fn contributor_asym_4arg_accepts_explicit_sign() {
         let m = expect_map(eval_stackup("contributor_asym", &[
             len(0.010), len(0.0001), len(0.00005), Value::Int(-1),
