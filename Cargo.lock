@@ -4537,6 +4537,7 @@ dependencies = [
  "reify-kernel-occt",
  "reify-runtime",
  "reify-solver-elastic",
+ "reify-stdlib",
  "reify-syntax",
  "reify-test-support",
  "reify-types",

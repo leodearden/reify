@@ -40,6 +40,10 @@ reify-test-support = { workspace = true, features = ["eval-helpers"] }
 reify-kernel-occt.workspace = true
 reify-constraints.workspace = true
 reify-geometry.workspace = true
+# Task 3843 (KCC-γ): integration tests in `kinematic_loop_closure_machinery.rs`
+# call `reify_stdlib::loop_closure::{chain_transform, loop_residual_twist}` to
+# verify the closed-chain residual at convergence on the planar e2e fixture.
+reify-stdlib.workspace = true
 # Task 3579 (PRD §5 B5 / I-3): T5 boundary tests in
 # `tests/node_traits_boundary.rs` need `reify_runtime::concurrent::{
 # SchedulerConfig, ConcurrentScheduler}` plus a tokio runtime. This is the
