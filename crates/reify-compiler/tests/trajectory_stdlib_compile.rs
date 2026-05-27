@@ -1026,3 +1026,81 @@ fn shaper_trait_exists_with_no_params() {
         trait_def.refinements
     );
 }
+
+// ─── step-31: JointLimit param shape ─────────────────────────────────────────
+
+/// `JointLimit` is the per-joint actuator constraint consumed by TOTSShaper
+/// (PRD §5.2). It must declare exactly two params:
+///
+///   - `joint     : Real`  (TODO(joint-type) placeholder for the future
+///                          kinematic-completion Joint type)
+///   - `max_force : Real`  (TODO(force-scalar) placeholder for Scalar<Force>)
+///
+/// Both fields are caller-supplied — no canonical defaults. JointLimit
+/// refines no trait (zero `trait_bounds`). Constraint `max_force > 0` is
+/// asserted separately in step-33.
+///
+/// Mirrors `waypoint_struct_has_correct_param_shape` (step-9) and
+/// `rayleigh_damping_param_shape` in modal_options_validation_tests.rs.
+#[test]
+fn joint_limit_struct_has_correct_param_shape() {
+    let template = find_structure("JointLimit");
+
+    // JointLimit refines no trait (not a BoundaryCondition, not a Profile).
+    assert_eq!(
+        template.trait_bounds,
+        Vec::<String>::new(),
+        "JointLimit should refine no traits; got trait_bounds: {:?}",
+        template.trait_bounds
+    );
+
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    assert_eq!(
+        params.len(),
+        2,
+        "JointLimit should have exactly 2 param cells (joint, max_force); \
+         got: {:?}",
+        names
+    );
+
+    let expected: &[(&str, Type)] = &[
+        ("joint", Type::Real),
+        ("max_force", Type::Real),
+    ];
+
+    // Param declaration order is part of the contract.
+    let expected_names: Vec<&str> = expected.iter().map(|(m, _)| *m).collect();
+    assert_eq!(
+        names, expected_names,
+        "JointLimit params must be in canonical order (joint, max_force); \
+         got: {:?}",
+        names
+    );
+
+    for (member, expected_ty) in expected {
+        let cell = params
+            .iter()
+            .find(|vc| vc.id.member == *member)
+            .unwrap_or_else(|| {
+                panic!("JointLimit missing required param '{}'; got: {:?}", member, names)
+            });
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "JointLimit.{} should be {:?}, got {:?}",
+            member, expected_ty, cell.cell_type
+        );
+    }
+
+    // Both fields are caller-supplied — no canonical defaults.
+    for cell in &params {
+        assert!(
+            cell.default_expr.is_none(),
+            "JointLimit.{} should have no default_expr (caller-supplied); \
+             got: {:?}",
+            cell.id.member,
+            cell.default_expr
+        );
+    }
+}
