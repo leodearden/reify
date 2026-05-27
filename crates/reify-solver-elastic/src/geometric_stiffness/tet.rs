@@ -234,6 +234,56 @@ mod tests {
         }
     }
 
+    // ----- debug-only stress-guard tests -----
+    // The guard `debug_assert!(sigma.sigma.iter().flatten().all(|x| x.is_finite()), ...)`
+    // is compiled in only under `debug_assertions`, so the tests must be
+    // gated identically.  The guard is finite-only (not finite-positive)
+    // because compressive stress is negative and zero stress is valid.
+    // We do NOT add a `zero_stress_does_not_panic` test — that contract
+    // is already pinned by `zero_stress_yields_zero_matrix` above.
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "stress must be entrywise finite")]
+    fn k_g_p1_panics_on_nan_stress_component() {
+        let sigma = InitialStress3 {
+            sigma: [
+                [f64::NAN, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+            ],
+        };
+        let _ = geometric_element_stiffness_tet_p1(&UNIT_TET, &sigma);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "stress must be entrywise finite")]
+    fn k_g_p1_panics_on_positive_infinite_stress_component() {
+        let sigma = InitialStress3 {
+            sigma: [
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, f64::INFINITY],
+            ],
+        };
+        let _ = geometric_element_stiffness_tet_p1(&UNIT_TET, &sigma);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "stress must be entrywise finite")]
+    fn k_g_p1_panics_on_negative_infinite_stress_component() {
+        let sigma = InitialStress3 {
+            sigma: [
+                [0.0, 0.0, 0.0],
+                [0.0, f64::NEG_INFINITY, 0.0],
+                [0.0, 0.0, 0.0],
+            ],
+        };
+        let _ = geometric_element_stiffness_tet_p1(&UNIT_TET, &sigma);
+    }
+
     #[test]
     fn translation_is_in_kernel() {
         // Rigid-body translation u = (a, b, c) per node ⇒ no relative
