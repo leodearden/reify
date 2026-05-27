@@ -747,4 +747,158 @@ mod tests {
             "trampoline must observe prior=Some(42) sourced from cache",
         );
     }
+
+    // ── ζ / task 3425 step-7: donate new warm state on Completed ───────────
+    //
+    // PRD §5 step-3: the atomic-completion step writes the new value AND
+    // donates the trampoline's `new_warm_state` (with `cost_per_byte`) to
+    // the cache under `NodeId::Compute(c_id)` in a single critical section.
+    //
+    // These tests pin the donate-on-Completed wiring. They fail until step-8
+    // updates the `run_compute_dispatch` Completed arm to thread
+    // `new_warm_state` and `cost_per_byte.unwrap_or(0.0)` into the extended
+    // `complete_compute_dispatch_atomically(c_id, &pairs, version, new_warm_state, cost)`.
+
+    /// Trampoline returning Completed{Int(99), warm=Some(7), cost=Some(0.5)}.
+    fn donate_7_fn(
+        _value_inputs: &[Value],
+        _realization_inputs: &[RealizationReadHandle],
+        _options: &Value,
+        _prior_warm_state: Option<&OpaqueState>,
+        _cancellation: &CancellationHandle,
+    ) -> ComputeOutcome {
+        ComputeOutcome::Completed {
+            result: Value::Int(99),
+            new_warm_state: Some(OpaqueState::new(7i32, 4)),
+            cost_per_byte: Some(0.5),
+            diagnostics: vec![],
+        }
+    }
+
+    #[test]
+    fn run_compute_dispatch_completed_donates_new_warm_state_and_cost_to_cache() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn("test::zeta_donate_7", donate_7_fn as ComputeFn);
+
+        let cell = ValueCellId::new("T", "donate");
+        let c_id = ComputeNodeId::new("T", 0);
+
+        // Seed an output VC at Final so begin_compute_dispatch has a
+        // last_substantive to display.
+        engine.cache_store_mut().put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Int(0), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        // NOTE: NO pre-existing entry under NodeId::Compute(c_id) — the
+        // donate-on-Completed path must auto-seed the sentinel entry
+        // (extended complete_compute_dispatch_atomically contract).
+
+        let result = engine.run_compute_dispatch(
+            &c_id,
+            std::slice::from_ref(&cell),
+            "test::zeta_donate_7",
+            &[Value::Int(0)],
+            &[],
+            &Value::Undef,
+            &CancellationHandle::new(),
+            VersionId(2),
+        );
+        let (value, _diags) = result.expect("dispatch must Ok");
+        assert_eq!(value, Value::Int(99), "trampoline result must surface");
+
+        // Output VC flipped Pending → Final by atomic-complete.
+        assert_eq!(
+            engine.freshness(&NodeId::Value(cell.clone())),
+            Freshness::Final,
+            "output VC must be Final after Completed dispatch",
+        );
+
+        // The trampoline's new_warm_state must be donated to the cache.
+        let observed_warm = engine
+            .cache_store_mut()
+            .get_warm_state(&NodeId::Compute(c_id.clone()))
+            .expect("cache must hold warm state after donate-on-Completed");
+        assert_eq!(
+            observed_warm.downcast::<i32>(),
+            Some(7i32),
+            "cache warm_state must contain the donated i32=7",
+        );
+
+        // The reported cost_per_byte=0.5 must round-trip through the cache.
+        // (Note: get_warm_state above consumed the warm_state slot via take
+        // semantics, but the cost_per_byte field is separate and persists.)
+        assert_eq!(
+            engine
+                .cache_store()
+                .cost_per_byte_of(&NodeId::Compute(c_id)),
+            Some(0.5),
+            "cache cost_per_byte must reflect the trampoline's reported cost",
+        );
+    }
+
+    /// Trampoline returning Completed with NO warm state and NO cost.
+    fn no_warm_no_cost_fn(
+        _value_inputs: &[Value],
+        _realization_inputs: &[RealizationReadHandle],
+        _options: &Value,
+        _prior_warm_state: Option<&OpaqueState>,
+        _cancellation: &CancellationHandle,
+    ) -> ComputeOutcome {
+        ComputeOutcome::Completed {
+            result: Value::Int(0),
+            new_warm_state: None,
+            cost_per_byte: None,
+            diagnostics: vec![],
+        }
+    }
+
+    #[test]
+    fn run_compute_dispatch_completed_with_none_warm_state_creates_no_compute_entry() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn(
+            "test::zeta_no_warm_no_cost",
+            no_warm_no_cost_fn as ComputeFn,
+        );
+
+        let cell = ValueCellId::new("T", "nowarm");
+        let c_id = ComputeNodeId::new("T", 0);
+
+        engine.cache_store_mut().put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Int(0), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        let result = engine.run_compute_dispatch(
+            &c_id,
+            std::slice::from_ref(&cell),
+            "test::zeta_no_warm_no_cost",
+            &[Value::Int(0)],
+            &[],
+            &Value::Undef,
+            &CancellationHandle::new(),
+            VersionId(2),
+        );
+        result.expect("dispatch must Ok");
+
+        // No warm state reported → no Compute entry must exist
+        // (auto-seed only fires when new_warm_state is Some).
+        assert!(
+            engine
+                .cache_store()
+                .get(&NodeId::Compute(c_id))
+                .is_none(),
+            "no Compute entry must exist when trampoline returned new_warm_state=None",
+        );
+    }
 }
