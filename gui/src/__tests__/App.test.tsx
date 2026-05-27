@@ -4910,6 +4910,55 @@ describe('App file-changed auto-reload (non-dirty)', () => {
   });
 });
 
+// ─── isSameFile cross-format path matching in onFileChanged ─────────────────
+
+describe('App file-changed isSameFile cross-format matching', () => {
+  const testState: GuiState = {
+    meshes: [],
+    values: [],
+    constraints: [],
+    files: [
+      { path: '/project/foo.ri', content: 'old content' },
+    ],
+    tessellation_diagnostics: [],
+    compile_diagnostics: [],
+  };
+
+  let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
+
+  beforeEach(() => {
+    fileChangedCallback = undefined;
+    vi.mocked(bridge.onFileChanged).mockImplementation(async (cb: any) => {
+      fileChangedCallback = cb;
+      return () => {};
+    });
+    vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
+  });
+
+  it('file-changed with file:// URI matches a bare-path tab and auto-reloads its content', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(fileChangedCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    // Tab has bare path '/project/foo.ri'; event arrives with file:// URI.
+    // The handler must use isSameFile to match them.
+    fileChangedCallback!({ path: 'file:///project/foo.ri', content: 'NEW' });
+
+    // Give reactivity a chance to settle
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Content should be updated — the URI matched the bare-path tab
+    const file = capturedEditorStore.state.openFiles.find(
+      (f: any) => f.path === '/project/foo.ri',
+    );
+    expect(file?.content).toBe('NEW');
+
+    // No conflict UI — non-dirty auto-reload
+    expect(capturedEditorStore.state.externallyChanged).not.toContain('/project/foo.ri');
+    expect(screen.queryByText('Reload')).toBeNull();
+  });
+});
+
 // ─── handleSave aborts when file is externally changed ───────────────────────
 
 describe('App handleSave aborts when file is externally changed', () => {
