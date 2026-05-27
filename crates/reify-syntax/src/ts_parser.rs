@@ -2343,7 +2343,7 @@ impl<'a> Lowering<'a> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
         let value_node = node.child_by_field_name("value")?;
-        let value = self.lower_expr(value_node)?;
+        let value = self.lower_binding_value(value_node)?;
         Some((name, value))
     }
 
