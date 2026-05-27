@@ -87,3 +87,75 @@ fn let_value_auto_free_lowers_to_expr_kind_auto_true() {
         let_decl.value.kind
     );
 }
+
+// ── Site 2: named_argument.value ─────────────────────────────────────────────
+
+/// `sub b = Bearing(bore: auto)` — strict form lowers the `bore` arg's value
+/// to `ExprKind::Auto { free: false }`.
+#[test]
+fn named_argument_value_auto_strict_lowers_to_expr_kind_auto_false() {
+    let source = "structure S { sub b = Bearing(bore: auto) }";
+    let module = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        module.errors.is_empty(),
+        "expected no parse errors: {:?}",
+        module.errors
+    );
+
+    let structure = match &module.declarations[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    let sub_decl = match &structure.members[0] {
+        MemberDecl::Sub(s) => s,
+        other => panic!("expected Sub, got {:?}", other),
+    };
+
+    let (name, expr) = sub_decl
+        .args
+        .iter()
+        .find(|(n, _)| n == "bore")
+        .expect("expected a 'bore' named arg");
+    assert_eq!(name, "bore");
+    assert!(
+        matches!(expr.kind, ExprKind::Auto { free: false }),
+        "expected ExprKind::Auto {{ free: false }}, got {:?}",
+        expr.kind
+    );
+}
+
+/// `sub b = Bearing(bore: auto(free))` — free form lowers the `bore` arg's value
+/// to `ExprKind::Auto { free: true }`.
+#[test]
+fn named_argument_value_auto_free_lowers_to_expr_kind_auto_true() {
+    let source = "structure S { sub b = Bearing(bore: auto(free)) }";
+    let module = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        module.errors.is_empty(),
+        "expected no parse errors: {:?}",
+        module.errors
+    );
+
+    let structure = match &module.declarations[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    let sub_decl = match &structure.members[0] {
+        MemberDecl::Sub(s) => s,
+        other => panic!("expected Sub, got {:?}", other),
+    };
+
+    let (name, expr) = sub_decl
+        .args
+        .iter()
+        .find(|(n, _)| n == "bore")
+        .expect("expected a 'bore' named arg");
+    assert_eq!(name, "bore");
+    assert!(
+        matches!(expr.kind, ExprKind::Auto { free: true }),
+        "expected ExprKind::Auto {{ free: true }}, got {:?}",
+        expr.kind
+    );
+}
