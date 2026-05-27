@@ -169,16 +169,14 @@ pub(crate) fn phase_auto_type_param_resolution(
 
     // Pass 2 — apply placeholder rewrites and store the deduped substitution.
     for (owner, sub_name, position, resolved_name) in rewrites {
-        if let Some(template) = ctx.templates.iter_mut().find(|t| t.name == owner) {
-            if let Some(sub) = template
+        if let Some(template) = ctx.templates.iter_mut().find(|t| t.name == owner)
+            && let Some(sub) = template
                 .sub_components
                 .iter_mut()
                 .find(|s| s.name == sub_name)
-            {
-                if let Some(slot) = sub.type_args.get_mut(position) {
-                    *slot = Type::StructureRef(resolved_name);
-                }
-            }
+            && let Some(slot) = sub.type_args.get_mut(position)
+        {
+            *slot = Type::StructureRef(resolved_name);
         }
     }
 
