@@ -777,6 +777,7 @@ module.exports = grammar({
       $.quantifier_expression,
       $.ad_hoc_selector,
       $.index_access,
+      $.trait_method_call,
       $.qualified_access,
       $.instance_qualified_access,
       $._primary_expression,
@@ -1055,6 +1056,14 @@ module.exports = grammar({
       '.',
       '(',
       field('qualified', $._expression),
+      ')',
+    )),
+
+    // Trait::fn(args) or obj.(Trait::fn)(args) — callable qualified path
+    trait_method_call: $ => prec(10, seq(
+      field('callee', choice($.qualified_access, $.instance_qualified_access)),
+      '(',
+      optional($.argument_list),
       ')',
     )),
 
