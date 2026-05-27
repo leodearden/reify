@@ -812,9 +812,14 @@ mod tests {
 
     #[test]
     fn joint_range_midpoint_prismatic_0_to_1m() {
+        // KCC-γ: widened return type — single-DOF kinds wrap their midpoint
+        // in `JointValue::Scalar`.
         let j = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
         let mid = super::joint_range_midpoint(&j).expect("midpoint");
-        assert!((mid - 0.5).abs() < 1e-12);
+        match mid {
+            JointValue::Scalar(s) => assert!((s - 0.5).abs() < 1e-12),
+            other => panic!("expected Scalar(0.5), got {other:?}"),
+        }
     }
 
     #[test]
@@ -832,14 +837,22 @@ mod tests {
             ],
         );
         let mid = super::joint_range_midpoint(&j).expect("midpoint");
-        assert!(mid.abs() < 1e-12);
+        match mid {
+            JointValue::Scalar(s) => assert!(s.abs() < 1e-12),
+            other => panic!("expected Scalar(0), got {other:?}"),
+        }
     }
 
     #[test]
     fn joint_range_midpoint_revolute_0_to_pi() {
         let j = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
         let mid = super::joint_range_midpoint(&j).expect("midpoint");
-        assert!((mid - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+        match mid {
+            JointValue::Scalar(s) => {
+                assert!((s - std::f64::consts::FRAC_PI_2).abs() < 1e-12)
+            }
+            other => panic!("expected Scalar(π/2), got {other:?}"),
+        }
     }
 
     #[test]
@@ -857,7 +870,10 @@ mod tests {
             ],
         );
         let mid = super::joint_range_midpoint(&j).expect("midpoint");
-        assert!(mid.abs() < 1e-12);
+        match mid {
+            JointValue::Scalar(s) => assert!(s.abs() < 1e-12),
+            other => panic!("expected Scalar(0), got {other:?}"),
+        }
     }
 
     #[test]
@@ -865,10 +881,13 @@ mod tests {
         let parent = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
         let coupling = eval_builtin("couple", &[parent, Value::Real(2.0)]);
         let mid = super::joint_range_midpoint(&coupling).expect("midpoint");
-        assert!(
-            (mid - std::f64::consts::FRAC_PI_2).abs() < 1e-12,
-            "expected π/2, got {mid}"
-        );
+        match mid {
+            JointValue::Scalar(s) => assert!(
+                (s - std::f64::consts::FRAC_PI_2).abs() < 1e-12,
+                "expected π/2, got {s}"
+            ),
+            other => panic!("expected Scalar(π/2), got {other:?}"),
+        }
     }
 
     #[test]
@@ -1276,17 +1295,30 @@ mod tests {
 
     // ── planar joint pin tests ────────────────────────────────────────────
 
-    /// `joint_range_midpoint` returns `None` for a planar joint.
+    /// `joint_range_midpoint` returns `Some(JointValue::Planar([mid_x, mid_y, mid_θ]))`
+    /// for a planar joint.
     ///
-    /// Pins the contract that planar's multi-DOF free-variable space has no
-    /// single-scalar midpoint until PRD v0.2 kinematic task 2 (taskmaster
-    /// #2670 — "FD fallback for spherical, cylindrical, planar") lands.
+    /// KCC-γ widening (PRD §5.2): planar's 3-DOF free-variable space has three
+    /// independent range midpoints — wrapped as a `JointValue::Planar([x, y, θ])`
+    /// triple in canonical storage order (matches `JointValue::Planar` layout
+    /// and `transform_at("planar", _)`'s `Value::List([length, length, angle])`
+    /// surface).  `planar_xy_joint()` uses two 0..1m length ranges and a 0..π
+    /// angle range, so midpoints are `[0.5, 0.5, π/2]`.
     #[test]
-    fn joint_range_midpoint_planar_returns_none() {
-        assert!(
-            super::joint_range_midpoint(&planar_xy_joint()).is_none(),
-            "joint_range_midpoint must return None for a planar joint"
-        );
+    fn joint_range_midpoint_planar_returns_planar_midpoint() {
+        let mid = super::joint_range_midpoint(&planar_xy_joint())
+            .expect("joint_range_midpoint must return Some(Planar(..)) for a planar joint");
+        match mid {
+            JointValue::Planar([x, y, theta]) => {
+                assert!((x - 0.5).abs() < 1e-12, "expected x = 0.5, got {x}");
+                assert!((y - 0.5).abs() < 1e-12, "expected y = 0.5, got {y}");
+                assert!(
+                    (theta - std::f64::consts::FRAC_PI_2).abs() < 1e-12,
+                    "expected θ = π/2, got {theta}"
+                );
+            }
+            other => panic!("expected JointValue::Planar([0.5, 0.5, π/2]), got {other:?}"),
+        }
     }
 
     /// `chain_transform` returns `None` when the chain contains a planar joint.
@@ -1368,23 +1400,27 @@ mod tests {
 
     // ── spherical joint pin tests ────────────────────────────────────────
 
-    /// `joint_range_midpoint` returns `None` for a spherical joint.
+    /// `joint_range_midpoint` returns `Some(JointValue::Sphere([1, 0, 0, 0]))`
+    /// for a spherical joint — the identity quaternion (PRD §5.2).
     ///
-    /// Pins the contract that spherical's 3-DOF orientation free-variable
-    /// space has no single-scalar midpoint. Future code MUST keep this
-    /// `None` — the catch-all `_ => None` arm currently masks the absence
-    /// of an explicit `"spherical"` arm, so step-16 will add the explicit
-    /// arm to make the contract source-visible. If a future contributor
-    /// adds an arm returning `Some`, this pin breaks loudly.
-    ///
-    /// Multi-DOF chain support is deferred to PRD v0.2 kinematic task 2
-    /// (taskmaster #2670 — "FD fallback for spherical, cylindrical, planar").
+    /// KCC-γ widening: spherical is axis-isotropic (no preferred direction is
+    /// stored), so the natural seed for fresh-snapshot start values is the
+    /// identity rotation `q = (w=1, x=0, y=0, z=0)`.  The `range_angle` bound
+    /// constrains rotation magnitude downstream during solver iteration; the
+    /// midpoint seed only needs to be a valid (unit-norm) quaternion on S³.
     #[test]
-    fn joint_range_midpoint_spherical_returns_none() {
-        assert!(
-            super::joint_range_midpoint(&spherical_joint()).is_none(),
-            "joint_range_midpoint must return None for a spherical joint"
-        );
+    fn joint_range_midpoint_spherical_returns_identity_quaternion() {
+        let mid = super::joint_range_midpoint(&spherical_joint())
+            .expect("joint_range_midpoint must return Some(Sphere(..)) for a spherical joint");
+        match mid {
+            JointValue::Sphere([w, x, y, z]) => {
+                assert!((w - 1.0).abs() < 1e-12, "expected w = 1, got {w}");
+                assert!(x.abs() < 1e-12, "expected x = 0, got {x}");
+                assert!(y.abs() < 1e-12, "expected y = 0, got {y}");
+                assert!(z.abs() < 1e-12, "expected z = 0, got {z}");
+            }
+            other => panic!("expected JointValue::Sphere([1, 0, 0, 0]), got {other:?}"),
+        }
     }
 
     /// `chain_transform` returns `None` when the chain contains a spherical joint.
@@ -1530,19 +1566,28 @@ mod tests {
         );
     }
 
-    /// `joint_range_midpoint` returns `None` for a cylindrical joint.
+    /// `joint_range_midpoint` returns `Some(JointValue::Cyl([mid_d, mid_θ]))`
+    /// for a cylindrical joint.
     ///
-    /// Contract: cylindrical is 2-DOF (translation_range LENGTH,
-    /// rotation_range ANGLE). The fn signature returns `Option<f64>` — a
-    /// single midpoint per joint — and 2-DOF has two midpoints (one per
-    /// DOF). Callers seeding fresh-snapshot start values should skip
-    /// cylindrical joints just as they skip fixed/planar/spherical today.
+    /// KCC-γ widening (PRD §5.2): cylindrical is 2-DOF (translation along axis,
+    /// rotation about axis); the midpoints of `translation_range` and
+    /// `rotation_range` form the canonical seed.  `cylindrical_z_joint()` uses
+    /// a 0..1m translation range and a 0..π rotation range, so midpoints are
+    /// `[0.5, π/2]`.
     #[test]
-    fn joint_range_midpoint_cylindrical_returns_none() {
-        assert!(
-            super::joint_range_midpoint(&cylindrical_z_joint()).is_none(),
-            "joint_range_midpoint must return None for a cylindrical joint"
-        );
+    fn joint_range_midpoint_cylindrical_returns_cyl_midpoint() {
+        let mid = super::joint_range_midpoint(&cylindrical_z_joint())
+            .expect("joint_range_midpoint must return Some(Cyl(..)) for a cylindrical joint");
+        match mid {
+            JointValue::Cyl([d, theta]) => {
+                assert!((d - 0.5).abs() < 1e-12, "expected d = 0.5, got {d}");
+                assert!(
+                    (theta - std::f64::consts::FRAC_PI_2).abs() < 1e-12,
+                    "expected θ = π/2, got {theta}"
+                );
+            }
+            other => panic!("expected JointValue::Cyl([0.5, π/2]), got {other:?}"),
+        }
     }
 
     // ── multi-DOF None contract: JOINT_KINDS-iteration partition (step-21) ──
@@ -1593,12 +1638,17 @@ mod tests {
         }
     }
 
+    /// KCC-γ widening: multi-DOF joint kinds now return `Some(JointValue::..)`
+    /// from `joint_range_midpoint`, with per-DOF range midpoints (planar,
+    /// cylindrical) or the identity quaternion (spherical, axis-isotropic).
+    /// Only `fixed` (0-DOF, empty free-variable space) still returns `None`.
     #[test]
-    fn joint_range_midpoint_returns_none_for_all_multi_dof_kinds() {
+    fn joint_range_midpoint_returns_some_for_all_multi_dof_kinds() {
         for &kind in MULTI_DOF_KINDS {
             assert!(
-                super::joint_range_midpoint(&minimal_joint(kind)).is_none(),
-                "joint_range_midpoint must return None for multi-DOF kind '{kind}'"
+                super::joint_range_midpoint(&minimal_joint(kind)).is_some(),
+                "joint_range_midpoint must return Some(JointValue::..) for \
+                 multi-DOF kind '{kind}' (KCC-γ widening — PRD §5.2)"
             );
         }
     }
@@ -1635,15 +1685,22 @@ mod tests {
     }
 
     /// Partition contract for `joint_range_midpoint`: returns None for every
-    /// kind in `JOINT_RANGE_MIDPOINT_NONE_KINDS`, Some for the rest. Note
-    /// this partition differs from value_for_joint's because `fixed` returns
-    /// Some(Real(0.0)) from value_for_joint but None from
-    /// joint_range_midpoint (no free-variable space to seed).
+    /// kind in `JOINT_RANGE_MIDPOINT_NONE_KINDS`, Some for the rest.
+    ///
+    /// KCC-γ widening: only `fixed` (0-DOF, no free-variable space to seed)
+    /// remains in the None partition; all other kinds — single-DOF
+    /// (prismatic/revolute/coupling) and multi-DOF (planar/spherical/
+    /// cylindrical) — return `Some(JointValue::..)` with the per-DOF surface
+    /// shape matched by `value_for_joint` and the chain machinery.
+    ///
+    /// Note this partition still differs from `value_for_joint`'s: `fixed`
+    /// returns `Some(JointValue::Scalar(0))` from `value_for_joint` (where
+    /// the value is discarded) but None from `joint_range_midpoint` (no
+    /// free-variable space to seed).
     #[test]
     fn joint_range_midpoint_partition_covers_joint_kinds() {
         use crate::joints::JOINT_KINDS;
-        const JOINT_RANGE_MIDPOINT_NONE_KINDS: &[&str] =
-            &["fixed", "planar", "spherical", "cylindrical"];
+        const JOINT_RANGE_MIDPOINT_NONE_KINDS: &[&str] = &["fixed"];
         for &kind in JOINT_KINDS {
             let result = super::joint_range_midpoint(&minimal_joint(kind));
             if JOINT_RANGE_MIDPOINT_NONE_KINDS.contains(&kind) {
@@ -1655,9 +1712,12 @@ mod tests {
                 let mid = result.unwrap_or_else(|| {
                     panic!("joint_range_midpoint must return Some for kind '{kind}'")
                 });
+                // Finite-component check across all four JointValue variants —
+                // every f64 stored in the per-DOF surface must be finite.
+                let all_finite = mid.as_f64_slice().iter().all(|v| v.is_finite());
                 assert!(
-                    mid.is_finite(),
-                    "joint_range_midpoint('{kind}') midpoint must be finite, got {mid}"
+                    all_finite,
+                    "joint_range_midpoint('{kind}') midpoint must be finite, got {mid:?}"
                 );
             }
         }
