@@ -38,7 +38,7 @@ tracing.workspace = true
 # `elalish/manifold` C++ tree on first build (~3-5 min cold). The
 # `manifold-csg-sys` build cache is keyed by version+patch stamp so
 # subsequent builds reuse it. See README.md for the build-cache caveat.
-manifold3d = "0.1"
+manifold3d = "0.2"
 
 # `reify-eval` is a dev-dependency (not a normal dep) for the same reason the
 # OCCT adapter excludes it from its production deps: adapter crates depend on
