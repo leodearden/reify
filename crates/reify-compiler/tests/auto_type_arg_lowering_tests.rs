@@ -164,3 +164,40 @@ fn free_auto_type_arg_ambiguous_selects_lex_first_with_warning() {
         "free mode must pick the lexicographically-first feasible candidate"
     );
 }
+
+/// Two `auto:` slots on one sub-component, each bound to a different trait with
+/// a single conformant candidate → both resolve, and the substitution preserves
+/// the target template's declared type-param order (`T` then `U`).
+#[test]
+fn multi_param_auto_type_args_resolve_in_declared_order() {
+    let source = r#"
+        trait Seal {}
+        trait Cooled {}
+        structure def ORingSeal : Seal { param d : Real = 10.0 }
+        structure def AirCooled : Cooled { param f : Real = 5.0 }
+        structure def Coupling<T: Seal, U: Cooled> { param x : Real = 1.0 }
+        structure def Assembly { sub c = Coupling<auto: Seal, auto: Cooled>() }
+    "#;
+
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    assert_eq!(
+        compiled.auto_type_substitution.as_slice(),
+        &[
+            ("T".to_string(), "ORingSeal".to_string()),
+            ("U".to_string(), "AirCooled".to_string()),
+        ],
+        "multi-param substitution must follow the target's declared type-param order"
+    );
+
+    let error_count = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .count();
+    assert_eq!(
+        error_count, 0,
+        "expected no error diagnostics, got: {:?}",
+        compiled.diagnostics
+    );
+}
