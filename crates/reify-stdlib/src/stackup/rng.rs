@@ -185,6 +185,69 @@ mod tests {
         }
     }
 
+    // ---- sample_normal tests ----
+
+    const N_STAT: usize = 100_000;
+
+    /// Compute the sample mean of a slice.
+    fn sample_mean(xs: &[f64]) -> f64 {
+        xs.iter().sum::<f64>() / xs.len() as f64
+    }
+
+    /// Compute the unbiased sample variance of a slice.
+    fn sample_variance(xs: &[f64]) -> f64 {
+        let mean = sample_mean(xs);
+        let sum_sq: f64 = xs.iter().map(|&x| (x - mean).powi(2)).sum();
+        sum_sq / (xs.len() - 1) as f64
+    }
+
+    /// sample_normal(σ=1) mean is 0 within 5·SE = 5/√N ≈ 0.01581 (5σ bound).
+    #[test]
+    fn sample_normal_mean_zero_within_se() {
+        let mut rng = Xoshiro256StarStar::from_seed(0x1111_2222_3333_4444);
+        let draws: Vec<f64> = (0..N_STAT).map(|_| rng.sample_normal(1.0)).collect();
+        let mean = sample_mean(&draws);
+        let threshold = 5.0 / (N_STAT as f64).sqrt();
+        assert!(mean.abs() <= threshold,
+            "|mean| = {:.6} > threshold {:.6}", mean.abs(), threshold);
+    }
+
+    /// sample_normal(σ=1) variance is within 2% of 1.0.
+    #[test]
+    fn sample_normal_variance_within_2pct_at_n100k() {
+        let mut rng = Xoshiro256StarStar::from_seed(0x2222_3333_4444_5555);
+        let draws: Vec<f64> = (0..N_STAT).map(|_| rng.sample_normal(1.0)).collect();
+        let var = sample_variance(&draws);
+        let rel_err = (var - 1.0).abs() / 1.0;
+        assert!(rel_err <= 0.02, "variance {var:.6} deviates {:.4}% from 1.0", rel_err * 100.0);
+    }
+
+    /// sample_normal(σ=2.5) variance is within 2% of 6.25.
+    #[test]
+    fn sample_normal_scales_with_sigma() {
+        let sigma = 2.5_f64;
+        let expected_var = sigma * sigma;
+        let mut rng = Xoshiro256StarStar::from_seed(0x3333_4444_5555_6666);
+        let draws: Vec<f64> = (0..N_STAT).map(|_| rng.sample_normal(sigma)).collect();
+        let var = sample_variance(&draws);
+        let rel_err = (var - expected_var).abs() / expected_var;
+        assert!(rel_err <= 0.02,
+            "variance {var:.6} deviates {:.4}% from {expected_var}", rel_err * 100.0);
+    }
+
+    /// Two same-seed instances produce bit-identical first 100 normal draws.
+    #[test]
+    fn sample_normal_deterministic_same_seed() {
+        let seed = 0x4444_5555_6666_7777_u64;
+        let mut rng1 = Xoshiro256StarStar::from_seed(seed);
+        let mut rng2 = Xoshiro256StarStar::from_seed(seed);
+        for i in 0..100 {
+            let v1 = rng1.sample_normal(1.0);
+            let v2 = rng2.sample_normal(1.0);
+            assert_eq!(v1.to_bits(), v2.to_bits(), "diverged at draw {i}");
+        }
+    }
+
     // ---- next_uniform_f64 tests ----
 
     /// Every draw from next_uniform_f64 must lie in [0, 1).
