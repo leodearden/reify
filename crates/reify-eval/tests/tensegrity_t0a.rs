@@ -12,6 +12,7 @@
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 use reify_core::{DimensionVector, ValueCellId};
 use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use reify_stdlib::eval_builtin;
 
 /// Index `StructureInstance.fields` with a string literal.
 fn field<'a>(m: &'a PersistentMap<String, Value>, k: &str) -> Option<&'a Value> {
@@ -213,4 +214,159 @@ structure def TNet {
         }
         other => panic!("expected Value::StructureInstance for TNet.t, got {:?}", other),
     }
+}
+
+// ── step-5: shape-guard tests for tensegrity_wires ───────────────────────────
+
+// Shared helpers for building Tensegrity-shaped Values directly (bypassing
+// the compile pipeline) so these tests are purely unit-level.
+
+fn make_length(meters: f64) -> Value {
+    Value::Scalar { si_value: meters, dimension: DimensionVector::LENGTH }
+}
+
+fn make_node(x: f64, y: f64, z: f64) -> Value {
+    Value::Point(vec![make_length(x), make_length(y), make_length(z)])
+}
+
+/// Build a valid 4-node 1-strut 1-cable Tensegrity StructureInstance.
+/// Used as the positive-shape control in each shape-guard test.
+fn make_valid_tensegrity() -> Value {
+    let nodes = Value::List(vec![
+        make_node(0.0, 0.0, 0.0),
+        make_node(1.0, 0.0, 0.0),
+        make_node(0.5, 0.866, 0.0),
+        make_node(0.5, 0.289, 0.816),
+    ]);
+    let struts = Value::List(vec![
+        Value::List(vec![Value::Int(0), Value::Int(3)]),
+    ]);
+    let cables = Value::List(vec![
+        Value::List(vec![Value::Int(0), Value::Int(1)]),
+    ]);
+    let fields: PersistentMap<String, Value> = [
+        ("nodes".to_string(), nodes),
+        ("struts".to_string(), struts),
+        ("cables".to_string(), cables),
+    ]
+    .into_iter()
+    .collect();
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(0),
+        type_name: "Tensegrity".to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
+/// Zero args → Undef. Positive control: valid Tensegrity → non-Undef.
+/// RED state: the positive control fails because `tensegrity_wires` is not
+/// yet recognized by eval_builtin.
+#[test]
+fn tensegrity_wires_undef_on_zero_args() {
+    let result = eval_builtin("tensegrity_wires", &[]);
+    assert!(result.is_undef(), "zero args should return Undef, got {:?}", result);
+
+    // Positive control: the function IS recognized and a valid Tensegrity
+    // returns a non-Undef list. Fails RED until step-6 registers the builtin.
+    let valid = make_valid_tensegrity();
+    let positive = eval_builtin("tensegrity_wires", &[valid]);
+    assert!(
+        !positive.is_undef(),
+        "tensegrity_wires(valid Tensegrity) should return non-Undef; \
+         got Undef — step-6 not yet implemented"
+    );
+}
+
+/// Two args → Undef. Positive control: valid Tensegrity → non-Undef.
+#[test]
+fn tensegrity_wires_undef_on_two_args() {
+    let result = eval_builtin("tensegrity_wires", &[Value::Real(1.0), Value::Real(2.0)]);
+    assert!(result.is_undef(), "two args should return Undef, got {:?}", result);
+
+    let valid = make_valid_tensegrity();
+    let positive = eval_builtin("tensegrity_wires", &[valid]);
+    assert!(
+        !positive.is_undef(),
+        "tensegrity_wires(valid Tensegrity) should return non-Undef; \
+         got Undef — step-6 not yet implemented"
+    );
+}
+
+/// args[0] is Real, not StructureInstance → Undef.
+#[test]
+fn tensegrity_wires_undef_on_real_arg() {
+    let result = eval_builtin("tensegrity_wires", &[Value::Real(1.0)]);
+    assert!(result.is_undef(), "Real arg should return Undef, got {:?}", result);
+
+    let valid = make_valid_tensegrity();
+    let positive = eval_builtin("tensegrity_wires", &[valid]);
+    assert!(
+        !positive.is_undef(),
+        "tensegrity_wires(valid Tensegrity) should return non-Undef; \
+         got Undef — step-6 not yet implemented"
+    );
+}
+
+/// args[0] is a StructureInstance with wrong type_name → Undef.
+#[test]
+fn tensegrity_wires_undef_on_wrong_type_name() {
+    let fields: PersistentMap<String, Value> = PersistentMap::new();
+    let wrong = Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(0),
+        type_name: "Steel_AISI_1045".to_string(),
+        version: 1,
+        fields,
+    }));
+    let result = eval_builtin("tensegrity_wires", &[wrong]);
+    assert!(result.is_undef(), "wrong type_name should return Undef, got {:?}", result);
+
+    let valid = make_valid_tensegrity();
+    let positive = eval_builtin("tensegrity_wires", &[valid]);
+    assert!(
+        !positive.is_undef(),
+        "tensegrity_wires(valid Tensegrity) should return non-Undef; \
+         got Undef — step-6 not yet implemented"
+    );
+}
+
+/// args[0] is Tensegrity-shaped but struts references out-of-range index → Undef.
+#[test]
+fn tensegrity_wires_undef_on_out_of_range_index() {
+    // 2 nodes but struts references node index 5 (out of range).
+    let nodes = Value::List(vec![
+        make_node(0.0, 0.0, 0.0),
+        make_node(1.0, 0.0, 0.0),
+    ]);
+    let struts = Value::List(vec![
+        Value::List(vec![Value::Int(0), Value::Int(5)]), // index 5 >= nodes.len()=2
+    ]);
+    let cables = Value::List(vec![]);
+    let fields: PersistentMap<String, Value> = [
+        ("nodes".to_string(), nodes),
+        ("struts".to_string(), struts),
+        ("cables".to_string(), cables),
+    ]
+    .into_iter()
+    .collect();
+    let bad = Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(0),
+        type_name: "Tensegrity".to_string(),
+        version: 1,
+        fields,
+    }));
+    let result = eval_builtin("tensegrity_wires", &[bad]);
+    assert!(
+        result.is_undef(),
+        "out-of-range strut index should return Undef, got {:?}",
+        result
+    );
+
+    let valid = make_valid_tensegrity();
+    let positive = eval_builtin("tensegrity_wires", &[valid]);
+    assert!(
+        !positive.is_undef(),
+        "tensegrity_wires(valid Tensegrity) should return non-Undef; \
+         got Undef — step-6 not yet implemented"
+    );
 }
