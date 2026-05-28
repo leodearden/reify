@@ -4,6 +4,16 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashSet;
 
+/// Reserved prefix used to mint the synthetic `Type::TypeParam` placeholder
+/// for an `auto:` / `auto(free):` type-argument slot (see the two
+/// `MemberDecl::Sub` lowering arms below). The placeholder lives in the same
+/// `Type::TypeParam(_)` namespace as user-declared type-params and is
+/// transparently skipped by `check_type_param_bounds`, so a user-declared
+/// type-param sharing this prefix could mask the bound-check at the wrong
+/// site. `compile_entity` rejects this prefix at the declaration site (see
+/// `AutoTypeParamReservedPrefix` diagnostic) so the namespaces stay disjoint.
+pub(crate) const AUTO_TYPE_PARAM_PLACEHOLDER_PREFIX: &str = "__auto_";
+
 /// Shared reference to entity definition fields (used by both StructureDef and OccurrenceDef).
 pub(crate) struct EntityDefRef<'a> {
     pub(crate) name: &'a str,
@@ -407,6 +417,35 @@ pub(crate) fn compile_entity(
         .iter()
         .map(|tp| tp.name.clone())
         .collect();
+
+    // Reject user-declared type-params whose name collides with the
+    // `__auto_` synthetic-placeholder prefix. The placeholder lives in the
+    // same `Type::TypeParam(_)` namespace as user-declared type-params and is
+    // skipped by `check_type_param_bounds`, so a user-named `__auto_Seal`
+    // could silently mask a bound check at the wrong site (the collision
+    // realistically never occurs, but the prefix is otherwise unreserved
+    // anywhere in the language). Reserving it here keeps the two namespaces
+    // disjoint without requiring a new `Type` variant in `reify-core`.
+    for tp in structure.type_params.iter() {
+        if tp.name.starts_with(AUTO_TYPE_PARAM_PLACEHOLDER_PREFIX) {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "type-parameter name '{}' is reserved: the '{}' prefix is \
+                     used by the compiler for `auto:` type-argument \
+                     placeholders and must not appear in user-declared \
+                     type-parameter names",
+                    tp.name, AUTO_TYPE_PARAM_PLACEHOLDER_PREFIX
+                ))
+                .with_label(DiagnosticLabel::new(
+                    tp.span,
+                    format!(
+                        "rename this type-parameter to avoid the reserved '{}' prefix",
+                        AUTO_TYPE_PARAM_PLACEHOLDER_PREFIX
+                    ),
+                )),
+            );
+        }
+    }
 
     // Register field names into the scope so expressions can reference fields
     // (e.g., `sample(my_field, point)`). Fields use the FIELD_ENTITY_PREFIX.
@@ -1338,7 +1377,10 @@ pub(crate) fn compile_entity(
                                 bound: bound.clone(),
                                 span: ta.span,
                             });
-                            Type::TypeParam(format!("__auto_{}", bound))
+                            Type::TypeParam(format!(
+                                "{}{}",
+                                AUTO_TYPE_PARAM_PLACEHOLDER_PREFIX, bound
+                            ))
                         }
                         _ => {
                             diagnostics.push(
@@ -2653,7 +2695,10 @@ fn compile_match_arm_decl_group(
                             bound: bound.clone(),
                             span: ta.span,
                         });
-                        Type::TypeParam(format!("__auto_{}", bound))
+                        Type::TypeParam(format!(
+                            "{}{}",
+                            AUTO_TYPE_PARAM_PLACEHOLDER_PREFIX, bound
+                        ))
                     }
                     _ => {
                         diagnostics.push(

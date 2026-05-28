@@ -362,3 +362,40 @@ fn multi_subs_with_colliding_param_names_first_wins() {
         heatsink_sub.type_args,
     );
 }
+
+/// A user-declared type-param whose name starts with the reserved `__auto_`
+/// prefix is rejected with an Error diagnostic. The prefix is the namespace
+/// the compiler uses to mint synthetic placeholders for `auto:` type-arg
+/// slots (`Type::TypeParam("__auto_<bound>")`); a user-named type-param
+/// sharing the prefix could mask a bound check at the wrong site because
+/// `check_type_param_bounds` transparently skips every `Type::TypeParam(_)`.
+/// Reserving the prefix at the declaration site keeps the two namespaces
+/// disjoint without requiring a new `Type` variant in `reify-core`.
+#[test]
+fn user_type_param_with_reserved_auto_prefix_is_rejected() {
+    let source = r#"
+        trait Seal {}
+        structure def Foo<__auto_Seal: Seal> { param x : Real = 1.0 }
+    "#;
+
+    let compiled = compile_source_with_stdlib(source);
+
+    // Find any error whose message mentions the reserved prefix.
+    let prefix_errors: Vec<&Diagnostic> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| d.message.contains("reserved") && d.message.contains("__auto_"))
+        .collect();
+    assert_eq!(
+        prefix_errors.len(),
+        1,
+        "expected exactly one reserved-prefix error diagnostic, got: {:?}",
+        compiled.diagnostics
+    );
+    assert!(
+        prefix_errors[0].message.contains("__auto_Seal"),
+        "the error must name the offending type-param, got: {:?}",
+        prefix_errors[0].message
+    );
+}
