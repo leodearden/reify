@@ -268,10 +268,23 @@ pub(crate) fn element_stiffness_generic_with_d_global<E: ReferenceElement>(
 /// Quadrature: P1 uses a 1-point centroid rule (degree-1 exact); for
 /// affine geometry that's exact for the constant-`B` integrand a P1
 /// element produces.
+///
+/// # Panics
+///
+/// Panics under `debug_assertions` when `material` violates its validity
+/// contract (`E > 0`, `-1 < ν < 0.5`), via
+/// [`IsotropicElastic::debug_assert_valid`] called at the kernel entry.
+/// This is structurally redundant with the validation performed inside
+/// `material.d_matrix()` (called one layer deeper inside the generic
+/// kernel) — the explicit entry-point call adds diagnostic clarity (stack
+/// trace points at the kernel entry) and matches the explicit-guard
+/// convention used by [`crate::consistent_element_mass_tet_p1`] and
+/// [`crate::geometric_element_stiffness_tet_p1`].
 pub fn element_stiffness_p1(
     phys_nodes: &[[f64; 3]; 4],
     material: &IsotropicElastic,
 ) -> ElementStiffness {
+    material.debug_assert_valid();
     element_stiffness_generic(&TetP1, &phys_nodes[..], material)
 }
 
@@ -487,6 +500,34 @@ mod tests {
         // Break symmetry at a single off-diagonal entry.
         d[0][1] += 1.0;
         let _ = element_stiffness_generic_with_d_global(&TetP1, &UNIT_TET_P1[..], &d);
+    }
+
+    /// Non-positive Young's modulus must trip the `material.debug_assert_valid()`
+    /// entry guard at `element_stiffness_p1`. Mirrors the guard-coverage pattern
+    /// used by `consistent_element_mass_tet_p1` (density guard) and
+    /// `geometric_element_stiffness_tet_p1` (stress guard).
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "IsotropicElastic.youngs_modulus")]
+    fn element_stiffness_p1_panics_on_non_positive_youngs_modulus() {
+        let invalid = IsotropicElastic {
+            youngs_modulus: 0.0,
+            poisson_ratio: 0.3,
+        };
+        let _ = element_stiffness_p1(&UNIT_TET_P1, &invalid);
+    }
+
+    /// Poisson ratio outside the legal PD range (-1, 0.5) must trip the
+    /// `material.debug_assert_valid()` entry guard at `element_stiffness_p1`.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "IsotropicElastic.poisson_ratio")]
+    fn element_stiffness_p1_panics_on_out_of_range_poisson_ratio() {
+        let invalid = IsotropicElastic {
+            youngs_modulus: 1.0,
+            poisson_ratio: 0.6,
+        };
+        let _ = element_stiffness_p1(&UNIT_TET_P1, &invalid);
     }
 
     #[test]

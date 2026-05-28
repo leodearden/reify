@@ -218,15 +218,16 @@ fn parse_constraint_def_body_syntax_error() {
 
 #[test]
 fn parse_constraint_def_error_param() {
-    // `param wall : Box<,>` — a comma with no second type arg causes tree-sitter
-    // to insert a MISSING identifier node inside type_args, making the
+    // `param wall : Box<,>` — a type_arg_list with a leading comma forces
+    // tree-sitter to insert a MISSING type-arg node inside type_args, making the
     // param_declaration node have `has_error() == true`.
     //
-    // NOTE: `Box<>` (empty angle brackets) does NOT trigger this — tree-sitter
-    // resolves that ambiguity by treating `Box` as a plain identifier type_expr
-    // and consuming `<>  x > 0` as a range-expression predicate (no error node).
-    // `Box<,>` correctly produces the MISSING node because the comma implies a
-    // second type argument that is absent.
+    // (An empty `Box<>` no longer suffices: once single-sided range arms `<expr`/
+    // `>expr` were added to the expression grammar, the parser prefers reading
+    // `Box` as a bare named type and the trailing `<...` as a range expression,
+    // so `Box<>` parses with no MISSING node. `Box<,>` still has no valid parse
+    // other than the MISSING-type-arg recovery, so it remains a clean probe for
+    // the `check_and_lower!` has_error path.)
     //
     // Without `check_and_lower!` (before step-18), `self.lower_param()` is called
     // directly: it succeeds (name "wall" is found) and silently adds the malformed

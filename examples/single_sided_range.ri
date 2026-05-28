@@ -1,0 +1,33 @@
+// PRD v0.6 numeric-and-range-literal-forms, slice 3 (ζ): single-sided range literals.
+// Exercises all four prefix-operator forms through the parse → lower → compile_with_stdlib
+// pipeline.  AST lowering per D5:
+//
+//   >x  → Range { lower: Some(x), upper: None,    lower_inclusive: false, upper_inclusive: true  }
+//   >=x → Range { lower: Some(x), upper: None,    lower_inclusive: true,  upper_inclusive: true  }
+//   <x  → Range { lower: None,    upper: Some(x), lower_inclusive: true,  upper_inclusive: false }
+//   <=x → Range { lower: None,    upper: Some(x), lower_inclusive: true,  upper_inclusive: true  }
+//
+// Absent-side *_inclusive = true (vacuous; contains() skips absent bounds at eval time).
+//
+// Verified by: crates/reify-compiler/tests/examples_smoke.rs
+//   (all_examples_parse_and_compile_with_stdlib — no Error-severity diagnostics).
+
+structure def SingleSidedRange {
+    // D5: >x  — exclusive lower bound, no upper bound
+    let gt  = >2mm
+
+    // D5: >=x — inclusive lower bound, no upper bound
+    let gte = >=2mm
+
+    // D5: <x  — no lower bound, exclusive upper bound
+    let lt  = <100mm
+
+    // D5: <=x — no lower bound, inclusive upper bound
+    let lte = <=100mm
+
+    // All four are concrete Range values → determined.
+    constraint determined(gt)
+    constraint determined(gte)
+    constraint determined(lt)
+    constraint determined(lte)
+}
