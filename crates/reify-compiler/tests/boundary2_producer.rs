@@ -242,7 +242,7 @@ fn type_error_dimension_mismatch() {
                     default: Some(Expr {
                         kind: ExprKind::QuantityLiteral {
                             value: 5.0,
-                            unit: "mm".into(),
+                            unit: UnitExpr::Unit("mm".to_string()),
                         },
                         span: SourceSpan::new(9, 12),
                     }),
@@ -266,7 +266,7 @@ fn type_error_dimension_mismatch() {
                             right: Box::new(Expr {
                                 kind: ExprKind::QuantityLiteral {
                                     value: 2.0,
-                                    unit: "kg".into(),
+                                    unit: UnitExpr::Unit("kg".to_string()),
                                 },
                                 span: SourceSpan::new(42, 45),
                             }),
@@ -334,7 +334,7 @@ fn constraint_non_bool_produces_warning() {
                     default: Some(Expr {
                         kind: ExprKind::QuantityLiteral {
                             value: 80.0,
-                            unit: "mm".into(),
+                            unit: UnitExpr::Unit("mm".to_string()),
                         },
                         span: SourceSpan::new(9, 13),
                     }),
@@ -356,7 +356,7 @@ fn constraint_non_bool_produces_warning() {
                     default: Some(Expr {
                         kind: ExprKind::QuantityLiteral {
                             value: 100.0,
-                            unit: "mm".into(),
+                            unit: UnitExpr::Unit("mm".to_string()),
                         },
                         span: SourceSpan::new(29, 34),
                     }),
@@ -744,7 +744,7 @@ fn mul_div_different_dimensions_no_diagnostic() {
                     default: Some(Expr {
                         kind: ExprKind::QuantityLiteral {
                             value: 80.0,
-                            unit: "mm".into(),
+                            unit: UnitExpr::Unit("mm".to_string()),
                         },
                         span: SourceSpan::new(9, 13),
                     }),
@@ -766,7 +766,7 @@ fn mul_div_different_dimensions_no_diagnostic() {
                     default: Some(Expr {
                         kind: ExprKind::QuantityLiteral {
                             value: 100.0,
-                            unit: "mm".into(),
+                            unit: UnitExpr::Unit("mm".to_string()),
                         },
                         span: SourceSpan::new(29, 34),
                     }),
@@ -1790,7 +1790,7 @@ fn scalar_plus_int_type_error() {
                     default: Some(Expr {
                         kind: ExprKind::QuantityLiteral {
                             value: 80.0,
-                            unit: "mm".into(),
+                            unit: UnitExpr::Unit("mm".to_string()),
                         },
                         span: SourceSpan::new(9, 13),
                     }),

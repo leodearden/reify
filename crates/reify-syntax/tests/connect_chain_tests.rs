@@ -295,7 +295,7 @@ fn parse_connect_mixed_multiple_entries() {
                 "expected value 2.0, got {}",
                 value
             );
-            assert_eq!(unit, "mm");
+            assert_eq!(unit, &UnitExpr::Unit("mm".to_string()));
         }
         other => panic!(
             "expected QuantityLiteral {{ value: 2.0, unit: \"mm\" }}, got {:?}",

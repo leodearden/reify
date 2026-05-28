@@ -97,7 +97,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 default: Some(Expr {
                     kind: ExprKind::QuantityLiteral {
                         value: 80.0,
-                        unit: "mm".into(),
+                        unit: UnitExpr::Unit("mm".to_string()),
                     },
                     span: SourceSpan::new(38, 42),
                 }),
@@ -119,7 +119,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 default: Some(Expr {
                     kind: ExprKind::QuantityLiteral {
                         value: 100.0,
-                        unit: "mm".into(),
+                        unit: UnitExpr::Unit("mm".to_string()),
                     },
                     span: SourceSpan::new(69, 74),
                 }),
@@ -141,7 +141,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 default: Some(Expr {
                     kind: ExprKind::QuantityLiteral {
                         value: 5.0,
-                        unit: "mm".into(),
+                        unit: UnitExpr::Unit("mm".to_string()),
                     },
                     span: SourceSpan::new(104, 107),
                 }),
@@ -163,7 +163,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 default: Some(Expr {
                     kind: ExprKind::QuantityLiteral {
                         value: 3.0,
-                        unit: "mm".into(),
+                        unit: UnitExpr::Unit("mm".to_string()),
                     },
                     span: SourceSpan::new(141, 144),
                 }),
@@ -185,7 +185,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 default: Some(Expr {
                     kind: ExprKind::QuantityLiteral {
                         value: 6.0,
-                        unit: "mm".into(),
+                        unit: UnitExpr::Unit("mm".to_string()),
                     },
                     span: SourceSpan::new(178, 181),
                 }),
@@ -240,7 +240,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                         right: Box::new(Expr {
                             kind: ExprKind::QuantityLiteral {
                                 value: 2.0,
-                                unit: "mm".into(),
+                                unit: UnitExpr::Unit("mm".to_string()),
                             },
                             span: SourceSpan::new(255, 258),
                         }),
@@ -552,7 +552,7 @@ pub fn generic_container_module() -> CompiledModule {
 /// Used to test trait conformance checking.
 pub fn rigid_trait_module() -> CompiledModule {
     use reify_compiler::DefaultKind;
-    use reify_ast::{ConstraintDecl, Expr, ExprKind};
+    use reify_ast::{ConstraintDecl, Expr, ExprKind, UnitExpr};
     use reify_core::DimensionVector;
 
     let mass_type = Type::Scalar {
@@ -572,7 +572,7 @@ pub fn rigid_trait_module() -> CompiledModule {
                 right: Box::new(Expr {
                     kind: ExprKind::QuantityLiteral {
                         value: 0.0,
-                        unit: "kg".to_string(),
+                        unit: UnitExpr::Unit("kg".to_string()),
                     },
                     span: SourceSpan::new(0, 0),
                 }),

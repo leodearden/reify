@@ -587,6 +587,30 @@ pub(crate) fn compile_expr_guarded(
             }
         }
         reify_ast::ExprKind::QuantityLiteral { value, unit } => {
+            // Only bare units resolve here. Compound unit expressions (Mul/Div/Pow)
+            // need registry folding (factor product + dimension-vector sum), which
+            // lands in task γ (3803). Emit a placeholder diagnostic until then.
+            let unit = match unit {
+                reify_ast::UnitExpr::Unit(name) => name,
+                reify_ast::UnitExpr::Mul(..)
+                | reify_ast::UnitExpr::Div(..)
+                | reify_ast::UnitExpr::Pow(..) => {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "compound unit expressions are not yet supported; \
+                             resolver lands in task γ (3803)"
+                                .to_string(),
+                        )
+                        .with_label(DiagnosticLabel::new(expr.span, "compound unit")),
+                    );
+                    return CompiledExpr::literal(
+                        Value::Undef,
+                        Type::Scalar {
+                            dimension: DimensionVector::DIMENSIONLESS,
+                        },
+                    );
+                }
+            };
             // Check the unit registry first (for user-declared units), then fall back to hardcoded.
             let resolved = scope
                 .lookup_unit_in_registry(*value, unit)

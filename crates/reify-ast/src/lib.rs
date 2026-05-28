@@ -27,7 +27,9 @@ pub mod decl;
 // ── flat root re-exports ─────────────────────────────────────────────────────
 // Flat re-export so code using `reify_ast::Expr` (etc.) resolves alongside the
 // module-path form `reify_ast::ast::Expr`.
-pub use ast::{DimOp, Expr, ExprKind, LambdaParam, MatchArm, QuantifierKind, TypeExpr, TypeExprKind};
+pub use ast::{
+    DimOp, Expr, ExprKind, LambdaParam, MatchArm, QuantifierKind, TypeExpr, TypeExprKind, UnitExpr,
+};
 
 // ── declaration AST flat re-exports ─────────────────────────────────────────
 // Mirrors the flat surface previously in reify-syntax::lib so that code using

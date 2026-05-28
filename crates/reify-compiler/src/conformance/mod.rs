@@ -1585,7 +1585,7 @@ mod tests {
                         value: reify_ast::Expr {
                             kind: reify_ast::ExprKind::QuantityLiteral {
                                 value: 80.0,
-                                unit: "mm".to_string(),
+                                unit: reify_ast::UnitExpr::Unit("mm".to_string()),
                             },
                             span: SourceSpan::empty(0),
                         },

@@ -2760,12 +2760,81 @@ impl<'a> Lowering<'a> {
         let unit_node = node.child_by_field_name("unit")?;
 
         let value: f64 = self.node_text(value_node).parse().ok()?;
-        let unit = self.node_text(unit_node).to_string();
+        let unit = self.lower_unit_expr(unit_node)?;
 
         Some(Expr {
             kind: ExprKind::QuantityLiteral { value, unit },
             span: self.span(node),
         })
+    }
+
+    /// Lower a `unit_expr` CST node into a structured [`UnitExpr`] tree.
+    ///
+    /// Probe order mirrors the grammar's precedence (PRD
+    /// `docs/prds/unit-expressions.md` §3.2/§4.1; task α corpus
+    /// `tree-sitter-reify/test/corpus/unit_expr.txt`):
+    ///   1. **Pow** — `base ^ exponent`. Probed first because the pow arm also
+    ///      carries an `op` field (the `^`), but is uniquely identified by the
+    ///      presence of `base` + `exponent` fields.
+    ///   2. **Mul/Div** — `left (*|/) right`, left-associative. Dispatch on the
+    ///      operator's source TEXT, not node kind: the `op` field aliases the two
+    ///      external-scanner tokens (`_unit_mul_op` / `_unit_div_op`).
+    ///   3. **Paren / bare unit** — a parenthesised `unit_expr` is unwrapped
+    ///      transparently (no `Paren` variant — parens carry no semantics); a
+    ///      `unit_name` child becomes [`UnitExpr::Unit`].
+    ///
+    /// Returns `None` on a malformed CST so `?` propagates a parse failure
+    /// cleanly, matching the other `lower_*` helpers.
+    fn lower_unit_expr(&self, node: tree_sitter::Node) -> Option<UnitExpr> {
+        // 1. Pow: `base ^ exponent`.
+        if let (Some(base_node), Some(exp_node)) = (
+            node.child_by_field_name("base"),
+            node.child_by_field_name("exponent"),
+        ) {
+            let base = self.lower_unit_expr(base_node)?;
+            // grammar's `signed_integer` is `-?\d+`, so this parse is total in practice.
+            let exponent: i32 = self.node_text(exp_node).parse().ok()?;
+            return Some(UnitExpr::Pow(Box::new(base), exponent));
+        }
+
+        // 2. Mul/Div: `left (*|/) right`, left-associative. The `op` field aliases
+        //    the external-scanner tokens (`_unit_mul_op` / `_unit_div_op`), which
+        //    `child_by_field_name` does NOT expose — so detect the arm by the
+        //    `left`+`right` fields and read the operator from the source slice
+        //    between the two operands. Units are contiguous (no whitespace inside
+        //    a unit_expr), so that slice is exactly `*` or `/`.
+        if let (Some(left_node), Some(right_node)) = (
+            node.child_by_field_name("left"),
+            node.child_by_field_name("right"),
+        ) {
+            let left = self.lower_unit_expr(left_node)?;
+            let right = self.lower_unit_expr(right_node)?;
+            let op_text = self
+                .source
+                .get(left_node.end_byte()..right_node.start_byte())?;
+            return if op_text.contains('/') {
+                Some(UnitExpr::Div(Box::new(left), Box::new(right)))
+            } else if op_text.contains('*') {
+                Some(UnitExpr::Mul(Box::new(left), Box::new(right)))
+            } else {
+                None
+            };
+        }
+
+        // 3. Paren or bare unit: walk named children. A `unit_name` child is a
+        //    bare unit; an inner `unit_expr` child is a parenthesised group that
+        //    we unwrap by recursing (parens are anonymous tokens, not children).
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            match child.kind() {
+                "unit_name" => {
+                    return Some(UnitExpr::Unit(self.node_text(child).to_string()));
+                }
+                "unit_expr" => return self.lower_unit_expr(child),
+                _ => {}
+            }
+        }
+        None
     }
 
     fn lower_number_literal(&self, node: tree_sitter::Node) -> Option<Expr> {
@@ -3166,7 +3235,7 @@ mod tests {
         match &width.default.as_ref().unwrap().kind {
             ExprKind::QuantityLiteral { value, unit } => {
                 assert!((value - 80.0).abs() < f64::EPSILON);
-                assert_eq!(unit, "mm");
+                assert_eq!(unit, &UnitExpr::Unit("mm".to_string()));
             }
             other => panic!("expected QuantityLiteral, got {:?}", other),
         }
@@ -3270,7 +3339,7 @@ mod tests {
                 match &right.kind {
                     ExprKind::QuantityLiteral { value, unit } => {
                         assert!((value - 2.0).abs() < f64::EPSILON);
-                        assert_eq!(unit, "mm");
+                        assert_eq!(unit, &UnitExpr::Unit("mm".to_string()));
                     }
                     other => panic!("expected QuantityLiteral, got {:?}", other),
                 }
@@ -5050,7 +5119,7 @@ mod tests {
                 match lower_expr.kind {
                     ExprKind::QuantityLiteral { value, unit } => {
                         assert!((value - 2.0).abs() < f64::EPSILON);
-                        assert_eq!(unit, "mm");
+                        assert_eq!(unit, UnitExpr::Unit("mm".to_string()));
                     }
                     other => panic!("expected QuantityLiteral for bound, got {:?}", other),
                 }
@@ -5077,7 +5146,7 @@ mod tests {
                 match lower_expr.kind {
                     ExprKind::QuantityLiteral { value, unit } => {
                         assert!((value - 2.0).abs() < f64::EPSILON);
-                        assert_eq!(unit, "mm");
+                        assert_eq!(unit, UnitExpr::Unit("mm".to_string()));
                     }
                     other => panic!("expected QuantityLiteral for bound, got {:?}", other),
                 }
@@ -5104,7 +5173,7 @@ mod tests {
                 match upper_expr.kind {
                     ExprKind::QuantityLiteral { value, unit } => {
                         assert!((value - 100.0).abs() < f64::EPSILON);
-                        assert_eq!(unit, "MPa");
+                        assert_eq!(unit, UnitExpr::Unit("MPa".to_string()));
                     }
                     other => panic!("expected QuantityLiteral for bound, got {:?}", other),
                 }
@@ -5131,7 +5200,7 @@ mod tests {
                 match upper_expr.kind {
                     ExprKind::QuantityLiteral { value, unit } => {
                         assert!((value - 100.0).abs() < f64::EPSILON);
-                        assert_eq!(unit, "MPa");
+                        assert_eq!(unit, UnitExpr::Unit("MPa".to_string()));
                     }
                     other => panic!("expected QuantityLiteral for bound, got {:?}", other),
                 }
