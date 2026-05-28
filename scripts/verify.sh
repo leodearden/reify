@@ -113,8 +113,10 @@ case "$SCOPE" in all|staged) ;; *)
     echo "verify.sh: ERROR — invalid --scope '$SCOPE' (want all|staged)" >&2; exit 64 ;;
 esac
 DF_VERIFY_ROLE="${DF_VERIFY_ROLE:-task}"
-case "$DF_VERIFY_ROLE" in task|merge) ;; *)
-    echo "verify.sh: ERROR — unknown DF_VERIFY_ROLE '$DF_VERIFY_ROLE' (want task|merge)" >&2; exit 64 ;;
+case "$DF_VERIFY_ROLE" in
+    task)  CARGO_PRIO="nice -n 15 ionice -c 2 -n 7 " ;;
+    merge) CARGO_PRIO="nice -n 5 " ;;
+    *)     echo "verify.sh: ERROR — unknown DF_VERIFY_ROLE '$DF_VERIFY_ROLE' (want task|merge)" >&2; exit 64 ;;
 esac
 
 # A merge in progress cannot trust `git diff --cached` (the index reflects the
@@ -305,14 +307,14 @@ add_test_passes() {
         # single-threaded. No outer timeout — the wrapper owns it via
         # REIFY_OCCT_TEST_TIMEOUT (lock-wait time does not consume the budget).
         if [ "$RUN_OCCT_GATE" -eq 1 ]; then
-            add "REIFY_OCCT_TEST_TIMEOUT=${gated_timeout} ./scripts/cargo-test-occt-gated.sh cargo test ${P_FLAGS}${rel} -- --test-threads=1"
+            add "REIFY_OCCT_TEST_TIMEOUT=${gated_timeout} ./scripts/cargo-test-occt-gated.sh ${CARGO_PRIO}cargo test ${P_FLAGS}${rel} -- --test-threads=1"
         fi
 
         # Ungated tail: everything except the OCCT crates, full concurrency.
         if [ "$NEXTEST" -eq 1 ]; then
-            ungated="timeout --kill-after=60 ${outer_timeout} cargo nextest run --workspace ${EXCLUDE_FLAGS}${rel}"
+            ungated="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run --workspace ${EXCLUDE_FLAGS}${rel}"
         else
-            ungated="timeout --kill-after=60 ${outer_timeout} cargo test --workspace ${EXCLUDE_FLAGS}${rel} -- --test-threads=1"
+            ungated="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo test --workspace ${EXCLUDE_FLAGS}${rel} -- --test-threads=1"
         fi
         add "$ungated"
     done
@@ -327,12 +329,12 @@ build_plan() {
     # typecheck (cargo check) only when NOT also linting — clippy --all-targets
     # is a strict superset of `cargo check`, so running both would be redundant.
     if [ "$DO_TYPECHECK" -eq 1 ] && [ "$DO_LINT" -eq 0 ] && [ "$RUN_RUST" -eq 1 ]; then
-        add "timeout --kill-after=60 20m cargo check --workspace --tests"
+        add "timeout --kill-after=60 20m ${CARGO_PRIO}cargo check --workspace --tests"
     fi
 
     # lint: clippy over all targets, warnings-as-errors.
     if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
-        add "timeout --kill-after=60 30m cargo clippy --workspace --all-targets -- -D warnings"
+        add "timeout --kill-after=60 30m ${CARGO_PRIO}cargo clippy --workspace --all-targets -- -D warnings"
     fi
 
     # test: gated + ungated cargo passes, per profile.
