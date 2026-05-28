@@ -112,6 +112,10 @@ esac
 case "$SCOPE" in all|staged) ;; *)
     echo "verify.sh: ERROR — invalid --scope '$SCOPE' (want all|staged)" >&2; exit 64 ;;
 esac
+DF_VERIFY_ROLE="${DF_VERIFY_ROLE:-task}"
+case "$DF_VERIFY_ROLE" in task|merge) ;; *)
+    echo "verify.sh: ERROR — unknown DF_VERIFY_ROLE '$DF_VERIFY_ROLE' (want task|merge)" >&2; exit 64 ;;
+esac
 
 # A merge in progress cannot trust `git diff --cached` (the index reflects the
 # merge result, not a curated stage), so force a full verification. Detected via
@@ -374,7 +378,7 @@ build_plan
 # Emit: print the plan (oracle) or execute it (&& semantics)
 # ---------------------------------------------------------------------------
 if [ "$PRINT_PLAN" -eq 1 ]; then
-    echo "# verify.sh plan — action=$ACTION profile=$PROFILE scope=$SCOPE include_infra=$INCLUDE_INFRA nextest=$NEXTEST"
+    echo "# verify.sh plan — action=$ACTION profile=$PROFILE scope=$SCOPE include_infra=$INCLUDE_INFRA nextest=$NEXTEST role=$DF_VERIFY_ROLE"
     echo "# scope decision — RUN_RUST=$RUN_RUST RUN_GUI=$RUN_GUI RUN_OCCT_GATE=$RUN_OCCT_GATE"
     echo "# --- environment (process-level; inherited by every command below) ---"
     for _e in "${ENV_LINES[@]}"; do echo "# $_e"; done
