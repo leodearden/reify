@@ -1033,7 +1033,7 @@ fn shaper_trait_exists_with_no_params() {
 /// (PRD §5.2). It must declare exactly two params:
 ///
 ///   - `joint     : Real`  (TODO(joint-type) placeholder for the future
-///                          kinematic-completion Joint type)
+///     kinematic-completion Joint type)
 ///   - `max_force : Real`  (TODO(force-scalar) placeholder for Scalar<Force>)
 ///
 /// Both fields are caller-supplied — no canonical defaults. JointLimit
