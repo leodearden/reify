@@ -887,6 +887,33 @@ pub struct FeaCaseChanged {
     pub available_cases: Vec<String>,
 }
 
+/// IPC payload for the `solver-progress` Tauri event channel (GR-016 ζ).
+///
+/// Emitted at the end of each CG iteration (after the residual-norm update,
+/// before the convergence check) by the `solve_cg_with_progress` kernel callback.
+/// The engine-boundary emit-call wiring (populating `app.emit`) is a follow-on
+/// task; this struct is the type-definition seam.
+///
+/// Field names match the TypeScript `SolverProgress` interface in `gui/src/types.ts`
+/// exactly — no `serde(rename_all)` (PRD `docs/prds/v0_3/gui-event-channel-inventory.md`
+/// §2.2 task ζ / §3.2 field-name-exactness convention).
+///
+/// `eta_ms` is omitted from the wire format when `None` (ETA not yet estimable,
+/// e.g. on the first iteration before a residual history is available).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SolverProgress {
+    /// Solver algorithm identifier, e.g. `"cg"` for Jacobi-preconditioned CG.
+    pub solver_kind: String,
+    /// 1-indexed iteration number just completed.
+    pub iter: u32,
+    /// L2 residual norm at this iteration.
+    pub residual: f64,
+    /// Estimated time to completion in milliseconds; absent when ETA cannot be
+    /// estimated (residual history too short).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eta_ms: Option<u64>,
+}
+
 #[cfg(test)]
 mod format_value_range_tests {
     use super::*;
