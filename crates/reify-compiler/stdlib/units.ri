@@ -80,3 +80,8 @@ pub unit USD : Money
 /// Standard acceleration of gravity (g_n), 9.80665 m/s² — BIPM/CGPM 1901 §70
 /// reference value. Use in body-force loads: `gravity(5 * STANDARD_GRAVITY())`.
 pub fn STANDARD_GRAVITY() -> Acceleration { 9.80665 * 1m / (1s * 1s) }
+
+/// Speed of light in vacuum (c), 299792458 m/s exactly — SI definition
+/// (BIPM, 1983 redefinition of the metre via the second). Use in EM and
+/// relativistic computations: `let kinetic = 0.5 * m * (v * v) / SPEED_OF_LIGHT()`.
+pub fn SPEED_OF_LIGHT() -> Length / Time { 299792458.0 * 1m / 1s }
