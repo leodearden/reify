@@ -442,7 +442,7 @@ impl GeometryKernel for FidgetKernel {
         // The catch-all message names (a) the rejected query (via kind_name()),
         // (b) the repr family (Sdf), and (c) the kernel identity (Fidget) so
         // readers can attribute the failure. The
-        // fidget_kernel_query_export_tessellate_each_emit_op_specific_message test
+        // fidget_kernel_query_export_each_emit_op_specific_message test
         // pins this format over GeometryQuery::Volume.
         Err(QueryError::QueryFailed(format!(
             "Fidget SDF kernel: {} queries on Sdf require meshing — see arch §10.8 \
@@ -463,13 +463,20 @@ impl GeometryKernel for FidgetKernel {
         )))
     }
 
-    fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
-        Err(TessError::TessellationFailed(
-            "Fidget SDF kernel: SDF→Mesh feature-preserving meshing is the v0.2 \
-             follow-up named in arch §10.8 / docs/prds/v0_2/multi-kernel.md \
-             (deferred from this task by design)"
-                .into(),
-        ))
+    /// Delegates to [`FidgetKernel::iso_mesh`] with `iso_value = 0.0` and
+    /// `target_edge_length = tolerance`.
+    ///
+    /// Wired per PRD §8 task κ — the stub that returned
+    /// `TessError::TessellationFailed("…§10.8…")` is replaced by real
+    /// Manifold Dual Contouring via fidget-mesh.
+    fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError> {
+        self.iso_mesh(
+            handle,
+            &IsoMeshOptions {
+                iso_value: 0.0,
+                target_edge_length: tolerance,
+            },
+        )
     }
     // extract_edges, extract_faces, execute_with_history, query_many all use
     // the trait defaults — they error in the standard "not supported" fashion.
@@ -705,13 +712,18 @@ mod tests {
         }
     }
 
-    /// `query`/`export`/`tessellate` must each emit op-specific error
-    /// messages that name the kernel (`Fidget`), the repr family (`Sdf`),
-    /// and reference the architecture pointer for SDF→Mesh deferral
-    /// (`§10.8`) so the diagnostic explains the deferral rather than
-    /// looking like a generic catch-all.
+    /// `query` and `export` must each emit op-specific error messages naming
+    /// the kernel (`Fidget`), the repr family (`Sdf`), and a reference to the
+    /// architecture pointer (`§10.8`) so diagnostics explain the limitation
+    /// rather than looking like generic catch-alls.
+    ///
+    /// `tessellate` is no longer in this test: per PRD §8 task κ, the
+    /// formerly-stubbed error path was replaced by real meshing via
+    /// `iso_mesh`. The `fidget_kernel_tessellate_sphere_produces_nonempty_mesh`
+    /// test covers the new contract; `fidget_kernel_iso_mesh_unknown_handle_errors`
+    /// pins the `InvalidHandle` path.
     #[test]
-    fn fidget_kernel_query_export_tessellate_each_emit_op_specific_message() {
+    fn fidget_kernel_query_export_each_emit_op_specific_message() {
         use reify_ir::GeometryQuery;
 
         let kernel = FidgetKernel::new();
@@ -742,18 +754,6 @@ mod tests {
                 assert!(msg.contains("Sdf"), "{msg:?}");
             }
             other => panic!("expected FormatError, got {other:?}"),
-        }
-
-        // (c) tessellate
-        let err = kernel
-            .tessellate(GeometryHandleId(1), 0.1)
-            .expect_err("tessellate must error on Sdf");
-        match err {
-            TessError::TessellationFailed(msg) => {
-                assert!(msg.contains("Fidget"), "{msg:?}");
-                assert!(msg.contains("§10.8"), "{msg:?}");
-            }
-            other => panic!("expected TessellationFailed, got {other:?}"),
         }
     }
 
