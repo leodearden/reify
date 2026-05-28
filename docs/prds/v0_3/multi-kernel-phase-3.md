@@ -1,6 +1,8 @@
 # Multi-Kernel Phase 3 — ReprKind Chain Coverage
 
-Status: contract (extends `docs/prds/v0_2/multi-kernel.md` whose Phases 1+2 shipped 2026-04-28). Authored 2026-05-12 in interactive session. Pending Leo approval before queueing tasks.
+Status: contract (extends `docs/prds/v0_2/multi-kernel.md` whose Phases 1+2 shipped 2026-04-28). Authored 2026-05-12 in interactive session. Phase 1 (α, β, γ) and Phase 2 (δ, ε) shipped; Phase 3+ tasks queued.
+
+**Amendment 2026-05-28** — §3a "Cross-kernel mesh-routing substrate (production)" added as a G3 follow-on per decision D on esc-3437-13 (architect-verified that ε's "deferred to ζ/η/θ" error arm at `engine_build.rs:2626-2648` left ζ's end-to-end signal with no substrate). Phase 2a inserted into §8 (tasks λ, σ, υ, φ) and ζ's signal rewritten under G6. Retires bookmark task 4043.
 
 Resolves cluster C-18 / gap GR-020 per `docs/architecture-audit/gap-register.md`. Folds in GR-034 (cluster C-32 — long-chain diagnostic / per-stage tolerance budget unreachable). Hosts the multi-kernel half of GR-003 (OpenVDB consumer wiring) per the 2026-05-12 contested-ownership disposition.
 
@@ -106,6 +108,161 @@ pub struct Engine {
 `with_registered_kernels` (new constructor) instantiates one adapter per registered descriptor, keyed by kernel name. `pick_lexmin_brep_kernel` retires — it's a v0.2 single-kernel artifact. `execute_realization_ops` consults the registry per op via `dispatch(...)`. The BTreeMap ordering preserves the determinism contract (`dispatcher.rs:23-31`).
 
 **Backward compatibility.** No existing public API breaks: `Engine::with_registered_kernel` is renamed to `with_registered_kernels` (plural) at the same call sites; the old name becomes a deprecation alias for one minor cycle.
+
+## §3a — Cross-kernel mesh-routing substrate (production)
+
+Authored 2026-05-28 as a G3 follow-on (decision D on esc-3437-13, retiring bookmark task 4043). When ε (task 3436) shipped, the audit-derived premise that "ε wires `execute_realization_ops` to consult the dispatcher per op" landed correctly — but the dispatcher was wired to ask only the `BUDGET_QUERY_TRIPLE_V02` request (`demanded=BRep`, `available={BRep}`), and the **non-empty-conversion arm at `engine_build.rs:2626-2648` was descoped to an error diagnostic** ("non-empty conversion chain ... is not supported in v0.3-ε (deferred to ζ/η/θ)"). The original §3-§5 design assumed ε would also ship the *executor* for those conversion chains; it did not. As a result, the .ri-driven end-to-end signal ζ (task 3437) demands — a Boolean auto-routed to Manifold producing a Mesh, no pragma — has no substrate to land on today.
+
+This § is the substrate. It is named in §8 ahead of ζ; ζ becomes its integration-gate leaf.
+
+### §3a.1 — What is missing today (verified live at `ab0b4c66db`)
+
+1. **No production mesh-ingest trait method.** `reify_ir::GeometryKernel` (`crates/reify-ir/src/geometry.rs:1577`) exposes `execute / execute_with_history / query / query_many / export / tessellate / extract_edges|faces|vertices / attribute_hook` — none accept a `Mesh` input. Manifold's only mesh-ingest path is `ManifoldKernel::store_mesh_for_test` at `crates/reify-kernel-manifold/src/kernel.rs:109-138`, gated on `cfg(any(test, feature = "test-fixtures"))`. The per-op realization loop cannot reach it.
+2. **No handle→kernel ownership.** `step_handles: Vec<GeometryHandleId>` is a flat list of *kernel-local* ids (handle `5` in OCCT and handle `5` in Manifold are different shapes). The `RealizationCache` similarly stores a bare terminal `GeometryHandleId`. With `geometry_kernels: BTreeMap<String, Box<dyn GeometryKernel>>` (ε), there is nothing in the type system or runtime preventing a Manifold handle from being passed to OCCT's `query`.
+3. **No in-realization conversion execution.** `engine_build.rs:2626-2648` errors out on every non-empty `DispatchPlan.conversions`. The plan stage `("occt", BRep, Mesh)` followed by Manifold `(BooleanUnion, Mesh)` is *expressible* by the dispatcher BFS but unexecutable.
+4. **No production demand-Mesh trigger.** `engine_build.rs:2554` hardcodes `dispatch(registry, operation, ReprKind::BRep, &available_set)`; `:2393` sources `available_set` from `BUDGET_QUERY_TRIPLE_V02.2 == {BRep}`; `:2421` pins `cache_repr = ReprKind::BRep`; `:2465` debug-asserts the cache stays BRep-only. The dispatcher can only ever be asked for `(op, BRep, {BRep})`.
+
+The four gaps form one coherent substrate: a typed handle-ownership wrapper, a per-realization demanded-repr derivation, a trait method that lets one kernel hand a `Mesh` to another, and an executor that orchestrates conversion stages within a single realization. They are taken together because each is a no-op without the others.
+
+### §3a.2 — Trait surface: `ingest_mesh`
+
+Add one method to `reify_ir::GeometryKernel`:
+
+```rust
+pub trait GeometryKernel: Send + Sync {
+    // ... existing methods ...
+
+    /// Ingest a `Mesh` produced by another kernel and return a freshly-allocated
+    /// kernel-local handle whose representation kind is `ReprKind::Mesh`.
+    ///
+    /// Default impl returns `Err(GeometryError::OperationFailed)` with a
+    /// "<kernel> does not accept Mesh inputs" payload so kernels without a
+    /// mesh-ingest path (OCCT, Fidget for v0.3) compile unchanged. The default
+    /// is the structural enforcement of "this kernel sits on the producer side
+    /// of conversion edges only" — analogous to `attribute_hook`'s `None`
+    /// default. Overriding kernels (`reify-kernel-manifold`, and later
+    /// `reify-kernel-openvdb`, `reify-kernel-fidget` for their η / ι Convert
+    /// edges) return a real handle.
+    fn ingest_mesh(&mut self, _mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
+        Err(GeometryError::OperationFailed(
+            "this kernel does not accept Mesh inputs".into(),
+        ))
+    }
+}
+```
+
+`reify-kernel-manifold` overrides it by **promoting `store_mesh_for_test` to production**: the body moves verbatim out of the `#[cfg(any(test, feature = "test-fixtures"))]` block into the `impl GeometryKernel for ManifoldKernel` block as `fn ingest_mesh`. The cfg-gated name disappears in the same edit; existing in-crate tests update to call `ingest_mesh` directly.
+
+η (task 3438, OpenVDB `Mesh→Voxel`) and ι (task 3440, Fidget `Sdf→Mesh` + reverse) ship their own `ingest_mesh` overrides when their phases land. This § does **not** design those overrides; the default impl keeps them compiling, and the per-kernel override is the natural unit of work in the η / ι tasks.
+
+### §3a.3 — Handle ownership: `KernelId` enum + `KernelHandle` wrapper
+
+A `GeometryHandleId` alone is ambiguous under multi-kernel. Introduce a typed kernel discriminator and a paired-handle wrapper:
+
+```rust
+// In reify-ir (next to GeometryHandleId).
+
+/// Discriminator for which adapter owns a `GeometryHandleId`.
+///
+/// Enum (not String) because the registered-adapter set is small, closed at
+/// build time (per Cargo features), and per-frame handle-routing wants
+/// integer equality, not string compare. Variants are 1:1 with the kernel
+/// crates and stay in lex order so `<KernelId as Ord>` matches the
+/// dispatcher's BTreeMap-name ordering (the determinism contract).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
+pub enum KernelId {
+    Fidget,
+    Gmsh,
+    Manifold,
+    Occt,
+    OpenVdb,
+}
+
+/// A handle paired with the kernel that owns it. Replaces bare
+/// `GeometryHandleId` in cross-kernel-aware contexts (step_handles,
+/// RealizationCache value, dispatcher plan stages).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KernelHandle {
+    pub kernel: KernelId,
+    pub id: GeometryHandleId,
+}
+```
+
+`#[non_exhaustive]` keeps the enum extensible for future adapters without breaking external `match` exhaustiveness. The registry-name string (`"manifold"`) and the `KernelId::Manifold` variant are bridged by a `pub const fn KernelId::as_registry_name(self) -> &'static str` and a `pub fn KernelId::from_registry_name(name: &str) -> Option<Self>` — both pure, both unit-tested for round-trip.
+
+**Where bare `GeometryHandleId` is replaced with `KernelHandle`:**
+
+| Site | Today | After σ |
+|---|---|---|
+| `step_handles` inside a realization | `Vec<GeometryHandleId>` | `Vec<KernelHandle>` |
+| `named_steps` map | `HashMap<String, GeometryHandleId>` | `HashMap<String, KernelHandle>` |
+| `RealizationCache` value | `GeometryHandleId` | `KernelHandle` |
+| `DispatchPlan.conversions` stage tuples | `Vec<(String, ReprKind, ReprKind)>` | `Vec<(KernelId, ReprKind, ReprKind)>` (already-typed kernel name) |
+| `seed_cross_sub_named_steps` cross-template seeding | bare id passed through | `KernelHandle` (kernel-of-origin survives the seed) |
+
+**Where bare `GeometryHandleId` STAYS:**
+
+- Inside each kernel adapter's own internal maps (`ManifoldKernel.shapes: HashMap<u64, Manifold>`). The kernel never sees a `KernelHandle` — the executor projects `KernelHandle.id` before calling the trait method, and re-wraps with the kernel's own `KernelId` after.
+- The trait method signatures (`execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, _>`, `tessellate(&self, handle: GeometryHandleId, ...)`, `ingest_mesh(&mut self, ...)` etc.) keep bare `GeometryHandleId` and `GeometryHandle`. The kernel-name discriminator is the *executor's* responsibility, not the per-kernel trait's.
+
+This is the seam that prevents an OCCT handle from leaking into Manifold's `get_manifold`: a `KernelHandle { kernel: Occt, id: 5 }` never has its `id` field read by a Manifold method, because the executor's per-op routing always pairs the resolved kernel with the handles it owns.
+
+### §3a.4 — Per-realization demanded-repr derivation (consumer-demand backward pass)
+
+Today the dispatcher is asked `(op, BRep)` unconditionally. With auto-routing, the demanded repr must vary by realization. The derivation rule:
+
+> A realization demands `Mesh` iff **every** downstream consumer of its output accepts `Mesh`. Otherwise it demands `BRep` (the v0.2 default, preserving today's behaviour for BRep-consumed booleans).
+
+This is the structural answer to "what makes `examples/multi_kernel/manifold_boolean.ri`'s boolean auto-route to Manifold without a pragma": its result is bound to a mesh-only sink (viewport tessellation / mesh export / mesh-morph), so every consumer accepts `Mesh`, so the demand resolves to `Mesh`, so the dispatcher returns the 1-conversion plan `("occt", BRep, Mesh)` then Manifold's `(BooleanUnion, Mesh)`. A `union; fillet` .ri stays BRep because `Fillet` is a BRep-only consumer.
+
+**Algorithm.** Implemented as a single backward pass in `engine_build.rs::compute_demanded_reprs` (sibling to the existing `compute_demanded_tols`):
+
+1. Build a consumer-side inversion of the realization graph: `consumers: HashMap<RealizationNodeId, Vec<RealizationNodeId>>` derived from the existing `realization_inputs` edges by reversing them. One pass over `state.snapshot.graph.realizations`.
+2. Classify each `Operation` by its input-repr admissibility into a small fixed table — `op_accepts_repr(op, repr) -> bool`. Examples (v0.3 set):
+
+   | Operation | Accepts `BRep` | Accepts `Mesh` |
+   |---|---|---|
+   | `BooleanUnion / Difference / Intersection` | yes | yes |
+   | `Fillet / Chamfer / Shell / Draft / Thicken` | yes | **no** |
+   | `Tessellate / mesh export / mesh-morph` | (n/a — sink) | yes |
+   | `Extrude / Revolve / Loft / Pipe` | yes | no (today) |
+   | `Transform / Translate / Rotate / Scale / Mirror` | yes | yes |
+   | `Convert { from, to }` | input = `from` | input = `from` |
+
+3. Classify each top-level binding sink — what does this realization's *terminal* consumer want? The `BuildResult.format: ExportFormat` plus any explicit mesh-output bindings (`emit stl`, `viewport`) make a realization a *mesh sink*. STEP / IGES / BRep export and any BRep-typed binding make it a *BRep sink*.
+4. Walk each realization R: collect the union of (a) reprs accepted by every op in every realization in `consumers*(R)` that consumes R's terminal handle, plus (b) reprs accepted by every terminal sink reachable from R. Demand `Mesh` iff `BRep` is **not** in that union (i.e. nothing downstream actually needs BRep). Otherwise demand `BRep`.
+
+The pass produces `demanded_reprs: Vec<Vec<ReprKind>>` indexed by `[t_idx][r_idx]`, mirroring `demanded_tols`. `execute_realization_ops` consumes one element per realization, replacing the hardcoded `ReprKind::BRep` at `engine_build.rs:2554`.
+
+**Unreachable demand stays correct.** If a realization's classified op-set demands `Mesh` but the dispatcher returns `None` (the `Mesh→BRep`-equivalent escape — say a `Mesh`-source realization feeding a `Fillet`-only path that snuck past the classifier), the existing `Diagnostic::NoKernelChain` at the `None` arm fires. Failing closed is preserved; no silent BRep fallback.
+
+**Default-rule conservatism.** When the classifier cannot prove ALL consumers accept `Mesh` (e.g. a consumer's op is not in the table, or a downstream realization is missing from the graph snapshot), demand `BRep`. This makes the worst case "today's behaviour" — a regression in the classifier cannot break a working program.
+
+**Behavioural change to be validated, not assumed.** Existing viewport-only booleans (.ri files whose only consumer is the viewport's tessellation step) will start routing to Manifold. The φ task's boundary-test sketch (§7) includes a regression scan over the corpus of `examples/**.ri` to confirm no rendered example produces a structurally-different mesh outside Manifold's documented tolerance vs the OCCT-tessellate baseline.
+
+### §3a.5 — In-realization conversion execution
+
+Replace the error arm at `engine_build.rs:2626-2648` ("non-empty conversion chain ... is not supported in v0.3-ε (deferred to ζ/η/θ)") with a multi-stage executor. Per `Some(plan)` where `plan.conversions` is non-empty, the executor walks the conversion stages in order:
+
+For each `(kernel: KernelId, from: ReprKind, to: ReprKind)` stage in `plan.conversions`:
+1. Locate the *prior-stage* handle. On the first stage, this is the resolved input `KernelHandle`s drawn from `step_handles` (the op's inputs, all in `from`'s repr by construction of the BFS-seeded plan). On later stages, it is the previous stage's output `KernelHandle`.
+2. **Source side.** Resolve `kernel` via the BTreeMap (registry-name → owning kernel). Call the source kernel's repr-projection method: today `from = BRep, to = Mesh ⇒ tessellate(handle, per_stage_tol)`. The per-stage tolerance comes from the existing `per_stage_tolerance_for_plan` machinery (already shipped in ε).
+3. **Target side.** Resolve the *next-stage* kernel (the kernel that consumes `to`). Call `ingest_mesh(&mesh) -> Result<GeometryHandle, _>` on that kernel. The returned `GeometryHandle` is wrapped into a `KernelHandle` paired with the target kernel's `KernelId`.
+4. **Cache the intermediate.** The intermediate `KernelHandle` is inserted at the cache slot `(entity_id, to, per_stage_tol, NO_OPTIONS)` so a second realization demanding the same intermediate Mesh hits the cache.
+5. Substitute the substituted `KernelHandle` into the realization's step state for the final-stage op.
+
+After all conversion stages complete, the final-stage op runs on the final-stage kernel (`plan.kernel`) over the substituted inputs. The op's output `KernelHandle` becomes the realization's terminal handle; `produced_repr_out` is written to the final-stage op's output repr (typically `plan_output_repr(registry, plan, operation)`, unchanged from ε's 0-conversion derivation).
+
+**v0.3 scope.** This executor supports exactly one conversion shape today: `BRep → Mesh` (OCCT-tessellate → Manifold-ingest). The trait method `ingest_mesh` is general; the executor's repr-projection table is the closed surface. Adding `Mesh → Voxel` (η) is a single-row extension; adding `Voxel → Mesh` (ι) likewise. The executor's dispatch on `(from, to)` is a small `match` with explicit `unreachable!`-free defaulting to `Diagnostic::NoKernelChain` — keeps M-007 / M-009 / M-010 / M-011 producers honest about declared-but-unwired Convert edges.
+
+**Rollback discipline.** A failure at any stage (tessellate error, ingest_mesh error, kernel-side execute error) triggers the existing realization-rollback path (`step_handles.truncate(handle_start)`); intermediates inserted into the cache *during the failed realization* are dropped from the cache atomically with the rollback. (The cache today does not snapshot-per-realization; a follow-up task adds a per-realization staging buffer if rollback granularity becomes load-bearing — provisional in §9 open questions.)
+
+### §3a.6 — Cache-key repr unpinned from `BRep`
+
+The amendment in §3a.5 requires the `cache_repr` local at `engine_build.rs:2421` to bind to the realization's actual terminal `produced_repr` (computed from `plan.kernel`'s descriptor entry for `operation`) rather than the v0.2 hardcoded `ReprKind::BRep`. The debug-asserts at `:2465` (cache-hit path) and the populate-site assert near the post-loop `realization_cache.insert(...)` both relax from `cache_repr == ReprKind::BRep` to `cache_repr == produced_repr` (the per-realization repr surfaced through `produced_repr_out`). Cache-hit short-circuit semantics are preserved: a tighter-tol request still misses a looser cached entry; same-repr / same-entity / same-tol / same-options still hits.
+
+The existing `RealizationCacheKey { entity_id, repr_kind, tol, options_hash }` shape from §4 is unchanged; only the *populate site's* `repr_kind` argument migrates from a hardcoded `BRep` to the per-realization terminal repr.
 
 ## §4 — Cache-key composition over ReprKind chains
 
@@ -241,6 +398,24 @@ Tests live in `crates/reify-eval/tests/` (engine-level integration) and per-kern
 | **Project-pin happy path.** `reify.toml` pins {occt=0.1, manifold=0.1, fidget=0.1, openvdb=0.1}; all adapter VERSIONs match. | Engine construction. | Engine starts. No diagnostics emitted at startup. |
 | **Project-pin unpinned-loaded warning.** `reify.toml` pins {occt, manifold}; fidget is built into the binary. | Engine construction. | Warning diagnostic; engine starts. |
 
+### 7.3 Cross-kernel mesh-routing substrate (§3a)
+
+| Scenario | Preconditions | Postconditions |
+|---|---|---|
+| **`ingest_mesh` default error.** Call `ingest_mesh(&mesh)` on a kernel that does not override (OCCT, Fidget for v0.3). | Default trait impl in place. | Returns `Err(GeometryError::OperationFailed)` with a "this kernel does not accept Mesh inputs" payload. No panic. |
+| **`ingest_mesh` Manifold round-trip.** Build a tiny BRep cube via OCCT, `tessellate` it to a `Mesh`, `ingest_mesh` the result into Manifold, then `tessellate` the Manifold handle back. | Manifold override of `ingest_mesh` lives in `impl GeometryKernel`; OCCT's `tessellate` ships. | Final `Mesh.vertices.len() == initial_mesh.vertices.len()` and the bounding-box centroid is preserved within `1e-9` (Manifold's f64-internal exactness; no remeshing). |
+| **`KernelHandle` round-trip.** Compose `KernelHandle { kernel: KernelId::Manifold, id: 5 }`; round-trip via `KernelId::as_registry_name` → `from_registry_name`. | σ landed. | Round-trip is total over the registered set; `KernelId::Ord` matches the dispatcher BTreeMap-name order (verified by an exhaustive enum-variants test). |
+| **Cross-kernel hand-off rejects mis-kernel.** A `KernelHandle { kernel: KernelId::Occt, id: 5 }` passed to a code path that resolved kernel = `KernelId::Manifold`. | Executor's per-op routing in place. | Executor inserts the OCCT→Manifold conversion stage transparently (tessellate + ingest_mesh); Manifold never sees the foreign id directly. |
+| **Demanded-repr derivation — Mesh-terminal boolean.** `examples/multi_kernel/manifold_boolean.ri`: two BRep solids; result bound to a viewport / mesh export sink only. No #kernel pragma. | υ pass shipped; classification table includes BooleanUnion+Mesh and viewport-tessellate-as-mesh-sink. | `compute_demanded_reprs[t][r] == ReprKind::Mesh` for the boolean's realization; the dispatcher returns plan `kernel: "manifold", conversions: [("occt", BRep, Mesh)]`. |
+| **Demanded-repr derivation — BRep-pinning consumer.** A `.ri` file: `let u = a | b; let f = fillet(u, ...);`. Mesh sink at the terminal. | υ pass shipped. | The `BooleanUnion` realization demands `BRep` (because the `Fillet` consumer accepts only BRep); routes through OCCT-BRep; today's behaviour preserved. |
+| **Demanded-repr fallback when classifier is incomplete.** A `.ri` file uses an Operation variant the classifier does not cover (`Operation::NewlyAdded`). | υ pass shipped; the new variant not yet in the table. | Conservative default demands `BRep` for affected realizations; no regression vs v0.2. A `tracing::debug!` diagnostic names the unclassified op so the table extension is visible. |
+| **In-realization conversion execution — happy path.** Execute a realization whose dispatch plan is `kernel: "manifold", conversions: [("occt", BRep, Mesh)]` over `(BooleanUnion, Mesh)` with two OCCT BRep inputs. | All four substrate tasks (λ σ υ φ) landed. | (a) OCCT `tessellate` runs once per input, intermediate `Mesh` realizations created; (b) Manifold `ingest_mesh` runs once per intermediate; (c) Manifold `execute(BooleanUnion)` runs once on the ingested handles; (d) terminal `produced_repr == ReprKind::Mesh` and `KernelHandle.kernel == KernelId::Manifold` on the realization's last `step_handle`. |
+| **In-realization conversion execution — cache reuse.** Repeat the happy path within one build, then a second build of the same module without resetting the cache. | First build seeded `(entity, Mesh, tol, NO_OPTIONS) → KernelHandle{Manifold,..}` for the intermediates. | Second build's `tessellate` count is zero (intermediates served from cache); `last_dispatch_count == 0` for the cache-hit short-circuit on the terminal. |
+| **In-realization conversion execution — failure rollback.** Conversion plan as above, but the synthetic Mesh produced by `tessellate` is invalid for Manifold (non-manifold winding). | A test fixture that yields an invalid mesh. | `ingest_mesh` returns `Err(GeometryError::OperationFailed)`; executor rolls back via `step_handles.truncate(handle_start)`; the intermediate Mesh cache entry inserted *during this realization* is dropped; `Diagnostic::error` is emitted naming the source ID of the failed `ingest_mesh`. |
+| **Cache repr unpinned.** Realization terminal `produced_repr == ReprKind::Mesh`. | φ landed; `cache_repr` derives from `produced_repr_out`. | `realization_cache.insert(..., ReprKind::Mesh, ...)` succeeds (no debug_assert panic); subsequent same-repr same-entity lookup hits. The original `cache_repr == BRep` assertion is removed; a new assert pins `cache_repr == produced_repr_out.unwrap()` on the populate site. |
+| **Corpus regression scan — kernel selection.** Run `cargo run --bin reify -- check examples/**.ri --verbose` over the rendered-example corpus. | All four substrate tasks landed; viewport sinks treated as mesh sinks by υ's classifier. | For every example whose terminal binding is *not* explicitly BRep-typed: kernel selection is now `manifold` (or whatever lex-min chooses among Mesh-supporting kernels). For BRep-binding examples (e.g. STEP export, fillet-suffix): selection is unchanged. A snapshot file records the per-example kernel decision so future regressions surface diff-noise. |
+| **Corpus regression scan — visible-output stability.** For every example that the corpus regression renders, the viewport-tessellated `Mesh.vertices.len()` post-φ is within Manifold's *documented* tolerance of the pre-φ baseline AND the bounding-box centroid moves by ≤ `1e-6 × bounding_radius`. | Above. | The intent is "no visible regression" measured as a geometric check rather than a guessed numeric bound — this is the G6-safe formulation of "the gear case still renders." |
+
 ## §8 — Integration DAG (proposed; not yet filed)
 
 Decomposition style: **B (vertical slice) + H (design-first / interface contracts / boundary tests)** per `preferences_implementation_chain_portfolio`. Each leaf names its **user-observable signal**. Producer-only tasks closed in isolation are no longer tolerable (`feedback_task_chain_user_observable`).
@@ -278,12 +453,37 @@ The DAG threads through `compute-node-contract.md` η (FEA first real consumer) 
   - **Crates touched:** reify-eval (engine_admin.rs, engine_build.rs, lib.rs).
   - **Supersedes:** the v0.2 single-kernel `Engine.geometry_kernel: Option<Box<dyn GeometryKernel>>` shape.
 
+### Phase 2a — Cross-kernel mesh-routing substrate (production) — §3a
+
+Authored 2026-05-28 as the G3 follow-on (decision D on esc-3437-13, retiring bookmark task 4043). Each task is an *intermediate* in the C-as-integration-gate sense: ζ (revised below) is their integration-gate leaf. Listing per-task user-observable signals nonetheless, because the orchestrator's per-task metadata field (`user_observable_signal`) wants one — but the **load-bearing signal is ζ's**.
+
+- **Task λ** — `GeometryKernel::ingest_mesh` trait method added with the default-error impl; `reify-kernel-manifold` promotes `store_mesh_for_test` (currently `#[cfg(any(test, feature = "test-fixtures"))]`) to a production override of `ingest_mesh` in the `impl GeometryKernel for ManifoldKernel` block; the cfg-gated name disappears in the same edit.
+  - **Observable signal (intermediate; consumer prereq = φ).** Unit test in `reify-kernel-manifold` builds a tiny BRep cube via OCCT, `tessellate`s it, calls `ingest_mesh` on Manifold, then `tessellate`s the returned handle: vertex count and centroid round-trip within `1e-9`. Default-impl error path: a sibling test on `FidgetKernel::ingest_mesh` returns `Err(GeometryError::OperationFailed)` carrying the kernel name in the payload.
+  - **Prereqs:** None.
+  - **Crates touched:** reify-ir (`geometry.rs`, default impl), reify-kernel-manifold (`kernel.rs`, override + cfg-gate removal).
+
+- **Task σ** — `KernelId` enum + `KernelHandle` wrapper introduced in `reify-ir`; bare `GeometryHandleId` migrated to `KernelHandle` at the sites listed in §3a.3 (step_handles, named_steps, `RealizationCache` value, `DispatchPlan.conversions` stage tuples, `seed_cross_sub_named_steps`). Trait-method signatures and per-kernel internal maps stay on bare `GeometryHandleId` / `GeometryHandle`.
+  - **Observable signal (intermediate; consumer prereq = φ).** Exhaustive enum-variants test pins `KernelId::Ord` is total and matches `BTreeMap<String, _>::iter()` order over the v0.3 registered-name set; round-trip `as_registry_name → from_registry_name` is identity. A `KernelHandle`-aware test for `RealizationCache::lookup/insert` round-trips a `KernelHandle{Manifold, 5}` cleanly.
+  - **Prereqs:** None.
+  - **Crates touched:** reify-ir (types), reify-eval (engine_build.rs, realization_cache.rs, dispatcher.rs signatures, geometry_ops.rs cross-sub seeding).
+
+- **Task υ** — `compute_demanded_reprs(module) -> Vec<Vec<ReprKind>>` added as a sibling of `compute_demanded_tols` in `reify-eval::engine_build`. Implements the backward-pass derivation from §3a.4: classify each Operation's input-repr admissibility, walk the consumer-inverted realization graph, demand `Mesh` iff `BRep` is not in any consumer's accepted-repr set, else demand `BRep`. Conservative default (`BRep`) when a downstream op is not in the classifier table; emits `tracing::debug!` naming unclassified ops.
+  - **Observable signal (intermediate; consumer prereq = φ).** Unit tests pin three cases against synthetic compiled-module fixtures: (a) mesh-terminal boolean → `Mesh`; (b) boolean-then-fillet → `BRep`; (c) unknown Operation variant → `BRep` (conservative) + debug-log naming the op.
+  - **Prereqs:** None. (Indirect on γ for the eventual `NoKernelChain` diagnostic emitted in the unreachable-demand path, but γ is already done.)
+  - **Crates touched:** reify-eval (`engine_build.rs`).
+
+- **Task φ** — In-realization conversion-execution executor and cache-repr unpin, per §3a.5 and §3a.6. Replace the error arm at `engine_build.rs:2626-2648` with the multi-stage executor (tessellate on source kernel → ingest_mesh on target → cache intermediate → substitute → final-stage op). Replace the `let cache_repr = ReprKind::BRep;` at `:2421` with a binding derived from the realization's resolved terminal repr; relax the debug_assert at `:2465` to `cache_repr == produced_repr_out.unwrap_or(ReprKind::BRep)`; update the post-loop `realization_cache.insert(..., cache_repr, ...)` site to pass the per-realization repr. Replace the hardcoded `dispatch(registry, operation, ReprKind::BRep, ...)` at `:2554` with the υ-computed per-realization demanded repr.
+  - **Observable signal (integration intermediate; consumer prereq = ζ).** Synthetic-fixture integration test in `crates/reify-eval/tests/cross_kernel_handoff.rs`: a 1-realization compiled module containing two BRep primitive solids + `BooleanUnion`, with the υ-pass forced to demand `Mesh` via a fixture-side hook; assert (a) the executor emits one `tessellate` per input handle on OCCT, (b) one `ingest_mesh` per intermediate on Manifold, (c) one `execute(BooleanUnion)` on Manifold, (d) `RealizationNodeData.produced_repr == ReprKind::Mesh`, (e) terminal `KernelHandle.kernel == KernelId::Manifold`, (f) re-running the same build hits the cache at every layer (`last_dispatch_count == 0`). The .ri-driven user-facing signal is ζ's.
+  - **Prereqs:** λ, σ, υ.
+  - **Crates touched:** reify-eval (engine_build.rs primarily; minor on dispatcher.rs / realization_cache.rs if the stage-execution helper lives there).
+
 ### Phase 3 — Manifold consumer wired
 
-- **Task ζ** — Manifold adapter's `execute` arm for `(BooleanUnion/Difference/Intersection, Mesh)` validated against `manifold3d` and integrated with realization-graph output.
-  - **Observable signal:** `examples/multi_kernel/manifold_boolean.ri` (new fixture) computes a non-trivial Boolean (two interlocking gear-like shapes) where the OCCT path historically fails. Manifold path produces a manifold-output result; CLI `--verbose` confirms `kernel: manifold` was selected. Result vertex count is within Manifold's tolerance of the analytical-equivalent.
-  - **Prereqs:** ε.
-  - **Crates touched:** reify-kernel-manifold (kernel.rs validation of FFI), reify-eval (output-value wrap).
+- **Task ζ** — Integration-gate leaf for §3a substrate. Author the user-facing fixture and end-to-end test that demonstrates the substrate works from a .ri file with no #kernel pragma.
+  - **Observable signal (G6-corrected, replaces the original 2026-05-12 wording).** Author `examples/multi_kernel/manifold_boolean.ri`: two overlapping BRep primitive solids whose Boolean union is known to fail OCCT's `BRepAlgoAPI_Fuse` on this exact fixture — pinned by a sibling test in the same file that constructs the same two BReps directly and asserts OCCT's `execute(BooleanUnion, BRep)` returns `Err`. The .ri file binds the boolean result to a mesh-only sink (viewport / `emit stl`) and contains NO `#kernel(...)` pragma. CLI `cargo run --bin reify -- check examples/multi_kernel/manifold_boolean.ri --verbose` exits 0 and prints `kernel: manifold` for the boolean op's realization. Engine inspection (test-only API) reports the realization's `RealizationNodeData.produced_repr == ReprKind::Mesh` and the terminal `KernelHandle.kernel == KernelId::Manifold`. The output `Mesh` has `vertices.len() > 0` and the Manifold-side terminal `Manifold` (queried via a test-only adapter API) satisfies `!m.is_empty() && m.num_tri() > 0 && m.volume() > 0.0 && m.bounding_box().is_some()` — all four checks are existing manifold-csg 0.2.0 API methods (`manifold-csg-0.2.0/src/manifold.rs:520, 734, 741, 762, 772`), no novel probe is required. NO numeric vertex-count vs analytical-equivalent assertion — the binary "boolean produced a non-degenerate Manifold solid" is the load-bearing claim.
+  - **Premise note (G6, esc-3437-13 / decision D).** The original 2026-05-12 ζ signal demanded "vertex count within Manifold's tolerance of the analytical-equivalent" — a guessed numeric bound (G6 branch 1) with no validated reference and an ambiguous notion of "analytical-equivalent" for a gear-Boolean. The revised signal asserts only what ζ's *dependency set* can demonstrably produce (λ ships `ingest_mesh`; σ ships kernel-tagged handles; υ derives Mesh-demand; φ executes the conversion chain; Manifold's existing execute arm at `kernel.rs:148-172` runs the Boolean; the four manifold-csg API methods above provide the structural-validity probe). All asserted capabilities are owned by this task or its prerequisites — no claim delegates to a downstream task.
+  - **Prereqs:** φ (transitively pulls in λ, σ, υ, and the v0.2-done ε / β / α / γ / δ).
+  - **Crates touched:** `examples/multi_kernel/` (new fixture), `crates/reify-eval/tests/` (end-to-end test), `crates/reify-kernel-manifold` (validity-probe binding if not already exposed); no further Manifold execute-arm work (`kernel.rs:148-172` is already in place per the 2026-05-28 substrate verification).
 
 ### Phase 4 — OpenVDB consumer wired (GR-003 fold-in)
 
@@ -356,19 +556,19 @@ The DAG threads through `compute-node-contract.md` η (FEA first real consumer) 
 
 ```
 α ─┐
-β ─┼─→ δ ─→ ε ─┬─→ ζ ─→ ο
-γ ─┘          │
-              ├─→ η ─→ θ ─→ ι
-              │
-              ├─→ κ
-              │
-              └─→ ξ ←── (compute-node-contract.md η)
-              
-ι ─→ ρ
-ε ─→ π
+β ─┼─→ δ ─→ ε ─┬─→ η ─→ θ ─→ ι ─→ ρ
+γ ─┘          ├─→ κ
+              ├─→ ξ ←── (compute-node-contract.md η)
+              └─→ π
+
+λ ─┐
+σ ─┼─→ φ ─→ ζ ─→ ο
+υ ─┘
 
 μ, ν, τ (independent doc edits)
 ```
+
+The Phase 2a substrate (λ, σ, υ, φ) is the path to ζ. The original Phase 4–8 fan-out (η through ρ, plus κ, ξ, π) keeps its ε edges *for the per-task signals as written* — each of those signals targets a single kernel's `execute` / descriptor / cache-key surface, which is exercisable without cross-kernel hand-off via fixture-side scaffolding. **However:** η (OpenVDB `ingest_mesh` override + Mesh→Voxel chain) and ξ (Gmsh consuming a tessellated Mesh) only render *end-to-end* through φ. At decompose time, if either is queued before φ lands, its end-to-end variant gets a soft dependency on φ; the foundational descriptor-entry / per-kernel `execute` work can land first.
 
 ComputeNode contract task η must land before multi-kernel ξ (the hex-wedge `force_tet` cache discipline slice). All other tasks are ComputeNode-independent.
 
@@ -389,6 +589,10 @@ ComputeNode contract task η must land before multi-kernel ξ (the hex-wedge `fo
 7. **`Operation::Convert` execute-side validation per kernel.** Each kernel's `execute` arm must handle every declared Convert edge. Audit M-009/M-010/M-011 found declared edges with no execute path. **Suggested resolution:** per-task acceptance check (each kernel-edge task validates `execute` returns a non-stub Value); add a workspace-level test that asserts every declared `(Convert, ReprKind)` in every capability descriptor has a corresponding `execute` arm that returns `Value::Geometry` (not `Value::Undef` and not a stub-message error). Decide during task δ (set the pattern; subsequent kernel tasks follow).
 
 8. **Realization-graph backward-compat under multi-handle engine.** Changing `Engine.geometry_kernel` → `geometry_kernels` may affect serialised engine state if any persistent-cache layer captures kernel identity. **Suggested resolution:** verify `persistent_cache.rs` doesn't serialise `Engine.geometry_kernel`; if it does, version-bump the persistent format and migrate. Decide during task ε.
+
+9. **Per-realization cache-staging for rollback granularity (§3a.5).** φ inserts intermediate `(entity, Mesh, tol, ...)` cache entries during conversion-chain execution; if a *later* stage in the same realization fails, those intermediates are valid (the tessellate succeeded; the ingest_mesh succeeded) but were materialised for a realization that did not complete. v0.3 keeps them — they are content-correct and re-usable by any future demand. **Suggested resolution:** keep current behaviour; revisit only if a downstream determinism test surfaces a difference. Decide during task φ.
+
+10. **υ classifier-table drift.** The Operation-vs-input-repr table in §3a.4 is closed at the time of υ's authoring; future Operation variants must be added or they fall to the conservative `BRep` default (with a debug log). **Suggested resolution:** add a unit test that walks the `Operation` enum's `#[derive(strum::EnumIter)]` variants and asserts every variant has an entry in the classifier table; a new variant without an entry fails the test, forcing the author to make an explicit BRep-vs-Mesh decision. Decide during task υ.
 
 ## §10 — Out of scope for this PRD
 
