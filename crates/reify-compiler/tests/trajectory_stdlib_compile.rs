@@ -1475,3 +1475,564 @@ fn tots_shaper_constrains_design_param_invariants() {
             .collect::<Vec<_>>()
     );
 }
+
+// ─── step-41: ZVShaper param shape and constraint ────────────────────────────
+
+/// `ZVShaper` is the Zero-Vibration impulse shaper (PRD §5.1).
+/// It must refine the `Shaper` marker trait and declare exactly 2 params:
+///
+///   - `target_frequency : Frequency`   (Type::Scalar{dimension: FREQUENCY})
+///   - `damping_ratio    : Real = 0.0`  (default 0.0 per PRD §5.1 — ZV
+///     assumes undamped as the base case)
+///
+/// Exactly 1 constraint: `target_frequency > 0Hz` (BinOp::Gt, RHS
+/// Value::Scalar{si_value:0.0, dimension:FREQUENCY} — the dimensioned
+/// literal is required per the esc-3115 rule; a bare `0` is Type::Real
+/// and dim-incompatible with Frequency).
+///
+/// Uses the HarmonicForce Frequency-constraint pattern
+/// (modal_options_validation_tests.rs:1296-1348) and the TOTSShaper
+/// trait-bounds + param-shape assertion style (step-35).
+///
+/// Landed alongside the structure_def in trajectory.ri:513-518.
+#[test]
+fn zv_shaper_struct_has_correct_param_shape_and_constraint() {
+    // step-41
+    let template = find_structure("ZVShaper");
+
+    // (a) refines Shaper marker trait.
+    assert_eq!(
+        template.trait_bounds,
+        vec!["Shaper".to_string()],
+        "ZVShaper must refine Shaper; got trait_bounds: {:?}",
+        template.trait_bounds
+    );
+
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    // (b) tight param count.
+    assert_eq!(
+        params.len(),
+        2,
+        "ZVShaper should have exactly 2 params (target_frequency, damping_ratio); \
+         got: {:?}",
+        names
+    );
+
+    let expected: &[(&str, Type)] = &[
+        (
+            "target_frequency",
+            Type::Scalar {
+                dimension: DimensionVector::FREQUENCY,
+            },
+        ),
+        ("damping_ratio", Type::Real),
+    ];
+
+    // (c) param declaration order is part of the contract.
+    let expected_names: Vec<&str> = expected.iter().map(|(m, _)| *m).collect();
+    assert_eq!(
+        names, expected_names,
+        "ZVShaper params must be in canonical order \
+         (target_frequency, damping_ratio); got: {:?}",
+        names
+    );
+
+    // (d) type assertion per param.
+    for (member, expected_ty) in expected {
+        let cell = params
+            .iter()
+            .find(|vc| vc.id.member == *member)
+            .unwrap_or_else(|| {
+                panic!(
+                    "ZVShaper missing required param '{}'; got: {:?}",
+                    member, names
+                )
+            });
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "ZVShaper.{} should be {:?}, got {:?}",
+            member, expected_ty, cell.cell_type
+        );
+    }
+
+    // (e) target_frequency has no default (caller-supplied frequency).
+    let tf_cell = params
+        .iter()
+        .find(|vc| vc.id.member == "target_frequency")
+        .unwrap();
+    assert!(
+        tf_cell.default_expr.is_none(),
+        "ZVShaper.target_frequency should have NO default_expr (caller-supplied); \
+         got: {:?}",
+        tf_cell.default_expr
+    );
+
+    // (f) damping_ratio defaults to 0.0 (ZV assumes undamped per PRD §5.1).
+    let dr_default = require_default(template, "damping_ratio");
+    match &dr_default.kind {
+        CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => {}
+        other => panic!(
+            "ZVShaper.damping_ratio default should be Literal(Real(0.0)); \
+             the .ri file declares `0.0` (decimal literal → Value::Real), \
+             not Int(0); got: {:?}",
+            other
+        ),
+    }
+
+    // (g) exactly 1 constraint: target_frequency > 0Hz.
+    assert_eq!(
+        template.constraints.len(),
+        1,
+        "ZVShaper should declare exactly 1 constraint (target_frequency > 0Hz); \
+         got {} constraints: {:?}",
+        template.constraints.len(),
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+
+    let constraint = &template.constraints[0];
+    let matched = match &constraint.expr.kind {
+        CompiledExprKind::BinOp { op, left, right } => {
+            if *op != BinOp::Gt
+                || !collect_value_ref_members(left).contains(&"target_frequency")
+            {
+                false
+            } else {
+                matches!(
+                    &right.kind,
+                    CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
+                        if *si_value == 0.0 && *dimension == DimensionVector::FREQUENCY
+                )
+            }
+        }
+        _ => false,
+    };
+    assert!(
+        matched,
+        "ZVShaper should declare `constraint target_frequency > 0Hz` \
+         (BinOp::Gt, LHS refs target_frequency, \
+          RHS Value::Scalar{{si_value:0.0, dimension:FREQUENCY}} — \
+          dimensioned literal required per esc-3115 rule); \
+         got: {:?}",
+        constraint.expr.kind
+    );
+}
+
+// ─── step-43: ZVDShaper param shape and constraint ───────────────────────────
+
+/// `ZVDShaper` is the Zero-Vibration-Derivative impulse shaper (PRD §5.1).
+/// It must refine the `Shaper` marker trait and declare exactly 2 params:
+///
+///   - `target_frequency : Frequency`  (Type::Scalar{dimension: FREQUENCY})
+///   - `damping_ratio    : Real`       (caller-supplied, NO default —
+///     ZVD's damping ratio is a required design parameter, unlike ZVShaper
+///     which defaults to undamped)
+///
+/// Exactly 1 constraint: `target_frequency > 0Hz` (BinOp::Gt, RHS
+/// Value::Scalar{si_value:0.0, dimension:FREQUENCY} — dimensioned literal
+/// required per esc-3115 rule; bare `0` is Type::Real, dim-incompatible
+/// with Frequency).
+///
+/// Key distinction from ZVShaper: BOTH params have `default_expr.is_none()`.
+///
+/// Landed alongside the structure_def in trajectory.ri:536-541.
+#[test]
+fn zvd_shaper_struct_has_correct_param_shape_and_constraint() {
+    // step-43
+    let template = find_structure("ZVDShaper");
+
+    // (a) refines Shaper marker trait.
+    assert_eq!(
+        template.trait_bounds,
+        vec!["Shaper".to_string()],
+        "ZVDShaper must refine Shaper; got trait_bounds: {:?}",
+        template.trait_bounds
+    );
+
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    // (b) tight param count.
+    assert_eq!(
+        params.len(),
+        2,
+        "ZVDShaper should have exactly 2 params (target_frequency, damping_ratio); \
+         got: {:?}",
+        names
+    );
+
+    let expected: &[(&str, Type)] = &[
+        (
+            "target_frequency",
+            Type::Scalar {
+                dimension: DimensionVector::FREQUENCY,
+            },
+        ),
+        ("damping_ratio", Type::Real),
+    ];
+
+    // (c) param declaration order is part of the contract.
+    let expected_names: Vec<&str> = expected.iter().map(|(m, _)| *m).collect();
+    assert_eq!(
+        names, expected_names,
+        "ZVDShaper params must be in canonical order \
+         (target_frequency, damping_ratio); got: {:?}",
+        names
+    );
+
+    // (d) type assertion per param.
+    for (member, expected_ty) in expected {
+        let cell = params
+            .iter()
+            .find(|vc| vc.id.member == *member)
+            .unwrap_or_else(|| {
+                panic!(
+                    "ZVDShaper missing required param '{}'; got: {:?}",
+                    member, names
+                )
+            });
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "ZVDShaper.{} should be {:?}, got {:?}",
+            member, expected_ty, cell.cell_type
+        );
+    }
+
+    // (e) BOTH params are caller-supplied — neither has a default.
+    // This distinguishes ZVD from ZV (which defaults damping_ratio to 0.0).
+    for cell in &params {
+        assert!(
+            cell.default_expr.is_none(),
+            "ZVDShaper.{} should have NO default_expr (caller-supplied); \
+             got: {:?}",
+            cell.id.member,
+            cell.default_expr
+        );
+    }
+
+    // (f) exactly 1 constraint: target_frequency > 0Hz.
+    assert_eq!(
+        template.constraints.len(),
+        1,
+        "ZVDShaper should declare exactly 1 constraint (target_frequency > 0Hz); \
+         got {} constraints: {:?}",
+        template.constraints.len(),
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+
+    let constraint = &template.constraints[0];
+    let matched = match &constraint.expr.kind {
+        CompiledExprKind::BinOp { op, left, right } => {
+            if *op != BinOp::Gt
+                || !collect_value_ref_members(left).contains(&"target_frequency")
+            {
+                false
+            } else {
+                matches!(
+                    &right.kind,
+                    CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
+                        if *si_value == 0.0 && *dimension == DimensionVector::FREQUENCY
+                )
+            }
+        }
+        _ => false,
+    };
+    assert!(
+        matched,
+        "ZVDShaper should declare `constraint target_frequency > 0Hz` \
+         (BinOp::Gt, LHS refs target_frequency, \
+          RHS Value::Scalar{{si_value:0.0, dimension:FREQUENCY}} — \
+          dimensioned literal required per esc-3115 rule); \
+         got: {:?}",
+        constraint.expr.kind
+    );
+}
+
+// ─── step-45: EIShaper param shape and constraints ───────────────────────────
+
+/// `EIShaper` is the Extra-Insensitive impulse shaper (PRD §5.1).
+/// It must refine `Shaper` and declare exactly 3 params:
+///
+///   - `target_frequency    : Frequency`  (Type::Scalar{dimension: FREQUENCY})
+///   - `damping_ratio       : Real`       (caller-supplied, no default)
+///   - `vibration_tolerance : Real`       (caller-supplied, no default)
+///
+/// Exactly 3 constraints:
+///   (a) `target_frequency > 0Hz`        — BinOp::Gt, RHS Scalar{0.0,FREQ}
+///   (b) `vibration_tolerance > 0`       — BinOp::Gt, RHS Int(0)/Real(0.0)
+///   (c) `vibration_tolerance <= 1`      — BinOp::Le, RHS Int(1)/Real(1.0)
+///
+/// The vibration_tolerance ∈ (0,1] interval splits into two scalar predicates
+/// (same discipline as TOTSShaper, step-39 at line 1391-1477).
+///
+/// Landed alongside the structure_def in trajectory.ri:570-578.
+#[test]
+fn ei_shaper_struct_has_correct_param_shape_and_constraints() {
+    // step-45
+    let template = find_structure("EIShaper");
+
+    // (a) refines Shaper marker trait.
+    assert_eq!(
+        template.trait_bounds,
+        vec!["Shaper".to_string()],
+        "EIShaper must refine Shaper; got trait_bounds: {:?}",
+        template.trait_bounds
+    );
+
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    // (b) tight param count.
+    assert_eq!(
+        params.len(),
+        3,
+        "EIShaper should have exactly 3 params \
+         (target_frequency, damping_ratio, vibration_tolerance); got: {:?}",
+        names
+    );
+
+    let expected: &[(&str, Type)] = &[
+        (
+            "target_frequency",
+            Type::Scalar {
+                dimension: DimensionVector::FREQUENCY,
+            },
+        ),
+        ("damping_ratio", Type::Real),
+        ("vibration_tolerance", Type::Real),
+    ];
+
+    // (c) param declaration order is part of the contract.
+    let expected_names: Vec<&str> = expected.iter().map(|(m, _)| *m).collect();
+    assert_eq!(
+        names, expected_names,
+        "EIShaper params must be in canonical order \
+         (target_frequency, damping_ratio, vibration_tolerance); got: {:?}",
+        names
+    );
+
+    // (d) type assertion per param.
+    for (member, expected_ty) in expected {
+        let cell = params
+            .iter()
+            .find(|vc| vc.id.member == *member)
+            .unwrap_or_else(|| {
+                panic!(
+                    "EIShaper missing required param '{}'; got: {:?}",
+                    member, names
+                )
+            });
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "EIShaper.{} should be {:?}, got {:?}",
+            member, expected_ty, cell.cell_type
+        );
+    }
+
+    // (e) all three params are caller-supplied — no defaults.
+    for cell in &params {
+        assert!(
+            cell.default_expr.is_none(),
+            "EIShaper.{} should have NO default_expr (caller-supplied); \
+             got: {:?}",
+            cell.id.member,
+            cell.default_expr
+        );
+    }
+
+    // (f) exactly 3 constraints.
+    assert_eq!(
+        template.constraints.len(),
+        3,
+        "EIShaper should declare exactly 3 constraints \
+         (target_frequency > 0Hz, vibration_tolerance > 0, \
+          vibration_tolerance <= 1); got {} constraints: {:?}",
+        template.constraints.len(),
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+
+    // (g) target_frequency > 0Hz (dimensioned literal — esc-3115 rule).
+    let tf_matched = template.constraints.iter().any(|c| {
+        match &c.expr.kind {
+            CompiledExprKind::BinOp { op, left, right } => {
+                if *op != BinOp::Gt
+                    || !collect_value_ref_members(left).contains(&"target_frequency")
+                {
+                    return false;
+                }
+                matches!(
+                    &right.kind,
+                    CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
+                        if *si_value == 0.0 && *dimension == DimensionVector::FREQUENCY
+                )
+            }
+            _ => false,
+        }
+    });
+    assert!(
+        tf_matched,
+        "EIShaper should declare `constraint target_frequency > 0Hz`; \
+         got constraints: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+
+    // (h) vibration_tolerance > 0 (lower bound of (0,1] interval).
+    let vt_gt_matched = template.constraints.iter().any(|c| {
+        match &c.expr.kind {
+            CompiledExprKind::BinOp { op, left, right } => {
+                if *op != BinOp::Gt
+                    || !collect_value_ref_members(left).contains(&"vibration_tolerance")
+                {
+                    return false;
+                }
+                match &right.kind {
+                    CompiledExprKind::Literal(Value::Int(0)) => true,
+                    CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    });
+    assert!(
+        vt_gt_matched,
+        "EIShaper should declare `constraint vibration_tolerance > 0` \
+         (lower bound of (0,1] interval); got constraints: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+
+    // (i) vibration_tolerance <= 1 (upper bound of (0,1] interval).
+    let vt_le_matched = template.constraints.iter().any(|c| {
+        match &c.expr.kind {
+            CompiledExprKind::BinOp { op, left, right } => {
+                if *op != BinOp::Le
+                    || !collect_value_ref_members(left).contains(&"vibration_tolerance")
+                {
+                    return false;
+                }
+                match &right.kind {
+                    CompiledExprKind::Literal(Value::Int(1)) => true,
+                    CompiledExprKind::Literal(Value::Real(v)) if *v == 1.0 => true,
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    });
+    assert!(
+        vt_le_matched,
+        "EIShaper should declare `constraint vibration_tolerance <= 1` \
+         (upper bound completing the (0,1] interval per PRD §5.1); \
+         got constraints: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+}
+
+// ─── step-47: CascadedShaper param shape ─────────────────────────────────────
+
+/// `CascadedShaper` chains multiple `Shaper` instances in sequence (PRD §5.1).
+/// It must refine `Shaper` and declare exactly 1 param:
+///
+///   - `shapers : List<Shaper>`  →  Type::List(Box::new(
+///     Type::TraitObject("Shaper")))
+///
+/// Zero constraints: an empty cascade is a valid identity (no shaping) —
+/// the collection invariant is deferred to the ε consumer, matching
+/// TOTSShaper's modes/actuator_limits discipline. The test asserts exactly
+/// 0 constraints as a regression gate against accidental over-declaration.
+///
+/// Mirrors `CompositeForce.sources : List<ForcingFunction>` pattern for the
+/// `Type::List(TraitObject(...))` assertion shape
+/// (modal_options_validation_tests.rs).
+///
+/// Landed alongside the structure_def in trajectory.ri:600-602.
+#[test]
+fn cascaded_shaper_struct_has_correct_param_shape() {
+    // step-47
+    let template = find_structure("CascadedShaper");
+
+    // (a) refines Shaper marker trait.
+    assert_eq!(
+        template.trait_bounds,
+        vec!["Shaper".to_string()],
+        "CascadedShaper must refine Shaper; got trait_bounds: {:?}",
+        template.trait_bounds
+    );
+
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    // (b) exactly 1 param.
+    assert_eq!(
+        params.len(),
+        1,
+        "CascadedShaper should have exactly 1 param (shapers); got: {:?}",
+        names
+    );
+
+    // (c) param name and type: shapers : List<TraitObject("Shaper")>.
+    let shapers_cell = &params[0];
+    assert_eq!(
+        shapers_cell.id.member, "shapers",
+        "CascadedShaper param[0] name should be 'shapers'; got: {:?}",
+        shapers_cell.id.member
+    );
+    assert_eq!(
+        shapers_cell.cell_type,
+        Type::List(Box::new(Type::TraitObject("Shaper".to_string()))),
+        "CascadedShaper.shapers should be Type::List(TraitObject(\"Shaper\")); \
+         got: {:?}",
+        shapers_cell.cell_type
+    );
+
+    // (d) no default (caller-supplied sequence of shapers).
+    assert!(
+        shapers_cell.default_expr.is_none(),
+        "CascadedShaper.shapers should have NO default_expr (caller-supplied); \
+         got: {:?}",
+        shapers_cell.default_expr
+    );
+
+    // (e) zero constraints — regression gate against accidental over-declaration.
+    // An empty cascade is a valid identity (no shaping); the collection
+    // invariant is deferred to the ε consumer (matches TOTSShaper.modes /
+    // actuator_limits discipline).
+    assert_eq!(
+        template.constraints.len(),
+        0,
+        "CascadedShaper should declare exactly 0 constraints \
+         (collection invariant deferred to ε consumer); \
+         got {} constraints: {:?}",
+        template.constraints.len(),
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+}

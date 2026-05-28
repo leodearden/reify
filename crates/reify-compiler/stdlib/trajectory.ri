@@ -464,3 +464,125 @@ structure def TOTSShaper : Shaper {
     //   `actuator_limits : List<JointLimit>` — same collection-invariant
     //   rationale (producer/consumer-enforced at the SQP loop).
 }
+
+// ── Impulse shapers (PRD §5.1) ────────────────────────────────────────────────
+//
+// δ task (3857) adds ZVShaper, ZVDShaper, EIShaper, and CascadedShaper — all
+// refining the `trait Shaper { }` marker declared above (:322).
+// Type/encoding rationale is documented per-structure below; see ZVShaper for
+// the canonical type-decision commentary (Frequency dim, 0Hz constraint, etc.).
+
+// ── ZVShaper (PRD §5.1) ───────────────────────────────────────────────────────
+
+// ZVShaper — Zero-Vibration impulse shaper (PRD §5.1).
+//
+// The ZV shaper cancels residual vibration at a single target frequency by
+// convolving the command with a two-impulse sequence. The default damping_ratio
+// of 0.0 matches the PRD §5.1 "undamped" base case; callers with a known
+// damping ratio can override.
+//
+// Fields:
+//   - target_frequency : Frequency  — the resonant frequency to suppress.
+//                                     Frequency IS in NAMED_DIMENSIONS, so the
+//                                     param is typed Frequency (not Real).
+//   - damping_ratio    : Real = 0.0 — damping ratio ζ ∈ [0, 1). Default 0.0
+//                                     per PRD §5.1 (ZV assumes undamped as base
+//                                     case). Decimal literal → Value::Real(0.0)
+//                                     (same pattern as TOTSShaper.tol = 0.000001).
+//
+// Constraint:
+//   target_frequency > 0Hz — rejects degenerate zero or negative frequency.
+//   The constraint RHS MUST be the dimensioned literal `0Hz` → Value::Scalar
+//   {si_value:0.0, dimension:FREQUENCY}; a bare `0` is Type::Real, which is
+//   dim-incompatible with Frequency per the esc-3115 rule documented at
+//   modal_analysis.ri:564-566.
+structure def ZVShaper : Shaper {
+    param target_frequency : Frequency
+    param damping_ratio : Real = 0.0
+
+    constraint target_frequency > 0Hz
+}
+
+// ── ZVDShaper (PRD §5.1) ──────────────────────────────────────────────────────
+
+// ZVDShaper — Zero-Vibration-Derivative impulse shaper (PRD §5.1).
+//
+// The ZVD shaper adds robustness by zeroing both the residual vibration and
+// its derivative with respect to the natural frequency, at the cost of a longer
+// impulse sequence. Unlike ZVShaper, damping_ratio is a required caller-supplied
+// parameter because ZVD's robustness guarantee depends explicitly on ζ.
+//
+// Fields:
+//   - target_frequency : Frequency  — the resonant frequency to suppress.
+//   - damping_ratio    : Real       — damping ratio ζ (no default — caller
+//                                     must supply per PRD §5.1 / task spec).
+//
+// Constraint:
+//   target_frequency > 0Hz — same dimensioned literal as ZVShaper (0Hz, not 0).
+structure def ZVDShaper : Shaper {
+    param target_frequency : Frequency
+    param damping_ratio : Real
+
+    constraint target_frequency > 0Hz
+}
+
+// ── EIShaper (PRD §5.1) ───────────────────────────────────────────────────────
+
+// EIShaper — Extra-Insensitive impulse shaper (PRD §5.1).
+//
+// The EI shaper tolerates small deviations from the nominal frequency by
+// accepting up to `vibration_tolerance` fractional residual vibration at the
+// ends of the frequency band. The tolerance trades narrower suppression depth
+// for wider frequency coverage.
+//
+// Fields:
+//   - target_frequency    : Frequency  — the nominal resonant frequency.
+//   - damping_ratio       : Real       — damping ratio ζ (caller-supplied,
+//                                        no default per PRD §5.1).
+//   - vibration_tolerance : Real       — allowed residual vibration fraction.
+//                                        Must lie in (0, 1] per PRD §5.1:
+//                                        zero → "no vibration allowed ever"
+//                                        (physically impossible); > 1 →
+//                                        accepts more residual than the input
+//                                        (degenerate). Two scalar predicates
+//                                        because Reify's constraint grammar has
+//                                        no interval form — same decomposition
+//                                        as TOTSShaper (:450-451).
+//
+// Constraints:
+//   target_frequency > 0Hz     — dimensioned literal (esc-3115 rule).
+//   vibration_tolerance > 0    — lower bound of (0, 1] interval.
+//   vibration_tolerance <= 1   — upper bound of (0, 1] interval.
+structure def EIShaper : Shaper {
+    param target_frequency : Frequency
+    param damping_ratio : Real
+    param vibration_tolerance : Real
+
+    constraint target_frequency > 0Hz
+    constraint vibration_tolerance > 0
+    constraint vibration_tolerance <= 1
+}
+
+// ── CascadedShaper (PRD §5.1) ─────────────────────────────────────────────────
+
+// CascadedShaper — chains multiple `Shaper` instances in sequence (PRD §5.1).
+//
+// A cascaded shaper convolves successive impulse sequences, composing their
+// individual frequency-suppression effects. An empty `shapers` list is a valid
+// identity (convolving with nothing = no shaping), so no `shapers.count > 0`
+// constraint is declared. Collection invariants (e.g. non-empty, compatible
+// frequencies) are deferred to the ε consumer, matching the TOTSShaper.modes /
+// actuator_limits discipline (:461-465).
+//
+// Fields:
+//   - shapers : List<Shaper>  — the ordered sequence of shapers to cascade.
+//                               Type::List(TraitObject("Shaper")) — same
+//                               encoding as CompositeForce.sources:
+//                               List<ForcingFunction> (modal_analysis.ri:701).
+//
+// NOTE — explicitly NOT constrained:
+//   `shapers : List<Shaper>` — an empty cascade is a valid identity (no-op);
+//   the collection invariant is deferred to the ε consumer.
+structure def CascadedShaper : Shaper {
+    param shapers : List<Shaper>
+}
