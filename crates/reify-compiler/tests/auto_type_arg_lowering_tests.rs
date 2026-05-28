@@ -272,3 +272,93 @@ fn module_without_auto_type_arg_has_default_substitution() {
         compiled.diagnostics
     );
 }
+
+/// Two sub-components in the same module, each instantiating a *different*
+/// template whose corresponding `auto:` type-param happens to share the same
+/// identifier (`T`) → the per-`SubComponentDecl` rewrites both succeed (so
+/// downstream consumers see the correct resolved `Type::StructureRef` on every
+/// sub), but the *module-level aggregate* `auto_type_substitution` retains only
+/// the first resolution (first-wins) because `AutoTypeSubstitution::new` panics
+/// on duplicate param names.
+///
+/// Pins the known lossy aggregation called out in
+/// `auto_type_param_phase.rs::phase_auto_type_param_resolution`: the aggregate
+/// field is a debug/audit view rather than an authoritative per-use-site map.
+/// A future qualification scheme (e.g. `Owner.sub.T` keys or a richer
+/// `Vec<(owner, sub_name, param, template)>`) would lift this restriction —
+/// when that happens, this test will fail loudly, forcing an intentional
+/// review of the shape change.
+#[test]
+fn multi_subs_with_colliding_param_names_first_wins() {
+    let source = r#"
+        trait Seal {}
+        trait Cooled {}
+        structure def ORingSeal : Seal { param d : Real = 10.0 }
+        structure def AirCooled : Cooled { param f : Real = 5.0 }
+        structure def Bearing<T: Seal> { param bore : Real = 25.0 }
+        structure def Heatsink<T: Cooled> { param fins : Real = 8.0 }
+        structure def Assembly {
+            sub b = Bearing<auto: Seal>()
+            sub h = Heatsink<auto: Cooled>()
+        }
+    "#;
+
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    // No errors — both resolutions are unambiguous.
+    let error_count = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .count();
+    assert_eq!(
+        error_count, 0,
+        "expected no error diagnostics, got: {:?}",
+        compiled.diagnostics
+    );
+
+    // First-wins on the colliding `T` key: only the Bearing resolution lands.
+    // This is the lossy aggregation invariant; the per-sub rewrites below
+    // confirm that the loss is confined to this module-level view.
+    assert_eq!(
+        compiled.auto_type_substitution.as_slice(),
+        &[("T".to_string(), "ORingSeal".to_string())],
+        "lossy aggregation: only the first `T` resolution survives the dedup, \
+         got: {:?}",
+        compiled.auto_type_substitution.as_slice(),
+    );
+
+    // Per-sub correctness: every `SubComponentDecl.type_args[0]` is correctly
+    // rewritten to the resolved candidate, regardless of the aggregate's
+    // first-wins behaviour. The slot rewrites carry their own
+    // (owner, sub_index, position) tuples and are not subject to name dedup.
+    let assembly = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Assembly")
+        .expect("Assembly template must compile");
+    let bearing_sub = assembly
+        .sub_components
+        .iter()
+        .find(|s| s.name == "b")
+        .expect("sub b must be present");
+    let heatsink_sub = assembly
+        .sub_components
+        .iter()
+        .find(|s| s.name == "h")
+        .expect("sub h must be present");
+    assert_eq!(
+        bearing_sub.type_args.first(),
+        Some(&Type::StructureRef("ORingSeal".to_string())),
+        "sub b's type-arg slot must rewrite to the resolved ORingSeal, got: {:?}",
+        bearing_sub.type_args,
+    );
+    assert_eq!(
+        heatsink_sub.type_args.first(),
+        Some(&Type::StructureRef("AirCooled".to_string())),
+        "sub h's type-arg slot must rewrite to the resolved AirCooled \
+         (per-sub rewrite must not be dropped by the aggregate's first-wins \
+         dedup), got: {:?}",
+        heatsink_sub.type_args,
+    );
+}
