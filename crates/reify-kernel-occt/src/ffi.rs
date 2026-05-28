@@ -453,9 +453,11 @@ pub mod ffi {
         /// The operation runs with `Copy=true`, so the source shape is never mutated;
         /// a fresh `UniquePtr<OcctShape>` is returned.
         ///
-        /// Singular-input guard: rejects `|det(linear)| < 1e-12` with an error message
-        /// containing "singular". Non-uniform scale and shear are valid (e.g. diag(1,1,2)
-        /// → det=2). Per PRD `docs/prds/v0_6/affine-map-type.md` §5 task ε.
+        /// Singular-input guard: rejects rank-deficient linear parts using a scale-invariant
+        /// Hadamard-ratio check (`|det| / (‖row0‖·‖row1‖·‖row2‖) < 1e-12`), with an error
+        /// message containing "singular". Non-uniform scale and shear are valid (e.g.
+        /// `diag(1,1,2)` → ratio=1.0; `diag(1e-5,1e-5,1e-5)` → ratio=1.0 ≫ 1e-12).
+        /// Per PRD `docs/prds/v0_6/affine-map-type.md` §5 task ε.
         ///
         /// # Errors
         /// Returns an error if the linear part is singular, or if
