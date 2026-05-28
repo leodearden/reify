@@ -807,7 +807,7 @@ module.exports = grammar({
     //   3: ==, != (equality)
     //   4: <, >, <=, >= (comparison)
     //   5: +, - (additive)
-    //   6: *, / (multiplicative)
+    //   6: *, /, % (multiplicative)
     //   7: unary -, ! (unary)
     //   8: postfix index access ([]), qualified access (::)
     //   9: postfix ad-hoc selector (@)
@@ -947,6 +947,7 @@ module.exports = grammar({
       prec.left(5, seq(field('left', $._expression), field('op', '-'), field('right', $._expression))),
       prec.left(6, seq(field('left', $._expression), field('op', '*'), field('right', $._expression))),
       prec.left(6, seq(field('left', $._expression), field('op', '/'), field('right', $._expression))),
+      prec.left(6, seq(field('left', $._expression), field('op', '%'), field('right', $._expression))),
     ),
 
     // ── Range expressions ───────────────────────────────────
