@@ -1130,6 +1130,71 @@ mod tests {
         assert!(yf >= 0.999, "yield ≥ 0.999 for ±4σ spec, got {yf}");
     }
 
+    // ─── monte_carlo_stackup step-11 tests (INV-4 sign-flip, INV-5 zero-tol) ─
+
+    #[test]
+    fn monte_carlo_inv4_sign_flip_negates_mean_band_unchanged() {
+        // INV-4: flip all signs → mc_mean negates; mc_sigma unchanged (bit-exact
+        // since sampling stream depends only on (seed, contributor_index), not sign).
+        let orig_chain = golden_chain(); // c1(+1), c2(-1), c3(+1) → gap=+0.008
+        let c1f = eval_stackup("contributor", &[len(0.010), len(0.0001), Value::Int(-1)]).unwrap();
+        let c2f = eval_stackup("contributor", &[len(0.005), len(0.00005), Value::Int(1)]).unwrap();
+        let c3f = eval_stackup("contributor", &[len(0.003), len(0.0002), Value::Int(-1)]).unwrap();
+        let flip_chain = Value::List(vec![c1f, c2f, c3f]);
+
+        let n = 10_000_i64;
+        let seed = 42_i64;
+
+        let run = |chain| match eval_stackup("monte_carlo_stackup", &[
+            chain, Value::Int(n), Value::Int(seed),
+        ]) {
+            Some(Value::Map(m)) => m,
+            other => panic!("expected Some(Map), got {:?}", other),
+        };
+        let mo = run(orig_chain);
+        let mf = run(flip_chain);
+
+        let mean_orig  = scalar_si(&mo[&Value::String("mc_mean".into())]);
+        let mean_flip  = scalar_si(&mf[&Value::String("mc_mean".into())]);
+        let sigma_orig = scalar_si(&mo[&Value::String("mc_sigma".into())]);
+        let sigma_flip = scalar_si(&mf[&Value::String("mc_sigma".into())]);
+
+        // mc_mean must negate (within 5·SE of 0.008)
+        let rss_sigma = (5.25e-8_f64).sqrt() / 3.0;
+        let five_se = 5.0 * rss_sigma / (n as f64).sqrt();
+        assert!((mean_orig + mean_flip).abs() <= 2.0 * five_se,
+            "mc_mean + mc_mean_flipped should ≈ 0; got {} + {} = {}",
+            mean_orig, mean_flip, mean_orig + mean_flip);
+
+        // mc_sigma bit-identical (sign only multiplied post-draw)
+        assert_eq!(sigma_orig.to_bits(), sigma_flip.to_bits(),
+            "mc_sigma should be bit-identical after sign flip: {} vs {}", sigma_orig, sigma_flip);
+    }
+
+    #[test]
+    fn monte_carlo_inv5_zero_tol_sigma_is_zero() {
+        // INV-5: all tolerances = 0 → mc_sigma = 0 exactly, mc_mean = nominal_gap exactly,
+        // mc_min = mc_max = nominal_gap exactly (no random deviations).
+        let c1 = eval_stackup("contributor", &[len(0.010), len(0.0), Value::Int(1)]).unwrap();
+        let c2 = eval_stackup("contributor", &[len(0.005), len(0.0), Value::Int(-1)]).unwrap();
+        let zero_tol_chain = Value::List(vec![c1, c2]);
+        let m = match eval_stackup("monte_carlo_stackup", &[
+            zero_tol_chain, Value::Int(500), Value::Int(7),
+        ]) {
+            Some(Value::Map(m)) => m,
+            other => panic!("expected Some(Map), got {:?}", other),
+        };
+        let ng     = scalar_si(&m[&Value::String("nominal_gap".into())]);
+        let mean   = scalar_si(&m[&Value::String("mc_mean".into())]);
+        let sigma  = scalar_si(&m[&Value::String("mc_sigma".into())]);
+        let mc_min = scalar_si(&m[&Value::String("mc_min".into())]);
+        let mc_max = scalar_si(&m[&Value::String("mc_max".into())]);
+        assert_eq!(sigma, 0.0,  "zero-tol: mc_sigma must be 0.0, got {sigma}");
+        assert_eq!(mean,  ng,   "zero-tol: mc_mean must == nominal_gap, got {mean} vs {ng}");
+        assert_eq!(mc_min, ng,  "zero-tol: mc_min must == nominal_gap, got {mc_min} vs {ng}");
+        assert_eq!(mc_max, ng,  "zero-tol: mc_max must == nominal_gap, got {mc_max} vs {ng}");
+    }
+
     // ─── stackup_worst_case tests (step-1 RED; GREEN after step-2 impl) ──────
 
     #[test]
