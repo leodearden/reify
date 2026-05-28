@@ -65,4 +65,41 @@ run_gate() {
 
 echo "=== psi-gate tests ==="
 
+# ---------------------------------------------------------------------------
+# Cycle 1: core PSI gate — avg10 vs threshold, MAX_WAIT timeout, exit codes
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle 1: core PSI gate ---"
+
+# (a) avg10=40 < threshold=50 (default), no dispatch file → exit 0 + dispatch touched
+PSI_1A="$(make_psi_fixture 40)"
+DISPATCH_1A="$(mktemp -u -p "$WORKDIR" dispatch.XXXXXX)"   # -u: name only, file absent
+run_gate "$DISPATCH_1A" "$PSI_1A"
+assert "core-pass: avg10=40 < threshold=50 → exit 0" \
+    test "$GATE_RC" -eq 0
+assert "core-pass: dispatch file was touched" \
+    test -e "$DISPATCH_1A"
+
+# (b) avg10=60 >= threshold=50 → times out (exit 75), stderr contains give-up message,
+#     dispatch file NOT created
+PSI_1B="$(make_psi_fixture 60)"
+DISPATCH_1B="$(mktemp -u -p "$WORKDIR" dispatch.XXXXXX)"
+run_gate "$DISPATCH_1B" "$PSI_1B" \
+    REIFY_PSI_GATE_MAX_WAIT=2 REIFY_PSI_GATE_POLL=1
+assert "core-timeout: avg10=60 >= threshold=50, max_wait=2 → exit 75" \
+    test "$GATE_RC" -eq 75
+assert "core-timeout: stderr contains give-up message (cpu headroom/gave up/psi)" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "cpu headroom|gave up|psi"' _ "$GATE_STDERR"
+assert "core-timeout: dispatch file was NOT created" \
+    test ! -e "$DISPATCH_1B"
+
+# (c) avg10=40, THRESHOLD=30 → 40 >= 30 blocks; max_wait=2 → exit 75
+#     (exercises threshold env override parsing)
+PSI_1C="$(make_psi_fixture 40)"
+DISPATCH_1C="$(mktemp -u -p "$WORKDIR" dispatch.XXXXXX)"
+run_gate "$DISPATCH_1C" "$PSI_1C" \
+    REIFY_PSI_GATE_THRESHOLD=30 REIFY_PSI_GATE_MAX_WAIT=2 REIFY_PSI_GATE_POLL=1
+assert "threshold-override: avg10=40 >= threshold=30, max_wait=2 → exit 75" \
+    test "$GATE_RC" -eq 75
+
 test_summary
