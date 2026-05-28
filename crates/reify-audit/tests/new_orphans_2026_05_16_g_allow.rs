@@ -67,10 +67,6 @@ const PINS: &[(&str, &str)] = &[
     ),
     (
         "crates/reify-eval/src/engine_admin.rs",
-        "register_compute_fn",
-    ),
-    (
-        "crates/reify-eval/src/engine_admin.rs",
         "drain_and_record_warm_pool_events",
     ),
     (
