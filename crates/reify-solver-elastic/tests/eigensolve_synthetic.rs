@@ -676,7 +676,14 @@ fn lanczos_shift_invert_panics_on_dimension_mismatch() {
     let m_op = SparseMetricOp { m: m.as_ref() };
 
     // Must panic: "lanczos_shift_invert: dimension mismatch — ..."
-    let _ = lanczos_shift_invert(&k_op, &m_op, EigenSolverOptions::default());
+    // Use explicit valid opts so that if Default ever changes to an invalid
+    // value, the dimension assert (which runs last) still fires rather than
+    // an earlier guard giving a confusing failure message.
+    let _ = lanczos_shift_invert(
+        &k_op,
+        &m_op,
+        EigenSolverOptions { n_modes: 5, tol: 1e-10, max_iters: 1000, sigma: 0.0 },
+    );
 }
 
 /// (b) n_modes=0 is rejected at the generic entry point with a message
@@ -704,5 +711,59 @@ fn lanczos_shift_invert_panics_on_zero_n_modes() {
 
     // Must panic: "EigenSolverOptions.n_modes = 0 is invalid; must be >= 1"
     let opts = EigenSolverOptions { n_modes: 0, ..EigenSolverOptions::default() };
+    let _ = lanczos_shift_invert(&k_op, &m_op, opts);
+}
+
+/// (c) tol=NaN is rejected at the generic entry point with a message
+/// containing "tol".
+#[test]
+#[should_panic(expected = "tol")]
+fn lanczos_shift_invert_panics_on_non_finite_tol() {
+    let n = 80usize;
+
+    let mut k_trips = Vec::with_capacity(3 * n - 2);
+    for i in 0..n {
+        k_trips.push(Triplet::new(i, i, 2.0));
+        if i > 0 { k_trips.push(Triplet::new(i, i - 1, -1.0)); }
+        if i + 1 < n { k_trips.push(Triplet::new(i, i + 1, -1.0)); }
+    }
+    let k = SparseRowMat::try_new_from_triplets(n, n, &k_trips).unwrap();
+    let llt = k.sp_cholesky(Side::Lower).expect("K must be SPD");
+    let k_op = SparseStiffnessOp { llt: &llt, n };
+
+    let m_trips: Vec<Triplet<usize, usize, f64>> =
+        (0..n).map(|i| Triplet::new(i, i, 1.0)).collect();
+    let m = SparseRowMat::try_new_from_triplets(n, n, &m_trips).unwrap();
+    let m_op = SparseMetricOp { m: m.as_ref() };
+
+    // Must panic: "EigenSolverOptions.tol = NaN must be a finite positive value"
+    let opts = EigenSolverOptions { n_modes: 5, tol: f64::NAN, max_iters: 1000, sigma: 0.0 };
+    let _ = lanczos_shift_invert(&k_op, &m_op, opts);
+}
+
+/// (d) max_iters=0 is rejected at the generic entry point with a message
+/// containing "max_iters".
+#[test]
+#[should_panic(expected = "max_iters")]
+fn lanczos_shift_invert_panics_on_zero_max_iters() {
+    let n = 80usize;
+
+    let mut k_trips = Vec::with_capacity(3 * n - 2);
+    for i in 0..n {
+        k_trips.push(Triplet::new(i, i, 2.0));
+        if i > 0 { k_trips.push(Triplet::new(i, i - 1, -1.0)); }
+        if i + 1 < n { k_trips.push(Triplet::new(i, i + 1, -1.0)); }
+    }
+    let k = SparseRowMat::try_new_from_triplets(n, n, &k_trips).unwrap();
+    let llt = k.sp_cholesky(Side::Lower).expect("K must be SPD");
+    let k_op = SparseStiffnessOp { llt: &llt, n };
+
+    let m_trips: Vec<Triplet<usize, usize, f64>> =
+        (0..n).map(|i| Triplet::new(i, i, 1.0)).collect();
+    let m = SparseRowMat::try_new_from_triplets(n, n, &m_trips).unwrap();
+    let m_op = SparseMetricOp { m: m.as_ref() };
+
+    // Must panic: "EigenSolverOptions.max_iters = 0 is invalid; must be >= 1"
+    let opts = EigenSolverOptions { n_modes: 5, tol: 1e-10, max_iters: 0, sigma: 0.0 };
     let _ = lanczos_shift_invert(&k_op, &m_op, opts);
 }
