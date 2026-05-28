@@ -3,6 +3,22 @@ use reify_ir::Value;
 
 use crate::helpers::{binary, complex_abs, complex_phase, sanitize_value, unary};
 
+/// Compute (ar+ai·i)·(br+bi·i) = (ar·br - ai·bi) + (ar·bi + ai·br)·i.
+/// Returns (re, im) components; caller wraps in Value::Complex.
+fn complex_mul_parts(ar: f64, ai: f64, br: f64, bi: f64) -> (f64, f64) {
+    (ar * br - ai * bi, ar * bi + ai * br)
+}
+
+/// Compute (ar+ai·i)/(br+bi·i) = ((ar·br+ai·bi) + (ai·br-ar·bi)·i) / (br²+bi²).
+/// Returns None when the denominator is zero (br=bi=0).
+fn complex_div_parts(ar: f64, ai: f64, br: f64, bi: f64) -> Option<(f64, f64)> {
+    let denom = br * br + bi * bi;
+    if denom == 0.0 {
+        return None;
+    }
+    Some(((ar * br + ai * bi) / denom, (ai * br - ar * bi) / denom))
+}
+
 pub(crate) fn eval_complex(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {
         // complex(re, im) constructor: both args must be numeric with matching dimensions.
@@ -122,8 +138,7 @@ pub(crate) fn eval_complex(name: &str, args: &[Value]) -> Option<Value> {
                     dimension: bd,
                 },
             ) => {
-                let re = ar * br - ai * bi;
-                let im = ar * bi + ai * br;
+                let (re, im) = complex_mul_parts(*ar, *ai, *br, *bi);
                 let dimension = ad.mul(bd);
                 sanitize_value(Value::Complex { re, im, dimension })
             }
@@ -156,6 +171,55 @@ pub(crate) fn eval_complex(name: &str, args: &[Value]) -> Option<Value> {
             }
             _ => Value::Undef,
         }),
+
+        // complex_pow(z, n: Int): z^n by repeated multiplication over |n| steps.
+        // Accumulates (re, im) via complex_mul_parts and dimension via DimensionVector::mul.
+        // n=0 → 1+0i DIMENSIONLESS (zero iterations, multiplicative identity).
+        // n<0 → 1/z^|n| via complex_div_parts; z=0+0i with n<0 → Undef.
+        // Non-Int exponent → Undef (non-integer powers need fractional dimension, deferred).
+        "complex_pow" => {
+            if args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            let (base_re, base_im, base_dim) = match &args[0] {
+                Value::Complex { re, im, dimension } => (*re, *im, *dimension),
+                _ => return Some(Value::Undef),
+            };
+            let n = match &args[1] {
+                Value::Int(n) => *n,
+                _ => return Some(Value::Undef),
+            };
+            // Accumulate z^|n| starting from multiplicative identity (1+0i, DIMENSIONLESS).
+            let abs_n = n.unsigned_abs() as usize;
+            let mut acc_re = 1.0_f64;
+            let mut acc_im = 0.0_f64;
+            let mut acc_dim = DimensionVector::DIMENSIONLESS;
+            for _ in 0..abs_n {
+                let (r, i) = complex_mul_parts(acc_re, acc_im, base_re, base_im);
+                acc_re = r;
+                acc_im = i;
+                acc_dim = acc_dim.mul(&base_dim);
+            }
+            if n < 0 {
+                // 1 / z^|n|; fail on zero denominator
+                match complex_div_parts(1.0, 0.0, acc_re, acc_im) {
+                    Some((r, i)) => {
+                        let dim = DimensionVector::DIMENSIONLESS.div(&acc_dim);
+                        return Some(sanitize_value(Value::Complex {
+                            re: r,
+                            im: i,
+                            dimension: dim,
+                        }));
+                    }
+                    None => return Some(Value::Undef),
+                }
+            }
+            sanitize_value(Value::Complex {
+                re: acc_re,
+                im: acc_im,
+                dimension: acc_dim,
+            })
+        }
 
         // complex_exp(z): e^(a+bi) = e^a·(cos b + i·sin b).
         // Dimensionless input only — exp of a dimensioned quantity is meaningless.
