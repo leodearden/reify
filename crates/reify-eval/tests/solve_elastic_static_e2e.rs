@@ -213,7 +213,7 @@ fn e2e_cantilever_max_von_mises_within_tolerance() {
 
     // The value must be Scalar with dimension == PRESSURE.
     let (si_value, dimension) = match &mvm {
-        Value::Scalar { si_value, dimension } => (*si_value, dimension.clone()),
+        Value::Scalar { si_value, dimension } => (*si_value, *dimension),
         other => panic!(
             "expected max_von_mises to be Value::Scalar {{ ... }}, got: {:?}",
             other
