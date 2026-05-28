@@ -76,6 +76,24 @@ pub unit USD : Money
 // ── Physical Constants ──────────────────────────────────────────────────────
 // Dimensionful physical constants. Exposed as zero-arg `pub fn` because Reify
 // lacks top-level `const` (see `standard_stock.ri:5`); migrate when added.
+//
+// Helper type aliases: the grammar's `type_expr` rule (used for function
+// return types) admits `identifier | parameterized_type` only — binary
+// dimensional-op expressions (`Length / Time`, `Energy / Temperature`) are
+// reserved for `type_alias_declaration` RHS via the `dimensional_type_expr`
+// rule. To give these constants accurate `Scalar<dim>` return types, we
+// introduce the aliases below; user code may reference them too. esc-4026-121.
+
+/// Velocity dimension, m/s. Aliases `Length / Time` so it can appear in
+/// function return type position (where the grammar admits `identifier`
+/// only). Note: `Velocity` is intentionally absent from `NAMED_DIMENSIONS`
+/// (only `AngularVelocity` is registered) — this alias substitutes.
+pub type Velocity = Length / Time
+
+/// Entropy / heat-capacity dimension, J/K. Aliases `Energy / Temperature`
+/// so it can appear in function return type position; no canonical named
+/// dimension exists among the 35. Boltzmann's constant carries these units.
+pub type Entropy = Energy / Temperature
 
 /// Standard acceleration of gravity (g_n), 9.80665 m/s² — BIPM/CGPM 1901 §70
 /// reference value. Use in body-force loads: `gravity(5 * STANDARD_GRAVITY())`.
@@ -84,4 +102,4 @@ pub fn STANDARD_GRAVITY() -> Acceleration { 9.80665 * 1m / (1s * 1s) }
 /// Speed of light in vacuum (c), 299792458 m/s exactly — SI definition
 /// (BIPM, 1983 redefinition of the metre via the second). Use in EM and
 /// relativistic computations: `let kinetic = 0.5 * m * (v * v) / SPEED_OF_LIGHT()`.
-pub fn SPEED_OF_LIGHT() -> Length / Time { 299792458.0 * 1m / 1s }
+pub fn SPEED_OF_LIGHT() -> Velocity { 299792458.0 * 1m / 1s }
