@@ -1046,8 +1046,10 @@ mod tests {
             other => panic!("expected Some(Map), got {:?}", other),
         };
         let mc_sigma = scalar_si(&mc[&Value::String("mc_sigma".into())]);
-        // TBD: replace with actual bits measured in step-8
-        let expected_bits: u64 = 0x_0000_0000_0000_0000; // placeholder → RED
+        // Print actual bits for step-8 pinning (remove after capturing)
+        // Pinned in step-8: golden mc_sigma for (golden_chain, N=100_000, seed=42)
+        // Value: 7.629323289651385e-5 m  (measured on first correct run)
+        let expected_bits: u64 = 0x3F13_FFF3_C2C2_E856;
         assert_eq!(mc_sigma.to_bits(), expected_bits,
             "mc_sigma={mc_sigma:.10e} bits=0x{:016X} expected=0x{expected_bits:016X}",
             mc_sigma.to_bits());
