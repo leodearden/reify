@@ -38,7 +38,12 @@ echo "--- Test 2: no bare 'cargo check --workspace' without --tests (regression 
 
 # This is the regression we are preventing: a bare cargo check --workspace
 # silently skips test targets, letting broken test-binary imports merge.
+# Guard also requires ≥1 'cargo check --workspace' line so the assertion
+# cannot pass spuriously when the gate disappears entirely (e.g. RUN_RUST=0):
+# without the leading grep -qE check, an empty plan would produce no lines for
+# the pipeline, leaving grep -qEv with no input (exit 1) and the leading !
+# would flip that to 0 — a false PASS.
 assert "plan does NOT contain a bare 'cargo check --workspace' without --tests" \
-    bash -c "! printf '%s\n' \"\$TYPECHECK_PLAN_SEGS\" | grep -E 'cargo check --workspace' | grep -qEv 'cargo check --workspace.*--tests'"
+    bash -c "printf '%s\n' \"\$TYPECHECK_PLAN_SEGS\" | grep -qE 'cargo check --workspace' && ! printf '%s\n' \"\$TYPECHECK_PLAN_SEGS\" | grep -E 'cargo check --workspace' | grep -qEv 'cargo check --workspace.*--tests'"
 
 test_summary
