@@ -1,0 +1,179 @@
+================================================================================
+not: basic unary (not a)
+================================================================================
+
+structure S {
+  let r = not a
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (unary_expression
+        operand: (identifier)))))
+
+================================================================================
+and: basic binary (a and b)
+================================================================================
+
+structure S {
+  let r = a and b
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (binary_expression
+        left: (identifier)
+        right: (identifier)))))
+
+================================================================================
+or: basic binary (a or b)
+================================================================================
+
+structure S {
+  let r = a or b
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (binary_expression
+        left: (identifier)
+        right: (identifier)))))
+
+================================================================================
+and-tighter-than-or: a or b and c => (a or (b and c))
+================================================================================
+
+structure S {
+  let r = a or b and c
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (binary_expression
+        left: (identifier)
+        right: (binary_expression
+          left: (identifier)
+          right: (identifier))))))
+
+================================================================================
+not-tighter-than-and: not a and b => ((not a) and b)
+================================================================================
+
+structure S {
+  let r = not a and b
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (binary_expression
+        left: (unary_expression
+          operand: (identifier))
+        right: (identifier)))))
+
+================================================================================
+and: left-associativity (a and b and c)
+================================================================================
+
+structure S {
+  let r = a and b and c
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (binary_expression
+        left: (binary_expression
+          left: (identifier)
+          right: (identifier))
+        right: (identifier)))))
+
+================================================================================
+or: left-associativity (a or b or c)
+================================================================================
+
+structure S {
+  let r = a or b or c
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (binary_expression
+        left: (binary_expression
+          left: (identifier)
+          right: (identifier))
+        right: (identifier)))))
+
+================================================================================
+cross-band: not a == b => not (a == b) (keyword not looser than comparison)
+================================================================================
+
+structure S {
+  let r = not a == b
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (unary_expression
+        operand: (binary_expression
+          left: (identifier)
+          right: (identifier))))))
+
+================================================================================
+cross-band: a and b == c => a and (b == c) (comparison tighter than and)
+================================================================================
+
+structure S {
+  let r = a and b == c
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (binary_expression
+        left: (identifier)
+        right: (binary_expression
+          left: (identifier)
+          right: (identifier))))))
