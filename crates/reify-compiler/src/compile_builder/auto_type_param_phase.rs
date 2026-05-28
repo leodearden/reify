@@ -88,9 +88,14 @@ pub(crate) fn phase_auto_type_param_resolution(
     let requests = std::mem::take(&mut ctx.pending_auto_resolutions);
 
     // Pass 1 — resolve every request while holding immutable registry borrows.
-    // Collect (owner, sub_name, position, resolved_name) rewrites and the raw
+    // Collect (owner, sub_index, position, resolved_name) rewrites and the raw
     // substitution pairs; defer the mutation of `ctx.templates` to pass 2 so the
-    // registry's `&TopologyTemplate` borrows don't conflict with `&mut`.
+    // registry's `&TopologyTemplate` borrows don't conflict with `&mut`. We key
+    // rewrites by `sub_index` (not `sub_name`) because match-arm clusters reuse
+    // `sub_name` across multiple `SubComponentDecl`s — a name-only `find` would
+    // resolve every arm's rewrite to arm[0], silently dropping the rest. The
+    // index is captured at the request push site in `entity.rs` (where it
+    // equals the about-to-be-pushed-position in the local `sub_components` vec).
     let (rewrites, subst_pairs) = {
         // Template registry: prelude `structure def`s first, then local
         // overrides — identical composition to `phase_pending_bound_checks`.
@@ -105,7 +110,8 @@ pub(crate) fn phase_auto_type_param_resolution(
         let functions = ctx.resolution_functions.as_slice();
         let diagnostics = &mut ctx.diagnostics;
 
-        let mut rewrites: Vec<(String, String, usize, String)> = Vec::new();
+        // (owner_structure, sub_index, type_args_position, resolved_template_name)
+        let mut rewrites: Vec<(String, usize, usize, String)> = Vec::new();
         let mut subst_pairs: Vec<(String, String)> = Vec::new();
 
         for req in &requests {
@@ -155,7 +161,7 @@ pub(crate) fn phase_auto_type_param_resolution(
                 if let Some(&position) = name_to_position.get(&param_name) {
                     rewrites.push((
                         req.owner_structure.clone(),
-                        req.sub_name.clone(),
+                        req.sub_index,
                         position,
                         template_name.clone(),
                     ));
@@ -168,12 +174,12 @@ pub(crate) fn phase_auto_type_param_resolution(
     };
 
     // Pass 2 — apply placeholder rewrites and store the deduped substitution.
-    for (owner, sub_name, position, resolved_name) in rewrites {
+    // `sub_index` keys are unique per (owner, sub_index) so this safely targets
+    // each `SubComponentDecl` even when match-arm clusters reuse `sub_name`
+    // across multiple arms within the same template.
+    for (owner, sub_index, position, resolved_name) in rewrites {
         if let Some(template) = ctx.templates.iter_mut().find(|t| t.name == owner)
-            && let Some(sub) = template
-                .sub_components
-                .iter_mut()
-                .find(|s| s.name == sub_name)
+            && let Some(sub) = template.sub_components.get_mut(sub_index)
             && let Some(slot) = sub.type_args.get_mut(position)
         {
             *slot = Type::StructureRef(resolved_name);
@@ -183,6 +189,23 @@ pub(crate) fn phase_auto_type_param_resolution(
     // Dedup first-wins on param name: `AutoTypeSubstitution::new` panics on
     // duplicate param names, and a panic at compile time is a worse UX than a
     // silent first-wins (B1 scope; future name-qualification is out of scope).
+    //
+    // ⚠️ Known lossy aggregation: when two sub-components in the same module
+    // each instantiate a *different* template whose corresponding type-param is
+    // named identically (e.g. both have `T: Seal`), only the first resolution
+    // appears in the aggregate `auto_type_substitution`. The slot rewrites in
+    // pass 2 above are NOT affected — each rewrite tuple carries its own
+    // `(owner, sub_index, position)` so every `SubComponentDecl.type_args`
+    // entry is correctly updated. The lossy behaviour is confined to the
+    // module-level aggregate field, which downstream consumers should treat as
+    // a debug/audit view rather than an authoritative per-use-site map.
+    //
+    // Future name-qualification (e.g. `Owner.sub.T` keys, or a shape change to
+    // `Vec<(owner, sub_name, param, template)>`) would lift this restriction
+    // but requires touching `types.rs::AutoTypeSubstitution` — out of B1 scope.
+    // The negative-case test `multi_subs_with_colliding_param_names_first_wins`
+    // pins the current first-wins behaviour so a future shape change cannot
+    // regress silently.
     let mut seen: HashSet<String> = HashSet::new();
     let deduped: Vec<(String, String)> = subst_pairs
         .into_iter()

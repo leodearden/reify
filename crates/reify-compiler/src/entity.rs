@@ -1357,14 +1357,19 @@ pub(crate) fn compile_entity(
                     .collect();
 
                 // Defer `auto:` resolution to the post-pass: one request per Sub
-                // carrying every auto-clause, located by owner + sub name so the
-                // resolved candidate can be written back into the placeholder slot.
+                // carrying every auto-clause, located by owner + sub-index so
+                // the resolved candidate can be written back into the
+                // placeholder slot. `sub_index` is the position at which the
+                // matching `SubComponentDecl` is about to be pushed (the
+                // following `sub_components.push(...)` is the only path that
+                // grows the vec before the post-pass runs), so we capture
+                // `sub_components.len()` here as the predicted index.
                 if !auto_clauses.is_empty() {
                     pending_auto_resolutions.push(AutoResolutionRequest {
                         target_name: sub.structure_name.clone(),
                         auto_clauses,
                         owner_structure: entity_name.to_string(),
-                        sub_name: sub.name.clone(),
+                        sub_index: sub_components.len(),
                     });
                 }
 
@@ -2666,15 +2671,22 @@ fn compile_match_arm_decl_group(
                 })
                 .collect();
 
-            // Defer `auto:` resolution: one request per match-arm Sub, located by
-            // owner + sub name so the resolved candidate can be written back into
-            // the placeholder slot (mirrors the non-arm Sub path).
+            // Defer `auto:` resolution: one request per match-arm Sub, located
+            // by owner + sub-index. Match-arm clusters reuse `sub_name`
+            // across every arm (per the cluster's `logical_name` invariant),
+            // so a name-only lookup in the post-pass would map every arm's
+            // request to arm[0]'s `SubComponentDecl`, dropping every other
+            // arm's resolved candidate. `sub_components.len()` here is the
+            // index at which the matching `SubComponentDecl` is about to be
+            // pushed (the following `sub_components.push(...)` is the only
+            // path that grows the vec for this arm), so the index uniquely
+            // identifies the right entry regardless of name collisions.
             if !auto_clauses.is_empty() {
                 pending_auto_resolutions.push(AutoResolutionRequest {
                     target_name: sub.structure_name.clone(),
                     auto_clauses,
                     owner_structure: entity_name.to_string(),
-                    sub_name: sub.name.clone(),
+                    sub_index: sub_components.len(),
                 });
             }
 
@@ -2929,9 +2941,19 @@ pub(crate) enum PendingBoundCheck {
 /// when the target is forward-referenced from the use site.
 ///
 /// `target_name` is the instantiated template (e.g. `"Bearing"`);
-/// `owner_structure` + `sub_name` locate the `SubComponentDecl` whose
+/// `owner_structure` + `sub_index` locate the `SubComponentDecl` whose
 /// `type_args` placeholder slots are rewritten to concrete `Type::StructureRef`
 /// on a successful resolution.
+///
+/// Why `sub_index` instead of just `sub_name`: match-arm clusters push one
+/// `SubComponentDecl` per arm, all sharing the same `sub_name` (see
+/// `compile_match_arm_decl_group`'s `logical_name` invariant). A name-only
+/// lookup would resolve every arm's request to arm[0]'s `SubComponentDecl`,
+/// silently losing the resolved candidate for every other arm. The index is
+/// captured at push time as `sub_components.len()` — the position at which
+/// the matching `SubComponentDecl` will be pushed immediately after — so the
+/// post-pass can rewrite the correct entry even when multiple arms share a
+/// name.
 pub(crate) struct AutoResolutionRequest {
     /// The template being instantiated (e.g. `"Bearing"`).
     pub(crate) target_name: String,
@@ -2942,8 +2964,12 @@ pub(crate) struct AutoResolutionRequest {
     pub(crate) auto_clauses: Vec<AutoClause>,
     /// Name of the structure that owns this sub-component (e.g. `"Assembly"`).
     pub(crate) owner_structure: String,
-    /// Name of the sub-component (e.g. `"b"` in `sub b = Bearing<auto: Seal>()`).
-    pub(crate) sub_name: String,
+    /// Index of the target `SubComponentDecl` in the owning template's
+    /// `sub_components` vector. Captured at push time as the length of the
+    /// local `sub_components` vec, which the immediately-following push fills
+    /// — so the index unambiguously identifies the matching entry even when
+    /// arm clusters reuse names across multiple `SubComponentDecl`s.
+    pub(crate) sub_index: usize,
 }
 
 /// A single `auto:` / `auto(free):` type-argument clause within a
