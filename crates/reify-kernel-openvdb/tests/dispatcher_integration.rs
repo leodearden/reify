@@ -30,7 +30,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use reify_eval::{dispatcher, kernel_registry};
+use reify_eval::{DispatchPlan, dispatcher, kernel_registry};
 use reify_ir::{CapabilityDescriptor, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, Operation, ReprKind};
 use reify_kernel_openvdb::register::openvdb_capability_descriptor;
 use reify_kernel_openvdb::OpenVdbKernel;
@@ -131,23 +131,21 @@ fn openvdb_descriptor_declares_convert_mesh_to_voxel() {
     );
 }
 
-/// With a synthetic registry containing OCCT's `(Convert{from:BRep}, Mesh)`
-/// and OpenVDB's full descriptor (including the new `(Convert{from:Mesh}, Voxel)`),
-/// dispatching `(BooleanUnion, Voxel)` from `{BRep}` must produce a two-stage
-/// plan: kernel="openvdb", conversions=[("occt",BRep,Mesh),("openvdb",Mesh,Voxel)].
+// ---------------------------------------------------------------------------
+// Shared helper: two-stage BRep→Mesh→Voxel planning fixture
+// ---------------------------------------------------------------------------
+
+/// Build a synthetic registry, dispatch `(BooleanUnion, Voxel)` from `{BRep}`,
+/// assert the two-stage chain plan, and return the plan.
 ///
-/// Uses a synthetic in-test registry so this test does not depend on OCCT
-/// being linked into the openvdb test binary (dep-direction isolation — see
-/// module-level doc). RED until register.rs is updated in step-4.
-#[test]
-fn openvdb_dispatches_two_stage_chain_brep_to_voxel() {
-    // Build a synthetic "occt" descriptor that declares only (Convert{from:BRep}, Mesh).
+/// Called by both the chain-dispatch test and the graceful-degradation test to
+/// avoid duplicating the registry setup and planning assertions verbatim.
+fn assert_two_stage_brep_to_voxel_plan() -> DispatchPlan {
     let occt_descriptor = CapabilityDescriptor {
         supports: vec![(Operation::Convert { from: ReprKind::BRep }, ReprKind::Mesh)],
     };
     let openvdb_descriptor = openvdb_capability_descriptor();
 
-    // Owned map → borrowed view (matches dispatcher::dispatch signature).
     let owned: BTreeMap<String, CapabilityDescriptor> = BTreeMap::from([
         ("occt".to_string(), occt_descriptor),
         ("openvdb".to_string(), openvdb_descriptor),
@@ -155,14 +153,12 @@ fn openvdb_dispatches_two_stage_chain_brep_to_voxel() {
     let view: BTreeMap<String, &CapabilityDescriptor> =
         owned.iter().map(|(k, v)| (k.clone(), v)).collect();
 
-    // Available repr is only BRep; demanded output is Voxel.
     let available: HashSet<ReprKind> = HashSet::from([ReprKind::BRep]);
-    let plan = dispatcher::dispatch(&view, Operation::BooleanUnion, ReprKind::Voxel, &available);
-
-    let plan = plan.expect(
-        "dispatcher::dispatch must return Some(...) for (BooleanUnion, Voxel) with BRep input \
-         when the two-stage BRep→Mesh→Voxel chain is available",
-    );
+    let plan = dispatcher::dispatch(&view, Operation::BooleanUnion, ReprKind::Voxel, &available)
+        .expect(
+            "dispatcher::dispatch must return Some(...) for (BooleanUnion, Voxel) with BRep \
+             input when the two-stage BRep→Mesh→Voxel chain is available",
+        );
 
     assert_eq!(
         plan.kernel, "openvdb",
@@ -177,6 +173,22 @@ fn openvdb_dispatches_two_stage_chain_brep_to_voxel() {
         ],
         "two-stage chain must produce conversions [(occt,BRep,Mesh),(openvdb,Mesh,Voxel)]",
     );
+    plan
+}
+
+// ---------------------------------------------------------------------------
+
+/// With a synthetic registry containing OCCT's `(Convert{from:BRep}, Mesh)`
+/// and OpenVDB's full descriptor (including the new `(Convert{from:Mesh}, Voxel)`),
+/// dispatching `(BooleanUnion, Voxel)` from `{BRep}` must produce a two-stage
+/// plan: kernel="openvdb", conversions=[("occt",BRep,Mesh),("openvdb",Mesh,Voxel)].
+///
+/// Uses a synthetic in-test registry so this test does not depend on OCCT
+/// being linked into the openvdb test binary (dep-direction isolation — see
+/// module-level doc). RED until register.rs is updated in step-4.
+#[test]
+fn openvdb_dispatches_two_stage_chain_brep_to_voxel() {
+    assert_two_stage_brep_to_voxel_plan();
 }
 
 /// Pins the planning-vs-execution contract for the BRep→Mesh→Voxel two-stage chain.
@@ -206,36 +218,10 @@ fn openvdb_dispatches_two_stage_chain_brep_to_voxel() {
 #[test]
 fn openvdb_two_stage_chain_terminal_op_execute_degrades_gracefully() {
     // -----------------------------------------------------------------------
-    // PLANNING side — pin the two-stage BRep→Mesh→Voxel dispatch chain.
+    // PLANNING side — pin the two-stage BRep→Mesh→Voxel dispatch chain via
+    // the shared helper (avoids duplicating registry setup + plan assertions).
     // -----------------------------------------------------------------------
-    let occt_descriptor = CapabilityDescriptor {
-        supports: vec![(Operation::Convert { from: ReprKind::BRep }, ReprKind::Mesh)],
-    };
-    let openvdb_descriptor = openvdb_capability_descriptor();
-
-    let owned: BTreeMap<String, CapabilityDescriptor> = BTreeMap::from([
-        ("occt".to_string(), occt_descriptor),
-        ("openvdb".to_string(), openvdb_descriptor),
-    ]);
-    let view: BTreeMap<String, &CapabilityDescriptor> =
-        owned.iter().map(|(k, v)| (k.clone(), v)).collect();
-
-    let available: HashSet<ReprKind> = HashSet::from([ReprKind::BRep]);
-    let plan = dispatcher::dispatch(&view, Operation::BooleanUnion, ReprKind::Voxel, &available)
-        .expect("two-stage chain must resolve: BRep→Mesh (occt) then Mesh→Voxel (openvdb)");
-
-    assert_eq!(
-        plan.kernel, "openvdb",
-        "two-stage chain must resolve to openvdb as the final-stage kernel",
-    );
-    assert_eq!(
-        plan.conversions,
-        vec![
-            ("occt".to_string(), ReprKind::BRep, ReprKind::Mesh),
-            ("openvdb".to_string(), ReprKind::Mesh, ReprKind::Voxel),
-        ],
-        "two-stage chain conversions must be [(occt,BRep,Mesh),(openvdb,Mesh,Voxel)]",
-    );
+    assert_two_stage_brep_to_voxel_plan();
 
     // -----------------------------------------------------------------------
     // EXECUTION side — terminal Voxel op through trait degrades gracefully.
