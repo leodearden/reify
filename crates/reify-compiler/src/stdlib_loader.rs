@@ -128,6 +128,14 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 "std.flexures",
                 include_str!("../stdlib/flexures.ri"),
             ),
+            // `std.tensegrity` depends on `std.units` (Length, Area, Force),
+            // `std.si_units` (0N literal), and `std.materials.fea`
+            // (ElasticMaterial trait) — all earlier in the prelude sequence.
+            // End-insertion minimises merge friction with future sibling additions.
+            (
+                "std.tensegrity",
+                include_str!("../stdlib/tensegrity.ri"),
+            ),
         ];
 
         // SEQUENTIAL COMPILATION WITH GROWING PRELUDE: each module is compiled
