@@ -61,6 +61,12 @@ module.exports = grammar({
     [$.named_argument_list, $.argument_list],
     [$.constraint_instantiation, $.constraint_declaration],
     [$.type_expr, $.parameterized_type],
+    // function_definition and function_signature share a common prefix (fn name
+    // type_params '(' fn_param_list ')' optional('->' type_expr)) and diverge
+    // only at '{' (body) vs end-of-member.  This entry keeps tree-sitter's GLR
+    // split stable even if a future type_expr change introduces a brace-shaped
+    // right edge.
+    [$.function_definition, $.function_signature],
   ],
 
   rules: {
@@ -93,6 +99,12 @@ module.exports = grammar({
     ),
 
     // ── Function ─────────────────────────────────────────────
+    // NOTE: optional('pub') is retained here because function_definition serves
+    // both top-level and trait_member contexts.  In the trait_member arm, `pub`
+    // is grammatically accepted but semantically vacuous — trait visibility is
+    // governed by the trait declaration itself.  The lowering pass (task γ)
+    // diagnoses `pub fn` inside a trait body.  function_signature (below) omits
+    // `pub` because it is only reachable via trait_member.
     function_definition: $ => seq(
       optional('pub'),
       'fn',

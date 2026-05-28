@@ -207,3 +207,53 @@ trait T { fn h(x : Int) -> Int { x } }
           (identifier))
         (fn_body
           result: (identifier))))))
+
+================================================================================
+INTENTIONAL — free fn with self receiver parses cleanly at file scope
+================================================================================
+
+fn free_with_self(self, x : Int) -> Int { x }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_definition
+    name: (identifier)
+    (fn_param_list
+      (fn_param
+        name: (identifier)
+        type: (type_expr
+          (identifier))))
+    return_type: (type_expr
+      (identifier))
+    (fn_body
+      result: (identifier))))
+
+================================================================================
+BOUNDARY — function_signature immediately before second trait_member
+================================================================================
+
+trait T {
+  fn sig(self, x : Int) -> Int
+  let y = 0
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (trait_declaration
+    name: (identifier)
+    (trait_member
+      (function_signature
+        name: (identifier)
+        (fn_param_list
+          (fn_param
+            name: (identifier)
+            type: (type_expr
+              (identifier))))
+        return_type: (type_expr
+          (identifier))))
+    (trait_member
+      (let_declaration
+        name: (identifier)
+        value: (number_literal)))))
