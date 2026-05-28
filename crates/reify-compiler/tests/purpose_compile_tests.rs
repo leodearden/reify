@@ -2,10 +2,10 @@
 //!
 //! Tests for compiling purpose declarations into CompiledPurpose entries.
 
+use reify_ir::*;
 use reify_compiler::*;
 use reify_test_support::parse_and_compile;
 use reify_core::*;
-use reify_ir::*;
 
 // ── Step 9: basic purpose compilation ───────────────────────────
 

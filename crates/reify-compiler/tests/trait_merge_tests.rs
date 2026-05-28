@@ -6,10 +6,10 @@
 
 use std::sync::atomic::Ordering;
 
+use reify_ir::*;
 use reify_compiler::*;
 use reify_test_support::{CountingSubscriberBuilder, compile_first_template};
 use reify_core::*;
-use reify_ir::*;
 
 /// Step 1a: Two traits each providing `let area : Real = width * height`.
 /// Structure implements both — identical let defaults should be merged (dedup).

@@ -13,9 +13,9 @@
 //! Accessor argument contract (pinned in `multi_load_case_stdlib_smoke_e2e`):
 //!   `result_for(mcr, key)` — `mcr` is `args[0]`, `key` is `args[1]`.
 
+use reify_ir::*;
 use reify_compiler::*;
 use reify_core::*;
-use reify_ir::*;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 

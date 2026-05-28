@@ -2,10 +2,10 @@
 //!
 //! Tests for compiling port declarations into CompiledPort entries in TopologyTemplate.
 
+use reify_ir::*;
 use reify_compiler::*;
 use reify_test_support::compile_first_template;
 use reify_core::*;
-use reify_ir::*;
 
 // ── Step 11: compile_port_creates_value_cells ───────────────────────
 

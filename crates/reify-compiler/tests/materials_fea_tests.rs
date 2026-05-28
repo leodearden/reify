@@ -13,10 +13,10 @@
 //! production (not a standalone `.ri` file re-read). This mirrors the pattern
 //! in `materials_thermal_tests.rs` and `materials_electrical_tests.rs`.
 
+use reify_ir::*;
 use reify_compiler::*;
 use reify_test_support::compile_source_with_stdlib;
 use reify_core::*;
-use reify_ir::*;
 
 /// Look up a structure template by name within the `std/materials/fea` module.
 ///

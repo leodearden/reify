@@ -19,9 +19,9 @@
 //! exercises the same embedded + sequential-prelude compilation path as
 //! production. This mirrors the helper trio in `solver_elastic_tests.rs`.
 
+use reify_ir::*;
 use reify_compiler::*;
 use reify_core::*;
-use reify_ir::*;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 

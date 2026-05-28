@@ -14,9 +14,9 @@
 //! exercises the same embedded + sequential-prelude compilation path as
 //! production. This mirrors the helper trio in `materials_fea_tests.rs`.
 
+use reify_ir::*;
 use reify_compiler::*;
 use reify_core::*;
-use reify_ir::*;
 
 /// Look up a structure template by name within the `std/solver/elastic` module.
 ///

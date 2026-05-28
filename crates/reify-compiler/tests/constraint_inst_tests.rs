@@ -5,9 +5,9 @@
 //! substitutes param references in predicate expressions, and injects resulting
 //! constraints into the parent entity's constraint list.
 
+use reify_ir::*;
 use reify_test_support::{compile_source, compile_template};
 use reify_core::*;
-use reify_ir::*;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

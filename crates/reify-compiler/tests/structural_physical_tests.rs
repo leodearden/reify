@@ -4,10 +4,10 @@
 //! trait is correctly represented in the compiled module, and that trait
 //! conformance and constraint injection work as expected.
 
+use reify_ir::*;
 use reify_compiler::*;
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 use reify_core::*;
-use reify_ir::*;
 
 mod common;
 

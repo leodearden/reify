@@ -3,9 +3,9 @@
 //! Tests for compiling where-clauses and guarded blocks into
 //! CompiledGuardedGroup entries in TopologyTemplate.
 
+use reify_ir::*;
 use reify_test_support::{assert_no_diagnostics, compile_first_template};
 use reify_core::*;
-use reify_ir::*;
 
 /// Characterization test: `Chain` inside a `where {}` block is silently ignored
 /// by `compile_guarded_members` — no diagnostic of any severity is emitted.

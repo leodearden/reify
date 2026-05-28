@@ -12,10 +12,10 @@
 //! 9. Non-recursive structures with subs are NOT flagged.
 //! 10. Block-level guards satisfy termination requirement.
 
+use reify_ir::*;
 use reify_compiler::*;
 use reify_test_support::{compile_first_template, compile_source};
 use reify_core::*;
-use reify_ir::*;
 
 /// Helper: compile and destructure into templates + diagnostics.
 fn compile_all(source: &str) -> (Vec<TopologyTemplate>, Vec<Diagnostic>) {

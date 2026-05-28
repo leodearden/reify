@@ -12,10 +12,10 @@
 mod common;
 
 use common::assert_trait_constraint_binop;
+use reify_ir::*;
 use reify_compiler::*;
 use reify_test_support::compile_source_with_stdlib;
 use reify_core::*;
-use reify_ir::*;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 

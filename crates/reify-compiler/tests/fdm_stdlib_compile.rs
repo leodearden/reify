@@ -17,10 +17,10 @@
 //! exercises the same embedded + sequential-prelude compilation path as
 //! production. This mirrors the helper trio in `trajectory_stdlib_compile.rs`.
 
+use reify_ir::*;
 use reify_compiler::*;
 use reify_test_support::compile_source_with_stdlib;
 use reify_core::*;
-use reify_ir::*;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
