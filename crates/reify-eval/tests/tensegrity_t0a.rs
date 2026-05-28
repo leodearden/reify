@@ -504,6 +504,69 @@ fn tensegrity_wires_preserves_declaration_order_struts_then_cables() {
     assert_eq!(w1.fields.get(&"kind".to_string()), Some(&Value::String("cable".to_string())));
 }
 
+// ── step-9: CLI golden test ───────────────────────────────────────────────────
+
+/// `reify eval examples/tensegrity_t_prism.ri` must print the T-prism instance
+/// and 6 tagged TensegrityWire values. Output compared against the committed
+/// golden at `crates/reify-eval/tests/golden/tensegrity_t_prism.txt`.
+/// Regenerate with `REIFY_REGENERATE_GOLDEN=1`.
+///
+/// RED state: `examples/tensegrity_t_prism.ri` and the golden don't exist yet,
+/// so `cargo run` either fails to read the example or the golden read panics.
+#[test]
+fn cli_reify_eval_prints_t_prism_wireframe() {
+    let manifest = env!("CARGO_MANIFEST_DIR"); // .../crates/reify-eval
+    let workspace_root = std::path::Path::new(manifest)
+        .ancestors()
+        .nth(2)
+        .expect("workspace root is two levels above crates/reify-eval")
+        .to_path_buf();
+    let example = workspace_root.join("examples/tensegrity_t_prism.ri");
+    let golden = std::path::Path::new(manifest).join("tests/golden/tensegrity_t_prism.txt");
+
+    let output = std::process::Command::new(env!("CARGO"))
+        .current_dir(&workspace_root)
+        .args(["run", "-q", "-p", "reify-cli", "--bin", "reify", "--", "eval"])
+        .arg(&example)
+        .output()
+        .expect("failed to spawn `cargo run -p reify-cli -- eval`");
+
+    assert!(
+        output.status.success(),
+        "`reify eval examples/tensegrity_t_prism.ri` exited non-zero.\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout must be valid UTF-8");
+
+    if std::env::var("REIFY_REGENERATE_GOLDEN").is_ok() {
+        std::fs::write(&golden, &stdout).expect("failed to write golden file");
+        return;
+    }
+
+    let expected = std::fs::read_to_string(&golden).unwrap_or_else(|_| {
+        panic!(
+            "golden crates/reify-eval/tests/golden/tensegrity_t_prism.txt missing; \
+             run once with REIFY_REGENERATE_GOLDEN=1"
+        )
+    });
+    assert_eq!(
+        stdout, expected,
+        "`reify eval examples/tensegrity_t_prism.ri` stdout drifted from the golden; \
+         re-run with REIFY_REGENERATE_GOLDEN=1 to update"
+    );
+
+    // Defense-in-depth: pins the T0a signal independent of golden content.
+    assert!(
+        stdout.contains("TensegrityWire { kind: \"strut\""),
+        "T0a signal: expected at least one 'TensegrityWire {{ kind: \"strut\"' line; got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("TensegrityWire { kind: \"cable\""),
+        "T0a signal: expected at least one 'TensegrityWire {{ kind: \"cable\"' line; got:\n{stdout}"
+    );
+}
+
 /// args[0] is Tensegrity-shaped but struts references out-of-range index → Undef.
 #[test]
 fn tensegrity_wires_undef_on_out_of_range_index() {
