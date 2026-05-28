@@ -1055,6 +1055,81 @@ mod tests {
             mc_sigma.to_bits());
     }
 
+    // ─── monte_carlo_stackup step-9 tests (yield_fraction) ─────────────────
+
+    #[test]
+    fn monte_carlo_yield_fraction_absent_without_spec() {
+        // 3-arg call: no mc_yield_fraction key.
+        let m = match eval_stackup("monte_carlo_stackup", &[
+            golden_chain(), Value::Int(1000), Value::Int(42),
+        ]) {
+            Some(Value::Map(m)) => m,
+            other => panic!("expected Some(Map), got {:?}", other),
+        };
+        assert!(!m.contains_key(&Value::String("mc_yield_fraction".into())),
+            "3-arg call must NOT contain mc_yield_fraction");
+    }
+
+    #[test]
+    fn monte_carlo_yield_fraction_present_with_5arg() {
+        // 5-arg call: mc_yield_fraction present as Value::Real (dimensionless).
+        let m = match eval_stackup("monte_carlo_stackup", &[
+            golden_chain(), Value::Int(1000), Value::Int(42),
+            len(0.001), len(0.015), // spec_min=1mm, spec_max=15mm
+        ]) {
+            Some(Value::Map(m)) => m,
+            other => panic!("expected Some(Map), got {:?}", other),
+        };
+        assert!(m.contains_key(&Value::String("mc_yield_fraction".into())),
+            "5-arg call MUST contain mc_yield_fraction");
+        match &m[&Value::String("mc_yield_fraction".into())] {
+            Value::Real(_) => {}
+            other => panic!("mc_yield_fraction must be Value::Real, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn monte_carlo_yield_fraction_one_sigma_band_normal() {
+        // Single Normal contributor: nominal=10mm, tol=3mm → sigma_gap=1mm at sigma_level=3.
+        // spec=[9mm, 11mm] = ±1σ; expect yield ≈ Φ(1)−Φ(−1) = 0.6826894921370859.
+        // SE(p̂) = sqrt(p(1-p)/N) ≈ 1.47e-3 at N=100k; |empirical − 0.6827| ≤ 0.01 (≈ 7×SE).
+        let c = eval_stackup("contributor", &[len(0.010), len(0.003), Value::Int(1)]).unwrap();
+        let one_c_chain = Value::List(vec![c]);
+        let m = match eval_stackup("monte_carlo_stackup", &[
+            one_c_chain, Value::Int(100_000), Value::Int(42),
+            len(0.009), len(0.011),
+        ]) {
+            Some(Value::Map(m)) => m,
+            other => panic!("expected Some(Map), got {:?}", other),
+        };
+        let yf = match &m[&Value::String("mc_yield_fraction".into())] {
+            Value::Real(r) => *r,
+            other => panic!("expected Real, got {:?}", other),
+        };
+        let expected = 0.6826894921370859_f64; // Φ(1)−Φ(−1)
+        assert!((yf - expected).abs() <= 0.01,
+            "yield_fraction {yf:.6} not within 0.01 of {expected:.6}");
+    }
+
+    #[test]
+    fn monte_carlo_yield_fraction_full_band_normal() {
+        // spec=[6mm, 14mm] = ±4σ for same chain; expect yield ≥ 0.999.
+        let c = eval_stackup("contributor", &[len(0.010), len(0.003), Value::Int(1)]).unwrap();
+        let one_c_chain = Value::List(vec![c]);
+        let m = match eval_stackup("monte_carlo_stackup", &[
+            one_c_chain, Value::Int(100_000), Value::Int(42),
+            len(0.006), len(0.014),
+        ]) {
+            Some(Value::Map(m)) => m,
+            other => panic!("expected Some(Map), got {:?}", other),
+        };
+        let yf = match &m[&Value::String("mc_yield_fraction".into())] {
+            Value::Real(r) => *r,
+            other => panic!("expected Real, got {:?}", other),
+        };
+        assert!(yf >= 0.999, "yield ≥ 0.999 for ±4σ spec, got {yf}");
+    }
+
     // ─── stackup_worst_case tests (step-1 RED; GREEN after step-2 impl) ──────
 
     #[test]
