@@ -458,6 +458,12 @@ wrap_subshell() {
 }
 
 add_test_passes() {
+    # PSI gate: must pass before any cargo test work starts.
+    # In execute mode: eval runs this as a subprocess that inherits DF_VERIFY_ROLE
+    # and REIFY_PSI_GATE_*; exit 75 (EX_TEMPFAIL) propagates → orchestrator retries.
+    # In --print-plan mode: printed faithfully as a normal plan line.
+    add "./scripts/verify.sh psi-gate"
+
     local profile rel gated_timeout outer_timeout ungated
     for profile in "${PROFILES[@]}"; do
         if [ "$profile" = "release" ]; then
