@@ -2517,6 +2517,30 @@ fn eval_div(lv: &Value, rv: &Value) -> Value {
             si_value: si_value / r,
             dimension: *dimension,
         },
+        // Complex / Complex: (a+bi)/(c+di) = ((ac+bd)+(bc-ad)i)/(c²+d²)
+        (
+            Value::Complex {
+                re: ar,
+                im: ai,
+                dimension: ad,
+            },
+            Value::Complex {
+                re: br,
+                im: bi,
+                dimension: bd,
+            },
+        ) => {
+            let denom = br * br + bi * bi;
+            if denom == 0.0 {
+                Value::Undef
+            } else {
+                Value::Complex {
+                    re: (ar * br + ai * bi) / denom,
+                    im: (ai * br - ar * bi) / denom,
+                    dimension: ad.div(bd),
+                }
+            }
+        }
         // Complex / Scalar: divide re/im, combine dimensions
         (
             Value::Complex {
