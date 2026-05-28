@@ -12,7 +12,9 @@
 
 use reify_core::ValueCellId;
 use reify_ir::Value;
-use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
+use reify_test_support::{
+    collect_errors, compile_source_with_stdlib, make_simple_engine, parse_and_compile_with_stdlib,
+};
 
 // ─── step-51: MarlinDialect ───────────────────────────────────────────────────
 
@@ -171,4 +173,40 @@ structure def DialectHolder {
             "expected StructureInstance for DialectHolder.klipper sub; got {other:?}"
         ),
     }
+}
+
+// ─── amend: negative-conformance ─────────────────────────────────────────────
+
+/// A non-`GcodeDialect` structure passed to a `GcodeDialect`-typed param must
+/// be rejected at compile time with a trait-conformance diagnostic.
+///
+/// This confirms the `GcodeDialect` bound is actually enforced by the trait
+/// registry (not vacuous) — the positive `gcode_dialect_param_admits_both_dialects`
+/// test would still pass if the bound had no enforcement at all (e.g. if any
+/// `StructureInstance` were admitted). Mirrors `nominal_conformance_enforcement_negative`
+/// (scenario 5) in `structure_instance_e2e.rs`.
+#[test]
+fn gcode_dialect_param_rejects_non_conforming_structure() {
+    // NotADialect declares no trait bound, so it does NOT conform to GcodeDialect.
+    // Passing it into a `param d : GcodeDialect` must produce a diagnostic.
+    const SOURCE: &str = r#"
+structure def NotADialect {}
+
+structure def ChooseDialectStrict {
+    param d : GcodeDialect = MarlinDialect()
+}
+structure def BadDialectHolder {
+    sub bad = ChooseDialectStrict(d: NotADialect())
+}
+"#;
+    let compiled = compile_source_with_stdlib(SOURCE);
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("does not conform to trait")
+                && d.message.contains("GcodeDialect")),
+        "passing a non-conforming `NotADialect()` to a GcodeDialect-typed param \
+         must produce a trait-conformance error; got: {errors:?}"
+    );
 }
