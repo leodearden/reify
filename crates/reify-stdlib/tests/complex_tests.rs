@@ -218,6 +218,55 @@ fn complex_mul_cross_dimension_combines() {
     assert_complex_eq(&result, -5.0, 10.0, expected_dim);
 }
 
+// ── complex_div builtin tests (step-5b) ─────────────────────────────────────
+
+#[test]
+fn complex_div_one_over_i_returns_minus_i() {
+    // complex_div(1+0i, 0+1i) = (0-1i): 1/i = -i
+    // denom=1, re=(1*0+0*1)/1=0, im=(0*0-1*1)/1=-1
+    let a = complex_val(1.0, 0.0, DimensionVector::DIMENSIONLESS);
+    let b = complex_val(0.0, 1.0, DimensionVector::DIMENSIONLESS);
+    let result = eval_builtin("complex_div", &[a, b]);
+    assert_complex_eq(&result, 0.0, -1.0, DimensionVector::DIMENSIONLESS);
+}
+
+#[test]
+fn complex_div_cross_dimension_combines() {
+    // complex_div((6+8i)[AREA], (2+0i)[LENGTH]) = (3+4i)[LENGTH]
+    // denom=4, re=12/4=3, im=16/4=4; dim=AREA/LENGTH=LENGTH
+    let a = complex_val(6.0, 8.0, DimensionVector::AREA);
+    let b = complex_val(2.0, 0.0, DimensionVector::LENGTH);
+    let result = eval_builtin("complex_div", &[a, b]);
+    let expected_dim = DimensionVector::AREA.div(&DimensionVector::LENGTH);
+    assert_complex_eq(&result, 3.0, 4.0, expected_dim);
+}
+
+#[test]
+fn complex_div_by_zero_complex_returns_undef() {
+    // complex_div(6+8i, 0+0i) = Undef (denom = 0)
+    let a = complex_val(6.0, 8.0, DimensionVector::DIMENSIONLESS);
+    let b = complex_val(0.0, 0.0, DimensionVector::DIMENSIONLESS);
+    let result = eval_builtin("complex_div", &[a, b]);
+    assert!(result.is_undef(), "expected Undef for division by 0+0i, got {:?}", result);
+}
+
+#[test]
+fn complex_div_non_complex_arg_returns_undef() {
+    // complex_div(1+2i, Real(3.0)) = Undef (second arg is not Complex)
+    let a = complex_val(1.0, 2.0, DimensionVector::DIMENSIONLESS);
+    let result = eval_builtin("complex_div", &[a, Value::Real(3.0)]);
+    assert!(result.is_undef(), "expected Undef for non-Complex arg, got {:?}", result);
+}
+
+#[test]
+fn complex_div_overflow_returns_undef() {
+    // complex_div(MAX+0i, 0.5+0i): denom=0.25, re=MAX/0.25=Inf → sanitize_value→Undef
+    let a = complex_val(f64::MAX, 0.0, DimensionVector::DIMENSIONLESS);
+    let b = complex_val(0.5, 0.0, DimensionVector::DIMENSIONLESS);
+    let result = eval_builtin("complex_div", &[a, b]);
+    assert!(result.is_undef(), "expected Undef for overflow, got {:?}", result);
+}
+
 // ── Magnitude / Phase / Conjugate tests (step-7) ─────────────────────────────
 
 #[test]
