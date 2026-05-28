@@ -323,7 +323,7 @@ build_plan() {
     # typecheck (cargo check) only when NOT also linting — clippy --all-targets
     # is a strict superset of `cargo check`, so running both would be redundant.
     if [ "$DO_TYPECHECK" -eq 1 ] && [ "$DO_LINT" -eq 0 ] && [ "$RUN_RUST" -eq 1 ]; then
-        add "timeout --kill-after=60 20m cargo check --workspace"
+        add "timeout --kill-after=60 20m cargo check --workspace --tests"
     fi
 
     # lint: clippy over all targets, warnings-as-errors.

@@ -2741,3 +2741,214 @@ fn block_level_kernel_pragma_on_constraint_def_emits_deferred_warning() {
         warns
     );
 }
+
+// ── cfg pragma (task α — conditional compilation) ────────────────────────────
+
+/// Well-formed `#cfg` pragmas — `#cfg(target = "linux")` (KeyValue arg),
+/// `#cfg(linux)` (Bare-Ident arg), and `#cfg(linux, target = "wasm")`
+/// (mixed-shape multi-arg, all args pass the shape check) — produce zero
+/// `#cfg`-related diagnostics.
+///
+/// Expected failure before step-2 impl: `validate_module_pragmas` emits
+/// "unknown pragma #cfg" because "cfg" is absent from `MODULE_ONLY_PRAGMAS`.
+#[test]
+fn cfg_pragma_well_formed_no_unknown_pragma_warning() {
+    let cases: &[(&str, &str)] = &[
+        (
+            r#"#cfg(target = "linux")
+structure S { param x : Real }"#,
+            "key-value-arg",
+        ),
+        (
+            "#cfg(linux)\nstructure S { param x : Real }",
+            "bare-ident-arg",
+        ),
+        (
+            r#"#cfg(linux, target = "wasm")
+structure S { param x : Real }"#,
+            "mixed-shape-multi-arg",
+        ),
+    ];
+
+    for (source, label) in cases {
+        let module = compile_source(source);
+
+        // No error mentions "#cfg", "unknown pragma", or "E_CFG_MALFORMED".
+        let cfg_errors: Vec<_> = errors_only(&module)
+            .into_iter()
+            .filter(|d| {
+                d.message.contains("#cfg")
+                    || d.message.contains("unknown pragma")
+                    || d.message.contains("E_CFG_MALFORMED")
+            })
+            .collect();
+        assert!(
+            cfg_errors.is_empty(),
+            "[{label}] unexpected #cfg-related errors: {:?}",
+            cfg_errors
+        );
+
+        // No warning matches "unknown pragma #cfg".
+        let unknown_warns: Vec<_> = warnings_only(&module)
+            .into_iter()
+            .filter(|d| d.message.contains("unknown pragma #cfg"))
+            .collect();
+        assert!(
+            unknown_warns.is_empty(),
+            "[{label}] unexpected 'unknown pragma #cfg' warning: {:?}",
+            unknown_warns
+        );
+    }
+}
+
+/// Malformed `#cfg` arg shapes emit exactly one `E_CFG_MALFORMED` Error
+/// diagnostic per pragma occurrence and produce no additional errors.
+///
+/// Shapes covered (one case per row):
+/// - no-args: `#cfg` with no arg list at all → `pragma.args.is_empty()`
+/// - empty-args: `#cfg()` with empty parens → also `pragma.args.is_empty()`
+/// - bare-number, bare-string, bare-bool, bare-quantity: `Bare(non-Ident)` variants
+/// - good-then-bare-number: first arg well-formed, second arg malformed → still one error
+///
+/// Expected failure before step-4 impl: `apply_cfg_pragma` does not yet exist
+/// so no E_CFG_MALFORMED is emitted and the `exactly-one` assertion fires.
+#[test]
+fn cfg_pragma_malformed_args_emit_e_cfg_malformed() {
+    let cases: &[(&str, &str)] = &[
+        ("#cfg\nstructure S { param x : Real }", "no-args"),
+        ("#cfg()\nstructure S { param x : Real }", "empty-args"),
+        ("#cfg(42)\nstructure S { param x : Real }", "bare-number"),
+        (
+            r#"#cfg("linux")
+structure S { param x : Real }"#,
+            "bare-string",
+        ),
+        ("#cfg(true)\nstructure S { param x : Real }", "bare-bool"),
+        (
+            "#cfg(0.001m)\nstructure S { param x : Real }",
+            "bare-quantity",
+        ),
+        // First arg is well-formed (Bare Ident), second is malformed (Bare Number).
+        // ANY bad arg triggers one E_CFG_MALFORMED per pragma.
+        (
+            "#cfg(linux, 42)\nstructure S { param x : Real }",
+            "good-then-bare-number",
+        ),
+    ];
+
+    for (source, label) in cases {
+        let module = compile_source(source);
+
+        // Exactly one error whose message contains "E_CFG_MALFORMED" and "#cfg".
+        let cfg_errors: Vec<_> = errors_only(&module)
+            .into_iter()
+            .filter(|d| {
+                d.message.contains("E_CFG_MALFORMED") && d.message.contains("#cfg")
+            })
+            .collect();
+        assert_eq!(
+            cfg_errors.len(),
+            1,
+            "[{label}] expected exactly 1 E_CFG_MALFORMED error, got {}: {:?}",
+            cfg_errors.len(),
+            errors_only(&module)
+        );
+    }
+}
+
+/// `#cfg` misplaced inside a block-level declaration (e.g. a structure body)
+/// emits exactly one "only valid at module level" warning and no
+/// `E_CFG_MALFORMED` or "unknown pragma" diagnostics.
+///
+/// This behavior is inherited for free because `cfg` is in `MODULE_ONLY_PRAGMAS`
+/// and `validate_pragmas` treats every `ModuleOnly` pragma on a block with the
+/// same warning.  `apply_cfg_pragma` only walks module-level `parsed.pragmas`
+/// so no `E_CFG_MALFORMED` fires for a block-scoped `#cfg`.
+///
+/// This test locks that regression path so a refactor cannot silently drop the
+/// misplacement warning or accidentally introduce a spurious malformed-arg error.
+#[test]
+fn cfg_pragma_block_level_warns_module_only() {
+    let source = "structure S { #cfg(linux) param x : Real }";
+    let module = compile_source(source);
+
+    // Exactly one warning containing "only valid at module level" and "#cfg".
+    let module_only_warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| {
+            d.message.contains("only valid at module level") && d.message.contains("#cfg")
+        })
+        .collect();
+    assert_eq!(
+        module_only_warns.len(),
+        1,
+        "expected exactly 1 'module-only' warning for block-level #cfg, got {}: {:?}",
+        module_only_warns.len(),
+        warnings_only(&module)
+    );
+
+    // No E_CFG_MALFORMED errors — block-level #cfg does not go through apply_cfg_pragma.
+    let malformed_errors: Vec<_> = errors_only(&module)
+        .into_iter()
+        .filter(|d| d.message.contains("E_CFG_MALFORMED"))
+        .collect();
+    assert!(
+        malformed_errors.is_empty(),
+        "unexpected E_CFG_MALFORMED errors for block-level #cfg: {:?}",
+        malformed_errors
+    );
+
+    // No "unknown pragma #cfg" warning — cfg is now a recognized pragma name.
+    let unknown_warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| d.message.contains("unknown pragma #cfg"))
+        .collect();
+    assert!(
+        unknown_warns.is_empty(),
+        "unexpected 'unknown pragma #cfg' warning for block-level #cfg: {:?}",
+        unknown_warns
+    );
+}
+
+/// Two malformed `#cfg` pragmas each emit exactly one `E_CFG_MALFORMED` error
+/// (total: 2 errors), and a well-formed `#cfg` mixed with a malformed one
+/// emits exactly 1 error for the malformed occurrence only.
+///
+/// Locks the per-occurrence emission contract so an off-by-one in the
+/// `apply_cfg_pragma` loop would be caught by the two-malformed case.
+#[test]
+fn cfg_pragma_multi_occurrence_per_occurrence_error() {
+    // Two malformed pragmas → two errors.
+    {
+        let source = "#cfg(42)\n#cfg(\"linux\")\nstructure S { param x : Real }";
+        let module = compile_source(source);
+        let cfg_errors: Vec<_> = errors_only(&module)
+            .into_iter()
+            .filter(|d| d.message.contains("E_CFG_MALFORMED"))
+            .collect();
+        assert_eq!(
+            cfg_errors.len(),
+            2,
+            "two malformed #cfg pragmas should emit 2 E_CFG_MALFORMED errors, got {}: {:?}",
+            cfg_errors.len(),
+            errors_only(&module)
+        );
+    }
+
+    // One well-formed + one malformed → exactly 1 error (only the malformed one).
+    {
+        let source = "#cfg(linux)\n#cfg(42)\nstructure S { param x : Real }";
+        let module = compile_source(source);
+        let cfg_errors: Vec<_> = errors_only(&module)
+            .into_iter()
+            .filter(|d| d.message.contains("E_CFG_MALFORMED"))
+            .collect();
+        assert_eq!(
+            cfg_errors.len(),
+            1,
+            "one well-formed + one malformed #cfg should emit 1 E_CFG_MALFORMED error, got {}: {:?}",
+            cfg_errors.len(),
+            errors_only(&module)
+        );
+    }
+}
