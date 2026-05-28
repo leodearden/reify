@@ -366,7 +366,7 @@ each side.
 | **Fixed-free cantilever column.** Same geometry; bottom fixed, top free, tip load. | Same. | `eigenvalue × 1 kN` within **11%** of `π² E I / (2L)²` (effective-length factor k=2; observed 10.0%). Mode shape is quarter-sine. |
 | **Fixed-pin column.** Same geometry; bottom face fully clamped (all 3 DOFs/node), top face laterally clamped (`u_x=u_y=0`, `u_z` free/node). | Same. | `eigenvalue × 1 kN` within **10%** of `π² E I / (k L)²` with **k≈0.6992 (fixed-pin)**; observed `k_eff≈0.670`, 8.8% at current mesh. |
 
-> **P1-tet accuracy note (G6 / esc-3453-5,6).** The 5% bounds and the **fixed-fixed (k=0.5)** third variant originally stated here are *not achievable* at practical mesh density: P1-tet bending lock at this slenderness (L/r≈138) yields 9–10% error on every BC variant, and pointwise Dirichlet BCs impose no rotational restraint, so a clamped-clamped attempt realizes **fixed-pin (k≈0.6992)**, not fixed-fixed. Bounds reconciled to the shipped test (`euler_column_pin_pin.rs`: pin-pin 10%, fixed-free 11%, fixed-pin 10%). True fixed-fixed (k=0.5) within 5% requires multi-point constraints (`u_z` equal across the top face) or P2-tet K_g — a follow-up beyond v0.5 task δ.
+> **P1-tet accuracy note (G6 / esc-3453-5,6).** The 5% bounds and the **fixed-fixed (k=0.5)** third variant originally stated here are *not achievable* at practical mesh density: P1-tet bending lock at this slenderness (L/r≈138) yields 9–10% error on every BC variant, and pointwise Dirichlet BCs impose no rotational restraint, so a clamped-clamped attempt realizes **fixed-pin (k≈0.6992)**, not fixed-fixed. Bounds reconciled to the shipped test (`euler_column_pin_pin.rs`: pin-pin 10%, fixed-free 11%, fixed-pin 10%). MPCs (`u_z` equal across the top face) **do** realize a true fixed-fixed (k=0.5) BC — verified in `euler_column_pin_pin.rs::fixed_guided_euler_column_within_nine_percent` (constraint satisfaction is bit-exact). The MPC alone does **not** reach 5%, however: P1-tet bending lock floors the error at ~6.8% (asymptote of `error = a + b/nx²`; 8.46% at nx=ny=10), so the MPC variant is bounded at **9%** to match the P1-tet tolerance family. Reaching the original 5% requires P2-tet (quadratic) K_g — tracked as a follow-up (esc-3813-117).
 | **n_modes degeneracy on square cross-section.** Pinned-pinned column with square box (20×20×L). | Same. | First two eigenvalues are within tolerance of each other (in-plane / out-of-plane mode pair). `modes[0].mode_shape` and `modes[1].mode_shape` are orthogonal in displacement space. |
 | **Shell input emits clean diagnostic.** Call `solve_buckling` on a shell-classified body. | Body classifier returns Shell. | Trampoline returns `ComputeOutcome::Failed { diagnostics: [E_BucklingShellNotImplemented { cite_task: "3392", ... }] }`. No panic. |
 | **Cancellation under design loop.** Synthetic large-DOF column; auto-resolve drives a non-structural param; rapid input changes mid-solve. | Trampoline registered; ≥ 100 ms per Lanczos iteration. | Cancellation observed within 2× poll budget (≤ 200 ms). Prior cache entry intact. No orphaned solver threads. |
@@ -483,8 +483,12 @@ isolation are not acceptable (`feedback_task_chain_user_observable`).
     asserts `result.modes[0].eigenvalue × 1 kN` within **10%** of `π²EI/L²` (P1-tet
     bending lock — see §9.1). Same test file also covers the fixed-free (11%) and
     fixed-pin (10%) BC variants. The third variant is **fixed-pin, not fixed-fixed**:
-    P1-tet pointwise Dirichlet imposes no rotational restraint, so true fixed-fixed /
-    k=0.5 within 5% needs MPCs or P2 K_g (deferred). Bounds corrected per esc-3453-5/6 (G6).
+    P1-tet pointwise Dirichlet imposes no rotational restraint, so the plain-Dirichlet
+    third variant is fixed-pin. A fourth variant
+    (`fixed_guided_euler_column_within_nine_percent`) uses a top-face `u_z`-equality MPC
+    to realize true fixed-fixed (k=0.5); the MPC is verified correct but P1-tet bending
+    lock floors error at ~6.8% (→ bounded **9%**, 8.46% at nx=ny=10). The original 5%
+    needs P2 K_g (esc-3813-117 follow-up). Bounds corrected per esc-3453-5/6 (G6) and esc-3813-117.
   - **Prereqs:** β, γ.
   - **Crates touched:** reify-solver-elastic.
 

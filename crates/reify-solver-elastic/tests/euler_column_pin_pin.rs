@@ -102,14 +102,20 @@ impl ColumnFixture {
     ///
     /// P1-tet bending lock gives a systematic floor: fitting `error = a + b/nx²`
     /// to the measured data yields a → 6.8%, meaning 5% is unachievable at any
-    /// practical P1-tet mesh density. Escalation filed as esc-3813-116.
+    /// practical P1-tet mesh density (esc-3813-116 / esc-3813-117). The MPC
+    /// itself is correct (constraint satisfaction is bit-exact); the residual
+    /// error is pure P1-tet stiffness overestimation, not a constraint defect.
     ///
     /// Tuning history (release mode, P_cr = 168,605.74 N):
     /// - `nx=ny=8, nz=160`: 9.39% (step-7 RED measurement, 2026-05-28).
     /// - `nx=ny=10, nz=160`: 8.46%, 55.71s (step-8 branch-B, 2026-05-28).
     /// - `nx=ny=12, nz=160`: 7.95%, 95.37s (step-8 branch-B/C, 2026-05-28).
+    ///
+    /// Chosen `nx=ny=10`: 8.46% sits under the 9% bound (esc-3813-117 Option A)
+    /// with ~55s release wall time (CI-safe, under the ~90s threshold). nx=12
+    /// would be marginally tighter (7.95%) but ~95s — over budget.
     fn fixed_guided_high_resolution() -> Self {
-        Self { nx: 12, ny: 12, nz: 160, lx: 0.02, ly: 0.02, lz: 0.8 }
+        Self { nx: 10, ny: 10, nz: 160, lx: 0.02, ly: 0.02, lz: 0.8 }
     }
 
     fn n_nodes(&self) -> usize {
@@ -485,15 +491,19 @@ fn fixed_pin_euler_column_within_ten_percent() {
 ///
 /// **Reference**: `P_cr = π²·E·I / (k·L)² = 4·π²·E·I / L²` (k = 0.5).
 ///
-/// **Tolerance**: `|λ·F − P_cr| / P_cr < 5%`.
-/// The PRD §9.1 footnote states "True fixed-fixed (k=0.5) within 5% requires
-/// multi-point constraints (`u_z` equal across the top face)". This is the
-/// empirical validation of that claim.
-///
-/// See also `.task/plan.json` §numeric_bound_premise for the mitigation path
-/// if 5% is not achievable at nx=ny=8 (mesh refinement to nx=ny=10/12).
+/// **Tolerance**: `|λ·F − P_cr| / P_cr < 9%` (esc-3813-117 Option A).
+/// The MPC machinery is implemented and verified correct (top-face u_z values
+/// are bit-identical to the master, asserted below), so the PRD §9.1 footnote
+/// "True fixed-fixed (k=0.5) within 5% requires MPCs" is *necessary but not
+/// sufficient*: a verified MPC still floors at ~6.8% (asymptote of
+/// error = a + b/nx²) for this L/r ≈ 138 geometry because constant-strain P1
+/// tets cannot capture the fixed-fixed half-sine curvature. Reaching the
+/// original 5% requires a P2-tet (quadratic) geometric-stiffness kernel,
+/// tracked as a follow-up task. The 9% bound matches the established P1-tet
+/// BC-variant tolerance family (pin-pin 10%, fixed-pin 10%, fixed-free 11%);
+/// MPC removal of the lateral-clamp coupling lets fixed-guided land tighter.
 #[test]
-fn fixed_guided_euler_column_within_five_percent() {
+fn fixed_guided_euler_column_within_nine_percent() {
     let grid = ColumnFixture::fixed_guided_high_resolution();
     let nodes = build_node_xyz(&grid);
     let tets = build_tet_mesh(&grid);
@@ -601,9 +611,9 @@ fn fixed_guided_euler_column_within_five_percent() {
     }
 
     assert!(
-        rel_err < 0.05,
+        rel_err < 0.09,
         "fixed-guided Euler: λ·F = {lambda_x_load:.2} N, P_cr = {p_cr:.2} N, \
-         rel_err = {:.2}% > 5%",
+         rel_err = {:.2}% > 9%",
         rel_err * 100.0,
     );
 }
