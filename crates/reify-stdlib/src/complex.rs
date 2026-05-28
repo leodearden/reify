@@ -175,6 +175,27 @@ pub(crate) fn eval_complex(name: &str, args: &[Value]) -> Option<Value> {
             _ => Value::Undef,
         }),
 
+        // complex_sqrt(z): principal square root using overflow-safe formula.
+        // r = hypot(re,im); out_re = sqrt((r+re)/2); out_im = sqrt((r-re)/2).copysign(im).
+        // copysign ensures principal branch: sqrt(-1+0i) = +i (im=+0.0 → positive).
+        // Dimensionless input only for v0.6 (dimensioned Q^(1/2) is deferred).
+        "complex_sqrt" => unary(args, |v| match v {
+            Value::Complex { re, im, dimension } => {
+                if *dimension != DimensionVector::DIMENSIONLESS {
+                    return Value::Undef;
+                }
+                let r = (*re).hypot(*im);
+                let out_re = ((r + *re) / 2.0).sqrt();
+                let out_im = ((r - *re) / 2.0).sqrt().copysign(*im);
+                sanitize_value(Value::Complex {
+                    re: out_re,
+                    im: out_im,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                })
+            }
+            _ => Value::Undef,
+        }),
+
         _ => return None,
     })
 }
