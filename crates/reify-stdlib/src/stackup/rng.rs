@@ -28,6 +28,29 @@
 ///   *contributor-index ascending, then draw-index ascending* — T4 exposes
 ///   primitives only; T5 enforces the nesting order when calling them.
 ///
+/// # Box–Muller caching and contributor boundaries
+///
+/// [`Self::sample_normal`] may consume **0 or 2** underlying uniform draws
+/// per call — not exactly 1 — because the second variate `z2` from a
+/// Box–Muller pair is cached in [`Self::spare`] and returned on the
+/// *subsequent* call without touching the uniform stream.
+///
+/// Consequence for T5's mixed-distribution loop: if a Normal contributor
+/// draws an **odd** number of samples, the cached spare is still set when
+/// the next contributor begins.  That spare will be returned (scaled by the
+/// *new* contributor's sigma) on the first `sample_normal` call of the next
+/// contributor — even if an intervening Uniform or Triangular draw occurred.
+/// Each returned value remains a statistically valid N(0,1) sample, and the
+/// overall sequence stays fully deterministic, but the 1-to-1 correspondence
+/// between "sampler calls" and "stream positions" does not hold for Normal.
+///
+/// T5 implementers should choose one of:
+/// - **Fresh `from_seed` per contributor** — guarantees zero cross-contributor
+///   spare leakage; each contributor gets its own independent stream.
+/// - **Clear the spare at contributor boundaries** — call
+///   `self.spare = None` before starting draws for each contributor when a
+///   single shared RNG is preferred for reproducibility of the whole trial.
+///
 /// # References
 ///
 /// - <https://prng.di.unimi.it/xoshiro256starstar.c>  (CC0)
