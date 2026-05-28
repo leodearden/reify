@@ -240,3 +240,81 @@ fn fidget_dispatcher_to_kernel_chain_realizes_sdf_without_occt() {
         );
     }
 }
+
+/// Proves that `dispatcher::dispatch(...)` for `(Convert{from: Sdf}, Mesh)`
+/// with `{Sdf}` as the available-repr set produces a `DispatchPlan` that
+/// routes to `"fidget"` with a single `("fidget", Sdf, Mesh)` conversion
+/// stage — one Convert hop from Sdf to Mesh through Fidget iso-surface meshing.
+///
+/// PRD §8 task κ: the `(Convert { from: ReprKind::Sdf }, ReprKind::Mesh)` entry
+/// in the fidget descriptor enables the dispatcher BFS to chain an Sdf-producing
+/// kernel into a Mesh-consuming kernel without the caller having to invoke
+/// `tessellate` directly.
+///
+/// # No stub-mode skip
+///
+/// Unlike the OCCT analog, Fidget is pure-Rust and compiles unconditionally —
+/// no `cfg(has_fidget)` or `FIDGET_AVAILABLE` guard is needed.
+#[test]
+fn fidget_dispatches_for_sdf_to_mesh_conversion() {
+    // Linker anchor: call `fidget_capability_descriptor` and assert the
+    // result is non-empty. Forces the linker to include `register.rs`'s
+    // translation unit; asserting on the output prevents the call from
+    // being optimised away under LTO/release.
+    let anchor_descriptor = reify_kernel_fidget::register::fidget_capability_descriptor();
+    assert!(
+        !anchor_descriptor.supports.is_empty(),
+        "fidget_capability_descriptor() must declare at least one capability \
+         (linker anchor sanity check — if empty the registration is broken)",
+    );
+
+    let reg = kernel_registry::registry();
+
+    // 1. Registry contains "fidget" — proves the inventory submit fired.
+    assert!(
+        reg.contains_key("fidget"),
+        "kernel_registry::registry() must contain \"fidget\"; found keys: {:?}",
+        reg.keys().collect::<Vec<_>>(),
+    );
+
+    // 2. Build a descriptor view for the dispatcher.
+    let owned: BTreeMap<String, CapabilityDescriptor> = reg
+        .iter()
+        .map(|(k, entry)| (k.clone(), (entry.descriptor)()))
+        .collect();
+    let view: BTreeMap<String, &CapabilityDescriptor> =
+        owned.iter().map(|(k, v)| (k.clone(), v)).collect();
+
+    // 3. Dispatch the Sdf→Mesh Convert with Sdf as the only available
+    //    input repr.
+    let available: HashSet<ReprKind> = HashSet::from([ReprKind::Sdf]);
+    let plan = dispatcher::dispatch(
+        &view,
+        Operation::Convert {
+            from: ReprKind::Sdf,
+        },
+        ReprKind::Mesh,
+        &available,
+    );
+
+    // 4. The plan must exist and select "fidget".
+    let plan = plan.expect(
+        "dispatcher::dispatch must return Some(...) for (Convert{from: Sdf}, Mesh) \
+         when fidget is registered — PRD §8 task κ",
+    );
+    assert_eq!(
+        plan.kernel, "fidget",
+        "dispatch must select the fidget kernel for (Convert{{from: Sdf}}, Mesh); \
+         got kernel = {:?}",
+        plan.kernel,
+    );
+
+    // 5. One-stage Convert path: input repr (Sdf) is meshed to Mesh via Fidget.
+    assert_eq!(
+        plan.conversions,
+        vec![("fidget".to_string(), ReprKind::Sdf, ReprKind::Mesh,)],
+        "dispatch must produce a single (\"fidget\", Sdf, Mesh) conversion stage; \
+         got conversions = {:?}",
+        plan.conversions,
+    );
+}
