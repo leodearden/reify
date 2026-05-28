@@ -354,3 +354,64 @@ fn apply_transform_to_handle_t_inverse_round_trip_matches_source_aabb() {
         "T ∘ T⁻¹ round-trip AABB (rigid-isometry composition contract)",
     );
 }
+
+// ---------------------------------------------------------------------------
+// (e) Source-handle preservation (multi-frame reuse contract)
+// ---------------------------------------------------------------------------
+
+/// `apply_transform_to_handle` must leave the source handle's shape intact,
+/// so the same child can be placed in multiple frames.
+///
+/// **Why this matters**: T5/T8 will instantiate a `sub` placement by emitting
+/// `ApplyTransform` ops that each reference the SAME source-geometry handle.
+/// Any in-place mutation of the source slot would break subsequent placements
+/// (or, worse, accumulate transforms onto a single shape).
+///
+/// **Method**: build a box centered at origin (X,Y,Z ∈ [-5, 5]), apply a pure
+/// translation to produce a new handle, then re-tessellate the SOURCE handle
+/// and assert its AABB is still the pre-transform [-5, 5] cube.
+#[test]
+fn apply_transform_to_handle_preserves_source_handle() {
+    let mut kernel = OcctKernel::new();
+
+    let source = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(10.0),
+            depth: Value::Real(10.0),
+        })
+        .expect("box creation should succeed");
+
+    let t = Transform3 {
+        qw: 1.0,
+        qx: 0.0,
+        qy: 0.0,
+        qz: 0.0,
+        tx: 100.0,
+        ty: 200.0,
+        tz: 300.0,
+    };
+
+    // Apply transform to obtain a new handle. We intentionally discard the
+    // result — this test is about what happens to the *source*.
+    let _transformed = kernel
+        .apply_transform_to_handle(source.id, &t)
+        .expect("translation transform should succeed");
+
+    // Re-tessellate the source handle. If the FFI accidentally mutated the
+    // source's TopoDS_Shape in place, this AABB would now be shifted by
+    // (100, 200, 300) instead of staying at [-5, 5].
+    let source_aabb_after = aabb_of_handle(&kernel, source.id);
+    let expected_source_aabb = Aabb {
+        min: [-5.0, -5.0, -5.0],
+        max: [5.0, 5.0, 5.0],
+    };
+
+    assert_aabb_eq(
+        source_aabb_after,
+        expected_source_aabb,
+        1e-6,
+        "source AABB after apply_transform_to_handle (multi-frame reuse contract: \
+         source must be unmodified so it can be placed in multiple frames)",
+    );
+}
