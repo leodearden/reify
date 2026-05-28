@@ -306,6 +306,52 @@ fn complex_div_by_zero_scalar() {
     assert!(result.is_undef());
 }
 
+/// Complex<DIMENSIONLESS> / Complex<DIMENSIONLESS>: 1/i = -i.
+/// Pins formula re=(ac+bd)/denom, im=(bc-ad)/denom with a=1,b=0,c=0,d=1: denom=1, re=0, im=-1.
+#[test]
+fn complex_div_complex_dimensionless() {
+    let result = eval_binop(
+        BinOp::Div,
+        complex_val(1.0, 0.0, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        complex_val(0.0, 1.0, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        Type::complex(Type::Real),
+    );
+    assert_eq!(result, complex_val(0.0, -1.0, DimensionVector::DIMENSIONLESS));
+}
+
+/// Complex<Area> / Complex<Length>: dimension quotient is Length; re=3, im=4.
+/// a=6,b=8,c=2,d=0: denom=4, re=12/4=3, im=16/4=4.
+#[test]
+fn complex_div_complex_dimension_quotient() {
+    let expected_dim = DimensionVector::AREA.div(&DimensionVector::LENGTH);
+    let result = eval_binop(
+        BinOp::Div,
+        complex_val(6.0, 8.0, DimensionVector::AREA),
+        Type::complex(Type::Real),
+        complex_val(2.0, 0.0, DimensionVector::LENGTH),
+        Type::complex(Type::length()),
+        Type::complex(Type::Real),
+    );
+    assert_eq!(result, complex_val(3.0, 4.0, expected_dim));
+}
+
+/// Complex / Complex(0+0i) returns Undef via the arm's explicit denom==0 guard.
+/// Also proves Complex.as_f64()==None so the top-level guard does not misfire.
+#[test]
+fn complex_div_complex_by_zero_returns_undef() {
+    let result = eval_binop(
+        BinOp::Div,
+        complex_val(6.0, 8.0, DimensionVector::LENGTH),
+        Type::complex(Type::length()),
+        complex_val(0.0, 0.0, DimensionVector::LENGTH),
+        Type::complex(Type::length()),
+        Type::complex(Type::length()),
+    );
+    assert!(result.is_undef());
+}
+
 // ─── step-11: Unary negation ───────────────────────────────────────────────
 
 /// Negating a Complex value negates both re and im, preserves dimension.
