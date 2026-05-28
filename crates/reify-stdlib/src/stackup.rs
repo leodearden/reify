@@ -18,6 +18,7 @@ pub(crate) fn eval_stackup(name: &str, args: &[Value]) -> Option<Value> {
         "contributor_asym" => contributor_asym(args),
         "stackup_worst_case" => stackup_worst_case(args),
         "stackup_rss" => stackup_rss(args),
+        "monte_carlo_stackup" => monte_carlo_stackup(args),
         _ => return None,
     })
 }
@@ -274,6 +275,152 @@ fn stackup_rss(args: &[Value]) -> Value {
     Value::Map(m)
 }
 
+/// Parse an optional length bound: `Value::Undef` → absent (`Some(None)`),
+/// a valid finite LENGTH scalar → present (`Some(Some(si_value))`),
+/// anything else → invalid (`None`).
+fn parse_optional_length(v: &Value) -> Option<Option<f64>> {
+    match v {
+        Value::Undef => Some(None),
+        _ => match len_scalar(v) {
+            Some(si) => Some(Some(si)),
+            None => None,
+        },
+    }
+}
+
+/// Parse spec bounds `(spec_min, spec_max)` from two arg slots.
+///
+/// Returns `Ok(Some((min, max)))` when both are present, `Ok(None)` when both
+/// are absent (Undef), or `Err(())` when only one is present or either slot is
+/// an invalid (non-length, non-Undef) value.
+fn parse_spec_bounds(min_arg: &Value, max_arg: &Value) -> Result<Option<(f64, f64)>, ()> {
+    match (parse_optional_length(min_arg), parse_optional_length(max_arg)) {
+        (Some(Some(lo)), Some(Some(hi))) => Ok(Some((lo, hi))),
+        (Some(None), Some(None)) => Ok(None),
+        (None, _) | (_, None) => Err(()), // invalid spec value
+        _ => Err(()), // asymmetric present/absent
+    }
+}
+
+/// Stub implementation for Monte Carlo stack-up (step-2: validation + key scaffold).
+/// Real sampling math is added in step-4.
+fn monte_carlo_stackup(args: &[Value]) -> Value {
+    // (a) arity guard: 3..=6 args only
+    if !(3..=6).contains(&args.len()) {
+        return Value::Undef;
+    }
+
+    // (b) parse chain
+    let chain = match parse_chain(&args[0]) {
+        Some(c) => c,
+        None => return Value::Undef,
+    };
+
+    // (c) parse samples: must be Value::Int with n > 0
+    let n_samples: usize = match &args[1] {
+        Value::Int(n) if *n > 0 => *n as usize,
+        _ => return Value::Undef,
+    };
+
+    // (d) parse seed: must be Value::Int (any i64)
+    let seed_i64: i64 = match &args[2] {
+        Value::Int(s) => *s,
+        _ => return Value::Undef,
+    };
+    let seed_u64: u64 = seed_i64 as u64;
+
+    // (e)+(f) parse spec bounds and sigma_level based on arity
+    let (spec_bounds, sigma_level): (Option<(f64, f64)>, f64) = match args.len() {
+        3 => (None, 3.0),
+        4 => {
+            // args[3] = sigma_level (Undef → default 3.0)
+            let sl = if matches!(args[3], Value::Undef) {
+                3.0
+            } else {
+                match parse_sigma_level(&args[3]) {
+                    Some(s) => s,
+                    None => return Value::Undef,
+                }
+            };
+            (None, sl)
+        }
+        5 => {
+            // args[3] = spec_min, args[4] = spec_max; default sigma_level=3.0
+            match parse_spec_bounds(&args[3], &args[4]) {
+                Ok(bounds) => (bounds, 3.0),
+                Err(()) => return Value::Undef,
+            }
+        }
+        6 => {
+            // args[3] = spec_min, args[4] = spec_max, args[5] = sigma_level
+            let bounds = match parse_spec_bounds(&args[3], &args[4]) {
+                Ok(b) => b,
+                Err(()) => return Value::Undef,
+            };
+            let sl = if matches!(args[5], Value::Undef) {
+                3.0
+            } else {
+                match parse_sigma_level(&args[5]) {
+                    Some(s) => s,
+                    None => return Value::Undef,
+                }
+            };
+            (bounds, sl)
+        }
+        _ => unreachable!(), // arity guard above
+    };
+
+    // Compute nominal gap (used in both stub and full impl)
+    let mut gap_nominal = 0.0_f64;
+    for c in &chain {
+        gap_nominal += c.sign as f64 * c.nominal;
+    }
+
+    // --- STUB: placeholder statistics (replaced in step-4) ---
+    let _ = (seed_u64, sigma_level); // suppress unused warnings until step-4
+    build_mc_map(
+        gap_nominal,
+        len_result(0.0), // mc_mean placeholder
+        len_result(0.0), // mc_sigma placeholder
+        len_result(0.0), // mc_min placeholder
+        len_result(0.0), // mc_max placeholder
+        len_result(0.0), // mc_p_low placeholder
+        len_result(0.0), // mc_p_high placeholder
+        n_samples,
+        seed_i64,
+        spec_bounds.map(|_| 0.0_f64), // mc_yield_fraction placeholder
+    )
+}
+
+/// Assemble the Monte Carlo result `Value::Map`.
+fn build_mc_map(
+    gap_nominal: f64,
+    mc_mean: Value,
+    mc_sigma: Value,
+    mc_min: Value,
+    mc_max: Value,
+    mc_p_low: Value,
+    mc_p_high: Value,
+    samples: usize,
+    seed: i64,
+    yield_fraction: Option<f64>,
+) -> Value {
+    let mut m = BTreeMap::new();
+    m.insert(Value::String("mc_max".into()),     mc_max);
+    m.insert(Value::String("mc_mean".into()),    mc_mean);
+    m.insert(Value::String("mc_min".into()),     mc_min);
+    m.insert(Value::String("mc_p_high".into()),  mc_p_high);
+    m.insert(Value::String("mc_p_low".into()),   mc_p_low);
+    m.insert(Value::String("mc_sigma".into()),   mc_sigma);
+    m.insert(Value::String("nominal_gap".into()), len_result(gap_nominal));
+    m.insert(Value::String("samples".into()),    Value::Int(samples as i64));
+    m.insert(Value::String("seed".into()),       Value::Int(seed));
+    if let Some(yf) = yield_fraction {
+        m.insert(Value::String("mc_yield_fraction".into()), Value::Real(yf));
+    }
+    Value::Map(m)
+}
+
 fn make_contributor_map(
     nominal: Value,
     plus_tol: Value,
@@ -312,12 +459,6 @@ mod tests {
     #[test]
     fn unknown_function_returns_none() {
         assert!(eval_stackup("foo", &[]).is_none());
-    }
-
-    #[test]
-    fn monte_carlo_stub_name_returns_none() {
-        // worst_case and rss are now recognised (return Some); only mc still falls through.
-        assert!(eval_stackup("monte_carlo_stackup", &[]).is_none());
     }
 
     #[test]
@@ -540,6 +681,88 @@ mod tests {
             eval_stackup("contributor", &[len(0.005), len(0.00005), Value::Int(-1)]).unwrap();
         let c3 = eval_stackup("contributor", &[len(0.003), len(0.0002), Value::Int(1)]).unwrap();
         Value::List(vec![c1, c2, c3])
+    }
+
+    // ─── monte_carlo_stackup step-1 tests ───────────────────────────────────
+
+    /// Helper: accepts None (arm absent) or Some(Undef) (arm present, validation failed).
+    fn is_undef_or_none(v: Option<Value>) -> bool {
+        match v {
+            None => true,
+            Some(val) => val.is_undef(),
+        }
+    }
+
+    #[test]
+    fn monte_carlo_arity_and_validation_returns_undef() {
+        let chain = golden_chain();
+        let n = Value::Int(10); // valid samples
+        let s = Value::Int(42); // valid seed
+
+        // 0-arg, 1-arg, 2-arg (missing seed)
+        assert!(is_undef_or_none(eval_stackup("monte_carlo_stackup", &[])));
+        assert!(is_undef_or_none(eval_stackup("monte_carlo_stackup", &[chain.clone()])));
+        assert!(is_undef_or_none(eval_stackup("monte_carlo_stackup", &[chain.clone(), n.clone()])));
+
+        // 7-arg over-arity
+        assert!(is_undef_or_none(eval_stackup("monte_carlo_stackup", &[
+            chain.clone(), n.clone(), s.clone(),
+            len(0.001), len(0.009), Value::Real(3.0), Value::Undef,
+        ])));
+
+        // chain arg not a non-empty List
+        assert!(is_undef_or_none(eval_stackup("monte_carlo_stackup",
+            &[Value::Int(1), n.clone(), s.clone()])));
+        assert!(is_undef_or_none(eval_stackup("monte_carlo_stackup",
+            &[Value::List(vec![]), n.clone(), s.clone()])));
+
+        // samples = Int(0) (E_StackupBadSamples)
+        assert!(is_undef_or_none(eval_stackup("monte_carlo_stackup",
+            &[chain.clone(), Value::Int(0), s.clone()])));
+        // samples = Int(-5)
+        assert!(is_undef_or_none(eval_stackup("monte_carlo_stackup",
+            &[chain.clone(), Value::Int(-5), s.clone()])));
+        // samples = Real(100.0) (non-Int)
+        assert!(is_undef_or_none(eval_stackup("monte_carlo_stackup",
+            &[chain.clone(), Value::Real(100.0), s.clone()])));
+
+        // seed = Real(42.0) (non-Int)
+        assert!(is_undef_or_none(eval_stackup("monte_carlo_stackup",
+            &[chain.clone(), n.clone(), Value::Real(42.0)])));
+        // seed = Scalar (dimensioned)
+        assert!(is_undef_or_none(eval_stackup("monte_carlo_stackup",
+            &[chain.clone(), n.clone(), len(0.042)])));
+
+        // spec_min/spec_max asymmetric: one Length, other Undef (5-arg form)
+        assert!(is_undef_or_none(eval_stackup("monte_carlo_stackup",
+            &[chain.clone(), n.clone(), s.clone(), len(0.001), Value::Undef])));
+        assert!(is_undef_or_none(eval_stackup("monte_carlo_stackup",
+            &[chain.clone(), n.clone(), s.clone(), Value::Undef, len(0.009)])));
+
+        // sigma_level non-positive (4-arg form: args[3] = sigma_level)
+        assert!(is_undef_or_none(eval_stackup("monte_carlo_stackup",
+            &[chain.clone(), n.clone(), s.clone(), Value::Int(-1)])));
+        assert!(is_undef_or_none(eval_stackup("monte_carlo_stackup",
+            &[chain.clone(), n.clone(), s.clone(), Value::Int(0)])));
+        // sigma_level NaN
+        assert!(is_undef_or_none(eval_stackup("monte_carlo_stackup",
+            &[chain.clone(), n.clone(), s.clone(), Value::Real(f64::NAN)])));
+        // sigma_level dimensioned (LENGTH scalar)
+        assert!(is_undef_or_none(eval_stackup("monte_carlo_stackup",
+            &[chain.clone(), n.clone(), s.clone(), len(0.003)])));
+    }
+
+    #[test]
+    fn monte_carlo_returns_map_for_minimum_valid_args() {
+        // Happy-path placeholder: returns Some(Map) for minimum valid 3-arg call.
+        // Content checked in step-3. This test is RED until step-2 adds the arm.
+        let result = eval_stackup("monte_carlo_stackup", &[
+            golden_chain(), Value::Int(10), Value::Int(42),
+        ]);
+        match result {
+            Some(Value::Map(_)) => {}
+            other => panic!("expected Some(Map), got {:?}", other),
+        }
     }
 
     // ─── stackup_worst_case tests (step-1 RED; GREEN after step-2 impl) ──────
