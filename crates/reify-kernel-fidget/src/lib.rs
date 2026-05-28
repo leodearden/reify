@@ -35,7 +35,9 @@
 //! `crates/reify-kernel-occt/src/register.rs` — OCCT's registration pattern.
 //! `crates/reify-test-support/src/mocks.rs` — `FailingMockGeometryKernel`.
 
+pub mod iso_mesh_options;
 pub mod kernel;
 pub mod register;
 
+pub use iso_mesh_options::IsoMeshOptions;
 pub use kernel::FidgetKernel;
