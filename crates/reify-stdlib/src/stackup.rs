@@ -22,6 +22,8 @@ pub(crate) fn eval_stackup(name: &str, args: &[Value]) -> Option<Value> {
     })
 }
 
+mod rng;
+
 // --- private helpers ---
 
 /// Validate that `v` is a LENGTH scalar with a finite `si_value`.
