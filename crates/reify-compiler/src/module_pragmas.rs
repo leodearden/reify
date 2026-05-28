@@ -785,6 +785,12 @@ fn apply_kernel_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
 /// - Any combination of the above in a multi-arg pragma — e.g.
 ///   `#cfg(linux, target = "wasm")`
 ///
+/// **KeyValue value-type is not checked here**: `#cfg(target = 42)`,
+/// `#cfg(target = true)`, and `#cfg(target = 1m)` all pass task α
+/// validation because they have the correct `KeyValue` shape.  Whether the
+/// value type is meaningful for a config predicate is a task β concern
+/// (the cfg evaluator will inspect value types when computing satisfaction).
+///
 /// Any other shape (zero args, or any arg that is `Bare(non-Ident)`) emits
 /// exactly one `E_CFG_MALFORMED` Error diagnostic per pragma occurrence,
 /// attached to the whole-pragma span.  One diagnostic per occurrence
