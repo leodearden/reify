@@ -3,6 +3,8 @@
 .claude/*
 !.claude/skills/
 /target
+# Rust compiled library artifacts (build output, never source)
+*.rlib
 **/*.rs.bk
 .task/
 .worktrees/
