@@ -119,7 +119,7 @@ echo "--- Scenario 4: crates/reify-eval (OCCT-touching) -> gated + ungated ---"
 plan_for staged crates/reify-eval/src/cache.rs
 assert "reify-eval: scope decision RUN_OCCT_GATE=1" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_OUT"
-assert "reify-eval: gated OCCT pass present" plan_has 'cargo-test-occt-gated\.sh cargo test -p reify-kernel-occt'
+assert "reify-eval: gated OCCT pass present" plan_has 'cargo-test-occt-gated\.sh.*cargo test -p reify-kernel-occt'
 assert "reify-eval: ungated tail present" plan_has 'cargo (test|nextest run) --workspace --exclude'
 
 # ---------------------------------------------------------------------------
