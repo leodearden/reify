@@ -360,6 +360,15 @@ unsafe impl Sync for OpenVdbKernel {}
 // GeometryKernel trait implementation
 // ---------------------------------------------------------------------------
 
+// Planning vs execution contract note (cross-referenced from register.rs docstring):
+//
+// The `(Convert{from:Mesh}, Voxel)` entry in `openvdb_capability_descriptor()` (register.rs)
+// is a PLANNING declaration that lets the dispatcher BFS route BRep→Mesh→Voxel two-stage
+// chains. The executable Mesh→Voxel primitive is `realize_voxel_from_mesh_with_options`
+// (defined above). Trait-`execute()` of a terminal Voxel op intentionally returns
+// `GeometryError::OperationFailed` — graceful degradation, pinned by
+// `tests/dispatcher_integration.rs::openvdb_two_stage_chain_terminal_op_execute_degrades_gracefully`.
+// Full execute()-trait routing requires a GeometryOp Mesh-input variant and is task ε scope.
 const VOXEL_BOOL_STUB_MSG: &str = "OpenVDB voxel-Boolean execution requires Voxel handles on both operands. \
      Direct-call voxelization via realize_voxel_from_mesh_with_options is available; \
      the descriptor now declares (Convert{from:Mesh}, Voxel) so BRep→Mesh→Voxel chains \
@@ -368,10 +377,12 @@ const VOXEL_BOOL_STUB_MSG: &str = "OpenVDB voxel-Boolean execution requires Voxe
 
 impl GeometryKernel for OpenVdbKernel {
     fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-        // Voxel Boolean execution through execute() is deferred — see
-        // VOXEL_BOOL_STUB_MSG. The capability descriptor declares the Booleans
-        // so the dispatcher BFS can enumerate them, but execution requires
-        // the full dispatcher chain from BRep→Mesh→Voxel which isn't routed yet.
+        // Voxel op execution through execute() degrades gracefully — see
+        // VOXEL_BOOL_STUB_MSG and the planning-vs-execution contract note above.
+        // The capability descriptor declares (Convert{from:Mesh},Voxel) and the
+        // three Booleans so the dispatcher BFS can reach Voxel; execute() returns
+        // OperationFailed (not a panic, not Ok(_)) until task ε wires the
+        // realize_voxel_from_mesh_with_options wrapper into engine dispatch.
         Err(GeometryError::OperationFailed(VOXEL_BOOL_STUB_MSG.into()))
     }
 

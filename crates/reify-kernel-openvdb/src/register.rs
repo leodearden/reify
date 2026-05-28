@@ -98,6 +98,18 @@ pub const OPENVDB_KERNEL_NAME: &str = "openvdb";
 /// Owned return (`CapabilityDescriptor` by value) because the descriptor's
 /// `supports: Vec<...>` field is non-const-constructible — see
 /// `reify_types::KernelRegistration` doc for the full rationale.
+///
+/// # Planning vs execution contract
+///
+/// The `(Convert{from:Mesh}, Voxel)` entry is a **PLANNING** declaration that
+/// lets the dispatcher BFS reach Voxel from a BRep input via a two-stage chain
+/// `BRep --occt--> Mesh --openvdb--> Voxel`. The executable Mesh→Voxel primitive
+/// is `OpenVdbKernel::realize_voxel_from_mesh_with_options` (kernel_real.rs).
+/// Trait-`execute()` of the terminal Voxel op intentionally returns
+/// `GeometryError::OperationFailed` (graceful degradation, pinned by
+/// `tests/dispatcher_integration.rs::openvdb_two_stage_chain_terminal_op_execute_degrades_gracefully`)
+/// until task ε wires the wrapper into engine dispatch (no `GeometryOp`
+/// Mesh-input variant exists, so trait-execute routing is structurally deferred).
 pub fn openvdb_capability_descriptor() -> CapabilityDescriptor {
     use Operation::*;
     let supports = vec![
