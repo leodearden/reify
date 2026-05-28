@@ -17,7 +17,7 @@
 //! only reify-core primitives and the in-crate `ast.rs` Expr/TypeExpr. No ir-tier
 //! type references exist in decl.rs — confirmed by `cargo build -p reify-ast`.
 
-// Mirrors reify-core/reify-types preludes for lint-attribute parity across the
+// Mirrors the reify-core lint-attribute prelude for parity across the
 // core stack; reify-ast itself has no current trigger.
 #![allow(clippy::mutable_key_type)]
 
@@ -25,9 +25,8 @@ pub mod ast;
 pub mod decl;
 
 // ── flat root re-exports ─────────────────────────────────────────────────────
-// Mirrors the flat surface previously in reify-types::ast so that code using
-// `reify_ast::Expr` (etc.) resolves correctly alongside the module-path form
-// `reify_ast::ast::Expr`.
+// Flat re-export so code using `reify_ast::Expr` (etc.) resolves alongside the
+// module-path form `reify_ast::ast::Expr`.
 pub use ast::{DimOp, Expr, ExprKind, LambdaParam, MatchArm, QuantifierKind, TypeExpr, TypeExprKind};
 
 // ── declaration AST flat re-exports ─────────────────────────────────────────

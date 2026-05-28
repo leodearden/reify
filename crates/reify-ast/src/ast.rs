@@ -2,18 +2,9 @@
 //!
 //! These types model *source as written* — identifiers unresolved, operators
 //! as strings, no types attached. Contrast the name-resolved, type-checked
-//! form in `reify-types::expr::CompiledExpr` ready for evaluation. The parsed
+//! form in `reify-ir::expr::CompiledExpr` ready for evaluation. The parsed
 //! AST is produced by the parser in `reify-syntax` and re-exported from it (so
 //! `reify_syntax::Expr` etc. continue to resolve unchanged).
-//!
-//! ## History
-//!
-//! Originally in `reify-syntax`, relocated to `reify-types` (task 3555,
-//! annotation-args δ) so that compiled IR could embed an *unevaluated* parse
-//! fragment. Relocated here to `reify-ast` (task 3772, core-ast-ir-layering δ)
-//! as Phase 2 of the three-layer split: `reify-core` ← `reify-ast` ← `reify-ir`.
-//! `reify-types` now re-exports this module transparently so no downstream crate
-//! requires changes until the η cutover sweep.
 
 use reify_core::SourceSpan;
 use std::fmt;
