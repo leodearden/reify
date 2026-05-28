@@ -11,11 +11,11 @@
 //!
 //! Coverage:
 //! * **(A)** Positive CST shape — `1_000_000`, `0.000_001`, `1_000e1_0` each
-//!           parse as a single `number_literal` node whose text spans the whole
-//!           literal; no `unit_expr` node (defeats the unit-suffix misparse).
+//!   parse as a single `number_literal` node whose text spans the whole
+//!   literal; no `unit_expr` node (defeats the unit-suffix misparse).
 //! * **(B)** Regression — bare `1000` still parses as a single `number_literal`.
 //! * **(C)** Regression — `5mm` still parses as a `quantity_literal` containing
-//!           a `number_literal` and a `unit_expr`.
+//!   a `number_literal` and a `unit_expr`.
 //!
 //! See also: `tree-sitter-reify/test/corpus/numeric_separators.txt` for the
 //! corpus-level CST documentation, runnable via `tree-sitter test`.
