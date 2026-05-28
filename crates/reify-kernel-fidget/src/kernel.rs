@@ -914,7 +914,7 @@ mod tests {
         let result = kernel.iso_mesh(sphere.id, &IsoMeshOptions::default());
         let mesh = result.expect("iso_mesh on sphere must succeed");
         assert!(
-            mesh.vertices.len() > 0,
+            !mesh.vertices.is_empty(),
             "iso_mesh must produce at least one vertex; got {} vertices",
             mesh.vertices.len(),
         );
@@ -925,7 +925,7 @@ mod tests {
             mesh.vertices.len(),
         );
         assert!(
-            mesh.indices.len() > 0,
+            !mesh.indices.is_empty(),
             "iso_mesh must produce at least one index; got {} indices",
             mesh.indices.len(),
         );
@@ -967,7 +967,7 @@ mod tests {
         let result = kernel.tessellate(sphere.id, 0.5);
         let mesh = result.expect("tessellate on sphere must succeed");
         assert!(
-            mesh.vertices.len() > 0,
+            !mesh.vertices.is_empty(),
             "tessellate must produce at least one vertex; got {}",
             mesh.vertices.len(),
         );
