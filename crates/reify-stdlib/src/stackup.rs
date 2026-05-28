@@ -126,12 +126,21 @@ fn len_result(si: f64) -> Value {
     sanitize_value(Value::Scalar { si_value: si, dimension: DimensionVector::LENGTH })
 }
 
+/// Distribution variant for a contributor's random deviation.
+#[derive(Clone, Copy, Debug)]
+enum Distribution {
+    Normal,
+    Uniform,
+    Triangular,
+}
+
 /// Extracted numeric data from a single contributor map entry.
 struct ContributorData {
     nominal: f64,
     plus_tol: f64,
     minus_tol: f64,
     sign: i64,
+    distribution: Distribution,
 }
 
 /// Parse a chain of contributors from a `Value`.
@@ -160,7 +169,19 @@ fn parse_chain(v: &Value) -> Option<Vec<ContributorData>> {
             len_scalar(map.get(&Value::String("minus_tol".into()))?)?;
         let sign =
             parse_sign(map.get(&Value::String("sign".into()))?)?;
-        chain.push(ContributorData { nominal, plus_tol, minus_tol, sign });
+        let distribution = match map.get(&Value::String("distribution".into())) {
+            Some(Value::Enum { type_name, variant }) if type_name.as_str() == "Distribution" => {
+                match variant.as_str() {
+                    "Normal" => Distribution::Normal,
+                    "Uniform" => Distribution::Uniform,
+                    "Triangular" => Distribution::Triangular,
+                    _ => return None, // unrecognized variant
+                }
+            }
+            None => Distribution::Normal, // default when key absent
+            _ => return None,             // invalid key type
+        };
+        chain.push(ContributorData { nominal, plus_tol, minus_tol, sign, distribution });
     }
     Some(chain)
 }
@@ -370,25 +391,88 @@ fn monte_carlo_stackup(args: &[Value]) -> Value {
         _ => unreachable!(), // arity guard above
     };
 
-    // Compute nominal gap (used in both stub and full impl)
+    // --- Core Monte Carlo sampling ---
+
+    // Compute nominal gap and per-contributor half-bands
     let mut gap_nominal = 0.0_f64;
     for c in &chain {
         gap_nominal += c.sign as f64 * c.nominal;
     }
 
-    // --- STUB: placeholder statistics (replaced in step-4) ---
-    let _ = (seed_u64, sigma_level); // suppress unused warnings until step-4
+    // Allocate per-trial gap vector, initialised to the nominal gap
+    let mut gaps: Vec<f64> = vec![gap_nominal; n_samples];
+
+    // Outer: contributor index ascending; inner: draw index ascending.
+    // Per-contributor sub-seed via SplitMix64-XOR to avoid Box–Muller spare
+    // leakage across contributor boundaries (design decision §2 in plan).
+    for (i, c) in chain.iter().enumerate() {
+        let t_i = (c.plus_tol + c.minus_tol) / 2.0; // symmetric half-band
+        if t_i == 0.0 {
+            continue; // zero tolerance → no contribution to variance
+        }
+        let sub_seed = seed_u64 ^ (i as u64).wrapping_mul(0x9E3779B97F4A7C15);
+        let mut rng = rng::Xoshiro256StarStar::from_seed(sub_seed);
+        let sign_f = c.sign as f64;
+        for draw_idx in 0..n_samples {
+            let deviation: f64 = match c.distribution {
+                Distribution::Normal     => rng.sample_normal(t_i / sigma_level),
+                Distribution::Uniform    => rng.sample_uniform_sym(t_i),
+                Distribution::Triangular => rng.sample_triangular_sym(t_i),
+            };
+            gaps[draw_idx] += sign_f * deviation;
+        }
+    }
+
+    // Compute statistics
+    let n = n_samples as f64;
+    let mc_mean: f64 = gaps.iter().sum::<f64>() / n;
+
+    let mc_sigma: f64 = if n_samples > 1 {
+        let ss: f64 = gaps.iter().map(|&g| (g - mc_mean).powi(2)).sum();
+        (ss / (n - 1.0)).sqrt()
+    } else {
+        0.0
+    };
+
+    let mc_min: f64 = gaps.iter().cloned().fold(f64::INFINITY,     f64::min);
+    let mc_max: f64 = gaps.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+
+    // R-7 linear interpolation quantile on a sorted copy
+    let mut sorted = gaps.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    debug_assert!(sorted.iter().all(|v| v.is_finite()),
+        "MC: gap sample unexpectedly non-finite — PRNG or chain design error");
+
+    let quantile = |p: f64| -> f64 {
+        let h   = (n_samples as f64 - 1.0) * p;
+        let lo  = h.floor() as usize;
+        let hi  = h.ceil()  as usize;
+        sorted[lo] + (h - lo as f64) * (sorted[hi] - sorted[lo])
+    };
+
+    const P_LOW:  f64 = 0.00135;  // ≈ Φ(−3)
+    const P_HIGH: f64 = 0.99865;  // ≈ Φ(+3)
+    let mc_p_low  = quantile(P_LOW);
+    let mc_p_high = quantile(P_HIGH);
+
+    // Optional yield fraction
+    let yield_fraction: Option<f64> = spec_bounds.map(|(spec_min, spec_max)| {
+        let n_within = gaps.iter().filter(|&&g| g >= spec_min && g <= spec_max).count();
+        n_within as f64 / n_samples as f64
+    });
+
     build_mc_map(
         gap_nominal,
-        len_result(0.0), // mc_mean placeholder
-        len_result(0.0), // mc_sigma placeholder
-        len_result(0.0), // mc_min placeholder
-        len_result(0.0), // mc_max placeholder
-        len_result(0.0), // mc_p_low placeholder
-        len_result(0.0), // mc_p_high placeholder
+        len_result(mc_mean),
+        len_result(mc_sigma),
+        len_result(mc_min),
+        len_result(mc_max),
+        len_result(mc_p_low),
+        len_result(mc_p_high),
         n_samples,
         seed_i64,
-        spec_bounds.map(|_| 0.0_f64), // mc_yield_fraction placeholder
+        yield_fraction,
     )
 }
 
