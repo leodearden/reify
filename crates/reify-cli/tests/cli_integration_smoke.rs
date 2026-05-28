@@ -237,3 +237,26 @@ fn new_m11_examples_pass_check_when_present() {
         failures
     );
 }
+
+// ── task-3953 step-7: complex_div.ri eval prints 0-1i ────────────────────────
+
+/// End-to-end signal: `reify eval examples/complex_div.ri` must succeed and
+/// stdout must contain "0-1i", the Display of complex(0,-1) (= 1/i = -i).
+#[test]
+fn eval_complex_div_prints_one_over_i_is_minus_i() {
+    let path = common::example_path("complex_div.ri");
+    let (status, stdout, stderr) = common::run_subcommand("eval", &path);
+
+    assert!(
+        status.success(),
+        "reify eval should exit 0 for complex_div.ri.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("0-1i"),
+        "stdout should contain '0-1i' (the quotient 1/i = -i), got: {stdout}"
+    );
+    assert!(
+        !stderr.contains("Error"),
+        "stderr should not contain 'Error', got: {stderr}"
+    );
+}
