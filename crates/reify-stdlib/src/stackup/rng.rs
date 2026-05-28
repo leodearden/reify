@@ -167,6 +167,43 @@ mod tests {
         }
     }
 
+    // ---- next_uniform_f64 tests ----
+
+    /// Every draw from next_uniform_f64 must lie in [0, 1).
+    #[test]
+    fn next_uniform_f64_is_in_unit_interval_half_open() {
+        let mut rng = Xoshiro256StarStar::from_seed(0xABCD_EF01_2345_6789);
+        for i in 0..10_000 {
+            let f = rng.next_uniform_f64();
+            assert!(f >= 0.0 && f < 1.0,
+                "draw {i}: {f} out of [0, 1)");
+        }
+    }
+
+    /// The first 8 draws from seed GOLDEN_SEED must match the bit-exact
+    /// golden vector derived from (GOLDEN_FIRST_16[i] >> 11) * 2^-53.
+    #[test]
+    fn next_uniform_f64_first_8_bit_exact_at_seed() {
+        let mut rng = Xoshiro256StarStar::from_seed(GOLDEN_SEED);
+        for (i, &expected) in GOLDEN_F64_FIRST_8.iter().enumerate() {
+            let got = rng.next_uniform_f64();
+            assert_eq!(got.to_bits(), expected.to_bits(),
+                "draw {i}: got {got}, expected {expected}");
+        }
+    }
+
+    /// Two instances from the same seed produce the same 100 uniform draws.
+    #[test]
+    fn next_uniform_f64_deterministic_same_seed() {
+        let mut rng1 = Xoshiro256StarStar::from_seed(0x1234_5678_9ABC_DEF0);
+        let mut rng2 = Xoshiro256StarStar::from_seed(0x1234_5678_9ABC_DEF0);
+        for i in 0..100 {
+            let v1 = rng1.next_uniform_f64();
+            let v2 = rng2.next_uniform_f64();
+            assert_eq!(v1.to_bits(), v2.to_bits(), "diverged at draw {i}");
+        }
+    }
+
     // ---- Xoshiro256** golden + same-seed tests ----
 
     /// Verify the first 16 `next_u64()` outputs from seed `GOLDEN_SEED` match
