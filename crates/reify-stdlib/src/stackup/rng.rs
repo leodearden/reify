@@ -1,6 +1,31 @@
 //! Vendored deterministic PRNG + distribution samplers (T4 — PRD §3.3)
+//!
+//! This module provides a self-contained, platform-independent deterministic
+//! PRNG ([`Xoshiro256StarStar`]) seeded via SplitMix64, plus per-distribution
+//! samplers for Normal, Uniform-symmetric, and Triangular-symmetric distributions.
+//!
+//! No external `rand`/`rand_xoshiro` crates are used (PRD §3.3 invariant).
 
 #![allow(dead_code)]
+
+// ---------------------------------------------------------------------------
+// SplitMix64 seeder
+// ---------------------------------------------------------------------------
+
+/// One step of the SplitMix64 generator (Vigna, CC0 public domain).
+///
+/// Advances `*state` by one step and returns the mixed output value.  Used
+/// exclusively to convert a single `u64` seed into 4 independent `u64` words
+/// for `Xoshiro256StarStar::from_seed`.
+///
+/// Reference: <https://prng.di.unimi.it/splitmix64.c>
+fn splitmix64_step(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9E3779B97F4A7C15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+    z ^ (z >> 31)
+}
 
 #[cfg(test)]
 mod tests {
