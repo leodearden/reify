@@ -865,8 +865,8 @@ where
 mod tests {
     #![allow(clippy::needless_range_loop)] // index-parallel loops in test asserts
     use super::{
-        CgSolverOptions, SolverMode, build_initial_u_r, norm2_squared, pairwise_tree_sum_fn,
-        solve_cg, solve_cg_warm, spmv_seq,
+        CgIterationControl, CgSolverOptions, SolverMode, build_initial_u_r, norm2_squared,
+        pairwise_tree_sum_fn, solve_cg, solve_cg_warm, solve_cg_with_progress, spmv_seq,
     };
     use faer::sparse::{SparseRowMat, Triplet};
 
@@ -1922,5 +1922,73 @@ mod tests {
             expected_bits,
             "tree-shape pin: mid=6 split must produce bits matching explicit pairwise grouping"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // GR-016 ζ step-1/3: solve_cg_with_progress callback tests
+    // -----------------------------------------------------------------------
+
+    /// `solve_cg_with_progress` fires the callback exactly once per CG
+    /// iteration, and the callback receives monotonically increasing iter
+    /// indices starting at 1 and finite positive residuals.
+    ///
+    /// Uses the fan-mesh fixture (33 free DOFs, takes ~tens of iterations)
+    /// so the callback receives a non-trivial sequence.
+    #[test]
+    fn solve_cg_with_progress_fires_callback_per_iteration_and_converges() {
+        let (k, f) = fan_mesh_k_spd_and_f();
+        let opts = CgSolverOptions {
+            tolerance: 1e-10,
+            max_iter: 1000,
+        };
+
+        let mut observed: Vec<(usize, f64)> = Vec::new();
+        let result = solve_cg_with_progress(
+            &k,
+            &f,
+            None,
+            opts,
+            SolverMode::Deterministic,
+            &mut |iter, residual| {
+                observed.push((iter, residual));
+                CgIterationControl::Continue
+            },
+        );
+
+        // (a) The solve must converge on this SPD problem.
+        assert!(
+            result.converged,
+            "solve_cg_with_progress must converge on fan-mesh; iterations={}",
+            result.iterations
+        );
+
+        // (b) Callback fires exactly once per iteration.
+        assert_eq!(
+            observed.len(),
+            result.iterations,
+            "callback invocation count ({}) must equal result.iterations ({})",
+            observed.len(),
+            result.iterations
+        );
+
+        // (c) Iter values are strictly monotonically increasing starting at 1.
+        for (idx, &(iter, _)) in observed.iter().enumerate() {
+            assert_eq!(
+                iter,
+                idx + 1,
+                "expected iter={} at position {}, got {}",
+                idx + 1,
+                idx,
+                iter
+            );
+        }
+
+        // (d) Every observed residual is finite and positive.
+        for &(iter, residual) in &observed {
+            assert!(
+                residual.is_finite() && residual > 0.0,
+                "residual at iter={iter} must be finite and positive, got {residual}"
+            );
+        }
     }
 }
