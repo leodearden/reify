@@ -474,45 +474,6 @@ pub structure Outer {
 
 // ─── task 3454: bare let emits v0.1 no-value-cell warning ────────────────────
 
-/// Helper: asserts a Warning containing `` `let copy = self.inner.body` ``,
-/// `"v0.1"`, and `"no value cell"` fires and no Errors appear.
-///
-/// Used for child-side geometry **lets** (`let body = box(...)`) where the
-/// cross-sub bypass in entity.rs still fires in GHR-γ step-2 (it is retired
-/// in step-4).  Geometry-let cross-sub access goes through the
-/// `CrossSubGeometryRef` path and hits the bypass warning.
-fn assert_v01_bare_let_warning(source: &str, case_label: &str) {
-    let compiled = compile_source(source);
-
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "{case_label}: expected no Error diagnostics; got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-
-    let has_warning = compiled.diagnostics.iter().any(|d| {
-        d.severity == Severity::Warning
-            && d.message.contains("`let copy = self.inner.body`")
-            && d.message.contains("v0.1")
-            && d.message.contains("no value cell")
-    });
-    assert!(
-        has_warning,
-        "{case_label}: expected Warning containing \"`let copy = self.inner.body`\", \
-         \"v0.1\", \"no value cell\"; got diagnostics: {:?}",
-        compiled
-            .diagnostics
-            .iter()
-            .map(|d| (&d.severity, &d.message))
-            .collect::<Vec<_>>()
-    );
-}
-
 /// Helper: asserts that NO v0.1 bare-let Warning fires for `source`.
 ///
 /// Used for child-side Solid **params** (`param body : Solid = box(...)`) after
