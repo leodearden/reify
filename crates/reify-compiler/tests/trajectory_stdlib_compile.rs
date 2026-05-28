@@ -1624,3 +1624,140 @@ fn zv_shaper_struct_has_correct_param_shape_and_constraint() {
         constraint.expr.kind
     );
 }
+
+// ─── step-43: ZVDShaper param shape and constraint ───────────────────────────
+
+/// `ZVDShaper` is the Zero-Vibration-Derivative impulse shaper (PRD §5.1).
+/// It must refine the `Shaper` marker trait and declare exactly 2 params:
+///
+///   - `target_frequency : Frequency`  (Type::Scalar{dimension: FREQUENCY})
+///   - `damping_ratio    : Real`       (caller-supplied, NO default —
+///                                      ZVD's damping ratio is a required
+///                                      design parameter, unlike ZVShaper
+///                                      which defaults to undamped)
+///
+/// Exactly 1 constraint: `target_frequency > 0Hz` (BinOp::Gt, RHS
+/// Value::Scalar{si_value:0.0, dimension:FREQUENCY}; also accept
+/// Value::Real(0.0)).
+///
+/// Key distinction from ZVShaper: BOTH params have `default_expr.is_none()`.
+///
+/// RED because `ZVDShaper` does not exist yet — `find_structure` panics.
+#[test]
+fn zvd_shaper_struct_has_correct_param_shape_and_constraint() {
+    // step-43
+    let template = find_structure("ZVDShaper");
+
+    // (a) refines Shaper marker trait.
+    assert_eq!(
+        template.trait_bounds,
+        vec!["Shaper".to_string()],
+        "ZVDShaper must refine Shaper; got trait_bounds: {:?}",
+        template.trait_bounds
+    );
+
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    // (b) tight param count.
+    assert_eq!(
+        params.len(),
+        2,
+        "ZVDShaper should have exactly 2 params (target_frequency, damping_ratio); \
+         got: {:?}",
+        names
+    );
+
+    let expected: &[(&str, Type)] = &[
+        (
+            "target_frequency",
+            Type::Scalar {
+                dimension: DimensionVector::FREQUENCY,
+            },
+        ),
+        ("damping_ratio", Type::Real),
+    ];
+
+    // (c) param declaration order is part of the contract.
+    let expected_names: Vec<&str> = expected.iter().map(|(m, _)| *m).collect();
+    assert_eq!(
+        names, expected_names,
+        "ZVDShaper params must be in canonical order \
+         (target_frequency, damping_ratio); got: {:?}",
+        names
+    );
+
+    // (d) type assertion per param.
+    for (member, expected_ty) in expected {
+        let cell = params
+            .iter()
+            .find(|vc| vc.id.member == *member)
+            .unwrap_or_else(|| {
+                panic!(
+                    "ZVDShaper missing required param '{}'; got: {:?}",
+                    member, names
+                )
+            });
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "ZVDShaper.{} should be {:?}, got {:?}",
+            member, expected_ty, cell.cell_type
+        );
+    }
+
+    // (e) BOTH params are caller-supplied — neither has a default.
+    // This distinguishes ZVD from ZV (which defaults damping_ratio to 0.0).
+    for cell in &params {
+        assert!(
+            cell.default_expr.is_none(),
+            "ZVDShaper.{} should have NO default_expr (caller-supplied); \
+             got: {:?}",
+            cell.id.member,
+            cell.default_expr
+        );
+    }
+
+    // (f) exactly 1 constraint: target_frequency > 0Hz.
+    assert_eq!(
+        template.constraints.len(),
+        1,
+        "ZVDShaper should declare exactly 1 constraint (target_frequency > 0Hz); \
+         got {} constraints: {:?}",
+        template.constraints.len(),
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+
+    let constraint = &template.constraints[0];
+    let matched = match &constraint.expr.kind {
+        CompiledExprKind::BinOp { op, left, right } => {
+            if *op != BinOp::Gt
+                || !collect_value_ref_members(left).contains(&"target_frequency")
+            {
+                false
+            } else {
+                match &right.kind {
+                    CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
+                        if *si_value == 0.0 && *dimension == DimensionVector::FREQUENCY =>
+                    {
+                        true
+                    }
+                    CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
+                    _ => false,
+                }
+            }
+        }
+        _ => false,
+    };
+    assert!(
+        matched,
+        "ZVDShaper should declare `constraint target_frequency > 0Hz` \
+         (BinOp::Gt, LHS refs target_frequency, \
+          RHS Value::Scalar{{si_value:0.0, dimension:FREQUENCY}}); \
+         got: {:?}",
+        constraint.expr.kind
+    );
+}
