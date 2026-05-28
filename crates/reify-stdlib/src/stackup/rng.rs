@@ -55,6 +55,43 @@ impl Xoshiro256StarStar {
         Xoshiro256StarStar { s, spare: None }
     }
 
+    /// Draw one sample from `N(0, σ²)` using the Box–Muller transform.
+    ///
+    /// The Box–Muller method converts a pair of independent uniform `[0,1)`
+    /// variates `(u1, u2)` into a pair of independent standard-normal variates:
+    ///
+    /// ```text
+    /// r  = sqrt(-2 · ln(u1))
+    /// θ  = 2π · u2
+    /// z1 = r · cos(θ),   z2 = r · sin(θ)
+    /// ```
+    ///
+    /// To avoid wasting `z2`, the second variate is stored in `self.spare` and
+    /// returned on the next call.  This is the canonical cached-pair pattern —
+    /// it preserves the deterministic uniform-stream contract: each pair of
+    /// uniforms produces exactly two normals in a fixed, reproducible order.
+    ///
+    /// To guarantee `ln(u1)` is finite, we re-draw `u1` while `u1 == 0.0`.
+    /// With a 53-bit uniform the zero probability is ≈ 2⁻⁵³, so this loop
+    /// almost never executes, but the path is well-defined.
+    pub(super) fn sample_normal(&mut self, sigma: f64) -> f64 {
+        if let Some(z2) = self.spare.take() {
+            return z2 * sigma;
+        }
+        // Draw u1 in (0, 1) — re-draw if exactly 0 to keep ln finite.
+        let mut u1 = self.next_uniform_f64();
+        while u1 == 0.0 {
+            u1 = self.next_uniform_f64();
+        }
+        let u2 = self.next_uniform_f64();
+        let r = (-2.0 * u1.ln()).sqrt();
+        let theta = 2.0 * std::f64::consts::PI * u2;
+        let z1 = r * theta.cos();
+        let z2 = r * theta.sin();
+        self.spare = Some(z2);
+        z1 * sigma
+    }
+
     /// Return a `f64` in the half-open interval `[0, 1)`.
     ///
     /// Recipe: right-shift the raw `u64` by 11 bits to obtain a 53-bit
