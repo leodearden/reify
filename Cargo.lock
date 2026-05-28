@@ -2966,9 +2966,9 @@ dependencies = [
 
 [[package]]
 name = "manifold-csg-sys"
-version = "3.4.107"
+version = "3.5.100"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7ba98ad842ca99ec2752d2e556f43ce69aa3f8000bd55b188053b383f9cb095"
+checksum = "74bd993b1c232e3b0aaef722dd33b24c7240075e4d7398da6b93597bddcca173"
 dependencies = [
  "cmake",
 ]
