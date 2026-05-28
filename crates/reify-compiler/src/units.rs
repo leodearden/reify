@@ -446,6 +446,18 @@ pub(crate) fn unit_to_scalar(value: f64, unit: &str) -> Option<(Value, Dimension
             },
             DimensionVector::TIME,
         )),
+        // Kelvin needs a hardcoded fallback because `std.units` itself uses
+        // `1K` in `BOLTZMANN_CONSTANT()`s body — fn bodies in std.units load
+        // with no unit_registry seeded, so the K declared at units.ri can't
+        // satisfy the same file's own quantity literals. Mirrors the kg/s/m
+        // self-bootstrap entries above.
+        "K" => Some((
+            Value::Scalar {
+                si_value: value,
+                dimension: DimensionVector::TEMPERATURE,
+            },
+            DimensionVector::TEMPERATURE,
+        )),
         _ => None,
     }
 }
