@@ -1008,14 +1008,14 @@ where
         // if the callback returns Cancel, exit immediately with
         // `iterations = iter + 1, converged = false`. The callback is NOT invoked
         // again after it returns Cancel; no further z/β/p updates are computed.
-        if let Some(ref mut cb) = progress {
-            if cb(iter + 1, r_norm_sq.sqrt()) == CgIterationControl::Cancel {
-                return CgResult {
-                    u: Arc::new(u),
-                    iterations: iter + 1,
-                    converged: false,
-                };
-            }
+        if let Some(ref mut cb) = progress
+            && cb(iter + 1, r_norm_sq.sqrt()) == CgIterationControl::Cancel
+        {
+            return CgResult {
+                u: Arc::new(u),
+                iterations: iter + 1,
+                converged: false,
+            };
         }
 
         if r_norm_sq < tol_sq {
