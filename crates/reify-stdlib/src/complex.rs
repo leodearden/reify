@@ -1652,4 +1652,118 @@ mod tests {
             result
         );
     }
+
+    // ── complex_sqrt() tests (step-3) ─────────────────────────────────────────
+
+    #[test]
+    fn complex_sqrt_negative_real_returns_plus_i() {
+        // complex_sqrt(-1+0i) = 0+1i  (principal square root of -1 is +i)
+        // This is the user signal: principal root, exact via overflow-safe formula.
+        let result = eval_builtin(
+            "complex_sqrt",
+            &[Value::Complex {
+                re: -1.0,
+                im: 0.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            }],
+        );
+        match result {
+            Value::Complex { re, im, dimension } => {
+                assert!((re - 0.0).abs() < 1e-12, "expected re=0.0, got {}", re);
+                assert!((im - 1.0).abs() < 1e-12, "expected im=1.0, got {}", im);
+                assert_eq!(dimension, DimensionVector::DIMENSIONLESS);
+            }
+            other => panic!("expected Complex{{0,1,DIMLESS}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn complex_sqrt_positive_real_returns_sqrt() {
+        // complex_sqrt(4+0i) = 2+0i
+        let result = eval_builtin(
+            "complex_sqrt",
+            &[Value::Complex {
+                re: 4.0,
+                im: 0.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            }],
+        );
+        match result {
+            Value::Complex { re, im, dimension } => {
+                assert!((re - 2.0).abs() < 1e-12, "expected re=2.0, got {}", re);
+                assert!((im - 0.0).abs() < 1e-12, "expected im=0.0, got {}", im);
+                assert_eq!(dimension, DimensionVector::DIMENSIONLESS);
+            }
+            other => panic!("expected Complex{{2,0,DIMLESS}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn complex_sqrt_pure_imaginary_2i() {
+        // complex_sqrt(0+2i): (1+1i)² = 1+2i-1 = 2i, so sqrt(2i) = 1+1i.
+        // Exercises the non-real-axis branch and copysign on positive im.
+        let result = eval_builtin(
+            "complex_sqrt",
+            &[Value::Complex {
+                re: 0.0,
+                im: 2.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            }],
+        );
+        match result {
+            Value::Complex { re, im, dimension } => {
+                assert!((re - 1.0).abs() < 1e-12, "expected re=1.0, got {}", re);
+                assert!((im - 1.0).abs() < 1e-12, "expected im=1.0, got {}", im);
+                assert_eq!(dimension, DimensionVector::DIMENSIONLESS);
+            }
+            other => panic!("expected Complex{{1,1,DIMLESS}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn complex_sqrt_dimensioned_input_returns_undef() {
+        // dimensioned sqrt is deferred (needs Q^(1/2)); return Undef for now
+        let result = eval_builtin(
+            "complex_sqrt",
+            &[Value::Complex {
+                re: 4.0,
+                im: 0.0,
+                dimension: DimensionVector::LENGTH,
+            }],
+        );
+        assert!(
+            result.is_undef(),
+            "complex_sqrt of dimensioned Complex must return Undef, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn complex_sqrt_non_complex_returns_undef() {
+        assert!(
+            eval_builtin("complex_sqrt", &[Value::Real(4.0)]).is_undef(),
+            "complex_sqrt of Real must return Undef"
+        );
+    }
+
+    #[test]
+    fn complex_sqrt_zero_args_returns_undef() {
+        assert!(
+            eval_builtin("complex_sqrt", &[]).is_undef(),
+            "complex_sqrt with 0 args must return Undef"
+        );
+    }
+
+    #[test]
+    fn complex_sqrt_two_args_returns_undef() {
+        let z = Value::Complex {
+            re: 4.0,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("complex_sqrt", &[z.clone(), z]).is_undef(),
+            "complex_sqrt with 2 args must return Undef"
+        );
+    }
 }
