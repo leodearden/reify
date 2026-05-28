@@ -2320,3 +2320,82 @@ fn joint_binding_fixed_no_motion_round_trips() {
         "FixedNoMotion must round-trip without data loss"
     );
 }
+
+// ── GR-016 ζ step-5: SolverProgress IPC struct serialization ─────────────────
+
+/// Pin the PRD §2.2 / PRD §3.2 wire format for the `solver-progress` event channel.
+///
+/// Three sub-cases:
+/// (a) Full payload (eta_ms present) — exact JSON shape + 4-key assertion.
+/// (b) eta_ms-None payload — exact JSON shape + 3-key assertion (pins
+///     `skip_serializing_if = "Option::is_none"` directive).
+/// (c) Round-trip from the 3-key wire shape preserves None for eta_ms.
+///
+/// No `serde(rename_all)` — field names match the TS interface exactly
+/// (PRD §3.2 field-name-exactness convention).
+///
+/// Mirrors `warm_pool_event_serializes_with_expected_field_set` (line 2041).
+#[test]
+fn solver_progress_serializes_to_expected_json_shape() {
+    use crate::types::SolverProgress;
+    use serde_json::json;
+
+    // (a) Full payload: eta_ms present → 4 top-level keys.
+    let full = SolverProgress {
+        solver_kind: "cg".to_string(),
+        iter: 7,
+        residual: 1.234e-6_f64,
+        eta_ms: Some(2500),
+    };
+    let v = serde_json::to_value(&full).expect("SolverProgress (full) must serialize");
+    assert_eq!(
+        v,
+        json!({
+            "solver_kind": "cg",
+            "iter": 7,
+            "residual": 1.234e-6_f64,
+            "eta_ms": 2500
+        }),
+        "full payload: exact JSON shape mismatch"
+    );
+    let obj = v.as_object().unwrap();
+    assert_eq!(
+        obj.len(),
+        4,
+        "full payload must have exactly 4 top-level keys; got {:?}",
+        obj.keys().collect::<Vec<_>>()
+    );
+
+    // (b) eta_ms-None payload → 3 top-level keys (skip_serializing_if omits it).
+    let no_eta = SolverProgress {
+        solver_kind: "cg".to_string(),
+        iter: 3,
+        residual: 5.0e-4_f64,
+        eta_ms: None,
+    };
+    let v2 = serde_json::to_value(&no_eta).expect("SolverProgress (no eta_ms) must serialize");
+    assert_eq!(
+        v2,
+        json!({
+            "solver_kind": "cg",
+            "iter": 3,
+            "residual": 5.0e-4_f64
+        }),
+        "no-eta payload: exact JSON shape mismatch (eta_ms must be absent)"
+    );
+    let obj2 = v2.as_object().unwrap();
+    assert_eq!(
+        obj2.len(),
+        3,
+        "no-eta payload must have exactly 3 top-level keys; got {:?}",
+        obj2.keys().collect::<Vec<_>>()
+    );
+
+    // (c) Round-trip from the 3-key wire shape (no eta_ms) preserves None.
+    let rt: SolverProgress = serde_json::from_value(v2.clone()).expect("must deserialize 3-key shape");
+    assert_eq!(rt.solver_kind, "cg");
+    assert_eq!(rt.iter, 3);
+    assert!((rt.residual - 5.0e-4_f64).abs() < f64::EPSILON * 100.0,
+        "residual round-trip mismatch: {} vs {}", rt.residual, 5.0e-4_f64);
+    assert_eq!(rt.eta_ms, None, "eta_ms must be None when absent from wire shape");
+}
