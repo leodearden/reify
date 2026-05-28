@@ -1488,6 +1488,54 @@ pub(crate) fn compile_entity(
                     span: sub.span,
                     content_hash: sub.content_hash,
                 });
+
+                // Sub-instance auto overrides (task 3806, γ-slice):
+                // For each `(name, expr)` in param_overrides where the value is `auto` /
+                // `auto(free)`, push a scoped `ValueCellDecl { kind: Auto { free }, … }` into
+                // the PARENT template's `value_cells` under id
+                // `ValueCellId("<entity>.<sub>", "<member>")`.  This places the Auto cell in
+                // the same per-template resolution problem as the parent's constraints, so the
+                // existing M3 solver resolves it identically to a param-default `auto` cell
+                // (the §4.4 invariant).  Non-auto overrides are carried in `param_overrides`
+                // for future slices; the no-op here preserves the previous silent-discard
+                // behaviour so there is no regression.
+                for (override_name, override_expr) in &sub.param_overrides {
+                    let Some(free) = extract_auto_free(override_expr) else {
+                        continue;
+                    };
+                    // Resolve the member type from the child's pre-populated member-type map.
+                    let cell_type = match scope
+                        .sub_member_types
+                        .get(&sub.name)
+                        .and_then(|m| m.get(override_name))
+                    {
+                        Some(ty) => ty.clone(),
+                        None => {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "sub `{}`: override for `{}` — no such param in `{}`",
+                                    sub.name, override_name, sub.structure_name
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    override_expr.span,
+                                    "this member does not exist in the child structure",
+                                )),
+                            );
+                            continue;
+                        }
+                    };
+                    let scoped_entity = format!("{}.{}", entity_name, sub.name);
+                    let scoped_id = ValueCellId::new(&scoped_entity, override_name.as_str());
+                    value_cells.push(ValueCellDecl {
+                        id: scoped_id,
+                        kind: ValueCellKind::Auto { free },
+                        visibility: Visibility::Public,
+                        cell_type,
+                        default_expr: None,
+                        solver_hints: vec![],
+                        span: sub.span,
+                    });
+                }
             }
             reify_ast::MemberDecl::Minimize(min_decl) => {
                 let compiled_expr =
