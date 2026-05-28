@@ -87,11 +87,10 @@ use super::*;
 /// an expression in pass 2 may freely reference a name declared later in the
 /// member list.
 ///
-/// This predicate is the inner check used by `is_solid_geometry_param` and is
-/// called from four sites that must stay consistent: the `compile_entity`
-/// pre-pass (entity.rs), the `compile_entity` main member loop (entity.rs),
-/// `register_guarded_names` (guards.rs), and `compile_guarded_members`
-/// (guards.rs).
+/// Called from two pre-pass sites that must stay consistent: the `compile_entity`
+/// pre-pass (entity.rs:~531) and `register_guarded_names` (guards.rs:~183).
+/// Formerly also referenced via `is_solid_geometry_param` — that wrapper was
+/// retired in GHR-γ (task 3605).
 pub(crate) fn is_geometry_let(
     expr: &reify_ast::Expr,
     functions: &[CompiledFunction],
@@ -137,26 +136,6 @@ pub(crate) fn is_geometry_let(
         // function value, not a geometry value, so they are not candidates.
         _ => false,
     }
-}
-
-/// Returns `true` if a param with the given type and default expression is a
-/// Solid-typed geometry param — i.e. its type is `Type::Geometry` and its
-/// default expression is a geometry call or a reference to a geometry let.
-///
-/// This predicate is the single source of truth for the "Solid param with
-/// geometry-call default" check, which must be consistent across four sites:
-/// entity.rs pre-pass, entity.rs main Param loop, guards.rs
-/// `register_guarded_names`, and guards.rs `compile_guarded_members`.
-pub(crate) fn is_solid_geometry_param(
-    ty: &reify_core::Type,
-    default: Option<&reify_ast::Expr>,
-    functions: &[CompiledFunction],
-    known: &HashSet<&str>,
-) -> bool {
-    ty == &reify_core::Type::Geometry
-        && default
-            .map(|e| is_geometry_let(e, functions, known))
-            .unwrap_or(false)
 }
 
 /// Returns the arg indices that are geometry refs for each non-boolean geometry function.

@@ -106,19 +106,21 @@ structure def MyBox {
 
 // ─── headline Phase-1 integration: spec-shape Bracket lowering pin ───────────
 
-/// Spec-shape `Bracket : Physical` lowers `param geometry : Solid` to a
-/// **realization** (not a value cell), and a `value_cell` for `geometry`
-/// does NOT exist.
+/// Spec-shape `Bracket : Physical` lowers `param geometry : Solid` to BOTH a
+/// **realization** AND a **value cell** (`cell_type == Type::Geometry`).
+///
+/// After GHR-γ (task 3605, bypass retired), `param geometry : Solid` now emits
+/// a `ValueCellDecl{cell_type: Type::Geometry, kind: Param}` alongside the
+/// existing `RealizationDecl`.  The `ValueCellDecl` carries the compiled
+/// geometry-call default expr; the `RealizationDecl` drives the kernel dispatch.
 ///
 /// This is the unique coverage this file contributes over its sibling
 /// `structural_physical_tests.rs`, which pins clean compilation + presence
 /// of `mass` / `centroid` / `material` value cells + the `Physical` trait
-/// bound. The "Solid-typed params lower to realizations" invariant
-/// (rooted in `is_representable_cell_type` rejecting `Type::Geometry`) is
-/// not pinned anywhere else in the structural_physical test files; this
-/// test covers it as the cross-product check between SIR-α struct-member
-/// access, the geometry-query dispatch arm, and the realization-lowering
-/// path for `Solid` params.
+/// bound. The "Solid-typed params lower to BOTH a value cell AND a realization"
+/// invariant (post-GHR-γ) is pinned here as the cross-product check between
+/// SIR-α struct-member access, the geometry-query dispatch arm, and the
+/// realization-lowering path for `Solid` params.
 ///
 /// Sibling test for the redundant trait-schema + `mass`/`centroid` checks:
 /// see `physical_trait_has_geometry_and_material_params_only` +
@@ -152,25 +154,34 @@ structure def Bracket : Physical {
         .find(|t| t.name == "Bracket")
         .expect("Bracket template should be compiled");
 
-    // `geometry : Solid` lowers to a realization (not a value cell) because
-    // `Type::Geometry` is unrepresentable per `is_representable_cell_type`
-    // — mirrors `solid_param_tests::solid_param_compiles_as_realization`.
+    // After GHR-γ: `geometry : Solid` lowers to BOTH a RealizationDecl AND a
+    // ValueCellDecl{cell_type: Type::Geometry} — the bypass that previously
+    // skipped value-cell creation has been retired.
     assert!(
         !bracket.realizations.is_empty(),
         "Bracket should have at least one realization (from `param geometry : Solid = box(...)`); got none"
     );
-    assert!(
-        !bracket
-            .value_cells
-            .iter()
-            .any(|vc| vc.id.member == "geometry"),
-        "Bracket must NOT have a value cell for 'geometry' (Solid-typed params \
-         lower to realizations); got members: {:?}",
+    let geom_cells: Vec<_> = bracket
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "geometry")
+        .collect();
+    assert_eq!(
+        geom_cells.len(),
+        1,
+        "After GHR-γ: Bracket MUST have exactly 1 ValueCellDecl for 'geometry' \
+         (cell_type=Type::Geometry); got members: {:?}",
         bracket
             .value_cells
             .iter()
             .map(|vc| vc.id.member.as_str())
             .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        geom_cells[0].cell_type,
+        Type::Geometry,
+        "expected cell_type=Type::Geometry for 'geometry' value cell, got {:?}",
+        geom_cells[0].cell_type
     );
 }
 

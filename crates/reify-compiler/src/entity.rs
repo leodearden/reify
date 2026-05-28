@@ -568,12 +568,14 @@ pub(crate) fn compile_entity(
                 // symmetrically to geometry lets: register as Type::Geometry,
                 // mark scope as having geometry, and track in known_geometry_lets
                 // so subsequent members can reference this param as a geometry source.
-                if is_solid_geometry_param(
-                    &ty,
-                    param.default.as_ref(),
-                    functions,
-                    &known_geometry_lets,
-                ) {
+                // (is_solid_geometry_param inlined here — retired in GHR-γ, task 3605)
+                if ty == Type::Geometry
+                    && param
+                        .default
+                        .as_ref()
+                        .map(|e| is_geometry_let(e, functions, &known_geometry_lets))
+                        .unwrap_or(false)
+                {
                     scope.has_geometry = true;
                     known_geometry_lets.insert(param.name.as_str());
                 }
@@ -853,14 +855,13 @@ pub(crate) fn compile_entity(
                         .sub_structure_traits
                         .insert(sub.structure_name.clone(), child_tmpl.trait_bounds.clone());
                     // Populate sub_member_types for self.sub.member resolution.
-                    let member_types: BTreeMap<String, Type> = child_tmpl
-                        .value_cells
-                        .iter()
-                        .map(|vc| (vc.id.member.clone(), vc.cell_type.clone()))
-                        .collect();
+                    // After GHR-γ (task 3605): geometry-typed params now appear in
+                    // member_type_map_from_template (they have ValueCellDecls), so
+                    // non-collection sub access to a Solid param resolves via the normal
+                    // ValueRef path.  See member_type_map_from_template for details.
                     scope
                         .sub_member_types
-                        .insert(sub.name.clone(), member_types);
+                        .insert(sub.name.clone(), member_type_map_from_template(child_tmpl));
                     // Populate sub_realization_names for cross-sub geometry diagnostic.
                     scope.sub_realization_names.insert(
                         sub.name.clone(),
@@ -1079,18 +1080,6 @@ pub(crate) fn compile_entity(
                         )
                     });
 
-                // Solid-typed params with a geometry-call default are lowered as
-                // realizations (third pass), not as scalar ValueCellDecls.
-                // Symmetric with the geometry-let early-continue in the Let branch.
-                if is_solid_geometry_param(
-                    &cell_type,
-                    param.default.as_ref(),
-                    functions,
-                    &known_geometry_lets,
-                ) {
-                    continue;
-                }
-
                 let auto_free = param.default.as_ref().and_then(extract_auto_free);
 
                 // Lower and validate annotations on this param
@@ -1162,64 +1151,6 @@ pub(crate) fn compile_entity(
                     trait_names,
                     diagnostics,
                 );
-
-                // Cross-sub bare geometry access (task 3441):
-                // `let copy = self.<sub>.<geom>` produces a CompiledExpr of kind
-                // `CompiledExprKind::CrossSubGeometryRef` (task 3508) with
-                // `Type::Geometry` via `try_resolve_cross_sub_geometry_value_ref`
-                // (expr.rs).  Value cells with Type::Geometry are unrepresentable
-                // (rejected by `value_type_kind_matches` in reify-eval; runtime
-                // invariant `assert_value_cell_types_representable`).  Skip the
-                // value cell creation in this specific case: the bare access
-                // produces no realisation op (a bare `MemberAccess` doesn't
-                // pass `is_geometry_let`) and no kernel op — the working path
-                // is designed for use *inside* a geometry call where the
-                // parallel `try_resolve_cross_sub_geom_ref` in geometry.rs
-                // lowers the access to a `GeomRef::Sub`.
-                //
-                // The check matches the typed `CompiledExprKind::CrossSubGeometryRef`
-                // marker emitted exclusively by
-                // `expr.rs::try_resolve_cross_sub_geometry_value_ref` (task 3508),
-                // so that other expressions that happen to inferentially resolve to
-                // Type::Geometry — e.g. an ident alias to a geometry let used in a
-                // BinaryOp like `alias + 1` — remain compiled as value cells.
-                // Pinned by `let_scope_tests::ident_alias_scope_type_is_geometry`
-                // (must create a value cell for `x`) and by
-                // `crates/reify-eval/tests/cross_sub_geometry_e2e.rs::bare_cross_sub_geometry_access_is_documented_v01_value_cell_only`
-                // (must NOT create a value cell for `copy`).
-                //
-                // Task 3454: emit a Warning at the drop site so the user knows
-                // the binding is a no-op.  Task 3508: replaced fragile heuristic
-                // (`ValueRef + entity.contains('.')`) with the typed variant tag.
-                // Dual regression guards:
-                // - `cross_sub_geometry_diagnostic_tests.rs::bare_cross_sub_geometry_let_emits_v01_no_op_warning`
-                //   (compiler-side; asserts Warning severity + keywords)
-                // - `cross_sub_geometry_e2e.rs::bare_cross_sub_geometry_access_is_documented_v01_value_cell_only`
-                //   (eval-side; filters by Severity::Error only — Warning is invisible to it)
-                if let reify_ir::CompiledExprKind::CrossSubGeometryRef(vid) = &compiled_expr.kind
-                {
-                    // Extract `<sub>` from the synthetic entity stamp `"<parent>.<sub>"`.
-                    // Entity names cannot contain '.' (the parser's identifier rule rejects
-                    // dots), so split_once is unambiguous for the current stamp format.
-                    // `unwrap_or` degrades gracefully if the stamp format ever changes
-                    // (e.g. a future task uses '::' as a separator) — the warning still
-                    // fires but names the full entity string instead of just the sub.
-                    let sub_name = vid.entity.split_once('.').map(|(_, s)| s).unwrap_or(&vid.entity);
-                    diagnostics.push(
-                        Diagnostic::warning(format!(
-                            "bare `let {} = self.{}.{}` produces no value cell in v0.1 \
-                             (cross-sub geometry must be used inside a geometry call — \
-                             wrap with translate/union/etc., or move the alias into the \
-                             child template's body)",
-                            let_decl.name, sub_name, vid.member
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            let_decl.span,
-                            "no-op in v0.1; binding silently dropped",
-                        )),
-                    );
-                    continue;
-                }
 
                 let cell_type = compiled_expr.result_type.clone();
                 let id = ValueCellId::new(entity_name, &let_decl.name);
@@ -2363,6 +2294,20 @@ pub(crate) fn compile_entity(
 /// sites and ensures future changes to the mapping (e.g. filtering hidden members)
 /// only need to be applied once. (task 2872)
 fn member_type_map_from_template(tmpl: &TopologyTemplate) -> BTreeMap<String, Type> {
+    // GHR-γ (task 3605): after bypass retirement, geometry-typed params
+    // (`param x : Solid = <geom>`) now produce a ValueCellDecl AND are included
+    // here.  For non-collection subs, this means `self.<sub>.<geom-param>`
+    // resolves through the normal `ValueRef` path (Type::Geometry cell) rather
+    // than the `CrossSubGeometryRef` bypass — the bypass only fires for geometry
+    // LETS which remain realization-only (no ValueCellDecl) and therefore still
+    // miss in `sub_member_types`.
+    //
+    // Note: for collection subs, including geometry cells means the "recommend
+    // indexed access" diagnostic fires instead of the geometry-specific cross-sub
+    // diagnostic for `self.<collection_sub>.<geom_param>` access.  The
+    // geometry-specific collection-sub diagnostic tests are therefore `#[ignore]`
+    // until GHR-δ+ provides a better routing strategy.  This is an accepted v0.1
+    // limitation; the "recommend indexed access" message is still informative.
     tmpl.value_cells
         .iter()
         .map(|vc| (vc.id.member.clone(), vc.cell_type.clone()))
@@ -2371,12 +2316,16 @@ fn member_type_map_from_template(tmpl: &TopologyTemplate) -> BTreeMap<String, Ty
 
 /// Collect the names of all named `RealizationDecl`s from a child `TopologyTemplate`.
 ///
-/// Geometry-typed params (`param x : Solid = <geom>`) and geometry lets
-/// (`let x = box(...)`) are BOTH lowered as `RealizationDecl`s (never as
-/// `ValueCellDecl`s), so neither ever appears in `member_type_map_from_template`
-/// output.  This helper captures those names so that `expr.rs` can distinguish
-/// "genuinely missing member" from "member exists as a realization — cross-sub
-/// geometry access not yet supported in v0.1".
+/// Geometry-typed params (`param x : Solid = <geom>`) are lowered as BOTH a
+/// `ValueCellDecl` (GHR-γ) AND a `RealizationDecl`.  Geometry lets
+/// (`let x = box(...)`) are lowered as `RealizationDecl`s only (no value cell).
+///
+/// Geometry params appear in BOTH `member_type_map_from_template` output AND here.
+/// Geometry lets appear here ONLY.  This lets `expr.rs` distinguish the two cases:
+/// - Solid param: member IS in `sub_member_types` → `ValueRef` path (step-2+).
+/// - Geometry let: member NOT in `sub_member_types` but IS in `sub_realization_names`
+///   → `CrossSubGeometryRef` path → bypass warning (until step-4 retires the bypass).
+/// - Genuinely missing: not in either map → "unknown member" error.
 ///
 /// Called side-by-side with `member_type_map_from_template` in the two Sub
 /// pre-pass sites (regular Sub at entity.rs ~line 766; match-arm Sub at ~line
