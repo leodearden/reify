@@ -20,7 +20,7 @@
 use std::f64::consts::PI;
 
 use reify_kernel_occt::{OcctKernel, Transform3};
-use reify_ir::{GeometryHandleId, GeometryOp, Value};
+use reify_ir::{GeometryError, GeometryHandleId, GeometryOp, Value};
 
 /// Axis-aligned bounding box derived from a flat `Vec<f32>` of vertex positions
 /// (X, Y, Z triples). Stored as f64 so comparisons against f64 tolerances are
@@ -414,4 +414,63 @@ fn apply_transform_to_handle_preserves_source_handle() {
         "source AABB after apply_transform_to_handle (multi-frame reuse contract: \
          source must be unmodified so it can be placed in multiple frames)",
     );
+}
+
+// ---------------------------------------------------------------------------
+// (f) Non-unit-quaternion validation surfaces from build_trsf through the FFI
+// ---------------------------------------------------------------------------
+
+/// A quaternion with |q|² far from 1.0 must produce an error.
+///
+/// **Why this matters**: rigid isometry requires unit quaternions; a non-unit
+/// quaternion would yield a non-orthonormal rotation matrix and corrupt the
+/// transformed shape. The C++ helper `build_trsf` enforces this invariant via
+/// `std::runtime_error(...)`, which `wrap_occt_call` catches and surfaces as a
+/// cxx-bridge error string. This test asserts the error survives end-to-end
+/// through the new FFI symbol — locks against accidentally bypassing the
+/// validation in the new wrapper (e.g. by constructing the gp_Trsf inline
+/// without routing through build_trsf).
+///
+/// Fixture: qw=2.0, |q|² = 4.0 — well outside the [1±1e-6] tolerance.
+#[test]
+fn apply_transform_to_handle_non_unit_quaternion_returns_err() {
+    let mut kernel = OcctKernel::new();
+
+    let source = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(10.0),
+            depth: Value::Real(10.0),
+        })
+        .expect("box creation should succeed");
+
+    let bad = Transform3 {
+        qw: 2.0,
+        qx: 0.0,
+        qy: 0.0,
+        qz: 0.0,
+        tx: 0.0,
+        ty: 0.0,
+        tz: 0.0,
+    };
+
+    let result = kernel.apply_transform_to_handle(source.id, &bad);
+
+    match result {
+        Ok(_) => panic!(
+            "non-unit quaternion (|q|² = 4.0) should have been rejected by build_trsf, \
+             but apply_transform_to_handle returned Ok"
+        ),
+        Err(GeometryError::OperationFailed(msg)) => {
+            assert!(
+                msg.contains("quaternion"),
+                "expected error message to mention 'quaternion' so the user can \
+                 diagnose the cause; got: {msg}"
+            );
+        }
+        Err(other) => panic!(
+            "expected GeometryError::OperationFailed with a 'quaternion' message; \
+             got: {other:?}"
+        ),
+    }
 }
