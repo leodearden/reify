@@ -359,8 +359,21 @@ fn cmd_check(args: &[String]) -> ExitCode {
             let mut engine = reify_eval::Engine::new(Box::new(checker), None);
             let eval_result = engine.eval(&compiled);
 
-            // Step-α: only single-binding activations are wired through here.
-            // The multi-binding rejection guard lands in step-12.
+            // Step-α only activates the single-binding form via the
+            // activate_purpose(name, entity) shim. Multi-ref activation
+            // requires task γ's activate_purpose_with_bindings, which
+            // does not exist yet — refuse with a specific error so users
+            // get an actionable signal distinct from the generic
+            // is_purpose_active failure below.
+            if activation.bindings.len() != 1 {
+                eprintln!(
+                    "Error: purpose '{}' was given {} bindings; multi-ref purpose activation is not yet supported (requires task γ / activate_purpose_with_bindings)",
+                    activation.name,
+                    activation.bindings.len()
+                );
+                return ExitCode::FAILURE;
+            }
+
             engine.activate_purpose(&activation.name, &activation.bindings[0].entity);
 
             // activate_purpose returns () and is silent (warn-log only) on
