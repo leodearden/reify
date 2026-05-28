@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
+use reify_eval::CancellationHandle;
 use reify_mcp::{SelectionInfo, SourceLocationInfo};
 
 use crate::claude_bridge::SidecarHandle;
@@ -28,6 +29,20 @@ pub struct AppState {
     pub selection: Arc<RwLock<SelectionInfo>>,
     /// Initial file passed on the CLI at startup (used for workspace resolution).
     pub initial_file: Mutex<Option<std::path::PathBuf>>,
+    /// In-flight FEA solve cancellation handle.
+    ///
+    /// Published by the engine-side dispatch wiring (follow-on task) when a
+    /// `solve_elastic_static` dispatch starts; cleared on completion.  The
+    /// `cancel_solve` Tauri command reads this slot, calls `.cancel()` if
+    /// present, and clears the slot.  A `None` value means no solve is
+    /// currently running.
+    ///
+    /// Design: the engine mutex is held for the duration of a solve, so we
+    /// cannot reach the `CancellationHandle` through `AppState::engine` without
+    /// deadlocking.  Publishing a clone here (the same pattern used by
+    /// `cancellation_compute_dispatch.rs:124-127`) sidesteps the lock order
+    /// issue.  PRD §11 Q2 / compute-node-contract §2 SLA.
+    pub pending_solve_cancel: Mutex<Option<CancellationHandle>>,
 }
 
 // --- Helper functions for testability ---
@@ -285,4 +300,26 @@ pub fn get_mechanism_descriptors_impl(
     engine: &Mutex<EngineSession>,
 ) -> Result<Vec<MechanismDescriptor>, String> {
     crate::engine_lock::with_engine_lock(engine, |s| s.get_mechanism_descriptors())
+}
+
+/// Cancel an in-flight FEA solve (GR-016 ζ).
+///
+/// Reads `state.pending_solve_cancel`, calls `.cancel()` on the
+/// `CancellationHandle` if one is present, and clears the slot.
+/// Returns `Ok(())` in both the "cancelled" and "no-op" cases — there is
+/// nothing to cancel when the slot is empty, and that is a valid outcome.
+///
+/// The engine-side wiring that publishes the handle into the slot is a
+/// follow-on task; this function is the command infrastructure seam.
+/// PRD §11 Q2 / compute-node-contract §2 SLA.
+pub fn cancel_solve_impl(state: &AppState) -> Result<(), String> {
+    let handle = state
+        .pending_solve_cancel
+        .lock()
+        .map_err(|e| format!("pending_solve_cancel mutex poisoned: {e}"))?
+        .take();
+    if let Some(h) = handle {
+        h.cancel();
+    }
+    Ok(())
 }
