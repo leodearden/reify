@@ -92,10 +92,9 @@ impl IsoMeshOptions {
     /// in the same `ToleranceBucket`, silently returning wrong cached geometry.
     /// Pinned by `default_content_hash_is_not_no_options_sentinel`.
     pub fn content_hash(&self) -> ContentHash {
-        // STUB: returns ContentHash(0) — deliberately the NO_OPTIONS sentinel
-        // so the `default_content_hash_is_not_no_options_sentinel` test fails.
-        // Replaced in step-2 with the real domain-tagged hash.
-        ContentHash(0)
+        ContentHash::of_str("IsoMeshOptions")
+            .combine(ContentHash::of(&self.iso_value.to_le_bytes()))
+            .combine(ContentHash::of(&self.target_edge_length.to_le_bytes()))
     }
 }
 
