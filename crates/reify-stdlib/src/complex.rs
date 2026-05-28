@@ -60,11 +60,14 @@ pub(crate) fn eval_complex(name: &str, args: &[Value]) -> Option<Value> {
             _ => Value::Undef,
         }),
 
-        // phase(z): compute atan2(im, re), return Scalar with ANGLE dimension.
+        // phase(z) / arg(z): compute atan2(im, re), return Scalar with ANGLE dimension.
         // phase(0+0i) is undefined — zero vector has no direction.
-        // Delegates to the shared helper so the method path (reify-expr) and
-        // builtin path share identical pre-guards and output construction.
-        "phase" => unary(args, |v| match v {
+        // Both "phase" and "arg" route to helpers::complex_phase, so they are
+        // guaranteed identical pre-guards (non-finite → Undef, zero-vector → Undef)
+        // and output construction.  `arg` is the standard complex-analysis alias
+        // for `phase` (the "argument" of z, i.e. angle in polar form).
+        // See helpers::complex_phase for the implementation.
+        "phase" | "arg" => unary(args, |v| match v {
             Value::Complex { re, im, .. } => complex_phase(*re, *im),
             _ => Value::Undef,
         }),
@@ -634,6 +637,76 @@ mod tests {
         assert!(
             eval_builtin("phase", &[z]).is_undef(),
             "phase(Complex{{0,0,LENGTH}}) should be Undef regardless of dimension"
+        );
+    }
+
+    // ── arg() alias tests (step-3, task-3952) ────────────────────────────────
+
+    #[test]
+    fn arg_matches_phase_dimensionless() {
+        // arg(z) must equal phase(z) exactly (same code path) for dimensionless z
+        let z = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert_eq!(
+            eval_builtin("arg", std::slice::from_ref(&z)),
+            eval_builtin("phase", &[z]),
+            "arg(z) must equal phase(z) for dimensionless Complex"
+        );
+    }
+
+    #[test]
+    fn arg_matches_phase_dimensioned() {
+        // arg(z) must equal phase(z) for dimensioned Complex (phase is dimension-invariant)
+        let z = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert_eq!(
+            eval_builtin("arg", std::slice::from_ref(&z)),
+            eval_builtin("phase", &[z]),
+            "arg(z) must equal phase(z) for dimensioned Complex"
+        );
+    }
+
+    #[test]
+    fn arg_complex_1_1_returns_pi_over_4() {
+        // arg(1+1i) = atan2(1,1) = π/4, with ANGLE dimension
+        let z = Value::Complex {
+            re: 1.0,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert_scalar_approx!(
+            eval_builtin("arg", &[z]),
+            std::f64::consts::FRAC_PI_4,
+            DimensionVector::ANGLE
+        );
+    }
+
+    #[test]
+    fn arg_zero_complex_returns_undef() {
+        // arg(0+0i) is undefined — zero vector has no direction
+        let z = Value::Complex {
+            re: 0.0,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("arg", &[z]).is_undef(),
+            "arg(0+0i) should be Undef, not Scalar{{0.0, ANGLE}}"
+        );
+    }
+
+    #[test]
+    fn arg_non_complex_returns_undef() {
+        // arg on a non-Complex value must return Undef
+        assert!(
+            eval_builtin("arg", &[Value::Real(1.0)]).is_undef(),
+            "arg(Real) should be Undef"
         );
     }
 
