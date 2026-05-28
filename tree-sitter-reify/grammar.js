@@ -802,6 +802,18 @@ module.exports = grammar({
 
     // ── Expressions ─────────────────────────────────────────
     // Precedence (low → high):
+    //  -15: implies (keyword, right-assoc) — loosest in language
+    //  -14: or  (keyword, left-assoc)
+    //  -13: and (keyword, left-assoc)
+    //  -12: not (keyword, unary prefix)   ─╮ keyword logical-operator band
+    //         NOTE: tree-sitter prec is higher=tighter, the INVERSE of spec §16's
+    //         "1 (highest) … 15 (lowest)" numbering. Spec levels 12–15 are negated
+    //         here so the ordering not(−12) > and(−13) > or(−14) > implies(−15)
+    //         matches the spec exactly. The whole band sits below range(0) and the
+    //         symbol forms (||=1, &&=2), making keyword ops the outermost layer.
+    //         Keyword `not`(−12) is intentionally LOOSER than symbol `!`(7) per
+    //         spec §16: `not a == b` → not(a==b), `!a == b` → (!a)==b.
+    //   0: range (.., ..<, single-sided)
     //   1: || (or)
     //   2: && (and)
     //   3: ==, != (equality)
@@ -935,6 +947,10 @@ module.exports = grammar({
     ),
 
     binary_expression: $ => choice(
+      // ── Keyword logical-operator band (spec §16 levels 13–14, negated for tree-sitter) ──
+      prec.left(-13, seq(field('left', $._expression), field('op', 'and'), field('right', $._expression))),
+      prec.left(-14, seq(field('left', $._expression), field('op', 'or'), field('right', $._expression))),
+      // ── Symbol logical operators (kept for back-compat; deprecation deferred per PRD §10 Q3) ──
       prec.left(1, seq(field('left', $._expression), field('op', '||'), field('right', $._expression))),
       prec.left(2, seq(field('left', $._expression), field('op', '&&'), field('right', $._expression))),
       prec.left(3, seq(field('left', $._expression), field('op', '=='), field('right', $._expression))),
@@ -969,6 +985,9 @@ module.exports = grammar({
     ),
 
     unary_expression: $ => choice(
+      // ── Keyword logical-operator band (spec §16 level 12, negated for tree-sitter) ──
+      prec(-12, seq(field('op', 'not'), field('operand', $._expression))),
+      // ── Symbol unary operators (kept for back-compat; `!` deprecation deferred per PRD §10 Q3) ──
       prec(7, seq(field('op', '-'), field('operand', $._expression))),
       prec(7, seq(field('op', '!'), field('operand', $._expression))),
     ),
