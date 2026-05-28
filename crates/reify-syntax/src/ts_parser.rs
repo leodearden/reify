@@ -1908,12 +1908,12 @@ impl<'a> Lowering<'a> {
                     // Both auto and non-auto values are captured so the AST is complete;
                     // the compiler acts only on ExprKind::Auto entries this task (ε handles
                     // non-auto resolution).
-                    if let Some(name_node) = child.child_by_field_name("name") {
-                        if let Some(value_node) = child.child_by_field_name("value") {
-                            let param_name = self.node_text(name_node).to_string();
-                            if let Some(expr) = self.lower_binding_value(value_node) {
-                                param_overrides.push((param_name, expr));
-                            }
+                    if let Some(name_node) = child.child_by_field_name("name")
+                        && let Some(value_node) = child.child_by_field_name("value")
+                    {
+                        let param_name = self.node_text(name_node).to_string();
+                        if let Some(expr) = self.lower_binding_value(value_node) {
+                            param_overrides.push((param_name, expr));
                         }
                     }
                     continue;
