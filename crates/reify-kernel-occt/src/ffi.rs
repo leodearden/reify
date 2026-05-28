@@ -442,6 +442,20 @@ pub mod ffi {
             angle_rad: f64,
         ) -> Result<UniquePtr<OcctShape>>;
 
+        /// Apply the rigid transform encoded in `t` (unit-quaternion +
+        /// translation) to `shape`, returning a fresh shape that shares
+        /// topology pointers with the source via `TopLoc_Location` —
+        /// `BRepBuilderAPI_Transform(…, Standard_False)`. Used by the
+        /// sub-placement op (PRD §5, task 3901).
+        ///
+        /// Returns an error (Err(cxx::Exception)) when the quaternion is not a
+        /// unit quaternion (|q|² outside [1−1e-6, 1+1e-6]); the message starts
+        /// with "build_trsf: non-unit quaternion".
+        fn apply_transform_to_shape(
+            shape: &OcctShape,
+            t: &Transform3Props,
+        ) -> Result<UniquePtr<OcctShape>>;
+
         /// Apply a general non-rigid affine transform (3×3 linear + translation)
         /// to `shape` using OCCT's `gp_GTrsf` / `BRepBuilderAPI_GTransform`.
         ///

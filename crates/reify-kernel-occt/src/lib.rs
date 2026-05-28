@@ -862,6 +862,41 @@ impl OcctKernel {
         queries::distance_with_transform(s1, s2, t_rel)
     }
 
+    /// Apply the rigid transform `t` to the shape identified by `handle`,
+    /// returning a *new* handle that points at the transformed result. The
+    /// source handle is preserved unmodified so the same child shape can be
+    /// placed under several different frames (sub-placement PRD §5, task 3901).
+    ///
+    /// The transform is encoded via `BRepBuilderAPI_Transform(…, Standard_False)`
+    /// (TopLoc_Location) — no geometry bake, exact-isometry preserved at
+    /// machine precision. The result inherits the source's [`BRepKind`] because
+    /// a rigid isometry preserves topology (a Solid stays a Solid, a Face stays
+    /// a Face, …).
+    ///
+    /// # Errors
+    /// - `GeometryError::InvalidReference(handle)` if `handle` is unknown to
+    ///   this kernel.
+    /// - `GeometryError::OperationFailed(msg)` if the quaternion stored in `t`
+    ///   is not a unit quaternion (|q|² outside [1−1e-6, 1+1e-6]) — the message
+    ///   contains "quaternion". Any other OCCT failure is also surfaced via
+    ///   `OperationFailed`.
+    pub fn apply_transform_to_handle(
+        &mut self,
+        handle: GeometryHandleId,
+        t: &crate::Transform3,
+    ) -> Result<GeometryHandleId, GeometryError> {
+        // Inherit the source's BRepKind so a transformed Face stays a Face,
+        // a Wire stays a Wire, etc. Missing repr falls back to Solid to match
+        // the implicit default in `store(shape)`.
+        let source_repr = self.repr_of(handle).unwrap_or(BRepKind::Solid);
+        let shape = self.get_shape(handle)?;
+        let props = ffi::ffi::Transform3Props::from(t);
+        let new_shape = ffi::ffi::apply_transform_to_shape(shape, &props)
+            .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+        let new_handle = self.store_with_repr(new_shape, source_repr);
+        Ok(new_handle.id)
+    }
+
     /// Return the closest point on the shape identified by `handle` to the
     /// query point `(px, py, pz)`.
     ///

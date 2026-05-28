@@ -20,7 +20,7 @@
 use std::f64::consts::PI;
 
 use reify_kernel_occt::{OcctKernel, Transform3};
-use reify_ir::{GeometryError, GeometryHandleId, GeometryOp, Value};
+use reify_ir::{GeometryHandleId, GeometryOp, Value};
 
 /// Axis-aligned bounding box derived from a flat `Vec<f32>` of vertex positions
 /// (X, Y, Z triples). Stored as f64 so comparisons against f64 tolerances are
