@@ -22,6 +22,7 @@ pub mod diagnostics;
 pub mod dimension;
 pub mod hash;
 pub mod identity;
+pub mod persistent_cache;
 pub mod primitives;
 pub mod source_location;
 pub mod spanned_ident;
@@ -51,5 +52,6 @@ pub use source_location::{
     SourceLocationInfo, build_line_offsets, byte_offset_to_line_col,
     line_col_to_byte_offset_with_offsets,
 };
+pub use persistent_cache::PersistentlyCacheable;
 pub use spanned_ident::SpannedIdent;
 pub use ty::Type;

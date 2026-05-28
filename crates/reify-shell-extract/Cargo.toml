@@ -8,16 +8,13 @@ description = "Voxel-medial mid-surface extraction for v0.4 shell-element FEA (P
 [dependencies]
 reify-core.workspace = true
 reify-ir.workspace = true
-# `PersistentlyCacheable` trait lives in `reify-eval::persistent_cache` (see
-# crates/reify-eval/src/persistent_cache.rs:399). Per Rust's orphan rule,
-# `impl PersistentlyCacheable for ShellExtractionResult` must live where either
-# the trait or the type is local. Since `ShellExtractionResult` is defined here
-# in `result.rs`, the impl lives here too — which requires this `reify-eval`
-# dep. Task α (#3592). reify-eval does NOT currently depend on this crate, so
-# this dep is acyclic at α land time; task γ's planned `reify-eval →
-# reify-shell-extract` edge will conflict and γ owns the resolution (move trait
-# to `reify-types` OR co-locate the impl in reify-eval).
-reify-eval.workspace = true
+# `PersistentlyCacheable` trait was moved from `reify-eval::persistent_cache`
+# to `reify-core::persistent_cache` during task γ (#3834) to break the
+# `reify-shell-extract → reify-eval` dependency cycle. The trait body uses
+# only `std::io::{Read, Write}` + `Sized`, satisfying reify-core's B1
+# invariant (zero `reify-*` deps). The `reify-eval` dep has been removed;
+# `impl PersistentlyCacheable for ShellExtractionResult` in `result.rs` now
+# references `reify_core::persistent_cache::PersistentlyCacheable` directly.
 # Wire-format toolchain mirroring `ElasticResult`'s precedent at
 # `reify-eval::persistent_cache.rs:697-803`: bincode 1.3 fixint-LE for the
 # header, zstd 0.13 level-0 for byte-deterministic compression, bytemuck for

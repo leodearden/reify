@@ -12,6 +12,7 @@ reify-ir.workspace = true
 reify-expr.workspace = true
 reify-syntax.workspace = true
 reify-compiler.workspace = true
+reify-shell-extract.workspace = true
 reify-solver-elastic.workspace = true
 bincode.workspace = true
 bytemuck.workspace = true
