@@ -136,3 +136,49 @@ fn apply_transform_to_handle_identity_returns_box_with_same_aabb() {
         "identity-transform AABB",
     );
 }
+
+// ---------------------------------------------------------------------------
+// (b) Pure-translation regression lock
+// ---------------------------------------------------------------------------
+
+/// A pure translation (qw=1, zero rotation) shifts the AABB by the translation
+/// vector exactly. `build_trsf` constructs the gp_Trsf via
+/// `SetTranslationPart(gp_Vec(tx,ty,tz))` so this exercises the unconditional
+/// translation path.
+///
+/// Fixture: 10×10×10 box centered at origin (X,Y,Z ∈ [-5, 5]) translated by
+/// (10, 20, 30); expected AABB is min=[5, 15, 25] / max=[15, 25, 35].
+#[test]
+fn apply_transform_to_handle_pure_translation_shifts_aabb() {
+    let mut kernel = OcctKernel::new();
+
+    let source = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(10.0),
+            depth: Value::Real(10.0),
+        })
+        .expect("box creation should succeed");
+
+    let t = Transform3 {
+        qw: 1.0,
+        qx: 0.0,
+        qy: 0.0,
+        qz: 0.0,
+        tx: 10.0,
+        ty: 20.0,
+        tz: 30.0,
+    };
+
+    let transformed_id = kernel
+        .apply_transform_to_handle(source.id, &t)
+        .expect("pure-translation transform should succeed");
+
+    let transformed_aabb = aabb_of_handle(&kernel, transformed_id);
+    let expected = Aabb {
+        min: [5.0, 15.0, 25.0],
+        max: [15.0, 25.0, 35.0],
+    };
+
+    assert_aabb_eq(transformed_aabb, expected, 1e-6, "pure-translation AABB");
+}
