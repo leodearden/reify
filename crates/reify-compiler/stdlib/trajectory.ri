@@ -21,6 +21,10 @@
 //   - trait Shaper                      (marker for all input-shaper variants, PRD §5)
 //   - structure def JointLimit          (per-joint actuator constraint, PRD §5.2)
 //   - structure def TOTSShaper : Shaper  (time-optimal trajectory shaper, PRD §5.2)
+//   - type Pose3 / Vec3 / LocationId    (Real placeholders, η; PRD §6.2)
+//   - structure def EndEffectorTrack    (forward-pass simulator output, η; PRD §6.2)
+//   - fn end_effector_track / deviation_from_nominal / peak_deviation
+//                                       (lazy accessors over EndEffectorTrack, η; PRD §6.2)
 //
 // Module placement: registered last in `stdlib_loader.rs` — `std.trajectory`
 // has no compile-time dependency on any other stdlib module (every type it
@@ -43,6 +47,19 @@
 //      analogous alias makes sense (Mechanism is a structural type, not a
 //      scalar dimension) — same pattern as `LoadCase.loads : List<Real>`'s
 //      `TODO(load-trait)` annotation in `fea_multi_case.ri`.
+//   3. TYPE-ALIAS COLLAPSE (η-phase): `Pose3`, `Vec3`, and `LocationId` are
+//      all aliased to `Real` (lines 67-86). Because all three resolve to the
+//      identical underlying type, the typechecker currently provides ZERO
+//      nominal type-checking between them — the compiler will silently accept
+//      a `Pose3` value where a `LocationId` index is expected, or a `Vec3`
+//      displacement where a `Pose3` pose is required. This is a known
+//      placeholder trade-off: the geometry/pose PRD (not yet landed) will
+//      replace these aliases with proper record types, at which point
+//      call-site type confusion becomes a compile error. Until then, the
+//      hazard is documented rather than enforced — the three TODO(…-type)
+//      comments on each alias name the owning PRD and serve as the retarget
+//      hooks. No α/η-phase consumer is expected to mix these types at
+//      runtime; the risk is low and closes when the geometry/pose PRD lands.
 
 // ── Type aliases ──────────────────────────────────────────────────────────
 
@@ -57,6 +74,36 @@
 // TODO(joint-value-type): retarget to the kinematic-completion PRD's
 // `JointValue` (likely `Scalar<...>` or a struct) when that PRD lands.
 pub type JointValue = Real
+
+// Pose3: 3-D rigid-body pose (position + orientation) at a single location
+// and time instant. Currently aliased to `Real` as the geometry/pose PRD
+// (which owns the proper Pose3 type) has not landed yet. Same placeholder
+// convention as `pub type JointValue = Real` above — retargeting this line
+// propagates the type tightening to every consumer without touching any
+// structure_def body.
+//
+// TODO(pose3-type): retarget to the geometry/pose PRD's `Pose3` type when
+// that PRD lands.
+pub type Pose3 = Real
+
+// Vec3: 3-D Euclidean vector (vibration displacement or offset). Currently
+// aliased to `Real` as the geometry/pose PRD (which owns the proper Vec3
+// type) has not landed yet. Same placeholder convention as `pub type
+// JointValue = Real` above.
+//
+// TODO(vec3-type): retarget to the geometry/pose PRD's `Vec3` type when
+// that PRD lands.
+pub type Vec3 = Real
+
+// LocationId: identifier for a named monitoring location on a mechanism
+// link (indexes into the per-location inner lists on EndEffectorTrack).
+// Currently aliased to `Real` as the geometry/pose PRD (which owns the
+// proper LocationId type) has not landed yet. Same placeholder convention
+// as `pub type JointValue = Real` above.
+//
+// TODO(location-id-type): retarget to the geometry/pose PRD's `LocationId`
+// type when that PRD lands.
+pub type LocationId = Real
 
 // ── Marker traits ─────────────────────────────────────────────────────────
 
@@ -233,6 +280,50 @@ structure def PiecewisePolynomialProfile : Profile {
     constraint waypoints.count > 0
 }
 
+// ── EndEffectorTrack ──────────────────────────────────────────────────────────
+
+// EndEffectorTrack — forward-pass simulator output value type (PRD §6.2).
+//
+// Captures the full time-history of end-effector poses at every monitored
+// location on the mechanism — produced by `simulate_trajectory` (η phase)
+// and consumed by the lazy accessor fns below.
+//
+//   mechanism        : Real          — the kinematic chain being simulated.
+//                                      Currently `Real` placeholder.
+//   modal_result     : Real          — the modal analysis result driving the
+//                                      vibration_offset field. Currently `Real`
+//                                      placeholder.
+//   t_samples        : List<Time>    — the sampling instants used by the
+//                                      forward-pass simulator.
+//   nominal_pose     : List<List<Pose3>>    — nominal rigid-body poses:
+//                                      outer index = time, inner = location.
+//   vibration_offset : List<List<Vec3>>     — vibration displacement offsets:
+//                                      outer index = time, inner = location.
+//   combined_pose    : List<List<Pose3>>    — nominal_pose + vibration_offset:
+//                                      outer index = time, inner = location.
+//
+// No trait bound: plain value-type output, not a Profile/BoundaryCondition
+// variant. No structure-level constraint: simulator output — every field is
+// fully determined by the simulator; there is no caller-authored invariant to
+// enforce at construction (contrast with PiecewisePolynomialProfile's
+// `constraint waypoints.count > 0`, which rejects a bad caller input).
+//
+// TODO(mechanism-type): tighten `mechanism : Real` to the kinematic-
+// completion PRD's `Mechanism` type when that PRD lands. Same shape and
+// rationale as `PiecewisePolynomialProfile.mechanism : Real` above.
+//
+// TODO(modal-result-type): tighten `modal_result : Real` to the modal-
+// analysis PRD's `ModalResult` type when that PRD lands. Same encoding
+// rationale as TODO(mechanism-type) above.
+structure def EndEffectorTrack {
+    param mechanism        : Real
+    param modal_result     : Real
+    param t_samples        : List<Time>
+    param nominal_pose     : List<List<Pose3>>
+    param vibration_offset : List<List<Vec3>>
+    param combined_pose    : List<List<Pose3>>
+}
+
 // ── Evaluator helper fn signatures (compiler-known intrinsics) ────────────────
 //
 // These four functions are declared with minimal type-correct stub bodies that
@@ -304,6 +395,77 @@ pub fn evaluate_profile_ddot(p: Profile, t: Time) -> List<JointValue> { [0.0] }
 // evaluator and the PiecewisePolynomialProfile runtime accessor land.
 pub fn profile_duration(p: Profile) -> Time { 0.0 * 1s }
 
+// ── EndEffectorTrack lazy accessor fns ───────────────────────────────────────
+//
+// Three lazy accessor fns for the EndEffectorTrack output type (PRD §6.2).
+// Real lazy-evaluation logic (per-time index into combined_pose / per-time
+// Euclidean distance / max over time) belongs to task θ
+// (`reify-stdlib/src/trajectory/simulate.rs`, intra-batch consumer). Each
+// stub body below is a type-correct placeholder satisfying the grammar's
+// fn_body requirement (same rationale as the α evaluator stubs above).
+//
+// η-phase hazard: if a call to any of these three fns reaches the evaluator
+// before θ lands, it will silently return the stub value (`[]`, `[0mm]`, or
+// `0mm` respectively) rather than a real result. In the case of
+// `deviation_from_nominal`, callers that iterate expecting one value per
+// `t_samples` element will see a length-1 list silently. No η-phase consumer
+// is expected to invoke these fns at runtime; the risk is low. θ closes the
+// hazard by replacing each stub body with the real lazy-evaluation dispatch.
+
+// end_effector_track — extract the combined pose time-series for a single
+// named location from an EndEffectorTrack (PRD §6.2).
+//
+// `track : EndEffectorTrack` — the simulator output record.
+// `location : LocationId`    — the location index (LocationId = Real alias)
+//                              selecting the inner slice at each time step.
+//
+// Returns `List<Pose3>` (= List<Real> via the Pose3 alias) — one pose per
+// time sample in `track.t_samples`.
+//
+// Stub body `[]` is an empty list literal; Pose3 = Real carries no dimension,
+// so the empty literal types as List<Real> without a dimensional hint
+// (contrast with `[0mm]` needed for List<Length> in deviation_from_nominal).
+//
+// TODO(θ): replace stub body with real lazy eval:
+//   `track.combined_pose.map(|row| row[location])`
+// once θ (`reify-stdlib/src/trajectory/simulate.rs`) lands.
+pub fn end_effector_track(track: EndEffectorTrack, location: LocationId) -> List<Pose3> { [] }
+
+// deviation_from_nominal — compute the per-time-sample Euclidean distance
+// between combined_pose and nominal_pose at a single named location
+// (PRD §6.2).
+//
+// Returns `List<Length>` — one Length scalar per time sample in
+// `track.t_samples`.
+//
+// Stub body `[0mm]` is a one-element List<Length> literal. The single
+// Length-dimensioned element provides the dimensional hint the compiler needs
+// to infer the list's element type (avoids the "cannot infer element type of
+// empty list literal" diagnostic at `reify-compiler/src/expr.rs:2082` that
+// an empty `[]` would trigger for a Length-typed list). Precedent:
+// `standard_stock.ri::standard_bolt_lengths() -> List<Length> { [8mm, ...] }`.
+//
+// TODO(θ): replace stub body with real lazy eval:
+//   `track.combined_pose.zip(track.nominal_pose)
+//    .map(|(comb_row, nom_row)| distance(comb_row[location], nom_row[location]))`
+// once θ (`reify-stdlib/src/trajectory/simulate.rs`) lands.
+pub fn deviation_from_nominal(track: EndEffectorTrack, location: LocationId) -> List<Length> { [0mm] }
+
+// peak_deviation — compute the maximum Euclidean deviation from nominal
+// across all time samples at a single named location (PRD §6.2).
+//
+// Returns a scalar `Length` — the single peak value over all time samples
+// (contrast with `deviation_from_nominal` which returns one value per time
+// sample as a `List<Length>`).
+//
+// Stub body `0mm` is the canonical Length-zero literal (precedent:
+// `tolerancing.ri:68` `tolerance_value : Length = 0mm`). Type-correct for
+// the scalar `Length` return without any dimensional-hint ceremony.
+//
+// TODO(θ): replace stub body with real lazy eval:
+//   `deviation_from_nominal(track, location).max()`
+// once θ (`reify-stdlib/src/trajectory/simulate.rs`) lands.
+pub fn peak_deviation(track: EndEffectorTrack, location: LocationId) -> Length { 0mm }
 // ── Shaper marker trait (PRD §5) ──────────────────────────────────────────────
 
 // Shaper — marker trait for every input-shaper variant (PRD §5).
