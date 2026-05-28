@@ -765,6 +765,117 @@ mod tests {
         }
     }
 
+    // ─── monte_carlo_stackup step-3 tests (RED until step-4) ───────────────
+
+    #[test]
+    fn monte_carlo_map_has_expected_keys_no_spec() {
+        // 3-arg call → exactly 9 keys, NO mc_yield_fraction
+        let m = match eval_stackup("monte_carlo_stackup", &[
+            golden_chain(), Value::Int(1000), Value::Int(42),
+        ]) {
+            Some(Value::Map(m)) => m,
+            other => panic!("expected Some(Map), got {:?}", other),
+        };
+        let expected_keys: std::collections::BTreeSet<Value> = [
+            "nominal_gap", "mc_mean", "mc_sigma", "mc_min", "mc_max",
+            "mc_p_low", "mc_p_high", "samples", "seed",
+        ]
+        .iter()
+        .map(|k| Value::String((*k).into()))
+        .collect();
+        let actual_keys: std::collections::BTreeSet<Value> = m.keys().cloned().collect();
+        assert_eq!(actual_keys, expected_keys,
+            "key mismatch: extra={:?} missing={:?}",
+            actual_keys.difference(&expected_keys).collect::<Vec<_>>(),
+            expected_keys.difference(&actual_keys).collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn monte_carlo_samples_seed_int_keys() {
+        let m = match eval_stackup("monte_carlo_stackup", &[
+            golden_chain(), Value::Int(1000), Value::Int(42),
+        ]) {
+            Some(Value::Map(m)) => m,
+            other => panic!("expected Some(Map), got {:?}", other),
+        };
+        assert_eq!(m[&Value::String("samples".into())], Value::Int(1000));
+        assert_eq!(m[&Value::String("seed".into())],    Value::Int(42));
+    }
+
+    #[test]
+    fn monte_carlo_nominal_gap_matches_chain() {
+        // golden_chain: gap_nominal = 0.010 - 0.005 + 0.003 = 0.008 m
+        let m = match eval_stackup("monte_carlo_stackup", &[
+            golden_chain(), Value::Int(100), Value::Int(99),
+        ]) {
+            Some(Value::Map(m)) => m,
+            other => panic!("expected Some(Map), got {:?}", other),
+        };
+        let ng = scalar_si(&m[&Value::String("nominal_gap".into())]);
+        assert_rel_close(ng, 0.008, 1e-12, "nominal_gap");
+    }
+
+    #[test]
+    fn monte_carlo_length_keys_are_length_scalars() {
+        let m = match eval_stackup("monte_carlo_stackup", &[
+            golden_chain(), Value::Int(500), Value::Int(7),
+        ]) {
+            Some(Value::Map(m)) => m,
+            other => panic!("expected Some(Map), got {:?}", other),
+        };
+        for key in &["mc_mean", "mc_sigma", "mc_min", "mc_max", "mc_p_low", "mc_p_high"] {
+            let v = &m[&Value::String((*key).into())];
+            match v {
+                Value::Scalar { si_value, dimension }
+                    if *dimension == DimensionVector::LENGTH && si_value.is_finite() => {}
+                other => panic!("key {key}: expected finite LENGTH Scalar, got {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn monte_carlo_min_le_p_low_le_p_high_le_max() {
+        let m = match eval_stackup("monte_carlo_stackup", &[
+            golden_chain(), Value::Int(2000), Value::Int(13),
+        ]) {
+            Some(Value::Map(m)) => m,
+            other => panic!("expected Some(Map), got {:?}", other),
+        };
+        let mc_min   = scalar_si(&m[&Value::String("mc_min".into())]);
+        let mc_p_low = scalar_si(&m[&Value::String("mc_p_low".into())]);
+        let mc_p_high= scalar_si(&m[&Value::String("mc_p_high".into())]);
+        let mc_max   = scalar_si(&m[&Value::String("mc_max".into())]);
+        assert!(mc_min <= mc_p_low,  "mc_min({mc_min}) > mc_p_low({mc_p_low})");
+        assert!(mc_p_low <= mc_p_high,"mc_p_low({mc_p_low}) > mc_p_high({mc_p_high})");
+        assert!(mc_p_high <= mc_max, "mc_p_high({mc_p_high}) > mc_max({mc_max})");
+    }
+
+    #[test]
+    fn monte_carlo_normal_only_mean_near_nominal_within_se() {
+        // golden_chain: 3 Normal contributors, gap_nominal = 0.008 m
+        // rss_sigma = sqrt((1e-4/3)^2 + (5e-5/3)^2 + (2e-4/3)^2)
+        //           = sqrt(1.11111e-9 + 2.77778e-10 + 4.44444e-9) / 3 × 3  -- let's compute
+        // t1=1e-4, t2=5e-5, t3=2e-4; rss_sigma = sqrt(t1²+t2²+t3²)/sigma_level
+        // = sqrt(1e-8 + 2.5e-9 + 4e-8) / 3 = sqrt(5.25e-8) / 3
+        // SE(mean) = rss_sigma / sqrt(N)
+        // At N=10_000, 5×SE is 5×(sqrt(5.25e-8)/3)/100 ≈ 1.28e-6  — well within 1e-4
+        let n = 10_000_usize;
+        let rss_sigma = (5.25e-8_f64).sqrt() / 3.0;
+        let five_se = 5.0 * rss_sigma / (n as f64).sqrt();
+        let m = match eval_stackup("monte_carlo_stackup", &[
+            golden_chain(), Value::Int(n as i64), Value::Int(42),
+        ]) {
+            Some(Value::Map(m)) => m,
+            other => panic!("expected Some(Map), got {:?}", other),
+        };
+        let mc_mean = scalar_si(&m[&Value::String("mc_mean".into())]);
+        assert!(
+            (mc_mean - 0.008_f64).abs() <= five_se,
+            "mc_mean {mc_mean:.6e} not within 5×SE={five_se:.2e} of nominal 0.008"
+        );
+    }
+
     // ─── stackup_worst_case tests (step-1 RED; GREEN after step-2 impl) ──────
 
     #[test]
