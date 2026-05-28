@@ -20,23 +20,40 @@ pub(crate) fn eval_stackup(name: &str, args: &[Value]) -> Option<Value> {
     })
 }
 
+// --- private helpers ---
+
+/// Validate that `v` is a LENGTH scalar with a finite `si_value`.
+fn len_scalar(v: &Value) -> Option<f64> {
+    validate_dimensioned_scalar(v, DimensionVector::LENGTH)
+}
+
+/// Parse a sign value: accepts only `Value::Int(1)` or `Value::Int(-1)`.
+fn parse_sign(v: &Value) -> Option<i64> {
+    match v {
+        Value::Int(1) => Some(1),
+        Value::Int(-1) => Some(-1),
+        _ => None,
+    }
+}
+
+// --- builder functions ---
+
 fn contributor(args: &[Value]) -> Value {
     if !matches!(args.len(), 2 | 3) {
         return Value::Undef;
     }
-    let nominal_si = match validate_dimensioned_scalar(&args[0], DimensionVector::LENGTH) {
+    let nominal_si = match len_scalar(&args[0]) {
         Some(v) => v,
         None => return Value::Undef,
     };
-    let tol_si = match validate_dimensioned_scalar(&args[1], DimensionVector::LENGTH) {
+    let tol_si = match len_scalar(&args[1]) {
         Some(v) => v,
         None => return Value::Undef,
     };
     let sign: i64 = if args.len() == 3 {
-        match &args[2] {
-            Value::Int(1) => 1,
-            Value::Int(-1) => -1,
-            _ => return Value::Undef,
+        match parse_sign(&args[2]) {
+            Some(s) => s,
+            None => return Value::Undef,
         }
     } else {
         1
@@ -50,23 +67,22 @@ fn contributor_asym(args: &[Value]) -> Value {
     if !matches!(args.len(), 3..=5) {
         return Value::Undef;
     }
-    let nominal_si = match validate_dimensioned_scalar(&args[0], DimensionVector::LENGTH) {
+    let nominal_si = match len_scalar(&args[0]) {
         Some(v) => v,
         None => return Value::Undef,
     };
-    let plus_tol_si = match validate_dimensioned_scalar(&args[1], DimensionVector::LENGTH) {
+    let plus_tol_si = match len_scalar(&args[1]) {
         Some(v) => v,
         None => return Value::Undef,
     };
-    let minus_tol_si = match validate_dimensioned_scalar(&args[2], DimensionVector::LENGTH) {
+    let minus_tol_si = match len_scalar(&args[2]) {
         Some(v) => v,
         None => return Value::Undef,
     };
     let sign: i64 = if args.len() >= 4 {
-        match &args[3] {
-            Value::Int(1) => 1,
-            Value::Int(-1) => -1,
-            _ => return Value::Undef,
+        match parse_sign(&args[3]) {
+            Some(s) => s,
+            None => return Value::Undef,
         }
     } else {
         1

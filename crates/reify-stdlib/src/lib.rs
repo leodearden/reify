@@ -20,7 +20,6 @@ mod test_macros;
 mod test_fixtures;
 
 mod analysis;
-mod stackup;
 mod complex;
 mod fea;
 mod geometry;
@@ -37,6 +36,7 @@ mod mechanism;
 mod numeric;
 mod orientation;
 mod snapshot;
+mod stackup;
 mod supports;
 mod sweep;
 mod trajectory;
@@ -73,9 +73,6 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
     if let Some(v) = analysis::eval_analysis(name, args) {
         return v;
     }
-    if let Some(v) = stackup::eval_stackup(name, args) {
-        return v;
-    }
     if let Some(v) = joints::eval_joints(name, args) {
         return v;
     }
@@ -92,6 +89,9 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         return v;
     }
     if let Some(v) = snapshot::eval_snapshot(name, args) {
+        return v;
+    }
+    if let Some(v) = stackup::eval_stackup(name, args) {
         return v;
     }
     if let Some(v) = sweep::eval_sweep(name, args) {
