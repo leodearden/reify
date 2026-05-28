@@ -1761,3 +1761,203 @@ fn zvd_shaper_struct_has_correct_param_shape_and_constraint() {
         constraint.expr.kind
     );
 }
+
+// ─── step-45: EIShaper param shape and constraints ───────────────────────────
+
+/// `EIShaper` is the Extra-Insensitive impulse shaper (PRD §5.1).
+/// It must refine `Shaper` and declare exactly 3 params:
+///
+///   - `target_frequency    : Frequency`  (Type::Scalar{dimension: FREQUENCY})
+///   - `damping_ratio       : Real`       (caller-supplied, no default)
+///   - `vibration_tolerance : Real`       (caller-supplied, no default)
+///
+/// Exactly 3 constraints:
+///   (a) `target_frequency > 0Hz`        — BinOp::Gt, RHS Scalar{0.0,FREQ}
+///   (b) `vibration_tolerance > 0`       — BinOp::Gt, RHS Int(0)/Real(0.0)
+///   (c) `vibration_tolerance <= 1`      — BinOp::Le, RHS Int(1)/Real(1.0)
+///
+/// The vibration_tolerance ∈ (0,1] interval splits into two scalar predicates
+/// (same discipline as TOTSShaper, step-39 at line 1391-1477).
+///
+/// RED because `EIShaper` does not exist yet — `find_structure` panics.
+#[test]
+fn ei_shaper_struct_has_correct_param_shape_and_constraints() {
+    // step-45
+    let template = find_structure("EIShaper");
+
+    // (a) refines Shaper marker trait.
+    assert_eq!(
+        template.trait_bounds,
+        vec!["Shaper".to_string()],
+        "EIShaper must refine Shaper; got trait_bounds: {:?}",
+        template.trait_bounds
+    );
+
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    // (b) tight param count.
+    assert_eq!(
+        params.len(),
+        3,
+        "EIShaper should have exactly 3 params \
+         (target_frequency, damping_ratio, vibration_tolerance); got: {:?}",
+        names
+    );
+
+    let expected: &[(&str, Type)] = &[
+        (
+            "target_frequency",
+            Type::Scalar {
+                dimension: DimensionVector::FREQUENCY,
+            },
+        ),
+        ("damping_ratio", Type::Real),
+        ("vibration_tolerance", Type::Real),
+    ];
+
+    // (c) param declaration order is part of the contract.
+    let expected_names: Vec<&str> = expected.iter().map(|(m, _)| *m).collect();
+    assert_eq!(
+        names, expected_names,
+        "EIShaper params must be in canonical order \
+         (target_frequency, damping_ratio, vibration_tolerance); got: {:?}",
+        names
+    );
+
+    // (d) type assertion per param.
+    for (member, expected_ty) in expected {
+        let cell = params
+            .iter()
+            .find(|vc| vc.id.member == *member)
+            .unwrap_or_else(|| {
+                panic!(
+                    "EIShaper missing required param '{}'; got: {:?}",
+                    member, names
+                )
+            });
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "EIShaper.{} should be {:?}, got {:?}",
+            member, expected_ty, cell.cell_type
+        );
+    }
+
+    // (e) all three params are caller-supplied — no defaults.
+    for cell in &params {
+        assert!(
+            cell.default_expr.is_none(),
+            "EIShaper.{} should have NO default_expr (caller-supplied); \
+             got: {:?}",
+            cell.id.member,
+            cell.default_expr
+        );
+    }
+
+    // (f) exactly 3 constraints.
+    assert_eq!(
+        template.constraints.len(),
+        3,
+        "EIShaper should declare exactly 3 constraints \
+         (target_frequency > 0Hz, vibration_tolerance > 0, \
+          vibration_tolerance <= 1); got {} constraints: {:?}",
+        template.constraints.len(),
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+
+    // (g) target_frequency > 0Hz (dimensioned literal).
+    let tf_matched = template.constraints.iter().any(|c| {
+        match &c.expr.kind {
+            CompiledExprKind::BinOp { op, left, right } => {
+                if *op != BinOp::Gt
+                    || !collect_value_ref_members(left).contains(&"target_frequency")
+                {
+                    return false;
+                }
+                match &right.kind {
+                    CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
+                        if *si_value == 0.0 && *dimension == DimensionVector::FREQUENCY =>
+                    {
+                        true
+                    }
+                    CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    });
+    assert!(
+        tf_matched,
+        "EIShaper should declare `constraint target_frequency > 0Hz`; \
+         got constraints: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+
+    // (h) vibration_tolerance > 0 (lower bound of (0,1] interval).
+    let vt_gt_matched = template.constraints.iter().any(|c| {
+        match &c.expr.kind {
+            CompiledExprKind::BinOp { op, left, right } => {
+                if *op != BinOp::Gt
+                    || !collect_value_ref_members(left).contains(&"vibration_tolerance")
+                {
+                    return false;
+                }
+                match &right.kind {
+                    CompiledExprKind::Literal(Value::Int(0)) => true,
+                    CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    });
+    assert!(
+        vt_gt_matched,
+        "EIShaper should declare `constraint vibration_tolerance > 0` \
+         (lower bound of (0,1] interval); got constraints: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+
+    // (i) vibration_tolerance <= 1 (upper bound of (0,1] interval).
+    let vt_le_matched = template.constraints.iter().any(|c| {
+        match &c.expr.kind {
+            CompiledExprKind::BinOp { op, left, right } => {
+                if *op != BinOp::Le
+                    || !collect_value_ref_members(left).contains(&"vibration_tolerance")
+                {
+                    return false;
+                }
+                match &right.kind {
+                    CompiledExprKind::Literal(Value::Int(1)) => true,
+                    CompiledExprKind::Literal(Value::Real(v)) if *v == 1.0 => true,
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    });
+    assert!(
+        vt_le_matched,
+        "EIShaper should declare `constraint vibration_tolerance <= 1` \
+         (upper bound completing the (0,1] interval per PRD §5.1); \
+         got constraints: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+}
