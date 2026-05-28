@@ -1007,6 +1007,52 @@ mod tests {
             "mc_mean should differ for different seeds");
     }
 
+    // ─── monte_carlo_stackup step-7 tests ───────────────────────────────────
+
+    #[test]
+    fn monte_carlo_sigma_within_2pct_of_rss_at_n100k() {
+        // PRD §3.3 convergence: SE(σ̂) ≈ 0.224% at N=100k; 2% bound ≈ 9×SE → robust.
+        // golden_chain: t1=1e-4, t2=5e-5, t3=2e-4, sigma_level=3
+        // rss_sigma = sqrt((t1/3)² + (t2/3)² + (t3/3)²)
+        let rss = match eval_stackup("stackup_rss", &[golden_chain()]) {
+            Some(Value::Map(m)) => m,
+            other => panic!("stackup_rss failed: {:?}", other),
+        };
+        let rss_sigma = scalar_si(&rss[&Value::String("rss_sigma".into())]);
+
+        let mc = match eval_stackup("monte_carlo_stackup", &[
+            golden_chain(), Value::Int(100_000), Value::Int(42),
+        ]) {
+            Some(Value::Map(m)) => m,
+            other => panic!("monte_carlo failed: {:?}", other),
+        };
+        let mc_sigma = scalar_si(&mc[&Value::String("mc_sigma".into())]);
+
+        let rel_err = (mc_sigma - rss_sigma).abs() / rss_sigma;
+        assert!(rel_err <= 0.02,
+            "mc_sigma {mc_sigma:.6e} vs rss_sigma {rss_sigma:.6e}: rel_err {:.4}% > 2%",
+            rel_err * 100.0);
+    }
+
+    #[test]
+    fn monte_carlo_sigma_bit_exact_regression_pin_n100k_seed42() {
+        // Regression golden for mc_sigma at (golden_chain, N=100_000, seed=42).
+        // Pinned in step-8 after measuring the actual value.
+        // Placeholder constant 0 will be replaced with the real bits in step-8.
+        let mc = match eval_stackup("monte_carlo_stackup", &[
+            golden_chain(), Value::Int(100_000), Value::Int(42),
+        ]) {
+            Some(Value::Map(m)) => m,
+            other => panic!("expected Some(Map), got {:?}", other),
+        };
+        let mc_sigma = scalar_si(&mc[&Value::String("mc_sigma".into())]);
+        // TBD: replace with actual bits measured in step-8
+        let expected_bits: u64 = 0x_0000_0000_0000_0000; // placeholder → RED
+        assert_eq!(mc_sigma.to_bits(), expected_bits,
+            "mc_sigma={mc_sigma:.10e} bits=0x{:016X} expected=0x{expected_bits:016X}",
+            mc_sigma.to_bits());
+    }
+
     // ─── stackup_worst_case tests (step-1 RED; GREEN after step-2 impl) ──────
 
     #[test]
