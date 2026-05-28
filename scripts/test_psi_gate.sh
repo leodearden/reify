@@ -163,4 +163,44 @@ assert "concurrent-burst: consecutive pass timestamps >= WINDOW=2s apart" \
         done <<< "$1"
     ' _ "$SORTED_2B"
 
+# ---------------------------------------------------------------------------
+# Cycle 3: role=merge bypass — skips wait but still bumps the timestamp
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle 3: merge bypass ---"
+
+# Setup: dispatch pre-touched to "now"; PSI=99 (both WINDOW and PSI would block task)
+PSI_HIGH="$(make_psi_fixture 99)"
+PSI_ZERO_M="$(make_psi_fixture 0)"
+DISPATCH_3="$(mktemp -p "$WORKDIR" dispatch-3.XXXXXX)"
+touch "$DISPATCH_3"
+sleep 1  # ensure a fresh mtime is distinguishable from "now"
+MTIME_3_BEFORE=$(stat -c %Y "$DISPATCH_3")
+
+# (a) merge bypass: avg10=99, WINDOW=2 → must exit 0 fast AND bump dispatch mtime
+#     (MAX_WAIT=5 safety cap: without the bypass, the gate would block >1800s)
+T3_0=$(date +%s)
+run_gate "$DISPATCH_3" "$PSI_HIGH" \
+    DF_VERIFY_ROLE=merge REIFY_PSI_GATE_WINDOW=2 REIFY_PSI_GATE_MAX_WAIT=5 REIFY_PSI_GATE_POLL=1
+T3_1=$(date +%s)
+MERGE_ELAPSED=$(( T3_1 - T3_0 ))
+MTIME_3_AFTER=$(stat -c %Y "$DISPATCH_3")
+
+assert "merge-bypass: exit 0" \
+    test "$GATE_RC" -eq 0
+assert "merge-bypass: returned fast (no window wait)" \
+    test "$MERGE_ELAPSED" -lt 2
+assert "merge-bypass: dispatch mtime was bumped (>= before)" \
+    test "$MTIME_3_AFTER" -ge "$MTIME_3_BEFORE"
+
+# (b) immediately after merge: a task verify must back off >= WINDOW from merge's touch
+T3B_0=$(date +%s)
+run_gate "$DISPATCH_3" "$PSI_ZERO_M" \
+    DF_VERIFY_ROLE=task REIFY_PSI_GATE_WINDOW=2 REIFY_PSI_GATE_POLL=1 REIFY_PSI_GATE_MAX_WAIT=30
+T3B_1=$(date +%s)
+TASK_ELAPSED=$(( T3B_1 - T3B_0 ))
+
+assert "merge-bypass: subsequent task blocks >= WINDOW=2s after merge touch" \
+    test "$TASK_ELAPSED" -ge 2
+
 test_summary
