@@ -1483,7 +1483,7 @@ fn tots_shaper_constrains_design_param_invariants() {
 ///
 ///   - `target_frequency : Frequency`   (Type::Scalar{dimension: FREQUENCY})
 ///   - `damping_ratio    : Real = 0.0`  (default 0.0 per PRD §5.1 — ZV
-///                                       assumes undamped as the base case)
+///     assumes undamped as the base case)
 ///
 /// Exactly 1 constraint: `target_frequency > 0Hz` (BinOp::Gt, RHS
 /// Value::Scalar{si_value:0.0, dimension:FREQUENCY}; also accept
@@ -1632,9 +1632,8 @@ fn zv_shaper_struct_has_correct_param_shape_and_constraint() {
 ///
 ///   - `target_frequency : Frequency`  (Type::Scalar{dimension: FREQUENCY})
 ///   - `damping_ratio    : Real`       (caller-supplied, NO default —
-///                                      ZVD's damping ratio is a required
-///                                      design parameter, unlike ZVShaper
-///                                      which defaults to undamped)
+///     ZVD's damping ratio is a required design parameter, unlike ZVShaper
+///     which defaults to undamped)
 ///
 /// Exactly 1 constraint: `target_frequency > 0Hz` (BinOp::Gt, RHS
 /// Value::Scalar{si_value:0.0, dimension:FREQUENCY}; also accept
@@ -1968,7 +1967,7 @@ fn ei_shaper_struct_has_correct_param_shape_and_constraints() {
 /// It must refine `Shaper` and declare exactly 1 param:
 ///
 ///   - `shapers : List<Shaper>`  →  Type::List(Box::new(
-///                                      Type::TraitObject("Shaper")))
+///     Type::TraitObject("Shaper")))
 ///
 /// Zero constraints: an empty cascade is a valid identity (no shaping) —
 /// the collection invariant is deferred to the ε consumer, matching
