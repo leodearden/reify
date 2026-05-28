@@ -4997,4 +4997,157 @@ mod tests {
         };
         assert_eq!(decl.doc.as_deref(), Some("A rigid body."));
     }
+
+    // PRD v0.6 D5: single-sided range lowering (task 3914 / ζ).
+    // Grammar (task 3911) names the prefix fields `op` and `bound`.
+    // Discriminator: two-sided has `lower`/`upper` fields; single-sided has `op`/`bound` fields.
+    #[test]
+    fn single_sided_range_gt_lower_exclusive() {
+        // `>2mm` => Range { lower: Some(2mm), upper: None, lower_inclusive: false, upper_inclusive: true }
+        let kind = parse_let_expr("structure S { let r = >2mm }");
+        match kind {
+            ExprKind::Range {
+                lower,
+                upper,
+                lower_inclusive,
+                upper_inclusive,
+            } => {
+                assert!(upper.is_none(), "upper should be None for `>2mm`");
+                assert!(!lower_inclusive, "lower should be exclusive for `>`");
+                assert!(upper_inclusive, "absent upper_inclusive should be vacuous true");
+                let lower_expr = lower.expect("lower should be Some for `>2mm`");
+                match lower_expr.kind {
+                    ExprKind::QuantityLiteral { value, unit } => {
+                        assert!((value - 2.0).abs() < f64::EPSILON);
+                        assert_eq!(unit, "mm");
+                    }
+                    other => panic!("expected QuantityLiteral for bound, got {:?}", other),
+                }
+            }
+            other => panic!("expected ExprKind::Range, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn single_sided_range_gte_lower_inclusive() {
+        // `>=2mm` => Range { lower: Some(2mm), upper: None, lower_inclusive: true, upper_inclusive: true }
+        let kind = parse_let_expr("structure S { let r = >=2mm }");
+        match kind {
+            ExprKind::Range {
+                lower,
+                upper,
+                lower_inclusive,
+                upper_inclusive,
+            } => {
+                assert!(upper.is_none(), "upper should be None for `>=2mm`");
+                assert!(lower_inclusive, "lower should be inclusive for `>=`");
+                assert!(upper_inclusive, "absent upper_inclusive should be vacuous true");
+                let lower_expr = lower.expect("lower should be Some for `>=2mm`");
+                match lower_expr.kind {
+                    ExprKind::QuantityLiteral { value, unit } => {
+                        assert!((value - 2.0).abs() < f64::EPSILON);
+                        assert_eq!(unit, "mm");
+                    }
+                    other => panic!("expected QuantityLiteral for bound, got {:?}", other),
+                }
+            }
+            other => panic!("expected ExprKind::Range, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn single_sided_range_lt_upper_exclusive() {
+        // `<100MPa` => Range { lower: None, upper: Some(100MPa), lower_inclusive: true, upper_inclusive: false }
+        let kind = parse_let_expr("structure S { let r = <100MPa }");
+        match kind {
+            ExprKind::Range {
+                lower,
+                upper,
+                lower_inclusive,
+                upper_inclusive,
+            } => {
+                assert!(lower.is_none(), "lower should be None for `<100MPa`");
+                assert!(lower_inclusive, "absent lower_inclusive should be vacuous true");
+                assert!(!upper_inclusive, "upper should be exclusive for `<`");
+                let upper_expr = upper.expect("upper should be Some for `<100MPa`");
+                match upper_expr.kind {
+                    ExprKind::QuantityLiteral { value, unit } => {
+                        assert!((value - 100.0).abs() < f64::EPSILON);
+                        assert_eq!(unit, "MPa");
+                    }
+                    other => panic!("expected QuantityLiteral for bound, got {:?}", other),
+                }
+            }
+            other => panic!("expected ExprKind::Range, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn single_sided_range_lte_upper_inclusive() {
+        // `<=100MPa` => Range { lower: None, upper: Some(100MPa), lower_inclusive: true, upper_inclusive: true }
+        let kind = parse_let_expr("structure S { let r = <=100MPa }");
+        match kind {
+            ExprKind::Range {
+                lower,
+                upper,
+                lower_inclusive,
+                upper_inclusive,
+            } => {
+                assert!(lower.is_none(), "lower should be None for `<=100MPa`");
+                assert!(lower_inclusive, "absent lower_inclusive should be vacuous true");
+                assert!(upper_inclusive, "upper should be inclusive for `<=`");
+                let upper_expr = upper.expect("upper should be Some for `<=100MPa`");
+                match upper_expr.kind {
+                    ExprKind::QuantityLiteral { value, unit } => {
+                        assert!((value - 100.0).abs() < f64::EPSILON);
+                        assert_eq!(unit, "MPa");
+                    }
+                    other => panic!("expected QuantityLiteral for bound, got {:?}", other),
+                }
+            }
+            other => panic!("expected ExprKind::Range, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn two_sided_range_inclusive_regression() {
+        // `2mm..10mm` => Range { lower: Some, upper: Some, lower_inclusive: true, upper_inclusive: true }
+        // Guards that the existing two-sided path is not broken by the single-sided branch.
+        let kind = parse_let_expr("structure S { let r = 2mm..10mm }");
+        match kind {
+            ExprKind::Range {
+                lower,
+                upper,
+                lower_inclusive,
+                upper_inclusive,
+            } => {
+                assert!(lower.is_some(), "lower should be Some for two-sided range");
+                assert!(upper.is_some(), "upper should be Some for two-sided range");
+                assert!(lower_inclusive, "lower should be inclusive for `..`");
+                assert!(upper_inclusive, "upper should be inclusive for `..`");
+            }
+            other => panic!("expected ExprKind::Range, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn two_sided_range_exclusive_upper_regression() {
+        // `0mm..<10mm` => Range { lower: Some, upper: Some, lower_inclusive: true, upper_inclusive: false }
+        // Guards that the `..<` exclusive-upper detection loop is not broken.
+        let kind = parse_let_expr("structure S { let r = 0mm..<10mm }");
+        match kind {
+            ExprKind::Range {
+                lower,
+                upper,
+                lower_inclusive,
+                upper_inclusive,
+            } => {
+                assert!(lower.is_some(), "lower should be Some for two-sided range");
+                assert!(upper.is_some(), "upper should be Some for two-sided range");
+                assert!(lower_inclusive, "lower should be inclusive for `..<`");
+                assert!(!upper_inclusive, "upper should be exclusive for `..<`");
+            }
+            other => panic!("expected ExprKind::Range, got {:?}", other),
+        }
+    }
 }
