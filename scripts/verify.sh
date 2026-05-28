@@ -88,7 +88,12 @@ psi_gate() {
 
     # (1) Break-glass bypass — no read, no touch, no wait (added in step-8)
 
-    # (2) Merge bypass — added in step-6
+    # (2) Merge bypass: skip wait + bump timestamp so the next task backs off
+    if [ "${DF_VERIFY_ROLE:-task}" = "merge" ]; then
+        touch "$DISPATCH"
+        echo "verify.sh: psi-gate bypass (role=merge) — timestamp bumped" >&2
+        return 0
+    fi
 
     # (3) Fail-open on missing PSI source — added in step-10
 
