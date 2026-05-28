@@ -1455,4 +1455,73 @@ mod tests {
         ]);
         assert_eq!(format!("{}", union), "Union<HexHead | SocketHead>");
     }
+
+    // ── AffineMap tests (step-1 RED / task 3958 α) ───────────────────────────
+
+    #[test]
+    fn type_affine_map_construction() {
+        // Same dimension equals itself
+        assert_eq!(Type::AffineMap(3), Type::AffineMap(3));
+        // Distinct dimensions are not equal
+        assert_ne!(Type::AffineMap(3), Type::AffineMap(2));
+    }
+
+    #[test]
+    fn type_affine_map_display() {
+        assert_eq!(format!("{}", Type::AffineMap(3)), "AffineMap3");
+        assert_eq!(format!("{}", Type::AffineMap(2)), "AffineMap2");
+    }
+
+    #[test]
+    fn type_affine_map_factory() {
+        assert_eq!(Type::affine_map(3), Type::AffineMap(3));
+        assert_eq!(Type::affine_map(2), Type::AffineMap(2));
+    }
+
+    #[test]
+    fn type_affine_map_eq_and_hash() {
+        use std::collections::HashMap;
+
+        let a3a = Type::AffineMap(3);
+        let a3b = Type::AffineMap(3);
+        let a2 = Type::AffineMap(2);
+
+        assert_eq!(a3a, a3b);
+        assert_ne!(a3a, a2);
+        // AffineMap != other types
+        assert_ne!(a3a, Type::Real);
+
+        // Hash consistency
+        let mut map: HashMap<Type, &str> = HashMap::new();
+        map.insert(a3a.clone(), "a3");
+        assert_eq!(map.get(&a3b), Some(&"a3"));
+        assert_eq!(map.get(&a2), None);
+    }
+
+    #[test]
+    fn type_affine_map_not_numeric() {
+        assert!(!Type::AffineMap(3).is_numeric());
+        assert!(!Type::AffineMap(2).is_numeric());
+    }
+
+    #[test]
+    fn type_affine_map_as_name_none() {
+        assert_eq!(Type::AffineMap(3).as_name(), None);
+    }
+
+    #[test]
+    fn type_affine_map_ne_transform() {
+        // AffineMap(3) and Transform(3) are semantically distinct (non-rigid vs rigid)
+        assert_ne!(Type::AffineMap(3), Type::Transform(3));
+    }
+
+    #[test]
+    fn type_affine_map_ne_frame() {
+        assert_ne!(Type::AffineMap(3), Type::Frame(3));
+    }
+
+    #[test]
+    fn type_affine_map_ne_orientation() {
+        assert_ne!(Type::AffineMap(3), Type::Orientation(3));
+    }
 }
