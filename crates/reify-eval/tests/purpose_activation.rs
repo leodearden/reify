@@ -935,6 +935,74 @@ purpose weight_target(subject : Structure) {
     );
 }
 
+// ── §5b: Multi-param activation refusal via single-entity shim (task-2181 β, PRD §4.5 C2) ──────
+
+/// Verifies that activating a multi-param purpose via the single-entity `activate_purpose` shim
+/// is refused (no-op + warn) rather than silently mis-binding all params to the same entity.
+///
+/// Background (PRD §4.5 contract C2):
+///   After task-β removed the compile-time multi-StructureRef rejection, a 2-param purpose like
+///   `fits_within(part, envelope)` can compile cleanly. However, the single-entity shim
+///   `activate_purpose(name, entity_ref)` cannot safely bind it — applying one `entity_ref`
+///   to every per-param `{purpose}::{param}` stamp aliases `part.length > envelope.length`
+///   into `entity.length > entity.length`, a silently meaningless constraint.
+///
+///   C2 mandates refusal: `activate_purpose` must return without injecting any constraints
+///   and `is_purpose_active` must remain false. Per-param binding is task γ's
+///   `activate_purpose_with_bindings`.
+///
+/// RED state (step-5, before step-6 guard):
+///   Assertions #4 and #5 fail — `activate_purpose` injects the mis-bound constraint and
+///   marks the purpose active. Step-6 adds the `params.len() > 1` early-return guard.
+#[test]
+fn activate_multi_param_purpose_via_single_entity_shim_is_refused() {
+    let source = r#"
+structure Bracket {
+    param length : Length = 80mm
+}
+
+purpose fits_within(part : Structure, envelope : Structure) {
+    constraint part.length > envelope.length
+}
+"#;
+
+    // Precondition: compiles cleanly post-β (no task-2201 rejection).
+    // parse_and_compile panics on any error-severity diagnostic.
+    let compiled = parse_and_compile(source);
+    assert_eq!(
+        compiled.compiled_purposes.len(),
+        1,
+        "precondition: fits_within must compile to exactly one purpose"
+    );
+    assert_eq!(
+        compiled.compiled_purposes[0].params.len(),
+        2,
+        "precondition: fits_within must have exactly 2 params (part, envelope)"
+    );
+
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+    let before = constraint_count(&engine);
+
+    // Attempt single-entity activation of a 2-param purpose.
+    engine.activate_purpose("fits_within", "Bracket");
+
+    // C2: refusal — purpose must NOT become active via the single-entity shim.
+    assert!(
+        !engine.is_purpose_active("fits_within"),
+        "multi-param purpose must NOT activate via the single-entity shim \
+         (PRD §4.5 C2: refusal, not silent mis-bind); activate_purpose_with_bindings \
+         is the correct API (task γ)"
+    );
+
+    // C2: zero constraints injected — graph is unmodified.
+    assert_eq!(
+        constraint_count(&engine),
+        before,
+        "a refused multi-param activation must inject zero constraints (PRD §4.5 C2)"
+    );
+}
+
 // ── §8: Reflective aggregation acceptance (task-2289) ────────────────────────
 
 /// Acceptance test for runtime expansion of `subject.params` (task-2289).
