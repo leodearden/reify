@@ -8,8 +8,6 @@
 //! These are RED tests for step-1. They fail until step-2 adds the declaration.
 
 use reify_compiler::*;
-use reify_core::*;
-use reify_ir::*;
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
