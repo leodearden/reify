@@ -112,6 +112,32 @@ esac
 case "$SCOPE" in all|staged) ;; *)
     echo "verify.sh: ERROR — invalid --scope '$SCOPE' (want all|staged)" >&2; exit 64 ;;
 esac
+DF_VERIFY_ROLE="${DF_VERIFY_ROLE:-task}"
+# Probe scheduling-tool availability once; degrade gracefully on non-Linux hosts
+# where util-linux may not be installed.
+_HAS_NICE=0; _HAS_IONICE=0
+command -v nice   >/dev/null 2>&1 && _HAS_NICE=1
+command -v ionice >/dev/null 2>&1 && _HAS_IONICE=1
+case "$DF_VERIFY_ROLE" in
+    task)
+        if   [ "$_HAS_NICE" -eq 1 ] && [ "$_HAS_IONICE" -eq 1 ]; then
+            CARGO_PRIO="nice -n 15 ionice -c 2 -n 7 "
+        elif [ "$_HAS_NICE" -eq 1 ]; then
+            echo "verify.sh: WARNING — ionice not found; task role using nice only (no IO throttle)" >&2
+            CARGO_PRIO="nice -n 15 "
+        else
+            echo "verify.sh: WARNING — nice/ionice not found; task role running at normal priority" >&2
+            CARGO_PRIO=""
+        fi ;;
+    merge)
+        if [ "$_HAS_NICE" -eq 1 ]; then
+            CARGO_PRIO="nice -n 5 "
+        else
+            echo "verify.sh: WARNING — nice not found; merge role running at normal priority" >&2
+            CARGO_PRIO=""
+        fi ;;
+    *)  echo "verify.sh: ERROR — unknown DF_VERIFY_ROLE '$DF_VERIFY_ROLE' (want task|merge)" >&2; exit 64 ;;
+esac
 
 # A merge in progress cannot trust `git diff --cached` (the index reflects the
 # merge result, not a curated stage), so force a full verification. Detected via
@@ -301,14 +327,14 @@ add_test_passes() {
         # single-threaded. No outer timeout — the wrapper owns it via
         # REIFY_OCCT_TEST_TIMEOUT (lock-wait time does not consume the budget).
         if [ "$RUN_OCCT_GATE" -eq 1 ]; then
-            add "REIFY_OCCT_TEST_TIMEOUT=${gated_timeout} ./scripts/cargo-test-occt-gated.sh cargo test ${P_FLAGS}${rel} -- --test-threads=1"
+            add "REIFY_OCCT_TEST_TIMEOUT=${gated_timeout} ./scripts/cargo-test-occt-gated.sh ${CARGO_PRIO}cargo test ${P_FLAGS}${rel} -- --test-threads=1"
         fi
 
         # Ungated tail: everything except the OCCT crates, full concurrency.
         if [ "$NEXTEST" -eq 1 ]; then
-            ungated="timeout --kill-after=60 ${outer_timeout} cargo nextest run --workspace ${EXCLUDE_FLAGS}${rel}"
+            ungated="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run --workspace ${EXCLUDE_FLAGS}${rel}"
         else
-            ungated="timeout --kill-after=60 ${outer_timeout} cargo test --workspace ${EXCLUDE_FLAGS}${rel} -- --test-threads=1"
+            ungated="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo test --workspace ${EXCLUDE_FLAGS}${rel} -- --test-threads=1"
         fi
         add "$ungated"
     done
@@ -323,12 +349,12 @@ build_plan() {
     # typecheck (cargo check) only when NOT also linting — clippy --all-targets
     # is a strict superset of `cargo check`, so running both would be redundant.
     if [ "$DO_TYPECHECK" -eq 1 ] && [ "$DO_LINT" -eq 0 ] && [ "$RUN_RUST" -eq 1 ]; then
-        add "timeout --kill-after=60 20m cargo check --workspace --tests"
+        add "timeout --kill-after=60 20m ${CARGO_PRIO}cargo check --workspace --tests"
     fi
 
     # lint: clippy over all targets, warnings-as-errors.
     if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
-        add "timeout --kill-after=60 30m cargo clippy --workspace --all-targets -- -D warnings"
+        add "timeout --kill-after=60 30m ${CARGO_PRIO}cargo clippy --workspace --all-targets -- -D warnings"
     fi
 
     # test: gated + ungated cargo passes, per profile.
@@ -374,7 +400,7 @@ build_plan
 # Emit: print the plan (oracle) or execute it (&& semantics)
 # ---------------------------------------------------------------------------
 if [ "$PRINT_PLAN" -eq 1 ]; then
-    echo "# verify.sh plan — action=$ACTION profile=$PROFILE scope=$SCOPE include_infra=$INCLUDE_INFRA nextest=$NEXTEST"
+    echo "# verify.sh plan — action=$ACTION profile=$PROFILE scope=$SCOPE include_infra=$INCLUDE_INFRA nextest=$NEXTEST role=$DF_VERIFY_ROLE"
     echo "# scope decision — RUN_RUST=$RUN_RUST RUN_GUI=$RUN_GUI RUN_OCCT_GATE=$RUN_OCCT_GATE"
     echo "# --- environment (process-level; inherited by every command below) ---"
     for _e in "${ENV_LINES[@]}"; do echo "# $_e"; done
