@@ -1179,6 +1179,18 @@ mod tests {
     }
 
     #[test]
+    fn parse_purpose_flag_accepts_single_pair() {
+        // `name=entity` is the single-binding form: one binding with no
+        // per-param name and the entity as the structure ref.
+        let activation =
+            parse_purpose_flag("mfg_ready=Bracket").expect("single-pair form should parse");
+        assert_eq!(activation.name, "mfg_ready");
+        assert_eq!(activation.bindings.len(), 1);
+        assert_eq!(activation.bindings[0].param, None);
+        assert_eq!(activation.bindings[0].entity, "Bracket");
+    }
+
+    #[test]
     fn report_eval_output_returns_correct_outcome_variants() {
         let no_diags: Vec<reify_core::Diagnostic> = vec![];
 
