@@ -24,6 +24,30 @@ fn check_with_violated_purpose_exits_failure_with_summary() {
 }
 
 #[test]
+fn check_with_multi_binding_value_exits_failure_with_specific_message() {
+    // Alpha only activates the single-binding form via activate_purpose(name, entity);
+    // multi-ref activation requires task γ's activate_purpose_with_bindings, so the
+    // CLI must REJECT multi-binding values with a SPECIFIC error (not the generic
+    // step-10 fallback) so users get an actionable signal.
+    let (status, stdout, stderr) = common::run_with_args(&[
+        "check",
+        "--purpose",
+        "fits_within=part:PartA,envelope:BoxB",
+        &common::fixture_path("purpose_multi_param.ri"),
+    ]);
+
+    assert!(
+        !status.success(),
+        "reify check --purpose with multi-binding value should exit non-zero.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    // Distinctive wording that step-10's generic message does NOT contain.
+    assert!(
+        stderr.contains("multi-ref"),
+        "stderr should contain the specific multi-ref rejection wording 'multi-ref', got: {stderr}"
+    );
+}
+
+#[test]
 fn check_with_unknown_purpose_exits_failure_with_clear_error() {
     let (status, stdout, stderr) = common::run_with_args(&[
         "check",
