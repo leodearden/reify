@@ -190,18 +190,27 @@ assert "merge-bypass: exit 0" \
     test "$GATE_RC" -eq 0
 assert "merge-bypass: returned fast (no window wait)" \
     test "$MERGE_ELAPSED" -lt 2
-assert "merge-bypass: dispatch mtime was bumped (>= before)" \
-    test "$MTIME_3_AFTER" -ge "$MTIME_3_BEFORE"
+# Assert against T3_0 (wall-clock captured right before run_gate), not MTIME_3_BEFORE.
+# If the bypass drops its 'touch', MTIME_3_AFTER stays at the pre-sleep value which is
+# < T3_0 (sleep 1 elapsed between initial touch and T3_0), so the assertion fails.
+# A strict -ge MTIME_3_BEFORE would be non-discriminating (AFTER == BEFORE satisfies it).
+assert "merge-bypass: dispatch mtime was bumped (>= gate-start)" \
+    test "$MTIME_3_AFTER" -ge "$T3_0"
 
-# (b) immediately after merge: a task verify must back off >= WINDOW from merge's touch
+# (b) immediately after merge: a task verify must back off >= WINDOW from merge's touch.
+# Measure elapsed from MTIME_3_AFTER (the actual merge-touch mtime) rather than from
+# T3B_0: with integer-second date +%s, T3B_0 can be up to 1s after MTIME_3_AFTER,
+# so the gate may start with age=1 and only wait ~1s, making T3B_1-T3B_0 = 1 < 2.
+# TASK_COMPLETE_OFFSET = T3B_1 - MTIME_3_AFTER is >= WINDOW whenever the gate passes
+# correctly (the gate's pass condition is age >= WINDOW, i.e. now - mtime >= WINDOW).
 T3B_0=$(date +%s)
 run_gate "$DISPATCH_3" "$PSI_ZERO_M" \
     DF_VERIFY_ROLE=task REIFY_PSI_GATE_WINDOW=2 REIFY_PSI_GATE_POLL=1 REIFY_PSI_GATE_MAX_WAIT=30
 T3B_1=$(date +%s)
-TASK_ELAPSED=$(( T3B_1 - T3B_0 ))
+TASK_COMPLETE_OFFSET=$(( T3B_1 - MTIME_3_AFTER ))
 
-assert "merge-bypass: subsequent task blocks >= WINDOW=2s after merge touch" \
-    test "$TASK_ELAPSED" -ge 2
+assert "merge-bypass: subsequent task completes >= WINDOW=2s after merge touch" \
+    test "$TASK_COMPLETE_OFFSET" -ge 2
 
 # ---------------------------------------------------------------------------
 # Cycle 4: REIFY_PSI_GATE_DISABLE=1 break-glass — exits 0 fast, NO touch

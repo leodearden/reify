@@ -104,6 +104,25 @@ psi_gate() {
     local PROC_PATH="${REIFY_PSI_GATE_PROC_PATH:-/proc/pressure/cpu}"
     local DISPATCH="${REIFY_PSI_GATE_DISPATCH_FILE:-/tmp/reify-verify-last-dispatch}"
 
+    # Helper: returns 0 if both PSI and window conditions are satisfied (dispatch now),
+    # or 1 otherwise.  Reads PROC_PATH, THRESHOLD, WINDOW, DISPATCH from the outer
+    # psi_gate() locals.  $1 = current timestamp (integer seconds, from date +%s).
+    # Defined as a nested function so the parse/compare logic lives in exactly one place;
+    # called from both the flock subshell and the lock-free fallback path.
+    _psi_should_pass() {
+        local _ts="$1" _mtime _age _avg10
+        _mtime=$(stat -c %Y "$DISPATCH" 2>/dev/null || echo 0)
+        _age=$(( _ts - _mtime ))
+        _avg10=$(awk '/^some/ {
+            for (i=1; i<=NF; i++) {
+                if ($i ~ /^avg10=/) { v=$i; sub(/^avg10=/, "", v); print v; exit }
+            }
+        }' "$PROC_PATH" 2>/dev/null || echo "")
+        [ -n "$_avg10" ] && \
+            awk -v p="$_avg10" -v t="$THRESHOLD" 'BEGIN{exit !(p<t)}' && \
+            [ "$_age" -ge "$WINDOW" ]
+    }
+
     # (1) Break-glass bypass — total bypass: no PSI read, no touch, no wait
     if [ "${REIFY_PSI_GATE_DISABLE:-}" = "1" ]; then
         echo "verify.sh: psi-gate disabled (REIFY_PSI_GATE_DISABLE=1)" >&2
@@ -149,39 +168,22 @@ psi_gate() {
             (
                 flock -w 5 9 || exit 9
                 _ts=$(date +%s)
-                _mtime=$(stat -c %Y "$DISPATCH" 2>/dev/null || echo 0)
-                _age=$(( _ts - _mtime ))
-                _avg10=$(awk '/^some/ {
-                    for (i=1; i<=NF; i++) {
-                        if ($i ~ /^avg10=/) { v=$i; sub(/^avg10=/, "", v); print v; exit }
-                    }
-                }' "$PROC_PATH" 2>/dev/null || echo "")
-                if [ -n "$_avg10" ] && \
-                   awk -v p="$_avg10" -v t="$THRESHOLD" 'BEGIN{exit !(p<t)}' && \
-                   [ "$_age" -ge "$WINDOW" ]; then
+                if _psi_should_pass "$_ts"; then
                     touch "$DISPATCH"
                     exit 0
                 fi
                 exit 10
             ) 9>"${DISPATCH}.lock" || _flock_rc=$?
+            # ${DISPATCH}.lock is a single fixed-name file in /tmp — one lockfile per
+            # coordination point, does not accumulate.  Intentionally left in place
+            # across runs (O_CREAT via '>' redirect; harmless stale presence).
         else
             # lock-free best-effort fallback (flock not available)
-            local _ts _mtime _age _avg10
+            local _ts
             _ts=$(date +%s)
-            _mtime=$(stat -c %Y "$DISPATCH" 2>/dev/null || echo 0)
-            _age=$(( _ts - _mtime ))
-            _avg10=$(awk '/^some/ {
-                for (i=1; i<=NF; i++) {
-                    if ($i ~ /^avg10=/) { v=$i; sub(/^avg10=/, "", v); print v; exit }
-                }
-            }' "$PROC_PATH" 2>/dev/null || echo "")
-            if [ -n "$_avg10" ] && \
-               awk -v p="$_avg10" -v t="$THRESHOLD" 'BEGIN{exit !(p<t)}' && \
-               [ "$_age" -ge "$WINDOW" ]; then
+            if _psi_should_pass "$_ts"; then
                 touch "$DISPATCH"
                 _flock_rc=0
-            else
-                _flock_rc=10
             fi
         fi
 
