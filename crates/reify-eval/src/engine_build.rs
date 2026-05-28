@@ -847,6 +847,7 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
         | GeometryOp::Rotate { target, .. }
         | GeometryOp::Scale { target, .. }
         | GeometryOp::RotateAround { target, .. }
+        | GeometryOp::ApplyTransform { target, .. }
         | GeometryOp::LinearPattern { target, .. }
         | GeometryOp::CircularPattern { target, .. }
         | GeometryOp::Mirror { target, .. }
@@ -923,6 +924,7 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
         GeometryOp::Rotate { .. } => Operation::TransformRotate,
         GeometryOp::Scale { .. } => Operation::TransformScale,
         GeometryOp::RotateAround { .. } => Operation::TransformRotateAround,
+        GeometryOp::ApplyTransform { .. } => Operation::TransformApplyTransform,
 
         // Pattern
         GeometryOp::LinearPattern { .. } => Operation::PatternLinear,

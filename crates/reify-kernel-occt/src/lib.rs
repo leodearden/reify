@@ -1977,6 +1977,46 @@ impl OcctKernel {
                 )
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            GeometryOp::ApplyTransform {
+                target,
+                rotation,
+                translation,
+            } => {
+                // Validate the 4 quaternion components and 3 translation
+                // components are finite. Unit-quaternion enforcement lives in
+                // the C++ helper `build_trsf` (called via FFI) — surfacing it
+                // here would just duplicate the check; the kernel error path
+                // already returns a "quaternion"-tagged message for |q|≠1.
+                if !rotation[0].is_finite()
+                    || !rotation[1].is_finite()
+                    || !rotation[2].is_finite()
+                    || !rotation[3].is_finite()
+                    || !translation[0].is_finite()
+                    || !translation[1].is_finite()
+                    || !translation[2].is_finite()
+                {
+                    return Err(GeometryError::OperationFailed(format!(
+                        "apply_transform parameters must be finite: rotation={:?}, translation={:?}",
+                        rotation, translation
+                    )));
+                }
+                let t = crate::Transform3 {
+                    qw: rotation[0],
+                    qx: rotation[1],
+                    qy: rotation[2],
+                    qz: rotation[3],
+                    tx: translation[0],
+                    ty: translation[1],
+                    tz: translation[2],
+                };
+                // Forward to the inherent `apply_transform_to_handle` to
+                // re-use its source-repr inheritance + FFI plumbing. Return
+                // early so we don't fall through to the default `self.store`
+                // path below — the new handle is already registered.
+                let new_id = self.apply_transform_to_handle(*target, &t)?;
+                let repr = self.repr_of(new_id);
+                return Ok(GeometryHandle { id: new_id, repr });
+            }
             GeometryOp::Extrude { profile, distance } => {
                 let dist = extract_f64(distance)?;
                 if !dist.is_finite() {

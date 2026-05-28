@@ -206,6 +206,10 @@ pub enum Operation {
     TransformScale,
     /// Rotate around an arbitrary axis.
     TransformRotateAround,
+    /// Apply a fully-evaluated rigid transform (unit quaternion + translation)
+    /// via TopLoc_Location. Backs the `GeometryOp::ApplyTransform` IR op
+    /// emitted by sub-placement / FK frames.
+    TransformApplyTransform,
 
     // ── Pattern (replicate) ─────────────────────────────────────────────────
     /// Linear pattern along an axis.
@@ -487,6 +491,28 @@ pub enum GeometryOp {
         axis: [f64; 3],
         angle_rad: f64,
     },
+    /// Apply a fully-evaluated rigid transform (unit quaternion + translation)
+    /// to a target shape, producing a fresh handle that references the source
+    /// via a TopLoc_Location. The source handle is left unmodified, so the
+    /// same child can be placed in multiple frames.
+    ///
+    /// **Field ordering**: `rotation = [qw, qx, qy, qz]` (scalar-first), and
+    /// `translation = [tx, ty, tz]`. The kernel-side dispatch converts these
+    /// into the OCCT `Transform3` struct, whose `From<&Transform3>` impl for
+    /// `Transform3Props` then routes through `build_trsf`, which validates
+    /// the unit-quaternion invariant and constructs `gp_Quaternion(qx, qy,
+    /// qz, qw)` (OCCT's xyzw ordering).
+    ///
+    /// **Why raw floats**: this enum lives in `reify-ir`, which is kernel-
+    /// agnostic; `Transform3` lives in `reify-kernel-occt`. Carrying raw
+    /// float arrays keeps the IR layered cleanly. The pattern matches
+    /// `Rotate { axis: [f64; 3], … }` and `RotateAround { point: [f64; 3],
+    /// axis: [f64; 3], … }`.
+    ApplyTransform {
+        target: GeometryHandleId,
+        rotation: [f64; 4],
+        translation: [f64; 3],
+    },
     /// Create a linear pattern of copies along a direction.
     LinearPattern {
         target: GeometryHandleId,
@@ -675,6 +701,7 @@ impl GeometryOp {
             GeometryOp::Rotate { .. } => "Rotate",
             GeometryOp::Scale { .. } => "Scale",
             GeometryOp::RotateAround { .. } => "RotateAround",
+            GeometryOp::ApplyTransform { .. } => "ApplyTransform",
             GeometryOp::LinearPattern { .. } => "LinearPattern",
             GeometryOp::CircularPattern { .. } => "CircularPattern",
             GeometryOp::Mirror { .. } => "Mirror",
@@ -4742,11 +4769,12 @@ mod tests {
             Operation::ModifyShell,
             Operation::ModifyDraft,
             Operation::ModifyThicken,
-            // Transform (4)
+            // Transform (5)
             Operation::TransformTranslate,
             Operation::TransformRotate,
             Operation::TransformScale,
             Operation::TransformRotateAround,
+            Operation::TransformApplyTransform,
             // Pattern (5)
             Operation::PatternLinear,
             Operation::PatternCircular,
@@ -4844,6 +4872,7 @@ mod tests {
             Operation::TransformRotate => {}
             Operation::TransformScale => {}
             Operation::TransformRotateAround => {}
+            Operation::TransformApplyTransform => {}
             Operation::PatternLinear => {}
             Operation::PatternCircular => {}
             Operation::PatternMirror => {}
@@ -5368,6 +5397,14 @@ mod tests {
                 },
             ),
             (
+                "ApplyTransform",
+                GeometryOp::ApplyTransform {
+                    target: GeometryHandleId(1),
+                    rotation: [1.0, 0.0, 0.0, 0.0],
+                    translation: [0.0, 0.0, 0.0],
+                },
+            ),
+            (
                 "LinearPattern",
                 GeometryOp::LinearPattern {
                     target: GeometryHandleId(1),
@@ -5549,7 +5586,7 @@ mod tests {
         // variant is added or removed from GeometryOp — compile-time
         // exhaustiveness on kind_name() guarantees correctness, this assertion
         // guarantees the token list here stays in sync.
-        const GEOMETRY_OP_VARIANT_COUNT: usize = 35;
+        const GEOMETRY_OP_VARIANT_COUNT: usize = 36;
         assert_eq!(
             cases.len(),
             GEOMETRY_OP_VARIANT_COUNT,
