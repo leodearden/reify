@@ -1003,10 +1003,19 @@ where
         // included in the callback sequence (observed.len() == result.iterations).
         // The L2 norm (not squared) is emitted — callers display/log residuals
         // in L2-norm units; doing the sqrt here avoids repeated sqrt at N consumers.
-        // Cancel handling is added in step-4 (GR-016 ζ); this step ignores the
-        // return value and simply invokes the callback.
+        //
+        // Cooperative-cancellation contract (PRD §11 Q2 / compute-node-contract §2):
+        // if the callback returns Cancel, exit immediately with
+        // `iterations = iter + 1, converged = false`. The callback is NOT invoked
+        // again after it returns Cancel; no further z/β/p updates are computed.
         if let Some(ref mut cb) = progress {
-            cb(iter + 1, r_norm_sq.sqrt());
+            if cb(iter + 1, r_norm_sq.sqrt()) == CgIterationControl::Cancel {
+                return CgResult {
+                    u: Arc::new(u),
+                    iterations: iter + 1,
+                    converged: false,
+                };
+            }
         }
 
         if r_norm_sq < tol_sq {
@@ -2180,21 +2189,33 @@ mod tests {
     }
 
     /// Returning `CgIterationControl::Cancel` from the progress callback stops
-    /// the CG loop immediately at the iteration where `Cancel` was returned.
+    /// the CG loop immediately and sets `converged = false`, even when the
+    /// residual would have satisfied the convergence criterion.
+    ///
+    /// The fan-mesh with a single-entry RHS converges in exactly 1 CG iteration
+    /// (α=1 exactly drives r₁ → 0, as documented by the esc-3543-111 analysis
+    /// in `solve_cg_with_progress_fires_callback_per_iteration_and_converges`).
+    /// We cancel at `iter == 1`: the Cancel check in `cg_loop` runs BEFORE the
+    /// convergence check, so the convergence check is never reached and the
+    /// solver returns `converged = false` rather than `converged = true`.
     ///
     /// Assertions:
-    /// (a) `result.converged == false`  — Cancel is not convergence.
-    /// (b) `result.iterations == 3`     — loop terminated at the Cancel iteration.
-    /// (c) callback was invoked exactly 3 times — no further calls after Cancel.
+    /// (a) `result.converged == false`  — Cancel is not convergence; the
+    ///     `converged = true` path is unreachable once Cancel is checked first.
+    ///     Against step-2 (Cancel ignored), the solver converges normally and
+    ///     returns `converged = true` → **RED**.
+    /// (b) `result.iterations == 1`     — one iteration executed.
+    /// (c) callback invoked exactly once — no re-entry after Cancel.
     ///
     /// This test is RED against step-2's implementation because `cg_loop`
     /// ignores the Cancel return value in that step; step-4 adds the
-    /// cooperative-cancellation branch.
+    /// cooperative-cancellation branch (Cancel check before convergence check).
     #[test]
     fn solve_cg_with_progress_cancel_terminates_iteration_within_one_step() {
         let (k, f) = fan_mesh_k_spd_and_f();
-        // Generous max_iter so the real solve would complete normally.
-        // The fan-mesh takes ~tens of iterations; 1000 >> that.
+        // Tight tolerance to ensure the fan-mesh would converge at iter=1
+        // without Cancel (the problem is trivially solvable in one CG step).
+        // max_iter=1000 ensures the loop would run if Cancel is ignored.
         let opts = CgSolverOptions {
             tolerance: 1e-10,
             max_iter: 1000,
@@ -2209,8 +2230,9 @@ mod tests {
             SolverMode::Deterministic,
             &mut |iter, _residual| {
                 call_count += 1;
-                // Cancel on the 3rd iteration; Continue before that.
-                if iter == 3 {
+                // Cancel on the first iteration — the convergence check at
+                // iter==1 would otherwise succeed; Cancel must win.
+                if iter == 1 {
                     CgIterationControl::Cancel
                 } else {
                     CgIterationControl::Continue
@@ -2218,27 +2240,29 @@ mod tests {
             },
         );
 
-        // (a) Cancel is not convergence.
+        // (a) Cancel is not convergence — the convergence path is unreachable
+        // once cg_loop checks Cancel before the convergence branch.
+        // Against step-2 the solver ignores Cancel and returns converged=true
+        // (the residual satisfies tolerance at iter=1). → RED.
         assert!(
             !result.converged,
-            "result.converged must be false when Cancel was returned; \
-             got converged=true (step-4 Cancel branch not yet wired)"
+            "result.converged must be false when Cancel was returned at iter=1; \
+             got converged=true (step-4 Cancel-before-convergence branch not wired)"
         );
 
         // (b) Loop terminated exactly at the Cancel iteration.
         assert_eq!(
             result.iterations,
-            3,
-            "result.iterations must be 3 (the iter where Cancel was returned); \
-             got {} (Cancel return not yet honoured — step-4 wires this)",
+            1,
+            "result.iterations must be 1 (the Cancel iteration); got {}",
             result.iterations
         );
 
-        // (c) Callback invoked exactly 3 times — no further calls after Cancel.
+        // (c) Callback invoked exactly once — no re-entry after Cancel.
         assert_eq!(
             call_count,
-            3,
-            "callback must be invoked exactly 3 times (stopped at Cancel); \
+            1,
+            "callback must be invoked exactly once (stopped at Cancel); \
              got {call_count} invocations"
         );
     }
