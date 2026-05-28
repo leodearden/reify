@@ -24,6 +24,27 @@ fn check_with_violated_purpose_exits_failure_with_summary() {
 }
 
 #[test]
+fn check_with_unknown_purpose_exits_failure_with_clear_error() {
+    let (status, stdout, stderr) = common::run_with_args(&[
+        "check",
+        "--purpose",
+        "does_not_exist=Bracket",
+        &common::fixture_path("purpose_single_satisfiable.ri"),
+    ]);
+
+    assert!(
+        !status.success(),
+        "reify check --purpose with an unknown purpose name should exit non-zero.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    // Error message must clearly attribute the failure to the unknown purpose:
+    // either explicitly mention activation, or name the purpose itself.
+    assert!(
+        stderr.contains("could not activate purpose") || stderr.contains("does_not_exist"),
+        "stderr should clearly attribute the failure to the unknown purpose, got: {stderr}"
+    );
+}
+
+#[test]
 fn check_with_satisfiable_purpose_succeeds_and_reports_purpose_constraint() {
     let (status, stdout, stderr) = common::run_with_args(&[
         "check",
