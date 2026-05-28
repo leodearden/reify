@@ -101,3 +101,96 @@ fn speed_of_light_evaluates_to_299792458_si_with_length_over_time_dimension() {
         ),
     }
 }
+
+// ─── Test 3: BOLTZMANN_CONSTANT present and has correct signature ─────────────
+
+/// `BOLTZMANN_CONSTANT` must be present in `std/units`, be `pub`, take no
+/// parameters, and return `Scalar<ENERGY / TEMPERATURE>`.
+///
+/// Return type resolves via the `Entropy` type alias (`pub type Entropy =
+/// Energy / Temperature` in units.ri, introduced by esc-4026-121), which the
+/// compiler expands to `Scalar<ENERGY/TEMPERATURE>`.
+///
+/// k_B = 1.380649e-23 J/K exactly — 2019 SI redefinition
+/// (CGPM 26th meeting, Resolution 1).
+#[test]
+fn boltzmann_constant_function_present_in_std_units() {
+    let module = common::units_module();
+
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "BOLTZMANN_CONSTANT")
+        .unwrap_or_else(|| {
+            panic!(
+                "BOLTZMANN_CONSTANT not found in std/units; found functions: {:?}",
+                module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+            )
+        });
+
+    assert!(func.is_pub, "BOLTZMANN_CONSTANT should be pub");
+    assert!(
+        func.params.is_empty(),
+        "BOLTZMANN_CONSTANT should take no params, got: {:?}",
+        func.params
+    );
+
+    let expected_dim = DimensionVector::ENERGY.div(&DimensionVector::TEMPERATURE);
+    assert_eq!(
+        func.return_type,
+        Type::Scalar {
+            dimension: expected_dim
+        },
+        "BOLTZMANN_CONSTANT return type should be Scalar<ENERGY / TEMPERATURE>, got {:?}",
+        func.return_type
+    );
+}
+
+// ─── Test 4: BOLTZMANN_CONSTANT evaluates to 1.380649e-23 J/K ────────────────
+
+/// Evaluating `BOLTZMANN_CONSTANT()` via `eval_expr` must yield a
+/// `Value::Scalar` with `si_value ≈ 1.380649e-23` and
+/// `dimension = ENERGY / TEMPERATURE`.
+///
+/// Tolerance is 1e-35: the stored decimal literal `0.00000000000000000000001380649`
+/// has 7 significant figures; f64 precision is ~15-17 digits, so the round-trip
+/// error is ≤ 1.5 × ulp ≈ 3e-39, comfortably under 1e-35.
+#[test]
+fn boltzmann_constant_evaluates_to_1p380649e_minus_23_si_with_energy_over_temperature_dimension() {
+    let module = common::units_module();
+
+    let expected_dim = DimensionVector::ENERGY.div(&DimensionVector::TEMPERATURE);
+    let call_expr = CompiledExpr::user_function_call(
+        "BOLTZMANN_CONSTANT".to_string(),
+        vec![],
+        Type::Scalar {
+            dimension: expected_dim,
+        },
+    );
+    let values = ValueMap::new();
+    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    let result = reify_expr::eval_expr(&call_expr, &ctx);
+
+    match result {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(
+                dimension,
+                DimensionVector::ENERGY.div(&DimensionVector::TEMPERATURE),
+                "BOLTZMANN_CONSTANT() should have ENERGY / TEMPERATURE dimension, got {:?}",
+                dimension
+            );
+            assert!(
+                (si_value - 1.380649e-23).abs() < 1e-35,
+                "BOLTZMANN_CONSTANT() si_value: expected 1.380649e-23, got {:.6e}",
+                si_value
+            );
+        }
+        other => panic!(
+            "BOLTZMANN_CONSTANT() should return Value::Scalar, got {:?}",
+            other
+        ),
+    }
+}
