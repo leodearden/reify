@@ -129,6 +129,33 @@ pub(crate) fn eval_complex(name: &str, args: &[Value]) -> Option<Value> {
             _ => Value::Undef,
         }),
 
+        // complex_div(a, b): divide complex number a by b, combining dimensions via div().
+        // (a+bi)/(c+di) = ((ac+bd)+(bc-ad)i)/(c²+d²)
+        "complex_div" => binary(args, |a, b| match (a, b) {
+            (
+                Value::Complex {
+                    re: ar,
+                    im: ai,
+                    dimension: ad,
+                },
+                Value::Complex {
+                    re: br,
+                    im: bi,
+                    dimension: bd,
+                },
+            ) => {
+                let denom = br * br + bi * bi;
+                if denom == 0.0 {
+                    return Value::Undef;
+                }
+                let re = (ar * br + ai * bi) / denom;
+                let im = (ai * br - ar * bi) / denom;
+                let dimension = ad.div(bd);
+                sanitize_value(Value::Complex { re, im, dimension })
+            }
+            _ => Value::Undef,
+        }),
+
         _ => return None,
     })
 }
