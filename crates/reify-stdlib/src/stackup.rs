@@ -117,6 +117,12 @@ fn parse_distribution(v: &Value) -> Option<&str> {
 
 // --- stackup math helpers ---
 
+/// Build a LENGTH scalar result value, collapsing NaN/inf to [`Value::Undef`] via
+/// [`sanitize_value`].
+fn len_result(si: f64) -> Value {
+    sanitize_value(Value::Scalar { si_value: si, dimension: DimensionVector::LENGTH })
+}
+
 /// Extracted numeric data from a single contributor map entry.
 struct ContributorData {
     nominal: f64,
@@ -156,6 +162,18 @@ fn parse_chain(v: &Value) -> Option<Vec<ContributorData>> {
     Some(chain)
 }
 
+/// Compute worst-case (extreme-value) stack-up bounds for a contributor chain.
+///
+/// The bound computation is **sign-aware**: for a gap G = Σ sign_i·X_i, each
+/// contributor's plus/minus tolerance is routed to the correct side depending on
+/// its sign:
+///
+/// - `sign=+1`: `plus_tol` widens the maximum; `minus_tol` widens the minimum.
+/// - `sign=-1`: the contributor is subtracted, so `minus_tol` widens the maximum
+///   (subtracting a smaller value increases G) and `plus_tol` widens the minimum.
+///
+/// For symmetric tolerances (`plus_tol == minus_tol`) the result is identical to a
+/// sign-agnostic sum, so all symmetric-chain tests are unaffected.
 fn stackup_worst_case(args: &[Value]) -> Value {
     if args.len() != 1 {
         return Value::Undef;
@@ -165,25 +183,31 @@ fn stackup_worst_case(args: &[Value]) -> Value {
         None => return Value::Undef,
     };
     let mut gap_nominal = 0.0_f64;
-    let mut sum_plus = 0.0_f64;
-    let mut sum_minus = 0.0_f64;
+    // sum_max: tolerance budget that widens the gap toward its maximum.
+    // sum_min: tolerance budget that widens the gap toward its minimum.
+    let mut sum_max = 0.0_f64;
+    let mut sum_min = 0.0_f64;
     for c in &chain {
         gap_nominal += c.sign as f64 * c.nominal;
-        sum_plus += c.plus_tol;
-        sum_minus += c.minus_tol;
+        if c.sign > 0 {
+            sum_max += c.plus_tol;
+            sum_min += c.minus_tol;
+        } else {
+            // sign = -1: subtracted contributor — its minus_tol raises the gap (max side)
+            //            and its plus_tol lowers the gap (min side).
+            sum_max += c.minus_tol;
+            sum_min += c.plus_tol;
+        }
     }
-    let wc_max = gap_nominal + sum_plus;
-    let wc_min = gap_nominal - sum_minus;
-    // worst_case_band = half-width of the worst-case interval = (sum_plus + sum_minus) / 2
-    let wc_band = (sum_plus + sum_minus) / 2.0;
-    let len_scalar_val = |si: f64| {
-        sanitize_value(Value::Scalar { si_value: si, dimension: DimensionVector::LENGTH })
-    };
+    let wc_max = gap_nominal + sum_max;
+    let wc_min = gap_nominal - sum_min;
+    // worst_case_band = half-width of the worst-case interval = (sum_max + sum_min) / 2
+    let wc_band = (sum_max + sum_min) / 2.0;
     let mut m = BTreeMap::new();
-    m.insert(Value::String("nominal_gap".into()),     len_scalar_val(gap_nominal));
-    m.insert(Value::String("worst_case_band".into()), len_scalar_val(wc_band));
-    m.insert(Value::String("worst_case_max".into()),  len_scalar_val(wc_max));
-    m.insert(Value::String("worst_case_min".into()),  len_scalar_val(wc_min));
+    m.insert(Value::String("nominal_gap".into()),     len_result(gap_nominal));
+    m.insert(Value::String("worst_case_band".into()), len_result(wc_band));
+    m.insert(Value::String("worst_case_max".into()),  len_result(wc_max));
+    m.insert(Value::String("worst_case_min".into()),  len_result(wc_min));
     Value::Map(m)
 }
 
@@ -238,15 +262,12 @@ fn stackup_rss(args: &[Value]) -> Value {
     let rss_band = sigma_level * rss_sigma;
     let rss_min = gap_nominal - rss_band;
     let rss_max = gap_nominal + rss_band;
-    let len_val = |si: f64| {
-        sanitize_value(Value::Scalar { si_value: si, dimension: DimensionVector::LENGTH })
-    };
     let mut m = BTreeMap::new();
-    m.insert(Value::String("nominal_gap".into()), len_val(gap_nominal));
-    m.insert(Value::String("rss_band".into()),    len_val(rss_band));
-    m.insert(Value::String("rss_max".into()),     len_val(rss_max));
-    m.insert(Value::String("rss_min".into()),     len_val(rss_min));
-    m.insert(Value::String("rss_sigma".into()),   len_val(rss_sigma));
+    m.insert(Value::String("nominal_gap".into()), len_result(gap_nominal));
+    m.insert(Value::String("rss_band".into()),    len_result(rss_band));
+    m.insert(Value::String("rss_max".into()),     len_result(rss_max));
+    m.insert(Value::String("rss_min".into()),     len_result(rss_min));
+    m.insert(Value::String("rss_sigma".into()),   len_result(rss_sigma));
     m.insert(Value::String("sigma_level".into()), Value::Real(sigma_level));
     Value::Map(m)
 }
@@ -316,7 +337,9 @@ mod tests {
     }
 
     #[test]
-    fn eval_builtin_t1_stub_math_names_return_undef() {
+    fn eval_builtin_zero_arg_stackup_math_returns_undef() {
+        // stackup_worst_case and stackup_rss are fully implemented; 0-arg calls hit the arity
+        // guard and still return Undef.  monte_carlo_stackup is the only remaining stub.
         assert!(crate::eval_builtin("stackup_worst_case", &[]).is_undef());
         assert!(crate::eval_builtin("stackup_rss", &[]).is_undef());
         assert!(crate::eval_builtin("monte_carlo_stackup", &[]).is_undef());
@@ -942,5 +965,82 @@ mod tests {
             eval_stackup("stackup_rss", &[]).unwrap().is_undef(),
             "0 args must be Undef"
         );
+    }
+
+    // ─── asymmetric-tolerance tests (Suggestions 1 & 2) ─────────────────────
+
+    #[test]
+    fn worst_case_asym_contributor_sign_aware_bounds() {
+        // Verifies sign-aware worst-case bound computation for asymmetric tolerances.
+        //
+        // Chain (SI meters):
+        //   c1: nominal=10mm, plus_tol=0.2mm, minus_tol=0.1mm, sign=+1
+        //   c2: nominal=5mm,  plus_tol=0.3mm, minus_tol=0.15mm, sign=-1
+        //
+        // gap_nominal = +0.010 + (-1)*0.005 = 0.005 m
+        //
+        // Sign-aware routing:
+        //   c1 (sign=+1): plus_tol  → max side, minus_tol  → min side
+        //   c2 (sign=-1): minus_tol → max side, plus_tol   → min side
+        //
+        // sum_max  = 0.0002  + 0.00015 = 0.00035 m
+        // sum_min  = 0.0001  + 0.0003  = 0.00040 m
+        // wc_max   = 0.005   + 0.00035 = 0.00535 m
+        // wc_min   = 0.005   - 0.00040 = 0.00460 m
+        // wc_band  = (0.00035 + 0.00040) / 2 = 3.75e-4 m
+        let c1 = eval_stackup(
+            "contributor_asym",
+            &[len(0.010), len(0.0002), len(0.0001), Value::Int(1)],
+        )
+        .unwrap();
+        let c2 = eval_stackup(
+            "contributor_asym",
+            &[len(0.005), len(0.0003), len(0.00015), Value::Int(-1)],
+        )
+        .unwrap();
+        let chain = Value::List(vec![c1, c2]);
+        let m = expect_map(eval_stackup("stackup_worst_case", &[chain]));
+        let tol = 1e-12_f64;
+        assert_rel_close(scalar_si(&m[&Value::String("nominal_gap".into())]),     0.005,   tol, "nominal_gap");
+        assert_rel_close(scalar_si(&m[&Value::String("worst_case_max".into())]),  0.00535, tol, "wc_max");
+        assert_rel_close(scalar_si(&m[&Value::String("worst_case_min".into())]),  0.0046,  tol, "wc_min");
+        assert_rel_close(scalar_si(&m[&Value::String("worst_case_band".into())]), 3.75e-4, tol, "wc_band");
+    }
+
+    #[test]
+    fn rss_asym_contributor_t_i_averaging() {
+        // Verifies t_i = (plus_tol + minus_tol) / 2 half-band averaging for asymmetric
+        // tolerances with a sign=-1 contributor.
+        //
+        // Chain (SI meters):
+        //   c1: nominal=10mm, plus_tol=0.2mm, minus_tol=0.1mm, sign=+1
+        //   c2: nominal=5mm,  plus_tol=0.3mm, minus_tol=0.15mm, sign=-1
+        //
+        // gap_nominal = 0.005 m
+        // t1 = (0.0002 + 0.0001) / 2 = 0.00015  m
+        // t2 = (0.0003 + 0.00015) / 2 = 0.000225 m
+        // Sum t^2 = (0.00015)^2 + (0.000225)^2 = 2.25e-8 + 5.0625e-8 = 7.3125e-8 m^2
+        // rss_band  = sqrt(7.3125e-8) m  (sigma-invariant)
+        // rss_sigma = rss_band / 3
+        let c1 = eval_stackup(
+            "contributor_asym",
+            &[len(0.010), len(0.0002), len(0.0001), Value::Int(1)],
+        )
+        .unwrap();
+        let c2 = eval_stackup(
+            "contributor_asym",
+            &[len(0.005), len(0.0003), len(0.00015), Value::Int(-1)],
+        )
+        .unwrap();
+        let chain = Value::List(vec![c1, c2]);
+        let m = expect_map(eval_stackup("stackup_rss", &[chain]));
+        let tol = 1e-12_f64;
+        let rss_band_expected = (7.3125e-8_f64).sqrt();
+        let rss_sigma_expected = rss_band_expected / 3.0;
+        assert_rel_close(scalar_si(&m[&Value::String("nominal_gap".into())]),  0.005,               tol, "nominal_gap");
+        assert_rel_close(scalar_si(&m[&Value::String("rss_band".into())]),     rss_band_expected,   tol, "rss_band");
+        assert_rel_close(scalar_si(&m[&Value::String("rss_sigma".into())]),    rss_sigma_expected,  tol, "rss_sigma");
+        assert_rel_close(scalar_si(&m[&Value::String("rss_min".into())]),      0.005 - rss_band_expected, tol, "rss_min");
+        assert_rel_close(scalar_si(&m[&Value::String("rss_max".into())]),      0.005 + rss_band_expected, tol, "rss_max");
     }
 }
