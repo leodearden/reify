@@ -1,0 +1,11 @@
+structure PartA {
+    param length : Length = 80mm
+}
+
+structure BoxB {
+    param length : Length = 100mm
+}
+
+purpose fits_within(part : Structure, envelope : Structure) {
+    constraint part.length < envelope.length
+}

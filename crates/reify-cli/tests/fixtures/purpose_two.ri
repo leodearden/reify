@@ -1,0 +1,11 @@
+structure Bracket {
+    param width : Length = 80mm
+}
+
+purpose mfg_ready(subject : Structure) {
+    constraint subject.width > 0mm
+}
+
+purpose lightweight(subject : Structure) {
+    constraint subject.width < 200mm
+}

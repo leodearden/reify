@@ -51,6 +51,27 @@ pub fn run_subcommand(subcommand: &str, path: &str) -> (ExitStatus, String, Stri
     (output.status, stdout, stderr)
 }
 
+/// Run `reify <args...>` with arbitrary args and return `(status, stdout, stderr)`.
+///
+/// Unlike [`run_subcommand`], which forwards exactly a `(subcommand, path)` pair,
+/// this helper forwards the full arg list verbatim so tests can pass flags such
+/// as `--purpose <value>` (including repeated occurrences). The same
+/// `Command`/`Stdio` boilerplate is shared with `run_subcommand`.
+#[allow(dead_code)]
+pub fn run_with_args(args: &[&str]) -> (ExitStatus, String, String) {
+    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute reify binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    (output.status, stdout, stderr)
+}
+
 /// Captures the output of a `reify build` invocation.
 #[allow(dead_code)]
 pub struct BuildOutput {
