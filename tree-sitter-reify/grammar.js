@@ -947,9 +947,10 @@ module.exports = grammar({
     ),
 
     binary_expression: $ => choice(
-      // ── Keyword logical-operator band (spec §16 levels 13–14, negated for tree-sitter) ──
+      // ── Keyword logical-operator band (spec §16 levels 13–15, negated for tree-sitter) ──
       prec.left(-13, seq(field('left', $._expression), field('op', 'and'), field('right', $._expression))),
       prec.left(-14, seq(field('left', $._expression), field('op', 'or'), field('right', $._expression))),
+      prec.right(-15, seq(field('left', $._expression), field('op', 'implies'), field('right', $._expression))),
       // ── Symbol logical operators (kept for back-compat; deprecation deferred per PRD §10 Q3) ──
       prec.left(1, seq(field('left', $._expression), field('op', '||'), field('right', $._expression))),
       prec.left(2, seq(field('left', $._expression), field('op', '&&'), field('right', $._expression))),
