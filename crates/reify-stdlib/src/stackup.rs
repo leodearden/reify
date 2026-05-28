@@ -641,7 +641,7 @@ mod tests {
 
         // (a) args[0] is not a List
         assert!(
-            eval_stackup("stackup_worst_case", &[nom.clone()]).unwrap().is_undef(),
+            eval_stackup("stackup_worst_case", std::slice::from_ref(&nom)).unwrap().is_undef(),
             "non-List arg[0] must be Undef"
         );
         assert!(
