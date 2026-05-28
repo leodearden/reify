@@ -38,6 +38,24 @@
 #     remains the primary runtime-lib mechanism for `cargo test`/`cargo run`; this is
 #     belt-and-braces for contexts the runner does not cover.
 #
+# PSI gate (inter-dispatch throttle for multi-worktree verify bursts):
+#   REIFY_PSI_GATE_THRESHOLD    — CPU avg10 % ceiling; dispatch waits until below this
+#                                  value. Default: 50.
+#   REIFY_PSI_GATE_WINDOW       — minimum inter-dispatch spacing in seconds.  Default: 20.
+#   REIFY_PSI_GATE_MAX_WAIT     — give-up timeout (seconds); exits 75 (EX_TEMPFAIL) so
+#                                  the orchestrator retries.  Default: 1800.
+#   REIFY_PSI_GATE_DISABLE      — set to 1 to bypass entirely (no wait, no dispatch touch).
+#                                  Emergency break-glass; does not affect coordination state.
+#   REIFY_PSI_GATE_POLL         — recheck interval in seconds.  Default: 5.
+#                                  (testability knob; reduce in tests for faster runs)
+#   REIFY_PSI_GATE_PROC_PATH    — PSI source; defaults to /proc/pressure/cpu.
+#                                  (testability knob; override to inject fixture files)
+#   REIFY_PSI_GATE_DISPATCH_FILE— shared coordination timestamp file.
+#                                  Default: /tmp/reify-verify-last-dispatch.
+#                                  (testability knob; isolate per test case)
+#   psi-gate action             — `verify.sh psi-gate` runs only the gate and exits;
+#                                  used as the first test-phase plan entry (test/all).
+#
 # OCCT safety:
 #   OCCT C++ globals are PER-PROCESS; cross-process isolation is already provided by
 #   cargo's test-binary parallelism. Cross-WORKTREE contention (concurrent worktrees)
@@ -99,7 +117,14 @@ psi_gate() {
         return 0
     fi
 
-    # (3) Fail-open on missing PSI source — added in step-10
+    # (3) Fail-open on missing/unreadable PSI source (older kernels / non-Linux hosts).
+    # Touch the dispatch file so cross-process coordination stays consistent;
+    # proceed without blocking the build.
+    if [ ! -r "$PROC_PATH" ]; then
+        echo "verify.sh: WARNING — PSI gate disabled — kernel lacks ${PROC_PATH}" >&2
+        touch "$DISPATCH"
+        return 0
+    fi
 
     # (4) Task poll loop: wait for avg10 < THRESHOLD AND age >= WINDOW.
     # The read-mtime / compare / touch critical section is wrapped in a flock
