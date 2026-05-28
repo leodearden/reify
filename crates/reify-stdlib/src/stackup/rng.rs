@@ -231,6 +231,59 @@ mod tests {
         }
     }
 
+    // ---- sample_triangular_sym tests ----
+
+    /// Every draw from sample_triangular_sym(h) must lie in [-h, +h].
+    #[test]
+    fn sample_triangular_sym_in_band() {
+        let h = 0.001_f64;
+        let mut rng = Xoshiro256StarStar::from_seed(0xBBBB_CCCC_DDDD_EEEE);
+        for i in 0..10_000 {
+            let v = rng.sample_triangular_sym(h);
+            assert!(v >= -h && v <= h,
+                "draw {i}: {v} out of [-{h}, +{h}]");
+        }
+    }
+
+    /// sample_triangular_sym(h=1) mean is 0 within 5·SE.
+    /// Var = h²/6, SE = sqrt(h²/6/N). At h=1, N=100k: SE ≈ 1.291e-3.
+    #[test]
+    fn sample_triangular_sym_mean_zero_within_se() {
+        let h = 1.0_f64;
+        let mut rng = Xoshiro256StarStar::from_seed(0xCCCC_DDDD_EEEE_FFFF);
+        let draws: Vec<f64> = (0..N_STAT).map(|_| rng.sample_triangular_sym(h)).collect();
+        let mean = sample_mean(&draws);
+        let se = (h * h / 6.0 / N_STAT as f64).sqrt();
+        assert!(mean.abs() <= 5.0 * se,
+            "|mean| = {:.6} > 5·SE = {:.6}", mean.abs(), 5.0 * se);
+    }
+
+    /// sample_triangular_sym(h=1) variance is within 2% of h²/6.
+    #[test]
+    fn sample_triangular_sym_variance_within_2pct() {
+        let h = 1.0_f64;
+        let expected_var = h * h / 6.0;
+        let mut rng = Xoshiro256StarStar::from_seed(0xDDDD_EEEE_FFFF_0000);
+        let draws: Vec<f64> = (0..N_STAT).map(|_| rng.sample_triangular_sym(h)).collect();
+        let var = sample_variance(&draws);
+        let rel_err = (var - expected_var).abs() / expected_var;
+        assert!(rel_err <= 0.02,
+            "variance {var:.6} deviates {:.4}% from {expected_var}", rel_err * 100.0);
+    }
+
+    /// Two same-seed instances produce bit-identical first 100 triangular draws.
+    #[test]
+    fn sample_triangular_sym_deterministic_same_seed() {
+        let seed = 0xEEEE_FFFF_0000_1111_u64;
+        let mut rng1 = Xoshiro256StarStar::from_seed(seed);
+        let mut rng2 = Xoshiro256StarStar::from_seed(seed);
+        for i in 0..100 {
+            let v1 = rng1.sample_triangular_sym(1.0);
+            let v2 = rng2.sample_triangular_sym(1.0);
+            assert_eq!(v1.to_bits(), v2.to_bits(), "diverged at draw {i}");
+        }
+    }
+
     // ---- sample_uniform_sym tests ----
 
     /// Every draw from sample_uniform_sym(h) must lie in [-h, +h).
