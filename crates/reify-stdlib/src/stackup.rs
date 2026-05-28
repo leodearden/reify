@@ -629,4 +629,253 @@ mod tests {
             "2 args must be Undef"
         );
     }
+
+    // ─── stackup_rss tests (step-3 RED; GREEN after step-4 impl) ─────────────
+
+    #[test]
+    fn rss_happy_path_golden_chain_default_sigma() {
+        // GOLDEN chain hand-calc (SI meters, default sigma_level=3):
+        //   t1 = (0.0001 + 0.0001) / 2 = 1e-4   m  (symmetric)
+        //   t2 = (0.00005 + 0.00005) / 2 = 5e-5  m
+        //   t3 = (0.0002 + 0.0002) / 2 = 2e-4    m
+        //   Sum t^2 = (1e-4)^2 + (5e-5)^2 + (2e-4)^2 = 1e-8 + 2.5e-9 + 4e-8 = 5.25e-8 m^2
+        //   rss_band  = sqrt(5.25e-8) ≈ 2.291288e-4  m  (sigma-invariant)
+        //   rss_sigma = rss_band / 3  ≈ 7.637628e-5  m
+        //   nominal_gap = 0.008 m
+        //   rss_min   = 0.008 - rss_band ≈ 7.770871e-3  m
+        //   rss_max   = 0.008 + rss_band ≈ 8.229129e-3  m
+        //   sigma_level = Value::Real(3.0)
+        let m = expect_map(eval_stackup("stackup_rss", &[golden_chain()]));
+        assert_eq!(m.len(), 6, "result map must have exactly 6 keys");
+        let tol = 1e-12_f64;
+        let rss_band_expected = (5.25e-8_f64).sqrt();
+        let rss_sigma_expected = rss_band_expected / 3.0;
+        assert_rel_close(
+            scalar_si(&m[&Value::String("nominal_gap".into())]),
+            0.008,
+            tol,
+            "nominal_gap",
+        );
+        assert_rel_close(
+            scalar_si(&m[&Value::String("rss_band".into())]),
+            rss_band_expected,
+            tol,
+            "rss_band",
+        );
+        assert_rel_close(
+            scalar_si(&m[&Value::String("rss_sigma".into())]),
+            rss_sigma_expected,
+            tol,
+            "rss_sigma",
+        );
+        assert_rel_close(
+            scalar_si(&m[&Value::String("rss_min".into())]),
+            0.008 - rss_band_expected,
+            tol,
+            "rss_min",
+        );
+        assert_rel_close(
+            scalar_si(&m[&Value::String("rss_max".into())]),
+            0.008 + rss_band_expected,
+            tol,
+            "rss_max",
+        );
+        assert_eq!(
+            m[&Value::String("sigma_level".into())],
+            Value::Real(3.0),
+            "sigma_level must be Value::Real(3.0)"
+        );
+    }
+
+    #[test]
+    fn rss_inv2_exactness_sigma3() {
+        // INV-2: rss_sigma equals the closed-form formula to 1e-12 relative.
+        let m = expect_map(eval_stackup("stackup_rss", &[golden_chain()]));
+        let expected_sigma = ((1e-4_f64 / 3.0).powi(2)
+            + (5e-5_f64 / 3.0).powi(2)
+            + (2e-4_f64 / 3.0).powi(2))
+        .sqrt();
+        assert_rel_close(
+            scalar_si(&m[&Value::String("rss_sigma".into())]),
+            expected_sigma,
+            1e-12,
+            "rss_sigma exactness (INV-2)",
+        );
+    }
+
+    #[test]
+    fn rss_sigma_flow_through_int_arg() {
+        // Sigma flow-through: pass Value::Int(6).
+        //   rss_sigma(sigma=6) = rss_band / 6  (halves relative to sigma=3)
+        //   rss_band INVARIANT: rss_band(sigma=6) == rss_band(sigma=3)  ← regression guard
+        //   sigma_level stored as Value::Real(6.0)
+        let chain = golden_chain();
+        let m6 = expect_map(eval_stackup("stackup_rss", &[chain.clone(), Value::Int(6)]));
+        let m3 = expect_map(eval_stackup("stackup_rss", &[chain]));
+        let tol = 1e-12_f64;
+        let rss_band3  = scalar_si(&m3[&Value::String("rss_band".into())]);
+        let rss_sigma3 = scalar_si(&m3[&Value::String("rss_sigma".into())]);
+        let rss_band6  = scalar_si(&m6[&Value::String("rss_band".into())]);
+        let rss_sigma6 = scalar_si(&m6[&Value::String("rss_sigma".into())]);
+        // rss_band is sigma-invariant (PRD 3.2 identity)
+        assert_rel_close(rss_band6, rss_band3, tol, "rss_band invariant under sigma=6 (regression guard)");
+        // rss_sigma halves when sigma doubles
+        assert_rel_close(rss_sigma6, rss_sigma3 / 2.0, tol, "rss_sigma halves at sigma=6");
+        assert_eq!(
+            m6[&Value::String("sigma_level".into())],
+            Value::Real(6.0),
+            "sigma_level stored as Real(6.0)"
+        );
+    }
+
+    #[test]
+    fn rss_sigma_flow_through_real_arg() {
+        // Same as the Int(6) test but pass Value::Real(6.0).
+        let chain = golden_chain();
+        let m6 = expect_map(eval_stackup("stackup_rss", &[chain.clone(), Value::Real(6.0)]));
+        let m3 = expect_map(eval_stackup("stackup_rss", &[chain]));
+        let tol = 1e-12_f64;
+        let rss_band3  = scalar_si(&m3[&Value::String("rss_band".into())]);
+        let rss_sigma3 = scalar_si(&m3[&Value::String("rss_sigma".into())]);
+        let rss_band6  = scalar_si(&m6[&Value::String("rss_band".into())]);
+        let rss_sigma6 = scalar_si(&m6[&Value::String("rss_sigma".into())]);
+        assert_rel_close(rss_band6, rss_band3, tol, "rss_band invariant (Real arg)");
+        assert_rel_close(rss_sigma6, rss_sigma3 / 2.0, tol, "rss_sigma halves (Real arg)");
+        assert_eq!(m6[&Value::String("sigma_level".into())], Value::Real(6.0));
+    }
+
+    #[test]
+    fn rss_inv1_worst_case_band_ge_rss_band() {
+        // INV-1: worst_case_band >= rss_band (L1 >= L2 inequality).
+        // 3.5e-4 >= 2.291288e-4 (Golden chain values).
+        let wc = expect_map(eval_stackup("stackup_worst_case", &[golden_chain()]));
+        let rss = expect_map(eval_stackup("stackup_rss", &[golden_chain()]));
+        let wc_band  = scalar_si(&wc[&Value::String("worst_case_band".into())]);
+        let rss_band = scalar_si(&rss[&Value::String("rss_band".into())]);
+        assert!(
+            wc_band >= rss_band,
+            "INV-1 violated: worst_case_band={:.6e} < rss_band={:.6e}",
+            wc_band, rss_band
+        );
+    }
+
+    #[test]
+    fn rss_inv4_sign_flip_invariants() {
+        // INV-4: flip all signs; rss_sigma and rss_band unchanged; nominal_gap negates.
+        let c1 = eval_stackup("contributor", &[len(0.010), len(0.0001), Value::Int(-1)]).unwrap();
+        let c2 = eval_stackup("contributor", &[len(0.005), len(0.00005), Value::Int(1)]).unwrap();
+        let c3 = eval_stackup("contributor", &[len(0.003), len(0.0002), Value::Int(-1)]).unwrap();
+        let flipped = Value::List(vec![c1, c2, c3]);
+        let mf = expect_map(eval_stackup("stackup_rss", &[flipped]));
+        let m  = expect_map(eval_stackup("stackup_rss", &[golden_chain()]));
+        let tol = 1e-12_f64;
+        assert_rel_close(
+            scalar_si(&mf[&Value::String("rss_band".into())]),
+            scalar_si(&m[&Value::String("rss_band".into())]),
+            tol,
+            "rss_band invariant under sign flip",
+        );
+        assert_rel_close(
+            scalar_si(&mf[&Value::String("rss_sigma".into())]),
+            scalar_si(&m[&Value::String("rss_sigma".into())]),
+            tol,
+            "rss_sigma invariant under sign flip",
+        );
+        assert_rel_close(
+            scalar_si(&mf[&Value::String("nominal_gap".into())]),
+            -0.008,
+            tol,
+            "nominal_gap negated after flip",
+        );
+    }
+
+    #[test]
+    fn rss_inv5_zero_tol_sigma_and_band_are_zero() {
+        // INV-5: all tolerances = 0 → rss_sigma=0, rss_band=0, rss_min==rss_max==nominal_gap.
+        let c1 = eval_stackup("contributor", &[len(0.010), len(0.0), Value::Int(1)]).unwrap();
+        let c2 = eval_stackup("contributor", &[len(0.005), len(0.0), Value::Int(-1)]).unwrap();
+        let zero_tol_chain = Value::List(vec![c1, c2]);
+        let m = expect_map(eval_stackup("stackup_rss", &[zero_tol_chain]));
+        let gap   = scalar_si(&m[&Value::String("nominal_gap".into())]);
+        let band  = scalar_si(&m[&Value::String("rss_band".into())]);
+        let sigma = scalar_si(&m[&Value::String("rss_sigma".into())]);
+        let min   = scalar_si(&m[&Value::String("rss_min".into())]);
+        let max   = scalar_si(&m[&Value::String("rss_max".into())]);
+        assert_eq!(band,  0.0, "zero-tol: rss_band must be 0");
+        assert_eq!(sigma, 0.0, "zero-tol: rss_sigma must be 0");
+        assert_eq!(min, gap, "zero-tol: rss_min == nominal_gap");
+        assert_eq!(max, gap, "zero-tol: rss_max == nominal_gap");
+    }
+
+    #[test]
+    fn rss_validation_returns_undef() {
+        // (a) empty chain → Undef
+        assert!(
+            eval_stackup("stackup_rss", &[Value::List(vec![])]).unwrap().is_undef(),
+            "empty chain must be Undef"
+        );
+
+        // (b) non-Length contributor field → Undef
+        use std::collections::BTreeMap;
+        let mut bad_m: BTreeMap<Value, Value> = BTreeMap::new();
+        bad_m.insert(
+            Value::String("nominal".into()),
+            Value::Scalar { si_value: 10.0, dimension: DimensionVector::FORCE },
+        );
+        bad_m.insert(Value::String("plus_tol".into()), len(0.0001));
+        bad_m.insert(Value::String("minus_tol".into()), len(0.0001));
+        bad_m.insert(Value::String("sign".into()), Value::Int(1));
+        bad_m.insert(
+            Value::String("distribution".into()),
+            Value::Enum { type_name: "Distribution".into(), variant: "Normal".into() },
+        );
+        let bad_chain = Value::List(vec![Value::Map(bad_m)]);
+        assert!(
+            eval_stackup("stackup_rss", &[bad_chain]).unwrap().is_undef(),
+            "non-LENGTH contributor field must be Undef"
+        );
+
+        // (c) sigma_level <= 0 → Undef
+        let chain = golden_chain();
+        assert!(
+            eval_stackup("stackup_rss", &[chain.clone(), Value::Int(0)]).unwrap().is_undef(),
+            "sigma_level=Int(0) must be Undef"
+        );
+        assert!(
+            eval_stackup("stackup_rss", &[chain.clone(), Value::Real(-3.0)]).unwrap().is_undef(),
+            "sigma_level=Real(-3.0) must be Undef"
+        );
+
+        // (d) non-finite sigma_level → Undef
+        assert!(
+            eval_stackup("stackup_rss", &[chain.clone(), Value::Real(f64::NAN)]).unwrap().is_undef(),
+            "sigma_level=NaN must be Undef"
+        );
+        assert!(
+            eval_stackup("stackup_rss", &[chain.clone(), Value::Real(f64::INFINITY)])
+                .unwrap()
+                .is_undef(),
+            "sigma_level=Inf must be Undef"
+        );
+
+        // (e) DIMENSIONED sigma_level (LENGTH scalar 6mm) → Undef
+        assert!(
+            eval_stackup("stackup_rss", &[chain.clone(), len(0.006)]).unwrap().is_undef(),
+            "dimensioned sigma_level must be Undef"
+        );
+
+        // (f) 3 args → Undef
+        assert!(
+            eval_stackup("stackup_rss", &[chain.clone(), Value::Real(3.0), Value::Real(0.0)])
+                .unwrap()
+                .is_undef(),
+            "3 args must be Undef"
+        );
+
+        // (g) 0 args → Undef
+        assert!(
+            eval_stackup("stackup_rss", &[]).unwrap().is_undef(),
+            "0 args must be Undef"
+        );
+    }
 }
