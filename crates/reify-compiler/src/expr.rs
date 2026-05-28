@@ -1831,21 +1831,30 @@ pub(crate) fn compile_expr_guarded(
             // the existing `is_error()` poison short-circuit below still fires
             // for already-poisoned subjects.
             //
-            // Single-StructureRef-param invariant (task-2201): the
-            // `ValueCellId::new(&id.entity, member)` emit at line ~1222 below
-            // collapses ALL purpose-subject member refs onto the purpose-name
-            // entity stamp (id.entity == scope.entity_name == purpose_name).
-            // This is correct only when the purpose has exactly one StructureRef
-            // param, because `activate_purpose` rewrites the stamp with a single
-            // `remap_entity(purpose_name, entity_ref)` call
-            // (reify-types/src/expr.rs:660) — there is no per-param dispatch.
-            // `compile_purpose` (traits.rs) rejects multi-param purposes with a
-            // clear diagnostic before this branch ever runs for them; see
-            // esc-2181-18 S3 for the deferred Approach-2 design.
+            // Per-param stamp invariant (task-2181 β, PRD §4.1 contract C1):
+            // When a purpose param identifier (e.g. `subject`) is accessed as
+            // `subject.mass`, the member-ref compiles to a ValueCellId whose
+            // entity stamp is `format!("{}::{}", purpose_name, param_name)` —
+            // e.g. `"lightweight::subject"`. This makes each param's refs
+            // disjoint even in multi-param purposes. `activate_purpose` (task β)
+            // remaps each per-param stamp to the bound entity_ref via a per-param
+            // `remap_entity(format!("{}::{}", purpose_name, param.name), entity_ref)`
+            // loop; task γ adds `activate_purpose_with_bindings` for independent
+            // per-param entity bindings.
+            //
+            // The `let Some(param_root) = scope.purpose_param_root(&id.member)` conjunct
+            // guards forward-compatibility for task δ (let-bindings in purpose bodies):
+            // future lets will register via `scope.register` with the same
+            // entity_name, but NOT via `register_purpose_param`, so they will
+            // NOT trigger this branch and will instead fall through to the
+            // normal member-access path. Binding `param_root` directly in the guard
+            // eliminates the duplicate lookup that was previously needed inside the
+            // `else` branch below (reviewer suggestion code_reuse_efficiency).
             if let CompiledExprKind::ValueRef(ref id) = compiled_obj.kind
                 && matches!(&compiled_obj.result_type, Type::StructureRef(_))
                 && id.entity == scope.entity_name
                 && !scope.is_entity_scope
+                && let Some(param_root) = scope.purpose_param_root(&id.member)
             {
                 if PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS.contains(&member.as_str()) {
                     // Reflective-aggregation placeholder (task-2289).
@@ -1936,7 +1945,13 @@ pub(crate) fn compile_expr_guarded(
                             );
                         }
                     }
-                    let member_id = ValueCellId::new(&id.entity, member);
+                    // Per-param stamp: encode `purpose_name::param_name` as the entity
+                    // so each param's refs are disjoint (task-2181 β, PRD §4.1 C1).
+                    // `param_root` is already bound by the outer `if let` guard's
+                    // `let Some(param_root) = scope.purpose_param_root(&id.member)`
+                    // conjunct — no second lookup or `.expect()` needed.
+                    let stamp_entity = format!("{}::{}", id.entity, param_root);
+                    let member_id = ValueCellId::new(&stamp_entity, member);
                     return CompiledExpr::value_ref(member_id, Type::Real);
                 }
             }

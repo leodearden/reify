@@ -42,6 +42,30 @@ impl Engine {
     /// `deactivate_purpose` first. This means existing callers that manually
     /// re-activate between consecutive builds (with the same entity) continue
     /// to work harmlessly — the second call is silently skipped.
+    ///
+    /// **Multi-param refusal — known UX gap (resolved by task γ):**
+    /// activating a multi-param purpose via this single-entity shim is refused.
+    /// `is_purpose_active` returns `false`, zero constraints are injected, and a
+    /// `tracing::warn!` event fires at `WARN` level under the
+    /// `reify_eval::engine_purposes` target. The public signature returns `()`,
+    /// making this a **silent no-op from the caller's perspective** unless the
+    /// caller either (a) subscribes to `tracing` events, or (b) checks
+    /// `is_purpose_active(purpose_name)` after the call and observes it still
+    /// returns `false`.
+    ///
+    /// *Why silent?* The Engine activation path has no Diagnostic sink (existing
+    /// not-found and no-eval-state refusals also return `()` silently). A
+    /// breaking API change to return an error enum is deferred to task γ's
+    /// `activate_purpose_with_bindings`. Until task γ lands, authors activating
+    /// a multi-param purpose will experience a silent no-op — document this in
+    /// any user-facing release notes accompanying the β feature.
+    ///
+    /// *Detection during development:* subscribe to `tracing` at `WARN` level
+    /// targeting `reify_eval::engine_purposes`, or assert `is_purpose_active`
+    /// after calling `activate_purpose` for any purpose you authored with
+    /// multiple params. Per-param binding via task γ's
+    /// `activate_purpose_with_bindings` (PRD §4.5 C2) is the correct long-term
+    /// API for multi-param purposes.
     pub fn activate_purpose(&mut self, purpose_name: &str, entity_ref: &str) {
         // Delegate to the constraint-injection helper; rebuild infrastructure only
         // once rather than once per call.  For the single-activation case (N=1)
@@ -57,7 +81,9 @@ impl Engine {
     ///
     /// Returns `true` if the injection was performed, `false` when this is a
     /// no-op (purpose already active, purpose not found in `compiled_purposes`,
-    /// or no `eval_state` present).
+    /// no `eval_state` present, or the purpose has more than one param — the
+    /// single-entity shim cannot bind a multi-param purpose; callers must use
+    /// `activate_purpose_with_bindings`, task γ — PRD §4.5 C2).
     ///
     /// **Does NOT** rebuild `reverse_index`, `trace_map`, `rebuild_cone`, or
     /// `active_tolerance_scope`.  Call `rebuild_purpose_infrastructure()` once
@@ -85,6 +111,24 @@ impl Engine {
             None => return false, // Purpose not found — silently ignore
         };
 
+        // Contract C2 (PRD §4.5): the single-entity `activate_purpose(name, entity_ref)`
+        // shim cannot safely bind a multi-param purpose. Applying one `entity_ref` to
+        // every per-param `{purpose}::{param}` stamp (the remap loop below) would alias
+        // distinct params — `part.length > envelope.length` would collapse to
+        // `entity.length > entity.length`, a silently meaningless constraint. Refuse the
+        // activation rather than inject a mis-bound constraint. Per-param binding is task
+        // γ's `activate_purpose_with_bindings`; until it lands the single-entity path is a
+        // refusal (non-silent: warn-logged + observable as no injection / not active),
+        // NOT a silent no-op or mis-bind.
+        if purpose.params.len() > 1 {
+            tracing::warn!(
+                purpose = %purpose_name,
+                param_count = purpose.params.len(),
+                "refusing single-entity activation of multi-param purpose; use activate_purpose_with_bindings (task gamma)"
+            );
+            return false;
+        }
+
         // Get mutable access to the evaluation state
         let state = match self.eval_state.as_mut() {
             Some(s) => s,
@@ -94,18 +138,31 @@ impl Engine {
         // Build a unique entity prefix for the purpose-injected constraints
         let purpose_entity = format!("purpose:{}@{}", purpose_name, entity_ref);
 
-        // Rewrite compiled expressions: substitute ValueCellId(purpose_name, param)
-        // with ValueCellId(entity_ref, param) so references resolve to existing
-        // value cells in the evaluation graph.
+        // Rewrite compiled expressions: substitute each per-param stamp
+        // `ValueCellId("{purpose}::{param}", member)` with `ValueCellId(entity_ref, member)`
+        // so references resolve to existing value cells in the evaluation graph (task-2181 β).
+        //
+        // By the time control reaches here, `purpose.params.len() == 1` (multi-param
+        // purposes are refused above by the C2 guard). The per-param loop therefore runs
+        // exactly once — behavior-identical to the pre-β single `remap_entity(purpose_name,
+        // entity_ref)`. Task γ replaces the C2 guard-plus-single-binding loop with a
+        // per-binding remap via `activate_purpose_with_bindings`; keep the `for param in
+        // &purpose.params { … }` loop shape as the seam γ generalizes.
         let mut rewritten_constraints = purpose.constraints.clone();
         for constraint in &mut rewritten_constraints {
-            constraint.expr.remap_entity(purpose_name, entity_ref);
+            for param in &purpose.params {
+                let from_stamp = format!("{}::{}", purpose_name, param.name);
+                constraint.expr.remap_entity(&from_stamp, entity_ref);
+            }
         }
 
         let rewritten_objective = purpose.objective.clone().map(|mut obj| {
             match &mut obj {
                 OptimizationObjective::Minimize(expr) | OptimizationObjective::Maximize(expr) => {
-                    expr.remap_entity(purpose_name, entity_ref);
+                    for param in &purpose.params {
+                        let from_stamp = format!("{}::{}", purpose_name, param.name);
+                        expr.remap_entity(&from_stamp, entity_ref);
+                    }
                 }
             }
             obj
