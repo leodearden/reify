@@ -19,6 +19,16 @@ fn complex_div_parts(ar: f64, ai: f64, br: f64, bi: f64) -> Option<(f64, f64)> {
     Some(((ar * br + ai * bi) / denom, (ai * br - ar * bi) / denom))
 }
 
+/// Extract `(re, im, dimension)` from a `Value::Complex`; returns `None` for any other variant.
+/// Shared extraction path used by `complex_exp`, `complex_sqrt`, and `complex_pow` so
+/// each builtin's type-guard is expressed once rather than repeated inline.
+fn as_complex(v: &Value) -> Option<(f64, f64, DimensionVector)> {
+    match v {
+        Value::Complex { re, im, dimension } => Some((*re, *im, *dimension)),
+        _ => None,
+    }
+}
+
 pub(crate) fn eval_complex(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {
         // complex(re, im) constructor: both args must be numeric with matching dimensions.
@@ -172,33 +182,49 @@ pub(crate) fn eval_complex(name: &str, args: &[Value]) -> Option<Value> {
             _ => Value::Undef,
         }),
 
-        // complex_pow(z, n: Int): z^n by repeated multiplication over |n| steps.
+        // complex_pow(z, n: Int): z^n via exponentiation-by-squaring; O(log |n|).
         // Accumulates (re, im) via complex_mul_parts and dimension via DimensionVector::mul.
         // n=0 → 1+0i DIMENSIONLESS (zero iterations, multiplicative identity).
         // n<0 → 1/z^|n| via complex_div_parts; z=0+0i with n<0 → Undef.
+        // |n| > 1<<20 → Undef (DoS guard; avoids effectively-infinite loops in the interpreter).
         // Non-Int exponent → Undef (non-integer powers need fractional dimension, deferred).
         "complex_pow" => {
             if args.len() != 2 {
                 return Some(Value::Undef);
             }
-            let (base_re, base_im, base_dim) = match &args[0] {
-                Value::Complex { re, im, dimension } => (*re, *im, *dimension),
-                _ => return Some(Value::Undef),
+            let Some((base_re, base_im, base_dim)) = as_complex(&args[0]) else {
+                return Some(Value::Undef);
             };
             let n = match &args[1] {
                 Value::Int(n) => *n,
                 _ => return Some(Value::Undef),
             };
-            // Accumulate z^|n| starting from multiplicative identity (1+0i, DIMENSIONLESS).
-            let abs_n = n.unsigned_abs() as usize;
+            let abs_n = n.unsigned_abs(); // u64 — no truncating cast on 32-bit targets
+            if abs_n > (1u64 << 20) {
+                // Exponents above ~1M are rejected as a DoS guard.
+                return Some(Value::Undef);
+            }
+            // Exponentiation by squaring: O(log |n|) complex multiplications.
+            // acc accumulates the result; base is squared each iteration.
             let mut acc_re = 1.0_f64;
             let mut acc_im = 0.0_f64;
             let mut acc_dim = DimensionVector::DIMENSIONLESS;
-            for _ in 0..abs_n {
-                let (r, i) = complex_mul_parts(acc_re, acc_im, base_re, base_im);
-                acc_re = r;
-                acc_im = i;
-                acc_dim = acc_dim.mul(&base_dim);
+            let mut base_r = base_re;
+            let mut base_i = base_im;
+            let mut base_d = base_dim;
+            let mut exp = abs_n;
+            while exp > 0 {
+                if exp & 1 != 0 {
+                    let (r, i) = complex_mul_parts(acc_re, acc_im, base_r, base_i);
+                    acc_re = r;
+                    acc_im = i;
+                    acc_dim = acc_dim.mul(&base_d);
+                }
+                let (r, i) = complex_mul_parts(base_r, base_i, base_r, base_i);
+                base_r = r;
+                base_i = i;
+                base_d = base_d.mul(&base_d);
+                exp >>= 1;
             }
             if n < 0 {
                 // 1 / z^|n|; fail on zero denominator
@@ -223,41 +249,41 @@ pub(crate) fn eval_complex(name: &str, args: &[Value]) -> Option<Value> {
 
         // complex_exp(z): e^(a+bi) = e^a·(cos b + i·sin b).
         // Dimensionless input only — exp of a dimensioned quantity is meaningless.
-        // Result is always DIMENSIONLESS. Overflow caught by sanitize_value.
-        "complex_exp" => unary(args, |v| match v {
-            Value::Complex { re, im, dimension } => {
-                if *dimension != DimensionVector::DIMENSIONLESS {
-                    return Value::Undef;
-                }
-                let er = (*re).exp();
-                sanitize_value(Value::Complex {
-                    re: er * (*im).cos(),
-                    im: er * (*im).sin(),
-                    dimension: DimensionVector::DIMENSIONLESS,
-                })
+        // Result is always DIMENSIONLESS. Overflow/NaN caught by sanitize_value.
+        "complex_exp" => unary(args, |v| {
+            let Some((re, im, dim)) = as_complex(v) else {
+                return Value::Undef;
+            };
+            if dim != DimensionVector::DIMENSIONLESS {
+                return Value::Undef;
             }
-            _ => Value::Undef,
+            let er = re.exp();
+            sanitize_value(Value::Complex {
+                re: er * im.cos(),
+                im: er * im.sin(),
+                dimension: DimensionVector::DIMENSIONLESS,
+            })
         }),
 
         // complex_sqrt(z): principal square root using overflow-safe formula.
         // r = hypot(re,im); out_re = sqrt((r+re)/2); out_im = sqrt((r-re)/2).copysign(im).
         // copysign ensures principal branch: sqrt(-1+0i) = +i (im=+0.0 → positive).
         // Dimensionless input only for v0.6 (dimensioned Q^(1/2) is deferred).
-        "complex_sqrt" => unary(args, |v| match v {
-            Value::Complex { re, im, dimension } => {
-                if *dimension != DimensionVector::DIMENSIONLESS {
-                    return Value::Undef;
-                }
-                let r = (*re).hypot(*im);
-                let out_re = ((r + *re) / 2.0).sqrt();
-                let out_im = ((r - *re) / 2.0).sqrt().copysign(*im);
-                sanitize_value(Value::Complex {
-                    re: out_re,
-                    im: out_im,
-                    dimension: DimensionVector::DIMENSIONLESS,
-                })
+        "complex_sqrt" => unary(args, |v| {
+            let Some((re, im, dim)) = as_complex(v) else {
+                return Value::Undef;
+            };
+            if dim != DimensionVector::DIMENSIONLESS {
+                return Value::Undef;
             }
-            _ => Value::Undef,
+            let r = re.hypot(im);
+            let out_re = ((r + re) / 2.0).sqrt();
+            let out_im = ((r - re) / 2.0).sqrt().copysign(im);
+            sanitize_value(Value::Complex {
+                re: out_re,
+                im: out_im,
+                dimension: DimensionVector::DIMENSIONLESS,
+            })
         }),
 
         _ => return None,
@@ -2078,5 +2104,101 @@ mod tests {
             eval_builtin("complex_pow", &[z.clone(), Value::Int(2), z]).is_undef(),
             "complex_pow with 3 args must return Undef"
         );
+    }
+
+    // ── Amendment tests (suggestions 4+5) ────────────────────────────────────
+
+    #[test]
+    fn complex_pow_n8_1_plus_i_gives_16() {
+        // (1+i)^2=2i; (2i)^2=-4; (-4)^2=16 → (1+i)^8=16+0i.
+        // Exercises dimension accumulation and value correctness beyond n=2.
+        let result = eval_builtin(
+            "complex_pow",
+            &[
+                Value::Complex {
+                    re: 1.0,
+                    im: 1.0,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                },
+                Value::Int(8),
+            ],
+        );
+        match result {
+            Value::Complex { re, im, dimension } => {
+                assert!((re - 16.0).abs() < 1e-10, "expected re=16.0, got {}", re);
+                assert!(im.abs() < 1e-10, "expected im≈0.0, got {}", im);
+                assert_eq!(dimension, DimensionVector::DIMENSIONLESS);
+            }
+            other => panic!("expected Complex{{16,0,DIMLESS}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn complex_sqrt_zero_returns_zero() {
+        // complex_sqrt(0+0i): r=hypot(0,0)=0; out_re=sqrt(0)=0; out_im=sqrt(0).copysign(0)=0.
+        // Pins the formula edge where both (r+re)/2 and (r-re)/2 are exactly 0.
+        let result = eval_builtin(
+            "complex_sqrt",
+            &[Value::Complex {
+                re: 0.0,
+                im: 0.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            }],
+        );
+        match result {
+            Value::Complex { re, im, dimension } => {
+                assert!((re - 0.0).abs() < 1e-12, "expected re=0.0, got {}", re);
+                assert!((im - 0.0).abs() < 1e-12, "expected im=0.0, got {}", im);
+                assert_eq!(dimension, DimensionVector::DIMENSIONLESS);
+            }
+            other => panic!("expected Complex{{0,0,DIMLESS}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn complex_exp_nan_input_returns_undef() {
+        // exp(NaN+0i): NaN.exp()=NaN; NaN*cos(0)=NaN → sanitize_value returns Undef.
+        let result = eval_builtin(
+            "complex_exp",
+            &[Value::Complex {
+                re: f64::NAN,
+                im: 0.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            }],
+        );
+        assert!(
+            result.is_undef(),
+            "complex_exp with NaN re must return Undef via sanitize_value, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn complex_pow_n0_dimensioned_base_returns_dimensionless_one() {
+        // z^0 = 1+0i DIMENSIONLESS even when z is dimensioned (zero iterations → identity).
+        // Locks the documented behaviour: Q^0 = DIMENSIONLESS regardless of base dimension.
+        let result = eval_builtin(
+            "complex_pow",
+            &[
+                Value::Complex {
+                    re: 2.0,
+                    im: 0.0,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::Int(0),
+            ],
+        );
+        match result {
+            Value::Complex { re, im, dimension } => {
+                assert!((re - 1.0).abs() < 1e-12, "expected re=1.0, got {}", re);
+                assert!((im - 0.0).abs() < 1e-12, "expected im=0.0, got {}", im);
+                assert_eq!(
+                    dimension,
+                    DimensionVector::DIMENSIONLESS,
+                    "expected DIMENSIONLESS for z^0 regardless of base dimension"
+                );
+            }
+            other => panic!("expected Complex{{1,0,DIMLESS}}, got {:?}", other),
+        }
     }
 }
