@@ -42,6 +42,12 @@ impl Engine {
     /// `deactivate_purpose` first. This means existing callers that manually
     /// re-activate between consecutive builds (with the same entity) continue
     /// to work harmlessly — the second call is silently skipped.
+    ///
+    /// **Multi-param refusal:** activating a multi-param purpose via this
+    /// single-entity shim is refused (no-op + `tracing::warn!`) pending the
+    /// per-param bindings API (`activate_purpose_with_bindings`, task γ —
+    /// PRD §4.5 C2). `is_purpose_active` returns `false` and no constraints
+    /// are injected.
     pub fn activate_purpose(&mut self, purpose_name: &str, entity_ref: &str) {
         // Delegate to the constraint-injection helper; rebuild infrastructure only
         // once rather than once per call.  For the single-activation case (N=1)
@@ -57,7 +63,9 @@ impl Engine {
     ///
     /// Returns `true` if the injection was performed, `false` when this is a
     /// no-op (purpose already active, purpose not found in `compiled_purposes`,
-    /// or no `eval_state` present).
+    /// no `eval_state` present, or the purpose has more than one param — the
+    /// single-entity shim cannot bind a multi-param purpose; callers must use
+    /// `activate_purpose_with_bindings`, task γ — PRD §4.5 C2).
     ///
     /// **Does NOT** rebuild `reverse_index`, `trace_map`, `rebuild_cone`, or
     /// `active_tolerance_scope`.  Call `rebuild_purpose_infrastructure()` once
@@ -85,6 +93,24 @@ impl Engine {
             None => return false, // Purpose not found — silently ignore
         };
 
+        // Contract C2 (PRD §4.5): the single-entity `activate_purpose(name, entity_ref)`
+        // shim cannot safely bind a multi-param purpose. Applying one `entity_ref` to
+        // every per-param `{purpose}::{param}` stamp (the remap loop below) would alias
+        // distinct params — `part.length > envelope.length` would collapse to
+        // `entity.length > entity.length`, a silently meaningless constraint. Refuse the
+        // activation rather than inject a mis-bound constraint. Per-param binding is task
+        // γ's `activate_purpose_with_bindings`; until it lands the single-entity path is a
+        // refusal (non-silent: warn-logged + observable as no injection / not active),
+        // NOT a silent no-op or mis-bind.
+        if purpose.params.len() > 1 {
+            tracing::warn!(
+                purpose = %purpose_name,
+                param_count = purpose.params.len(),
+                "refusing single-entity activation of multi-param purpose; use activate_purpose_with_bindings (task gamma)"
+            );
+            return false;
+        }
+
         // Get mutable access to the evaluation state
         let state = match self.eval_state.as_mut() {
             Some(s) => s,
@@ -98,11 +124,12 @@ impl Engine {
         // `ValueCellId("{purpose}::{param}", member)` with `ValueCellId(entity_ref, member)`
         // so references resolve to existing value cells in the evaluation graph (task-2181 β).
         //
-        // For single-param purposes this is one remap — behavior-identical to the
-        // pre-β `remap_entity(purpose_name, entity_ref)`. For multi-param purposes
-        // all per-param stamps are aliased to the same entity_ref under the
-        // single-bound-entity API; task γ adds `activate_purpose_with_bindings`
-        // for independent per-param entity bindings.
+        // By the time control reaches here, `purpose.params.len() == 1` (multi-param
+        // purposes are refused above by the C2 guard). The per-param loop therefore runs
+        // exactly once — behavior-identical to the pre-β single `remap_entity(purpose_name,
+        // entity_ref)`. Task γ replaces the C2 guard-plus-single-binding loop with a
+        // per-binding remap via `activate_purpose_with_bindings`; keep the `for param in
+        // &purpose.params { … }` loop shape as the seam γ generalizes.
         let mut rewritten_constraints = purpose.constraints.clone();
         for constraint in &mut rewritten_constraints {
             for param in &purpose.params {
