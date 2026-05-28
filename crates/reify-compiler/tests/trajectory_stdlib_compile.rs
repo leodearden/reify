@@ -1486,14 +1486,15 @@ fn tots_shaper_constrains_design_param_invariants() {
 ///     assumes undamped as the base case)
 ///
 /// Exactly 1 constraint: `target_frequency > 0Hz` (BinOp::Gt, RHS
-/// Value::Scalar{si_value:0.0, dimension:FREQUENCY}; also accept
-/// Value::Real(0.0) for future-proofing).
+/// Value::Scalar{si_value:0.0, dimension:FREQUENCY} — the dimensioned
+/// literal is required per the esc-3115 rule; a bare `0` is Type::Real
+/// and dim-incompatible with Frequency).
 ///
 /// Uses the HarmonicForce Frequency-constraint pattern
 /// (modal_options_validation_tests.rs:1296-1348) and the TOTSShaper
 /// trait-bounds + param-shape assertion style (step-35).
 ///
-/// RED because `ZVShaper` does not exist yet — `find_structure` panics.
+/// Landed alongside the structure_def in trajectory.ri:513-518.
 #[test]
 fn zv_shaper_struct_has_correct_param_shape_and_constraint() {
     // step-41
@@ -1572,10 +1573,10 @@ fn zv_shaper_struct_has_correct_param_shape_and_constraint() {
     let dr_default = require_default(template, "damping_ratio");
     match &dr_default.kind {
         CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => {}
-        CompiledExprKind::Literal(Value::Int(0)) => {}
         other => panic!(
-            "ZVShaper.damping_ratio default should be Literal(Real(0.0)) or \
-             Literal(Int(0)); got: {:?}",
+            "ZVShaper.damping_ratio default should be Literal(Real(0.0)); \
+             the .ri file declares `0.0` (decimal literal → Value::Real), \
+             not Int(0); got: {:?}",
             other
         ),
     }
@@ -1602,15 +1603,11 @@ fn zv_shaper_struct_has_correct_param_shape_and_constraint() {
             {
                 false
             } else {
-                match &right.kind {
+                matches!(
+                    &right.kind,
                     CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
-                        if *si_value == 0.0 && *dimension == DimensionVector::FREQUENCY =>
-                    {
-                        true
-                    }
-                    CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
-                    _ => false,
-                }
+                        if *si_value == 0.0 && *dimension == DimensionVector::FREQUENCY
+                )
             }
         }
         _ => false,
@@ -1619,7 +1616,8 @@ fn zv_shaper_struct_has_correct_param_shape_and_constraint() {
         matched,
         "ZVShaper should declare `constraint target_frequency > 0Hz` \
          (BinOp::Gt, LHS refs target_frequency, \
-          RHS Value::Scalar{{si_value:0.0, dimension:FREQUENCY}}); \
+          RHS Value::Scalar{{si_value:0.0, dimension:FREQUENCY}} — \
+          dimensioned literal required per esc-3115 rule); \
          got: {:?}",
         constraint.expr.kind
     );
@@ -1636,12 +1634,13 @@ fn zv_shaper_struct_has_correct_param_shape_and_constraint() {
 ///     which defaults to undamped)
 ///
 /// Exactly 1 constraint: `target_frequency > 0Hz` (BinOp::Gt, RHS
-/// Value::Scalar{si_value:0.0, dimension:FREQUENCY}; also accept
-/// Value::Real(0.0)).
+/// Value::Scalar{si_value:0.0, dimension:FREQUENCY} — dimensioned literal
+/// required per esc-3115 rule; bare `0` is Type::Real, dim-incompatible
+/// with Frequency).
 ///
 /// Key distinction from ZVShaper: BOTH params have `default_expr.is_none()`.
 ///
-/// RED because `ZVDShaper` does not exist yet — `find_structure` panics.
+/// Landed alongside the structure_def in trajectory.ri:536-541.
 #[test]
 fn zvd_shaper_struct_has_correct_param_shape_and_constraint() {
     // step-43
@@ -1738,15 +1737,11 @@ fn zvd_shaper_struct_has_correct_param_shape_and_constraint() {
             {
                 false
             } else {
-                match &right.kind {
+                matches!(
+                    &right.kind,
                     CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
-                        if *si_value == 0.0 && *dimension == DimensionVector::FREQUENCY =>
-                    {
-                        true
-                    }
-                    CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
-                    _ => false,
-                }
+                        if *si_value == 0.0 && *dimension == DimensionVector::FREQUENCY
+                )
             }
         }
         _ => false,
@@ -1755,7 +1750,8 @@ fn zvd_shaper_struct_has_correct_param_shape_and_constraint() {
         matched,
         "ZVDShaper should declare `constraint target_frequency > 0Hz` \
          (BinOp::Gt, LHS refs target_frequency, \
-          RHS Value::Scalar{{si_value:0.0, dimension:FREQUENCY}}); \
+          RHS Value::Scalar{{si_value:0.0, dimension:FREQUENCY}} — \
+          dimensioned literal required per esc-3115 rule); \
          got: {:?}",
         constraint.expr.kind
     );
@@ -1778,7 +1774,7 @@ fn zvd_shaper_struct_has_correct_param_shape_and_constraint() {
 /// The vibration_tolerance ∈ (0,1] interval splits into two scalar predicates
 /// (same discipline as TOTSShaper, step-39 at line 1391-1477).
 ///
-/// RED because `EIShaper` does not exist yet — `find_structure` panics.
+/// Landed alongside the structure_def in trajectory.ri:570-578.
 #[test]
 fn ei_shaper_struct_has_correct_param_shape_and_constraints() {
     // step-45
@@ -1868,7 +1864,7 @@ fn ei_shaper_struct_has_correct_param_shape_and_constraints() {
             .collect::<Vec<_>>()
     );
 
-    // (g) target_frequency > 0Hz (dimensioned literal).
+    // (g) target_frequency > 0Hz (dimensioned literal — esc-3115 rule).
     let tf_matched = template.constraints.iter().any(|c| {
         match &c.expr.kind {
             CompiledExprKind::BinOp { op, left, right } => {
@@ -1877,15 +1873,11 @@ fn ei_shaper_struct_has_correct_param_shape_and_constraints() {
                 {
                     return false;
                 }
-                match &right.kind {
+                matches!(
+                    &right.kind,
                     CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
-                        if *si_value == 0.0 && *dimension == DimensionVector::FREQUENCY =>
-                    {
-                        true
-                    }
-                    CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
-                    _ => false,
-                }
+                        if *si_value == 0.0 && *dimension == DimensionVector::FREQUENCY
+                )
             }
             _ => false,
         }
@@ -1978,7 +1970,7 @@ fn ei_shaper_struct_has_correct_param_shape_and_constraints() {
 /// `Type::List(TraitObject(...))` assertion shape
 /// (modal_options_validation_tests.rs).
 ///
-/// RED because `CascadedShaper` does not exist yet — `find_structure` panics.
+/// Landed alongside the structure_def in trajectory.ri:600-602.
 #[test]
 fn cascaded_shaper_struct_has_correct_param_shape() {
     // step-47

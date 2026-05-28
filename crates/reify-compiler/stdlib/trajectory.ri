@@ -469,22 +469,8 @@ structure def TOTSShaper : Shaper {
 //
 // δ task (3857) adds ZVShaper, ZVDShaper, EIShaper, and CascadedShaper — all
 // refining the `trait Shaper { }` marker declared above (:322).
-//
-// Type decisions (each verified against a landed sibling):
-//
-//   target_frequency : Frequency → Type::Scalar{dimension: FREQUENCY}.
-//     Constraint RHS is the dimensioned literal `0Hz` → Value::Scalar{si_value:
-//     0.0, dimension:FREQUENCY}; a bare `0` is Type::Real and dim-incompatible
-//     with Frequency (esc-3115 rule, modal_analysis.ri:564-566).
-//     Exact precedent: HarmonicForce.frequency:Frequency + constraint frequency
-//     > 0Hz (modal_analysis.ri:578-594).
-//
-//   shapers : List<Shaper> → Type::List(TraitObject("Shaper")).
-//     Same encoding as CompositeForce.sources:List<ForcingFunction>
-//     (modal_analysis.ri:701).
-//
-//   damping_ratio default 0.0 (ZVShaper only) → Value::Real(0.0).
-//     Matches TOTSShaper.tol:Real = 0.000001 precedent. ZVD/EI have NO default.
+// Type/encoding rationale is documented per-structure below; see ZVShaper for
+// the canonical type-decision commentary (Frequency dim, 0Hz constraint, etc.).
 
 // ── ZVShaper (PRD §5.1) ───────────────────────────────────────────────────────
 
