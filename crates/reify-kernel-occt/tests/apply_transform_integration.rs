@@ -182,3 +182,65 @@ fn apply_transform_to_handle_pure_translation_shifts_aabb() {
 
     assert_aabb_eq(transformed_aabb, expected, 1e-6, "pure-translation AABB");
 }
+
+// ---------------------------------------------------------------------------
+// (c) Rotation-only invariance (anti-cube-blind-spot)
+// ---------------------------------------------------------------------------
+
+/// A 90°-Z rotation on an asymmetric 12×8×6 brick swaps the X and Y extents.
+///
+/// **Fixture** (same as transform_distance_integration:84 — anti-cube-blind-
+/// spot): brick centered at origin, X∈[-6,6], Y∈[-4,4], Z∈[-3,3]. After 90°-Z
+/// rotation, the new X-extent is the old ±Y-extent (±4) and the new Y-extent
+/// is the old ±X-extent (±6). Z-extent is unchanged.
+///
+/// The 90°-Z rotation quaternion: qw=cos(π/4), qz=sin(π/4), qx=qy=0.
+///
+/// **Why this catches xyzw/wxyz swaps**: a wrong quaternion-component order
+/// would interpret this as a 90°-X rotation (X stays [-6,6], Y↔Z swap). The
+/// resulting X-extent would still be ±6 — a 2mm delta from the correct ±4
+/// extent, which is 20,000× the assertion tolerance of 1e-4 m.
+///
+/// Tolerance is 1e-4 m (slacker than translation case) because tessellation
+/// of the rotated faces projects mesh-vertex positions onto the new axes;
+/// the box edges are themselves preserved exactly by the TopLoc_Location path.
+#[test]
+fn apply_transform_to_handle_rotation_only_swaps_brick_extents() {
+    let mut kernel = OcctKernel::new();
+
+    let source = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(12.0),
+            height: Value::Real(8.0),
+            depth: Value::Real(6.0),
+        })
+        .expect("12×8×6 brick creation should succeed");
+
+    let t = Transform3 {
+        qw: (PI / 4.0).cos(),
+        qx: 0.0,
+        qy: 0.0,
+        qz: (PI / 4.0).sin(),
+        tx: 0.0,
+        ty: 0.0,
+        tz: 0.0,
+    };
+
+    let transformed_id = kernel
+        .apply_transform_to_handle(source.id, &t)
+        .expect("90°-Z rotation should succeed");
+
+    let transformed_aabb = aabb_of_handle(&kernel, transformed_id);
+    let expected = Aabb {
+        min: [-4.0, -6.0, -3.0],
+        max: [4.0, 6.0, 3.0],
+    };
+
+    assert_aabb_eq(
+        transformed_aabb,
+        expected,
+        1e-4,
+        "90°-Z rotation AABB (12×8×6 brick → expected X∈[-4,4], Y∈[-6,6], Z∈[-3,3]; \
+         a wrong xyzw/wxyz quaternion swap would give X∈[-6,6] instead)",
+    );
+}
