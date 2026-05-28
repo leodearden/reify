@@ -360,9 +360,21 @@ fn cmd_check(args: &[String]) -> ExitCode {
             let eval_result = engine.eval(&compiled);
 
             // Step-α: only single-binding activations are wired through here.
-            // The multi-binding rejection guard and is_purpose_active probe
-            // land in steps 10 and 12.
+            // The multi-binding rejection guard lands in step-12.
             engine.activate_purpose(&activation.name, &activation.bindings[0].entity);
+
+            // activate_purpose returns () and is silent (warn-log only) on
+            // unknown-purpose, missing eval_state, and the C2 multi-param
+            // refusal. The only programmatic signal is is_purpose_active —
+            // a false result surfaces all three failure modes as a clear
+            // CLI error + non-zero exit.
+            if !engine.is_purpose_active(&activation.name) {
+                eprintln!(
+                    "Error: could not activate purpose '{}' (no such purpose in the file, or it requires per-param bindings)",
+                    activation.name
+                );
+                return ExitCode::FAILURE;
+            }
 
             let (constraint_results, check_diags) =
                 match engine.check_constraints_with_values(&eval_result.values) {
