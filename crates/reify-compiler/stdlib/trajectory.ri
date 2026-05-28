@@ -464,3 +464,56 @@ structure def TOTSShaper : Shaper {
     //   `actuator_limits : List<JointLimit>` — same collection-invariant
     //   rationale (producer/consumer-enforced at the SQP loop).
 }
+
+// ── Impulse shapers (PRD §5.1) ────────────────────────────────────────────────
+//
+// δ task (3857) adds ZVShaper, ZVDShaper, EIShaper, and CascadedShaper — all
+// refining the `trait Shaper { }` marker declared above (:322).
+//
+// Type decisions (each verified against a landed sibling):
+//
+//   target_frequency : Frequency → Type::Scalar{dimension: FREQUENCY}.
+//     Constraint RHS is the dimensioned literal `0Hz` → Value::Scalar{si_value:
+//     0.0, dimension:FREQUENCY}; a bare `0` is Type::Real and dim-incompatible
+//     with Frequency (esc-3115 rule, modal_analysis.ri:564-566).
+//     Exact precedent: HarmonicForce.frequency:Frequency + constraint frequency
+//     > 0Hz (modal_analysis.ri:578-594).
+//
+//   shapers : List<Shaper> → Type::List(TraitObject("Shaper")).
+//     Same encoding as CompositeForce.sources:List<ForcingFunction>
+//     (modal_analysis.ri:701).
+//
+//   damping_ratio default 0.0 (ZVShaper only) → Value::Real(0.0).
+//     Matches TOTSShaper.tol:Real = 0.000001 precedent. ZVD/EI have NO default.
+
+// ── ZVShaper (PRD §5.1) ───────────────────────────────────────────────────────
+
+// ZVShaper — Zero-Vibration impulse shaper (PRD §5.1).
+//
+// The ZV shaper cancels residual vibration at a single target frequency by
+// convolving the command with a two-impulse sequence. The default damping_ratio
+// of 0.0 matches the PRD §5.1 "undamped" base case; callers with a known
+// damping ratio can override.
+//
+// Fields:
+//   - target_frequency : Frequency  — the resonant frequency to suppress.
+//                                     Frequency IS in NAMED_DIMENSIONS, so the
+//                                     param is typed Frequency (not Real).
+//   - damping_ratio    : Real = 0.0 — damping ratio ζ ∈ [0, 1). Default 0.0
+//                                     per PRD §5.1 (ZV assumes undamped as base
+//                                     case). Decimal literal → Value::Real(0.0)
+//                                     (same pattern as TOTSShaper.tol = 0.000001).
+//
+// Constraint:
+//   target_frequency > 0Hz — rejects degenerate zero or negative frequency.
+//   The constraint RHS MUST be the dimensioned literal `0Hz` → Value::Scalar
+//   {si_value:0.0, dimension:FREQUENCY}; a bare `0` is Type::Real, which is
+//   dim-incompatible with Frequency per the esc-3115 rule documented at
+//   modal_analysis.ri:564-566.
+structure def ZVShaper : Shaper {
+    param target_frequency : Frequency
+    param damping_ratio : Real = 0.0
+
+    constraint target_frequency > 0Hz
+}
+
