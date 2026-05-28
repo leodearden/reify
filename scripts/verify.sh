@@ -64,6 +64,65 @@ usage() {
 }
 
 # ---------------------------------------------------------------------------
+# PSI gate — throttle per-task test phases under multi-worktree verify bursts
+# ---------------------------------------------------------------------------
+# psi_gate() — wait for CPU headroom before dispatching the test phase.
+# Called directly via `verify.sh psi-gate` (testable entry point) and wired
+# as the first test-phase plan entry by add_test_passes().
+#
+# Environment knobs (see header comment block for full doc):
+#   REIFY_PSI_GATE_THRESHOLD    — avg10 ceiling to allow dispatch (default 50)
+#   REIFY_PSI_GATE_WINDOW       — min seconds between dispatches (default 20)
+#   REIFY_PSI_GATE_MAX_WAIT     — give-up timeout in seconds (default 1800)
+#   REIFY_PSI_GATE_POLL         — recheck interval in seconds (default 5)
+#   REIFY_PSI_GATE_PROC_PATH    — PSI source path (default /proc/pressure/cpu)
+#   REIFY_PSI_GATE_DISPATCH_FILE— coordination timestamp file
+#   REIFY_PSI_GATE_DISABLE      — set to 1 to bypass entirely (no touch)
+psi_gate() {
+    local THRESHOLD="${REIFY_PSI_GATE_THRESHOLD:-50}"
+    local MAX_WAIT="${REIFY_PSI_GATE_MAX_WAIT:-1800}"
+    local POLL="${REIFY_PSI_GATE_POLL:-5}"
+    local PROC_PATH="${REIFY_PSI_GATE_PROC_PATH:-/proc/pressure/cpu}"
+    local DISPATCH="${REIFY_PSI_GATE_DISPATCH_FILE:-/tmp/reify-verify-last-dispatch}"
+
+    # (1) Break-glass bypass — no read, no touch, no wait (added in step-8)
+
+    # (2) Merge bypass — added in step-6
+
+    # (3) Fail-open on missing PSI source — added in step-10
+
+    # (4) Task poll loop: wait for avg10 < THRESHOLD
+    local deadline
+    deadline=$(( $(date +%s) + MAX_WAIT ))
+
+    while true; do
+        local now avg10
+        now=$(date +%s)
+
+        # Parse avg10 from PSI file (e.g. "some avg10=12.34 avg60=… total=0")
+        avg10=$(awk '/^some/ {
+            for (i=1; i<=NF; i++) {
+                if ($i ~ /^avg10=/) { v=$i; sub(/^avg10=/, "", v); print v; exit }
+            }
+        }' "$PROC_PATH" 2>/dev/null || echo "")
+
+        # Compare avg10 < THRESHOLD (float-safe via awk)
+        if awk -v p="${avg10:-0}" -v t="$THRESHOLD" 'BEGIN{exit !(p<t)}'; then
+            touch "$DISPATCH"
+            return 0
+        fi
+
+        # Give up if we've waited too long
+        if [ "$now" -ge "$deadline" ]; then
+            echo "verify.sh: PSI gate gave up after ${MAX_WAIT}s waiting for CPU headroom (avg10=${avg10} >= threshold=${THRESHOLD})" >&2
+            return 75
+        fi
+
+        sleep "$POLL"
+    done
+}
+
+# ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
 ACTION=""
@@ -74,7 +133,7 @@ PRINT_PLAN=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        test|lint|typecheck|all)
+        test|lint|typecheck|all|psi-gate)
             if [ -n "$ACTION" ]; then
                 echo "verify.sh: ERROR — action already set to '$ACTION', got '$1'" >&2
                 exit 64
@@ -138,6 +197,13 @@ case "$DF_VERIFY_ROLE" in
         fi ;;
     *)  echo "verify.sh: ERROR — unknown DF_VERIFY_ROLE '$DF_VERIFY_ROLE' (want task|merge)" >&2; exit 64 ;;
 esac
+
+# psi-gate is dispatched EARLY — before MERGE_HEAD check / cd / apply_env —
+# so the integration test can drive it without triggering the cargo pipeline.
+if [ "$ACTION" = "psi-gate" ]; then
+    psi_gate
+    exit $?
+fi
 
 # A merge in progress cannot trust `git diff --cached` (the index reflects the
 # merge result, not a curated stage), so force a full verification. Detected via
