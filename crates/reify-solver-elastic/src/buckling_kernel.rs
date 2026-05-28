@@ -538,6 +538,48 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // step-1 (RED → GREEN in step-2): empty-mpcs signature anchor.
+    // -----------------------------------------------------------------------
+
+    /// Verify that `solve_buckling_kernel` accepts an empty `mpcs` slice via the
+    /// new 7-argument signature and returns a well-shaped result identical in
+    /// kind to the 6-argument baseline.
+    ///
+    /// This test RED-fails at compile time until the kernel signature is extended
+    /// in step-2 (compile error = RED signal).
+    #[test]
+    fn solve_buckling_kernel_accepts_empty_mpcs_slice_and_matches_no_mpc_behavior() {
+        let nodes = unit_brick_nodes();
+        let tets = unit_brick_tets();
+        let material = IsotropicElastic { youngs_modulus: 1.0, poisson_ratio: 0.0 };
+        let bcs = shape_test_bcs();
+
+        let mut f = vec![0.0_f64; 3 * nodes.len()];
+        for top_node in 4..8_usize {
+            f[3 * top_node + 2] = -0.25;
+        }
+
+        let opts = BucklingKernelOptions {
+            n_modes: 1,
+            eigen_tol: 1e-8,
+            eigen_max_iters: 100,
+            cg_tolerance: 1e-10,
+            cg_max_iter: 1000,
+        };
+
+        // New 7-arg signature: mpcs = &[] (empty slice).
+        let result = solve_buckling_kernel(&nodes, &tets, &material, &bcs, &f, &[], opts);
+
+        assert!(result.converged, "eigensolve must converge on n_free=4 system");
+        assert!(result.modes.len() >= 1, "expect at least 1 mode; got {}", result.modes.len());
+        assert_eq!(
+            result.pre_stress_displacement.len(),
+            24,
+            "displacement length must be 3 * n_nodes = 24",
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // step-3 (RED → GREEN in step-4): behavioural / numerical pin.
     // -----------------------------------------------------------------------
 
