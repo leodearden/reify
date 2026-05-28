@@ -6,7 +6,6 @@
 
 use reify_compiler::*;
 use reify_core::*;
-use reify_ir::*;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
