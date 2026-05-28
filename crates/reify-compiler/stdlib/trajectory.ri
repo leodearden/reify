@@ -540,3 +540,40 @@ structure def ZVDShaper : Shaper {
     constraint target_frequency > 0Hz
 }
 
+// ── EIShaper (PRD §5.1) ───────────────────────────────────────────────────────
+
+// EIShaper — Extra-Insensitive impulse shaper (PRD §5.1).
+//
+// The EI shaper tolerates small deviations from the nominal frequency by
+// accepting up to `vibration_tolerance` fractional residual vibration at the
+// ends of the frequency band. The tolerance trades narrower suppression depth
+// for wider frequency coverage.
+//
+// Fields:
+//   - target_frequency    : Frequency  — the nominal resonant frequency.
+//   - damping_ratio       : Real       — damping ratio ζ (caller-supplied,
+//                                        no default per PRD §5.1).
+//   - vibration_tolerance : Real       — allowed residual vibration fraction.
+//                                        Must lie in (0, 1] per PRD §5.1:
+//                                        zero → "no vibration allowed ever"
+//                                        (physically impossible); > 1 →
+//                                        accepts more residual than the input
+//                                        (degenerate). Two scalar predicates
+//                                        because Reify's constraint grammar has
+//                                        no interval form — same decomposition
+//                                        as TOTSShaper (:450-451).
+//
+// Constraints:
+//   target_frequency > 0Hz     — dimensioned literal (esc-3115 rule).
+//   vibration_tolerance > 0    — lower bound of (0, 1] interval.
+//   vibration_tolerance <= 1   — upper bound of (0, 1] interval.
+structure def EIShaper : Shaper {
+    param target_frequency : Frequency
+    param damping_ratio : Real
+    param vibration_tolerance : Real
+
+    constraint target_frequency > 0Hz
+    constraint vibration_tolerance > 0
+    constraint vibration_tolerance <= 1
+}
+
