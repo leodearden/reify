@@ -62,9 +62,11 @@ pub(crate) fn eval_complex(name: &str, args: &[Value]) -> Option<Value> {
 
         // phase(z) / arg(z): compute atan2(im, re), return Scalar with ANGLE dimension.
         // phase(0+0i) is undefined — zero vector has no direction.
-        // Delegates to the shared helper so the method path (reify-expr) and
-        // builtin path share identical pre-guards and output construction.
-        // `arg` is the standard complex-analysis alias for `phase` (argument of z).
+        // Both "phase" and "arg" route to helpers::complex_phase, so they are
+        // guaranteed identical pre-guards (non-finite → Undef, zero-vector → Undef)
+        // and output construction.  `arg` is the standard complex-analysis alias
+        // for `phase` (the "argument" of z, i.e. angle in polar form).
+        // See helpers::complex_phase for the implementation.
         "phase" | "arg" => unary(args, |v| match v {
             Value::Complex { re, im, .. } => complex_phase(*re, *im),
             _ => Value::Undef,
