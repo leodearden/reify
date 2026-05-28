@@ -1798,6 +1798,10 @@ mod tests {
             func_labels.contains(&"complex_mul"),
             "should include 'complex_mul'"
         );
+        assert!(
+            func_labels.contains(&"complex_div"),
+            "should include 'complex_div'"
+        );
     }
 
     // --- stdlib completions: plane/axis functions (step-6) ---
