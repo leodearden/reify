@@ -893,7 +893,6 @@ fn evaluate_profile_ddot_fn_signature() {
 /// Look up the named param cell on `template` and return its `default_expr`.
 /// Panics with a clear message if the cell or its default is missing.
 /// Mirrors `require_default` in `modal_options_validation_tests.rs:97-106`.
-#[allow(dead_code)]
 fn require_default<'a>(template: &'a TopologyTemplate, member: &str) -> &'a CompiledExpr {
     let cell = template
         .value_cells
@@ -907,7 +906,6 @@ fn require_default<'a>(template: &'a TopologyTemplate, member: &str) -> &'a Comp
 
 /// Recursively collect ValueRef member names from a compiled expression tree.
 /// Mirrors `collect_value_ref_members` in `modal_options_validation_tests.rs:111-122`.
-#[allow(dead_code)]
 fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<&str> {
     match &expr.kind {
         CompiledExprKind::ValueRef(cell_id) => vec![cell_id.member.as_str()],
@@ -1121,6 +1119,14 @@ fn joint_limit_struct_has_correct_param_shape() {
 /// Mirrors `modal_options_constrains_positivity_invariants` in
 /// modal_options_validation_tests.rs and
 /// `piecewise_polynomial_profile_constrains_waypoints_nonempty` (step-19).
+///
+/// These constraint declarations feed the SIR-α generic constraint-firing
+/// pipeline, which is pinned end-to-end by
+/// `crates/reify-eval/tests/stress_error_messages.rs::constraint_violation_diagnostic`
+/// (constraint → `Satisfaction::Violated` diagnostic) and the
+/// `Value::StructureInstance` round-trip in
+/// `crates/reify-eval/tests/structure_instance_e2e.rs`. A JointLimit-specific
+/// construction-time firing test would duplicate that generic coverage.
 #[test]
 fn joint_limit_constrains_max_force_positive() {
     let template = find_structure("JointLimit");
@@ -1198,6 +1204,17 @@ fn joint_limit_constrains_max_force_positive() {
 /// std.modal.analysis is loaded at slot 16 BEFORE std.trajectory at slot 17
 /// (stdlib_loader.rs:110-116). Type encoding: `Type::List(Box::new(
 /// Type::StructureRef("Mode")))` — identical to ModalResult.modes.
+///
+/// ⚠ Duplicate-Mode note: the stdlib has TWO `structure def Mode` declarations
+/// with different field shapes — `modal_analysis.ri:187` (frequency, shape,
+/// participation_mass, damping_ratio) and `solver_buckling.ri:148` (eigenvalue,
+/// mode_shape). `Type::StructureRef("Mode")` carries only the name, so the
+/// assertion below cannot distinguish which Mode was bound by name resolution.
+/// Correct resolution is guaranteed by load order: slot 16 (std.modal.analysis)
+/// is compiled before slot 17 (std.trajectory), so the modal-analysis Mode wins
+/// the first-wins shadow rule. `modal_analysis.ri:137-141` documents this
+/// coexistence; if name-shadowing ever surfaces as a problem, the fallback is a
+/// one-line rename in `trajectory.ri`.
 ///
 /// Does NOT assert defaults (step-37) or constraints (step-39).
 /// Mirrors `piecewise_polynomial_profile_has_correct_param_shape` (step-17)
@@ -1365,6 +1382,12 @@ fn tots_shaper_param_defaults_match_spec() {
 ///
 /// Mirrors `modal_options_constrains_positivity_invariants` in
 /// modal_options_validation_tests.rs.
+///
+/// These declarations feed the SIR-α generic constraint-firing pipeline; the
+/// construction-time `Satisfaction::Violated` signal is pinned end-to-end by
+/// `crates/reify-eval/tests/stress_error_messages.rs::constraint_violation_diagnostic`
+/// and `crates/reify-eval/tests/structure_instance_e2e.rs` — no duplicate
+/// TOTSShaper-specific construction-time firing test is needed here.
 #[test]
 fn tots_shaper_constrains_design_param_invariants() {
     let template = find_structure("TOTSShaper");
