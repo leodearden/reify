@@ -5,6 +5,7 @@
 
 use reify_compiler::{BooleanOp, CompiledGeometryOp, PrimitiveKind, ValueCellKind};
 use reify_core::{RealizationNodeId, Severity, Type};
+use reify_ir::CompiledExprKind;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -751,5 +752,63 @@ fn guarded_solid_param_creates_geometry_value_cell() {
     assert!(
         !template.realizations.is_empty(),
         "expected at least one RealizationDecl for guarded `param body : Solid = box(...)`, got none"
+    );
+}
+
+// ─── GHR-γ step-3: bare cross-sub geometry let MUST emit a ValueCellDecl ─────
+
+/// After GHR-γ step-4 (cross-sub bypass retired), `let copy = self.child.body`
+/// where `body` is a geometry param on a sub-structure MUST produce a
+/// `ValueCellDecl{cell_type: Type::Geometry}` for `copy` on the outer template,
+/// with `default_expr` whose kind is `CompiledExprKind::CrossSubGeometryRef(_)`.
+///
+/// Currently FAILS because entity.rs:1148-1171 intercepts `CrossSubGeometryRef`
+/// and `continue`s with a Warning, dropping the cell.  Step-4 deletes that bypass.
+///
+/// Note: the required sub-constructor syntax is `sub child = Inner()` — the grammar
+/// does NOT accept `sub child : Inner` (zero occurrences in the test suite).
+#[test]
+fn bare_cross_sub_geometry_creates_value_cell() {
+    let source = r#"pub structure Inner { param body : Solid = sphere(5mm) }
+pub structure Outer {
+    sub child = Inner()
+    let copy = self.child.body
+}"#;
+    let compiled = compile_no_errors(source);
+    let outer = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Outer")
+        .expect("Outer template not found");
+
+    // After step-4: `copy` must be a ValueCellDecl with Type::Geometry.
+    let copy_cells: Vec<_> = outer
+        .value_cells
+        .iter()
+        .filter(|c| c.id.member == "copy")
+        .collect();
+    assert_eq!(
+        copy_cells.len(),
+        1,
+        "expected exactly 1 ValueCellDecl for 'copy' (GHR-γ step-4: bypass retired); \
+         got: {:#?}",
+        copy_cells
+    );
+    let cell = copy_cells[0];
+    assert_eq!(
+        cell.cell_type,
+        Type::Geometry,
+        "expected cell_type=Type::Geometry for 'copy', got {:?}",
+        cell.cell_type
+    );
+    // The default_expr must carry a CrossSubGeometryRef discriminator.
+    let default_expr = cell
+        .default_expr
+        .as_ref()
+        .expect("expected default_expr.is_some() for 'copy'");
+    assert!(
+        matches!(default_expr.kind, CompiledExprKind::CrossSubGeometryRef(_)),
+        "expected default_expr.kind == CrossSubGeometryRef(_) for 'copy', got {:?}",
+        default_expr.kind
     );
 }
