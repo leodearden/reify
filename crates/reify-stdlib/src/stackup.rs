@@ -405,11 +405,13 @@ fn monte_carlo_stackup(args: &[Value]) -> Value {
     // Outer: contributor index ascending; inner: draw index ascending.
     // Per-contributor sub-seed via SplitMix64-XOR to avoid Box–Muller spare
     // leakage across contributor boundaries (design decision §2 in plan).
+    let mut any_sampled = false;
     for (i, c) in chain.iter().enumerate() {
         let t_i = (c.plus_tol + c.minus_tol) / 2.0; // symmetric half-band
         if t_i == 0.0 {
             continue; // zero tolerance → no contribution to variance
         }
+        any_sampled = true;
         let sub_seed = seed_u64 ^ (i as u64).wrapping_mul(0x9E3779B97F4A7C15);
         let mut rng = rng::Xoshiro256StarStar::from_seed(sub_seed);
         let sign_f = c.sign as f64;
@@ -421,6 +423,26 @@ fn monte_carlo_stackup(args: &[Value]) -> Value {
             };
             gaps[draw_idx] += sign_f * deviation;
         }
+    }
+
+    // INV-5: degenerate short-circuit — all tolerances are zero, no sampling occurred.
+    // Return exact values to avoid FP accumulation errors in mean computation.
+    if !any_sampled {
+        let yf = spec_bounds.map(|(spec_min, spec_max)| {
+            if gap_nominal >= spec_min && gap_nominal <= spec_max { 1.0_f64 } else { 0.0_f64 }
+        });
+        return build_mc_map(
+            gap_nominal,
+            len_result(gap_nominal), // mc_mean  = nominal_gap (exact)
+            len_result(0.0),         // mc_sigma = 0.0 (exact)
+            len_result(gap_nominal), // mc_min   = nominal_gap (exact)
+            len_result(gap_nominal), // mc_max   = nominal_gap (exact)
+            len_result(gap_nominal), // mc_p_low  = nominal_gap (exact)
+            len_result(gap_nominal), // mc_p_high = nominal_gap (exact)
+            n_samples,
+            seed_i64,
+            yf,
+        );
     }
 
     // Compute statistics
