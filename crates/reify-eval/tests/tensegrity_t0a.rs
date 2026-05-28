@@ -330,6 +330,180 @@ fn tensegrity_wires_undef_on_wrong_type_name() {
     );
 }
 
+// ── step-7: full-shape tensegrity_wires test ──────────────────────────────────
+
+/// T-prism: 6 nodes, 3 struts, 3 cables → 6 TensegrityWire values.
+/// Verifies:
+///   - result is Value::List of exactly 6 elements
+///   - elements [0..3] have kind="strut", [3..6] have kind="cable"
+///   - from_index/to_index match the supplied pairs
+///   - x1/y1/z1/x2/y2/z2 match the corresponding node coordinates
+///
+/// Also pins declaration order: struts precede cables (DD2 open-groups seam).
+#[test]
+fn tensegrity_wires_emits_six_tagged_wires() {
+    // 6-node T-prism: bottom triangle at z=0m, top triangle at z=1m.
+    // Canonical twist: top triangle rotated 60° relative to bottom.
+    let nodes = vec![
+        // bottom triangle
+        make_node(1.0,   0.0,   0.0),  // node 0
+        make_node(-0.5,  0.866, 0.0),  // node 1
+        make_node(-0.5, -0.866, 0.0),  // node 2
+        // top triangle (60° rotated, z=1m)
+        make_node(0.0,   1.0,   1.0),  // node 3
+        make_node(-0.866, -0.5, 1.0),  // node 4
+        make_node(0.866, -0.5, 1.0),   // node 5
+    ];
+    // 3 struts: cross-members connecting bottom to top
+    let strut_pairs = [(0usize, 3usize), (1, 4), (2, 5)];
+    // 3 cables: top triangle perimeter
+    let cable_pairs = [(3usize, 4usize), (4, 5), (5, 3)];
+
+    let struts = Value::List(
+        strut_pairs
+            .iter()
+            .map(|(f, t)| Value::List(vec![Value::Int(*f as i64), Value::Int(*t as i64)]))
+            .collect(),
+    );
+    let cables = Value::List(
+        cable_pairs
+            .iter()
+            .map(|(f, t)| Value::List(vec![Value::Int(*f as i64), Value::Int(*t as i64)]))
+            .collect(),
+    );
+    let fields: PersistentMap<String, Value> = [
+        ("nodes".to_string(),  Value::List(nodes.clone())),
+        ("struts".to_string(), struts),
+        ("cables".to_string(), cables),
+    ]
+    .into_iter()
+    .collect();
+    let tensegrity = Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(0),
+        type_name: "Tensegrity".to_string(),
+        version: 1,
+        fields,
+    }));
+
+    let result = eval_builtin("tensegrity_wires", &[tensegrity]);
+
+    let wires = match &result {
+        Value::List(w) => w,
+        other => panic!("expected Value::List of wires, got {:?}", other),
+    };
+    assert_eq!(wires.len(), 6, "T-prism should have 6 wires (3 struts + 3 cables)");
+
+    // First 3: struts
+    for (i, (from, to)) in strut_pairs.iter().enumerate() {
+        let wire = match &wires[i] {
+            Value::StructureInstance(data) => data,
+            other => panic!("wire[{}] should be StructureInstance, got {:?}", i, other),
+        };
+        assert_eq!(wire.type_name, "TensegrityWire", "wire[{}] type_name", i);
+        assert_eq!(
+            wire.fields.get(&"kind".to_string()),
+            Some(&Value::String("strut".to_string())),
+            "wire[{}] kind should be 'strut'", i
+        );
+        assert_eq!(
+            wire.fields.get(&"from_index".to_string()),
+            Some(&Value::Int(*from as i64)),
+            "wire[{}] from_index", i
+        );
+        assert_eq!(
+            wire.fields.get(&"to_index".to_string()),
+            Some(&Value::Int(*to as i64)),
+            "wire[{}] to_index", i
+        );
+        // Verify x1/y1/z1 match nodes[from] components
+        let expected_from = match &nodes[*from] {
+            Value::Point(comps) => comps.clone(),
+            other => panic!("nodes[{}] should be Point, got {:?}", from, other),
+        };
+        assert_eq!(wire.fields.get(&"x1".to_string()), Some(&expected_from[0]), "wire[{}] x1", i);
+        assert_eq!(wire.fields.get(&"y1".to_string()), Some(&expected_from[1]), "wire[{}] y1", i);
+        assert_eq!(wire.fields.get(&"z1".to_string()), Some(&expected_from[2]), "wire[{}] z1", i);
+        let expected_to = match &nodes[*to] {
+            Value::Point(comps) => comps.clone(),
+            other => panic!("nodes[{}] should be Point, got {:?}", to, other),
+        };
+        assert_eq!(wire.fields.get(&"x2".to_string()), Some(&expected_to[0]), "wire[{}] x2", i);
+        assert_eq!(wire.fields.get(&"y2".to_string()), Some(&expected_to[1]), "wire[{}] y2", i);
+        assert_eq!(wire.fields.get(&"z2".to_string()), Some(&expected_to[2]), "wire[{}] z2", i);
+    }
+
+    // Last 3: cables
+    for (i, (from, to)) in cable_pairs.iter().enumerate() {
+        let idx = i + 3;
+        let wire = match &wires[idx] {
+            Value::StructureInstance(data) => data,
+            other => panic!("wire[{}] should be StructureInstance, got {:?}", idx, other),
+        };
+        assert_eq!(wire.type_name, "TensegrityWire");
+        assert_eq!(
+            wire.fields.get(&"kind".to_string()),
+            Some(&Value::String("cable".to_string())),
+            "wire[{}] kind should be 'cable'", idx
+        );
+        assert_eq!(
+            wire.fields.get(&"from_index".to_string()),
+            Some(&Value::Int(*from as i64)),
+            "wire[{}] from_index", idx
+        );
+        assert_eq!(
+            wire.fields.get(&"to_index".to_string()),
+            Some(&Value::Int(*to as i64)),
+            "wire[{}] to_index", idx
+        );
+    }
+}
+
+/// Pins that struts precede cables in the output list (open-groups seam DD2).
+#[test]
+fn tensegrity_wires_preserves_declaration_order_struts_then_cables() {
+    let nodes = Value::List(vec![
+        make_node(0.0, 0.0, 0.0),
+        make_node(1.0, 0.0, 0.0),
+        make_node(0.0, 1.0, 0.0),
+    ]);
+    let struts = Value::List(vec![Value::List(vec![Value::Int(0), Value::Int(1)])]);
+    let cables = Value::List(vec![Value::List(vec![Value::Int(1), Value::Int(2)])]);
+    let fields: PersistentMap<String, Value> = [
+        ("nodes".to_string(),  nodes),
+        ("struts".to_string(), struts),
+        ("cables".to_string(), cables),
+    ]
+    .into_iter()
+    .collect();
+    let t = Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(0),
+        type_name: "Tensegrity".to_string(),
+        version: 1,
+        fields,
+    }));
+
+    let result = eval_builtin("tensegrity_wires", &[t]);
+    let wires = match &result {
+        Value::List(w) => w,
+        other => panic!("expected List, got {:?}", other),
+    };
+    assert_eq!(wires.len(), 2);
+
+    // First wire must be the strut
+    let w0 = match &wires[0] {
+        Value::StructureInstance(d) => d,
+        other => panic!("wires[0] should be StructureInstance, got {:?}", other),
+    };
+    assert_eq!(w0.fields.get(&"kind".to_string()), Some(&Value::String("strut".to_string())));
+
+    // Second wire must be the cable
+    let w1 = match &wires[1] {
+        Value::StructureInstance(d) => d,
+        other => panic!("wires[1] should be StructureInstance, got {:?}", other),
+    };
+    assert_eq!(w1.fields.get(&"kind".to_string()), Some(&Value::String("cable".to_string())));
+}
+
 /// args[0] is Tensegrity-shaped but struts references out-of-range index → Undef.
 #[test]
 fn tensegrity_wires_undef_on_out_of_range_index() {
