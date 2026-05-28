@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use reify_core::DimensionVector;
 use reify_ir::Value;
 
-use crate::helpers::validate_dimensioned_scalar;
+use crate::helpers::{sanitize_value, validate_dimensioned_scalar};
 
 /// Evaluate a tolerance stack-up builtin by name.
 ///
@@ -16,6 +16,7 @@ pub(crate) fn eval_stackup(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {
         "contributor" => contributor(args),
         "contributor_asym" => contributor_asym(args),
+        "stackup_worst_case" => stackup_worst_case(args),
         _ => return None,
     })
 }
@@ -113,6 +114,78 @@ fn parse_distribution(v: &Value) -> Option<&str> {
     }
 }
 
+// --- stackup math helpers ---
+
+/// Extracted numeric data from a single contributor map entry.
+struct ContributorData {
+    nominal: f64,
+    plus_tol: f64,
+    minus_tol: f64,
+    sign: i64,
+}
+
+/// Parse a chain of contributors from a `Value`.
+///
+/// Returns `None` if:
+/// - `v` is not a non-empty `Value::List`
+/// - any element is not a `Value::Map`
+/// - any map is missing or has an invalid `nominal` / `plus_tol` / `minus_tol`
+///   (must be finite LENGTH scalars) or `sign` (must be +/-1)
+fn parse_chain(v: &Value) -> Option<Vec<ContributorData>> {
+    let items = match v {
+        Value::List(items) if !items.is_empty() => items,
+        _ => return None,
+    };
+    let mut chain = Vec::with_capacity(items.len());
+    for item in items {
+        let map = match item {
+            Value::Map(m) => m,
+            _ => return None,
+        };
+        let nominal =
+            len_scalar(map.get(&Value::String("nominal".into()))?)?;
+        let plus_tol =
+            len_scalar(map.get(&Value::String("plus_tol".into()))?)?;
+        let minus_tol =
+            len_scalar(map.get(&Value::String("minus_tol".into()))?)?;
+        let sign =
+            parse_sign(map.get(&Value::String("sign".into()))?)?;
+        chain.push(ContributorData { nominal, plus_tol, minus_tol, sign });
+    }
+    Some(chain)
+}
+
+fn stackup_worst_case(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::Undef;
+    }
+    let chain = match parse_chain(&args[0]) {
+        Some(c) => c,
+        None => return Value::Undef,
+    };
+    let mut gap_nominal = 0.0_f64;
+    let mut sum_plus = 0.0_f64;
+    let mut sum_minus = 0.0_f64;
+    for c in &chain {
+        gap_nominal += c.sign as f64 * c.nominal;
+        sum_plus += c.plus_tol;
+        sum_minus += c.minus_tol;
+    }
+    let wc_max = gap_nominal + sum_plus;
+    let wc_min = gap_nominal - sum_minus;
+    // worst_case_band = half-width of the worst-case interval = (sum_plus + sum_minus) / 2
+    let wc_band = (sum_plus + sum_minus) / 2.0;
+    let len_scalar_val = |si: f64| {
+        sanitize_value(Value::Scalar { si_value: si, dimension: DimensionVector::LENGTH })
+    };
+    let mut m = BTreeMap::new();
+    m.insert(Value::String("nominal_gap".into()),     len_scalar_val(gap_nominal));
+    m.insert(Value::String("worst_case_band".into()), len_scalar_val(wc_band));
+    m.insert(Value::String("worst_case_max".into()),  len_scalar_val(wc_max));
+    m.insert(Value::String("worst_case_min".into()),  len_scalar_val(wc_min));
+    Value::Map(m)
+}
+
 fn make_contributor_map(
     nominal: Value,
     plus_tol: Value,
@@ -154,9 +227,8 @@ mod tests {
     }
 
     #[test]
-    fn math_stub_names_return_none() {
-        assert!(eval_stackup("stackup_worst_case", &[]).is_none());
-        assert!(eval_stackup("stackup_rss", &[]).is_none());
+    fn monte_carlo_stub_name_returns_none() {
+        // worst_case and rss are now recognised (return Some); only mc still falls through.
         assert!(eval_stackup("monte_carlo_stackup", &[]).is_none());
     }
 
