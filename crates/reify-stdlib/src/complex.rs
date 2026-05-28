@@ -1787,4 +1787,232 @@ mod tests {
             "complex_sqrt with 2 args must return Undef"
         );
     }
+
+    // ── complex_pow() tests (step-5) ──────────────────────────────────────────
+
+    #[test]
+    fn complex_pow_3_4i_squared_is_minus7_plus_24i() {
+        // (3+4i)² = 9 + 24i - 16 = -7 + 24i
+        // This is the user signal: verified by two integer multiplications.
+        let result = eval_builtin(
+            "complex_pow",
+            &[
+                Value::Complex {
+                    re: 3.0,
+                    im: 4.0,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                },
+                Value::Int(2),
+            ],
+        );
+        match result {
+            Value::Complex { re, im, dimension } => {
+                assert!((re - (-7.0)).abs() < 1e-12, "expected re=-7.0, got {}", re);
+                assert!((im - 24.0).abs() < 1e-12, "expected im=24.0, got {}", im);
+                assert_eq!(dimension, DimensionVector::DIMENSIONLESS);
+            }
+            other => panic!("expected Complex{{-7,24,DIMLESS}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn complex_pow_n0_returns_one() {
+        // z^0 = 1+0i (multiplicative identity, DIMENSIONLESS regardless of z's dim)
+        let result = eval_builtin(
+            "complex_pow",
+            &[
+                Value::Complex {
+                    re: 3.0,
+                    im: 4.0,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                },
+                Value::Int(0),
+            ],
+        );
+        match result {
+            Value::Complex { re, im, dimension } => {
+                assert!((re - 1.0).abs() < 1e-12, "expected re=1.0, got {}", re);
+                assert!((im - 0.0).abs() < 1e-12, "expected im=0.0, got {}", im);
+                assert_eq!(dimension, DimensionVector::DIMENSIONLESS);
+            }
+            other => panic!("expected Complex{{1,0,DIMLESS}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn complex_pow_n1_returns_self() {
+        // z^1 = z
+        let result = eval_builtin(
+            "complex_pow",
+            &[
+                Value::Complex {
+                    re: 3.0,
+                    im: 4.0,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                },
+                Value::Int(1),
+            ],
+        );
+        match result {
+            Value::Complex { re, im, dimension } => {
+                assert!((re - 3.0).abs() < 1e-12, "expected re=3.0, got {}", re);
+                assert!((im - 4.0).abs() < 1e-12, "expected im=4.0, got {}", im);
+                assert_eq!(dimension, DimensionVector::DIMENSIONLESS);
+            }
+            other => panic!("expected Complex{{3,4,DIMLESS}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn complex_pow_dimensioned_n2_gives_area() {
+        // (2+0i [LENGTH])^2 = (4+0i [LENGTH²])
+        let area_dim = DimensionVector::LENGTH.mul(&DimensionVector::LENGTH);
+        let result = eval_builtin(
+            "complex_pow",
+            &[
+                Value::Complex {
+                    re: 2.0,
+                    im: 0.0,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::Int(2),
+            ],
+        );
+        match result {
+            Value::Complex { re, im, dimension } => {
+                assert!((re - 4.0).abs() < 1e-12, "expected re=4.0, got {}", re);
+                assert!((im - 0.0).abs() < 1e-12, "expected im=0.0, got {}", im);
+                assert_eq!(dimension, area_dim, "expected AREA dimension");
+            }
+            other => panic!("expected Complex{{4,0,AREA}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn complex_pow_negative_n_on_i_returns_minus_i() {
+        // (0+1i)^(-1) = 1/i = -i  (since i * (-i) = 1)
+        let result = eval_builtin(
+            "complex_pow",
+            &[
+                Value::Complex {
+                    re: 0.0,
+                    im: 1.0,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                },
+                Value::Int(-1),
+            ],
+        );
+        match result {
+            Value::Complex { re, im, dimension } => {
+                assert!((re - 0.0).abs() < 1e-12, "expected re=0.0, got {}", re);
+                assert!((im - (-1.0)).abs() < 1e-12, "expected im=-1.0, got {}", im);
+                assert_eq!(dimension, DimensionVector::DIMENSIONLESS);
+            }
+            other => panic!("expected Complex{{0,-1,DIMLESS}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn complex_pow_negative_n_dimensioned() {
+        // (2+0i [LENGTH])^(-1) = (0.5+0i [DIMENSIONLESS/LENGTH]) = LENGTH^-1
+        let inv_length = DimensionVector::DIMENSIONLESS.div(&DimensionVector::LENGTH);
+        let result = eval_builtin(
+            "complex_pow",
+            &[
+                Value::Complex {
+                    re: 2.0,
+                    im: 0.0,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::Int(-1),
+            ],
+        );
+        match result {
+            Value::Complex { re, im, dimension } => {
+                assert!((re - 0.5).abs() < 1e-12, "expected re=0.5, got {}", re);
+                assert!((im - 0.0).abs() < 1e-12, "expected im=0.0, got {}", im);
+                assert_eq!(dimension, inv_length, "expected LENGTH^-1 dimension");
+            }
+            other => panic!("expected Complex{{0.5,0,LENGTH^-1}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn complex_pow_zero_base_negative_n_returns_undef() {
+        // (0+0i)^(-1) is division by zero → Undef
+        let result = eval_builtin(
+            "complex_pow",
+            &[
+                Value::Complex {
+                    re: 0.0,
+                    im: 0.0,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                },
+                Value::Int(-1),
+            ],
+        );
+        assert!(
+            result.is_undef(),
+            "complex_pow(0+0i, -1) must return Undef (division by zero), got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn complex_pow_real_exponent_returns_undef() {
+        // Real exponent (non-integer) is out of scope — reject it
+        let result = eval_builtin(
+            "complex_pow",
+            &[
+                Value::Complex {
+                    re: 3.0,
+                    im: 4.0,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                },
+                Value::Real(2.0),
+            ],
+        );
+        assert!(
+            result.is_undef(),
+            "complex_pow with Real exponent must return Undef, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn complex_pow_non_complex_base_returns_undef() {
+        assert!(
+            eval_builtin("complex_pow", &[Value::Real(3.0), Value::Int(2)]).is_undef(),
+            "complex_pow with Real base must return Undef"
+        );
+    }
+
+    #[test]
+    fn complex_pow_one_arg_returns_undef() {
+        assert!(
+            eval_builtin(
+                "complex_pow",
+                &[Value::Complex {
+                    re: 3.0,
+                    im: 4.0,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                }]
+            )
+            .is_undef(),
+            "complex_pow with 1 arg must return Undef"
+        );
+    }
+
+    #[test]
+    fn complex_pow_three_args_returns_undef() {
+        let z = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("complex_pow", &[z.clone(), Value::Int(2), z]).is_undef(),
+            "complex_pow with 3 args must return Undef"
+        );
+    }
 }
