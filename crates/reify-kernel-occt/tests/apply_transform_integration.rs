@@ -244,3 +244,113 @@ fn apply_transform_to_handle_rotation_only_swaps_brick_extents() {
          a wrong xyzw/wxyz quaternion swap would give X∈[-6,6] instead)",
     );
 }
+
+// ---------------------------------------------------------------------------
+// (d) Rigid-isometry composition: T ∘ T⁻¹ round-trip
+// ---------------------------------------------------------------------------
+
+/// `apply_transform_to_handle(apply_transform_to_handle(s, T), T⁻¹)` yields a
+/// shape whose AABB equals the source AABB componentwise.
+///
+/// **Why this matters**: confirms the `BRepBuilderAPI_Transform(...,
+/// Standard_False)` path is a pure rigid-isometry composition — a regression
+/// to `Standard_True` (geometry bake) would accumulate float-rounding on each
+/// application, breaking componentwise AABB equality at the 1e-4 m level.
+///
+/// **Transform**: 60° rotation about the unit-normalized [1, 1, 1] axis,
+/// combined with translation (7, -3, 5). The non-axis-aligned rotation
+/// ensures the inverse is non-trivial — any composition-order bug or
+/// quaternion-conjugation error would surface as a translation drift.
+#[test]
+fn apply_transform_to_handle_t_inverse_round_trip_matches_source_aabb() {
+    let mut kernel = OcctKernel::new();
+
+    let source = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(12.0),
+            height: Value::Real(8.0),
+            depth: Value::Real(6.0),
+        })
+        .expect("brick creation should succeed");
+
+    let source_aabb = aabb_of_handle(&kernel, source.id);
+
+    // 60° rotation about the unit-normalized [1, 1, 1] axis.
+    let theta = PI / 3.0; // 60°
+    let half = theta / 2.0;
+    let inv_sqrt3 = 1.0 / (3.0_f64).sqrt();
+    let qw = half.cos();
+    let s = half.sin();
+    let qx = s * inv_sqrt3;
+    let qy = s * inv_sqrt3;
+    let qz = s * inv_sqrt3;
+
+    let tx = 7.0;
+    let ty = -3.0;
+    let tz = 5.0;
+
+    let t = Transform3 {
+        qw,
+        qx,
+        qy,
+        qz,
+        tx,
+        ty,
+        tz,
+    };
+
+    // T⁻¹: conjugate quaternion (qw, -qx, -qy, -qz); translation = -R⁻¹·t.
+    // Since gp_Trsf composes as `p' = R·p + t`, the inverse is
+    //   p = R⁻¹·(p' - t) = R⁻¹·p' - R⁻¹·t.
+    // So T⁻¹.translation = -R⁻¹·t = -conjugate(q) · t · conjugate(q)⁻¹ as a
+    // vector rotation. Compute R⁻¹·t by rotating the vector (tx, ty, tz) by
+    // the inverse quaternion (qw, -qx, -qy, -qz) using the vector-rotation
+    // formula v' = q · v · q⁻¹ (for unit q, q⁻¹ = conjugate(q)).
+    //
+    // For a unit quaternion q = (w, x, y, z), rotating v = (vx, vy, vz):
+    //   v' = (w² + x² - y² - z²)·vx + 2(xy - wz)·vy + 2(xz + wy)·vz, …
+    // (the standard quaternion-to-rotation-matrix formula).
+    //
+    // For the inverse rotation we use q_inv = (w, -x, -y, -z); plugging into
+    // the formula gives the same matrix transposed.
+    let qx_inv = -qx;
+    let qy_inv = -qy;
+    let qz_inv = -qz;
+    let qw_inv = qw;
+    let rot_inv_x = (qw_inv * qw_inv + qx_inv * qx_inv - qy_inv * qy_inv - qz_inv * qz_inv) * tx
+        + 2.0 * (qx_inv * qy_inv - qw_inv * qz_inv) * ty
+        + 2.0 * (qx_inv * qz_inv + qw_inv * qy_inv) * tz;
+    let rot_inv_y = 2.0 * (qx_inv * qy_inv + qw_inv * qz_inv) * tx
+        + (qw_inv * qw_inv - qx_inv * qx_inv + qy_inv * qy_inv - qz_inv * qz_inv) * ty
+        + 2.0 * (qy_inv * qz_inv - qw_inv * qx_inv) * tz;
+    let rot_inv_z = 2.0 * (qx_inv * qz_inv - qw_inv * qy_inv) * tx
+        + 2.0 * (qy_inv * qz_inv + qw_inv * qx_inv) * ty
+        + (qw_inv * qw_inv - qx_inv * qx_inv - qy_inv * qy_inv + qz_inv * qz_inv) * tz;
+
+    let t_inv = Transform3 {
+        qw: qw_inv,
+        qx: qx_inv,
+        qy: qy_inv,
+        qz: qz_inv,
+        tx: -rot_inv_x,
+        ty: -rot_inv_y,
+        tz: -rot_inv_z,
+    };
+
+    // Apply T then T⁻¹.
+    let after_t = kernel
+        .apply_transform_to_handle(source.id, &t)
+        .expect("first transform should succeed");
+    let round_trip = kernel
+        .apply_transform_to_handle(after_t, &t_inv)
+        .expect("inverse transform should succeed");
+
+    let round_trip_aabb = aabb_of_handle(&kernel, round_trip);
+
+    assert_aabb_eq(
+        round_trip_aabb,
+        source_aabb,
+        1e-4,
+        "T ∘ T⁻¹ round-trip AABB (rigid-isometry composition contract)",
+    );
+}
