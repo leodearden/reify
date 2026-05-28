@@ -451,6 +451,8 @@ fn assert_all_value_variants_listed(v: &reify_ir::Value) {
         Value::StructureInstance(_) => true,
         // Realized geometry handle (v0.3 — task 3604 / GHR-β)
         Value::GeometryHandle { .. } => true,
+        // Non-rigid affine map (task 3958 / α)
+        Value::AffineMap { .. } => true,
         // Undefined
         Value::Undef => true,
     };

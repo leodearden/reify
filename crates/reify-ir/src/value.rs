@@ -595,6 +595,14 @@ pub enum Value {
         upstream_values_hash: [u8; 32],
         kernel_handle: crate::geometry::GeometryHandleId,
     },
+    /// General 3D affine map x ↦ linear·x + translation.
+    ///
+    /// `linear` is dimensionless row-major 3×3; `translation` carries Length (meters).
+    /// Stored inline (no `Box<Value>`) because the shape is fixed at 9+3 f64s.
+    AffineMap {
+        linear: [[f64; 3]; 3],
+        translation: [f64; 3],
+    },
     /// Undefined — not yet determined or computation failed.
     Undef,
 }
@@ -815,7 +823,7 @@ impl Value {
         // 8=Set, 9=Map, 10=Satisfaction(reserved), 11=Option, 12=Lambda, 13=Field,
         // 14=Tensor, 15=Complex, 16=Orientation, 17=Range, 18=Point, 19=Vector,
         // 20=Frame, 21=Transform, 22=Plane, 23=Axis, 24=BoundingBox, 25=Matrix,
-        // 26=SampledField, 27=StructureInstance, 28=GeometryHandle
+        // 26=SampledField, 27=StructureInstance, 28=GeometryHandle, 29=AffineMap
         match self {
             Value::Bool(b) => ContentHash::of(&[0, *b as u8]),
             Value::Int(i) => {
@@ -1107,6 +1115,27 @@ impl Value {
                     .combine(ContentHash::of(&realization_ref.index.to_le_bytes()))
                     .combine(ContentHash::of(upstream_values_hash))
             }
+            Value::AffineMap { linear, translation } => {
+                // tag=29; 97-byte buffer: 1 tag + 9×8 linear (row-major) + 3×8 translation.
+                // NaN payload canonicalized (collapses bit-pattern differences; see doc).
+                // neg-zero preserved via to_bits() (PartialEq uses bit-identity).
+                let mut buf = [0u8; 97];
+                buf[0] = 29;
+                let mut offset = 1usize;
+                for row in linear.iter() {
+                    for &v in row.iter() {
+                        let bits = if v.is_nan() { f64::NAN.to_bits() } else { v.to_bits() };
+                        buf[offset..offset + 8].copy_from_slice(&bits.to_le_bytes());
+                        offset += 8;
+                    }
+                }
+                for &v in translation.iter() {
+                    let bits = if v.is_nan() { f64::NAN.to_bits() } else { v.to_bits() };
+                    buf[offset..offset + 8].copy_from_slice(&bits.to_le_bytes());
+                    offset += 8;
+                }
+                ContentHash::of(&buf)
+            }
             Value::Undef => ContentHash::of(&[5]),
         }
     }
@@ -1336,6 +1365,8 @@ impl Value {
             Value::SampledField(_) => None,
             Value::StructureInstance(data) => Some(Type::StructureRef(data.type_name.clone())),
             Value::GeometryHandle { .. } => Some(Type::Geometry),
+            // Dimension is structurally 3 (fixed-size arrays) — deterministic, unlike Frame/Transform.
+            Value::AffineMap { .. } => Some(Type::AffineMap(3)),
             Value::Undef => Some(Type::Bool),
         }
     }
@@ -1512,6 +1543,15 @@ impl Value {
             Value::GeometryHandle { realization_ref, .. } => {
                 format!("<Geometry: {realization_ref}>")
             }
+            Value::AffineMap { linear, translation } => {
+                format!(
+                    "AffineMap(linear=[[{}, {}, {}], [{}, {}, {}], [{}, {}, {}]], translation=[{}, {}, {}])",
+                    linear[0][0], linear[0][1], linear[0][2],
+                    linear[1][0], linear[1][1], linear[1][2],
+                    linear[2][0], linear[2][1], linear[2][2],
+                    translation[0], translation[1], translation[2],
+                )
+            }
             Value::Undef => "(undefined)".to_string(),
         }
     }
@@ -1671,6 +1711,15 @@ impl Value {
             }
             Value::GeometryHandle { realization_ref, .. } => {
                 format!("<Geometry: {realization_ref}>")
+            }
+            Value::AffineMap { linear, translation } => {
+                format!(
+                    "affine_map([[{}, {}, {}], [{}, {}, {}], [{}, {}, {}]], [{}, {}, {}])",
+                    linear[0][0], linear[0][1], linear[0][2],
+                    linear[1][0], linear[1][1], linear[1][2],
+                    linear[2][0], linear[2][1], linear[2][2],
+                    translation[0], translation[1], translation[2],
+                )
             }
             Value::Undef => "undefined".to_string(),
         }
@@ -1999,6 +2048,21 @@ impl PartialEq for Value {
                     ..
                 },
             ) => rr_a == rr_b && h_a == h_b,
+            (
+                Value::AffineMap {
+                    linear: la,
+                    translation: ta,
+                },
+                Value::AffineMap {
+                    linear: lb,
+                    translation: tb,
+                },
+            ) => {
+                // Bit-identity equality: +0.0 != -0.0, NaN == NaN (same canonical bits)
+                la.iter().zip(lb.iter()).all(|(ra, rb)| {
+                    ra.iter().zip(rb.iter()).all(|(a, b)| a.to_bits() == b.to_bits())
+                }) && ta.iter().zip(tb.iter()).all(|(a, b)| a.to_bits() == b.to_bits())
+            }
             (Value::Undef, Value::Undef) => true,
             _ => false,
         }
@@ -2028,7 +2092,7 @@ impl Ord for Value {
         use std::cmp::Ordering;
 
         // Type-tag discriminant for cross-type ordering:
-        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10, Field=11, Lambda=12, Tensor=13, Complex=14, Orientation=15, Range=16, Point=17, Vector=18, Matrix=19, Frame=20, Transform=21, Plane=22, Axis=23, BoundingBox=24, SampledField=25, StructureInstance=26, GeometryHandle=27
+        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10, Field=11, Lambda=12, Tensor=13, Complex=14, Orientation=15, Range=16, Point=17, Vector=18, Matrix=19, Frame=20, Transform=21, Plane=22, Axis=23, BoundingBox=24, SampledField=25, StructureInstance=26, GeometryHandle=27, AffineMap=28
         fn type_tag(v: &Value) -> u8 {
             match v {
                 Value::Undef => 0,
@@ -2059,6 +2123,7 @@ impl Ord for Value {
                 Value::SampledField(_) => 25,
                 Value::StructureInstance(_) => 26,
                 Value::GeometryHandle { .. } => 27,
+                Value::AffineMap { .. } => 28,
             }
         }
 
@@ -2287,6 +2352,34 @@ impl Ord for Value {
                     .then_with(|| rr_a.index.cmp(&rr_b.index))
                     .then_with(|| h_a.cmp(h_b))
             }
+            (
+                Value::AffineMap {
+                    linear: la,
+                    translation: ta,
+                },
+                Value::AffineMap {
+                    linear: lb,
+                    translation: tb,
+                },
+            ) => {
+                // Lexicographic: row 0 → row 1 → row 2 (each element total_cmp),
+                // then translation[0..2]. Agrees with bit-identity PartialEq.
+                for (ra, rb) in la.iter().zip(lb.iter()) {
+                    for (a, b) in ra.iter().zip(rb.iter()) {
+                        let c = a.total_cmp(b);
+                        if c != Ordering::Equal {
+                            return c;
+                        }
+                    }
+                }
+                for (a, b) in ta.iter().zip(tb.iter()) {
+                    let c = a.total_cmp(b);
+                    if c != Ordering::Equal {
+                        return c;
+                    }
+                }
+                Ordering::Equal
+            }
             _ => unreachable!("same type tag but different variants"),
         }
     }
@@ -2513,6 +2606,16 @@ impl std::fmt::Display for Value {
             }
             Value::GeometryHandle { realization_ref, .. } => {
                 write!(f, "<Geometry: {realization_ref}>")
+            }
+            Value::AffineMap { linear, translation } => {
+                write!(
+                    f,
+                    "affine_map(linear=[[{}, {}, {}], [{}, {}, {}], [{}, {}, {}]], translation=[{}, {}, {}])",
+                    linear[0][0], linear[0][1], linear[0][2],
+                    linear[1][0], linear[1][1], linear[1][2],
+                    linear[2][0], linear[2][1], linear[2][2],
+                    translation[0], translation[1], translation[2],
+                )
             }
             Value::Undef => write!(f, "undef"),
         }

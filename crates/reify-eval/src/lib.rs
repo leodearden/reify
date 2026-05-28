@@ -294,6 +294,7 @@ fn value_type_kind_matches(
         // assertion `assert_value_cell_types_representable` is relaxed in
         // step-6 so Geometry cells are accepted.
         Value::GeometryHandle { .. } => matches!(ty, Type::Geometry),
+        Value::AffineMap { .. } => matches!(ty, Type::AffineMap(_)), // task 3958 / α
         // If a future `Value::TraitObjectInstance` variant is added, add a
         // matching arm here AND relax the runtime assertion so the compiler
         // enforces completeness.
