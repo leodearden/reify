@@ -100,12 +100,17 @@ structure def KlipperDialectFixture {
 /// routes `StructureInstance ↔ TraitObject("GcodeDialect")` conformance
 /// through the trait registry, so both dialect values materialise correctly
 /// when passed through a `GcodeDialect`-typed param.
+///
+/// Pattern: `sub marlin = ChooseDialect(d: MarlinDialect())` → the sub cell
+/// is at `ValueCellId::new("DialectHolder", "marlin")` (parent scope, sub
+/// name), giving a ChooseDialect StructureInstance whose `d` field holds the
+/// dialect value. Mirrors `trait_typed_param_admits_conforming_structure` in
+/// structure_instance_e2e.rs.
 #[test]
 fn gcode_dialect_param_admits_both_dialects() {
     const SOURCE: &str = r#"
 structure def ChooseDialect {
     param d : GcodeDialect = MarlinDialect()
-    let chosen = self.d
 }
 structure def DialectHolder {
     sub marlin  = ChooseDialect(d: MarlinDialect())
@@ -117,37 +122,53 @@ structure def DialectHolder {
     let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
 
-    let marlin_id = ValueCellId::new("DialectHolder/marlin", "chosen");
-    let marlin_val = result
+    // The sub `marlin` is a value cell on DialectHolder; it holds a
+    // ChooseDialect StructureInstance whose `d` field is the dialect value.
+    let marlin_sub = result
         .values
-        .get(&marlin_id)
-        .unwrap_or_else(|| panic!("DialectHolder/marlin.chosen missing from eval result"));
+        .get(&ValueCellId::new("DialectHolder", "marlin"))
+        .unwrap_or_else(|| panic!("DialectHolder.marlin sub cell missing from eval result"));
 
-    match marlin_val {
-        Value::StructureInstance(data) => assert_eq!(
-            data.type_name, "MarlinDialect",
-            "DialectHolder/marlin.chosen should be MarlinDialect; got {:?}",
-            data.type_name
-        ),
+    match marlin_sub {
+        Value::StructureInstance(data) => {
+            assert_eq!(data.type_name, "ChooseDialect");
+            match data.fields.get(&"d".to_string()) {
+                Some(Value::StructureInstance(d)) => assert_eq!(
+                    d.type_name, "MarlinDialect",
+                    "DialectHolder.marlin.d should be MarlinDialect; got {:?}",
+                    d.type_name
+                ),
+                other => panic!(
+                    "expected StructureInstance for DialectHolder.marlin.d; got {other:?}"
+                ),
+            }
+        }
         other => panic!(
-            "expected StructureInstance for DialectHolder/marlin.chosen; got {other:?}"
+            "expected StructureInstance for DialectHolder.marlin sub; got {other:?}"
         ),
     }
 
-    let klipper_id = ValueCellId::new("DialectHolder/klipper", "chosen");
-    let klipper_val = result
+    let klipper_sub = result
         .values
-        .get(&klipper_id)
-        .unwrap_or_else(|| panic!("DialectHolder/klipper.chosen missing from eval result"));
+        .get(&ValueCellId::new("DialectHolder", "klipper"))
+        .unwrap_or_else(|| panic!("DialectHolder.klipper sub cell missing from eval result"));
 
-    match klipper_val {
-        Value::StructureInstance(data) => assert_eq!(
-            data.type_name, "KlipperDialect",
-            "DialectHolder/klipper.chosen should be KlipperDialect; got {:?}",
-            data.type_name
-        ),
+    match klipper_sub {
+        Value::StructureInstance(data) => {
+            assert_eq!(data.type_name, "ChooseDialect");
+            match data.fields.get(&"d".to_string()) {
+                Some(Value::StructureInstance(d)) => assert_eq!(
+                    d.type_name, "KlipperDialect",
+                    "DialectHolder.klipper.d should be KlipperDialect; got {:?}",
+                    d.type_name
+                ),
+                other => panic!(
+                    "expected StructureInstance for DialectHolder.klipper.d; got {other:?}"
+                ),
+            }
+        }
         other => panic!(
-            "expected StructureInstance for DialectHolder/klipper.chosen; got {other:?}"
+            "expected StructureInstance for DialectHolder.klipper sub; got {other:?}"
         ),
     }
 }

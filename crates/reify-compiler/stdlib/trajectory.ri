@@ -611,3 +611,12 @@ trait GcodeDialect { }
 // Structurally identical to `NaturalSpline : BoundaryCondition` — a pure
 // nominal selector with no authoring-time params or constraints.
 structure def MarlinDialect : GcodeDialect { }
+
+// KlipperDialect — zero-DOF marker for the Klipper G-code dialect (PRD §7.1/§7.2).
+//
+// Klipper superset: same core G-codes as Marlin plus SET_VELOCITY_LIMIT and
+// INPUT_SHAPER directives. The semantic behavior lives in the `gcode_import`
+// parser dispatch, not here. Structurally identical to
+// `PeriodicSpline : BoundaryCondition` — a pure nominal selector with no
+// authoring-time params or constraints.
+structure def KlipperDialect : GcodeDialect { }
