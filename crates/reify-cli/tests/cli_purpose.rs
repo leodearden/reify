@@ -24,6 +24,34 @@ fn check_with_violated_purpose_exits_failure_with_summary() {
 }
 
 #[test]
+fn check_with_repeated_purpose_flag_activates_each_purpose() {
+    // Repeatable per PRD §11 Open Q#4: each --purpose occurrence is one
+    // name=binding-list activation. Both purposes' injected constraint ids
+    // must appear in the report.
+    let (status, stdout, stderr) = common::run_with_args(&[
+        "check",
+        "--purpose",
+        "mfg_ready=Bracket",
+        "--purpose",
+        "lightweight=Bracket",
+        &common::fixture_path("purpose_two.ri"),
+    ]);
+
+    assert!(
+        status.success(),
+        "reify check with two satisfiable --purpose flags should exit 0.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("purpose:mfg_ready@Bracket"),
+        "stdout should contain first purpose's id 'purpose:mfg_ready@Bracket', got: {stdout}"
+    );
+    assert!(
+        stdout.contains("purpose:lightweight@Bracket"),
+        "stdout should contain second purpose's id 'purpose:lightweight@Bracket', got: {stdout}"
+    );
+}
+
+#[test]
 fn check_with_multi_binding_value_exits_failure_with_specific_message() {
     // Alpha only activates the single-binding form via activate_purpose(name, entity);
     // multi-ref activation requires task γ's activate_purpose_with_bindings, so the
