@@ -916,4 +916,62 @@ mod tests {
             }
         }
     }
+
+    // -----------------------------------------------------------------------
+    // step-5 (RED → GREEN in step-6): v0.5 limitation panic tests.
+    // -----------------------------------------------------------------------
+
+    /// Kernel must panic with "rhs" in the message when any MPC row has rhs ≠ 0.
+    #[test]
+    #[should_panic(expected = "rhs")]
+    fn solve_buckling_kernel_panics_on_non_homogeneous_mpc() {
+        let nodes = unit_brick_nodes();
+        let tets = unit_brick_tets();
+        let material = IsotropicElastic { youngs_modulus: 1.0, poisson_ratio: 0.0 };
+        let bcs = shape_test_bcs();
+        let mut f = vec![0.0_f64; 3 * nodes.len()];
+        f[3 * 4 + 2] = -0.1;
+
+        // rhs = 1.0: inhomogeneous — must panic.
+        let mpc = MpcRow::new(vec![3 * 4 + 2, 3 * 5 + 2], vec![1.0, -1.0], 1.0);
+        let opts = BucklingKernelOptions { n_modes: 1, ..Default::default() };
+        let _ = solve_buckling_kernel(&nodes, &tets, &material, &bcs, &f, &[mpc], opts);
+    }
+
+    /// Kernel must panic with "pivot" in the message when a slave DOF is also Dirichlet.
+    #[test]
+    #[should_panic(expected = "pivot")]
+    fn solve_buckling_kernel_panics_on_dirichlet_pivot() {
+        let nodes = unit_brick_nodes();
+        let tets = unit_brick_tets();
+        let material = IsotropicElastic { youngs_modulus: 1.0, poisson_ratio: 0.0 };
+        let bcs = shape_test_bcs();
+        let mut f = vec![0.0_f64; 3 * nodes.len()];
+        f[3 * 4 + 2] = -0.1;
+
+        // Pivot DOF 0 (u_x[0]) is constrained by Dirichlet BC — must panic with "pivot".
+        let mpc = MpcRow::new(vec![0, 3 * 5 + 2], vec![1.0, -1.0], 0.0);
+        let opts = BucklingKernelOptions { n_modes: 1, ..Default::default() };
+        let _ = solve_buckling_kernel(&nodes, &tets, &material, &bcs, &f, &[mpc], opts);
+    }
+
+    /// Kernel must panic with "chain" when an MPC's "other" DOF is itself a pivot.
+    #[test]
+    #[should_panic(expected = "chain")]
+    fn solve_buckling_kernel_panics_on_chained_mpc() {
+        let nodes = unit_brick_nodes();
+        let tets = unit_brick_tets();
+        let material = IsotropicElastic { youngs_modulus: 1.0, poisson_ratio: 0.0 };
+        let bcs = shape_test_bcs();
+        let mut f = vec![0.0_f64; 3 * nodes.len()];
+        f[3 * 4 + 2] = -0.1;
+
+        // MPC chain: row0 pivots u_z[4], other = u_z[5].
+        //            row1 pivots u_z[5], other = u_z[6].
+        // u_z[5] is the pivot of row1 AND the "other" of row0 → chain violation.
+        let mpc0 = MpcRow::new(vec![3 * 4 + 2, 3 * 5 + 2], vec![1.0, -1.0], 0.0);
+        let mpc1 = MpcRow::new(vec![3 * 5 + 2, 3 * 6 + 2], vec![1.0, -1.0], 0.0);
+        let opts = BucklingKernelOptions { n_modes: 1, ..Default::default() };
+        let _ = solve_buckling_kernel(&nodes, &tets, &material, &bcs, &f, &[mpc0, mpc1], opts);
+    }
 }
