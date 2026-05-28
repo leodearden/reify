@@ -36,6 +36,7 @@ mod mechanism;
 mod numeric;
 mod orientation;
 mod snapshot;
+mod stackup;
 mod supports;
 mod sweep;
 mod trajectory;
@@ -88,6 +89,9 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         return v;
     }
     if let Some(v) = snapshot::eval_snapshot(name, args) {
+        return v;
+    }
+    if let Some(v) = stackup::eval_stackup(name, args) {
         return v;
     }
     if let Some(v) = sweep::eval_sweep(name, args) {
