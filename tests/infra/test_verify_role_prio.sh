@@ -72,6 +72,8 @@ UNSET_TEST_PLAN="$(env -u DF_VERIFY_ROLE bash "$REPO_ROOT/scripts/verify.sh" tes
     | grep -v '^#')"
 MERGE_PLAN_FULL="$(DF_VERIFY_ROLE=merge bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan)"
 MERGE_TEST_PLAN="$(printf '%s\n' "$MERGE_PLAN_FULL" | grep -v '^#')"
+MERGE_ALL_PLAN_FULL="$(DF_VERIFY_ROLE=merge bash "$REPO_ROOT/scripts/verify.sh" all --scope all --print-plan)"
+MERGE_ALL_PLAN="$(printf '%s\n' "$MERGE_ALL_PLAN_FULL" | grep -v '^#')"
 
 # --- task / test / all ---
 
@@ -97,6 +99,13 @@ assert "task/all/all: all cargo lines prefixed with 'nice -n 15 ionice -c 2 -n 7
     bash -c '! printf "%s\n" "$1" | grep -E "(^| )cargo " | grep -vq "nice -n 15 ionice -c 2 -n 7 cargo"' \
     _ "$TASK_ALL_PLAN"
 
+# Negative contract: non-cargo lines (tree-sitter-generate.sh, npm) must NOT carry
+# the prefix.  Every plan line that contains the nice/ionice prefix must also
+# contain 'cargo' — i.e. zero prefix-bearing lines lack 'cargo'.
+assert "task/all/all: only cargo lines carry the nice/ionice prefix (non-cargo lines clean)" \
+    bash -c '! printf "%s\n" "$1" | grep -F "nice -n 15 ionice -c 2 -n 7 " | grep -vq "cargo"' \
+    _ "$TASK_ALL_PLAN"
+
 # --- unset role defaults to task ---
 
 assert "unset role: plan contains task prefix 'nice -n 15 ionice -c 2 -n 7 cargo'" \
@@ -114,5 +123,17 @@ assert "merge/test/all: all cargo lines prefixed with 'nice -n 5 cargo'" \
 assert "merge/test/all: no 'ionice' anywhere in the full plan output" \
     bash -c '! printf "%s\n" "$1" | grep -q "ionice"' \
     _ "$MERGE_PLAN_FULL"
+
+# --- merge / all / all (covers clippy + gated + ungated) ---
+# Mirrors the task/all/all assertion so the merge path on lint/typecheck commands
+# is also covered.
+
+assert "merge/all/all: all cargo lines prefixed with 'nice -n 5 cargo'" \
+    bash -c '! printf "%s\n" "$1" | grep -E "(^| )cargo " | grep -vq "nice -n 5 cargo"' \
+    _ "$MERGE_ALL_PLAN"
+
+assert "merge/all/all: no 'ionice' anywhere in the full plan output" \
+    bash -c '! printf "%s\n" "$1" | grep -q "ionice"' \
+    _ "$MERGE_ALL_PLAN_FULL"
 
 test_summary
