@@ -569,6 +569,12 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
         doc: "Product of complex numbers `a` and `b`.",
         sort_group: "05-complex",
     },
+    BuiltinFunctionInfo {
+        name: "complex_div",
+        signature: "complex_div(a: Complex, b: Complex) -> Complex",
+        doc: "Quotient of complex numbers `a` and `b`.",
+        sort_group: "05-complex",
+    },
     // --- 06-constructors: geometry value constructors ---
     BuiltinFunctionInfo {
         name: "point2",
