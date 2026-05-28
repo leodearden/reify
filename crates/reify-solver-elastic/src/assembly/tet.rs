@@ -502,6 +502,34 @@ mod tests {
         let _ = element_stiffness_generic_with_d_global(&TetP1, &UNIT_TET_P1[..], &d);
     }
 
+    /// Non-positive Young's modulus must trip the `material.debug_assert_valid()`
+    /// entry guard at `element_stiffness_p1`. Mirrors the guard-coverage pattern
+    /// used by `consistent_element_mass_tet_p1` (density guard) and
+    /// `geometric_element_stiffness_tet_p1` (stress guard).
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "IsotropicElastic.youngs_modulus")]
+    fn element_stiffness_p1_panics_on_non_positive_youngs_modulus() {
+        let invalid = IsotropicElastic {
+            youngs_modulus: 0.0,
+            poisson_ratio: 0.3,
+        };
+        let _ = element_stiffness_p1(&UNIT_TET_P1, &invalid);
+    }
+
+    /// Poisson ratio outside the legal PD range (-1, 0.5) must trip the
+    /// `material.debug_assert_valid()` entry guard at `element_stiffness_p1`.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "IsotropicElastic.poisson_ratio")]
+    fn element_stiffness_p1_panics_on_out_of_range_poisson_ratio() {
+        let invalid = IsotropicElastic {
+            youngs_modulus: 1.0,
+            poisson_ratio: 0.6,
+        };
+        let _ = element_stiffness_p1(&UNIT_TET_P1, &invalid);
+    }
+
     #[test]
     fn p1_is_symmetric() {
         let k = element_stiffness_p1(&UNIT_TET_P1, &dimensionless_steel_like());
