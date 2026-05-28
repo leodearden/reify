@@ -107,7 +107,7 @@ fn speed_of_light_evaluates_to_299792458_si_with_length_over_time_dimension() {
 /// `BOLTZMANN_CONSTANT` must be present in `std/units`, be `pub`, take no
 /// parameters, and return `Scalar<ENERGY / TEMPERATURE>`.
 ///
-/// Return type resolves via the `Entropy` type alias (`pub type Entropy =
+/// Return type resolves via the `HeatCapacity` type alias (`pub type HeatCapacity =
 /// Energy / Temperature` in units.ri, introduced by esc-4026-121), which the
 /// compiler expands to `Scalar<ENERGY/TEMPERATURE>`.
 ///

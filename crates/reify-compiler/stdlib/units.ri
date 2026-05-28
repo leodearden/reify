@@ -90,10 +90,9 @@ pub unit USD : Money
 /// (only `AngularVelocity` is registered) — this alias substitutes.
 pub type Velocity = Length / Time
 
-/// Entropy / heat-capacity dimension, J/K. Aliases `Energy / Temperature`
-/// so it can appear in function return type position; no canonical named
-/// dimension exists among the 35. Boltzmann's constant carries these units.
-pub type Entropy = Energy / Temperature
+/// Energy per unit temperature — dimension of entropy / heat capacity /
+/// Boltzmann constant. Local alias because no J/K named dimension exists.
+pub type HeatCapacity = Energy / Temperature
 
 /// Standard acceleration of gravity (g_n), 9.80665 m/s² — BIPM/CGPM 1901 §70
 /// reference value. Use in body-force loads: `gravity(5 * STANDARD_GRAVITY())`.
@@ -103,3 +102,16 @@ pub fn STANDARD_GRAVITY() -> Acceleration { 9.80665 * 1m / (1s * 1s) }
 /// (BIPM, 1983 redefinition of the metre via the second). Use in EM and
 /// relativistic computations: `let kinetic = 0.5 * m * (v * v) / SPEED_OF_LIGHT()`.
 pub fn SPEED_OF_LIGHT() -> Velocity { 299792458.0 * 1m / 1s }
+
+/// Boltzmann constant (k_B), 1.380649×10⁻²³ J/K — exact by the 2019 SI
+/// redefinition (26th CGPM, Resolution 1). Used in thermal-energy expressions:
+/// `let thermal_energy = BOLTZMANN_CONSTANT() * 300K`.
+/// Body uses `1m * 1m * 1kg / (1s * 1s * 1K)` because `J` is generated in
+/// std.si_units, which compiles AFTER std.units; the resulting SI value is
+/// identical (J = kg·m²·s⁻²).
+/// Value is written in decimal form because Reify's number-literal grammar
+/// does not accept scientific notation in value position (see
+/// `modal_analysis.ri:32-33` for the same convention).
+pub fn BOLTZMANN_CONSTANT() -> HeatCapacity {
+    0.00000000000000000000001380649 * 1kg * 1m * 1m / (1s * 1s * 1K)
+}
