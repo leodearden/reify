@@ -250,13 +250,55 @@ fn parse_purpose_flag(value: &str) -> Result<PurposeActivation, String> {
     })
 }
 
+/// Usage line printed to stderr for any `reify check` usage error.
+const CHECK_USAGE: &str = "Usage: reify check [--purpose <name>=<binding>]... <file>";
+
 fn cmd_check(args: &[String]) -> ExitCode {
-    if args.is_empty() {
-        eprintln!("Usage: reify check <file>");
-        return ExitCode::FAILURE;
+    // Flag walk modeled on cmd_doc/cmd_gui: explicit handling of known flags
+    // and explicit rejection of unknown `--`-prefixed tokens so a typo like
+    // `--purpouse` fails loud instead of being silently treated as a file path.
+    let mut purpose_value: Option<String> = None;
+    let mut file: Option<&str> = None;
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        match a {
+            "--purpose" => {
+                if i + 1 >= args.len() {
+                    eprintln!("Error: --purpose requires a value");
+                    eprintln!("{}", CHECK_USAGE);
+                    return ExitCode::FAILURE;
+                }
+                // Step-6: collect the FIRST --purpose occurrence only.
+                // Step-14 makes the flag repeatable.
+                if purpose_value.is_none() {
+                    purpose_value = Some(args[i + 1].clone());
+                }
+                i += 2;
+            }
+            flag if flag.starts_with("--") => {
+                eprintln!("Error: unknown flag for `check`: {}", flag);
+                eprintln!("{}", CHECK_USAGE);
+                return ExitCode::FAILURE;
+            }
+            _ => {
+                if file.is_none() {
+                    file = Some(a);
+                }
+                i += 1;
+            }
+        }
     }
 
-    let compiled = match parse_and_compile(&args[0]) {
+    let file = match file {
+        Some(f) => f,
+        None => {
+            eprintln!("{}", CHECK_USAGE);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let compiled = match parse_and_compile(file) {
         Ok(c) => c,
         Err(code) => return code,
     };
@@ -269,29 +311,82 @@ fn cmd_check(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-    let result = engine.check(&compiled);
+    match purpose_value {
+        None => {
+            // No --purpose flag: existing engine.check() path, byte-for-byte.
+            let checker = SimpleConstraintChecker;
+            let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+            let result = engine.check(&compiled);
 
-    let outcome = report_eval_output(
-        &result.constraint_results,
-        &result.diagnostics,
-        &mut std::io::stdout(),
-        &mut std::io::stderr(),
-    );
+            let outcome = report_eval_output(
+                &result.constraint_results,
+                &result.diagnostics,
+                &mut std::io::stdout(),
+                &mut std::io::stderr(),
+            );
 
-    match outcome {
-        ConstraintOutcome::AllSatisfied => {
-            println!("All constraints satisfied.");
-            ExitCode::SUCCESS
+            match outcome {
+                ConstraintOutcome::AllSatisfied => {
+                    println!("All constraints satisfied.");
+                    ExitCode::SUCCESS
+                }
+                ConstraintOutcome::SomeIndeterminate(n) => {
+                    println!("No constraints violated ({n} indeterminate).");
+                    ExitCode::SUCCESS
+                }
+                ConstraintOutcome::SomeViolated => {
+                    println!("Some constraints violated.");
+                    ExitCode::FAILURE
+                }
+            }
         }
-        ConstraintOutcome::SomeIndeterminate(n) => {
-            println!("No constraints violated ({n} indeterminate).");
+        Some(value) => {
+            // --purpose path: replicates the canonical
+            // eval → activate_purpose → check_constraints_with_values sequence
+            // (see crates/reify-eval/tests/purpose_activation.rs:1151-1177).
+            // engine.check() does NOT visit purpose-injected constraints —
+            // they live in snapshot.graph.constraints, visited only by
+            // check_constraints_with_values.
+            let activation = match parse_purpose_flag(&value) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    return ExitCode::FAILURE;
+                }
+            };
+
+            let checker = SimpleConstraintChecker;
+            let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+            let eval_result = engine.eval(&compiled);
+
+            // Step-α: only single-binding activations are wired through here.
+            // The multi-binding rejection guard and is_purpose_active probe
+            // land in steps 10 and 12.
+            engine.activate_purpose(&activation.name, &activation.bindings[0].entity);
+
+            let (constraint_results, check_diags) =
+                match engine.check_constraints_with_values(&eval_result.values) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        return ExitCode::FAILURE;
+                    }
+                };
+
+            // Eval diagnostics first, then check diagnostics — chronological order.
+            let mut diagnostics = eval_result.diagnostics.clone();
+            diagnostics.extend(check_diags);
+
+            let _outcome = report_eval_output(
+                &constraint_results,
+                &diagnostics,
+                &mut std::io::stdout(),
+                &mut std::io::stderr(),
+            );
+
+            // Step-6 returns SUCCESS regardless of outcome; the summary line +
+            // exit-code mapping land in step-8.
             ExitCode::SUCCESS
-        }
-        ConstraintOutcome::SomeViolated => {
-            println!("Some constraints violated.");
-            ExitCode::FAILURE
         }
     }
 }
