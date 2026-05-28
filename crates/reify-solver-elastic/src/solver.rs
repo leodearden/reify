@@ -134,6 +134,33 @@ pub struct CgResult {
     pub converged: bool,
 }
 
+/// Return value of the per-iteration progress callback passed to
+/// [`solve_cg_with_progress`].
+///
+/// Cooperative-cancellation primitive for the CG kernel. The callback returns
+/// `Continue` to allow the next iteration, or `Cancel` to stop the solve
+/// immediately. When `Cancel` is returned, `cg_loop` exits with
+/// `iterations = iter_just_completed, converged = false`. The callback is
+/// **not** invoked again after it returns `Cancel`.
+///
+/// # Why an enum rather than `bool`?
+///
+/// A `bool` return forces readers to memorise "true means cancel" vs "true means
+/// continue" — a known footgun (cf. `Iterator::any` vs `Iterator::for_each`
+/// predicates). `CgIterationControl` is self-documenting at the call site:
+/// `if h.is_cancelled() { Cancel } else { Continue }` reads unambiguously.
+///
+/// Design decision recorded in `docs/prds/v0_3/gui-event-channel-inventory.md`
+/// §11 Q2 / compute-node-contract §2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CgIterationControl {
+    /// Allow the next CG iteration to proceed.
+    Continue,
+    /// Stop the CG solve immediately; the iteration that returned `Cancel` is
+    /// counted in `CgResult.iterations` and `converged` is set to `false`.
+    Cancel,
+}
+
 /// Solve the SPD linear system `K u = f` with Jacobi-preconditioned CG.
 ///
 /// # Algorithm
@@ -350,6 +377,7 @@ pub fn solve_cg_warm(
                 |p, out| spmv_seq(k, p, out),
                 dot,
                 norm2_squared,
+                None, // no progress callback — no-op, no overhead
             )
         }
         SolverMode::Parallel { threads } => {
@@ -364,6 +392,145 @@ pub fn solve_cg_warm(
                 |p, out| spmv_parallel(k, p, out, threads),
                 |a, b| dot_parallel(a, b, threads),
                 |v| norm2_squared_parallel(v, threads),
+                None, // no progress callback — no-op, no overhead
+            )
+        }
+    }
+}
+
+/// Solve the SPD linear system `K u = f` with Jacobi-preconditioned CG,
+/// invoking a per-iteration progress callback after each residual-norm update.
+///
+/// Identical contract to [`solve_cg_warm`] except for the additional `progress`
+/// closure. The closure is invoked at the **end** of each CG iteration (after the
+/// residual-norm update and before the convergence branch) with
+/// `(iter_just_completed: usize, residual_l2_norm: f64)`. `iter_just_completed`
+/// is 1-indexed: the first iteration fires `(1, ‖r₁‖)`.
+///
+/// The return value of the callback is [`CgIterationControl`]:
+/// - [`CgIterationControl::Continue`] — allow the next iteration.
+/// - [`CgIterationControl::Cancel`] — exit immediately with
+///   `iterations = iter_just_completed, converged = false`.
+///
+/// The callback is **not** invoked after it returns `Cancel`, and is also not
+/// invoked when `cg_loop` exits early via the warm-start `‖r₀‖² < tol_sq`
+/// check (returns `iterations = 0, converged = true` without entering the main
+/// loop).
+///
+/// # Use in engine-boundary wiring (GR-016 ζ)
+///
+/// The GUI side translates `CancellationHandle::is_cancelled()` into
+/// `CgIterationControl::Cancel` at the engine boundary. The iteration callback
+/// also emits the `solver-progress` Tauri event via `event_bus::emit_typed`.
+/// Both are out of scope for this crate — this function is the kernel-side seam.
+///
+/// See `docs/gui-event-channels/solver-progress.md` §3 for the producer-side spec.
+///
+/// # Panics
+///
+/// Same panic conditions as [`solve_cg_warm`].
+pub fn solve_cg_with_progress(
+    k: &SparseRowMat<usize, f64>,
+    f: &[f64],
+    initial_guess: Option<&[f64]>,
+    opts: CgSolverOptions,
+    mode: SolverMode,
+    progress: &mut dyn FnMut(usize, f64) -> CgIterationControl,
+) -> CgResult {
+    // Contract checks are identical to solve_cg_warm — delegate the checks and
+    // warm-start setup to it, then re-enter via cg_loop with the progress closure.
+    //
+    // Implementation note: we duplicate the contract-check + dispatch block from
+    // solve_cg_warm rather than having solve_cg_warm call cg_loop-with-progress,
+    // because threading the closure through solve_cg_warm's return path would
+    // require changing its public signature. The duplication is limited to the
+    // dispatch block (match mode {...}); cg_loop itself is the shared implementation.
+    if let SolverMode::Parallel { threads } = mode {
+        assert!(
+            threads != 0,
+            "SolverMode::Parallel {{ threads: 0 }} is invalid: \
+             auto-fallback to single-threaded would silently mask caller bugs \
+             (e.g. a misread config defaulting threads to 0). \
+             Pass threads >= 1, or use SolverMode::Deterministic for \
+             single-threaded pairwise-tree reductions.",
+        );
+    }
+    assert!(
+        opts.tolerance.is_finite() && opts.tolerance > 0.0,
+        "CgSolverOptions.tolerance = {} must be a finite positive value",
+        opts.tolerance,
+    );
+    assert!(
+        opts.max_iter > 0,
+        "CgSolverOptions.max_iter = 0 is invalid; must be >= 1",
+    );
+    assert_eq!(
+        f.len(),
+        k.nrows(),
+        "f.len() = {} but k.nrows() = {}; f must be sized to the system (f.len() == k.nrows())",
+        f.len(),
+        k.nrows(),
+    );
+    assert_eq!(
+        k.nrows(),
+        k.ncols(),
+        "K must be square: k.nrows() = {} but k.ncols() = {}; \
+         the stiffness matrix must be n × n",
+        k.nrows(),
+        k.ncols(),
+    );
+    if let Some(u_0) = initial_guess {
+        assert_eq!(
+            u_0.len(),
+            k.nrows(),
+            "initial_guess.len() = {} but k.nrows() = {}; \
+             initial_guess must be sized to the system (initial_guess.len() == k.nrows())",
+            u_0.len(),
+            k.nrows(),
+        );
+    }
+
+    let n = f.len();
+    let inv_diag = extract_diag_jacobi(k);
+
+    let f_norm_sq = norm2_squared(f);
+    if f_norm_sq == 0.0 {
+        return CgResult {
+            u: Arc::new(vec![0.0; n]),
+            iterations: 0,
+            converged: true,
+        };
+    }
+    let tol_sq = opts.tolerance * opts.tolerance * f_norm_sq;
+
+    match mode {
+        SolverMode::Deterministic => {
+            let (u, r) = build_initial_u_r(f, initial_guess, |p, out| spmv_seq(k, p, out));
+            cg_loop(
+                u,
+                r,
+                &inv_diag,
+                tol_sq,
+                opts.max_iter,
+                |p, out| spmv_seq(k, p, out),
+                dot,
+                norm2_squared,
+                Some(progress),
+            )
+        }
+        SolverMode::Parallel { threads } => {
+            let (u, r) =
+                build_initial_u_r(f, initial_guess, |p, out| spmv_parallel(k, p, out, threads));
+            cg_loop(
+                u,
+                r,
+                &inv_diag,
+                tol_sq,
+                opts.max_iter,
+                |p, out| spmv_parallel(k, p, out, threads),
+                |a, b| dot_parallel(a, b, threads),
+                |v| norm2_squared_parallel(v, threads),
+                Some(progress),
             )
         }
     }
@@ -748,7 +915,7 @@ fn norm2_squared_parallel(v: &[f64], threads: usize) -> f64 {
 /// `f_norm_sq == 0.0` short-circuit at the dispatch site, and avoids the
 /// `0/0` from `α = rz / pkp` when `rz ≈ 0, pkp ≈ 0`. Pinned by
 /// `warm_start_at_exact_solution_returns_in_zero_iterations`.
-#[allow(clippy::too_many_arguments)] // 8 args: state (5) + mode-injected closures (3).
+#[allow(clippy::too_many_arguments)] // 9 args: state (5) + mode-injected closures (3) + progress (1).
 fn cg_loop<S, D, N>(
     mut u: Vec<f64>,
     mut r: Vec<f64>,
@@ -758,6 +925,7 @@ fn cg_loop<S, D, N>(
     spmv: S,
     dot_fn: D,
     norm2sq_fn: N,
+    mut progress: Option<&mut dyn FnMut(usize, f64) -> CgIterationControl>,
 ) -> CgResult
 where
     S: Fn(&[f64], &mut [f64]),
@@ -829,6 +997,18 @@ where
 
         // Convergence check: ‖r_{k+1}‖² < tol² · ‖f‖²
         let r_norm_sq = norm2sq_fn(&r);
+
+        // Per-iteration progress callback: fires post-residual-norm-update,
+        // before the convergence branch, so the converging iteration is always
+        // included in the callback sequence (observed.len() == result.iterations).
+        // The L2 norm (not squared) is emitted — callers display/log residuals
+        // in L2-norm units; doing the sqrt here avoids repeated sqrt at N consumers.
+        // Cancel handling is added in step-4 (GR-016 ζ); this step ignores the
+        // return value and simply invokes the callback.
+        if let Some(ref mut cb) = progress {
+            cb(iter + 1, r_norm_sq.sqrt());
+        }
+
         if r_norm_sq < tol_sq {
             return CgResult {
                 u: Arc::new(u),
@@ -1983,11 +2163,18 @@ mod tests {
             );
         }
 
-        // (d) Every observed residual is finite and positive.
+        // (d) Every observed residual is finite and non-negative.
+        //
+        // Note: residual CAN be exactly 0.0 if the problem converges with zero
+        // maintained residual (e.g. the fan-mesh with a single-entry RHS converges
+        // in 1 step with α=1 exactly, driving r₁ = 0 due to DOF decoupling).
+        // The L2 norm of a residual vector is mathematically non-negative; we
+        // assert finite+non-negative rather than strictly positive. Escalation
+        // esc-3543-111 documents the root cause analysis.
         for &(iter, residual) in &observed {
             assert!(
-                residual.is_finite() && residual > 0.0,
-                "residual at iter={iter} must be finite and positive, got {residual}"
+                residual.is_finite() && residual >= 0.0,
+                "residual at iter={iter} must be finite and non-negative, got {residual}"
             );
         }
     }

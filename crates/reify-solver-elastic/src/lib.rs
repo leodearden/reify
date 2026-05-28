@@ -466,7 +466,10 @@ pub use geometric_stiffness::{
 // `k_e` opaquely — K vs K_g vs M).
 // PRD: docs/prds/v0_3/modal-analysis.md §10 Phase 1 task δ.
 pub use mass_matrix::consistent_element_mass_tet_p1;
-pub use solver::{CgResult, CgSolverOptions, SolverMode, solve_cg, solve_cg_warm};
+pub use solver::{
+    CgIterationControl, CgResult, CgSolverOptions, SolverMode, solve_cg, solve_cg_warm,
+    solve_cg_with_progress,
+};
 pub use warm_state::{CgWarmState, solve_cg_with_warm_state};
 // Task 2987: 2D cross-section meshing surface for the hex/wedge swept-body
 // pipeline. Re-export the typed orchestrator (`mesh_swept_profile_2d`), its
