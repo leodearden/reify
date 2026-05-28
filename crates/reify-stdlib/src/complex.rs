@@ -649,7 +649,7 @@ mod tests {
             dimension: DimensionVector::DIMENSIONLESS,
         };
         assert_eq!(
-            eval_builtin("arg", &[z.clone()]),
+            eval_builtin("arg", std::slice::from_ref(&z)),
             eval_builtin("phase", &[z]),
             "arg(z) must equal phase(z) for dimensionless Complex"
         );
@@ -664,7 +664,7 @@ mod tests {
             dimension: DimensionVector::LENGTH,
         };
         assert_eq!(
-            eval_builtin("arg", &[z.clone()]),
+            eval_builtin("arg", std::slice::from_ref(&z)),
             eval_builtin("phase", &[z]),
             "arg(z) must equal phase(z) for dimensioned Complex"
         );

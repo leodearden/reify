@@ -1345,7 +1345,7 @@ mod tests {
             im: 4.0,
             dimension: DimensionVector::LENGTH,
         };
-        let abs_result = eval_builtin("abs", &[z.clone()]);
+        let abs_result = eval_builtin("abs", std::slice::from_ref(&z));
         let mag_result = eval_builtin("magnitude", &[z]);
         assert_eq!(
             abs_result, mag_result,
