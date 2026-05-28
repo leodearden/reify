@@ -2036,3 +2036,49 @@ fn cascaded_shaper_struct_has_correct_param_shape() {
             .collect::<Vec<_>>()
     );
 }
+
+// ─── step-49: GcodeDialect marker trait ──────────────────────────────────────
+
+/// `GcodeDialect` is the marker trait for G-code dialect selectors (PRD §7.2).
+/// Concrete dialects (`MarlinDialect`, `KlipperDialect`) refine it. The trait
+/// exists only to give the `gcode_import` dispatcher's `dialect : GcodeDialect`
+/// param a single nominal type so the SIR-α nominal type-tag dispatches on the
+/// concrete dialect variant.
+///
+/// Empty by design — the semantic behavior lives in the consumer ο
+/// (`gcode_import` parser), not as authoring-time params.
+///
+/// Test pins three invariants: (a) the trait is found, (b) it has zero
+/// required members + zero defaults (marker trait), (c) it has no
+/// refinements (top-level marker, no parent trait).
+/// Mirrors `shaper_trait_exists_with_no_params` (step-29).
+#[test]
+fn gcode_dialect_trait_exists_with_no_params() {
+    let trait_def = find_trait("GcodeDialect");
+
+    assert!(
+        trait_def.required_members.is_empty(),
+        "GcodeDialect should declare zero required members (marker trait); \
+         got: {:?}",
+        trait_def
+            .required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        trait_def.defaults.is_empty(),
+        "GcodeDialect should declare zero defaults (marker trait); got: {:?}",
+        trait_def
+            .defaults
+            .iter()
+            .map(|d| &d.name)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        trait_def.refinements.is_empty(),
+        "GcodeDialect should declare zero refinements (top-level marker, no \
+         parent trait); got: {:?}",
+        trait_def.refinements
+    );
+}
