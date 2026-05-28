@@ -1520,4 +1520,117 @@ mod tests {
             other => panic!("expected Real({expected}), got {other:?}"),
         }
     }
+
+    // ── complex_exp() tests (step-1) ──────────────────────────────────────────
+
+    #[test]
+    fn complex_exp_zero_returns_one() {
+        // complex_exp(complex(0,0)) = exp(0)·(cos(0) + i·sin(0)) = 1 + 0i
+        // This is the user signal: exact since exp(0)=1, cos(0)=1, sin(0)=0.
+        let result = eval_builtin(
+            "complex_exp",
+            &[Value::Complex {
+                re: 0.0,
+                im: 0.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            }],
+        );
+        match result {
+            Value::Complex { re, im, dimension } => {
+                assert!((re - 1.0).abs() < 1e-12, "expected re=1.0, got {}", re);
+                assert!((im - 0.0).abs() < 1e-12, "expected im=0.0, got {}", im);
+                assert_eq!(dimension, DimensionVector::DIMENSIONLESS);
+            }
+            other => panic!("expected Complex{{1,0,DIMLESS}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn complex_exp_pure_imaginary_half_pi() {
+        // complex_exp(0 + i·π/2) = e^0·(cos(π/2) + i·sin(π/2)) = 0 + 1i
+        let result = eval_builtin(
+            "complex_exp",
+            &[Value::Complex {
+                re: 0.0,
+                im: std::f64::consts::FRAC_PI_2,
+                dimension: DimensionVector::DIMENSIONLESS,
+            }],
+        );
+        match result {
+            Value::Complex { re, im, dimension } => {
+                assert!((re - 0.0).abs() < 1e-12, "expected re=0.0, got {}", re);
+                assert!((im - 1.0).abs() < 1e-12, "expected im=1.0, got {}", im);
+                assert_eq!(dimension, DimensionVector::DIMENSIONLESS);
+            }
+            other => panic!("expected Complex{{0,1,DIMLESS}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn complex_exp_dimensioned_input_returns_undef() {
+        // exp(z) is only defined for dimensionless z — reject dimensioned input
+        let result = eval_builtin(
+            "complex_exp",
+            &[Value::Complex {
+                re: 0.0,
+                im: 0.0,
+                dimension: DimensionVector::LENGTH,
+            }],
+        );
+        assert!(
+            result.is_undef(),
+            "complex_exp of dimensioned Complex must return Undef, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn complex_exp_non_complex_arg_returns_undef() {
+        // Non-Complex input (e.g. Real) must return Undef
+        let result = eval_builtin("complex_exp", &[Value::Real(1.0)]);
+        assert!(
+            result.is_undef(),
+            "complex_exp of Real must return Undef, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn complex_exp_zero_args_returns_undef() {
+        assert!(
+            eval_builtin("complex_exp", &[]).is_undef(),
+            "complex_exp with 0 args must return Undef"
+        );
+    }
+
+    #[test]
+    fn complex_exp_two_args_returns_undef() {
+        let z = Value::Complex {
+            re: 0.0,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("complex_exp", &[z.clone(), z]).is_undef(),
+            "complex_exp with 2 args must return Undef"
+        );
+    }
+
+    #[test]
+    fn complex_exp_overflow_returns_undef() {
+        // exp(1e308 + 0i) = e^1e308 = +Inf, caught by sanitize_value
+        let result = eval_builtin(
+            "complex_exp",
+            &[Value::Complex {
+                re: 1e308,
+                im: 0.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            }],
+        );
+        assert!(
+            result.is_undef(),
+            "complex_exp overflow must return Undef, got {:?}",
+            result
+        );
+    }
 }
