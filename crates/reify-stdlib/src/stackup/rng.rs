@@ -9,6 +9,75 @@
 #![allow(dead_code)]
 
 // ---------------------------------------------------------------------------
+// Xoshiro256** PRNG
+// ---------------------------------------------------------------------------
+
+/// Deterministic, platform-independent pseudo-random number generator.
+///
+/// Uses the xoshiro256\*\* algorithm (Vigna 2018, CC0 public domain) seeded
+/// via four successive SplitMix64 steps from a single `u64`.  All state
+/// transitions are pure integer arithmetic (xor / shift / rotate / wrapping
+/// multiply / wrapping add) — **bit-identical streams on every IEEE-754
+/// platform**.
+///
+/// # Contract
+///
+/// - `from_seed(s)` ⟹ deterministic: two instances from the same seed
+///   produce the same sequence.
+/// - The sampling-order contract for Monte-Carlo stack-up (T5) is:
+///   *contributor-index ascending, then draw-index ascending* — T4 exposes
+///   primitives only; T5 enforces the nesting order when calling them.
+///
+/// # References
+///
+/// - <https://prng.di.unimi.it/xoshiro256starstar.c>  (CC0)
+/// - <https://prng.di.unimi.it/splitmix64.c>          (CC0)
+pub(super) struct Xoshiro256StarStar {
+    /// Four-word xoshiro256** state.
+    s: [u64; 4],
+    /// Cached spare Normal-sampler output from Box–Muller pairing.
+    spare: Option<f64>,
+}
+
+impl Xoshiro256StarStar {
+    /// Construct a new generator from a single `u64` seed.
+    ///
+    /// The seed is expanded to four 64-bit state words using four successive
+    /// SplitMix64 steps (Vigna's canonical seeding pattern).
+    pub(super) fn from_seed(seed: u64) -> Self {
+        let mut sm = seed;
+        let s = [
+            splitmix64_step(&mut sm),
+            splitmix64_step(&mut sm),
+            splitmix64_step(&mut sm),
+            splitmix64_step(&mut sm),
+        ];
+        Xoshiro256StarStar { s, spare: None }
+    }
+
+    /// Return the next `u64` from the stream and advance the state.
+    ///
+    /// Output function: `rotl(s[1] * 5, 7) * 9`  (xoshiro256** variant).
+    pub(super) fn next_u64(&mut self) -> u64 {
+        let result = self.s[1]
+            .wrapping_mul(5)
+            .rotate_left(7)
+            .wrapping_mul(9);
+
+        // xoshiro256** state advance (Vigna's reference):
+        let t = self.s[1] << 17;
+        self.s[2] ^= self.s[0];
+        self.s[3] ^= self.s[1];
+        self.s[1] ^= self.s[2];
+        self.s[0] ^= self.s[3];
+        self.s[2] ^= t;
+        self.s[3] = self.s[3].rotate_left(45);
+
+        result
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SplitMix64 seeder
 // ---------------------------------------------------------------------------
 
