@@ -1,7 +1,7 @@
 use reify_core::DimensionVector;
 use reify_ir::Value;
 
-use crate::helpers::{binary, quinary_f64, sanitize_value, ternary, unary, unary_f64};
+use crate::helpers::{binary, complex_abs, quinary_f64, sanitize_value, ternary, unary, unary_f64};
 
 pub(crate) fn eval_numeric(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {
@@ -16,6 +16,9 @@ pub(crate) fn eval_numeric(name: &str, args: &[Value]) -> Option<Value> {
                 si_value: si_value.abs(),
                 dimension: *dimension,
             },
+            // Complex modulus: |z| = sqrt(re² + im²), identical to magnitude/complex_magnitude.
+            // Returns Real for DIMENSIONLESS, Scalar otherwise; sanitizes Inf/NaN to Undef.
+            Value::Complex { re, im, dimension } => complex_abs(*re, *im, *dimension),
             _ => Value::Undef,
         }),
         "sqrt" => unary(args, |v| match v {
@@ -1282,6 +1285,71 @@ mod tests {
             result.is_undef(),
             "remap with 3 args should be Undef, got {:?}",
             result
+        );
+    }
+
+    // --- abs on Complex tests (step-1, task-3952) ---
+
+    #[test]
+    fn abs_complex_dimensionless_returns_5() {
+        // abs(3+4i) = 5.0 (3-4-5 Pythagorean triple, dimensionless → Real)
+        let z = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert_real_approx!(eval_builtin("abs", &[z]), 5.0);
+    }
+
+    #[test]
+    fn abs_complex_dimensioned_returns_scalar_5() {
+        // abs(Complex{3,4,LENGTH}) = Scalar{5.0, LENGTH}
+        let z = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert_scalar_approx!(eval_builtin("abs", &[z]), 5.0, DimensionVector::LENGTH);
+    }
+
+    #[test]
+    fn abs_complex_zero_returns_zero() {
+        // abs(0+0i) = 0.0 (zero vector: modulus is well-defined at zero, unlike phase)
+        let z = Value::Complex {
+            re: 0.0,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert_real_approx!(eval_builtin("abs", &[z]), 0.0);
+    }
+
+    #[test]
+    fn abs_complex_nan_returns_undef() {
+        // abs(Complex{NaN, 1.0, DIMLESS}) → Undef (sanitize_value catches NaN)
+        let z = Value::Complex {
+            re: f64::NAN,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("abs", &[z]).is_undef(),
+            "abs of Complex with NaN re must return Undef"
+        );
+    }
+
+    #[test]
+    fn abs_complex_matches_magnitude() {
+        // abs and magnitude must agree bit-for-bit on Complex inputs (task-3952 symmetry contract)
+        let z = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        let abs_result = eval_builtin("abs", std::slice::from_ref(&z));
+        let mag_result = eval_builtin("magnitude", &[z]);
+        assert_eq!(
+            abs_result, mag_result,
+            "abs and magnitude must produce identical results for Complex"
         );
     }
 

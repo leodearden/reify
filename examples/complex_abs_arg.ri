@@ -1,0 +1,29 @@
+// complex_abs_arg.ri — demonstrate abs() and arg() on Complex values.
+//
+// Expected `reify eval` output:
+//   z_abs  = 5.0          (Real — |3+4i| = sqrt(9+16) = 5, dimensionless)
+//   z_arg  = 0.9272952... (Scalar with ANGLE dimension — atan2(4,3) ≈ 0.927 rad)
+//
+// `arg(z)` is the complex-analysis name for the argument (phase angle) of z.
+// It is an exact alias for `phase(z)` — both call the same atan2 code path,
+// return the same ANGLE-dimensioned Scalar, and satisfy arg(z) == phase(z).
+
+structure def ComplexAbsArgDemo {
+    // z = 3 + 4i (dimensionless) — uses the 3-4-5 Pythagorean triple so
+    // |z| = 5.0 exactly (no rounding error).
+    let z = complex(3.0, 4.0)
+
+    // |z| via the generic abs() builtin (new Complex arm, task-3952).
+    // Returns Real(5.0) for dimensionless Complex inputs.
+    let z_abs = abs(z)
+
+    // arg(z) = atan2(4, 3) ≈ 0.9272952180016122 rad, with ANGLE dimension.
+    // `arg` is the standard complex-analysis alias for `phase`.
+    let z_arg = arg(z)
+
+    // Constrain only the dimensionless z_abs (a tight ε around the exact value 5).
+    // z_arg carries ANGLE dimension and is left unconstrained to avoid any
+    // dimensionless-vs-ANGLE comparison issue.
+    constraint z_abs > 4.999
+    constraint z_abs < 5.001
+}

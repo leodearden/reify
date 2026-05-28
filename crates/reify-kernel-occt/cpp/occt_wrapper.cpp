@@ -79,7 +79,9 @@
 
 // OCCT transforms
 #include <BRepBuilderAPI_Transform.hxx>
+#include <BRepBuilderAPI_GTransform.hxx>
 #include <gp_Trsf.hxx>
+#include <gp_GTrsf.hxx>
 #include <gp_Vec.hxx>
 #include <gp_Ax1.hxx>
 #include <gp_Ax2.hxx>
@@ -1674,6 +1676,57 @@ std::unique_ptr<OcctShape> rotate_around_shape(const OcctShape& shape,
         }
         auto result = std::make_unique<OcctShape>();
         result->shape = transform.Shape();
+        return result;
+    });
+}
+
+std::unique_ptr<OcctShape> gtransform_shape(const OcctShape& shape,
+    double m00, double m01, double m02,
+    double m10, double m11, double m12,
+    double m20, double m21, double m22,
+    double tx, double ty, double tz) {
+    return wrap_occt_call("gtransform_shape", [&]() {
+        // Reject singular linear part before dispatch: BRepBuilderAPI_GTransform on a
+        // det=0 gp_GTrsf can silently emit a zero-volume / non-manifold shape without
+        // marking IsDone() false, producing hard-to-diagnose downstream failures.
+        // Cofactor expansion along row 0:
+        const double det =
+            m00 * (m11 * m22 - m12 * m21)
+          - m01 * (m10 * m22 - m12 * m20)
+          + m02 * (m10 * m21 - m11 * m20);
+        // Scale-invariant singularity guard: compare |det| against the Hadamard bound
+        // (product of row magnitudes) rather than an absolute threshold.
+        //
+        // Motivation: det scales as the cube of the matrix entries, so an absolute floor
+        // (e.g. 1e-12) wrongly rejects legitimately non-singular small-scale matrices.
+        // For example, diag(1e-5, 1e-5, 1e-5) has det=1e-15 < 1e-12 but is perfectly
+        // non-singular; a uniform scale of 1e-4 would also be falsely flagged.
+        //
+        // |det(M)| / (||row0|| · ||row1|| · ||row2||) ∈ [0, 1] by Hadamard's inequality;
+        // → 0 iff M is rank-deficient.  We reject when this relative ratio is < 1e-12.
+        // If any row has zero magnitude (hadamard == 0.0), M is trivially rank-deficient.
+        const double row0_norm = std::sqrt(m00*m00 + m01*m01 + m02*m02);
+        const double row1_norm = std::sqrt(m10*m10 + m11*m11 + m12*m12);
+        const double row2_norm = std::sqrt(m20*m20 + m21*m21 + m22*m22);
+        const double hadamard  = row0_norm * row1_norm * row2_norm;
+        if (hadamard == 0.0 || std::abs(det) < 1e-12 * hadamard) {
+            std::ostringstream oss;
+            oss << "linear part is singular (det=" << det << ")";
+            throw std::runtime_error(oss.str());
+        }
+        // Build gp_GTrsf from 3×3 linear matrix (row-major) + translation XYZ.
+        gp_Mat linear(m00, m01, m02,
+                      m10, m11, m12,
+                      m20, m21, m22);
+        gp_XYZ translation(tx, ty, tz);
+        gp_GTrsf gtrsf(linear, translation);
+        BRepBuilderAPI_GTransform gtransform(shape.shape, gtrsf, /*Copy=*/true);
+        gtransform.Build();
+        if (!gtransform.IsDone()) {
+            throw std::runtime_error("BRepBuilderAPI_GTransform failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = gtransform.Shape();
         return result;
     });
 }

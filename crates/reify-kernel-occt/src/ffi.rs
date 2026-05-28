@@ -442,6 +442,42 @@ pub mod ffi {
             angle_rad: f64,
         ) -> Result<UniquePtr<OcctShape>>;
 
+        /// Apply a general non-rigid affine transform (3×3 linear + translation)
+        /// to `shape` using OCCT's `gp_GTrsf` / `BRepBuilderAPI_GTransform`.
+        ///
+        /// The 3×3 linear part is given in row-major order `(m00..m22)` and the
+        /// translation column is `(tx, ty, tz)`.  These map to OCCT's 1-indexed
+        /// row-major 3×4 `SetValues(a11, a12, a13, a14,  a21, a22, a23, a24,  a31, a32, a33, a34)`
+        /// as `m00→a11, m01→a12, m02→a13, tx→a14, m10→a21, …`.
+        ///
+        /// The operation runs with `Copy=true`, so the source shape is never mutated;
+        /// a fresh `UniquePtr<OcctShape>` is returned.
+        ///
+        /// Singular-input guard: rejects rank-deficient linear parts using a scale-invariant
+        /// Hadamard-ratio check (`|det| / (‖row0‖·‖row1‖·‖row2‖) < 1e-12`), with an error
+        /// message containing "singular". Non-uniform scale and shear are valid (e.g.
+        /// `diag(1,1,2)` → ratio=1.0; `diag(1e-5,1e-5,1e-5)` → ratio=1.0 ≫ 1e-12).
+        /// Per PRD `docs/prds/v0_6/affine-map-type.md` §5 task ε.
+        ///
+        /// # Errors
+        /// Returns an error if the linear part is singular, or if
+        /// `BRepBuilderAPI_GTransform` fails (`IsDone()` is false).
+        fn gtransform_shape(
+            shape: &OcctShape,
+            m00: f64,
+            m01: f64,
+            m02: f64,
+            m10: f64,
+            m11: f64,
+            m12: f64,
+            m20: f64,
+            m21: f64,
+            m22: f64,
+            tx: f64,
+            ty: f64,
+            tz: f64,
+        ) -> Result<UniquePtr<OcctShape>>;
+
         // --- Mirror / Pattern / Circular pattern ---
         fn mirror_shape(
             shape: &OcctShape,

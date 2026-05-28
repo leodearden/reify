@@ -218,13 +218,16 @@ fn parse_constraint_def_body_syntax_error() {
 
 #[test]
 fn parse_constraint_def_error_param() {
-    // `param wall : Box<,>` — trailing-comma inside type_args causes tree-sitter
-    // to insert a MISSING type-arg node, making the param_declaration node have
-    // `has_error() == true`.
+    // `param wall : Box<,>` — a type_arg_list with a leading comma forces
+    // tree-sitter to insert a MISSING type-arg node inside type_args, making the
+    // param_declaration node have `has_error() == true`.
     //
-    // Note: `Box<>` was the original probe, but the grammar addition of single-sided
-    // prefix range arms (`< expr`, `> expr`) changed how `<>` is parsed, so `Box<>`
-    // no longer reliably produces `has_error()`.  `Box<,>` still does.
+    // (An empty `Box<>` no longer suffices: once single-sided range arms `<expr`/
+    // `>expr` were added to the expression grammar, the parser prefers reading
+    // `Box` as a bare named type and the trailing `<...` as a range expression,
+    // so `Box<>` parses with no MISSING node. `Box<,>` still has no valid parse
+    // other than the MISSING-type-arg recovery, so it remains a clean probe for
+    // the `check_and_lower!` has_error path.)
     //
     // Without `check_and_lower!` (before step-18), `self.lower_param()` is called
     // directly: it succeeds (name "wall" is found) and silently adds the malformed
@@ -236,7 +239,7 @@ fn parse_constraint_def_error_param() {
     let (decls, errors) = parse_decls(source);
     assert!(
         !errors.is_empty(),
-        "expected parse errors for malformed param_declaration (Box<> has MISSING type arg), got none"
+        "expected parse errors for malformed param_declaration (Box<,> has MISSING type arg), got none"
     );
     assert!(
         errors
