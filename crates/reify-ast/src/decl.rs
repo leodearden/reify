@@ -232,6 +232,17 @@ pub struct SubDecl {
     /// wired. `param_assignment` nodes inside the body are currently dropped
     /// during lowering — their full round-trip is tracked by task 3573.
     pub body: Option<Vec<MemberDecl>>,
+    /// Parameter overrides specified in the specialization-scope body
+    /// (`sub b : Bearing { bore = auto }` → `[("bore", Expr { kind: Auto { free: false }, .. })]`).
+    ///
+    /// Mirrors `args` (named constructor arguments) but for the colon-form
+    /// specialization body's `param_assignment` nodes.  All values — both
+    /// `auto`/`auto(free)` and non-auto expressions — are collected here so the
+    /// AST is a complete representation of the source.  The compiler acts only
+    /// on `ExprKind::Auto` entries in this task (γ = task 3806); non-auto
+    /// resolution is deferred to task ε.  Empty for bare instantiation, the
+    /// paren-arg form, or any sub with no param_assignment overrides.
+    pub param_overrides: Vec<(String, Expr)>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }

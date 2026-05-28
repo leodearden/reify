@@ -1895,30 +1895,26 @@ impl<'a> Lowering<'a> {
         // conventionally carry annotations. If future usage demands annotation
         // propagation here, replace this loop with a call to `lower_members` and
         // filter the result.
+        let mut param_overrides: Vec<(String, Expr)> = Vec::new();
         let body = node.child_by_field_name("body").map(|body_node| {
             let mut members = Vec::new();
             let mut cursor = body_node.walk();
             for child in body_node.children(&mut cursor) {
                 if child.kind() == "param_assignment" {
-                    // Invoke the shared helper at grammar slot 3 (param_assignment.value,
-                    // grammar.js:595) so auto_keyword lowering is centralised at all five
-                    // _binding_value slots (β = task 3804, PRD §4.2).  The resulting Expr
-                    // is intentionally discarded here: γ = task 3806 ("sub-instance-override
-                    // auto end-to-end") will add the MemberDecl variant or let-rewrite that
-                    // carries it forward.  CST-level coverage for this site lives in
-                    // auto_binding_sites_grammar_tests.rs::param_assignment_auto_strict_produces_auto_keyword
-                    // and param_assignment_auto_free_has_modifier_field.
-                    //
-                    // NOTE: gated on `auto_keyword` only — `lower_binding_value` falls
-                    // through to `lower_expr` for non-auto nodes, which can push diagnostics
-                    // as a side-effect.  Since the result is discarded at this site, calling
-                    // the helper on an ordinary expression would surface spurious errors
-                    // before γ wires the AST plumbing.  Non-auto values remain silently
-                    // skipped (pre-existing behaviour) until γ=3806 replaces the discard.
-                    if let Some(v) = child.child_by_field_name("value")
-                        && v.kind() == "auto_keyword"
-                    {
-                        let _ = self.lower_binding_value(v);
+                    // γ = task 3806: collect each param_assignment as (name, value_expr)
+                    // into `param_overrides` using the shared `lower_binding_value` helper
+                    // (grammar slot 3, grammar.js:595) — the single source of truth for
+                    // auto_keyword lowering at all five _binding_value slots (PRD §4.2).
+                    // Both auto and non-auto values are captured so the AST is complete;
+                    // the compiler acts only on ExprKind::Auto entries this task (ε handles
+                    // non-auto resolution).
+                    if let Some(name_node) = child.child_by_field_name("name") {
+                        if let Some(value_node) = child.child_by_field_name("value") {
+                            let param_name = self.node_text(name_node).to_string();
+                            if let Some(expr) = self.lower_binding_value(value_node) {
+                                param_overrides.push((param_name, expr));
+                            }
+                        }
                     }
                     continue;
                 }
@@ -1937,6 +1933,7 @@ impl<'a> Lowering<'a> {
             is_collection,
             where_clause,
             body,
+            param_overrides,
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
@@ -2744,6 +2741,7 @@ impl<'a> Lowering<'a> {
             is_collection: false,
             where_clause: None,
             body: None,
+            param_overrides: vec![],
             span: self.span(member_node),
             content_hash: self.content_hash(member_node),
         };

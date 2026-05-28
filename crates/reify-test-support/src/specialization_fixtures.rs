@@ -112,6 +112,7 @@ pub fn make_sub_bare(name: &str, span: SourceSpan) -> MemberDecl {
         is_collection: false,
         where_clause: None,
         body: None,
+        param_overrides: Vec::new(),
         span,
         content_hash: dummy_hash(),
     })
@@ -130,6 +131,7 @@ pub fn make_sub_with_body(name: &str, span: SourceSpan, body: Vec<MemberDecl>) -
         is_collection: false,
         where_clause: None,
         body: Some(body),
+        param_overrides: Vec::new(),
         span,
         content_hash: dummy_hash(),
     })

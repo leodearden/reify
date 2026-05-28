@@ -72,6 +72,7 @@ fn sub_member(name: &str, structure_name: &str) -> MemberDecl {
         is_collection: false,
         where_clause: None,
         body: None,
+        param_overrides: vec![],
         span: zero_span(),
         content_hash: ContentHash(0),
     })
@@ -732,6 +733,7 @@ fn collection_sub_member(name: &str, structure_name: &str) -> MemberDecl {
         is_collection: true,
         where_clause: None,
         body: None,
+        param_overrides: vec![],
         span: zero_span(),
         content_hash: ContentHash(0),
     })
