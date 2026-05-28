@@ -364,30 +364,28 @@ rm -f "$_LOCK20" "${_LOCK20}.slot-1" "${_LOCK20}.slot-2"
 assert "Test 20: 3 invocations with N=2 complete in [700,1200]ms — 3rd is serialized (got ${_ELAPSED20_MS}ms)" \
     bash -c "test '$_ELAPSED20_MS' -ge 700 && test '$_ELAPSED20_MS' -le 1200"
 
-# -- Test 21: REIFY_OCCT_MAX_CONCURRENCY caps auto-detect N --------------------
-# Unset REIFY_OCCT_CONCURRENCY (force auto-detect path); set
-# REIFY_OCCT_MAX_CONCURRENCY=2 to cap N at 2 regardless of nproc/load.
-# Sub-test A: two concurrent wrappers → parallel (<700ms).
-# Sub-test B: three concurrent wrappers → third serialized (>=700ms, <=1200ms).
+# -- Test 21: REIFY_OCCT_MAX_CONCURRENCY sets N when CONCURRENCY is unset ------
+# With REIFY_OCCT_CONCURRENCY unset, N falls back to REIFY_OCCT_MAX_CONCURRENCY.
+# Sub-test A: two concurrent wrappers → parallel (<900ms).
+# Sub-test B: three concurrent wrappers → third serialized ([700,1200]ms).
 #
-# Load-independence: Use _REIFY_OCCT_NPROC_OVERRIDE=100 + _REIFY_OCCT_LOAD_OVERRIDE=0
-# to simulate an idle 100-CPU machine, ensuring auto-detect gives N = min(2,100) = 2
-# regardless of actual host load.  Per-plan note: "Skip the nproc-derivation portion
-# of auto-detect in tests; assert only that the cap upper-bounds correctly."
+# Historical note: a prior implementation auto-detected N as
+# clamp(nproc - load_1m_int, 1, MAX_CAP) and was retired (esc-4000-39, 2026-05-28)
+# because the load-based reduction created positive-feedback collapse to N=1
+# under concurrent worktree load.  The MAX_CONCURRENCY env var is now N itself
+# when CONCURRENCY is unset.
 echo ""
-echo "--- Test 21: REIFY_OCCT_MAX_CONCURRENCY=2 caps auto-detect — 2 parallel, 3rd serialized ---"
+echo "--- Test 21: REIFY_OCCT_MAX_CONCURRENCY=2 sets N=2 — 2 parallel, 3rd serialized ---"
 
 _LOCK21A="$(mktemp)"
 _LOCK21B="$(mktemp)"
 
-# Sub-test A: 2 invocations with MAX_CAP=2, simulated idle 100-CPU machine
+# Sub-test A: 2 invocations with MAX_CONCURRENCY=2 → both slots used in parallel.
 _START21A_NS="$(date +%s%N)"
-_REIFY_OCCT_NPROC_OVERRIDE=100 _REIFY_OCCT_LOAD_OVERRIDE=0 \
-    REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21A" \
+REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21A" \
     "$WRAPPER" bash -c 'sleep 0.4' &
 _PID21A1=$!
-_REIFY_OCCT_NPROC_OVERRIDE=100 _REIFY_OCCT_LOAD_OVERRIDE=0 \
-    REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21A" \
+REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21A" \
     "$WRAPPER" bash -c 'sleep 0.4' &
 _PID21A2=$!
 wait "$_PID21A1" "$_PID21A2"
@@ -395,19 +393,15 @@ _END21A_NS="$(date +%s%N)"
 _ELAPSED21A_MS=$(( (_END21A_NS - _START21A_NS) / 1000000 ))
 rm -f "$_LOCK21A" "${_LOCK21A}.slot-1" "${_LOCK21A}.slot-2"
 
-# Sub-test B: 3 invocations with MAX_CAP=2, simulated idle 100-CPU machine
-# third must wait because only 2 slots available.
+# Sub-test B: 3 invocations with MAX_CONCURRENCY=2 → third must wait.
 _START21B_NS="$(date +%s%N)"
-_REIFY_OCCT_NPROC_OVERRIDE=100 _REIFY_OCCT_LOAD_OVERRIDE=0 \
-    REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21B" \
+REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21B" \
     "$WRAPPER" bash -c 'sleep 0.4' &
 _PID21B1=$!
-_REIFY_OCCT_NPROC_OVERRIDE=100 _REIFY_OCCT_LOAD_OVERRIDE=0 \
-    REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21B" \
+REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21B" \
     "$WRAPPER" bash -c 'sleep 0.4' &
 _PID21B2=$!
-_REIFY_OCCT_NPROC_OVERRIDE=100 _REIFY_OCCT_LOAD_OVERRIDE=0 \
-    REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21B" \
+REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21B" \
     "$WRAPPER" bash -c 'sleep 0.4' &
 _PID21B3=$!
 wait "$_PID21B1" "$_PID21B2" "$_PID21B3"
@@ -415,10 +409,10 @@ _END21B_NS="$(date +%s%N)"
 _ELAPSED21B_MS=$(( (_END21B_NS - _START21B_NS) / 1000000 ))
 rm -f "$_LOCK21B" "${_LOCK21B}.slot-1" "${_LOCK21B}.slot-2"
 
-assert "Test 21A: 2 invocations with MAX_CAP=2 run in parallel (<900ms, got ${_ELAPSED21A_MS}ms)" \
+assert "Test 21A: 2 invocations with MAX_CONCURRENCY=2 run in parallel (<900ms, got ${_ELAPSED21A_MS}ms)" \
     test "$_ELAPSED21A_MS" -lt 900
 
-assert "Test 21B: 3 invocations with MAX_CAP=2 have 3rd serialized ([700,1200]ms, got ${_ELAPSED21B_MS}ms)" \
+assert "Test 21B: 3 invocations with MAX_CONCURRENCY=2 have 3rd serialized ([700,1200]ms, got ${_ELAPSED21B_MS}ms)" \
     bash -c "test '$_ELAPSED21B_MS' -ge 700 && test '$_ELAPSED21B_MS' -le 1200"
 
 # -- Test 22: LOCK_WAIT bound fires when ALL N slots are externally held ------
