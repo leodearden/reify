@@ -2178,4 +2178,68 @@ mod tests {
             );
         }
     }
+
+    /// Returning `CgIterationControl::Cancel` from the progress callback stops
+    /// the CG loop immediately at the iteration where `Cancel` was returned.
+    ///
+    /// Assertions:
+    /// (a) `result.converged == false`  — Cancel is not convergence.
+    /// (b) `result.iterations == 3`     — loop terminated at the Cancel iteration.
+    /// (c) callback was invoked exactly 3 times — no further calls after Cancel.
+    ///
+    /// This test is RED against step-2's implementation because `cg_loop`
+    /// ignores the Cancel return value in that step; step-4 adds the
+    /// cooperative-cancellation branch.
+    #[test]
+    fn solve_cg_with_progress_cancel_terminates_iteration_within_one_step() {
+        let (k, f) = fan_mesh_k_spd_and_f();
+        // Generous max_iter so the real solve would complete normally.
+        // The fan-mesh takes ~tens of iterations; 1000 >> that.
+        let opts = CgSolverOptions {
+            tolerance: 1e-10,
+            max_iter: 1000,
+        };
+
+        let mut call_count: usize = 0;
+        let result = solve_cg_with_progress(
+            &k,
+            &f,
+            None,
+            opts,
+            SolverMode::Deterministic,
+            &mut |iter, _residual| {
+                call_count += 1;
+                // Cancel on the 3rd iteration; Continue before that.
+                if iter == 3 {
+                    CgIterationControl::Cancel
+                } else {
+                    CgIterationControl::Continue
+                }
+            },
+        );
+
+        // (a) Cancel is not convergence.
+        assert!(
+            !result.converged,
+            "result.converged must be false when Cancel was returned; \
+             got converged=true (step-4 Cancel branch not yet wired)"
+        );
+
+        // (b) Loop terminated exactly at the Cancel iteration.
+        assert_eq!(
+            result.iterations,
+            3,
+            "result.iterations must be 3 (the iter where Cancel was returned); \
+             got {} (Cancel return not yet honoured — step-4 wires this)",
+            result.iterations
+        );
+
+        // (c) Callback invoked exactly 3 times — no further calls after Cancel.
+        assert_eq!(
+            call_count,
+            3,
+            "callback must be invoked exactly 3 times (stopped at Cancel); \
+             got {call_count} invocations"
+        );
+    }
 }
