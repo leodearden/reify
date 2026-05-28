@@ -2082,3 +2082,48 @@ fn gcode_dialect_trait_exists_with_no_params() {
         trait_def.refinements
     );
 }
+
+// ─── step-51: MarlinDialect refines GcodeDialect ──────────────────────────────
+
+/// `MarlinDialect` is the zero-DOF marker for the Marlin G-code dialect
+/// (PRD §7.1/§7.2). It refines `GcodeDialect` and carries no authoring-time
+/// params: the semantic behaviour (G0/G1/G2/G3/G92/F, M-commands ignored)
+/// lives in the consumer ο (`gcode_import` parser dispatch), not here.
+///
+/// Test pins three invariants: (a) the structure refines `GcodeDialect`
+/// (via `template.trait_bounds`), (b) it has zero params (marker), (c) it
+/// declares no constraints.
+/// Mirrors `natural_spline_refines_boundary_condition_with_no_params` (step-11).
+#[test]
+fn marlin_dialect_refines_gcode_dialect_with_no_params() {
+    let template = find_structure("MarlinDialect");
+
+    assert_eq!(
+        template.trait_bounds,
+        vec!["GcodeDialect".to_string()],
+        "MarlinDialect must refine GcodeDialect; got trait_bounds: {:?}",
+        template.trait_bounds
+    );
+
+    let params = param_cells(template);
+    assert!(
+        params.is_empty(),
+        "MarlinDialect should declare zero params (marker structure); \
+         got: {:?}",
+        params
+            .iter()
+            .map(|vc| vc.id.member.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    assert!(
+        template.constraints.is_empty(),
+        "MarlinDialect should declare no constraints (semantic behaviour \
+         is consumer-ο-enforced); got: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+}
