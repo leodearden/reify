@@ -308,12 +308,16 @@ fn parse_optional_length(v: &Value) -> Option<Option<f64>> {
 
 /// Parse spec bounds `(spec_min, spec_max)` from two arg slots.
 ///
-/// Returns `Ok(Some((min, max)))` when both are present, `Ok(None)` when both
-/// are absent (Undef), or `Err(())` when only one is present or either slot is
-/// an invalid (non-length, non-Undef) value.
+/// Returns `Ok(Some((min, max)))` when both are present and `min <= max`,
+/// `Ok(None)` when both are absent (Undef), or `Err(())` when only one is
+/// present, either slot is an invalid (non-length, non-Undef) value, or
+/// `spec_min > spec_max` (inverted bounds are a user error, not a valid
+/// empty range — return Undef rather than silently yielding yield_fraction=0).
 fn parse_spec_bounds(min_arg: &Value, max_arg: &Value) -> Result<Option<(f64, f64)>, ()> {
     match (parse_optional_length(min_arg), parse_optional_length(max_arg)) {
-        (Some(Some(lo)), Some(Some(hi))) => Ok(Some((lo, hi))),
+        (Some(Some(lo)), Some(Some(hi))) => {
+            if lo <= hi { Ok(Some((lo, hi))) } else { Err(()) }
+        }
         (Some(None), Some(None)) => Ok(None),
         (None, _) | (_, None) => Err(()), // invalid spec value
         _ => Err(()), // asymmetric present/absent
@@ -1213,6 +1217,134 @@ mod tests {
         assert_eq!(mean,  ng,   "zero-tol: mc_mean must == nominal_gap, got {mean} vs {ng}");
         assert_eq!(mc_min, ng,  "zero-tol: mc_min must == nominal_gap, got {mc_min} vs {ng}");
         assert_eq!(mc_max, ng,  "zero-tol: mc_max must == nominal_gap, got {mc_max} vs {ng}");
+    }
+
+    // ─── monte_carlo_stackup amendment tests ────────────────────────────────
+
+    #[test]
+    fn monte_carlo_inverted_spec_bounds_returns_undef() {
+        // spec_min > spec_max → Undef (reviewer suggestion #2: robustness guard).
+        // Previously this silently produced yield_fraction=0; now it is rejected.
+        assert!(is_undef_or_none(eval_stackup("monte_carlo_stackup", &[
+            golden_chain(), Value::Int(100), Value::Int(42),
+            len(0.010), len(0.001), // spec_min=10mm > spec_max=1mm (inverted)
+        ])), "inverted spec bounds must return Undef");
+    }
+
+    #[test]
+    fn monte_carlo_uniform_distribution_sigma_near_theoretical() {
+        // Single Uniform contributor: sample_uniform_sym(t_i) draws from Uniform[-t_i, t_i].
+        // Variance = t_i²/3  →  sigma_gap = t_i/sqrt(3).
+        // Exercises the Distribution::Uniform branch in the MC sampling loop.
+        let t = 0.01_f64;
+        let expected_sigma = t / 3.0_f64.sqrt();
+        let dist = Value::Enum { type_name: "Distribution".into(), variant: "Uniform".into() };
+        let c = eval_stackup("contributor_asym", &[
+            len(0.010), len(t), len(t), Value::Int(1), dist,
+        ]).unwrap();
+        let chain = Value::List(vec![c]);
+        let m = match eval_stackup("monte_carlo_stackup", &[
+            chain, Value::Int(100_000), Value::Int(42),
+        ]) {
+            Some(Value::Map(m)) => m,
+            other => panic!("expected Some(Map), got {:?}", other),
+        };
+        let mc_sigma = scalar_si(&m[&Value::String("mc_sigma".into())]);
+        let rel_err = (mc_sigma - expected_sigma).abs() / expected_sigma;
+        assert!(rel_err <= 0.02,
+            "Uniform mc_sigma {mc_sigma:.6e} vs expected {expected_sigma:.6e}: \
+             rel_err {:.4}% > 2%", rel_err * 100.0);
+    }
+
+    #[test]
+    fn monte_carlo_triangular_distribution_sigma_near_theoretical() {
+        // Single Triangular contributor: sample_triangular_sym(t_i) draws from Triangular[-t_i, t_i].
+        // Variance = t_i²/6  →  sigma_gap = t_i/sqrt(6).
+        // Exercises the Distribution::Triangular branch in the MC sampling loop.
+        let t = 0.01_f64;
+        let expected_sigma = t / 6.0_f64.sqrt();
+        let dist = Value::Enum { type_name: "Distribution".into(), variant: "Triangular".into() };
+        let c = eval_stackup("contributor_asym", &[
+            len(0.010), len(t), len(t), Value::Int(1), dist,
+        ]).unwrap();
+        let chain = Value::List(vec![c]);
+        let m = match eval_stackup("monte_carlo_stackup", &[
+            chain, Value::Int(100_000), Value::Int(42),
+        ]) {
+            Some(Value::Map(m)) => m,
+            other => panic!("expected Some(Map), got {:?}", other),
+        };
+        let mc_sigma = scalar_si(&m[&Value::String("mc_sigma".into())]);
+        let rel_err = (mc_sigma - expected_sigma).abs() / expected_sigma;
+        assert!(rel_err <= 0.02,
+            "Triangular mc_sigma {mc_sigma:.6e} vs expected {expected_sigma:.6e}: \
+             rel_err {:.4}% > 2%", rel_err * 100.0);
+    }
+
+    #[test]
+    fn monte_carlo_invalid_distribution_in_chain_returns_undef() {
+        // parse_chain returns None for unrecognized/invalid distribution values,
+        // which propagates to Undef from monte_carlo_stackup.
+        // (a) Unrecognized Distribution variant
+        {
+            let mut m = std::collections::BTreeMap::new();
+            m.insert(Value::String("nominal".into()),      len(0.010));
+            m.insert(Value::String("plus_tol".into()),     len(0.001));
+            m.insert(Value::String("minus_tol".into()),    len(0.001));
+            m.insert(Value::String("sign".into()),         Value::Int(1));
+            m.insert(Value::String("distribution".into()),
+                Value::Enum { type_name: "Distribution".into(), variant: "Lognormal".into() });
+            let chain = Value::List(vec![Value::Map(m)]);
+            assert!(is_undef_or_none(eval_stackup("monte_carlo_stackup",
+                &[chain, Value::Int(10), Value::Int(42)])),
+                "unrecognized Distribution variant must return Undef");
+        }
+        // (b) Invalid distribution key type (String instead of Enum)
+        {
+            let mut m = std::collections::BTreeMap::new();
+            m.insert(Value::String("nominal".into()),      len(0.010));
+            m.insert(Value::String("plus_tol".into()),     len(0.001));
+            m.insert(Value::String("minus_tol".into()),    len(0.001));
+            m.insert(Value::String("sign".into()),         Value::Int(1));
+            m.insert(Value::String("distribution".into()),
+                Value::String("Normal".into())); // must be Enum, not String
+            let chain = Value::List(vec![Value::Map(m)]);
+            assert!(is_undef_or_none(eval_stackup("monte_carlo_stackup",
+                &[chain, Value::Int(10), Value::Int(42)])),
+                "invalid distribution key type (String) must return Undef");
+        }
+    }
+
+    #[test]
+    fn monte_carlo_absent_distribution_key_defaults_to_normal() {
+        // A contributor map without a "distribution" key should default to Normal
+        // in parse_chain, yielding bit-identical mc_sigma vs an explicit Normal chain.
+        let mut m_no_dist = std::collections::BTreeMap::new();
+        m_no_dist.insert(Value::String("nominal".into()),   len(0.010));
+        m_no_dist.insert(Value::String("plus_tol".into()),  len(0.001));
+        m_no_dist.insert(Value::String("minus_tol".into()), len(0.001));
+        m_no_dist.insert(Value::String("sign".into()),      Value::Int(1));
+        // NOTE: "distribution" key deliberately omitted → parse_chain defaults to Normal
+        let chain_no_dist = Value::List(vec![Value::Map(m_no_dist)]);
+
+        let c_normal =
+            eval_stackup("contributor", &[len(0.010), len(0.001), Value::Int(1)]).unwrap();
+        let chain_normal = Value::List(vec![c_normal]);
+
+        let run = |chain| match eval_stackup("monte_carlo_stackup", &[
+            chain, Value::Int(5000), Value::Int(42),
+        ]) {
+            Some(Value::Map(m)) => m,
+            other => panic!("expected Some(Map), got {:?}", other),
+        };
+        let m_absent = run(chain_no_dist);
+        let m_normal = run(chain_normal);
+
+        let sigma_absent = scalar_si(&m_absent[&Value::String("mc_sigma".into())]);
+        let sigma_normal = scalar_si(&m_normal[&Value::String("mc_sigma".into())]);
+        assert_eq!(sigma_absent.to_bits(), sigma_normal.to_bits(),
+            "absent distribution key should produce Normal results (bit-identical): \
+             absent={sigma_absent:.8e} normal={sigma_normal:.8e}");
     }
 
     // ─── stackup_worst_case tests (step-1 RED; GREEN after step-2 impl) ──────
