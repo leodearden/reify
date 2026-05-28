@@ -260,4 +260,40 @@ assert "fail-open: stderr contains 'PSI gate disabled' warning" \
 assert "fail-open: stderr mentions 'kernel lacks' and the path" \
     bash -c 'printf "%s\n" "$1" | grep -q "kernel lacks"' _ "$GATE_STDERR"
 
+# ---------------------------------------------------------------------------
+# Cycle 6: production wiring — gate appears in test/all plan, not in lint/typecheck
+# (hermetic: --print-plan, never executes cargo)
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle 6: production wiring (--print-plan) ---"
+
+PLAN_TEST="$(bash "$VERIFY" test  --scope all --print-plan 2>/dev/null | grep -v '^#')"
+PLAN_LINT="$(bash "$VERIFY" lint  --scope all --print-plan 2>/dev/null | grep -v '^#')"
+PLAN_TC="$(bash "$VERIFY"   typecheck --scope all --print-plan 2>/dev/null | grep -v '^#')"
+
+# (a) test plan contains the psi-gate line
+assert "wiring: 'test --print-plan' contains verify.sh psi-gate" \
+    bash -c 'printf "%s\n" "$1" | grep -q "verify\.sh psi-gate"' _ "$PLAN_TEST"
+
+# (b) gate line appears BEFORE first cargo test/nextest line in the test plan
+assert "wiring: psi-gate line is before first cargo test line" \
+    bash -c '
+        gate_ln=$(printf "%s\n" "$1" | grep -n "verify\.sh psi-gate" | head -1 | cut -d: -f1)
+        cargo_ln=$(printf "%s\n" "$1" | grep -nE "(^| )cargo (test|nextest)" | head -1 | cut -d: -f1)
+        [ -n "$gate_ln" ] && [ -n "$cargo_ln" ] && [ "$gate_ln" -lt "$cargo_ln" ]
+    ' _ "$PLAN_TEST"
+
+# (c) lint plan does NOT contain psi-gate
+assert "wiring: 'lint --print-plan' does NOT contain verify.sh psi-gate" \
+    bash -c '! printf "%s\n" "$1" | grep -q "verify\.sh psi-gate"' _ "$PLAN_LINT"
+
+# (d) typecheck plan does NOT contain psi-gate
+assert "wiring: 'typecheck --print-plan' does NOT contain verify.sh psi-gate" \
+    bash -c '! printf "%s\n" "$1" | grep -q "verify\.sh psi-gate"' _ "$PLAN_TC"
+
+# (e) regression guard: test plan still has >= 2 cargo lines (gate line has no 'cargo' token)
+_cargo_count=$(printf "%s\n" "$PLAN_TEST" | grep -cE "(^| )cargo " || true)
+assert "wiring: test plan still contains >= 2 cargo lines (no regression)" \
+    test "$_cargo_count" -ge 2
+
 test_summary
