@@ -99,9 +99,10 @@ impl OpenVdbKernel {
     /// `[[u32;3]]` slices expected by [`Self::realize_voxel_from_mesh`], then
     /// delegates with `opts.voxel_size` and `opts.narrow_band`.
     ///
-    /// Returns `Err(GeometryError::OperationFailed)` if either the vertex or
-    /// index count is not a multiple of 3 (malformed flat mesh), or if the
-    /// underlying FFI call fails (empty/degenerate mesh).
+    /// Returns `Err(GeometryError::OperationFailed)` if:
+    /// - the vertex or index count is not a multiple of 3 (malformed flat mesh),
+    /// - `opts.voxel_size` or `opts.narrow_band` is not positive and finite, or
+    /// - the underlying FFI call fails (empty/degenerate mesh).
     pub fn realize_voxel_from_mesh_with_options(
         &mut self,
         mesh: &Mesh,
@@ -117,6 +118,18 @@ impl OpenVdbKernel {
             return Err(GeometryError::OperationFailed(format!(
                 "mesh.indices length {} is not a multiple of 3 (expected flat triangle layout)",
                 mesh.indices.len(),
+            )));
+        }
+        if !(opts.voxel_size > 0.0 && opts.voxel_size.is_finite()) {
+            return Err(GeometryError::OperationFailed(format!(
+                "opts.voxel_size must be positive and finite; got {}",
+                opts.voxel_size,
+            )));
+        }
+        if !(opts.narrow_band > 0.0 && opts.narrow_band.is_finite()) {
+            return Err(GeometryError::OperationFailed(format!(
+                "opts.narrow_band must be positive and finite; got {}",
+                opts.narrow_band,
             )));
         }
         let verts: Vec<[f32; 3]> = mesh
