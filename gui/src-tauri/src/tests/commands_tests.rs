@@ -33,6 +33,7 @@ fn app_state_constructible() {
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo::default())),
         initial_file: Mutex::new(None),
+        pending_solve_cancel: Mutex::new(None),
     };
 }
 
@@ -50,6 +51,7 @@ fn app_state_selection_is_accessible() {
             hovered_entity: None,
         })),
         initial_file: Mutex::new(None),
+        pending_solve_cancel: Mutex::new(None),
     };
     let sel = state.selection.read().unwrap();
     assert_eq!(sel.selected_entity, Some("Bracket".to_string()));
@@ -69,6 +71,7 @@ fn app_state_selection_multi() {
             hovered_entity: None,
         })),
         initial_file: Mutex::new(None),
+        pending_solve_cancel: Mutex::new(None),
     };
     let sel = state.selection.read().unwrap();
     assert_eq!(sel.selected_entity, Some("A".to_string()));
