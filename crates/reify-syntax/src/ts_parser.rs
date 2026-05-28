@@ -2443,28 +2443,59 @@ impl<'a> Lowering<'a> {
     }
 
     fn lower_range_expr(&self, node: tree_sitter::Node) -> Option<Expr> {
-        let lower_node = node.child_by_field_name("lower")?;
-        let upper_node = node.child_by_field_name("upper")?;
-        let lower = self.lower_expr(lower_node)?;
-        let upper = self.lower_expr(upper_node)?;
-        // Determine inclusive/exclusive by checking for "..<" token
-        let mut exclusive_upper = false;
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if !child.is_named() && self.node_text(child) == "..<" {
-                exclusive_upper = true;
-                break;
+        // Discriminate two-sided vs single-sided by named-field presence:
+        // two-sided ranges (a..b, a..<b) carry `lower`/`upper` fields;
+        // single-sided prefix ranges (>x, >=x, <x, <=x) carry `op`/`bound` fields.
+        // (mirrors grammar.js:929 — absence of lower/upper fields is the discriminator)
+        if let (Some(lower_node), Some(upper_node)) = (
+            node.child_by_field_name("lower"),
+            node.child_by_field_name("upper"),
+        ) {
+            // Two-sided form: existing logic, kept intact.
+            let lower = self.lower_expr(lower_node)?;
+            let upper = self.lower_expr(upper_node)?;
+            // Determine inclusive/exclusive by checking for "..<" token
+            let mut exclusive_upper = false;
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if !child.is_named() && self.node_text(child) == "..<" {
+                    exclusive_upper = true;
+                    break;
+                }
             }
+            Some(Expr {
+                kind: ExprKind::Range {
+                    lower: Some(Box::new(lower)),
+                    upper: Some(Box::new(upper)),
+                    lower_inclusive: true,
+                    upper_inclusive: !exclusive_upper,
+                },
+                span: self.span(node),
+            })
+        } else {
+            // Single-sided prefix form: `op` names the operator, `bound` is the operand.
+            // D5 inclusivity mapping: absent-side *_inclusive = true (vacuous).
+            let op_node = node.child_by_field_name("op")?;
+            let bound_node = node.child_by_field_name("bound")?;
+            let bound = self.lower_expr(bound_node)?;
+            let op = self.node_text(op_node);
+            let (lower, upper, lower_inclusive, upper_inclusive) = match op {
+                ">" => (Some(Box::new(bound)), None, false, true),
+                ">=" => (Some(Box::new(bound)), None, true, true),
+                "<" => (None, Some(Box::new(bound)), true, false),
+                "<=" => (None, Some(Box::new(bound)), true, true),
+                _ => return None,
+            };
+            Some(Expr {
+                kind: ExprKind::Range {
+                    lower,
+                    upper,
+                    lower_inclusive,
+                    upper_inclusive,
+                },
+                span: self.span(node),
+            })
         }
-        Some(Expr {
-            kind: ExprKind::Range {
-                lower: Some(Box::new(lower)),
-                upper: Some(Box::new(upper)),
-                lower_inclusive: true,
-                upper_inclusive: !exclusive_upper,
-            },
-            span: self.span(node),
-        })
     }
 
     fn lower_conditional(&self, node: tree_sitter::Node) -> Option<Expr> {
