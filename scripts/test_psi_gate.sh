@@ -240,4 +240,24 @@ MTIME_4B_AFTER=$(stat -c %Y "$DISPATCH_4B")
 assert "disable: pre-existing dispatch file mtime unchanged" \
     test "$MTIME_4B_AFTER" -eq "$MTIME_4B_BEFORE"
 
+# ---------------------------------------------------------------------------
+# Cycle 5: fail-open on missing PSI source (older/non-Linux kernels)
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle 5: fail-open on missing PSI source ---"
+
+NONEXISTENT_PSI="$WORKDIR/nope/pressure-cpu"   # guaranteed absent
+DISPATCH_5="$(mktemp -u -p "$WORKDIR" dispatch-5.XXXXXX)"
+
+# MAX_WAIT=5/POLL=1 safety: without fail-open, the gate would loop until MAX_WAIT=1800s
+run_gate "$DISPATCH_5" "$NONEXISTENT_PSI" \
+    REIFY_PSI_GATE_MAX_WAIT=5 REIFY_PSI_GATE_POLL=1
+
+assert "fail-open: exit 0 when PSI source is missing" \
+    test "$GATE_RC" -eq 0
+assert "fail-open: stderr contains 'PSI gate disabled' warning" \
+    bash -c 'printf "%s\n" "$1" | grep -q "PSI gate disabled"' _ "$GATE_STDERR"
+assert "fail-open: stderr mentions 'kernel lacks' and the path" \
+    bash -c 'printf "%s\n" "$1" | grep -q "kernel lacks"' _ "$GATE_STDERR"
+
 test_summary
