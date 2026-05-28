@@ -8200,4 +8200,43 @@ mod tests {
             "source zmax mutated: before={}, after={}", orig_bb.zmax, post_bb.zmax
         );
     }
+
+    /// `OcctKernel::execute(&GeometryOp::ApplyTransform { ... })` must dispatch to
+    /// `apply_transform_to_handle`, return a fresh `GeometryHandle`, and preserve
+    /// the source BRepKind (Solid → Solid) on the result.
+    ///
+    /// Locks the kernel-side dispatch arm: the IR-level `GeometryOp::ApplyTransform`
+    /// is the unified seam that T5/T8 will emit, so executing it through the
+    /// standard `execute(&op)` entry must produce a usable handle with the right
+    /// classifier.
+    #[test]
+    fn execute_apply_transform_dispatches_correctly() {
+        let mut kernel = OcctKernel::new();
+
+        let source = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .expect("box creation should succeed");
+
+        let result = kernel.execute(&GeometryOp::ApplyTransform {
+            target: source.id,
+            rotation: [1.0, 0.0, 0.0, 0.0],
+            translation: [10.0, 20.0, 30.0],
+        });
+
+        let handle = result.expect("ApplyTransform execute should succeed");
+        assert_eq!(
+            handle.repr,
+            Some(BRepKind::Solid),
+            "ApplyTransform on a Solid source must produce a Solid result handle \
+             (rigid isometry preserves topology classification)"
+        );
+        assert_ne!(
+            handle.id, source.id,
+            "ApplyTransform must produce a fresh handle, not reuse the source's"
+        );
+    }
 }
