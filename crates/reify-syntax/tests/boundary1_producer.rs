@@ -4,7 +4,7 @@
 //! that the compiler can consume. Until the Tree-sitter parser is implemented,
 //! tests use the hand-built fixture from reify-test-support.
 
-use reify_syntax::*;
+use reify_ast::*;
 use reify_test_support::*;
 
 /// Parse bracket → verify structure (1 StructureDef, 5 params, 3 constraints, 2 lets).
