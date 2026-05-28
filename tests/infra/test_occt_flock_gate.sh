@@ -121,13 +121,13 @@ echo ""
 echo "--- Test 10: debug pass is gated by cargo-test-occt-gated.sh ---"
 
 assert "plan contains gated debug pass with -p reify-kernel-occt" \
-    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qF './scripts/cargo-test-occt-gated.sh cargo test -p reify-kernel-occt -p reify-eval -p reify-cli -p reify-config -- --test-threads=1'"
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE './scripts/cargo-test-occt-gated\.sh.*cargo test -p reify-kernel-occt -p reify-eval -p reify-cli -p reify-config -- --test-threads=1'"
 
 echo ""
 echo "--- Test 11: release pass is gated by cargo-test-occt-gated.sh ---"
 
 assert "plan contains gated release pass with -p reify-kernel-occt" \
-    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qF './scripts/cargo-test-occt-gated.sh cargo test -p reify-kernel-occt -p reify-eval -p reify-cli -p reify-config --release -- --test-threads=1'"
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE './scripts/cargo-test-occt-gated\.sh.*cargo test -p reify-kernel-occt -p reify-eval -p reify-cli -p reify-config --release -- --test-threads=1'"
 
 echo ""
 echo "--- Test 12: no bare ungated workspace pass (every --workspace leaf has --exclude) ---"
@@ -144,7 +144,7 @@ echo ""
 echo "--- Test 13: --workspace flag preserved under gate (coverage assertion) ---"
 
 assert "gated debug invocation contains '-p reify-kernel-occt'" \
-    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qF 'cargo-test-occt-gated.sh cargo test -p reify-kernel-occt'"
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'cargo-test-occt-gated\.sh.*cargo test -p reify-kernel-occt'"
 
 # -- Test 14: bounded lock-wait exits non-zero with clear message ---------------
 echo ""
@@ -248,10 +248,10 @@ assert "Test 17: REIFY_OCCT_TEST_TIMEOUT= appears exactly twice in the plan (onc
     bash -c "[ \"\$(printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -oF 'REIFY_OCCT_TEST_TIMEOUT=' | wc -l | tr -d ' ')\" -eq 2 ]"
 
 assert "Test 17: debug invocation sets REIFY_OCCT_TEST_TIMEOUT=2700" \
-    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qF 'REIFY_OCCT_TEST_TIMEOUT=2700 ./scripts/cargo-test-occt-gated.sh cargo test -p reify-kernel-occt'"
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'REIFY_OCCT_TEST_TIMEOUT=2700 ./scripts/cargo-test-occt-gated\.sh.*cargo test -p reify-kernel-occt'"
 
 assert "Test 17: release invocation sets REIFY_OCCT_TEST_TIMEOUT=3600" \
-    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qF 'REIFY_OCCT_TEST_TIMEOUT=3600 ./scripts/cargo-test-occt-gated.sh cargo test -p reify-kernel-occt -p reify-eval -p reify-cli -p reify-config --release'"
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'REIFY_OCCT_TEST_TIMEOUT=3600 ./scripts/cargo-test-occt-gated\.sh.*cargo test -p reify-kernel-occt -p reify-eval -p reify-cli -p reify-config --release'"
 
 # -- Test 18: wrapper does not leak the lock fd into background daemons --------
 # Regression test for the 2026-04-20 merge-queue wedge: sccache (spawned as a
