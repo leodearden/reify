@@ -517,3 +517,26 @@ structure def ZVShaper : Shaper {
     constraint target_frequency > 0Hz
 }
 
+// ── ZVDShaper (PRD §5.1) ──────────────────────────────────────────────────────
+
+// ZVDShaper — Zero-Vibration-Derivative impulse shaper (PRD §5.1).
+//
+// The ZVD shaper adds robustness by zeroing both the residual vibration and
+// its derivative with respect to the natural frequency, at the cost of a longer
+// impulse sequence. Unlike ZVShaper, damping_ratio is a required caller-supplied
+// parameter because ZVD's robustness guarantee depends explicitly on ζ.
+//
+// Fields:
+//   - target_frequency : Frequency  — the resonant frequency to suppress.
+//   - damping_ratio    : Real       — damping ratio ζ (no default — caller
+//                                     must supply per PRD §5.1 / task spec).
+//
+// Constraint:
+//   target_frequency > 0Hz — same dimensioned literal as ZVShaper (0Hz, not 0).
+structure def ZVDShaper : Shaper {
+    param target_frequency : Frequency
+    param damping_ratio : Real
+
+    constraint target_frequency > 0Hz
+}
+
