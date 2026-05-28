@@ -507,6 +507,7 @@ mod tests {
     use super::*;
     use crate::boundary::DirichletBc;
     use crate::constitutive::IsotropicElastic;
+    use crate::mpc::MpcRow;
 
     // -----------------------------------------------------------------------
     // Shared fixture: single 1×1×1 m brick split into 6 P1 tets.
@@ -693,7 +694,92 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // step-3 (RED → GREEN in step-4): behavioural / numerical pin.
+    // step-3 (RED → GREEN in step-4): MPC constraint enforcement behavioral test.
+    // -----------------------------------------------------------------------
+
+    /// Verify that a single homogeneous MPC tying `u_z[4]` to `u_z[5]` forces
+    /// exact bit-equal values in both the pre-stress displacement and the first
+    /// mode shape.
+    ///
+    /// This test RED-fails at runtime (assertion error) until step-4 implements
+    /// the actual master-slave reduction; the current step-2 no-op path does NOT
+    /// enforce the MPC constraint.
+    #[test]
+    fn solve_buckling_kernel_homogeneous_mpc_enforces_equal_dof_constraint_in_pre_stress_and_mode_shape() {
+        let nodes = unit_brick_nodes();
+        let tets = unit_brick_tets();
+        // ν = 0 for clean analytical pre-stress.
+        let material = IsotropicElastic { youngs_modulus: 1.0, poisson_ratio: 0.0 };
+        let bcs = shape_test_bcs();
+
+        // Asymmetric load: entire 0.1-N on node 4 only (node 5 gets no load).
+        // Without MPC, the mesh asymmetry ensures u_z[4] ≠ u_z[5] — this
+        // distinguishes the no-MPC path (step-2) from the MPC path (step-4).
+        let mut f = vec![0.0_f64; 3 * nodes.len()];
+        f[3 * 4 + 2] = -0.1; // all force on node 4; node 5 gets nothing.
+
+        // MPC: u_z[4] = u_z[5]  →  u_z[4] - u_z[5] = 0
+        // MpcRow::new([slave, master], [+1, -1], 0)  →  pivot = u_z[4] (slave)
+        let mpc = MpcRow::new(vec![3 * 4 + 2, 3 * 5 + 2], vec![1.0, -1.0], 0.0);
+
+        let opts = BucklingKernelOptions {
+            n_modes: 1,
+            eigen_tol: 1e-8,
+            eigen_max_iters: 100,
+            cg_tolerance: 1e-10,
+            cg_max_iter: 1000,
+        };
+
+        let result = solve_buckling_kernel(&nodes, &tets, &material, &bcs, &f, &[mpc], opts);
+
+        // (a) Eigensolve must converge.
+        assert!(result.converged, "eigensolve must converge with one MPC");
+
+        // (b) MPC constraint in pre-stress: u_z[4] must equal u_z[5] exactly
+        //     (bit-identical, since both recover from the same independent index).
+        assert_eq!(
+            result.pre_stress_displacement[3 * 4 + 2].to_bits(),
+            result.pre_stress_displacement[3 * 5 + 2].to_bits(),
+            "pre_stress: u_z[4]={} must be bit-identical to u_z[5]={} (MPC slave=master)",
+            result.pre_stress_displacement[3 * 4 + 2],
+            result.pre_stress_displacement[3 * 5 + 2],
+        );
+
+        // (c) MPC constraint in mode shape: same bit-equal check.
+        assert!(result.modes.len() >= 1, "expect at least 1 mode");
+        assert_eq!(
+            result.modes[0].mode_shape[3 * 4 + 2].to_bits(),
+            result.modes[0].mode_shape[3 * 5 + 2].to_bits(),
+            "mode[0]: mode_shape[u_z=4]={} must be bit-identical to mode_shape[u_z=5]={}",
+            result.modes[0].mode_shape[3 * 4 + 2],
+            result.modes[0].mode_shape[3 * 5 + 2],
+        );
+
+        // (d) Smallest λ must be positive (−K_g PSD under compression).
+        let lambda_min = result.modes[0].eigenvalue;
+        assert!(
+            lambda_min > 0.0,
+            "λ_min = {lambda_min} must be positive for compressive load",
+        );
+
+        // (e) All Dirichlet DOFs must be exactly 0.0 in pre-stress and mode-shape.
+        let constrained = shape_test_constrained_dofs();
+        for &g in &constrained {
+            assert_eq!(
+                result.pre_stress_displacement[g], 0.0,
+                "constrained DOF {g} must be 0.0 in pre_stress_displacement",
+            );
+        }
+        for &g in &constrained {
+            assert_eq!(
+                result.modes[0].mode_shape[g], 0.0,
+                "constrained DOF {g} must be 0.0 in mode_shape[0]",
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // step-3b (RED → GREEN in step-4): behavioural / numerical pin.
     // -----------------------------------------------------------------------
 
     /// Behavioural correctness test on the same single-brick fixture.
