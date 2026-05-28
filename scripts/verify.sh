@@ -80,6 +80,7 @@ usage() {
 #   REIFY_PSI_GATE_DISABLE      — set to 1 to bypass entirely (no touch)
 psi_gate() {
     local THRESHOLD="${REIFY_PSI_GATE_THRESHOLD:-50}"
+    local WINDOW="${REIFY_PSI_GATE_WINDOW:-20}"
     local MAX_WAIT="${REIFY_PSI_GATE_MAX_WAIT:-1800}"
     local POLL="${REIFY_PSI_GATE_POLL:-5}"
     local PROC_PATH="${REIFY_PSI_GATE_PROC_PATH:-/proc/pressure/cpu}"
@@ -91,30 +92,72 @@ psi_gate() {
 
     # (3) Fail-open on missing PSI source — added in step-10
 
-    # (4) Task poll loop: wait for avg10 < THRESHOLD
+    # (4) Task poll loop: wait for avg10 < THRESHOLD AND age >= WINDOW.
+    # The read-mtime / compare / touch critical section is wrapped in a flock
+    # so concurrent waiters pass one-at-a-time and each pass re-touches —
+    # guaranteeing consecutive passes are >= WINDOW apart.
     local deadline
     deadline=$(( $(date +%s) + MAX_WAIT ))
 
     while true; do
-        local now avg10
+        local now _flock_rc
         now=$(date +%s)
+        _flock_rc=10  # not-yet (default: condition not met)
 
-        # Parse avg10 from PSI file (e.g. "some avg10=12.34 avg60=… total=0")
-        avg10=$(awk '/^some/ {
-            for (i=1; i<=NF; i++) {
-                if ($i ~ /^avg10=/) { v=$i; sub(/^avg10=/, "", v); print v; exit }
-            }
-        }' "$PROC_PATH" 2>/dev/null || echo "")
+        if command -v flock >/dev/null 2>&1; then
+            # Atomic check-and-touch inside a flock subshell.
+            # Exit codes: 0=pass, 9=lock-timeout, 10=not-yet.
+            # The subshell exits immediately so the FD is not inherited by
+            # long-lived children (no cargo/sccache FD-9-inheritance hazard).
+            # Use "|| _flock_rc=$?" to capture the non-zero exit without
+            # triggering set -e in the outer function.
+            _flock_rc=0
+            (
+                flock -w 5 9 || exit 9
+                _ts=$(date +%s)
+                _mtime=$(stat -c %Y "$DISPATCH" 2>/dev/null || echo 0)
+                _age=$(( _ts - _mtime ))
+                _avg10=$(awk '/^some/ {
+                    for (i=1; i<=NF; i++) {
+                        if ($i ~ /^avg10=/) { v=$i; sub(/^avg10=/, "", v); print v; exit }
+                    }
+                }' "$PROC_PATH" 2>/dev/null || echo "")
+                if [ -n "$_avg10" ] && \
+                   awk -v p="$_avg10" -v t="$THRESHOLD" 'BEGIN{exit !(p<t)}' && \
+                   [ "$_age" -ge "$WINDOW" ]; then
+                    touch "$DISPATCH"
+                    exit 0
+                fi
+                exit 10
+            ) 9>"${DISPATCH}.lock" || _flock_rc=$?
+        else
+            # lock-free best-effort fallback (flock not available)
+            local _ts _mtime _age _avg10
+            _ts=$(date +%s)
+            _mtime=$(stat -c %Y "$DISPATCH" 2>/dev/null || echo 0)
+            _age=$(( _ts - _mtime ))
+            _avg10=$(awk '/^some/ {
+                for (i=1; i<=NF; i++) {
+                    if ($i ~ /^avg10=/) { v=$i; sub(/^avg10=/, "", v); print v; exit }
+                }
+            }' "$PROC_PATH" 2>/dev/null || echo "")
+            if [ -n "$_avg10" ] && \
+               awk -v p="$_avg10" -v t="$THRESHOLD" 'BEGIN{exit !(p<t)}' && \
+               [ "$_age" -ge "$WINDOW" ]; then
+                touch "$DISPATCH"
+                _flock_rc=0
+            else
+                _flock_rc=10
+            fi
+        fi
 
-        # Compare avg10 < THRESHOLD (float-safe via awk)
-        if awk -v p="${avg10:-0}" -v t="$THRESHOLD" 'BEGIN{exit !(p<t)}'; then
-            touch "$DISPATCH"
+        if [ "$_flock_rc" -eq 0 ]; then
             return 0
         fi
 
         # Give up if we've waited too long
         if [ "$now" -ge "$deadline" ]; then
-            echo "verify.sh: PSI gate gave up after ${MAX_WAIT}s waiting for CPU headroom (avg10=${avg10} >= threshold=${THRESHOLD})" >&2
+            echo "verify.sh: PSI gate gave up after ${MAX_WAIT}s waiting for CPU headroom" >&2
             return 75
         fi
 
