@@ -177,3 +177,111 @@ structure S {
         right: (binary_expression
           left: (identifier)
           right: (identifier))))))
+
+================================================================================
+implies: basic binary (a implies b)
+================================================================================
+
+structure S {
+  let r = a implies b
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (binary_expression
+        left: (identifier)
+        right: (identifier)))))
+
+================================================================================
+implies: right-associativity (a implies b implies c => a implies (b implies c))
+================================================================================
+
+structure S {
+  let r = a implies b implies c
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (binary_expression
+        left: (identifier)
+        right: (binary_expression
+          left: (identifier)
+          right: (identifier))))))
+
+================================================================================
+implies: or-tighter-than-implies (a or b implies c => (a or b) implies c)
+================================================================================
+
+structure S {
+  let r = a or b implies c
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (binary_expression
+        left: (binary_expression
+          left: (identifier)
+          right: (identifier))
+        right: (identifier)))))
+
+================================================================================
+implies: full spec ladder (a and b or not c implies d => ((a and b) or (not c)) implies d)
+================================================================================
+
+structure S {
+  let r = a and b or not c implies d
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (binary_expression
+        left: (binary_expression
+          left: (binary_expression
+            left: (identifier)
+            right: (identifier))
+          right: (unary_expression
+            operand: (identifier)))
+        right: (identifier)))))
+
+================================================================================
+implies: cross-band lock (a == b implies c == d => (a==b) implies (c==d))
+================================================================================
+
+structure S {
+  let r = a == b implies c == d
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (binary_expression
+        left: (binary_expression
+          left: (identifier)
+          right: (identifier))
+        right: (binary_expression
+          left: (identifier)
+          right: (identifier))))))
