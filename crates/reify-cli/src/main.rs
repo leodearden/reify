@@ -183,9 +183,13 @@ struct PurposeActivation {
 
 /// Parse a `--purpose <value>` flag value.
 ///
-/// Step-α handles the single-pair form `name=entity`, producing one binding
-/// `{ param: None, entity }`. The multi-pair form (`name=p:A,q:B`) is added
-/// by step-4. Errors on missing `=`, empty name, or empty rest.
+/// Grammar:
+/// - single-pair: `name=entity` → one binding `{ param: None, entity }`.
+/// - multi-pair:  `name=p:A,q:B` → ordered bindings, each `{ param: Some(p), entity: A }`.
+///
+/// Errors on: missing `=`, empty name, empty binding list, empty segment
+/// (e.g. trailing `,`), malformed `p:` / `:e` (empty side of `:`), or
+/// multi-segment values where any segment lacks its `param:` name.
 fn parse_purpose_flag(value: &str) -> Result<PurposeActivation, String> {
     let (name, rest) = value
         .split_once('=')
@@ -199,12 +203,50 @@ fn parse_purpose_flag(value: &str) -> Result<PurposeActivation, String> {
     if rest.is_empty() {
         return Err(format!("--purpose value '{}' has no binding", value));
     }
+
+    let mut bindings: Vec<PurposeBinding> = Vec::new();
+    for segment in rest.split(',') {
+        if segment.is_empty() {
+            return Err(format!(
+                "--purpose value '{}' has an empty binding segment",
+                value
+            ));
+        }
+        let binding = match segment.split_once(':') {
+            Some((param, entity)) => {
+                if param.is_empty() || entity.is_empty() {
+                    return Err(format!(
+                        "--purpose value '{}' has a malformed binding segment '{}'",
+                        value, segment
+                    ));
+                }
+                PurposeBinding {
+                    param: Some(param.to_string()),
+                    entity: entity.to_string(),
+                }
+            }
+            None => PurposeBinding {
+                param: None,
+                entity: segment.to_string(),
+            },
+        };
+        bindings.push(binding);
+    }
+
+    // Multi-binding values must use named bindings (per-param `p:E` form) so
+    // each binding knows which purpose param it targets. Allowing
+    // `name=A,B` would silently rely on positional order against a
+    // user-declared param list, which is too brittle.
+    if bindings.len() >= 2 && bindings.iter().any(|b| b.param.is_none()) {
+        return Err(format!(
+            "--purpose value '{}' has multiple bindings but at least one is missing its 'param:' name",
+            value
+        ));
+    }
+
     Ok(PurposeActivation {
         name: name.to_string(),
-        bindings: vec![PurposeBinding {
-            param: None,
-            entity: rest.to_string(),
-        }],
+        bindings,
     })
 }
 
