@@ -602,3 +602,12 @@ structure def CascadedShaper : Shaper {
 // Matches the established marker-trait discipline of `Profile`,
 // `BoundaryCondition`, and `Shaper`.
 trait GcodeDialect { }
+
+// MarlinDialect — zero-DOF marker for the Marlin G-code dialect (PRD §7.1/§7.2).
+//
+// Marlin subset: G0/G1 (linear move), G2/G3 (arc), G92 (set position), F
+// (feed-rate modifier), M-commands are ignored by the consumer ο parser.
+// The semantic behavior lives in the `gcode_import` parser dispatch, not here.
+// Structurally identical to `NaturalSpline : BoundaryCondition` — a pure
+// nominal selector with no authoring-time params or constraints.
+structure def MarlinDialect : GcodeDialect { }
