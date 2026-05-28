@@ -102,4 +102,65 @@ run_gate "$DISPATCH_1C" "$PSI_1C" \
 assert "threshold-override: avg10=40 >= threshold=30, max_wait=2 → exit 75" \
     test "$GATE_RC" -eq 75
 
+# ---------------------------------------------------------------------------
+# Cycle 2: WINDOW throttle — inter-dispatch spacing
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle 2: WINDOW throttle ---"
+
+# (a) block-wait — dispatch file pre-touched to "now", PSI never blocks (avg10=0),
+#     WINDOW=2s; gate must wait out the window before passing.
+PSI_ZERO="$(make_psi_fixture 0)"
+DISPATCH_2A="$(mktemp -p "$WORKDIR" dispatch-2a.XXXXXX)"   # creates the file
+touch "$DISPATCH_2A"                                         # set mtime to now
+
+T2A_0=$(date +%s)
+run_gate "$DISPATCH_2A" "$PSI_ZERO" \
+    REIFY_PSI_GATE_WINDOW=2 REIFY_PSI_GATE_POLL=1 REIFY_PSI_GATE_MAX_WAIT=30
+T2A_1=$(date +%s)
+ELAPSED_2A=$(( T2A_1 - T2A_0 ))
+
+assert "window-block: exit 0 after waiting" \
+    test "$GATE_RC" -eq 0
+assert "window-block: elapsed >= WINDOW=2s" \
+    test "$ELAPSED_2A" -ge 2
+
+# (b) concurrent burst — 5 background invocations sharing one dispatch file;
+#     assert all pass AND consecutive timestamps are >= WINDOW=2s apart
+PSI_BURST="$(make_psi_fixture 0)"
+DISPATCH_2B="$(mktemp -u -p "$WORKDIR" dispatch-2b.XXXXXX)"  # absent initially
+RESULTS_2B="$(mktemp -p "$WORKDIR" results.XXXXXX)"
+
+for _i in $(seq 1 5); do
+    (
+        _d="$DISPATCH_2B" _p="$PSI_BURST" _r="$RESULTS_2B" _v="$VERIFY"
+        GATE_RC=0
+        env REIFY_PSI_GATE_DISPATCH_FILE="$_d" \
+            REIFY_PSI_GATE_PROC_PATH="$_p" \
+            REIFY_PSI_GATE_WINDOW=2 \
+            REIFY_PSI_GATE_POLL=1 \
+            REIFY_PSI_GATE_MAX_WAIT=60 \
+            bash "$_v" psi-gate >/dev/null 2>&1 \
+            && date +%s >> "$_r"
+    ) &
+done
+wait
+
+assert "concurrent-burst: all 5 invocations passed" \
+    bash -c '[ "$(wc -l < "$1")" -eq 5 ]' _ "$RESULTS_2B"
+
+SORTED_2B="$(sort -n "$RESULTS_2B")"
+assert "concurrent-burst: consecutive pass timestamps >= WINDOW=2s apart" \
+    bash -c '
+        prev=""
+        while IFS= read -r ts; do
+            [ -z "$ts" ] && continue
+            if [ -n "$prev" ]; then
+                delta=$(( ts - prev ))
+                [ "$delta" -ge 2 ] || { echo "  delta $delta < 2 between $prev and $ts" >&2; exit 1; }
+            fi
+            prev="$ts"
+        done <<< "$1"
+    ' _ "$SORTED_2B"
+
 test_summary
