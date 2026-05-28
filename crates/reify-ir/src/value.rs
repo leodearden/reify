@@ -7216,6 +7216,201 @@ mod tests {
         assert_ne!(t1.content_hash(), t2.content_hash());
     }
 
+    // ── Value::AffineMap tests (step-3 RED / task 3958 α) ───────────────────
+
+    fn make_affine_identity() -> Value {
+        Value::AffineMap {
+            linear: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            translation: [0.0, 0.0, 0.0],
+        }
+    }
+
+    fn make_affine_diag(sx: f64, sy: f64, sz: f64, tx: f64, ty: f64, tz: f64) -> Value {
+        Value::AffineMap {
+            linear: [[sx, 0.0, 0.0], [0.0, sy, 0.0], [0.0, 0.0, sz]],
+            translation: [tx, ty, tz],
+        }
+    }
+
+    #[test]
+    fn value_affine_map_construction() {
+        let v = make_affine_diag(2.0, 3.0, 4.0, 0.1, 0.2, 0.3);
+        match v {
+            Value::AffineMap { linear, translation } => {
+                assert_eq!(linear[0][0], 2.0);
+                assert_eq!(linear[1][1], 3.0);
+                assert_eq!(linear[2][2], 4.0);
+                assert_eq!(linear[0][1], 0.0);
+                assert_eq!(translation[0], 0.1);
+                assert_eq!(translation[1], 0.2);
+                assert_eq!(translation[2], 0.3);
+            }
+            other => panic!("expected Value::AffineMap, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn value_affine_map_partial_eq_equal() {
+        let a1 = make_affine_identity();
+        let a2 = make_affine_identity();
+        assert_eq!(a1, a2);
+    }
+
+    #[test]
+    fn value_affine_map_partial_eq_different_linear() {
+        let a1 = make_affine_identity();
+        let a2 = Value::AffineMap {
+            linear: [[2.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            translation: [0.0, 0.0, 0.0],
+        };
+        assert_ne!(a1, a2);
+    }
+
+    #[test]
+    fn value_affine_map_partial_eq_different_translation() {
+        let a1 = make_affine_identity();
+        let a2 = Value::AffineMap {
+            linear: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            translation: [1.0, 0.0, 0.0],
+        };
+        assert_ne!(a1, a2);
+    }
+
+    #[test]
+    fn value_affine_map_partial_eq_neg_zero_vs_pos_zero() {
+        // bit-identity convention: +0.0 != -0.0
+        let a_pos = Value::AffineMap {
+            linear: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            translation: [0.0, 0.0, 0.0],
+        };
+        let a_neg = Value::AffineMap {
+            linear: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            translation: [-0.0, 0.0, 0.0],
+        };
+        assert_ne!(a_pos, a_neg);
+    }
+
+    #[test]
+    fn value_affine_map_display() {
+        let s = format!("{}", make_affine_identity());
+        assert!(
+            s.starts_with("affine_map("),
+            "display should start with 'affine_map(', got: {}",
+            s
+        );
+    }
+
+    #[test]
+    fn value_affine_map_dimension_is_dimensionless() {
+        assert_eq!(make_affine_identity().dimension(), DimensionVector::DIMENSIONLESS);
+    }
+
+    #[test]
+    fn value_affine_map_content_hash_determinism() {
+        let a1 = make_affine_identity();
+        let a2 = make_affine_identity();
+        assert_eq!(a1.content_hash(), a2.content_hash());
+    }
+
+    #[test]
+    fn value_affine_map_content_hash_distinct_from_transform() {
+        let affine = make_affine_identity();
+        let transform = make_transform(make_orientation_identity(), make_vector3_length());
+        assert_ne!(affine.content_hash(), transform.content_hash());
+    }
+
+    #[test]
+    fn value_affine_map_content_hash_distinct_from_orientation() {
+        let affine = make_affine_identity();
+        let orientation = make_orientation_identity();
+        assert_ne!(affine.content_hash(), orientation.content_hash());
+    }
+
+    #[test]
+    fn value_affine_map_content_hash_neg_zero_translation_differs() {
+        // neg-zero and pos-zero in translation produce different hashes (to_bits preserves sign)
+        let a_pos = Value::AffineMap {
+            linear: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            translation: [0.0, 0.0, 0.0],
+        };
+        let a_neg = Value::AffineMap {
+            linear: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            translation: [-0.0, 0.0, 0.0],
+        };
+        assert_ne!(a_pos.content_hash(), a_neg.content_hash());
+    }
+
+    #[test]
+    fn value_affine_map_content_hash_nan_canonicalized() {
+        // NaN payload is canonicalized: all NaN bit patterns hash the same
+        let canonical_nan = f64::NAN;
+        let noncanonical_nan = f64::from_bits(f64::NAN.to_bits() | 1);
+        let a1 = Value::AffineMap {
+            linear: [[canonical_nan, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            translation: [0.0, 0.0, 0.0],
+        };
+        let a2 = Value::AffineMap {
+            linear: [[noncanonical_nan, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            translation: [0.0, 0.0, 0.0],
+        };
+        assert_eq!(a1.content_hash(), a2.content_hash());
+    }
+
+    #[test]
+    fn value_affine_map_ord_type_tag_gt_geometry_handle() {
+        // AffineMap type_tag=28 > GeometryHandle type_tag=27
+        let affine = make_affine_identity();
+        let ghandle = Value::GeometryHandle {
+            realization_ref: reify_core::identity::RealizationNodeId::new("T", 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: crate::geometry::GeometryHandleId(0),
+        };
+        assert!(affine > ghandle);
+    }
+
+    #[test]
+    fn value_affine_map_ord_same_type_compare_linear_first() {
+        // Same translation, differing linear[0][0]: lower linear comes first
+        let a1 = Value::AffineMap {
+            linear: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            translation: [0.0, 0.0, 0.0],
+        };
+        let a2 = Value::AffineMap {
+            linear: [[2.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            translation: [0.0, 0.0, 0.0],
+        };
+        assert!(a1 < a2);
+    }
+
+    #[test]
+    fn value_affine_map_ord_same_linear_compare_translation() {
+        // Same linear, differing translation[0]: lower translation comes first
+        let a1 = Value::AffineMap {
+            linear: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            translation: [0.0, 0.0, 0.0],
+        };
+        let a2 = Value::AffineMap {
+            linear: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            translation: [1.0, 0.0, 0.0],
+        };
+        assert!(a1 < a2);
+    }
+
+    #[test]
+    fn value_affine_map_try_infer_type_returns_affine_map_3() {
+        // AffineMap has fixed-size arrays, so dimension is structurally pinned to 3
+        assert_eq!(
+            make_affine_identity().try_infer_type(),
+            Some(reify_core::ty::Type::AffineMap(3))
+        );
+    }
+
+    #[test]
+    fn value_affine_map_infer_type_returns_affine_map_3() {
+        // Does NOT panic — unlike Frame/Transform which panic on infer_type()
+        assert_eq!(make_affine_identity().infer_type(), reify_core::ty::Type::AffineMap(3));
+    }
+
     // ── Value::Plane tests (pre-2) ────────────────────────────────────────────
 
     fn make_plane(origin: Value, normal: Value) -> Value {
@@ -7872,6 +8067,8 @@ mod tests {
                     kernel_handle: crate::geometry::GeometryHandleId(0),
                 },
             ),
+            // task 3958 / α: AffineMap tag=29
+            ("AffineMap", make_affine_identity()),
             ("Undef", Value::Undef),
         ];
 
