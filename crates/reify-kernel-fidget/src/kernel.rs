@@ -12,7 +12,7 @@
 //! Tree-level ops (`min`/`max` on the symbolic graph) and never need to
 //! JIT-compile the operands.
 //!
-//! # v0.2 scope
+//! # Wired capabilities (PRD §8 task κ)
 //!
 //! Wired in this task:
 //! - `execute(Sphere)` and `execute(Box)` — SDF primitives needed to build
@@ -22,10 +22,25 @@
 //!   the descriptor already claims.
 //! - `evaluate_sdf_at(handle, x, y, z)` — JIT-compiled point evaluation
 //!   (arch §10.8 "JIT compilation as the production-performance deliverable").
+//! - `iso_mesh(handle, &IsoMeshOptions)` — SDF→Mesh iso-surface meshing via
+//!   fidget-mesh Manifold Dual Contouring (PRD §8 task κ). The `tessellate`
+//!   trait method now delegates to this inherent method.
 //!
-//! Deferred (named follow-up tasks):
-//! - `tessellate` (SDF→Mesh feature-preserving meshing — arch §10.8 / lib.rs).
-//! - `query` / `export` on Sdf reps (require meshing first).
+//! Deferred (out of scope for this task):
+//! - `query` / `export` on Sdf reps (require meshing + downstream wiring).
+//!
+//! # Meshing region and depth derivation
+//!
+//! fidget-mesh meshes the canonical `[-1, 1]³` cube (identity
+//! `world_to_model` in [`fidget::mesh::Settings`]). The SDF is remapped
+//! via [`Tree::remap_xyz`] so that the `[-H, H]³` world region maps to
+//! `[-1, 1]³`, where `H = DEFAULT_MESH_HALF_EXTENT`. Output vertices are
+//! scaled back by `H`. SDF Trees carry no intrinsic bounds, so `H` is a
+//! fixed constant (PRD §4 — `IsoMeshOptions` intentionally has no bounds
+//! field). Octree depth is derived from `target_edge_length`: the mesh
+//! edge length at depth `d` is `2·H / 2^d`, so
+//! `depth = ceil(log2(2·H / target_edge_length))`, clamped to
+//! `[MIN_MESH_DEPTH, MAX_MESH_DEPTH]`.
 //!
 //! # Design templates
 //!
@@ -38,6 +53,33 @@ use fidget::context::Tree;
 use fidget::shape::EzShape;
 
 use reify_ir::{BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, TessError, Value};
+
+use crate::IsoMeshOptions;
+
+/// Half-extent of the canonical meshing region.
+///
+/// The SDF is remapped so that the world cube `[-H, H]³` maps to the
+/// canonical `[-1, 1]³` that fidget-mesh meshes (identity `world_to_model`
+/// in [`fidget::mesh::Settings`]). Output vertices are scaled back by `H`.
+///
+/// 8.0 encompasses any SDF primitive defined in this kernel (a unit-radius
+/// sphere has its surface at distance 1 from the origin, well inside
+/// `[-8, 8]³`). SDF Trees carry no intrinsic bounds so this is fixed per
+/// PRD §4 — `IsoMeshOptions` intentionally has no bounds field.
+const DEFAULT_MESH_HALF_EXTENT: f64 = 8.0;
+
+/// Minimum octree depth for meshing (2³ = 8 subdivisions per axis).
+///
+/// Avoids degenerate or empty meshes for very large `target_edge_length`
+/// values.
+const MIN_MESH_DEPTH: u8 = 3;
+
+/// Maximum octree depth for meshing (2⁷ = 128 subdivisions per axis).
+///
+/// At `H = 8.0` and depth 7 the mesh edge length is ≈ 0.125. Bounding
+/// depth caps the cost for very fine `target_edge_length` values (depth 7
+/// ≈ 50k triangles for a sphere; depth 8 would be ≈ 200k).
+const MAX_MESH_DEPTH: u8 = 7;
 
 /// Tree-backed Fidget SDF kernel.
 ///
@@ -205,6 +247,94 @@ impl FidgetKernel {
             .eval(&tape, x, y, z)
             .map_err(|e| QueryError::QueryFailed(format!("Fidget SDF eval failed: {e}")))?;
         Ok(value)
+    }
+
+    /// SDF→Mesh iso-surface meshing via fidget-mesh Manifold Dual Contouring.
+    ///
+    /// Meshes the level-set `tree == opts.iso_value` by:
+    /// 1. Applying the iso offset: `t = tree − iso_value` (so the meshed
+    ///    surface is the zero-crossing of `t`).
+    /// 2. Remapping `[-H, H]³` to the canonical `[-1, 1]³` that fidget-mesh
+    ///    operates on via [`Tree::remap_xyz`] (see module doc for H).
+    /// 3. Deriving octree depth from `target_edge_length` (see module doc).
+    /// 4. Running [`fidget::mesh::Octree::build`] + [`walk_dual`].
+    /// 5. Converting the output to reify [`Mesh`] (flat `f32` vertices scaled
+    ///    back by H; flat `u32` triangle indices).
+    ///
+    /// This is the real meshing consumer for `IsoMeshOptions`; the trait's
+    /// `tessellate` method delegates here with `iso_value = 0.0` and
+    /// `target_edge_length = tolerance`.
+    ///
+    /// # Errors
+    ///
+    /// - [`TessError::InvalidHandle`] — `handle` was not registered.
+    /// - [`TessError::TessellationFailed`] — fidget octree build was
+    ///   cancelled (e.g. via `CancelToken`). This is not expected in
+    ///   normal usage (the default `Settings` never sets the token).
+    pub fn iso_mesh(
+        &self,
+        handle: GeometryHandleId,
+        opts: &IsoMeshOptions,
+    ) -> Result<Mesh, TessError> {
+        // 1. Look up the Tree.
+        let tree = self
+            .trees
+            .get(&handle)
+            .ok_or(TessError::InvalidHandle(handle))?
+            .clone();
+
+        // 2. Apply iso offset so we mesh at `tree == iso_value`.
+        let t = tree - opts.iso_value;
+
+        // 3. Remap coords: [-H,H]³ → [-1,1]³ (identity world_to_model in
+        //    Settings then covers the canonical cube, which our SDF now lives in).
+        let h = DEFAULT_MESH_HALF_EXTENT;
+        let scaled = t.remap_xyz(h * Tree::x(), h * Tree::y(), h * Tree::z());
+
+        // 4. Derive octree depth.
+        //    Resolution = 2·H / 2^depth; target_edge_length ≈ resolution.
+        //    depth = ceil(log2(2·H / target_edge_length)), clamped to [MIN, MAX].
+        let depth = if opts.target_edge_length <= 0.0 || !opts.target_edge_length.is_finite() {
+            MAX_MESH_DEPTH
+        } else {
+            let raw = (2.0 * h / opts.target_edge_length).log2().ceil() as i32;
+            raw.clamp(MIN_MESH_DEPTH as i32, MAX_MESH_DEPTH as i32) as u8
+        };
+
+        // 5. Build the octree and mesh.
+        let shape = fidget::jit::JitShape::from(scaled);
+        let octree = fidget::mesh::Octree::build(
+            &shape,
+            &fidget::mesh::Settings {
+                depth,
+                ..Default::default()
+            },
+        )
+        .ok_or_else(|| {
+            TessError::TessellationFailed("fidget octree build cancelled".into())
+        })?;
+        let m = octree.walk_dual();
+
+        // 6. Convert to reify Mesh.
+        //    Vertices: nalgebra::Vector3<f32> → flat Vec<f32>, scaled back by H.
+        let h_f32 = h as f32;
+        let vertices: Vec<f32> = m
+            .vertices
+            .iter()
+            .flat_map(|v| [v.x * h_f32, v.y * h_f32, v.z * h_f32])
+            .collect();
+        //    Triangles: nalgebra::Vector3<usize> → flat Vec<u32> indices.
+        let indices: Vec<u32> = m
+            .triangles
+            .iter()
+            .flat_map(|tri| [tri.x as u32, tri.y as u32, tri.z as u32])
+            .collect();
+
+        Ok(Mesh {
+            vertices,
+            indices,
+            normals: None,
+        })
     }
 }
 

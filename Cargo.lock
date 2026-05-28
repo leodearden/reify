@@ -4448,6 +4448,7 @@ version = "0.1.0"
 dependencies = [
  "fidget",
  "inventory",
+ "reify-core",
  "reify-eval",
  "reify-ir",
  "reify-test-support",
