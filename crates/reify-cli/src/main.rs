@@ -257,7 +257,7 @@ fn cmd_check(args: &[String]) -> ExitCode {
     // Flag walk modeled on cmd_doc/cmd_gui: explicit handling of known flags
     // and explicit rejection of unknown `--`-prefixed tokens so a typo like
     // `--purpouse` fails loud instead of being silently treated as a file path.
-    let mut purpose_value: Option<String> = None;
+    let mut purpose_values: Vec<String> = Vec::new();
     let mut file: Option<&str> = None;
     let mut i = 0;
     while i < args.len() {
@@ -269,11 +269,7 @@ fn cmd_check(args: &[String]) -> ExitCode {
                     eprintln!("{}", CHECK_USAGE);
                     return ExitCode::FAILURE;
                 }
-                // Step-6: collect the FIRST --purpose occurrence only.
-                // Step-14 makes the flag repeatable.
-                if purpose_value.is_none() {
-                    purpose_value = Some(args[i + 1].clone());
-                }
+                purpose_values.push(args[i + 1].clone());
                 i += 2;
             }
             flag if flag.starts_with("--") => {
@@ -311,60 +307,64 @@ fn cmd_check(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    match purpose_value {
-        None => {
-            // No --purpose flag: existing engine.check() path, byte-for-byte.
-            let checker = SimpleConstraintChecker;
-            let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-            let result = engine.check(&compiled);
+    if purpose_values.is_empty() {
+        // No --purpose flag: existing engine.check() path, byte-for-byte.
+        let checker = SimpleConstraintChecker;
+        let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+        let result = engine.check(&compiled);
 
-            let outcome = report_eval_output(
-                &result.constraint_results,
-                &result.diagnostics,
-                &mut std::io::stdout(),
-                &mut std::io::stderr(),
-            );
+        let outcome = report_eval_output(
+            &result.constraint_results,
+            &result.diagnostics,
+            &mut std::io::stdout(),
+            &mut std::io::stderr(),
+        );
 
-            match outcome {
-                ConstraintOutcome::AllSatisfied => {
-                    println!("All constraints satisfied.");
-                    ExitCode::SUCCESS
-                }
-                ConstraintOutcome::SomeIndeterminate(n) => {
-                    println!("No constraints violated ({n} indeterminate).");
-                    ExitCode::SUCCESS
-                }
-                ConstraintOutcome::SomeViolated => {
-                    println!("Some constraints violated.");
-                    ExitCode::FAILURE
-                }
+        match outcome {
+            ConstraintOutcome::AllSatisfied => {
+                println!("All constraints satisfied.");
+                ExitCode::SUCCESS
+            }
+            ConstraintOutcome::SomeIndeterminate(n) => {
+                println!("No constraints violated ({n} indeterminate).");
+                ExitCode::SUCCESS
+            }
+            ConstraintOutcome::SomeViolated => {
+                println!("Some constraints violated.");
+                ExitCode::FAILURE
             }
         }
-        Some(value) => {
-            // --purpose path: replicates the canonical
-            // eval → activate_purpose → check_constraints_with_values sequence
-            // (see crates/reify-eval/tests/purpose_activation.rs:1151-1177).
-            // engine.check() does NOT visit purpose-injected constraints —
-            // they live in snapshot.graph.constraints, visited only by
-            // check_constraints_with_values.
-            let activation = match parse_purpose_flag(&value) {
-                Ok(a) => a,
+    } else {
+        // --purpose path: replicates the canonical
+        // eval → activate_purpose → check_constraints_with_values sequence
+        // (see crates/reify-eval/tests/purpose_activation.rs:1151-1177).
+        // engine.check() does NOT visit purpose-injected constraints —
+        // they live in snapshot.graph.constraints, visited only by
+        // check_constraints_with_values.
+
+        // Parse all --purpose values up front so a malformed value fails
+        // before we touch the engine.
+        let mut activations: Vec<PurposeActivation> = Vec::with_capacity(purpose_values.len());
+        for value in &purpose_values {
+            match parse_purpose_flag(value) {
+                Ok(a) => activations.push(a),
                 Err(e) => {
                     eprintln!("Error: {}", e);
                     return ExitCode::FAILURE;
                 }
-            };
+            }
+        }
 
-            let checker = SimpleConstraintChecker;
-            let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-            let eval_result = engine.eval(&compiled);
+        let checker = SimpleConstraintChecker;
+        let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+        let eval_result = engine.eval(&compiled);
 
+        // Activate each purpose in flag order; one check_constraints_with_values
+        // call after the loop collects results for ALL injected constraints.
+        for activation in &activations {
             // Step-α only activates the single-binding form via the
             // activate_purpose(name, entity) shim. Multi-ref activation
-            // requires task γ's activate_purpose_with_bindings, which
-            // does not exist yet — refuse with a specific error so users
-            // get an actionable signal distinct from the generic
-            // is_purpose_active failure below.
+            // requires task γ's activate_purpose_with_bindings.
             if activation.bindings.len() != 1 {
                 eprintln!(
                     "Error: purpose '{}' was given {} bindings; multi-ref purpose activation is not yet supported (requires task γ / activate_purpose_with_bindings)",
@@ -378,7 +378,7 @@ fn cmd_check(args: &[String]) -> ExitCode {
 
             // activate_purpose returns () and is silent (warn-log only) on
             // unknown-purpose, missing eval_state, and the C2 multi-param
-            // refusal. The only programmatic signal is is_purpose_active —
+            // refusal. is_purpose_active is the only programmatic signal —
             // a false result surfaces all three failure modes as a clear
             // CLI error + non-zero exit.
             if !engine.is_purpose_active(&activation.name) {
@@ -388,43 +388,43 @@ fn cmd_check(args: &[String]) -> ExitCode {
                 );
                 return ExitCode::FAILURE;
             }
+        }
 
-            let (constraint_results, check_diags) =
-                match engine.check_constraints_with_values(&eval_result.values) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        eprintln!("Error: {}", e);
-                        return ExitCode::FAILURE;
-                    }
-                };
-
-            // Eval diagnostics first, then check diagnostics — chronological order.
-            let mut diagnostics = eval_result.diagnostics.clone();
-            diagnostics.extend(check_diags);
-
-            let outcome = report_eval_output(
-                &constraint_results,
-                &diagnostics,
-                &mut std::io::stdout(),
-                &mut std::io::stderr(),
-            );
-
-            // Same outcome → summary + exit-code mapping as the no-purpose path,
-            // so a purpose-injected violation behaves identically to a structure
-            // constraint violation in stdout and shell exit semantics.
-            match outcome {
-                ConstraintOutcome::AllSatisfied => {
-                    println!("All constraints satisfied.");
-                    ExitCode::SUCCESS
+        let (constraint_results, check_diags) =
+            match engine.check_constraints_with_values(&eval_result.values) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    return ExitCode::FAILURE;
                 }
-                ConstraintOutcome::SomeIndeterminate(n) => {
-                    println!("No constraints violated ({n} indeterminate).");
-                    ExitCode::SUCCESS
-                }
-                ConstraintOutcome::SomeViolated => {
-                    println!("Some constraints violated.");
-                    ExitCode::FAILURE
-                }
+            };
+
+        // Eval diagnostics first, then check diagnostics — chronological order.
+        let mut diagnostics = eval_result.diagnostics.clone();
+        diagnostics.extend(check_diags);
+
+        let outcome = report_eval_output(
+            &constraint_results,
+            &diagnostics,
+            &mut std::io::stdout(),
+            &mut std::io::stderr(),
+        );
+
+        // Same outcome → summary + exit-code mapping as the no-purpose path,
+        // so a purpose-injected violation behaves identically to a structure
+        // constraint violation in stdout and shell exit semantics.
+        match outcome {
+            ConstraintOutcome::AllSatisfied => {
+                println!("All constraints satisfied.");
+                ExitCode::SUCCESS
+            }
+            ConstraintOutcome::SomeIndeterminate(n) => {
+                println!("No constraints violated ({n} indeterminate).");
+                ExitCode::SUCCESS
+            }
+            ConstraintOutcome::SomeViolated => {
+                println!("Some constraints violated.");
+                ExitCode::FAILURE
             }
         }
     }
