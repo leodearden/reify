@@ -86,7 +86,11 @@ psi_gate() {
     local PROC_PATH="${REIFY_PSI_GATE_PROC_PATH:-/proc/pressure/cpu}"
     local DISPATCH="${REIFY_PSI_GATE_DISPATCH_FILE:-/tmp/reify-verify-last-dispatch}"
 
-    # (1) Break-glass bypass — no read, no touch, no wait (added in step-8)
+    # (1) Break-glass bypass — total bypass: no PSI read, no touch, no wait
+    if [ "${REIFY_PSI_GATE_DISABLE:-}" = "1" ]; then
+        echo "verify.sh: psi-gate disabled (REIFY_PSI_GATE_DISABLE=1)" >&2
+        return 0
+    fi
 
     # (2) Merge bypass: skip wait + bump timestamp so the next task backs off
     if [ "${DF_VERIFY_ROLE:-task}" = "merge" ]; then
