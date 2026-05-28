@@ -50,7 +50,8 @@
 use std::f64::consts::PI;
 
 use reify_solver_elastic::{
-    BucklingKernelOptions, DirichletBc, IsotropicElastic, apply_point_load, solve_buckling_kernel,
+    BucklingKernelOptions, DirichletBc, IsotropicElastic, MpcRow, apply_point_load,
+    solve_buckling_kernel,
 };
 
 // ---------------------------------------------------------------------------
@@ -223,7 +224,7 @@ fn pin_pin_euler_column_within_ten_percent() {
         cg_max_iter: 10_000,
     };
 
-    let result = solve_buckling_kernel(&nodes, &tets, &material, &bcs, &f, opts);
+    let result = solve_buckling_kernel(&nodes, &tets, &material, &bcs, &f, &[], opts);
 
     assert!(result.converged, "eigensolve must converge for pin-pin column");
     assert!(!result.modes.is_empty(), "must return at least 1 mode");
@@ -311,7 +312,7 @@ fn fixed_free_euler_column_within_eleven_percent() {
         cg_max_iter: 10_000,
     };
 
-    let result = solve_buckling_kernel(&nodes, &tets, &material, &bcs, &f, opts);
+    let result = solve_buckling_kernel(&nodes, &tets, &material, &bcs, &f, &[], opts);
 
     assert!(result.converged, "eigensolve must converge for fixed-free column");
     assert!(!result.modes.is_empty(), "must return at least 1 mode");
@@ -424,7 +425,7 @@ fn fixed_pin_euler_column_within_ten_percent() {
         cg_max_iter: 10_000,
     };
 
-    let result = solve_buckling_kernel(&nodes, &tets, &material, &bcs, &f, opts);
+    let result = solve_buckling_kernel(&nodes, &tets, &material, &bcs, &f, &[], opts);
 
     assert!(result.converged, "eigensolve must converge for fixed-pin column");
     assert!(!result.modes.is_empty(), "must return at least 1 mode");

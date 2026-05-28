@@ -33,6 +33,7 @@ use crate::boundary::DirichletBc;
 use crate::constitutive::IsotropicElastic;
 use crate::eigensolve::{EigenSolverOptions, solve_eigen_shift_invert};
 use crate::geometric_stiffness::{InitialStress3, geometric_element_stiffness_tet_p1};
+use crate::mpc::MpcRow;
 use crate::result::element_stress_p1;
 use crate::solver::{CgSolverOptions, SolverMode, solve_cg};
 
@@ -105,62 +106,160 @@ pub struct BucklingKernelResult {
 // Private helpers
 // ---------------------------------------------------------------------------
 
-/// Build the free-DOF index map and count from a Dirichlet BC list.
+/// Build a per-full-DOF expansion map for the master-slave MPC reduction.
 ///
-/// Returns `(free_map, n_free)` where:
-/// - `free_map[g] = usize::MAX` if global DOF `g` is constrained.
-/// - `free_map[g] = f` (0-based free index) if DOF `g` is free.
+/// Returns `(expansion, n_indep)` where:
+/// - `expansion[g]` is a list of `(indep_idx, weight)` pairs expressing full
+///   DOF `g` as a linear combination of independent (reduced) DOFs.
+/// - Independent (non-Dirichlet, non-slave) DOF: `expansion[g] = [(r, 1.0)]`.
+/// - Dirichlet DOF: `expansion[g] = []` (contributes nothing; fixed at 0).
+/// - Slave DOF `p` with pivot coefficient `c0` and other-DOFs `(d_i, c_i)`:
+///   `expansion[p] = [(indep_idx[d_i], -c_i/c0)]` for each non-Dirichlet `d_i`.
+/// - `n_indep` is the total number of independent DOFs (rank of reduced system).
 ///
-/// The `value` field of each `DirichletBc` is silently ignored — v0.5 only
-/// supports homogeneous BCs. See design decision in `.task/plan.json`.
-fn build_free_dof_map(n_nodes: usize, bcs: &[DirichletBc]) -> (Vec<usize>, usize) {
+/// # v0.5 limitations (panics at entry)
+///
+/// - Each MPC row must be homogeneous (`rhs == 0.0`); inhomogeneous rows
+///   panic with a message containing `"rhs"`.
+/// - A slave (pivot, `dofs[0]`) must not also be in `bcs`; violation panics
+///   with a message containing `"pivot"`.
+/// - Each global DOF may be the pivot of at most one MPC; duplicates panic
+///   with a message containing `"pivot"`.
+/// - The "other" DOFs (`dofs[1..]`) of any MPC must not be pivots of another
+///   MPC (no chains); violation panics with a message containing `"chain"`.
+fn build_expansion_map(
+    n_nodes: usize,
+    bcs: &[DirichletBc],
+    mpcs: &[MpcRow],
+) -> (Vec<Vec<(usize, f64)>>, usize) {
     let n_dofs = 3 * n_nodes;
-    let mut fixed = vec![false; n_dofs];
+
+    // Pass 1: mark Dirichlet DOFs.
+    let mut is_dirichlet = vec![false; n_dofs];
     for bc in bcs {
-        fixed[bc.dof] = true;
+        is_dirichlet[bc.dof] = true;
     }
-    let mut free_map = vec![usize::MAX; n_dofs];
-    let mut n_free = 0usize;
-    for (g, &is_fixed) in fixed.iter().enumerate() {
-        if !is_fixed {
-            free_map[g] = n_free;
-            n_free += 1;
+
+    // Pass 2: detect pivots; validate homogeneity, no-Dirichlet-pivot, unique pivots.
+    let mut pivot_of: Vec<Option<usize>> = vec![None; n_dofs]; // pivot_of[g] = Some(mpc_idx)
+    for (mpc_idx, row) in mpcs.iter().enumerate() {
+        assert!(
+            row.rhs == 0.0,
+            "MPC row {mpc_idx}: rhs = {} is non-homogeneous; v0.5 buckling kernel \
+             supports only rhs == 0.0 (homogeneous MPCs). inhomogeneous constraints \
+             are ill-defined for the generalized eigenproblem.",
+            row.rhs,
+        );
+        let pivot = row.dofs[0];
+        assert!(
+            !is_dirichlet[pivot],
+            "MPC row {mpc_idx}: pivot DOF {pivot} is also in the Dirichlet BC list; \
+             a slave pivot must not be simultaneously constrained by Dirichlet BCs.",
+        );
+        assert!(
+            pivot_of[pivot].is_none(),
+            "MPC row {mpc_idx}: pivot DOF {pivot} is already the pivot of MPC row {}; \
+             each global DOF may be the pivot of at most one MPC.",
+            pivot_of[pivot].unwrap(),
+        );
+        pivot_of[pivot] = Some(mpc_idx);
+    }
+
+    // Pass 3: check no-chain constraint (other DOFs must not be pivots).
+    for (mpc_idx, row) in mpcs.iter().enumerate() {
+        for &d in &row.dofs[1..] {
+            assert!(
+                pivot_of[d].is_none(),
+                "MPC chain detected: MPC row {mpc_idx} references DOF {d} as an \
+                 \"other\" DOF, but DOF {d} is itself the pivot of MPC row {}. \
+                 Constraint chains are not supported in v0.5.",
+                pivot_of[d].unwrap(),
+            );
         }
     }
-    (free_map, n_free)
+
+    // Pass 4: assign independent indices to non-Dirichlet, non-slave DOFs.
+    let mut indep_idx: Vec<usize> = vec![usize::MAX; n_dofs];
+    let mut n_indep = 0usize;
+    for g in 0..n_dofs {
+        if !is_dirichlet[g] && pivot_of[g].is_none() {
+            indep_idx[g] = n_indep;
+            n_indep += 1;
+        }
+    }
+
+    // Pass 5: fill expansion map.
+    let mut expansion: Vec<Vec<(usize, f64)>> = vec![vec![]; n_dofs];
+    for g in 0..n_dofs {
+        if is_dirichlet[g] {
+            // Dirichlet: empty (0-valued; contributes nothing).
+        } else if let Some(mpc_idx) = pivot_of[g] {
+            // Slave: express as linear combination of other DOFs.
+            let row = &mpcs[mpc_idx];
+            let c0 = row.coeffs[0];
+            for i in 1..row.dofs.len() {
+                let d_i = row.dofs[i];
+                let c_i = row.coeffs[i];
+                let alpha_i = -c_i / c0;
+                // Skip Dirichlet other-DOFs (contribute 0).
+                if !is_dirichlet[d_i] {
+                    let r = indep_idx[d_i];
+                    debug_assert_ne!(
+                        r,
+                        usize::MAX,
+                        "other DOF {d_i} in MPC row {mpc_idx} must be independent \
+                         (not Dirichlet and not a pivot) after chain-check",
+                    );
+                    expansion[g].push((r, alpha_i));
+                }
+            }
+        } else {
+            // Independent: singleton.
+            expansion[g].push((indep_idx[g], 1.0));
+        }
+    }
+
+    (expansion, n_indep)
 }
 
-/// Project a full `n × n` sparse matrix onto the `n_free × n_free` free-DOF
-/// subspace by walking the CSR structure and re-emitting only triplets where
-/// both the row and column map to a free DOF.
+/// Project a full `n × n` sparse matrix to the `n_indep × n_indep` reduced
+/// subspace via the expansion map `T` (implicitly `Tᵀ · M · T`).
 ///
-/// Mirrors the `kg_p1_tet.rs::assemble_free_dof_matrix` CSR-walk pattern,
-/// factored out as a reusable helper (applied to both K and −K_g).
-fn project_free(
+/// For each stored entry `(g_row, g_col, v)` in `full`, iterates all
+/// `(r, w_r)` in `expansion[g_row]` and `(c, w_c)` in `expansion[g_col]`
+/// and emits triplet `(r, c, w_r * v * w_c)`. Faer's `try_new_from_triplets`
+/// sums duplicates, so slave rows/cols accumulate into master entries naturally.
+///
+/// This generalises `project_free` (which is the special case where every
+/// non-Dirichlet DOF has expansion `[(indep_idx, 1.0)]`).
+fn project_with_expansion(
     full: &SparseRowMat<usize, f64>,
-    free_map: &[usize],
-    n_free: usize,
+    expansion: &[Vec<(usize, f64)>],
+    n_indep: usize,
 ) -> SparseRowMat<usize, f64> {
     let sym = full.symbolic();
     let n_rows = full.nrows();
     let mut trips: Vec<Triplet<usize, usize, f64>> = Vec::new();
-    for global_row in 0..n_rows {
-        let r = free_map[global_row];
-        if r == usize::MAX {
+    for g_row in 0..n_rows {
+        if expansion[g_row].is_empty() {
             continue;
         }
-        let cols = sym.col_idx_of_row_raw(global_row);
-        let vals = full.val_of_row(global_row);
-        for (col_idx, &val) in cols.iter().zip(vals.iter()) {
-            let c = free_map[*col_idx];
-            if c == usize::MAX || val == 0.0 {
+        let cols = sym.col_idx_of_row_raw(g_row);
+        let vals = full.val_of_row(g_row);
+        for (col_raw, &val) in cols.iter().zip(vals.iter()) {
+            let g_col = *col_raw;
+            if val == 0.0 || expansion[g_col].is_empty() {
                 continue;
             }
-            trips.push(Triplet::new(r, c, val));
+            for &(r, w_r) in &expansion[g_row] {
+                for &(c, w_c) in &expansion[g_col] {
+                    trips.push(Triplet::new(r, c, w_r * val * w_c));
+                }
+            }
         }
     }
-    SparseRowMat::try_new_from_triplets(n_free, n_free, &trips)
-        .expect("free-DOF sub-matrix construction must not violate CSR invariants")
+    SparseRowMat::try_new_from_triplets(n_indep, n_indep, &trips)
+        .expect("expansion-map sub-matrix construction must not violate CSR invariants")
 }
 
 // ---------------------------------------------------------------------------
@@ -177,21 +276,36 @@ fn project_free(
 /// - `bcs` — homogeneous Dirichlet BCs; `.value` is silently ignored in v0.5.
 /// - `f` — pre-built global load vector, length `3 * n_nodes`.
 ///   Build via `apply_point_load` / `apply_body_force` / `apply_traction_load`.
+/// - `mpcs` — multi-point constraints applied via master-slave (transformation)
+///   reduction. Pass `&[]` for no MPCs (no-op, bit-identical to the 6-arg
+///   behaviour). v0.5 limitations enforced by panic at entry:
+///   - **Homogeneous only** (`row.rhs == 0.0` for every row): inhomogeneous MPCs
+///     are ill-defined for the eigenproblem and will panic with a message
+///     containing `"rhs"`.
+///   - **No Dirichlet-pivot conflict**: if a slave DOF (`dofs[0]`) also appears
+///     in `bcs`, panics with a message containing `"pivot"`.
+///   - **Unique pivots**: each global DOF may be the pivot of at most one MPC;
+///     duplicates panic with a message containing `"pivot"`.
+///   - **No constraint chains**: the "other" DOFs (`dofs[1..]`) of any MPC must
+///     not themselves be pivots of another MPC; chains panic with a message
+///     containing `"chain"`.
 /// - `opts` — solver tuning parameters.
 ///
 /// # Phases
 ///
-/// 1. **Free-DOF map** — identify unconstrained DOFs from `bcs`.
-/// 2. **Linear-static pre-stress** — CG solve `K_free u_free = f_free`.
-/// 3. **K_g assembly** — per-element Cauchy stress → −K_g_free.
-/// 4. **Generalized eigensolve** — `K_free φ = λ (−K_g_free) φ`.
-/// 5. **Mode-shape expansion** — insert 0.0 at constrained DOFs.
+/// 1. **Expansion map** — identify constrained (Dirichlet + slave) DOFs and
+///    build the per-DOF linear-combination map from the `bcs` + `mpcs` inputs.
+/// 2. **Linear-static pre-stress** — CG solve `K_red u_red = f_red`.
+/// 3. **K_g assembly** — per-element Cauchy stress → −K_g_red.
+/// 4. **Generalized eigensolve** — `K_red φ_red = λ (−K_g_red) φ_red`.
+/// 5. **Mode-shape expansion** — expand to full DOF space via the expansion map.
 ///
 /// # Panics
 ///
 /// - `f.len() != 3 * nodes.len()`
 /// - `opts.n_modes < 1`
 /// - Any `bc.dof >= 3 * nodes.len()`
+/// - Any MPC violation (see `mpcs` arg description above).
 /// - Invalid solver option values (non-positive / non-finite tolerances or
 ///   zero iteration budgets).
 /// - The pre-stress CG solve exhausts its iteration budget without converging
@@ -200,13 +314,14 @@ fn project_free(
 /// # v0.5 limitations
 ///
 /// Only homogeneous Dirichlet BCs are supported; `DirichletBc.value` is silently
-/// ignored.
+/// ignored. MPCs must be homogeneous (`rhs == 0.0`).
 pub fn solve_buckling_kernel(
     nodes: &[[f64; 3]],
     tets: &[[usize; 4]],
     material: &IsotropicElastic,
     bcs: &[DirichletBc],
     f: &[f64],
+    mpcs: &[MpcRow],
     opts: BucklingKernelOptions,
 ) -> BucklingKernelResult {
     // ---- Contract checks ---------------------------------------------------
@@ -249,8 +364,9 @@ pub fn solve_buckling_kernel(
 
     let n_nodes = nodes.len();
 
-    // ---- Phase 1: free-DOF map ---------------------------------------------
-    let (free_map, n_free) = build_free_dof_map(n_nodes, bcs);
+    // ---- Phase 1: build expansion map (Dirichlet + MPC reduction) ----------
+    // For empty mpcs this degenerates to the original free-DOF map path.
+    let (expansion, n_indep) = build_expansion_map(n_nodes, bcs, mpcs);
 
     // ---- Phase 2a: K full assembly -----------------------------------------
     // Per-element K_e for each tet; collected before borrowing into
@@ -272,23 +388,22 @@ pub fn solve_buckling_kernel(
 
     let k_full = assemble_global_stiffness(n_nodes, &k_assembly, AssemblyMode::Deterministic);
 
-    // ---- Phase 2b: project K to free-DOF subspace --------------------------
-    let k_free = project_free(&k_full, &free_map, n_free);
+    // ---- Phase 2b: project K to independent-DOF subspace via expansion map -
+    let k_red = project_with_expansion(&k_full, &expansion, n_indep);
 
-    // ---- Phase 2c: f_free projection ----------------------------------------
-    // Iterate global DOFs in ascending order; skip constrained ones.
-    // Because free_map assigns indices in ascending-g order, the resulting
-    // f_free is in correct free-index order.
-    let f_free: Vec<f64> = (0..3 * n_nodes)
-        .filter_map(|g| {
-            if free_map[g] == usize::MAX { None } else { Some(f[g]) }
-        })
-        .collect();
-    debug_assert_eq!(f_free.len(), n_free);
+    // ---- Phase 2c: f_red projection ----------------------------------------
+    // f_red[r] += w * f[g]  for each (r, w) in expansion[g].
+    let mut f_red = vec![0.0_f64; n_indep];
+    for g in 0..3 * n_nodes {
+        for &(r, w) in &expansion[g] {
+            f_red[r] += w * f[g];
+        }
+    }
+    debug_assert_eq!(f_red.len(), n_indep);
 
     // ---- Phase 3: linear-static CG solve -----------------------------------
     let cg_opts = CgSolverOptions { tolerance: opts.cg_tolerance, max_iter: opts.cg_max_iter };
-    let cg_result = solve_cg(&k_free, &f_free, cg_opts, SolverMode::Deterministic);
+    let cg_result = solve_cg(&k_red, &f_red, cg_opts, SolverMode::Deterministic);
 
     // Loud failure on non-convergence per Task-2544 contract-explicitness convention.
     assert!(
@@ -299,13 +414,12 @@ pub fn solve_buckling_kernel(
         opts.cg_tolerance,
     );
 
-    // ---- Expand u_free → u_full (0.0 at constrained DOFs) ------------------
-    let u_free: &[f64] = &cg_result.u;
+    // ---- Expand u_red → u_full (0.0 at constrained DOFs) ------------------
+    let u_red: &[f64] = &cg_result.u;
     let mut u_full = vec![0.0_f64; 3 * n_nodes];
     for g in 0..u_full.len() {
-        let f_idx = free_map[g];
-        if f_idx != usize::MAX {
-            u_full[g] = u_free[f_idx];
+        for &(r, w) in &expansion[g] {
+            u_full[g] += w * u_red[r];
         }
     }
 
@@ -342,7 +456,7 @@ pub fn solve_buckling_kernel(
         neg_k_g_elems.push(neg_k_g_e);
     }
 
-    // ---- Phase 4b: assemble full −K_g and project to free-DOF subspace -----
+    // ---- Phase 4b: assemble full −K_g and project via expansion map --------
     let neg_k_g_assembly: Vec<AssemblyElement<'_>> = tets
         .iter()
         .zip(neg_k_g_elems.iter())
@@ -352,7 +466,7 @@ pub fn solve_buckling_kernel(
 
     let neg_k_g_full =
         assemble_global_stiffness(n_nodes, &neg_k_g_assembly, AssemblyMode::Deterministic);
-    let neg_k_g_free = project_free(&neg_k_g_full, &free_map, n_free);
+    let neg_k_g_red = project_with_expansion(&neg_k_g_full, &expansion, n_indep);
 
     // ---- Phase 5: generalized eigensolve K φ = λ (−K_g) φ ------------------
     let eigen_opts = EigenSolverOptions {
@@ -361,17 +475,16 @@ pub fn solve_buckling_kernel(
         max_iters: opts.eigen_max_iters,
         sigma: 0.0,
     };
-    let eig = solve_eigen_shift_invert(&k_free, &neg_k_g_free, eigen_opts);
+    let eig = solve_eigen_shift_invert(&k_red, &neg_k_g_red, eigen_opts);
 
     // ---- Phase 6: expand mode shapes to full DOF space ----------------------
     let mut modes: Vec<Mode> = Vec::with_capacity(eig.eigenvalues.len());
     for i in 0..eig.eigenvalues.len() {
-        let phi_free = eig.eigenvectors.col_as_slice(i);
+        let phi_red = eig.eigenvectors.col_as_slice(i);
         let mut mode_shape = vec![0.0_f64; 3 * n_nodes];
         for g in 0..3 * n_nodes {
-            let f_idx = free_map[g];
-            if f_idx != usize::MAX {
-                mode_shape[g] = phi_free[f_idx];
+            for &(r, w) in &expansion[g] {
+                mode_shape[g] += w * phi_red[r];
             }
         }
         modes.push(Mode { eigenvalue: eig.eigenvalues[i], mode_shape });
@@ -491,7 +604,7 @@ mod tests {
             cg_max_iter: 1000,
         };
 
-        let result = solve_buckling_kernel(&nodes, &tets, &material, &bcs, &f, opts);
+        let result = solve_buckling_kernel(&nodes, &tets, &material, &bcs, &f, &[], opts);
 
         // n_free = 24 - 20 = 4; dense-fallback returns min(4, n_modes=3) = 3 modes.
         // Assert ≥ 1 to stay tolerant if the actual count diverges.
@@ -622,7 +735,7 @@ mod tests {
             cg_max_iter: 1000,
         };
 
-        let result = solve_buckling_kernel(&nodes, &tets, &material, &bcs, &f, opts);
+        let result = solve_buckling_kernel(&nodes, &tets, &material, &bcs, &f, &[], opts);
 
         // (a) Eigensolve must converge for the 4-free-DOF fixture.
         assert!(result.converged, "eigensolve must converge on n_free=4 system");
