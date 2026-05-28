@@ -164,6 +164,50 @@ fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitC
     Ok(compiled)
 }
 
+/// One per-param binding parsed from a `--purpose` flag value.
+///
+/// `param` is the per-param name in the multi-pair form (`p:A`), or `None`
+/// in the single-pair form (`name=entity`). `entity` is the structure ref.
+#[derive(Debug, PartialEq)]
+struct PurposeBinding {
+    param: Option<String>,
+    entity: String,
+}
+
+/// A single `--purpose <value>` activation: a purpose name and its bindings.
+#[derive(Debug, PartialEq)]
+struct PurposeActivation {
+    name: String,
+    bindings: Vec<PurposeBinding>,
+}
+
+/// Parse a `--purpose <value>` flag value.
+///
+/// Step-α handles the single-pair form `name=entity`, producing one binding
+/// `{ param: None, entity }`. The multi-pair form (`name=p:A,q:B`) is added
+/// by step-4. Errors on missing `=`, empty name, or empty rest.
+fn parse_purpose_flag(value: &str) -> Result<PurposeActivation, String> {
+    let (name, rest) = value
+        .split_once('=')
+        .ok_or_else(|| format!("--purpose value '{}' is missing '='", value))?;
+    if name.is_empty() {
+        return Err(format!(
+            "--purpose value '{}' has an empty purpose name",
+            value
+        ));
+    }
+    if rest.is_empty() {
+        return Err(format!("--purpose value '{}' has no binding", value));
+    }
+    Ok(PurposeActivation {
+        name: name.to_string(),
+        bindings: vec![PurposeBinding {
+            param: None,
+            entity: rest.to_string(),
+        }],
+    })
+}
+
 fn cmd_check(args: &[String]) -> ExitCode {
     if args.is_empty() {
         eprintln!("Usage: reify check <file>");
