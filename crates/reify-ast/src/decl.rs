@@ -882,7 +882,7 @@ pub struct Annotation {
 
 /// Returns true if the slice contains a `@test` annotation.
 ///
-/// The parser-produced parallel of `reify_types::annotation::has_test_annotation`
+/// The parser-produced parallel of `reify_ir::annotation::has_test_annotation`
 /// (which operates on the compiled Annotation); this one operates on the
 /// parser-produced Annotation (args: Vec<Expr>).
 pub fn has_test_annotation(annotations: &[Annotation]) -> bool {
