@@ -14,7 +14,7 @@
 //! vs `M`).
 
 use crate::assembly::ElementStiffness;
-use crate::elements::{ReferenceCoord, ReferenceElement, tet_p1::TetP1};
+use crate::elements::tet_p1::GRADS_REF;
 use crate::math::MIN_JACOBIAN_DET;
 
 /// Compute the 12×12 **consistent mass matrix** `M_e` for a P1 (linear,
@@ -50,10 +50,13 @@ use crate::math::MIN_JACOBIAN_DET;
 ///
 /// # Panics
 ///
-/// Panics under `debug_assertions` when `|det J| <= MIN_JACOBIAN_DET` or
-/// when `det J` is non-finite/subnormal — the same degeneracy-guard
-/// convention as [`crate::element_stiffness_p1`] and
-/// [`crate::geometric_element_stiffness_tet_p1`].
+/// Panics under `debug_assertions` when:
+/// - `density` is non-finite or non-positive (NaN, ±∞, 0.0, negative) —
+///   non-physical density would propagate a negative-diagonal or all-NaN
+///   mass matrix into the Lanczos eigensolver.
+/// - `|det J| <= MIN_JACOBIAN_DET` or `det J` is non-finite/subnormal —
+///   the same degeneracy-guard convention as [`crate::element_stiffness_p1`]
+///   and [`crate::geometric_element_stiffness_tet_p1`].
 ///
 /// Uses `|det J|` so left-handed (mirror-flipped) node orderings still
 /// produce the physically correct positive `V_e` and a positive-mass `M_e`.
@@ -64,27 +67,32 @@ pub fn consistent_element_mass_tet_p1(
 ) -> ElementStiffness {
     const N_NODES: usize = 4;
     const N_DOFS: usize = 12;
+    debug_assert!(
+        density.is_finite() && density > 0.0,
+        "density must be finite and positive, got {density}",
+    );
     let mut m_e = ElementStiffness::zeros(N_DOFS);
 
-    // P1 has constant gradients — evaluating at the centroid is just as
-    // valid as any other reference point; the centroid is the canonical
-    // 1-point Gauss location. We only need gradients to build J (for V_e);
-    // the shape-function values N_a are absorbed into the closed-form
-    // integral V_e·(1+δ_{a,b})/20.
-    let centroid = ReferenceCoord::new(0.25, 0.25, 0.25);
-    let grads_ref = TetP1.shape_grad_at(centroid);
-    debug_assert_eq!(grads_ref.len(), N_NODES);
+    // P1 gradients are compile-time constants — use the shared const
+    // directly rather than calling TetP1::shape_grad_at (which allocates a
+    // Vec per call). We only need gradients to build J (for V_e); the
+    // shape-function values N_a are absorbed into the closed-form integral
+    // V_e·(1+δ_{a,b})/20.
+    let grads_ref = &GRADS_REF;
 
     // Forward Jacobian J_ij = Σ_k phys_nodes[k][i] · grads_ref[k][j].
     // Built as a 3×3 stack array — we only need `det` here, so there is
     // no benefit to constructing the full `ReferenceElement::jacobian()`
-    // `Jacobian` struct (which also computes the inverse transpose). Note
-    // that `grads_ref` from `shape_grad_at` is still a heap-allocated Vec
-    // per call; the same heap traffic exists in `element_stiffness_p1`
-    // and `geometric_element_stiffness_tet_p1`, and could be eliminated
-    // by a future sweep that replaces these with a const `[[f64;3];4]`
-    // across all three tet-P1 kernels (gradients are compile-time
-    // constants for P1).
+    // `Jacobian` struct (which also computes the inverse transpose).
+    // Per-element Vec allocation is now eliminated in this kernel and in
+    // `geometric_element_stiffness_tet_p1` via the shared
+    // `crate::elements::tet_p1::GRADS_REF` const.  Only `element_stiffness_p1`
+    // (via the generic kernel) still allocates per element — that path's
+    // removal is deferred to the `ReferenceElement` trait-level refactor
+    // documented at `elements/mod.rs:117-140` because changing it requires
+    // preserving the C4 bit-identity contract pinned by
+    // `element_stiffness_generic_with_d_global_matches_isotropic_path_bit_for_bit`
+    // and `tet_p1_with_constant_isotropic_lift_identity_frame_is_bit_identical_to_legacy_p1`.
     let mut j_mat = [[0.0_f64; 3]; 3];
     for k in 0..N_NODES {
         for i in 0..3 {
@@ -433,6 +441,47 @@ mod tests {
         u_sparse[0] = 1.0;
         let q_sparse = quad_form(&m_e, &u_sparse);
         assert!(q_sparse > 0.0, "sparse uᵀMu = {q_sparse}, expected > 0");
+    }
+
+    // ----- debug-only density-guard tests -----
+    // The guard `debug_assert!(density.is_finite() && density > 0.0, ...)`
+    // is compiled in only under `debug_assertions`, so the tests must be
+    // gated identically.  The `#[should_panic]` expected string must match
+    // the guard message exactly.
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "density must be finite and positive")]
+    fn consistent_mass_p1_panics_on_nan_density() {
+        let _ = consistent_element_mass_tet_p1(&UNIT_TET, f64::NAN);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "density must be finite and positive")]
+    fn consistent_mass_p1_panics_on_positive_infinite_density() {
+        let _ = consistent_element_mass_tet_p1(&UNIT_TET, f64::INFINITY);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "density must be finite and positive")]
+    fn consistent_mass_p1_panics_on_negative_infinite_density() {
+        let _ = consistent_element_mass_tet_p1(&UNIT_TET, f64::NEG_INFINITY);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "density must be finite and positive")]
+    fn consistent_mass_p1_panics_on_zero_density() {
+        let _ = consistent_element_mass_tet_p1(&UNIT_TET, 0.0);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "density must be finite and positive")]
+    fn consistent_mass_p1_panics_on_negative_density() {
+        let _ = consistent_element_mass_tet_p1(&UNIT_TET, -1.0);
     }
 
     #[test]

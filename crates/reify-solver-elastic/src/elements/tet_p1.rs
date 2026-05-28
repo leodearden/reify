@@ -9,6 +9,23 @@ use crate::elements::{QuadraturePoint, ReferenceCoord, ReferenceElement};
 /// First-order Lagrangian tetrahedron.
 pub struct TetP1;
 
+/// Compile-time canonical P1 reference-gradient table.
+///
+/// P1 shape-function gradients are constant (independent of the reference
+/// coordinate), so this table serves as a single source of truth shared with
+/// `crate::mass_matrix` and `crate::geometric_stiffness::tet`.  Using the
+/// const directly in those kernels eliminates the per-element `Vec<[f64;3]>`
+/// allocation that `TetP1::shape_grad_at` would otherwise produce.
+///
+/// Row order: `[∇N_0, ∇N_1, ∇N_2, ∇N_3]` in the canonical vertex ordering
+/// `(0,0,0), (1,0,0), (0,1,0), (0,0,1)`.
+pub(crate) const GRADS_REF: [[f64; 3]; 4] = [
+    [-1.0, -1.0, -1.0],
+    [1.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0],
+    [0.0, 0.0, 1.0],
+];
+
 /// Single-entry centroid Gauss rule for the unit reference tetrahedron.
 ///
 /// One point at `(1/4, 1/4, 1/4)` with weight `1/6`. Degree-1 exact —
@@ -39,13 +56,11 @@ impl ReferenceElement for TetP1 {
     /// shape functions are linear. Returned in the canonical row order
     /// `[∇N_0, ∇N_1, ∇N_2, ∇N_3] = [(-1,-1,-1), (1,0,0), (0,1,0), (0,0,1)]`.
     /// The argument is kept for trait-uniformity with `TetP2`.
+    ///
+    /// The values are drawn from [`GRADS_REF`], the compile-time constant
+    /// that serves as the single source of truth for P1 reference gradients.
     fn shape_grad_at(&self, _coord: ReferenceCoord) -> Vec<[f64; 3]> {
-        vec![
-            [-1.0, -1.0, -1.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0],
-        ]
+        GRADS_REF.to_vec()
     }
 
     fn quad_points(&self) -> &'static [QuadraturePoint] {
@@ -251,6 +266,23 @@ mod tests {
             [0.0, 0.0, 0.0],
         ];
         TetP1.jacobian(phys, ReferenceCoord::new(0.25, 0.25, 0.25));
+    }
+
+    /// `GRADS_REF` must equal the canonical P1 reference-gradient table.
+    ///
+    /// The const is the single source of truth shared with
+    /// `crate::mass_matrix` and `crate::geometric_stiffness::tet`.  This
+    /// test asserts its value against the exact-representable float literals
+    /// so a future typo in the const definition is caught immediately.
+    #[test]
+    fn grads_ref_const_matches_canonical_p1_gradients() {
+        let expected: [[f64; 3]; 4] = [
+            [-1.0, -1.0, -1.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
+        assert_eq!(GRADS_REF, expected);
     }
 
     #[test]

@@ -61,6 +61,12 @@ module.exports = grammar({
     [$.named_argument_list, $.argument_list],
     [$.constraint_instantiation, $.constraint_declaration],
     [$.type_expr, $.parameterized_type],
+    // function_definition and function_signature share a common prefix (fn name
+    // type_params '(' fn_param_list ')' optional('->' type_expr)) and diverge
+    // only at '{' (body) vs end-of-member.  This entry keeps tree-sitter's GLR
+    // split stable even if a future type_expr change introduces a brace-shaped
+    // right edge.
+    [$.function_definition, $.function_signature],
   ],
 
   rules: {
@@ -93,6 +99,12 @@ module.exports = grammar({
     ),
 
     // ── Function ─────────────────────────────────────────────
+    // NOTE: optional('pub') is retained here because function_definition serves
+    // both top-level and trait_member contexts.  In the trait_member arm, `pub`
+    // is grammatically accepted but semantically vacuous — trait visibility is
+    // governed by the trait declaration itself.  The lowering pass (task γ)
+    // diagnoses `pub fn` inside a trait body.  function_signature (below) omits
+    // `pub` because it is only reachable via trait_member.
     function_definition: $ => seq(
       optional('pub'),
       'fn',
@@ -105,10 +117,32 @@ module.exports = grammar({
       $.fn_body,
     ),
 
-    fn_param_list: $ => seq(
-      $.fn_param,
-      repeat(seq(',', $.fn_param)),
-      optional(','),
+    // Bodyless fn signature — only reachable via trait_member (not in _declaration).
+    // Represents a required (no-default) associated function in a trait body.
+    // Sibling of function_definition: same prefix but no fn_body, no optional('pub').
+    function_signature: $ => seq(
+      'fn',
+      field('name', $.identifier),
+      optional($.type_parameters),
+      '(',
+      optional($.fn_param_list),
+      ')',
+      optional(seq('->', field('return_type', $.type_expr))),
+    ),
+
+    fn_param_list: $ => choice(
+      // Self-led: `self` receiver with optional following typed params.
+      // Downstream uses child_by_field_name("receiver") to detect the receiver.
+      seq(
+        field('receiver', 'self'),
+        optional(seq(',', $.fn_param, repeat(seq(',', $.fn_param)), optional(','))),
+      ),
+      // Typed params only (existing behaviour — no self receiver).
+      seq(
+        $.fn_param,
+        repeat(seq(',', $.fn_param)),
+        optional(','),
+      ),
     ),
 
     fn_param: $ => seq(
@@ -178,6 +212,8 @@ module.exports = grammar({
       $.constraint_declaration,
       $.sub_declaration,
       $.associated_type,
+      $.function_definition,
+      $.function_signature,
       $.pragma,
     ),
 

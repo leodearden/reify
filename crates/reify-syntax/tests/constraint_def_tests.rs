@@ -218,32 +218,28 @@ fn parse_constraint_def_body_syntax_error() {
 
 #[test]
 fn parse_constraint_def_error_param() {
-    // `param wall : Box<, >` — the first element of the `type_arg_list` is a
-    // comma `,` which is not a valid `type_expr`, `number_literal`, or
-    // `auto_type_arg`.  Tree-sitter inserts a MISSING node for the first
-    // required type-arg element, making the `param_declaration` node have
-    // `has_error() == true`.
+    // `param wall : Box<,>` — a type_arg_list with a leading comma forces
+    // tree-sitter to insert a MISSING type-arg node inside type_args, making the
+    // param_declaration node have `has_error() == true`.
     //
-    // Note: the original source `param wall : Box<>` relied on an empty
-    // `type_arg_list` inside `Box<>` producing a MISSING type-arg node.
-    // After the single-sided range grammar was added (task 3911, commit
-    // 8ca44c3a), tree-sitter resolves the `<>` sequence differently — it no
-    // longer inserts MISSING inside the type, so `param_declaration.has_error()`
-    // was false.  Using `Box<, >` (leading comma) is grammar-stable: the first
-    // element of `type_arg_list` is always required, so MISSING is unconditional
-    // here regardless of future expression-grammar changes.
+    // (An empty `Box<>` no longer suffices: once single-sided range arms `<expr`/
+    // `>expr` were added to the expression grammar, the parser prefers reading
+    // `Box` as a bare named type and the trailing `<...` as a range expression,
+    // so `Box<>` parses with no MISSING node. `Box<,>` still has no valid parse
+    // other than the MISSING-type-arg recovery, so it remains a clean probe for
+    // the `check_and_lower!` has_error path.)
     //
     // Without `check_and_lower!` (before step-18), `self.lower_param()` is called
-    // directly: it succeeds (name "wall" and type "Box<, >" are found) and silently
-    // adds the malformed param to params with no diagnostic pushed.
+    // directly: it succeeds (name "wall" is found) and silently adds the malformed
+    // param to params with no diagnostic pushed.
     //
     // After step-18 fix, `check_and_lower!` detects `has_error()`, emits
     // 'invalid constraint param: ...', and skips the param entirely.
-    let source = "constraint def Bad { param wall : Box<, >  x > 0 }";
+    let source = "constraint def Bad { param wall : Box<,>  x > 0 }";
     let (decls, errors) = parse_decls(source);
     assert!(
         !errors.is_empty(),
-        "expected parse errors for malformed param_declaration (Box<, > has MISSING type arg), got none"
+        "expected parse errors for malformed param_declaration (Box<,> has MISSING type arg), got none"
     );
     assert!(
         errors
@@ -271,4 +267,3 @@ fn parse_constraint_def_error_param() {
         other => panic!("expected Declaration::Constraint, got {:?}", other),
     }
 }
-
