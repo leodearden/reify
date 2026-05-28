@@ -960,6 +960,53 @@ mod tests {
         );
     }
 
+    // ─── monte_carlo_stackup step-5 tests (RED until step-6 confirms) ──────
+
+    #[test]
+    fn monte_carlo_same_seed_bit_identical() {
+        // INV-3: two calls with the same args must produce bit-identical f64 results.
+        let run = || match eval_stackup("monte_carlo_stackup", &[
+            golden_chain(), Value::Int(5000), Value::Int(42),
+        ]) {
+            Some(Value::Map(m)) => m,
+            other => panic!("expected Some(Map), got {:?}", other),
+        };
+        let m1 = run();
+        let m2 = run();
+
+        for key in &["nominal_gap", "mc_mean", "mc_sigma", "mc_min", "mc_max",
+                     "mc_p_low", "mc_p_high"] {
+            let k = Value::String((*key).into());
+            let a = scalar_si(&m1[&k]);
+            let b = scalar_si(&m2[&k]);
+            assert_eq!(a.to_bits(), b.to_bits(),
+                "key {key}: a={a} b={b} — not bit-identical");
+        }
+        assert_eq!(m1[&Value::String("samples".into())], m2[&Value::String("samples".into())]);
+        assert_eq!(m1[&Value::String("seed".into())],    m2[&Value::String("seed".into())]);
+    }
+
+    #[test]
+    fn monte_carlo_different_seed_differs() {
+        // Different seed must produce different mc_sigma and mc_mean.
+        let run = |seed: i64| match eval_stackup("monte_carlo_stackup", &[
+            golden_chain(), Value::Int(5000), Value::Int(seed),
+        ]) {
+            Some(Value::Map(m)) => m,
+            other => panic!("expected Some(Map), got {:?}", other),
+        };
+        let m42 = run(42);
+        let m43 = run(43);
+        let sigma42 = scalar_si(&m42[&Value::String("mc_sigma".into())]);
+        let sigma43 = scalar_si(&m43[&Value::String("mc_sigma".into())]);
+        let mean42  = scalar_si(&m42[&Value::String("mc_mean".into())]);
+        let mean43  = scalar_si(&m43[&Value::String("mc_mean".into())]);
+        assert_ne!(sigma42.to_bits(), sigma43.to_bits(),
+            "mc_sigma should differ for different seeds");
+        assert_ne!(mean42.to_bits(), mean43.to_bits(),
+            "mc_mean should differ for different seeds");
+    }
+
     // ─── stackup_worst_case tests (step-1 RED; GREEN after step-2 impl) ──────
 
     #[test]
