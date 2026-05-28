@@ -308,6 +308,30 @@ fn elaborate_child_params_only(
         }
 
         let member = &cell.id.member;
+        let scoped_id = ValueCellId::new(scoped_entity, member);
+
+        // task 3806 (γ) precedence rule: if the parent template pushed an
+        // explicit override cell for this scoped id (e.g. `sub b : Bearing {
+        // bore = auto }` via entity.rs step-4), the snapshot entry carries
+        // `DeterminacyState::Auto`.  Overwriting that with the child param's
+        // concrete default would poison the solver's initial point and prevent
+        // the M3 solver from resolving the Auto cell via the parent's
+        // constraints.  Skip the child default write so the Auto state and its
+        // `Value::Undef` initial value survive into `build_solver_problem`.
+        if snapshot
+            .values
+            .get(&scoped_id)
+            .map(|(_, det)| *det == DeterminacyState::Auto)
+            .unwrap_or(false)
+        {
+            // Still populate child_values from the snapshot so that
+            // downstream let-bindings that reference this member see a
+            // consistent value (Undef for now; the solver will resolve it).
+            if let Some((val, _)) = snapshot.values.get(&scoped_id) {
+                child_values.insert(cell.id.clone(), val.clone());
+            }
+            continue;
+        }
 
         let val = if let Some((_name, arg_expr)) = args.iter().find(|(name, _)| name == member) {
             reify_expr::eval_expr(arg_expr, &eval_ctx_with_meta(values, functions, meta_map))
@@ -321,8 +345,6 @@ fn elaborate_child_params_only(
         };
 
         child_values.insert(cell.id.clone(), val.clone());
-
-        let scoped_id = ValueCellId::new(scoped_entity, member);
         let node_id = NodeId::Value(scoped_id.clone());
         let start = Instant::now();
         journal.record(EvalEvent {

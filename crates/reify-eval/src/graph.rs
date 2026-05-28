@@ -429,6 +429,21 @@ impl EvaluationGraph {
 
                     for child_cell in &child_template.value_cells {
                         let scoped_id = ValueCellId::new(&scoped_entity, &child_cell.id.member);
+
+                        // task 3806 (γ) precedence rule: if the parent template
+                        // already inserted an override cell for this scoped id
+                        // (lines 284-298 above, from the parent's own value_cells
+                        // — e.g. a `sub b : Bearing { bore = auto }` override
+                        // emitted by entity.rs step-4), let that cell stand.
+                        // Overwriting it with the child-default-derived node
+                        // would change its `kind` from `Auto` to `Param`, which
+                        // would cause `Snapshot::from_compiled_module` to
+                        // initialise the cell as `Undetermined` instead of `Auto`
+                        // and break incremental-eval cache-key invariants.
+                        if graph.value_cells.contains_key(&scoped_id) {
+                            continue;
+                        }
+
                         let id_hash = ContentHash::of_str(&format!("{}", scoped_id));
                         let expr_hash = child_cell
                             .default_expr
