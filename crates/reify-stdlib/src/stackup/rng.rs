@@ -55,6 +55,24 @@ impl Xoshiro256StarStar {
         Xoshiro256StarStar { s, spare: None }
     }
 
+    /// Return a `f64` in the half-open interval `[0, 1)`.
+    ///
+    /// Recipe: right-shift the raw `u64` by 11 bits to obtain a 53-bit
+    /// integer, then multiply by `2^-53 = 0x1.0p-53` (IEEE-754 hex literal).
+    ///
+    /// This is the standard portable-deterministic recipe:
+    /// - The 11-bit right-shift fits the integer exactly into the 53-bit
+    ///   IEEE-754 double mantissa.
+    /// - Multiplying by an exact power of two is always correctly-rounded ⇒
+    ///   **same output on every IEEE-754 platform**.
+    /// - Result is in `[0, 1)` because the integer is in `[0, 2^53)`.
+    ///
+    /// No platform-dependent transcendentals or rounding modes are involved.
+    pub(super) fn next_uniform_f64(&mut self) -> f64 {
+        // 0x3CA0000000000000 == 2^-53 as a raw IEEE-754 bit pattern.
+        (self.next_u64() >> 11) as f64 * f64::from_bits(0x3CA0_0000_0000_0000)
+    }
+
     /// Return the next `u64` from the stream and advance the state.
     ///
     /// Output function: `rotl(s[1] * 5, 7) * 9`  (xoshiro256** variant).
