@@ -1,3 +1,4 @@
+use reify_core::DimensionVector;
 use reify_ir::Value;
 
 use crate::helpers::{binary, complex_abs, complex_phase, sanitize_value, unary};
@@ -152,6 +153,24 @@ pub(crate) fn eval_complex(name: &str, args: &[Value]) -> Option<Value> {
                 let im = (ai * br - ar * bi) / denom;
                 let dimension = ad.div(bd);
                 sanitize_value(Value::Complex { re, im, dimension })
+            }
+            _ => Value::Undef,
+        }),
+
+        // complex_exp(z): e^(a+bi) = e^a·(cos b + i·sin b).
+        // Dimensionless input only — exp of a dimensioned quantity is meaningless.
+        // Result is always DIMENSIONLESS. Overflow caught by sanitize_value.
+        "complex_exp" => unary(args, |v| match v {
+            Value::Complex { re, im, dimension } => {
+                if *dimension != DimensionVector::DIMENSIONLESS {
+                    return Value::Undef;
+                }
+                let er = (*re).exp();
+                sanitize_value(Value::Complex {
+                    re: er * (*im).cos(),
+                    im: er * (*im).sin(),
+                    dimension: DimensionVector::DIMENSIONLESS,
+                })
             }
             _ => Value::Undef,
         }),
