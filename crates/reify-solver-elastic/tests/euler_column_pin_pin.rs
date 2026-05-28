@@ -98,6 +98,20 @@ impl ColumnFixture {
         Self { nx: 8, ny: 8, nz: 160, lx: 0.02, ly: 0.02, lz: 0.8 }
     }
 
+    /// Higher-resolution mesh for the fixed-guided (k=0.5) MPC test.
+    ///
+    /// P1-tet bending lock gives a systematic floor: fitting `error = a + b/nx²`
+    /// to the measured data yields a → 6.8%, meaning 5% is unachievable at any
+    /// practical P1-tet mesh density. Escalation filed as esc-3813-116.
+    ///
+    /// Tuning history (release mode, P_cr = 168,605.74 N):
+    /// - `nx=ny=8, nz=160`: 9.39% (step-7 RED measurement, 2026-05-28).
+    /// - `nx=ny=10, nz=160`: 8.46%, 55.71s (step-8 branch-B, 2026-05-28).
+    /// - `nx=ny=12, nz=160`: 7.95%, 95.37s (step-8 branch-B/C, 2026-05-28).
+    fn fixed_guided_high_resolution() -> Self {
+        Self { nx: 12, ny: 12, nz: 160, lx: 0.02, ly: 0.02, lz: 0.8 }
+    }
+
     fn n_nodes(&self) -> usize {
         (self.nx + 1) * (self.ny + 1) * (self.nz + 1)
     }
@@ -480,7 +494,7 @@ fn fixed_pin_euler_column_within_ten_percent() {
 /// if 5% is not achievable at nx=ny=8 (mesh refinement to nx=ny=10/12).
 #[test]
 fn fixed_guided_euler_column_within_five_percent() {
-    let grid = ColumnFixture::steel_aisi_1045_800mm();
+    let grid = ColumnFixture::fixed_guided_high_resolution();
     let nodes = build_node_xyz(&grid);
     let tets = build_tet_mesh(&grid);
 
