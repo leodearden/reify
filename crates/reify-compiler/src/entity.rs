@@ -1152,64 +1152,6 @@ pub(crate) fn compile_entity(
                     diagnostics,
                 );
 
-                // Cross-sub bare geometry access (task 3441):
-                // `let copy = self.<sub>.<geom>` produces a CompiledExpr of kind
-                // `CompiledExprKind::CrossSubGeometryRef` (task 3508) with
-                // `Type::Geometry` via `try_resolve_cross_sub_geometry_value_ref`
-                // (expr.rs).  Value cells with Type::Geometry are unrepresentable
-                // (rejected by `value_type_kind_matches` in reify-eval; runtime
-                // invariant `assert_value_cell_types_representable`).  Skip the
-                // value cell creation in this specific case: the bare access
-                // produces no realisation op (a bare `MemberAccess` doesn't
-                // pass `is_geometry_let`) and no kernel op — the working path
-                // is designed for use *inside* a geometry call where the
-                // parallel `try_resolve_cross_sub_geom_ref` in geometry.rs
-                // lowers the access to a `GeomRef::Sub`.
-                //
-                // The check matches the typed `CompiledExprKind::CrossSubGeometryRef`
-                // marker emitted exclusively by
-                // `expr.rs::try_resolve_cross_sub_geometry_value_ref` (task 3508),
-                // so that other expressions that happen to inferentially resolve to
-                // Type::Geometry — e.g. an ident alias to a geometry let used in a
-                // BinaryOp like `alias + 1` — remain compiled as value cells.
-                // Pinned by `let_scope_tests::ident_alias_scope_type_is_geometry`
-                // (must create a value cell for `x`) and by
-                // `crates/reify-eval/tests/cross_sub_geometry_e2e.rs::bare_cross_sub_geometry_access_is_documented_v01_value_cell_only`
-                // (must NOT create a value cell for `copy`).
-                //
-                // Task 3454: emit a Warning at the drop site so the user knows
-                // the binding is a no-op.  Task 3508: replaced fragile heuristic
-                // (`ValueRef + entity.contains('.')`) with the typed variant tag.
-                // Dual regression guards:
-                // - `cross_sub_geometry_diagnostic_tests.rs::bare_cross_sub_geometry_let_emits_v01_no_op_warning`
-                //   (compiler-side; asserts Warning severity + keywords)
-                // - `cross_sub_geometry_e2e.rs::bare_cross_sub_geometry_access_is_documented_v01_value_cell_only`
-                //   (eval-side; filters by Severity::Error only — Warning is invisible to it)
-                if let reify_ir::CompiledExprKind::CrossSubGeometryRef(vid) = &compiled_expr.kind
-                {
-                    // Extract `<sub>` from the synthetic entity stamp `"<parent>.<sub>"`.
-                    // Entity names cannot contain '.' (the parser's identifier rule rejects
-                    // dots), so split_once is unambiguous for the current stamp format.
-                    // `unwrap_or` degrades gracefully if the stamp format ever changes
-                    // (e.g. a future task uses '::' as a separator) — the warning still
-                    // fires but names the full entity string instead of just the sub.
-                    let sub_name = vid.entity.split_once('.').map(|(_, s)| s).unwrap_or(&vid.entity);
-                    diagnostics.push(
-                        Diagnostic::warning(format!(
-                            "bare `let {} = self.{}.{}` produces no value cell in v0.1 \
-                             (cross-sub geometry must be used inside a geometry call — \
-                             wrap with translate/union/etc., or move the alias into the \
-                             child template's body)",
-                            let_decl.name, sub_name, vid.member
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            let_decl.span,
-                            "no-op in v0.1; binding silently dropped",
-                        )),
-                    );
-                    continue;
-                }
-
                 let cell_type = compiled_expr.result_type.clone();
                 let id = ValueCellId::new(entity_name, &let_decl.name);
 

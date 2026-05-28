@@ -225,17 +225,17 @@ pub(crate) fn try_emit_cross_sub_geometry(
 /// `CompiledExprKind::CrossSubGeometryRef` (task 3508) whose entity stamp follows
 /// the same `format!("{}.{}", entity_name, sub_name)` convention used at
 /// expr.rs:1317 for scalar cross-sub member access, with `Type::Geometry`.
-/// The typed variant lets the bare-let drop site in entity.rs recognise the
-/// synthetic shape unambiguously via pattern match, rather than the fragile
-/// `entity.contains('.')` heuristic.
 ///
 /// Returns `None` when the member is not a realisation on the child template,
 /// allowing the caller to fall through to its existing "unknown member" branch.
 ///
-/// **No diagnostic emitted on success.**  The eval side (engine_build.rs) is
-/// responsible for plumbing the realised geometry handle into
-/// `named_steps["<sub>.<member>"]` so that the parallel `GeomRef::Sub("<sub>.<member>")`
-/// in the realisation ops resolves to the child's handle.
+/// **No diagnostic emitted on success.**  After GHR-γ step-4 the
+/// `CrossSubGeometryRef` falls through to the standard `ValueCellDecl` path in
+/// entity.rs.  The eval side (engine_build.rs `seed_cross_sub_named_steps`)
+/// stamps the scoped value cell (`ValueCellId("<parent>.<sub>", member)`) with a
+/// `Value::GeometryHandle` derived from the child's realization handle.  The
+/// eval-time arm in `reify_expr::eval_expr` dereferences the scoped cell
+/// directly (GHR-γ step-8).
 ///
 /// The collection-sub call sites continue to use [`try_emit_cross_sub_geometry`]
 /// to emit the v0.1 diagnostic until per-instance handles are implemented.
@@ -265,9 +265,6 @@ fn try_resolve_cross_sub_geometry_value_ref(
     if scope.sub_member_is_cross_sub_geometry_or_forward_declared(sub_name, member) {
         let scoped_entity = format!("{}.{}", scope.entity_name, sub_name);
         let scoped_id = ValueCellId::new(&scoped_entity, member);
-        // Emit the typed discriminator (task-3508) so the bare-let drop site in
-        // entity.rs can recognise this synthetic shape via pattern match on the
-        // variant, rather than the fragile `entity.contains('.')` heuristic.
         Some(CompiledExpr::cross_sub_geometry_ref(scoped_id, Type::Geometry))
     } else {
         None

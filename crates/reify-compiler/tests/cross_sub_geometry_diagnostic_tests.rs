@@ -548,27 +548,18 @@ fn assert_no_v01_bare_let_warning(source: &str, case_label: &str) {
     );
 }
 
-/// A bare `let copy = self.inner.body` with no wrapping geometry call emits a
-/// Warning for geometry-let child members (`let body = box(...)`) because the
-/// cross-sub bypass in entity.rs is still active in GHR-γ step-2.
+/// A bare `let copy = self.inner.body` with no wrapping geometry call no longer
+/// emits a v0.1 Warning after GHR-γ step-4 retires the cross-sub bypass in
+/// entity.rs.  Both child-side shapes — geometry-let and Solid-param — now
+/// produce a `ValueCellDecl{Type::Geometry}` and no warning fires.
 ///
-/// For Solid-param child members (`param body : Solid = box(...)`) the Warning
-/// no longer fires after step-2: the param now has a `ValueCellDecl` so the
-/// access goes through the plain `ValueRef` path and the bypass is not reached.
-///
-/// This test covers both child-side shapes:
-/// - Case A `let body = box(...)` — Warning fires (bypass still present).
-/// - Case B `param body : Solid = box(...)` — No Warning (bypass not reached).
-///
-/// When step-4 retires the cross-sub bypass entirely, flip Case A to use
-/// `assert_no_v01_bare_let_warning` too.
-///
-/// Originally added by task 3454. Updated by task 3605 (GHR-γ step-2) to
-/// split the two cases.
+/// Originally added by task 3454 asserting the Warning fired.  Updated by task
+/// 3605 (GHR-γ step-2) to split the two cases.  Updated by task 3605 (step-4)
+/// to flip both cases to expect NO warning.
 #[test]
 fn bare_cross_sub_geometry_let_emits_v01_no_op_warning() {
-    // Case A: child-side `let body = box(...)` — bypass still fires.
-    assert_v01_bare_let_warning(
+    // Case A: child-side `let body = box(...)` — bypass retired, no Warning.
+    assert_no_v01_bare_let_warning(
         r#"pub structure Inner {
     let body = box(10mm, 20mm, 30mm)
 }
@@ -579,8 +570,7 @@ pub structure Outer {
         "Case A (let body)",
     );
 
-    // Case B: child-side `param body : Solid = box(...)` — bypass not reached
-    // (Solid param has a value cell after step-2, so ValueRef path is taken).
+    // Case B: child-side `param body : Solid = box(...)` — no Warning (unchanged).
     assert_no_v01_bare_let_warning(
         r#"pub structure Inner {
     param body : Solid = box(10mm, 20mm, 30mm)
@@ -597,17 +587,16 @@ pub structure Outer {
 
 /// Downstream translate after a bare cross-sub geometry let.
 ///
-/// - Case A (`let body`): still emits exactly ONE v0.1 Warning (bypass active).
-/// - Case B (`param body : Solid`): ZERO Warnings (bypass not reached; Solid
-///   param creates a value cell after GHR-γ step-2).
-///
-/// When step-4 retires the cross-sub bypass, flip Case A to expect count == 0.
+/// After GHR-γ step-4 retires the cross-sub bypass both cases emit ZERO v0.1
+/// Warnings — the `CrossSubGeometryRef` now falls through to the standard
+/// `ValueCellDecl` path and no warning is emitted.
 ///
 /// Originally added by task 3454 (step-3) asserting count == 1 for both cases.
 /// Updated by task 3605 (GHR-γ step-2) to split counts.
+/// Updated by task 3605 (step-4) to flip Case A to expect count == 0.
 #[test]
 fn bare_cross_sub_geometry_let_with_downstream_translate_surfaces_v01_hint() {
-    // Case A: geometry let — Warning still fires (cross-sub bypass present).
+    // Case A: geometry let — bypass retired, ZERO Warnings.
     {
         let source = r#"pub structure Inner {
     let body = box(10mm, 20mm, 30mm)
@@ -635,16 +624,15 @@ pub structure Outer {
             .iter()
             .filter(|d| {
                 d.severity == Severity::Warning
-                    && d.message.contains("`let copy = self.inner.body`")
                     && d.message.contains("v0.1")
                     && d.message.contains("no value cell")
             })
             .count();
         assert_eq!(
             warn_count,
-            1,
-            "Case A (let body, downstream translate): expected exactly one v0.1 bare-let Warning \
-             (fires at the declaration, not once per downstream use); got: {:?}",
+            0,
+            "Case A (let body, downstream translate): expected ZERO v0.1 bare-let Warnings \
+             after step-4 retires the bypass; got: {:?}",
             compiled
                 .diagnostics
                 .iter()

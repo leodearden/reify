@@ -769,7 +769,19 @@ fn guarded_solid_param_creates_geometry_value_cell() {
 /// does NOT accept `sub child : Inner` (zero occurrences in the test suite).
 #[test]
 fn bare_cross_sub_geometry_creates_value_cell() {
-    let source = r#"pub structure Inner { param body : Solid = sphere(5mm) }
+    // Use a geometry-LET child member (`let body = sphere(5mm)`) — geometry lets
+    // have only a RealizationDecl (not a ValueCellDecl), so `body` is absent from
+    // `sub_member_types["child"]`.  The expr.rs lookup falls through to
+    // `try_resolve_cross_sub_geometry_value_ref`, which produces
+    // `CompiledExprKind::CrossSubGeometryRef`.  That's the variant the old
+    // bypass matched on; after step-4 retires the bypass the cell is created.
+    //
+    // For `param body : Solid` the child HAS a ValueCellDecl, so `body` IS in
+    // `sub_member_types` and the access resolves to a plain `ValueRef` — the
+    // bypass never fired for that case even before step-4.
+    let source = r#"pub structure Inner {
+    let body = sphere(5mm)
+}
 pub structure Outer {
     sub child = Inner()
     let copy = self.child.body
@@ -801,7 +813,9 @@ pub structure Outer {
         "expected cell_type=Type::Geometry for 'copy', got {:?}",
         cell.cell_type
     );
-    // The default_expr must carry a CrossSubGeometryRef discriminator.
+    // The default_expr must carry a CrossSubGeometryRef discriminator (not
+    // ValueRef) because the geometry-let child member is absent from
+    // sub_member_types.
     let default_expr = cell
         .default_expr
         .as_ref()
