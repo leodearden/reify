@@ -302,10 +302,7 @@ fn stackup_rss(args: &[Value]) -> Value {
 fn parse_optional_length(v: &Value) -> Option<Option<f64>> {
     match v {
         Value::Undef => Some(None),
-        _ => match len_scalar(v) {
-            Some(si) => Some(Some(si)),
-            None => None,
-        },
+        _ => len_scalar(v).map(Some),
     }
 }
 
@@ -415,13 +412,13 @@ fn monte_carlo_stackup(args: &[Value]) -> Value {
         let sub_seed = seed_u64 ^ (i as u64).wrapping_mul(0x9E3779B97F4A7C15);
         let mut rng = rng::Xoshiro256StarStar::from_seed(sub_seed);
         let sign_f = c.sign as f64;
-        for draw_idx in 0..n_samples {
+        for gap in &mut gaps {
             let deviation: f64 = match c.distribution {
                 Distribution::Normal     => rng.sample_normal(t_i / sigma_level),
                 Distribution::Uniform    => rng.sample_uniform_sym(t_i),
                 Distribution::Triangular => rng.sample_triangular_sym(t_i),
             };
-            gaps[draw_idx] += sign_f * deviation;
+            *gap += sign_f * deviation;
         }
     }
 
@@ -499,6 +496,7 @@ fn monte_carlo_stackup(args: &[Value]) -> Value {
 }
 
 /// Assemble the Monte Carlo result `Value::Map`.
+#[allow(clippy::too_many_arguments)]
 fn build_mc_map(
     gap_nominal: f64,
     mc_mean: Value,
@@ -807,7 +805,7 @@ mod tests {
 
         // 0-arg, 1-arg, 2-arg (missing seed)
         assert!(is_undef_or_none(eval_stackup("monte_carlo_stackup", &[])));
-        assert!(is_undef_or_none(eval_stackup("monte_carlo_stackup", &[chain.clone()])));
+        assert!(is_undef_or_none(eval_stackup("monte_carlo_stackup", std::slice::from_ref(&chain))));
         assert!(is_undef_or_none(eval_stackup("monte_carlo_stackup", &[chain.clone(), n.clone()])));
 
         // 7-arg over-arity
