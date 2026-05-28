@@ -203,4 +203,41 @@ TASK_ELAPSED=$(( T3B_1 - T3B_0 ))
 assert "merge-bypass: subsequent task blocks >= WINDOW=2s after merge touch" \
     test "$TASK_ELAPSED" -ge 2
 
+# ---------------------------------------------------------------------------
+# Cycle 4: REIFY_PSI_GATE_DISABLE=1 break-glass — exits 0 fast, NO touch
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle 4: DISABLE break-glass ---"
+
+PSI_HIGH2="$(make_psi_fixture 99)"
+
+# (a) dispatch file absent: gate should exit 0 fast AND not create the file
+#     (MAX_WAIT=5/POLL=1 safety: without DISABLE, the gate would block on avg10=99)
+DISPATCH_4A="$(mktemp -u -p "$WORKDIR" dispatch-4a.XXXXXX)"
+T4A_0=$(date +%s)
+run_gate "$DISPATCH_4A" "$PSI_HIGH2" REIFY_PSI_GATE_DISABLE=1 \
+    REIFY_PSI_GATE_MAX_WAIT=5 REIFY_PSI_GATE_POLL=1
+T4A_1=$(date +%s)
+ELAPSED_4A=$(( T4A_1 - T4A_0 ))
+
+assert "disable: exit 0 (absent dispatch)" \
+    test "$GATE_RC" -eq 0
+assert "disable: returned fast" \
+    test "$ELAPSED_4A" -lt 2
+assert "disable: dispatch file NOT created" \
+    test ! -e "$DISPATCH_4A"
+
+# (b) dispatch file pre-existing: gate exits 0 fast AND mtime must be unchanged
+DISPATCH_4B="$(mktemp -p "$WORKDIR" dispatch-4b.XXXXXX)"
+touch "$DISPATCH_4B"
+sleep 1  # ensure clock-second boundary for a stable mtime
+MTIME_4B_BEFORE=$(stat -c %Y "$DISPATCH_4B")
+
+run_gate "$DISPATCH_4B" "$PSI_HIGH2" REIFY_PSI_GATE_DISABLE=1 \
+    REIFY_PSI_GATE_MAX_WAIT=5 REIFY_PSI_GATE_POLL=1
+MTIME_4B_AFTER=$(stat -c %Y "$DISPATCH_4B")
+
+assert "disable: pre-existing dispatch file mtime unchanged" \
+    test "$MTIME_4B_AFTER" -eq "$MTIME_4B_BEFORE"
+
 test_summary
