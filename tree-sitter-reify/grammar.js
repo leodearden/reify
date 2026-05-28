@@ -60,6 +60,7 @@ module.exports = grammar({
     [$.pragma],
     [$.named_argument_list, $.argument_list],
     [$.constraint_instantiation, $.constraint_declaration],
+    [$.type_expr, $.parameterized_type],
   ],
 
   rules: {
@@ -920,6 +921,13 @@ module.exports = grammar({
       prec.left(0, seq(field('lower', $._expression), '..', field('upper', $._expression))),
       // Two-sided exclusive upper: lower..<upper
       prec.left(0, seq(field('lower', $._expression), '..<', field('upper', $._expression))),
+      // Single-sided prefix forms: >expr, >=expr, <expr, <=expr
+      // No field names — operator is anonymous child, operand is unnamed child.
+      // Downstream task ζ discriminates single-sided from two-sided by absence of lower/upper fields.
+      prec.left(0, seq('>', $._expression)),
+      prec.left(0, seq('>=', $._expression)),
+      prec.left(0, seq('<', $._expression)),
+      prec.left(0, seq('<=', $._expression)),
     ),
 
     unary_expression: $ => choice(
