@@ -568,12 +568,14 @@ pub(crate) fn compile_entity(
                 // symmetrically to geometry lets: register as Type::Geometry,
                 // mark scope as having geometry, and track in known_geometry_lets
                 // so subsequent members can reference this param as a geometry source.
-                if is_solid_geometry_param(
-                    &ty,
-                    param.default.as_ref(),
-                    functions,
-                    &known_geometry_lets,
-                ) {
+                // (is_solid_geometry_param inlined here — retired in GHR-γ, task 3605)
+                if ty == Type::Geometry
+                    && param
+                        .default
+                        .as_ref()
+                        .map(|e| is_geometry_let(e, functions, &known_geometry_lets))
+                        .unwrap_or(false)
+                {
                     scope.has_geometry = true;
                     known_geometry_lets.insert(param.name.as_str());
                 }
@@ -1078,18 +1080,6 @@ pub(crate) fn compile_entity(
                             diagnostics,
                         )
                     });
-
-                // Solid-typed params with a geometry-call default are lowered as
-                // realizations (third pass), not as scalar ValueCellDecls.
-                // Symmetric with the geometry-let early-continue in the Let branch.
-                if is_solid_geometry_param(
-                    &cell_type,
-                    param.default.as_ref(),
-                    functions,
-                    &known_geometry_lets,
-                ) {
-                    continue;
-                }
 
                 let auto_free = param.default.as_ref().and_then(extract_auto_free);
 

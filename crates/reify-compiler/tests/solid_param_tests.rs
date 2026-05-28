@@ -33,12 +33,11 @@ fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
     compiled
 }
 
-// ─── step-5: Solid-typed param must NOT emit a ValueCellDecl ─────────────────
+// ─── GHR-γ: Solid-typed param MUST emit a ValueCellDecl ──────────────────────
 
-/// After the pre-pass extension (step-4), scope registers `g` as Type::Geometry.
-/// The main Param loop must also skip ValueCellDecl construction so that `g`
-/// appears nowhere in `template.value_cells`.
-/// Expect failure until the main-loop early-continue (step-6) is implemented.
+/// After GHR-γ (bypass retired), `param g : Solid = cylinder(10mm, 20mm)`
+/// must produce a `ValueCellDecl{cell_type: Type::Geometry, kind: Param}`
+/// AND a `RealizationDecl` (both paths are now active in parallel).
 #[test]
 fn solid_param_has_no_value_cell() {
     let source = r#"structure def Widget {
@@ -51,11 +50,23 @@ fn solid_param_has_no_value_cell() {
         .find(|t| t.name == "Widget")
         .expect("Widget template not found");
 
-    // The geometry param must NOT produce a scalar ValueCellDecl.
-    assert!(
-        !template.value_cells.iter().any(|c| c.id.member == "g"),
-        "ValueCellDecl for 'g' must not exist; Solid-typed params with geometry \
-         defaults should be lowered as realizations only"
+    // After GHR-γ: exactly one ValueCellDecl for 'g' with Type::Geometry.
+    let g_cells: Vec<_> = template.value_cells.iter().filter(|c| c.id.member == "g").collect();
+    assert_eq!(
+        g_cells.len(),
+        1,
+        "expected exactly 1 ValueCellDecl for 'g' (GHR-γ: bypass retired); got: {:#?}",
+        g_cells
+    );
+    assert_eq!(
+        g_cells[0].cell_type,
+        Type::Geometry,
+        "expected cell_type=Type::Geometry for 'g'"
+    );
+    assert_eq!(
+        g_cells[0].kind,
+        ValueCellKind::Param,
+        "expected kind=ValueCellKind::Param for 'g'"
     );
 }
 

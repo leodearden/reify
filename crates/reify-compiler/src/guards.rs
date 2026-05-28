@@ -179,13 +179,15 @@ pub(crate) fn register_guarded_names<'a>(
                     Type::Real
                 };
                 // Solid-typed params with a geometry-call default are treated
-                // symmetrically to geometry lets (mirrors entity.rs pre-pass, step-4).
-                if is_solid_geometry_param(
-                    &ty,
-                    param.default.as_ref(),
-                    functions,
-                    known_geometry_lets,
-                ) {
+                // symmetrically to geometry lets (mirrors entity.rs pre-pass).
+                // (is_solid_geometry_param inlined here — retired in GHR-γ, task 3605)
+                if ty == Type::Geometry
+                    && param
+                        .default
+                        .as_ref()
+                        .map(|e| is_geometry_let(e, functions, known_geometry_lets))
+                        .unwrap_or(false)
+                {
                     scope.has_geometry = true;
                     known_geometry_lets.insert(param.name.as_str());
                 }
@@ -375,17 +377,6 @@ pub(crate) fn compile_guarded_members(
                     .resolve(&param.name)
                     .map(|(_, ty)| ty.clone())
                     .unwrap_or_else(|| emit_ice_unresolved(UnresolvedKind::GuardedMember, &param.name, param.span, diagnostics));
-
-                // Solid-typed params with a geometry-call default are lowered as
-                // realizations (not scalar cells) — mirrors entity.rs main loop (step-6).
-                if is_solid_geometry_param(
-                    &cell_type,
-                    param.default.as_ref(),
-                    functions,
-                    known_geometry_lets,
-                ) {
-                    continue;
-                }
 
                 let auto_free = param.default.as_ref().and_then(extract_auto_free);
 
