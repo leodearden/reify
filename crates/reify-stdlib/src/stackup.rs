@@ -17,6 +17,7 @@ pub(crate) fn eval_stackup(name: &str, args: &[Value]) -> Option<Value> {
         "contributor" => contributor(args),
         "contributor_asym" => contributor_asym(args),
         "stackup_worst_case" => stackup_worst_case(args),
+        "stackup_rss" => stackup_rss(args),
         _ => return None,
     })
 }
@@ -183,6 +184,70 @@ fn stackup_worst_case(args: &[Value]) -> Value {
     m.insert(Value::String("worst_case_band".into()), len_scalar_val(wc_band));
     m.insert(Value::String("worst_case_max".into()),  len_scalar_val(wc_max));
     m.insert(Value::String("worst_case_min".into()),  len_scalar_val(wc_min));
+    Value::Map(m)
+}
+
+/// Parse a sigma_level argument: must be a positive, finite, dimensionless numeric.
+///
+/// Accepted variants: `Value::Int(n)`, `Value::Real(r)`, or a dimensionless
+/// `Value::Scalar`. Dimensioned scalars (e.g. LENGTH), <= 0, and non-finite
+/// values all return `None`.
+fn parse_sigma_level(v: &Value) -> Option<f64> {
+    let sigma = match v {
+        Value::Int(n) => *n as f64,
+        Value::Real(r) => *r,
+        Value::Scalar { si_value, dimension }
+            if *dimension == DimensionVector::DIMENSIONLESS =>
+        {
+            *si_value
+        }
+        _ => return None,
+    };
+    if sigma.is_finite() && sigma > 0.0 {
+        Some(sigma)
+    } else {
+        None
+    }
+}
+
+fn stackup_rss(args: &[Value]) -> Value {
+    if !(1..=2).contains(&args.len()) {
+        return Value::Undef;
+    }
+    let chain = match parse_chain(&args[0]) {
+        Some(c) => c,
+        None => return Value::Undef,
+    };
+    let sigma_level: f64 = if args.len() == 2 {
+        match parse_sigma_level(&args[1]) {
+            Some(s) => s,
+            None => return Value::Undef,
+        }
+    } else {
+        3.0 // PRD §3 default: +/-3σ mechanical convention
+    };
+    let mut gap_nominal = 0.0_f64;
+    let mut sum_t_sq = 0.0_f64;
+    for c in &chain {
+        gap_nominal += c.sign as f64 * c.nominal;
+        let t_i = (c.plus_tol + c.minus_tol) / 2.0; // half-band per contributor
+        sum_t_sq += (t_i / sigma_level).powi(2);
+    }
+    // rss_sigma = sqrt(Σ(t_i/σ)²); rss_band = σ·rss_sigma = sqrt(Σt_i²) — sigma-invariant
+    let rss_sigma = sum_t_sq.sqrt();
+    let rss_band = sigma_level * rss_sigma;
+    let rss_min = gap_nominal - rss_band;
+    let rss_max = gap_nominal + rss_band;
+    let len_val = |si: f64| {
+        sanitize_value(Value::Scalar { si_value: si, dimension: DimensionVector::LENGTH })
+    };
+    let mut m = BTreeMap::new();
+    m.insert(Value::String("nominal_gap".into()), len_val(gap_nominal));
+    m.insert(Value::String("rss_band".into()),    len_val(rss_band));
+    m.insert(Value::String("rss_max".into()),     len_val(rss_max));
+    m.insert(Value::String("rss_min".into()),     len_val(rss_min));
+    m.insert(Value::String("rss_sigma".into()),   len_val(rss_sigma));
+    m.insert(Value::String("sigma_level".into()), Value::Real(sigma_level));
     Value::Map(m)
 }
 
