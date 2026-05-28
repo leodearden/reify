@@ -396,6 +396,8 @@ fn assert_all_type_variants_listed(t: &reify_core::Type) {
         Type::Complex(_) | Type::Range(_) => true,
         // Rigid-body / orientation
         Type::Orientation(_) | Type::Frame(_) | Type::Transform(_) => true,
+        // Non-rigid affine map (task 3958 / α)
+        Type::AffineMap(_) => true,
         // 3D geometric primitives
         Type::Plane | Type::Axis | Type::BoundingBox => true,
         // Matrix

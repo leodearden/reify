@@ -102,6 +102,11 @@ pub enum Type {
     Frame(usize),
     /// Rigid-body transformation in N-dimensional space: a rotation (Orientation) + translation (Vector).
     Transform(usize),
+    /// General (non-rigid) affine map in N-dimensional space: a linear part + translation.
+    ///
+    /// Unlike `Transform(usize)` (rigid: rotation+translation), the linear part may scale/shear.
+    /// Stored as inline arrays `linear: [[f64;3];3]` + `translation: [f64;3]` in `Value::AffineMap`.
+    AffineMap(usize),
     /// Range over a comparable element type (e.g., Range<Int>, Range<Scalar[m]>).
     Range(Box<Type>),
     /// 3D plane: an origin point and a unit normal vector.
@@ -227,6 +232,11 @@ impl Type {
     /// Shorthand for a rigid-body transformation in N-dimensional space.
     pub fn transform(n: usize) -> Self {
         Type::Transform(n)
+    }
+
+    /// Shorthand for a general (non-rigid) affine map in N-dimensional space.
+    pub fn affine_map(n: usize) -> Self {
+        Type::AffineMap(n)
     }
 
     /// Shorthand for a range over a given element type.
@@ -374,6 +384,7 @@ impl std::fmt::Display for Type {
             Type::Orientation(n) => write!(f, "Orientation{}", n),
             Type::Frame(n) => write!(f, "Frame{}", n),
             Type::Transform(n) => write!(f, "Transform{}", n),
+            Type::AffineMap(n) => write!(f, "AffineMap{}", n),
             Type::Range(inner) => write!(f, "Range<{}>", inner),
             Type::Plane => write!(f, "Plane"),
             Type::Axis => write!(f, "Axis"),
