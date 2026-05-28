@@ -454,3 +454,142 @@ fn fixed_pin_euler_column_within_ten_percent() {
         rel_err * 100.0,
     );
 }
+
+// ---------------------------------------------------------------------------
+// Step-7: Fixed-guided (fixed-fixed, k=0.5) Euler column via MPCs — within 5%
+// ---------------------------------------------------------------------------
+
+/// Fixed-guided Euler column — PRD §13 task δ + §9.1 "5% requires MPCs" footnote.
+///
+/// **Why "fixed-guided" = "fixed-fixed" (k=0.5)**: the MPC group enforces
+/// `u_z[every_top_node] = u_z[master_top_node]`, which forces the top
+/// cross-section to remain planar normal to the column axis (`θ=0`). Combined
+/// with the bottom full clamp, this is the classical fixed-fixed BC (k=0.5).
+/// The master-slave reduction in `solve_buckling_kernel` eliminates the
+/// (N_top − 1) = 80 slave DOFs, reducing u_z at the top face to a single
+/// independent DOF.
+///
+/// **Reference**: `P_cr = π²·E·I / (k·L)² = 4·π²·E·I / L²` (k = 0.5).
+///
+/// **Tolerance**: `|λ·F − P_cr| / P_cr < 5%`.
+/// The PRD §9.1 footnote states "True fixed-fixed (k=0.5) within 5% requires
+/// multi-point constraints (`u_z` equal across the top face)". This is the
+/// empirical validation of that claim.
+///
+/// See also `.task/plan.json` §numeric_bound_premise for the mitigation path
+/// if 5% is not achievable at nx=ny=8 (mesh refinement to nx=ny=10/12).
+#[test]
+fn fixed_guided_euler_column_within_five_percent() {
+    let grid = ColumnFixture::steel_aisi_1045_800mm();
+    let nodes = build_node_xyz(&grid);
+    let tets = build_tet_mesh(&grid);
+
+    let material = IsotropicElastic { youngs_modulus: STEEL_E_PA, poisson_ratio: STEEL_NU };
+
+    // BCs: fixed-guided.
+    // Bottom face (k=0): all 3 DOFs clamped (true fixed end).
+    // Top face (k=nz): u_x = u_y = 0 per node (lateral clamp; u_z free via MPC).
+    let mut bcs: Vec<DirichletBc> = Vec::new();
+    for j in 0..=grid.ny {
+        for i in 0..=grid.nx {
+            let n = grid.node_id(i, j, 0);
+            bcs.push(DirichletBc { dof: 3 * n,     value: 0.0 }); // u_x
+            bcs.push(DirichletBc { dof: 3 * n + 1, value: 0.0 }); // u_y
+            bcs.push(DirichletBc { dof: 3 * n + 2, value: 0.0 }); // u_z
+        }
+    }
+    for j in 0..=grid.ny {
+        for i in 0..=grid.nx {
+            let n = grid.node_id(i, j, grid.nz);
+            bcs.push(DirichletBc { dof: 3 * n,     value: 0.0 }); // u_x
+            bcs.push(DirichletBc { dof: 3 * n + 1, value: 0.0 }); // u_y
+        }
+    }
+
+    // MPC group: master = corner node (0, 0, nz); all other top-face nodes are slaves.
+    // MpcRow::new([slave_uz, master_uz], [+1, -1], 0) → u_z[slave] = u_z[master].
+    let master_node = grid.node_id(0, 0, grid.nz);
+    let mut mpcs: Vec<MpcRow> = Vec::new();
+    for j in 0..=grid.ny {
+        for i in 0..=grid.nx {
+            let n = grid.node_id(i, j, grid.nz);
+            if n == master_node {
+                continue; // master is not a slave of itself
+            }
+            mpcs.push(MpcRow::new(
+                vec![3 * n + 2, 3 * master_node + 2],
+                vec![1.0, -1.0],
+                0.0,
+            ));
+        }
+    }
+    // N_top = (nx+1)*(ny+1) = 81 nodes → 80 MPC rows.
+    assert_eq!(
+        mpcs.len(),
+        (grid.nx + 1) * (grid.ny + 1) - 1,
+        "expected N_top - 1 = 80 MPC rows",
+    );
+
+    // Load: 1 kN distributed uniformly across top-face nodes.
+    let n_top_nodes = (grid.nx + 1) * (grid.ny + 1);
+    let mut f = vec![0.0_f64; 3 * nodes.len()];
+    for j in 0..=grid.ny {
+        for i in 0..=grid.nx {
+            let n = grid.node_id(i, j, grid.nz);
+            apply_point_load(&mut f, n, [0.0, 0.0, -APPLIED_LOAD_NEWTONS / n_top_nodes as f64]);
+        }
+    }
+
+    let opts = BucklingKernelOptions {
+        n_modes: 1,
+        eigen_tol: 1e-8,
+        eigen_max_iters: 100,
+        cg_tolerance: 1e-10,
+        cg_max_iter: 10_000,
+    };
+
+    let result = solve_buckling_kernel(&nodes, &tets, &material, &bcs, &f, &mpcs, opts);
+
+    assert!(result.converged, "eigensolve must converge for fixed-guided column");
+    assert!(!result.modes.is_empty(), "must return at least 1 mode");
+
+    let lambda_min = result.modes[0].eigenvalue;
+    assert!(
+        lambda_min > 0.0,
+        "λ_min = {lambda_min} must be positive for compressive load",
+    );
+
+    // Reference: fixed-fixed critical load (k=0.5): P_cr = 4·π²·E·I / L².
+    let i_min = grid.i_min();
+    let p_cr = 4.0 * PI.powi(2) * STEEL_E_PA * i_min / grid.lz.powi(2);
+
+    let lambda_x_load = lambda_min * APPLIED_LOAD_NEWTONS;
+    let rel_err = (lambda_x_load - p_cr).abs() / p_cr;
+    eprintln!(
+        "fixed-guided (k=0.5): λ·F = {lambda_x_load:.2} N, P_cr = {p_cr:.2} N, \
+         rel_err = {:.2}%",
+        rel_err * 100.0,
+    );
+
+    // (c) MPC constraint satisfaction: all top-face u_z values must equal the master's.
+    let master_uz = result.pre_stress_displacement[3 * master_node + 2];
+    for j in 0..=grid.ny {
+        for i in 0..=grid.nx {
+            let n = grid.node_id(i, j, grid.nz);
+            assert_eq!(
+                result.pre_stress_displacement[3 * n + 2].to_bits(),
+                master_uz.to_bits(),
+                "top-face node ({i},{j}): u_z = {} != master u_z = {} (MPC not satisfied)",
+                result.pre_stress_displacement[3 * n + 2],
+                master_uz,
+            );
+        }
+    }
+
+    assert!(
+        rel_err < 0.05,
+        "fixed-guided Euler: λ·F = {lambda_x_load:.2} N, P_cr = {p_cr:.2} N, \
+         rel_err = {:.2}% > 5%",
+        rel_err * 100.0,
+    );
+}
