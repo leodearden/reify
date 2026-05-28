@@ -285,3 +285,62 @@ structure S {
         right: (binary_expression
           left: (identifier)
           right: (identifier))))))
+
+================================================================================
+not: double negation (not not a => not (not a))
+================================================================================
+
+structure S {
+  let r = not not a
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (unary_expression
+        operand: (unary_expression
+          operand: (identifier))))))
+
+================================================================================
+cross-band unary: not !a => not (!a) (symbol ! prec 7 tighter than keyword not prec -12)
+================================================================================
+
+structure S {
+  let r = not !a
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (unary_expression
+        operand: (unary_expression
+          operand: (identifier))))))
+
+================================================================================
+cross-band binary: a || b implies c => (a || b) implies c (symbol || prec 1 tighter than implies prec -15)
+================================================================================
+
+structure S {
+  let r = a || b implies c
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (binary_expression
+        left: (binary_expression
+          left: (identifier)
+          right: (identifier))
+        right: (identifier)))))
