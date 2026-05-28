@@ -557,13 +557,15 @@ fn cli_reify_eval_prints_t_prism_wireframe() {
     );
 
     // Defense-in-depth: pins the T0a signal independent of golden content.
+    // Fields are sorted alphabetically in the output, so `from_index` precedes
+    // `kind`. We match on `kind: "strut"` / `kind: "cable"` substrings.
     assert!(
-        stdout.contains("TensegrityWire { kind: \"strut\""),
-        "T0a signal: expected at least one 'TensegrityWire {{ kind: \"strut\"' line; got:\n{stdout}"
+        stdout.contains("kind: \"strut\""),
+        "T0a signal: expected at least one TensegrityWire with kind=\"strut\"; got:\n{stdout}"
     );
     assert!(
-        stdout.contains("TensegrityWire { kind: \"cable\""),
-        "T0a signal: expected at least one 'TensegrityWire {{ kind: \"cable\"' line; got:\n{stdout}"
+        stdout.contains("kind: \"cable\""),
+        "T0a signal: expected at least one TensegrityWire with kind=\"cable\"; got:\n{stdout}"
     );
 }
 

@@ -12,7 +12,6 @@
 //!   DD4: T0a signal is CLI-only; no kernel line_segment emission here.
 //!   Reuse 4: silent-Undef discipline for all shape-guard failures.
 
-use reify_core::DimensionVector;
 use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 
 /// Evaluate a tensegrity stdlib function by name.
@@ -188,6 +187,7 @@ fn tensegrity_wires(args: &[Value]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_core::DimensionVector;
 
     fn length(m: f64) -> Value {
         Value::Scalar { si_value: m, dimension: DimensionVector::LENGTH }
