@@ -377,16 +377,30 @@ fn cmd_check(args: &[String]) -> ExitCode {
             let mut diagnostics = eval_result.diagnostics.clone();
             diagnostics.extend(check_diags);
 
-            let _outcome = report_eval_output(
+            let outcome = report_eval_output(
                 &constraint_results,
                 &diagnostics,
                 &mut std::io::stdout(),
                 &mut std::io::stderr(),
             );
 
-            // Step-6 returns SUCCESS regardless of outcome; the summary line +
-            // exit-code mapping land in step-8.
-            ExitCode::SUCCESS
+            // Same outcome → summary + exit-code mapping as the no-purpose path,
+            // so a purpose-injected violation behaves identically to a structure
+            // constraint violation in stdout and shell exit semantics.
+            match outcome {
+                ConstraintOutcome::AllSatisfied => {
+                    println!("All constraints satisfied.");
+                    ExitCode::SUCCESS
+                }
+                ConstraintOutcome::SomeIndeterminate(n) => {
+                    println!("No constraints violated ({n} indeterminate).");
+                    ExitCode::SUCCESS
+                }
+                ConstraintOutcome::SomeViolated => {
+                    println!("Some constraints violated.");
+                    ExitCode::FAILURE
+                }
+            }
         }
     }
 }
