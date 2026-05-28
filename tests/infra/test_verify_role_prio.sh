@@ -56,4 +56,63 @@ assert "DF_VERIFY_ROLE unset: exits 0 (defaults to task)" \
     bash -c 'env -u DF_VERIFY_ROLE bash "$1/scripts/verify.sh" test --scope all --print-plan >/dev/null 2>&1' \
     _ "$REPO_ROOT"
 
+# ---------------------------------------------------------------------------
+# Cycle B: CARGO_PRIO prefix-wrapping contract
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle B: prefix-wrapping contract ---"
+
+# Capture command lines for each role/action combination.
+# grep -v '^#' strips env-export and comment lines; command lines remain.
+TASK_TEST_PLAN="$(DF_VERIFY_ROLE=task bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan \
+    | grep -v '^#')"
+TASK_ALL_PLAN="$(DF_VERIFY_ROLE=task bash "$REPO_ROOT/scripts/verify.sh" all --scope all --print-plan \
+    | grep -v '^#')"
+UNSET_TEST_PLAN="$(env -u DF_VERIFY_ROLE bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan \
+    | grep -v '^#')"
+MERGE_PLAN_FULL="$(DF_VERIFY_ROLE=merge bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan)"
+MERGE_TEST_PLAN="$(printf '%s\n' "$MERGE_PLAN_FULL" | grep -v '^#')"
+
+# --- task / test / all ---
+
+# Sanity: at least 2 cargo command lines in the plan.
+# '(^| )cargo ' matches the real cargo token; 'cargo-test-occt-gated.sh' has a
+# hyphen so it doesn't match the wrapper script name, only the 'cargo test' arg.
+assert "task/test/all: at least 2 cargo command lines (sanity)" \
+    bash -c '[ "$(printf "%s\n" "$1" | grep -cE "(^| )cargo " || echo 0)" -ge 2 ]' \
+    _ "$TASK_TEST_PLAN"
+
+# All cargo lines must carry the task prefix (zero unprefixed lines).
+assert "task/test/all: all cargo lines prefixed with 'nice -n 15 ionice -c 2 -n 7 cargo'" \
+    bash -c '! printf "%s\n" "$1" | grep -E "(^| )cargo " | grep -vq "nice -n 15 ionice -c 2 -n 7 cargo"' \
+    _ "$TASK_TEST_PLAN"
+
+# --- task / all / all (covers clippy + gated + ungated) ---
+
+assert "task/all/all: at least 2 cargo command lines (sanity)" \
+    bash -c '[ "$(printf "%s\n" "$1" | grep -cE "(^| )cargo " || echo 0)" -ge 2 ]' \
+    _ "$TASK_ALL_PLAN"
+
+assert "task/all/all: all cargo lines prefixed with 'nice -n 15 ionice -c 2 -n 7 cargo'" \
+    bash -c '! printf "%s\n" "$1" | grep -E "(^| )cargo " | grep -vq "nice -n 15 ionice -c 2 -n 7 cargo"' \
+    _ "$TASK_ALL_PLAN"
+
+# --- unset role defaults to task ---
+
+assert "unset role: plan contains task prefix 'nice -n 15 ionice -c 2 -n 7 cargo'" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "nice -n 15 ionice -c 2 -n 7 cargo"' \
+    _ "$UNSET_TEST_PLAN"
+
+# --- merge / test / all ---
+
+# Every cargo line prefixed with 'nice -n 5 cargo' (mild CPU nice, no ionice).
+assert "merge/test/all: all cargo lines prefixed with 'nice -n 5 cargo'" \
+    bash -c '! printf "%s\n" "$1" | grep -E "(^| )cargo " | grep -vq "nice -n 5 cargo"' \
+    _ "$MERGE_TEST_PLAN"
+
+# The full plan output (including header) must contain NO 'ionice'.
+assert "merge/test/all: no 'ionice' anywhere in the full plan output" \
+    bash -c '! printf "%s\n" "$1" | grep -q "ionice"' \
+    _ "$MERGE_PLAN_FULL"
+
 test_summary
