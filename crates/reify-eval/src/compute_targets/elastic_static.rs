@@ -445,10 +445,10 @@ fn extract_tip_force(val: &Value) -> f64 {
     };
     let mut total = 0.0f64;
     for item in items {
-        if let Value::StructureInstance(data) = item {
-            if let Some(Value::Real(f)) = data.fields.get(&"force".to_string()) {
-                total += f;
-            }
+        if let Value::StructureInstance(data) = item
+            && let Some(Value::Real(f)) = data.fields.get(&"force".to_string())
+        {
+            total += f;
         }
     }
     total

@@ -2808,55 +2808,63 @@ impl Engine {
 
                 if let Some(target) = maybe_target {
                     // §8-η / §3 Final-gate: if the output VC is already
-                    // `Freshness::Final` in the cache from a prior eval(), the
-                    // trampoline result is unchanged — skip re-dispatch and return
-                    // the cached value directly.
+                    // `Freshness::Final` in the cache from a prior eval() that
+                    // dispatched via the @optimized path, the trampoline result
+                    // is unchanged — skip re-dispatch and return the cached
+                    // value directly.
                     //
-                    // This is the in-memory cache-hit path for @optimized cells
-                    // when ALL inputs are Final.  The Pending gate above (lines
-                    // 2771-2789) handles the Pending case; this gate handles the
-                    // symmetric Final case that the Pending gate leaves unguarded.
-                    //
-                    // Placed BEFORE the `compute_dispatch` lookup so both the
-                    // trampoline path and the fall-through body-inline path benefit:
-                    // if a cell was previously evaluated (by either path) and all
-                    // inputs are still Final, the cached value is authoritative.
+                    // Guard: we only fire this gate when the prior snapshot
+                    // (`self.eval_state`) had a ComputeNode for the same target
+                    // pointing to this output cell.  Without this guard, a
+                    // body-inline cache entry written by an intervening
+                    // `edit_source` that replaced the @optimized call with a
+                    // plain expression would suppress ComputeNode creation on
+                    // the next eval() call — the test
+                    // `remove_and_reinsert_via_edit_source_preserves_counter`
+                    // (opaque_state_lifecycle.rs) pins this invariant.
                     //
                     // Uses `NodeId::Value(cell_id.clone())` — the same key that
                     // `complete_compute_dispatch_atomically` writes under on the
                     // first dispatch (matching the post-dispatch store site).
                     {
                         let output_node_id = NodeId::Value(cell_id.clone());
-                        if self.cache.freshness(&output_node_id) == Freshness::Final {
-                            if let Some(entry) = self.cache.get(&output_node_id) {
-                                if let CachedResult::Value(cached_val, det) =
-                                    entry.result.clone()
-                                {
-                                    values.insert(cell_id.clone(), cached_val.clone());
-                                    snapshot.values.insert(
-                                        cell_id.clone(),
-                                        (cached_val, det),
-                                    );
-                                    let _trace = take_trace(
-                                        &mut let_traces,
-                                        &node_id,
-                                        "sorted_lets",
-                                        "let_traces",
-                                    );
-                                    self.journal.record(EvalEvent {
-                                        timestamp: Instant::now(),
-                                        node_id,
-                                        kind: EventKind::Completed {
-                                            outcome: EvalOutcome::Unchanged,
-                                        },
-                                        version: VersionId(version_id),
-                                        payload: Some(EventPayload::Duration(
-                                            start.elapsed(),
-                                        )),
-                                    });
-                                    continue;
-                                }
-                            }
+                        let prior_had_compute_node =
+                            self.eval_state.as_ref().is_some_and(|prior| {
+                                prior.snapshot.graph.compute_nodes.iter().any(
+                                    |(_, cn)| {
+                                        cn.target == target
+                                            && cn.output_value_cells.contains(cell_id)
+                                    },
+                                )
+                            });
+                        if prior_had_compute_node
+                            && self.cache.freshness(&output_node_id) == Freshness::Final
+                            && let Some(entry) = self.cache.get(&output_node_id)
+                            && let CachedResult::Value(cached_val, det) = entry.result.clone()
+                        {
+                            values.insert(cell_id.clone(), cached_val.clone());
+                            snapshot.values.insert(
+                                cell_id.clone(),
+                                (cached_val, det),
+                            );
+                            let _trace = take_trace(
+                                &mut let_traces,
+                                &node_id,
+                                "sorted_lets",
+                                "let_traces",
+                            );
+                            self.journal.record(EvalEvent {
+                                timestamp: Instant::now(),
+                                node_id,
+                                kind: EventKind::Completed {
+                                    outcome: EvalOutcome::Unchanged,
+                                },
+                                version: VersionId(version_id),
+                                payload: Some(EventPayload::Duration(
+                                    start.elapsed(),
+                                )),
+                            });
+                            continue;
                         }
                     }
 
