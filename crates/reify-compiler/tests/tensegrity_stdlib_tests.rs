@@ -14,9 +14,7 @@
 //! `std/tensegrity` is not yet registered — every test below will fail
 //! at the `.expect("stdlib should contain std/tensegrity module")` panic.
 
-use reify_ir::*;
 use reify_compiler::*;
-use reify_test_support::compile_source_with_stdlib;
 use reify_core::*;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
