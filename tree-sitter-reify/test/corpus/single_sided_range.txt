@@ -14,7 +14,7 @@ structure S {
     (let_declaration
       name: (identifier)
       value: (range_expression
-        (quantity_literal
+        bound: (quantity_literal
           value: (number_literal)
           unit: (unit_expr
             (unit_name)))))))
@@ -35,7 +35,7 @@ structure S {
     (let_declaration
       name: (identifier)
       value: (range_expression
-        (quantity_literal
+        bound: (quantity_literal
           value: (number_literal)
           unit: (unit_expr
             (unit_name)))))))
@@ -56,7 +56,7 @@ structure S {
     (let_declaration
       name: (identifier)
       value: (range_expression
-        (quantity_literal
+        bound: (quantity_literal
           value: (number_literal)
           unit: (unit_expr
             (unit_name)))))))
@@ -77,7 +77,7 @@ structure S {
     (let_declaration
       name: (identifier)
       value: (range_expression
-        (quantity_literal
+        bound: (quantity_literal
           value: (number_literal)
           unit: (unit_expr
             (unit_name)))))))
@@ -100,3 +100,80 @@ structure S {
       value: (binary_expression
         left: (identifier)
         right: (identifier)))))
+
+================================================================================
+regression guard D6: a >= b stays binary_expression
+================================================================================
+
+structure S {
+  let r = a >= b
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (binary_expression
+        left: (identifier)
+        right: (identifier)))))
+
+================================================================================
+regression guard D6: a < b stays binary_expression
+================================================================================
+
+structure S {
+  let r = a < b
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (binary_expression
+        left: (identifier)
+        right: (identifier)))))
+
+================================================================================
+regression guard D6: a <= b stays binary_expression
+================================================================================
+
+structure S {
+  let r = a <= b
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (binary_expression
+        left: (identifier)
+        right: (identifier)))))
+
+================================================================================
+regression guard: parameterized_type not captured by prefix-< range rule
+================================================================================
+
+fn f() -> Scalar<Length> { 0 }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_definition
+    name: (identifier)
+    return_type: (type_expr
+      (parameterized_type
+        name: (identifier)
+        type_args: (type_arg_list
+          (type_expr
+            (identifier)))))
+    (fn_body
+      result: (number_literal))))

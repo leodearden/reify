@@ -922,12 +922,13 @@ module.exports = grammar({
       // Two-sided exclusive upper: lower..<upper
       prec.left(0, seq(field('lower', $._expression), '..<', field('upper', $._expression))),
       // Single-sided prefix forms: >expr, >=expr, <expr, <=expr
-      // No field names — operator is anonymous child, operand is unnamed child.
-      // Downstream task ζ discriminates single-sided from two-sided by absence of lower/upper fields.
-      prec.left(0, seq('>', $._expression)),
-      prec.left(0, seq('>=', $._expression)),
-      prec.left(0, seq('<', $._expression)),
-      prec.left(0, seq('<=', $._expression)),
+      // op:    named field on anonymous token — accessible via childByFieldName('op').text,
+      //        but NOT rendered in the S-expression (tree-sitter's named-node-only convention;
+      //        matches binary_expression's op: field treatment).
+      // bound: named field for the bound expression — rendered in S-expression as bound: (...).
+      // Downstream ζ discriminates single-sided from two-sided by absence of lower/upper fields;
+      // presence of 'bound' does not defeat that discriminator.
+      prec.left(0, seq(field('op', choice('>', '>=', '<', '<=')), field('bound', $._expression))),
     ),
 
     unary_expression: $ => choice(
