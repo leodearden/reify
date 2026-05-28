@@ -2,16 +2,18 @@
 //!
 //! After PRD task ε (docs/prds/core-ast-ir-layering.md §10 Phase 2), the parsed
 //! AST data types live in `reify-ast`; this crate is the behaviour layer that
-//! produces them. The `pub use reify_ast::{…}` block below is a TRANSIENT
-//! re-export so the 7 reify-syntax dependents (reify-cli, reify-compiler,
-//! reify-doc-build, reify-eval, reify-expr, reify-lsp, reify-test-support)
-//! keep resolving `reify_syntax::ParsedModule` etc. through PRD task η, which
-//! atomically rewrites every `reify_syntax::<AST type>` → `reify_ast::<…>`
-//! and then removes this re-export block.
+//! produces them. The `pub use reify_ast::*` block below is a TRANSIENT
+//! re-export so the integration tests in `tests/` (which use `use reify_syntax::*`)
+//! keep resolving `Declaration`, `ExprKind`, etc. until PRD task η's follow-up
+//! sweeps the reify-syntax test suite to import from `reify_ast` directly.
 
 mod ts_parser;
 
-use reify_ast::ParsedModule;
+// TRANSIENT: re-export all AST types so `use reify_syntax::*` in integration tests
+// continues to resolve `Declaration`, `ExprKind`, `TypeExprKind`, etc.
+// Remove once task η follow-up updates reify-syntax/tests/*.rs to `use reify_ast::*`.
+pub use reify_ast::*;
+
 use reify_core::ModulePath;
 
 /// Parse a source string into a `ParsedModule` (re-exported from reify-ast).

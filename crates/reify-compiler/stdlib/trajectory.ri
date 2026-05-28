@@ -7,7 +7,7 @@
 // and structure_def names declared here. Scope is the type surface only —
 // no Rust evaluator and no constructor side effects (that is β).
 //
-// Surface (PRD §4.1):
+// Surface (PRD §4.1, §5, §5.2):
 //   - trait Profile                     (marker for all motion-profile variants)
 //   - trait BoundaryCondition           (marker for all spline boundary kinds)
 //   - enum  SplineKind                  (CubicSpline | QuinticSpline)
@@ -18,6 +18,9 @@
 //   - structure def PiecewisePolynomialProfile : Profile
 //                                       (mechanism, waypoints, boundary, spline_kind;
 //                                        constraint waypoints.count > 0)
+//   - trait Shaper                      (marker for all input-shaper variants, PRD §5)
+//   - structure def JointLimit          (per-joint actuator constraint, PRD §5.2)
+//   - structure def TOTSShaper : Shaper  (time-optimal trajectory shaper, PRD §5.2)
 //
 // Module placement: registered last in `stdlib_loader.rs` — `std.trajectory`
 // has no compile-time dependency on any other stdlib module (every type it
@@ -300,3 +303,164 @@ pub fn evaluate_profile_ddot(p: Profile, t: Time) -> List<JointValue> { [0.0] }
 // computation (`waypoints.last.t - waypoints.first.t`) once the B-spline
 // evaluator and the PiecewisePolynomialProfile runtime accessor land.
 pub fn profile_duration(p: Profile) -> Time { 0.0 * 1s }
+
+// ── Shaper marker trait (PRD §5) ──────────────────────────────────────────────
+
+// Shaper — marker trait for every input-shaper variant (PRD §5).
+//
+// ι (this task) introduces the trait and the first refining variant
+// TOTSShaper (time-optimal trajectory shaper, PRD §5.2). Future Phase 2
+// task δ will add the impulse-shaper refinements ZVShaper / ZVDShaper /
+// EIShaper. Whoever lands first wins the trait; δ's architect will see this
+// declaration and add only the ZV/ZVD/EI structures that refine it.
+//
+// Kept empty by design: each variant carries its own per-strategy fields;
+// the trait exists only to give the `shaper` param on the `input_shape`
+// dispatcher a single nominal type so the SIR-α nominal type-tag dispatches
+// correctly. Same marker-trait discipline as `trait Profile { }` (:68) and
+// `trait BoundaryCondition { }` (:83).
+trait Shaper { }
+
+// ── JointLimit (PRD §5.2) ─────────────────────────────────────────────────────
+
+// JointLimit — per-joint actuator constraint consumed by TOTSShaper (PRD §5.2).
+//
+// Fields:
+//   - joint     : Real   — TODO(joint-type): placeholder for the future
+//                          kinematic-completion PRD's Joint type. Same
+//                          encoding as `PiecewisePolynomialProfile.mechanism :
+//                          Real` (:211, TODO(mechanism-type)) — both reference
+//                          kinematic-completion-PRD-owned types that have not
+//                          yet landed. When kinematic-completion lands, both
+//                          retarget via the same refactor sweep.
+//   - max_force : Real   — TODO(force-scalar): placeholder for `Scalar<Force>`
+//                          per the uniform-Real-placeholder convention
+//                          established in modal_analysis.ri header §1.
+//                          Force IS a named dimension but the convention
+//                          placeholders all dimensioned scalars uniformly so
+//                          the dimensional-tightening sweep retargets them in
+//                          a single pass.
+//
+// No defaults: both fields are caller-supplied. There is no canonical "default
+// max force" (the limit is entirely application-specific).
+//
+// Constraint `max_force > 0` is added in step-34. Explicitly NOT constrained:
+// `joint : Real` — placeholder for an entity-handle type; no meaningful scalar
+// predicate on a handle.
+//
+// Refines no trait (JointLimit is a plain data container, not a Shaper
+// variant or a BoundaryCondition).
+structure def JointLimit {
+    param joint : Real
+    param max_force : Real
+
+    // max_force is a physical limit — only positive values are meaningful.
+    // A "max force" of zero or negative is degenerate (a zero-limit means
+    // the joint can exert no force, a negative limit is non-physical).
+    // Makes the contract explicit in production code rather than relying
+    // solely on test coverage (task #2544 convention, memory id c8452b30).
+    // Fires automatically at construction via SIR-α's
+    // `check_constraints_against_templates` machinery (task 3540, landed).
+    //
+    // NOTE — explicitly NOT constrained:
+    //   `joint : Real` — placeholder for an entity-handle type; no
+    //   meaningful scalar predicate on a handle.
+    constraint max_force > 0
+}
+
+// ── TOTSShaper (PRD §5.2) ─────────────────────────────────────────────────────
+
+// TOTSShaper — time-optimal trajectory shaping value type (PRD §5.2).
+// Solver-input bundle, not a result. Consumed by the future κ-task TOTS
+// SQP-loop trampoline that runs the time-optimal shaping algorithm.
+//
+// Refines the Shaper marker trait declared above — TOTSShaper is one of
+// several input-shaper variants; the future Phase 2 task δ adds ZVShaper /
+// ZVDShaper / EIShaper. All refine the same `trait Shaper { }`.
+//
+// Uniform-Real-placeholder encoding convention (modal_analysis.ri header §1):
+// All dimensioned scalars are encoded as Real with TODO(...) annotations
+// naming the future-tightening target, even when the named dimension IS in
+// NAMED_DIMENSIONS. This keeps constraint RHS literals plain (> 0, <= 1)
+// and lets the dimensional-tightening sweep retarget every placeholder in a
+// single pass.
+//
+// Fields:
+//   - modes              : List<Mode>        — vibration modes resolved via
+//                                              the growing-prelude cross-module
+//                                              mechanism (std.modal.analysis
+//                                              loaded before std.trajectory per
+//                                              stdlib_loader.rs:110-116).
+//   - actuator_limits    : List<JointLimit>  — per-joint force limits
+//                                              (JointLimit declared above).
+//   - velocity_limit     : Real              — TODO(velocity-scalar): Scalar<Velocity>
+//                                              (Velocity NOT in NAMED_DIMENSIONS,
+//                                              so Real is the only option anyway).
+//   - acceleration_limit : Real              — TODO(acceleration-scalar): Scalar<Acceleration>
+//   - vibration_tolerance: Real              — genuinely dimensionless (residual
+//                                              fraction); vibration_tolerance ∈ (0,1]
+//                                              per PRD §11 Phase 2 ε spec.
+//   - max_iters          : Int = 100         — solver iteration cap per PRD §5.2.
+//                                              Default 100 added in step-38.
+//   - tol                : Real = 0.000001   — convergence threshold (1e-6).
+//                                              Default added in step-38.
+//
+// Constraints (6 total) added in step-40.
+// NOT constrained: modes / actuator_limits (collection invariants deferred
+// to the κ-task SQP-loop trampoline, mirroring ModalResult.modes discipline).
+structure def TOTSShaper : Shaper {
+    param modes : List<Mode>
+    param actuator_limits : List<JointLimit>
+    param velocity_limit : Real
+    param acceleration_limit : Real
+    param vibration_tolerance : Real
+
+    // max_iters = 100 per PRD §5.2 explicit default — solver iteration cap.
+    // Exists so a pathologically conditioned problem fails loudly (exceeds
+    // iteration budget) rather than running forever. Callers with tighter
+    // or looser convergence budgets can override.
+    param max_iters : Int = 100
+
+    // tol = 0.000001 = 1e-6 per PRD §5.2. Encoded as the decimal literal
+    // because Reify's number-literal grammar has no scientific notation (same
+    // convention as modal_analysis.ri:356 tol = 0.000000001 = 1e-9 and
+    // solver_buckling.ri:79 tol = 0.00000001 = 1e-8). IEEE-754 round-to-
+    // nearest of this exact decimal literal is deterministic.
+    param tol : Real = 0.000001
+
+    // PRD §5.2 "ctor constraints on numeric design params" + PRD §11 Phase 2 ε
+    // spec (vibration_tolerance ∈ (0, 1]).
+    //
+    // Makes the contract explicit in production code rather than relying solely
+    // on test coverage (task #2544 convention, memory id c8452b30). All six
+    // fire automatically at construction via SIR-α's
+    // `check_constraints_against_templates` machinery (task 3540, landed).
+    //
+    // velocity_limit, acceleration_limit: must be strictly positive — a zero or
+    // negative kinematic limit is non-physical (the robot cannot move at all if
+    // the velocity limit is zero, and a negative limit has no physical meaning).
+    constraint velocity_limit > 0
+    constraint acceleration_limit > 0
+
+    // vibration_tolerance ∈ (0, 1]: residual-vibration fraction. Zero would
+    // mean "no vibration allowed ever" (impossible in practice); values > 1
+    // would accept more residual vibration than the input itself (degenerate).
+    // Two scalar predicates because Reify's constraint grammar admits BinOp
+    // predicates but no interval form (PRD §11 Phase 2 ε spec).
+    constraint vibration_tolerance > 0
+    constraint vibration_tolerance <= 1
+
+    // max_iters: must be strictly positive — a zero iteration count means
+    // the solver never runs.
+    constraint max_iters > 0
+
+    // tol: convergence threshold must be strictly positive — a zero or
+    // negative tolerance would never converge (or converge trivially).
+    constraint tol > 0
+
+    // NOTE — explicitly NOT constrained:
+    //   `modes : List<Mode>` — collection invariants deferred to the κ-task
+    //   SQP-loop trampoline (same discipline as ModalResult.modes).
+    //   `actuator_limits : List<JointLimit>` — same collection-invariant
+    //   rationale (producer/consumer-enforced at the SQP loop).
+}

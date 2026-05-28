@@ -888,6 +888,37 @@ fn evaluate_profile_ddot_fn_signature() {
     assert_evaluator_signature("evaluate_profile_ddot");
 }
 
+// ─── helpers (step-29+) ───────────────────────────────────────────────────────
+
+/// Look up the named param cell on `template` and return its `default_expr`.
+/// Panics with a clear message if the cell or its default is missing.
+/// Mirrors `require_default` in `modal_options_validation_tests.rs:97-106`.
+fn require_default<'a>(template: &'a TopologyTemplate, member: &str) -> &'a CompiledExpr {
+    let cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == member)
+        .unwrap_or_else(|| panic!("{}.{} missing", template.name, member));
+    cell.default_expr
+        .as_ref()
+        .unwrap_or_else(|| panic!("{}.{} missing default_expr", template.name, member))
+}
+
+/// Recursively collect ValueRef member names from a compiled expression tree.
+/// Mirrors `collect_value_ref_members` in `modal_options_validation_tests.rs:111-122`.
+fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<&str> {
+    match &expr.kind {
+        CompiledExprKind::ValueRef(cell_id) => vec![cell_id.member.as_str()],
+        CompiledExprKind::BinOp { left, right, .. } => {
+            let mut refs = collect_value_ref_members(left);
+            refs.extend(collect_value_ref_members(right));
+            refs
+        }
+        CompiledExprKind::UnOp { operand, .. } => collect_value_ref_members(operand),
+        _ => vec![],
+    }
+}
+
 // ─── step-27: profile_duration fn signature ───────────────────────────────────
 
 /// `profile_duration` is the duration accessor — it returns the profile's
@@ -944,5 +975,503 @@ fn profile_duration_fn_signature() {
         },
         "profile_duration return type should be Scalar<TIME>; got: {:?}",
         func.return_type
+    );
+}
+
+// ─── step-29: Shaper marker trait ────────────────────────────────────────────
+
+/// `Shaper` is the marker trait for every input-shaper variant (PRD §5).
+/// Currently only `TOTSShaper` refines it (Phase 4, task ι). Future Phase 2
+/// task δ will add ZVShaper / ZVDShaper / EIShaper refinements.
+///
+/// Empty in this task by design: each variant carries its own per-strategy
+/// fields; the trait exists only to give the `shaper` param on the
+/// `input_shape` dispatcher a single nominal type so the SIR-α nominal
+/// type-tag dispatches correctly.
+///
+/// Test pins three invariants: (a) the trait is found, (b) it has zero
+/// required members + zero defaults (marker trait), (c) it has no
+/// refinements (top-level marker, no parent trait).
+/// Mirrors `profile_trait_exists_with_no_params` (step-3) and
+/// `boundary_condition_trait_exists_with_no_params` (step-5).
+#[test]
+fn shaper_trait_exists_with_no_params() {
+    let trait_def = find_trait("Shaper");
+
+    assert!(
+        trait_def.required_members.is_empty(),
+        "Shaper should declare zero required members (marker trait); \
+         got: {:?}",
+        trait_def
+            .required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        trait_def.defaults.is_empty(),
+        "Shaper should declare zero defaults (marker trait); got: {:?}",
+        trait_def
+            .defaults
+            .iter()
+            .map(|d| &d.name)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        trait_def.refinements.is_empty(),
+        "Shaper should declare zero refinements (top-level marker, no \
+         parent trait); got: {:?}",
+        trait_def.refinements
+    );
+}
+
+// ─── step-31: JointLimit param shape ─────────────────────────────────────────
+
+/// `JointLimit` is the per-joint actuator constraint consumed by TOTSShaper
+/// (PRD §5.2). It must declare exactly two params:
+///
+///   - `joint     : Real`  (TODO(joint-type) placeholder for the future
+///     kinematic-completion Joint type)
+///   - `max_force : Real`  (TODO(force-scalar) placeholder for Scalar<Force>)
+///
+/// Both fields are caller-supplied — no canonical defaults. JointLimit
+/// refines no trait (zero `trait_bounds`). Constraint `max_force > 0` is
+/// asserted separately in step-33.
+///
+/// Mirrors `waypoint_struct_has_correct_param_shape` (step-9) and
+/// `rayleigh_damping_param_shape` in modal_options_validation_tests.rs.
+#[test]
+fn joint_limit_struct_has_correct_param_shape() {
+    let template = find_structure("JointLimit");
+
+    // JointLimit refines no trait (not a BoundaryCondition, not a Profile).
+    assert_eq!(
+        template.trait_bounds,
+        Vec::<String>::new(),
+        "JointLimit should refine no traits; got trait_bounds: {:?}",
+        template.trait_bounds
+    );
+
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    assert_eq!(
+        params.len(),
+        2,
+        "JointLimit should have exactly 2 param cells (joint, max_force); \
+         got: {:?}",
+        names
+    );
+
+    let expected: &[(&str, Type)] = &[
+        ("joint", Type::Real),
+        ("max_force", Type::Real),
+    ];
+
+    // Param declaration order is part of the contract.
+    let expected_names: Vec<&str> = expected.iter().map(|(m, _)| *m).collect();
+    assert_eq!(
+        names, expected_names,
+        "JointLimit params must be in canonical order (joint, max_force); \
+         got: {:?}",
+        names
+    );
+
+    for (member, expected_ty) in expected {
+        let cell = params
+            .iter()
+            .find(|vc| vc.id.member == *member)
+            .unwrap_or_else(|| {
+                panic!("JointLimit missing required param '{}'; got: {:?}", member, names)
+            });
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "JointLimit.{} should be {:?}, got {:?}",
+            member, expected_ty, cell.cell_type
+        );
+    }
+
+    // Both fields are caller-supplied — no canonical defaults.
+    for cell in &params {
+        assert!(
+            cell.default_expr.is_none(),
+            "JointLimit.{} should have no default_expr (caller-supplied); \
+             got: {:?}",
+            cell.id.member,
+            cell.default_expr
+        );
+    }
+}
+
+// ─── step-33: JointLimit max_force positivity constraint ─────────────────────
+
+/// `JointLimit` must declare exactly one constraint: `max_force > 0`.
+///
+/// A "max force" of zero or negative is physically degenerate — only positive
+/// values are meaningful as an actuator limit. Making the contract explicit
+/// in production code (task #2544 convention) rather than relying solely on
+/// test coverage.
+///
+/// Tight count == 1 is a regression gate: `joint : Real` is explicitly NOT
+/// constrained (it is an entity-handle placeholder — no meaningful scalar
+/// predicate on a handle).
+///
+/// Mirrors `modal_options_constrains_positivity_invariants` in
+/// modal_options_validation_tests.rs and
+/// `piecewise_polynomial_profile_constrains_waypoints_nonempty` (step-19).
+///
+/// These constraint declarations feed the SIR-α generic constraint-firing
+/// pipeline, which is pinned end-to-end by
+/// `crates/reify-eval/tests/stress_error_messages.rs::constraint_violation_diagnostic`
+/// (constraint → `Satisfaction::Violated` diagnostic) and the
+/// `Value::StructureInstance` round-trip in
+/// `crates/reify-eval/tests/structure_instance_e2e.rs`. A JointLimit-specific
+/// construction-time firing test would duplicate that generic coverage.
+#[test]
+fn joint_limit_constrains_max_force_positive() {
+    let template = find_structure("JointLimit");
+
+    // Tight count: exactly 1 constraint (regression-gate against accidental
+    // over-declaration of a constraint on `joint`).
+    assert_eq!(
+        template.constraints.len(),
+        1,
+        "JointLimit should declare exactly 1 constraint (max_force > 0); \
+         got {} constraints: {:?}",
+        template.constraints.len(),
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+
+    let constraint = &template.constraints[0];
+
+    // Constraint must be BinOp::Gt.
+    let (left, right, op) = match &constraint.expr.kind {
+        CompiledExprKind::BinOp { op, left, right } => (left.as_ref(), right.as_ref(), op),
+        other => panic!(
+            "JointLimit constraint should be a BinOp; got: {:?}",
+            other
+        ),
+    };
+    assert_eq!(
+        *op,
+        BinOp::Gt,
+        "JointLimit constraint should use BinOp::Gt (max_force > 0); \
+         got: {:?}",
+        op
+    );
+
+    // LHS must reference `max_force`.
+    let lhs_refs = collect_value_ref_members(left);
+    assert!(
+        lhs_refs.contains(&"max_force"),
+        "JointLimit constraint LHS should reference `max_force`; \
+         got refs: {:?}",
+        lhs_refs
+    );
+
+    // RHS must be literal 0 — accept Int(0) or Real(0.0) per future-proofing
+    // convention (mirrors piecewise_polynomial_profile_constrains_waypoints_nonempty).
+    match &right.kind {
+        CompiledExprKind::Literal(Value::Int(0)) => {}
+        CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => {}
+        other => panic!(
+            "JointLimit constraint RHS should be Literal(Int(0)) or \
+             Literal(Real(0.0)); got: {:?}",
+            other
+        ),
+    }
+}
+
+// ─── step-35: TOTSShaper param shape ─────────────────────────────────────────
+
+/// `TOTSShaper` is the time-optimal trajectory shaper value type (PRD §5.2).
+/// It must refine the `Shaper` marker trait and declare exactly 7 params in
+/// canonical order:
+///
+///   - `modes             : List<Mode>`        (cross-module: Mode from std.modal.analysis)
+///   - `actuator_limits   : List<JointLimit>`  (JointLimit declared in this file above)
+///   - `velocity_limit    : Real`              (TODO(velocity-scalar) placeholder)
+///   - `acceleration_limit: Real`              (TODO(acceleration-scalar) placeholder)
+///   - `vibration_tolerance: Real`             (genuinely dimensionless residual fraction)
+///   - `max_iters         : Int`               (solver iteration cap)
+///   - `tol               : Real`              (convergence threshold)
+///
+/// `Mode` resolves via the growing-prelude cross-module mechanism —
+/// std.modal.analysis is loaded at slot 16 BEFORE std.trajectory at slot 17
+/// (stdlib_loader.rs:110-116). Type encoding: `Type::List(Box::new(
+/// Type::StructureRef("Mode")))` — identical to ModalResult.modes.
+///
+/// ⚠ Duplicate-Mode note: the stdlib has TWO `structure def Mode` declarations
+/// with different field shapes — `modal_analysis.ri:187` (frequency, shape,
+/// participation_mass, damping_ratio) and `solver_buckling.ri:148` (eigenvalue,
+/// mode_shape). `Type::StructureRef("Mode")` carries only the name, so the
+/// assertion below cannot distinguish which Mode was bound by name resolution.
+/// Correct resolution is guaranteed by load order: slot 16 (std.modal.analysis)
+/// is compiled before slot 17 (std.trajectory), so the modal-analysis Mode wins
+/// the first-wins shadow rule. `modal_analysis.ri:137-141` documents this
+/// coexistence; if name-shadowing ever surfaces as a problem, the fallback is a
+/// one-line rename in `trajectory.ri`.
+///
+/// Does NOT assert defaults (step-37) or constraints (step-39).
+/// Mirrors `piecewise_polynomial_profile_has_correct_param_shape` (step-17)
+/// and `modal_options_struct_has_correct_param_shape` in
+/// modal_options_validation_tests.rs.
+#[test]
+fn tots_shaper_struct_has_correct_param_shape() {
+    let template = find_structure("TOTSShaper");
+
+    // (a) refines Shaper marker trait.
+    assert_eq!(
+        template.trait_bounds,
+        vec!["Shaper".to_string()],
+        "TOTSShaper must refine Shaper; got trait_bounds: {:?}",
+        template.trait_bounds
+    );
+
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    // (b) tight param count.
+    assert_eq!(
+        params.len(),
+        7,
+        "TOTSShaper should have exactly 7 params \
+         (modes, actuator_limits, velocity_limit, acceleration_limit, \
+          vibration_tolerance, max_iters, tol); got: {:?}",
+        names
+    );
+
+    let expected: &[(&str, Type)] = &[
+        (
+            "modes",
+            Type::List(Box::new(Type::StructureRef("Mode".to_string()))),
+        ),
+        (
+            "actuator_limits",
+            Type::List(Box::new(Type::StructureRef("JointLimit".to_string()))),
+        ),
+        ("velocity_limit", Type::Real),
+        ("acceleration_limit", Type::Real),
+        ("vibration_tolerance", Type::Real),
+        ("max_iters", Type::Int),
+        ("tol", Type::Real),
+    ];
+
+    // (c) Param declaration order is part of the contract.
+    let expected_names: Vec<&str> = expected.iter().map(|(m, _)| *m).collect();
+    assert_eq!(
+        names, expected_names,
+        "TOTSShaper params must be in canonical order; got: {:?}",
+        names
+    );
+
+    // (d) type assertion per param.
+    for (member, expected_ty) in expected {
+        let cell = params
+            .iter()
+            .find(|vc| vc.id.member == *member)
+            .unwrap_or_else(|| {
+                panic!(
+                    "TOTSShaper missing required param '{}'; got: {:?}",
+                    member, names
+                )
+            });
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "TOTSShaper.{} should be {:?}, got {:?}",
+            member, expected_ty, cell.cell_type
+        );
+    }
+}
+
+// ─── step-37: TOTSShaper param defaults ──────────────────────────────────────
+
+/// `TOTSShaper` declares two param defaults per PRD §5.2:
+///   - `max_iters : Int = 100`         — solver iteration cap
+///   - `tol       : Real = 0.000001`   — convergence threshold (= 1e-6 in decimal)
+///
+/// The other five params (modes, actuator_limits, velocity_limit,
+/// acceleration_limit, vibration_tolerance) are required at construction —
+/// no canonical default exists for these caller-supplied values.
+///
+/// Decimal-encoding discipline: Reify's grammar has no scientific notation,
+/// so 1e-6 is spelled as `0.000001` (same convention as modal_analysis.ri
+/// tol = 0.000000001 = 1e-9 at modal_analysis.ri:356). IEEE-754
+/// round-to-nearest of these exact decimal literals is deterministic.
+///
+/// Mirrors `modal_options_param_defaults_match_spec` in
+/// modal_options_validation_tests.rs.
+#[test]
+fn tots_shaper_param_defaults_match_spec() {
+    let template = find_structure("TOTSShaper");
+
+    // max_iters = 100 per PRD §5.2 explicit default.
+    let max_iters_default = require_default(template, "max_iters");
+    match &max_iters_default.kind {
+        CompiledExprKind::Literal(Value::Int(v)) => {
+            assert_eq!(*v, 100, "max_iters default should be 100, got: {}", v)
+        }
+        other => panic!(
+            "max_iters default should be Literal(Value::Int(100)), got: {:?}",
+            other
+        ),
+    }
+
+    // tol = 0.000001 = 1e-6 per PRD §5.2; decimal-encoding (no sci notation
+    // in Reify grammar). Strict-equality safe — IEEE-754 deterministic.
+    let tol_default = require_default(template, "tol");
+    match &tol_default.kind {
+        CompiledExprKind::Literal(Value::Real(v)) => assert_eq!(
+            *v, 0.000001,
+            "tol default should be exactly 0.000001 (= 1e-6), got: {}",
+            v
+        ),
+        other => panic!(
+            "tol default should be Literal(Value::Real(0.000001)), got: {:?}",
+            other
+        ),
+    }
+
+    // The other five params are required at construction — no canonical
+    // default (caller must supply modes, actuator_limits, velocity_limit,
+    // acceleration_limit, vibration_tolerance).
+    for member in [
+        "modes",
+        "actuator_limits",
+        "velocity_limit",
+        "acceleration_limit",
+        "vibration_tolerance",
+    ] {
+        let cell = template
+            .value_cells
+            .iter()
+            .find(|vc| vc.id.member == member)
+            .unwrap_or_else(|| panic!("TOTSShaper.{} missing", member));
+        assert!(
+            cell.default_expr.is_none(),
+            "TOTSShaper.{} should have NO default_expr (required at \
+             construction), but got: {:?}",
+            member,
+            cell.default_expr
+        );
+    }
+}
+
+// ─── step-39: TOTSShaper design-param positivity/range constraints ────────────
+
+/// `TOTSShaper` must declare exactly 6 constraints per PRD §5.2 + §11 Phase 2:
+///
+///   constraint velocity_limit     > 0
+///   constraint acceleration_limit > 0
+///   constraint vibration_tolerance > 0
+///   constraint vibration_tolerance <= 1   (upper bound: (0,1] interval)
+///   constraint max_iters           > 0
+///   constraint tol                 > 0
+///
+/// The `vibration_tolerance ∈ (0, 1]` interval decomposes into two scalar
+/// predicates because Reify's constraint grammar admits BinOp predicates but
+/// no interval form. `BinOp::Le` handles `<= 1` (confirmed in type_compat.rs).
+///
+/// Tight count == 6 regression-gates against accidental over/under-declaration.
+/// Explicitly NOT constrained (collection invariants deferred to κ-task):
+///   `modes : List<Mode>` and `actuator_limits : List<JointLimit>`.
+///
+/// Mirrors `modal_options_constrains_positivity_invariants` in
+/// modal_options_validation_tests.rs.
+///
+/// These declarations feed the SIR-α generic constraint-firing pipeline; the
+/// construction-time `Satisfaction::Violated` signal is pinned end-to-end by
+/// `crates/reify-eval/tests/stress_error_messages.rs::constraint_violation_diagnostic`
+/// and `crates/reify-eval/tests/structure_instance_e2e.rs` — no duplicate
+/// TOTSShaper-specific construction-time firing test is needed here.
+#[test]
+fn tots_shaper_constrains_design_param_invariants() {
+    let template = find_structure("TOTSShaper");
+
+    // Tight count: exactly 6 constraints.
+    assert_eq!(
+        template.constraints.len(),
+        6,
+        "TOTSShaper should declare exactly 6 constraints; \
+         got {} constraints: {:?}",
+        template.constraints.len(),
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+
+    // Five positivity constraints (> 0) for numeric design params.
+    for required in &[
+        "velocity_limit",
+        "acceleration_limit",
+        "vibration_tolerance",
+        "max_iters",
+        "tol",
+    ] {
+        let matched = template.constraints.iter().any(|c| {
+            match &c.expr.kind {
+                CompiledExprKind::BinOp { op, left, right } => {
+                    if *op != BinOp::Gt
+                        || !collect_value_ref_members(left).contains(required)
+                    {
+                        return false;
+                    }
+                    match &right.kind {
+                        CompiledExprKind::Literal(Value::Int(0)) => true,
+                        CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
+                        _ => false,
+                    }
+                }
+                _ => false,
+            }
+        });
+        assert!(
+            matched,
+            "TOTSShaper should declare `constraint {} > 0`; \
+             got constraints: {:?}",
+            required,
+            template
+                .constraints
+                .iter()
+                .map(|c| &c.expr.kind)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    // Upper-bound constraint: vibration_tolerance <= 1 (completing the (0,1]
+    // interval per PRD §11 Phase 2 ε spec). Accept Int(1) or Real(1.0) RHS.
+    let le_matched = template.constraints.iter().any(|c| {
+        match &c.expr.kind {
+            CompiledExprKind::BinOp { op, left, right } => {
+                if *op != BinOp::Le
+                    || !collect_value_ref_members(left).contains(&"vibration_tolerance")
+                {
+                    return false;
+                }
+                match &right.kind {
+                    CompiledExprKind::Literal(Value::Int(1)) => true,
+                    CompiledExprKind::Literal(Value::Real(v)) if *v == 1.0 => true,
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    });
+    assert!(
+        le_matched,
+        "TOTSShaper should declare `constraint vibration_tolerance <= 1` \
+         (upper bound completing the (0,1] interval per PRD §11 Phase 2 ε); \
+         got constraints: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
     );
 }
