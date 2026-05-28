@@ -685,7 +685,7 @@ mod tests {
         let result = solve_buckling_kernel(&nodes, &tets, &material, &bcs, &f, &[], opts);
 
         assert!(result.converged, "eigensolve must converge on n_free=4 system");
-        assert!(result.modes.len() >= 1, "expect at least 1 mode; got {}", result.modes.len());
+        assert!(!result.modes.is_empty(), "expect at least 1 mode; got {}", result.modes.len());
         assert_eq!(
             result.pre_stress_displacement.len(),
             24,
@@ -746,7 +746,7 @@ mod tests {
         );
 
         // (c) MPC constraint in mode shape: same bit-equal check.
-        assert!(result.modes.len() >= 1, "expect at least 1 mode");
+        assert!(!result.modes.is_empty(), "expect at least 1 mode");
         assert_eq!(
             result.modes[0].mode_shape[3 * 4 + 2].to_bits(),
             result.modes[0].mode_shape[3 * 5 + 2].to_bits(),
