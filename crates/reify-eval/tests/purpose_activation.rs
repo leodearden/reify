@@ -1003,6 +1003,94 @@ purpose fits_within(part : Structure, envelope : Structure) {
     );
 }
 
+// ── §5c: Objective ValueRef remap on activation (task-2181 β, reviewer test_coverage) ───────────
+
+/// Verifies that the inner `ValueRef` of a `minimize subject.mass` objective is remapped
+/// from the per-param stamp (`weight_target::subject`) to the bound entity (`Bracket`)
+/// on activation (task-2181 β objective remap path, engine_purposes.rs:141-151).
+///
+/// The existing objective tests (`minimize_objective_injected`, `maximize_objective_injected`)
+/// use literal expressions (e.g. `80mm + 60mm`) that contain no purpose-param `ValueRef`s —
+/// they verify the *presence* of an objective variant but do not exercise the per-param
+/// entity remap for objectives. This test closes that gap.
+///
+/// Flow:
+///  1. Compile `purpose weight_target(subject : Structure) { minimize subject.mass }`.
+///  2. Pre-activation: assert objective's inner `ValueRef` entity == `"weight_target::subject"`
+///     (the β per-param stamp).
+///  3. `engine.activate_purpose("weight_target", "Bracket")`.
+///  4. Post-activation: assert the active objective's inner `ValueRef` entity == `"Bracket"`.
+#[test]
+fn minimize_objective_valueref_remapped_to_bound_entity_on_activation() {
+    let source = r#"
+structure Bracket {
+    param width : Length = 80mm
+}
+
+purpose weight_target(subject : Structure) {
+    minimize subject.mass
+}
+"#;
+
+    let compiled = parse_and_compile(source);
+    assert_eq!(compiled.compiled_purposes.len(), 1);
+    let purpose = &compiled.compiled_purposes[0];
+    assert_eq!(purpose.name, "weight_target");
+
+    // Pre-activation: objective's inner ValueRef entity must equal the β per-param stamp.
+    let pre_obj_entity = match purpose
+        .objective
+        .as_ref()
+        .expect("weight_target must have a minimize objective")
+    {
+        OptimizationObjective::Minimize(expr) => match &expr.kind {
+            CompiledExprKind::ValueRef(id) => id.entity.clone(),
+            other => panic!(
+                "pre-activation: expected ValueRef inside Minimize objective, got {:?}",
+                other
+            ),
+        },
+        other => panic!(
+            "pre-activation: expected Minimize objective, got {:?}",
+            other
+        ),
+    };
+    assert_eq!(
+        pre_obj_entity, "weight_target::subject",
+        "pre-activation: objective ValueRef entity must equal 'purpose::param' (post-β stamp)"
+    );
+
+    // Activate against Bracket — the per-param remap loop in
+    // `activate_purpose_constraints` (engine_purposes.rs:141-151) rewrites the
+    // objective expression in lockstep with the constraint expressions.
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+    engine.activate_purpose("weight_target", "Bracket");
+
+    let objectives = engine.active_objectives();
+    assert_eq!(objectives.len(), 1, "should have 1 active objective after activation");
+
+    // Post-activation: the active objective's ValueRef entity must be remapped to "Bracket".
+    let post_obj_entity = match objectives[0] {
+        OptimizationObjective::Minimize(expr) => match &expr.kind {
+            CompiledExprKind::ValueRef(id) => id.entity.clone(),
+            other => panic!(
+                "post-activation: expected ValueRef inside Minimize objective, got {:?}",
+                other
+            ),
+        },
+        other => panic!(
+            "post-activation: expected Minimize objective, got {:?}",
+            other
+        ),
+    };
+    assert_eq!(
+        post_obj_entity, "Bracket",
+        "post-activation: remap_entity must rewrite objective ValueRef entity \
+         from 'weight_target::subject' (β stamp) to 'Bracket' (bound entity)"
+    );
+}
+
 // ── §8: Reflective aggregation acceptance (task-2289) ────────────────────────
 
 /// Acceptance test for runtime expansion of `subject.params` (task-2289).
