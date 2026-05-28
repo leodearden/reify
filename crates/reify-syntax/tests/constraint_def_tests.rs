@@ -218,9 +218,13 @@ fn parse_constraint_def_body_syntax_error() {
 
 #[test]
 fn parse_constraint_def_error_param() {
-    // `param wall : Box<>` — empty type args cause tree-sitter to insert a
-    // MISSING identifier node inside type_args, making the param_declaration
-    // node have `has_error() == true`.
+    // `param wall : Box<,>` — trailing-comma inside type_args causes tree-sitter
+    // to insert a MISSING type-arg node, making the param_declaration node have
+    // `has_error() == true`.
+    //
+    // Note: `Box<>` was the original probe, but the grammar addition of single-sided
+    // prefix range arms (`< expr`, `> expr`) changed how `<>` is parsed, so `Box<>`
+    // no longer reliably produces `has_error()`.  `Box<,>` still does.
     //
     // Without `check_and_lower!` (before step-18), `self.lower_param()` is called
     // directly: it succeeds (name "wall" is found) and silently adds the malformed
@@ -228,7 +232,7 @@ fn parse_constraint_def_error_param() {
     //
     // After step-18 fix, `check_and_lower!` detects `has_error()`, emits
     // 'invalid constraint param: ...', and skips the param entirely.
-    let source = "constraint def Bad { param wall : Box<>  x > 0 }";
+    let source = "constraint def Bad { param wall : Box<,>  x > 0 }";
     let (decls, errors) = parse_decls(source);
     assert!(
         !errors.is_empty(),
