@@ -1,0 +1,102 @@
+================================================================================
+single-sided range: prefix > (greater-than bound)
+================================================================================
+
+structure S {
+  let r = >2mm
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (range_expression
+        (quantity_literal
+          value: (number_literal)
+          unit: (unit_expr
+            (unit_name)))))))
+
+================================================================================
+single-sided range: prefix >= (greater-or-equal bound)
+================================================================================
+
+structure S {
+  let r = >=2mm
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (range_expression
+        (quantity_literal
+          value: (number_literal)
+          unit: (unit_expr
+            (unit_name)))))))
+
+================================================================================
+single-sided range: prefix < (less-than bound)
+================================================================================
+
+structure S {
+  let r = <100MPa
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (range_expression
+        (quantity_literal
+          value: (number_literal)
+          unit: (unit_expr
+            (unit_name)))))))
+
+================================================================================
+single-sided range: prefix <= (less-or-equal bound)
+================================================================================
+
+structure S {
+  let r = <=100MPa
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (range_expression
+        (quantity_literal
+          value: (number_literal)
+          unit: (unit_expr
+            (unit_name)))))))
+
+================================================================================
+regression guard D6: a > b stays binary_expression
+================================================================================
+
+structure S {
+  let r = a > b
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (binary_expression
+        left: (identifier)
+        right: (identifier)))))
