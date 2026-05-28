@@ -1674,6 +1674,16 @@ pub(crate) fn compile_expr_guarded(
                 && let reify_ast::ExprKind::Ident(name) = &idx_obj.kind
                 && scope.collection_sub_names.contains(name.as_str())
             {
+                // GHR-γ (task 3605): check geometry realization members BEFORE
+                // sub_member_types — geometry params now have ValueCellDecls and
+                // appear in sub_member_types, but collection-sub geometry access
+                // is not yet supported in v0.1 regardless.  Checking here ensures
+                // the geometry-specific diagnostic fires even for Solid params.
+                if let Some(e) =
+                    try_emit_cross_sub_geometry(scope, name, member, expr.span, diagnostics)
+                {
+                    return e;
+                }
                 // Resolve member type from pre-populated sub_member_types
                 let member_type = match scope
                     .sub_member_types
@@ -1683,12 +1693,6 @@ pub(crate) fn compile_expr_guarded(
                 {
                     Some(ty) => ty,
                     None => {
-                        // Check for geometry realization member (task-3397).
-                        if let Some(e) =
-                            try_emit_cross_sub_geometry(scope, name, member, expr.span, diagnostics)
-                        {
-                            return e;
-                        }
                         // Anti-cascade (task-448/task-1921): return poison early rather than
                         // synthesising a dangling ValueRef to a non-existent cell.
                         return make_poison_literal(

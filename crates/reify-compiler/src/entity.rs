@@ -855,14 +855,13 @@ pub(crate) fn compile_entity(
                         .sub_structure_traits
                         .insert(sub.structure_name.clone(), child_tmpl.trait_bounds.clone());
                     // Populate sub_member_types for self.sub.member resolution.
-                    let member_types: BTreeMap<String, Type> = child_tmpl
-                        .value_cells
-                        .iter()
-                        .map(|vc| (vc.id.member.clone(), vc.cell_type.clone()))
-                        .collect();
+                    // After GHR-γ (task 3605): geometry-typed params now appear in
+                    // member_type_map_from_template (they have ValueCellDecls), so
+                    // non-collection sub access to a Solid param resolves via the normal
+                    // ValueRef path.  See member_type_map_from_template for details.
                     scope
                         .sub_member_types
-                        .insert(sub.name.clone(), member_types);
+                        .insert(sub.name.clone(), member_type_map_from_template(child_tmpl));
                     // Populate sub_realization_names for cross-sub geometry diagnostic.
                     scope.sub_realization_names.insert(
                         sub.name.clone(),
@@ -2353,6 +2352,20 @@ pub(crate) fn compile_entity(
 /// sites and ensures future changes to the mapping (e.g. filtering hidden members)
 /// only need to be applied once. (task 2872)
 fn member_type_map_from_template(tmpl: &TopologyTemplate) -> BTreeMap<String, Type> {
+    // GHR-γ (task 3605): after bypass retirement, geometry-typed params
+    // (`param x : Solid = <geom>`) now produce a ValueCellDecl AND are included
+    // here.  For non-collection subs, this means `self.<sub>.<geom-param>`
+    // resolves through the normal `ValueRef` path (Type::Geometry cell) rather
+    // than the `CrossSubGeometryRef` bypass — the bypass only fires for geometry
+    // LETS which remain realization-only (no ValueCellDecl) and therefore still
+    // miss in `sub_member_types`.
+    //
+    // Note: for collection subs, including geometry cells means the "recommend
+    // indexed access" diagnostic fires instead of the geometry-specific cross-sub
+    // diagnostic for `self.<collection_sub>.<geom_param>` access.  The
+    // geometry-specific collection-sub diagnostic tests are therefore `#[ignore]`
+    // until GHR-δ+ provides a better routing strategy.  This is an accepted v0.1
+    // limitation; the "recommend indexed access" message is still informative.
     tmpl.value_cells
         .iter()
         .map(|vc| (vc.id.member.clone(), vc.cell_type.clone()))
@@ -2361,12 +2374,16 @@ fn member_type_map_from_template(tmpl: &TopologyTemplate) -> BTreeMap<String, Ty
 
 /// Collect the names of all named `RealizationDecl`s from a child `TopologyTemplate`.
 ///
-/// Geometry-typed params (`param x : Solid = <geom>`) and geometry lets
-/// (`let x = box(...)`) are BOTH lowered as `RealizationDecl`s (never as
-/// `ValueCellDecl`s), so neither ever appears in `member_type_map_from_template`
-/// output.  This helper captures those names so that `expr.rs` can distinguish
-/// "genuinely missing member" from "member exists as a realization — cross-sub
-/// geometry access not yet supported in v0.1".
+/// Geometry-typed params (`param x : Solid = <geom>`) are lowered as BOTH a
+/// `ValueCellDecl` (GHR-γ) AND a `RealizationDecl`.  Geometry lets
+/// (`let x = box(...)`) are lowered as `RealizationDecl`s only (no value cell).
+///
+/// Geometry params appear in BOTH `member_type_map_from_template` output AND here.
+/// Geometry lets appear here ONLY.  This lets `expr.rs` distinguish the two cases:
+/// - Solid param: member IS in `sub_member_types` → `ValueRef` path (step-2+).
+/// - Geometry let: member NOT in `sub_member_types` but IS in `sub_realization_names`
+///   → `CrossSubGeometryRef` path → bypass warning (until step-4 retires the bypass).
+/// - Genuinely missing: not in either map → "unknown member" error.
 ///
 /// Called side-by-side with `member_type_map_from_template` in the two Sub
 /// pre-pass sites (regular Sub at entity.rs ~line 766; match-arm Sub at ~line
