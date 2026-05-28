@@ -1,7 +1,7 @@
 //! Tests for `param x : Solid = <geometry_call>` compilation.
 //!
-//! A `Solid`-typed param with a geometry-call default should be lowered as a
-//! realization (like a geometry let) rather than a scalar ValueCellDecl.
+//! After GHR-γ: a `Solid`-typed param with a geometry-call default is lowered
+//! BOTH as a `ValueCellDecl{cell_type: Type::Geometry}` AND as a `RealizationDecl`.
 
 use reify_compiler::{BooleanOp, CompiledGeometryOp, PrimitiveKind, ValueCellKind};
 use reify_core::{RealizationNodeId, Severity, Type};
@@ -563,5 +563,124 @@ fn solid_param_with_non_geometry_default_silently_accepts() {
         ValueCellKind::Param,
         "pin-down: expected kind=ValueCellKind::Param for `param g : Solid = 42`, got {:?}",
         g_cell.kind
+    );
+}
+
+// ─── GHR-γ step-1: ValueCellDecl MUST exist for Solid params ─────────────────
+// These RED tests assert that after the bypass retirement, Solid-typed params
+// with geometry-call defaults produce a `ValueCellDecl{cell_type: Type::Geometry,
+// kind: ValueCellKind::Param}` in addition to the existing RealizationDecl.
+// They FAIL until step-2 deletes the `is_solid_geometry_param → continue` bypass.
+
+/// After GHR-γ, `param body : Solid = box(10mm, 20mm, 30mm)` must produce:
+/// (a) exactly one `ValueCellDecl` with `id.member == "body"`, `cell_type ==
+///     Type::Geometry`, `kind == ValueCellKind::Param`, `default_expr.is_some()`.
+/// (b) exactly one `RealizationDecl` (parallel realization-op chain unchanged).
+///
+/// Currently FAILS because entity.rs:1045's `is_solid_geometry_param(…) → continue`
+/// skip drops the ValueCellDecl.
+#[test]
+fn solid_param_creates_geometry_value_cell() {
+    let source = r#"structure def Widget {
+    param body : Solid = box(10mm, 20mm, 30mm)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Widget")
+        .expect("Widget template not found");
+
+    // (a) Exactly one ValueCellDecl named "body" with Type::Geometry + Param kind.
+    let body_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|c| c.id.member == "body")
+        .collect();
+    assert_eq!(
+        body_cells.len(),
+        1,
+        "expected exactly 1 ValueCellDecl for 'body'; got: {:#?}",
+        body_cells
+    );
+    let cell = body_cells[0];
+    assert_eq!(
+        cell.cell_type,
+        Type::Geometry,
+        "expected cell_type=Type::Geometry for 'body', got {:?}",
+        cell.cell_type
+    );
+    assert_eq!(
+        cell.kind,
+        ValueCellKind::Param,
+        "expected kind=ValueCellKind::Param for 'body', got {:?}",
+        cell.kind
+    );
+    assert!(
+        cell.default_expr.is_some(),
+        "expected default_expr.is_some() for 'body' (box call as default)"
+    );
+
+    // (b) Exactly one RealizationDecl — realization path is orthogonal and unchanged.
+    assert_eq!(
+        template.realizations.len(),
+        1,
+        "expected exactly 1 RealizationDecl for `param body : Solid = box(...)`, got {}",
+        template.realizations.len()
+    );
+}
+
+/// Guarded-block variant: `where some_cond { param body : Solid = box(...) }` must
+/// produce a `ValueCellDecl` in the guarded group's `members` AND a `RealizationDecl`
+/// in the template's top-level realizations list.
+///
+/// Currently FAILS because guards.rs:381's `is_solid_geometry_param(…) → continue`
+/// skips the ValueCellDecl in the guarded-members compilation pass.
+#[test]
+fn guarded_solid_param_creates_geometry_value_cell() {
+    let source = r#"structure def W {
+    param some_cond : Bool = true
+    where some_cond {
+        param body : Solid = box(10mm, 20mm, 30mm)
+    }
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "W")
+        .expect("W template not found");
+
+    // (a) "body" must appear as a ValueCellDecl in exactly one guarded group's members.
+    let guarded_body_cells: Vec<_> = template
+        .guarded_groups
+        .iter()
+        .flat_map(|g| g.members.iter())
+        .filter(|c| c.id.member == "body")
+        .collect();
+    assert_eq!(
+        guarded_body_cells.len(),
+        1,
+        "expected exactly 1 guarded ValueCellDecl for 'body'; got: {:#?}",
+        guarded_body_cells
+    );
+    let cell = guarded_body_cells[0];
+    assert_eq!(
+        cell.cell_type,
+        Type::Geometry,
+        "expected cell_type=Type::Geometry for guarded 'body', got {:?}",
+        cell.cell_type
+    );
+    assert_eq!(
+        cell.kind,
+        ValueCellKind::Param,
+        "expected kind=ValueCellKind::Param for guarded 'body', got {:?}",
+        cell.kind
+    );
+
+    // (b) At least one RealizationDecl must still be emitted.
+    assert!(
+        !template.realizations.is_empty(),
+        "expected at least one RealizationDecl for guarded `param body : Solid = box(...)`, got none"
     );
 }
