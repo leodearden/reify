@@ -952,6 +952,33 @@ mod tests {
         }
     }
 
+    /// `tessellate(handle, tolerance)` must now succeed and return a non-empty
+    /// mesh (it delegates to `iso_mesh` with `iso_value=0.0`).  Verifies that
+    /// the trait's previously-stubbed error path is replaced by real meshing.
+    #[test]
+    fn fidget_kernel_tessellate_sphere_produces_nonempty_mesh() {
+        let mut kernel = FidgetKernel::new();
+        let sphere = kernel
+            .execute(&GeometryOp::Sphere {
+                radius: Value::Real(1.0),
+            })
+            .expect("Sphere build");
+        // tolerance = 0.5 → depth = ceil(log2(16/0.5)) = ceil(5.0) = 5
+        let result = kernel.tessellate(sphere.id, 0.5);
+        let mesh = result.expect("tessellate on sphere must succeed");
+        assert!(
+            mesh.vertices.len() > 0,
+            "tessellate must produce at least one vertex; got {}",
+            mesh.vertices.len(),
+        );
+        assert_eq!(
+            mesh.indices.len() % 3,
+            0,
+            "index count must be divisible by 3; got {}",
+            mesh.indices.len(),
+        );
+    }
+
     /// Pins the stable contract that the FIRST missing handle is the one
     /// named in `InvalidReference` — `left` is checked before `right`.
     #[test]
