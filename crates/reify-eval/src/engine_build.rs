@@ -1214,6 +1214,16 @@ impl Engine {
                     .geometry_kernels
                     .get_mut(name)
                     .expect("default kernel must remain in the map across the per-realization loop");
+                // GHR-γ step-6: mirror of the build() hydration — stamp
+                // Type::Geometry value cells with real kernel handles so
+                // build_snapshot callers see the same GeometryHandle values.
+                Engine::post_process_geometry_handle_cells(
+                    template,
+                    &named_steps,
+                    &mut values,
+                    &self.functions,
+                    &self.meta_map,
+                );
                 // Task 2320: see `Engine::post_process_conformance_queries`
                 // docstring for the full contract. Mirrored in `build` and
                 // `tessellate_from_values` — keep all four call sites in
@@ -1519,6 +1529,16 @@ impl Engine {
                     .geometry_kernels
                     .get_mut(name)
                     .expect("default kernel must remain in the map across the per-realization loop");
+                // GHR-γ step-6: hydrate Type::Geometry value cells with real
+                // kernel handles before any downstream post-process that might
+                // read geometry-handle cells.
+                Engine::post_process_geometry_handle_cells(
+                    template,
+                    &named_steps,
+                    &mut values,
+                    &self.functions,
+                    &self.meta_map,
+                );
                 // Task 2320: see `Engine::post_process_conformance_queries`
                 // docstring for the full contract. Mirrored in
                 // `build_snapshot` and `tessellate_from_values` — keep all
@@ -3158,6 +3178,113 @@ impl Engine {
             version,
             payload: None,
         });
+    }
+
+    /// Hydrate `Type::Geometry` value cells from the realization-execution
+    /// path (GHR-γ step-6).
+    ///
+    /// For each named [`RealizationDecl`] whose name matches a
+    /// `ValueCellDecl` with `cell_type == Type::Geometry` in `template`,
+    /// constructs `Value::GeometryHandle { realization_ref, upstream_values_hash,
+    /// kernel_handle }` and writes it into `values`.
+    ///
+    /// `upstream_values_hash` is a deterministic 32-byte digest derived by
+    /// folding the `content_hash()` of each scalar arg value across all ops
+    /// in the realization (using `reify_core::hash::ContentHash` / XXH3-128).
+    /// The first 16 bytes hold the combined hash; the second 16 bytes hold a
+    /// salted variant to avoid all-zero output for empty arg lists.
+    ///
+    /// Runs in `build` and `build_snapshot` immediately before the
+    /// conformance- and kinematic-query post-processes, so downstream value
+    /// cells that read a `GeometryHandle` see the hydrated value.
+    ///
+    /// **Out of scope for GHR-γ:** kernel-name participation in
+    /// `upstream_values_hash`, persistent-cache freshness-walk
+    /// Realization→ValueCell edges, and `List<Geometry>` spread cells —
+    /// those are deferred to GHR-δ/ε/ζ. See plan design decisions.
+    fn post_process_geometry_handle_cells(
+        template: &reify_compiler::TopologyTemplate,
+        named_steps: &HashMap<String, GeometryHandleId>,
+        values: &mut ValueMap,
+        functions: &[CompiledFunction],
+        meta_map: &HashMap<String, HashMap<String, String>>,
+    ) {
+        use reify_core::{Type, hash::ContentHash, identity::ValueCellId};
+        use reify_ir::Value;
+
+        // Two-phase approach: collect entries while holding a &ValueMap borrow
+        // (via eval_ctx), then write them back via &mut ValueMap. This avoids a
+        // split-borrow conflict between the read and write phases.
+        let mut entries: Vec<(ValueCellId, Value)> = Vec::new();
+
+        {
+            let ctx = crate::eval_ctx_with_meta(values, functions, meta_map);
+
+            for realization in &template.realizations {
+                let name = match &realization.name {
+                    Some(n) => n.as_str(),
+                    None => continue,
+                };
+                let kernel_handle = match named_steps.get(name) {
+                    Some(&h) => h,
+                    None => continue,
+                };
+                // Only hydrate if a matching Type::Geometry value cell exists.
+                let has_geometry_cell = template
+                    .value_cells
+                    .iter()
+                    .any(|c| c.id.member == name && c.cell_type == Type::Geometry);
+                if !has_geometry_cell {
+                    continue;
+                }
+
+                // Fold content_hashes of all scalar-arg values across the
+                // realization's ops to form upstream_values_hash. Boolean
+                // ops (left/right GeomRefs) carry no scalar args and are
+                // skipped. Domain separator `b"uvh2"` ensures non-zero
+                // output even when all arg lists are empty (e.g. a zero-arg
+                // primitive that still needs a non-zero hash tag).
+                let mut h = ContentHash::of(b"uvh1");
+                for op in &realization.operations {
+                    let args: &[(String, reify_ir::CompiledExpr)] = match op {
+                        reify_compiler::CompiledGeometryOp::Primitive { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Modify { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Transform { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Pattern { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Sweep { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Curve { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Boolean { .. } => &[],
+                    };
+                    for (arg_name, expr) in args {
+                        let v = reify_expr::eval_expr(expr, &ctx);
+                        h = h
+                            .combine(ContentHash::of_str(arg_name))
+                            .combine(v.content_hash());
+                    }
+                }
+                // Pack the 128-bit XXH3 hash into a 32-byte field:
+                // bytes [0..16]  = h (the main combined hash)
+                // bytes [16..32] = h salted with "uvh2" (distinct second half)
+                let lo = h.0.to_le_bytes();
+                let hi = h.combine(ContentHash::of(b"uvh2")).0.to_le_bytes();
+                let mut upstream_values_hash = [0u8; 32];
+                upstream_values_hash[..16].copy_from_slice(&lo);
+                upstream_values_hash[16..].copy_from_slice(&hi);
+
+                entries.push((
+                    ValueCellId::new(realization.id.entity.as_str(), name),
+                    Value::GeometryHandle {
+                        realization_ref: realization.id.clone(),
+                        upstream_values_hash,
+                        kernel_handle,
+                    },
+                ));
+            }
+        } // ctx dropped — &ValueMap borrow released
+
+        for (cell_id, value) in entries {
+            values.insert(cell_id, value);
+        }
     }
 
     /// Post-process value cells for a template after `execute_realization_ops`
