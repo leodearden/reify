@@ -154,7 +154,8 @@ fn shell_extract_dispatch_on_synthetic_slab_materializes_shell_extraction_result
 /// 1. `dispatch_compute_node` returns `Err(diagnostics)`.
 /// 2. At least one diagnostic has `severity == Severity::Error` AND
 ///    `code == Some(DiagnosticCode::ShellBadThreshold)`.
-/// 3. The diagnostic message contains `"0"` (the offending value).
+/// 3. The diagnostic message contains `"= 0"` (value-after-equals per PRD §7,
+///    confirming the offending value is surfaced in the expected format).
 ///
 /// RED in step-5: `DiagnosticCode::ShellBadThreshold` does not exist yet and
 /// the failure mapping does not call `.with_code(...)`. GREEN after step-6
@@ -202,11 +203,14 @@ fn shell_extract_invalid_threshold_returns_failed_with_e_shell_bad_threshold_cod
          code=DiagnosticCode::ShellBadThreshold; got: {diagnostics:?}"
     );
 
-    // (3) Message must contain the offending value "0"
+    // (3) Message must contain the value-after-equals shape ("= 0") per PRD §7.
+    // Canonical message: "shell_threshold = 0 must be in (0.0, 1.0)."
+    // Checking for "= 0" pins that the *offending value* appears after the
+    // equals sign, not just that some digit '0' appears anywhere in the message.
     let msg = &typed.unwrap().message;
     assert!(
-        msg.contains('0'),
-        "expected diagnostic message to contain \"0\" (the bad threshold value); \
+        msg.contains("= 0"),
+        "expected diagnostic message to contain \"= 0\" (value-after-equals per PRD §7); \
          got: {msg:?}"
     );
 }
@@ -220,7 +224,7 @@ fn shell_extract_invalid_threshold_returns_failed_with_e_shell_bad_threshold_cod
 /// **Single-test ownership invariant**: this static is touched exclusively by
 /// `counting_shell_extract_fn` (target `"test::shell-extract-counting"`), which
 /// in turn is registered only by
-/// `shell_extract_second_run_hits_in_memory_compute_node_cache`. Adding a second
+/// `shell_extract_cache_entry_is_byte_stable_across_redispatches`. Adding a second
 /// test in this binary that registers a trampoline calling
 /// `counting_shell_extract_fn` — directly or via `"test::shell-extract-counting"`
 /// — will silently corrupt the count. The test resets the static at entry as
@@ -249,20 +253,26 @@ fn counting_shell_extract_fn(
     )
 }
 
-/// Verify that `run_compute_dispatch` records the result in the cache correctly
-/// across two dispatches on the same inputs.
+/// Verify that `shell_extraction_result_to_value` produces a byte-stable
+/// `Value` across two re-dispatches on the same pipeline inputs, and that the
+/// cache entry written by `run_compute_dispatch` carries that stable value.
 ///
-/// After the first dispatch:
+/// This test does NOT pin the eval-loop short-circuit (the mechanism that avoids
+/// calling the trampoline on a cache hit). That contract lives in the eval loop
+/// at `engine_eval.rs:2169-2194` and is tested by `compute_dispatch_registry.rs`.
+/// What this test pins is the prerequisite for that short-circuit to be correct:
+/// the trampoline output must be **deterministic** (same inputs → byte-identical
+/// `Value`) so the content hash stored in the cache can be used as a stable key.
+///
+/// After the first dispatch (VersionId 1):
 /// - The trampoline ran exactly once.
 /// - `engine.freshness(NodeId::Value(cell)) == Freshness::Final`.
 /// - The cache entry carries `Value::StructureInstance("ShellExtractionResult")`.
 /// - `result.content_hash()` is captured as `hash1`.
 ///
-/// After the second dispatch (same inputs, VersionId(2)):
+/// After the second dispatch (same inputs, VersionId 2):
 /// - The trampoline ran a total of twice (`run_compute_dispatch` has no
-///   short-circuit at the helper level — that short-circuit lives in the
-///   eval loop at `engine_eval.rs:2169-2194`, tested by
-///   `compute_dispatch_registry.rs`).
+///   short-circuit at the helper level).
 /// - `freshness` is still `Final`.
 /// - `result.content_hash() == hash1` — pinning that
 ///   `shell_extraction_result_to_value` is **deterministic** for the same
@@ -277,7 +287,7 @@ fn counting_shell_extract_fn(
 /// PRD §5 cache-key composition forward link:
 /// `docs/prds/v0_4/shell-extract-engine-bridge.md §5`.
 #[test]
-fn shell_extract_second_run_hits_in_memory_compute_node_cache() {
+fn shell_extract_cache_entry_is_byte_stable_across_redispatches() {
     use reify_core::{ComputeNodeId, ValueCellId, VersionId};
     use reify_eval::cache::NodeId;
     use reify_ir::Freshness;
