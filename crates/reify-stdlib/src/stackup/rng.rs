@@ -424,7 +424,7 @@ mod tests {
         let mut rng = Xoshiro256StarStar::from_seed(0xABCD_EF01_2345_6789);
         for i in 0..10_000 {
             let f = rng.next_uniform_f64();
-            assert!(f >= 0.0 && f < 1.0,
+            assert!((0.0..1.0).contains(&f),
                 "draw {i}: {f} out of [0, 1)");
         }
     }
