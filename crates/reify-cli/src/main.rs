@@ -1235,6 +1235,32 @@ mod tests {
     }
 
     #[test]
+    fn parse_purpose_flag_accepts_multi_pair_named_bindings() {
+        // `name=p:A,q:B` is the multi-pair form: ordered, each segment carries
+        // its per-param name.
+        let activation = parse_purpose_flag("fits_within=part:A,envelope:B")
+            .expect("multi-pair form should parse");
+        assert_eq!(activation.name, "fits_within");
+        assert_eq!(activation.bindings.len(), 2);
+        assert_eq!(activation.bindings[0].param.as_deref(), Some("part"));
+        assert_eq!(activation.bindings[0].entity, "A");
+        assert_eq!(activation.bindings[1].param.as_deref(), Some("envelope"));
+        assert_eq!(activation.bindings[1].entity, "B");
+    }
+
+    #[test]
+    fn parse_purpose_flag_rejects_malformed_values() {
+        // Missing `=` — no purpose name vs. binding-list separator.
+        assert!(parse_purpose_flag("noequals").is_err());
+        // Empty purpose name.
+        assert!(parse_purpose_flag("=Bracket").is_err());
+        // Empty binding list.
+        assert!(parse_purpose_flag("mfg_ready=").is_err());
+        // Trailing empty segment after a comma (`p=a,`).
+        assert!(parse_purpose_flag("p=a,").is_err());
+    }
+
+    #[test]
     fn report_eval_output_returns_correct_outcome_variants() {
         let no_diags: Vec<reify_core::Diagnostic> = vec![];
 
