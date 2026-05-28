@@ -2518,6 +2518,10 @@ fn eval_div(lv: &Value, rv: &Value) -> Value {
             dimension: *dimension,
         },
         // Complex / Complex: (a+bi)/(c+di) = ((ac+bd)+(bc-ad)i)/(c²+d²)
+        // NOTE: No sanitize_value here — by design, matching eval_mul Complex*Complex (lib.rs:2185).
+        // Overflow (e.g. MAX/0.5 → Inf) propagates as an Inf-bearing Complex in the operator path;
+        // the `complex_div` builtin (reify-stdlib/src/complex.rs) adds sanitize_value for Inf→Undef.
+        // The divergence is intentional and pinned by `complex_div_complex_overflow_propagates_infinity`.
         (
             Value::Complex {
                 re: ar,

@@ -352,6 +352,26 @@ fn complex_div_complex_by_zero_returns_undef() {
     assert!(result.is_undef());
 }
 
+/// Operator-path overflow propagates as an Inf-bearing Complex (no sanitize_value by design).
+/// denom = 0.25; re = MAX/0.25 = Inf; im = 0/0.25 = 0.
+/// Pins the deliberate operator-vs-builtin divergence: the complex_div builtin sanitizes
+/// (Inf→Undef), but the operator arm does not — matching eval_mul Complex*Complex convention.
+#[test]
+fn complex_div_complex_overflow_propagates_infinity() {
+    let result = eval_binop(
+        BinOp::Div,
+        complex_val(f64::MAX, 0.0, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        complex_val(0.5, 0.0, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        Type::complex(Type::Real),
+    );
+    assert!(
+        matches!(&result, Value::Complex { re, im, .. } if re.is_infinite() && *im == 0.0),
+        "expected Inf-bearing Complex, got: {result:?}",
+    );
+}
+
 // ─── step-11: Unary negation ───────────────────────────────────────────────
 
 /// Negating a Complex value negates both re and im, preserves dimension.

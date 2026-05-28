@@ -252,8 +252,8 @@ fn eval_complex_div_prints_one_over_i_is_minus_i() {
         "reify eval should exit 0 for complex_div.ri.\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
-        stdout.contains("0-1i"),
-        "stdout should contain '0-1i' (the quotient 1/i = -i), got: {stdout}"
+        stdout.contains("quotient = 0-1i"),
+        "stdout should contain 'quotient = 0-1i' (binding + value of 1/i = -i), got: {stdout}"
     );
     assert!(
         !stderr.contains("Error"),
