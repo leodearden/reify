@@ -42,6 +42,20 @@ pub struct AppState {
     /// deadlocking.  Publishing a clone here (the same pattern used by
     /// `cancellation_compute_dispatch.rs:124-127`) sidesteps the lock order
     /// issue.  PRD §11 Q2 / compute-node-contract §2 SLA.
+    ///
+    /// # Stale-handle invariant
+    ///
+    /// The slot must be `None` before the engine-side producer publishes a new
+    /// handle.  If the producer fails to clear the slot on solve completion
+    /// (early-return, panic, or oversight), a stale handle lingers: the next
+    /// `cancel_solve` call will fire `.cancel()` on a completed run (no
+    /// effect), and the following solve will inherit the stale cancelled flag.
+    ///
+    /// The engine-side publisher **must** `debug_assert!(slot.lock().unwrap().is_none())`
+    /// before inserting a new handle.  `cancel_solve_impl` always clears the
+    /// slot via `.take()`, so a successful cancel also cleans up.  No run-id
+    /// matching is performed; the assumption is that at most one FEA solve runs
+    /// at a time (enforced by the engine mutex).
     pub pending_solve_cancel: Mutex<Option<CancellationHandle>>,
 }
 

@@ -270,6 +270,70 @@ pub fn solve_cg_warm(
     opts: CgSolverOptions,
     mode: SolverMode,
 ) -> CgResult {
+    solve_cg_impl(k, f, initial_guess, opts, mode, None)
+}
+
+/// Solve the SPD linear system `K u = f` with Jacobi-preconditioned CG,
+/// invoking a per-iteration progress callback after each residual-norm update.
+///
+/// Identical contract to [`solve_cg_warm`] except for the additional `progress`
+/// closure. The closure is invoked at the **end** of each CG iteration (after the
+/// residual-norm update and before the convergence branch) with
+/// `(iter_just_completed: usize, residual_l2_norm: f64)`. `iter_just_completed`
+/// is 1-indexed: the first iteration fires `(1, ‖r₁‖)`.
+///
+/// The return value of the callback is [`CgIterationControl`]:
+/// - [`CgIterationControl::Continue`] — allow the next iteration.
+/// - [`CgIterationControl::Cancel`] — exit immediately with
+///   `iterations = iter_just_completed, converged = false`.
+///   **Note:** Cancel is checked *before* the convergence branch — if the
+///   callback returns `Cancel` on an iteration whose residual would have
+///   satisfied the convergence tolerance, the result is `converged = false`
+///   anyway. Callers that want "cancel only if not yet converged" should check
+///   `residual_l2_norm` against their own tolerance before returning `Cancel`.
+///
+/// The callback is **not** invoked after it returns `Cancel`, and is also not
+/// invoked when `cg_loop` exits early via the warm-start `‖r₀‖² < tol_sq`
+/// check (returns `iterations = 0, converged = true` without entering the main
+/// loop).
+///
+/// # Use in engine-boundary wiring (GR-016 ζ)
+///
+/// The GUI side translates `CancellationHandle::is_cancelled()` into
+/// `CgIterationControl::Cancel` at the engine boundary. The iteration callback
+/// also emits the `solver-progress` Tauri event via `event_bus::emit_typed`.
+/// Both are out of scope for this crate — this function is the kernel-side seam.
+///
+/// See `docs/gui-event-channels/solver-progress.md` §3 for the producer-side spec.
+///
+/// # Panics
+///
+/// Same panic conditions as [`solve_cg_warm`].
+pub fn solve_cg_with_progress(
+    k: &SparseRowMat<usize, f64>,
+    f: &[f64],
+    initial_guess: Option<&[f64]>,
+    opts: CgSolverOptions,
+    mode: SolverMode,
+    progress: &mut dyn FnMut(usize, f64) -> CgIterationControl,
+) -> CgResult {
+    solve_cg_impl(k, f, initial_guess, opts, mode, Some(progress))
+}
+
+/// Shared implementation backing [`solve_cg_warm`] and [`solve_cg_with_progress`].
+///
+/// Contains all contract checks, the zero-RHS short-circuit, Jacobi-preconditioner
+/// setup, and mode-dispatch to [`cg_loop`]. The `progress` parameter is forwarded
+/// directly to `cg_loop`; callers pass `None` (no-op, no overhead) or `Some(cb)`
+/// (per-iteration callback). Public function signatures remain unchanged.
+fn solve_cg_impl(
+    k: &SparseRowMat<usize, f64>,
+    f: &[f64],
+    initial_guess: Option<&[f64]>,
+    opts: CgSolverOptions,
+    mode: SolverMode,
+    progress: Option<&mut dyn FnMut(usize, f64) -> CgIterationControl>,
+) -> CgResult {
     // --- Contract checks (per Task-2544 contract-explicitness convention) ---
     //
     // Zero-threads check first (before dim checks): a Parallel { threads: 0 }
@@ -377,7 +441,7 @@ pub fn solve_cg_warm(
                 |p, out| spmv_seq(k, p, out),
                 dot,
                 norm2_squared,
-                None, // no progress callback — no-op, no overhead
+                progress,
             )
         }
         SolverMode::Parallel { threads } => {
@@ -392,145 +456,7 @@ pub fn solve_cg_warm(
                 |p, out| spmv_parallel(k, p, out, threads),
                 |a, b| dot_parallel(a, b, threads),
                 |v| norm2_squared_parallel(v, threads),
-                None, // no progress callback — no-op, no overhead
-            )
-        }
-    }
-}
-
-/// Solve the SPD linear system `K u = f` with Jacobi-preconditioned CG,
-/// invoking a per-iteration progress callback after each residual-norm update.
-///
-/// Identical contract to [`solve_cg_warm`] except for the additional `progress`
-/// closure. The closure is invoked at the **end** of each CG iteration (after the
-/// residual-norm update and before the convergence branch) with
-/// `(iter_just_completed: usize, residual_l2_norm: f64)`. `iter_just_completed`
-/// is 1-indexed: the first iteration fires `(1, ‖r₁‖)`.
-///
-/// The return value of the callback is [`CgIterationControl`]:
-/// - [`CgIterationControl::Continue`] — allow the next iteration.
-/// - [`CgIterationControl::Cancel`] — exit immediately with
-///   `iterations = iter_just_completed, converged = false`.
-///
-/// The callback is **not** invoked after it returns `Cancel`, and is also not
-/// invoked when `cg_loop` exits early via the warm-start `‖r₀‖² < tol_sq`
-/// check (returns `iterations = 0, converged = true` without entering the main
-/// loop).
-///
-/// # Use in engine-boundary wiring (GR-016 ζ)
-///
-/// The GUI side translates `CancellationHandle::is_cancelled()` into
-/// `CgIterationControl::Cancel` at the engine boundary. The iteration callback
-/// also emits the `solver-progress` Tauri event via `event_bus::emit_typed`.
-/// Both are out of scope for this crate — this function is the kernel-side seam.
-///
-/// See `docs/gui-event-channels/solver-progress.md` §3 for the producer-side spec.
-///
-/// # Panics
-///
-/// Same panic conditions as [`solve_cg_warm`].
-pub fn solve_cg_with_progress(
-    k: &SparseRowMat<usize, f64>,
-    f: &[f64],
-    initial_guess: Option<&[f64]>,
-    opts: CgSolverOptions,
-    mode: SolverMode,
-    progress: &mut dyn FnMut(usize, f64) -> CgIterationControl,
-) -> CgResult {
-    // Contract checks are identical to solve_cg_warm — delegate the checks and
-    // warm-start setup to it, then re-enter via cg_loop with the progress closure.
-    //
-    // Implementation note: we duplicate the contract-check + dispatch block from
-    // solve_cg_warm rather than having solve_cg_warm call cg_loop-with-progress,
-    // because threading the closure through solve_cg_warm's return path would
-    // require changing its public signature. The duplication is limited to the
-    // dispatch block (match mode {...}); cg_loop itself is the shared implementation.
-    if let SolverMode::Parallel { threads } = mode {
-        assert!(
-            threads != 0,
-            "SolverMode::Parallel {{ threads: 0 }} is invalid: \
-             auto-fallback to single-threaded would silently mask caller bugs \
-             (e.g. a misread config defaulting threads to 0). \
-             Pass threads >= 1, or use SolverMode::Deterministic for \
-             single-threaded pairwise-tree reductions.",
-        );
-    }
-    assert!(
-        opts.tolerance.is_finite() && opts.tolerance > 0.0,
-        "CgSolverOptions.tolerance = {} must be a finite positive value",
-        opts.tolerance,
-    );
-    assert!(
-        opts.max_iter > 0,
-        "CgSolverOptions.max_iter = 0 is invalid; must be >= 1",
-    );
-    assert_eq!(
-        f.len(),
-        k.nrows(),
-        "f.len() = {} but k.nrows() = {}; f must be sized to the system (f.len() == k.nrows())",
-        f.len(),
-        k.nrows(),
-    );
-    assert_eq!(
-        k.nrows(),
-        k.ncols(),
-        "K must be square: k.nrows() = {} but k.ncols() = {}; \
-         the stiffness matrix must be n × n",
-        k.nrows(),
-        k.ncols(),
-    );
-    if let Some(u_0) = initial_guess {
-        assert_eq!(
-            u_0.len(),
-            k.nrows(),
-            "initial_guess.len() = {} but k.nrows() = {}; \
-             initial_guess must be sized to the system (initial_guess.len() == k.nrows())",
-            u_0.len(),
-            k.nrows(),
-        );
-    }
-
-    let n = f.len();
-    let inv_diag = extract_diag_jacobi(k);
-
-    let f_norm_sq = norm2_squared(f);
-    if f_norm_sq == 0.0 {
-        return CgResult {
-            u: Arc::new(vec![0.0; n]),
-            iterations: 0,
-            converged: true,
-        };
-    }
-    let tol_sq = opts.tolerance * opts.tolerance * f_norm_sq;
-
-    match mode {
-        SolverMode::Deterministic => {
-            let (u, r) = build_initial_u_r(f, initial_guess, |p, out| spmv_seq(k, p, out));
-            cg_loop(
-                u,
-                r,
-                &inv_diag,
-                tol_sq,
-                opts.max_iter,
-                |p, out| spmv_seq(k, p, out),
-                dot,
-                norm2_squared,
-                Some(progress),
-            )
-        }
-        SolverMode::Parallel { threads } => {
-            let (u, r) =
-                build_initial_u_r(f, initial_guess, |p, out| spmv_parallel(k, p, out, threads));
-            cg_loop(
-                u,
-                r,
-                &inv_diag,
-                tol_sq,
-                opts.max_iter,
-                |p, out| spmv_parallel(k, p, out, threads),
-                |a, b| dot_parallel(a, b, threads),
-                |v| norm2_squared_parallel(v, threads),
-                Some(progress),
+                progress,
             )
         }
     }
@@ -2265,5 +2191,102 @@ mod tests {
             "callback must be invoked exactly once (stopped at Cancel); \
              got {call_count} invocations"
         );
+    }
+
+    /// `solve_cg_with_progress` fires the callback across **multiple** CG
+    /// iterations on a coupled system that cannot converge in a single step.
+    ///
+    /// The two tests above both use the fan-mesh fixture, which converges in
+    /// exactly 1 CG iteration (the mesh DOFs are decoupled after Dirichlet
+    /// elimination, so α = 1 drives r₁ → 0 exactly). That means neither
+    /// test exercises `observed[idx]` for `idx > 0`, leaving the 1-indexed
+    /// iter-counter contract and residual-sequence unverified across multiple
+    /// iterations.
+    ///
+    /// This test uses a 3×3 tridiagonal SPD system with off-diagonal coupling:
+    ///
+    /// ```text
+    ///     ⎡  4  −1   0 ⎤       ⎡ 1 ⎤
+    /// K = ⎢ −1   4  −1 ⎥   f = ⎢ 2 ⎥
+    ///     ⎣  0  −1   4 ⎦       ⎣ 3 ⎦
+    /// ```
+    ///
+    /// Eigenvalues of K are 4 ± √2 and 4 (all strictly positive → K is SPD).
+    /// With the asymmetric RHS [1, 2, 3] and Jacobi preconditioner the solver
+    /// requires > 1 step before residual drops below 1e-12.
+    ///
+    /// Assertions:
+    /// (a) Converges on this SPD system.
+    /// (b) `observed.len() > 1` — the multi-step contract is actually exercised.
+    /// (c) Iter values are exactly 1-indexed: `observed[i].0 == i + 1`.
+    /// (d) Every residual is finite and non-negative.
+    #[test]
+    fn solve_cg_with_progress_multi_iteration_callback_sequence() {
+        let k = SparseRowMat::try_new_from_triplets(
+            3,
+            3,
+            &[
+                Triplet::new(0_usize, 0_usize, 4.0_f64),
+                Triplet::new(0_usize, 1_usize, -1.0_f64),
+                Triplet::new(1_usize, 0_usize, -1.0_f64),
+                Triplet::new(1_usize, 1_usize, 4.0_f64),
+                Triplet::new(1_usize, 2_usize, -1.0_f64),
+                Triplet::new(2_usize, 1_usize, -1.0_f64),
+                Triplet::new(2_usize, 2_usize, 4.0_f64),
+            ],
+        )
+        .unwrap();
+        let f = [1.0_f64, 2.0_f64, 3.0_f64];
+        let opts = CgSolverOptions {
+            tolerance: 1e-12,
+            max_iter: 100,
+        };
+
+        let mut observed: Vec<(usize, f64)> = Vec::new();
+        let result = solve_cg_with_progress(
+            &k,
+            &f,
+            None,
+            opts,
+            SolverMode::Deterministic,
+            &mut |iter, residual| {
+                observed.push((iter, residual));
+                CgIterationControl::Continue
+            },
+        );
+
+        // (a) Must converge on this SPD system.
+        assert!(
+            result.converged,
+            "solve_cg_with_progress must converge on tridiagonal SPD system; iterations={}",
+            result.iterations
+        );
+
+        // (b) The coupled system requires more than one CG iteration — this is
+        // the invariant that the fan-mesh tests cannot pin.
+        assert!(
+            observed.len() > 1,
+            "expected > 1 callback invocation on coupled tridiagonal system, got {}; \
+             the multi-iteration iter-counter contract was not exercised",
+            observed.len()
+        );
+
+        // (c) Iter values must be exactly 1-indexed with no gaps.
+        for (idx, &(iter, _)) in observed.iter().enumerate() {
+            assert_eq!(
+                iter,
+                idx + 1,
+                "expected iter={} at position {idx}, got {iter}",
+                idx + 1
+            );
+        }
+
+        // (d) Every residual must be finite and non-negative.
+        for &(iter, residual) in &observed {
+            assert!(
+                residual.is_finite() && residual >= 0.0,
+                "residual at iter={iter} must be finite and non-negative, got {residual}"
+            );
+        }
     }
 }
