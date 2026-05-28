@@ -92,6 +92,15 @@ impl Xoshiro256StarStar {
         z1 * sigma
     }
 
+    /// Draw one sample from `Uniform([-h, +h])` (symmetric about zero).
+    ///
+    /// Inverse-CDF: `F⁻¹(p) = h · (2p − 1)`.
+    /// Maps `p ∈ [0, 1)` → `[-h, +h)`.
+    pub(super) fn sample_uniform_sym(&mut self, half_band: f64) -> f64 {
+        let u = self.next_uniform_f64();
+        (2.0 * u - 1.0) * half_band
+    }
+
     /// Return a `f64` in the half-open interval `[0, 1)`.
     ///
     /// Recipe: right-shift the raw `u64` by 11 bits to obtain a 53-bit
