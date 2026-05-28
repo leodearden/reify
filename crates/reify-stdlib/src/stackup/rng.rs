@@ -92,6 +92,22 @@ impl Xoshiro256StarStar {
         z1 * sigma
     }
 
+    /// Draw one sample from `Triangular([-h, +h], mode=0)` (symmetric).
+    ///
+    /// Inverse-CDF derivation (two pieces):
+    /// - On `[-h, 0]`: CDF is `F(x) = 0.5·(1 + x/h)²`.  Invert: `x = h·(√(2p) − 1)`.
+    /// - On `[0, +h]`: CDF is `F(x) = 1 − 0.5·(1 − x/h)²`.  Invert: `x = h·(1 − √(2(1−p)))`.
+    ///
+    /// Switching point at `p = 0.5` (the CDF value at mode 0).
+    pub(super) fn sample_triangular_sym(&mut self, half_band: f64) -> f64 {
+        let u = self.next_uniform_f64();
+        if u < 0.5 {
+            half_band * ((2.0 * u).sqrt() - 1.0)
+        } else {
+            half_band * (1.0 - (2.0 * (1.0 - u)).sqrt())
+        }
+    }
+
     /// Draw one sample from `Uniform([-h, +h])` (symmetric about zero).
     ///
     /// Inverse-CDF: `F⁻¹(p) = h · (2p − 1)`.
