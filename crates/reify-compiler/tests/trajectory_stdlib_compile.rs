@@ -1961,3 +1961,87 @@ fn ei_shaper_struct_has_correct_param_shape_and_constraints() {
             .collect::<Vec<_>>()
     );
 }
+
+// ─── step-47: CascadedShaper param shape ─────────────────────────────────────
+
+/// `CascadedShaper` chains multiple `Shaper` instances in sequence (PRD §5.1).
+/// It must refine `Shaper` and declare exactly 1 param:
+///
+///   - `shapers : List<Shaper>`  →  Type::List(Box::new(
+///                                      Type::TraitObject("Shaper")))
+///
+/// Zero constraints: an empty cascade is a valid identity (no shaping) —
+/// the collection invariant is deferred to the ε consumer, matching
+/// TOTSShaper's modes/actuator_limits discipline. The test asserts exactly
+/// 0 constraints as a regression gate against accidental over-declaration.
+///
+/// Mirrors `CompositeForce.sources : List<ForcingFunction>` pattern for the
+/// `Type::List(TraitObject(...))` assertion shape
+/// (modal_options_validation_tests.rs).
+///
+/// RED because `CascadedShaper` does not exist yet — `find_structure` panics.
+#[test]
+fn cascaded_shaper_struct_has_correct_param_shape() {
+    // step-47
+    let template = find_structure("CascadedShaper");
+
+    // (a) refines Shaper marker trait.
+    assert_eq!(
+        template.trait_bounds,
+        vec!["Shaper".to_string()],
+        "CascadedShaper must refine Shaper; got trait_bounds: {:?}",
+        template.trait_bounds
+    );
+
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    // (b) exactly 1 param.
+    assert_eq!(
+        params.len(),
+        1,
+        "CascadedShaper should have exactly 1 param (shapers); got: {:?}",
+        names
+    );
+
+    // (c) param name and type: shapers : List<TraitObject("Shaper")>.
+    let shapers_cell = &params[0];
+    assert_eq!(
+        shapers_cell.id.member, "shapers",
+        "CascadedShaper param[0] name should be 'shapers'; got: {:?}",
+        shapers_cell.id.member
+    );
+    assert_eq!(
+        shapers_cell.cell_type,
+        Type::List(Box::new(Type::TraitObject("Shaper".to_string()))),
+        "CascadedShaper.shapers should be Type::List(TraitObject(\"Shaper\")); \
+         got: {:?}",
+        shapers_cell.cell_type
+    );
+
+    // (d) no default (caller-supplied sequence of shapers).
+    assert!(
+        shapers_cell.default_expr.is_none(),
+        "CascadedShaper.shapers should have NO default_expr (caller-supplied); \
+         got: {:?}",
+        shapers_cell.default_expr
+    );
+
+    // (e) zero constraints — regression gate against accidental over-declaration.
+    // An empty cascade is a valid identity (no shaping); the collection
+    // invariant is deferred to the ε consumer (matches TOTSShaper.modes /
+    // actuator_limits discipline).
+    assert_eq!(
+        template.constraints.len(),
+        0,
+        "CascadedShaper should declare exactly 0 constraints \
+         (collection invariant deferred to ε consumer); \
+         got {} constraints: {:?}",
+        template.constraints.len(),
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+}
