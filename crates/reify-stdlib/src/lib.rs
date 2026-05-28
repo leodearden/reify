@@ -39,6 +39,7 @@ mod snapshot;
 mod stackup;
 mod supports;
 mod sweep;
+mod tensegrity;
 mod trajectory;
 mod trig;
 
@@ -98,6 +99,9 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         return v;
     }
     if let Some(v) = trajectory::eval_trajectory(name, args) {
+        return v;
+    }
+    if let Some(v) = tensegrity::eval_tensegrity(name, args) {
         return v;
     }
     Value::Undef
