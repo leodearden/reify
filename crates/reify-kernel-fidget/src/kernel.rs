@@ -769,6 +769,59 @@ mod tests {
             .expect("execute(Box) with valid dimensions must succeed");
     }
 
+    /// `iso_mesh` on a sphere SDF must produce a non-empty mesh with valid
+    /// geometry: at least one vertex and one triangle, with vertex count and
+    /// index count both divisible by 3.
+    #[test]
+    fn fidget_kernel_iso_mesh_sphere_produces_nonempty_mesh() {
+        use crate::IsoMeshOptions;
+        let mut kernel = FidgetKernel::new();
+        let sphere = kernel
+            .execute(&GeometryOp::Sphere {
+                radius: Value::Real(1.0),
+            })
+            .expect("Sphere build");
+        let result = kernel.iso_mesh(sphere.id, &IsoMeshOptions::default());
+        let mesh = result.expect("iso_mesh on sphere must succeed");
+        assert!(
+            mesh.vertices.len() > 0,
+            "iso_mesh must produce at least one vertex; got {} vertices",
+            mesh.vertices.len(),
+        );
+        assert_eq!(
+            mesh.vertices.len() % 3,
+            0,
+            "vertex count must be divisible by 3 (flat xyz layout); got {}",
+            mesh.vertices.len(),
+        );
+        assert!(
+            mesh.indices.len() > 0,
+            "iso_mesh must produce at least one index; got {} indices",
+            mesh.indices.len(),
+        );
+        assert_eq!(
+            mesh.indices.len() % 3,
+            0,
+            "index count must be divisible by 3 (triangle list); got {}",
+            mesh.indices.len(),
+        );
+    }
+
+    /// `iso_mesh` on an unknown handle must return `Err(TessError::InvalidHandle(_))`.
+    #[test]
+    fn fidget_kernel_iso_mesh_unknown_handle_errors() {
+        use crate::IsoMeshOptions;
+        let kernel = FidgetKernel::new();
+        let result = kernel.iso_mesh(GeometryHandleId(999), &IsoMeshOptions::default());
+        match result {
+            Err(TessError::InvalidHandle(id)) => {
+                assert_eq!(id, GeometryHandleId(999), "must report the invalid handle id");
+            }
+            Ok(_) => panic!("iso_mesh on unknown handle must fail"),
+            Err(other) => panic!("expected InvalidHandle, got {:?}", other),
+        }
+    }
+
     /// Pins the stable contract that the FIRST missing handle is the one
     /// named in `InvalidReference` — `left` is checked before `right`.
     #[test]
