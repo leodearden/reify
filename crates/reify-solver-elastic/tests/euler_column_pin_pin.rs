@@ -502,6 +502,20 @@ fn fixed_pin_euler_column_within_ten_percent() {
 /// tracked as a follow-up task. The 9% bound matches the established P1-tet
 /// BC-variant tolerance family (pin-pin 10%, fixed-pin 10%, fixed-free 11%);
 /// MPC removal of the lateral-clamp coupling lets fixed-guided land tighter.
+///
+/// **Profile gating**: this fixture's Lanczos solve takes ~1000s in a debug
+/// build, which exceeds `verify.sh`'s 30-minute debug-pass budget once the
+/// task-role `CARGO_PRIO` wrapper (`nice -n 15 ionice -c 2 -n 7`) deprioritizes
+/// it (the regression that originally blocked task 3813). `verify.sh` runs
+/// nextest *without* `--run-ignored`, so a bare `#[ignore]` would skip this test
+/// in BOTH profiles — silently dropping the task's deliverable. Instead we
+/// `cfg_attr(debug_assertions, ignore)`: the debug pass skips it, while the
+/// release pass (where `debug_assertions` is off) still runs it at ~55s, well
+/// under the 45-minute release-pass budget.
+#[cfg_attr(
+    debug_assertions,
+    ignore = "debug runtime ~1000s exceeds verify.sh 30m debug budget under CARGO_PRIO; runs in the release pass (~55s) — task 3813 / esc-3813-117"
+)]
 #[test]
 fn fixed_guided_euler_column_within_nine_percent() {
     let grid = ColumnFixture::fixed_guided_high_resolution();
