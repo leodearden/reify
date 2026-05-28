@@ -31,8 +31,9 @@
 use std::collections::{BTreeMap, HashSet};
 
 use reify_eval::{dispatcher, kernel_registry};
-use reify_ir::{CapabilityDescriptor, Operation, ReprKind};
+use reify_ir::{CapabilityDescriptor, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, Operation, ReprKind};
 use reify_kernel_openvdb::register::openvdb_capability_descriptor;
+use reify_kernel_openvdb::OpenVdbKernel;
 
 /// Proves that `reify_eval::kernel_registry::registry()` contains `"openvdb"`
 /// when the openvdb adapter is linked in (i.e. the `inventory::submit!` in
@@ -175,5 +176,87 @@ fn openvdb_dispatches_two_stage_chain_brep_to_voxel() {
             ("openvdb".to_string(), ReprKind::Mesh, ReprKind::Voxel),
         ],
         "two-stage chain must produce conversions [(occt,BRep,Mesh),(openvdb,Mesh,Voxel)]",
+    );
+}
+
+/// Pins the planning-vs-execution contract for the BRep→Mesh→Voxel two-stage chain.
+///
+/// # What this test pins
+///
+/// - **PLANNING**: `dispatcher::dispatch` with a synthetic `{ "occt": (Convert{BRep},Mesh),
+///   "openvdb": descriptor }` registry resolves `(BooleanUnion, Voxel)` from `{BRep}` to
+///   `kernel="openvdb", conversions=[("occt",BRep,Mesh),("openvdb",Mesh,Voxel)]` — pinning
+///   the exact two-stage chain the reviewer flagged.
+/// - **EXECUTION (graceful degradation)**: calling `GeometryKernel::execute` on a freshly
+///   constructed `OpenVdbKernel` with a `GeometryOp::Union` (dummy handle IDs — `execute`
+///   short-circuits before reading them) returns `Err(GeometryError::OperationFailed(_))`,
+///   NOT a panic and NOT `Ok(_)` (which would be silent-wrong-geometry).
+///
+/// # Contract documented
+///
+/// The `(Convert{from:Mesh}, Voxel)` descriptor edge is a **PLANNING** declaration that
+/// lets the dispatcher BFS reach Voxel. The executable Mesh→Voxel primitive is
+/// `OpenVdbKernel::realize_voxel_from_mesh_with_options` (task η steps 5-6). Trait-`execute()`
+/// of the planned terminal Voxel op intentionally degrades to a typed error until task ε wires
+/// engine dispatch (no `GeometryOp` Mesh-input variant exists, so trait-execute routing is
+/// structurally deferred). This test makes the graceful-degradation contract visible from green CI.
+///
+/// cfg-agnostic: both the real `kernel_real.rs` and stub `kernel.rs` return
+/// `GeometryError::OperationFailed` from `execute()` — no `cfg(has_openvdb)` split needed.
+#[test]
+fn openvdb_two_stage_chain_terminal_op_execute_degrades_gracefully() {
+    // -----------------------------------------------------------------------
+    // PLANNING side — pin the two-stage BRep→Mesh→Voxel dispatch chain.
+    // -----------------------------------------------------------------------
+    let occt_descriptor = CapabilityDescriptor {
+        supports: vec![(Operation::Convert { from: ReprKind::BRep }, ReprKind::Mesh)],
+    };
+    let openvdb_descriptor = openvdb_capability_descriptor();
+
+    let owned: BTreeMap<String, CapabilityDescriptor> = BTreeMap::from([
+        ("occt".to_string(), occt_descriptor),
+        ("openvdb".to_string(), openvdb_descriptor),
+    ]);
+    let view: BTreeMap<String, &CapabilityDescriptor> =
+        owned.iter().map(|(k, v)| (k.clone(), v)).collect();
+
+    let available: HashSet<ReprKind> = HashSet::from([ReprKind::BRep]);
+    let plan = dispatcher::dispatch(&view, Operation::BooleanUnion, ReprKind::Voxel, &available)
+        .expect("two-stage chain must resolve: BRep→Mesh (occt) then Mesh→Voxel (openvdb)");
+
+    assert_eq!(
+        plan.kernel, "openvdb",
+        "two-stage chain must resolve to openvdb as the final-stage kernel",
+    );
+    assert_eq!(
+        plan.conversions,
+        vec![
+            ("occt".to_string(), ReprKind::BRep, ReprKind::Mesh),
+            ("openvdb".to_string(), ReprKind::Mesh, ReprKind::Voxel),
+        ],
+        "two-stage chain conversions must be [(occt,BRep,Mesh),(openvdb,Mesh,Voxel)]",
+    );
+
+    // -----------------------------------------------------------------------
+    // EXECUTION side — terminal Voxel op through trait degrades gracefully.
+    // -----------------------------------------------------------------------
+    // Drive the planned final-stage op through the GeometryKernel trait.
+    // execute() short-circuits before reading the handle IDs, so dummy IDs
+    // need no real Voxel handles / FFI.
+    let mut k = OpenVdbKernel::new();
+    let r = GeometryKernel::execute(
+        &mut k,
+        &GeometryOp::Union {
+            left: GeometryHandleId(0),
+            right: GeometryHandleId(1),
+        },
+    );
+
+    // Must be a typed, intentional error — NOT a panic, NOT Ok(_).
+    assert!(
+        matches!(r, Err(GeometryError::OperationFailed(_))),
+        "execute() for a terminal Voxel op must degrade to GeometryError::OperationFailed, \
+         got {:?}",
+        r,
     );
 }
