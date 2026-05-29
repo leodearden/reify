@@ -431,6 +431,26 @@ const COLLECTION_AGGREGATION_MEMBERS: &[&str] = &["count", "sum", "keys", "value
 const PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS: &[&str] =
     &["params", "geometric_params", "material_params"];
 
+/// Structural-query accessor names on `self` in entity scope.
+///
+/// When a structure body accesses `self.<name>` where `<name>` is in this list
+/// and no user-declared param/let/sub with that name exists, the compiler emits a
+/// `CompiledExprKind::MethodCall` node with result type
+/// `Type::List(Box::new(Type::StructureRef(WILDCARD_STRUCTURE_KIND)))`.
+///
+/// Semantics:
+/// - `self.children` — direct sub-entity instances (one level deep).
+/// - `self.members`  — all members (params + sub-entities) at this level.
+/// - `self.descendants` — all sub-entity instances transitively.
+///
+/// User-declared params/lets/subs shadow these names because the dispatch is
+/// placed in the `None` arm of `scope.resolve(member)`, i.e. only when no
+/// user-definition matches.
+///
+/// Runtime enumeration (actually populating the list) is deferred to the β/γ
+/// tasks; this α task provides compiler-typing only.
+const STRUCTURAL_QUERY_ACCESSORS: &[&str] = &["children", "members", "descendants"];
+
 /// Entity-kind name that acts as the purpose-subject wildcard.
 ///
 /// A purpose declared as `purpose check(subject : Structure)` binds to *any*
@@ -1351,6 +1371,34 @@ pub(crate) fn compile_expr_guarded(
                             return CompiledExpr::value_ref(id, ty);
                         }
                         None => {
+                            // Structural-query accessors (task 3982, PRD §8 Phase 1).
+                            //
+                            // Placed here — AFTER scope.resolve fails — so user-declared
+                            // params/lets/subs with the same name shadow the accessors
+                            // (matches the built-in–shadowing precedent at line ~683-690).
+                            //
+                            // Lower to a MethodCall node using the same shape as the
+                            // collection-aggregation lowering (`.count`/`.sum`, expr.rs ~2081).
+                            // self_ref mirrors the bare-`self` resolution (line ~663-668).
+                            // The result type `List(StructureRef(WILDCARD_STRUCTURE_KIND))`
+                            // is the concrete spelling of "List<EntityRef>" — the wildcard
+                            // StructureRef("Structure") already means "any structure entity".
+                            // β/γ dispatch on MethodCall{method ∈ STRUCTURAL_QUERY_ACCESSORS}.
+                            if STRUCTURAL_QUERY_ACCESSORS.contains(&member.as_str()) {
+                                let self_ref = CompiledExpr::value_ref(
+                                    ValueCellId::new(&scope.entity_name, "__self"),
+                                    Type::StructureRef(scope.entity_name.clone()),
+                                );
+                                let elem_type =
+                                    Type::StructureRef(WILDCARD_STRUCTURE_KIND.to_string());
+                                let list_type = Type::List(Box::new(elem_type));
+                                return CompiledExpr::method_call(
+                                    self_ref,
+                                    member.clone(),
+                                    vec![],
+                                    list_type,
+                                );
+                            }
                             // Anti-cascade (task-448/task-1921/task-1969): by-construction
                             // invariant — make_poison_literal pushes the diagnostic and
                             // returns the poison literal in one call.
