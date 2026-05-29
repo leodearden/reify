@@ -1654,6 +1654,56 @@ purpose fits_within(part : Structure, envelope : Structure) {
     );
 }
 
+/// C3 / RED (step-03): `activate_purpose_with_bindings` must return Err when a
+/// binding names a param not declared by the purpose, and must NOT inject any
+/// constraints.
+///
+/// RED because step-02's implementation does not yet validate C3.
+/// (Step-04 adds the C3 guard.)
+#[test]
+fn activate_with_bindings_unknown_param_is_diagnostic() {
+    let source = r#"
+structure PartA { param length : Length = 80mm }
+structure BoxB { param length : Length = 100mm }
+purpose fits_within(part : Structure, envelope : Structure) {
+    constraint part.length < envelope.length
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_simple_engine();
+    engine.eval(&compiled);
+    let before = constraint_count(&engine);
+
+    // "bogus" is not a declared param of fits_within.
+    let result = engine.activate_purpose_with_bindings(
+        "fits_within",
+        &[
+            ("part".to_string(), "PartA".to_string()),
+            ("bogus".to_string(), "BoxB".to_string()),
+        ],
+    );
+
+    // C3: must return Err naming the unknown param.
+    let err_msg = result.expect_err(
+        "expected Err for an unknown binding param, got Ok"
+    );
+    assert!(
+        err_msg.contains("bogus"),
+        "error message must name the unknown param 'bogus', got: {err_msg}"
+    );
+
+    // No injection must have occurred.
+    assert!(
+        !engine.is_purpose_active("fits_within"),
+        "purpose must NOT be active after a C3 validation failure"
+    );
+    assert_eq!(
+        constraint_count(&engine),
+        before,
+        "zero constraints must be injected on a C3 validation failure"
+    );
+}
+
 /// C6 parity / RED (step-01): `activate_purpose_with_bindings` with a single
 /// binding must produce the same `purpose:{name}@{entity}` prefix as the
 /// existing `activate_purpose` shim — NO digest in the single-binding path.
