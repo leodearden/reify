@@ -64,25 +64,72 @@ fn self_structural_accessors_resolve_to_list_of_entity_ref() {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    // (b) For each of cs/ms/ds, Asm template's value cell's default_expr.result_type
-    //     equals `Type::List(Box::new(Type::StructureRef("Structure")))`.
+    // (b) For each of cs/ms/ds, check:
+    //     - result_type == List(StructureRef("Structure"))
+    //     - lowered IR node is MethodCall { method=accessor, object=ValueRef(__self) }
+    //
+    // Pinning the method name here guards the β/γ dispatch contract:
+    // β/γ key on MethodCall{method ∈ STRUCTURAL_QUERY_ACCESSORS}.  A regression
+    // that always emitted method="children" for all three would pass a type-only
+    // check but break β/γ dispatch.
     let asm_template = compiled
         .templates
         .iter()
         .find(|t| t.name == "Asm")
         .expect("Asm template");
 
-    for member_name in &["cs", "ms", "ds"] {
+    let accessor_cases: &[(&str, &str)] = &[
+        ("cs", "children"),
+        ("ms", "members"),
+        ("ds", "descendants"),
+    ];
+
+    for (cell_name, expected_method) in accessor_cases {
         let cell = asm_template
             .value_cells
             .iter()
-            .find(|vc| vc.id.member == *member_name)
-            .unwrap_or_else(|| panic!("value cell '{}' not found in Asm", member_name));
+            .find(|vc| vc.id.member == *cell_name)
+            .unwrap_or_else(|| panic!("value cell '{}' not found in Asm", cell_name));
         let default_expr = cell
             .default_expr
             .as_ref()
-            .unwrap_or_else(|| panic!("cell '{}' has no default_expr", member_name));
-        assert_list_of_entity_ref(&default_expr.result_type, member_name);
+            .unwrap_or_else(|| panic!("cell '{}' has no default_expr", cell_name));
+
+        // Check result type.
+        assert_list_of_entity_ref(&default_expr.result_type, cell_name);
+
+        // Check the IR node is MethodCall { method=accessor, object=ValueRef(__self) }.
+        match &default_expr.kind {
+            reify_ir::CompiledExprKind::MethodCall { method, object, .. } => {
+                assert_eq!(
+                    method.as_str(),
+                    *expected_method,
+                    "cell '{}': expected MethodCall method={:?}, got {:?}",
+                    cell_name,
+                    expected_method,
+                    method,
+                );
+                match &object.kind {
+                    reify_ir::CompiledExprKind::ValueRef(id) => {
+                        assert_eq!(
+                            id.member.as_str(),
+                            "__self",
+                            "cell '{}': expected __self object, got {:?}",
+                            cell_name,
+                            id,
+                        );
+                    }
+                    other => panic!(
+                        "cell '{}': expected ValueRef(__self) as MethodCall object, got {:?}",
+                        cell_name, other
+                    ),
+                }
+            }
+            other => panic!(
+                "cell '{}': expected CompiledExprKind::MethodCall, got {:?}",
+                cell_name, other
+            ),
+        }
     }
 }
 
@@ -162,8 +209,16 @@ fn user_declared_member_shadows_accessor() {
     );
 }
 
-/// `let n = count(self.children)` over a multi-sub structure compiles with no panic.
-/// Exercises the free-function `count` applied to a structural-query accessor.
+/// `let n = count(self.children)` over a multi-sub structure compiles with zero
+/// Error diagnostics (PRD §1 user-observable signal).
+///
+/// Note: `count(...)` in **free-function** form is not a recognised aggregation —
+/// it falls through to the first-arg fallback in the `NoUserFunctions` arm of
+/// `resolve_function_overload` and returns the arg's type
+/// (`List<StructureRef("Structure")>`, **not** `Int`).
+/// The assertion below documents this explicitly so future readers know that
+/// count-as-free-fn is unresolved today; a β-phase task will wire proper
+/// aggregation semantics.  The compile-clean signal is what α exercises.
 #[test]
 fn count_of_self_children_compiles_clean() {
     let source = r#"
@@ -174,6 +229,36 @@ fn count_of_self_children_compiles_clean() {
             let n = count(self.children)
         }
     "#;
-    // parse_and_compile panics on any Error diagnostic.
-    let _compiled = parse_and_compile(source);
+    let compiled = compile_source(source);
+
+    // (a) Zero Error diagnostics.
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected zero Error diagnostics for count(self.children), got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // (b) The result type of `n` is List<StructureRef("Structure")> — the first-arg
+    //     fallback type — NOT Int.  Pinning this documents the current behaviour and
+    //     will catch when β resolves count to Int (update this assertion then).
+    let asm_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Asm")
+        .expect("Asm template");
+    let n_cell = asm_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "n")
+        .expect("n value cell");
+    let n_expr = n_cell.default_expr.as_ref().expect("n has default_expr");
+    assert_list_of_entity_ref(
+        &n_expr.result_type,
+        "n (count-as-free-fn returns arg type, not Int — expected until β wires aggregation)",
+    );
 }
