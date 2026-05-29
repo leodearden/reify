@@ -65,7 +65,7 @@ fn simple_setup() -> ConcurrentEditSetup {
     );
     traces.insert(
         NodeId::Value(ValueCellId::new(e, "b")),
-        DependencyTrace {
+        DependencyTrace { realization_reads: Vec::new(),
             reads: vec![ValueCellId::new(e, "a")],
         },
     );
@@ -2977,7 +2977,7 @@ mod execute_with_config_tests {
             NodeCache::new(
                 CachedResult::Value(Value::Real(0.0), DeterminacyState::Determined),
                 Freshness::Intermediate { generation: 1 },
-                DependencyTrace { reads: vec![] },
+                DependencyTrace { realization_reads: Vec::new(), reads: vec![] },
                 VersionId(1),
             ),
         );
@@ -2986,7 +2986,7 @@ mod execute_with_config_tests {
             NodeCache::new(
                 CachedResult::Value(Value::Real(0.0), DeterminacyState::Determined),
                 Freshness::Final,
-                DependencyTrace {
+                DependencyTrace { realization_reads: Vec::new(),
                     reads: vec![upstream.clone()],
                 },
                 VersionId(1),
@@ -3710,7 +3710,7 @@ mod execute_with_config_tests {
             NodeCache::new(
                 CachedResult::Value(Value::Real(0.0), DeterminacyState::Determined),
                 Freshness::Final,
-                DependencyTrace { reads: vec![] },
+                DependencyTrace { realization_reads: Vec::new(), reads: vec![] },
                 VersionId(1),
             ),
         );
@@ -3719,7 +3719,7 @@ mod execute_with_config_tests {
             NodeCache::new(
                 CachedResult::Value(Value::Real(0.0), DeterminacyState::Determined),
                 Freshness::Final,
-                DependencyTrace {
+                DependencyTrace { realization_reads: Vec::new(),
                     reads: vec![upstream.clone()],
                 },
                 VersionId(1),
@@ -3809,7 +3809,7 @@ mod execute_with_config_tests {
             NodeCache::new(
                 CachedResult::Value(Value::Real(0.0), DeterminacyState::Determined),
                 Freshness::Intermediate { generation: 1 },
-                DependencyTrace { reads: vec![] },
+                DependencyTrace { realization_reads: Vec::new(), reads: vec![] },
                 VersionId(1),
             ),
         );
@@ -3819,7 +3819,7 @@ mod execute_with_config_tests {
                 NodeCache::new(
                     CachedResult::Value(Value::Real(0.0), DeterminacyState::Determined),
                     Freshness::Final,
-                    DependencyTrace {
+                    DependencyTrace { realization_reads: Vec::new(),
                         reads: vec![upstream.clone()],
                     },
                     VersionId(1),

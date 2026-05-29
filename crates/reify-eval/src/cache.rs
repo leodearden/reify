@@ -2241,7 +2241,7 @@ mod tests {
         let expected_hash = result.content_hash();
 
         let version = VersionId(1);
-        let trace = DependencyTrace {
+        let trace = DependencyTrace { realization_reads: Vec::new(),
             reads: vec![ValueCellId::new("A", "x")],
         };
 
@@ -3618,7 +3618,7 @@ mod tests {
         );
 
         // A trace that only reads `a` (Final) → should yield Final
-        let trace_a_only = DependencyTrace {
+        let trace_a_only = DependencyTrace { realization_reads: Vec::new(),
             reads: vec![a_id.clone()],
         };
         assert_eq!(
@@ -3628,7 +3628,7 @@ mod tests {
         );
 
         // A trace that reads `b` (Intermediate) → should yield Intermediate
-        let trace_b_only = DependencyTrace {
+        let trace_b_only = DependencyTrace { realization_reads: Vec::new(),
             reads: vec![b_id.clone()],
         };
         assert_eq!(
@@ -3661,7 +3661,7 @@ mod tests {
         let b_id = ValueCellId::new("T", "b");
 
         // Cold-start: trace reads `a`
-        let trace_a = DependencyTrace {
+        let trace_a = DependencyTrace { realization_reads: Vec::new(),
             reads: vec![a_id.clone()],
         };
         store.record_evaluation_with_freshness(
@@ -3678,7 +3678,7 @@ mod tests {
         );
 
         // Early cutoff: same hash, but different trace (reads `b` now)
-        let trace_b = DependencyTrace {
+        let trace_b = DependencyTrace { realization_reads: Vec::new(),
             reads: vec![b_id.clone()],
         };
         let outcome = store.record_evaluation_with_freshness(
@@ -3728,7 +3728,7 @@ mod tests {
 
         // Call record_evaluation_propagating_freshness with a trace that reads `a`.
         // version=7 → generation derived as version.0=7 per §7.1 (single source of truth).
-        let trace = DependencyTrace {
+        let trace = DependencyTrace { realization_reads: Vec::new(),
             reads: vec![a_id.clone()],
         };
         let out_node = NodeId::Value(out_id.clone());
@@ -4104,7 +4104,7 @@ mod tests {
         // Row 1: all-Final (simplest path through the classifier)
         {
             let store = make_store(Freshness::Final, Freshness::Final);
-            let trace = DependencyTrace {
+            let trace = DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![a_id.clone(), b_id.clone()],
             };
             assert_agree!(store, &trace, sr, g, "all-Final");
@@ -4114,7 +4114,7 @@ mod tests {
         {
             let mut store = make_store(Freshness::Final, Freshness::Final);
             store.mark_pending(&NodeId::Value(b_id.clone()));
-            let trace = DependencyTrace {
+            let trace = DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![a_id.clone(), b_id.clone()],
             };
             assert_agree!(store, &trace, sr, g, "one-Pending");
@@ -4124,7 +4124,7 @@ mod tests {
         {
             let mut store = make_store(Freshness::Final, Freshness::Final);
             store.mark_failed(&NodeId::Value(b_id.clone()), ErrorRef::new("x"));
-            let trace = DependencyTrace {
+            let trace = DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![a_id.clone(), b_id.clone()],
             };
             assert_agree!(store, &trace, sr, g, "one-Failed");
@@ -4133,7 +4133,7 @@ mod tests {
         // Row 4: still_refining=true (exercises the Pending-when-still-refining branch)
         {
             let store = make_store(Freshness::Final, Freshness::Final);
-            let trace = DependencyTrace {
+            let trace = DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![a_id.clone(), b_id.clone()],
             };
             assert_agree!(store, &trace, true, g, "all-Final-still-refining");

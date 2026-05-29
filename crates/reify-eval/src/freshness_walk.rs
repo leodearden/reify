@@ -359,7 +359,7 @@ mod tests {
             NodeCache::new(
                 CachedResult::Value(value, DeterminacyState::Determined),
                 freshness,
-                DependencyTrace { reads },
+                DependencyTrace { realization_reads: Vec::new(), reads },
                 basis_version,
             ),
         );
@@ -1200,7 +1200,7 @@ mod tests {
             NodeCache::new(
                 CachedResult::GeometryHandle(GeometryHandleId(0)),
                 Freshness::Intermediate { generation: 1 },
-                DependencyTrace {
+                DependencyTrace { realization_reads: Vec::new(),
                     reads: vec![a.clone()],
                 },
                 VersionId(1),
@@ -1496,7 +1496,7 @@ mod tests {
             NodeCache::new(
                 CachedResult::Value(Value::Real(0.0), DeterminacyState::Determined),
                 Freshness::Intermediate { generation: 1 },
-                DependencyTrace {
+                DependencyTrace { realization_reads: Vec::new(),
                     reads: vec![a.clone()],
                 },
                 VersionId(1),

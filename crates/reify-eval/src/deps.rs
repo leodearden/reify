@@ -22,11 +22,19 @@ use std::collections::{HashMap, HashSet};
 #[derive(Debug, Clone, Default)]
 pub struct DependencyTrace {
     pub reads: Vec<ValueCellId>,
+    /// GHR-δ (PRD geometry-handle-runtime.md §8 Phase 4): RealizationNodeIds
+    /// this node implicitly depends on. A value cell holding a
+    /// `Value::GeometryHandle` reads the upstream Realization named in its
+    /// `realization_ref`; that edge is invisible to the VC→VC `reads` set, so
+    /// it is recorded here and folded into freshness derivation
+    /// (`derive_output_freshness_from_trace_with_cause`) and the freshness-only
+    /// walk's Realization→ValueCell fan-out. Empty for all non-geometry nodes.
+    pub realization_reads: Vec<RealizationNodeId>,
 }
 
 /// Extract a dependency trace from a compiled expression by collecting all ValueRef ids.
 pub fn extract_dependency_trace(expr: &CompiledExpr) -> DependencyTrace {
-    DependencyTrace {
+    DependencyTrace { realization_reads: Vec::new(),
         reads: expr.collect_value_refs(),
     }
 }
@@ -269,7 +277,7 @@ pub fn build_trace_map_and_fields(
     }
 
     for (_, res_node) in graph.resolutions.iter() {
-        let trace = DependencyTrace {
+        let trace = DependencyTrace { realization_reads: Vec::new(),
             reads: res_node.auto_params.clone(),
         };
         traces.insert(NodeId::Resolution(res_node.id.clone()), trace);
@@ -312,7 +320,7 @@ pub fn extract_realization_dependencies(
             reads.extend(expr.collect_value_refs());
         }
     }
-    DependencyTrace { reads }
+    DependencyTrace { realization_reads: Vec::new(), reads }
 }
 
 #[cfg(test)]
@@ -867,10 +875,10 @@ mod tests {
         let cell_x = ValueCellId::new("E", "x");
         let cell_y = ValueCellId::new("E", "y");
 
-        let trace_a = DependencyTrace {
+        let trace_a = DependencyTrace { realization_reads: Vec::new(),
             reads: vec![cell_x.clone()],
         };
-        let trace_b = DependencyTrace {
+        let trace_b = DependencyTrace { realization_reads: Vec::new(),
             reads: vec![cell_y.clone()],
         };
 
