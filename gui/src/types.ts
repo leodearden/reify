@@ -587,3 +587,27 @@ export interface FeaCaseChanged {
   /** All available case names, sorted lexicographically. */
   available_cases: string[];
 }
+
+/**
+ * Payload for the `solver-progress` Tauri event channel (GR-016 ζ).
+ *
+ * Emitted at the end of each CG iteration by the `solve_cg_with_progress`
+ * kernel callback in `crates/reify-solver-elastic/src/solver.rs`.
+ *
+ * Field names match the Rust IPC struct in
+ * `gui/src-tauri/src/types.rs::SolverProgress` exactly — no `serde(rename_all)`
+ * (PRD `docs/prds/v0_3/gui-event-channel-inventory.md` §2.2 task ζ / §3.2).
+ *
+ * `eta_ms` is absent from the wire when ETA cannot be estimated (first iteration).
+ * Consumer: `SolverProgressOverlay`.
+ */
+export interface SolverProgress {
+  /** Solver algorithm identifier, e.g. `"cg"` for Jacobi-preconditioned CG. */
+  solver_kind: string;
+  /** 1-indexed iteration number just completed. */
+  iter: number;
+  /** L2 residual norm at this iteration. */
+  residual: number;
+  /** Estimated time to completion in milliseconds; absent when ETA not yet estimable. */
+  eta_ms?: number;
+}

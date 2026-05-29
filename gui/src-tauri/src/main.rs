@@ -575,6 +575,17 @@ fn get_kernel_status() -> reify_gui::kernel_status::KernelStatus {
     reify_gui::kernel_status::current_kernel_status()
 }
 
+/// Cancel an in-flight FEA solve (GR-016 ζ, PRD §11 Q2).
+///
+/// Reads `AppState::pending_solve_cancel`, calls `.cancel()` on the handle if
+/// present, and clears the slot.  Returns `Ok(())` in both the "cancelled" and
+/// "no-op" cases.  The engine-side wiring that publishes the handle is a
+/// follow-on task.
+#[tauri::command]
+fn cancel_solve(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    reify_gui::commands::cancel_solve_impl(&*state)
+}
+
 fn main() {
     // Sweep stale tempfiles and orphan directories from the persistent cache
     // before any engine work. Best-effort: resolver errors are logged at
@@ -624,6 +635,7 @@ fn main() {
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::clone(&selection_arc),
         initial_file: Mutex::new(initial_file.clone()),
+        pending_solve_cancel: Mutex::new(None),
     };
 
     tauri::Builder::default()
@@ -731,6 +743,7 @@ fn main() {
             get_kernel_status,
             read_view_sidecar,
             write_view_sidecar,
+            cancel_solve,
         ])
         .on_window_event(|window, event| {
             // Gracefully shut down the sidecar when the window closes.

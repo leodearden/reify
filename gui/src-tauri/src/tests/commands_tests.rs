@@ -33,6 +33,7 @@ fn app_state_constructible() {
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo::default())),
         initial_file: Mutex::new(None),
+        pending_solve_cancel: Mutex::new(None),
     };
 }
 
@@ -50,6 +51,7 @@ fn app_state_selection_is_accessible() {
             hovered_entity: None,
         })),
         initial_file: Mutex::new(None),
+        pending_solve_cancel: Mutex::new(None),
     };
     let sel = state.selection.read().unwrap();
     assert_eq!(sel.selected_entity, Some("Bracket".to_string()));
@@ -69,6 +71,7 @@ fn app_state_selection_multi() {
             hovered_entity: None,
         })),
         initial_file: Mutex::new(None),
+        pending_solve_cancel: Mutex::new(None),
     };
     let sel = state.selection.read().unwrap();
     assert_eq!(sel.selected_entity, Some("A".to_string()));
@@ -938,4 +941,60 @@ fn open_file_engine_impl_files_path_is_canonical_absolute() {
         state.files[0].path, expected,
         "GuiState.files[0].path should be the canonical absolute realpath, not a module-key form"
     );
+}
+
+// ── Task 3543 step-9: cancel_solve_impl command tests (GR-016 ζ) ─────────────
+
+/// `cancel_solve_impl` calls `.cancel()` on the published handle, clears the
+/// slot, and returns `Ok(())`.
+///
+/// Verifies the PRD §11 Q2 resolution: the `cancel_solve` Tauri command reads
+/// `AppState::pending_solve_cancel`, cancels the handle if present, and clears
+/// the slot so it is not double-cancelled by a follow-on command invocation.
+#[test]
+fn cancel_solve_impl_fires_published_handle_and_clears_slot() {
+    use reify_eval::CancellationHandle;
+    use crate::commands::cancel_solve_impl;
+
+    let session = make_session();
+    let handle = CancellationHandle::new();
+    let handle_clone = handle.clone();
+
+    let state = AppState {
+        engine: Arc::new(Mutex::new(session)),
+        last_state: Mutex::new(None),
+        watcher: Mutex::new(None),
+        sidecar: tokio::sync::Mutex::new(None),
+        selection: Arc::new(RwLock::new(SelectionInfo::default())),
+        initial_file: Mutex::new(None),
+        pending_solve_cancel: Mutex::new(Some(handle_clone)),
+    };
+
+    let result = cancel_solve_impl(&state);
+    assert!(result.is_ok(), "cancel_solve_impl must return Ok; got: {:?}", result);
+    assert!(handle.is_cancelled(), "CancellationHandle must be cancelled after cancel_solve_impl");
+    let slot = state.pending_solve_cancel.lock().unwrap();
+    assert!(slot.is_none(), "pending_solve_cancel slot must be cleared after cancel_solve_impl");
+}
+
+/// `cancel_solve_impl` returns `Ok(())` when the slot is empty (no solve in flight).
+///
+/// A no-op is the correct outcome — there is nothing to cancel.
+#[test]
+fn cancel_solve_impl_returns_ok_when_slot_empty() {
+    use crate::commands::cancel_solve_impl;
+
+    let session = make_session();
+    let state = AppState {
+        engine: Arc::new(Mutex::new(session)),
+        last_state: Mutex::new(None),
+        watcher: Mutex::new(None),
+        sidecar: tokio::sync::Mutex::new(None),
+        selection: Arc::new(RwLock::new(SelectionInfo::default())),
+        initial_file: Mutex::new(None),
+        pending_solve_cancel: Mutex::new(None),
+    };
+
+    let result = cancel_solve_impl(&state);
+    assert!(result.is_ok(), "cancel_solve_impl must return Ok when slot is empty; got: {:?}", result);
 }

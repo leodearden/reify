@@ -1,0 +1,75 @@
+/**
+ * SolverProgressOverlay — FEA solver progress overlay panel (task 3543, GR-016 ζ).
+ *
+ * Pure-render Solid component showing live CG solver iteration progress.
+ * Renders nothing when `progress` is null (no solve in flight).
+ * When non-null, renders a fixed-position card with solver kind, iteration
+ * count, residual norm, optional ETA, and a Cancel button.
+ *
+ * Subscription lifecycle owner is a follow-on task; this component is
+ * props-driven matching the FeaCasePickerDropdown precedent.
+ *
+ * Per PRD §2.2 task ζ and docs/gui-event-channels/solver-progress.md.
+ */
+
+import { Show, type JSX } from 'solid-js';
+import type { SolverProgress } from '../types';
+import styles from './SolverProgressOverlay.module.css';
+
+export interface SolverProgressOverlayProps {
+  /** Live solver progress; null when no solve is in flight. */
+  progress: SolverProgress | null;
+  /** Called when the user clicks the Cancel button. */
+  onCancel: () => void;
+}
+
+/** Format residual using scientific notation with 2 decimal places. */
+function formatResidual(r: number): string {
+  return r.toExponential(2);
+}
+
+/** Format ETA: seconds when >= 1000 ms, otherwise milliseconds. */
+function formatEta(eta_ms: number): string {
+  if (eta_ms >= 1000) {
+    return `${(eta_ms / 1000).toFixed(1)} s`;
+  }
+  return `${eta_ms} ms`;
+}
+
+/**
+ * Solver progress overlay card.
+ *
+ * Renders nothing when progress is null. When non-null, renders a card
+ * in the top-right corner with iteration metrics and a Cancel button.
+ */
+export function SolverProgressOverlay(props: SolverProgressOverlayProps): JSX.Element {
+  return (
+    <Show when={props.progress !== null && props.progress}>
+      {(p) => (
+        <div class={styles.overlay} data-testid="solver-progress-overlay">
+          <div class={styles.row}>
+            <span class={styles.label}>Solver</span>
+            <span class={styles.value}>{p().solver_kind}</span>
+          </div>
+          <div class={styles.row}>
+            <span class={styles.label}>Iteration</span>
+            <span class={styles.value}>{p().iter}</span>
+          </div>
+          <div class={styles.row}>
+            <span class={styles.label}>Residual</span>
+            <span class={styles.value}>{formatResidual(p().residual)}</span>
+          </div>
+          <Show when={p().eta_ms !== undefined}>
+            <div class={styles.row}>
+              <span class={styles.label}>ETA</span>
+              <span class={styles.value}>{formatEta(p().eta_ms!)}</span>
+            </div>
+          </Show>
+          <button class={styles.cancelButton} onClick={() => props.onCancel()}>
+            Cancel
+          </button>
+        </div>
+      )}
+    </Show>
+  );
+}

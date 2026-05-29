@@ -24,6 +24,7 @@ import type {
   AutoResolveIteration,
   WarmPoolEvent,
   FeaCaseChanged,
+  SolverProgress,
 } from './types';
 import { convertRawMesh, convertRawGuiState } from './types';
 import type {
@@ -712,4 +713,50 @@ export async function onFeaCaseChanged(
     }
     callback(p as unknown as FeaCaseChanged);
   });
+}
+
+/**
+ * Subscribe to `solver-progress` Tauri events (GR-016 ζ).
+ *
+ * Emitted at the end of each CG iteration by `solve_cg_with_progress` in
+ * `crates/reify-solver-elastic/src/solver.rs`. The engine-boundary `app.emit`
+ * wiring is a follow-on task; this listener is the GUI-side subscription seam.
+ *
+ * Uses the inline structural-shape-guard idiom (listen<unknown> +
+ * isPlainObject + per-field type checks + console.warn drop on malformed),
+ * mirroring `onFeaCaseChanged` (bridge.ts:699-715). `eta_ms` is optional and
+ * not asserted — its absence from the wire shape is a valid case (first
+ * iteration before residual history is available).
+ *
+ * Per-channel spec: docs/gui-event-channels/solver-progress.md
+ */
+export async function onSolverProgress(
+  callback: (payload: SolverProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<unknown>('solver-progress', (event) => {
+    const p = event.payload;
+    if (
+      !isPlainObject(p) ||
+      typeof p['solver_kind'] !== 'string' ||
+      typeof p['iter'] !== 'number' ||
+      typeof p['residual'] !== 'number'
+    ) {
+      console.warn('[solver-progress] malformed payload; dropping event', p);
+      return;
+    }
+    callback(p as unknown as SolverProgress);
+  });
+}
+
+/**
+ * Cancel an in-flight FEA solve (GR-016 ζ).
+ *
+ * Invokes the `cancel_solve` Tauri command which calls `.cancel()` on the
+ * `CancellationHandle` stored in `AppState::pending_solve_cancel`, if any.
+ * A no-op (returns Ok) when no solve is currently in flight.
+ *
+ * PRD §11 Q2 resolution: command, not event.
+ */
+export async function cancelSolve(): Promise<void> {
+  return invoke('cancel_solve');
 }
