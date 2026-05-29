@@ -4355,6 +4355,7 @@ dependencies = [
  "reify-stdlib",
  "reify-syntax",
  "reify-test-support",
+ "rustc-hash",
  "serde",
  "tempfile",
  "tokio",
