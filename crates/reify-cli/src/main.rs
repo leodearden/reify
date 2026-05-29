@@ -384,6 +384,22 @@ fn cmd_check(args: &[String]) -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             } else {
+                // Multi-binding requires every binding to name its param
+                // (`part:PartA`). A bare segment mixed in (`PartA,envelope:BoxB`)
+                // — or an all-bare multi value (`PartA,BoxB`) — would forward an
+                // empty param string below and surface as the unactionable
+                // "has no parameter ''" engine diagnostic. parse_purpose_flag is
+                // the first line of defense (it rejects a bare segment in a
+                // len>=2 value), so this is currently unreachable via the CLI;
+                // we guard here too so cmd_check stays self-consistent and never
+                // forwards an empty param if the parser is ever loosened.
+                if activation.bindings.iter().any(|b| b.param.is_none()) {
+                    eprintln!(
+                        "Error: purpose '{}' has multiple bindings; name every parameter (e.g. 'part:PartA,envelope:BoxB')",
+                        activation.name
+                    );
+                    return ExitCode::FAILURE;
+                }
                 let pairs: Vec<(String, String)> = activation
                     .bindings
                     .iter()
