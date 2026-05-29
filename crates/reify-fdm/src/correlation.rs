@@ -107,6 +107,80 @@ pub fn gibson_ashby_infill_factor(density: f64, c: f64, n: f64) -> f64 {
     c * density.powf(n)
 }
 
+// ── Infill-pattern factors ──────────────────────────────────────────────────
+
+/// Rust mirror of the stdlib `InfillPattern` enum
+/// (`crates/reify-compiler/stdlib/fdm.ri`). Variants are in the canonical order
+/// pinned by α's
+/// `fdm_stdlib_compile.rs::infill_pattern_enum_has_five_variants_in_canonical_order`
+/// (near-isotropic first, then directional); any future addition must be
+/// appended, never inserted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum InfillPattern {
+    /// Near-isotropic.
+    Gyroid,
+    /// Near-isotropic.
+    Cubic,
+    /// Directional.
+    Grid,
+    /// Directional.
+    Triangular,
+    /// Directional.
+    Honeycomb,
+}
+
+/// In-plane directional knockdown factors for an infill pattern: a `strong`
+/// (along-raster) and `weak` (transverse) multiplier on the
+/// infill-density-derived in-plane modulus. Near-isotropic patterns have
+/// `in_plane_strong == in_plane_weak`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PatternFactors {
+    /// Strong (along-raster) in-plane factor.
+    pub in_plane_strong: f64,
+    /// Weak (transverse) in-plane factor.
+    pub in_plane_weak: f64,
+}
+
+/// Near-isotropic (gyroid/cubic) in-plane factor. Mirrors stdlib
+/// `FDMCorrelationDefaults.pattern_near_isotropic_factor`.
+pub const NEAR_ISOTROPIC_FACTOR: f64 = 1.0;
+
+/// Directional strong (along-raster) in-plane factor. Mirrors stdlib
+/// `FDMCorrelationDefaults.pattern_directional_strong_factor`.
+pub const DIRECTIONAL_STRONG_FACTOR: f64 = 1.0;
+
+/// Directional weak (transverse) in-plane factor. Mirrors stdlib
+/// `FDMCorrelationDefaults.pattern_directional_weak_factor`.
+pub const DIRECTIONAL_WEAK_FACTOR: f64 = 0.6;
+
+/// Provenance for the directional pattern factors — approximate, no
+/// PRD-pinned calibration, flagged low-confidence.
+pub const DIRECTIONAL_FACTOR_PROVENANCE: CorrelationProvenance = CorrelationProvenance {
+    source: "Reify FDM correlations v1",
+    reference: "PRD §Built-in property correlations — grid/triangular/honeycomb directional factors",
+    notes: "strong > weak yields the orthotropic E1 > E2 in-plane split; the magnitudes are approximate.",
+    low_confidence: true,
+};
+
+/// In-plane [`PatternFactors`] for an infill pattern. Near-isotropic patterns
+/// (gyroid/cubic) return equal factors (both = [`NEAR_ISOTROPIC_FACTOR`));
+/// directional patterns (grid/triangular/honeycomb) return
+/// [`DIRECTIONAL_STRONG_FACTOR`] > [`DIRECTIONAL_WEAK_FACTOR`].
+pub fn pattern_factors(p: InfillPattern) -> PatternFactors {
+    match p {
+        InfillPattern::Gyroid | InfillPattern::Cubic => PatternFactors {
+            in_plane_strong: NEAR_ISOTROPIC_FACTOR,
+            in_plane_weak: NEAR_ISOTROPIC_FACTOR,
+        },
+        InfillPattern::Grid | InfillPattern::Triangular | InfillPattern::Honeycomb => {
+            PatternFactors {
+                in_plane_strong: DIRECTIONAL_STRONG_FACTOR,
+                in_plane_weak: DIRECTIONAL_WEAK_FACTOR,
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
