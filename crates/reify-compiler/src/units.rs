@@ -609,8 +609,13 @@ pub fn resolve_unit_expr(
             let (fb, db) = resolve_unit_expr(b, registry, span)?;
             Ok((fa * fb, da.mul(&db)))
         }
-        reify_ast::UnitExpr::Div(..) | reify_ast::UnitExpr::Pow(..) => {
-            todo!("Div/Pow fold arms added in later steps (task 3803)")
+        reify_ast::UnitExpr::Div(a, b) => {
+            let (fa, da) = resolve_unit_expr(a, registry, span)?;
+            let (fb, db) = resolve_unit_expr(b, registry, span)?;
+            Ok((fa / fb, da.div(&db)))
+        }
+        reify_ast::UnitExpr::Pow(..) => {
+            todo!("Pow fold arm added in later steps (task 3803)")
         }
     }
 }
