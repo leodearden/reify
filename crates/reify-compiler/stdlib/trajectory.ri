@@ -782,3 +782,49 @@ structure def MarlinDialect : GcodeDialect { }
 // `PeriodicSpline : BoundaryCondition` — a pure nominal selector with no
 // authoring-time params or constraints.
 structure def KlipperDialect : GcodeDialect { }
+
+// gcode_import — lower a g-code program to a list of motion profiles
+// (PRD §7.2, §11 task ο).
+//
+// `source` is the raw g-code text. `dialect : GcodeDialect` selects the parser
+// (`MarlinDialect` / `KlipperDialect`) via the SIR-α nominal type-tag — the same
+// marker-trait dispatch `evaluate_profile(p: Profile, …)` (:368) uses to accept
+// any concrete variant. The result is one `Profile` per contiguous motion
+// segment: non-motion commands (temperature/fan/extruder M-codes,
+// SET_VELOCITY_LIMIT, INPUT_SHAPER) split the motion run, while G92 set-position
+// and standalone F feed-rate updates are in-segment state that do not split.
+//
+// Runtime dispatch lives in the Rust eval path
+// (`reify-stdlib/src/trajectory/gcode_import.rs::eval_gcode_import`, wired
+// through `trajectory/mod.rs::eval_trajectory`): it marshals the
+// `(String, StructureInstance)` arguments into a `Value::List` of profile
+// records, mirroring the `mechanism` builtin's `Value::Map` structured-result
+// encoding (the `eval_builtin` path has no `StructureRegistry` to mint a real
+// `Value::StructureInstance`). The `[]` body here is the compile-time
+// type-surface stub — same posture as `end_effector_track(…) -> List<Pose3> { [] }`
+// (:432); the populated list is produced by the eval path, never by this body.
+pub fn gcode_import(source: String, dialect: GcodeDialect) -> List<Profile> { [] }
+
+// ── GcodeDialectInput ────────────────────────────────────────────────────────
+//
+// Type-coercion shim for passing a concrete `GcodeDialect` structure
+// (`MarlinDialect()` / `KlipperDialect()`) to `gcode_import`. The Reify overload
+// resolver uses exact type equality (crates/reify-compiler/src/type_compat.rs);
+// a concrete `StructureRef("MarlinDialect")` does NOT match the declared
+// `GcodeDialect` trait param at a fn call site — the identical situation
+// `FEAMaterialInput` works around for `solve_elastic_static` (solver_elastic.ri).
+//
+// Workaround:
+//   1. Wrap the dialect: `let di = GcodeDialectInput(dialect: MarlinDialect())`
+//      (structure ctors accept any value — no call-site type check).
+//   2. Pass `di.dialect` — whose compile-time type is `GcodeDialect` (the
+//      declared param type) — to `gcode_import`. Exact match. ✓
+//   The runtime value is still the `MarlinDialect` StructureInstance; the eval
+//   path (`eval_gcode_import`) reads it via `Value::StructureInstance` and
+//   dispatches on `type_name`.
+//
+// TODO(trait-coerce): remove this struct and pass the dialect directly once the
+// type checker supports trait-object coercion at fn call sites.
+pub structure def GcodeDialectInput {
+    param dialect : GcodeDialect
+}
