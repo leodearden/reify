@@ -152,10 +152,17 @@ pub(crate) fn lower_gcode(source: &str, dialect: GcodeImportDialect) -> GcodeImp
     }
 }
 
-/// Walk a parsed command stream, accumulating motion waypoints into contiguous
-/// segments. In step-2 every motion command feeds a single open segment that is
-/// flushed at end-of-input; segment splitting on non-motion commands (and the
-/// `G92`/`F` in-segment state updates) is added in step-4.
+/// Walk a parsed command stream, lowering it to contiguous motion segments.
+///
+/// - `LinearMove`/`ArcMove` append a waypoint (omitted axes inherit the running
+///   position) to the open segment.
+/// - `SetPosition` (G92) rebases the running position; `Feedrate` (standalone
+///   F) updates the running feedrate. Both are in-segment state — no split.
+/// - `IgnoredMCode`/`SetVelocityLimit`/`InputShaper` close the open segment
+///   (emitting a profile only when it holds ≥1 waypoint). The running position
+///   persists across the split.
+///
+/// The trailing open segment is flushed at end-of-input.
 fn lower_commands(commands: &[GcodeCommand]) -> GcodeImportResult {
     let mut profiles: Vec<MotionProfile> = Vec::new();
     let mut segment: Vec<Waypoint> = Vec::new();
@@ -184,14 +191,47 @@ fn lower_commands(commands: &[GcodeCommand]) -> GcodeImportResult {
                 }
                 segment.push(cur.to_waypoint());
             }
-            // SetPosition (G92 rebase), Feedrate (F), and the segment-splitting
-            // non-motion commands (IgnoredMCode / SetVelocityLimit / InputShaper)
-            // are handled in step-4; InputShaper additionally raises a
-            // ShaperConflict warning in step-8. Ignored for now.
-            _ => {}
+            // G92 set-position rebases the running position in place: each
+            // supplied axis is set to its new logical value; omitted axes are
+            // left untouched. No waypoint is emitted and the segment is not
+            // split (a rebase is in-segment state, not a motion boundary).
+            GcodeCommand::SetPosition(sp) => {
+                if let Some(v) = sp.x {
+                    cur.x = v;
+                }
+                if let Some(v) = sp.y {
+                    cur.y = v;
+                }
+                if let Some(v) = sp.z {
+                    cur.z = v;
+                }
+                if let Some(v) = sp.e {
+                    cur.e = v;
+                }
+            }
+            // A standalone `F` updates the running feedrate consumed by
+            // subsequent moves; it is in-segment state and never splits.
+            GcodeCommand::Feedrate(f) => {
+                cur.feedrate = Some(f.value);
+            }
+            // Non-motion commands close the current motion segment (PRD §7.2):
+            // emit a profile only when the open segment holds at least one
+            // motion waypoint, so back-to-back splitters never produce empty
+            // profiles. The running position persists across the split. The
+            // InputShaper-specific ShaperConflict warning is added in step-8.
+            GcodeCommand::IgnoredMCode(_)
+            | GcodeCommand::SetVelocityLimit(_)
+            | GcodeCommand::InputShaper(_) => {
+                if !segment.is_empty() {
+                    profiles.push(MotionProfile {
+                        waypoints: std::mem::take(&mut segment),
+                    });
+                }
+            }
         }
     }
 
+    // Flush the trailing open segment at end-of-input.
     if !segment.is_empty() {
         profiles.push(MotionProfile { waypoints: segment });
     }
