@@ -91,6 +91,28 @@ structure def FDMCorrelationDefaults {
     // Exponent n of the Gibson-Ashby open-cell foam law (bending-dominated).
     param gibson_ashby_n : Real = 2.0
 
+    // ── Infill-pattern directional factors ─────────────────────────────────
+    //
+    // Multipliers applied to the infill-density-derived in-plane modulus.
+    // Near-isotropic patterns (gyroid/cubic) use a single factor for both
+    // in-plane directions; directional patterns (grid/triangular/honeycomb)
+    // split into a strong (along-raster) and weak (transverse) factor.
+    // PRD §"Built-in property correlations": "gyroid/cubic treated as
+    // near-isotropic; grid/triangular/honeycomb get directional factors."
+
+    // Near-isotropic (gyroid/cubic) in-plane factor. 1.0 ⇒ the pattern adds
+    // no extra in-plane anisotropy beyond the Gibson-Ashby density knockdown.
+    param pattern_near_isotropic_factor : Real = 1.0
+
+    // Directional (grid/triangular/honeycomb) STRONG in-plane factor — along
+    // the dominant raster-line direction.
+    param pattern_directional_strong_factor : Real = 1.0
+
+    // Directional WEAK in-plane factor — transverse to the raster lines.
+    // strong > weak drives the orthotropic E1 > E2 in-plane split. The
+    // magnitude is approximate (no PRD-pinned value) and flagged low-confidence.
+    param pattern_directional_weak_factor : Real = 0.6
+
     // ── Per-property provenance slots ──────────────────────────────────────
     //
     // Parallel `..._provenance : MaterialPropertyProvenance` citation slots,
@@ -124,4 +146,54 @@ structure def FDMCorrelationDefaults {
             reference: "Gibson & Ashby 1997, Cellular Solids (PRD §Built-in property correlations) — bending-dominated exponent n=2",
             notes: "n=2 corresponds to bending-dominated open-cell deformation. The FDM-specific exponent is approximate and pattern-dependent; flagged low-confidence (see the parallel low_confidence slot)."
         )
+
+    param pattern_near_isotropic_factor_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "Reify FDM correlations v1",
+            reference: "PRD docs/prds/v0_5/fdm-as-printed-fea.md §Built-in property correlations — gyroid/cubic near-isotropic",
+            notes: "Gyroid/cubic infill approximates in-plane isotropy, so a single factor of 1.0 applies to both in-plane directions. Well-justified for structural FEA; not flagged low-confidence."
+        )
+
+    param pattern_directional_strong_factor_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "Reify FDM correlations v1",
+            reference: "PRD docs/prds/v0_5/fdm-as-printed-fea.md §Built-in property correlations — grid/triangular/honeycomb directional factors",
+            notes: "Strong in-plane factor along the dominant raster direction. The directional magnitude is approximate (no PRD-pinned calibration); flagged low-confidence."
+        )
+
+    param pattern_directional_weak_factor_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "Reify FDM correlations v1",
+            reference: "PRD docs/prds/v0_5/fdm-as-printed-fea.md §Built-in property correlations — grid/triangular/honeycomb directional factors",
+            notes: "Weak in-plane factor transverse to the raster lines. strong > weak yields the orthotropic E1 > E2 split. Approximate magnitude; flagged low-confidence."
+        )
+
+    // ── Per-property low-confidence flags ──────────────────────────────────
+    //
+    // Parallel `..._low_confidence : Bool` slots making "low-confidence
+    // defaults flagged" (PRD §"Built-in property correlations": FDM-specific
+    // Gibson-Ashby exponents; directional pattern factors) a machine-checkable
+    // contract rather than buried prose. true ⇒ the default is approximate and
+    // a coupon override is recommended where accuracy matters.
+
+    // PLA-calibrated (PMC9828590) — well-supported.
+    param build_z_modulus_ratio_low_confidence : Bool = false
+
+    // PLA-calibrated (PMC9828590) — well-supported.
+    param build_z_strength_ratio_low_confidence : Bool = false
+
+    // Standard open-cell prefactor C=1 — well-supported.
+    param gibson_ashby_c_low_confidence : Bool = false
+
+    // FDM-specific Gibson-Ashby exponent — approximate, pattern-dependent.
+    param gibson_ashby_n_low_confidence : Bool = true
+
+    // Near-isotropic single factor — well-justified for gyroid/cubic.
+    param pattern_near_isotropic_factor_low_confidence : Bool = false
+
+    // Directional factor — approximate, no PRD-pinned calibration.
+    param pattern_directional_strong_factor_low_confidence : Bool = true
+
+    // Directional factor — approximate, no PRD-pinned calibration.
+    param pattern_directional_weak_factor_low_confidence : Bool = true
 }
