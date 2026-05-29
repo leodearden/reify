@@ -1978,7 +1978,12 @@ pub(crate) fn try_eval_topology_selector(
             // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
             let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
             // args[1]: density ValueRef → values map → Real / dimensionless Scalar.
-            let density = resolve_real_scalar_arg(&args[1], values)?;
+            // Uses resolve_density_arg (same as MomentOfInertia) so a dimensioned
+            // density arg emits a Severity::Warning instead of silently resolving
+            // to undefined — consistent diagnostic experience for both density-taking
+            // queries.
+            let density =
+                resolve_density_arg(&args[1], values, &function.name, diagnostics)?;
             let query = reify_ir::GeometryQuery::CenterOfMass { handle, density };
             dispatch_point3_length_reply(kernel, &query, &function.name, diagnostics)
         }
@@ -2452,10 +2457,13 @@ fn resolve_point3_length_arg(
     Some(out)
 }
 
-/// Resolve the `density` argument of `moment_of_inertia` to a raw `f64`.
+/// Resolve the `density` argument of `center_of_mass` and `moment_of_inertia`
+/// to a raw `f64`, emitting a `Severity::Warning` when the caller passes a
+/// dimensioned or non-numeric `Value`.
 ///
-/// Contract (matches the established "unsupported arg shape → silent
-/// fall-through" pattern that every sibling resolver follows):
+/// Delegates the accept-logic (Real / dimensionless Scalar) to
+/// [`resolve_real_scalar_arg`] and only owns the diagnostic-on-wrong-type
+/// behavior, keeping the type-acceptance contract in a single place:
 ///
 /// | arg expr / resolved value        | return       | diagnostic pushed?           |
 /// |----------------------------------|--------------|------------------------------|
@@ -2467,44 +2475,41 @@ fn resolve_point3_length_arg(
 /// | `ValueRef` → dimensioned Scalar  | `None`       | yes — `Severity::Warning`    |
 /// |   or any non-numeric `Value`     |              | naming `helper_name` +       |
 /// |                                  |              | "density" + "dimensionless"  |
-///
-/// Leave `center_of_mass` on `resolve_real_scalar_arg` (out of scope);
-/// only `MomentOfInertia` uses this helper.
 fn resolve_density_arg(
     expr: &reify_ir::CompiledExpr,
     values: &reify_ir::ValueMap,
     helper_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<f64> {
+    // Delegate accept-logic to the shared resolver (Real / dimensionless Scalar).
+    if let Some(v) = resolve_real_scalar_arg(expr, values) {
+        return Some(v);
+    }
+    // resolve_real_scalar_arg returned None. Emit a diagnostic only when expr
+    // is a ValueRef pointing to a *present* value of the wrong type —
+    // a non-ValueRef shape or a missing cell falls through silently
+    // (the established "unsupported arg shape → silent" contract).
     let id = match &expr.kind {
         reify_ir::CompiledExprKind::ValueRef(id) => id,
-        _ => return None, // non-ValueRef: silent fall-through
+        _ => return None,
     };
-    let value = values.get(id)?;
-    match value {
-        reify_ir::Value::Real(v) => Some(*v),
-        reify_ir::Value::Scalar {
-            si_value,
-            dimension,
-        } if *dimension == reify_core::DimensionVector::DIMENSIONLESS => Some(*si_value),
-        other => {
-            diagnostics.push(Diagnostic::warning(format!(
-                "{helper_name}: density argument must be a bare numeric Real or \
-                 dimensionless value in v0.3 (compound-unit literals are not yet \
-                 supported as a density arg); got {other:?} — treating as undefined"
-            )));
-            None
-        }
+    if let Some(other) = values.get(id) {
+        diagnostics.push(Diagnostic::warning(format!(
+            "{helper_name}: density argument must be a bare numeric Real or \
+             dimensionless value in v0.3 (compound-unit literals are not yet \
+             supported as a density arg); got {other:?} — treating as undefined"
+        )));
     }
+    None
 }
 
-/// Resolve a `CompiledExprKind::ValueRef` arg to a raw f64 from a
-/// `Value::Real` or a dimensionless `Value::Scalar`. Used for the `density`
-/// argument of `center_of_mass` / `moment_of_inertia` (a dimensionless
-/// numeric in v0.1 — the kernel multiplies OCCT's volume-weighted result by
-/// this scalar). Returns `None` for any non-`ValueRef` shape, missing cell,
-/// or a dimensioned Scalar — caller maps to the "unsupported arg shape →
-/// fall through" behaviour.
+/// Shared accept-logic for a density-style argument: resolves a
+/// `CompiledExprKind::ValueRef` to a raw `f64` from a `Value::Real` or a
+/// dimensionless `Value::Scalar`. Called internally by [`resolve_density_arg`]
+/// — not invoked directly from dispatch arms. Returns `None` (no diagnostic)
+/// for any non-`ValueRef` shape, a missing cell, or a dimensioned Scalar;
+/// callers that need a `Severity::Warning` for the wrong-type case should use
+/// [`resolve_density_arg`] instead.
 fn resolve_real_scalar_arg(
     expr: &reify_ir::CompiledExpr,
     values: &reify_ir::ValueMap,

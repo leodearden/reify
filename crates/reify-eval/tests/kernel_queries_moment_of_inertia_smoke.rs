@@ -55,12 +55,9 @@ fn moment_of_inertia_box_evals_to_analytic_tensor() {
         "examples/kernel_queries/moment_of_inertia_box.ri should exist (task 3620 step-4)",
     );
 
-    // Skip the OCCT-dependent assertion if OCCT is not built.
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping real-OCCT assertions: OCCT not available");
-        return;
-    }
-
+    // Validate fixture compilation unconditionally — a grammar/compile regression
+    // (e.g. moment_of_inertia signature change) should fail on every runner,
+    // not just those with OCCT.
     let compiled = parse_and_compile_with_stdlib(&source);
     assert!(
         errors_only(&compiled).is_empty(),
@@ -68,6 +65,12 @@ fn moment_of_inertia_box_evals_to_analytic_tensor() {
          error-severity diagnostics, got:\n{:#?}",
         errors_only(&compiled)
     );
+
+    // Skip the OCCT-dependent kernel build/tensor assertions if OCCT is not built.
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping real-OCCT assertions: OCCT not available");
+        return;
+    }
 
     // Build with real OCCT kernel (SingleKernelHolder + OcctKernelHandle::spawn).
     let checker = SimpleConstraintChecker;
