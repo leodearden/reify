@@ -16,7 +16,7 @@
 
 pub mod zone;
 
-mod correlation;
+pub mod correlation;
 
 pub use zone::{
     AxisAlignedBox, DEFAULT_TOP_BOTTOM_NORMAL_THRESHOLD, Zone, ZoneProbe, ZoneProcessParams,
