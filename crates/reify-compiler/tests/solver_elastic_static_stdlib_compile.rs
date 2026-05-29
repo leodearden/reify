@@ -8,6 +8,7 @@
 //! These are RED tests for step-1. They fail until step-2 adds the declaration.
 
 use reify_compiler::*;
+use reify_core::Type;
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -88,5 +89,28 @@ fn solve_elastic_static_has_seven_params() {
         "expected 7 params (material, length, width, height, loads, supports, options), \
          got {:?}",
         f.params.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>()
+    );
+}
+
+/// Pin: `fn solve_elastic_static`'s first parameter (`material`) must have
+/// type `Type::TraitObject("ConstitutiveLaw")` (task δ/3780).
+///
+/// Before step-2 the type is `TraitObject("ElasticMaterial")` → RED.
+/// After step-2 changes the param annotation to `: ConstitutiveLaw` → GREEN.
+#[test]
+fn solve_elastic_static_material_param_is_constitutive_law() {
+    let f = find_fn();
+    let (name, ty) = &f.params[0];
+    assert_eq!(
+        name.as_str(),
+        "material",
+        "expected params[0] to be 'material', got {:?}",
+        name
+    );
+    assert_eq!(
+        *ty,
+        Type::TraitObject("ConstitutiveLaw".to_string()),
+        "expected material param type to be TraitObject(\"ConstitutiveLaw\"), got {:?}",
+        ty
     );
 }
