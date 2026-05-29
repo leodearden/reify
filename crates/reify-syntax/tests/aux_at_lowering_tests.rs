@@ -200,3 +200,19 @@ fn sub_instantiation_with_at_has_pose_expr() {
         "`sub bolt = Foo() at p` must lower to pose_expr.is_some()"
     );
 }
+
+/// `aux sub a = Foo()` (instantiation arm) lowers to `SubDecl.is_aux == true`.
+///
+/// All three arms share the single `has_aux_keyword` call in `lower_sub`, but
+/// this pin makes the instantiation-arm path explicit and catches any future
+/// per-arm divergence early.
+#[test]
+fn aux_sub_instantiation_has_is_aux_true() {
+    let source = "structure S { aux sub a = Foo() }";
+    let members = parse_first_structure_members(source);
+    let sub = first_sub(&members);
+    assert!(
+        sub.is_aux,
+        "`aux sub a = Foo()` must lower to is_aux == true"
+    );
+}

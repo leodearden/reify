@@ -562,6 +562,13 @@ module.exports = grammar({
       // The bare `'List'` token is reached only on exact-length matches —
       // see the long comment on the specialization arm below for the full
       // tree-sitter rule #1 / rule #2 reasoning and the regression lock.
+      //
+      // NOTE: `at <pose>` is grammatically accepted on the collection form
+      // for uniformity with the other two arms, but per-element collection
+      // placement is semantically out-of-scope (PRD §10). The compiler (T2,
+      // sub-placement lowering) is responsible for emitting a diagnostic when
+      // `pose_expr.is_some()` on a collection-form `SubDecl`; this grammar
+      // deliberately does not enforce that restriction at parse time.
       seq(
         optional('aux'),
         'sub',

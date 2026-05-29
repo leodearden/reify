@@ -239,10 +239,19 @@ pub struct SubDecl {
     /// Whether this sub-component is marked `aux` (PRD §2.1: auxiliary placement).
     /// `aux sub` declares a sub-component used for internal geometry only,
     /// not surfaced in the public component interface.
+    ///
+    /// Parsed and stored here (task 3899); first consumed by the T2
+    /// sub-placement compiler lowering task.
     pub is_aux: bool,
     /// Optional placement pose expression from the `at <expr>` clause (PRD §2.2).
     /// `None` when no `at` clause is present; `Some(expr)` when the sub-component
     /// carries an explicit placement frame or transform.
+    ///
+    /// Parsed and stored here (task 3899); first consumed by the T2
+    /// sub-placement compiler lowering task. Note: `pose_expr.is_some()` on a
+    /// collection-form `SubDecl` (`is_collection == true`) is grammatically
+    /// accepted but semantically invalid — the compiler (T2) must reject it
+    /// with a diagnostic (PRD §10).
     pub pose_expr: Option<Expr>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
