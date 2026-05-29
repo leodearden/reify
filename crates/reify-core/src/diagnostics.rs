@@ -1115,6 +1115,58 @@ pub enum DiagnosticCode {
     ///
     /// The PRD-prose mnemonic for this code is `E_SHELL_BAD_THRESHOLD`.
     ShellBadThreshold,
+    /// Origin: `crates/reify-stdlib/src/stackup.rs` (classifier) +
+    ///          `crates/reify-expr/src/lib.rs` (emission site).
+    ///
+    /// Emitted as `Severity::Error` when `stackup_worst_case`, `stackup_rss`,
+    /// or `monte_carlo_stackup` receives an empty list (`[]`) as the chain
+    /// argument.  An empty chain yields no contributors and no meaningful gap
+    /// statistics.
+    ///
+    /// Canonical message form:
+    /// `"E_StackupEmptyChain: tolerance chain must be non-empty"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_StackupEmptyChain`
+    /// (see `docs/prds/v0_6/tolerance-stackup-analysis.md` §4.4).
+    StackupEmptyChain,
+    /// Origin: `crates/reify-stdlib/src/stackup.rs` (classifier) +
+    ///          `crates/reify-expr/src/lib.rs` (emission site).
+    ///
+    /// Emitted as `Severity::Error` when a contributor entry in the chain
+    /// is not a `Value::Map`, or when the `nominal`, `plus_tol`, or
+    /// `minus_tol` field of a contributor map is not a finite LENGTH scalar.
+    ///
+    /// Canonical message form:
+    /// `"E_StackupDimMismatch: contributor field must be a finite LENGTH scalar"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_StackupDimMismatch`
+    /// (see `docs/prds/v0_6/tolerance-stackup-analysis.md` §4.4).
+    StackupDimMismatch,
+    /// Origin: `crates/reify-stdlib/src/stackup.rs` (classifier) +
+    ///          `crates/reify-expr/src/lib.rs` (emission site).
+    ///
+    /// Emitted as `Severity::Error` when the `sign` field of a contributor
+    /// map is not `Value::Int(1)` or `Value::Int(-1)`.
+    ///
+    /// Canonical message form:
+    /// `"E_StackupBadSign: contributor sign must be Int(+1) or Int(-1)"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_StackupBadSign`
+    /// (see `docs/prds/v0_6/tolerance-stackup-analysis.md` §4.4).
+    StackupBadSign,
+    /// Origin: `crates/reify-stdlib/src/stackup.rs` (classifier) +
+    ///          `crates/reify-expr/src/lib.rs` (emission site).
+    ///
+    /// Emitted as `Severity::Error` when the `samples` argument to
+    /// `monte_carlo_stackup` is not a positive `Value::Int` (i.e. ≤ 0
+    /// or not an integer type).
+    ///
+    /// Canonical message form:
+    /// `"E_StackupBadSamples: samples must be a positive integer"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_StackupBadSamples`
+    /// (see `docs/prds/v0_6/tolerance-stackup-analysis.md` §4.4).
+    StackupBadSamples,
 }
 
 /// A diagnostic message with location and optional labels.
