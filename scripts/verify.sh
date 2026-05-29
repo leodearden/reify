@@ -38,6 +38,24 @@
 #     remains the primary runtime-lib mechanism for `cargo test`/`cargo run`; this is
 #     belt-and-braces for contexts the runner does not cover.
 #
+# PSI gate (inter-dispatch throttle for multi-worktree verify bursts):
+#   REIFY_PSI_GATE_THRESHOLD    — CPU avg10 % ceiling; dispatch waits until below this
+#                                  value. Default: 50.
+#   REIFY_PSI_GATE_WINDOW       — minimum inter-dispatch spacing in seconds.  Default: 20.
+#   REIFY_PSI_GATE_MAX_WAIT     — give-up timeout (seconds); exits 75 (EX_TEMPFAIL) so
+#                                  the orchestrator retries.  Default: 1800.
+#   REIFY_PSI_GATE_DISABLE      — set to 1 to bypass entirely (no wait, no dispatch touch).
+#                                  Emergency break-glass; does not affect coordination state.
+#   REIFY_PSI_GATE_POLL         — recheck interval in seconds.  Default: 5.
+#                                  (testability knob; reduce in tests for faster runs)
+#   REIFY_PSI_GATE_PROC_PATH    — PSI source; defaults to /proc/pressure/cpu.
+#                                  (testability knob; override to inject fixture files)
+#   REIFY_PSI_GATE_DISPATCH_FILE— shared coordination timestamp file.
+#                                  Default: /tmp/reify-verify-last-dispatch.
+#                                  (testability knob; isolate per test case)
+#   psi-gate action             — `verify.sh psi-gate` runs only the gate and exits;
+#                                  used as the first test-phase plan entry (test/all).
+#
 # OCCT safety:
 #   OCCT C++ globals are PER-PROCESS; cross-process isolation is already provided by
 #   cargo's test-binary parallelism. Cross-WORKTREE contention (concurrent worktrees)
@@ -64,6 +82,131 @@ usage() {
 }
 
 # ---------------------------------------------------------------------------
+# PSI gate — throttle per-task test phases under multi-worktree verify bursts
+# ---------------------------------------------------------------------------
+
+# _psi_should_pass() — helper for psi_gate().
+# Returns 0 if both PSI and window conditions are satisfied (safe to dispatch
+# now), or 1 otherwise.  Reads PROC_PATH, THRESHOLD, WINDOW, DISPATCH from
+# psi_gate()'s dynamic scope (bash locals are visible to callees via dynamic
+# scoping, not lexical scoping).  $1 = current timestamp (integer seconds).
+# Called from both the flock subshell and the lock-free fallback path.
+_psi_should_pass() {
+    local _ts="$1" _mtime _age _avg10
+    _mtime=$(stat -c %Y "$DISPATCH" 2>/dev/null || echo 0)
+    _age=$(( _ts - _mtime ))
+    _avg10=$(awk '/^some/ {
+        for (i=1; i<=NF; i++) {
+            if ($i ~ /^avg10=/) { v=$i; sub(/^avg10=/, "", v); print v; exit }
+        }
+    }' "$PROC_PATH" 2>/dev/null || echo "")
+    [ -n "$_avg10" ] && \
+        awk -v p="$_avg10" -v t="$THRESHOLD" 'BEGIN{exit !(p<t)}' && \
+        [ "$_age" -ge "$WINDOW" ]
+}
+
+# psi_gate() — wait for CPU headroom before dispatching the test phase.
+# Called directly via `verify.sh psi-gate` (testable entry point) and wired
+# as the first test-phase plan entry by add_test_passes().
+#
+# Environment knobs (see header comment block for full doc):
+#   REIFY_PSI_GATE_THRESHOLD    — avg10 ceiling to allow dispatch (default 50)
+#   REIFY_PSI_GATE_WINDOW       — min seconds between dispatches (default 20)
+#   REIFY_PSI_GATE_MAX_WAIT     — give-up timeout in seconds (default 1800)
+#   REIFY_PSI_GATE_POLL         — recheck interval in seconds (default 5)
+#   REIFY_PSI_GATE_PROC_PATH    — PSI source path (default /proc/pressure/cpu)
+#   REIFY_PSI_GATE_DISPATCH_FILE— coordination timestamp file
+#   REIFY_PSI_GATE_DISABLE      — set to 1 to bypass entirely (no touch)
+psi_gate() {
+    local THRESHOLD="${REIFY_PSI_GATE_THRESHOLD:-50}"
+    local WINDOW="${REIFY_PSI_GATE_WINDOW:-20}"
+    local MAX_WAIT="${REIFY_PSI_GATE_MAX_WAIT:-1800}"
+    local POLL="${REIFY_PSI_GATE_POLL:-5}"
+    local PROC_PATH="${REIFY_PSI_GATE_PROC_PATH:-/proc/pressure/cpu}"
+    local DISPATCH="${REIFY_PSI_GATE_DISPATCH_FILE:-/tmp/reify-verify-last-dispatch}"
+
+    # (1) Break-glass bypass — total bypass: no PSI read, no touch, no wait
+    if [ "${REIFY_PSI_GATE_DISABLE:-}" = "1" ]; then
+        echo "verify.sh: psi-gate disabled (REIFY_PSI_GATE_DISABLE=1)" >&2
+        return 0
+    fi
+
+    # (2) Merge bypass: skip wait + bump timestamp so the next task backs off
+    if [ "${DF_VERIFY_ROLE:-task}" = "merge" ]; then
+        touch "$DISPATCH"
+        echo "verify.sh: psi-gate bypass (role=merge) — timestamp bumped" >&2
+        return 0
+    fi
+
+    # (3) Fail-open on missing/unreadable PSI source (older kernels / non-Linux hosts).
+    # Touch the dispatch file so cross-process coordination stays consistent;
+    # proceed without blocking the build.
+    if [ ! -r "$PROC_PATH" ]; then
+        echo "verify.sh: WARNING — PSI gate disabled — kernel lacks ${PROC_PATH}" >&2
+        touch "$DISPATCH"
+        return 0
+    fi
+
+    # (4) Task poll loop: wait for avg10 < THRESHOLD AND age >= WINDOW.
+    # The read-mtime / compare / touch critical section is wrapped in a flock
+    # so concurrent waiters pass one-at-a-time and each pass re-touches —
+    # guaranteeing consecutive passes are >= WINDOW apart.
+    local deadline
+    deadline=$(( $(date +%s) + MAX_WAIT ))
+
+    while true; do
+        local now _flock_rc
+        now=$(date +%s)
+        _flock_rc=10  # not-yet (default: condition not met)
+
+        if command -v flock >/dev/null 2>&1; then
+            # Atomic check-and-touch inside a flock subshell.
+            # Exit codes: 0=pass, 9=lock-timeout, 10=not-yet.
+            # The subshell exits immediately so the FD is not inherited by
+            # long-lived children (no cargo/sccache FD-9-inheritance hazard).
+            # Use "|| _flock_rc=$?" to capture the non-zero exit without
+            # triggering set -e in the outer function.
+            _flock_rc=0
+            (
+                flock -w 5 9 || exit 9
+                _ts=$(date +%s)
+                if _psi_should_pass "$_ts"; then
+                    touch "$DISPATCH"
+                    exit 0
+                fi
+                exit 10
+            ) 9>"${DISPATCH}.lock" || _flock_rc=$?
+            # ${DISPATCH}.lock is a single fixed-name file in /tmp — one lockfile per
+            # coordination point, does not accumulate.  Intentionally left in place
+            # across runs (O_CREAT via '>' redirect; harmless stale presence).
+        else
+            # lock-free best-effort fallback (flock not available)
+            local _ts
+            _ts=$(date +%s)
+            if _psi_should_pass "$_ts"; then
+                touch "$DISPATCH"
+                _flock_rc=0
+            fi
+        fi
+
+        if [ "$_flock_rc" -eq 0 ]; then
+            return 0
+        fi
+
+        # Re-sample now: the flock attempt above may have blocked up to 5s,
+        # so the value captured at the top of the loop can be stale.
+        now=$(date +%s)
+        # Give up if we've waited too long
+        if [ "$now" -ge "$deadline" ]; then
+            echo "verify.sh: PSI gate gave up after ${MAX_WAIT}s waiting for CPU headroom" >&2
+            return 75
+        fi
+
+        sleep "$POLL"
+    done
+}
+
+# ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
 ACTION=""
@@ -74,7 +217,7 @@ PRINT_PLAN=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        test|lint|typecheck|all)
+        test|lint|typecheck|all|psi-gate)
             if [ -n "$ACTION" ]; then
                 echo "verify.sh: ERROR — action already set to '$ACTION', got '$1'" >&2
                 exit 64
@@ -138,6 +281,17 @@ case "$DF_VERIFY_ROLE" in
         fi ;;
     *)  echo "verify.sh: ERROR — unknown DF_VERIFY_ROLE '$DF_VERIFY_ROLE' (want task|merge)" >&2; exit 64 ;;
 esac
+
+# psi-gate is dispatched EARLY — before MERGE_HEAD check / cd / apply_env —
+# so the integration test can drive it without triggering the cargo pipeline.
+# Note: psi-gate is execute-only; --print-plan is intentionally ignored here.
+# The parent test/all invocation prints the psi-gate command as a normal plan
+# line; the psi-gate subprocess itself always executes the gate regardless of
+# how it was invoked.
+if [ "$ACTION" = "psi-gate" ]; then
+    psi_gate
+    exit $?
+fi
 
 # A merge in progress cannot trust `git diff --cached` (the index reflects the
 # merge result, not a curated stage), so force a full verification. Detected via
@@ -315,6 +469,12 @@ wrap_subshell() {
 }
 
 add_test_passes() {
+    # PSI gate: must pass before any cargo test work starts.
+    # In execute mode: eval runs this as a subprocess that inherits DF_VERIFY_ROLE
+    # and REIFY_PSI_GATE_*; exit 75 (EX_TEMPFAIL) propagates → orchestrator retries.
+    # In --print-plan mode: printed faithfully as a normal plan line.
+    add "./scripts/verify.sh psi-gate"
+
     local profile rel gated_timeout outer_timeout ungated
     for profile in "${PROFILES[@]}"; do
         if [ "$profile" = "release" ]; then
