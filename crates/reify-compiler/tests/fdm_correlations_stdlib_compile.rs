@@ -119,6 +119,81 @@ fn assert_real_default(template: &TopologyTemplate, member: &str, expected: f64)
     );
 }
 
+/// Assert that the named param cell on `template` carries a Bool default with
+/// the expected boolean value.
+fn assert_bool_default(template: &TopologyTemplate, member: &str, expected: bool) {
+    let cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == member)
+        .unwrap_or_else(|| panic!("{} missing param '{}'", template.name, member));
+
+    assert_eq!(
+        cell.cell_type,
+        Type::Bool,
+        "{}.{} cell_type should be Bool, got: {:?}",
+        template.name,
+        member,
+        cell.cell_type
+    );
+
+    let expr = cell
+        .default_expr
+        .as_ref()
+        .unwrap_or_else(|| panic!("{}.{} missing default_expr", template.name, member));
+
+    match &expr.kind {
+        CompiledExprKind::Literal(Value::Bool(b)) => assert_eq!(
+            *b, expected,
+            "{}.{} default value should be {}, got {}",
+            template.name, member, expected, b
+        ),
+        other => panic!(
+            "{}.{} default should be Literal(Value::Bool({})), got: {:?}",
+            template.name, member, expected, other
+        ),
+    }
+}
+
+/// Assert that the named param cell on `template` is a
+/// `MaterialPropertyProvenance` slot carrying a default
+/// `MaterialPropertyProvenance(..)` constructor. The exact citation string
+/// content is intentionally not pinned (fragile to rewording) — only that the
+/// slot exists with the right type and a ctor default.
+fn assert_provenance_ctor(template: &TopologyTemplate, member: &str) {
+    let cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == member)
+        .unwrap_or_else(|| panic!("{} missing param '{}'", template.name, member));
+
+    assert_eq!(
+        cell.cell_type,
+        Type::StructureRef("MaterialPropertyProvenance".to_string()),
+        "{}.{} cell_type should be StructureRef(MaterialPropertyProvenance), got: {:?}",
+        template.name,
+        member,
+        cell.cell_type
+    );
+
+    let expr = cell
+        .default_expr
+        .as_ref()
+        .unwrap_or_else(|| panic!("{}.{} missing default_expr", template.name, member));
+
+    match &expr.kind {
+        CompiledExprKind::StructureInstanceCtor { type_name, .. } => assert_eq!(
+            type_name, "MaterialPropertyProvenance",
+            "{}.{} default should be MaterialPropertyProvenance(..), got type_name: {}",
+            template.name, member, type_name
+        ),
+        other => panic!(
+            "{}.{} default should be StructureInstanceCtor {{ type_name: \"MaterialPropertyProvenance\", .. }}, got: {:?}",
+            template.name, member, other
+        ),
+    }
+}
+
 // ─── step-1: module loads + build-Z / Gibson-Ashby default values ────────────
 
 /// The std/fdm/correlations module must load through the production stdlib
@@ -159,4 +234,49 @@ fn fdm_correlation_defaults_build_z_and_gibson_ashby_values() {
     assert_real_default(template, "build_z_strength_ratio", 0.52);
     assert_real_default(template, "gibson_ashby_c", 1.0);
     assert_real_default(template, "gibson_ashby_n", 2.0);
+}
+
+// ─── step-3: pattern-factor defaults + low-confidence flags ──────────────────
+
+/// `FDMCorrelationDefaults` pins the infill-pattern directional factors and
+/// the parallel `..._low_confidence : Bool` flags (PRD §"Built-in property
+/// correlations": gyroid/cubic near-isotropic; grid/triangular/honeycomb
+/// directional; FDM-specific Gibson-Ashby exponent + directional pattern
+/// factors flagged low-confidence).
+///
+/// Pattern factors:
+///   - pattern_near_isotropic_factor = 1.0 (gyroid/cubic ≈ in-plane isotropic)
+///   - pattern_directional_strong_factor = 1.0 (along the raster lines)
+///   - pattern_directional_weak_factor = 0.6 (transverse to the raster lines)
+/// The strong > weak ordering is what makes the orthotropic E1 > E2 split; the
+/// magnitudes are flagged low-confidence (no PRD-pinned value).
+///
+/// Low-confidence contract (machine-checkable, not buried prose):
+///   false for the PLA-calibrated build-Z ratio and the standard Gibson-Ashby
+///   C / near-isotropic factor; true for the FDM-specific Gibson-Ashby
+///   exponent n and the directional pattern factors.
+#[test]
+fn fdm_correlation_defaults_pattern_factors_and_low_confidence_flags() {
+    let template = find_structure("FDMCorrelationDefaults");
+
+    // Pattern-factor Real defaults.
+    assert_real_default(template, "pattern_near_isotropic_factor", 1.0);
+    assert_real_default(template, "pattern_directional_strong_factor", 1.0);
+    assert_real_default(template, "pattern_directional_weak_factor", 0.6);
+
+    // Each pattern factor carries a MaterialPropertyProvenance citation slot.
+    assert_provenance_ctor(template, "pattern_near_isotropic_factor_provenance");
+    assert_provenance_ctor(template, "pattern_directional_strong_factor_provenance");
+    assert_provenance_ctor(template, "pattern_directional_weak_factor_provenance");
+
+    // Low-confidence flags: false for well-calibrated defaults …
+    assert_bool_default(template, "build_z_modulus_ratio_low_confidence", false);
+    assert_bool_default(template, "build_z_strength_ratio_low_confidence", false);
+    assert_bool_default(template, "gibson_ashby_c_low_confidence", false);
+    assert_bool_default(template, "pattern_near_isotropic_factor_low_confidence", false);
+
+    // … true for the FDM-specific exponent and directional pattern factors.
+    assert_bool_default(template, "gibson_ashby_n_low_confidence", true);
+    assert_bool_default(template, "pattern_directional_strong_factor_low_confidence", true);
+    assert_bool_default(template, "pattern_directional_weak_factor_low_confidence", true);
 }
