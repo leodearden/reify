@@ -65,9 +65,7 @@
 //! overflow-checks = false
 //!
 //! [profile.dev.package.reify-solver-elastic]
-//! opt-level = 2             # faer generic kernels monomorphised here
-//! debug-assertions = false
-//! overflow-checks = false
+//! opt-level = 2   # faer generic kernels monomorphised here; assertions kept on
 //! ```
 //!
 //! If a debug-mode performance regression appears (hundreds of seconds),
