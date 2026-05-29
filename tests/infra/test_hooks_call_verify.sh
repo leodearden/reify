@@ -56,9 +56,11 @@ assert "test_command calls ./scripts/verify.sh test" \
     bash -c "grep '^test_command:' '$ORCH' | grep -qF './scripts/verify.sh test'"
 assert "lint_command calls ./scripts/verify.sh lint" \
     bash -c "grep '^lint_command:' '$ORCH' | grep -qF './scripts/verify.sh lint'"
-assert "type_check_command no longer invokes verify.sh typecheck (redundant cargo check dropped; clippy supersets it)" \
-    bash -c "! grep '^type_check_command:' '$ORCH' | grep -qF './scripts/verify.sh typecheck'"
-assert "type_check_command is the passing no-op 'true'" \
+# Single positive assertion: requires the key to exist AND hold the value 'true' — cannot
+# pass vacuously if the key is deleted (unlike a pure negation). Implicitly covers the
+# "no longer invokes verify.sh typecheck" property: if the value is 'true', it is not
+# the old './scripts/verify.sh typecheck --scope all' string.
+assert "type_check_command is the passing no-op 'true' (redundant cargo check dropped; clippy supersets it)" \
     bash -c "grep -qE '^type_check_command:[[:space:]]+\"?true\"?[[:space:]]*(#.*)?$' '$ORCH'"
 # verify_env must remain (verify.sh re-bakes it, but the orchestrator still injects it).
 assert "orchestrator.yaml still defines verify_env" \
