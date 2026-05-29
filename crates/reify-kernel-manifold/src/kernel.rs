@@ -106,35 +106,21 @@ impl ManifoldKernel {
             .ok_or(GeometryError::InvalidReference(id))
     }
 
-    /// Test-only ingestion path for `reify_types::Mesh` inputs.
+    /// Thin compatibility shim — delegates to
+    /// [`GeometryKernel::ingest_mesh`] and returns the `GeometryHandleId`.
     ///
-    /// Widens the input mesh's f32 vertices to f64 (per Decision 4 in the
-    /// task plan: "Reify's tolerance regime is f64; manifold internals stay
-    /// f64 throughout") and the u32 indices to u64 (per the
-    /// `from_mesh_f64` API signature), then constructs a `Manifold` via
-    /// `Manifold::from_mesh_f64`. Returns
-    /// `Err(GeometryError::OperationFailed)` on invalid mesh input — the
-    /// underlying manifold3d error is surfaced in the `OperationFailed`
-    /// payload so a winding-order regression in a fixture is debuggable
-    /// rather than presenting as a generic "must be a valid manifold"
-    /// message.
+    /// **Scheduled for removal in task 4047 step-5.** All call sites will be
+    /// updated to `kernel.ingest_mesh(mesh).expect(…).id` at that point.
+    /// The shim exists only to keep the 14 existing callers green while the
+    /// production override settles; it introduces no new behaviour.
     ///
-    /// Gated on `cfg(any(test, feature = "test-fixtures"))` so the API is
-    /// reachable from in-crate `mod tests` (cfg(test)) AND from cross-crate
-    /// integration tests in `tests/` (which set the `test-fixtures` feature
-    /// via the self-dev-dep in `Cargo.toml`).
+    /// Gated on `cfg(any(test, feature = "test-fixtures"))` so existing
+    /// in-crate `mod tests` callers (cfg(test)) and cross-crate integration
+    /// tests under `tests/` (which set the `test-fixtures` feature via the
+    /// self-dev-dep in `Cargo.toml`) continue to compile unchanged.
     #[cfg(any(test, feature = "test-fixtures"))]
     pub fn store_mesh_for_test(&mut self, mesh: &Mesh) -> Result<GeometryHandleId, GeometryError> {
-        let vert_props_f64: Vec<f64> = mesh.vertices.iter().map(|&v| v as f64).collect();
-        let tri_indices_u64: Vec<u64> = mesh.indices.iter().map(|&i| i as u64).collect();
-        let manifold =
-            Manifold::from_mesh_f64(&vert_props_f64, 3, &tri_indices_u64).map_err(|e| {
-                GeometryError::OperationFailed(format!(
-                    "store_mesh_for_test: input Mesh must be a valid manifold; \
-                     manifold3d::from_mesh_f64 reported: {e:?}"
-                ))
-            })?;
-        Ok(self.store(manifold).id)
+        Ok(self.ingest_mesh(mesh)?.id)
     }
 }
 
@@ -272,6 +258,38 @@ impl GeometryKernel for ManifoldKernel {
     }
     // extract_edges, extract_faces, execute_with_history, query_many all use
     // the trait defaults — they error in the standard "not supported" fashion.
+
+    /// Ingest an externally-supplied [`Mesh`] into the kernel, converting it
+    /// to a `Manifold` and storing it under a fresh handle.
+    ///
+    /// # Widening rationale (Decision 4, task 3186 plan)
+    ///
+    /// Reify's boundary contract is `Mesh { vertices: Vec<f32>, indices:
+    /// Vec<u32> }` while `Manifold::from_mesh_f64` requires `f64` vertex
+    /// props and `u64` indices. The widening (`f32 as f64`, `u32 as u64`)
+    /// happens here at the ingestion seam; manifold internals remain f64
+    /// throughout, and the corresponding narrowing on egress (`tessellate`)
+    /// converts back to f32/u32 at the Reify boundary.
+    ///
+    /// # Error surface
+    ///
+    /// Returns `Err(GeometryError::OperationFailed(_))` if the input is not a
+    /// closed orientable manifold (e.g. a mesh with boundary edges, inverted
+    /// winding, or degenerate geometry). The underlying `manifold3d` error is
+    /// included in the `OperationFailed` payload so winding-order regressions
+    /// in fixture meshes are debuggable without source-diving.
+    fn ingest_mesh(&mut self, mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
+        let vert_props_f64: Vec<f64> = mesh.vertices.iter().map(|&v| v as f64).collect();
+        let tri_indices_u64: Vec<u64> = mesh.indices.iter().map(|&i| i as u64).collect();
+        let manifold =
+            Manifold::from_mesh_f64(&vert_props_f64, 3, &tri_indices_u64).map_err(|e| {
+                GeometryError::OperationFailed(format!(
+                    "ingest_mesh: input Mesh must be a valid manifold; \
+                     manifold3d::from_mesh_f64 reported: {e:?}"
+                ))
+            })?;
+        Ok(self.store(manifold))
+    }
 
     /// Override the trait default to advertise that ManifoldKernel implements
     /// [`KernelAttributeHook`]. Per PRD line 70, ManifoldKernel is the first
