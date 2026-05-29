@@ -60,6 +60,11 @@ enum StackupError {
     /// A contributor's `sign` field is not `Value::Int(1)` or `Value::Int(-1)`.
     BadSign,
     /// The `samples` argument to `monte_carlo_stackup` is not a positive `Value::Int`.
+    ///
+    /// `parse_chain_checked` never returns this variant — it is classified separately
+    /// in `diagnose()` by directly inspecting the samples argument.  The variant is
+    /// kept in the enum for documentation completeness and exhaustive match arms.
+    #[allow(dead_code)]
     BadSamples,
 }
 
@@ -249,7 +254,7 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
     // and has no PRD §4.4 diagnostic code.
     match name {
         "stackup_worst_case" | "stackup_rss" => {
-            if args.len() < 1 {
+            if args.is_empty() {
                 return None; // arity error handled elsewhere
             }
             match parse_chain_checked(&args[0]) {
