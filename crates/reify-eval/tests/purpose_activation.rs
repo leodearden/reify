@@ -1819,6 +1819,63 @@ purpose fits_within(part : Structure, envelope : Structure) {
     );
 }
 
+/// Robustness (amend): `activate_purpose_with_bindings` must reject a binding
+/// set that binds the same param more than once, BEFORE any injection.
+///
+/// Both C3 (every binding names a declared param) and C2 (every declared param
+/// has a binding) pass for `[part:PartA, envelope:BoxB, part:BoxC]` — every
+/// param is bound and every binding names a real param — yet `part` is bound
+/// twice. Without an explicit duplicate check the inner remap loop consumes the
+/// `fits_within::part` stamp on the first remap, so the second (`part`→BoxC)
+/// finds nothing and is silently dropped, leaving a partially-bound constraint
+/// with no diagnostic (while `purpose_binding_token` still hashes both pairs).
+/// The method must instead return Err naming the duplicated param and inject
+/// nothing.
+#[test]
+fn activate_with_bindings_duplicate_param_is_diagnostic() {
+    let source = r#"
+structure PartA { param length : Length = 80mm }
+structure BoxB { param length : Length = 100mm }
+structure BoxC { param length : Length = 120mm }
+purpose fits_within(part : Structure, envelope : Structure) {
+    constraint part.length < envelope.length
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_simple_engine();
+    engine.eval(&compiled);
+    let before = constraint_count(&engine);
+
+    // "part" is bound twice; "envelope" is bound once. C2 and C3 both pass.
+    let result = engine.activate_purpose_with_bindings(
+        "fits_within",
+        &[
+            ("part".to_string(), "PartA".to_string()),
+            ("envelope".to_string(), "BoxB".to_string()),
+            ("part".to_string(), "BoxC".to_string()),
+        ],
+    );
+
+    // Must return Err naming the duplicated param.
+    let err_msg =
+        result.expect_err("expected Err for a param bound more than once, got Ok");
+    assert!(
+        err_msg.contains("part"),
+        "error message must name the duplicated param 'part', got: {err_msg}"
+    );
+
+    // No injection must have occurred (validation precedes injection).
+    assert!(
+        !engine.is_purpose_active("fits_within"),
+        "purpose must NOT be active after a duplicate-param validation failure"
+    );
+    assert_eq!(
+        constraint_count(&engine),
+        before,
+        "zero constraints must be injected on a duplicate-param validation failure"
+    );
+}
+
 /// C7 / RED (step-07): when a 2-param purpose has reflective members on BOTH
 /// params, `activate_purpose_with_bindings` must resolve the `a.params` and
 /// `b.params` placeholders to their RESPECTIVE bound entities — NOT to a single

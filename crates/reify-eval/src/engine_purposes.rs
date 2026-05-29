@@ -342,6 +342,21 @@ impl Engine {
             }
         }
 
+        // No param may be bound more than once. A duplicate binding for the
+        // same param passes BOTH C2 and C3 (the param is declared and is bound),
+        // but the inner remap loop consumes the `{purpose}::{param}` stamp on the
+        // first remap, so the second remap finds nothing and is silently dropped —
+        // a partially-bound constraint with no diagnostic (while
+        // `purpose_binding_token` still folds both pairs into the digest). Reject
+        // it here, before any injection, naming the duplicated param.
+        for (i, (param, _)) in bindings.iter().enumerate() {
+            if bindings[i + 1..].iter().any(|(p, _)| p == param) {
+                return Err(format!(
+                    "purpose '{purpose_name}' parameter '{param}' is bound more than once"
+                ));
+            }
+        }
+
         // C2: every declared purpose param must have a binding.
         for p in &purpose.params {
             if !bindings.iter().any(|(param, _)| param == &p.name) {
@@ -655,19 +670,35 @@ fn expand_purpose_reflective_placeholders(
             query_kind,
         } => {
             // Resolve the entity_ref for this placeholder's param_name from
-            // the bindings slice. If the param_name is not found (cannot
-            // happen post-C2 validation), fall back to the first binding's
-            // entity for anti-cascade safety. For the single-binding path
-            // this is always the sole binding's entity (C6 parity). The
-            // empty-slice case (`bindings.first()` → None) cannot occur today —
-            // a reflective placeholder requires a param, so `bindings` is
-            // non-empty — but we guard with an empty-string fallback rather
-            // than `bindings[0]` so a future empty-bindings caller cannot panic.
-            let entity_ref: &str = bindings
+            // the bindings slice. C2 validation guarantees every declared
+            // purpose param is bound, and the duplicate-param check guarantees
+            // it is bound exactly once, so this lookup ALWAYS finds a match in
+            // any valid activation. `debug_assert!` it: a miss means an upstream
+            // invariant broke (a future caller bypassed C2, or a new
+            // duplicate-handling path slipped through), and the silent
+            // first-binding fallback below would bind this reflective
+            // aggregation to the WRONG entity — a plausible-but-wrong constraint
+            // rather than a loud failure. Halt in debug builds; keep the
+            // anti-cascade fallback for release. The empty-slice case
+            // (`bindings.first()` → None) cannot occur today — a reflective
+            // placeholder requires a param, so `bindings` is non-empty — but the
+            // empty-string fallback means a future empty-bindings caller cannot
+            // panic.
+            let matched: Option<&str> = bindings
                 .iter()
                 .find(|(p, _)| p == param_name.as_str())
-                .map(|(_, e)| e.as_str())
-                .unwrap_or_else(|| bindings.first().map(|(_, e)| e.as_str()).unwrap_or(""));
+                .map(|(_, e)| e.as_str());
+            debug_assert!(
+                matched.is_some(),
+                "expand_purpose_reflective_placeholders: param_name '{}' not found among \
+                 bindings {:?}; C2 validation should guarantee every purpose param is bound \
+                 exactly once — the silent first-binding fallback would bind this reflective \
+                 aggregation to the wrong entity",
+                param_name,
+                bindings
+            );
+            let entity_ref: &str =
+                matched.unwrap_or_else(|| bindings.first().map(|(_, e)| e.as_str()).unwrap_or(""));
 
             // Resolve the member list for this placeholder. Prefer compile-
             // time `ResolvedSchemaQuery`; fall back to scanning `value_cells`
