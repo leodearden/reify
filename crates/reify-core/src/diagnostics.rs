@@ -34,7 +34,7 @@ impl SourceSpan {
     ///
     /// Equals `u32::MAX as usize` — the value you get when casting
     /// `SourceSpan::prelude().start` or `SourceSpan::prelude().end` to `usize`.
-    /// Both `reify_types::byte_offset_to_line_col` and
+    /// Both `reify_core::byte_offset_to_line_col` and
     /// `gui::engine::offset_to_line_col_fast` check for this exact value and
     /// return `(1, 1)` without further computation.
     ///
@@ -1128,7 +1128,7 @@ pub enum DiagnosticCode {
 /// Direct struct-literal construction is not supported for external crates:
 ///
 /// ```compile_fail,E0639
-/// use reify_types::{Diagnostic, Severity};
+/// use reify_core::{Diagnostic, Severity};
 /// let _ = Diagnostic {
 ///     severity: Severity::Error,
 ///     message: String::new(),
