@@ -4913,13 +4913,8 @@ mod tests {
     }
 
     // ── BinOp::Implies eval (task-3921) ──────────────────────────────────
-    //
-    // These tests are RED until eval_implies is wired (step-6).
-    // The placeholder in step-4 routes Implies to Value::Undef, so truth-table
-    // rows that expect non-Undef fail.
 
     /// Pins eval_implies truth table row T⇒F = Bool(false).
-    /// The placeholder returns Undef, so this test fails until step-6.
     #[test]
     fn eval_implies_true_implies_false_is_false() {
         let expr = CompiledExpr::binop(

@@ -862,15 +862,27 @@ pub(crate) fn compile_expr_guarded(
                             !matches!(lty, Type::Bool | Type::Error);
                         let right_bad =
                             !matches!(rty, Type::Bool | Type::Error);
-                        if left_bad || right_bad {
+                        if left_bad {
                             diagnostics.push(
                                 Diagnostic::error(format!(
-                                    "implies operands must be Bool: {} vs {}",
-                                    lty, rty,
+                                    "implies left operand must be Bool, got `{}`",
+                                    lty,
                                 ))
                                 .with_label(DiagnosticLabel::new(
-                                    expr.span,
-                                    "non-Bool operand to implies",
+                                    left.span,
+                                    "expected Bool here",
+                                )),
+                            );
+                        }
+                        if right_bad {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "implies right operand must be Bool, got `{}`",
+                                    rty,
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    right.span,
+                                    "expected Bool here",
                                 )),
                             );
                         }

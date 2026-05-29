@@ -40,3 +40,24 @@ structure def Good {
     let module = compile_source(source);
     assert_no_error_diagnostics(&module.diagnostics, "true implies false should compile cleanly");
 }
+
+/// `p implies true` (where `p` is a `Bool` param) must compile without errors.
+///
+/// A `param p : Bool` (no default) is Bool-typed at compile time even though
+/// it evaluates to `Undef` at runtime.  This test pins that the Bool-operand guard
+/// does not false-positive on a Bool-typed value reference — only literal Int/Real/etc
+/// operands should trigger the diagnostic.
+#[test]
+fn implies_accepts_bool_param_operand() {
+    let source = r#"
+structure def GoodParam {
+    param p : Bool
+    let result : Bool = p implies true
+}
+"#;
+    let module = compile_source(source);
+    assert_no_error_diagnostics(
+        &module.diagnostics,
+        "p implies true should compile cleanly when p is Bool",
+    );
+}
