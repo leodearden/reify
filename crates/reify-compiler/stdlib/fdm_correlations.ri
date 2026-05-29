@@ -40,3 +40,88 @@
 // Cross-module dependencies (resolved via sequential-prelude in stdlib_loader):
 //   - `MaterialPropertyProvenance` — from std.materials.fea
 //   - `InfillPattern`              — from std.fdm
+
+// ── FDMCorrelationDefaults ──────────────────────────────────────────────────
+
+// FDMCorrelationDefaults is the default-constants record for the β-phase
+// effective-property correlation library. It collects every empirically
+// calibrated constant used to derive as-printed elastic constants from a base
+// material plus FDM process parameters, each accompanied by a parallel
+// `..._provenance : MaterialPropertyProvenance` citation slot and (added in a
+// later β step) a parallel `..._low_confidence : Bool` slot.
+//
+// FDMCorrelationDefaults is a concrete options record (no trait bound) —
+// mirrors `FDMProcess` in fdm.ri and `ElasticOptions` in solver_elastic.ri.
+//
+// Correlation constants (PRD §"Built-in property correlations"):
+//   build_z_modulus_ratio  — E_z / E_xy, the build-direction Young's-modulus
+//                            knockdown. The build (Z) axis is the weakest
+//                            because inter-layer bonds carry load worse than
+//                            continuous in-plane beads. Default 0.67
+//                            (PLA-calibrated, PMC9828590).
+//   build_z_strength_ratio — σ_z / σ_xy, the build-direction strength
+//                            knockdown. Default 0.52 (PLA-calibrated,
+//                            PMC9828590). Carried for downstream limit-state
+//                            checks; β's elastic assemblers use the modulus
+//                            ratio.
+//   gibson_ashby_c         — coefficient C in the Gibson-Ashby open-cell foam
+//                            law E_eff / E_solid = C · ρ^n. Default 1.0
+//                            (Gibson & Ashby 1997).
+//   gibson_ashby_n         — exponent n in the Gibson-Ashby law. Default 2.0
+//                            (bending-dominated open cells). The FDM-specific
+//                            value is flagged low-confidence in a later step.
+//
+// PRD reference: docs/prds/v0_5/fdm-as-printed-fea.md task β / slice 1,
+// §"Built-in property correlations".
+structure def FDMCorrelationDefaults {
+    // ── Build-Z knockdown ratios ───────────────────────────────────────────
+
+    // E_z / E_xy: build-direction Young's-modulus knockdown. < 1 guarantees
+    // the PRD C3/C4 invariant "build-Z is the weakest axis". PLA-calibrated.
+    param build_z_modulus_ratio : Real = 0.67
+
+    // σ_z / σ_xy: build-direction strength knockdown. PLA-calibrated.
+    param build_z_strength_ratio : Real = 0.52
+
+    // ── Gibson-Ashby infill law (E_eff / E_solid = C · ρ^n) ─────────────────
+
+    // Coefficient C of the Gibson-Ashby open-cell foam law.
+    param gibson_ashby_c : Real = 1.0
+
+    // Exponent n of the Gibson-Ashby open-cell foam law (bending-dominated).
+    param gibson_ashby_n : Real = 2.0
+
+    // ── Per-property provenance slots ──────────────────────────────────────
+    //
+    // Parallel `..._provenance : MaterialPropertyProvenance` citation slots,
+    // one per correlation constant, mirroring the convention established by
+    // materials_fea.ri and α's fdm.ri FDMProcess.
+
+    param build_z_modulus_ratio_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "Reify FDM correlations v1",
+            reference: "PMC9828590 (PRD §Built-in property correlations) — PLA-calibrated build-Z modulus ratio E_z/E_xy ≈ 0.67",
+            notes: "Build-direction (inter-layer) Young's modulus is reduced relative to the in-plane value because layer bonds carry tensile load worse than continuous beads. 0.67 is the PLA-calibrated default; known-good fusion (e.g. Nylon) yields milder values."
+        )
+
+    param build_z_strength_ratio_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "Reify FDM correlations v1",
+            reference: "PMC9828590 (PRD §Built-in property correlations) — PLA-calibrated build-Z strength ratio σ_z/σ_xy ≈ 0.52",
+            notes: "Build-direction strength knockdown, used by downstream limit-state / safety-factor checks. β's elastic assemblers consume the modulus ratio; this strength ratio is carried for δ and later plasticity passes."
+        )
+
+    param gibson_ashby_c_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "Reify FDM correlations v1",
+            reference: "Gibson & Ashby 1997, Cellular Solids (PRD §Built-in property correlations) — open-cell foam coefficient C=1",
+            notes: "E_eff/E_solid = C·ρ^n. C=1 is the standard open-cell prefactor; ρ is the relative density (infill volume fraction)."
+        )
+
+    param gibson_ashby_n_provenance : MaterialPropertyProvenance =
+        MaterialPropertyProvenance(
+            source: "Reify FDM correlations v1",
+            reference: "Gibson & Ashby 1997, Cellular Solids (PRD §Built-in property correlations) — bending-dominated exponent n=2",
+            notes: "n=2 corresponds to bending-dominated open-cell deformation. The FDM-specific exponent is approximate and pattern-dependent; flagged low-confidence (see the parallel low_confidence slot)."
+        )
+}
