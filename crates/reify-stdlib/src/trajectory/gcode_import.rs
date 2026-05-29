@@ -99,6 +99,17 @@ impl GcodeImportResult {
             warnings: Vec::new(),
         }
     }
+
+    /// A short-circuited result carrying a parse error and no profiles. The
+    /// `reify_gcode::ParseError` is reused verbatim as the `E_GcodeParseError`
+    /// carrier (1-indexed line + dialect-specific reason).
+    fn from_parse_error(error: ParseError) -> Self {
+        GcodeImportResult {
+            profiles: Vec::new(),
+            parse_error: Some(error),
+            warnings: Vec::new(),
+        }
+    }
 }
 
 /// Running kinematic state threaded through the command walk: the absolute
@@ -138,14 +149,14 @@ impl PosState {
 
 /// Lower a g-code source to motion profiles using the chosen dialect parser.
 ///
-/// Marlin is the only dialect wired in step-2; the Klipper and Unsupported
-/// arms are filled in by steps 8 and 10. Parse-error mapping is added in
-/// step-6 (until then a parse failure yields an empty result).
+/// A parse failure short-circuits to a [`GcodeImportResult::from_parse_error`]
+/// (no profiles). The Klipper and Unsupported arms are filled in by steps 8
+/// and 10.
 pub(crate) fn lower_gcode(source: &str, dialect: GcodeImportDialect) -> GcodeImportResult {
     match dialect {
         GcodeImportDialect::Marlin => match reify_gcode::parse_marlin(source) {
             Ok(commands) => lower_commands(&commands),
-            Err(_e) => GcodeImportResult::empty(),
+            Err(e) => GcodeImportResult::from_parse_error(e),
         },
         GcodeImportDialect::Klipper => GcodeImportResult::empty(),
         GcodeImportDialect::Unsupported(_name) => GcodeImportResult::empty(),
