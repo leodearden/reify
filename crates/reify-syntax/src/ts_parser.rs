@@ -247,6 +247,20 @@ impl<'a> Lowering<'a> {
         false
     }
 
+    /// Check if a node has an anonymous 'aux' keyword child.
+    ///
+    /// Mirrors `has_pub_keyword`. Used by `lower_let` and `lower_sub` to set
+    /// `is_aux` (PRD §2.1/§2.2, task 3899 step-6).
+    fn has_aux_keyword(&self, node: tree_sitter::Node) -> bool {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if !child.is_named() && self.node_text(child) == "aux" {
+                return true;
+            }
+        }
+        false
+    }
+
     // ── Top-level lowering ──────────────────────────────────
 
     fn lower_source_file(&mut self, node: tree_sitter::Node) {
@@ -1763,6 +1777,8 @@ impl<'a> Lowering<'a> {
 
         // Detect 'pub' keyword by checking anonymous children
         let is_pub = self.has_pub_keyword(node);
+        // Detect 'aux' modifier (PRD §2.1, task 3899 step-6).
+        let is_aux = self.has_aux_keyword(node);
 
         let type_expr = node
             .child_by_field_name("type")
@@ -1777,7 +1793,7 @@ impl<'a> Lowering<'a> {
             name,
             doc,
             is_pub,
-            is_aux: false,
+            is_aux,
             type_expr,
             value,
             where_clause,
@@ -1931,6 +1947,16 @@ impl<'a> Lowering<'a> {
             members
         });
 
+        // Detect 'aux' modifier (PRD §2.2, task 3899 step-6).
+        let is_aux = self.has_aux_keyword(node);
+        // Lower the optional `at <pose>` clause. The grammar exposes the pose
+        // expression as a named field "pose" on the sub_declaration node
+        // (grammar.js task 3899 step-2). Pattern mirrors other optional-expr
+        // members (e.g. lower_port frame_expr, lower_param default).
+        let pose_expr = node
+            .child_by_field_name("pose")
+            .and_then(|n| self.lower_expr(n));
+
         Some(SubDecl {
             name,
             structure_name,
@@ -1939,8 +1965,8 @@ impl<'a> Lowering<'a> {
             is_collection,
             where_clause,
             body,
-            is_aux: false,
-            pose_expr: None,
+            is_aux,
+            pose_expr,
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
