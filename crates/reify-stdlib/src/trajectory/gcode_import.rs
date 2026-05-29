@@ -21,3 +21,39 @@
 //! enum (the shared `reify-core` `DiagnosticCode` set is out of this task's
 //! scope). Eval-path diagnostic surfacing is deferred per the `mechanism.rs`
 //! precedent and asserted only at the pure-function level.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A three-move Marlin run with no non-motion commands lowers to exactly
+    /// ONE motion profile whose ordered waypoints are the absolute move
+    /// targets (0,0) → (10,0) → (10,10). Establishes the `GcodeImportDialect`
+    /// enum, the `GcodeImportResult` type, and the per-profile waypoint shape.
+    #[test]
+    fn marlin_three_linear_moves_lower_to_one_profile() {
+        let src = "G1 X0 Y0\nG1 X10 Y0\nG1 X10 Y10";
+        let result = lower_gcode(src, GcodeImportDialect::Marlin);
+
+        assert!(
+            result.parse_error.is_none(),
+            "expected a clean parse, got {:?}",
+            result.parse_error
+        );
+        assert_eq!(
+            result.profiles.len(),
+            1,
+            "a contiguous motion run must lower to exactly one profile"
+        );
+
+        let wps = &result.profiles[0].waypoints;
+        assert_eq!(wps.len(), 3, "expected three ordered waypoints");
+        assert_eq!((wps[0].x, wps[0].y), (0.0, 0.0), "waypoint 0 = G1 X0 Y0");
+        assert_eq!((wps[1].x, wps[1].y), (10.0, 0.0), "waypoint 1 = G1 X10 Y0");
+        assert_eq!(
+            (wps[2].x, wps[2].y),
+            (10.0, 10.0),
+            "waypoint 2 = G1 X10 Y10"
+        );
+    }
+}
