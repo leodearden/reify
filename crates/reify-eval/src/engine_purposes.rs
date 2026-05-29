@@ -129,63 +129,98 @@ impl Engine {
             return false;
         }
 
-        // Get mutable access to the evaluation state
-        let state = match self.eval_state.as_mut() {
-            Some(s) => s,
-            None => return false, // No eval state — silently ignore
+        // Build a 1-entry binding and delegate to the bindings-map core so the
+        // single-entity and multi-entity paths share one injection body. The core
+        // applies per-binding remap; for len==1 this is exactly one remap call —
+        // behavior-identical to the pre-γ inline loop. The C6 parity token
+        // (purpose_binding_token returns entity_ref directly for len==1) ensures
+        // the `purpose:{name}@{entity}` prefix is byte-identical to today.
+        let bindings = vec![(purpose.params[0].name.clone(), entity_ref.to_string())];
+        self.activate_purpose_constraints_with_bindings_inner(purpose_name, &bindings)
+    }
+
+    /// Bindings-map core: inject a purpose's constraints into the evaluation
+    /// graph with one independent remap per `(param, entity)` binding.
+    ///
+    /// Caller contract:
+    /// - `active_purposes` must NOT already contain `purpose_name` (guarded by
+    ///   the public shim and `activate_purpose_with_bindings`).
+    /// - `compiled_purposes` must contain a purpose with the given name.
+    /// - `eval_state` must be `Some`.
+    /// - All `(param, entity)` pairs in `bindings` must be valid (C2/C3
+    ///   validated before this call by `activate_purpose_with_bindings`).
+    ///
+    /// Returns `true` if injection was performed, `false` on any early-return
+    /// condition (purpose already active, not found, no eval state).
+    ///
+    /// **Does NOT** rebuild infrastructure or record `active_purpose_bindings`
+    /// for multi-binding activations — callers handle both.
+    pub(crate) fn activate_purpose_constraints_with_bindings_inner(
+        &mut self,
+        purpose_name: &str,
+        bindings: &[(String, String)],
+    ) -> bool {
+        // No-op if already active — first binding wins.
+        if self.active_purposes.contains_key(purpose_name) {
+            return false;
+        }
+
+        // Look up the compiled purpose.
+        let purpose = match self
+            .compiled_purposes
+            .iter()
+            .find(|p| p.name == purpose_name)
+        {
+            Some(p) => p.clone(),
+            None => return false,
         };
 
-        // Build a unique entity prefix for the purpose-injected constraints
-        let purpose_entity = format!("purpose:{}@{}", purpose_name, entity_ref);
+        // Compute the prefix token:
+        // - single-binding → entity_ref directly (C6 parity: "purpose:{name}@{entity}")
+        // - multi-binding  → ContentHash of sorted "{param}={entity}" pairs
+        let token = purpose_binding_token(bindings);
+        let purpose_entity = format!("purpose:{}@{}", purpose_name, token);
 
-        // Rewrite compiled expressions: substitute each per-param stamp
-        // `ValueCellId("{purpose}::{param}", member)` with `ValueCellId(entity_ref, member)`
-        // so references resolve to existing value cells in the evaluation graph (task-2181 β).
-        //
-        // By the time control reaches here, `purpose.params.len() == 1` (multi-param
-        // purposes are refused above by the C2 guard). The per-param loop therefore runs
-        // exactly once — behavior-identical to the pre-β single `remap_entity(purpose_name,
-        // entity_ref)`. Task γ replaces the C2 guard-plus-single-binding loop with a
-        // per-binding remap via `activate_purpose_with_bindings`; keep the `for param in
-        // &purpose.params { … }` loop shape as the seam γ generalizes.
+        // Get mutable access to the evaluation state.
+        let state = match self.eval_state.as_mut() {
+            Some(s) => s,
+            None => return false,
+        };
+
+        // Rewrite compiled expressions: for each binding, substitute the per-param
+        // stamp `{purpose}::{param}` with the bound entity. β guarantees these stamps
+        // are disjoint, so N independent single-from remaps are safe.
         let mut rewritten_constraints = purpose.constraints.clone();
         for constraint in &mut rewritten_constraints {
-            for param in &purpose.params {
-                let from_stamp = format!("{}::{}", purpose_name, param.name);
-                constraint.expr.remap_entity(&from_stamp, entity_ref);
+            for (param, entity) in bindings {
+                let from_stamp = format!("{}::{}", purpose_name, param);
+                constraint.expr.remap_entity(&from_stamp, entity);
             }
         }
 
         let rewritten_objective = purpose.objective.clone().map(|mut obj| {
             match &mut obj {
                 OptimizationObjective::Minimize(expr) | OptimizationObjective::Maximize(expr) => {
-                    for param in &purpose.params {
-                        let from_stamp = format!("{}::{}", purpose_name, param.name);
-                        expr.remap_entity(&from_stamp, entity_ref);
+                    for (param, entity) in bindings {
+                        let from_stamp = format!("{}::{}", purpose_name, param);
+                        expr.remap_entity(&from_stamp, entity);
                     }
                 }
             }
             obj
         });
 
-        // Expand `PurposeReflectiveAggregation` placeholders into populated
-        // `ListLiteral([ValueRef(entity_ref, member), ...])` nodes against the
-        // bound entity (task-2289). Walks each constraint expression and the
-        // objective immediately after the `remap_entity` rewrite. The walk
-        // mirrors `remap_entity`'s arm-by-arm structure so future variant
-        // additions in `crates/reify-types/src/expr.rs` only need to touch the
-        // same places.
-        //
-        // Captured shape — `&purpose.resolved_queries`, `entity_ref`, and
-        // `&state.snapshot.graph.value_cells` — is identical for the
-        // constraints loop and the objective rewrite, so a closure keeps the
-        // call sites in lockstep (any future arg change only touches one
-        // signature).
+        // Expand `PurposeReflectiveAggregation` placeholders. For the single-
+        // binding path the representative entity is bindings[0].1 (C6 parity).
+        // For multi-binding, step-08 will replace this with per-param lookup;
+        // for now use the first binding as a representative (correct for
+        // purposes with no reflective members, such as fits_within).
+        let representative_entity = &bindings[0].1;
         let expand_placeholders = |expr: &mut CompiledExpr| {
             expand_purpose_reflective_placeholders(
                 expr,
                 &purpose.resolved_queries,
-                entity_ref,
+                representative_entity,
                 &state.snapshot.graph.value_cells,
             );
         };
@@ -201,7 +236,7 @@ impl Engine {
             obj
         });
 
-        // Inject each of the purpose's compiled constraints into the evaluation graph
+        // Inject each constraint into the evaluation graph.
         let mut injected_ids = Vec::new();
         for (i, constraint) in rewritten_constraints.iter().enumerate() {
             let constraint_id = ConstraintNodeId::new(&purpose_entity, i as u32);
@@ -223,7 +258,7 @@ impl Engine {
             injected_ids.push(constraint_id);
         }
 
-        // Update demand registry: demand each newly injected constraint node.
+        // Update demand registry.
         for id in &injected_ids {
             self.demand.add_demand(NodeId::Constraint(id.clone()));
         }
@@ -237,17 +272,86 @@ impl Engine {
                 .insert(purpose_name.to_string(), objective.clone());
         }
 
-        // Record the per-purpose entity binding.  The binding insert MUST run
-        // before any call to recompute_tolerance_scope() — which happens in the
-        // caller via rebuild_purpose_infrastructure() — so this purpose's
-        // `RepresentationWithin` contribution is included in the resulting
-        // scope; tighter contributions across purposes win via `min`. See
-        // `crates/reify-eval/src/tolerance_scope.rs` for the recognition
-        // matcher and propagation walk.
-        self.active_purpose_bindings
-            .insert(purpose_name.to_string(), entity_ref.to_string());
+        // Record the per-purpose entity binding ONLY for single-binding activations
+        // (byte-identical to today, C6). Multi-param tolerance-scope contribution
+        // and eval()-round-trip persistence are deferred (scope boundary documented
+        // in the plan; extract_tolerance_bindings docstring names this seam).
+        if bindings.len() == 1 {
+            self.active_purpose_bindings
+                .insert(purpose_name.to_string(), bindings[0].1.clone());
+        }
 
         true
+    }
+
+    /// Activate a purpose by name with per-param entity bindings.
+    ///
+    /// Looks up the compiled purpose by `purpose_name`, validates that every
+    /// binding names a declared param (C3) and every declared param has a
+    /// binding (C2), then injects the purpose's constraints with each param
+    /// remapped to its own distinct entity.
+    ///
+    /// Returns `Err(message)` on validation failure so the caller can surface a
+    /// clear diagnostic (C2/C3). Returns `Ok(())` on success or if the purpose
+    /// is already active (idempotent).
+    ///
+    /// Requires a prior call to `eval()` so an evaluation state exists.
+    ///
+    /// **Prefix contract (design decision):**
+    /// - single-binding (len==1) → `purpose:{name}@{entity}` (C6 parity).
+    /// - multi-binding  (len>=2) → `purpose:{name}@{digest}` where digest is
+    ///   `ContentHash::of_str` of bindings sorted by param, each rendered
+    ///   `"{param}={entity}"`, joined with `","`. This avoids raw entity
+    ///   concatenation (entity strings contain `:` and `,` which mangle
+    ///   `ConstraintNodeId` Display) and is order-independent.
+    pub fn activate_purpose_with_bindings(
+        &mut self,
+        purpose_name: &str,
+        bindings: &[(String, String)],
+    ) -> Result<(), String> {
+        // Look up the compiled purpose for validation (C2/C3).
+        let purpose = match self
+            .compiled_purposes
+            .iter()
+            .find(|p| p.name == purpose_name)
+        {
+            Some(p) => p.clone(),
+            None => {
+                return Err(format!("no purpose named '{purpose_name}'"));
+            }
+        };
+
+        // Require eval state to exist.
+        if self.eval_state.is_none() {
+            return Err(format!(
+                "cannot activate purpose '{purpose_name}': no evaluation state (call eval() first)"
+            ));
+        }
+
+        // C3: every binding param must be declared by the purpose.
+        for (param, _) in bindings {
+            if !purpose.params.iter().any(|p| &p.name == param) {
+                return Err(format!(
+                    "purpose '{purpose_name}' has no parameter '{param}'"
+                ));
+            }
+        }
+
+        // C2: every declared purpose param must have a binding.
+        for p in &purpose.params {
+            if !bindings.iter().any(|(param, _)| param == &p.name) {
+                return Err(format!(
+                    "purpose '{purpose_name}' parameter '{}' has no binding",
+                    p.name
+                ));
+            }
+        }
+
+        // Inject via the core; rebuild infrastructure if injection happened.
+        if self.activate_purpose_constraints_with_bindings_inner(purpose_name, bindings) {
+            self.rebuild_purpose_infrastructure();
+        }
+        Ok(())
     }
 
     /// Rebuild the purpose-activation infrastructure (reverse_index, trace_map,
@@ -431,6 +535,39 @@ impl Engine {
             }
         }
     }
+}
+
+// ─── Binding token helper (task γ) ───────────────────────────────────────────
+
+/// Compute the entity prefix token for the injected `purpose:{name}@{token}`
+/// entity from a slice of `(param, entity)` bindings.
+///
+/// - single-binding (len==1): returns the entity string directly, preserving
+///   the `purpose:{name}@{entity}` prefix byte-for-byte (C6 parity).
+/// - multi-binding  (len>=2): returns the hex string of
+///   `ContentHash::of_str(canonical)` where `canonical` is the bindings
+///   sorted by param name, each rendered `"{param}={entity}"`, joined with
+///   `","`. Sorting by param makes it order-independent; embedding both param
+///   and entity makes it collision-free across different entity sets for the
+///   same purpose. Using a hash avoids raw entity concatenation (entity strings
+///   may contain `:` and `,`, which would mangle `ConstraintNodeId` Display).
+fn purpose_binding_token(bindings: &[(String, String)]) -> String {
+    if bindings.len() == 1 {
+        // C6 parity: bare entity, no digest.
+        return bindings[0].1.clone();
+    }
+    // Multi-binding: stable digest of sorted "{param}={entity}" pairs.
+    let mut sorted: Vec<(&str, &str)> = bindings
+        .iter()
+        .map(|(p, e)| (p.as_str(), e.as_str()))
+        .collect();
+    sorted.sort_by_key(|(p, _)| *p);
+    let canonical = sorted
+        .into_iter()
+        .map(|(p, e)| format!("{p}={e}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{}", ContentHash::of_str(&canonical))
 }
 
 // ─── Activation-time reflective-aggregation expansion (task-2289) ────────────
