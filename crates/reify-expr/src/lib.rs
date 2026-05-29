@@ -4884,6 +4884,106 @@ mod tests {
         );
     }
 
+    // ── BinOp::Implies eval (task-3921) ──────────────────────────────────
+    //
+    // These tests are RED until eval_implies is wired (step-6).
+    // The placeholder in step-4 routes Implies to Value::Undef, so truth-table
+    // rows that expect non-Undef fail.
+
+    /// Pins eval_implies truth table row T⇒F = Bool(false).
+    /// The placeholder returns Undef, so this test fails until step-6.
+    #[test]
+    fn eval_implies_true_implies_false_is_false() {
+        let expr = CompiledExpr::binop(
+            BinOp::Implies,
+            lit(Value::Bool(true), Type::Bool),
+            lit(Value::Bool(false), Type::Bool),
+            Type::Bool,
+        );
+        assert_eq!(
+            eval_expr(&expr, &EvalContext::simple(&ValueMap::new())),
+            Value::Bool(false),
+        );
+    }
+
+    /// Pins eval_implies truth table row T⇒T = Bool(true).
+    #[test]
+    fn eval_implies_true_implies_true_is_true() {
+        let expr = CompiledExpr::binop(
+            BinOp::Implies,
+            lit(Value::Bool(true), Type::Bool),
+            lit(Value::Bool(true), Type::Bool),
+            Type::Bool,
+        );
+        assert_eq!(
+            eval_expr(&expr, &EvalContext::simple(&ValueMap::new())),
+            Value::Bool(true),
+        );
+    }
+
+    /// Pins eval_implies truth table row F⇒U = Bool(true) (vacuous).
+    #[test]
+    fn eval_implies_false_implies_undef_is_true() {
+        let expr = CompiledExpr::binop(
+            BinOp::Implies,
+            lit(Value::Bool(false), Type::Bool),
+            lit(Value::Undef, Type::Bool),
+            Type::Bool,
+        );
+        assert_eq!(
+            eval_expr(&expr, &EvalContext::simple(&ValueMap::new())),
+            Value::Bool(true),
+        );
+    }
+
+    /// Pins eval_implies truth table row U⇒F = Undef.
+    #[test]
+    fn eval_implies_undef_implies_false_is_undef() {
+        let expr = CompiledExpr::binop(
+            BinOp::Implies,
+            lit(Value::Undef, Type::Bool),
+            lit(Value::Bool(false), Type::Bool),
+            Type::Bool,
+        );
+        assert_eq!(
+            eval_expr(&expr, &EvalContext::simple(&ValueMap::new())),
+            Value::Undef,
+        );
+    }
+
+    /// Non-Bool left operand (Int literal) → Value::Undef; right NOT evaluated.
+    ///
+    /// Mirrors `eval_and_short_circuit_on_non_bool_left_does_not_evaluate_right`.
+    #[test]
+    fn eval_implies_non_bool_left_does_not_evaluate_right() {
+        let expr = CompiledExpr::binop(
+            BinOp::Implies,
+            lit(Value::Int(5), Type::Int),
+            panic_on_eval_sentinel(), // panics if evaluated
+            Type::Bool,
+        );
+        assert!(eval_expr(&expr, &EvalContext::simple(&ValueMap::new())).is_undef());
+    }
+
+    /// False left operand short-circuits to Bool(true) without evaluating right.
+    ///
+    /// Vacuous truth: `¬False = True` is the absorbing element for OR; right
+    /// operand must NOT be evaluated.
+    #[test]
+    fn eval_implies_false_left_short_circuits_does_not_evaluate_right() {
+        let expr = CompiledExpr::binop(
+            BinOp::Implies,
+            lit(Value::Bool(false), Type::Bool),
+            panic_on_eval_sentinel(), // panics if evaluated
+            Type::Bool,
+        );
+        // No panic → sentinel was not evaluated → short-circuit is preserved.
+        assert_eq!(
+            eval_expr(&expr, &EvalContext::simple(&ValueMap::new())),
+            Value::Bool(true)
+        );
+    }
+
     // ── Task 2343 step-7b: composed-field call dispatch ──────────────────
     //
     // Pin the runtime fallthrough that turns a `field_name(p)` call inside
