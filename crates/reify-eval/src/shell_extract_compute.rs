@@ -22,9 +22,14 @@
 //! synthetic-slab runs; tighter inner-loop granularity can land in ε or a
 //! follow-up without interface breakage.
 
+use std::hash::{Hash, Hasher};
+
 use reify_core::persistent_cache::PersistentlyCacheable;
 use reify_core::Diagnostic;
-use reify_ir::{FeatureId, OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use reify_ir::{
+    FeatureId, GeometryHandleId, OpaqueState, PersistentMap, Role, StructureInstanceData,
+    StructureTypeId, TopologyAttribute, TopologyAttributeTable, Value,
+};
 use reify_shell_extract::{
     MedialOptions, MesherOptions, MidSurfaceOptions, PruneOptions, SegmentationError,
     SegmentationOptions, SingleBodyMask, compute_medial_mask, extract_mid_surface,
@@ -512,4 +517,331 @@ pub fn shell_extract_compute_fn(
 /// point to introduce an aggregator if needed.
 pub fn register_shell_extract_compute_fns(engine: &mut Engine) {
     engine.register_compute_fn("shell-extract::extract", shell_extract_compute_fn as ComputeFn);
+}
+
+// ── ζ §9-dispatch-complete fold hook ─────────────────────────────────────────
+
+/// Mint a deterministic synthetic `GeometryHandleId` for a derived mid-surface
+/// entity.
+///
+/// Packing layout (64 bits):
+/// - Bit 63: always 1 — marks this as synthetic (disjoint from OCCT kernel
+///   handles, which start at 1 and grow upward, never reaching the high bit).
+/// - Bits 62–33: 30-bit FxHash of `feature_id` — disambiguates mid-surfaces
+///   from different parent features in the same table.
+/// - Bit 32: `is_edge` — separates MidSurfaceFace (0) from MidSurfaceEdge (1)
+///   records for the same feature/index.
+/// - Bits 31–0: `local_index` — 0-based index within the (feature_id, role)
+///   pair.
+///
+/// Uses `rustc_hash::FxHasher` with default (fixed, zero) seed — NOT
+/// `std::collections::hash_map::RandomState` — so IDs are identical across
+/// process restarts (required for the step-7 re-derivation round-trip).
+fn synthetic_mid_surface_handle_id(
+    feature_id: &str,
+    is_edge: bool,
+    local_index: u32,
+) -> GeometryHandleId {
+    let mut hasher = rustc_hash::FxHasher::default();
+    feature_id.hash(&mut hasher);
+    let h = hasher.finish();
+    let h30 = (h & 0x3FFF_FFFF) as u64;
+    let id = 0x8000_0000_0000_0000u64
+        | (h30 << 33)
+        | ((is_edge as u64) << 32)
+        | (local_index as u64);
+    GeometryHandleId(id)
+}
+
+/// Fold the MidSurfaceAttributes records from a projected `ShellExtractionResult`
+/// Value into `table`.
+///
+/// Decodes `result.naming.face_records` and `result.naming.edges` (projected by
+/// `shell_extraction_result_to_value` in step-2) and records one
+/// `TopologyAttribute` per entry using deterministic synthetic
+/// `GeometryHandleId`s (see `synthetic_mid_surface_handle_id`).
+///
+/// # Error handling
+///
+/// Mirrors the auxiliary-metadata convention of the existing per-op populators
+/// (`populate_extrude/revolve/loft_attributes` in
+/// `topology_attribute_propagation.rs`): on any decode anomaly (missing or
+/// mistyped field) the record is silently skipped and a `tracing::warn!` is
+/// emitted.  The function never panics and never causes the dispatch to regress
+/// to `Failed`.
+pub(crate) fn fold_mid_surface_attributes_into_table(
+    table: &mut TopologyAttributeTable,
+    result: &Value,
+) {
+    let outer = match result {
+        Value::StructureInstance(d) => d,
+        _ => {
+            tracing::warn!("fold_mid_surface_attributes: result is not a StructureInstance");
+            return;
+        }
+    };
+
+    let naming = match outer.fields.get(&"naming".to_string()) {
+        Some(Value::StructureInstance(d)) => d,
+        _ => {
+            tracing::warn!("fold_mid_surface_attributes: naming field missing or not a StructureInstance");
+            return;
+        }
+    };
+
+    // ── face_records → MidSurfaceFace entries ────────────────────────────────
+    if let Some(Value::List(face_records)) = naming.fields.get(&"face_records".to_string()) {
+        for (i, rec) in face_records.iter().enumerate() {
+            let rec_data = match rec {
+                Value::StructureInstance(d) => d,
+                _ => {
+                    tracing::warn!(
+                        "fold_mid_surface_attributes: face_records[{i}] is not a StructureInstance"
+                    );
+                    continue;
+                }
+            };
+            let feature_id_str = match rec_data.fields.get(&"feature_id".to_string()) {
+                Some(Value::String(s)) => s.as_str(),
+                _ => {
+                    tracing::warn!(
+                        "fold_mid_surface_attributes: face_records[{i}].feature_id missing or not String"
+                    );
+                    continue;
+                }
+            };
+            let local_index = match rec_data.fields.get(&"local_index".to_string()) {
+                Some(Value::Int(n)) => *n as u32,
+                _ => {
+                    tracing::warn!(
+                        "fold_mid_surface_attributes: face_records[{i}].local_index missing or not Int"
+                    );
+                    continue;
+                }
+            };
+            let id = synthetic_mid_surface_handle_id(feature_id_str, false, local_index);
+            let attr = TopologyAttribute {
+                feature_id: FeatureId::new(feature_id_str),
+                role: Role::MidSurfaceFace,
+                local_index,
+                user_label: None,
+                mod_history: vec![],
+            };
+            table.record(id, attr);
+        }
+    } else {
+        tracing::warn!("fold_mid_surface_attributes: naming.face_records missing or not a List");
+    }
+
+    // ── edges → MidSurfaceEdge entries ───────────────────────────────────────
+    if let Some(Value::List(edges)) = naming.fields.get(&"edges".to_string()) {
+        for (i, rec) in edges.iter().enumerate() {
+            let rec_data = match rec {
+                Value::StructureInstance(d) => d,
+                _ => {
+                    tracing::warn!(
+                        "fold_mid_surface_attributes: edges[{i}] is not a StructureInstance"
+                    );
+                    continue;
+                }
+            };
+            let feature_id_str = match rec_data.fields.get(&"feature_id".to_string()) {
+                Some(Value::String(s)) => s.as_str(),
+                _ => {
+                    tracing::warn!(
+                        "fold_mid_surface_attributes: edges[{i}].feature_id missing or not String"
+                    );
+                    continue;
+                }
+            };
+            let local_index = match rec_data.fields.get(&"local_index".to_string()) {
+                Some(Value::Int(n)) => *n as u32,
+                _ => {
+                    tracing::warn!(
+                        "fold_mid_surface_attributes: edges[{i}].local_index missing or not Int"
+                    );
+                    continue;
+                }
+            };
+            let id = synthetic_mid_surface_handle_id(feature_id_str, true, local_index);
+            let attr = TopologyAttribute {
+                feature_id: FeatureId::new(feature_id_str),
+                role: Role::MidSurfaceEdge,
+                local_index,
+                user_label: None,
+                mod_history: vec![],
+            };
+            table.record(id, attr);
+        }
+    } else {
+        tracing::warn!("fold_mid_surface_attributes: naming.edges missing or not a List");
+    }
+}
+
+// ── Unit tests for fold helper ────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reify_ir::{StructureTypeId, PersistentMap};
+
+    /// Build a minimal ShellExtractionResult-shaped Value with known face/edge
+    /// records for testing fold_mid_surface_attributes_into_table.
+    fn make_result_value(
+        face_records: &[(&str, u32)],
+        edges: &[(&str, u32)],
+    ) -> Value {
+        let face_records_val = Value::List(
+            face_records
+                .iter()
+                .map(|(fid, li)| {
+                    let mut rf = PersistentMap::default();
+                    rf.insert("feature_id".to_string(), Value::String(fid.to_string()));
+                    rf.insert("local_index".to_string(), Value::Int(*li as i64));
+                    Value::StructureInstance(Box::new(StructureInstanceData {
+                        type_id: StructureTypeId(0),
+                        type_name: "MidSurfaceFaceRecord".to_string(),
+                        version: 1,
+                        fields: rf,
+                    }))
+                })
+                .collect::<Vec<_>>(),
+        );
+        let edges_val = Value::List(
+            edges
+                .iter()
+                .map(|(fid, li)| {
+                    let mut ef = PersistentMap::default();
+                    ef.insert("feature_id".to_string(), Value::String(fid.to_string()));
+                    ef.insert("local_index".to_string(), Value::Int(*li as i64));
+                    Value::StructureInstance(Box::new(StructureInstanceData {
+                        type_id: StructureTypeId(0),
+                        type_name: "MidSurfaceEdgeRecord".to_string(),
+                        version: 1,
+                        fields: ef,
+                    }))
+                })
+                .collect::<Vec<_>>(),
+        );
+        let mut naming_fields = PersistentMap::default();
+        naming_fields.insert("face_count".to_string(), Value::Int(face_records.len() as i64));
+        naming_fields.insert("edge_count".to_string(), Value::Int(edges.len() as i64));
+        naming_fields.insert("face_records".to_string(), face_records_val);
+        naming_fields.insert("edges".to_string(), edges_val);
+        let naming_val = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: "MidSurfaceAttributes".to_string(),
+            version: 1,
+            fields: naming_fields,
+        }));
+        let mut outer_fields = PersistentMap::default();
+        outer_fields.insert("naming".to_string(), naming_val);
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: "ShellExtractionResult".to_string(),
+            version: 1,
+            fields: outer_fields,
+        }))
+    }
+
+    /// step-3: fold_mid_surface_attributes_into_table populates one
+    /// MidSurfaceFace per face record and one MidSurfaceEdge per edge record,
+    /// with correct feature_id/local_index and high bit set on all IDs.
+    #[test]
+    fn fold_helper_records_face_and_edge_entries_with_correct_attrs_and_synthetic_ids() {
+        let feature_id = "synthetic/mid_surface";
+        let face_records = [(feature_id, 0u32), (feature_id, 1u32)];
+        let edges = [(feature_id, 0u32)];
+
+        let value = make_result_value(&face_records, &edges);
+        let mut table = TopologyAttributeTable::default();
+        fold_mid_surface_attributes_into_table(&mut table, &value);
+
+        // (1) One MidSurfaceFace per region
+        let face_entries: Vec<_> = table
+            .iter()
+            .filter(|(_, a)| a.role == Role::MidSurfaceFace)
+            .collect();
+        assert_eq!(face_entries.len(), 2, "expected 2 MidSurfaceFace entries");
+        for (id, attr) in &face_entries {
+            assert_eq!(attr.feature_id.to_string(), feature_id);
+            assert!(attr.user_label.is_none());
+            assert!(attr.mod_history.is_empty());
+            // High bit set
+            assert_eq!(
+                id.0 & 0x8000_0000_0000_0000,
+                0x8000_0000_0000_0000,
+                "MidSurfaceFace id {:#018x} must have high bit set",
+                id.0
+            );
+        }
+        // local_index values: {0, 1}
+        let mut face_indices: Vec<u32> = face_entries.iter().map(|(_, a)| a.local_index).collect();
+        face_indices.sort();
+        assert_eq!(face_indices, vec![0, 1]);
+
+        // (2) One MidSurfaceEdge
+        let edge_entries: Vec<_> = table
+            .iter()
+            .filter(|(_, a)| a.role == Role::MidSurfaceEdge)
+            .collect();
+        assert_eq!(edge_entries.len(), 1, "expected 1 MidSurfaceEdge entry");
+        let (edge_id, edge_attr) = &edge_entries[0];
+        assert_eq!(edge_attr.local_index, 0);
+        assert_eq!(edge_attr.role, Role::MidSurfaceEdge);
+        assert_eq!(
+            edge_id.0 & 0x8000_0000_0000_0000,
+            0x8000_0000_0000_0000,
+            "MidSurfaceEdge id must have high bit set"
+        );
+
+        // (3) All IDs are distinct
+        let mut all_ids: Vec<u64> = table.iter().map(|(id, _)| id.0).collect();
+        let total = all_ids.len();
+        all_ids.sort();
+        all_ids.dedup();
+        assert_eq!(all_ids.len(), total, "all synthetic IDs must be distinct");
+
+        // (4) Determinism: fold into a second table yields identical id→attr pairs
+        let mut table2 = TopologyAttributeTable::default();
+        fold_mid_surface_attributes_into_table(&mut table2, &value);
+        let mut entries1: Vec<(u64, Role, u32, String)> = table
+            .iter()
+            .map(|(id, a)| (id.0, a.role, a.local_index, a.feature_id.to_string()))
+            .collect();
+        let mut entries2: Vec<(u64, Role, u32, String)> = table2
+            .iter()
+            .map(|(id, a)| (id.0, a.role, a.local_index, a.feature_id.to_string()))
+            .collect();
+        entries1.sort_by_key(|(id, _, _, _)| *id);
+        entries2.sort_by_key(|(id, _, _, _)| *id);
+        assert_eq!(entries1, entries2, "fold must be deterministic");
+    }
+
+    /// Verify synthetic_mid_surface_handle_id packs correctly:
+    /// high bit set, role bit correct, local_index in low 32 bits.
+    #[test]
+    fn synthetic_handle_id_packs_bits_correctly() {
+        let id_face = synthetic_mid_surface_handle_id("feat/mid_surface", false, 3);
+        let id_edge = synthetic_mid_surface_handle_id("feat/mid_surface", true, 3);
+
+        // High bit set
+        assert_eq!(id_face.0 >> 63, 1, "high bit must be 1 (synthetic)");
+        assert_eq!(id_edge.0 >> 63, 1);
+
+        // Role bit (bit 32): face=0, edge=1
+        assert_eq!((id_face.0 >> 32) & 1, 0, "face role bit must be 0");
+        assert_eq!((id_edge.0 >> 32) & 1, 1, "edge role bit must be 1");
+
+        // local_index in low 32 bits
+        assert_eq!(id_face.0 & 0xFFFF_FFFF, 3);
+        assert_eq!(id_edge.0 & 0xFFFF_FFFF, 3);
+
+        // Face and edge with same feature_id/local_index are distinct
+        assert_ne!(id_face.0, id_edge.0);
+
+        // Different feature_ids produce different IDs
+        let id_other = synthetic_mid_surface_handle_id("other/mid_surface", false, 3);
+        assert_ne!(id_face.0, id_other.0);
+    }
 }
