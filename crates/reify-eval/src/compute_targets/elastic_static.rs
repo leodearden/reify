@@ -320,6 +320,21 @@ pub(crate) fn solve_cantilever_fea(
     let mut tet_connectivity: Vec<[usize; 4]> = Vec::with_capacity(n_tets);
     let mut elem_stiffness_mats: Vec<_>        = Vec::with_capacity(n_tets);
 
+    // Hoist per-element-constant anisotropic quantities out of the element loops.
+    //
+    // For `MaterialModel::Anisotropic`, both the `ConstantField` (used in the
+    // stiffness loop) and `d_matrix_global()` (used in the stress-recovery loop)
+    // are identical for every element: the material is homogeneous and the frame
+    // is the identity, so `rotate_voigt` runs once here instead of O(n_tets) times.
+    //
+    // For `MaterialModel::Isotropic` this tuple is `None` and incurs no cost.
+    let aniso_precomp: Option<(ConstantField, [[f64; 6]; 6])> =
+        if let MaterialModel::Anisotropic(a) = model {
+            Some((ConstantField { material: *a }, a.d_matrix_global()))
+        } else {
+            None
+        };
+
     for hz in 0..nz {
         for hy in 0..ny {
             for hx in 0..nx {
@@ -349,9 +364,12 @@ pub(crate) fn solve_cantilever_fea(
                         MaterialModel::Isotropic(iso) => {
                             element_stiffness(ElementOrder::P1, &phys, iso)
                         }
-                        MaterialModel::Anisotropic(aniso) => {
-                            let field = ConstantField { material: *aniso };
-                            element_stiffness_p1_with_field(&phys4, &field)
+                        MaterialModel::Anisotropic(_) => {
+                            // Use the hoisted ConstantField (computed once above).
+                            element_stiffness_p1_with_field(
+                                &phys4,
+                                &aniso_precomp.as_ref().unwrap().0,
+                            )
                         }
                     };
                     tet_connectivity.push(conn);
@@ -455,8 +473,13 @@ pub(crate) fn solve_cantilever_fea(
                     + 6.0 * (sxy * sxy + syz * syz + szx * szx)
                 ))
             }
-            MaterialModel::Anisotropic(aniso) => {
-                element_von_mises_anisotropic(&phys, &aniso.d_matrix_global(), &u_e)
+            MaterialModel::Anisotropic(_) => {
+                // Use the hoisted d_global (computed once above).
+                element_von_mises_anisotropic(
+                    &phys,
+                    &aniso_precomp.as_ref().unwrap().1,
+                    &u_e,
+                )
             }
         };
         if vm > max_von_mises {
@@ -511,6 +534,20 @@ fn element_von_mises_anisotropic(
     let det = j_mat[0][0] * (j_mat[1][1] * j_mat[2][2] - j_mat[1][2] * j_mat[2][1])
         - j_mat[0][1] * (j_mat[1][0] * j_mat[2][2] - j_mat[1][2] * j_mat[2][0])
         + j_mat[0][2] * (j_mat[1][0] * j_mat[2][1] - j_mat[1][1] * j_mat[2][0]);
+
+    // Degenerate-element guard — mirrors `element_stress_p1` (result.rs:94-100).
+    // `det.is_normal()` catches ±0, ±∞, NaN, and subnormals; the absolute-value
+    // floor matches `reify_solver_elastic::math::MIN_JACOBIAN_DET` (1e-30).
+    // A degenerate tet with |det J| at or below this threshold would produce
+    // NaN/Inf stress via the division in the J⁻ᵀ computation below.
+    const MIN_JACOBIAN_DET: f64 = 1.0e-30;
+    debug_assert!(
+        det.is_normal() && det.abs() > MIN_JACOBIAN_DET,
+        "element_von_mises_anisotropic: degenerate tet |det J| = {:.3e} \
+         (must be > {:.3e} and finite — see PRD task #21 for the future diagnostic path)",
+        det.abs(),
+        MIN_JACOBIAN_DET,
+    );
 
     // J⁻ᵀ via cofactor / det (same formula as element_stress_p1 → inverse_transpose_3x3)
     let j_inv_t = [
@@ -802,6 +839,58 @@ mod tests {
              of Euler–Bernoulli reference {delta_eb:.6e} m",
             0.5 * delta_eb,
             1.5 * delta_eb,
+        );
+    }
+
+    /// Amendment (test_coverage): pin `element_von_mises_anisotropic` against the
+    /// analytic bending-stress reference for the same orthotropic fixture.
+    ///
+    /// The analytic peak bending stress for a cantilever is:
+    ///   σ_max = 6·P·L / (b·h²)
+    /// This is material-independent (pure-equilibrium Euler–Bernoulli result).
+    /// For the fixture: 6×1000×0.8 / (0.1×0.01) = 4.8 MPa.
+    ///
+    /// The ±50% band is the same P1-tet method-error budget already documented
+    /// for the isotropic stress test (solve_elastic_static_e2e.rs:231) and mirrors
+    /// the reviewer's suggestion to add a stress-magnitude assertion that would
+    /// catch regressions in the D_global·ε multiply, eps ordering, or Voigt-index
+    /// unpacking inside `element_von_mises_anisotropic`.
+    #[test]
+    fn orthotropic_cantilever_max_von_mises_within_stress_band() {
+        // Same orthotropic fixture as the deflection test.
+        let law = OrthotropicMaterial {
+            e1: 200e9_f64, e2: 10e9_f64, e3: 10e9_f64,
+            g12: 4e9_f64,  g13: 4e9_f64, g23: 4e9_f64,
+            nu12: 0.3_f64, nu13: 0.3_f64, nu23: 0.3_f64,
+        };
+        let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let aniso_mat = AnisotropicMaterial::from_law(&law, identity);
+
+        let length    = 0.8_f64;
+        let width     = 0.1_f64;
+        let height    = 0.1_f64;
+        let tip_force = 1000.0_f64;
+
+        let (result, _) = solve_cantilever_fea(
+            &MaterialModel::Anisotropic(aniso_mat),
+            length, width, height, tip_force, None,
+        );
+
+        // Analytic σ_max = 6·P·L / (b·h²) — independent of material stiffness.
+        let sigma_analytic = 6.0 * tip_force * length / (width * height * height);
+        let vm = result.max_von_mises;
+
+        assert!(
+            vm.is_finite() && vm > 0.0,
+            "max_von_mises must be finite and positive, got {vm}"
+        );
+        // ±50% P1-tet method-error band (same budget as isotropic stress e2e).
+        assert!(
+            vm >= 0.5 * sigma_analytic && vm <= 1.5 * sigma_analytic,
+            "max_von_mises {vm:.4e} Pa outside ±50% band [{:.4e}, {:.4e}] Pa \
+             of analytic σ_max {sigma_analytic:.4e} Pa",
+            0.5 * sigma_analytic,
+            1.5 * sigma_analytic,
         );
     }
 }
