@@ -8,6 +8,7 @@ import type {
   GuiState,
   DiagnosticInfo,
   AutoResolveIteration,
+  TensegrityWireData,
 } from '../types';
 import {
   onMeshUpdate,
@@ -54,6 +55,8 @@ export interface EngineState {
   compileDiagnostics: DiagnosticInfo[];
   kernelStatus: KernelStatus | null;
   autoResolve: AutoResolveLoopState;
+  /** Tensegrity wire endpoint pairs with member-type tags (T0b). Empty when none present. */
+  tensegrityWires: TensegrityWireData[];
 }
 
 export interface EngineStoreOptions {
@@ -74,6 +77,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
     compileDiagnostics: [],
     kernelStatus: null,
     autoResolve: { active: false, iterations: [], canonicalDrivingMetric: undefined, warnedEmptyMetric: undefined },
+    tensegrityWires: [],
   });
 
   function initFromState(guiState: GuiState) {
@@ -92,7 +96,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
       constraints[c.node_id] = c;
     }
 
-    setState({ meshes, values, constraints, tessellationDiagnostics: guiState.tessellation_diagnostics, compileDiagnostics: guiState.compile_diagnostics });
+    setState({ meshes, values, constraints, tessellationDiagnostics: guiState.tessellation_diagnostics, compileDiagnostics: guiState.compile_diagnostics, tensegrityWires: guiState.tensegrity_wires });
     options?.onEngineReinitialized?.();
   }
 
