@@ -178,6 +178,33 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // kleene_implies: all 9 rows of the §9.2.3 truth table (a ⇒ b)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn kleene_implies_truth_table() {
+        use KBool::*;
+        // T ⇒ T = T
+        assert_eq!(kleene_implies(True, True), True);
+        // T ⇒ F = F
+        assert_eq!(kleene_implies(True, False), False);
+        // T ⇒ U = U
+        assert_eq!(kleene_implies(True, Undef), Undef);
+        // F ⇒ T = T  (vacuous)
+        assert_eq!(kleene_implies(False, True), True);
+        // F ⇒ F = T  (vacuous)
+        assert_eq!(kleene_implies(False, False), True);
+        // F ⇒ U = T  (vacuous: ¬False = True is absorbing for OR)
+        assert_eq!(kleene_implies(False, Undef), True);
+        // U ⇒ T = T  (¬Undef = Undef, Undef ∨ True = True)
+        assert_eq!(kleene_implies(Undef, True), True);
+        // U ⇒ F = U  (¬Undef = Undef, Undef ∨ False = Undef)
+        assert_eq!(kleene_implies(Undef, False), Undef);
+        // U ⇒ U = U  (¬Undef = Undef, Undef ∨ Undef = Undef)
+        assert_eq!(kleene_implies(Undef, Undef), Undef);
+    }
+
+    // -----------------------------------------------------------------------
     // kleene_not: all 3 rows
     // -----------------------------------------------------------------------
 
