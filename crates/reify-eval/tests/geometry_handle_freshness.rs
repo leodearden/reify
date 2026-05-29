@@ -465,3 +465,165 @@ fn lazy_revalidation_reresolves_stale_handle_and_undefs_missing_realization() {
         read3
     );
 }
+
+/// FIFTH (GHR-δ §8 Phase 4 — removed-realization donation leg,
+/// `engine_edit.rs` `for rid in &removed_realizations`): the THIRD test covers
+/// the *changed*-realization donation leg (a realization whose `content_hash`
+/// moves while its backing cell survives byte-identical). This covers the
+/// sibling branch the reviewer flagged as untested — and the riskiest, since a
+/// missed cell silently keeps a now-unbacked handle: a `Type::Geometry` value
+/// cell **survives** an edit while the `RealizationNodeId` that backed it in the
+/// OLD graph is **removed**. The removed-realization leg consults the OLD
+/// reverse index (`Realization → Value(cell)`), gated on the cell still existing
+/// in the new graph, and invalidates it.
+///
+/// ## Fixture: drop an *earlier* geometry param so a later one reindexes
+///
+/// A `Type::Geometry` param produces a realization regardless of its default
+/// expression (an alias `param b : Solid = a` still emits a realization — so
+/// "remove the geometry default" does NOT drop a realization). The only way a
+/// surviving Geometry cell's backing `RealizationNodeId` vanishes is positional
+/// reindexing: realizations are keyed by `RealizationNodeId { entity, index }`
+/// in declaration order, so removing an *earlier* geometry param shifts a later
+/// one to a lower index and the old high index lands in `removed_realizations`.
+///
+/// OLD: `a` → `Widget#0`, `b` → `Widget#1`. NEW (drop `a`): `b` → `Widget#0`.
+/// → `Widget#1` removed; the OLD reverse index `Widget#1 → Value(Widget.b)` and
+/// `Widget.b` is still a declared param (member name + `box(..)` default
+/// unchanged, so its own `content_hash` is identical → it is NOT in the
+/// value-cell `changed` set). That is exactly the removed-leg
+/// membership-gate-TRUE branch.
+///
+/// ## Outcome guard, not leg isolation (intentional)
+///
+/// This pins the safety OUTCOME (the surviving cell is invalidated, so no stale
+/// handle persists) and exercises the removed-leg branch end-to-end, but it is
+/// not a sole-invalidator isolation test: `Widget.b`'s NEW backing realization
+/// `Widget#0` (was `a`, now `b`) is in `changed_realizations`, so the
+/// changed-realization leg also invalidates `Widget.b` via the NEW reverse edge.
+/// A pure isolation is structurally unreachable through a source edit — any edit
+/// that removes a surviving Geometry cell's backing `RealizationNodeId` either
+/// changes that cell's `default_expr` (→ changed cell) or reindexes it (→ a
+/// changed/added realization re-linked to the cell). Coverage of the branch plus
+/// the outcome assertion is the achievable guard, matching the reviewer's ask.
+#[test]
+fn removed_realization_donates_invalidation_to_surviving_geometry_cell() {
+    // `a` and `b` are geometry params (realizations Widget#0 / Widget#1); `width`
+    // is a scalar (no realization), declared first so the box() calls have no
+    // forward reference. `b` does not reference `a`, so dropping `a` compiles.
+    const SRC_A: &str = r#"structure def Widget {
+    param width : Length = 10mm
+    param a : Solid = box(width, 20mm, 30mm)
+    param b : Solid = box(width, 40mm, 50mm)
+}"#;
+    // Drop the EARLIER geometry param `a`. `b` reindexes Widget#1 → Widget#0, so
+    // the old id Widget#1 lands in removed_realizations; the value cell Widget.b
+    // survives byte-identical (same member, same default).
+    const SRC_B: &str = r#"structure def Widget {
+    param width : Length = 10mm
+    param b : Solid = box(width, 40mm, 50mm)
+}"#;
+
+    let compiled_a = compile_source(SRC_A);
+    let a_errors: Vec<_> = compiled_a
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .map(|d| d.message.clone())
+        .collect();
+    assert!(
+        a_errors.is_empty(),
+        "module A must compile cleanly; got: {:?}",
+        a_errors
+    );
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&compiled_a, ExportFormat::Step);
+    let build_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .map(|d| format!("[{:?}] {}", d.severity, d.message))
+        .collect();
+    assert!(
+        build_errors.is_empty(),
+        "module A must build cleanly; got: {:?}",
+        build_errors
+    );
+
+    let b = ValueCellId::new("Widget", "b");
+    let b_node = NodeId::Value(b.clone());
+    // In SRC_A, `b` is the second geometry param → Widget#1.
+    let r_b_old = RealizationNodeId::new("Widget", 1);
+
+    // Preconditions on the built graph: `b` hydrated to a handle (it really is a
+    // Realization-backed Type::Geometry cell) and Widget#1 backs it.
+    assert!(
+        matches!(result.values.get_or_undef(&b), Value::GeometryHandle { .. }),
+        "Widget.b must hydrate to a Value::GeometryHandle before the edit"
+    );
+    assert!(
+        engine.cache_store().get(&b_node).is_some(),
+        "Widget.b must have a live cache entry after build()"
+    );
+    {
+        let snap = engine.snapshot().expect("snapshot after build()");
+        assert!(
+            snap.graph.realizations.contains_key(&r_b_old),
+            "Widget#1 must exist before the edit (it backs `b`)"
+        );
+    }
+
+    // Edit: drop `a`. Widget#1 disappears (b reindexes to Widget#0) →
+    // removed_realizations; Widget.b survives byte-identical as a param.
+    let compiled_b = compile_source(SRC_B);
+    let b_errors: Vec<_> = compiled_b
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .map(|d| d.message.clone())
+        .collect();
+    assert!(
+        b_errors.is_empty(),
+        "module B must compile cleanly; got: {:?}",
+        b_errors
+    );
+    let edit = engine
+        .edit_source(&compiled_b)
+        .expect("drop-param edit_source must not error");
+
+    // Precondition: the OLD backing realization Widget#1 was removed, and the
+    // value cell Widget.b survived in the new graph (the removed-leg's
+    // membership-gate-TRUE branch).
+    let snap = engine.snapshot().expect("snapshot after edit");
+    assert!(
+        !snap.graph.realizations.contains_key(&r_b_old),
+        "Widget#1 must be removed after dropping the earlier geometry param `a`; \
+         realizations now: {:?}",
+        snap.graph
+            .realizations
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        snap.graph.value_cells.contains_key(&b),
+        "Widget.b must SURVIVE the edit (still a declared param) — this is the \
+         removed-realization donation leg's membership-gate-TRUE branch"
+    );
+
+    // Main assertion (mirrors the THIRD/reorder test): the surviving cell, whose
+    // OLD backing realization was removed, must be invalidated so its stale
+    // handle does not silently persist in the cache.
+    assert!(
+        engine.cache_store().get(&b_node).is_none(),
+        "Widget.b (a surviving Type::Geometry cell whose OLD backing Realization \
+         Widget#1 was removed) must be invalidated by the edit donation cascade; \
+         it is still cached with a stale handle"
+    );
+
+    // Smoke: the edit produced a coherent result and did not panic.
+    let _ = edit.values;
+}
