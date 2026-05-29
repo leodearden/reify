@@ -2404,10 +2404,31 @@ fn build_constraints(
 ///
 /// For each wire instance, the six endpoint coords are flattened from
 /// `Value::Scalar{si_value, ..}` or `Value::Real(v)` to `f64` SI.  Wires
-/// with malformed or missing fields are silently skipped (no panic, no Undef
-/// propagation — the contract lives in T0a's extraction layer).
+/// with malformed or missing fields are skipped and logged at `warn!` level so
+/// silent drops are observable in logs without changing the no-panic contract.
 ///
 /// The owning entity is taken from `cell.id.entity` (e.g. `"TPrism"`).
+///
+/// # Limitations (T0b scope)
+///
+/// **Template-level extraction only**: `entity_path` is the *template* name
+/// (e.g. `"TPrism"`), not a per-instance path.  If a `TPrism` is instantiated
+/// multiple times in an assembly, all instances contribute wires with the same
+/// `entity_path` and local-frame coordinates — per-instance placement/transforms
+/// are NOT applied.  A future instancing task must address this.
+///
+/// **Aliased-cell double-counting**: if the same wire list is reachable via two
+/// value cells (e.g. `let w2 = wires`), wires are extracted twice.  This is
+/// unlikely in practice because T0a binds the wire list to one cell; if it
+/// becomes an issue, deduplicate by `(entity_path, x1, y1, z1, x2, y2, z2)`.
+///
+/// **Second iteration over value cells**: this function walks the same
+/// `compiled.templates → template.value_cells` loop and calls
+/// `check.values.get_or_undef` for each cell, independently of `build_values`.
+/// For large modules this means each cell's `Value` is cloned twice per
+/// `build_gui_state` call.  The separation is intentional for clarity and
+/// matches the T0b scope boundary; fold into `build_values` if profiling shows
+/// the duplication as a bottleneck.
 fn build_tensegrity_wires(
     compiled: &reify_compiler::CompiledModule,
     check: &CheckResult,
@@ -2428,20 +2449,35 @@ fn build_tensegrity_wires(
 /// Matches either a standalone `TensegrityWire` instance or a
 /// `List` of `TensegrityWire` instances (the output of `tensegrity_wires()`).
 /// All other variants are silently ignored.
+///
+/// Logs a `warn!` when a `TensegrityWire` instance is found but has malformed
+/// or missing fields (i.e. `wire_data_from_instance` returns `None`), so silent
+/// drops are observable in logs without changing the no-panic contract.
 fn collect_wires_from_value(val: &Value, entity_path: &str, out: &mut Vec<TensegrityWireData>) {
     match val {
         Value::StructureInstance(data) if data.type_name == "TensegrityWire" => {
             if let Some(wire) = wire_data_from_instance(&data.fields, entity_path) {
                 out.push(wire);
+            } else {
+                warn!(
+                    entity = %entity_path,
+                    "skipping malformed TensegrityWire instance (missing or non-numeric field)"
+                );
             }
         }
         Value::List(items) => {
             for item in items.iter() {
                 if let Value::StructureInstance(data) = item
                     && data.type_name == "TensegrityWire"
-                    && let Some(wire) = wire_data_from_instance(&data.fields, entity_path)
                 {
-                    out.push(wire);
+                    if let Some(wire) = wire_data_from_instance(&data.fields, entity_path) {
+                        out.push(wire);
+                    } else {
+                        warn!(
+                            entity = %entity_path,
+                            "skipping malformed TensegrityWire instance in list (missing or non-numeric field)"
+                        );
+                    }
                 }
             }
         }

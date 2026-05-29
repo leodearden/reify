@@ -9156,3 +9156,51 @@ fn build_gui_state_yields_empty_wires_for_non_tensegrity_module() {
         state.tensegrity_wires.len()
     );
 }
+
+/// A Reify module that binds a `Tensegrity(...)` struct to a value cell but does
+/// NOT call `tensegrity_wires()`.  Value cells therefore contain a
+/// `Value::StructureInstance { type_name: "Tensegrity", .. }` — a non-TensegrityWire
+/// struct — which `build_tensegrity_wires` must actively filter out.
+fn tensegrity_struct_no_wires_source() -> &'static str {
+    r#"
+structure def TOnly {
+    let prism = Tensegrity(
+        nodes: [
+            point3(1m, 0m, 1m),
+            point3(-0.5m, 0.866m, 1m),
+            point3(0.866m, 0.5m, 0m)
+        ],
+        struts: [[0, 1]],
+        cables: [[1, 2]]
+    )
+}
+"#
+}
+
+/// `build_tensegrity_wires` must NOT extract records from `StructureInstance`
+/// values whose `type_name` is not `"TensegrityWire"`.
+///
+/// Uses a module whose value cells hold a `Tensegrity` StructureInstance
+/// (`type_name == "Tensegrity"`) but no `TensegrityWire` instances (because
+/// `tensegrity_wires()` is never called).  This exercises the type-name filter
+/// branch: the Tensegrity value must be ignored, yielding `tensegrity_wires: []`.
+///
+/// This is a stronger guard than `build_gui_state_yields_empty_wires_for_non_tensegrity_module`
+/// because the bracket module has no StructureInstances at all (only scalar params),
+/// so it cannot catch a regression where the filter is dropped.
+#[test]
+fn build_tensegrity_wires_filters_non_tensegrity_wire_struct_instances() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(tensegrity_struct_no_wires_source(), "tonly")
+        .expect("tonly load_from_source should succeed");
+
+    assert!(
+        state.tensegrity_wires.is_empty(),
+        "a Tensegrity StructureInstance (type_name='Tensegrity') must not be extracted as a wire; got {} wire(s)",
+        state.tensegrity_wires.len()
+    );
+}
