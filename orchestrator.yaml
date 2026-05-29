@@ -31,7 +31,21 @@ lock_depth: 4
 # at merge, instead of on every per-task iteration.
 test_command: "./scripts/verify.sh test --profile debug --scope all --include-infra"
 lint_command: "./scripts/verify.sh lint --scope all --include-infra"
-type_check_command: "./scripts/verify.sh typecheck --scope all"
+# type_check_command is a passing no-op (task 4063).
+# Rationale: lint_command's `cargo clippy --workspace --all-targets -- -D warnings` is a
+# STRICT SUPERSET of `cargo check --workspace --tests` — clippy runs the full compiler
+# frontend and reports every type error cargo check would, plus lint warnings. The
+# orchestrator invokes test_command / lint_command / type_check_command as THREE SEPARATE
+# verify.sh processes; verify.sh's own intra-process clippy-vs-cargo-check dedup (the
+# DO_TYPECHECK && !DO_LINT guard at verify.sh:351) does NOT bridge across these separate
+# invocations. So the standalone `verify.sh typecheck` pass was pure redundant compile
+# (~20 min cargo check --workspace --tests) on every task iteration. No-op'd here.
+#
+# ACCEPTED COST: type errors now fail the LINT (clippy) phase rather than a distinct
+# typecheck phase, so per-phase failure attribution loses the "type errors" bucket.
+# Acceptable: clippy is the stricter signal and catches everything cargo check does.
+# verify.sh's `typecheck` action remains a valid standalone/manual entry point unchanged.
+type_check_command: "true"
 
 # Run test/lint/type sequentially in one verify invocation.
 # Rust workspaces take an advisory lock on target/.cargo-lock, so the three
