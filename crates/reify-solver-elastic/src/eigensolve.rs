@@ -72,6 +72,10 @@
 //!
 //! If a debug-mode performance regression appears (hundreds of seconds),
 //! check those overrides first — they are the most likely culprit.
+//!
+//! **Full regression (task 4055 s6):** 478 tests pass in both debug and
+//! release with no collateral drift (CG solver, assembly, buckling, shell
+//! benchmarks all unaffected by the dep opt-level override).
 
 use faer::{Col, Conj, Mat, Par, Side};
 use faer::dyn_stack::{MemBuffer, MemStack, StackReq};
