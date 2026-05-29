@@ -1060,6 +1060,155 @@ mod tests {
         }
     }
 
+    // --- MITC3+ patch tests + isotropy + no-spurious-modes (task 3392 step-9) ---
+
+    #[test]
+    fn mitc3_plus_membrane_patch_test_matches_analytical_energy() {
+        // Uniform in-plane strain u_x = a·x, u_y = b·y → ε = (a, b, 0). The
+        // bubble does not enter membrane and a constant membrane state does not
+        // excite it, so MITC3+ reproduces the analytical membrane energy exactly.
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let a = 0.01_f64;
+        let b = -0.005_f64;
+        let k = shell_element_stiffness_mitc3_plus(&UNIT_TRI, t, &mat);
+
+        const NDP: usize = Mitc3Plus::N_DOFS_PER_NODE;
+        let mut u = [0.0_f64; Mitc3Plus::N_DOFS];
+        u[NDP * 1] = a; // node1 at x=1 → u_x = a
+        u[NDP * 2 + 1] = b; // node2 at y=1 → u_y = b
+
+        let ku = matvec(&k, &u);
+        let u_k: f64 = 0.5 * ku.iter().zip(u.iter()).map(|(ki, ui)| ki * ui).sum::<f64>();
+
+        let d = plane_stress_d(&mat);
+        let eps = [a, b, 0.0_f64];
+        let d_eps = [
+            d[0][0] * eps[0] + d[0][1] * eps[1],
+            d[1][0] * eps[0] + d[1][1] * eps[1],
+            0.0,
+        ];
+        let area = 0.5_f64;
+        let u_analytical = 0.5 * (eps[0] * d_eps[0] + eps[1] * d_eps[1]) * t * area;
+        let scale = u_analytical.abs().max(1.0);
+        assert!(
+            (u_k - u_analytical).abs() < 1e-9 * scale,
+            "MITC3+ membrane patch: U_K={u_k}, U_analytical={u_analytical}",
+        );
+    }
+
+    #[test]
+    fn mitc3_plus_shear_patch_test_uniform_theta_y_matches_analytical_energy() {
+        // Uniform θ_y = α → uniform γ_xz = α. The deviatoric bubble shear means
+        // a constant shear state does not excite the bubble, so MITC3+
+        // reproduces the analytical shear energy 0.5·α²·κ·G·t·A exactly.
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let alpha = 0.003_f64;
+        let k = shell_element_stiffness_mitc3_plus(&UNIT_TRI, t, &mat);
+
+        let mut u = [0.0_f64; Mitc3Plus::N_DOFS];
+        for node in 0..Mitc3Plus::N_NODES {
+            u[Mitc3Plus::N_DOFS_PER_NODE * node + 4] = alpha; // θ_y
+        }
+        let ku = matvec(&k, &u);
+        let u_k: f64 = 0.5 * ku.iter().zip(u.iter()).map(|(ki, ui)| ki * ui).sum::<f64>();
+
+        let e = mat.youngs_modulus;
+        let nu = mat.poisson_ratio;
+        let gmod = e / (2.0 * (1.0 + nu));
+        let kappa = 5.0_f64 / 6.0;
+        let area = 0.5_f64;
+        let u_analytical = 0.5 * alpha * alpha * kappa * gmod * t * area;
+        let scale = u_analytical.abs().max(1.0);
+        assert!(
+            (u_k - u_analytical).abs() < 1e-9 * scale,
+            "MITC3+ shear patch: U_K={u_k}, U_analytical={u_analytical}",
+        );
+    }
+
+    #[test]
+    fn mitc3_plus_strain_energy_invariant_under_global_rigid_rotation() {
+        // Frame covariance / isotropy: ½uᵀKu invariant under a global rotation Q
+        // of nodes + DOFs (MITC3+ is built in the local frame and block-rotated,
+        // exactly as bare MITC3). Mirrors the bare-MITC3 frame-covariance test.
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let a = 0.01_f64;
+        let b = -0.005_f64;
+        let ndp = Mitc3Plus::N_DOFS_PER_NODE;
+        let mut u_orig = [0.0_f64; Mitc3Plus::N_DOFS];
+        u_orig[ndp * 1] = a;
+        u_orig[ndp * 2 + 1] = b;
+        let k_orig = shell_element_stiffness_mitc3_plus(&UNIT_TRI, t, &mat);
+        let ku_orig = matvec(&k_orig, &u_orig);
+        let u_k_orig: f64 = 0.5
+            * ku_orig
+                .iter()
+                .zip(u_orig.iter())
+                .map(|(a, b)| a * b)
+                .sum::<f64>();
+
+        let q = super::tilted_q_for_shell_tests();
+        let mut rot_nodes = [[0.0_f64; 3]; 3];
+        for (ni, node) in UNIT_TRI.iter().enumerate() {
+            for i in 0..3 {
+                rot_nodes[ni][i] = q[i][0] * node[0] + q[i][1] * node[1] + q[i][2] * node[2];
+            }
+        }
+        let mut u_rot = [0.0_f64; Mitc3Plus::N_DOFS];
+        for node in 0..Mitc3Plus::N_NODES {
+            for triple in 0..2 {
+                let off = ndp * node + 3 * triple;
+                let v = [u_orig[off], u_orig[off + 1], u_orig[off + 2]];
+                for i in 0..3 {
+                    u_rot[off + i] = q[i][0] * v[0] + q[i][1] * v[1] + q[i][2] * v[2];
+                }
+            }
+        }
+        let k_rot = shell_element_stiffness_mitc3_plus(&rot_nodes, t, &mat);
+        let ku_rot = matvec(&k_rot, &u_rot);
+        let u_k_rot: f64 = 0.5
+            * ku_rot
+                .iter()
+                .zip(u_rot.iter())
+                .map(|(a, b)| a * b)
+                .sum::<f64>();
+        let scale = u_k_orig.abs().max(1.0);
+        assert!(
+            (u_k_orig - u_k_rot).abs() < 1e-9 * scale,
+            "MITC3+ frame covariance: U_orig={u_k_orig}, U_rot={u_k_rot}",
+        );
+    }
+
+    #[test]
+    fn mitc3_plus_strain_modes_have_strictly_positive_energy() {
+        // No-spurious-modes proxy: representative membrane, bending, and shear
+        // strain modes each carry strictly positive energy. K* is PSD (the
+        // Schur complement of the PSD uncondensed matrix w.r.t. the SPD bubble
+        // block) and these modes lie outside the rigid-body/drilling null space.
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let k = shell_element_stiffness_mitc3_plus(&UNIT_TRI, t, &mat);
+        let ndp = Mitc3Plus::N_DOFS_PER_NODE;
+
+        let mut u_m = [0.0_f64; Mitc3Plus::N_DOFS]; // membrane: u_x at node1
+        u_m[ndp] = 1.0;
+        let mut u_b = [0.0_f64; Mitc3Plus::N_DOFS]; // bending: θ_y at node1
+        u_b[ndp + 4] = 1.0;
+        let mut u_s = [0.0_f64; Mitc3Plus::N_DOFS]; // shear: u_z at node1
+        u_s[ndp + 2] = 1.0;
+
+        for (name, u) in [("membrane", u_m), ("bending", u_b), ("shear", u_s)] {
+            let ku = matvec(&k, &u);
+            let energy: f64 = 0.5 * ku.iter().zip(u.iter()).map(|(ki, ui)| ki * ui).sum::<f64>();
+            assert!(
+                energy > 1e-12,
+                "MITC3+ {name} strain-mode energy = {energy}, expected strictly > 0",
+            );
+        }
+    }
+
     // --- Thickness scaling (step 19) ---
 
     #[test]
