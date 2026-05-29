@@ -388,4 +388,74 @@ mod tests {
             expected
         );
     }
+
+    #[test]
+    fn coupon_override_replaces_computed_constants() {
+        let base = pla_base();
+        // No-override baseline at the same inputs, for the fall-back comparison.
+        let baseline = effective_transverse_isotropic(
+            base,
+            0.5,
+            InfillPattern::Gyroid,
+            &CouponOverride::default(),
+        );
+        let coupon = CouponOverride {
+            ex: Some(4.0e9),
+            ez: Some(1.5e9),
+            gxy: Some(1.2e9),
+            infill_n: Some(1.8),
+            ..Default::default()
+        };
+        let c = effective_transverse_isotropic(base, 0.5, InfillPattern::Gyroid, &coupon);
+
+        // The PRD signal: a coupon-measured value beats the computed default.
+        assert_eq!(c.e_in_plane, 4.0e9, "ex overrides e_in_plane");
+        assert_eq!(c.e_axial, 1.5e9, "ez overrides e_axial");
+        assert_eq!(
+            c.g_axial, 1.2e9,
+            "gxy overrides the conformer's independent stored shear (g_axial)"
+        );
+
+        // Fields the coupon left None fall back to the computed defaults.
+        assert_eq!(
+            c.nu_in_plane, baseline.nu_in_plane,
+            "nu_in_plane (no override) falls back to the default"
+        );
+        assert_eq!(
+            c.nu_axial, baseline.nu_axial,
+            "nu_axial (no override) falls back to the default"
+        );
+        assert_eq!(
+            c.density, baseline.density,
+            "density (no override) falls back to the default"
+        );
+    }
+
+    #[test]
+    fn coupon_infill_exponent_override_changes_knockdown() {
+        let base = pla_base();
+        let rho = 0.2;
+        let baseline =
+            effective_transverse_isotropic(base, rho, InfillPattern::Gyroid, &CouponOverride::default());
+        // Override only the Gibson-Ashby exponent (ex unset ⇒ effect observable).
+        let coupon = CouponOverride {
+            infill_n: Some(1.8),
+            ..Default::default()
+        };
+        let c = effective_transverse_isotropic(base, rho, InfillPattern::Gyroid, &coupon);
+
+        // e_in_plane must now follow base · C · ρ^1.8 (the overridden curve).
+        let expected = base.youngs_modulus * gibson_ashby_infill_factor(rho, GIBSON_ASHBY_C, 1.8);
+        assert!(
+            (c.e_in_plane - expected).abs() <= 1e-9 * expected,
+            "infill_n override should drive e_in_plane to base·C·ρ^1.8 = {}, got {}",
+            expected,
+            c.e_in_plane
+        );
+        // n: 2.0 → 1.8 raises the factor (ρ<1) ⇒ higher modulus than the default.
+        assert!(
+            c.e_in_plane > baseline.e_in_plane,
+            "smaller exponent ⇒ less knockdown ⇒ higher e_in_plane than the default"
+        );
+    }
 }
