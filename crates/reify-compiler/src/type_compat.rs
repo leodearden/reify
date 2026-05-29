@@ -819,6 +819,37 @@ mod tests {
         }
     }
 
+    // ── BinOp::Implies wiring (task-3921) ────────────────────────────────────
+
+    #[test]
+    fn resolve_binop_implies_keyword() {
+        assert_eq!(resolve_binop("implies"), Some(BinOp::Implies));
+    }
+
+    #[test]
+    fn infer_binop_implies_bool_bool_yields_bool() {
+        assert_eq!(
+            infer_binop_type(BinOp::Implies, &Type::Bool, &Type::Bool),
+            Type::Bool,
+        );
+    }
+
+    #[test]
+    fn infer_binop_implies_left_error_propagates() {
+        assert_eq!(
+            infer_binop_type(BinOp::Implies, &Type::Error, &Type::Bool),
+            Type::Error,
+        );
+    }
+
+    #[test]
+    fn infer_binop_implies_right_error_propagates() {
+        assert_eq!(
+            infer_binop_type(BinOp::Implies, &Type::Bool, &Type::Error),
+            Type::Error,
+        );
+    }
+
     // ── task-3702 tests ───────────────────────────────────────────────────────
 
     /// Helper: build a minimal `CompiledFnBody` returning a Real(2.0) literal.
