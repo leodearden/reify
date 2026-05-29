@@ -93,7 +93,7 @@
 //!
 //! // ShellStress smoke test (T16): use a non-trivial value so a regression where
 //! // one channel is left default would surface here.
-//! let field = reify_types::Value::Real(1.0);
+//! let field = reify_ir::Value::Real(1.0);
 //! let ss = ShellStress::homogeneous(field.clone());
 //! assert_eq!(ss.top, field, "homogeneous: top must equal input");
 //! assert_eq!(ss.mid, field, "homogeneous: mid must equal input");
@@ -253,8 +253,11 @@
 //! );
 //!
 //! // Task 2923: progressive-solve framework smoke pin.
-//! // The import block above already asserts all progressive re-exports compile;
-//! // these fn-signature pins catch renames or signature changes at compile time.
+//! // The import block above asserts key progressive types and helpers compile.
+//! // TerminationReason is also re-exported from the crate root; it is covered
+//! // transitively via AdvanceDecision in the should_refine pin below rather
+//! // than directly in the import block.  These fn-signature pins catch renames
+//! // or signature changes at compile time.
 //! let _: fn(&ProgressiveOptions) -> PassTuning = coarse_pass_tuning;
 //! let _: fn(&ProgressiveOptions, usize) -> PassTuning = refinement_pass_tuning;
 //! let _: fn(&PartialElasticResult, &ProgressiveOptions) -> bool = near_constraint_boundary;
@@ -322,7 +325,7 @@
 //! };
 //! let _: fn(
 //!     &[StressElement<'_>],
-//!     &reify_types::VolumeMesh,
+//!     &reify_ir::VolumeMesh,
 //!     &IsotropicElastic,
 //! ) -> ZzIndicator = compute_zz_indicator;
 //!
