@@ -1402,4 +1402,86 @@ mod tests {
             "kg/m^3: dimension must be MASS_DENSITY"
         );
     }
+
+    // --- Step-9: affine-rejection tests (RED — AffineUnitInCompound variant absent) ---
+
+    fn make_affine_registry() -> UnitRegistry {
+        use reify_core::{ContentHash, DimensionVector, SourceSpan};
+        let mut reg = make_resolver_registry();
+        // degC is an affine unit: si_value = value * 1.0 + 273.15
+        reg.register(UnitEntry {
+            name: "degC".to_string(),
+            dimension: DimensionVector::TEMPERATURE,
+            factor: 1.0,
+            offset: Some(273.15),
+            is_pub: true,
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash::of_str("degC"),
+            source_module: None,
+        })
+        .unwrap();
+        reg
+    }
+
+    #[test]
+    fn resolve_unit_expr_affine_in_compound_div_rejected() {
+        use reify_core::SourceSpan;
+        let reg = make_affine_registry();
+        let use_span = SourceSpan::new(100, 108);
+        // 5degC/m = Div(Unit("degC"), Unit("m"))
+        let expr = reify_ast::UnitExpr::Div(
+            Box::new(reify_ast::UnitExpr::Unit("degC".to_string())),
+            Box::new(reify_ast::UnitExpr::Unit("m".to_string())),
+        );
+        let err = resolve_unit_expr(&expr, &reg, use_span)
+            .expect_err("degC/m must be rejected");
+        assert_eq!(
+            err,
+            UnitResolveError::AffineUnitInCompound {
+                name: "degC".to_string(),
+                span: use_span,
+            },
+            "error must be AffineUnitInCompound with offending name and use-site span"
+        );
+    }
+
+    #[test]
+    fn resolve_unit_expr_bare_affine_unit_also_rejected() {
+        // Even a bare `Unit("degC")` returns AffineUnitInCompound — the fold
+        // never silently drops an offset. Bare affine literals must use the
+        // standalone lookup_unit_in_registry / unit_to_scalar path.
+        use reify_core::SourceSpan;
+        let reg = make_affine_registry();
+        let use_span = SourceSpan::new(110, 114);
+        let err = resolve_unit_expr(
+            &reify_ast::UnitExpr::Unit("degC".to_string()),
+            &reg,
+            use_span,
+        )
+        .expect_err("bare Unit(degC) must be rejected by resolve_unit_expr");
+        assert_eq!(
+            err,
+            UnitResolveError::AffineUnitInCompound {
+                name: "degC".to_string(),
+                span: use_span,
+            },
+            "bare affine unit must produce AffineUnitInCompound error"
+        );
+    }
+
+    #[test]
+    fn resolve_unit_expr_non_affine_compound_still_resolves() {
+        // Regression: adding the affine guard must not break non-affine units.
+        use reify_core::{DimensionVector, SourceSpan};
+        let reg = make_affine_registry();
+        let use_span = SourceSpan::new(120, 124);
+        let expr = reify_ast::UnitExpr::Mul(
+            Box::new(reify_ast::UnitExpr::Unit("kg".to_string())),
+            Box::new(reify_ast::UnitExpr::Unit("m".to_string())),
+        );
+        let (factor, dim) = resolve_unit_expr(&expr, &reg, use_span)
+            .expect("kg*m must still resolve after affine guard is added");
+        assert!((factor - 1.0).abs() < 1e-9);
+        assert_eq!(dim, DimensionVector::MASS.mul(&DimensionVector::LENGTH));
+    }
 }
