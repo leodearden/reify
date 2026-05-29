@@ -246,6 +246,9 @@ impl Engine {
             last_param_override_dimension_rejections: 0,
             last_sub_component_unknown_structure_errors: 0,
             last_dispatch_count: 0,
+            // GHR-δ §5: empty until the first build() populates it.
+            realization_handles: HashMap::new(),
+            geometry_revalidation_slow_path: std::sync::atomic::AtomicUsize::new(0),
             journal: EventJournal::new(),
             functions: Vec::<CompiledFunction>::new().into(),
             compiled_purposes: Vec::new(),
@@ -1191,6 +1194,40 @@ impl Engine {
     #[cfg(any(test, feature = "test-instrumentation"))]
     pub fn last_dispatch_count(&self) -> usize {
         self.last_dispatch_count
+    }
+
+    /// GHR-δ §5: reset the geometry-handle revalidation slow-path counter to 0.
+    ///
+    /// Called at the start of every `build()` / `build_snapshot()` (alongside
+    /// clearing `realization_handles`), so the count reported afterwards
+    /// reflects only the revalidation reads since the most recent build —
+    /// mirroring the reset-at-operation-start discipline of the `last_*`
+    /// counters. Takes `&self` because the counter is an `AtomicUsize`
+    /// (interior mutability); the reader below observes it. Always available
+    /// (NOT test-gated) since the reset site in `engine_build.rs` is production
+    /// code.
+    pub(crate) fn reset_geometry_revalidation_slow_path_count(&self) {
+        self.geometry_revalidation_slow_path
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Returns the number of geometry-handle revalidation SLOW-PATH firings
+    /// (stale-handle re-resolution OR absent-realization → `Undef`) since the
+    /// last `build()` / `build_snapshot()`. The fast path (handle already
+    /// matches, or non-handle value) does NOT increment it.
+    ///
+    /// GHR-δ §5 / §9 Q4 — gives the integration test (S15) a deterministic
+    /// "slow path fires exactly once per boundary" signal (exact `==`, since a
+    /// stale read both re-resolves AND writes the fresh handle back, so the
+    /// immediately-following read takes the fast path).
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    /// Integration tests reach this method via the self-dev-dep with the
+    /// `test-instrumentation` feature enabled (see `crates/reify-eval/Cargo.toml`).
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn geometry_revalidation_slow_path_count(&self) -> usize {
+        self.geometry_revalidation_slow_path
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Access the event journal (for testing/inspection).

@@ -3395,6 +3395,88 @@ mod invariant_tests {
     }
 }
 
+/// GHR-δ §5 lazy revalidation: the classification of a cell's stored `Value`
+/// after checking its geometry handle against the Engine's current
+/// `realization_ref → handle` map ([`crate::Engine::realization_handles`]).
+///
+/// Returned by the pure oracle [`revalidate_geometry_handle`] and consumed by
+/// the Engine read entry point (S16), which decides whether to write a
+/// re-resolved value back into the snapshot and whether to bump the slow-path
+/// counter.
+///
+// `allow(dead_code)`: the production consumer is the Engine read entry point
+// `read_value_revalidated` landed in S16; until then this enum is exercised
+// only by `revalidation_tests` (`#[cfg(test)]`). The allow is removed in S16.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum RevalidationOutcome {
+    /// No change needed: the value is not a `GeometryHandle`, or its
+    /// `kernel_handle` already matches the Engine's current handle for its
+    /// `realization_ref`. The caller returns the value verbatim — no
+    /// write-back, no slow-path bump (the §9 Q4 fast path).
+    Fresh,
+    /// The value was a `GeometryHandle` whose `kernel_handle` was stale. The
+    /// carried `Value` keeps the same `realization_ref` + `upstream_values_hash`
+    /// with `kernel_handle` re-resolved to the Engine's current handle (so it
+    /// still compares `==` to the original — `kernel_handle` is excluded from
+    /// `Value` equality). The caller writes it back and bumps the slow path.
+    Resolved(Value),
+    /// The value was a `GeometryHandle` whose `realization_ref` is ABSENT from
+    /// the Engine's map (the backing realization no longer exists). The caller
+    /// returns `Value::Undef` and bumps the slow path.
+    Undef,
+}
+
+/// Pure validity oracle for a `Value::GeometryHandle` (PRD §5 lazy
+/// revalidation). Compares the handle's `kernel_handle` against
+/// `realization_handles[realization_ref]` and classifies the result into a
+/// [`RevalidationOutcome`]:
+///
+/// - non-`GeometryHandle` value → `Fresh` (passthrough; nothing to revalidate)
+/// - `realization_ref` present, handle EQUAL → `Fresh` (fast path)
+/// - `realization_ref` present, handle DIFFERENT → `Resolved` with the current
+///   handle spliced in (`realization_ref` + `upstream_values_hash` preserved)
+/// - `realization_ref` ABSENT → `Undef` (the backing realization was removed)
+///
+/// No kernel coupling and no Engine borrow: the handle map is the entire
+/// validity source (the GeometryKernel trait has no `is_valid` API and
+/// snapshots carry no kernel reference — see plan.json design decision), so
+/// this is unit-testable in isolation.
+///
+// `allow(dead_code)`: wired into the Engine read entry point
+// `read_value_revalidated` in S16 (which removes this allow); until then it is
+// exercised only by `revalidation_tests` (`#[cfg(test)]`).
+#[allow(dead_code)]
+pub(crate) fn revalidate_geometry_handle(
+    value: &Value,
+    realization_handles: &HashMap<reify_core::RealizationNodeId, reify_ir::GeometryHandleId>,
+) -> RevalidationOutcome {
+    let (realization_ref, upstream_values_hash, kernel_handle) = match value {
+        Value::GeometryHandle {
+            realization_ref,
+            upstream_values_hash,
+            kernel_handle,
+        } => (realization_ref, upstream_values_hash, kernel_handle),
+        // Not a geometry handle — nothing to revalidate.
+        _ => return RevalidationOutcome::Fresh,
+    };
+
+    match realization_handles.get(realization_ref) {
+        // Fast path: the handle still matches the Engine's current resolution.
+        Some(current) if current == kernel_handle => RevalidationOutcome::Fresh,
+        // Slow path: stale handle — re-resolve to the current one, preserving
+        // identity (realization_ref + upstream_values_hash) so the re-resolved
+        // value remains `==` to the original.
+        Some(current) => RevalidationOutcome::Resolved(Value::GeometryHandle {
+            realization_ref: realization_ref.clone(),
+            upstream_values_hash: *upstream_values_hash,
+            kernel_handle: *current,
+        }),
+        // Slow path: the backing realization is gone.
+        None => RevalidationOutcome::Undef,
+    }
+}
+
 /// Tests for `hash_imported_file_content`.
 ///
 /// Deliberately NOT inside `#[cfg(all(test, debug_assertions))] mod invariant_tests`
@@ -3467,6 +3549,117 @@ mod imported_file_hash_tests {
             err.kind(),
             std::io::ErrorKind::NotFound,
             "IO error kind must be NotFound for missing file"
+        );
+    }
+}
+
+/// GHR-δ §5 lazy-revalidation pure-helper unit tests (S13).
+///
+/// `revalidate_geometry_handle` is the kernel-free validity oracle: given a
+/// cell's stored `Value` and the Engine's `realization_ref → current handle`
+/// map, it classifies the value into a [`RevalidationOutcome`] without touching
+/// the kernel or borrowing the Engine. These cases pin the PRD §5 truth table:
+/// equal handle → Fresh (fast path); stale handle → Resolved with the current
+/// handle spliced in (identity preserved so it still `==` the original); absent
+/// realization → Undef; non-handle → Fresh passthrough.
+///
+/// RED until S14 defines `RevalidationOutcome` + `revalidate_geometry_handle`.
+#[cfg(test)]
+mod revalidation_tests {
+    use super::{RevalidationOutcome, revalidate_geometry_handle};
+    use reify_core::RealizationNodeId;
+    use reify_ir::{GeometryHandleId, Value};
+    use std::collections::HashMap;
+
+    /// A `Value::GeometryHandle` backed by `realization` with the given kernel id
+    /// and a fixed upstream hash (so identity preservation is observable).
+    fn handle(realization: &RealizationNodeId, id: u64) -> Value {
+        Value::GeometryHandle {
+            realization_ref: realization.clone(),
+            upstream_values_hash: [7u8; 32],
+            kernel_handle: GeometryHandleId(id),
+        }
+    }
+
+    /// (a) realization_ref present and kernel_handle EQUAL → `Fresh` (fast path,
+    /// no write-back).
+    #[test]
+    fn revalidate_equal_handle_is_fresh() {
+        let r0 = RealizationNodeId::new("Widget", 0);
+        let mut map = HashMap::new();
+        map.insert(r0.clone(), GeometryHandleId(42));
+        assert_eq!(
+            revalidate_geometry_handle(&handle(&r0, 42), &map),
+            RevalidationOutcome::Fresh
+        );
+    }
+
+    /// (b) realization_ref present but kernel_handle DIFFERENT → `Resolved` whose
+    /// Value carries the SAME realization_ref + upstream_values_hash with
+    /// kernel_handle re-resolved to the current handle. The re-resolved value
+    /// must compare `==` to the original (kernel_handle is excluded from Value
+    /// equality per the GeometryHandle variant contract).
+    #[test]
+    fn revalidate_stale_handle_resolves_to_current() {
+        let r0 = RealizationNodeId::new("Widget", 0);
+        let mut map = HashMap::new();
+        map.insert(r0.clone(), GeometryHandleId(99));
+        let stale = handle(&r0, 42);
+
+        match revalidate_geometry_handle(&stale, &map) {
+            RevalidationOutcome::Resolved(resolved) => {
+                match &resolved {
+                    Value::GeometryHandle {
+                        realization_ref,
+                        upstream_values_hash,
+                        kernel_handle,
+                    } => {
+                        assert_eq!(
+                            *kernel_handle,
+                            GeometryHandleId(99),
+                            "kernel_handle must be re-resolved to the current handle"
+                        );
+                        assert_eq!(realization_ref, &r0, "realization_ref must be preserved");
+                        assert_eq!(
+                            upstream_values_hash, &[7u8; 32],
+                            "upstream_values_hash must be preserved"
+                        );
+                    }
+                    other => panic!("expected GeometryHandle, got {:?}", other),
+                }
+                assert_eq!(
+                    resolved, stale,
+                    "re-resolved value must == original under Value PartialEq (kernel_handle excluded)"
+                );
+            }
+            other => panic!("expected Resolved, got {:?}", other),
+        }
+    }
+
+    /// (c) realization_ref ABSENT from the map → `Undef` (backing realization
+    /// removed; the read returns Value::Undef).
+    #[test]
+    fn revalidate_absent_realization_is_undef() {
+        let r0 = RealizationNodeId::new("Widget", 0);
+        let map: HashMap<RealizationNodeId, GeometryHandleId> = HashMap::new();
+        assert_eq!(
+            revalidate_geometry_handle(&handle(&r0, 42), &map),
+            RevalidationOutcome::Undef
+        );
+    }
+
+    /// (d) non-GeometryHandle value → `Fresh` passthrough (nothing to
+    /// revalidate, regardless of map contents).
+    #[test]
+    fn revalidate_non_handle_is_fresh() {
+        let map: HashMap<RealizationNodeId, GeometryHandleId> = HashMap::new();
+        assert_eq!(
+            revalidate_geometry_handle(&Value::Int(7), &map),
+            RevalidationOutcome::Fresh
+        );
+        assert_eq!(
+            revalidate_geometry_handle(&Value::Undef, &map),
+            RevalidationOutcome::Fresh
         );
     }
 }
