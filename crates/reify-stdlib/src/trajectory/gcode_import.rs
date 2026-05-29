@@ -373,4 +373,55 @@ mod tests {
             "a parse error short-circuits to zero profiles"
         );
     }
+
+    /// A Klipper source containing an `INPUT_SHAPER` directive collects exactly
+    /// one `ShaperConflict` warning (the directive also splits the motion run,
+    /// per step-4). Satisfies task ν's "emits W_GcodeDialectShaperConflict when
+    /// consumed via gcode_import".
+    #[test]
+    fn klipper_input_shaper_collects_one_shaper_conflict_warning() {
+        let src = "G1 X10 Y0\nINPUT_SHAPER SHAPER_TYPE_X=mzv SHAPER_FREQ_X=40\nG1 X20 Y0";
+        let result = lower_gcode(src, GcodeImportDialect::Klipper);
+
+        assert!(result.parse_error.is_none(), "{:?}", result.parse_error);
+        assert_eq!(
+            result.profiles.len(),
+            2,
+            "INPUT_SHAPER splits the run into two profiles"
+        );
+        let shaper_warnings = result
+            .warnings
+            .iter()
+            .filter(|w| matches!(w, GcodeImportWarning::ShaperConflict))
+            .count();
+        assert_eq!(
+            shaper_warnings, 1,
+            "exactly one ShaperConflict warning for the single INPUT_SHAPER"
+        );
+    }
+
+    /// A Klipper source with only `SET_VELOCITY_LIMIT` (no `INPUT_SHAPER`)
+    /// collects zero shaper-conflict warnings — the velocity-limit directive
+    /// still splits segments but is not a shaper conflict.
+    #[test]
+    fn klipper_velocity_limit_only_collects_no_shaper_conflict() {
+        let src = "G1 X10\nSET_VELOCITY_LIMIT VELOCITY=200 ACCEL=3000\nG1 X20";
+        let result = lower_gcode(src, GcodeImportDialect::Klipper);
+
+        assert!(result.parse_error.is_none(), "{:?}", result.parse_error);
+        assert_eq!(
+            result.profiles.len(),
+            2,
+            "SET_VELOCITY_LIMIT splits the run into two profiles"
+        );
+        let shaper_warnings = result
+            .warnings
+            .iter()
+            .filter(|w| matches!(w, GcodeImportWarning::ShaperConflict))
+            .count();
+        assert_eq!(
+            shaper_warnings, 0,
+            "SET_VELOCITY_LIMIT must not raise a ShaperConflict"
+        );
+    }
 }
