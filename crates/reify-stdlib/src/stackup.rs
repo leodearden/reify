@@ -1850,4 +1850,129 @@ mod tests {
         assert_rel_close(scalar_si(&m[&Value::String("rss_min".into())]),      0.005 - rss_band_expected, tol, "rss_min");
         assert_rel_close(scalar_si(&m[&Value::String("rss_max".into())]),      0.005 + rss_band_expected, tol, "rss_max");
     }
+
+    // ─── diagnose() classifier tests (step-3 RED; GREEN after step-4) ────────
+
+    use reify_core::{Diagnostic as RDiagnostic, DiagnosticCode, Severity};
+
+    /// (a) empty chain → StackupEmptyChain, message contains "E_StackupEmptyChain",
+    ///     severity == Error.
+    #[test]
+    fn diagnose_empty_chain_returns_stackup_empty_chain() {
+        let d: RDiagnostic = diagnose("stackup_rss", &[Value::List(vec![])])
+            .expect("diagnose must return Some for empty chain");
+        assert_eq!(d.severity, Severity::Error, "expected Error severity");
+        assert_eq!(d.code, Some(DiagnosticCode::StackupEmptyChain));
+        assert!(d.message.contains("E_StackupEmptyChain"),
+            "message must contain 'E_StackupEmptyChain'; got: {:?}", d.message);
+    }
+
+    /// (b) non-Map item in chain → StackupDimMismatch.
+    #[test]
+    fn diagnose_non_map_item_returns_stackup_dim_mismatch() {
+        // A chain whose only element is a plain Int (not a Map).
+        let chain = Value::List(vec![Value::Int(42)]);
+        let d = diagnose("stackup_rss", &[chain])
+            .expect("diagnose must return Some for non-Map contributor");
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::StackupDimMismatch));
+        assert!(d.message.contains("E_StackupDimMismatch"),
+            "message must contain 'E_StackupDimMismatch'; got: {:?}", d.message);
+    }
+
+    /// (b) non-Length nominal field → StackupDimMismatch.
+    #[test]
+    fn diagnose_non_length_nominal_returns_stackup_dim_mismatch() {
+        // Build a map with nominal = Value::Real (not a LENGTH scalar).
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(Value::String("nominal".into()),   Value::Real(0.010)); // not LENGTH
+        m.insert(Value::String("plus_tol".into()),  len(0.0001));
+        m.insert(Value::String("minus_tol".into()), len(0.0001));
+        m.insert(Value::String("sign".into()),      Value::Int(1));
+        let chain = Value::List(vec![Value::Map(m)]);
+        let d = diagnose("stackup_worst_case", &[chain])
+            .expect("diagnose must return Some for non-Length nominal");
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::StackupDimMismatch));
+    }
+
+    /// (c) sign == Int(2) → StackupBadSign.
+    #[test]
+    fn diagnose_sign_int_2_returns_stackup_bad_sign() {
+        let c = make_bad_sign_contributor(Value::Int(2));
+        let chain = Value::List(vec![c]);
+        let d = diagnose("stackup_rss", &[chain])
+            .expect("diagnose must return Some for sign=Int(2)");
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::StackupBadSign));
+        assert!(d.message.contains("E_StackupBadSign"),
+            "message must contain 'E_StackupBadSign'; got: {:?}", d.message);
+    }
+
+    /// (c) sign == Int(0) → StackupBadSign.
+    #[test]
+    fn diagnose_sign_int_0_returns_stackup_bad_sign() {
+        let c = make_bad_sign_contributor(Value::Int(0));
+        let chain = Value::List(vec![c]);
+        let d = diagnose("stackup_rss", &[chain])
+            .expect("diagnose must return Some for sign=Int(0)");
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::StackupBadSign));
+    }
+
+    /// Helper: a contributor Map with valid Length fields but an arbitrary sign.
+    fn make_bad_sign_contributor(sign: Value) -> Value {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(Value::String("nominal".into()),   len(0.010));
+        m.insert(Value::String("plus_tol".into()),  len(0.0001));
+        m.insert(Value::String("minus_tol".into()), len(0.0001));
+        m.insert(Value::String("sign".into()),      sign);
+        Value::Map(m)
+    }
+
+    /// (d) samples == Int(0) for monte_carlo_stackup → StackupBadSamples.
+    #[test]
+    fn diagnose_monte_carlo_zero_samples_returns_stackup_bad_samples() {
+        let d = diagnose("monte_carlo_stackup", &[golden_chain(), Value::Int(0), Value::Int(42)])
+            .expect("diagnose must return Some for samples=0");
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::StackupBadSamples));
+        assert!(d.message.contains("E_StackupBadSamples"),
+            "message must contain 'E_StackupBadSamples'; got: {:?}", d.message);
+    }
+
+    /// (e) valid non-empty chain → None (no error).
+    #[test]
+    fn diagnose_valid_chain_returns_none() {
+        assert!(
+            diagnose("stackup_rss", &[golden_chain()]).is_none(),
+            "valid chain must not produce a diagnostic"
+        );
+    }
+
+    /// (f) non-stackup function name → None.
+    #[test]
+    fn diagnose_unknown_function_returns_none() {
+        assert!(
+            diagnose("not_a_stackup_fn", &[]).is_none(),
+            "unknown function must not produce a diagnostic"
+        );
+    }
+
+    /// Empty chain works for all three stackup math builtins.
+    #[test]
+    fn diagnose_empty_chain_works_for_all_math_builtins() {
+        let empty = Value::List(vec![]);
+        for name in &["stackup_worst_case", "stackup_rss", "monte_carlo_stackup"] {
+            let args: &[Value] = if *name == "monte_carlo_stackup" {
+                &[empty.clone(), Value::Int(10), Value::Int(42)]
+            } else {
+                std::slice::from_ref(&empty)
+            };
+            let d = diagnose(name, args)
+                .unwrap_or_else(|| panic!("diagnose({name}, empty_chain) must return Some"));
+            assert_eq!(d.code, Some(DiagnosticCode::StackupEmptyChain),
+                "{name}: expected StackupEmptyChain");
+        }
+    }
 }
