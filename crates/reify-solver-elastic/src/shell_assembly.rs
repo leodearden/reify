@@ -422,6 +422,333 @@ pub fn shell_element_stiffness(
     k_e
 }
 
+/// Compute the 18×18 element stiffness for the genuine flat-facet **MITC3+**
+/// shell element (Lee, Lee & Bathe 2014) — the transverse-shear-locking cure
+/// and sibling of the bare-MITC3 [`shell_element_stiffness`].
+///
+/// `nodes`, `thickness`, `material`, the DOF ordering, the drilling-rotation
+/// singularity, and the local→global rotation are all exactly as documented on
+/// [`shell_element_stiffness`]; only the transverse-shear treatment differs.
+///
+/// # Formulation (element-local, flat facet, constant Jacobian)
+///
+/// The section rotations are enriched by a cubic bubble `f_b = ξη(1−ξ−η)` tied
+/// to an internal centroid node, adding 2 internal rotational DOFs
+/// `(Δβ_x, Δβ_y)` → a 20×20 *uncondensed* local matrix. The bubble enters the
+/// **transverse-shear** field by its **value** at the six *interior* tying
+/// points (`f_b ≠ 0` there, unlike the edge midpoints where `f_b = 0`), so the
+/// nodal↔bubble shear coupling `K_NB^shear ≠ 0` even on a flat facet — the core
+/// MITC3+ mechanism. The 2 bubble DOFs are then statically condensed:
+///
+/// ```text
+/// K* = K_NN − K_NB · K_BB⁻¹ · K_BN        (18×18)
+/// ```
+///
+/// ## Block contents
+///
+/// - **K_NN** — the 18 nodal DOFs: membrane + bending + the bare-MITC3
+///   3-edge-midpoint assumed-shear blocks, **bit-identical to**
+///   [`shell_element_stiffness`]. All bare-MITC3 patch/null-space behaviour is
+///   inherited, and `K* ≤ K_NN` (static condensation only ever softens).
+/// - **K_BB** — the bubble self-stiffness: bending (`∫ ∇f_b·D_b·∇f_b`) plus
+///   shear; SPD (its shear part alone is SPD because the two bubble columns map
+///   through the independent columns of `J2⁻ᵀ`), so the 2×2 inverse is
+///   well-posed.
+/// - **K_NB / K_BN** — bubble↔nodal coupling. The **bending** coupling is
+///   identically zero on a flat facet (`∫_T ∇f_b dA = ∮ f_b·n ds = 0`,
+///   divergence theorem, `f_b = 0` on edges), so it is not assembled. The
+///   **shear** coupling is the load-bearing, non-zero term.
+///
+/// ## Patch-test consistency
+///
+/// The bubble's shear contribution is taken **deviatoric** — `f_b` minus its
+/// quadrature mean `f̄` over the interior tying points — so that
+/// `Σ_k w_k (f_b − f̄) = 0` exactly. A *constant* transverse-shear state then
+/// gives `K_BN·u = 0` (the bubble is not excited), the bubble stays at zero
+/// under condensation, and `K*·u = K_NN·u` reproduces the constant state
+/// exactly (patch test). Only the **higher-order** (parasitic, linearly
+/// varying) shear that causes locking excites the bubble, which condensation
+/// then relieves.
+#[allow(clippy::needless_range_loop)]
+pub fn shell_element_stiffness_mitc3_plus(
+    nodes: &[[f64; 3]; 3],
+    thickness: f64,
+    material: &IsotropicElastic,
+) -> ElementStiffness {
+    use crate::elements::mitc3_plus::{Mitc3Plus, ShellReferenceCoord, TyingShears};
+    assert!(
+        thickness > 0.0,
+        "shell_element_stiffness_mitc3_plus: thickness must be positive, got {thickness}"
+    );
+    const NDOF: usize = Mitc3Plus::N_DOFS; // 18 nodal DOFs
+    const NDP: usize = Mitc3Plus::N_DOFS_PER_NODE; // 6 DOFs per node
+    const NN: usize = Mitc3Plus::N_NODES; // 3 nodes
+    const NU: usize = Mitc3Plus::N_DOFS_UNCONDENSED; // 20 = 18 + 2 bubble DOFs
+    const BX: usize = NDOF; // 18 = Δβ_x bubble column
+    const BY: usize = NDOF + 1; // 19 = Δβ_y bubble column
+
+    let frame = build_shell_frame(nodes);
+    let r = frame.r;
+    let area = frame.area;
+    let t = thickness;
+    let d_pl = plane_stress_d(material);
+
+    let e = material.youngs_modulus;
+    let nu = material.poisson_ratio;
+    let g = e / (2.0 * (1.0 + nu));
+    let kappa_g = KAPPA * g;
+
+    let kin = crate::shell_kinematics::shell_kinematics(nodes, &frame);
+    let dn = kin.dn;
+    let det2 = kin.det2;
+    let inv_t = kin.jac2_inv_t;
+    let b_cov = kin.b_cov_at_tying_points;
+
+    // --- 20×20 uncondensed local matrix ---
+    let mut k = [[0.0_f64; NU]; NU];
+
+    // ---- Membrane K (nodal only; the bubble does not enter membrane) ----
+    let t_dpl = {
+        let mut td = [[0.0_f64; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                td[i][j] = t * d_pl[i][j];
+            }
+        }
+        td
+    };
+    for ni in 0..NN {
+        for nj in 0..NN {
+            let doi = [NDP * ni, NDP * ni + 1];
+            let doj = [NDP * nj, NDP * nj + 1];
+            let bmi = [[dn[ni][0], 0.0], [0.0, dn[ni][1]], [dn[ni][1], dn[ni][0]]];
+            let bmj = [[dn[nj][0], 0.0], [0.0, dn[nj][1]], [dn[nj][1], dn[nj][0]]];
+            for a in 0..2 {
+                for b in 0..2 {
+                    let mut v = 0.0;
+                    for rr in 0..3 {
+                        for s in 0..3 {
+                            v += bmi[rr][a] * t_dpl[rr][s] * bmj[s][b];
+                        }
+                    }
+                    k[doi[a]][doj[b]] += v * area;
+                }
+            }
+        }
+    }
+
+    // ---- Bending K ----
+    let t3_dpl = {
+        let factor = t * t * t / 12.0;
+        let mut td = [[0.0_f64; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                td[i][j] = factor * d_pl[i][j];
+            }
+        }
+        td
+    };
+    // Nodal bending K_NN (bit-identical to bare MITC3).
+    for ni in 0..NN {
+        for nj in 0..NN {
+            let doi = [NDP * ni + 3, NDP * ni + 4];
+            let doj = [NDP * nj + 3, NDP * nj + 4];
+            let bbi = [[0.0, -dn[ni][0]], [dn[ni][1], 0.0], [dn[ni][0], -dn[ni][1]]];
+            let bbj = [[0.0, -dn[nj][0]], [dn[nj][1], 0.0], [dn[nj][0], -dn[nj][1]]];
+            for a in 0..2 {
+                for b in 0..2 {
+                    let mut v = 0.0;
+                    for rr in 0..3 {
+                        for s in 0..3 {
+                            v += bbi[rr][a] * t3_dpl[rr][s] * bbj[s][b];
+                        }
+                    }
+                    k[doi[a]][doj[b]] += v * area;
+                }
+            }
+        }
+    }
+
+    // Interior tying points + their reference quadrature weight (weights sum to
+    // the reference-triangle area 1/2; `× det2` maps to physical area).
+    let interior = Mitc3Plus.interior_tying_points();
+    let w_ref = 0.5 / (interior.len() as f64);
+
+    // Bubble bending self-term K_BB^bend. The nodal↔bubble bending coupling is
+    // identically zero on a flat facet (divergence theorem; see doc above), so
+    // it is intentionally not assembled.
+    for tp in interior.iter() {
+        let g_ref = Mitc3Plus.bubble_grad_at(tp.coord);
+        // physical bubble gradient = J2⁻ᵀ · ∇_ref f_b
+        let fbx = inv_t[0][0] * g_ref[0] + inv_t[0][1] * g_ref[1];
+        let fby = inv_t[1][0] * g_ref[0] + inv_t[1][1] * g_ref[1];
+        // bubble bending B columns (Δβ_x, Δβ_y), same κ convention as nodal θ_x/θ_y
+        let bb = [[0.0, -fbx], [fby, 0.0], [fbx, -fby]];
+        for a in 0..2 {
+            for b in 0..2 {
+                let mut v = 0.0;
+                for rr in 0..3 {
+                    for s in 0..3 {
+                        v += bb[rr][a] * t3_dpl[rr][s] * bb[s][b];
+                    }
+                }
+                let ca = if a == 0 { BX } else { BY };
+                let cb = if b == 0 { BX } else { BY };
+                k[ca][cb] += v * w_ref * det2;
+            }
+        }
+    }
+
+    // ---- Transverse-shear K ----
+    // Nodal assumed covariant→physical shear B at an arbitrary reference coord,
+    // using the bare-MITC3 3-edge-midpoint assumed field (the single source of
+    // truth shared with `shell_element_stiffness`).
+    let nodal_shear_phys = |coord: ShellReferenceCoord| {
+        let mut b_cov_qp = [[0.0_f64; NDOF]; 2];
+        for dof in 0..NDOF {
+            let sampled = TyingShears {
+                gamma_xi_zeta_at_a: b_cov[0][0][dof],
+                gamma_eta_zeta_at_b: b_cov[1][1][dof],
+                gamma_xi_zeta_at_c: b_cov[2][0][dof],
+                gamma_eta_zeta_at_c: b_cov[2][1][dof],
+            };
+            let proj = Mitc3Plus.interpolate_assumed_shear(sampled, coord);
+            b_cov_qp[0][dof] = proj.gamma_xi_zeta;
+            b_cov_qp[1][dof] = proj.gamma_eta_zeta;
+        }
+        let mut b_phys = [[0.0_f64; NDOF]; 2];
+        for dof in 0..NDOF {
+            b_phys[0][dof] = inv_t[0][0] * b_cov_qp[0][dof] + inv_t[0][1] * b_cov_qp[1][dof];
+            b_phys[1][dof] = inv_t[1][0] * b_cov_qp[0][dof] + inv_t[1][1] * b_cov_qp[1][dof];
+        }
+        b_phys
+    };
+
+    // Nodal K_NN^shear — bit-identical to bare MITC3 (3 edge-midpoint tying
+    // points, weight 1/6 each).
+    let tying_pts = Mitc3Plus.tying_points();
+    let qp_weight = 1.0 / 6.0;
+    for qp in tying_pts.iter() {
+        let b_phys = nodal_shear_phys(qp.coord);
+        let scale = kappa_g * t * det2 * qp_weight;
+        for a in 0..NDOF {
+            for b in 0..NDOF {
+                k[a][b] += (b_phys[0][a] * b_phys[0][b] + b_phys[1][a] * b_phys[1][b]) * scale;
+            }
+        }
+    }
+
+    // Bubble shear coupling K_NB^shear / K_BB^shear at the interior tying
+    // points. The bubble shear column follows `covariant_shear_b_with_bubble`'s
+    // convention (γ_ξζ ← +f_b·Δβ_y, γ_ηζ ← −f_b·Δβ_x) but uses the **deviatoric**
+    // value `(f_b − f̄)` so a constant shear state does not excite the bubble
+    // (patch-test consistency); `f̄` is the quadrature mean, so the deviation
+    // sums to zero exactly across the tying points.
+    let fbar = interior
+        .iter()
+        .map(|tp| Mitc3Plus.bubble_at(tp.coord))
+        .sum::<f64>()
+        / (interior.len() as f64);
+    for tp in interior.iter() {
+        let dev = Mitc3Plus.bubble_at(tp.coord) - fbar;
+        // physical bubble shear columns (2-vectors):
+        //   Δβ_y ← covariant (+dev, 0); Δβ_x ← covariant (0, −dev)
+        let by_phys = [inv_t[0][0] * dev, inv_t[1][0] * dev];
+        let bx_phys = [inv_t[0][1] * (-dev), inv_t[1][1] * (-dev)];
+        let b_phys = nodal_shear_phys(tp.coord);
+        let scale = kappa_g * t * det2 * w_ref;
+        // K_NB^shear and its symmetric transpose K_BN.
+        for dof in 0..NDOF {
+            let v_bx = (b_phys[0][dof] * bx_phys[0] + b_phys[1][dof] * bx_phys[1]) * scale;
+            let v_by = (b_phys[0][dof] * by_phys[0] + b_phys[1][dof] * by_phys[1]) * scale;
+            k[dof][BX] += v_bx;
+            k[BX][dof] += v_bx;
+            k[dof][BY] += v_by;
+            k[BY][dof] += v_by;
+        }
+        // K_BB^shear.
+        k[BX][BX] += (bx_phys[0] * bx_phys[0] + bx_phys[1] * bx_phys[1]) * scale;
+        k[BY][BY] += (by_phys[0] * by_phys[0] + by_phys[1] * by_phys[1]) * scale;
+        let v_xy = (bx_phys[0] * by_phys[0] + bx_phys[1] * by_phys[1]) * scale;
+        k[BX][BY] += v_xy;
+        k[BY][BX] += v_xy;
+    }
+
+    // ---- Static condensation of the 2 bubble DOFs ----
+    // K* = K_NN − K_NB · K_BB⁻¹ · K_BN, closed-form 2×2 inverse of K_BB.
+    let k_bb = [[k[BX][BX], k[BX][BY]], [k[BY][BX], k[BY][BY]]];
+    let det_bb = k_bb[0][0] * k_bb[1][1] - k_bb[0][1] * k_bb[1][0];
+    debug_assert!(
+        det_bb > 0.0,
+        "MITC3+ bubble block K_BB must be SPD (det = {det_bb})"
+    );
+    let inv_bb = [
+        [k_bb[1][1] / det_bb, -k_bb[0][1] / det_bb],
+        [-k_bb[1][0] / det_bb, k_bb[0][0] / det_bb],
+    ];
+    let mut k_loc = [[0.0_f64; NDOF]; NDOF];
+    for i in 0..NDOF {
+        let nb_i = [k[i][BX], k[i][BY]]; // K_NB row i
+        for j in 0..NDOF {
+            let bn_j = [k[BX][j], k[BY][j]]; // K_BN col j
+            let mut corr = 0.0;
+            for p in 0..2 {
+                for q in 0..2 {
+                    corr += nb_i[p] * inv_bb[p][q] * bn_j[q];
+                }
+            }
+            k_loc[i][j] = k[i][j] - corr;
+        }
+    }
+
+    // ---- Symmetrize K_local ----
+    for a in 0..NDOF {
+        for b in (a + 1)..NDOF {
+            let m = 0.5 * (k_loc[a][b] + k_loc[b][a]);
+            k_loc[a][b] = m;
+            k_loc[b][a] = m;
+        }
+    }
+
+    // ---- Local → Global block rotation (identical to the bare path) ----
+    let n_blocks = 2 * NN;
+    let mut k_glob = [[0.0_f64; NDOF]; NDOF];
+    for bi in 0..n_blocks {
+        for bj in 0..n_blocks {
+            let row_off = 3 * bi;
+            let col_off = 3 * bj;
+            let mut sub = [[0.0_f64; 3]; 3];
+            for p in 0..3 {
+                for q in 0..3 {
+                    sub[p][q] = k_loc[row_off + p][col_off + q];
+                }
+            }
+            let rt_sub = mat3_mul(
+                &[
+                    [r[0][0], r[1][0], r[2][0]],
+                    [r[0][1], r[1][1], r[2][1]],
+                    [r[0][2], r[1][2], r[2][2]],
+                ],
+                &sub,
+            );
+            let rt_sub_r = mat3_mul(&rt_sub, &r);
+            for p in 0..3 {
+                for q in 0..3 {
+                    k_glob[row_off + p][col_off + q] = rt_sub_r[p][q];
+                }
+            }
+        }
+    }
+
+    let mut k_e = ElementStiffness::zeros(NDOF);
+    for i in 0..NDOF {
+        for j in 0..NDOF {
+            k_e.data[i * NDOF + j] = k_glob[i][j];
+        }
+    }
+    k_e
+}
+
 /// Rotation matrix Q = Ry(45°) · Rz(30°) used as a shared test fixture by
 /// both `shell_assembly` and `shell_boundary` tests.
 ///
@@ -636,6 +963,99 @@ mod tests {
             assert!(
                 norm_ku < tol,
                 "ω={w:?}: linf(K·u_rotation) = {norm_ku}, tol = {tol}",
+            );
+        }
+    }
+
+    // ====================================================================
+    // MITC3+ element (Lee, Lee & Bathe 2014): genuine flat-facet shell with
+    // a rotation-bubble + interior-tying assumed transverse-shear field and
+    // static condensation of the 2 internal bubble DOFs. Implemented as a
+    // sibling of the bare-MITC3 `shell_element_stiffness` above so the bare
+    // path stays available as the comparison baseline (see plan task 3392).
+    // ====================================================================
+
+    // --- MITC3+ shape + rigid-body null space (task 3392 step-7) ---
+
+    #[test]
+    fn mitc3_plus_stiffness_is_18x18_symmetric_finite_with_rigid_body_null_space() {
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let k = shell_element_stiffness_mitc3_plus(&UNIT_TRI, t, &mat);
+
+        // Shape: after static condensation of the 2 bubble DOFs the element
+        // matrix is the standard 18×18 (324 entries), same size as bare MITC3.
+        assert_eq!(
+            k.n_dofs,
+            Mitc3Plus::N_DOFS,
+            "MITC3+ must condense to N_DOFS = 18"
+        );
+        assert_eq!(
+            k.data.len(),
+            Mitc3Plus::N_DOFS * Mitc3Plus::N_DOFS,
+            "MITC3+ data length must be 18×18 = 324"
+        );
+
+        // Symmetric within fp tolerance and entrywise finite.
+        for i in 0..Mitc3Plus::N_DOFS {
+            for j in 0..Mitc3Plus::N_DOFS {
+                let kij = k.get(i, j);
+                let kji = k.get(j, i);
+                assert!(kij.is_finite(), "MITC3+ K[{i}][{j}] = {kij} is not finite");
+                let scale = kij.abs().max(kji.abs()).max(1.0);
+                assert!(
+                    (kij - kji).abs() < 1e-9 * scale,
+                    "MITC3+ asymmetry at ({i},{j}): {kij} vs {kji}",
+                );
+            }
+        }
+
+        // Rigid-body null space: the 3 rigid translations and 3 rigid rotations
+        // must annihilate K (within a k_max-relative tolerance). Static
+        // condensation preserves these modes because rigid modes are strain-free
+        // (K·u_rigid = 0 in every block, including K_BN). Mirrors the bare-MITC3
+        // null-space tests above.
+        let k_max = k.data.iter().copied().fold(0.0_f64, |a, x| a.max(x.abs()));
+        let tol = 1e-9 * k_max.max(1.0);
+
+        // (a) Rigid translations along each global axis.
+        for axis in 0..3 {
+            let mut u = [0.0_f64; Mitc3Plus::N_DOFS];
+            for node in 0..Mitc3Plus::N_NODES {
+                u[Mitc3Plus::N_DOFS_PER_NODE * node + axis] = 1.0;
+            }
+            let ku = matvec(&k, &u);
+            assert!(
+                linf(&ku) < tol,
+                "MITC3+ translation axis {axis}: linf(K·u) = {}, tol = {tol}",
+                linf(&ku),
+            );
+        }
+
+        // (b) Rigid rotations about the centroid: u_i = ω × (x_i − c), θ_i = ω.
+        let c = [1.0 / 3.0_f64, 1.0 / 3.0, 0.0_f64];
+        let omega = [[1.0_f64, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        for &w in &omega {
+            let mut u = [0.0_f64; Mitc3Plus::N_DOFS];
+            for node in 0..Mitc3Plus::N_NODES {
+                let dx = [
+                    UNIT_TRI[node][0] - c[0],
+                    UNIT_TRI[node][1] - c[1],
+                    UNIT_TRI[node][2] - c[2],
+                ];
+                let ndp = Mitc3Plus::N_DOFS_PER_NODE;
+                u[ndp * node + 0] = w[1] * dx[2] - w[2] * dx[1];
+                u[ndp * node + 1] = w[2] * dx[0] - w[0] * dx[2];
+                u[ndp * node + 2] = w[0] * dx[1] - w[1] * dx[0];
+                u[ndp * node + 3] = w[0];
+                u[ndp * node + 4] = w[1];
+                u[ndp * node + 5] = w[2];
+            }
+            let ku = matvec(&k, &u);
+            assert!(
+                linf(&ku) < tol,
+                "MITC3+ rotation ω={w:?}: linf(K·u) = {}, tol = {tol}",
+                linf(&ku),
             );
         }
     }
