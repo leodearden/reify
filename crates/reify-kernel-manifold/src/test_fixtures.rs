@@ -5,9 +5,10 @@
 //! reachable both from the lib's own `cfg(test)` build (in-crate unit
 //! tests in `kernel.rs`) and from cross-crate integration test binaries
 //! that pick up the `test-fixtures` feature via the self-dev-dep in
-//! `Cargo.toml`. Mirrors the [`crate::kernel::ManifoldKernel::store_mesh_for_test`]
-//! gating exactly so the fixtures and the ingestion path are reachable
-//! from the same call sites.
+//! `Cargo.toml`. The `ingest_mesh` production trait method on
+//! [`crate::kernel::ManifoldKernel`] is now the canonical ingestion path
+//! (no longer gated); these fixtures remain gated because they are
+//! test-only inputs not needed in production link closures.
 //!
 //! # Why a shared module rather than two copies
 //!
@@ -25,7 +26,7 @@ use reify_ir::Mesh;
 /// Closed unit cube as a `reify_types::Mesh`: 8 vertices, 12 outward-
 /// facing triangles. Used by the boolean-op tests in this crate to
 /// populate input handles via
-/// [`crate::kernel::ManifoldKernel::store_mesh_for_test`].
+/// [`reify_ir::GeometryKernel::ingest_mesh`].
 ///
 /// Vertices are in the unit `[0, 1]³` corner-block; the `offset`
 /// parameter shifts the cube by `(dx, dy, dz)` so two cubes can be made
