@@ -197,3 +197,67 @@ structure def FDMCorrelationDefaults {
     // Directional factor — approximate, no PRD-pinned calibration.
     param pattern_directional_weak_factor_low_confidence : Bool = true
 }
+
+// ── FDMCouponOverride ───────────────────────────────────────────────────────
+
+// FDMCouponOverride is the user-facing coupon-override entry point for the
+// β-phase correlation library. A user who has measured their own printed
+// coupons supplies the measured constants here; any set field beats the
+// corresponding FDMCorrelationDefaults / Gibson-Ashby default
+// (PRD §"Built-in property correlations": "Defaults are calibratable: a user
+// supplies measured coupon data (Ex,Ey,Ez,Gxy,…, infill curve) to override
+// any constant").
+//
+// Every field is optional and defaults to `none` (no override) — a bare
+// FDMCouponOverride() changes nothing, and the correlation library falls back
+// to the calibrated defaults. The δ-task reads this stdlib Value and maps the
+// set fields onto the Rust CouponOverride that the compute helper consumes.
+//
+// FDMCouponOverride is a concrete options record (no trait bound) — mirrors
+// FDMCorrelationDefaults and FDMProcess.
+//
+// Field semantics:
+//   ex, ey                 — measured in-plane Young's moduli. Either overrides
+//                            the computed in-plane modulus (e_in_plane); the
+//                            δ/compute layer decides ex-vs-ey precedence for
+//                            the transverse-isotropic in-plane axis.
+//   ez                     — measured build-direction (axial) Young's modulus;
+//                            overrides the build-Z-knocked-down e_axial.
+//   gxy                    — measured in-plane shear modulus; overrides the
+//                            derived in-plane/axial shear modulus.
+//   infill_gibson_ashby_c  — overrides the Gibson-Ashby coefficient C before
+//                            the infill knockdown factor is computed (the
+//                            "infill curve override", modelled as a (c, n)
+//                            override rather than a free-form curve — see Plan
+//                            §"Design Decisions").
+//   infill_gibson_ashby_n  — overrides the Gibson-Ashby exponent n.
+//
+// PRD reference: docs/prds/v0_5/fdm-as-printed-fea.md task β / slice 1,
+// §"Built-in property correlations + coupon override".
+structure def FDMCouponOverride {
+    // ── Measured elastic-constant overrides (Option<Pressure>) ──────────────
+
+    // Measured in-plane Young's modulus, X. Overrides the computed in-plane
+    // modulus when set.
+    param ex : Option<Pressure> = none
+
+    // Measured in-plane Young's modulus, Y.
+    param ey : Option<Pressure> = none
+
+    // Measured build-direction (axial / Z) Young's modulus. Overrides the
+    // build-Z-knocked-down axial modulus when set.
+    param ez : Option<Pressure> = none
+
+    // Measured in-plane shear modulus. Overrides the derived shear modulus.
+    param gxy : Option<Pressure> = none
+
+    // ── Infill-curve overrides (Option<Real>, Gibson-Ashby (c, n)) ──────────
+
+    // Override for the Gibson-Ashby coefficient C. When set, replaces
+    // FDMCorrelationDefaults.gibson_ashby_c before the infill factor is computed.
+    param infill_gibson_ashby_c : Option<Real> = none
+
+    // Override for the Gibson-Ashby exponent n. When set, replaces
+    // FDMCorrelationDefaults.gibson_ashby_n before the infill factor is computed.
+    param infill_gibson_ashby_n : Option<Real> = none
+}
