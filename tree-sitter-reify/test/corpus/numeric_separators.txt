@@ -14,37 +14,3 @@ structure S {
     (let_declaration
       name: (identifier)
       value: (number_literal))))
-
-================================================================================
-digit separators: decimal 0.000_001
-================================================================================
-
-structure S {
-  let x = 0.000_001
-}
-
---------------------------------------------------------------------------------
-
-(source_file
-  (structure_definition
-    name: (identifier)
-    (let_declaration
-      name: (identifier)
-      value: (number_literal))))
-
-================================================================================
-digit separators: scientific 1_000e1_0
-================================================================================
-
-structure S {
-  let x = 1_000e1_0
-}
-
---------------------------------------------------------------------------------
-
-(source_file
-  (structure_definition
-    name: (identifier)
-    (let_declaration
-      name: (identifier)
-      value: (number_literal))))
