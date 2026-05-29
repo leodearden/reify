@@ -117,8 +117,9 @@ fn build_widget() -> Engine {
 ///   - the GH cell's *cached* `dependency_trace.realization_reads` contains
 ///     `Widget#0` (so the derivation folds it in).
 ///
-/// RED until then: `mark_pending(R0)` returns false (no entry) and the cell's
-/// cached trace is empty, so the cell derives Final regardless of R0.
+/// RED until then: `mark_pending_with_cause(R0, R0)` returns false (no entry)
+/// and the cell's cached trace is empty, so the cell derives Final regardless
+/// of R0.
 #[test]
 fn geometry_handle_cell_freshness_folds_backing_realization() {
     let mut engine = build_widget();
@@ -129,8 +130,17 @@ fn geometry_handle_cell_freshness_folds_backing_realization() {
     let generation = 1u64;
 
     // The upstream Realization must be a markable, freshness-bearing cache node
-    // (PRD §7.1 presupposes this; esc-3606-37 ruling step 1 records it).
-    let marked = engine.cache_store_mut().mark_pending(&r0_node);
+    // (PRD §7.1 presupposes this; esc-3606-37 ruling step 1 records it). Mark it
+    // Pending with *itself* as the diagnostic-chain root: a directly-downgraded
+    // Realization is the chain root, mirroring the cache-layer contract pinned by
+    // `cache::tests::derive_output_freshness_folds_realization_reads` (S5), which
+    // this test defers to for the §7.2/§9.2 truth-table semantics. The
+    // forward-only meet then surfaces R0 as the cell's cause; a bare
+    // `mark_pending` would clear the cause (cache.rs:686) and the meet would
+    // forward `None`, exactly as a Pending VC input with no recorded upstream.
+    let marked = engine
+        .cache_store_mut()
+        .mark_pending_with_cause(&r0_node, r0_node.clone());
     assert!(
         marked,
         "Realization Widget#0 must be recorded as a freshness-bearing cache node \
@@ -156,7 +166,9 @@ fn geometry_handle_cell_freshness_folds_backing_realization() {
 
     // Leg B — Intermediate Realization → Intermediate cell (§7.2 main rule),
     // confirming the fold tracks the Intermediate state too, not just Pending.
-    engine
+    // `set_freshness` is `#[must_use]` (returns false when absent); R0 is present
+    // (just marked above), so explicitly discard the bool.
+    let _ = engine
         .cache_store_mut()
         .set_freshness(&r0_node, Freshness::Intermediate { generation: 7 });
     let f_inter = engine

@@ -2051,6 +2051,23 @@ impl Engine {
                 .combine(guard_state_hash);
         }
 
+        // GHR-δ S10: augment each geometry cell's CACHED trace with its backing
+        // Realization. Geometry params are recorded above with an empty
+        // `DependencyTrace` (the `record_eval_completed` param path can't see the
+        // implicit Realization→ValueCell edge), so without this post-pass the GH
+        // cell's freshness derivation would never fold in its Realization's
+        // freshness (PRD §5/§7.1). The links come from the same single source of
+        // truth the reverse index / trace map use
+        // (`geometry_cell_realization_links`); `snapshot.graph` is read-only here
+        // and `self.cache` is a disjoint field. Each geometry cell maps to one
+        // realization, so the replace-semantics setter stays idempotent across
+        // re-eval rounds.
+        for (rid, cell) in crate::deps::geometry_cell_realization_links(&snapshot.graph) {
+            let _ = self
+                .cache
+                .set_realization_reads(&NodeId::Value(cell), vec![rid]);
+        }
+
         // Store internal state for incremental evaluation
         self.eval_state = Some(EvaluationState {
             snapshot,

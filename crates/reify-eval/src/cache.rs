@@ -1081,6 +1081,34 @@ impl CacheStore {
         }
     }
 
+    /// GHR-δ: overwrite the `realization_reads` of a node's cached
+    /// `DependencyTrace`.
+    ///
+    /// A value cell holding a `Value::GeometryHandle` implicitly depends on the
+    /// upstream Realization named in its handle — an edge the expression-only
+    /// [`crate::deps::extract_dependency_trace`] cannot see (geometry params are
+    /// recorded with an empty trace via `record_eval_completed`). The cold-eval
+    /// (`engine_eval.rs`) and incremental (`engine_edit.rs`) paths call this as a
+    /// post-pass, sourcing the links from
+    /// [`crate::deps::geometry_cell_realization_links`], so that
+    /// [`Self::derive_output_freshness_from_trace_with_cause`] folds the backing
+    /// Realization's freshness into the cell's (PRD §5).
+    ///
+    /// Replaces (not appends) the list so repeated eval/edit rounds stay
+    /// idempotent. Returns `true` if the node was found, `false` if absent.
+    pub fn set_realization_reads(
+        &mut self,
+        node: &NodeId,
+        realization_reads: Vec<RealizationNodeId>,
+    ) -> bool {
+        if let Some(entry) = self.caches.get_mut(node) {
+            entry.dependency_trace.realization_reads = realization_reads;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Restore a node's freshness to Final after early cutoff skips its
     /// re-evaluation. This handles nodes that were pre-marked Pending but
     /// then bypassed because an upstream node produced an unchanged result.
@@ -1321,8 +1349,9 @@ impl CacheStore {
     }
 
     /// Insert a synthetic cache entry for a Realization node so that tests can
-    /// simulate state that `engine_build.rs` would normally create at
-    /// `build()` / `check()` time.
+    /// simulate state that `engine_build.rs` creates at `build()` / `check()`
+    /// time for geometry-backed Realizations — but does NOT create for
+    /// non-geometry Realizations or during `edit_source` (see "Why this exists").
     ///
     /// ## Contract
     ///
@@ -1340,10 +1369,15 @@ impl CacheStore {
     ///
     /// ## Why this exists
     ///
-    /// `engine_build.rs` creates Realization cache entries on demand during
-    /// `build()` / `check()`, not during `edit_source()`.  Tests that exercise
-    /// the warm-state donation hook for Realization nodes must therefore
-    /// synthesize an entry before calling `edit_source`.  This helper
+    /// GHR-δ (esc-3606-37 ruling step 1) made `engine_build.rs` record
+    /// **only geometry-backed** Realizations (those whose
+    /// `graph.realizations[*].geometry_cell.is_some()`) as freshness-bearing
+    /// cache nodes on the `build()` / `check()` success path, via
+    /// `post_process_geometry_handle_cells`. **Non-geometry** Realizations
+    /// (e.g. compute-only realizations exercised by warm-state donation tests)
+    /// are still NOT recorded on any success path, and no path records *any*
+    /// Realization during `edit_source()`. Tests that need such an entry must
+    /// therefore synthesize one before calling `edit_source`.  This helper
     /// centralizes that synthesis so future schema changes (`CachedResult`
     /// gaining a new variant, `NodeCache::new` gaining a parameter, etc.)
     /// produce a single compile error here rather than silent breakage in
@@ -1351,9 +1385,10 @@ impl CacheStore {
     ///
     /// ## When to retire
     ///
-    /// Once `engine_build.rs` or another engine path creates Realization cache
-    /// entries during `edit_source`, callers can switch to the normal eval path
-    /// and this helper becomes dead code.
+    /// Once `engine_build.rs` or another engine path records *non-geometry*
+    /// Realization cache entries (or records geometry-backed ones during
+    /// `edit_source`), callers can switch to the normal eval path and this
+    /// helper becomes dead code.
     ///
     /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
     /// Integration tests reach this method via the self-dev-dep with the
@@ -4236,7 +4271,8 @@ mod tests {
         // (b) R0 Intermediate{GEN} → Intermediate{GEN}, no cause.
         {
             let mut store = seed();
-            store.set_freshness(&r0_node, Freshness::Intermediate { generation: GEN });
+            // `set_freshness` is `#[must_use]`; R0 was just seeded, so discard.
+            let _ = store.set_freshness(&r0_node, Freshness::Intermediate { generation: GEN });
             let (f, cause) =
                 store.derive_output_freshness_from_trace_with_cause(&trace, false, GEN);
             assert_eq!(f, Freshness::Intermediate { generation: GEN });

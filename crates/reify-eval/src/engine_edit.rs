@@ -3240,6 +3240,25 @@ impl Engine {
         //       entries, making them recoverable on the next `edit_source`.
         pending_warm_seeds.drain_into_cache_or_repool(&mut self.cache);
 
+        // GHR-δ S10 (incremental path): mirror the cold-eval post-pass in
+        // `eval()` — augment each geometry cell's CACHED trace with its backing
+        // Realization. The edit loop re-records geometry (param) cells via
+        // `extract_dependency_trace` (reads-only), which cannot see the implicit
+        // Realization→ValueCell edge, so without this an edited GH cell would
+        // lose `realization_reads` and its freshness derivation would stop
+        // folding in the Realization's freshness (PRD §5/§7.1). Links come from
+        // the same single source of truth the trace map / reverse index use
+        // (`geometry_cell_realization_links`); `new_snapshot.graph` is read-only
+        // here (moved into `eval_state` just below) and `self.cache` is a
+        // disjoint field. The replace-semantics setter is idempotent across edit
+        // rounds and returns `false` harmlessly for any GH cell not (re-)recorded
+        // this edit (its entry already carries the link from the prior round).
+        for (rid, cell) in crate::deps::geometry_cell_realization_links(&new_snapshot.graph) {
+            let _ = self
+                .cache
+                .set_realization_reads(&NodeId::Value(cell), vec![rid]);
+        }
+
         // (15) Install the new snapshot, dep structures, and demand; record
         //      actual_eval_set (excludes early-cutoff-skipped nodes).
         self.eval_state = Some(crate::EvaluationState {

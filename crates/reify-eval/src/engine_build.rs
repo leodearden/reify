@@ -11,7 +11,7 @@ use reify_core::{Diagnostic, DiagnosticLabel, RealizationNodeId, SourceSpan, Ver
 use reify_ir::{AttributeHistory, CapabilityDescriptor, CompiledFunction, ErrorRef, ExportFormat, FeatureId, FeatureTag, FeatureTagTable, Freshness, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, LoftOpHistoryRecords, Mesh, Operation, ReprKind, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable, ValueMap, VolumeMesh};
 
 use crate::cache::{CacheStore, CachedResult, FAILED_REALIZATION_STUB_HANDLE, NodeCache, NodeId};
-use crate::deps::DependencyTrace;
+use crate::deps::{DependencyTrace, extract_realization_dependencies};
 use crate::dispatcher::{DispatchPlan, dispatch, per_stage_tolerance_for_plan};
 use crate::geometry_ops::compile_geometry_op;
 use crate::journal::{EvalEvent, EventJournal, EventKind};
@@ -1217,12 +1217,16 @@ impl Engine {
                 // GHR-γ step-6: mirror of the build() hydration — stamp
                 // Type::Geometry value cells with real kernel handles so
                 // build_snapshot callers see the same GeometryHandle values.
+                // GHR-δ: also records geometry-backed Realizations as
+                // freshness-bearing cache nodes (esc-3606-37 ruling step 1).
                 Engine::post_process_geometry_handle_cells(
                     template,
                     &named_steps,
                     &mut values,
                     &self.functions,
                     &self.meta_map,
+                    &mut self.cache,
+                    version_id,
                 );
                 // Task 2320: see `Engine::post_process_conformance_queries`
                 // docstring for the full contract. Mirrored in `build` and
@@ -1531,13 +1535,17 @@ impl Engine {
                     .expect("default kernel must remain in the map across the per-realization loop");
                 // GHR-γ step-6: hydrate Type::Geometry value cells with real
                 // kernel handles before any downstream post-process that might
-                // read geometry-handle cells.
+                // read geometry-handle cells. GHR-δ: also records geometry-backed
+                // Realizations as freshness-bearing cache nodes (esc-3606-37
+                // ruling step 1).
                 Engine::post_process_geometry_handle_cells(
                     template,
                     &named_steps,
                     &mut values,
                     &self.functions,
                     &self.meta_map,
+                    &mut self.cache,
+                    version_id,
                 );
                 // Task 2320: see `Engine::post_process_conformance_queries`
                 // docstring for the full contract. Mirrored in
@@ -3198,16 +3206,25 @@ impl Engine {
     /// conformance- and kinematic-query post-processes, so downstream value
     /// cells that read a `GeometryHandle` see the hydrated value.
     ///
-    /// **Out of scope for GHR-γ:** kernel-name participation in
-    /// `upstream_values_hash`, persistent-cache freshness-walk
-    /// Realization→ValueCell edges, and `List<Geometry>` spread cells —
-    /// those are deferred to GHR-δ/ε/ζ. See plan design decisions.
+    /// **GHR-δ (esc-3606-37 ruling step 1):** in addition to hydrating the GH
+    /// cell value, this records each geometry-backed Realization as a
+    /// freshness-bearing eval-cache node under `NodeId::Realization(rid)` with
+    /// `Freshness::Final` and a trace of its scalar reads
+    /// ([`extract_realization_dependencies`]). The PRD §5/§7.1 contract — "the
+    /// cell's freshness is the meet of (VC-input freshness, all referenced
+    /// Realization freshness)" — presupposes the referenced Realization carries
+    /// a freshness value in the cache; on the success path nothing else creates
+    /// that entry (the failure path uses [`Engine::mark_realization_failed`]).
+    /// Only geometry-backed realizations are recorded here; non-geometry
+    /// realizations continue to use the synthetic-insert test helper.
     fn post_process_geometry_handle_cells(
         template: &reify_compiler::TopologyTemplate,
         named_steps: &HashMap<String, GeometryHandleId>,
         values: &mut ValueMap,
         functions: &[CompiledFunction],
         meta_map: &HashMap<String, HashMap<String, String>>,
+        cache: &mut CacheStore,
+        version: VersionId,
     ) {
         use reify_core::{Type, hash::ContentHash, identity::ValueCellId};
         use reify_ir::Value;
@@ -3237,6 +3254,25 @@ impl Engine {
                 if !has_geometry_cell {
                     continue;
                 }
+
+                // GHR-δ / esc-3606-37 ruling step 1: record this geometry-backed
+                // Realization as a freshness-bearing eval-cache node on the build
+                // success path. The PRD §5/§7.1 realization_reads meet (folded by
+                // `derive_output_freshness_from_trace_with_cause`) and the
+                // freshness walk's `width → Realization → GH-cell` cascade both
+                // require a markable `NodeId::Realization` entry here; previously
+                // only the failure path created one (`mark_realization_failed`).
+                // The trace records the realization's scalar reads (e.g. `width`)
+                // so a dirtied scalar input re-derives R0 Pending. `cache` is a
+                // disjoint Engine field from the `values`/`functions`/`meta_map`
+                // borrows held by `ctx`.
+                cache.record_evaluation_with_freshness(
+                    NodeId::Realization(realization.id.clone()),
+                    CachedResult::GeometryHandle(kernel_handle),
+                    version,
+                    extract_realization_dependencies(&realization.operations),
+                    Freshness::Final,
+                );
 
                 // Fold content_hashes of all scalar-arg values across the
                 // realization's ops to form upstream_values_hash. Boolean
