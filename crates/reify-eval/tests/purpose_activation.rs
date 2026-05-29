@@ -1003,6 +1003,73 @@ purpose fits_within(part : Structure, envelope : Structure) {
     );
 }
 
+/// Reviewer regression: activating a ZERO-param purpose via the single-entity
+/// `activate_purpose` shim must be refused (no-op + warn), NOT panic.
+///
+/// Background:
+///   `activate_purpose_constraints` builds `vec![(purpose.params[0].name.clone(), …)]`
+///   (engine_purposes.rs:138) after ONLY the `params.len() > 1` guard. A zero-param
+///   purpose therefore reaches `purpose.params[0]` and panics index-out-of-bounds.
+///   Zero-param purposes compile cleanly: the grammar's `commaSep` accepts an empty
+///   `()`, `compile_purpose` has no zero-param rejection, and `constraint 1 > 0` is a
+///   literal constraint used pervasively across this suite with no diagnostic.
+///
+///   The single-entity shim binds exactly one entity to exactly one param; with zero
+///   params there is nothing to bind, so refusal (warn + return false) is the correct
+///   contract — mirroring `activate_multi_param_purpose_via_single_entity_shim_is_refused`.
+///   No capability is lost: zero-param purposes remain activatable via
+///   `activate_purpose_with_bindings(name, &[])` (C2/C3 pass vacuously).
+///
+/// RED state (before step-13): `activate_purpose` panics at `purpose.params[0]`
+/// instead of refusing. Step-13 widens the refusal guard from `> 1` to `!= 1`.
+#[test]
+fn activate_zero_param_purpose_via_single_entity_shim_does_not_panic() {
+    let source = r#"
+structure Bracket {
+    param length : Length = 80mm
+}
+
+purpose always_ok() {
+    constraint 1 > 0
+}
+"#;
+
+    // Precondition: compiles cleanly to exactly one zero-param purpose.
+    // parse_and_compile panics on any error-severity diagnostic.
+    let compiled = parse_and_compile(source);
+    assert_eq!(
+        compiled.compiled_purposes.len(),
+        1,
+        "precondition: always_ok must compile to exactly one purpose"
+    );
+    assert_eq!(
+        compiled.compiled_purposes[0].params.len(),
+        0,
+        "precondition: always_ok must have zero params"
+    );
+
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+    let before = constraint_count(&engine);
+
+    // Single-entity activation of a zero-param purpose.
+    // TODAY THIS PANICS at `purpose.params[0]` (index out of bounds).
+    engine.activate_purpose("always_ok", "Bracket");
+
+    // Refusal contract (mirrors the multi-param refusal): purpose must NOT
+    // activate, and zero constraints injected.
+    assert!(
+        !engine.is_purpose_active("always_ok"),
+        "zero-param purpose must NOT activate via the single-entity shim \
+         (the shim binds exactly one param; refuse rather than panic)"
+    );
+    assert_eq!(
+        constraint_count(&engine),
+        before,
+        "a refused zero-param activation must inject zero constraints"
+    );
+}
+
 // ── §5c: Objective ValueRef remap on activation (task-2181 β, reviewer test_coverage) ───────────
 
 /// Verifies that the inner `ValueRef` of a `minimize subject.mass` objective is remapped
