@@ -614,8 +614,19 @@ pub fn resolve_unit_expr(
             let (fb, db) = resolve_unit_expr(b, registry, span)?;
             Ok((fa / fb, da.div(&db)))
         }
-        reify_ast::UnitExpr::Pow(..) => {
-            todo!("Pow fold arm added in later steps (task 3803)")
+        reify_ast::UnitExpr::Pow(a, n) => {
+            let (fa, da) = resolve_unit_expr(a, registry, span)?;
+            // `f64::powi` takes i32 natively — no narrowing needed for the factor.
+            // `DimensionVector::pow` takes i8; guard the conversion so an
+            // out-of-range exponent surfaces as a resolve error rather than
+            // a panic or silent wrap.  Realistic unit exponents are ≤ ±10
+            // (per the UnitExpr::Pow doc-comment); the Rational(i16) storage
+            // cannot represent larger magnitudes anyway.
+            let n_i8 = i8::try_from(*n).map_err(|_| UnitResolveError::UnknownUnit {
+                name: format!("exponent {n} out of i8 range for DimensionVector::pow"),
+                span,
+            })?;
+            Ok((fa.powi(*n), da.pow(n_i8)))
         }
     }
 }
