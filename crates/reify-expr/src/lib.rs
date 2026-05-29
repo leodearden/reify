@@ -1705,6 +1705,7 @@ fn eval_binop(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalCo
     match op {
         BinOp::And => return eval_and(left, right, ctx),
         BinOp::Or => return eval_or(left, right, ctx),
+        BinOp::Implies => return eval_implies(left, right, ctx),
         _ => {}
     }
 
@@ -1737,7 +1738,7 @@ fn eval_binop(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalCo
         BinOp::Le => eval_cmp(&lv, &rv, |a, b| a <= b),
         BinOp::Gt => eval_cmp(&lv, &rv, |a, b| a > b),
         BinOp::Ge => eval_cmp(&lv, &rv, |a, b| a >= b),
-        BinOp::And | BinOp::Or => unreachable!(),
+        BinOp::And | BinOp::Or | BinOp::Implies => unreachable!(),
     }
 }
 
@@ -1789,6 +1790,34 @@ fn eval_or(left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalContext) -> Valu
         Err(_) => return Value::Undef,
     };
     kleene::kleene_or(lk, rk).into()
+}
+
+/// Kleene IMPLIES: `False ⇒ anything = True` (vacuous)
+///
+/// Mirrors the structure of [`eval_or`]:
+/// - Short-circuit on type error (non-bool/non-undef left → `Value::Undef`,
+///   right not evaluated).
+/// - Short-circuit on vacuous absorbing element (`False` left → `Value::Bool(true)`,
+///   right not evaluated; because `¬False = True` is absorbing for OR).
+/// - Otherwise delegates to [`kleene::kleene_implies`].
+///
+/// See `docs/reify-language-spec.md` §9.2.3.
+fn eval_implies(left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalContext) -> Value {
+    let lv = eval_expr(left, ctx);
+    let lk = match kleene::KBool::try_from(&lv) {
+        Ok(k) => k,
+        Err(_) => return Value::Undef,
+    };
+    // Short-circuit on vacuous element: False ⇒ anything = True.
+    if matches!(lk, kleene::KBool::False) {
+        return Value::Bool(true);
+    }
+    let rv = eval_expr(right, ctx);
+    let rk = match kleene::KBool::try_from(&rv) {
+        Ok(k) => k,
+        Err(_) => return Value::Undef,
+    };
+    kleene::kleene_implies(lk, rk).into()
 }
 
 /// Apply a binary operation component-wise to two equal-length component slices,
@@ -4873,6 +4902,101 @@ mod tests {
         let expr = CompiledExpr::binop(
             BinOp::Or,
             lit(Value::Bool(true), Type::Bool),
+            panic_on_eval_sentinel(), // panics if evaluated
+            Type::Bool,
+        );
+        // No panic → sentinel was not evaluated → short-circuit is preserved.
+        assert_eq!(
+            eval_expr(&expr, &EvalContext::simple(&ValueMap::new())),
+            Value::Bool(true)
+        );
+    }
+
+    // ── BinOp::Implies eval (task-3921) ──────────────────────────────────
+
+    /// Pins eval_implies truth table row T⇒F = Bool(false).
+    #[test]
+    fn eval_implies_true_implies_false_is_false() {
+        let expr = CompiledExpr::binop(
+            BinOp::Implies,
+            lit(Value::Bool(true), Type::Bool),
+            lit(Value::Bool(false), Type::Bool),
+            Type::Bool,
+        );
+        assert_eq!(
+            eval_expr(&expr, &EvalContext::simple(&ValueMap::new())),
+            Value::Bool(false),
+        );
+    }
+
+    /// Pins eval_implies truth table row T⇒T = Bool(true).
+    #[test]
+    fn eval_implies_true_implies_true_is_true() {
+        let expr = CompiledExpr::binop(
+            BinOp::Implies,
+            lit(Value::Bool(true), Type::Bool),
+            lit(Value::Bool(true), Type::Bool),
+            Type::Bool,
+        );
+        assert_eq!(
+            eval_expr(&expr, &EvalContext::simple(&ValueMap::new())),
+            Value::Bool(true),
+        );
+    }
+
+    /// Pins eval_implies truth table row F⇒U = Bool(true) (vacuous).
+    #[test]
+    fn eval_implies_false_implies_undef_is_true() {
+        let expr = CompiledExpr::binop(
+            BinOp::Implies,
+            lit(Value::Bool(false), Type::Bool),
+            lit(Value::Undef, Type::Bool),
+            Type::Bool,
+        );
+        assert_eq!(
+            eval_expr(&expr, &EvalContext::simple(&ValueMap::new())),
+            Value::Bool(true),
+        );
+    }
+
+    /// Pins eval_implies truth table row U⇒F = Undef.
+    #[test]
+    fn eval_implies_undef_implies_false_is_undef() {
+        let expr = CompiledExpr::binop(
+            BinOp::Implies,
+            lit(Value::Undef, Type::Bool),
+            lit(Value::Bool(false), Type::Bool),
+            Type::Bool,
+        );
+        assert_eq!(
+            eval_expr(&expr, &EvalContext::simple(&ValueMap::new())),
+            Value::Undef,
+        );
+    }
+
+    /// Non-Bool left operand (Int literal) → Value::Undef; right NOT evaluated.
+    ///
+    /// Mirrors `eval_and_short_circuit_on_non_bool_left_does_not_evaluate_right`.
+    #[test]
+    fn eval_implies_non_bool_left_does_not_evaluate_right() {
+        let expr = CompiledExpr::binop(
+            BinOp::Implies,
+            lit(Value::Int(5), Type::Int),
+            panic_on_eval_sentinel(), // panics if evaluated
+            Type::Bool,
+        );
+        assert!(eval_expr(&expr, &EvalContext::simple(&ValueMap::new())).is_undef());
+    }
+
+    /// False left operand short-circuits to Bool(true) without evaluating right.
+    ///
+    /// Vacuous truth: `¬False = True` is the absorbing element for OR; right
+    /// operand must NOT be evaluated.
+    #[test]
+    fn eval_implies_false_left_short_circuits_does_not_evaluate_right() {
+        let expr = CompiledExpr::binop(
+            BinOp::Implies,
+            lit(Value::Bool(false), Type::Bool),
             panic_on_eval_sentinel(), // panics if evaluated
             Type::Bool,
         );

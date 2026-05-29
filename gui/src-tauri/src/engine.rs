@@ -3686,6 +3686,7 @@ fn format_expr(expr: &reify_ir::CompiledExpr) -> String {
                 reify_ir::BinOp::Ge => ">=",
                 reify_ir::BinOp::And => "&&",
                 reify_ir::BinOp::Or => "||",
+                reify_ir::BinOp::Implies => "implies",
             };
             format!("{} {} {}", format_expr(left), op_str, format_expr(right))
         }
