@@ -12,6 +12,13 @@ mod helpers;
 /// path can call the same implementation used by the stdlib builtin path.
 pub use helpers::complex_phase;
 
+/// Public re-export of the tolerance stack-up error classifier.
+///
+/// Called by `crates/reify-expr/src/lib.rs` at the builtin fallthrough arm to
+/// push `Severity::Error` diagnostics into the `EvalContext` sink when a
+/// stackup builtin returns `Value::Undef`.
+pub use stackup::diagnose as stackup_diagnose;
+
 #[cfg(test)]
 #[macro_use]
 mod test_macros;

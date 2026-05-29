@@ -1115,6 +1115,58 @@ pub enum DiagnosticCode {
     ///
     /// The PRD-prose mnemonic for this code is `E_SHELL_BAD_THRESHOLD`.
     ShellBadThreshold,
+    /// Origin: `crates/reify-stdlib/src/stackup.rs` (classifier) +
+    ///          `crates/reify-expr/src/lib.rs` (emission site).
+    ///
+    /// Emitted as `Severity::Error` when `stackup_worst_case`, `stackup_rss`,
+    /// or `monte_carlo_stackup` receives an empty list (`[]`) as the chain
+    /// argument.  An empty chain yields no contributors and no meaningful gap
+    /// statistics.
+    ///
+    /// Canonical message form:
+    /// `"E_StackupEmptyChain: tolerance chain must be non-empty"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_StackupEmptyChain`
+    /// (see `docs/prds/v0_6/tolerance-stackup-analysis.md` §4.4).
+    StackupEmptyChain,
+    /// Origin: `crates/reify-stdlib/src/stackup.rs` (classifier) +
+    ///          `crates/reify-expr/src/lib.rs` (emission site).
+    ///
+    /// Emitted as `Severity::Error` when a contributor entry in the chain
+    /// is not a `Value::Map`, or when the `nominal`, `plus_tol`, or
+    /// `minus_tol` field of a contributor map is not a finite LENGTH scalar.
+    ///
+    /// Canonical message form:
+    /// `"E_StackupDimMismatch: contributor field must be a finite LENGTH scalar"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_StackupDimMismatch`
+    /// (see `docs/prds/v0_6/tolerance-stackup-analysis.md` §4.4).
+    StackupDimMismatch,
+    /// Origin: `crates/reify-stdlib/src/stackup.rs` (classifier) +
+    ///          `crates/reify-expr/src/lib.rs` (emission site).
+    ///
+    /// Emitted as `Severity::Error` when the `sign` field of a contributor
+    /// map is not `Value::Int(1)` or `Value::Int(-1)`.
+    ///
+    /// Canonical message form:
+    /// `"E_StackupBadSign: contributor sign must be Int(+1) or Int(-1)"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_StackupBadSign`
+    /// (see `docs/prds/v0_6/tolerance-stackup-analysis.md` §4.4).
+    StackupBadSign,
+    /// Origin: `crates/reify-stdlib/src/stackup.rs` (classifier) +
+    ///          `crates/reify-expr/src/lib.rs` (emission site).
+    ///
+    /// Emitted as `Severity::Error` when the `samples` argument to
+    /// `monte_carlo_stackup` is not a positive `Value::Int` (i.e. ≤ 0
+    /// or not an integer type).
+    ///
+    /// Canonical message form:
+    /// `"E_StackupBadSamples: samples must be a positive integer"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_StackupBadSamples`
+    /// (see `docs/prds/v0_6/tolerance-stackup-analysis.md` §4.4).
+    StackupBadSamples,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -2006,6 +2058,44 @@ mod tests {
                 "severity mismatch for {code:?}",
             );
             assert_eq!(d.code, Some(code), "code mismatch for {code:?}");
+        }
+    }
+
+    // --- Stackup DiagnosticCode tests (task 4007) ---
+
+    /// All four §4.4 stackup codes round-trip through
+    /// `Diagnostic::error(...).with_code(...)` with `Severity::Error`.
+    /// Mirrors the `diagnostic_code_multi_kernel_variants_with_code_round_trip` style.
+    #[test]
+    fn diagnostic_code_stackup_variants_constructible() {
+        use super::Severity;
+        let codes = [
+            DiagnosticCode::StackupEmptyChain,
+            DiagnosticCode::StackupDimMismatch,
+            DiagnosticCode::StackupBadSign,
+            DiagnosticCode::StackupBadSamples,
+        ];
+        for code in codes {
+            let d = Diagnostic::error("x").with_code(code);
+            assert_eq!(d.severity, Severity::Error, "severity mismatch for {code:?}");
+            assert_eq!(d.code, Some(code), "code mismatch for {code:?}");
+        }
+    }
+
+    /// Under `feature = "serde"`, each §4.4 stackup code serializes to its
+    /// PascalCase wire string (from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_stackup_variants_serde_pascal_case() {
+        let cases = [
+            (DiagnosticCode::StackupEmptyChain,  "\"StackupEmptyChain\""),
+            (DiagnosticCode::StackupDimMismatch, "\"StackupDimMismatch\""),
+            (DiagnosticCode::StackupBadSign,     "\"StackupBadSign\""),
+            (DiagnosticCode::StackupBadSamples,  "\"StackupBadSamples\""),
+        ];
+        for (code, expected) in cases {
+            let s = serde_json::to_string(&code).unwrap();
+            assert_eq!(s, expected, "serde mismatch for {code:?}");
         }
     }
 }
