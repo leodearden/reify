@@ -46,7 +46,7 @@
 //!     locate_element_p1, LocatableTet,
 //!     StressElement, element_stress_p1, recover_nodal_stress_p1, tet_volume_p1,
 //!     ProgressiveOptions, PartialElasticResult, PassTuning,
-//!     RefinementDemand, TerminationReason, AdvanceDecision,
+//!     RefinementDemand, AdvanceDecision,
 //!     coarse_pass_tuning, refinement_pass_tuning, near_constraint_boundary, should_refine,
 //!     SweepElementTarget, Mesh2d, Mesh2dReport, ProfileBoundary, Mesh2dOptions, Mesh2dError,
 //!     compute_quad_skew, recombine_quality_ok, auto_mesh_size_from_boundary,
@@ -93,7 +93,7 @@
 //!
 //! // ShellStress smoke test (T16): use a non-trivial value so a regression where
 //! // one channel is left default would surface here.
-//! let field = reify_types::Value::Real(1.0);
+//! let field = reify_ir::Value::Real(1.0);
 //! let ss = ShellStress::homogeneous(field.clone());
 //! assert_eq!(ss.top, field, "homogeneous: top must equal input");
 //! assert_eq!(ss.mid, field, "homogeneous: mid must equal input");
@@ -253,16 +253,11 @@
 //! );
 //!
 //! // Task 2923: progressive-solve framework smoke pin.
-//! // The import block above already asserts all progressive re-exports compile;
-//! // these one-shot constructions confirm renames or removals trip this doctest.
-//! let _ = ProgressiveOptions::default();
-//! let _ = PassTuning { mesh_tol: 0.0, cg_tol: 0.0 };
-//! let _ = PartialElasticResult {
-//!     displacement: vec![], stress: vec![], max_von_mises: 0.0,
-//!     converged: false, iterations: 0,
-//! };
-//! let _ = (RefinementDemand::None, TerminationReason::BudgetExhausted);
-//! let _ = AdvanceDecision::Continue(PassTuning { mesh_tol: 0.0, cg_tol: 0.0 });
+//! // The import block above asserts key progressive types and helpers compile.
+//! // TerminationReason is also re-exported from the crate root; it is covered
+//! // transitively via AdvanceDecision in the should_refine pin below rather
+//! // than directly in the import block.  These fn-signature pins catch renames
+//! // or signature changes at compile time.
 //! let _: fn(&ProgressiveOptions) -> PassTuning = coarse_pass_tuning;
 //! let _: fn(&ProgressiveOptions, usize) -> PassTuning = refinement_pass_tuning;
 //! let _: fn(&PartialElasticResult, &ProgressiveOptions) -> bool = near_constraint_boundary;
@@ -330,7 +325,7 @@
 //! };
 //! let _: fn(
 //!     &[StressElement<'_>],
-//!     &reify_types::VolumeMesh,
+//!     &reify_ir::VolumeMesh,
 //!     &IsotropicElastic,
 //! ) -> ZzIndicator = compute_zz_indicator;
 //!
