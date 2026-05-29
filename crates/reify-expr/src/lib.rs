@@ -1705,6 +1705,7 @@ fn eval_binop(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalCo
     match op {
         BinOp::And => return eval_and(left, right, ctx),
         BinOp::Or => return eval_or(left, right, ctx),
+        BinOp::Implies => return Value::Undef, // placeholder; eval_implies wired in step-6
         _ => {}
     }
 
@@ -1737,7 +1738,7 @@ fn eval_binop(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalCo
         BinOp::Le => eval_cmp(&lv, &rv, |a, b| a <= b),
         BinOp::Gt => eval_cmp(&lv, &rv, |a, b| a > b),
         BinOp::Ge => eval_cmp(&lv, &rv, |a, b| a >= b),
-        BinOp::And | BinOp::Or => unreachable!(),
+        BinOp::And | BinOp::Or | BinOp::Implies => unreachable!(),
     }
 }
 

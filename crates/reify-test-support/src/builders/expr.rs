@@ -320,7 +320,8 @@ fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
         | BinOp::Gt
         | BinOp::Ge
         | BinOp::And
-        | BinOp::Or => Type::Bool,
+        | BinOp::Or
+        | BinOp::Implies => Type::Bool,
         BinOp::Add | BinOp::Sub => left.clone(), // same dimension required
         BinOp::Mul => match (left, right) {
             (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd }) => Type::Scalar {
