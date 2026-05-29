@@ -18,7 +18,7 @@
 //!
 //! # Dependency relationship
 //!
-//! Input is `&reify_types::value::SampledField` (Regular3D narrow-band SDF).
+//! Input is `&reify_ir::value::SampledField` (Regular3D narrow-band SDF).
 //! The shipping `OpenVdbGridSource → SampledField` lowering pipeline in
 //! `reify-kernel-openvdb::ingest::lower_to_sampled` is the eventual producer
 //! once the OpenVDB FFI lands; until then, callers (and this crate's own
@@ -80,7 +80,7 @@
 //!     extract_mid_surface, GridValidationError, MedialMask, MidSurfaceError, MidSurfaceMesh,
 //!     MidSurfaceOptions,
 //! };
-//! use reify_types::value::{InterpolationKind, SampledField, SampledGridKind};
+//! use reify_ir::value::{InterpolationKind, SampledField, SampledGridKind};
 //! use std::sync::atomic::AtomicBool;
 //!
 //! let sdf = SampledField {
@@ -109,7 +109,7 @@
 //! use reify_shell_extract::{
 //!     GridValidationError, MedialError, MedialMask, MedialOptions, compute_medial_mask,
 //! };
-//! use reify_types::value::{InterpolationKind, SampledField, SampledGridKind};
+//! use reify_ir::value::{InterpolationKind, SampledField, SampledGridKind};
 //! use std::sync::atomic::AtomicBool;
 //!
 //! // Trivial 1×1×1 grid with a single voxel at SDF = +1.0. The mask comes
