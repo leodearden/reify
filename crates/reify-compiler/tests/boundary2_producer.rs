@@ -255,6 +255,7 @@ fn type_error_dimension_mismatch() {
                     name: "bad".into(),
                     doc: None,
                     is_pub: false,
+                    is_aux: false,
                     type_expr: None,
                     value: Expr {
                         kind: ExprKind::BinOp {
@@ -780,6 +781,7 @@ fn mul_div_different_dimensions_no_diagnostic() {
                     name: "area".into(),
                     doc: None,
                     is_pub: false,
+                    is_aux: false,
                     type_expr: None,
                     value: Expr {
                         kind: ExprKind::BinOp {
@@ -805,6 +807,7 @@ fn mul_div_different_dimensions_no_diagnostic() {
                     name: "ratio".into(),
                     doc: None,
                     is_pub: false,
+                    is_aux: false,
                     type_expr: None,
                     value: Expr {
                         kind: ExprKind::BinOp {
@@ -1804,6 +1807,7 @@ fn scalar_plus_int_type_error() {
                     name: "bad".into(),
                     doc: None,
                     is_pub: false,
+                    is_aux: false,
                     type_expr: None,
                     value: Expr {
                         kind: ExprKind::BinOp {

@@ -72,6 +72,8 @@ fn sub_member(name: &str, structure_name: &str) -> MemberDecl {
         is_collection: false,
         where_clause: None,
         body: None,
+        is_aux: false,
+        pose_expr: None,
         span: zero_span(),
         content_hash: ContentHash(0),
     })
@@ -82,6 +84,7 @@ fn let_member(name: &str, value: Expr) -> MemberDecl {
         name: name.to_string(),
         doc: None,
         is_pub: false,
+        is_aux: false,
         type_expr: None,
         value,
         where_clause: None,
@@ -732,6 +735,8 @@ fn collection_sub_member(name: &str, structure_name: &str) -> MemberDecl {
         is_collection: true,
         where_clause: None,
         body: None,
+        is_aux: false,
+        pose_expr: None,
         span: zero_span(),
         content_hash: ContentHash(0),
     })

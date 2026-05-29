@@ -178,6 +178,10 @@ pub struct LetDecl {
     pub name: String,
     pub doc: Option<String>,
     pub is_pub: bool,
+    /// Whether this binding is marked `aux` (PRD §2.1: auxiliary geometry).
+    /// `aux let` declares a derived binding that is not surfaced in the public
+    /// interface but participates in constraint solving.
+    pub is_aux: bool,
     pub type_expr: Option<TypeExpr>,
     pub value: Expr,
     pub where_clause: Option<WhereClause>,
@@ -232,6 +236,14 @@ pub struct SubDecl {
     /// wired. `param_assignment` nodes inside the body are currently dropped
     /// during lowering — their full round-trip is tracked by task 3573.
     pub body: Option<Vec<MemberDecl>>,
+    /// Whether this sub-component is marked `aux` (PRD §2.1: auxiliary placement).
+    /// `aux sub` declares a sub-component used for internal geometry only,
+    /// not surfaced in the public component interface.
+    pub is_aux: bool,
+    /// Optional placement pose expression from the `at <expr>` clause (PRD §2.2).
+    /// `None` when no `at` clause is present; `Some(expr)` when the sub-component
+    /// carries an explicit placement frame or transform.
+    pub pose_expr: Option<Expr>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }

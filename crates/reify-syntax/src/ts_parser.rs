@@ -1353,6 +1353,7 @@ impl<'a> Lowering<'a> {
             doc: None, // fn let bindings don't have doc comments
             type_expr,
             is_pub: false,
+            is_aux: false,
             value,
             where_clause: None, // fn let bindings have no where clause
             annotations: Vec::new(),
@@ -1776,6 +1777,7 @@ impl<'a> Lowering<'a> {
             name,
             doc,
             is_pub,
+            is_aux: false,
             type_expr,
             value,
             where_clause,
@@ -1937,6 +1939,8 @@ impl<'a> Lowering<'a> {
             is_collection,
             where_clause,
             body,
+            is_aux: false,
+            pose_expr: None,
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
@@ -2744,6 +2748,8 @@ impl<'a> Lowering<'a> {
             is_collection: false,
             where_clause: None,
             body: None,
+            is_aux: false,
+            pose_expr: None,
             span: self.span(member_node),
             content_hash: self.content_hash(member_node),
         };
