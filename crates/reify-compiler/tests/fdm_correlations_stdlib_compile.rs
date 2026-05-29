@@ -19,6 +19,7 @@
 use reify_compiler::*;
 use reify_core::*;
 use reify_ir::*;
+use reify_test_support::compile_source_with_stdlib;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -155,6 +156,21 @@ fn assert_bool_default(template: &TopologyTemplate, member: &str, expected: bool
     }
 }
 
+/// Assert that the named param cell on `template` has the expected declared
+/// `cell_type`.
+fn assert_param_type(template: &TopologyTemplate, member: &str, expected: &Type) {
+    let cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == member)
+        .unwrap_or_else(|| panic!("{} missing param '{}'", template.name, member));
+    assert_eq!(
+        &cell.cell_type, expected,
+        "{}.{} cell_type should be {:?}, got {:?}",
+        template.name, member, expected, cell.cell_type
+    );
+}
+
 /// Assert that the named param cell on `template` is a
 /// `MaterialPropertyProvenance` slot carrying a default
 /// `MaterialPropertyProvenance(..)` constructor. The exact citation string
@@ -279,4 +295,61 @@ fn fdm_correlation_defaults_pattern_factors_and_low_confidence_flags() {
     assert_bool_default(template, "gibson_ashby_n_low_confidence", true);
     assert_bool_default(template, "pattern_directional_strong_factor_low_confidence", true);
     assert_bool_default(template, "pattern_directional_weak_factor_low_confidence", true);
+}
+
+// ─── step-5: FDMCouponOverride shape + subset-override compile probe ──────────
+
+/// `FDMCouponOverride` is the user-facing coupon-override entry point. It
+/// carries optional measured elastic constants (ex/ey/ez/gxy : Option<Pressure>)
+/// and optional Gibson-Ashby infill-curve overrides (infill_gibson_ashby_c /
+/// infill_gibson_ashby_n : Option<Real>). Any set field beats the corresponding
+/// FDMCorrelationDefaults default (PRD §"Built-in property correlations":
+/// "a user supplies measured coupon data … to override any constant").
+///
+/// Test pins the (name, type) of each override field. Defaults (= none) are
+/// not pinned here — the subset-ctor probe below exercises the none-default path.
+#[test]
+fn fdm_coupon_override_has_optional_override_fields() {
+    let template = find_structure("FDMCouponOverride");
+
+    let pressure_opt = Type::Option(Box::new(Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    }));
+    let real_opt = Type::Option(Box::new(Type::Real));
+
+    assert_param_type(template, "ex", &pressure_opt);
+    assert_param_type(template, "ey", &pressure_opt);
+    assert_param_type(template, "ez", &pressure_opt);
+    assert_param_type(template, "gxy", &pressure_opt);
+    assert_param_type(template, "infill_gibson_ashby_c", &real_opt);
+    assert_param_type(template, "infill_gibson_ashby_n", &real_opt);
+}
+
+/// The coupon-override surface must support partial construction: a user
+/// overrides a subset of constants (here ex + the infill-curve exponent) and
+/// leaves the rest to default to `none`. This is the user-observable signal
+/// for the override entry point — it must compile cleanly through the stdlib
+/// prelude path. Mirrors `fdm_stdlib_compile.rs::prd_motivating_example_…`.
+#[test]
+fn fdm_coupon_override_subset_ctor_compiles_cleanly() {
+    let source = r#"
+structure def TestCoupon {
+    let coupon = FDMCouponOverride(
+        ex: some(4GPa),
+        infill_gibson_ashby_n: some(1.8)
+    )
+}
+"#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "FDMCouponOverride subset ctor should compile without errors; got: {:?}",
+        errors
+    );
 }
