@@ -9,6 +9,13 @@
 //   - `BucklingResult`          — single-case solver-output container
 //   - `MultiCaseBucklingResult` — multi-load-case parallel sibling of MultiCaseResult
 //
+// NOTE: `solve_buckling` and the result-interpretation helpers (`critical_load`,
+// `safety_factor_buckling`, `mode_shape`) live in `solver_buckling_fns.ri`
+// (`std.solver.buckling.fns`), which is loaded AFTER this module.  This is the
+// same split used for `std.flexures.types` / `std.flexures` (esc-3851-32):
+// function bodies that access struct fields (`result.modes[0].eigenvalue`)
+// must be compiled AFTER the struct types they reference are in the prelude.
+//
 // Module placement: `std.solver.buckling` is the sibling of `std.solver.elastic`.
 // Registered immediately after `std.solver.elastic` in `stdlib_loader.rs` so
 // `ElasticResult` is in scope when `BucklingResult.pre_stress : ElasticResult`

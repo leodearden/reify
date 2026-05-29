@@ -94,6 +94,14 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 "std.solver.buckling",
                 include_str!("../stdlib/solver_buckling.ri"),
             ),
+            // `std.solver.buckling.fns` MUST follow `std.solver.buckling` —
+            // function bodies access struct fields (`result.modes[0].eigenvalue`)
+            // that require `BucklingResult`/`Mode` to be in the prelude registry.
+            // Same split as `std.flexures.types` / `std.flexures`. esc-3851-32.
+            (
+                "std.solver.buckling.fns",
+                include_str!("../stdlib/solver_buckling_fns.ri"),
+            ),
             (
                 "std.fea.multi_case",
                 include_str!("../stdlib/fea_multi_case.ri"),
