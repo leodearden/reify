@@ -275,6 +275,95 @@ fn lower_commands(commands: &[GcodeCommand]) -> GcodeImportResult {
     }
 }
 
+/// Marshal the `gcode_import(source, dialect)` builtin: `Value` arguments in,
+/// a `Value::List` of profile records out. This is the thin eval-path arm wired
+/// into [`crate::trajectory::eval_trajectory`]; all lowering logic lives in the
+/// pure [`lower_gcode`] below it.
+///
+/// Argument contract — any deviation returns [`Value::Undef`] (the stdlib
+/// bad-args convention):
+/// - exactly two arguments;
+/// - `args[0]` is a [`Value::String`] (the g-code source text);
+/// - `args[1]` is a [`Value::StructureInstance`] (the dialect selector). Its
+///   `type_name` routes the parser — `"MarlinDialect"` / `"KlipperDialect"`;
+///   any other name falls to [`GcodeImportDialect::Unsupported`] (zero profiles,
+///   an empty list).
+///
+/// A parse error short-circuits to [`Value::Undef`]: the `eval_builtin` path has
+/// no diagnostic sink to carry an `E_GcodeParseError` (deferred per the
+/// `mechanism.rs` precedent), so a hard parse failure can only surface as the
+/// bad-value sentinel. On a clean parse each lowered profile becomes a
+/// `Value::Map` record (see [`profile_to_value`]) and the set is returned as a
+/// `Value::List`. Collected warnings are likewise undeliverable here and are
+/// dropped (they are asserted at the pure-function level instead).
+pub(crate) fn eval_gcode_import(args: &[Value]) -> Value {
+    // Arity guard: exactly (source, dialect).
+    let [source, dialect] = args else {
+        return Value::Undef;
+    };
+    // Type guards: a String source and a StructureInstance dialect selector.
+    let Value::String(source) = source else {
+        return Value::Undef;
+    };
+    let Value::StructureInstance(data) = dialect else {
+        return Value::Undef;
+    };
+    // Route on the structure `type_name` — a plain String field readable
+    // without a StructureRegistry. An unrecognised name drives the
+    // Unsupported (→ DialectUnsupported warning) path.
+    let dialect = match data.type_name.as_str() {
+        "MarlinDialect" => GcodeImportDialect::Marlin,
+        "KlipperDialect" => GcodeImportDialect::Klipper,
+        other => GcodeImportDialect::Unsupported(other.to_string()),
+    };
+
+    let result = lower_gcode(source, dialect);
+
+    // A parse error has no diagnostic sink on this path; surface it as the
+    // bad-value sentinel rather than a misleading empty list.
+    if result.parse_error.is_some() {
+        return Value::Undef;
+    }
+
+    Value::List(result.profiles.iter().map(profile_to_value).collect())
+}
+
+/// Encode one lowered [`MotionProfile`] as a `Value::Map` record, mirroring the
+/// `mechanism` builtin's `{ kind, ... }` structured-result precedent (the
+/// `eval_builtin` path has no `StructureRegistry` to mint a real
+/// `Value::StructureInstance`). Shape:
+/// `{ kind: "motion_profile", waypoints: List(<waypoint record>...) }`.
+fn profile_to_value(profile: &MotionProfile) -> Value {
+    let waypoints = profile.waypoints.iter().map(waypoint_to_value).collect();
+    let mut m = BTreeMap::new();
+    m.insert(
+        Value::String("kind".to_string()),
+        Value::String("motion_profile".to_string()),
+    );
+    m.insert(
+        Value::String("waypoints".to_string()),
+        Value::List(waypoints),
+    );
+    Value::Map(m)
+}
+
+/// Encode one [`Waypoint`] as a `Value::Map` of its absolute coordinates:
+/// `{ x, y, z, e }` as `Value::Real` (the `Waypoint` fields are raw,
+/// unit-agnostic f64 lifted straight from the g-code, so they are preserved
+/// verbatim — no unit interpretation is imposed here). The `feedrate` key is
+/// present only when a feed is in effect for the move.
+fn waypoint_to_value(wp: &Waypoint) -> Value {
+    let mut m = BTreeMap::new();
+    m.insert(Value::String("x".to_string()), Value::Real(wp.x));
+    m.insert(Value::String("y".to_string()), Value::Real(wp.y));
+    m.insert(Value::String("z".to_string()), Value::Real(wp.z));
+    m.insert(Value::String("e".to_string()), Value::Real(wp.e));
+    if let Some(f) = wp.feedrate {
+        m.insert(Value::String("feedrate".to_string()), Value::Real(f));
+    }
+    Value::Map(m)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

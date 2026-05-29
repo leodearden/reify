@@ -13,16 +13,22 @@ mod spline;
 /// Returns `Some(Value)` for known function names, or `None` for unknown names
 /// so that `eval_builtin` can fall through to the next module.
 ///
-/// Phase β: all recognized names unconditionally return `Some(Value::Undef)`.
-/// The pure-Rust spline math is implemented in the `spline` submodule but is
+/// `gcode_import` (task ο) is fully wired: it marshals its arguments through the
+/// pure [`gcode_import::lower_gcode`] layer and returns a real `Value::List` of
+/// profile records (or `Value::Undef` on bad args / a hard parse error). See
+/// [`gcode_import::eval_gcode_import`] for the argument contract.
+///
+/// The Phase β spline intrinsics still unconditionally return `Some(Value::Undef)`:
+/// the pure-Rust spline math is implemented in the `spline` submodule but is
 /// not yet wired to the Value API.  Full marshalling (parsing a
 /// `PiecewisePolynomialProfile` from `Value::StructureInstance`, dispatching on
 /// the `BoundaryCondition` SIR type-tag, emitting `Value::List<Value::Real>`
 /// per joint) is deferred to a later phase (γ/η/θ per the β PRD scope
-/// boundary).  Callers that see `Value::Undef` here should treat it as a
-/// "not yet implemented" stub, not a computation result.
-pub(crate) fn eval_trajectory(name: &str, _args: &[Value]) -> Option<Value> {
+/// boundary).  Callers that see `Value::Undef` from one of those names should
+/// treat it as a "not yet implemented" stub, not a computation result.
+pub(crate) fn eval_trajectory(name: &str, args: &[Value]) -> Option<Value> {
     match name {
+        "gcode_import" => Some(gcode_import::eval_gcode_import(args)),
         "piecewise_polynomial"
         | "evaluate_profile"
         | "evaluate_profile_dot"
