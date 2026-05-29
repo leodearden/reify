@@ -545,7 +545,7 @@ fn synthetic_mid_surface_handle_id(
     let mut hasher = rustc_hash::FxHasher::default();
     feature_id.hash(&mut hasher);
     let h = hasher.finish();
-    let h30 = (h & 0x3FFF_FFFF) as u64;
+    let h30 = h & 0x3FFF_FFFF;
     let id = 0x8000_0000_0000_0000u64
         | (h30 << 33)
         | ((is_edge as u64) << 32)
