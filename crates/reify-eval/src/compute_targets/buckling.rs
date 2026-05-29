@@ -46,9 +46,9 @@
 use reify_core::DimensionVector;
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_solver_elastic::{
-    AssemblyElement, AssemblyMode, DirichletBc, ElementOrder, IsotropicElastic,
-    apply_point_load, assemble_global_stiffness, element_stiffness,
-    BucklingKernelOptions, MpcRow, solve_buckling_kernel,
+    DirichletBc, IsotropicElastic,
+    apply_point_load,
+    BucklingKernelOptions, solve_buckling_kernel,
 };
 
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
@@ -280,7 +280,7 @@ pub fn solve_buckling_trampoline(
 
     // ── (12) Build BucklingResult StructureInstance ───────────────────────────
     let result_fields: PersistentMap<String, Value> = [
-        ("modes".to_string(),      Value::List(modes_list.into())),
+        ("modes".to_string(),      Value::List(modes_list)),
         ("converged".to_string(),  Value::Bool(kernel_result.converged)),
         ("iterations".to_string(), Value::Int(0)),
         ("pre_stress".to_string(), pre_stress),
@@ -447,7 +447,7 @@ fn placeholder_result() -> Value {
     }));
 
     let result_fields: PersistentMap<String, Value> = [
-        ("modes".to_string(),      Value::List(vec![mode].into())),
+        ("modes".to_string(),      Value::List(vec![mode])),
         ("converged".to_string(),  Value::Bool(false)),
         ("iterations".to_string(), Value::Int(0)),
         ("pre_stress".to_string(), pre_stress),
