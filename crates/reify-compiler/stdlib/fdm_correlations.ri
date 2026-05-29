@@ -1,0 +1,42 @@
+// Stdlib: FDM Effective-Property Correlations
+//
+// The β-phase of the v0.5 FDM-as-printed-FEA PRD
+// (docs/prds/v0_5/fdm-as-printed-fea.md §"Built-in property correlations").
+// Provides the human-facing citation + override surface for the
+// effective-property correlation library that turns a base filament material
+// plus FDM process parameters into the foundation's transverse-isotropic /
+// orthotropic constitutive constants.
+//
+// PRD reference: docs/prds/v0_5/fdm-as-printed-fea.md task β / slice 1.
+//
+// Module exports (added across the β TDD steps):
+//   - `FDMCorrelationDefaults` — the default correlation constants
+//     (build-Z knockdown ratios, Gibson-Ashby infill law (c, n), pattern
+//     factors), each accompanied by a parallel
+//     `..._provenance : MaterialPropertyProvenance` citation slot AND a
+//     parallel `..._low_confidence : Bool` slot flagging defaults whose
+//     evidence is weak (FDM-specific Gibson-Ashby exponent, directional
+//     pattern factors).
+//   - `FDMCouponOverride` — the user-facing coupon-override entry point;
+//     optional user-measured elastic constants and infill-curve (c, n)
+//     overrides that beat any default.
+//
+// Two-surface convention (see Plan §"Design Decisions"):
+//   The same numeric defaults appear here (citation/override surface, read
+//   by humans) AND as Rust `pub const`s in `crates/reify-fdm/src/correlation.rs`
+//   (the compute source-of-truth that the δ-task ComputeNode calls directly).
+//   Both sets are pinned by their own tests, so any divergence fails CI; the
+//   two must move together. This mirrors the α/γ precedent where γ's
+//   `ZoneProcessParams` re-declares `FDMProcess` defaults in Rust with a
+//   "mirrors stdlib" comment.
+//
+// Per-property provenance + low-confidence convention:
+//   Reuses `MaterialPropertyProvenance` from `std.materials.fea` (the
+//   three-field citation record source / reference / notes) to annotate each
+//   default. A parallel `..._low_confidence : Bool` slot makes
+//   "low-confidence defaults flagged" (PRD §"Built-in property correlations")
+//   a machine-checkable contract rather than buried prose.
+//
+// Cross-module dependencies (resolved via sequential-prelude in stdlib_loader):
+//   - `MaterialPropertyProvenance` — from std.materials.fea
+//   - `InfillPattern`              — from std.fdm
