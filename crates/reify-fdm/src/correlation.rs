@@ -181,6 +181,94 @@ pub fn pattern_factors(p: InfillPattern) -> PatternFactors {
     }
 }
 
+// ── Effective-property assemblers ─────────────────────────────────────────────
+
+/// Isotropic elastic properties of the base filament material (SI units).
+/// The single input to the correlation assemblers; δ builds this from the
+/// resolved base `Material`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BaseElastic {
+    /// Solid (fully dense) Young's modulus, Pa.
+    pub youngs_modulus: f64,
+    /// Isotropic Poisson ratio (dimensionless).
+    pub poisson_ratio: f64,
+    /// Solid mass density, kg/m³.
+    pub density: f64,
+}
+
+/// The 5-constant transverse-isotropic conformer result (plus density).
+///
+/// Field names mirror the stdlib `TransverseIsotropicMaterial`
+/// (`crates/reify-compiler/stdlib/constitutive.ri`) one-to-one so δ maps this
+/// onto the stdlib constructor without a translation layer. The in-plane (XY,
+/// print-plane) is the isotropy plane; the axial direction is the build (Z)
+/// axis. The in-plane shear is derived on the producer side as
+/// `G12 = e_in_plane / (2 (1 + nu_in_plane))`; `g_axial` is the independent
+/// out-of-plane shear (G13 = G23).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TransverseIsoConstants {
+    /// In-plane Young's modulus E1 = E2 (isotropy plane), Pa.
+    pub e_in_plane: f64,
+    /// Axial (build-Z) Young's modulus E3, Pa — the weakest axis.
+    pub e_axial: f64,
+    /// In-plane Poisson ratio ν12 (dimensionless).
+    pub nu_in_plane: f64,
+    /// Axial Poisson ratio ν13 = ν23 (dimensionless).
+    pub nu_axial: f64,
+    /// Axial shear modulus G13 = G23, Pa (the independent shear constant).
+    pub g_axial: f64,
+    /// Effective mass density, kg/m³ (solid density · solid fraction).
+    pub density: f64,
+}
+
+/// User-supplied coupon overrides for measured effective properties.
+///
+/// Any set field beats the corresponding computed default; unset fields fall
+/// back to the correlation result. This is the Rust mirror of the stdlib
+/// `FDMCouponOverride` structure; δ reads that stdlib `Value` and builds this.
+///
+/// The override fields and their application are wired in a later step
+/// (coupon-override path); this placeholder lets the assembler carry an inert
+/// `coupon` argument first.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct CouponOverride {}
+
+/// Build the default-path transverse-isotropic constants for an FDM-printed
+/// region: base filament + infill solid fraction + infill pattern.
+///
+/// In-plane modulus is the base modulus knocked down by the Gibson-Ashby
+/// infill law and scaled by the pattern's strong-direction factor; the axial
+/// (build-Z) modulus applies the [`BUILD_Z_MODULUS_RATIO`] knockdown so the
+/// build direction is the weakest axis (PRD C4 invariant). The `coupon`
+/// argument is inert until the coupon-override path is wired.
+pub fn effective_transverse_isotropic(
+    base: BaseElastic,
+    solid_fraction: f64,
+    pattern: InfillPattern,
+    _coupon: &CouponOverride,
+) -> TransverseIsoConstants {
+    let infill = gibson_ashby_infill_factor(solid_fraction, GIBSON_ASHBY_C, GIBSON_ASHBY_N);
+    let pf = pattern_factors(pattern);
+
+    let e_in_plane = base.youngs_modulus * infill * pf.in_plane_strong;
+    let e_axial = e_in_plane * BUILD_Z_MODULUS_RATIO;
+    let nu_in_plane = base.poisson_ratio;
+    let nu_axial = base.poisson_ratio;
+    // Default axial shear from the axial modulus (isotropic-like relation); the
+    // independent transverse-isotropic shear constant.
+    let g_axial = e_axial / (2.0 * (1.0 + nu_axial));
+    let density = base.density * solid_fraction;
+
+    TransverseIsoConstants {
+        e_in_plane,
+        e_axial,
+        nu_in_plane,
+        nu_axial,
+        g_axial,
+        density,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
