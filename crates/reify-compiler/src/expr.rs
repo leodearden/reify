@@ -846,6 +846,36 @@ pub(crate) fn compile_expr_guarded(
                         }
                     }
 
+                    // Bool-operand guard for `implies` (task-3921 / PRD §3.4).
+                    //
+                    // `infer_binop_type` returns `Type::Bool` unconditionally for Implies, so
+                    // without this guard `5 implies 3` would silently type-check.  We reject
+                    // non-Bool, non-Error operands here (Type::Error is the poison sentinel;
+                    // suppressing the secondary diagnostic prevents cascade noise).
+                    //
+                    // And/Or are intentionally left unchanged (they evaluate non-Bool operands
+                    // to Undef at runtime; see design_decisions in plan.json).
+                    if matches!(bin_op, BinOp::Implies) {
+                        let lty = &compiled_left.result_type;
+                        let rty = &compiled_right.result_type;
+                        let left_bad =
+                            !matches!(lty, Type::Bool | Type::Error);
+                        let right_bad =
+                            !matches!(rty, Type::Bool | Type::Error);
+                        if left_bad || right_bad {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "implies operands must be Bool: {} vs {}",
+                                    lty, rty,
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "non-Bool operand to implies",
+                                )),
+                            );
+                        }
+                    }
+
                     CompiledExpr::binop(bin_op, compiled_left, compiled_right, result_type)
                 }
                 None => {
