@@ -762,6 +762,54 @@ mod tests {
         );
     }
 
+    /// Pins that `GeometryKernel::ingest_mesh` default returns
+    /// `Err(GeometryError::OperationFailed(_))` with the concrete kernel name
+    /// and the "does not accept Mesh inputs" sentinel phrase.
+    ///
+    /// Uses `reify_test_support::FailingMockGeometryKernel` — a non-overriding
+    /// `GeometryKernel` impl that is already an ungated dev-dep — so the test
+    /// exercises the trait default directly without requiring a new dependency
+    /// (e.g. `reify-kernel-fidget`). Design decision 4 (task 4047 plan.json):
+    /// "Negative test reuses `FailingMockGeometryKernel` rather than
+    /// `FidgetKernel`."
+    ///
+    /// Structural assertions:
+    /// - result is `Err(GeometryError::OperationFailed(_))` (match-on-variant;
+    ///   `GeometryError` does not derive `PartialEq`)
+    /// - the `OperationFailed` payload contains "FailingMockGeometryKernel"
+    ///   (proves `type_name::<Self>()` resolves to the *concrete* kernel name)
+    /// - the payload contains "does not accept Mesh inputs"
+    ///
+    /// RED: fails to compile until `ingest_mesh` is added to `GeometryKernel`
+    /// (step-2 of task 4047).
+    #[test]
+    fn ingest_mesh_on_non_overriding_kernel_returns_operation_failed_with_kernel_name() {
+        let mut kernel = reify_test_support::FailingMockGeometryKernel;
+        let result = kernel.ingest_mesh(&Mesh {
+            vertices: vec![],
+            indices: vec![],
+            normals: None,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("FailingMockGeometryKernel"),
+                    "OperationFailed payload must contain the concrete kernel name \
+                     (via type_name::<Self>()); got: {msg:?}",
+                );
+                assert!(
+                    msg.contains("does not accept Mesh inputs"),
+                    "OperationFailed payload must contain the sentinel phrase \
+                     \"does not accept Mesh inputs\"; got: {msg:?}",
+                );
+            }
+            other => panic!(
+                "ingest_mesh on a non-overriding kernel must return \
+                 Err(GeometryError::OperationFailed(_)); got {other:?}",
+            ),
+        }
+    }
+
     /// RED for item 4 of task 3186: pins that `store_mesh_for_test` returns
     /// `Err(GeometryError::OperationFailed(_))` when given an invalid
     /// (non-manifold) mesh.
