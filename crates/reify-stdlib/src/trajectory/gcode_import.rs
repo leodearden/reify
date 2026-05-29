@@ -149,9 +149,10 @@ impl PosState {
 
 /// Lower a g-code source to motion profiles using the chosen dialect parser.
 ///
-/// A parse failure short-circuits to a [`GcodeImportResult::from_parse_error`]
-/// (no profiles). The Klipper and Unsupported arms are filled in by steps 8
-/// and 10.
+/// Marlin/Klipper drive the corresponding `reify_gcode` parser; a parse failure
+/// short-circuits to [`GcodeImportResult::from_parse_error`] (no profiles). An
+/// `Unsupported` selector skips parsing and emits a `DialectUnsupported`
+/// warning with no profiles.
 pub(crate) fn lower_gcode(source: &str, dialect: GcodeImportDialect) -> GcodeImportResult {
     match dialect {
         GcodeImportDialect::Marlin => match reify_gcode::parse_marlin(source) {
@@ -162,7 +163,13 @@ pub(crate) fn lower_gcode(source: &str, dialect: GcodeImportDialect) -> GcodeImp
             Ok(commands) => lower_commands(&commands),
             Err(e) => GcodeImportResult::from_parse_error(e),
         },
-        GcodeImportDialect::Unsupported(_name) => GcodeImportResult::empty(),
+        // An unrecognised dialect skips parsing entirely and surfaces a single
+        // DialectUnsupported warning naming the offending selector.
+        GcodeImportDialect::Unsupported(name) => GcodeImportResult {
+            profiles: Vec::new(),
+            parse_error: None,
+            warnings: vec![GcodeImportWarning::DialectUnsupported(name)],
+        },
     }
 }
 
