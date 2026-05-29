@@ -264,6 +264,7 @@ fn fdm_correlation_defaults_build_z_and_gibson_ashby_values() {
 ///   - pattern_near_isotropic_factor = 1.0 (gyroid/cubic ≈ in-plane isotropic)
 ///   - pattern_directional_strong_factor = 1.0 (along the raster lines)
 ///   - pattern_directional_weak_factor = 0.6 (transverse to the raster lines)
+///
 /// The strong > weak ordering is what makes the orthotropic E1 > E2 split; the
 /// magnitudes are flagged low-confidence (no PRD-pinned value).
 ///
