@@ -63,6 +63,11 @@ pub(crate) enum GcodeImportWarning {
     /// `W_GcodeDialectShaperConflict` — a file-declared `INPUT_SHAPER` directive
     /// was consumed via `gcode_import` (the in-PRD shaper-design supersedes it).
     ShaperConflict,
+    /// A `G2`/`G3` arc move was chord-flattened to its endpoint waypoint: the
+    /// `i`/`j`/`k` center offsets and rotation direction were discarded (see
+    /// [`lower_commands`]). Surfaced so a consumer can tell a curved move was
+    /// approximated by a straight chord rather than silently losing the arc.
+    ArcFlattened,
 }
 
 /// A single resolved motion waypoint: absolute machine coordinates after
@@ -79,6 +84,14 @@ pub(crate) struct Waypoint {
 
 /// One contiguous motion segment, lowered to an ordered waypoint list.
 /// Segments are split by non-motion commands (see [`lower_commands`]).
+///
+/// Waypoints are move **targets**, not move spans: a segment's first waypoint is
+/// the destination of its first move, NOT the position the motion started from.
+/// The starting position is the running machine position carried over from the
+/// prior segment (or the origin for the first segment) and is intentionally not
+/// re-recorded here. A consumer reconstructing an absolute path must therefore
+/// chain segments against that external running position rather than treating a
+/// single profile as self-contained.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct MotionProfile {
     pub waypoints: Vec<Waypoint>,
@@ -149,6 +162,30 @@ impl PosState {
             feedrate: self.feedrate,
         }
     }
+
+    /// Apply a move's optional axis targets and feedrate to the running state
+    /// and return the resolved absolute [`Waypoint`]. Omitted axes inherit the
+    /// running position; an omitted feedrate leaves the running feed unchanged.
+    /// Shared by the `LinearMove` and `ArcMove` arms so axis-inheritance and
+    /// feed-propagation stay in one place (the arc arm additionally discards
+    /// `i`/`j`/`k` — see [`lower_commands`]).
+    fn apply_move(
+        &mut self,
+        x: Option<f64>,
+        y: Option<f64>,
+        z: Option<f64>,
+        e: Option<f64>,
+        feedrate: Option<f64>,
+    ) -> Waypoint {
+        self.x = x.unwrap_or(self.x);
+        self.y = y.unwrap_or(self.y);
+        self.z = z.unwrap_or(self.z);
+        self.e = e.unwrap_or(self.e);
+        if let Some(f) = feedrate {
+            self.feedrate = Some(f);
+        }
+        self.to_waypoint()
+    }
 }
 
 /// Lower a g-code source to motion profiles using the chosen dialect parser.
@@ -179,15 +216,21 @@ pub(crate) fn lower_gcode(source: &str, dialect: GcodeImportDialect) -> GcodeImp
 
 /// Walk a parsed command stream, lowering it to contiguous motion segments.
 ///
-/// - `LinearMove`/`ArcMove` append a waypoint (omitted axes inherit the running
-///   position) to the open segment.
+/// - `LinearMove` appends a waypoint (omitted axes inherit the running position)
+///   to the open segment.
+/// - `ArcMove` (G2/G3) is **chord-flattened**: it appends only its endpoint
+///   waypoint, exactly like a linear move, and the `i`/`j`/`k` center offsets
+///   and rotation direction are discarded. Each flattened arc raises a
+///   [`GcodeImportWarning::ArcFlattened`] so the approximation is not silent.
 /// - `SetPosition` (G92) rebases the running position; `Feedrate` (standalone
 ///   F) updates the running feedrate. Both are in-segment state — no split.
 /// - `IgnoredMCode`/`SetVelocityLimit`/`InputShaper` close the open segment
 ///   (emitting a profile only when it holds ≥1 waypoint). The running position
 ///   persists across the split.
 ///
-/// The trailing open segment is flushed at end-of-input.
+/// Waypoints are move targets (a segment does not re-record its starting
+/// position — see [`MotionProfile`]). The trailing open segment is flushed at
+/// end-of-input.
 fn lower_commands(commands: &[GcodeCommand]) -> GcodeImportResult {
     let mut profiles: Vec<MotionProfile> = Vec::new();
     let mut segment: Vec<Waypoint> = Vec::new();
@@ -197,24 +240,17 @@ fn lower_commands(commands: &[GcodeCommand]) -> GcodeImportResult {
     for cmd in commands {
         match cmd {
             GcodeCommand::LinearMove(m) => {
-                cur.x = m.x.unwrap_or(cur.x);
-                cur.y = m.y.unwrap_or(cur.y);
-                cur.z = m.z.unwrap_or(cur.z);
-                cur.e = m.e.unwrap_or(cur.e);
-                if let Some(f) = m.feedrate {
-                    cur.feedrate = Some(f);
-                }
-                segment.push(cur.to_waypoint());
+                segment.push(cur.apply_move(m.x, m.y, m.z, m.e, m.feedrate));
             }
+            // Chord-flattening: a G2/G3 arc is lowered to its endpoint waypoint
+            // exactly like a linear move — the i/j/k center offsets and the
+            // rotation direction are deliberately discarded, so a curved move
+            // becomes the straight chord between its endpoints. This fidelity
+            // loss is made visible (not silent) via a ArcFlattened warning so a
+            // consumer can tell the path was approximated.
             GcodeCommand::ArcMove(a) => {
-                cur.x = a.x.unwrap_or(cur.x);
-                cur.y = a.y.unwrap_or(cur.y);
-                cur.z = a.z.unwrap_or(cur.z);
-                cur.e = a.e.unwrap_or(cur.e);
-                if let Some(f) = a.feedrate {
-                    cur.feedrate = Some(f);
-                }
-                segment.push(cur.to_waypoint());
+                warnings.push(GcodeImportWarning::ArcFlattened);
+                segment.push(cur.apply_move(a.x, a.y, a.z, a.e, a.feedrate));
             }
             // G92 set-position rebases the running position in place: each
             // supplied axis is set to its new logical value; omitted axes are
@@ -559,5 +595,95 @@ mod tests {
             "the warning names the offending dialect, got {:?}",
             result.warnings
         );
+    }
+
+    /// A `G2` arc move is chord-flattened: it contributes a single endpoint
+    /// waypoint (the `I`/`J` center offsets are discarded, so no intermediate
+    /// arc points appear), the move's in-line feedrate propagates, and exactly
+    /// one `ArcFlattened` warning is raised. The arc is motion (not a splitter),
+    /// so the preceding `G1` and the arc share one profile.
+    #[test]
+    fn arc_move_is_chord_flattened_to_endpoint_with_warning() {
+        let src = "G1 X0 Y0 F600\nG2 X10 Y0 I5 J0 F1200";
+        let result = lower_gcode(src, GcodeImportDialect::Marlin);
+
+        assert!(result.parse_error.is_none(), "{:?}", result.parse_error);
+        assert_eq!(
+            result.profiles.len(),
+            1,
+            "the arc is motion, not a splitter: G1 + G2 form one profile"
+        );
+
+        let wps = &result.profiles[0].waypoints;
+        assert_eq!(
+            wps.len(),
+            2,
+            "chord-flattening yields one endpoint waypoint per move (no intermediate arc points)"
+        );
+        assert_eq!((wps[0].x, wps[0].y), (0.0, 0.0), "G1 start move");
+        // The arc collapses to its endpoint; the I5/J0 center offsets and the
+        // CW rotation sense are discarded.
+        assert_eq!(
+            (wps[1].x, wps[1].y),
+            (10.0, 0.0),
+            "G2 endpoint chord (I/J center offsets discarded)"
+        );
+        assert_eq!(
+            wps[1].feedrate,
+            Some(1200.0),
+            "the arc's in-line F1200 propagates to its waypoint"
+        );
+
+        let arc_warnings = result
+            .warnings
+            .iter()
+            .filter(|w| matches!(w, GcodeImportWarning::ArcFlattened))
+            .count();
+        assert_eq!(
+            arc_warnings, 1,
+            "exactly one ArcFlattened warning for the single G2 arc"
+        );
+    }
+
+    /// Two consecutive non-motion commands between moves never emit an empty
+    /// middle profile: the `if !segment.is_empty()` guard means the second
+    /// splitter (whose segment was already flushed) produces nothing. The run
+    /// lowers to exactly TWO profiles, one per surrounding move.
+    #[test]
+    fn back_to_back_splitters_emit_no_empty_middle_profile() {
+        let src = "G1 X10\nM104 S200\nM109 S200\nG1 X20";
+        let result = lower_gcode(src, GcodeImportDialect::Marlin);
+
+        assert!(result.parse_error.is_none(), "{:?}", result.parse_error);
+        assert_eq!(
+            result.profiles.len(),
+            2,
+            "back-to-back M-codes must not produce an empty middle profile"
+        );
+        assert_eq!(result.profiles[0].waypoints.len(), 1, "first move only");
+        assert_eq!(result.profiles[0].waypoints[0].x, 10.0, "G1 X10");
+        assert_eq!(result.profiles[1].waypoints.len(), 1, "second move only");
+        assert_eq!(result.profiles[1].waypoints[0].x, 20.0, "G1 X20");
+    }
+
+    /// A source ending with an M-code flushes exactly the preceding waypoints
+    /// and produces no empty trailing profile: the splitter closes the open
+    /// segment, and end-of-input then finds an already-empty segment (nothing
+    /// to flush). One profile holding both leading moves results.
+    #[test]
+    fn trailing_splitter_flushes_without_empty_trailing_profile() {
+        let src = "G1 X10\nG1 X20\nM104 S200";
+        let result = lower_gcode(src, GcodeImportDialect::Marlin);
+
+        assert!(result.parse_error.is_none(), "{:?}", result.parse_error);
+        assert_eq!(
+            result.profiles.len(),
+            1,
+            "the trailing M-code must not create an empty trailing profile"
+        );
+        let wps = &result.profiles[0].waypoints;
+        assert_eq!(wps.len(), 2, "both pre-M104 moves flush together");
+        assert_eq!(wps[0].x, 10.0, "G1 X10");
+        assert_eq!(wps[1].x, 20.0, "G1 X20");
     }
 }
