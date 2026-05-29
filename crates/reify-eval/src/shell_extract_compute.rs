@@ -654,16 +654,16 @@ pub(crate) fn fold_mid_surface_attributes_into_table(
             // Detect 30-bit FxHash collision at record time: warn if the synthetic
             // id is already occupied by a *different* feature_id — silent overwrite
             // would be undetectable data loss (see "Hash collision detection" in doc).
-            if let Some(existing) = table.lookup(id) {
-                if existing.feature_id != attr.feature_id {
-                    tracing::warn!(
-                        "fold_mid_surface_attributes: id {:#018x} 30-bit FxHash collision: \
-                         existing feature_id={:?} overwritten by {:?}",
-                        id.0,
-                        existing.feature_id,
-                        attr.feature_id,
-                    );
-                }
+            if let Some(existing) = table.lookup(id)
+                && existing.feature_id != attr.feature_id
+            {
+                tracing::warn!(
+                    "fold_mid_surface_attributes: id {:#018x} 30-bit FxHash collision: \
+                     existing feature_id={:?} overwritten by {:?}",
+                    id.0,
+                    existing.feature_id,
+                    attr.feature_id,
+                );
             }
             table.record(id, attr);
         }
@@ -711,16 +711,16 @@ pub(crate) fn fold_mid_surface_attributes_into_table(
             };
             // Detect 30-bit FxHash collision at record time (see face-records
             // block above for the full rationale).
-            if let Some(existing) = table.lookup(id) {
-                if existing.feature_id != attr.feature_id {
-                    tracing::warn!(
-                        "fold_mid_surface_attributes: id {:#018x} 30-bit FxHash collision: \
-                         existing feature_id={:?} overwritten by {:?}",
-                        id.0,
-                        existing.feature_id,
-                        attr.feature_id,
-                    );
-                }
+            if let Some(existing) = table.lookup(id)
+                && existing.feature_id != attr.feature_id
+            {
+                tracing::warn!(
+                    "fold_mid_surface_attributes: id {:#018x} 30-bit FxHash collision: \
+                     existing feature_id={:?} overwritten by {:?}",
+                    id.0,
+                    existing.feature_id,
+                    attr.feature_id,
+                );
             }
             table.record(id, attr);
         }
