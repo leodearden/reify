@@ -569,6 +569,30 @@ fn synthetic_mid_surface_handle_id(
 /// mistyped field) the record is silently skipped and a `tracing::warn!` is
 /// emitted.  The function never panics and never causes the dispatch to regress
 /// to `Failed`.
+///
+/// # Hash collision detection
+///
+/// `synthetic_mid_surface_handle_id` folds the `feature_id` into 30 bits of
+/// FxHash.  Two distinct feature_ids that collide in those 30 bits while
+/// sharing role and `local_index` would produce the same synthetic
+/// `GeometryHandleId`, causing silent data loss.  This is detected at record
+/// time: a `tracing::warn!` is emitted when `table.lookup(id)` returns an
+/// existing entry whose `feature_id` differs from the incoming one.
+/// Practical risk is very low — mid-surface feature_ids per design are few.
+///
+/// # Re-dispatch and stale entries
+///
+/// On re-dispatch of the same compute node where the result has *fewer*
+/// regions/edges (e.g. a parameter change reduces the region count), synthetic
+/// entries from the previous dispatch whose IDs are no longer produced will
+/// linger in the table — they are never re-recorded, so the table can reflect
+/// the union of all past dispatches rather than exactly the current result.
+/// A proper fix requires `TopologyAttributeTable::retain()` or a per-entry
+/// remove API, which is out of scope for this task (ζ, #3596).  The gap is
+/// latent and non-observable today because `user_label = None` and dot-method
+/// selectors fall to `Value::Undef`; it will surface as a phantom
+/// `MidSurfaceFace`/`MidSurfaceEdge` target once selector vocab is wired
+/// (tasks 2691/2699).
 pub(crate) fn fold_mid_surface_attributes_into_table(
     table: &mut TopologyAttributeTable,
     result: &Value,
@@ -627,6 +651,20 @@ pub(crate) fn fold_mid_surface_attributes_into_table(
                 user_label: None,
                 mod_history: vec![],
             };
+            // Detect 30-bit FxHash collision at record time: warn if the synthetic
+            // id is already occupied by a *different* feature_id — silent overwrite
+            // would be undetectable data loss (see "Hash collision detection" in doc).
+            if let Some(existing) = table.lookup(id) {
+                if existing.feature_id != attr.feature_id {
+                    tracing::warn!(
+                        "fold_mid_surface_attributes: id {:#018x} 30-bit FxHash collision: \
+                         existing feature_id={:?} overwritten by {:?}",
+                        id.0,
+                        existing.feature_id,
+                        attr.feature_id,
+                    );
+                }
+            }
             table.record(id, attr);
         }
     } else {
@@ -671,6 +709,19 @@ pub(crate) fn fold_mid_surface_attributes_into_table(
                 user_label: None,
                 mod_history: vec![],
             };
+            // Detect 30-bit FxHash collision at record time (see face-records
+            // block above for the full rationale).
+            if let Some(existing) = table.lookup(id) {
+                if existing.feature_id != attr.feature_id {
+                    tracing::warn!(
+                        "fold_mid_surface_attributes: id {:#018x} 30-bit FxHash collision: \
+                         existing feature_id={:?} overwritten by {:?}",
+                        id.0,
+                        existing.feature_id,
+                        attr.feature_id,
+                    );
+                }
+            }
             table.record(id, attr);
         }
     } else {

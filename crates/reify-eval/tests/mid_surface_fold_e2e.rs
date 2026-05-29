@@ -74,20 +74,18 @@ fn field<'a>(si: &'a StructureInstanceData, key: &str) -> Option<&'a Value> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Step-1 test: RED — naming Value does not yet carry face_records/edges lists
+// Naming projection: face_records and edges lists are present in the result Value
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Dispatch `shell-extract::extract` on the synthetic slab and assert that the
-/// result Value's `naming` StructureInstance carries:
-///   - A `face_records` list with `len == naming.face_count` (≥ 1 for the slab).
-///   - An `edges` list with `len == naming.edge_count`.
-///
-/// RED today because `shell_extraction_result_to_value` only projects
-/// `face_count` / `edge_count` into the naming StructureInstance (line 168-179
-/// of shell_extract_compute.rs).  GREEN after step-2 adds the full lists.
+/// Guards that `shell_extraction_result_to_value` projects the full attribute
+/// records into the result `Value`'s `naming` StructureInstance:
+///   - `face_records`: a `List` with one `StructureInstance{feature_id,
+///     local_index}` per mid-surface region; `len == naming.face_count` (≥ 1
+///     for the slab).
+///   - `edges`: a `List` with one entry per edge; `len == naming.edge_count`.
 ///
 /// Uses `dispatch_compute_node` (&self) because we only need to inspect the
-/// projected Value — no engine-side fold is needed at this stage.
+/// projected Value — no engine-side fold is required at this stage.
 #[test]
 fn naming_value_carries_face_records_and_edges_lists() {
     let mut engine = make_simple_engine();
@@ -202,16 +200,16 @@ fn naming_value_carries_face_records_and_edges_lists() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Step-5 test: RED — engine table not yet populated at dispatch-complete
+// Fold hook: run_compute_dispatch populates topology_attribute_table on Completed
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Run `engine.run_compute_dispatch` on the synthetic slab and assert that
-/// `engine.topology_attribute_table()` contains MidSurfaceFace entries
-/// (count == naming.face_count, ≥ 1) and the expected MidSurfaceEdge entries.
-///
-/// RED today because `run_compute_dispatch` does not call
-/// `fold_mid_surface_attributes_into_table` on the Completed path.
-/// GREEN after step-6 wires the fold.
+/// Guards that `run_compute_dispatch` calls
+/// `fold_mid_surface_attributes_into_table` on the `Completed` path, and that
+/// `engine.topology_attribute_table()` then contains:
+///   - Exactly `face_count` (≥ 1) `MidSurfaceFace` entries.
+///   - Exactly `edge_count` `MidSurfaceEdge` entries.
+///   - All synthetic `GeometryHandleId`s with the high bit set (disjoint from
+///     OCCT kernel handles).
 ///
 /// Mirrors the ComputeNode wiring pattern from
 /// `shell_extract_compute_integration.rs:290` and `engine_compute.rs:649`.
@@ -262,8 +260,7 @@ fn run_compute_dispatch_folds_mid_surface_attributes_into_engine_table() {
     assert_eq!(
         face_entries.len() as i64,
         face_count,
-        "topology_attribute_table must have face_count={face_count} MidSurfaceFace entries; \
-         got {} (step-6 fold hook not yet wired?)",
+        "topology_attribute_table must have face_count={face_count} MidSurfaceFace entries; got {}",
         face_entries.len()
     );
 
@@ -271,8 +268,7 @@ fn run_compute_dispatch_folds_mid_surface_attributes_into_engine_table() {
     assert_eq!(
         edge_entries.len() as i64,
         edge_count,
-        "topology_attribute_table must have edge_count={edge_count} MidSurfaceEdge entries; \
-         got {} (step-6 fold hook not yet wired?)",
+        "topology_attribute_table must have edge_count={edge_count} MidSurfaceEdge entries; got {}",
         edge_entries.len()
     );
 

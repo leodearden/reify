@@ -316,6 +316,12 @@ impl crate::Engine {
                 // target that currently needs a post-dispatch fold; a per-target
                 // hook map is the documented future generalization if more
                 // targets need this pattern.
+                //
+                // NOTE: topology_attribute_table is rebuild-derived and is NOT
+                // repopulated on a pure in-memory cache hit. Any future path
+                // that short-circuits dispatch from a cached result (task ι
+                // scope) must also call this fold so the table stays consistent
+                // with the result served to callers.
                 if target == "shell-extract::extract" {
                     crate::shell_extract_compute::fold_mid_surface_attributes_into_table(
                         &mut self.topology_attribute_table,
