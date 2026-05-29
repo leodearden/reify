@@ -2057,15 +2057,18 @@ impl Engine {
         // implicit Realization→ValueCell edge), so without this post-pass the GH
         // cell's freshness derivation would never fold in its Realization's
         // freshness (PRD §5/§7.1). The links come from the same single source of
-        // truth the reverse index / trace map use
-        // (`geometry_cell_realization_links`); `snapshot.graph` is read-only here
-        // and `self.cache` is a disjoint field. Each geometry cell maps to one
-        // realization, so the replace-semantics setter stays idempotent across
-        // re-eval rounds.
-        for (rid, cell) in crate::deps::geometry_cell_realization_links(&snapshot.graph) {
+        // truth the reverse index / trace map use, folded per-cell by
+        // (`geometry_cell_realization_reads`) so the cached trace carries the
+        // SAME accumulated `realization_reads` as `build_trace_map_and_fields`
+        // (which `push`-accumulates) even if the 1:1 cell↔realization invariant
+        // is ever violated — see that helper's docs. `snapshot.graph` is
+        // read-only here and `self.cache` is a disjoint field. Each build
+        // re-folds from scratch, so the replace-semantics setter stays
+        // idempotent across re-eval rounds.
+        for (cell, reads) in crate::deps::geometry_cell_realization_reads(&snapshot.graph) {
             let _ = self
                 .cache
-                .set_realization_reads(&NodeId::Value(cell), vec![rid]);
+                .set_realization_reads(&NodeId::Value(cell), reads);
         }
 
         // Store internal state for incremental evaluation
@@ -3298,6 +3301,17 @@ impl Engine {
     /// snapshot (`engine.snapshot().clone()`) and revalidate against it without
     /// a borrow conflict with `&self`. Per PRD §9 Q4 the per-read HashMap lookup
     /// is acceptable for v0.3.
+    ///
+    /// **Consumers / production wiring (deferred).** As of GHR-δ this entry
+    /// point (and its sibling counter [`Engine::geometry_revalidation_slow_path_count`])
+    /// has NO production caller — only the in-crate integration suite
+    /// (`tests/geometry_handle_freshness.rs`) exercises it. Lazy revalidation is
+    /// therefore NOT yet active on any real read path: GUI value reads and other
+    /// consumers still read `snapshot.values` directly and bypass it. Routing the
+    /// real read boundary (e.g. the GUI engine's value-read path) through this
+    /// method is intentionally left to a follow-up task; until then a stale
+    /// handle is only re-resolved when a caller opts in. Do not assume
+    /// revalidation is live on every read just because this method exists.
     pub fn read_value_revalidated(&self, snapshot: &mut Snapshot, cell: &ValueCellId) -> Value {
         // Clone the (value, determinacy) pair out so the immutable borrow on
         // `snapshot.values` ends before the possible write-back below. A missing

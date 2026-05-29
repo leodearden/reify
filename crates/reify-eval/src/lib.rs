@@ -501,6 +501,11 @@ pub struct Engine {
     /// via `geometry_revalidation_slow_path_count` and reset via
     /// `reset_geometry_revalidation_slow_path_count` (engine_admin.rs; reader
     /// test-gated, mirroring the `last_*` reset+reader pair).
+    ///
+    /// NOTE (GHR-δ): the only thing that bumps this counter today is the
+    /// integration suite — `read_value_revalidated` has no production caller yet
+    /// (see its docstring), so in a live run this stays at 0. Wiring lazy
+    /// revalidation into the real read path is deferred to a follow-up task.
     geometry_revalidation_slow_path: std::sync::atomic::AtomicUsize,
     /// Event journal recording evaluation events.
     journal: EventJournal,

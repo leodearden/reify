@@ -1089,13 +1089,16 @@ impl CacheStore {
     /// [`crate::deps::extract_dependency_trace`] cannot see (geometry params are
     /// recorded with an empty trace via `record_eval_completed`). The cold-eval
     /// (`engine_eval.rs`) and incremental (`engine_edit.rs`) paths call this as a
-    /// post-pass, sourcing the links from
-    /// [`crate::deps::geometry_cell_realization_links`], so that
+    /// post-pass, sourcing the per-cell list from
+    /// [`crate::deps::geometry_cell_realization_reads`], so that
     /// [`Self::derive_output_freshness_from_trace_with_cause`] folds the backing
     /// Realization's freshness into the cell's (PRD §5).
     ///
     /// Replaces (not appends) the list so repeated eval/edit rounds stay
-    /// idempotent. Returns `true` if the node was found, `false` if absent.
+    /// idempotent — the caller passes the FULL accumulated list for the cell
+    /// (one realization in the expected 1:1 case), so this replace stays
+    /// consistent with the `push`-accumulating `build_trace_map_and_fields`.
+    /// Returns `true` if the node was found, `false` if absent.
     pub fn set_realization_reads(
         &mut self,
         node: &NodeId,

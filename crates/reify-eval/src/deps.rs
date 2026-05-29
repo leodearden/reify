@@ -239,6 +239,16 @@ impl ReverseDependencyIndex {
 /// the forward trace builder ([`build_trace_map_and_fields`]), the reverse
 /// index builder ([`ReverseDependencyIndex::build_from_graph_and_fields`]), and
 /// the cold/incremental eval-trace wiring in `engine_eval.rs` / `engine_edit.rs`.
+///
+/// **1:1 invariant.** Each geometry cell is expected to be backed by at most one
+/// realization: `from_templates` links a realization to the `Type::Geometry`
+/// value cell whose `member == realization.name`, and realization names are
+/// unique within an entity, so distinct realizations resolve to distinct cells.
+/// Callers that fold these links into a per-cell `realization_reads` list MUST
+/// nonetheless accumulate (not overwrite-last) so they stay consistent with the
+/// `push`-accumulating [`build_trace_map_and_fields`] even if that invariant is
+/// ever violated — use [`geometry_cell_realization_reads`] rather than calling
+/// [`crate::cache::CacheStore::set_realization_reads`] once per raw link.
 pub(crate) fn geometry_cell_realization_links(
     graph: &crate::graph::EvaluationGraph,
 ) -> impl Iterator<Item = (RealizationNodeId, ValueCellId)> + '_ {
@@ -248,6 +258,31 @@ pub(crate) fn geometry_cell_realization_links(
             .as_ref()
             .map(|cell| (rnode.id.clone(), cell.clone()))
     })
+}
+
+/// GHR-δ: fold [`geometry_cell_realization_links`] into a per-cell
+/// `realization_reads` list, accumulating (never overwriting) every realization
+/// that backs a given geometry cell.
+///
+/// This is the single source of truth for the cold-eval (`engine_eval.rs`) and
+/// incremental (`engine_edit.rs`) cache post-pass that calls
+/// [`crate::cache::CacheStore::set_realization_reads`]. Folding here — rather
+/// than calling the replace-semantics setter once per raw link — guarantees the
+/// cached trace carries the SAME accumulated `realization_reads` that
+/// [`build_trace_map_and_fields`] records via `push`, so the two freshness
+/// derivation paths cannot silently diverge if the 1:1 cell↔realization
+/// invariant is ever broken (two realizations sharing one geometry cell). In the
+/// expected 1:1 case each list has exactly one element, identical to the prior
+/// per-link behaviour. The replace-per-build setter remains idempotent across
+/// re-eval / edit rounds because each build re-folds from scratch.
+pub(crate) fn geometry_cell_realization_reads(
+    graph: &crate::graph::EvaluationGraph,
+) -> HashMap<ValueCellId, Vec<RealizationNodeId>> {
+    let mut reads: HashMap<ValueCellId, Vec<RealizationNodeId>> = HashMap::new();
+    for (rid, cell) in geometry_cell_realization_links(graph) {
+        reads.entry(cell).or_default().push(rid);
+    }
+    reads
 }
 
 /// Build a forward dependency trace map for all nodes in the graph.
