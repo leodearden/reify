@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use reify_core::DimensionVector;
+use reify_core::{Diagnostic, DiagnosticCode, DimensionVector};
 use reify_ir::Value;
 
 use crate::helpers::{sanitize_value, validate_dimensioned_scalar};
@@ -39,6 +39,28 @@ fn parse_sign(v: &Value) -> Option<i64> {
         Value::Int(-1) => Some(-1),
         _ => None,
     }
+}
+
+// --- stackup error classification ---
+
+/// Internal error classification for tolerance stack-up validation.
+///
+/// Each variant corresponds to one of the §4.4 diagnostic codes:
+/// - `EmptyChain`  → `E_StackupEmptyChain`  / `DiagnosticCode::StackupEmptyChain`
+/// - `DimMismatch` → `E_StackupDimMismatch` / `DiagnosticCode::StackupDimMismatch`
+/// - `BadSign`     → `E_StackupBadSign`     / `DiagnosticCode::StackupBadSign`
+/// - `BadSamples`  → `E_StackupBadSamples`  / `DiagnosticCode::StackupBadSamples`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StackupError {
+    /// Chain is empty (`Value::List` with zero elements) or not a list.
+    EmptyChain,
+    /// A contributor entry is not a `Value::Map`, or a required LENGTH field
+    /// (`nominal`, `plus_tol`, `minus_tol`) is missing or not a finite LENGTH scalar.
+    DimMismatch,
+    /// A contributor's `sign` field is not `Value::Int(1)` or `Value::Int(-1)`.
+    BadSign,
+    /// The `samples` argument to `monte_carlo_stackup` is not a positive `Value::Int`.
+    BadSamples,
 }
 
 // --- builder functions ---
@@ -143,47 +165,162 @@ struct ContributorData {
     distribution: Distribution,
 }
 
-/// Parse a chain of contributors from a `Value`.
+/// Parse a chain of contributors from a `Value`, returning a typed `StackupError`
+/// when any validation step fails.
 ///
-/// Returns `None` if:
-/// - `v` is not a non-empty `Value::List`
-/// - any element is not a `Value::Map`
-/// - any map is missing or has an invalid `nominal` / `plus_tol` / `minus_tol`
-///   (must be finite LENGTH scalars) or `sign` (must be +/-1)
-fn parse_chain(v: &Value) -> Option<Vec<ContributorData>> {
+/// Error mapping:
+/// - `v` is not a `Value::List`, or the list is empty → `StackupError::EmptyChain`
+/// - any element is not a `Value::Map`, or a required LENGTH field is invalid → `StackupError::DimMismatch`
+/// - any contributor's `sign` field is not `Value::Int(+1/-1)` → `StackupError::BadSign`
+fn parse_chain_checked(v: &Value) -> Result<Vec<ContributorData>, StackupError> {
     let items = match v {
         Value::List(items) if !items.is_empty() => items,
-        _ => return None,
+        _ => return Err(StackupError::EmptyChain),
     };
     let mut chain = Vec::with_capacity(items.len());
     for item in items {
         let map = match item {
             Value::Map(m) => m,
-            _ => return None,
+            _ => return Err(StackupError::DimMismatch),
         };
-        let nominal =
-            len_scalar(map.get(&Value::String("nominal".into()))?)?;
-        let plus_tol =
-            len_scalar(map.get(&Value::String("plus_tol".into()))?)?;
-        let minus_tol =
-            len_scalar(map.get(&Value::String("minus_tol".into()))?)?;
-        let sign =
-            parse_sign(map.get(&Value::String("sign".into()))?)?;
+        let nominal = len_scalar(
+            map.get(&Value::String("nominal".into()))
+                .ok_or(StackupError::DimMismatch)?,
+        )
+        .ok_or(StackupError::DimMismatch)?;
+        let plus_tol = len_scalar(
+            map.get(&Value::String("plus_tol".into()))
+                .ok_or(StackupError::DimMismatch)?,
+        )
+        .ok_or(StackupError::DimMismatch)?;
+        let minus_tol = len_scalar(
+            map.get(&Value::String("minus_tol".into()))
+                .ok_or(StackupError::DimMismatch)?,
+        )
+        .ok_or(StackupError::DimMismatch)?;
+        let sign = parse_sign(
+            map.get(&Value::String("sign".into()))
+                .ok_or(StackupError::BadSign)?,
+        )
+        .ok_or(StackupError::BadSign)?;
         let distribution = match map.get(&Value::String("distribution".into())) {
             Some(Value::Enum { type_name, variant }) if type_name.as_str() == "Distribution" => {
                 match variant.as_str() {
                     "Normal" => Distribution::Normal,
                     "Uniform" => Distribution::Uniform,
                     "Triangular" => Distribution::Triangular,
-                    _ => return None, // unrecognized variant
+                    _ => return Err(StackupError::DimMismatch), // unrecognized variant
                 }
             }
             None => Distribution::Normal, // default when key absent
-            _ => return None,             // invalid key type
+            _ => return Err(StackupError::DimMismatch), // invalid key type
         };
         chain.push(ContributorData { nominal, plus_tol, minus_tol, sign, distribution });
     }
-    Some(chain)
+    Ok(chain)
+}
+
+/// Parse a chain of contributors from a `Value`.
+///
+/// Delegates to [`parse_chain_checked`]; returns `None` on any error so the
+/// builtins retain their existing `Value::Undef` error behaviour unchanged.
+fn parse_chain(v: &Value) -> Option<Vec<ContributorData>> {
+    parse_chain_checked(v).ok()
+}
+
+/// Pure classifier: given the name and args of a stdlib call that returned
+/// `Value::Undef`, determine whether this was a recognised stackup builtin
+/// error and, if so, which `Diagnostic` (with `Severity::Error`) to emit.
+///
+/// Returns `None` for:
+/// - unrecognised function names (non-stackup builtins, user functions, etc.)
+/// - valid input to a stackup builtin (no error to report)
+///
+/// Returns `Some(Diagnostic)` for:
+/// - `E_StackupEmptyChain` — empty or non-list chain arg
+/// - `E_StackupDimMismatch` — contributor not a Map, or required field not a
+///   finite LENGTH scalar
+/// - `E_StackupBadSign` — contributor sign not Int(+1/-1)
+/// - `E_StackupBadSamples` — `monte_carlo_stackup` samples ≤ 0 (not a positive Int)
+pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
+    // Only the five stackup math builtins can produce these diagnostics.
+    // contributor / contributor_asym return Undef too, but they're builder
+    // functions — argument validation there is the caller's responsibility
+    // and has no PRD §4.4 diagnostic code.
+    match name {
+        "stackup_worst_case" | "stackup_rss" => {
+            if args.len() < 1 {
+                return None; // arity error handled elsewhere
+            }
+            match parse_chain_checked(&args[0]) {
+                Err(StackupError::EmptyChain) => Some(
+                    Diagnostic::error(
+                        "E_StackupEmptyChain: tolerance chain must be non-empty",
+                    )
+                    .with_code(DiagnosticCode::StackupEmptyChain),
+                ),
+                Err(StackupError::DimMismatch) => Some(
+                    Diagnostic::error(
+                        "E_StackupDimMismatch: contributor field must be a finite LENGTH scalar",
+                    )
+                    .with_code(DiagnosticCode::StackupDimMismatch),
+                ),
+                Err(StackupError::BadSign) => Some(
+                    Diagnostic::error(
+                        "E_StackupBadSign: contributor sign must be Int(+1) or Int(-1)",
+                    )
+                    .with_code(DiagnosticCode::StackupBadSign),
+                ),
+                Err(StackupError::BadSamples) => None, // unreachable for these fns
+                Ok(_) => None, // valid chain — no diagnostic
+            }
+        }
+        "monte_carlo_stackup" => {
+            if args.len() < 3 {
+                return None; // arity error handled elsewhere
+            }
+            // Check chain first.
+            match parse_chain_checked(&args[0]) {
+                Err(StackupError::EmptyChain) => {
+                    return Some(
+                        Diagnostic::error(
+                            "E_StackupEmptyChain: tolerance chain must be non-empty",
+                        )
+                        .with_code(DiagnosticCode::StackupEmptyChain),
+                    );
+                }
+                Err(StackupError::DimMismatch) => {
+                    return Some(
+                        Diagnostic::error(
+                            "E_StackupDimMismatch: contributor field must be a finite LENGTH scalar",
+                        )
+                        .with_code(DiagnosticCode::StackupDimMismatch),
+                    );
+                }
+                Err(StackupError::BadSign) => {
+                    return Some(
+                        Diagnostic::error(
+                            "E_StackupBadSign: contributor sign must be Int(+1) or Int(-1)",
+                        )
+                        .with_code(DiagnosticCode::StackupBadSign),
+                    );
+                }
+                Err(StackupError::BadSamples) => {} // unreachable from parse_chain_checked
+                Ok(_) => {}
+            }
+            // Chain is valid (or already returned). Check samples arg.
+            match &args[1] {
+                Value::Int(n) if *n > 0 => None, // valid
+                _ => Some(
+                    Diagnostic::error(
+                        "E_StackupBadSamples: samples must be a positive integer",
+                    )
+                    .with_code(DiagnosticCode::StackupBadSamples),
+                ),
+            }
+        }
+        _ => None, // not a stackup math builtin
+    }
 }
 
 /// Compute worst-case (extreme-value) stack-up bounds for a contributor chain.
