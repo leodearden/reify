@@ -81,9 +81,9 @@ vi.mock('../editor/FileTabs', () => ({
 }));
 
 // Mock bridge functions
-const emptyState: GuiState = { meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [] };
+const emptyState: GuiState = { meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [] };
 vi.mock('../bridge', () => ({
-  getInitialState: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [] }),
+  getInitialState: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [] }),
   getEntityTree: vi.fn().mockResolvedValue([]),
   setParameter: vi.fn().mockResolvedValue(undefined),
   exportGeometry: vi.fn().mockResolvedValue(undefined),
@@ -92,7 +92,7 @@ vi.mock('../bridge', () => ({
   updateSource: vi.fn().mockResolvedValue(undefined),
   saveFile: vi.fn().mockResolvedValue(undefined),
   openFile: vi.fn().mockResolvedValue({ path: '', content: '' }),
-  openFileEngine: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [] }),
+  openFileEngine: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [] }),
   getSourceLocation: vi.fn().mockResolvedValue({ file_path: '/test.ri', line: 1, column: 1, end_line: 1, end_column: 5 }),
   focusEntity: vi.fn().mockResolvedValue(undefined),
   onMeshUpdate: vi.fn().mockResolvedValue(() => {}),
@@ -118,7 +118,7 @@ vi.mock('../bridge', () => ({
   onKernelStatus: vi.fn().mockResolvedValue(() => {}),
   getContainingDefinition: vi.fn().mockResolvedValue(null),
   getEntityAtSourceLocation: vi.fn().mockResolvedValue(null),
-  getDefPreview: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [] }),
+  getDefPreview: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [] }),
   readViewSidecar: vi.fn().mockResolvedValue(null),
   writeViewSidecar: vi.fn().mockResolvedValue(undefined),
   getMechanismDescriptors: vi.fn().mockResolvedValue([]),
@@ -164,7 +164,7 @@ beforeEach(() => {
   capturedEditorScrollToLocation = undefined;
   mockFlyToEntity.mockClear();
   // Reset bridge mocks to defaults (clearAllMocks only clears call history, not implementations)
-  vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [] });
+  vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [] });
   vi.mocked(bridge.getEntityTree).mockResolvedValue([]);
   vi.mocked(bridge.onMeshUpdate).mockResolvedValue(() => {});
   vi.mocked(bridge.onValueUpdate).mockResolvedValue(() => {});
@@ -311,6 +311,7 @@ describe('App initial state loading', () => {
       files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
       tessellation_diagnostics: [],
       compile_diagnostics: [],
+      tensegrity_wires: [],
     };
 
     vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
@@ -376,6 +377,7 @@ describe('App dynamic window title', () => {
     vi.mocked(bridge.getInitialState).mockResolvedValue({
       meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [],
       compile_diagnostics: [],
+      tensegrity_wires: [],
     });
 
     render(() => <App />);
@@ -393,6 +395,7 @@ describe('App dynamic window title', () => {
       files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
       tessellation_diagnostics: [],
       compile_diagnostics: [],
+      tensegrity_wires: [],
     });
 
     render(() => <App />);
@@ -417,6 +420,7 @@ describe('App dynamic window title', () => {
       files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
       tessellation_diagnostics: [],
       compile_diagnostics: [],
+      tensegrity_wires: [],
     });
 
     render(() => <App />);
@@ -511,6 +515,7 @@ describe('App async mount/cleanup race conditions', () => {
       files: [{ path: '/test.ri', content: '' }],
       tessellation_diagnostics: [],
       compile_diagnostics: [],
+      tensegrity_wires: [],
     });
 
     // Flush macrotasks so setTimeout(0) callbacks execute
@@ -661,6 +666,7 @@ describe('App navigation wiring', () => {
     files: [],
     tessellation_diagnostics: [],
     compile_diagnostics: [],
+    tensegrity_wires: [],
   };
 
   it('viewport onSelect triggers getSourceLocation from bridge', async () => {
@@ -815,7 +821,7 @@ describe('App initialization loading state', () => {
     expect(screen.queryByTestId('app-layout')).toBeNull();
 
     // Resolve to transition to ready
-    resolveGetState({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [] });
+    resolveGetState({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [] });
     await waitFor(() => {
       expect(screen.getByTestId('app-layout')).toBeTruthy();
     });
@@ -848,7 +854,7 @@ describe('App initialization loading state', () => {
     });
 
     // Reset to succeed on retry
-    vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [] });
+    vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [] });
 
     fireEvent.click(screen.getByText('Retry'));
 
@@ -861,7 +867,7 @@ describe('App initialization loading state', () => {
   });
 
   it('after successful getInitialState, app-layout is shown and loading/error are gone', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [] });
+    vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [] });
 
     render(() => <App />);
 
@@ -937,6 +943,7 @@ describe('App changedFiles multi-file tracking (R-1)', () => {
     ],
     tessellation_diagnostics: [],
     compile_diagnostics: [],
+    tensegrity_wires: [],
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -1044,6 +1051,7 @@ describe('App dirty-file check before reload (R-4)', () => {
     ],
     tessellation_diagnostics: [],
     compile_diagnostics: [],
+    tensegrity_wires: [],
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -1166,6 +1174,7 @@ describe('App handleReload partial failure', () => {
     ],
     tessellation_diagnostics: [],
     compile_diagnostics: [],
+    tensegrity_wires: [],
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -1358,6 +1367,7 @@ describe('App handleReload race condition', () => {
     ],
     tessellation_diagnostics: [],
     compile_diagnostics: [],
+    tensegrity_wires: [],
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -1492,6 +1502,7 @@ describe('App handleSetParameter error handling', () => {
         files: [],
         tessellation_diagnostics: [],
         compile_diagnostics: [],
+        tensegrity_wires: [],
       });
 
       render(() => <App />);
@@ -1537,6 +1548,7 @@ describe('App re-evaluate error toast', () => {
         files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
         tessellation_diagnostics: [],
         compile_diagnostics: [],
+        tensegrity_wires: [],
       });
 
       render(() => <App />);
@@ -1580,6 +1592,7 @@ describe('App F5 re-evaluate multi-file', () => {
       ],
       tessellation_diagnostics: [],
       compile_diagnostics: [],
+      tensegrity_wires: [],
     });
     vi.mocked(bridge.updateSource).mockResolvedValue(undefined as any);
 
@@ -1634,6 +1647,7 @@ describe('App event subscription error toast', () => {
         files: [],
         tessellation_diagnostics: [],
         compile_diagnostics: [],
+        tensegrity_wires: [],
       });
 
       render(() => <App />);
@@ -1706,6 +1720,7 @@ describe('App reload error toast', () => {
         files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
         tessellation_diagnostics: [],
         compile_diagnostics: [],
+        tensegrity_wires: [],
       });
 
       render(() => <App />);
@@ -1873,7 +1888,7 @@ describe('App initApp concurrent execution guard', () => {
     expect(bridge.getInitialState).toHaveBeenCalledTimes(2);
 
     // Clean up: resolve the deferred promise
-    resolveRetry({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [] });
+    resolveRetry({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [] });
     await waitFor(() => {
       expect(screen.getByTestId('app-layout')).toBeTruthy();
     });
@@ -1901,6 +1916,7 @@ describe('App initApp concurrent execution guard', () => {
     vi.mocked(bridge.getInitialState).mockResolvedValueOnce({
       meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [],
       compile_diagnostics: [],
+      tensegrity_wires: [],
     });
 
     const { unmount } = render(() => <App />);
@@ -1963,7 +1979,7 @@ describe('App initApp concurrent execution guard', () => {
     expect(screen.getByTestId('app-loading')).toBeTruthy();
 
     // Clean up: resolve the deferred promise
-    resolveRetry({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [] });
+    resolveRetry({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [] });
     await waitFor(() => {
       expect(screen.getByTestId('app-layout')).toBeTruthy();
     });
@@ -2211,6 +2227,7 @@ describe('App Ctrl+O open file', () => {
       files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
       tessellation_diagnostics: [],
       compile_diagnostics: [],
+      tensegrity_wires: [],
     });
 
     // Mock pickOpenPath to return a path
@@ -2243,6 +2260,7 @@ describe('App handleOpen dirty-check confirmation', () => {
     vi.mocked(bridge.openFileEngine).mockResolvedValue({
       meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [],
       compile_diagnostics: [],
+      tensegrity_wires: [],
     });
   }
 
@@ -2334,6 +2352,7 @@ describe('App File→New (Ctrl+N) save-as-you-go flow', () => {
     vi.mocked(bridge.openFileEngine).mockResolvedValue({
       meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [],
       compile_diagnostics: [],
+      tensegrity_wires: [],
     });
   }
 
@@ -2450,6 +2469,7 @@ describe('App handleNew dirty-check confirmation', () => {
     vi.mocked(bridge.openFileEngine).mockResolvedValue({
       meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [],
       compile_diagnostics: [],
+      tensegrity_wires: [],
     });
   }
 
@@ -2537,6 +2557,7 @@ describe('App end-to-end toast integration', () => {
         files: [],
         tessellation_diagnostics: [],
         compile_diagnostics: [],
+        tensegrity_wires: [],
       });
 
       render(() => <App />);
@@ -2713,6 +2734,7 @@ describe('App onSend context forwarding', () => {
       files: [{ path: 'bracket.ri', content: 'structure Bracket {}' }],
       tessellation_diagnostics: [],
       compile_diagnostics: [],
+      tensegrity_wires: [],
     };
     vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
 
@@ -2769,6 +2791,7 @@ describe('App claudeSendMessage error-path integration', () => {
         files: [{ path: 'bracket.ri', content: 'structure Bracket {}' }],
         tessellation_diagnostics: [],
         compile_diagnostics: [],
+        tensegrity_wires: [],
       });
 
       render(() => <App />);
@@ -4682,6 +4705,7 @@ describe('App externallyChanged store wiring', () => {
     ],
     tessellation_diagnostics: [],
     compile_diagnostics: [],
+    tensegrity_wires: [],
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -4846,6 +4870,7 @@ describe('App file-changed auto-reload (non-dirty)', () => {
     ],
     tessellation_diagnostics: [],
     compile_diagnostics: [],
+    tensegrity_wires: [],
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -4937,6 +4962,7 @@ describe('App file-changed isSameFile cross-format matching', () => {
     ],
     tessellation_diagnostics: [],
     compile_diagnostics: [],
+    tensegrity_wires: [],
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -4986,6 +5012,7 @@ describe('App handleSave aborts when file is externally changed', () => {
     ],
     tessellation_diagnostics: [],
     compile_diagnostics: [],
+    tensegrity_wires: [],
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -5117,6 +5144,7 @@ describe('App handleSave conflict prompt: Reload from disk', () => {
     ],
     tessellation_diagnostics: [],
     compile_diagnostics: [],
+    tensegrity_wires: [],
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -5200,6 +5228,7 @@ describe('App handleSave conflict prompt: Overwrite', () => {
     ],
     tessellation_diagnostics: [],
     compile_diagnostics: [],
+    tensegrity_wires: [],
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -5277,6 +5306,7 @@ describe('App save-conflict resolution clears the reload-prompt banner', () => {
     ],
     tessellation_diagnostics: [],
     compile_diagnostics: [],
+    tensegrity_wires: [],
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -5577,6 +5607,7 @@ describe('App file-removed event handling', () => {
     ],
     tessellation_diagnostics: [],
     compile_diagnostics: [],
+    tensegrity_wires: [],
   };
 
   let fileRemovedCallback: ((data: { path: string }) => void) | undefined;

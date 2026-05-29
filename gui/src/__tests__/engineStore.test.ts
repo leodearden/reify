@@ -115,6 +115,7 @@ describe('engineStore', () => {
         files: [],
         tessellation_diagnostics: [],
         compile_diagnostics: [],
+        tensegrity_wires: [],
       };
       initFromState(guiState);
 
@@ -519,6 +520,7 @@ describe('engineStore', () => {
         files: [],
         tessellation_diagnostics: [],
         compile_diagnostics: [],
+        tensegrity_wires: [],
       };
       initFromState(guiState);
       expect(spy).toHaveBeenCalledTimes(1);
@@ -537,6 +539,7 @@ describe('engineStore', () => {
         files: [],
         tessellation_diagnostics: [],
         compile_diagnostics: [],
+        tensegrity_wires: [],
       };
       initFromState(guiState);
       initFromState(guiState);
@@ -556,6 +559,7 @@ describe('engineStore', () => {
         files: [],
         tessellation_diagnostics: [],
         compile_diagnostics: [],
+        tensegrity_wires: [],
       };
       // Must not throw when the callback is omitted.
       expect(() => initFromState(guiState)).not.toThrow();
@@ -628,6 +632,7 @@ describe('engineStore tessellationDiagnostics', () => {
         files: [],
         tessellation_diagnostics: [diag],
         compile_diagnostics: [],
+        tensegrity_wires: [],
       };
       initFromState(guiState);
       expect(state.tessellationDiagnostics).toEqual([diag]);
@@ -703,6 +708,7 @@ describe('engineStore compileDiagnostics', () => {
         files: [],
         tessellation_diagnostics: [],
         compile_diagnostics: [diag],
+        tensegrity_wires: [],
       };
       initFromState(guiState);
       expect(state.compileDiagnostics).toEqual([diag]);
@@ -771,6 +777,7 @@ describe('engineStore freshness pass-through', () => {
         files: [],
         tessellation_diagnostics: [],
         compile_diagnostics: [],
+        tensegrity_wires: [],
       };
       initFromState(guiState);
       expect(state.values['cell_failed'].freshness).toBe('failed');

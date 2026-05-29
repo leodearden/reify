@@ -56,7 +56,7 @@ function makeMesh(path: string): MeshData {
 function makeEngineStore(meshPaths: string[] = []) {
   const meshes: Record<string, MeshData> = {};
   for (const p of meshPaths) meshes[p] = makeMesh(p);
-  const [state] = createStore({ meshes });
+  const [state] = createStore({ meshes, tensegrityWires: [] as any[] });
   return { state };
 }
 
