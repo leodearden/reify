@@ -34,6 +34,10 @@
 //! sibling `spline` submodule.
 #![allow(dead_code)]
 
+use std::collections::BTreeMap;
+
+use reify_ir::Value;
+
 use reify_gcode::{GcodeCommand, ParseError};
 
 /// Which dialect parser [`lower_gcode`] should drive.
