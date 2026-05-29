@@ -62,7 +62,7 @@ load    on column.face("top")    = 1 kN downward
 support on column.face("bottom") = fixed
 
 result = solve_buckling(column, material, [load], [support])
-critical = critical_load(result)            // ≈ π² E I / L²  → eigenvalue × 1 kN
+critical = critical_load(result, 1 kN)      // ≈ π² E I / L²  → eigenvalue × 1 kN
 ```
 
 The user observes:
@@ -170,9 +170,11 @@ natural typed form without surface-API change.
 **Result-interpretation helpers** (stdlib pure functions, no trampoline):
 
 ```
-fn critical_load(result: BucklingResult) -> Force
-    // First-mode eigenvalue × reference load magnitude.
-    // Reference load magnitude derived from the `pre_stress` field's stored load magnitudes.
+fn critical_load(result: BucklingResult, reference_load: Force) -> Force
+    // First-mode eigenvalue × reference_load. The kernel returns a dimensionless
+    // multiplier λ with λ × reference_load = P_cr, so the reference load is supplied
+    // explicitly (BucklingResult / pre_stress do not store a load magnitude) —
+    // mirroring safety_factor_buckling(result, applied_load).
 
 fn mode_shape(result: BucklingResult, n: Integer) -> Field<Point3<Length>, Vector3<Length>>
     // result.modes[n].mode_shape (subject to #3117 placeholder).
