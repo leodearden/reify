@@ -4603,6 +4603,7 @@ name = "reify-stdlib"
 version = "0.1.0"
 dependencies = [
  "reify-core",
+ "reify-gcode",
  "reify-ir",
  "reify-test-support",
  "tracing",
