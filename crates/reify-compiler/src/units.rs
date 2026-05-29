@@ -604,8 +604,13 @@ pub fn resolve_unit_expr(
                 Ok((entry.factor, entry.dimension))
             }
         },
-        reify_ast::UnitExpr::Mul(..) | reify_ast::UnitExpr::Div(..) | reify_ast::UnitExpr::Pow(..) => {
-            todo!("compound fold arms added in later steps (task 3803)")
+        reify_ast::UnitExpr::Mul(a, b) => {
+            let (fa, da) = resolve_unit_expr(a, registry, span)?;
+            let (fb, db) = resolve_unit_expr(b, registry, span)?;
+            Ok((fa * fb, da.mul(&db)))
+        }
+        reify_ast::UnitExpr::Div(..) | reify_ast::UnitExpr::Pow(..) => {
+            todo!("Div/Pow fold arms added in later steps (task 3803)")
         }
     }
 }
