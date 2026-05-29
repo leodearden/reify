@@ -131,7 +131,7 @@ Consumer-side (`reify-eval` / `solve_elastic_static`):
 
 | Scenario | Precondition | Postcondition |
 |---|---|---|
-| Homogeneous orthotropic solve | single `OrthotropicMaterial`, cantilever | tip deflection matches anisotropic-beam reference within band |
+| Homogeneous orthotropic solve | single `OrthotropicMaterial`, cantilever (moderate aspect ratio L/h ≤ ~8) | tip deflection matches anisotropic-beam reference within band — **keep the band P1-tet-honest: the orthotropic D is exact, but a slender orthotropic cantilever still rides the P1 bending-lock floor (~6.8%); do not tighten below the P1 floor unless on the P2-tet path. See the 2026-05-29 achievability survey.** |
 | Heterogeneous solve | two-zone `Field` (stiff skin / soft core) | deflection between the two homogeneous bounds; stress concentrates in stiff zone |
 | Warm-start across field refinement | solve with field v1, then refined field v2 (same mesh) | second solve warm-starts from v1 iterate; CG iterations drop; result within tol of cold solve |
 | Constant-field equivalence | isotropic material vs its constant-field lift | identical `ElasticResult` (tolerance-equivalent) |
