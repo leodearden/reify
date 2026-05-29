@@ -31,7 +31,7 @@ use reify_eval::Engine;
 use reify_test_support::{
     make_engine, make_simple_engine, parse_and_compile, parse_and_compile_with_stdlib,
 };
-use reify_core::{ModulePath, Severity, Type, ValueCellId, VersionId};
+use reify_core::{ContentHash, ModulePath, Severity, Type, ValueCellId, VersionId};
 use reify_ir::{CompiledExprKind, OptimizationObjective, Satisfaction};
 
 const EXAMPLE_PATH: &str = concat!(
@@ -1557,4 +1557,141 @@ purpose p1(subject : S) {
             trace.reads
         );
     }
+}
+
+// ── §11: Multi-param activation via activate_purpose_with_bindings (task γ) ──
+
+/// B1 / RED (step-01): `activate_purpose_with_bindings` remaps each param to
+/// its own distinct entity, producing per-param `ValueRef` entities in the
+/// injected constraint expression.
+///
+/// Inline source: two structures with a same-named param but distinct values,
+/// and a 2-param purpose that constraints `part.length < envelope.length`.
+/// Distinct binding → 80mm < 100mm → the expr has PartA on the left and BoxB
+/// on the right; aliased binding would give PartA on both sides.
+///
+/// Verifies the DISTINCT-binding structural property by inspecting injected
+/// constraint expression ValueRef entities directly (not the eval outcome).
+///
+/// RED because `Engine::activate_purpose_with_bindings` does not yet exist.
+#[test]
+fn activate_purpose_with_bindings_remaps_each_param_to_distinct_entity() {
+    let source = r#"
+structure PartA { param length : Length = 80mm }
+structure BoxB { param length : Length = 100mm }
+purpose fits_within(part : Structure, envelope : Structure) {
+    constraint part.length < envelope.length
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_simple_engine();
+    engine.eval(&compiled);
+
+    // Call the new API — RED: this method does not yet exist.
+    let result = engine.activate_purpose_with_bindings(
+        "fits_within",
+        &[
+            ("part".to_string(), "PartA".to_string()),
+            ("envelope".to_string(), "BoxB".to_string()),
+        ],
+    );
+    assert!(
+        result.is_ok(),
+        "expected Ok from activate_purpose_with_bindings, got {:?}",
+        result
+    );
+
+    assert!(
+        engine.is_purpose_active("fits_within"),
+        "purpose should be active after activate_purpose_with_bindings"
+    );
+
+    let snapshot = engine.snapshot().expect("snapshot after activate");
+
+    // Find the injected constraint by purpose prefix.
+    let (constraint_id, data) = snapshot
+        .graph
+        .constraints
+        .iter()
+        .find(|(id, _)| id.entity.starts_with("purpose:fits_within@"))
+        .expect("expected injected constraint with entity prefix 'purpose:fits_within@'");
+
+    // B1: expr must be a BinOp with DISTINCT ValueRef entities for each param.
+    // `constraint part.length < envelope.length` compiles to BinOp(Less, left, right).
+    let (left_entity, right_entity) = match &data.expr.kind {
+        CompiledExprKind::BinOp { left, right, .. } => {
+            let left_ent = match &left.kind {
+                CompiledExprKind::ValueRef(id) => id.entity.clone(),
+                other => panic!("expected ValueRef in BinOp left, got {:?}", other),
+            };
+            let right_ent = match &right.kind {
+                CompiledExprKind::ValueRef(id) => id.entity.clone(),
+                other => panic!("expected ValueRef in BinOp right, got {:?}", other),
+            };
+            (left_ent, right_ent)
+        }
+        other => panic!("expected BinOp in injected constraint expr, got {:?}", other),
+    };
+    assert_eq!(
+        left_entity, "PartA",
+        "left operand (part.length) must resolve to PartA after per-param remap"
+    );
+    assert_eq!(
+        right_entity, "BoxB",
+        "right operand (envelope.length) must resolve to BoxB after per-param remap"
+    );
+
+    // Multi-binding entity must use the digest prefix (not a raw entity name).
+    // Canonical = bindings sorted by param name, each "{param}={entity}", joined by ","
+    // sorted: "envelope" < "part" → "envelope=BoxB,part=PartA"
+    let canonical = "envelope=BoxB,part=PartA";
+    let digest = ContentHash::of_str(canonical);
+    let expected_entity = format!("purpose:fits_within@{}", digest);
+    assert_eq!(
+        constraint_id.entity, expected_entity,
+        "multi-binding activation must produce entity '{}', got '{}'",
+        expected_entity, constraint_id.entity
+    );
+}
+
+/// C6 parity / RED (step-01): `activate_purpose_with_bindings` with a single
+/// binding must produce the same `purpose:{name}@{entity}` prefix as the
+/// existing `activate_purpose` shim — NO digest in the single-binding path.
+///
+/// RED because `Engine::activate_purpose_with_bindings` does not yet exist.
+#[test]
+fn activate_with_bindings_single_param_keeps_entity_prefix() {
+    // SIMPLE_MFG_SRC: `purpose mfg_ready(subject : Structure) { constraint 1 > 0 }`
+    let compiled = parse_and_compile(SIMPLE_MFG_SRC);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+
+    // Single-param: C6 parity path — entity, NOT digest.
+    let result = engine.activate_purpose_with_bindings(
+        "mfg_ready",
+        &[("subject".to_string(), "Bracket".to_string())],
+    );
+    assert!(
+        result.is_ok(),
+        "expected Ok from activate_purpose_with_bindings, got {:?}",
+        result
+    );
+    assert!(engine.is_purpose_active("mfg_ready"), "purpose should be active");
+
+    let snapshot = engine.snapshot().expect("snapshot after activate");
+
+    // C6: entity must be exactly "purpose:mfg_ready@Bracket" (no digest).
+    let injected_entity = snapshot
+        .graph
+        .constraints
+        .keys()
+        .find(|id| id.entity.starts_with("purpose:mfg_ready@"))
+        .map(|id| id.entity.as_str())
+        .expect("expected injected constraint with purpose:mfg_ready@ prefix");
+
+    assert_eq!(
+        injected_entity,
+        "purpose:mfg_ready@Bracket",
+        "single-binding activation must use '@{{entity}}' (C6 parity, no digest)"
+    );
 }
