@@ -254,6 +254,35 @@ pub struct CouponOverride {
     pub infill_n: Option<f64>,
 }
 
+/// Shared preamble for the effective-property assemblers: resolve the
+/// Gibson-Ashby `(C, n)` from the coupon (or the [`GIBSON_ASHBY_C`] /
+/// [`GIBSON_ASHBY_N`] defaults), compute the infill knockdown factor, and
+/// fetch the pattern's in-plane factors. Extracting this keeps the two
+/// assemblers from drifting if the override-resolution logic ever grows
+/// (e.g. clamping/validation).
+///
+/// `solid_fraction` is the infill relative density ρ ∈ (0, 1]. The domain is
+/// guarded by a `debug_assert!` so a bad value (ρ ≤ 0 ⇒ zero/singular
+/// stiffness; ρ > 1 ⇒ moduli above the base material) surfaces here, at the
+/// source, rather than as a degenerate constitutive matrix downstream.
+/// Callers (δ) are expected to pre-validate; the assert is a development-time
+/// backstop, compiled out of release builds.
+fn infill_and_pattern(
+    solid_fraction: f64,
+    pattern: InfillPattern,
+    coupon: &CouponOverride,
+) -> (f64, PatternFactors) {
+    debug_assert!(
+        solid_fraction > 0.0 && solid_fraction <= 1.0,
+        "solid_fraction (infill relative density) must be in (0, 1]; got {solid_fraction}"
+    );
+    let c = coupon.infill_c.unwrap_or(GIBSON_ASHBY_C);
+    let n = coupon.infill_n.unwrap_or(GIBSON_ASHBY_N);
+    let infill = gibson_ashby_infill_factor(solid_fraction, c, n);
+    let pf = pattern_factors(pattern);
+    (infill, pf)
+}
+
 /// Build the default-path transverse-isotropic constants for an FDM-printed
 /// region: base filament + infill solid fraction + infill pattern.
 ///
@@ -273,10 +302,7 @@ pub fn effective_transverse_isotropic(
     pattern: InfillPattern,
     coupon: &CouponOverride,
 ) -> TransverseIsoConstants {
-    let c = coupon.infill_c.unwrap_or(GIBSON_ASHBY_C);
-    let n = coupon.infill_n.unwrap_or(GIBSON_ASHBY_N);
-    let infill = gibson_ashby_infill_factor(solid_fraction, c, n);
-    let pf = pattern_factors(pattern);
+    let (infill, pf) = infill_and_pattern(solid_fraction, pattern, coupon);
 
     // In-plane modulus: ex (else ey) override beats the computed default.
     let e_in_plane = coupon
@@ -356,10 +382,7 @@ pub fn effective_orthotropic(
     pattern: InfillPattern,
     coupon: &CouponOverride,
 ) -> OrthotropicConstants {
-    let c = coupon.infill_c.unwrap_or(GIBSON_ASHBY_C);
-    let n = coupon.infill_n.unwrap_or(GIBSON_ASHBY_N);
-    let infill = gibson_ashby_infill_factor(solid_fraction, c, n);
-    let pf = pattern_factors(pattern);
+    let (infill, pf) = infill_and_pattern(solid_fraction, pattern, coupon);
 
     let e1 = coupon
         .ex
