@@ -111,3 +111,46 @@ tracing = "0.1"
 # for ad-hoc parallelism (matches reify-kernel-occt and reify-test-support);
 # `npy`, `rand`, and `linalg` are unused by the assembly primitive.
 faer = { version = "0.24", default-features = false, features = ["std", "sparse"] }
+
+# ---------------------------------------------------------------------------
+# Debug-profile optimisation for heavy numeric dependencies (task 4055)
+#
+# faer 0.24's Lanczos + dense gevd paths are ~500–1000× slower in unoptimised
+# debug builds than in release.  Two mechanisms are at play:
+#
+# (1) External crate kernels (faer-traits, gemm, gemm-common, gemm-f64, pulp,
+#     nano-gemm) contain SIMD loops that are pathological without optimisation.
+#     Fixed by [profile.dev.package."*"] opt-level = 3 + assertion disables
+#     (faer's own debug_assertions are also expensive in these tight kernels).
+#
+# (2) faer exposes generic functions (e.g. gevd_real<T: RealField>) that are
+#     monomorphised at the CALL SITE in reify-solver-elastic.  Cargo's "*"
+#     wildcard matches only dependency packages, NOT the root package being
+#     compiled; so the monomorphised QZ inner loops run at opt-level = 0 and
+#     remain ~220× slower than release even after (1).  Fixed by per-crate
+#     override on reify-solver-elastic (opt-level = 2 — enables vectorisation
+#     while preserving debug symbols and debuggability for non-numeric code).
+#     debug-assertions and overflow-checks are intentionally left at their dev
+#     defaults (true) here so that reify-solver-elastic's own debug_assert!
+#     invariants and overflow detection remain active during ordinary dev builds.
+#
+# Measured (task 4055):
+#   before fix        — release: 0.64 s, debug (ignored): 300–540 s
+#   "*" opt-level=3   — Lanczos path: ~0.09 s; dense gevd (n=80): ~137 s
+#   "*" + assertions=false — dense gevd: still ~137 s (monomorphised in ws crate)
+#   + reify-solver-elastic opt=2 — dense gevd <5 s; full suite <60 s ← target
+#
+# Cold-build note: the first `cargo build` after adding these tables recompiles
+# all dependencies at opt-level=3, which takes longer than a normal debug build.
+# Subsequent builds are fast (sccache amortises the cost across all worktrees).
+#
+# A debug-perf regression most likely means one of these tables was removed or
+# the opt-level on reify-solver-elastic was reset to 0.
+# ---------------------------------------------------------------------------
+[profile.dev.package."*"]
+opt-level = 3
+debug-assertions = false
+overflow-checks = false
+
+[profile.dev.package.reify-solver-elastic]
+opt-level = 2

@@ -36,6 +36,44 @@
 //! See `plan.json` design_decisions entries for rationale on: pure-function
 //! surface, generic (K, M) sign convention, panic-on-SPD-violation, deterministic
 //! start vector, and `faer::Mat<f64>` eigenvector storage.
+//!
+//! # Debug performance
+//!
+//! The shift-invert / Lanczos path's debug speed is a **faer build-profile
+//! characteristic**, not an algorithmic defect.  Release is fast and correct;
+//! debug is catastrophically slow without an explicit profile override because
+//! faer's SIMD numeric kernels run unoptimized and with internal
+//! `debug_assertions` enabled.
+//!
+//! Measured timings for the n=80 synthetic pair test
+//! (`shift_invert_and_dense_agree_on_80dof_synthetic_pair`):
+//!
+//! | profile | before fix | after fix (task 4055) |
+//! |---------|------------|----------------------|
+//! | release | ~0.644 s   | ~0.650 s (unchanged) |
+//! | debug   | 300–540 s  | ~0.646 s             |
+//!
+//! Boundary sweep (`shift_invert_no_panic_at_min_dim_boundaries`,
+//! 127 solves n=2..=128): debug ~0.107 s after fix (was 300–540 s).
+//!
+//! **Fast debug requires** the root workspace `Cargo.toml` to contain:
+//!
+//! ```toml
+//! [profile.dev.package."*"]
+//! opt-level = 3
+//! debug-assertions = false
+//! overflow-checks = false
+//!
+//! [profile.dev.package.reify-solver-elastic]
+//! opt-level = 2   # faer generic kernels monomorphised here; assertions kept on
+//! ```
+//!
+//! If a debug-mode performance regression appears (hundreds of seconds),
+//! check those overrides first — they are the most likely culprit.
+//!
+//! **Full regression (task 4055 s6):** 478 tests pass in both debug and
+//! release with no collateral drift (CG solver, assembly, buckling, shell
+//! benchmarks all unaffected by the dep opt-level override).
 
 use faer::{Col, Conj, Mat, Par, Side};
 use faer::dyn_stack::{MemBuffer, MemStack, StackReq};

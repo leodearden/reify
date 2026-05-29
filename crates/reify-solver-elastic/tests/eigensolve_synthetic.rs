@@ -237,7 +237,11 @@ fn fixture_c_expected_5() -> [f64; 5] {
     })
 }
 
-#[cfg_attr(debug_assertions, ignore = "heavy/debug-pathological: release-only at the merge gate; debug skips it. Un-ignore when task 4055 makes it fast in debug.")]
+// NOTE: this test requires the root Cargo.toml profile overrides added in
+// task 4055 ([profile.dev.package."*"] opt-level=3 and
+// [profile.dev.package.reify-solver-elastic] opt-level=2).  Without them,
+// the n=80 Lanczos + dense gevd paths run unoptimised in debug and take
+// 300–540 s.  If this test hangs in CI, check those overrides first.
 #[test]
 fn shift_invert_and_dense_agree_on_80dof_synthetic_pair() {
     let (k, b) = fixture_c();
@@ -528,7 +532,11 @@ fn solve_eigen_shift_invert_panics_on_non_finite_tol() {
 /// Numerical accuracy is not checked here — that is pinned by the closed-form
 /// fixtures.  This test guards only against the "panic on small problems"
 /// regression documented in eigensolve.rs FAER_MIN_DIM comment.
-#[cfg_attr(debug_assertions, ignore = "heavy/debug-pathological: release-only at the merge gate; debug skips it. Un-ignore when task 4055 makes it fast in debug.")]
+///
+/// NOTE: fast debug runtime (measured ~0.107 s, task 4055) depends on the root
+/// Cargo.toml profile overrides ([profile.dev.package."*"] opt-level=3 and
+/// [profile.dev.package.reify-solver-elastic] opt-level=2).  If this test
+/// hangs (127 solves × unoptimised faer ≈ 300 s each), check those first.
 #[test]
 fn shift_invert_no_panic_at_min_dim_boundaries() {
     for n in 2_usize..=128 {
