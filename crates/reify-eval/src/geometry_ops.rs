@@ -2480,10 +2480,7 @@ fn resolve_density_arg(
         reify_ir::CompiledExprKind::ValueRef(id) => id,
         _ => return None, // non-ValueRef: silent fall-through
     };
-    let value = match values.get(id) {
-        Some(v) => v,
-        None => return None, // missing cell: silent fall-through
-    };
+    let value = values.get(id)?;
     match value {
         reify_ir::Value::Real(v) => Some(*v),
         reify_ir::Value::Scalar {
