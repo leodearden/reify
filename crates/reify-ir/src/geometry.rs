@@ -1709,6 +1709,49 @@ pub trait GeometryKernel: Send + Sync {
         ))
     }
 
+    /// Ingest an externally-supplied [`Mesh`] and return a handle to the stored
+    /// geometry.
+    ///
+    /// # Producer-side-only mesh ingest
+    ///
+    /// This method is the **structural enforcement** of "producer-side-only"
+    /// mesh ingest: kernels whose geometry model is _not_ based on triangle
+    /// meshes (Fidget's implicit SDF representations, OpenVDB's voxel grids,
+    /// OCCT's B-rep topology, mocks, stubs) inherit this default unchanged, and
+    /// the `Err(OperationFailed)` return is the observable contract for that
+    /// absence.  The pattern is exactly analogous to [`attribute_hook`]'s
+    /// `None` default (geometry.rs ~line 1735): the absence of an override IS
+    /// the "not supported" contract — no per-kernel opt-out code is needed.
+    ///
+    /// `ManifoldKernel` is the only current override; it accepts closed
+    /// orientable triangle meshes and stores them as `Manifold` values (see
+    /// `crates/reify-kernel-manifold/src/kernel.rs`).
+    ///
+    /// # Object safety
+    ///
+    /// The trait remains object-safe — `Self` appears only in the `&mut self`
+    /// receiver.  The `type_name::<Self>()` call lives in the method *body*;
+    /// object safety is determined by the *signature* alone, so
+    /// `Box<dyn GeometryKernel>` upcasts (e.g. `register.rs:58`,
+    /// `kernel.rs:353`) keep compiling.  When invoked through a trait object,
+    /// `Self = dyn GeometryKernel` and `type_name` yields `"dyn GeometryKernel"`
+    /// (acceptable for the not-supported path); when called on a concrete kernel
+    /// directly, `type_name` yields the concrete kernel's fully-qualified name.
+    ///
+    /// # This is intentionally additive
+    ///
+    /// Following the established pattern at
+    /// [`GeometryKernel::execute_with_history`] (default
+    /// `AttributeHistory::None`) and [`GeometryKernel::attribute_hook`] (default
+    /// `None`), this default allows all existing kernels to continue compiling
+    /// without per-impl changes.
+    fn ingest_mesh(&mut self, _mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
+        Err(GeometryError::OperationFailed(format!(
+            "{} does not accept Mesh inputs",
+            std::any::type_name::<Self>()
+        )))
+    }
+
     /// Optional best-effort `TopologyAttribute` propagation hook for non-OCCT
     /// kernels with native parent→child correspondence (e.g. Manifold's
     /// `MeshGL` merge vectors + per-triangle `faceID` / `originalID`).
@@ -5767,5 +5810,52 @@ mod tests {
         assert_eq!(mesh.vertex_f64(0), Some([1.0_f64, 2.0, 3.0]));
         // out-of-range — None passes through from vertex
         assert_eq!(mesh.vertex_f64(1), None);
+    }
+
+    /// Pins the trait-object branch of `ingest_mesh`'s default impl: when
+    /// called through a `Box<dyn GeometryKernel>`, `type_name::<Self>()`
+    /// resolves to `"dyn GeometryKernel"` rather than the concrete kernel
+    /// name.  The observable contract the executor cares about is that the
+    /// error payload still contains "does not accept Mesh inputs".
+    #[test]
+    fn ingest_mesh_default_returns_does_not_accept_via_trait_object() {
+        struct StubKernel;
+        impl GeometryKernel for StubKernel {
+            fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+                Err(GeometryError::OperationFailed("stub".into()))
+            }
+            fn query(&self, _q: &GeometryQuery) -> Result<Value, QueryError> {
+                Err(QueryError::QueryFailed("stub".into()))
+            }
+            fn export(
+                &self,
+                _h: GeometryHandleId,
+                _f: ExportFormat,
+                _w: &mut dyn std::io::Write,
+            ) -> Result<(), ExportError> {
+                Err(ExportError::FormatError("stub".into()))
+            }
+            fn tessellate(
+                &self,
+                _h: GeometryHandleId,
+                _t: f64,
+            ) -> Result<Mesh, TessError> {
+                Err(TessError::TessellationFailed("stub".into()))
+            }
+        }
+
+        let mut boxed: Box<dyn GeometryKernel> = Box::new(StubKernel);
+        let mesh = Mesh { vertices: vec![], indices: vec![], normals: None };
+        match boxed.ingest_mesh(&mesh) {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("does not accept Mesh inputs"),
+                    "error payload must contain 'does not accept Mesh inputs'; got: {msg:?}",
+                );
+            }
+            other => panic!(
+                "expected Err(OperationFailed(_)) from trait-object ingest_mesh; got {other:?}"
+            ),
+        }
     }
 }

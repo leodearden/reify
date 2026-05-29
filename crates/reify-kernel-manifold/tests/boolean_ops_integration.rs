@@ -9,8 +9,8 @@
 //! pins three additional concerns:
 //!
 //! 1. The `test-fixtures`-gated API surface — concretely
-//!    [`ManifoldKernel::store_mesh_for_test`] and the shared
-//!    [`reify_kernel_manifold::test_fixtures::unit_cube_mesh`] helper —
+//!    [`reify_kernel_manifold::test_fixtures::unit_cube_mesh`] and
+//!    [`reify_kernel_manifold::test_fixtures::manifold_factory_for_test`] —
 //!    is reachable from outside the crate when the feature is active.
 //!    A regression that drops the self-dev-dep activation in
 //!    `Cargo.toml:61` would break this test at compile time with an
@@ -29,7 +29,7 @@
 //! the `features = ["test-fixtures"]` activation on the self-dev-dep,
 //! this guard fires at compile time with an explanatory message rather
 //! than producing a confusing "unknown function" error from the missing
-//! `store_mesh_for_test` / `test_fixtures` API surface.
+//! `unit_cube_mesh` / `test_fixtures` API surface.
 
 #[cfg(not(feature = "test-fixtures"))]
 compile_error!(
@@ -65,18 +65,19 @@ use reify_ir::{GeometryHandleId, GeometryKernel, GeometryOp};
 fn boolean_ops_round_trip_via_factory_and_geometry_kernel_trait_object() {
     // `ManifoldKernel::new()` is the production factory shape (its
     // boxed sibling `manifold_factory()` calls `::new()` then `Box::new`).
-    // We use the concrete type directly rather than going through the
-    // boxed factory because we need to reach the `test-fixtures`-gated
-    // `store_mesh_for_test` ingestion path, which only exists on the
-    // concrete `ManifoldKernel` type.
+    // `ingest_mesh` is now a production trait method on `GeometryKernel`, so
+    // we could use either the concrete type or the boxed factory here; we use
+    // the concrete type for clarity.
     let mut kernel = ManifoldKernel::new();
 
     let a: GeometryHandleId = kernel
-        .store_mesh_for_test(&unit_cube_mesh([0.0, 0.0, 0.0]))
-        .expect("unit_cube_mesh fixture must be a valid manifold");
+        .ingest_mesh(&unit_cube_mesh([0.0, 0.0, 0.0]))
+        .expect("unit_cube_mesh fixture must be a valid manifold")
+        .id;
     let b: GeometryHandleId = kernel
-        .store_mesh_for_test(&unit_cube_mesh([0.5, 0.0, 0.0]))
-        .expect("unit_cube_mesh fixture must be a valid manifold");
+        .ingest_mesh(&unit_cube_mesh([0.5, 0.0, 0.0]))
+        .expect("unit_cube_mesh fixture must be a valid manifold")
+        .id;
 
     let u = kernel
         .execute(&GeometryOp::Union { left: a, right: b })
