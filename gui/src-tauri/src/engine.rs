@@ -1622,6 +1622,7 @@ impl EngineSession {
                     }
                     None => Vec::new(),
                 },
+                tensegrity_wires: Vec::new(),
             });
         }
 
@@ -1737,6 +1738,7 @@ impl EngineSession {
             files,
             tessellation_diagnostics,
             compile_diagnostics,
+            tensegrity_wires: Vec::new(), // wired in step-4 (build_tensegrity_wires)
         })
     }
 
@@ -3026,6 +3028,7 @@ fn build_preview_gui_state(
         files: Vec::new(),
         tessellation_diagnostics: Vec::new(),
         compile_diagnostics: Vec::new(),
+        tensegrity_wires: Vec::new(),
     }
 }
 
