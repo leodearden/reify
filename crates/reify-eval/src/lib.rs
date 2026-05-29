@@ -476,6 +476,37 @@ pub struct Engine {
     /// itself is always present (module-private, no `pub`) so that the
     /// reset / increment sites in `engine_build.rs` need no cfg-gating.
     last_dispatch_count: usize,
+    /// GHR-δ §5 lazy-revalidation validity oracle: maps each geometry-backed
+    /// `RealizationNodeId` to the kernel handle it currently resolves to.
+    ///
+    /// This is the SOLE source of truth for whether a `Value::GeometryHandle`
+    /// cell's `kernel_handle` is still valid: the `GeometryKernel` trait has no
+    /// `is_valid` API and snapshots carry no kernel reference (plan.json design
+    /// decision), so a dedicated `realization_ref → handle` map is the precise,
+    /// cheap (HashMap) identity to compare against. Cleared and rebuilt at the
+    /// start of every `build()` / `build_snapshot()` and populated by
+    /// `post_process_geometry_handle_cells`; empty before the first build.
+    /// Consulted by `engine_eval::revalidate_geometry_handle` on read (S16).
+    realization_handles: HashMap<reify_core::RealizationNodeId, reify_ir::GeometryHandleId>,
+    /// GHR-δ §5 instrumentation: count of geometry-handle revalidation
+    /// SLOW-PATH firings (stale-handle re-resolution OR absent-realization →
+    /// `Undef`) since the last reset. Reset to 0 at the start of each `build()`
+    /// / `build_snapshot()`; incremented by the `&self` read entry point
+    /// `read_value_revalidated` (S16) on every non-`Fresh` outcome.
+    ///
+    /// `AtomicUsize` (not a plain `usize` like the sibling `last_*` counters)
+    /// because the read entry point borrows `&self`: interior mutability lets it
+    /// bump the counter without `&mut self`, and `AtomicUsize: Sync` preserves
+    /// `Engine: Sync` (the kernel/checker trait objects are `Send + Sync`). Read
+    /// via `geometry_revalidation_slow_path_count` and reset via
+    /// `reset_geometry_revalidation_slow_path_count` (engine_admin.rs; reader
+    /// test-gated, mirroring the `last_*` reset+reader pair).
+    ///
+    /// NOTE (GHR-δ): the only thing that bumps this counter today is the
+    /// integration suite — `read_value_revalidated` has no production caller yet
+    /// (see its docstring), so in a live run this stays at 0. Wiring lazy
+    /// revalidation into the real read path is deferred to a follow-up task.
+    geometry_revalidation_slow_path: std::sync::atomic::AtomicUsize,
     /// Event journal recording evaluation events.
     journal: EventJournal,
     /// User-defined functions from the last eval() call.

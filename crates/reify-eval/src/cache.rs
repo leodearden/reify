@@ -1081,6 +1081,37 @@ impl CacheStore {
         }
     }
 
+    /// GHR-δ: overwrite the `realization_reads` of a node's cached
+    /// `DependencyTrace`.
+    ///
+    /// A value cell holding a `Value::GeometryHandle` implicitly depends on the
+    /// upstream Realization named in its handle — an edge the expression-only
+    /// [`crate::deps::extract_dependency_trace`] cannot see (geometry params are
+    /// recorded with an empty trace via `record_eval_completed`). The cold-eval
+    /// (`engine_eval.rs`) and incremental (`engine_edit.rs`) paths call this as a
+    /// post-pass, sourcing the per-cell list from
+    /// [`crate::deps::geometry_cell_realization_reads`], so that
+    /// [`Self::derive_output_freshness_from_trace_with_cause`] folds the backing
+    /// Realization's freshness into the cell's (PRD §5).
+    ///
+    /// Replaces (not appends) the list so repeated eval/edit rounds stay
+    /// idempotent — the caller passes the FULL accumulated list for the cell
+    /// (one realization in the expected 1:1 case), so this replace stays
+    /// consistent with the `push`-accumulating `build_trace_map_and_fields`.
+    /// Returns `true` if the node was found, `false` if absent.
+    pub fn set_realization_reads(
+        &mut self,
+        node: &NodeId,
+        realization_reads: Vec<RealizationNodeId>,
+    ) -> bool {
+        if let Some(entry) = self.caches.get_mut(node) {
+            entry.dependency_trace.realization_reads = realization_reads;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Restore a node's freshness to Final after early cutoff skips its
     /// re-evaluation. This handles nodes that were pre-marked Pending but
     /// then bypassed because an upstream node produced an unchanged result.
@@ -1283,10 +1314,14 @@ impl CacheStore {
 
     /// Cause-bearing variant of [`derive_output_freshness_from_trace`].
     ///
-    /// Walks `trace.reads`, looks up each input's freshness and `pending_cause`,
-    /// and feeds the triples into [`derive_output_freshness_with_cause`]. Use
-    /// this at wire sites that have a freshly-computed trace and need the chain
-    /// root — e.g. the pre-eval Pending gate in `evaluate_let_bindings`.
+    /// Walks `trace.reads` (VC inputs) **and** `trace.realization_reads`
+    /// (GHR-δ: the upstream Realization a `Value::GeometryHandle` cell depends
+    /// on), looks up each input's freshness and `pending_cause`, and feeds the
+    /// combined triples into [`derive_output_freshness_with_cause`]. The core
+    /// classifier is NodeId-variant-agnostic, so a `NodeId::Realization` input
+    /// participates in the meet and chain-root forwarding exactly like a VC
+    /// input. Use this at wire sites that have a freshly-computed trace and need
+    /// the chain root — e.g. the pre-eval Pending gate in `evaluate_let_bindings`.
     pub fn derive_output_freshness_from_trace_with_cause(
         &self,
         trace: &DependencyTrace,
@@ -1295,19 +1330,31 @@ impl CacheStore {
     ) -> (Freshness, Option<NodeId>) {
         derive_output_freshness_with_cause(
             still_refining,
-            trace.reads.iter().map(|read| {
-                let n = NodeId::Value(read.clone());
-                let f = self.freshness(&n);
-                let c = self.pending_cause(&n);
-                (n, f, c)
-            }),
+            trace
+                .reads
+                .iter()
+                .map(|read| {
+                    let n = NodeId::Value(read.clone());
+                    let f = self.freshness(&n);
+                    let c = self.pending_cause(&n);
+                    (n, f, c)
+                })
+                .chain(trace.realization_reads.iter().map(|rid| {
+                    // GHR-δ: a GH cell implicitly reads its backing Realization;
+                    // fold that node's freshness into the same meet.
+                    let n = NodeId::Realization(rid.clone());
+                    let f = self.freshness(&n);
+                    let c = self.pending_cause(&n);
+                    (n, f, c)
+                })),
             generation,
         )
     }
 
     /// Insert a synthetic cache entry for a Realization node so that tests can
-    /// simulate state that `engine_build.rs` would normally create at
-    /// `build()` / `check()` time.
+    /// simulate state that `engine_build.rs` creates at `build()` / `check()`
+    /// time for geometry-backed Realizations — but does NOT create for
+    /// non-geometry Realizations or during `edit_source` (see "Why this exists").
     ///
     /// ## Contract
     ///
@@ -1325,10 +1372,15 @@ impl CacheStore {
     ///
     /// ## Why this exists
     ///
-    /// `engine_build.rs` creates Realization cache entries on demand during
-    /// `build()` / `check()`, not during `edit_source()`.  Tests that exercise
-    /// the warm-state donation hook for Realization nodes must therefore
-    /// synthesize an entry before calling `edit_source`.  This helper
+    /// GHR-δ (esc-3606-37 ruling step 1) made `engine_build.rs` record
+    /// **only geometry-backed** Realizations (those whose
+    /// `graph.realizations[*].geometry_cell.is_some()`) as freshness-bearing
+    /// cache nodes on the `build()` / `check()` success path, via
+    /// `post_process_geometry_handle_cells`. **Non-geometry** Realizations
+    /// (e.g. compute-only realizations exercised by warm-state donation tests)
+    /// are still NOT recorded on any success path, and no path records *any*
+    /// Realization during `edit_source()`. Tests that need such an entry must
+    /// therefore synthesize one before calling `edit_source`.  This helper
     /// centralizes that synthesis so future schema changes (`CachedResult`
     /// gaining a new variant, `NodeCache::new` gaining a parameter, etc.)
     /// produce a single compile error here rather than silent breakage in
@@ -1336,9 +1388,10 @@ impl CacheStore {
     ///
     /// ## When to retire
     ///
-    /// Once `engine_build.rs` or another engine path creates Realization cache
-    /// entries during `edit_source`, callers can switch to the normal eval path
-    /// and this helper becomes dead code.
+    /// Once `engine_build.rs` or another engine path records *non-geometry*
+    /// Realization cache entries (or records geometry-backed ones during
+    /// `edit_source`), callers can switch to the normal eval path and this
+    /// helper becomes dead code.
     ///
     /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
     /// Integration tests reach this method via the self-dev-dep with the
@@ -2241,7 +2294,7 @@ mod tests {
         let expected_hash = result.content_hash();
 
         let version = VersionId(1);
-        let trace = DependencyTrace {
+        let trace = DependencyTrace { realization_reads: Vec::new(),
             reads: vec![ValueCellId::new("A", "x")],
         };
 
@@ -3618,7 +3671,7 @@ mod tests {
         );
 
         // A trace that only reads `a` (Final) → should yield Final
-        let trace_a_only = DependencyTrace {
+        let trace_a_only = DependencyTrace { realization_reads: Vec::new(),
             reads: vec![a_id.clone()],
         };
         assert_eq!(
@@ -3628,7 +3681,7 @@ mod tests {
         );
 
         // A trace that reads `b` (Intermediate) → should yield Intermediate
-        let trace_b_only = DependencyTrace {
+        let trace_b_only = DependencyTrace { realization_reads: Vec::new(),
             reads: vec![b_id.clone()],
         };
         assert_eq!(
@@ -3661,7 +3714,7 @@ mod tests {
         let b_id = ValueCellId::new("T", "b");
 
         // Cold-start: trace reads `a`
-        let trace_a = DependencyTrace {
+        let trace_a = DependencyTrace { realization_reads: Vec::new(),
             reads: vec![a_id.clone()],
         };
         store.record_evaluation_with_freshness(
@@ -3678,7 +3731,7 @@ mod tests {
         );
 
         // Early cutoff: same hash, but different trace (reads `b` now)
-        let trace_b = DependencyTrace {
+        let trace_b = DependencyTrace { realization_reads: Vec::new(),
             reads: vec![b_id.clone()],
         };
         let outcome = store.record_evaluation_with_freshness(
@@ -3728,7 +3781,7 @@ mod tests {
 
         // Call record_evaluation_propagating_freshness with a trace that reads `a`.
         // version=7 → generation derived as version.0=7 per §7.1 (single source of truth).
-        let trace = DependencyTrace {
+        let trace = DependencyTrace { realization_reads: Vec::new(),
             reads: vec![a_id.clone()],
         };
         let out_node = NodeId::Value(out_id.clone());
@@ -4104,7 +4157,7 @@ mod tests {
         // Row 1: all-Final (simplest path through the classifier)
         {
             let store = make_store(Freshness::Final, Freshness::Final);
-            let trace = DependencyTrace {
+            let trace = DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![a_id.clone(), b_id.clone()],
             };
             assert_agree!(store, &trace, sr, g, "all-Final");
@@ -4114,7 +4167,7 @@ mod tests {
         {
             let mut store = make_store(Freshness::Final, Freshness::Final);
             store.mark_pending(&NodeId::Value(b_id.clone()));
-            let trace = DependencyTrace {
+            let trace = DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![a_id.clone(), b_id.clone()],
             };
             assert_agree!(store, &trace, sr, g, "one-Pending");
@@ -4124,7 +4177,7 @@ mod tests {
         {
             let mut store = make_store(Freshness::Final, Freshness::Final);
             store.mark_failed(&NodeId::Value(b_id.clone()), ErrorRef::new("x"));
-            let trace = DependencyTrace {
+            let trace = DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![a_id.clone(), b_id.clone()],
             };
             assert_agree!(store, &trace, sr, g, "one-Failed");
@@ -4133,10 +4186,119 @@ mod tests {
         // Row 4: still_refining=true (exercises the Pending-when-still-refining branch)
         {
             let store = make_store(Freshness::Final, Freshness::Final);
-            let trace = DependencyTrace {
+            let trace = DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![a_id.clone(), b_id.clone()],
             };
             assert_agree!(store, &trace, true, g, "all-Final-still-refining");
+        }
+    }
+
+    /// GHR-δ S5: `derive_output_freshness_from_trace_with_cause` folds
+    /// `realization_reads` into the freshness meet alongside `reads`, and the
+    /// cached-trace variant `derive_output_freshness_for_node_with_cause` agrees.
+    ///
+    /// A trace with `reads=[]`, `realization_reads=[R0]` must derive:
+    ///   R0 Pending (chain root) → Pending, cause Some(Realization(R0))
+    ///   R0 Intermediate{g}      → Intermediate{g}, no cause
+    ///   R0 Final                → Final, no cause
+    ///
+    /// RED until S6 chains the realization triples into the meet (today only
+    /// `trace.reads` is consulted, so an empty-`reads` trace always yields Final).
+    #[test]
+    fn derive_output_freshness_folds_realization_reads() {
+        const GEN: u64 = 5;
+        let r0 = RealizationNodeId::new("Widget", 0);
+        let gh = ValueCellId::new("Widget", "body");
+        let r0_node = NodeId::Realization(r0.clone());
+        let gh_node = NodeId::Value(gh.clone());
+
+        // Forward trace reads only the realization (no VC reads).
+        let trace = DependencyTrace {
+            reads: vec![],
+            realization_reads: vec![r0.clone()],
+        };
+
+        // Seed: R0 present (Final) + a GH cell whose CACHED trace carries
+        // realization_reads=[R0] (exercises the for-node / cached-trace variant).
+        let seed = || {
+            let mut store = CacheStore::new();
+            store.put(
+                r0_node.clone(),
+                NodeCache::new(
+                    CachedResult::GeometryHandle(GeometryHandleId(7)),
+                    Freshness::Final,
+                    DependencyTrace::default(),
+                    VersionId(1),
+                ),
+            );
+            store.put(
+                gh_node.clone(),
+                NodeCache::new(
+                    CachedResult::Value(Value::Int(0), DeterminacyState::Determined),
+                    Freshness::Final,
+                    DependencyTrace {
+                        reads: vec![],
+                        realization_reads: vec![r0.clone()],
+                    },
+                    VersionId(1),
+                ),
+            );
+            store
+        };
+
+        // (a) R0 Pending with cause = itself → Pending output, cause forwards.
+        {
+            let mut store = seed();
+            store.mark_pending_with_cause(&r0_node, r0_node.clone());
+            let (f, cause) =
+                store.derive_output_freshness_from_trace_with_cause(&trace, false, GEN);
+            assert!(
+                matches!(f, Freshness::Pending { .. }),
+                "Pending realization input must yield Pending output, got {:?}",
+                f
+            );
+            assert_eq!(
+                cause,
+                Some(r0_node.clone()),
+                "Pending cause must forward to the realization node"
+            );
+            let (f2, cause2) =
+                store.derive_output_freshness_for_node_with_cause(&gh_node, false, GEN);
+            assert!(
+                matches!(f2, Freshness::Pending { .. }),
+                "for-node (cached-trace) variant must agree on Pending"
+            );
+            assert_eq!(cause2, Some(r0_node.clone()), "for-node variant cause must agree");
+        }
+
+        // (b) R0 Intermediate{GEN} → Intermediate{GEN}, no cause.
+        {
+            let mut store = seed();
+            // `set_freshness` is `#[must_use]`; R0 was just seeded, so discard.
+            let _ = store.set_freshness(&r0_node, Freshness::Intermediate { generation: GEN });
+            let (f, cause) =
+                store.derive_output_freshness_from_trace_with_cause(&trace, false, GEN);
+            assert_eq!(f, Freshness::Intermediate { generation: GEN });
+            assert_eq!(cause, None);
+            let (f2, _) =
+                store.derive_output_freshness_for_node_with_cause(&gh_node, false, GEN);
+            assert_eq!(
+                f2,
+                Freshness::Intermediate { generation: GEN },
+                "for-node variant must agree on Intermediate"
+            );
+        }
+
+        // (c) R0 Final (as seeded) → Final, no cause.
+        {
+            let store = seed();
+            let (f, cause) =
+                store.derive_output_freshness_from_trace_with_cause(&trace, false, GEN);
+            assert_eq!(f, Freshness::Final);
+            assert_eq!(cause, None);
+            let (f2, _) =
+                store.derive_output_freshness_for_node_with_cause(&gh_node, false, GEN);
+            assert_eq!(f2, Freshness::Final, "for-node variant must agree on Final");
         }
     }
 

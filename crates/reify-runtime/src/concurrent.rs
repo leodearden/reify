@@ -547,7 +547,7 @@ mod tests {
         traces.insert(a.clone(), DependencyTrace::default());
         traces.insert(
             b.clone(),
-            DependencyTrace {
+            DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![ValueCellId::new(e, "a")],
             },
         );
@@ -621,7 +621,7 @@ mod tests {
         traces.insert(thickness.clone(), DependencyTrace::default());
         traces.insert(
             volume.clone(),
-            DependencyTrace {
+            DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![
                     ValueCellId::new(e, "width"),
                     ValueCellId::new(e, "thickness"),
@@ -630,7 +630,7 @@ mod tests {
         );
         traces.insert(
             c1.clone(),
-            DependencyTrace {
+            DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![
                     ValueCellId::new(e, "width"),
                     ValueCellId::new(e, "thickness"),
@@ -713,13 +713,13 @@ mod tests {
         let mut traces = HashMap::new();
         traces.insert(
             dirty_node.clone(),
-            DependencyTrace {
+            DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![changed_param.clone()],
             },
         );
         traces.insert(
             clean_node.clone(),
-            DependencyTrace {
+            DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![other_param],
             },
         );
@@ -779,7 +779,7 @@ mod tests {
         // c reads a and b
         traces.insert(
             c.clone(),
-            DependencyTrace {
+            DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![ValueCellId::new(e, "a"), ValueCellId::new(e, "b")],
             },
         );
@@ -1134,25 +1134,25 @@ mod tests {
         let mut traces = HashMap::new();
         traces.insert(
             p1.clone(),
-            DependencyTrace {
+            DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![a.clone()],
             },
         );
         traces.insert(
             p2.clone(),
-            DependencyTrace {
+            DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![a.clone()],
             },
         );
         traces.insert(
             p3.clone(),
-            DependencyTrace {
+            DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![a.clone()],
             },
         );
         traces.insert(
             d.clone(),
-            DependencyTrace {
+            DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![p1_vcid.clone(), p2_vcid.clone(), p3_vcid.clone()],
             },
         );
@@ -1232,19 +1232,19 @@ mod tests {
         let mut traces = HashMap::new();
         traces.insert(
             p1.clone(),
-            DependencyTrace {
+            DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![a.clone()],
             },
         );
         traces.insert(
             p2.clone(),
-            DependencyTrace {
+            DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![a.clone()],
             },
         );
         traces.insert(
             d.clone(),
-            DependencyTrace {
+            DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![p1_vcid.clone(), p2_vcid.clone()],
             },
         );
@@ -1319,19 +1319,19 @@ mod tests {
         let mut traces = HashMap::new();
         traces.insert(
             b.clone(),
-            DependencyTrace {
+            DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![a.clone()],
             },
         );
         traces.insert(
             c.clone(),
-            DependencyTrace {
+            DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![b_vcid.clone()],
             },
         );
         traces.insert(
             d.clone(),
-            DependencyTrace {
+            DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![c_vcid.clone()],
             },
         );
@@ -1395,7 +1395,7 @@ mod tests {
         traces.insert(thickness.clone(), DependencyTrace::default());
         traces.insert(
             volume.clone(),
-            DependencyTrace {
+            DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![
                     ValueCellId::new(e, "width"),
                     ValueCellId::new(e, "thickness"),
@@ -1404,7 +1404,7 @@ mod tests {
         );
         traces.insert(
             c1.clone(),
-            DependencyTrace {
+            DependencyTrace { realization_reads: Vec::new(),
                 reads: vec![
                     ValueCellId::new(e, "width"),
                     ValueCellId::new(e, "thickness"),

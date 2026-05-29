@@ -260,7 +260,7 @@ mod tests {
         let rnid = RealizationNodeId::new("Extra", 0);
         new_graph.realizations.insert(
             rnid.clone(),
-            RealizationNodeData {
+            RealizationNodeData { geometry_cell: None,
                 id: rnid,
                 operations: Vec::new(),
                 content_hash: ContentHash::of_str("diverge"),
@@ -308,7 +308,7 @@ mod tests {
         let rnid = RealizationNodeId::new("Extra", 0);
         new_graph.realizations.insert(
             rnid.clone(),
-            RealizationNodeData {
+            RealizationNodeData { geometry_cell: None,
                 id: rnid,
                 operations: Vec::new(),
                 content_hash: ContentHash::of_str("diverge2"),

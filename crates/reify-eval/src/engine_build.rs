@@ -11,7 +11,7 @@ use reify_core::{Diagnostic, DiagnosticLabel, RealizationNodeId, SourceSpan, Ver
 use reify_ir::{AttributeHistory, CapabilityDescriptor, CompiledFunction, ErrorRef, ExportFormat, FeatureId, FeatureTag, FeatureTagTable, Freshness, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, LoftOpHistoryRecords, Mesh, Operation, ReprKind, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable, ValueMap, VolumeMesh};
 
 use crate::cache::{CacheStore, CachedResult, FAILED_REALIZATION_STUB_HANDLE, NodeCache, NodeId};
-use crate::deps::DependencyTrace;
+use crate::deps::{DependencyTrace, extract_realization_dependencies};
 use crate::dispatcher::{DispatchPlan, dispatch, per_stage_tolerance_for_plan};
 use crate::geometry_ops::compile_geometry_op;
 use crate::journal::{EvalEvent, EventJournal, EventKind};
@@ -1030,6 +1030,12 @@ impl Engine {
         // build of the same module reports its own per-build dispatch tally
         // (and reports 0 when fully served from the RealizationCache).
         self.last_dispatch_count = 0;
+        // GHR-δ §5: clear the realization→handle validity map and reset the
+        // revalidation slow-path counter at the start of every build surface;
+        // the per-template `post_process_geometry_handle_cells` below
+        // repopulates the map with this build's resolved handles.
+        self.realization_handles.clear();
+        self.reset_geometry_revalidation_slow_path_count();
         let state = self.eval_state.as_ref()?;
 
         // Build ValueMap from snapshot values
@@ -1217,12 +1223,17 @@ impl Engine {
                 // GHR-γ step-6: mirror of the build() hydration — stamp
                 // Type::Geometry value cells with real kernel handles so
                 // build_snapshot callers see the same GeometryHandle values.
+                // GHR-δ: also records geometry-backed Realizations as
+                // freshness-bearing cache nodes (esc-3606-37 ruling step 1).
                 Engine::post_process_geometry_handle_cells(
                     template,
                     &named_steps,
                     &mut values,
                     &self.functions,
                     &self.meta_map,
+                    &mut self.cache,
+                    &mut self.realization_handles,
+                    version_id,
                 );
                 // Task 2320: see `Engine::post_process_conformance_queries`
                 // docstring for the full contract. Mirrored in `build` and
@@ -1357,6 +1368,12 @@ impl Engine {
         // dispatcher call should be counted against the build that hasn't
         // entered the per-realization op loop yet.
         self.last_dispatch_count = 0;
+        // GHR-δ §5: clear the realization→handle validity map and reset the
+        // revalidation slow-path counter at the start of the build; the
+        // per-template `post_process_geometry_handle_cells` below repopulates
+        // the map with this build's resolved handles.
+        self.realization_handles.clear();
+        self.reset_geometry_revalidation_slow_path_count();
         // PLACEMENT: AFTER check() — task 3103 consolidated the lifecycle so
         // eval() preserves active_purpose_bindings across the call, making the
         // pre-check workaround obsolete. All four surfaces (build /
@@ -1531,13 +1548,18 @@ impl Engine {
                     .expect("default kernel must remain in the map across the per-realization loop");
                 // GHR-γ step-6: hydrate Type::Geometry value cells with real
                 // kernel handles before any downstream post-process that might
-                // read geometry-handle cells.
+                // read geometry-handle cells. GHR-δ: also records geometry-backed
+                // Realizations as freshness-bearing cache nodes (esc-3606-37
+                // ruling step 1).
                 Engine::post_process_geometry_handle_cells(
                     template,
                     &named_steps,
                     &mut values,
                     &self.functions,
                     &self.meta_map,
+                    &mut self.cache,
+                    &mut self.realization_handles,
+                    version_id,
                 );
                 // Task 2320: see `Engine::post_process_conformance_queries`
                 // docstring for the full contract. Mirrored in
@@ -3198,16 +3220,33 @@ impl Engine {
     /// conformance- and kinematic-query post-processes, so downstream value
     /// cells that read a `GeometryHandle` see the hydrated value.
     ///
-    /// **Out of scope for GHR-γ:** kernel-name participation in
-    /// `upstream_values_hash`, persistent-cache freshness-walk
-    /// Realization→ValueCell edges, and `List<Geometry>` spread cells —
-    /// those are deferred to GHR-δ/ε/ζ. See plan design decisions.
+    /// **GHR-δ (esc-3606-37 ruling step 1):** in addition to hydrating the GH
+    /// cell value, this records each geometry-backed Realization as a
+    /// freshness-bearing eval-cache node under `NodeId::Realization(rid)` with
+    /// `Freshness::Final` and a trace of its scalar reads
+    /// ([`extract_realization_dependencies`]). The PRD §5/§7.1 contract — "the
+    /// cell's freshness is the meet of (VC-input freshness, all referenced
+    /// Realization freshness)" — presupposes the referenced Realization carries
+    /// a freshness value in the cache; on the success path nothing else creates
+    /// that entry (the failure path uses [`Engine::mark_realization_failed`]).
+    /// Only geometry-backed realizations are recorded here; non-geometry
+    /// realizations continue to use the synthetic-insert test helper.
+    // GHR-δ added `realization_handles`, pushing this to 8 distinct inputs;
+    // matches the sibling post-process helpers' allow (e.g. lines 158/2065/2396).
+    #[allow(clippy::too_many_arguments)]
     fn post_process_geometry_handle_cells(
         template: &reify_compiler::TopologyTemplate,
         named_steps: &HashMap<String, GeometryHandleId>,
         values: &mut ValueMap,
         functions: &[CompiledFunction],
         meta_map: &HashMap<String, HashMap<String, String>>,
+        cache: &mut CacheStore,
+        // GHR-δ §5: the per-Engine `realization_ref → handle` validity map.
+        // Each geometry-backed realization records the handle it resolved to,
+        // so a later read can revalidate a cell's `kernel_handle` against the
+        // current Engine. Disjoint from `cache` / `values` (separate fields).
+        realization_handles: &mut HashMap<reify_core::RealizationNodeId, GeometryHandleId>,
+        version: VersionId,
     ) {
         use reify_core::{Type, hash::ContentHash, identity::ValueCellId};
         use reify_ir::Value;
@@ -3237,6 +3276,31 @@ impl Engine {
                 if !has_geometry_cell {
                     continue;
                 }
+
+                // GHR-δ §5: record this realization's resolved handle in the
+                // Engine's validity map (the read-time revalidation oracle).
+                // `named_steps` already mapped this realization's name to the
+                // handle the kernel produced for this build.
+                realization_handles.insert(realization.id.clone(), kernel_handle);
+
+                // GHR-δ / esc-3606-37 ruling step 1: record this geometry-backed
+                // Realization as a freshness-bearing eval-cache node on the build
+                // success path. The PRD §5/§7.1 realization_reads meet (folded by
+                // `derive_output_freshness_from_trace_with_cause`) and the
+                // freshness walk's `width → Realization → GH-cell` cascade both
+                // require a markable `NodeId::Realization` entry here; previously
+                // only the failure path created one (`mark_realization_failed`).
+                // The trace records the realization's scalar reads (e.g. `width`)
+                // so a dirtied scalar input re-derives R0 Pending. `cache` is a
+                // disjoint Engine field from the `values`/`functions`/`meta_map`
+                // borrows held by `ctx`.
+                cache.record_evaluation_with_freshness(
+                    NodeId::Realization(realization.id.clone()),
+                    CachedResult::GeometryHandle(kernel_handle),
+                    version,
+                    extract_realization_dependencies(&realization.operations),
+                    Freshness::Final,
+                );
 
                 // Fold content_hashes of all scalar-arg values across the
                 // realization's ops to form upstream_values_hash. Boolean

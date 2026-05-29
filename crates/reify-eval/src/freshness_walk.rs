@@ -188,6 +188,50 @@ pub fn propagate_freshness_only<'a>(
                     );
                 }
             }
+
+            // GHR-δ S8 (PRD geometry-handle-runtime.md §8 Phase 4): edge —
+            // Realization → backing GH ValueCell fan-out. Mirrors the Compute
+            // edge #12 block above. Runs only when `cutoffs_passed` is true: the
+            // Realization's freshness actually transitioned (passed Failed-skip,
+            // freshness-early, and Pending-idempotency cutoffs). When a
+            // Realization flips, every value cell holding one of its handles —
+            // registered in the reverse index's realization map via
+            // `add_realization` (deps.rs `build_from_graph_and_fields`, S4) —
+            // must be re-derived. That re-derivation now folds the Realization's
+            // freshness in via the cell's `realization_reads`
+            // (cache.rs `derive_output_freshness_from_trace_with_cause`, S6), and
+            // the cell is pushed onto the frontier so its own VC→VC dependents
+            // (e.g. a StructureInstance cell) continue to cascade.
+            // `push_value_on_all_branches=true` mirrors the Compute fan-out's
+            // conservative "always push" semantics (dirty.rs:49-56).
+            //
+            // The reverse map keys a Realization to BOTH its consuming
+            // ComputeNodes (edge #10) and its backing GH ValueCells (S4); we
+            // filter to `NodeId::Value(_)` so this fan-out touches only the GH
+            // cells and leaves ComputeNode propagation exactly as it was.
+            if cutoffs_passed
+                && let NodeId::Realization(rid) = &dependent
+            {
+                // Clone the Value dependents so the immutable borrow on
+                // `reverse_index` drops before any `&mut cache` write below
+                // (same pattern as the snapshotted `dependents` Vec above).
+                let backed_cells: Vec<NodeId> = reverse_index
+                    .realization_dependents_of(rid)
+                    .iter()
+                    .filter(|n| matches!(n, NodeId::Value(_)))
+                    .cloned()
+                    .collect();
+                for out_node in backed_cells {
+                    process_dependent_freshness(
+                        cache,
+                        &out_node,
+                        &mut frontier,
+                        &mut updated,
+                        generation,
+                        /* push_value_on_all_branches */ true,
+                    );
+                }
+            }
         }
     }
 
@@ -359,7 +403,7 @@ mod tests {
             NodeCache::new(
                 CachedResult::Value(value, DeterminacyState::Determined),
                 freshness,
-                DependencyTrace { reads },
+                DependencyTrace { realization_reads: Vec::new(), reads },
                 basis_version,
             ),
         );
@@ -1200,7 +1244,7 @@ mod tests {
             NodeCache::new(
                 CachedResult::GeometryHandle(GeometryHandleId(0)),
                 Freshness::Intermediate { generation: 1 },
-                DependencyTrace {
+                DependencyTrace { realization_reads: Vec::new(),
                     reads: vec![a.clone()],
                 },
                 VersionId(1),
@@ -1496,7 +1540,7 @@ mod tests {
             NodeCache::new(
                 CachedResult::Value(Value::Real(0.0), DeterminacyState::Determined),
                 Freshness::Intermediate { generation: 1 },
-                DependencyTrace {
+                DependencyTrace { realization_reads: Vec::new(),
                     reads: vec![a.clone()],
                 },
                 VersionId(1),
@@ -1689,6 +1733,188 @@ mod tests {
             &EvaluationGraph::default(),
             [a.clone()].iter(),
             1,
+        );
+    }
+
+    /// GHR-δ S7 (PRD geometry-handle-runtime.md §8 Phase 4): `propagate_freshness_only`
+    /// cascades a freshness transition across the new Realization→ValueCell edge
+    /// (S8's fan-out), then onward through the GH cell's ordinary VC→VC dependents.
+    ///
+    /// Topology:
+    /// - `width: ValueCellId` — a scalar param; the upstream that breaks.
+    /// - `R0: RealizationNodeId` — a geometry realization, cache-seeded with
+    ///   `dependency_trace.reads = [width]` and `Freshness::Intermediate`.
+    /// - `body: ValueCellId` — the GH value cell holding R0's handle, seeded with
+    ///   `dependency_trace.realization_reads = [R0]` and EMPTY `reads`. This is
+    ///   the load-bearing detail: `body`'s ONLY inbound edge is the
+    ///   Realization→ValueCell edge — no VC→VC edge points at it — so it is
+    ///   reachable ONLY through the new Realization fan-out.
+    /// - `inst: ValueCellId` — a StructureInstance-like cell with `reads = [body]`.
+    /// - reverse_index: `add(width, Realization(R0))`,
+    ///   `add_realization(R0, Value(body))`, `add(body, Value(inst))`.
+    ///
+    /// We break `width` via `mark_failed` rather than `mark_pending`: a Failed
+    /// node is the §9.2 chain root (`derive_output_freshness_with_cause`
+    /// contributes its NodeId as `failed_cause`), whereas a plain `mark_pending`
+    /// width carries `pending_cause = None`, which would make the cause leg below
+    /// untestable (every forwarded cause would be `None`). R0 and `body` then
+    /// transition Intermediate→Pending as *forwarders* of that Failed leaf — only
+    /// Failed nodes are chain roots, so a transitioning Pending R0 forwards its
+    /// upstream cause rather than becoming one. The chain root therefore "traces
+    /// to R0" in the sense that it flows *through* R0 onto the backed GH cell.
+    ///
+    /// RED until S8 adds the Realization fan-out: before S8, `body` (and hence
+    /// `inst`) is never visited, so both stay `Intermediate`.
+    #[test]
+    fn propagate_freshness_only_cascades_across_realization_to_value_cell_edge() {
+        let e = "T";
+        let width = ValueCellId::new(e, "width");
+        let body = ValueCellId::new(e, "body");
+        let inst = ValueCellId::new(e, "inst");
+        let rid = RealizationNodeId::new(e, 0);
+        let r_node = NodeId::Realization(rid.clone());
+
+        let mut cache = CacheStore::new();
+
+        // width: a param, seeded Intermediate (concrete payload → non-trivial
+        // result_hash), later transitioned to Failed (the chain root).
+        put_value_entry_with_payload(
+            &mut cache,
+            &width,
+            Value::Real(10.0),
+            Freshness::Intermediate { generation: 1 },
+            vec![],
+            VersionId(1),
+        );
+
+        // R0: a Realization reading [width]. GeometryHandle(0) is the standard
+        // synthetic handle for unit tests (cache.rs:102-107); the walk reads only
+        // R0's freshness side-table and dependency_trace, never the payload bits.
+        cache.put(
+            r_node.clone(),
+            NodeCache::new(
+                CachedResult::GeometryHandle(GeometryHandleId(0)),
+                Freshness::Intermediate { generation: 1 },
+                DependencyTrace {
+                    realization_reads: Vec::new(),
+                    reads: vec![width.clone()],
+                },
+                VersionId(1),
+            ),
+        );
+
+        // body: the GH value cell. Its ONLY dependency is the backing Realization
+        // R0 (realization_reads=[R0]); `reads` is empty, so no VC→VC edge points
+        // at it — the Realization fan-out is the only path that reaches it.
+        cache.put(
+            NodeId::Value(body.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Real(0.0), DeterminacyState::Determined),
+                Freshness::Intermediate { generation: 1 },
+                DependencyTrace {
+                    realization_reads: vec![rid.clone()],
+                    reads: vec![],
+                },
+                VersionId(1),
+            ),
+        );
+
+        // inst: a StructureInstance-like cell reading [body] via the ordinary
+        // VC→VC edge (the pre-existing propagation path).
+        put_value_entry(
+            &mut cache,
+            &inst,
+            Freshness::Intermediate { generation: 1 },
+            vec![body.clone()],
+        );
+
+        // reverse_index: width → Realization(R0) (VC→Realization edge),
+        // R0 → Value(body) (the NEW Realization→ValueCell edge), body → Value(inst).
+        let mut reverse_index = ReverseDependencyIndex::new();
+        reverse_index.add(width.clone(), r_node.clone());
+        reverse_index.add_realization(rid.clone(), NodeId::Value(body.clone()));
+        reverse_index.add(body.clone(), NodeId::Value(inst.clone()));
+
+        // Break `width`: mark it Failed (the §9.2 chain root; clears its own
+        // pending_cause per mark_failed's contract).
+        let werr = ErrorRef::new("width broke");
+        assert!(
+            cache.mark_failed(&NodeId::Value(width.clone()), werr),
+            "sanity: width must be in the cache to mark_failed"
+        );
+
+        let mut changed = HashSet::new();
+        changed.insert(width.clone());
+
+        let updated = super::propagate_freshness_only(
+            &mut cache,
+            &reverse_index,
+            &EvaluationGraph::default(),
+            &changed,
+            1,
+        );
+
+        // (i) R0 transitioned Intermediate→Pending via the VC→Realization edge
+        //     (pre-existing; not the new behaviour) and is in `updated`.
+        assert!(
+            matches!(cache.freshness(&r_node), Freshness::Pending { .. }),
+            "R0 must be Pending after width fails, got: {:?}",
+            cache.freshness(&r_node)
+        );
+        assert!(
+            updated.contains(&r_node),
+            "updated must contain Realization(R0), got: {:?}",
+            updated
+        );
+
+        // (ii) body reached via the NEW Realization→ValueCell fan-out (S8) — it
+        //      is Pending and in `updated`. RED before S8: body is unreachable
+        //      (its only inbound edge is the Realization edge), so it stays
+        //      Intermediate and this assertion fails.
+        let body_node = NodeId::Value(body.clone());
+        assert!(
+            matches!(cache.freshness(&body_node), Freshness::Pending { .. }),
+            "body (GH cell) must be Pending — reached via the Realization→ValueCell edge, got: {:?}",
+            cache.freshness(&body_node)
+        );
+        assert!(
+            updated.contains(&body_node),
+            "updated must contain Value(body) via the Realization fan-out, got: {:?}",
+            updated
+        );
+
+        // (iii) inst reached via body's ordinary VC→VC edge — Pending and in
+        //       `updated`. Cascades once body goes Pending.
+        let inst_node = NodeId::Value(inst.clone());
+        assert!(
+            matches!(cache.freshness(&inst_node), Freshness::Pending { .. }),
+            "inst (SI-like cell) must be Pending — cascaded from body via VC→VC, got: {:?}",
+            cache.freshness(&inst_node)
+        );
+        assert!(
+            updated.contains(&inst_node),
+            "updated must contain Value(inst), got: {:?}",
+            updated
+        );
+
+        // (iv) The §9.2 chain root threads across the new edge: R0 and body both
+        //      forward the Failed `width` leaf (Pending nodes are forwarders, not
+        //      roots), so body's pending_cause traces *through* R0 to width.
+        let width_node = NodeId::Value(width.clone());
+        assert_eq!(
+            cache.pending_cause(&r_node),
+            Some(width_node.clone()),
+            "R0's pending_cause must be the Failed width leaf"
+        );
+        assert_eq!(
+            cache.pending_cause(&body_node),
+            cache.pending_cause(&r_node),
+            "body's pending_cause must forward R0's across the Realization→ValueCell edge"
+        );
+        assert_eq!(
+            cache.pending_cause(&body_node),
+            Some(width_node),
+            "body's pending_cause traces through R0 to the Failed width leaf"
         );
     }
 }
