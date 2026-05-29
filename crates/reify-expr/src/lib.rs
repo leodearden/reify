@@ -1705,7 +1705,7 @@ fn eval_binop(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalCo
     match op {
         BinOp::And => return eval_and(left, right, ctx),
         BinOp::Or => return eval_or(left, right, ctx),
-        BinOp::Implies => return Value::Undef, // placeholder; eval_implies wired in step-6
+        BinOp::Implies => return eval_implies(left, right, ctx),
         _ => {}
     }
 
@@ -1790,6 +1790,34 @@ fn eval_or(left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalContext) -> Valu
         Err(_) => return Value::Undef,
     };
     kleene::kleene_or(lk, rk).into()
+}
+
+/// Kleene IMPLIES: `False ⇒ anything = True` (vacuous)
+///
+/// Mirrors the structure of [`eval_or`]:
+/// - Short-circuit on type error (non-bool/non-undef left → `Value::Undef`,
+///   right not evaluated).
+/// - Short-circuit on vacuous absorbing element (`False` left → `Value::Bool(true)`,
+///   right not evaluated; because `¬False = True` is absorbing for OR).
+/// - Otherwise delegates to [`kleene::kleene_implies`].
+///
+/// See `docs/reify-language-spec.md` §9.2.3.
+fn eval_implies(left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalContext) -> Value {
+    let lv = eval_expr(left, ctx);
+    let lk = match kleene::KBool::try_from(&lv) {
+        Ok(k) => k,
+        Err(_) => return Value::Undef,
+    };
+    // Short-circuit on vacuous element: False ⇒ anything = True.
+    if matches!(lk, kleene::KBool::False) {
+        return Value::Bool(true);
+    }
+    let rv = eval_expr(right, ctx);
+    let rk = match kleene::KBool::try_from(&rv) {
+        Ok(k) => k,
+        Err(_) => return Value::Undef,
+    };
+    kleene::kleene_implies(lk, rk).into()
 }
 
 /// Apply a binary operation component-wise to two equal-length component slices,

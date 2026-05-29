@@ -26,7 +26,7 @@ use reify_test_support::{assert_no_eval_errors, make_engine, parse_and_compile_w
 /// `u` has no default → `Value::Undef` at eval time.
 /// All operands are `Bool`-typed, so the new Bool-operand guard does not reject them.
 const SIGNAL_SOURCE: &str = r#"
-module ImpliesSignal {
+structure def ImpliesSignal {
     param u : Bool
     let p1 : Bool = true implies false
     let p2 : Bool = false implies u
@@ -47,7 +47,7 @@ module ImpliesSignal {
 /// - Right-assoc: `false implies (true implies false)` = `false implies false` = `true`  (vacuous)
 /// - Left-assoc (wrong):  `(false implies true) implies false` = `true implies false` = `false`
 const ASSOC_SOURCE: &str = r#"
-module ImpliesAssoc {
+structure def ImpliesAssoc {
     let p4 : Bool = false implies true implies false
 }
 "#;
@@ -61,7 +61,7 @@ module ImpliesAssoc {
 /// - Correct: `(true or false) implies false` = `true implies false` = `false`
 /// - Wrong: `true or (false implies false)` = `true or true` = `true`
 const PREC_SOURCE: &str = r#"
-module ImpliesPrec {
+structure def ImpliesPrec {
     let p5 : Bool = true or false implies false
 }
 "#;
