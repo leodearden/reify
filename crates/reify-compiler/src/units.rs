@@ -1058,4 +1058,98 @@ mod tests {
             );
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Task 3803 — resolve_unit_expr: registry-folding evaluator for UnitExpr
+    // -----------------------------------------------------------------------
+    //
+    // Inline fixture registry shared by step-1 through step-10 tests.
+    // Seeded with a minimal set of SI units sufficient to cover all test cases:
+    //   m   → (1.0,    LENGTH)
+    //   kN  → (1000.0, FORCE)
+    //   mm  → (0.001,  LENGTH)
+    //   kg  → (1.0,    MASS)
+    //   s   → (1.0,    TIME)
+    //   degC → (1.0,   TEMPERATURE, offset=273.15)  ← affine; seeded in step-9
+    //
+    // All UnitEntry fields are pub → struct literals constructed directly;
+    // no test-support helper needed.
+
+    fn make_resolver_registry() -> UnitRegistry {
+        use reify_core::{ContentHash, DimensionVector, SourceSpan};
+        let mut reg = UnitRegistry::new();
+        for (name, dimension, factor, offset) in &[
+            ("m", DimensionVector::LENGTH, 1.0_f64, None),
+            ("kN", DimensionVector::FORCE, 1000.0_f64, None),
+            ("mm", DimensionVector::LENGTH, 0.001_f64, None),
+            ("kg", DimensionVector::MASS, 1.0_f64, None),
+            ("s", DimensionVector::TIME, 1.0_f64, None),
+        ] {
+            reg.register(UnitEntry {
+                name: name.to_string(),
+                dimension: *dimension,
+                factor: *factor,
+                offset: *offset,
+                is_pub: true,
+                span: SourceSpan::empty(0),
+                content_hash: ContentHash::of_str(name),
+                source_module: None,
+            })
+            .unwrap();
+        }
+        reg
+    }
+
+    // --- Step-1: Unit fold arm (RED — resolve_unit_expr / UnitResolveError absent) ---
+
+    #[test]
+    fn resolve_unit_expr_unit_m_returns_length_factor_1() {
+        use reify_core::{DimensionVector, SourceSpan};
+        let reg = make_resolver_registry();
+        let use_span = SourceSpan::new(10, 11);
+        let result = resolve_unit_expr(
+            &reify_ast::UnitExpr::Unit("m".to_string()),
+            &reg,
+            use_span,
+        );
+        let (factor, dim) = result.expect("m must resolve successfully");
+        assert!((factor - 1.0).abs() < 1e-9, "m: factor must ≈ 1.0, got {factor}");
+        assert_eq!(dim, DimensionVector::LENGTH, "m: dimension must be LENGTH");
+    }
+
+    #[test]
+    fn resolve_unit_expr_unit_kn_returns_force_factor_1000() {
+        use reify_core::{DimensionVector, SourceSpan};
+        let reg = make_resolver_registry();
+        let use_span = SourceSpan::new(10, 12);
+        let result = resolve_unit_expr(
+            &reify_ast::UnitExpr::Unit("kN".to_string()),
+            &reg,
+            use_span,
+        );
+        let (factor, dim) = result.expect("kN must resolve successfully");
+        assert!((factor - 1000.0).abs() < 1e-9, "kN: factor must ≈ 1000.0, got {factor}");
+        assert_eq!(dim, DimensionVector::FORCE, "kN: dimension must be FORCE");
+    }
+
+    #[test]
+    fn resolve_unit_expr_unknown_unit_returns_err_with_use_site_span() {
+        use reify_core::SourceSpan;
+        let reg = make_resolver_registry();
+        let use_span = SourceSpan::new(20, 23);
+        let err = resolve_unit_expr(
+            &reify_ast::UnitExpr::Unit("kgg".to_string()),
+            &reg,
+            use_span,
+        )
+        .expect_err("kgg must not resolve");
+        assert_eq!(
+            err,
+            UnitResolveError::UnknownUnit {
+                name: "kgg".to_string(),
+                span: use_span,
+            },
+            "error must carry the offending name and the use-site span"
+        );
+    }
 }
