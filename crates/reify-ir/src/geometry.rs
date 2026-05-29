@@ -5811,4 +5811,51 @@ mod tests {
         // out-of-range — None passes through from vertex
         assert_eq!(mesh.vertex_f64(1), None);
     }
+
+    /// Pins the trait-object branch of `ingest_mesh`'s default impl: when
+    /// called through a `Box<dyn GeometryKernel>`, `type_name::<Self>()`
+    /// resolves to `"dyn GeometryKernel"` rather than the concrete kernel
+    /// name.  The observable contract the executor cares about is that the
+    /// error payload still contains "does not accept Mesh inputs".
+    #[test]
+    fn ingest_mesh_default_returns_does_not_accept_via_trait_object() {
+        struct StubKernel;
+        impl GeometryKernel for StubKernel {
+            fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+                Err(GeometryError::OperationFailed("stub".into()))
+            }
+            fn query(&self, _q: &GeometryQuery) -> Result<Value, QueryError> {
+                Err(QueryError::QueryFailed("stub".into()))
+            }
+            fn export(
+                &self,
+                _h: GeometryHandleId,
+                _f: ExportFormat,
+                _w: &mut dyn std::io::Write,
+            ) -> Result<(), ExportError> {
+                Err(ExportError::FormatError("stub".into()))
+            }
+            fn tessellate(
+                &self,
+                _h: GeometryHandleId,
+                _t: f64,
+            ) -> Result<Mesh, TessError> {
+                Err(TessError::TessellationFailed("stub".into()))
+            }
+        }
+
+        let mut boxed: Box<dyn GeometryKernel> = Box::new(StubKernel);
+        let mesh = Mesh { vertices: vec![], indices: vec![], normals: None };
+        match boxed.ingest_mesh(&mesh) {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("does not accept Mesh inputs"),
+                    "error payload must contain 'does not accept Mesh inputs'; got: {msg:?}",
+                );
+            }
+            other => panic!(
+                "expected Err(OperationFailed(_)) from trait-object ingest_mesh; got {other:?}"
+            ),
+        }
+    }
 }

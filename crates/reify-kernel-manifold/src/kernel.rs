@@ -263,6 +263,20 @@ impl GeometryKernel for ManifoldKernel {
     /// included in the `OperationFailed` payload so winding-order regressions
     /// in fixture meshes are debuggable without source-diving.
     fn ingest_mesh(&mut self, mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
+        if mesh.vertices.len() % 3 != 0 {
+            return Err(GeometryError::OperationFailed(format!(
+                "ingest_mesh: vertices.len() must be a multiple of 3 (xyz triplets); \
+                 got {}",
+                mesh.vertices.len()
+            )));
+        }
+        if mesh.indices.len() % 3 != 0 {
+            return Err(GeometryError::OperationFailed(format!(
+                "ingest_mesh: indices.len() must be a multiple of 3 (triangle triplets); \
+                 got {}",
+                mesh.indices.len()
+            )));
+        }
         let vert_props_f64: Vec<f64> = mesh.vertices.iter().map(|&v| v as f64).collect();
         let tri_indices_u64: Vec<u64> = mesh.indices.iter().map(|&i| i as u64).collect();
         let manifold =
@@ -867,11 +881,16 @@ mod tests {
     /// - `out.vertices.len() % 3 == 0` and `out.indices.len() % 3 == 0`
     ///   (xyz triplets / triangle triplets invariant)
     /// - the axis-aligned bounding box of the round-tripped mesh matches the
-    ///   input's within 1e-9 per axis (manifold weld/reindex preserves
+    ///   input's within 1e-6 per axis (manifold weld/reindex preserves
     ///   geometry; exact vertex count is NOT asserted — see
-    ///   `boolean_ops_integration.rs:59-63`)
-    /// - bbox centroid == (0.5, 0.5, 0.5) within 1e-9 (the unit cube is
-    ///   centred there for the `[0.0,0.0,0.0]` origin variant)
+    ///   `boolean_ops_integration.rs:59-63`).  The tolerance is 1e-6, not
+    ///   1e-9, because `tessellate` returns f32 vertices whose machine epsilon
+    ///   (~1.2e-7) makes 1e-9 physically unrepresentable; tightening the
+    ///   assert to match the f64-layer prose in the PRD would make this test
+    ///   unreliable.
+    /// - bbox centroid == (0.5, 0.5, 0.5) within 1e-6 (same f32-egress
+    ///   rationale; the unit cube is centred there for the `[0.0,0.0,0.0]`
+    ///   origin variant)
     ///
     /// RED: `ManifoldKernel` currently inherits the trait default which
     /// returns `Err`; the first `.expect(…)` panics until step-4 adds the
