@@ -310,6 +310,19 @@ impl crate::Engine {
                 cost_per_byte,
                 diagnostics,
             }) => {
+                // §9-ζ (#3596) dispatch-complete fold hook: fold derived
+                // mid-surface attributes into the topology_attribute_table so
+                // downstream selector lookup can find them. Gated on the single
+                // target that currently needs a post-dispatch fold; a per-target
+                // hook map is the documented future generalization if more
+                // targets need this pattern.
+                if target == "shell-extract::extract" {
+                    crate::shell_extract_compute::fold_mid_surface_attributes_into_table(
+                        &mut self.topology_attribute_table,
+                        &result,
+                    );
+                }
+
                 // Step 3a: atomic completion (write + flip Pending→Final +
                 // clear cause + donate warm state). PRD §5 step-3 bundles
                 // all four operations into a single critical section.
