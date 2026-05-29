@@ -1216,4 +1216,27 @@ mod tests {
             "error must carry the offending name and the use-site span"
         );
     }
+
+    // --- Step-3: Mul fold arm (RED — todo!() panics) ---
+
+    #[test]
+    fn resolve_unit_expr_mul_kn_m_returns_torque_factor_1000() {
+        use reify_core::{DimensionVector, SourceSpan};
+        let reg = make_resolver_registry();
+        let use_span = SourceSpan::new(30, 35);
+        // 5kN*m = Mul(Unit("kN"), Unit("m"))
+        let expr = reify_ast::UnitExpr::Mul(
+            Box::new(reify_ast::UnitExpr::Unit("kN".to_string())),
+            Box::new(reify_ast::UnitExpr::Unit("m".to_string())),
+        );
+        let (factor, dim) = resolve_unit_expr(&expr, &reg, use_span)
+            .expect("kN*m must resolve successfully");
+        assert!(
+            (factor - 1000.0).abs() < 1e-9,
+            "kN*m: factor must ≈ 1000.0 (1000.0 * 1.0), got {factor}"
+        );
+        // FORCE (kg·m·s⁻²) × LENGTH (m) = kg·m²·s⁻²  (= ENERGY)
+        let expected_dim = DimensionVector::FORCE.mul(&DimensionVector::LENGTH);
+        assert_eq!(dim, expected_dim, "kN*m: dimension must be FORCE·LENGTH");
+    }
 }
