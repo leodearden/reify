@@ -1209,6 +1209,91 @@ mod tests {
         }
     }
 
+    // --- MITC3+ core mechanism: not bit-identical + shear-softening (task 3392 step-11) ---
+
+    /// A distorted (non-right-isosceles) flat triangle in the xy-plane, to
+    /// exercise the MITC3+ mechanism on a non-trivial constant Jacobian.
+    const DISTORTED_TRI: [[f64; 3]; 3] = [[0.0, 0.0, 0.0], [1.3, 0.0, 0.0], [0.4, 0.9, 0.0]];
+
+    #[test]
+    fn mitc3_plus_is_not_bit_identical_to_bare_mitc3() {
+        // The bubble is LIVE in shear on a flat facet (K_NB^shear ≠ 0), so static
+        // condensation genuinely modifies K_NN: at least one entry of K_mitc3+
+        // must differ from bare MITC3 by more than fp tolerance. Refutes the old
+        // "bit-identical to bare MITC3" claim (task 3349).
+        let mat = steel_like();
+        let t = 0.05_f64;
+        for nodes in [&UNIT_TRI, &DISTORTED_TRI] {
+            let k_bare = shell_element_stiffness(nodes, t, &mat);
+            let k_plus = shell_element_stiffness_mitc3_plus(nodes, t, &mat);
+            let k_max = k_bare
+                .data
+                .iter()
+                .copied()
+                .fold(0.0_f64, |a, x| a.max(x.abs()));
+            let tol = 1e-9 * k_max.max(1.0);
+            let max_diff = k_bare
+                .data
+                .iter()
+                .zip(k_plus.data.iter())
+                .fold(0.0_f64, |acc, (a, b)| acc.max((a - b).abs()));
+            assert!(
+                max_diff > tol,
+                "MITC3+ must differ from bare MITC3 (max|ΔK| = {max_diff}, tol = {tol})",
+            );
+        }
+    }
+
+    #[test]
+    fn mitc3_plus_softens_shear_dominated_modes_relative_to_bare() {
+        // Static condensation gives K* = K_bare − (PSD), so ½uᵀK*u ≤ ½uᵀK_bare·u
+        // for EVERY mode, and strictly less for any mode that excites the bubble
+        // (non-constant parasitic shear). The shear-locking-relief gate.
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let ndp = Mitc3Plus::N_DOFS_PER_NODE;
+
+        // A battery of bending/shear-dominated nodal modes. θ_x at node1 gives a
+        // linearly-varying covariant shear (assumed-field c ≠ 0) → excites the
+        // bubble → strict softening.
+        let mut m1 = [0.0_f64; Mitc3Plus::N_DOFS];
+        m1[ndp + 3] = 1.0; // θ_x at node1
+        let mut m2 = [0.0_f64; Mitc3Plus::N_DOFS];
+        m2[2 * ndp + 4] = 1.0; // θ_y at node2
+        let mut m3 = [0.0_f64; Mitc3Plus::N_DOFS];
+        m3[ndp + 2] = 1.0; // u_z node1
+        m3[2 * ndp + 3] = 0.5; // θ_x node2
+        m3[ndp + 4] = -0.7; // θ_y node1
+        let modes = [m1, m2, m3];
+
+        let energy = |k: &ElementStiffness, u: &[f64; Mitc3Plus::N_DOFS]| -> f64 {
+            0.5 * matvec(k, u).iter().zip(u.iter()).map(|(a, b)| a * b).sum::<f64>()
+        };
+
+        for nodes in [&UNIT_TRI, &DISTORTED_TRI] {
+            let k_bare = shell_element_stiffness(nodes, t, &mat);
+            let k_plus = shell_element_stiffness_mitc3_plus(nodes, t, &mat);
+            let mut any_strictly_softer = false;
+            for u in &modes {
+                let e_bare = energy(&k_bare, u);
+                let e_plus = energy(&k_plus, u);
+                let scale = e_bare.abs().max(1.0);
+                assert!(
+                    e_plus <= e_bare + 1e-9 * scale,
+                    "MITC3+ must not stiffen: e_plus={e_plus} > e_bare={e_bare}",
+                );
+                if (e_bare - e_plus) / scale > 1e-6 {
+                    any_strictly_softer = true;
+                }
+            }
+            assert!(
+                any_strictly_softer,
+                "MITC3+ must be strictly softer than bare for ≥1 shear/bending mode \
+                 (nodes = {nodes:?})",
+            );
+        }
+    }
+
     // --- Thickness scaling (step 19) ---
 
     #[test]
