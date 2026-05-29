@@ -434,4 +434,30 @@ mod tests {
             "SET_VELOCITY_LIMIT must not raise a ShaperConflict"
         );
     }
+
+    /// An unsupported dialect selector skips parsing entirely: zero profiles
+    /// and exactly one `DialectUnsupported` warning naming the offending
+    /// dialect.
+    #[test]
+    fn unsupported_dialect_yields_no_profiles_and_one_warning() {
+        let result = lower_gcode(
+            "G1 X10\nG1 X20",
+            GcodeImportDialect::Unsupported("FooDialect".to_string()),
+        );
+
+        assert!(result.parse_error.is_none(), "{:?}", result.parse_error);
+        assert!(
+            result.profiles.is_empty(),
+            "an unsupported dialect parses nothing"
+        );
+        assert_eq!(result.warnings.len(), 1, "exactly one warning");
+        assert!(
+            matches!(
+                &result.warnings[0],
+                GcodeImportWarning::DialectUnsupported(name) if name == "FooDialect"
+            ),
+            "the warning names the offending dialect, got {:?}",
+            result.warnings
+        );
+    }
 }
