@@ -188,3 +188,40 @@ fn check_with_satisfiable_purpose_succeeds_and_reports_purpose_constraint() {
         "stdout should contain the purpose-injected constraint id prefix 'purpose:mfg_ready@Bracket', got: {stdout}"
     );
 }
+
+/// Reviewer regression / RED (step-12): `reify check --purpose always_ok=Bracket`
+/// against a ZERO-param purpose must NOT panic the CLI.
+///
+/// `always_ok=Bracket` parses to one bare binding (param None), so cmd_check
+/// takes the bare-single branch → `engine.activate_purpose("always_ok", "Bracket")`,
+/// which today panics inside the engine (index-out-of-bounds at `purpose.params[0]`,
+/// engine_purposes.rs:138) and aborts the CLI. The RED→GREEN discriminator is
+/// `!stderr.contains("panicked")`.
+///
+/// After GREEN (step-13) the shim refuses cleanly (purpose not active), so cmd_check
+/// prints the existing "could not activate purpose 'always_ok'" error and returns
+/// ExitCode::FAILURE via the is_purpose_active → FAILURE path. No CLI change is needed.
+#[test]
+fn check_with_single_binding_zero_param_purpose_does_not_panic() {
+    let (status, stdout, stderr) = common::run_with_args(&[
+        "check",
+        "--purpose",
+        "always_ok=Bracket",
+        &common::fixture_path("purpose_zero_param.ri"),
+    ]);
+
+    // RED→GREEN discriminator: the engine must not panic / abort.
+    assert!(
+        !stderr.contains("panicked"),
+        "reify check on a zero-param purpose must not panic.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    // After GREEN: clean activation-failure exit via the is_purpose_active → FAILURE path.
+    assert!(
+        !status.success(),
+        "reify check on a refused zero-param purpose should exit non-zero.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("could not activate purpose"),
+        "stderr should contain 'could not activate purpose' for the refused zero-param purpose, got: {stderr}"
+    );
+}
