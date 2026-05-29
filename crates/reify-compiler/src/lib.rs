@@ -75,7 +75,7 @@ pub(crate) use traits::*;
 pub(crate) use type_compat::*;
 pub(crate) use type_resolution::*;
 pub(crate) use units::*;
-pub use units::{GEOMETRY_FUNCTION_NAMES, UnitEntry, UnitRegistry};
+pub use units::{GEOMETRY_FUNCTION_NAMES, UnitEntry, UnitRegistry, UnitResolveError, resolve_unit_expr};
 
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
