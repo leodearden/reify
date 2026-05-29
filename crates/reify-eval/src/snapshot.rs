@@ -16,6 +16,18 @@ pub struct Snapshot {
     pub id: SnapshotId,
     pub version: VersionId,
     pub graph: EvaluationGraph,
+    /// Per-cell evaluated values.
+    ///
+    /// GHR-δ §5 per-cell-read revalidation policy: a `Value::GeometryHandle`
+    /// stored here carries its `kernel_handle` VERBATIM across `Clone` and
+    /// across edits — the snapshot does NOT itself check handle validity and
+    /// holds no kernel reference (no kernel coupling enters this type). Kernel
+    /// resolution is re-checked at the READ boundary by the Engine, which owns
+    /// the `realization_ref → handle` validity map: `Engine::read_value_revalidated`
+    /// re-resolves a stale handle and writes the fresh value back into this map
+    /// in place (via the public `values` field), or returns `Value::Undef` when
+    /// the backing realization is gone. A bare field read (`values.get`) returns
+    /// the possibly-stale stored value unchanged.
     pub values: PersistentMap<ValueCellId, (Value, DeterminacyState)>,
     pub topology_fingerprint: ContentHash,
     pub provenance: SnapshotProvenance,

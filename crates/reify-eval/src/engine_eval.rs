@@ -3276,6 +3276,51 @@ impl Engine {
             });
         }
     }
+
+    /// GHR-δ §5 lazy revalidation read entry point: read a value cell's stored
+    /// `Value`, revalidating any `Value::GeometryHandle` against the Engine's
+    /// current `realization_ref → handle` map ([`Engine::realization_handles`])
+    /// before returning it.
+    ///
+    /// - STALE handle (the cell's `kernel_handle` no longer matches the Engine's
+    ///   current handle for its `realization_ref`): the re-resolved value is
+    ///   written back into `snapshot.values` so the next read of the same cell
+    ///   hits the fast path, and the slow-path counter is bumped.
+    /// - ABSENT realization (no longer in the map): returns [`Value::Undef`] and
+    ///   bumps the counter.
+    /// - FAST path (handle already matches, or the value is not a geometry
+    ///   handle, or the cell is absent): returns the value verbatim (Undef for
+    ///   an absent cell) with no write-back and no counter bump.
+    ///
+    /// Takes `&self` (not `&mut self`): the validity map is read-only here and
+    /// the counter is an `AtomicUsize`, so the only mutation is to the
+    /// caller-owned `snapshot`. A caller can therefore clone the Engine's
+    /// snapshot (`engine.snapshot().clone()`) and revalidate against it without
+    /// a borrow conflict with `&self`. Per PRD §9 Q4 the per-read HashMap lookup
+    /// is acceptable for v0.3.
+    pub fn read_value_revalidated(&self, snapshot: &mut Snapshot, cell: &ValueCellId) -> Value {
+        // Clone the (value, determinacy) pair out so the immutable borrow on
+        // `snapshot.values` ends before the possible write-back below. A missing
+        // cell reads as Undef (no entry to revalidate).
+        let Some((value, det)) = snapshot.values.get(cell).cloned() else {
+            return Value::Undef;
+        };
+        match revalidate_geometry_handle(&value, &self.realization_handles) {
+            RevalidationOutcome::Fresh => value,
+            RevalidationOutcome::Resolved(resolved) => {
+                self.geometry_revalidation_slow_path
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                // Preserve the cell's DeterminacyState; only the handle changes.
+                snapshot.values.insert(cell.clone(), (resolved.clone(), det));
+                resolved
+            }
+            RevalidationOutcome::Undef => {
+                self.geometry_revalidation_slow_path
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Value::Undef
+            }
+        }
+    }
 }
 
 #[cfg(all(test, debug_assertions))]
@@ -3403,11 +3448,6 @@ mod invariant_tests {
 /// the Engine read entry point (S16), which decides whether to write a
 /// re-resolved value back into the snapshot and whether to bump the slow-path
 /// counter.
-///
-// `allow(dead_code)`: the production consumer is the Engine read entry point
-// `read_value_revalidated` landed in S16; until then this enum is exercised
-// only by `revalidation_tests` (`#[cfg(test)]`). The allow is removed in S16.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum RevalidationOutcome {
     /// No change needed: the value is not a `GeometryHandle`, or its
@@ -3442,11 +3482,6 @@ pub(crate) enum RevalidationOutcome {
 /// validity source (the GeometryKernel trait has no `is_valid` API and
 /// snapshots carry no kernel reference — see plan.json design decision), so
 /// this is unit-testable in isolation.
-///
-// `allow(dead_code)`: wired into the Engine read entry point
-// `read_value_revalidated` in S16 (which removes this allow); until then it is
-// exercised only by `revalidation_tests` (`#[cfg(test)]`).
-#[allow(dead_code)]
 pub(crate) fn revalidate_geometry_handle(
     value: &Value,
     realization_handles: &HashMap<reify_core::RealizationNodeId, reify_ir::GeometryHandleId>,
