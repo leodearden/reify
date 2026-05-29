@@ -263,14 +263,14 @@ impl GeometryKernel for ManifoldKernel {
     /// included in the `OperationFailed` payload so winding-order regressions
     /// in fixture meshes are debuggable without source-diving.
     fn ingest_mesh(&mut self, mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
-        if mesh.vertices.len() % 3 != 0 {
+        if !mesh.vertices.len().is_multiple_of(3) {
             return Err(GeometryError::OperationFailed(format!(
                 "ingest_mesh: vertices.len() must be a multiple of 3 (xyz triplets); \
                  got {}",
                 mesh.vertices.len()
             )));
         }
-        if mesh.indices.len() % 3 != 0 {
+        if !mesh.indices.len().is_multiple_of(3) {
             return Err(GeometryError::OperationFailed(format!(
                 "ingest_mesh: indices.len() must be a multiple of 3 (triangle triplets); \
                  got {}",
