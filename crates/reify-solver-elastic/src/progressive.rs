@@ -545,6 +545,38 @@ mod tests {
     }
 
     #[test]
+    fn refinement_pass_tuning_level_0_equals_coarse_pass_tuning() {
+        // Contract (rustdoc at progressive.rs:66-70/83):
+        //   "level = 0 gives the same result as coarse_pass_tuning"
+        // The equivalence is bit-exact: 0.5^0 == 1.0 and 0.1^0 == 1.0,
+        // so mesh_tol = target_tolerance * 4.0 * 1.0 and cg_tol = 1e-3 * 1.0
+        // are identical in both code paths.  assert_eq! is correct here;
+        // a tolerance-based check would be strictly weaker and mask divergence.
+        //
+        // Two distinct opts are tested so a regression that hardcodes a specific
+        // tolerance would not accidentally pass.
+        let opts_a = ProgressiveOptions {
+            target_tolerance: 0.05,
+            ..Default::default()
+        };
+        assert_eq!(
+            refinement_pass_tuning(&opts_a, 0),
+            coarse_pass_tuning(&opts_a),
+            "level=0 must be bit-exact equal to coarse_pass_tuning (opts_a: tol=0.05)"
+        );
+
+        let opts_b = ProgressiveOptions {
+            target_tolerance: 0.01,
+            ..Default::default()
+        };
+        assert_eq!(
+            refinement_pass_tuning(&opts_b, 0),
+            coarse_pass_tuning(&opts_b),
+            "level=0 must be bit-exact equal to coarse_pass_tuning (opts_b: tol=0.01)"
+        );
+    }
+
+    #[test]
     fn progressive_options_default_has_sane_values() {
         let opts = ProgressiveOptions::default();
         assert!(
