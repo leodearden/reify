@@ -495,6 +495,25 @@ mod tests {
     }
 
     #[test]
+    fn should_refine_with_zero_max_refinements_terminates_budget_exhausted() {
+        // max_refinements == 0 is a legitimate "coarse-pass-only" configuration:
+        // the caller wants exactly one coarse pass with no refinements.
+        // should_refine must return Terminate(BudgetExhausted) immediately rather
+        // than panicking — the debug_assert!(opts.max_refinements > 0) footgun
+        // made this crash in debug/test builds while release returned the correct
+        // value.
+        let opts = ProgressiveOptions {
+            max_refinements: 0,
+            ..Default::default()
+        };
+        assert_eq!(
+            should_refine(&opts, 0, &make_result(0.0), RefinementDemand::More),
+            AdvanceDecision::Terminate(TerminationReason::BudgetExhausted),
+            "max_refinements==0 (coarse-only config) must yield BudgetExhausted, not panic"
+        );
+    }
+
+    #[test]
     fn should_refine_terminates_when_budget_exhausted() {
         // max_refinements = 3, current_level = 3 → budget exhausted, even with More demand.
         let opts = ProgressiveOptions {
