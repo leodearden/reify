@@ -79,10 +79,6 @@ fn check_with_multi_binding_value_activates_multi_param_purpose() {
         "stdout should contain purpose-injected constraint id prefix 'purpose:fits_within@', got: {stdout}"
     );
     assert!(
-        stdout.contains("OK") || stdout.contains("All constraints satisfied."),
-        "stdout should indicate success, got: {stdout}"
-    );
-    assert!(
         stdout.contains("All constraints satisfied."),
         "stdout should contain 'All constraints satisfied.', got: {stdout}"
     );
@@ -139,6 +135,31 @@ fn check_with_multi_binding_unknown_param_exits_failure() {
     assert!(
         stderr.contains("bogus"),
         "stderr must name the unknown param 'bogus' (C3 diagnostic), got: {stderr}"
+    );
+}
+
+/// Robustness (amend): a `--purpose` value that binds the same param twice
+/// (`part:PartA,envelope:BoxB,part:BoxB`) parses cleanly — every segment is
+/// named, so parse_purpose_flag accepts it — and reaches
+/// activate_purpose_with_bindings, which must reject it with a diagnostic
+/// naming the duplicated param and a non-zero exit, rather than silently
+/// dropping the second binding.
+#[test]
+fn check_with_multi_binding_duplicate_param_exits_failure() {
+    let (status, stdout, stderr) = common::run_with_args(&[
+        "check",
+        "--purpose",
+        "fits_within=part:PartA,envelope:BoxB,part:BoxB",
+        &common::fixture_path("purpose_multi_param.ri"),
+    ]);
+
+    assert!(
+        !status.success(),
+        "reify check with a param bound more than once should exit non-zero.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("part"),
+        "stderr must name the duplicated param 'part', got: {stderr}"
     );
 }
 
