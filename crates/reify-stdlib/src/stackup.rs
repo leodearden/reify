@@ -43,13 +43,19 @@ fn parse_sign(v: &Value) -> Option<i64> {
 
 // --- stackup error classification ---
 
-/// Internal error classification for tolerance stack-up validation.
+/// Internal error classification for tolerance chain validation.
 ///
-/// Each variant corresponds to one of the §4.4 diagnostic codes:
+/// Each variant corresponds to one of the §4.4 diagnostic codes returned by
+/// [`parse_chain_checked`] and mapped to a [`Diagnostic`] by
+/// [`chain_error_to_diagnostic`]:
 /// - `EmptyChain`  → `E_StackupEmptyChain`  / `DiagnosticCode::StackupEmptyChain`
 /// - `DimMismatch` → `E_StackupDimMismatch` / `DiagnosticCode::StackupDimMismatch`
 /// - `BadSign`     → `E_StackupBadSign`     / `DiagnosticCode::StackupBadSign`
-/// - `BadSamples`  → `E_StackupBadSamples`  / `DiagnosticCode::StackupBadSamples`
+///
+/// Note: `E_StackupBadSamples` / `DiagnosticCode::StackupBadSamples` is classified
+/// separately in [`diagnose`] by directly inspecting `args[1]` for
+/// `monte_carlo_stackup`, because `parse_chain_checked` only validates the chain
+/// argument (not `samples`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StackupError {
     /// Chain is empty (`Value::List` with zero elements) or not a list.
@@ -59,13 +65,6 @@ enum StackupError {
     DimMismatch,
     /// A contributor's `sign` field is not `Value::Int(1)` or `Value::Int(-1)`.
     BadSign,
-    /// The `samples` argument to `monte_carlo_stackup` is not a positive `Value::Int`.
-    ///
-    /// `parse_chain_checked` never returns this variant — it is classified separately
-    /// in `diagnose()` by directly inspecting the samples argument.  The variant is
-    /// kept in the enum for documentation completeness and exhaustive match arms.
-    #[allow(dead_code)]
-    BadSamples,
 }
 
 // --- builder functions ---
@@ -233,6 +232,32 @@ fn parse_chain(v: &Value) -> Option<Vec<ContributorData>> {
     parse_chain_checked(v).ok()
 }
 
+/// Maps a chain-validation error to its corresponding [`Diagnostic`].
+///
+/// Called by [`diagnose`] for all three stackup math builtins — this single
+/// source of truth eliminates the otherwise-duplicated EmptyChain/DimMismatch/
+/// BadSign message strings.
+fn chain_error_to_diagnostic(e: StackupError) -> Option<Diagnostic> {
+    match e {
+        StackupError::EmptyChain => Some(
+            Diagnostic::error("E_StackupEmptyChain: tolerance chain must be non-empty")
+                .with_code(DiagnosticCode::StackupEmptyChain),
+        ),
+        StackupError::DimMismatch => Some(
+            Diagnostic::error(
+                "E_StackupDimMismatch: contributor field must be a finite LENGTH scalar",
+            )
+            .with_code(DiagnosticCode::StackupDimMismatch),
+        ),
+        StackupError::BadSign => Some(
+            Diagnostic::error(
+                "E_StackupBadSign: contributor sign must be Int(+1) or Int(-1)",
+            )
+            .with_code(DiagnosticCode::StackupBadSign),
+        ),
+    }
+}
+
 /// Pure classifier: given the name and args of a stdlib call that returned
 /// `Value::Undef`, determine whether this was a recognised stackup builtin
 /// error and, if so, which `Diagnostic` (with `Severity::Error`) to emit.
@@ -247,8 +272,13 @@ fn parse_chain(v: &Value) -> Option<Vec<ContributorData>> {
 ///   finite LENGTH scalar
 /// - `E_StackupBadSign` — contributor sign not Int(+1/-1)
 /// - `E_StackupBadSamples` — `monte_carlo_stackup` samples ≤ 0 (not a positive Int)
+///
+/// **Not diagnosed** (no §4.4 code; `Value::Undef` propagates silently):
+/// - `monte_carlo_stackup` `seed` arg is not `Value::Int`
+/// - `monte_carlo_stackup` `sigma_level` is non-positive, NaN, or dimensioned
+/// - `monte_carlo_stackup` `spec_min`/`spec_max` are asymmetrically present or inverted
 pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
-    // Only the five stackup math builtins can produce these diagnostics.
+    // Only the stackup math builtins can produce these diagnostics.
     // contributor / contributor_asym return Undef too, but they're builder
     // functions — argument validation there is the caller's responsibility
     // and has no PRD §4.4 diagnostic code.
@@ -257,70 +287,22 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
             if args.is_empty() {
                 return None; // arity error handled elsewhere
             }
-            match parse_chain_checked(&args[0]) {
-                Err(StackupError::EmptyChain) => Some(
-                    Diagnostic::error(
-                        "E_StackupEmptyChain: tolerance chain must be non-empty",
-                    )
-                    .with_code(DiagnosticCode::StackupEmptyChain),
-                ),
-                Err(StackupError::DimMismatch) => Some(
-                    Diagnostic::error(
-                        "E_StackupDimMismatch: contributor field must be a finite LENGTH scalar",
-                    )
-                    .with_code(DiagnosticCode::StackupDimMismatch),
-                ),
-                Err(StackupError::BadSign) => Some(
-                    Diagnostic::error(
-                        "E_StackupBadSign: contributor sign must be Int(+1) or Int(-1)",
-                    )
-                    .with_code(DiagnosticCode::StackupBadSign),
-                ),
-                Err(StackupError::BadSamples) => None, // unreachable for these fns
-                Ok(_) => None, // valid chain — no diagnostic
-            }
+            parse_chain_checked(&args[0]).err().and_then(chain_error_to_diagnostic)
         }
         "monte_carlo_stackup" => {
             if args.len() < 3 {
                 return None; // arity error handled elsewhere
             }
-            // Check chain first.
-            match parse_chain_checked(&args[0]) {
-                Err(StackupError::EmptyChain) => {
-                    return Some(
-                        Diagnostic::error(
-                            "E_StackupEmptyChain: tolerance chain must be non-empty",
-                        )
-                        .with_code(DiagnosticCode::StackupEmptyChain),
-                    );
-                }
-                Err(StackupError::DimMismatch) => {
-                    return Some(
-                        Diagnostic::error(
-                            "E_StackupDimMismatch: contributor field must be a finite LENGTH scalar",
-                        )
-                        .with_code(DiagnosticCode::StackupDimMismatch),
-                    );
-                }
-                Err(StackupError::BadSign) => {
-                    return Some(
-                        Diagnostic::error(
-                            "E_StackupBadSign: contributor sign must be Int(+1) or Int(-1)",
-                        )
-                        .with_code(DiagnosticCode::StackupBadSign),
-                    );
-                }
-                Err(StackupError::BadSamples) => {} // unreachable from parse_chain_checked
-                Ok(_) => {}
+            // Check chain first; if invalid, surface the chain error.
+            if let Err(e) = parse_chain_checked(&args[0]) {
+                return chain_error_to_diagnostic(e);
             }
-            // Chain is valid (or already returned). Check samples arg.
+            // Chain is valid. Check samples arg.
             match &args[1] {
                 Value::Int(n) if *n > 0 => None, // valid
                 _ => Some(
-                    Diagnostic::error(
-                        "E_StackupBadSamples: samples must be a positive integer",
-                    )
-                    .with_code(DiagnosticCode::StackupBadSamples),
+                    Diagnostic::error("E_StackupBadSamples: samples must be a positive integer")
+                        .with_code(DiagnosticCode::StackupBadSamples),
                 ),
             }
         }
