@@ -863,4 +863,106 @@ mod tests {
             ),
         }
     }
+
+    /// Pins the round-trip contract for `ManifoldKernel::ingest_mesh`: a
+    /// valid closed-orientable mesh (the canonical `unit_cube_mesh` fixture)
+    /// ingests without error and tessellates back to a geometrically faithful
+    /// output.
+    ///
+    /// Assertions (per task 4047 design decision 3 — robust bbox rather than
+    /// exact vertex count):
+    /// - `out.vertices` and `out.indices` are non-empty
+    /// - `out.vertices.len() % 3 == 0` and `out.indices.len() % 3 == 0`
+    ///   (xyz triplets / triangle triplets invariant)
+    /// - the axis-aligned bounding box of the round-tripped mesh matches the
+    ///   input's within 1e-9 per axis (manifold weld/reindex preserves
+    ///   geometry; exact vertex count is NOT asserted — see
+    ///   `boolean_ops_integration.rs:59-63`)
+    /// - bbox centroid == (0.5, 0.5, 0.5) within 1e-9 (the unit cube is
+    ///   centred there for the `[0.0,0.0,0.0]` origin variant)
+    ///
+    /// RED: `ManifoldKernel` currently inherits the trait default which
+    /// returns `Err`; the first `.expect(…)` panics until step-4 adds the
+    /// override.
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn ingest_mesh_round_trips_unit_cube_through_manifold() {
+        let initial = unit_cube_mesh([0.0, 0.0, 0.0]);
+        let mut kernel = ManifoldKernel::new();
+
+        let handle = kernel
+            .ingest_mesh(&initial)
+            .expect("unit_cube_mesh must ingest as a valid manifold");
+
+        let out = kernel
+            .tessellate(handle.id, 0.0)
+            .expect("tessellate of ingested cube must succeed");
+
+        // Structural invariants.
+        assert!(
+            !out.vertices.is_empty(),
+            "tessellated mesh must have vertices",
+        );
+        assert!(
+            !out.indices.is_empty(),
+            "tessellated mesh must have indices",
+        );
+        assert_eq!(
+            out.vertices.len() % 3,
+            0,
+            "vertices.len() must be a multiple of 3 (xyz triplets)",
+        );
+        assert_eq!(
+            out.indices.len() % 3,
+            0,
+            "indices.len() must be a multiple of 3 (triangle triplets)",
+        );
+
+        // Bounding-box fidelity assertions.
+        // Extract (min_x, min_y, min_z) and (max_x, max_y, max_z) from a
+        // flat xyz-triplet slice.
+        fn bbox(verts: &[f32]) -> ([f32; 3], [f32; 3]) {
+            let mut mn = [f32::INFINITY; 3];
+            let mut mx = [f32::NEG_INFINITY; 3];
+            for chunk in verts.chunks(3) {
+                for (axis, &v) in chunk.iter().enumerate() {
+                    mn[axis] = mn[axis].min(v);
+                    mx[axis] = mx[axis].max(v);
+                }
+            }
+            (mn, mx)
+        }
+
+        let (in_min, in_max) = bbox(&initial.vertices);
+        let (out_min, out_max) = bbox(&out.vertices);
+
+        for axis in 0..3 {
+            assert!(
+                (out_min[axis] - in_min[axis]).abs() < 1e-6_f32,
+                "bbox min[{axis}] round-trip error too large: \
+                 in={}, out={} (diff={})",
+                in_min[axis],
+                out_min[axis],
+                (out_min[axis] - in_min[axis]).abs(),
+            );
+            assert!(
+                (out_max[axis] - in_max[axis]).abs() < 1e-6_f32,
+                "bbox max[{axis}] round-trip error too large: \
+                 in={}, out={} (diff={})",
+                in_max[axis],
+                out_max[axis],
+                (out_max[axis] - in_max[axis]).abs(),
+            );
+        }
+
+        // Centroid of the unit cube (origin variant) must be (0.5, 0.5, 0.5).
+        for axis in 0..3 {
+            let centroid = (out_min[axis] + out_max[axis]) / 2.0;
+            assert!(
+                (centroid - 0.5).abs() < 1e-6_f32,
+                "bbox centroid[{axis}] must be 0.5 for the unit cube; \
+                 got {centroid}",
+            );
+        }
+    }
 }
