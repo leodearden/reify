@@ -362,31 +362,39 @@ fn cmd_check(args: &[String]) -> ExitCode {
         // Activate each purpose in flag order; one check_constraints_with_values
         // call after the loop collects results for ALL injected constraints.
         for activation in &activations {
-            // Step-α only activates the single-binding form via the
-            // activate_purpose(name, entity) shim. Multi-ref activation
-            // requires task γ's activate_purpose_with_bindings.
-            if activation.bindings.len() != 1 {
-                eprintln!(
-                    "Error: purpose '{}' was given {} bindings; multi-ref purpose activation is not yet supported (requires task γ / activate_purpose_with_bindings)",
-                    activation.name,
-                    activation.bindings.len()
-                );
-                return ExitCode::FAILURE;
-            }
+            // Single-binding form (name=entity, param==None): route through the
+            // activate_purpose(name, entity) shim — byte-identical @entity prefix,
+            // preserves existing single-param CLI tests (C6).
+            // Everything else (len>=2, or len==1 with a named param like part:PartA):
+            // route through activate_purpose_with_bindings for C2/C3 validation.
+            let is_bare_single = activation.bindings.len() == 1
+                && activation.bindings[0].param.is_none();
 
-            engine.activate_purpose(&activation.name, &activation.bindings[0].entity);
+            if is_bare_single {
+                engine.activate_purpose(&activation.name, &activation.bindings[0].entity);
 
-            // activate_purpose returns () and is silent (warn-log only) on
-            // unknown-purpose, missing eval_state, and the C2 multi-param
-            // refusal. is_purpose_active is the only programmatic signal —
-            // a false result surfaces all three failure modes as a clear
-            // CLI error + non-zero exit.
-            if !engine.is_purpose_active(&activation.name) {
-                eprintln!(
-                    "Error: could not activate purpose '{}' (no such purpose in the file, or it requires per-param bindings)",
-                    activation.name
-                );
-                return ExitCode::FAILURE;
+                // activate_purpose is silent on unknown-purpose, missing eval_state,
+                // and the C2 multi-param refusal. is_purpose_active is the only
+                // programmatic signal — a false result surfaces all failure modes.
+                if !engine.is_purpose_active(&activation.name) {
+                    eprintln!(
+                        "Error: could not activate purpose '{}' (no such purpose in the file, or it requires per-param bindings)",
+                        activation.name
+                    );
+                    return ExitCode::FAILURE;
+                }
+            } else {
+                let pairs: Vec<(String, String)> = activation
+                    .bindings
+                    .iter()
+                    .map(|b| (b.param.clone().unwrap_or_default(), b.entity.clone()))
+                    .collect();
+                if let Err(e) =
+                    engine.activate_purpose_with_bindings(&activation.name, &pairs)
+                {
+                    eprintln!("Error: {e}");
+                    return ExitCode::FAILURE;
+                }
             }
         }
 
