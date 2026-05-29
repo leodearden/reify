@@ -39,10 +39,13 @@ structure def ImpliesSignal {
 /// With `a=true, b=false, c=true`:
 /// - Right-assoc: `true implies (false implies true)` = `true implies true` = `true`
 /// - Left-assoc (wrong):  `(true implies false) implies true` = `false implies true` = `true`
+///
 /// Both happen to equal `true` for this choice; pick inputs where they differ:
+///
 /// With `a=true, b=true, c=false`:
 /// - Right-assoc: `true implies (true implies false)` = `true implies false` = `false`
 /// - Left-assoc (wrong):  `(true implies true) implies false` = `true implies false` = `false`
+///
 /// Pick `a=false, b=true, c=false`:
 /// - Right-assoc: `false implies (true implies false)` = `false implies false` = `true`  (vacuous)
 /// - Left-assoc (wrong):  `(false implies true) implies false` = `true implies false` = `false`
@@ -57,6 +60,7 @@ structure def ImpliesAssoc {
 /// With `a=false, b=false, c=false`:
 /// - `(false or false) implies false` = `false implies false` = `true`  (vacuous)
 /// - If `or` had lower precedence (wrong): `false or (false implies false)` = `false or true` = `true`
+///
 /// Both equal `true` for this input; choose `a=true, b=false, c=false`:
 /// - Correct: `(true or false) implies false` = `true implies false` = `false`
 /// - Wrong: `true or (false implies false)` = `true or true` = `true`
