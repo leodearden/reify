@@ -25,21 +25,23 @@
 //
 // Type-coercion notes:
 //
-//   Material:
-//     `solve_elastic_static` declares `material: ElasticMaterial`. The Reify
-//     overload resolver uses exact type equality; `Steel_AISI_1045()` has
-//     compile-time type `StructureRef("Steel_AISI_1045")`, which does not match
-//     `TraitObject("ElasticMaterial")` at the call site.
+//   Material (updated task δ/3780):
+//     `solve_elastic_static` declares `material: ConstitutiveLaw` (generalised
+//     in task δ/3780 from the original `ElasticMaterial`). The Reify overload
+//     resolver uses exact type equality; `Steel_AISI_1045()` has compile-time
+//     type `StructureRef("Steel_AISI_1045")`, which does not match
+//     `TraitObject("ConstitutiveLaw")` at the call site.
 //
-//     Workaround (same pattern as loads/supports below): wrap the material in
-//     `FEAMaterialInput(material: mat)` — a structure ctor whose `material`
-//     param is declared `ElasticMaterial`. Accessing `mi.material` then returns
-//     compile-time type `ElasticMaterial`, satisfying the overload resolver.
-//     The runtime value is still the `Steel_AISI_1045` StructureInstance;
-//     the trampoline reads it via `Value::StructureInstance` pattern matching.
+//     Workaround: wrap the material in `ConstitutiveLawInput(law: mat)` — a
+//     structure ctor whose `law` param is declared `ConstitutiveLaw`. Accessing
+//     `ci.law` returns compile-time type `ConstitutiveLaw`, satisfying the
+//     overload resolver. The runtime value is still the `Steel_AISI_1045`
+//     StructureInstance; the trampoline reads it via `Value::StructureInstance`
+//     pattern matching and dispatches on `youngs_modulus` / `poisson_ratio`
+//     fields to the isotropic solve path (byte-identical to the pre-δ path).
 //
-//     See `solver_elastic.ri` for the `FEAMaterialInput` doc comment.
-//     TODO(trait-coerce): remove the FEAMaterialInput wrapper once trait
+//     See `solver_elastic.ri` for the `ConstitutiveLawInput` doc comment.
+//     TODO(trait-coerce): remove the ConstitutiveLawInput wrapper once trait
 //     subtype coercion is supported at fn call sites.
 //
 //   Loads / supports:
@@ -82,11 +84,12 @@ structure FeaCantileverSmoke {
     // the trampoline reads them via pattern-matching on their fields.
     let lc = LoadCase(name: "cantilever", loads: [tip_load], supports: [mount])
 
-    // Wrap material in FEAMaterialInput so that member-access .material has
-    // compile-time type ElasticMaterial (matching the fn param type).
+    // Wrap material in ConstitutiveLawInput so that member-access .law has
+    // compile-time type ConstitutiveLaw (matching the fn param type, task δ/3780).
     // Structure ctors accept any value — no call-site type check — so
-    // Steel_AISI_1045() is accepted and stored; mi.material returns ElasticMaterial.
-    let mi = FEAMaterialInput(material: material)
+    // Steel_AISI_1045() is accepted and stored; ci.law returns ConstitutiveLaw.
+    // See solver_elastic.ri ConstitutiveLawInput doc for the wrapper-coercion rationale.
+    let ci = ConstitutiveLawInput(law: material)
 
     // FEA solve: the @optimized dispatcher routes this call to the
     // `solver::elastic_static` trampoline in
@@ -97,6 +100,6 @@ structure FeaCantileverSmoke {
     // in solver_elastic.ri).  Bare `ElasticOptions()` uses all solver defaults
     // (P1 elements, max_iter=1000, tolerance=1e-6, …).
     let result = solve_elastic_static(
-        mi.material, length, width, height, lc.loads, lc.supports, ElasticOptions()
+        ci.law, length, width, height, lc.loads, lc.supports, ElasticOptions()
     )
 }
