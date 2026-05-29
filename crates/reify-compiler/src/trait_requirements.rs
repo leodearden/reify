@@ -625,6 +625,7 @@ mod tests {
             name: name.to_string(),
             doc: None,
             is_pub: false,
+            is_aux: false,
             type_expr: None,
             value: reify_ast::Expr {
                 kind: reify_ast::ExprKind::NumberLiteral {

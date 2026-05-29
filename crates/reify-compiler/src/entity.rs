@@ -3490,6 +3490,7 @@ mod tests {
                     name: "x".to_string(),
                     doc: None,
                     is_pub: false,
+                    is_aux: false,
                     type_expr: None,
                     value: reify_ast::Expr {
                         kind: reify_ast::ExprKind::Ident("dummy".to_string()),
