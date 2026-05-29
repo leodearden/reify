@@ -81,8 +81,9 @@ impl Engine {
     ///
     /// Returns `true` if the injection was performed, `false` when this is a
     /// no-op (purpose already active, purpose not found in `compiled_purposes`,
-    /// no `eval_state` present, or the purpose has more than one param — the
-    /// single-entity shim cannot bind a multi-param purpose; callers must use
+    /// no `eval_state` present, or the purpose does not have exactly one param —
+    /// the single-entity shim binds exactly one entity to one param, so it can
+    /// bind neither a zero- nor a multi-param purpose; callers must use
     /// `activate_purpose_with_bindings`, task γ — PRD §4.5 C2).
     ///
     /// **Does NOT** rebuild `reverse_index`, `trace_map`, `rebuild_cone`, or
@@ -112,19 +113,24 @@ impl Engine {
         };
 
         // Contract C2 (PRD §4.5): the single-entity `activate_purpose(name, entity_ref)`
-        // shim cannot safely bind a multi-param purpose. Applying one `entity_ref` to
-        // every per-param `{purpose}::{param}` stamp (the remap loop below) would alias
-        // distinct params — `part.length > envelope.length` would collapse to
-        // `entity.length > entity.length`, a silently meaningless constraint. Refuse the
-        // activation rather than inject a mis-bound constraint. Per-param binding is task
-        // γ's `activate_purpose_with_bindings`; until it lands the single-entity path is a
-        // refusal (non-silent: warn-logged + observable as no injection / not active),
-        // NOT a silent no-op or mis-bind.
-        if purpose.params.len() > 1 {
+        // shim binds exactly one entity to exactly one param, so it can only handle a
+        // purpose with EXACTLY one param. Refuse anything else:
+        //   - multi-param (>1): applying one `entity_ref` to every per-param
+        //     `{purpose}::{param}` stamp (the remap loop in the core) would alias distinct
+        //     params — `part.length > envelope.length` would collapse to
+        //     `entity.length > entity.length`, a silently meaningless constraint.
+        //   - zero-param (0): there is nothing to bind, and the `purpose.params[0]` index
+        //     in the delegation below would panic out-of-bounds.
+        // Refuse (warn + return false) rather than inject a mis-bound constraint or crash.
+        // Per-param binding is task γ's `activate_purpose_with_bindings` (zero-param
+        // purposes activate via it with an empty bindings slice — C2/C3 pass vacuously).
+        // The refusal is non-silent: warn-logged + observable as no injection / not active.
+        if purpose.params.len() != 1 {
             tracing::warn!(
                 purpose = %purpose_name,
                 param_count = purpose.params.len(),
-                "refusing single-entity activation of multi-param purpose; use activate_purpose_with_bindings (task gamma)"
+                "refusing single-entity activation: purpose requires exactly one param (got {}); use activate_purpose_with_bindings (task gamma)",
+                purpose.params.len()
             );
             return false;
         }
@@ -652,12 +658,16 @@ fn expand_purpose_reflective_placeholders(
             // the bindings slice. If the param_name is not found (cannot
             // happen post-C2 validation), fall back to the first binding's
             // entity for anti-cascade safety. For the single-binding path
-            // this is always bindings[0].1 (C6 parity).
+            // this is always the sole binding's entity (C6 parity). The
+            // empty-slice case (`bindings.first()` → None) cannot occur today —
+            // a reflective placeholder requires a param, so `bindings` is
+            // non-empty — but we guard with an empty-string fallback rather
+            // than `bindings[0]` so a future empty-bindings caller cannot panic.
             let entity_ref: &str = bindings
                 .iter()
                 .find(|(p, _)| p == param_name.as_str())
                 .map(|(_, e)| e.as_str())
-                .unwrap_or_else(|| bindings[0].1.as_str());
+                .unwrap_or_else(|| bindings.first().map(|(_, e)| e.as_str()).unwrap_or(""));
 
             // Resolve the member list for this placeholder. Prefer compile-
             // time `ResolvedSchemaQuery`; fall back to scanning `value_cells`
