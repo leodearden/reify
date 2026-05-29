@@ -3279,6 +3279,158 @@ mod tests {
         );
     }
 
+    /// Tests for `resolve_density_arg`: diagnostic behavior for wrong-typed density
+    /// arguments to `moment_of_inertia`.
+    ///
+    /// Contract under test:
+    ///   (a) ValueRef → LENGTH-dimensioned Scalar → None + exactly 1 Warning whose
+    ///       message names "density" and "real" or "dimensionless" (case-insensitive).
+    ///   (b) ValueRef → non-numeric Value (e.g. `Value::Bool`) → None + 1 Warning.
+    ///   (c) ValueRef → `Value::Real(7850.0)` → Some(7850.0), empty diagnostics.
+    ///       ValueRef → dimensionless `Value::Scalar` → Some(si_value), empty diagnostics.
+    ///   (d) Non-ValueRef expr (Literal) → None, empty diagnostics (silent fall-through,
+    ///       matching the established "unsupported arg shape → silent fall-through"
+    ///       contract that every sibling resolver follows).
+    ///
+    /// Modelled on `resolve_point3_length_arg_bare_real_components_return_none` above
+    /// (line 3254) — build a `value_ref` expr + a `ValueMap`, call the helper directly,
+    /// assert the return value and diagnostic side-effect, compiler-independently.
+    #[test]
+    fn resolve_density_arg_diagnostics() {
+        fn make_value_ref(cell: reify_core::ValueCellId) -> reify_ir::CompiledExpr {
+            reify_ir::CompiledExpr::value_ref(cell, reify_core::Type::Real)
+        }
+
+        // (a) ValueRef → LENGTH Scalar → None + 1 Warning
+        {
+            let cell = reify_core::ValueCellId::new("TestDef", "rho");
+            let expr = make_value_ref(cell.clone());
+            let mut values = reify_ir::ValueMap::new();
+            values.insert(
+                cell,
+                reify_ir::Value::Scalar {
+                    si_value: 1.0,
+                    dimension: reify_core::DimensionVector::LENGTH,
+                },
+            );
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result =
+                super::resolve_density_arg(&expr, &values, "moment_of_inertia", &mut diags);
+            assert_eq!(result, None, "(a) LENGTH Scalar must return None");
+            assert_eq!(
+                diags.len(),
+                1,
+                "(a) LENGTH Scalar must push exactly 1 diagnostic, got: {:?}",
+                diags
+            );
+            assert_eq!(
+                diags[0].severity,
+                reify_core::Severity::Warning,
+                "(a) diagnostic must be Warning severity"
+            );
+            let msg = diags[0].message.to_lowercase();
+            assert!(
+                msg.contains("density"),
+                "(a) warning must name 'density', got: {:?}",
+                diags[0].message
+            );
+            assert!(
+                msg.contains("real") || msg.contains("dimensionless"),
+                "(a) warning must mention 'real' or 'dimensionless', got: {:?}",
+                diags[0].message
+            );
+        }
+
+        // (b) ValueRef → Value::Bool(true) → None + 1 Warning
+        {
+            let cell = reify_core::ValueCellId::new("TestDef", "rho2");
+            let expr = make_value_ref(cell.clone());
+            let mut values = reify_ir::ValueMap::new();
+            values.insert(cell, reify_ir::Value::Bool(true));
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result =
+                super::resolve_density_arg(&expr, &values, "moment_of_inertia", &mut diags);
+            assert_eq!(result, None, "(b) Bool must return None");
+            assert_eq!(
+                diags.len(),
+                1,
+                "(b) Bool must push exactly 1 diagnostic, got: {:?}",
+                diags
+            );
+            assert_eq!(
+                diags[0].severity,
+                reify_core::Severity::Warning,
+                "(b) diagnostic must be Warning severity"
+            );
+        }
+
+        // (c-i) ValueRef → Value::Real(7850.0) → Some(7850.0), empty diagnostics
+        {
+            let cell = reify_core::ValueCellId::new("TestDef", "rho3");
+            let expr = make_value_ref(cell.clone());
+            let mut values = reify_ir::ValueMap::new();
+            values.insert(cell, reify_ir::Value::Real(7850.0));
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result =
+                super::resolve_density_arg(&expr, &values, "moment_of_inertia", &mut diags);
+            assert_eq!(
+                result,
+                Some(7850.0),
+                "(c-i) Value::Real(7850.0) must return Some(7850.0)"
+            );
+            assert!(
+                diags.is_empty(),
+                "(c-i) Value::Real must produce no diagnostics, got: {:?}",
+                diags
+            );
+        }
+
+        // (c-ii) ValueRef → dimensionless Scalar → Some(si_value), empty diagnostics
+        {
+            let cell = reify_core::ValueCellId::new("TestDef", "rho4");
+            let expr = make_value_ref(cell.clone());
+            let mut values = reify_ir::ValueMap::new();
+            values.insert(
+                cell,
+                reify_ir::Value::Scalar {
+                    si_value: 7850.0,
+                    dimension: reify_core::DimensionVector::DIMENSIONLESS,
+                },
+            );
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result =
+                super::resolve_density_arg(&expr, &values, "moment_of_inertia", &mut diags);
+            assert_eq!(
+                result,
+                Some(7850.0),
+                "(c-ii) dimensionless Scalar must return Some(si_value)"
+            );
+            assert!(
+                diags.is_empty(),
+                "(c-ii) dimensionless Scalar must produce no diagnostics, got: {:?}",
+                diags
+            );
+        }
+
+        // (d) Non-ValueRef (literal_f64) → None, empty diagnostics (silent fall-through)
+        {
+            let expr = literal_f64(7850.0);
+            let values = reify_ir::ValueMap::new();
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result =
+                super::resolve_density_arg(&expr, &values, "moment_of_inertia", &mut diags);
+            assert_eq!(
+                result, None,
+                "(d) Literal expr must return None (silent fall-through)"
+            );
+            assert!(
+                diags.is_empty(),
+                "(d) Literal expr must produce no diagnostics, got: {:?}",
+                diags
+            );
+        }
+    }
+
     // Constants `DEGENERATE_LENGTH_M`, `DEGENERATE_ANGLE_RAD`, and
     // `GEOMETRY_EPSILON` (top of file) are not pinned by a standalone unit
     // test — that would just restate the `const` definitions. Their behavior
