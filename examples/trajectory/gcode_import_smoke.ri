@@ -27,10 +27,18 @@ structure def GcodeImportSmoke {
     // A one-move Marlin program: linear move to (10 mm, 10 mm) in the XY plane.
     let source = "G1 X10 Y10"
 
-    // Lower the g-code to motion profiles under the Marlin dialect. The
-    // zero-arg structure constructor `MarlinDialect()` is a nominal dialect
-    // tag that the eval-path dispatcher routes on by its `type_name`.
-    let imported = gcode_import(source, MarlinDialect())
+    // Wrap the dialect in the GcodeDialectInput shim so that member-access
+    // `.dialect` carries the declared trait type GcodeDialect — which the
+    // overload resolver matches exactly against gcode_import's
+    // `dialect: GcodeDialect` param. A bare `MarlinDialect()` would NOT match
+    // the trait param directly (the resolver uses exact type equality); this is
+    // the same trait-coerce limitation FEAMaterialInput works around for
+    // solve_elastic_static. The runtime value is still the MarlinDialect
+    // instance, which the eval path dispatches on by type_name.
+    let di = GcodeDialectInput(dialect: MarlinDialect())
+
+    // Lower the g-code to a list of motion profiles under the Marlin dialect.
+    let imported = gcode_import(source, di.dialect)
 
     // Exercise the result: a contiguous one-move program lowers to a single
     // profile, so the imported list is non-empty.
