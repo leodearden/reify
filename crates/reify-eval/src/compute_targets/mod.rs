@@ -16,6 +16,7 @@
 //! implementation crates (`reify-solver-elastic`, `reify-kernel-gmsh`, etc.).
 //! That refactor is out of scope for this slice.
 
+pub mod buckling;
 pub mod elastic_static;
 
 /// Register all compute trampolines shipped in this slice.
@@ -29,5 +30,9 @@ pub fn register_compute_fns(engine: &mut crate::Engine) {
     engine.register_compute_fn(
         "solver::elastic_static",
         elastic_static::solve_elastic_static_trampoline as crate::ComputeFn,
+    );
+    engine.register_compute_fn(
+        "solver::buckling",
+        buckling::solve_buckling_trampoline as crate::ComputeFn,
     );
 }

@@ -215,7 +215,7 @@ fn e2e_buckling_critical_load_within_ten_percent() {
     let lambda0 = match &modes {
         Value::List(items) if !items.is_empty() => {
             match &items[0] {
-                Value::StructureInstance(data) => match data.fields.get("eigenvalue") {
+                Value::StructureInstance(data) => match data.fields.get(&"eigenvalue".to_string()) {
                     Some(Value::Real(r)) => *r,
                     other => panic!("modes[0].eigenvalue not Real, got: {:?}", other),
                 },
@@ -255,7 +255,7 @@ fn e2e_buckling_critical_load_within_ten_percent() {
     // (e) `ms` cell resolves without error (Undef is acceptable for task ε).
     let ms_cell = ValueCellId::new("BucklingColumnSmoke", "ms");
     assert!(
-        eval_result.values.contains_key(&ms_cell),
+        eval_result.values.get(&ms_cell).is_some(),
         "cell BucklingColumnSmoke.ms not found in eval result"
     );
 }
@@ -353,10 +353,10 @@ fn e2e_buckling_second_eval_hits_cache() {
         .unwrap_or_else(|| panic!("second eval: cell BucklingColumnSmoke.result not found"));
 
     let lambda1 = match &result1 {
-        Value::StructureInstance(data) => match data.fields.get("modes") {
+        Value::StructureInstance(data) => match data.fields.get(&"modes".to_string()) {
             Some(Value::List(items)) if !items.is_empty() => {
                 match &items[0] {
-                    Value::StructureInstance(d) => match d.fields.get("eigenvalue") {
+                    Value::StructureInstance(d) => match d.fields.get(&"eigenvalue".to_string()) {
                         Some(Value::Real(r)) => *r,
                         _ => panic!("first eval: modes[0].eigenvalue not Real"),
                     },
@@ -368,10 +368,10 @@ fn e2e_buckling_second_eval_hits_cache() {
         _ => panic!("first eval: result not StructureInstance"),
     };
     let lambda2 = match &result2 {
-        Value::StructureInstance(data) => match data.fields.get("modes") {
+        Value::StructureInstance(data) => match data.fields.get(&"modes".to_string()) {
             Some(Value::List(items)) if !items.is_empty() => {
                 match &items[0] {
-                    Value::StructureInstance(d) => match d.fields.get("eigenvalue") {
+                    Value::StructureInstance(d) => match d.fields.get(&"eigenvalue".to_string()) {
                         Some(Value::Real(r)) => *r,
                         _ => panic!("second eval: modes[0].eigenvalue not Real"),
                     },
