@@ -230,3 +230,141 @@ fn width_edit_cascades_through_realization_to_geometry_handle_cell() {
         updated
     );
 }
+
+/// THIRD (GHR-δ §8 Phase 4 — edit donation cross-kind cascade, S11/S12): when a
+/// source edit changes a Realization's `content_hash` (landing it in
+/// `changed_realizations`) WITHOUT changing the backing `Value::GeometryHandle`
+/// cell's own `content_hash`, the edit-time invalidation must still invalidate
+/// that cell via the Realization→ValueCell donation cascade. The changed
+/// Realization invalidates its own cache entry today (engine_edit.rs:2301), but
+/// the value cell holding its handle is missed — lazy revalidation (S14/S16)
+/// then handles the next read.
+///
+/// ## Why a *reorder* fixture, not a literal `box(20mm,..)`→`box(25mm,..)` edit
+///
+/// The plan (S11) gives a box-arg change as its example, but editing a box()
+/// argument changes BOTH the realization's ops-hash AND the geometry param
+/// cell's `default_expr` content_hash — so the cell lands in the value-cell
+/// `changed` set and is already invalidated by the pre-existing changed-cell
+/// path (engine_edit.rs:2283, the `for id in &changed` loop). That masks the
+/// cross-kind cascade: the test would pass with OR without S12 and never be RED.
+///
+/// Reordering two geometry params isolates the cascade. Value cells are keyed by
+/// member name (`Widget.a`, `Widget.b`) and carry their `default_expr` verbatim,
+/// so swapping declaration order leaves every cell's `content_hash`
+/// byte-identical — the cells are NOT in `changed`. Realizations are keyed
+/// positionally (`RealizationNodeId { entity, index }`), so the swap moves
+/// different ops under `Widget#0` / `Widget#1` and BOTH land in
+/// `changed_realizations`. The ONLY edit-time path that can now invalidate the
+/// GH cells is the Realization→ValueCell edge S12 adds. This honors S11's intent
+/// ("the backing realization's content_hash changes, lands in
+/// `changed_realizations`") while making the donation cascade observable.
+///
+/// Empirically on the base commit: after the reorder edit, `Widget#0`/`Widget#1`
+/// are invalidated (cache entries gone) but `Widget.a`/`Widget.b` remain cached
+/// with their stale handles — exactly the gap. RED until S12 invalidates the
+/// backed cells at the donation block; `assert no panic` per S11.
+#[test]
+fn realization_change_donates_invalidation_to_backing_geometry_cell() {
+    // Two geometry-bearing params; `width` first so the box() calls have no
+    // forward reference. `a` and `b` carry distinct box dimensions so their
+    // realizations have distinct ops-hashes (and so the swap is observable).
+    const TWO_GEOM_SRC: &str = r#"structure def Widget {
+    param width : Length = 10mm
+    param a : Solid = box(width, 20mm, 30mm)
+    param b : Solid = box(width, 40mm, 50mm)
+}"#;
+    // Same two params, declaration order swapped. Cell identities + exprs are
+    // byte-identical; only the realization indices move.
+    const TWO_GEOM_SRC_REORDERED: &str = r#"structure def Widget {
+    param width : Length = 10mm
+    param b : Solid = box(width, 40mm, 50mm)
+    param a : Solid = box(width, 20mm, 30mm)
+}"#;
+
+    let compiled = compile_source(TWO_GEOM_SRC);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .map(|d| d.message.clone())
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "expected no compile-time errors; got: {:?}",
+        compile_errors
+    );
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&compiled, ExportFormat::Step);
+    let build_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .map(|d| format!("[{:?}] {}", d.severity, d.message))
+        .collect();
+    assert!(
+        build_errors.is_empty(),
+        "expected no build-time errors; got: {:?}",
+        build_errors
+    );
+
+    let a = ValueCellId::new("Widget", "a");
+    let b = ValueCellId::new("Widget", "b");
+    let a_node = NodeId::Value(a.clone());
+    let b_node = NodeId::Value(b.clone());
+
+    // Sanity: both geometry cells hydrated to handles (so the realization↔cell
+    // freshness edge exists for both) and both have live cache entries.
+    assert!(
+        matches!(result.values.get_or_undef(&a), Value::GeometryHandle { .. }),
+        "Widget.a must hydrate to a Value::GeometryHandle"
+    );
+    assert!(
+        matches!(result.values.get_or_undef(&b), Value::GeometryHandle { .. }),
+        "Widget.b must hydrate to a Value::GeometryHandle"
+    );
+    assert!(
+        engine.cache_store().get(&a_node).is_some() && engine.cache_store().get(&b_node).is_some(),
+        "both geometry cells must have cache entries after build()"
+    );
+
+    // Edit: swap the two geometry params. Realizations Widget#0/Widget#1 change
+    // (ops-hash swap → changed_realizations); cells Widget.a/Widget.b do NOT
+    // (member name + default_expr unchanged → absent from value-cell `changed`).
+    let compiled2 = compile_source(TWO_GEOM_SRC_REORDERED);
+    let edit = engine
+        .edit_source(&compiled2)
+        .expect("reorder edit_source must not error");
+
+    // Precondition (already true on base): the realizations were invalidated,
+    // confirming the edit really did land them in `changed_realizations`.
+    let r0 = NodeId::Realization(RealizationNodeId::new("Widget", 0));
+    let r1 = NodeId::Realization(RealizationNodeId::new("Widget", 1));
+    assert!(
+        engine.cache_store().get(&r0).is_none() && engine.cache_store().get(&r1).is_none(),
+        "both realizations must be invalidated by the reorder (changed_realizations); \
+         got r0 cached={}, r1 cached={}",
+        engine.cache_store().get(&r0).is_some(),
+        engine.cache_store().get(&r1).is_some()
+    );
+
+    // RED assertion (S12): the GeometryHandle cells backed by the changed
+    // realizations must ALSO be invalidated by the donation cascade. On the base
+    // commit they survive with their stale handles, so this fails until S12.
+    assert!(
+        engine.cache_store().get(&a_node).is_none(),
+        "Widget.a (GeometryHandle cell backed by a changed Realization) must be \
+         invalidated by the edit donation cascade (GHR-δ S12); it is still cached"
+    );
+    assert!(
+        engine.cache_store().get(&b_node).is_none(),
+        "Widget.b (GeometryHandle cell backed by a changed Realization) must be \
+         invalidated by the edit donation cascade (GHR-δ S12); it is still cached"
+    );
+
+    // The edit must not panic and must report a coherent result (smoke per S11).
+    let _ = edit.values;
+}
