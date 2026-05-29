@@ -20,8 +20,8 @@ use reify_core::{Diagnostic, DiagnosticInfo, DiagnosticLabel, SourceLocationInfo
 use crate::types::{
     AutoResolveConstraintProgress, AutoResolveIteration, AutoResolveParameterValue, ConstraintData,
     DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState, JointBinding, JointDescriptor,
-    MechanismDescriptor, MeshData, SourceSpanInfo, ValueData, format_determinacy, format_freshness,
-    format_value,
+    MechanismDescriptor, MeshData, SourceSpanInfo, TensegrityWireData, ValueData,
+    format_determinacy, format_freshness, format_value,
 };
 
 // ── Persistent-cache startup sweep (task 3698) ────────────────────────────────
@@ -1731,6 +1731,14 @@ impl EngineSession {
             compile_diagnostics.extend(f.diags.iter().cloned());
         }
 
+        // Extract tensegrity wire descriptors from value cells.
+        // Scoped borrow released before GuiState construction.
+        let tensegrity_wires = {
+            let compiled = self.core.compiled().unwrap();
+            let check = self.core.last_check().unwrap();
+            build_tensegrity_wires(compiled, check)
+        };
+
         Ok(GuiState {
             meshes,
             values,
@@ -1738,7 +1746,7 @@ impl EngineSession {
             files,
             tessellation_diagnostics,
             compile_diagnostics,
-            tensegrity_wires: Vec::new(), // wired in step-4 (build_tensegrity_wires)
+            tensegrity_wires,
         })
     }
 
@@ -2382,6 +2390,94 @@ fn build_constraints(
         });
     }
     constraints
+}
+
+// ---- Tensegrity wire extraction (T0b) ----------------------------------------
+
+/// Extract `TensegrityWireData` records from every value cell in `compiled`.
+///
+/// Iterates the same cell loop as `build_values`, reads the post-eval `Value`
+/// for each cell, and collects every `Value::StructureInstance` with
+/// `type_name == "TensegrityWire"` found either:
+/// - directly as the cell's value (standalone wire), or
+/// - as elements of a `Value::List` (the typical `tensegrity_wires()` output).
+///
+/// For each wire instance, the six endpoint coords are flattened from
+/// `Value::Scalar{si_value, ..}` or `Value::Real(v)` to `f64` SI.  Wires
+/// with malformed or missing fields are silently skipped (no panic, no Undef
+/// propagation — the contract lives in T0a's extraction layer).
+///
+/// The owning entity is taken from `cell.id.entity` (e.g. `"TPrism"`).
+fn build_tensegrity_wires(
+    compiled: &reify_compiler::CompiledModule,
+    check: &CheckResult,
+) -> Vec<TensegrityWireData> {
+    let mut wires = Vec::new();
+    for template in &compiled.templates {
+        for cell in &template.value_cells {
+            let val = check.values.get_or_undef(&cell.id);
+            let entity_path = &cell.id.entity;
+            collect_wires_from_value(&val, entity_path, &mut wires);
+        }
+    }
+    wires
+}
+
+/// Collect `TensegrityWireData` records from a single cell `Value`.
+///
+/// Matches either a standalone `TensegrityWire` instance or a
+/// `List` of `TensegrityWire` instances (the output of `tensegrity_wires()`).
+/// All other variants are silently ignored.
+fn collect_wires_from_value(val: &Value, entity_path: &str, out: &mut Vec<TensegrityWireData>) {
+    match val {
+        Value::StructureInstance(data) if data.type_name == "TensegrityWire" => {
+            if let Some(wire) = wire_data_from_instance(&data.fields, entity_path) {
+                out.push(wire);
+            }
+        }
+        Value::List(items) => {
+            for item in items.iter() {
+                if let Value::StructureInstance(data) = item {
+                    if data.type_name == "TensegrityWire" {
+                        if let Some(wire) = wire_data_from_instance(&data.fields, entity_path) {
+                            out.push(wire);
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Extract a `TensegrityWireData` from a `TensegrityWire` instance's fields.
+///
+/// Returns `None` if `kind` is missing/non-string or any coordinate field is
+/// missing/non-numeric — the caller silently drops malformed wires.
+fn wire_data_from_instance(
+    fields: &reify_ir::PersistentMap<String, Value>,
+    entity_path: &str,
+) -> Option<TensegrityWireData> {
+    let kind = match fields.get(&"kind".to_string()) {
+        Some(Value::String(s)) => s.clone(),
+        _ => return None,
+    };
+    let x1 = scalar_to_f64(fields.get(&"x1".to_string())?)?;
+    let y1 = scalar_to_f64(fields.get(&"y1".to_string())?)?;
+    let z1 = scalar_to_f64(fields.get(&"z1".to_string())?)?;
+    let x2 = scalar_to_f64(fields.get(&"x2".to_string())?)?;
+    let y2 = scalar_to_f64(fields.get(&"y2".to_string())?)?;
+    let z2 = scalar_to_f64(fields.get(&"z2".to_string())?)?;
+    Some(TensegrityWireData {
+        entity_path: entity_path.to_string(),
+        kind,
+        x1,
+        y1,
+        z1,
+        x2,
+        y2,
+        z2,
+    })
 }
 
 // ---- Mechanism descriptor helpers -------------------------------------------
