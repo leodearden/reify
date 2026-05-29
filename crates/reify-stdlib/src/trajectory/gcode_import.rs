@@ -158,7 +158,10 @@ pub(crate) fn lower_gcode(source: &str, dialect: GcodeImportDialect) -> GcodeImp
             Ok(commands) => lower_commands(&commands),
             Err(e) => GcodeImportResult::from_parse_error(e),
         },
-        GcodeImportDialect::Klipper => GcodeImportResult::empty(),
+        GcodeImportDialect::Klipper => match reify_gcode::parse_klipper(source) {
+            Ok(commands) => lower_commands(&commands),
+            Err(e) => GcodeImportResult::from_parse_error(e),
+        },
         GcodeImportDialect::Unsupported(_name) => GcodeImportResult::empty(),
     }
 }
@@ -177,7 +180,7 @@ pub(crate) fn lower_gcode(source: &str, dialect: GcodeImportDialect) -> GcodeImp
 fn lower_commands(commands: &[GcodeCommand]) -> GcodeImportResult {
     let mut profiles: Vec<MotionProfile> = Vec::new();
     let mut segment: Vec<Waypoint> = Vec::new();
-    let warnings: Vec<GcodeImportWarning> = Vec::new();
+    let mut warnings: Vec<GcodeImportWarning> = Vec::new();
     let mut cur = PosState::origin();
 
     for cmd in commands {
@@ -228,11 +231,18 @@ fn lower_commands(commands: &[GcodeCommand]) -> GcodeImportResult {
             // Non-motion commands close the current motion segment (PRD §7.2):
             // emit a profile only when the open segment holds at least one
             // motion waypoint, so back-to-back splitters never produce empty
-            // profiles. The running position persists across the split. The
-            // InputShaper-specific ShaperConflict warning is added in step-8.
+            // profiles. The running position persists across the split.
+            //
+            // An `INPUT_SHAPER` directive additionally raises a ShaperConflict
+            // warning: its presence signals a file-declared shaper that the
+            // in-PRD shaper-design supersedes (PRD §10.1; the directive's
+            // variant identity is the cross-task signal — see ast.rs).
             GcodeCommand::IgnoredMCode(_)
             | GcodeCommand::SetVelocityLimit(_)
             | GcodeCommand::InputShaper(_) => {
+                if matches!(cmd, GcodeCommand::InputShaper(_)) {
+                    warnings.push(GcodeImportWarning::ShaperConflict);
+                }
                 if !segment.is_empty() {
                     profiles.push(MotionProfile {
                         waypoints: std::mem::take(&mut segment),
