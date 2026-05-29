@@ -51,12 +51,17 @@ fn check_with_repeated_purpose_flag_activates_each_purpose() {
     );
 }
 
+/// B7 / RED (step-09a): activating a multi-param purpose with distinct per-param
+/// bindings must SUCCEED and report the purpose-injected constraint as OK.
+///
+/// `PartA.length = 80mm`, `BoxB.length = 100mm`, constraint `part.length < envelope.length`.
+/// With distinct binding (part→PartA, envelope→BoxB) → 80mm < 100mm → Satisfied.
+///
+/// RED because the CLI currently rejects any multi-binding (bindings.len()!=1).
+/// Step-10 removes the rejection and routes multi-binding through
+/// activate_purpose_with_bindings.
 #[test]
-fn check_with_multi_binding_value_exits_failure_with_specific_message() {
-    // Alpha only activates the single-binding form via activate_purpose(name, entity);
-    // multi-ref activation requires task γ's activate_purpose_with_bindings, so the
-    // CLI must REJECT multi-binding values with a SPECIFIC error (not the generic
-    // step-10 fallback) so users get an actionable signal.
+fn check_with_multi_binding_value_activates_multi_param_purpose() {
     let (status, stdout, stderr) = common::run_with_args(&[
         "check",
         "--purpose",
@@ -65,13 +70,75 @@ fn check_with_multi_binding_value_exits_failure_with_specific_message() {
     ]);
 
     assert!(
-        !status.success(),
-        "reify check --purpose with multi-binding value should exit non-zero.\nstdout: {stdout}\nstderr: {stderr}"
+        status.success(),
+        "reify check --purpose with distinct multi-binding should exit 0 (constraint satisfied).\nstdout: {stdout}\nstderr: {stderr}"
     );
-    // Distinctive wording that step-10's generic message does NOT contain.
+    // Purpose-injected constraint must appear in the report with its entity prefix.
     assert!(
-        stderr.contains("multi-ref"),
-        "stderr should contain the specific multi-ref rejection wording 'multi-ref', got: {stderr}"
+        stdout.contains("purpose:fits_within@"),
+        "stdout should contain purpose-injected constraint id prefix 'purpose:fits_within@', got: {stdout}"
+    );
+    assert!(
+        stdout.contains("OK") || stdout.contains("All constraints satisfied."),
+        "stdout should indicate success, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("All constraints satisfied."),
+        "stdout should contain 'All constraints satisfied.', got: {stdout}"
+    );
+}
+
+/// C2 / RED (step-09b): when a named-param single-binding is supplied for a
+/// 2-param purpose and the other param is unbound, the CLI must exit non-zero
+/// with a diagnostic naming the unbound param.
+///
+/// `--purpose fits_within=part:PartA` supplies only "part"; "envelope" is missing.
+/// RED because after step-10 this routes through activate_purpose_with_bindings
+/// (single named-param binding → multi-binding path), which returns C2 Err.
+/// Currently the CLI falls through to activate_purpose (refuses quietly) and
+/// gives a generic "could not activate" error that does not name "envelope".
+#[test]
+fn check_with_multi_binding_unbound_param_exits_failure() {
+    let (status, stdout, stderr) = common::run_with_args(&[
+        "check",
+        "--purpose",
+        "fits_within=part:PartA",
+        &common::fixture_path("purpose_multi_param.ri"),
+    ]);
+
+    assert!(
+        !status.success(),
+        "reify check with an unbound purpose param should exit non-zero.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("envelope"),
+        "stderr must name the unbound param 'envelope' (C2 diagnostic), got: {stderr}"
+    );
+}
+
+/// C3 / RED (step-09c): when a binding names a param not declared by the
+/// purpose, the CLI must exit non-zero with a diagnostic naming the unknown param.
+///
+/// `--purpose fits_within=part:PartA,bogus:BoxB` — "bogus" is not a param of
+/// fits_within. RED because the CLI currently rejects any multi-binding with
+/// "multi-ref not yet supported"; after step-10 it calls
+/// activate_purpose_with_bindings which returns C3 Err naming "bogus".
+#[test]
+fn check_with_multi_binding_unknown_param_exits_failure() {
+    let (status, stdout, stderr) = common::run_with_args(&[
+        "check",
+        "--purpose",
+        "fits_within=part:PartA,bogus:BoxB",
+        &common::fixture_path("purpose_multi_param.ri"),
+    ]);
+
+    assert!(
+        !status.success(),
+        "reify check with an unknown binding param should exit non-zero.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("bogus"),
+        "stderr must name the unknown param 'bogus' (C3 diagnostic), got: {stderr}"
     );
 }
 
