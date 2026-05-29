@@ -12,7 +12,7 @@ import styles from './DualViewport.module.css';
 
 /** Minimal subset of engineStore needed by DualViewport. */
 interface EngineLike {
-  state: { meshes: Record<string, any> };
+  state: { meshes: Record<string, any>; tensegrityWires: any[] };
 }
 
 /** Passthrough props forwarded to the design Viewport instance. */
@@ -176,6 +176,7 @@ export function DualViewport(props: DualViewportProps) {
               viewportId="design-main"
               viewportStore={props.viewportStore}
               meshes={props.engineStore.state.meshes}
+              tensegrityWires={props.engineStore.state.tensegrityWires}
               onSelect={props.onSelect}
               onHover={props.onHover}
               hoveredEntity={props.hoveredEntity}

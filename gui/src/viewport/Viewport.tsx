@@ -1,9 +1,10 @@
 import { onMount, onCleanup, createEffect, createSignal, Show } from 'solid-js';
-import type { MeshData, EvaluationStatus, VisibilityState } from '../types';
+import type { MeshData, EvaluationStatus, VisibilityState, TensegrityWireData } from '../types';
 import { Box3 } from 'three';
 import { createScene } from './scene';
 import { createControls } from './controls';
 import { createMeshManager } from './meshManager';
+import { createWireManager } from './wireManager';
 import { createSelection } from './selection';
 import { FeaModeToolbar } from './FeaModeToolbar';
 import { bakeColours } from './colormap';
@@ -52,6 +53,11 @@ export interface ViewportProps {
    * unmounting and remounting the `<Viewport>`.
    */
   feaModeStore?: FeaModeStore;
+  /**
+   * Optional tensegrity wire data. When provided, the wire manager renders
+   * struts and cables as fat-line objects with distinct colour and linewidth.
+   */
+  tensegrityWires?: TensegrityWireData[];
 }
 
 export function Viewport(props: ViewportProps) {
@@ -69,6 +75,8 @@ export function Viewport(props: ViewportProps) {
     const { scene, camera, renderer, resize, adjustClipping, grid, axes } = createScene(canvasRef, width, height);
     const controls = createControls(camera, renderer.domElement);
     const meshManager = createMeshManager(scene);
+    const wireManager = createWireManager(scene);
+    wireManager.setResolution(width, height);
 
     // Create selection system
     const selection = createSelection({
@@ -233,6 +241,12 @@ export function Viewport(props: ViewportProps) {
       });
     }
 
+    // Sync tensegrity wires reactively
+    createEffect(() => {
+      wireManager.sync(props.tensegrityWires ?? []);
+      requestRender();
+    });
+
     // Sync meshes reactively
     createEffect(() => {
       meshManager.sync(props.meshes);
@@ -309,6 +323,7 @@ export function Viewport(props: ViewportProps) {
         const { width: w, height: h } = entry.contentRect;
         if (w > 0 && h > 0) {
           resize(w, h);
+          wireManager.setResolution(w, h);
           selection.invalidateRect();
           requestRender();
         }
@@ -340,6 +355,7 @@ export function Viewport(props: ViewportProps) {
       selection.dispose();
       controls.dispose();
       meshManager.dispose();
+      wireManager.dispose();
       renderer.dispose();
       if (window.__REIFY_DEBUG__) {
         // Per-key cleanup — only remove this viewport's entry from the map
