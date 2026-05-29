@@ -5,17 +5,17 @@
 //! [`KBool::Undef`] (unknown/indeterminate).  The three operators implement the
 //! truth tables specified in §9.2.3 exactly:
 //!
-//! | a     | b     | AND   | OR    |
-//! |-------|-------|-------|-------|
-//! | T     | T     | T     | T     |
-//! | T     | F     | F     | T     |
-//! | T     | U     | U     | T     |
-//! | F     | T     | F     | T     |
-//! | F     | F     | F     | F     |
-//! | F     | U     | F     | U     |
-//! | U     | T     | U     | T     |
-//! | U     | F     | F     | U     |
-//! | U     | U     | U     | U     |
+//! | a     | b     | AND   | OR    | IMPLIES |
+//! |-------|-------|-------|-------|---------|
+//! | T     | T     | T     | T     | T       |
+//! | T     | F     | F     | T     | F       |
+//! | T     | U     | U     | T     | U       |
+//! | F     | T     | F     | T     | T       |
+//! | F     | F     | F     | F     | T       |
+//! | F     | U     | F     | U     | T       |
+//! | U     | T     | U     | T     | T       |
+//! | U     | F     | F     | U     | U       |
+//! | U     | U     | U     | U     | U       |
 //!
 //! | a     | NOT a |
 //! |-------|-------|
@@ -70,6 +70,21 @@ pub fn kleene_or(a: KBool, b: KBool) -> KBool {
         (KBool::False, KBool::False) => KBool::False,
         _ => KBool::Undef,
     }
+}
+
+/// Kleene three-valued IMPLIES.
+///
+/// Defined as the closed form `¬a ∨ b` (de-Morgan identity), exactly
+/// reproducing the §9.2.3 `a implies b` column:
+///
+/// - `False ⇒ anything = True`  (vacuous truth: `¬False = True` is absorbing for OR)
+/// - `True ⇒ b = b`              (modus ponens: `¬True = False`, `False ∨ b = b`)
+/// - `Undef ⇒ True = True`       (`¬Undef = Undef`, `Undef ∨ True = True`)
+/// - `Undef ⇒ False = Undef`     (`¬Undef = Undef`, `Undef ∨ False = Undef`)
+///
+/// See `docs/reify-language-spec.md` §9.2.3.
+pub fn kleene_implies(a: KBool, b: KBool) -> KBool {
+    kleene_or(kleene_not(a), b)
 }
 
 /// Kleene three-valued NOT.
