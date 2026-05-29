@@ -44,8 +44,8 @@ echo ""
 echo "--- hooks/pre-merge-commit delegates to verify.sh (full scope, main only) ---"
 assert "hooks/pre-merge-commit exists" test -f "$PRE_MERGE"
 assert "hooks/pre-merge-commit is executable" test -x "$PRE_MERGE"
-assert "pre-merge-commit execs verify.sh all --profile debug --scope all" \
-    bash -c "grep -qE 'scripts/verify\.sh\" all --profile debug --scope all' '$PRE_MERGE'"
+assert "pre-merge-commit execs verify.sh all --profile both --scope all" \
+    bash -c "grep -qE 'scripts/verify\.sh\" all --profile both --scope all' '$PRE_MERGE'"
 assert "pre-merge-commit gates main only (branch != main -> exit 0)" \
     bash -c "grep -q 'branch' '$PRE_MERGE' && grep -q '!= \"main\"' '$PRE_MERGE'"
 

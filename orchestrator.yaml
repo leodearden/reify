@@ -21,7 +21,15 @@ lock_depth: 4
 # scope_cargo `cargo --workspace`→`-p` rewrite no longer applies (the thin
 # command has no `cargo --workspace` literal). sccache + the shared jobserver
 # keep full-workspace verifies cheap. verify_env below still applies.
-test_command: "./scripts/verify.sh test --profile both --scope all --include-infra"
+#
+# --profile debug (NOT both): per-task verify runs every TDD iteration, so it
+# stays debug-only for fast feedback. Release coverage — and the heavy
+# release-only tests gated behind #[cfg_attr(debug_assertions, ignore)] in
+# reify-solver-elastic (buckling/eigensolve) — lives at the MERGE GATE
+# (hooks/pre-merge-commit runs --profile both --scope all), which reruns far
+# less often. So release + the heavy numeric tests are exercised exactly once,
+# at merge, instead of on every per-task iteration.
+test_command: "./scripts/verify.sh test --profile debug --scope all --include-infra"
 lint_command: "./scripts/verify.sh lint --scope all --include-infra"
 type_check_command: "./scripts/verify.sh typecheck --scope all"
 

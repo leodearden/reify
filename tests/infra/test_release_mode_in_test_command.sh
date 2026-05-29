@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 # Infrastructure test for task 1410.
-# Validates that orchestrator.yaml's test_command includes a release-mode
-# cargo test pass so that tests gated on #[cfg(not(debug_assertions))] are
-# exercised in CI.
+# Validates that a release-mode cargo test pass exists so tests gated on
+# #[cfg(not(debug_assertions))] (and the heavy release-only tests gated behind
+# #[cfg_attr(debug_assertions, ignore)]) are exercised. Release coverage now
+# lives at the MERGE GATE: per-task verify (orchestrator.yaml) runs --profile
+# debug for fast feedback, while hooks/pre-merge-commit runs --profile both.
+# Tests 1-5 below pin the release passes that `verify.sh … --profile both`
+# emits (the profile the merge gate uses); Test 8 pins that the merge gate is
+# in fact where --profile both is wired.
 
 set -euo pipefail
 
@@ -84,5 +89,17 @@ assert "Test 6 grep targets REPO_ROOT as sole path (no subdirectory)" \
 
 assert "Test 6 uses workspace-wide recursive grep with --include flag" \
     bash -c "grep -qE '^\s+grep -rq.*REPO_ROOT.*--include=' \"$THIS_FILE\""
+
+# -- Test 8: release coverage is pinned to the merge gate ------------------------
+echo ""
+echo "--- Test 8: hooks/pre-merge-commit carries --profile both (merge-gate release) ---"
+
+# Release (and the heavy release-only tests) run at the merge boundary, not on
+# every per-task iteration. Pin --profile both to the pre-merge-commit hook so
+# this location can't silently regress to debug-only.
+PRE_MERGE="$REPO_ROOT/hooks/pre-merge-commit"
+
+assert "hooks/pre-merge-commit execs verify.sh all --profile both --scope all" \
+    bash -c "grep -qE 'scripts/verify\.sh\" all --profile both --scope all' '$PRE_MERGE'"
 
 test_summary
