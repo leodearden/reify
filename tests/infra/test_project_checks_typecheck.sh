@@ -67,4 +67,15 @@ assert "gui/package.json defines a 'typecheck' script" \
 assert "gui/package.json scripts.typecheck contains tsc --noEmit" \
     bash -c "node -e 'process.exit(/tsc --noEmit/.test(require(\"$PKG\").scripts.typecheck) ? 0 : 1)'"
 
+# -- Regression guard (task 4063): clippy is the sole Rust type-error signal ----
+# orchestrator.yaml's type_check_command is now a no-op ("true") because
+# lint_command's `cargo clippy --workspace --all-targets -- -D warnings` is a
+# strict superset of `cargo check`. This assertion pins that invariant: if clippy
+# were ever weakened or removed from verify.sh lint, the per-task type-error check
+# would silently vanish. Reuses LINT_PLAN_SEGS captured above — no extra invocation.
+echo ""
+echo "--- Regression guard (task 4063): lint plan includes clippy (sole Rust type-error signal) ---"
+assert "lint plan runs clippy --workspace --all-targets -D warnings (now the sole Rust type-error signal; supersedes the dropped per-task cargo check)" \
+    bash -c "printf '%s\n' \"\$LINT_PLAN_SEGS\" | grep -qE 'cargo clippy --workspace --all-targets.*-D warnings'"
+
 test_summary
