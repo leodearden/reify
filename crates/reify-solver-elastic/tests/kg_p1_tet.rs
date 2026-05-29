@@ -290,6 +290,7 @@ where
         .expect("free-DOF sub-matrix construction must not violate CSR invariants")
 }
 
+#[cfg_attr(debug_assertions, ignore = "heavy (large-DOF buckling): release-only at the merge gate; debug skips it for per-task speed.")]
 #[test]
 fn euler_column_pin_pin_within_ten_percent() {
     // ---- 1. Mesh + nodes ----------------------------------------------------

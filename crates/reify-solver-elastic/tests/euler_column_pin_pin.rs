@@ -181,6 +181,7 @@ fn build_tet_mesh(grid: &ColumnFixture) -> Vec<[usize; 4]> {
 /// Test passes when `|λ·F − P_cr| / P_cr < 10%` (see file-level # Tolerance
 /// section for rationale; the PRD-stated 5% is not reachable at CI-practical
 /// P1-tet mesh density for L/r ≈ 138 slender columns).
+#[cfg_attr(debug_assertions, ignore = "heavy (large-DOF buckling): release-only at the merge gate; debug skips it for per-task speed.")]
 #[test]
 fn pin_pin_euler_column_within_ten_percent() {
     let grid = ColumnFixture::steel_aisi_1045_800mm();
@@ -272,6 +273,7 @@ fn pin_pin_euler_column_within_ten_percent() {
 /// γ-task's 10% P1-tet baseline. An extra 1% slack absorbs cross-platform
 /// floating-point reproducibility variation without mask hiding a real regression
 /// (a sign-flip bug would produce error >> 10% and still fail this bound).
+#[cfg_attr(debug_assertions, ignore = "heavy (large-DOF buckling): release-only at the merge gate; debug skips it for per-task speed.")]
 #[test]
 fn fixed_free_euler_column_within_eleven_percent() {
     let grid = ColumnFixture::steel_aisi_1045_800mm();
@@ -373,6 +375,7 @@ fn fixed_free_euler_column_within_eleven_percent() {
 ///
 /// Analytical critical load: `P_cr = π²·E·I / (k·L)² ≈ 86.3 kN` (k≈0.6992, fixed-pin).
 /// Test passes when `|λ·F − P_cr| / P_cr < 10%`.
+#[cfg_attr(debug_assertions, ignore = "heavy (large-DOF buckling): release-only at the merge gate; debug skips it for per-task speed.")]
 #[test]
 fn fixed_pin_euler_column_within_ten_percent() {
     let grid = ColumnFixture::steel_aisi_1045_800mm();
