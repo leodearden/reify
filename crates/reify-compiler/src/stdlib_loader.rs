@@ -115,6 +115,14 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 include_str!("../stdlib/trajectory.ri"),
             ),
             ("std.fdm", include_str!("../stdlib/fdm.ri")),
+            // `std.fdm.correlations` (task β) MUST follow `std.fdm` — its
+            // structures reference `InfillPattern` (from std.fdm) and
+            // `MaterialPropertyProvenance` (from the earlier std.materials.fea),
+            // both resolved via the growing sequential prelude.
+            (
+                "std.fdm.correlations",
+                include_str!("../stdlib/fdm_correlations.ri"),
+            ),
             // `std.flexures.types` MUST precede `std.flexures` — the
             // accessor fn body in `std.flexures` references the
             // `FlexureCompliance` structure-def declared here via the
