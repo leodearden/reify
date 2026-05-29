@@ -550,7 +550,7 @@ impl Default for UnitRegistry {
 
 /// Error returned by [`resolve_unit_expr`] when a `UnitExpr` cannot be folded.
 ///
-/// Both variants carry the *use-site* `span` that was threaded into the call —
+/// All variants carry the *use-site* `span` that was threaded into the call —
 /// the `UnitExpr` AST nodes carry no spans of their own, and the §3.1
 /// contiguity invariant means the entire unit-expression is one source region.
 #[derive(Debug, PartialEq)]
@@ -562,6 +562,11 @@ pub enum UnitResolveError {
     /// affine literals (e.g. `20degC`) through the existing
     /// `lookup_unit_in_registry` / `unit_to_scalar` standalone path.
     AffineUnitInCompound { name: String, span: SourceSpan },
+    /// The exponent in a `Pow` node is outside the `i8` range accepted by
+    /// [`DimensionVector::pow`].  Realistic unit exponents are ≤ ±10; values
+    /// beyond `i8::MIN..=i8::MAX` (±127) are rejected rather than silently
+    /// wrapping or panicking.
+    ExponentOutOfRange { exponent: i32, span: SourceSpan },
 }
 
 /// Fold a `UnitExpr` AST node against `registry`, returning the combined
@@ -578,6 +583,7 @@ pub enum UnitResolveError {
 /// # Errors
 /// - [`UnitResolveError::UnknownUnit`]          — atom name not in registry
 /// - [`UnitResolveError::AffineUnitInCompound`] — affine unit in compound context
+/// - [`UnitResolveError::ExponentOutOfRange`]   — `Pow` exponent outside `i8` range
 ///
 /// # Standalone affine path
 /// Bare affine literals like `20degC` must be routed through
@@ -617,15 +623,12 @@ pub fn resolve_unit_expr(
         reify_ast::UnitExpr::Pow(a, n) => {
             let (fa, da) = resolve_unit_expr(a, registry, span)?;
             // `f64::powi` takes i32 natively — no narrowing needed for the factor.
-            // `DimensionVector::pow` takes i8; guard the conversion so an
-            // out-of-range exponent surfaces as a resolve error rather than
-            // a panic or silent wrap.  Realistic unit exponents are ≤ ±10
-            // (per the UnitExpr::Pow doc-comment); the Rational(i16) storage
-            // cannot represent larger magnitudes anyway.
-            let n_i8 = i8::try_from(*n).map_err(|_| UnitResolveError::UnknownUnit {
-                name: format!("exponent {n} out of i8 range for DimensionVector::pow"),
-                span,
-            })?;
+            // `DimensionVector::pow` takes i8, so the exponent must be narrowed.
+            // Guard the conversion so an out-of-range exponent surfaces as a
+            // resolve error rather than a panic or silent wrap.  Realistic unit
+            // exponents are ≤ ±10 (per the UnitExpr::Pow doc-comment).
+            let n_i8 = i8::try_from(*n)
+                .map_err(|_| UnitResolveError::ExponentOutOfRange { exponent: *n, span })?;
             Ok((fa.powi(*n), da.pow(n_i8)))
         }
     }
