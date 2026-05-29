@@ -500,7 +500,9 @@ isolation are not acceptable (`feedback_task_chain_user_observable`).
   - **Observable signal:** `examples/buckling_column_smoke.ri` declares a steel column,
     calls `solve_buckling`, and prints `critical_load(result)`. `reify check
     examples/buckling_column_smoke.ri` evaluates the file and the printed value
-    matches the analytical Euler load within 5%. CLI evaluation confirms; re-running
+    matches the analytical Euler load within 10% (P1-tet bending-lock floor — see
+    §9.1; the original 5% is aspirational, gated on the P2-tet K_g follow-up
+    esc-3813-117). CLI evaluation confirms; re-running
     hits the ComputeNode cache (dispatch-count instrumentation).
   - **Prereqs:** α, δ, **plus compute-node-contract.md §8 task η landed** (FEA round-trip
     proves the trampoline shape works; `solver::buckling` is a sibling registration).
