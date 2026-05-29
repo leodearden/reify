@@ -235,3 +235,90 @@ structure def MultiCaseBucklingResult {
     // BTreeMap iteration order is lexicographic on `Value::String` keys.
     param cases : Map<String, BucklingResult>
 }
+
+// ── solve_buckling ────────────────────────────────────────────────────────────
+
+// `@optimized("solver::buckling")` causes the engine to insert a ComputeNode
+// with target == "solver::buckling" rather than body-inlining.
+// The trampoline lives at crates/reify-eval/src/compute_targets/buckling.rs.
+//
+// Signature deviation from PRD §4 `(body: Body, ...)`:
+//   There is no Body→trampoline geometry channel. The @optimized trampoline
+//   receives flat value_inputs and reconstructs the column mesh from
+//   length/width/height, reusing the same pattern as `solve_elastic_static`
+//   (CN-η/3426, already landed). This keeps both solver entries uniform.
+//   See design decision DD-2 in .task/plan.json.
+//
+// Signature notes:
+//
+//   `loads : List<Real>` and `supports : List<Real>`:
+//     Placeholder types for `List<Load>` and `List<Support>`. Same
+//     TODO(load-trait) constraint as `solve_elastic_static`. Callers pass
+//     the values via `LoadCase.loads` / `LoadCase.supports` member access,
+//     which satisfies the type resolver at compile time while preserving the
+//     actual `Value::StructureInstance` items at runtime.
+//
+//   `options : BucklingOptions` (no default):
+//     `phase_functions` runs before `phase_entities` in the Reify compiler,
+//     so a same-module structure constructor `BucklingOptions()` cannot be
+//     used as a fn param default (esc-3851-32; same as `ElasticOptions`
+//     in solver_elastic.ri:420-428 TODO(phase-order)). Callers must pass
+//     `BucklingOptions()` explicitly.
+//     TODO(phase-order): add `= BucklingOptions()` default once the
+//     phase-functions-before-phase-entities ordering is resolved.
+@optimized("solver::buckling")
+pub fn solve_buckling(
+    material  : ElasticMaterial,
+    length    : Length,
+    width     : Length,
+    height    : Length,
+    loads     : List<Real>,
+    supports  : List<Real>,
+    options   : BucklingOptions
+) -> BucklingResult {
+    BucklingResult()
+}
+
+// ── Result-interpretation helpers ────────────────────────────────────────────
+
+// `critical_load` — first-mode critical load (Force).
+//
+// Design decision DD-1 (non-blocking escalate_info at task 3454):
+//   The kernel returns a dimensionless multiplier λ where λ × F_applied = P_cr.
+//   PRD §4 originally declared `critical_load(result) -> Force` intending
+//   to derive F_ref from `pre_stress`. However BucklingResult is frozen to
+//   4 fields (task α compile-test), and ElasticResult stores no load — so
+//   a pure `critical_load(result)` cannot recover F_ref without unfreezing α.
+//   Resolution: take an explicit `reference_load: Force` param, symmetric
+//   with the PRD's own `safety_factor_buckling(result, applied_load)`.
+pub fn critical_load(
+    result         : BucklingResult,
+    reference_load : Force
+) -> Force {
+    result.modes[0].eigenvalue * reference_load
+}
+
+// `safety_factor_buckling` — dimensionless first-mode load multiplier.
+//
+// v0.5 semantics: trivially `result.modes[0].eigenvalue`.
+// The `applied_load` argument is retained for forward-compatibility
+// (future non-linear buckling may use it); it is informational here.
+pub fn safety_factor_buckling(
+    result       : BucklingResult,
+    applied_load : Force
+) -> Real {
+    result.modes[0].eigenvalue
+}
+
+// `mode_shape` — displacement field eigenvector for mode n.
+//
+// Returns `result.modes[n].mode_shape`. For task ε this is `Undef`
+// per the tet-result convention (Undef must remain accepted for Field
+// params; see solver_elastic.ri:280-284). Displaced-position population
+// is task ι/3458 (GUI animator).
+pub fn mode_shape(
+    result : BucklingResult,
+    n      : Int
+) -> Field<Point3<Length>, Vector3<Length>> {
+    result.modes[n].mode_shape
+}
