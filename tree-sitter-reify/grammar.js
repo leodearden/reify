@@ -510,6 +510,7 @@ module.exports = grammar({
     // ── Let ─────────────────────────────────────────────────
     let_declaration: $ => seq(
       optional('pub'),
+      optional('aux'),
       'let',
       field('name', $.identifier),
       optional(seq(':', field('type', $.type_expr))),
@@ -545,6 +546,7 @@ module.exports = grammar({
     sub_declaration: $ => choice(
       // Instantiation form: sub name = StructName<TypeArgs>(args)
       seq(
+        optional('aux'),
         'sub',
         field('name', $.identifier),
         '=',
@@ -554,12 +556,14 @@ module.exports = grammar({
         optional($.named_argument_list),
         ')',
         optional(field('guard', $.where_clause)),
+        optional(seq('at', field('pose', $._expression))),
       ),
       // Collection form: sub name : List<StructName>
       // The bare `'List'` token is reached only on exact-length matches —
       // see the long comment on the specialization arm below for the full
       // tree-sitter rule #1 / rule #2 reasoning and the regression lock.
       seq(
+        optional('aux'),
         'sub',
         field('name', $.identifier),
         ':',
@@ -568,6 +572,7 @@ module.exports = grammar({
         field('structure_name', $.identifier),
         '>',
         optional(field('guard', $.where_clause)),
+        optional(seq('at', field('pose', $._expression))),
       ),
       // Specialization form: sub name : StructName <typeargs>? where? { body }?
       //
@@ -606,6 +611,7 @@ module.exports = grammar({
       // Bare `'List'` (relying on rules #1 + #2) is the correct mechanism.
       // See escalation esc-3712-201 for the empirical evidence.
       seq(
+        optional('aux'),
         'sub',
         field('name', $.identifier),
         ':',
@@ -613,6 +619,7 @@ module.exports = grammar({
         optional(field('type_args', seq('<', $.type_arg_list, '>'))),
         optional(field('guard', $.where_clause)),
         optional(field('body', $.specialization_body)),
+        optional(seq('at', field('pose', $._expression))),
       ),
     ),
 
