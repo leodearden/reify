@@ -9044,3 +9044,163 @@ fn get_mechanism_descriptors_bind_on_fixed_joint_does_not_promote_binding() {
     // fixed joints even though binding is FixedNoMotion.
     // (Not asserting a specific value here — the best-effort nature is the point.)
 }
+
+// ── T0b: tensegrity_wires extraction via build_gui_state ─────────────────────
+
+/// Inline T-prism topology source — mirrors `examples/tensegrity_t_prism.ri`.
+///
+/// 6 nodes (top equilateral triangle z=1m + bottom triangle z=0m 30° twist).
+/// 3 struts (cross-members [0,3],[1,4],[2,5]) then 3 cables (perimeter [0,1],[1,2],[2,0]).
+fn t_prism_source() -> &'static str {
+    r#"
+structure def TPrism {
+    let prism = Tensegrity(
+        nodes: [
+            point3(1m, 0m, 1m),
+            point3(-0.5m, 0.866m, 1m),
+            point3(-0.5m, -0.866m, 1m),
+            point3(0.866m, 0.5m, 0m),
+            point3(-0.866m, 0.5m, 0m),
+            point3(0m, -1m, 0m)
+        ],
+        struts: [[0, 3], [1, 4], [2, 5]],
+        cables: [[0, 1], [1, 2], [2, 0]]
+    )
+    let wires = tensegrity_wires(self.prism)
+}
+"#
+}
+
+/// `build_gui_state()` (via `load_from_source()`) must extract 6 tensegrity wires
+/// from the T-prism module: 3 struts followed by 3 cables (T0a DD2 order).
+///
+/// Asserts:
+/// - `tensegrity_wires.len() == 6`
+/// - wires[0..3] have `kind == "strut"`, wires[3..6] have `kind == "cable"`
+/// - first strut endpoints match node 0 (1,0,1) → node 3 (0.866, 0.5, 0)
+/// - `entity_path == "TPrism"` for all wires (owning template name)
+///
+/// RED until `build_tensegrity_wires` is implemented (field is always empty).
+#[test]
+fn build_gui_state_extracts_tensegrity_wires_from_t_prism() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(t_prism_source(), "t_prism")
+        .expect("T-prism load_from_source should succeed");
+
+    assert_eq!(
+        state.tensegrity_wires.len(),
+        6,
+        "T-prism must produce 6 wires (3 struts + 3 cables); got {}",
+        state.tensegrity_wires.len()
+    );
+
+    // Struts precede cables (T0a DD2 / tensegrity_wires output order).
+    for i in 0..3 {
+        assert_eq!(
+            state.tensegrity_wires[i].kind, "strut",
+            "wire[{}] must be a strut; got '{}'",
+            i, state.tensegrity_wires[i].kind
+        );
+    }
+    for i in 3..6 {
+        assert_eq!(
+            state.tensegrity_wires[i].kind, "cable",
+            "wire[{}] must be a cable; got '{}'",
+            i, state.tensegrity_wires[i].kind
+        );
+    }
+
+    // All wires belong to the TPrism template.
+    for wire in &state.tensegrity_wires {
+        assert_eq!(
+            wire.entity_path, "TPrism",
+            "entity_path must be 'TPrism'; got '{}'",
+            wire.entity_path
+        );
+    }
+
+    // First strut: node 0 (1m, 0m, 1m) → node 3 (0.866m, 0.5m, 0m).
+    // SI passthrough: values are the raw float stored in Value::Scalar.si_value.
+    let strut0 = &state.tensegrity_wires[0];
+    assert_eq!(strut0.x1, 1.0, "strut0.x1 must be 1.0 (node 0 x)");
+    assert_eq!(strut0.y1, 0.0, "strut0.y1 must be 0.0 (node 0 y)");
+    assert_eq!(strut0.z1, 1.0, "strut0.z1 must be 1.0 (node 0 z)");
+    assert_eq!(strut0.x2, 0.866, "strut0.x2 must be 0.866 (node 3 x)");
+    assert_eq!(strut0.y2, 0.5, "strut0.y2 must be 0.5 (node 3 y)");
+    assert_eq!(strut0.z2, 0.0, "strut0.z2 must be 0.0 (node 3 z)");
+}
+
+/// A module with no tensegrity wires (the bracket module) must yield an empty
+/// `tensegrity_wires` vec — not a panic or stale data from a prior load.
+///
+/// RED until build_tensegrity_wires is implemented (though technically the empty
+/// case passes since the field is initialised to Vec::new(); the real RED is the
+/// T-prism extraction test above).
+#[test]
+fn build_gui_state_yields_empty_wires_for_non_tensegrity_module() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("bracket load_from_source should succeed");
+
+    assert!(
+        state.tensegrity_wires.is_empty(),
+        "non-tensegrity module must produce no tensegrity wires; got {}",
+        state.tensegrity_wires.len()
+    );
+}
+
+/// A Reify module that binds a `Tensegrity(...)` struct to a value cell but does
+/// NOT call `tensegrity_wires()`.  Value cells therefore contain a
+/// `Value::StructureInstance { type_name: "Tensegrity", .. }` — a non-TensegrityWire
+/// struct — which `build_tensegrity_wires` must actively filter out.
+fn tensegrity_struct_no_wires_source() -> &'static str {
+    r#"
+structure def TOnly {
+    let prism = Tensegrity(
+        nodes: [
+            point3(1m, 0m, 1m),
+            point3(-0.5m, 0.866m, 1m),
+            point3(0.866m, 0.5m, 0m)
+        ],
+        struts: [[0, 1]],
+        cables: [[1, 2]]
+    )
+}
+"#
+}
+
+/// `build_tensegrity_wires` must NOT extract records from `StructureInstance`
+/// values whose `type_name` is not `"TensegrityWire"`.
+///
+/// Uses a module whose value cells hold a `Tensegrity` StructureInstance
+/// (`type_name == "Tensegrity"`) but no `TensegrityWire` instances (because
+/// `tensegrity_wires()` is never called).  This exercises the type-name filter
+/// branch: the Tensegrity value must be ignored, yielding `tensegrity_wires: []`.
+///
+/// This is a stronger guard than `build_gui_state_yields_empty_wires_for_non_tensegrity_module`
+/// because the bracket module has no StructureInstances at all (only scalar params),
+/// so it cannot catch a regression where the filter is dropped.
+#[test]
+fn build_tensegrity_wires_filters_non_tensegrity_wire_struct_instances() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(tensegrity_struct_no_wires_source(), "tonly")
+        .expect("tonly load_from_source should succeed");
+
+    assert!(
+        state.tensegrity_wires.is_empty(),
+        "a Tensegrity StructureInstance (type_name='Tensegrity') must not be extracted as a wire; got {} wire(s)",
+        state.tensegrity_wires.len()
+    );
+}

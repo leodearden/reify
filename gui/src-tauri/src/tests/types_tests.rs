@@ -15,6 +15,7 @@ fn gui_state_empty_serializes_with_expected_keys() {
         files: vec![],
         tessellation_diagnostics: vec![],
         compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(v.get("meshes").unwrap().is_array());
@@ -32,6 +33,7 @@ fn gui_state_serializes_tessellation_diagnostics_field() {
         files: vec![],
         tessellation_diagnostics: vec![],
         compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(
@@ -1647,6 +1649,7 @@ fn gui_state_serializes_compile_diagnostics_field() {
         files: vec![],
         tessellation_diagnostics: vec![],
         compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(
@@ -2318,6 +2321,97 @@ fn joint_binding_fixed_no_motion_round_trips() {
     assert_eq!(
         back, binding,
         "FixedNoMotion must round-trip without data loss"
+    );
+}
+
+// ── T0b: TensegrityWireData serde wire-shape tests ────────────────────────────
+
+/// `TensegrityWireData` must serialize to JSON with snake_case keys:
+/// `entity_path`, `kind`, `x1`, `y1`, `z1`, `x2`, `y2`, `z2` — all present and
+/// typed correctly (string for entity_path/kind, number for the six coords).
+///
+/// RED until `TensegrityWireData` is added to `types.rs`.
+#[test]
+fn tensegrity_wire_data_serializes_with_expected_keys() {
+    let wire = TensegrityWireData {
+        entity_path: "TPrism".to_string(),
+        kind: "strut".to_string(),
+        x1: 1.0,
+        y1: 0.0,
+        z1: 1.0,
+        x2: 0.866,
+        y2: 0.5,
+        z2: 0.0,
+    };
+    let v = serde_json::to_value(&wire).unwrap();
+    assert_eq!(v["entity_path"], json!("TPrism"), "entity_path must be 'TPrism'");
+    assert_eq!(v["kind"], json!("strut"), "kind must be 'strut'");
+    assert_eq!(v["x1"], json!(1.0), "x1 must be 1.0");
+    assert_eq!(v["y1"], json!(0.0), "y1 must be 0.0");
+    assert_eq!(v["z1"], json!(1.0), "z1 must be 1.0");
+    assert_eq!(v["x2"], json!(0.866), "x2 must be 0.866");
+    assert_eq!(v["y2"], json!(0.5), "y2 must be 0.5");
+    assert_eq!(v["z2"], json!(0.0), "z2 must be 0.0");
+}
+
+/// `GuiState.tensegrity_wires` must serialize as a JSON array.
+/// - Non-empty case: array length and element kind preserved.
+/// - Empty case: empty array (not absent).
+///
+/// RED until `GuiState.tensegrity_wires` field is added.
+#[test]
+fn gui_state_tensegrity_wires_serializes_as_array() {
+    // Non-empty case
+    let wire = TensegrityWireData {
+        entity_path: "TPrism".to_string(),
+        kind: "cable".to_string(),
+        x1: 1.0, y1: 0.0, z1: 1.0,
+        x2: -0.5, y2: 0.866, z2: 1.0,
+    };
+    let state = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![wire],
+    };
+    let v = serde_json::to_value(&state).unwrap();
+    assert!(
+        v.get("tensegrity_wires").unwrap().is_array(),
+        "tensegrity_wires must serialize as a JSON array"
+    );
+    assert_eq!(
+        v["tensegrity_wires"].as_array().unwrap().len(),
+        1,
+        "non-empty tensegrity_wires must have 1 element"
+    );
+    assert_eq!(
+        v["tensegrity_wires"][0]["kind"],
+        json!("cable"),
+        "wire kind must be 'cable'"
+    );
+
+    // Empty case — must serialize as [] not be absent
+    let empty_state = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+    };
+    let ev = serde_json::to_value(&empty_state).unwrap();
+    assert!(
+        ev.get("tensegrity_wires").unwrap().is_array(),
+        "empty tensegrity_wires must still serialize as a JSON array (not be absent)"
+    );
+    assert_eq!(
+        ev["tensegrity_wires"].as_array().unwrap().len(),
+        0,
+        "empty tensegrity_wires must be an empty array"
     );
 }
 

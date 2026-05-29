@@ -102,6 +102,30 @@ where
     }
 }
 
+/// IPC wire-format descriptor for a single tensegrity wire (strut or cable).
+///
+/// Produced by `build_tensegrity_wires` in `engine.rs` by scanning the value
+/// cells of the loaded module for `TensegrityWire` instances emitted by the
+/// `tensegrity_wires()` builtin (T0a).  Serialized over the Tauri IPC channel
+/// as part of `GuiState`.
+///
+/// # Field semantics
+/// - `entity_path`: owning entity name (e.g. `"TPrism"`), from `cell.id.entity`.
+/// - `kind`: `"strut"` or `"cable"` — the member-type tag T0a emits.
+/// - `x1/y1/z1`, `x2/y2/z2`: endpoint coordinates in SI metres (direct passthrough
+///   from `Value::Scalar{si_value}` or `Value::Real`; no unit conversion).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TensegrityWireData {
+    pub entity_path: String,
+    pub kind: String,
+    pub x1: f64,
+    pub y1: f64,
+    pub z1: f64,
+    pub x2: f64,
+    pub y2: f64,
+    pub z2: f64,
+}
+
 /// Full GUI state snapshot sent to the frontend after each operation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GuiState {
@@ -135,6 +159,17 @@ pub struct GuiState {
     ///    of `build_gui_state` (appended after `get_diagnostics()` output so
     ///    warnings from the prior good state remain visible alongside the error).
     pub compile_diagnostics: Vec<DiagnosticInfo>,
+    /// Tensegrity wire descriptors extracted from the current module's value cells.
+    ///
+    /// Populated by `build_tensegrity_wires` from cells that evaluate to a
+    /// `List<TensegrityWire>` or a standalone `TensegrityWire` (as emitted by the
+    /// `tensegrity_wires()` builtin, T0a).  Empty on preview snapshots, early-return
+    /// (no compile), and modules without any tensegrity wires.
+    ///
+    /// `#[serde(default)]` ensures existing payloads without this field deserialize
+    /// as an empty vec (forward-compat for older backend → newer frontend).
+    #[serde(default)]
+    pub tensegrity_wires: Vec<TensegrityWireData>,
 }
 
 // ---------------------------------------------------------------------------

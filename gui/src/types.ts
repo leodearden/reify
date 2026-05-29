@@ -203,6 +203,32 @@ export interface FileData {
   content: string;
 }
 
+/**
+ * A single tensegrity wire endpoint pair with member-type tag, as emitted by
+ * the backend `build_tensegrity_wires` extractor (T0b). Mirrors the Rust
+ * `TensegrityWireData` struct in `gui/src-tauri/src/types.rs`.
+ *
+ * Coordinate values are plain SI metres (f64 passthrough from the Reify kernel).
+ */
+export interface TensegrityWireData {
+  /** Dot-separated entity path of the owning structure (e.g. `"TPrism"`). */
+  entity_path: string;
+  /** Member type: `"strut"` (compression) or `"cable"` (tension). */
+  kind: string;
+  /** Start-point X coordinate in SI metres. */
+  x1: number;
+  /** Start-point Y coordinate in SI metres. */
+  y1: number;
+  /** Start-point Z coordinate in SI metres. */
+  z1: number;
+  /** End-point X coordinate in SI metres. */
+  x2: number;
+  /** End-point Y coordinate in SI metres. */
+  y2: number;
+  /** End-point Z coordinate in SI metres. */
+  z2: number;
+}
+
 /** Full GUI state snapshot from the backend (with typed arrays). */
 export interface GuiState {
   meshes: MeshData[];
@@ -212,6 +238,8 @@ export interface GuiState {
   tessellation_diagnostics: DiagnosticInfo[];
   /** Compile-time diagnostics (warnings, errors) from the Reify compiler. */
   compile_diagnostics: DiagnosticInfo[];
+  /** Tensegrity wire endpoint pairs with member-type tags (T0b). Empty when no tensegrity wires are present. */
+  tensegrity_wires: TensegrityWireData[];
 }
 
 /** Wire-format GUI state as received from Tauri IPC. */
@@ -223,6 +251,11 @@ export interface RawGuiState {
   tessellation_diagnostics: DiagnosticInfo[];
   /** Compile-time diagnostics (warnings, errors) from the Reify compiler. */
   compile_diagnostics: DiagnosticInfo[];
+  /**
+   * Tensegrity wire endpoint pairs with member-type tags (T0b).
+   * Optional on the wire for forward-compat with older backend payloads.
+   */
+  tensegrity_wires?: TensegrityWireData[];
 }
 
 /** Convert wire-format GUI state to typed arrays. */
@@ -234,6 +267,7 @@ export function convertRawGuiState(raw: RawGuiState): GuiState {
     files: raw.files,
     tessellation_diagnostics: raw.tessellation_diagnostics,
     compile_diagnostics: raw.compile_diagnostics,
+    tensegrity_wires: raw.tensegrity_wires ?? [],
   };
 }
 

@@ -46,6 +46,19 @@ vi.mock('three/addons/controls/OrbitControls.js', () => ({
   OrbitControls: class MockOrbitControls {},
 }));
 
+// wireManager.ts (imported transitively via Viewport.tsx) pulls in three/addons
+// fat-line classes. Without this mock the lottie_canvas.module.js inside three/addons
+// tries to create a Canvas2D context at module-init time, which returns null in jsdom
+// and throws "Cannot set properties of null (setting 'fillStyle')".
+vi.mock('three/addons', () => {
+  class MockClass {}
+  return {
+    LineSegments2:        MockClass,
+    LineSegmentsGeometry: class MockLineSegmentsGeometry { setPositions() {} dispose() {} },
+    LineMaterial:         class MockLineMaterial { resolution = { set() {} }; dispose() {} },
+  };
+});
+
 // The barrel's transitive import chain reaches bridge.ts → @tauri-apps/api.
 // In jsdom (no Tauri IPC), these modules hang on initialisation, exceeding
 // the 5 000 ms test timeout. Mock them the same way every other test file does.

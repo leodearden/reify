@@ -115,6 +115,7 @@ describe('engineStore', () => {
         files: [],
         tessellation_diagnostics: [],
         compile_diagnostics: [],
+        tensegrity_wires: [],
       };
       initFromState(guiState);
 
@@ -519,6 +520,7 @@ describe('engineStore', () => {
         files: [],
         tessellation_diagnostics: [],
         compile_diagnostics: [],
+        tensegrity_wires: [],
       };
       initFromState(guiState);
       expect(spy).toHaveBeenCalledTimes(1);
@@ -537,6 +539,7 @@ describe('engineStore', () => {
         files: [],
         tessellation_diagnostics: [],
         compile_diagnostics: [],
+        tensegrity_wires: [],
       };
       initFromState(guiState);
       initFromState(guiState);
@@ -556,6 +559,7 @@ describe('engineStore', () => {
         files: [],
         tessellation_diagnostics: [],
         compile_diagnostics: [],
+        tensegrity_wires: [],
       };
       // Must not throw when the callback is omitted.
       expect(() => initFromState(guiState)).not.toThrow();
@@ -628,6 +632,7 @@ describe('engineStore tessellationDiagnostics', () => {
         files: [],
         tessellation_diagnostics: [diag],
         compile_diagnostics: [],
+        tensegrity_wires: [],
       };
       initFromState(guiState);
       expect(state.tessellationDiagnostics).toEqual([diag]);
@@ -703,6 +708,7 @@ describe('engineStore compileDiagnostics', () => {
         files: [],
         tessellation_diagnostics: [],
         compile_diagnostics: [diag],
+        tensegrity_wires: [],
       };
       initFromState(guiState);
       expect(state.compileDiagnostics).toEqual([diag]);
@@ -771,6 +777,7 @@ describe('engineStore freshness pass-through', () => {
         files: [],
         tessellation_diagnostics: [],
         compile_diagnostics: [],
+        tensegrity_wires: [],
       };
       initFromState(guiState);
       expect(state.values['cell_failed'].freshness).toBe('failed');
@@ -1328,6 +1335,55 @@ describe('engineStore kernelStatus', () => {
       const ok: KernelStatus = { available: true, message: null };
       setKernelStatus(ok);
       expect(state.kernelStatus).toEqual(ok);
+      dispose();
+    });
+  });
+
+  // ── T0b: tensegrityWires store fan-out ───────────────────────────────────
+
+  it('initFromState writes tensegrity_wires from GuiState into state.tensegrityWires', () => {
+    // RED until EngineState.tensegrityWires is added and initFromState sets it.
+    createRoot((dispose) => {
+      const { state, initFromState } = createEngineStore();
+      const guiState: GuiState = {
+        meshes: [],
+        values: [],
+        constraints: [],
+        files: [],
+        tessellation_diagnostics: [],
+        compile_diagnostics: [],
+        tensegrity_wires: [
+          { entity_path: 'TPrism', kind: 'strut', x1: 1.0, y1: 0.0, z1: 1.0, x2: 0.866, y2: 0.5, z2: 0.0 },
+          { entity_path: 'TPrism', kind: 'cable', x1: 1.0, y1: 0.0, z1: 1.0, x2: -0.5, y2: 0.866, z2: 1.0 },
+        ],
+      };
+      initFromState(guiState);
+      expect((state as any).tensegrityWires).toHaveLength(2);
+      expect((state as any).tensegrityWires[0].kind).toBe('strut');
+      expect((state as any).tensegrityWires[0].entity_path).toBe('TPrism');
+      expect((state as any).tensegrityWires[1].kind).toBe('cable');
+      dispose();
+    });
+  });
+
+  it('initFromState leaves tensegrityWires as [] when tensegrity_wires is absent or empty', () => {
+    // RED until EngineState.tensegrityWires is initialised to [] and initFromState sets it.
+    createRoot((dispose) => {
+      const { state, initFromState } = createEngineStore();
+      // Initial state should be []
+      expect((state as any).tensegrityWires).toEqual([]);
+
+      const guiState: GuiState = {
+        meshes: [],
+        values: [],
+        constraints: [],
+        files: [],
+        tessellation_diagnostics: [],
+        compile_diagnostics: [],
+        tensegrity_wires: [],
+      };
+      initFromState(guiState);
+      expect((state as any).tensegrityWires).toEqual([]);
       dispose();
     });
   });

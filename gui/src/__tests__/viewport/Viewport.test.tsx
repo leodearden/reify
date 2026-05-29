@@ -129,6 +129,19 @@ vi.mock('../../viewport/meshManager', () => ({
   })),
 }));
 
+// ── wireManager mock (T0b) ────────────────────────────────────────────────────
+const mockWireSync = vi.fn();
+const mockWireDispose = vi.fn();
+const mockWireSetResolution = vi.fn();
+
+vi.mock('../../viewport/wireManager', () => ({
+  createWireManager: vi.fn(() => ({
+    sync: mockWireSync,
+    dispose: mockWireDispose,
+    setResolution: mockWireSetResolution,
+  })),
+}));
+
 const mockSelectionSetHovered = vi.fn();
 const mockSelectionSetSelected = vi.fn();
 const mockSelectionRefreshSelected = vi.fn();
@@ -970,5 +983,47 @@ describe('Viewport debug bridge map registration', () => {
 
     // vp-B must survive
     expect(window.__REIFY_DEBUG__?.viewports?.['vp-B']).toBeDefined();
+  });
+});
+
+// ── T0b: wireManager integration ──────────────────────────────────────────────
+
+describe('Viewport wireManager integration (T0b)', () => {
+  // RED until Viewport.tsx creates a wireManager and drives wireManager.sync.
+
+  it('rendering Viewport with tensegrityWires calls wireManager.sync', () => {
+    const wires = [
+      { entity_path: 'TPrism', kind: 'strut', x1: 1.0, y1: 0.0, z1: 1.0, x2: 0.866, y2: 0.5, z2: 0.0 },
+    ];
+    render(() => <Viewport meshes={{}} viewportId="test-wm-vp" tensegrityWires={wires} />);
+    // wireManager.sync must have been called (at least once via createEffect on mount).
+    expect(mockWireSync).toHaveBeenCalled();
+    const lastCall = mockWireSync.mock.calls[mockWireSync.mock.calls.length - 1];
+    expect(lastCall[0]).toEqual(wires);
+  });
+
+  it('updating tensegrityWires prop re-syncs the wireManager', () => {
+    const [wires, setWires] = createSignal([
+      { entity_path: 'TPrism', kind: 'strut', x1: 1.0, y1: 0.0, z1: 1.0, x2: 0.866, y2: 0.5, z2: 0.0 },
+    ]);
+    render(() => <Viewport meshes={{}} viewportId="test-wm-vp2" tensegrityWires={wires()} />);
+    const callCountAfterMount = mockWireSync.mock.calls.length;
+
+    // Update the prop to an empty array.
+    setWires([]);
+
+    // sync must have been called again after the prop update.
+    expect(mockWireSync.mock.calls.length).toBeGreaterThan(callCountAfterMount);
+    const lastCall = mockWireSync.mock.calls[mockWireSync.mock.calls.length - 1];
+    expect(lastCall[0]).toEqual([]);
+  });
+
+  it('unmounting Viewport disposes the wireManager', () => {
+    const { unmount } = render(() => <Viewport meshes={{}} viewportId="test-wm-vp3" tensegrityWires={[]} />);
+    mockWireDispose.mockClear();
+
+    unmount();
+
+    expect(mockWireDispose).toHaveBeenCalled();
   });
 });
