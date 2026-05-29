@@ -136,4 +136,38 @@ mod tests {
         assert_eq!(GIBSON_ASHBY_C, 1.0);
         assert_eq!(GIBSON_ASHBY_N, 2.0);
     }
+
+    #[test]
+    fn pattern_factors_near_isotropic_have_equal_in_plane_factors() {
+        // Gyroid/cubic ≈ in-plane isotropic: strong == weak == NEAR_ISOTROPIC_FACTOR.
+        for p in [InfillPattern::Gyroid, InfillPattern::Cubic] {
+            let f = pattern_factors(p);
+            assert_eq!(
+                f.in_plane_strong, f.in_plane_weak,
+                "{:?} should be near-isotropic (strong == weak)",
+                p
+            );
+            assert_eq!(f.in_plane_strong, NEAR_ISOTROPIC_FACTOR);
+        }
+    }
+
+    #[test]
+    fn pattern_factors_directional_have_strong_greater_than_weak() {
+        // Grid/triangular/honeycomb are directional: strong > weak (drives the
+        // orthotropic E1 > E2 split).
+        for p in [
+            InfillPattern::Grid,
+            InfillPattern::Triangular,
+            InfillPattern::Honeycomb,
+        ] {
+            let f = pattern_factors(p);
+            assert!(
+                f.in_plane_strong > f.in_plane_weak,
+                "{:?} should be directional (strong > weak), got {:?}",
+                p,
+                f
+            );
+            assert!(f.in_plane_weak > 0.0, "{:?} weak factor must be positive", p);
+        }
+    }
 }
