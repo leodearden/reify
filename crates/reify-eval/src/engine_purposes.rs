@@ -210,17 +210,16 @@ impl Engine {
             obj
         });
 
-        // Expand `PurposeReflectiveAggregation` placeholders. For the single-
-        // binding path the representative entity is bindings[0].1 (C6 parity).
-        // For multi-binding, step-08 will replace this with per-param lookup;
-        // for now use the first binding as a representative (correct for
-        // purposes with no reflective members, such as fits_within).
-        let representative_entity = &bindings[0].1;
+        // Expand `PurposeReflectiveAggregation` placeholders. Pass the full
+        // bindings slice so `expand_purpose_reflective_placeholders` can look
+        // up the entity_ref per placeholder's param_name (C7). For the
+        // single-binding path this resolves to the sole entity (C6 parity);
+        // for multi-binding each placeholder finds its own entity.
         let expand_placeholders = |expr: &mut CompiledExpr| {
             expand_purpose_reflective_placeholders(
                 expr,
                 &purpose.resolved_queries,
-                representative_entity,
+                bindings,
                 &state.snapshot.graph.value_cells,
             );
         };
@@ -641,7 +640,7 @@ fn purpose_binding_token(bindings: &[(String, String)]) -> String {
 fn expand_purpose_reflective_placeholders(
     expr: &mut CompiledExpr,
     queries: &[ResolvedSchemaQuery],
-    entity_ref: &str,
+    bindings: &[(String, String)],
     value_cells: &PersistentMap<ValueCellId, ValueCellNode>,
 ) {
     match &mut expr.kind {
@@ -649,6 +648,17 @@ fn expand_purpose_reflective_placeholders(
             param_name,
             query_kind,
         } => {
+            // Resolve the entity_ref for this placeholder's param_name from
+            // the bindings slice. If the param_name is not found (cannot
+            // happen post-C2 validation), fall back to the first binding's
+            // entity for anti-cascade safety. For the single-binding path
+            // this is always bindings[0].1 (C6 parity).
+            let entity_ref: &str = bindings
+                .iter()
+                .find(|(p, _)| p == param_name.as_str())
+                .map(|(_, e)| e.as_str())
+                .unwrap_or_else(|| bindings[0].1.as_str());
+
             // Resolve the member list for this placeholder. Prefer compile-
             // time `ResolvedSchemaQuery`; fall back to scanning `value_cells`
             // for the bound entity's params when the query is unresolved
@@ -781,16 +791,16 @@ fn expand_purpose_reflective_placeholders(
             // activation — it never contains nested placeholders (task-3508).
         }
         CompiledExprKind::BinOp { left, right, .. } => {
-            expand_purpose_reflective_placeholders(left, queries, entity_ref, value_cells);
-            expand_purpose_reflective_placeholders(right, queries, entity_ref, value_cells);
+            expand_purpose_reflective_placeholders(left, queries, bindings, value_cells);
+            expand_purpose_reflective_placeholders(right, queries, bindings, value_cells);
         }
         CompiledExprKind::UnOp { operand, .. } => {
-            expand_purpose_reflective_placeholders(operand, queries, entity_ref, value_cells);
+            expand_purpose_reflective_placeholders(operand, queries, bindings, value_cells);
         }
         CompiledExprKind::FunctionCall { args, .. }
         | CompiledExprKind::UserFunctionCall { args, .. } => {
             for arg in args {
-                expand_purpose_reflective_placeholders(arg, queries, entity_ref, value_cells);
+                expand_purpose_reflective_placeholders(arg, queries, bindings, value_cells);
             }
         }
         CompiledExprKind::Conditional {
@@ -798,27 +808,27 @@ fn expand_purpose_reflective_placeholders(
             then_branch,
             else_branch,
         } => {
-            expand_purpose_reflective_placeholders(condition, queries, entity_ref, value_cells);
-            expand_purpose_reflective_placeholders(then_branch, queries, entity_ref, value_cells);
-            expand_purpose_reflective_placeholders(else_branch, queries, entity_ref, value_cells);
+            expand_purpose_reflective_placeholders(condition, queries, bindings, value_cells);
+            expand_purpose_reflective_placeholders(then_branch, queries, bindings, value_cells);
+            expand_purpose_reflective_placeholders(else_branch, queries, bindings, value_cells);
         }
         CompiledExprKind::Match { discriminant, arms } => {
-            expand_purpose_reflective_placeholders(discriminant, queries, entity_ref, value_cells);
+            expand_purpose_reflective_placeholders(discriminant, queries, bindings, value_cells);
             for arm in arms {
                 expand_purpose_reflective_placeholders(
                     &mut arm.body,
                     queries,
-                    entity_ref,
+                    bindings,
                     value_cells,
                 );
             }
         }
         CompiledExprKind::Lambda { body, .. } => {
-            expand_purpose_reflective_placeholders(body, queries, entity_ref, value_cells);
+            expand_purpose_reflective_placeholders(body, queries, bindings, value_cells);
         }
         CompiledExprKind::ListLiteral(elements) | CompiledExprKind::SetLiteral(elements) => {
             for elem in elements {
-                expand_purpose_reflective_placeholders(elem, queries, entity_ref, value_cells);
+                expand_purpose_reflective_placeholders(elem, queries, bindings, value_cells);
             }
         }
         CompiledExprKind::ReflectiveCellList(_) => {
@@ -832,18 +842,18 @@ fn expand_purpose_reflective_placeholders(
         }
         CompiledExprKind::MapLiteral(entries) => {
             for (key, val) in entries {
-                expand_purpose_reflective_placeholders(key, queries, entity_ref, value_cells);
-                expand_purpose_reflective_placeholders(val, queries, entity_ref, value_cells);
+                expand_purpose_reflective_placeholders(key, queries, bindings, value_cells);
+                expand_purpose_reflective_placeholders(val, queries, bindings, value_cells);
             }
         }
         CompiledExprKind::IndexAccess { object, index } => {
-            expand_purpose_reflective_placeholders(object, queries, entity_ref, value_cells);
-            expand_purpose_reflective_placeholders(index, queries, entity_ref, value_cells);
+            expand_purpose_reflective_placeholders(object, queries, bindings, value_cells);
+            expand_purpose_reflective_placeholders(index, queries, bindings, value_cells);
         }
         CompiledExprKind::MethodCall { object, args, .. } => {
-            expand_purpose_reflective_placeholders(object, queries, entity_ref, value_cells);
+            expand_purpose_reflective_placeholders(object, queries, bindings, value_cells);
             for arg in args {
-                expand_purpose_reflective_placeholders(arg, queries, entity_ref, value_cells);
+                expand_purpose_reflective_placeholders(arg, queries, bindings, value_cells);
             }
         }
         CompiledExprKind::Quantifier {
@@ -851,24 +861,24 @@ fn expand_purpose_reflective_placeholders(
             predicate,
             ..
         } => {
-            expand_purpose_reflective_placeholders(collection, queries, entity_ref, value_cells);
-            expand_purpose_reflective_placeholders(predicate, queries, entity_ref, value_cells);
+            expand_purpose_reflective_placeholders(collection, queries, bindings, value_cells);
+            expand_purpose_reflective_placeholders(predicate, queries, bindings, value_cells);
         }
         CompiledExprKind::OptionSome(inner) => {
-            expand_purpose_reflective_placeholders(inner, queries, entity_ref, value_cells);
+            expand_purpose_reflective_placeholders(inner, queries, bindings, value_cells);
         }
         CompiledExprKind::RangeConstructor { lower, upper, .. } => {
             if let Some(lo) = lower {
-                expand_purpose_reflective_placeholders(lo, queries, entity_ref, value_cells);
+                expand_purpose_reflective_placeholders(lo, queries, bindings, value_cells);
             }
             if let Some(hi) = upper {
-                expand_purpose_reflective_placeholders(hi, queries, entity_ref, value_cells);
+                expand_purpose_reflective_placeholders(hi, queries, bindings, value_cells);
             }
         }
         CompiledExprKind::AdHocSelector { base, args, .. } => {
-            expand_purpose_reflective_placeholders(base, queries, entity_ref, value_cells);
+            expand_purpose_reflective_placeholders(base, queries, bindings, value_cells);
             for arg in args {
-                expand_purpose_reflective_placeholders(arg, queries, entity_ref, value_cells);
+                expand_purpose_reflective_placeholders(arg, queries, bindings, value_cells);
             }
         }
         // task 3540 (SIR-α): exhaustiveness-forced adapter arm for the new
@@ -882,10 +892,10 @@ fn expand_purpose_reflective_placeholders(
             ..
         } => {
             for (_, arg) in ordered_args {
-                expand_purpose_reflective_placeholders(arg, queries, entity_ref, value_cells);
+                expand_purpose_reflective_placeholders(arg, queries, bindings, value_cells);
             }
             for (_, def) in defaults {
-                expand_purpose_reflective_placeholders(def, queries, entity_ref, value_cells);
+                expand_purpose_reflective_placeholders(def, queries, bindings, value_cells);
             }
         }
     }
@@ -944,7 +954,7 @@ mod tests {
             Type::List(Box::new(Type::Real)),
         );
 
-        expand_purpose_reflective_placeholders(&mut expr, &queries, entity, &value_cells);
+        expand_purpose_reflective_placeholders(&mut expr, &queries, &[("subject".to_string(), entity.to_string())], &value_cells);
 
         let elements = match &expr.kind {
             CompiledExprKind::ReflectiveCellList(elements) => elements,
@@ -1002,7 +1012,7 @@ mod tests {
             Type::List(Box::new(Type::Real)),
         );
 
-        expand_purpose_reflective_placeholders(&mut expr, &queries, entity, &value_cells);
+        expand_purpose_reflective_placeholders(&mut expr, &queries, &[("subject".to_string(), entity.to_string())], &value_cells);
 
         let elements = match &expr.kind {
             CompiledExprKind::ReflectiveCellList(elements) => elements,
@@ -1104,7 +1114,7 @@ mod tests {
         // release builds both complete and let us read the warn counter.
         let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
             tracing::subscriber::with_default(subscriber, || {
-                expand_purpose_reflective_placeholders(&mut expr, &queries, entity, &value_cells);
+                expand_purpose_reflective_placeholders(&mut expr, &queries, &[("subject".to_string(), entity.to_string())], &value_cells);
             });
         }));
 
@@ -1215,7 +1225,7 @@ mod tests {
 
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
             tracing::subscriber::with_default(subscriber, || {
-                expand_purpose_reflective_placeholders(&mut expr, &queries, entity, &value_cells);
+                expand_purpose_reflective_placeholders(&mut expr, &queries, &[("subject".to_string(), entity.to_string())], &value_cells);
             });
         }));
 
@@ -1283,7 +1293,7 @@ mod tests {
             Type::List(Box::new(Type::Real)),
         );
 
-        expand_purpose_reflective_placeholders(&mut expr, &queries, entity, &value_cells);
+        expand_purpose_reflective_placeholders(&mut expr, &queries, &[("subject".to_string(), entity.to_string())], &value_cells);
 
         let elements = match &expr.kind {
             CompiledExprKind::ReflectiveCellList(elements) => elements,
@@ -1393,7 +1403,7 @@ mod tests {
         let mut failures: Vec<String> = Vec::new();
         for (label, wrap) in &wrappers {
             let mut wrapped = wrap(make_placeholder());
-            expand_purpose_reflective_placeholders(&mut wrapped, &queries, entity, &value_cells);
+            expand_purpose_reflective_placeholders(&mut wrapped, &queries, &[("subject".to_string(), entity.to_string())], &value_cells);
             if tree_contains_placeholder(&wrapped) {
                 failures.push(format!("{label}: placeholder not rewritten"));
             }
@@ -1767,7 +1777,7 @@ mod tests {
             Type::List(Box::new(Type::Real)),
         );
 
-        expand_purpose_reflective_placeholders(&mut expr, &queries, entity, &value_cells);
+        expand_purpose_reflective_placeholders(&mut expr, &queries, &[("subject".to_string(), entity.to_string())], &value_cells);
 
         // task-2458: must be ReflectiveCellList, NOT ListLiteral.
         let elements = match &expr.kind {
@@ -1842,7 +1852,7 @@ mod tests {
             Type::List(Box::new(Type::Real)),
         );
 
-        expand_purpose_reflective_placeholders(&mut expr, &queries, entity, &value_cells);
+        expand_purpose_reflective_placeholders(&mut expr, &queries, &[("subject".to_string(), entity.to_string())], &value_cells);
 
         // task-2458: must be ReflectiveCellList (empty), NOT ListLiteral.
         let elements = match &expr.kind {
