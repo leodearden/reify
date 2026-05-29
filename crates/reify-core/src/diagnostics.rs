@@ -2008,6 +2008,98 @@ mod tests {
             assert_eq!(d.code, Some(code), "code mismatch for {code:?}");
         }
     }
+
+    // --- StackupEmptyChain tests (task 4007 — E_StackupEmptyChain) ---
+
+    /// `DiagnosticCode::StackupEmptyChain` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` carrying both the expected
+    /// `Severity::Error` and `Some(DiagnosticCode::StackupEmptyChain)`.
+    #[test]
+    fn stackup_empty_chain_diagnostic_code_is_constructible() {
+        use super::Severity;
+        let d = Diagnostic::error("E_StackupEmptyChain: chain must be non-empty")
+            .with_code(DiagnosticCode::StackupEmptyChain);
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::StackupEmptyChain));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::StackupEmptyChain` serializes as
+    /// `"StackupEmptyChain"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_stackup_empty_chain_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::StackupEmptyChain).unwrap();
+        assert_eq!(s, "\"StackupEmptyChain\"");
+    }
+
+    // --- StackupDimMismatch tests (task 4007 — E_StackupDimMismatch) ---
+
+    /// `DiagnosticCode::StackupDimMismatch` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` carrying both the expected
+    /// `Severity::Error` and `Some(DiagnosticCode::StackupDimMismatch)`.
+    #[test]
+    fn stackup_dim_mismatch_diagnostic_code_is_constructible() {
+        use super::Severity;
+        let d = Diagnostic::error("E_StackupDimMismatch: contributor field is not a LENGTH scalar")
+            .with_code(DiagnosticCode::StackupDimMismatch);
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::StackupDimMismatch));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::StackupDimMismatch` serializes as
+    /// `"StackupDimMismatch"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_stackup_dim_mismatch_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::StackupDimMismatch).unwrap();
+        assert_eq!(s, "\"StackupDimMismatch\"");
+    }
+
+    // --- StackupBadSign tests (task 4007 — E_StackupBadSign) ---
+
+    /// `DiagnosticCode::StackupBadSign` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` carrying both the expected
+    /// `Severity::Error` and `Some(DiagnosticCode::StackupBadSign)`.
+    #[test]
+    fn stackup_bad_sign_diagnostic_code_is_constructible() {
+        use super::Severity;
+        let d = Diagnostic::error("E_StackupBadSign: sign must be +1 or -1")
+            .with_code(DiagnosticCode::StackupBadSign);
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::StackupBadSign));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::StackupBadSign` serializes as
+    /// `"StackupBadSign"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_stackup_bad_sign_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::StackupBadSign).unwrap();
+        assert_eq!(s, "\"StackupBadSign\"");
+    }
+
+    // --- StackupBadSamples tests (task 4007 — E_StackupBadSamples) ---
+
+    /// `DiagnosticCode::StackupBadSamples` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` carrying both the expected
+    /// `Severity::Error` and `Some(DiagnosticCode::StackupBadSamples)`.
+    #[test]
+    fn stackup_bad_samples_diagnostic_code_is_constructible() {
+        use super::Severity;
+        let d = Diagnostic::error("E_StackupBadSamples: samples must be a positive integer")
+            .with_code(DiagnosticCode::StackupBadSamples);
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::StackupBadSamples));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::StackupBadSamples` serializes as
+    /// `"StackupBadSamples"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_stackup_bad_samples_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::StackupBadSamples).unwrap();
+        assert_eq!(s, "\"StackupBadSamples\"");
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
