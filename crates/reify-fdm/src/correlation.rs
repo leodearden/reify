@@ -494,4 +494,39 @@ mod tests {
             "smaller exponent ⇒ less knockdown ⇒ higher e_in_plane than the default"
         );
     }
+
+    #[test]
+    fn orthotropic_directional_pattern_orders_e1_gt_e2_gt_e3() {
+        let base = pla_base();
+        // Grid is directional ⇒ a genuine in-plane split.
+        let c = effective_orthotropic(base, 0.5, InfillPattern::Grid, &CouponOverride::default());
+        // Along-raster (E1) stiffer than transverse (E2).
+        assert!(
+            c.e1 > c.e2,
+            "directional pattern: E1 ({}) should exceed E2 ({})",
+            c.e1,
+            c.e2
+        );
+        // Build-Z (E3) is the weakest axis: E3 < E2 (PRD ordering E1 > E2 > E3).
+        assert!(
+            c.e3 < c.e2,
+            "build-Z E3 ({}) must be weaker than in-plane E2 ({})",
+            c.e3,
+            c.e2
+        );
+        assert!(c.e1 > c.e3, "E1 ({}) > E3 ({}) — build-Z weakest", c.e1, c.e3);
+    }
+
+    #[test]
+    fn orthotropic_coupon_overrides_e1_and_e3() {
+        let base = pla_base();
+        let coupon = CouponOverride {
+            ex: Some(5.0e9),
+            ez: Some(1.0e9),
+            ..Default::default()
+        };
+        let c = effective_orthotropic(base, 0.5, InfillPattern::Grid, &coupon);
+        assert_eq!(c.e1, 5.0e9, "ex overrides E1");
+        assert_eq!(c.e3, 1.0e9, "ez overrides E3");
+    }
 }
