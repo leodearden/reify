@@ -453,3 +453,81 @@ fn extract_tip_force(val: &Value) -> f64 {
     }
     total
 }
+
+// ── unit tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reify_solver_elastic::{AnisotropicMaterial, OrthotropicMaterial};
+
+    /// step-3 RED (task δ/3780): orthotropic ConstantField cantilever tip-deflection
+    /// band test at L/h = 8.
+    ///
+    /// Fixture: L=0.8 m, b=h=0.1 m, P=1000 N; strongly anisotropic material
+    /// (E1=200 GPa along beam axis, E2=E3=10 GPa, G12=G13=G23=4 GPa,
+    /// nu12=nu13=nu23=0.3). Identity material frame → E1 governs bending.
+    ///
+    /// Reference: Euler–Bernoulli δ_ref = P·L³/(3·E1·I), I = b·h³/12.
+    /// Band: ±50% of δ_ref (P1-tet method-error budget; achievability survey §4.2,
+    /// 2026-05-29; deflection converges better than stress for P1 tets).
+    ///
+    /// RED: MaterialModel enum and solve_cantilever_fea don't exist yet.
+    #[test]
+    fn orthotropic_cantilever_tip_deflection_within_euler_bernoulli_band() {
+        // Build Rust OrthotropicMaterial: E1 >> E2 = E3 (strongly transverse-stiff)
+        let law = OrthotropicMaterial {
+            e1: 200e9_f64,  // 200 GPa — beam-axis Young's modulus (governs bending)
+            e2: 10e9_f64,   // 10 GPa  — transverse
+            e3: 10e9_f64,   // 10 GPa  — transverse
+            g12: 4e9_f64,   // 4 GPa
+            g13: 4e9_f64,   // 4 GPa
+            g23: 4e9_f64,   // 4 GPa
+            nu12: 0.3_f64,
+            nu13: 0.3_f64,
+            nu23: 0.3_f64,
+        };
+        // Identity material frame: beam axis = material 1-axis → E1 governs bending.
+        let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let aniso_mat = AnisotropicMaterial::from_law(&law, identity);
+
+        // Cantilever geometry at L/h = 8 (keeps fixture off slender bending-lock wall).
+        let length = 0.8_f64;   // m — beam length (x-axis)
+        let width  = 0.1_f64;   // m — cross-section width (y-axis)
+        let height = 0.1_f64;   // m — cross-section height (z-axis, bending direction)
+        let tip_force = 1000.0_f64; // N (distributed to tip-face nodes by trampoline)
+
+        // Call the new pub(crate) helper (doesn't exist yet → compile-fail RED).
+        let (result, _fresh_warm) = solve_cantilever_fea(
+            &MaterialModel::Anisotropic(aniso_mat),
+            length,
+            width,
+            height,
+            tip_force,
+            None,
+        );
+
+        // Tip deflection = max |u_z| over tip-face nodes.
+        let tip_deflection = result
+            .tip_nodes
+            .iter()
+            .map(|&n| result.u[3 * n + 2].abs())  // z-component
+            .fold(0.0f64, f64::max);
+
+        // Euler–Bernoulli reference: δ = P·L³ / (3·E1·I), I = b·h³/12.
+        let i_beam = width * height.powi(3) / 12.0;
+        let delta_eb = tip_force * length.powi(3) / (3.0 * 200e9_f64 * i_beam);
+
+        assert!(
+            tip_deflection.is_finite() && tip_deflection > 0.0,
+            "tip deflection must be finite and positive, got {tip_deflection}"
+        );
+        assert!(
+            tip_deflection >= 0.5 * delta_eb && tip_deflection <= 1.5 * delta_eb,
+            "tip deflection {tip_deflection:.6e} m outside ±50% band [{:.6e}, {:.6e}] m \
+             of Euler–Bernoulli reference {delta_eb:.6e} m",
+            0.5 * delta_eb,
+            1.5 * delta_eb,
+        );
+    }
+}
