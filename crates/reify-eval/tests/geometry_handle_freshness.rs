@@ -40,7 +40,7 @@ use reify_constraints::SimpleConstraintChecker;
 use reify_core::identity::{RealizationNodeId, ValueCellId};
 use reify_eval::Engine;
 use reify_eval::cache::NodeId;
-use reify_ir::{ExportFormat, Freshness, Value};
+use reify_ir::{ExportFormat, Freshness, GeometryHandleId, Value};
 use reify_test_support::{MockGeometryKernel, compile_source};
 
 /// A single geometry-bearing structure: `geometry` is a `Solid` realization
@@ -367,4 +367,101 @@ fn realization_change_donates_invalidation_to_backing_geometry_cell() {
 
     // The edit must not panic and must report a coherent result (smoke per S11).
     let _ = edit.values;
+}
+
+/// FOURTH (GHR-δ §5 — lazy revalidation, S15/S16): `Engine::read_value_revalidated`
+/// re-resolves a STALE `Value::GeometryHandle` against the Engine's current
+/// `realization_ref → handle` map, writing the fresh handle back so the next
+/// read is a fast-path hit; and returns `Value::Undef` (no panic) for a handle
+/// whose backing realization is ABSENT from the map.
+///
+/// The slow-path counter pins the §9 Q4 fast/slow split: the stale read fires
+/// the slow path exactly once, and because it writes the fresh value back, the
+/// immediately-following read of the same cell takes the fast path (counter
+/// stays at 1 — exact `==`, not `>=`).
+///
+/// RED until S16 adds the `read_value_revalidated` read entry point (the helper
+/// + map landed in S13/S14).
+#[test]
+fn lazy_revalidation_reresolves_stale_handle_and_undefs_missing_realization() {
+    // Build inline (not via `build_widget`) to capture the BuildResult: the
+    // hydrated GeometryHandle lands in `result.values`, NOT in the Engine's
+    // eval-state snapshot (whose geometry cell stays Undef — hydration runs on
+    // build's local value map). The Engine's `realization_handles` map, though,
+    // DID record `Widget#0 → fresh handle` during the same post-process, which
+    // is exactly the oracle revalidation consults.
+    let compiled = compile_source(WIDGET_SRC);
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let geom = ValueCellId::new("Widget", "geometry");
+    let fresh = result.values.get_or_undef(&geom);
+    let (realization_ref, current_handle) = match &fresh {
+        Value::GeometryHandle {
+            realization_ref,
+            kernel_handle,
+            ..
+        } => (realization_ref.clone(), *kernel_handle),
+        other => panic!("Widget.geometry must hydrate to a GeometryHandle; got {:?}", other),
+    };
+
+    // Clone the post-build snapshot so it can be mutated independently of the
+    // Engine: the read entry point takes `&self` + a `&mut Snapshot`, so a
+    // borrowed-from-engine snapshot would collide with the `&self` receiver. Its
+    // geom cell is Undef; we overwrite it, preserving its DeterminacyState.
+    let mut snap = engine
+        .snapshot()
+        .expect("engine has a snapshot after build()")
+        .clone();
+    let det = snap.values.get(&geom).expect("geom cell in snapshot").1;
+
+    // (1) STALE handle for Widget#0: INVALID kernel_handle, real realization_ref.
+    let stale = Value::GeometryHandle {
+        realization_ref: realization_ref.clone(),
+        upstream_values_hash: [0u8; 32],
+        kernel_handle: GeometryHandleId::INVALID,
+    };
+    snap.values.insert(geom.clone(), (stale, det));
+
+    // First read: the slow path re-resolves the stale handle to the current one.
+    let read1 = engine.read_value_revalidated(&mut snap, &geom);
+    match read1 {
+        Value::GeometryHandle { kernel_handle, .. } => assert_eq!(
+            kernel_handle, current_handle,
+            "stale handle must re-resolve to the Engine's current handle"
+        ),
+        other => panic!("expected re-resolved GeometryHandle, got {:?}", other),
+    }
+    assert_eq!(
+        engine.geometry_revalidation_slow_path_count(),
+        1,
+        "the stale read must fire the slow path exactly once"
+    );
+
+    // Second read: the cell was updated in place by the first read, so this
+    // takes the fast path and leaves the counter at 1.
+    let _read2 = engine.read_value_revalidated(&mut snap, &geom);
+    assert_eq!(
+        engine.geometry_revalidation_slow_path_count(),
+        1,
+        "the second read must take the fast path (counter unchanged)"
+    );
+
+    // (2) MISSING realization: a handle whose `realization_ref` is absent from
+    // the Engine's map must read as `Undef` without panicking.
+    let orphan_cell = ValueCellId::new("Widget", "orphan");
+    let orphan = Value::GeometryHandle {
+        realization_ref: RealizationNodeId::new("Ghost", 0),
+        upstream_values_hash: [0u8; 32],
+        kernel_handle: GeometryHandleId(123),
+    };
+    snap.values.insert(orphan_cell.clone(), (orphan, det));
+    let read3 = engine.read_value_revalidated(&mut snap, &orphan_cell);
+    assert!(
+        matches!(read3, Value::Undef),
+        "a handle backed by an absent realization must read as Undef; got {:?}",
+        read3
+    );
 }
