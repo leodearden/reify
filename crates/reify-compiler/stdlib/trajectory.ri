@@ -586,3 +586,37 @@ structure def EIShaper : Shaper {
 structure def CascadedShaper : Shaper {
     param shapers : List<Shaper>
 }
+
+// ── G-code dialect (PRD §7.2) ─────────────────────────────────────────────────
+
+// GcodeDialect — marker trait for G-code dialect selectors (PRD §7.2).
+//
+// Concrete dialects (`MarlinDialect`, `KlipperDialect`) refine this trait.
+// The trait exists only to give the `gcode_import` dispatcher's
+// `dialect : GcodeDialect` param a single nominal type so the SIR-α
+// nominal type-tag dispatches on the concrete dialect variant at runtime.
+//
+// Empty by design — the semantic behavior (which G-code commands are
+// recognised, how M-commands are handled, etc.) lives in the consumer ο
+// (`gcode_import` parser dispatch), not as authoring-time params.
+// Matches the established marker-trait discipline of `Profile`,
+// `BoundaryCondition`, and `Shaper`.
+trait GcodeDialect { }
+
+// MarlinDialect — zero-DOF marker for the Marlin G-code dialect (PRD §7.1/§7.2).
+//
+// Marlin subset: G0/G1 (linear move), G2/G3 (arc), G92 (set position), F
+// (feed-rate modifier), M-commands are ignored by the consumer ο parser.
+// The semantic behavior lives in the `gcode_import` parser dispatch, not here.
+// Structurally identical to `NaturalSpline : BoundaryCondition` — a pure
+// nominal selector with no authoring-time params or constraints.
+structure def MarlinDialect : GcodeDialect { }
+
+// KlipperDialect — zero-DOF marker for the Klipper G-code dialect (PRD §7.1/§7.2).
+//
+// Klipper superset: same core G-codes as Marlin plus SET_VELOCITY_LIMIT and
+// INPUT_SHAPER directives. The semantic behavior lives in the `gcode_import`
+// parser dispatch, not here. Structurally identical to
+// `PeriodicSpline : BoundaryCondition` — a pure nominal selector with no
+// authoring-time params or constraints.
+structure def KlipperDialect : GcodeDialect { }
