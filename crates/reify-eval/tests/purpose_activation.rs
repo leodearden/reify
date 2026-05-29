@@ -1752,6 +1752,103 @@ purpose fits_within(part : Structure, envelope : Structure) {
     );
 }
 
+/// C7 / RED (step-07): when a 2-param purpose has reflective members on BOTH
+/// params, `activate_purpose_with_bindings` must resolve the `a.params` and
+/// `b.params` placeholders to their RESPECTIVE bound entities — NOT to a single
+/// representative entity.
+///
+/// RED because step-02 passes `bindings[0].1` as the representative entity to
+/// `expand_purpose_reflective_placeholders` for all placeholders, so the
+/// `b.params` placeholder mis-resolves to `Sa` instead of `Sb`. Step-08 will
+/// fix this by passing the full bindings slice for per-param entity lookup.
+#[test]
+fn activate_with_bindings_resolves_reflective_query_per_param() {
+    // Sa has param "pa"; Sb has param "pb" — DISTINCT member names.
+    // A mis-bind would put Sa's entity on both constraints.
+    let source = r#"
+structure Sa { param pa : Real }
+structure Sb { param pb : Real }
+purpose pp(a : Structure, b : Structure) {
+    constraint forall x in a.params: determined(x)
+    constraint forall y in b.params: determined(y)
+}
+"#;
+    let compiled = parse_and_compile(source);
+    assert_eq!(compiled.compiled_purposes.len(), 1, "fixture must compile");
+
+    let mut engine = make_simple_engine();
+    engine.eval(&compiled);
+
+    let result = engine.activate_purpose_with_bindings(
+        "pp",
+        &[
+            ("a".to_string(), "Sa".to_string()),
+            ("b".to_string(), "Sb".to_string()),
+        ],
+    );
+    assert!(result.is_ok(), "expected Ok, got {:?}", result);
+    assert!(engine.is_purpose_active("pp"));
+
+    let snapshot = engine.snapshot().expect("snapshot after activate");
+
+    // Collect the two injected purpose constraints.
+    let mut injected: Vec<_> = snapshot
+        .graph
+        .constraints
+        .iter()
+        .filter(|(id, _)| id.entity.starts_with("purpose:pp@"))
+        .collect();
+    // Sort by constraint index for determinism.
+    injected.sort_by_key(|(id, _)| id.index);
+    assert_eq!(injected.len(), 2, "expected exactly 2 injected constraints");
+
+    // Helper: extract entities from a ReflectiveCellList inside a Quantifier.
+    let rcl_entities = |data: &reify_eval::graph::ConstraintNodeData| -> Vec<String> {
+        let collection = match &data.expr.kind {
+            CompiledExprKind::Quantifier { collection, .. } => collection,
+            other => panic!("expected Quantifier, got {:?}", other),
+        };
+        match &collection.kind {
+            CompiledExprKind::ReflectiveCellList(elements) => elements
+                .iter()
+                .map(|e| match &e.kind {
+                    CompiledExprKind::ValueRef(id) => id.entity.clone(),
+                    other => panic!("expected ValueRef, got {:?}", other),
+                })
+                .collect(),
+            other => panic!("expected ReflectiveCellList, got {:?}", other),
+        }
+    };
+
+    // First constraint (index 0): `forall x in a.params: determined(x)`
+    // a→Sa, so collection elements must have entity "Sa".
+    let entities_0 = rcl_entities(injected[0].1);
+    assert!(
+        !entities_0.is_empty(),
+        "a.params constraint (index 0) must expand to a non-empty ReflectiveCellList"
+    );
+    for entity in &entities_0 {
+        assert_eq!(
+            entity, "Sa",
+            "a.params constraint must reference entity 'Sa', got '{entity}'"
+        );
+    }
+
+    // Second constraint (index 1): `forall y in b.params: determined(y)`
+    // b→Sb, so collection elements must have entity "Sb".
+    let entities_1 = rcl_entities(injected[1].1);
+    assert!(
+        !entities_1.is_empty(),
+        "b.params constraint (index 1) must expand to a non-empty ReflectiveCellList"
+    );
+    for entity in &entities_1 {
+        assert_eq!(
+            entity, "Sb",
+            "b.params constraint must reference entity 'Sb' (not 'Sa'), got '{entity}'"
+        );
+    }
+}
+
 /// C6 parity / RED (step-01): `activate_purpose_with_bindings` with a single
 /// binding must produce the same `purpose:{name}@{entity}` prefix as the
 /// existing `activate_purpose` shim — NO digest in the single-binding path.
