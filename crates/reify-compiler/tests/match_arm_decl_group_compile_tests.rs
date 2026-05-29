@@ -68,6 +68,8 @@ fn sub_member_with_span(name: &str, structure_name: &str, span: SourceSpan) -> M
         is_collection: false,
         where_clause: None,
         body: None,
+        is_aux: false,
+        pose_expr: None,
         span,
         content_hash: ContentHash(0),
     })
@@ -1416,6 +1418,7 @@ fn duplicate_match_cluster_does_not_pollute_first_cluster_sub_member_types() {
         name: "probe".to_string(),
         doc: None,
         is_pub: false,
+        is_aux: false,
         type_expr: None,
         value: probe_value,
         where_clause: None,
@@ -1889,6 +1892,7 @@ fn match_arm_decl_group_outside_let_collision_emits_diagnostic() {
         name: "head".to_string(),
         doc: None,
         is_pub: false,
+        is_aux: false,
         type_expr: None,
         value: Expr {
             kind: ExprKind::NumberLiteral {
@@ -2828,6 +2832,7 @@ fn match_arm_decl_group_duplicate_outside_let_anchors_to_first_decl() {
         name: "head".to_string(),
         doc: None,
         is_pub: false,
+        is_aux: false,
         type_expr: None,
         value: Expr {
             kind: ExprKind::NumberLiteral {
@@ -2846,6 +2851,7 @@ fn match_arm_decl_group_duplicate_outside_let_anchors_to_first_decl() {
         name: "head".to_string(),
         doc: None,
         is_pub: false,
+        is_aux: false,
         type_expr: None,
         value: Expr {
             kind: ExprKind::NumberLiteral {

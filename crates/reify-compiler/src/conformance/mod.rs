@@ -900,6 +900,7 @@ mod tests {
                     name: "kind".to_string(),
                     doc: None,
                     is_pub: false,
+                    is_aux: false,
                     type_expr: Some(direction_type_expr),
                     value: reify_ast::Expr {
                         kind: reify_ast::ExprKind::NumberLiteral {
@@ -1058,6 +1059,7 @@ mod tests {
                         name: "x".to_string(),
                         doc: None,
                         is_pub: false,
+                        is_aux: false,
                         type_expr: None,
                         value: reify_ast::Expr {
                             kind: reify_ast::ExprKind::NumberLiteral {
@@ -1217,6 +1219,7 @@ mod tests {
             name: "x".to_string(),
             doc: None,
             is_pub: false,
+            is_aux: false,
             type_expr: None, // cell_type carries the annotation; type_expr is the raw AST form
             value: reify_ast::Expr {
                 kind: reify_ast::ExprKind::NumberLiteral {
@@ -1237,6 +1240,7 @@ mod tests {
             name: "x".to_string(),
             doc: None,
             is_pub: false,
+            is_aux: false,
             type_expr: None,
             value: reify_ast::Expr {
                 kind: reify_ast::ExprKind::NumberLiteral {
@@ -1581,6 +1585,7 @@ mod tests {
                         name: "x".to_string(),
                         doc: None,
                         is_pub: false,
+                        is_aux: false,
                         type_expr: None,
                         value: reify_ast::Expr {
                             kind: reify_ast::ExprKind::QuantityLiteral {
@@ -1700,6 +1705,7 @@ mod tests {
                         name: "x".to_string(),
                         doc: None,
                         is_pub: false,
+                        is_aux: false,
                         type_expr: None,
                         value: reify_ast::Expr {
                             kind: reify_ast::ExprKind::NumberLiteral {
@@ -1827,6 +1833,7 @@ mod tests {
                     name: "length".to_string(),
                     doc: None,
                     is_pub: false,
+                    is_aux: false,
                     type_expr: Some(length_type_expr),
                     value: reify_ast::Expr {
                         kind: reify_ast::ExprKind::NumberLiteral {
@@ -2059,6 +2066,7 @@ mod tests {
             name: "y".to_string(),
             doc: None,
             is_pub: false,
+            is_aux: false,
             type_expr: None, // unannotated — must go through Pass 2 inference
             value: reify_ast::Expr {
                 kind: reify_ast::ExprKind::NumberLiteral {
@@ -2164,6 +2172,7 @@ mod tests {
             name: "x".to_string(),
             doc: None,
             is_pub: false,
+            is_aux: false,
             type_expr: None, // unannotated — will be compiled in Pass 2
             value: reify_ast::Expr {
                 kind: reify_ast::ExprKind::NumberLiteral {
@@ -2290,6 +2299,7 @@ mod tests {
             name: "x".to_string(),
             doc: None,
             is_pub: false,
+            is_aux: false,
             type_expr: None, // type_expr in LetDecl is not consulted by Pass 1 — DefaultKind carries cell_type
             value: reify_ast::Expr {
                 kind: reify_ast::ExprKind::NumberLiteral {
@@ -2408,6 +2418,7 @@ mod tests {
             name: "x".to_string(),
             doc: None,
             is_pub: false,
+            is_aux: false,
             type_expr: None, // type_expr in LetDecl is not consulted by Pass 1 — DefaultKind carries cell_type
             value: reify_ast::Expr {
                 kind: reify_ast::ExprKind::NumberLiteral {
@@ -2543,6 +2554,7 @@ mod tests {
             name: "x".to_string(),
             doc: None,
             is_pub: false,
+            is_aux: false,
             type_expr: None, // unannotated — must go through Pass 2 inference
             value: reify_ast::Expr {
                 kind: reify_ast::ExprKind::ListLiteral(vec![]), // empty list → Warning, not Error
@@ -2697,6 +2709,7 @@ mod tests {
             name: "a".to_string(),
             doc: None,
             is_pub: false,
+            is_aux: false,
             type_expr: None, // unannotated
             value: reify_ast::Expr {
                 kind: reify_ast::ExprKind::Ident("b".to_string()), // b is undefined
@@ -2713,6 +2726,7 @@ mod tests {
             name: "c".to_string(),
             doc: None,
             is_pub: false,
+            is_aux: false,
             type_expr: None, // unannotated
             value: reify_ast::Expr {
                 kind: reify_ast::ExprKind::Ident("a".to_string()), // a → Type::Error sentinel
@@ -2951,6 +2965,7 @@ mod tests {
             name: "x".to_string(),
             doc: None,
             is_pub: false,
+            is_aux: false,
             type_expr: None, // type_expr not consulted — DefaultKind carries cell_type directly
             value: reify_ast::Expr {
                 kind: reify_ast::ExprKind::NumberLiteral {
@@ -3593,6 +3608,7 @@ mod tests {
             name: "x".to_string(),
             doc: None,
             is_pub: false,
+            is_aux: false,
             type_expr: None, // type_expr not consulted — DefaultKind::Let carries cell_type directly
             value: reify_ast::Expr {
                 kind: reify_ast::ExprKind::NumberLiteral {

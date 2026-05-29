@@ -198,6 +198,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 name: "volume".into(),
                 doc: None,
                 is_pub: false,
+                is_aux: false,
                 type_expr: None,
                 value: Expr {
                     kind: ExprKind::BinOp {
@@ -322,6 +323,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 name: "body".into(),
                 doc: None,
                 is_pub: false,
+                is_aux: false,
                 type_expr: None,
                 value: Expr {
                     kind: ExprKind::FunctionCall {

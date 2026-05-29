@@ -33,6 +33,8 @@ fn arm(patterns: Vec<&str>, sub_name: &str, structure_name: &str) -> MatchArmDec
             is_collection: false,
             where_clause: None,
             body: None,
+            is_aux: false,
+            pose_expr: None,
             span: dummy_span(),
             content_hash: dummy_hash(),
         })),
@@ -172,6 +174,8 @@ fn walk_specialization_scope_members_visits_match_arm_decl_group_arms() {
         is_collection: false,
         where_clause: None,
         body: Some(vec![MemberDecl::MatchArmDeclGroup(group)]),
+        is_aux: false,
+        pose_expr: None,
         span: dummy_span(),
         content_hash: dummy_hash(),
     };
