@@ -496,14 +496,12 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     // When a stackup builtin returns Undef, classify and emit
                     // the specific §4.4 error diagnostic into the ctx sink.
                     // Non-stackup builtins and valid stackup calls are untouched.
-                    if matches!(result, Value::Undef) {
-                        if let Some(sink) = ctx.diagnostics {
-                            if let Some(diag) =
-                                reify_stdlib::stackup_diagnose(&function.name, &evaluated_args)
-                            {
-                                sink.borrow_mut().push(diag);
-                            }
-                        }
+                    if matches!(result, Value::Undef)
+                        && let Some(sink) = ctx.diagnostics
+                        && let Some(diag) =
+                            reify_stdlib::stackup_diagnose(&function.name, &evaluated_args)
+                    {
+                        sink.borrow_mut().push(diag);
                     }
                     result
                 }
