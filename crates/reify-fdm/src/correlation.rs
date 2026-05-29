@@ -305,6 +305,99 @@ pub fn effective_transverse_isotropic(
     }
 }
 
+/// The 9-constant orthotropic conformer result (plus density).
+///
+/// Field names mirror the stdlib `OrthotropicMaterial`
+/// (`crates/reify-compiler/stdlib/constitutive.ri`) one-to-one. Axis
+/// convention: `1` = along-raster (strong in-plane), `2` = transverse
+/// in-plane, `3` = build (Z) axis — the weakest. This is the opt-in path for
+/// known-unidirectional raster; the transverse-isotropic 5-constant model
+/// ([`effective_transverse_isotropic`]) remains the default.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OrthotropicConstants {
+    /// Along-raster Young's modulus E1, Pa (strongest).
+    pub e1: f64,
+    /// Transverse in-plane Young's modulus E2, Pa.
+    pub e2: f64,
+    /// Build-Z Young's modulus E3, Pa (weakest).
+    pub e3: f64,
+    /// In-plane shear modulus G12, Pa.
+    pub g12: f64,
+    /// G13 shear modulus, Pa.
+    pub g13: f64,
+    /// G23 shear modulus, Pa.
+    pub g23: f64,
+    /// Poisson ratio ν12 (dimensionless).
+    pub nu12: f64,
+    /// Poisson ratio ν13 (dimensionless).
+    pub nu13: f64,
+    /// Poisson ratio ν23 (dimensionless).
+    pub nu23: f64,
+    /// Effective mass density, kg/m³ (solid density · solid fraction).
+    pub density: f64,
+}
+
+/// Build the orthotropic constants for a known-unidirectional-raster FDM
+/// region. Opt-in path; the transverse-isotropic model is the default.
+///
+/// The in-plane directional split comes from the pattern's strong/weak
+/// factors (E1 = strong, E2 = weak); the build-Z modulus applies the
+/// [`BUILD_Z_MODULUS_RATIO`] knockdown to the weak in-plane modulus, so the
+/// ordering is E1 > E2 > E3 with the build direction weakest. Shear moduli use
+/// a geometric-mean estimate of the relevant axial pair (no independent shear
+/// data); Poisson ratios default to the base value.
+///
+/// Coupon overrides beat the defaults: `infill_c`/`infill_n` replace the
+/// Gibson-Ashby `(C, n)`; `ex`/`ey`/`ez` set E1/E2/E3; `gxy` sets the in-plane
+/// shear G12. Unset fields fall back to the correlation result.
+pub fn effective_orthotropic(
+    base: BaseElastic,
+    solid_fraction: f64,
+    pattern: InfillPattern,
+    coupon: &CouponOverride,
+) -> OrthotropicConstants {
+    let c = coupon.infill_c.unwrap_or(GIBSON_ASHBY_C);
+    let n = coupon.infill_n.unwrap_or(GIBSON_ASHBY_N);
+    let infill = gibson_ashby_infill_factor(solid_fraction, c, n);
+    let pf = pattern_factors(pattern);
+
+    let e1 = coupon
+        .ex
+        .unwrap_or(base.youngs_modulus * infill * pf.in_plane_strong);
+    let e2 = coupon
+        .ey
+        .unwrap_or(base.youngs_modulus * infill * pf.in_plane_weak);
+    // Build-Z is the weakest axis: knock the (weak) in-plane modulus down.
+    let e3 = coupon.ez.unwrap_or(e2 * BUILD_Z_MODULUS_RATIO);
+
+    let nu12 = base.poisson_ratio;
+    let nu13 = base.poisson_ratio;
+    let nu23 = base.poisson_ratio;
+
+    // Geometric-mean shear estimate per plane (no independent shear data);
+    // gxy overrides the in-plane shear G12.
+    let g12 = coupon
+        .gxy
+        .unwrap_or((e1 * e2).sqrt() / (2.0 * (1.0 + nu12)));
+    let g13 = (e1 * e3).sqrt() / (2.0 * (1.0 + nu13));
+    let g23 = (e2 * e3).sqrt() / (2.0 * (1.0 + nu23));
+
+    let density = base.density * solid_fraction;
+
+    OrthotropicConstants {
+        e1,
+        e2,
+        e3,
+        g12,
+        g13,
+        g23,
+        nu12,
+        nu13,
+        nu23,
+        density,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
