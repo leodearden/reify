@@ -237,4 +237,66 @@ mod tests {
             "waypoint 2 = G1 X10 Y10"
         );
     }
+
+    /// An ignored M-code interleaved between two moves splits the contiguous
+    /// run into TWO profiles. The running machine position persists across the
+    /// split (the second profile's waypoint is the absolute `G1 X20` target).
+    #[test]
+    fn marlin_ignored_mcode_splits_into_two_profiles() {
+        let src = "G1 X10\nM104 S200\nG1 X20";
+        let result = lower_gcode(src, GcodeImportDialect::Marlin);
+
+        assert!(result.parse_error.is_none(), "{:?}", result.parse_error);
+        assert_eq!(
+            result.profiles.len(),
+            2,
+            "the ignored M104 must split the run into two profiles"
+        );
+        assert_eq!(
+            result.profiles[0].waypoints.len(),
+            1,
+            "first profile holds the pre-M104 move"
+        );
+        assert_eq!(result.profiles[0].waypoints[0].x, 10.0, "G1 X10");
+        assert_eq!(
+            result.profiles[1].waypoints.len(),
+            1,
+            "second profile holds the post-M104 move"
+        );
+        assert_eq!(result.profiles[1].waypoints[0].x, 20.0, "G1 X20");
+    }
+
+    /// A `G92` set-position and a standalone `F` feedrate line interleaved
+    /// between two moves do NOT split the run (single profile). The `G92`
+    /// rebases the running position so a subsequent move that omits the rebased
+    /// axis inherits the rebased value, and the standalone `F` updates the
+    /// running feedrate consumed by that move.
+    #[test]
+    fn marlin_g92_and_feedrate_are_in_segment_state_updates() {
+        let src = "G1 X10 Y0\nG92 X0\nF1200\nG1 Y10";
+        let result = lower_gcode(src, GcodeImportDialect::Marlin);
+
+        assert!(result.parse_error.is_none(), "{:?}", result.parse_error);
+        assert_eq!(
+            result.profiles.len(),
+            1,
+            "G92 and standalone F must not split the segment"
+        );
+
+        let wps = &result.profiles[0].waypoints;
+        assert_eq!(wps.len(), 2, "two motion waypoints in the single segment");
+        assert_eq!((wps[0].x, wps[0].y), (10.0, 0.0), "first move target");
+        // `G92 X0` rebased x→0; the `G1 Y10` move omits X, so it inherits the
+        // rebased x=0 rather than the pre-rebase x=10.
+        assert_eq!(
+            (wps[1].x, wps[1].y),
+            (0.0, 10.0),
+            "G92 rebased x to 0; subsequent move inherits the rebased x"
+        );
+        assert_eq!(
+            wps[1].feedrate,
+            Some(1200.0),
+            "standalone F1200 updates the running feedrate consumed by G1 Y10"
+        );
+    }
 }
