@@ -84,6 +84,27 @@ usage() {
 # ---------------------------------------------------------------------------
 # PSI gate — throttle per-task test phases under multi-worktree verify bursts
 # ---------------------------------------------------------------------------
+
+# _psi_should_pass() — helper for psi_gate().
+# Returns 0 if both PSI and window conditions are satisfied (safe to dispatch
+# now), or 1 otherwise.  Reads PROC_PATH, THRESHOLD, WINDOW, DISPATCH from
+# psi_gate()'s dynamic scope (bash locals are visible to callees via dynamic
+# scoping, not lexical scoping).  $1 = current timestamp (integer seconds).
+# Called from both the flock subshell and the lock-free fallback path.
+_psi_should_pass() {
+    local _ts="$1" _mtime _age _avg10
+    _mtime=$(stat -c %Y "$DISPATCH" 2>/dev/null || echo 0)
+    _age=$(( _ts - _mtime ))
+    _avg10=$(awk '/^some/ {
+        for (i=1; i<=NF; i++) {
+            if ($i ~ /^avg10=/) { v=$i; sub(/^avg10=/, "", v); print v; exit }
+        }
+    }' "$PROC_PATH" 2>/dev/null || echo "")
+    [ -n "$_avg10" ] && \
+        awk -v p="$_avg10" -v t="$THRESHOLD" 'BEGIN{exit !(p<t)}' && \
+        [ "$_age" -ge "$WINDOW" ]
+}
+
 # psi_gate() — wait for CPU headroom before dispatching the test phase.
 # Called directly via `verify.sh psi-gate` (testable entry point) and wired
 # as the first test-phase plan entry by add_test_passes().
@@ -103,25 +124,6 @@ psi_gate() {
     local POLL="${REIFY_PSI_GATE_POLL:-5}"
     local PROC_PATH="${REIFY_PSI_GATE_PROC_PATH:-/proc/pressure/cpu}"
     local DISPATCH="${REIFY_PSI_GATE_DISPATCH_FILE:-/tmp/reify-verify-last-dispatch}"
-
-    # Helper: returns 0 if both PSI and window conditions are satisfied (dispatch now),
-    # or 1 otherwise.  Reads PROC_PATH, THRESHOLD, WINDOW, DISPATCH from the outer
-    # psi_gate() locals.  $1 = current timestamp (integer seconds, from date +%s).
-    # Defined as a nested function so the parse/compare logic lives in exactly one place;
-    # called from both the flock subshell and the lock-free fallback path.
-    _psi_should_pass() {
-        local _ts="$1" _mtime _age _avg10
-        _mtime=$(stat -c %Y "$DISPATCH" 2>/dev/null || echo 0)
-        _age=$(( _ts - _mtime ))
-        _avg10=$(awk '/^some/ {
-            for (i=1; i<=NF; i++) {
-                if ($i ~ /^avg10=/) { v=$i; sub(/^avg10=/, "", v); print v; exit }
-            }
-        }' "$PROC_PATH" 2>/dev/null || echo "")
-        [ -n "$_avg10" ] && \
-            awk -v p="$_avg10" -v t="$THRESHOLD" 'BEGIN{exit !(p<t)}' && \
-            [ "$_age" -ge "$WINDOW" ]
-    }
 
     # (1) Break-glass bypass — total bypass: no PSI read, no touch, no wait
     if [ "${REIFY_PSI_GATE_DISABLE:-}" = "1" ]; then
@@ -191,6 +193,9 @@ psi_gate() {
             return 0
         fi
 
+        # Re-sample now: the flock attempt above may have blocked up to 5s,
+        # so the value captured at the top of the loop can be stale.
+        now=$(date +%s)
         # Give up if we've waited too long
         if [ "$now" -ge "$deadline" ]; then
             echo "verify.sh: PSI gate gave up after ${MAX_WAIT}s waiting for CPU headroom" >&2
@@ -279,6 +284,10 @@ esac
 
 # psi-gate is dispatched EARLY — before MERGE_HEAD check / cd / apply_env —
 # so the integration test can drive it without triggering the cargo pipeline.
+# Note: psi-gate is execute-only; --print-plan is intentionally ignored here.
+# The parent test/all invocation prints the psi-gate command as a normal plan
+# line; the psi-gate subprocess itself always executes the gate regardless of
+# how it was invoked.
 if [ "$ACTION" = "psi-gate" ]; then
     psi_gate
     exit $?
