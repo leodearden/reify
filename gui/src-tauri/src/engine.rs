@@ -2437,12 +2437,11 @@ fn collect_wires_from_value(val: &Value, entity_path: &str, out: &mut Vec<Tenseg
         }
         Value::List(items) => {
             for item in items.iter() {
-                if let Value::StructureInstance(data) = item {
-                    if data.type_name == "TensegrityWire" {
-                        if let Some(wire) = wire_data_from_instance(&data.fields, entity_path) {
-                            out.push(wire);
-                        }
-                    }
+                if let Value::StructureInstance(data) = item
+                    && data.type_name == "TensegrityWire"
+                    && let Some(wire) = wire_data_from_instance(&data.fields, entity_path)
+                {
+                    out.push(wire);
                 }
             }
         }
