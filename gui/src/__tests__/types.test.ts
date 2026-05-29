@@ -219,4 +219,45 @@ describe('convertRawGuiState', () => {
     expect(state.compile_diagnostics[0].message).toContain('unknown port type');
     expect(state.compile_diagnostics[0].file_path).toBe('test.ri');
   });
+
+  // ── T0b: tensegrity_wires conversion tests ───────────────────────────────
+
+  it('passes tensegrity_wires through from RawGuiState when present', () => {
+    // RED until TensegrityWireData is added to types.ts and convertRawGuiState copies it.
+    const raw: RawGuiState = {
+      meshes: [],
+      values: [],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+      tensegrity_wires: [
+        { entity_path: 'TPrism', kind: 'strut', x1: 1.0, y1: 0.0, z1: 1.0, x2: 0.866, y2: 0.5, z2: 0.0 },
+        { entity_path: 'TPrism', kind: 'cable', x1: 1.0, y1: 0.0, z1: 1.0, x2: -0.5, y2: 0.866, z2: 1.0 },
+      ],
+    };
+    const state = convertRawGuiState(raw);
+    expect(state.tensegrity_wires).toHaveLength(2);
+    expect(state.tensegrity_wires[0].kind).toBe('strut');
+    expect(state.tensegrity_wires[0].entity_path).toBe('TPrism');
+    expect(state.tensegrity_wires[0].x1).toBe(1.0);
+    expect(state.tensegrity_wires[0].x2).toBe(0.866);
+    expect(state.tensegrity_wires[1].kind).toBe('cable');
+  });
+
+  it('yields tensegrity_wires: [] when the field is absent from RawGuiState', () => {
+    // Forward-compat: older backend payloads without tensegrity_wires must not crash.
+    // RED until convertRawGuiState uses the `?? []` default.
+    const raw: RawGuiState = {
+      meshes: [],
+      values: [],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+      // tensegrity_wires intentionally omitted
+    };
+    const state = convertRawGuiState(raw);
+    expect(state.tensegrity_wires).toEqual([]);
+  });
 });
