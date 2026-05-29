@@ -88,6 +88,7 @@ use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 ///
 /// Anisotropic: assembles via `element_stiffness_p1_with_field(&ConstantField{..})`
 /// and recovers von Mises inline from `d_matrix_global()`.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum MaterialModel {
     /// Isotropic elastic material (legacy path — unchanged from pre-δ).
     Isotropic(IsotropicElastic),
@@ -99,6 +100,9 @@ pub(crate) enum MaterialModel {
 // ── CantileverFeaSolve ────────────────────────────────────────────────────────
 
 /// Outputs from `solve_cantilever_fea` exposed to callers (unit tests + trampoline).
+// `u`, `coords`, and `tip_nodes` are read in `#[cfg(test)]` code; the lib-target
+// dead_code lint fires because it doesn't see test-only reads.
+#[allow(dead_code)]
 pub(crate) struct CantileverFeaSolve {
     /// Displacement vector (length 3 × n_nodes): u[3n], u[3n+1], u[3n+2] for node n.
     /// Stored as `Arc<Vec<f64>>` to avoid copying the CgResult's shared buffer.

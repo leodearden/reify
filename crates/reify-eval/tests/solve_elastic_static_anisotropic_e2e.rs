@@ -36,6 +36,7 @@ use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 /// The elastic-modulus fields (e1,e2,e3,g12,g13,g23) are `Value::Scalar` with
 /// dimension `PRESSURE`; the Poisson ratio fields (nu12,nu13,nu23) are
 /// `Value::Real`.
+#[allow(clippy::too_many_arguments)]
 fn make_orthotropic_material(
     e1: f64, e2: f64, e3: f64,
     g12: f64, g13: f64, g23: f64,
@@ -78,7 +79,7 @@ fn make_point_load_list(force_n: f64) -> Value {
         version:   1,
         fields,
     }));
-    Value::List(vec![point_load].into())
+    Value::List(vec![point_load])
 }
 
 /// Build a `Value::List` with one `FixedSupport` instance (fields are not
@@ -91,7 +92,7 @@ fn make_support_list() -> Value {
         version:   1,
         fields,
     }));
-    Value::List(vec![support].into())
+    Value::List(vec![support])
 }
 
 /// Build a minimal `ElasticOptions` instance (fields are not inspected;
