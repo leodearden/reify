@@ -15,6 +15,17 @@
 //! pinned by their own tests and MUST move together (see Plan
 //! §"Design Decisions"): the stdlib surface is the human-facing
 //! citation/override surface; this Rust surface is what δ computes against.
+//!
+//! Divergence is caught *indirectly*: each surface is independently pinned to
+//! the PRD-specified literals by its own test — this crate's
+//! `default_constants_match_prd` and the compiler's
+//! `fdm_correlations_stdlib_compile.rs`. There is deliberately no single test
+//! that loads both surfaces and compares them directly, because `reify-fdm` is
+//! a zero-dependency crate (Plan §"Design Decisions") and cannot load the
+//! compiler stdlib without a cross-crate dependency. The residual risk: a
+//! value changed on one side stays caught only if that side's pinning test is
+//! also updated to the new PRD literal — so keep both literal lists in
+//! lock-step with the PRD.
 
 /// Citation + confidence record for a single correlation constant.
 ///
@@ -443,8 +454,14 @@ mod tests {
         );
     }
 
+    /// Pins the Rust-side default constants to the PRD-specified literals.
+    /// Scope is the Rust surface only — the name no longer claims `_and_stdlib`
+    /// because nothing here loads the stdlib. The stdlib `FDMCorrelationDefaults`
+    /// surface is pinned to the same literals independently by
+    /// `reify-compiler/tests/fdm_correlations_stdlib_compile.rs`; see the module
+    /// header for why a direct cross-surface comparison lives in neither place.
     #[test]
-    fn default_constants_match_prd_and_stdlib() {
+    fn default_constants_match_prd() {
         assert_eq!(BUILD_Z_MODULUS_RATIO, 0.67);
         assert_eq!(BUILD_Z_STRENGTH_RATIO, 0.52);
         assert_eq!(GIBSON_ASHBY_C, 1.0);
