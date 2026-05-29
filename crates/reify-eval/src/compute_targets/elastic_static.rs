@@ -69,7 +69,8 @@ use reify_core::DimensionVector;
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_solver_elastic::{
     AnisotropicMaterial, AssemblyElement, AssemblyMode, CgSolverOptions, CgWarmState,
-    ConstantField, DirichletBc, ElementOrder, IsotropicElastic, SolverMode,
+    ConstantField, DirichletBc, ElementOrder, IsotropicElastic, OrthotropicMaterial,
+    SolverMode, TransverseIsotropicMaterial,
     apply_dirichlet_row_elimination, apply_point_load, assemble_global_stiffness,
     element_stiffness, element_stiffness_p1_with_field, element_stress_p1,
     solve_cg_with_warm_state,
@@ -141,9 +142,13 @@ pub fn solve_elastic_static_trampoline(
     prior_warm_state: Option<&OpaqueState>,
     _cancellation: &CancellationHandle,
 ) -> ComputeOutcome {
-    // ── (1) Extract material properties (isotropic-only at step-4; step-6 adds anisotropic) ──
-    let mat = extract_material(&value_inputs[0]);
-    let model = MaterialModel::Isotropic(mat);
+    // ── (1) Classify material and build MaterialModel (step-6: full dispatch) ──
+    //
+    // Dispatch on the StructureInstance type_name.  Anisotropic conformers
+    // (OrthotropicMaterial, TransverseIsotropicMaterial) are produced by γ/3779
+    // (stdlib/constitutive.ri); the isotropic fallback reads youngs_modulus+
+    // poisson_ratio (unchanged from the pre-δ trampoline).
+    let model = classify_material(&value_inputs[0]);
 
     // ── (2) Extract geometry scalars (SI: metres) ─────────────────────────────
     let length = extract_scalar_si(&value_inputs[1]);
@@ -573,6 +578,89 @@ fn element_von_mises_anisotropic(
 
 
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+/// Classify a material `Value::StructureInstance` as `MaterialModel::Isotropic`
+/// or `MaterialModel::Anisotropic` by inspecting its `type_name`.
+///
+/// Dispatch table (δ/3780 step-6):
+/// - `"OrthotropicMaterial"` → read 9 constants (e1..e3, g12..g23, nu12..nu23)
+///   → `Rust OrthotropicMaterial` → `AnisotropicMaterial::from_law(&law, I₃)` → Anisotropic.
+/// - `"TransverseIsotropicMaterial"` → read 5 constants → same.
+/// - else → `extract_material` (reads `youngs_modulus` + `poisson_ratio`) → Isotropic.
+///
+/// Identity material frame `I₃` is used for the homogeneous `ConstitutiveLaw`
+/// surface (axis-aligned cantilever, beam axis = material 1-axis → E1 governs
+/// bending). Per-element frames arrive with the `Field` surface in ε/3787.
+fn classify_material(val: &Value) -> MaterialModel {
+    let data = match val {
+        Value::StructureInstance(d) => d,
+        other => panic!(
+            "solve_elastic_static_trampoline: expected material to be \
+             Value::StructureInstance, got: {:?}",
+            other
+        ),
+    };
+    // Identity material frame: global axes = material principal axes.
+    const IDENTITY: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+    match data.type_name.as_str() {
+        "OrthotropicMaterial" => {
+            let e1   = scalar_si_field(data, "e1");
+            let e2   = scalar_si_field(data, "e2");
+            let e3   = scalar_si_field(data, "e3");
+            let g12  = scalar_si_field(data, "g12");
+            let g13  = scalar_si_field(data, "g13");
+            let g23  = scalar_si_field(data, "g23");
+            let nu12 = real_field(data, "nu12");
+            let nu13 = real_field(data, "nu13");
+            let nu23 = real_field(data, "nu23");
+            let law  = OrthotropicMaterial { e1, e2, e3, g12, g13, g23, nu12, nu13, nu23 };
+            let aniso = AnisotropicMaterial::from_law(&law, IDENTITY);
+            MaterialModel::Anisotropic(aniso)
+        }
+        "TransverseIsotropicMaterial" => {
+            let e_in_plane  = scalar_si_field(data, "e_in_plane");
+            let e_axial     = scalar_si_field(data, "e_axial");
+            let nu_in_plane = real_field(data, "nu_in_plane");
+            let nu_axial    = real_field(data, "nu_axial");
+            let g_axial     = scalar_si_field(data, "g_axial");
+            let law = TransverseIsotropicMaterial {
+                e_in_plane, e_axial, nu_in_plane, nu_axial, g_axial,
+            };
+            let aniso = AnisotropicMaterial::from_law(&law, IDENTITY);
+            MaterialModel::Anisotropic(aniso)
+        }
+        _ => {
+            // Isotropic fallback: reads youngs_modulus + poisson_ratio (unchanged
+            // from the pre-δ trampoline).
+            MaterialModel::Isotropic(extract_material(val))
+        }
+    }
+}
+
+/// Read a `Value::Scalar { si_value, .. }` field from a StructureInstance.
+fn scalar_si_field(data: &StructureInstanceData, key: &str) -> f64 {
+    match data.fields.get(&key.to_string()) {
+        Some(Value::Scalar { si_value, .. }) => *si_value,
+        other => panic!(
+            "solve_elastic_static_trampoline: expected field {:?} to be \
+             Value::Scalar, got: {:?}",
+            key, other
+        ),
+    }
+}
+
+/// Read a `Value::Real` field from a StructureInstance.
+fn real_field(data: &StructureInstanceData, key: &str) -> f64 {
+    match data.fields.get(&key.to_string()) {
+        Some(Value::Real(r)) => *r,
+        other => panic!(
+            "solve_elastic_static_trampoline: expected field {:?} to be \
+             Value::Real, got: {:?}",
+            key, other
+        ),
+    }
+}
 
 /// Extract `IsotropicElastic` from a `Value::StructureInstance` carrying
 /// `youngs_modulus: Scalar(PRESSURE)` and `poisson_ratio: Real`.
