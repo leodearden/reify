@@ -237,7 +237,6 @@ fn fixture_c_expected_5() -> [f64; 5] {
     })
 }
 
-#[cfg_attr(debug_assertions, ignore = "heavy/debug-pathological: release-only at the merge gate; debug skips it. Un-ignore when task 4055 makes it fast in debug.")]
 #[test]
 fn shift_invert_and_dense_agree_on_80dof_synthetic_pair() {
     let (k, b) = fixture_c();
