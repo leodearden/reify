@@ -546,6 +546,70 @@ impl Default for UnitRegistry {
     }
 }
 
+// --- UnitExpr resolver (task 3803 / PRD §4.2) ---
+
+/// Error returned by [`resolve_unit_expr`] when a `UnitExpr` cannot be folded.
+///
+/// Both variants carry the *use-site* `span` that was threaded into the call —
+/// the `UnitExpr` AST nodes carry no spans of their own, and the §3.1
+/// contiguity invariant means the entire unit-expression is one source region.
+#[derive(Debug, PartialEq)]
+pub enum UnitResolveError {
+    /// No entry for this unit name in the registry.
+    UnknownUnit { name: String, span: SourceSpan },
+    /// The unit has an additive offset (`UnitEntry.offset.is_some()`) and
+    /// therefore cannot be used inside a compound expression.  Route bare
+    /// affine literals (e.g. `20degC`) through the existing
+    /// `lookup_unit_in_registry` / `unit_to_scalar` standalone path.
+    AffineUnitInCompound { name: String, span: SourceSpan },
+}
+
+/// Fold a `UnitExpr` AST node against `registry`, returning the combined
+/// SI conversion factor and [`DimensionVector`] for the expression.
+///
+/// # Parameters
+/// - `expr`     — the unit expression to evaluate (no spans stored in AST nodes)
+/// - `registry` — the registry to look up atom names in
+/// - `span`     — the use-site source span (stamped into any error)
+///
+/// # Returns
+/// `Ok((factor, dimension))` where `si_value = numeric_value * factor`.
+///
+/// # Errors
+/// - [`UnitResolveError::UnknownUnit`]          — atom name not in registry
+/// - [`UnitResolveError::AffineUnitInCompound`] — affine unit in compound context
+///
+/// # Standalone affine path
+/// Bare affine literals like `20degC` must be routed through
+/// `lookup_unit_in_registry` / `unit_to_scalar` (which applies the offset).
+/// The ε integration task wires the bare-vs-compound routing in `expr.rs`.
+pub fn resolve_unit_expr(
+    expr: &reify_ast::UnitExpr,
+    registry: &UnitRegistry,
+    span: SourceSpan,
+) -> Result<(f64, DimensionVector), UnitResolveError> {
+    match expr {
+        reify_ast::UnitExpr::Unit(name) => match registry.lookup(name) {
+            None => Err(UnitResolveError::UnknownUnit {
+                name: name.clone(),
+                span,
+            }),
+            Some(entry) => {
+                if entry.offset.is_some() {
+                    return Err(UnitResolveError::AffineUnitInCompound {
+                        name: name.clone(),
+                        span,
+                    });
+                }
+                Ok((entry.factor, entry.dimension))
+            }
+        },
+        reify_ast::UnitExpr::Mul(..) | reify_ast::UnitExpr::Div(..) | reify_ast::UnitExpr::Pow(..) => {
+            todo!("compound fold arms added in later steps (task 3803)")
+        }
+    }
+}
+
 // --- Type alias registry ---
 
 #[cfg(test)]
