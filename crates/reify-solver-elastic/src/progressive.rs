@@ -239,11 +239,6 @@ pub fn should_refine(
     demand: RefinementDemand,
 ) -> AdvanceDecision {
     debug_assert!(
-        opts.max_refinements > 0,
-        "max_refinements must be > 0, got {}",
-        opts.max_refinements
-    );
-    debug_assert!(
         opts.target_tolerance > 0.0,
         "target_tolerance must be positive, got {}",
         opts.target_tolerance
