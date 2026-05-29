@@ -81,8 +81,9 @@ impl Engine {
     ///
     /// Returns `true` if the injection was performed, `false` when this is a
     /// no-op (purpose already active, purpose not found in `compiled_purposes`,
-    /// no `eval_state` present, or the purpose has more than one param — the
-    /// single-entity shim cannot bind a multi-param purpose; callers must use
+    /// no `eval_state` present, or the purpose does not have exactly one param —
+    /// the single-entity shim binds exactly one entity to one param, so it can
+    /// bind neither a zero- nor a multi-param purpose; callers must use
     /// `activate_purpose_with_bindings`, task γ — PRD §4.5 C2).
     ///
     /// **Does NOT** rebuild `reverse_index`, `trace_map`, `rebuild_cone`, or
@@ -112,80 +113,119 @@ impl Engine {
         };
 
         // Contract C2 (PRD §4.5): the single-entity `activate_purpose(name, entity_ref)`
-        // shim cannot safely bind a multi-param purpose. Applying one `entity_ref` to
-        // every per-param `{purpose}::{param}` stamp (the remap loop below) would alias
-        // distinct params — `part.length > envelope.length` would collapse to
-        // `entity.length > entity.length`, a silently meaningless constraint. Refuse the
-        // activation rather than inject a mis-bound constraint. Per-param binding is task
-        // γ's `activate_purpose_with_bindings`; until it lands the single-entity path is a
-        // refusal (non-silent: warn-logged + observable as no injection / not active),
-        // NOT a silent no-op or mis-bind.
-        if purpose.params.len() > 1 {
+        // shim binds exactly one entity to exactly one param, so it can only handle a
+        // purpose with EXACTLY one param. Refuse anything else:
+        //   - multi-param (>1): applying one `entity_ref` to every per-param
+        //     `{purpose}::{param}` stamp (the remap loop in the core) would alias distinct
+        //     params — `part.length > envelope.length` would collapse to
+        //     `entity.length > entity.length`, a silently meaningless constraint.
+        //   - zero-param (0): there is nothing to bind, and the `purpose.params[0]` index
+        //     in the delegation below would panic out-of-bounds.
+        // Refuse (warn + return false) rather than inject a mis-bound constraint or crash.
+        // Per-param binding is task γ's `activate_purpose_with_bindings` (zero-param
+        // purposes activate via it with an empty bindings slice — C2/C3 pass vacuously).
+        // The refusal is non-silent: warn-logged + observable as no injection / not active.
+        if purpose.params.len() != 1 {
             tracing::warn!(
                 purpose = %purpose_name,
                 param_count = purpose.params.len(),
-                "refusing single-entity activation of multi-param purpose; use activate_purpose_with_bindings (task gamma)"
+                "refusing single-entity activation: purpose requires exactly one param (got {}); use activate_purpose_with_bindings (task gamma)",
+                purpose.params.len()
             );
             return false;
         }
 
-        // Get mutable access to the evaluation state
-        let state = match self.eval_state.as_mut() {
-            Some(s) => s,
-            None => return false, // No eval state — silently ignore
+        // Build a 1-entry binding and delegate to the bindings-map core so the
+        // single-entity and multi-entity paths share one injection body. The core
+        // applies per-binding remap; for len==1 this is exactly one remap call —
+        // behavior-identical to the pre-γ inline loop. The C6 parity token
+        // (purpose_binding_token returns entity_ref directly for len==1) ensures
+        // the `purpose:{name}@{entity}` prefix is byte-identical to today.
+        let bindings = vec![(purpose.params[0].name.clone(), entity_ref.to_string())];
+        self.activate_purpose_constraints_with_bindings_inner(purpose_name, &bindings)
+    }
+
+    /// Bindings-map core: inject a purpose's constraints into the evaluation
+    /// graph with one independent remap per `(param, entity)` binding.
+    ///
+    /// Caller contract:
+    /// - `active_purposes` must NOT already contain `purpose_name` (guarded by
+    ///   the public shim and `activate_purpose_with_bindings`).
+    /// - `compiled_purposes` must contain a purpose with the given name.
+    /// - `eval_state` must be `Some`.
+    /// - All `(param, entity)` pairs in `bindings` must be valid (C2/C3
+    ///   validated before this call by `activate_purpose_with_bindings`).
+    ///
+    /// Returns `true` if injection was performed, `false` on any early-return
+    /// condition (purpose already active, not found, no eval state).
+    ///
+    /// **Does NOT** rebuild infrastructure or record `active_purpose_bindings`
+    /// for multi-binding activations — callers handle both.
+    pub(crate) fn activate_purpose_constraints_with_bindings_inner(
+        &mut self,
+        purpose_name: &str,
+        bindings: &[(String, String)],
+    ) -> bool {
+        // No-op if already active — first binding wins.
+        if self.active_purposes.contains_key(purpose_name) {
+            return false;
+        }
+
+        // Look up the compiled purpose.
+        let purpose = match self
+            .compiled_purposes
+            .iter()
+            .find(|p| p.name == purpose_name)
+        {
+            Some(p) => p.clone(),
+            None => return false,
         };
 
-        // Build a unique entity prefix for the purpose-injected constraints
-        let purpose_entity = format!("purpose:{}@{}", purpose_name, entity_ref);
+        // Compute the prefix token:
+        // - single-binding → entity_ref directly (C6 parity: "purpose:{name}@{entity}")
+        // - multi-binding  → ContentHash of sorted "{param}={entity}" pairs
+        let token = purpose_binding_token(bindings);
+        let purpose_entity = format!("purpose:{}@{}", purpose_name, token);
 
-        // Rewrite compiled expressions: substitute each per-param stamp
-        // `ValueCellId("{purpose}::{param}", member)` with `ValueCellId(entity_ref, member)`
-        // so references resolve to existing value cells in the evaluation graph (task-2181 β).
-        //
-        // By the time control reaches here, `purpose.params.len() == 1` (multi-param
-        // purposes are refused above by the C2 guard). The per-param loop therefore runs
-        // exactly once — behavior-identical to the pre-β single `remap_entity(purpose_name,
-        // entity_ref)`. Task γ replaces the C2 guard-plus-single-binding loop with a
-        // per-binding remap via `activate_purpose_with_bindings`; keep the `for param in
-        // &purpose.params { … }` loop shape as the seam γ generalizes.
+        // Get mutable access to the evaluation state.
+        let state = match self.eval_state.as_mut() {
+            Some(s) => s,
+            None => return false,
+        };
+
+        // Rewrite compiled expressions: for each binding, substitute the per-param
+        // stamp `{purpose}::{param}` with the bound entity. β guarantees these stamps
+        // are disjoint, so N independent single-from remaps are safe.
         let mut rewritten_constraints = purpose.constraints.clone();
         for constraint in &mut rewritten_constraints {
-            for param in &purpose.params {
-                let from_stamp = format!("{}::{}", purpose_name, param.name);
-                constraint.expr.remap_entity(&from_stamp, entity_ref);
+            for (param, entity) in bindings {
+                let from_stamp = format!("{}::{}", purpose_name, param);
+                constraint.expr.remap_entity(&from_stamp, entity);
             }
         }
 
         let rewritten_objective = purpose.objective.clone().map(|mut obj| {
             match &mut obj {
                 OptimizationObjective::Minimize(expr) | OptimizationObjective::Maximize(expr) => {
-                    for param in &purpose.params {
-                        let from_stamp = format!("{}::{}", purpose_name, param.name);
-                        expr.remap_entity(&from_stamp, entity_ref);
+                    for (param, entity) in bindings {
+                        let from_stamp = format!("{}::{}", purpose_name, param);
+                        expr.remap_entity(&from_stamp, entity);
                     }
                 }
             }
             obj
         });
 
-        // Expand `PurposeReflectiveAggregation` placeholders into populated
-        // `ListLiteral([ValueRef(entity_ref, member), ...])` nodes against the
-        // bound entity (task-2289). Walks each constraint expression and the
-        // objective immediately after the `remap_entity` rewrite. The walk
-        // mirrors `remap_entity`'s arm-by-arm structure so future variant
-        // additions in `crates/reify-types/src/expr.rs` only need to touch the
-        // same places.
-        //
-        // Captured shape — `&purpose.resolved_queries`, `entity_ref`, and
-        // `&state.snapshot.graph.value_cells` — is identical for the
-        // constraints loop and the objective rewrite, so a closure keeps the
-        // call sites in lockstep (any future arg change only touches one
-        // signature).
+        // Expand `PurposeReflectiveAggregation` placeholders. Pass the full
+        // bindings slice so `expand_purpose_reflective_placeholders` can look
+        // up the entity_ref per placeholder's param_name (C7). For the
+        // single-binding path this resolves to the sole entity (C6 parity);
+        // for multi-binding each placeholder finds its own entity.
         let expand_placeholders = |expr: &mut CompiledExpr| {
             expand_purpose_reflective_placeholders(
                 expr,
                 &purpose.resolved_queries,
-                entity_ref,
+                bindings,
                 &state.snapshot.graph.value_cells,
             );
         };
@@ -201,7 +241,7 @@ impl Engine {
             obj
         });
 
-        // Inject each of the purpose's compiled constraints into the evaluation graph
+        // Inject each constraint into the evaluation graph.
         let mut injected_ids = Vec::new();
         for (i, constraint) in rewritten_constraints.iter().enumerate() {
             let constraint_id = ConstraintNodeId::new(&purpose_entity, i as u32);
@@ -223,7 +263,7 @@ impl Engine {
             injected_ids.push(constraint_id);
         }
 
-        // Update demand registry: demand each newly injected constraint node.
+        // Update demand registry.
         for id in &injected_ids {
             self.demand.add_demand(NodeId::Constraint(id.clone()));
         }
@@ -237,17 +277,101 @@ impl Engine {
                 .insert(purpose_name.to_string(), objective.clone());
         }
 
-        // Record the per-purpose entity binding.  The binding insert MUST run
-        // before any call to recompute_tolerance_scope() — which happens in the
-        // caller via rebuild_purpose_infrastructure() — so this purpose's
-        // `RepresentationWithin` contribution is included in the resulting
-        // scope; tighter contributions across purposes win via `min`. See
-        // `crates/reify-eval/src/tolerance_scope.rs` for the recognition
-        // matcher and propagation walk.
-        self.active_purpose_bindings
-            .insert(purpose_name.to_string(), entity_ref.to_string());
+        // Record the per-purpose entity binding ONLY for single-binding activations
+        // (byte-identical to today, C6). Multi-param tolerance-scope contribution
+        // and eval()-round-trip persistence are deferred (scope boundary documented
+        // in the plan; extract_tolerance_bindings docstring names this seam).
+        if bindings.len() == 1 {
+            self.active_purpose_bindings
+                .insert(purpose_name.to_string(), bindings[0].1.clone());
+        }
 
         true
+    }
+
+    /// Activate a purpose by name with per-param entity bindings.
+    ///
+    /// Looks up the compiled purpose by `purpose_name`, validates that every
+    /// binding names a declared param (C3) and every declared param has a
+    /// binding (C2), then injects the purpose's constraints with each param
+    /// remapped to its own distinct entity.
+    ///
+    /// Returns `Err(message)` on validation failure so the caller can surface a
+    /// clear diagnostic (C2/C3). Returns `Ok(())` on success or if the purpose
+    /// is already active (idempotent).
+    ///
+    /// Requires a prior call to `eval()` so an evaluation state exists.
+    ///
+    /// **Prefix contract (design decision):**
+    /// - single-binding (len==1) → `purpose:{name}@{entity}` (C6 parity).
+    /// - multi-binding  (len>=2) → `purpose:{name}@{digest}` where digest is
+    ///   `ContentHash::of_str` of bindings sorted by param, each rendered
+    ///   `"{param}={entity}"`, joined with `","`. This avoids raw entity
+    ///   concatenation (entity strings contain `:` and `,` which mangle
+    ///   `ConstraintNodeId` Display) and is order-independent.
+    pub fn activate_purpose_with_bindings(
+        &mut self,
+        purpose_name: &str,
+        bindings: &[(String, String)],
+    ) -> Result<(), String> {
+        // Look up the compiled purpose for validation (C2/C3).
+        let purpose = match self
+            .compiled_purposes
+            .iter()
+            .find(|p| p.name == purpose_name)
+        {
+            Some(p) => p.clone(),
+            None => {
+                return Err(format!("no purpose named '{purpose_name}'"));
+            }
+        };
+
+        // Require eval state to exist.
+        if self.eval_state.is_none() {
+            return Err(format!(
+                "cannot activate purpose '{purpose_name}': no evaluation state (call eval() first)"
+            ));
+        }
+
+        // C3: every binding param must be declared by the purpose.
+        for (param, _) in bindings {
+            if !purpose.params.iter().any(|p| &p.name == param) {
+                return Err(format!(
+                    "purpose '{purpose_name}' has no parameter '{param}'"
+                ));
+            }
+        }
+
+        // No param may be bound more than once. A duplicate binding for the
+        // same param passes BOTH C2 and C3 (the param is declared and is bound),
+        // but the inner remap loop consumes the `{purpose}::{param}` stamp on the
+        // first remap, so the second remap finds nothing and is silently dropped —
+        // a partially-bound constraint with no diagnostic (while
+        // `purpose_binding_token` still folds both pairs into the digest). Reject
+        // it here, before any injection, naming the duplicated param.
+        for (i, (param, _)) in bindings.iter().enumerate() {
+            if bindings[i + 1..].iter().any(|(p, _)| p == param) {
+                return Err(format!(
+                    "purpose '{purpose_name}' parameter '{param}' is bound more than once"
+                ));
+            }
+        }
+
+        // C2: every declared purpose param must have a binding.
+        for p in &purpose.params {
+            if !bindings.iter().any(|(param, _)| param == &p.name) {
+                return Err(format!(
+                    "purpose '{purpose_name}' parameter '{}' has no binding",
+                    p.name
+                ));
+            }
+        }
+
+        // Inject via the core; rebuild infrastructure if injection happened.
+        if self.activate_purpose_constraints_with_bindings_inner(purpose_name, bindings) {
+            self.rebuild_purpose_infrastructure();
+        }
+        Ok(())
     }
 
     /// Rebuild the purpose-activation infrastructure (reverse_index, trace_map,
@@ -433,6 +557,39 @@ impl Engine {
     }
 }
 
+// ─── Binding token helper (task γ) ───────────────────────────────────────────
+
+/// Compute the entity prefix token for the injected `purpose:{name}@{token}`
+/// entity from a slice of `(param, entity)` bindings.
+///
+/// - single-binding (len==1): returns the entity string directly, preserving
+///   the `purpose:{name}@{entity}` prefix byte-for-byte (C6 parity).
+/// - multi-binding  (len>=2): returns the hex string of
+///   `ContentHash::of_str(canonical)` where `canonical` is the bindings
+///   sorted by param name, each rendered `"{param}={entity}"`, joined with
+///   `","`. Sorting by param makes it order-independent; embedding both param
+///   and entity makes it collision-free across different entity sets for the
+///   same purpose. Using a hash avoids raw entity concatenation (entity strings
+///   may contain `:` and `,`, which would mangle `ConstraintNodeId` Display).
+fn purpose_binding_token(bindings: &[(String, String)]) -> String {
+    if bindings.len() == 1 {
+        // C6 parity: bare entity, no digest.
+        return bindings[0].1.clone();
+    }
+    // Multi-binding: stable digest of sorted "{param}={entity}" pairs.
+    let mut sorted: Vec<(&str, &str)> = bindings
+        .iter()
+        .map(|(p, e)| (p.as_str(), e.as_str()))
+        .collect();
+    sorted.sort_by_key(|(p, _)| *p);
+    let canonical = sorted
+        .into_iter()
+        .map(|(p, e)| format!("{p}={e}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{}", ContentHash::of_str(&canonical))
+}
+
 // ─── Activation-time reflective-aggregation expansion (task-2289) ────────────
 
 /// Walk the given expression tree and rewrite every
@@ -504,7 +661,7 @@ impl Engine {
 fn expand_purpose_reflective_placeholders(
     expr: &mut CompiledExpr,
     queries: &[ResolvedSchemaQuery],
-    entity_ref: &str,
+    bindings: &[(String, String)],
     value_cells: &PersistentMap<ValueCellId, ValueCellNode>,
 ) {
     match &mut expr.kind {
@@ -512,6 +669,37 @@ fn expand_purpose_reflective_placeholders(
             param_name,
             query_kind,
         } => {
+            // Resolve the entity_ref for this placeholder's param_name from
+            // the bindings slice. C2 validation guarantees every declared
+            // purpose param is bound, and the duplicate-param check guarantees
+            // it is bound exactly once, so this lookup ALWAYS finds a match in
+            // any valid activation. `debug_assert!` it: a miss means an upstream
+            // invariant broke (a future caller bypassed C2, or a new
+            // duplicate-handling path slipped through), and the silent
+            // first-binding fallback below would bind this reflective
+            // aggregation to the WRONG entity — a plausible-but-wrong constraint
+            // rather than a loud failure. Halt in debug builds; keep the
+            // anti-cascade fallback for release. The empty-slice case
+            // (`bindings.first()` → None) cannot occur today — a reflective
+            // placeholder requires a param, so `bindings` is non-empty — but the
+            // empty-string fallback means a future empty-bindings caller cannot
+            // panic.
+            let matched: Option<&str> = bindings
+                .iter()
+                .find(|(p, _)| p == param_name.as_str())
+                .map(|(_, e)| e.as_str());
+            debug_assert!(
+                matched.is_some(),
+                "expand_purpose_reflective_placeholders: param_name '{}' not found among \
+                 bindings {:?}; C2 validation should guarantee every purpose param is bound \
+                 exactly once — the silent first-binding fallback would bind this reflective \
+                 aggregation to the wrong entity",
+                param_name,
+                bindings
+            );
+            let entity_ref: &str =
+                matched.unwrap_or_else(|| bindings.first().map(|(_, e)| e.as_str()).unwrap_or(""));
+
             // Resolve the member list for this placeholder. Prefer compile-
             // time `ResolvedSchemaQuery`; fall back to scanning `value_cells`
             // for the bound entity's params when the query is unresolved
@@ -644,16 +832,16 @@ fn expand_purpose_reflective_placeholders(
             // activation — it never contains nested placeholders (task-3508).
         }
         CompiledExprKind::BinOp { left, right, .. } => {
-            expand_purpose_reflective_placeholders(left, queries, entity_ref, value_cells);
-            expand_purpose_reflective_placeholders(right, queries, entity_ref, value_cells);
+            expand_purpose_reflective_placeholders(left, queries, bindings, value_cells);
+            expand_purpose_reflective_placeholders(right, queries, bindings, value_cells);
         }
         CompiledExprKind::UnOp { operand, .. } => {
-            expand_purpose_reflective_placeholders(operand, queries, entity_ref, value_cells);
+            expand_purpose_reflective_placeholders(operand, queries, bindings, value_cells);
         }
         CompiledExprKind::FunctionCall { args, .. }
         | CompiledExprKind::UserFunctionCall { args, .. } => {
             for arg in args {
-                expand_purpose_reflective_placeholders(arg, queries, entity_ref, value_cells);
+                expand_purpose_reflective_placeholders(arg, queries, bindings, value_cells);
             }
         }
         CompiledExprKind::Conditional {
@@ -661,27 +849,27 @@ fn expand_purpose_reflective_placeholders(
             then_branch,
             else_branch,
         } => {
-            expand_purpose_reflective_placeholders(condition, queries, entity_ref, value_cells);
-            expand_purpose_reflective_placeholders(then_branch, queries, entity_ref, value_cells);
-            expand_purpose_reflective_placeholders(else_branch, queries, entity_ref, value_cells);
+            expand_purpose_reflective_placeholders(condition, queries, bindings, value_cells);
+            expand_purpose_reflective_placeholders(then_branch, queries, bindings, value_cells);
+            expand_purpose_reflective_placeholders(else_branch, queries, bindings, value_cells);
         }
         CompiledExprKind::Match { discriminant, arms } => {
-            expand_purpose_reflective_placeholders(discriminant, queries, entity_ref, value_cells);
+            expand_purpose_reflective_placeholders(discriminant, queries, bindings, value_cells);
             for arm in arms {
                 expand_purpose_reflective_placeholders(
                     &mut arm.body,
                     queries,
-                    entity_ref,
+                    bindings,
                     value_cells,
                 );
             }
         }
         CompiledExprKind::Lambda { body, .. } => {
-            expand_purpose_reflective_placeholders(body, queries, entity_ref, value_cells);
+            expand_purpose_reflective_placeholders(body, queries, bindings, value_cells);
         }
         CompiledExprKind::ListLiteral(elements) | CompiledExprKind::SetLiteral(elements) => {
             for elem in elements {
-                expand_purpose_reflective_placeholders(elem, queries, entity_ref, value_cells);
+                expand_purpose_reflective_placeholders(elem, queries, bindings, value_cells);
             }
         }
         CompiledExprKind::ReflectiveCellList(_) => {
@@ -695,18 +883,18 @@ fn expand_purpose_reflective_placeholders(
         }
         CompiledExprKind::MapLiteral(entries) => {
             for (key, val) in entries {
-                expand_purpose_reflective_placeholders(key, queries, entity_ref, value_cells);
-                expand_purpose_reflective_placeholders(val, queries, entity_ref, value_cells);
+                expand_purpose_reflective_placeholders(key, queries, bindings, value_cells);
+                expand_purpose_reflective_placeholders(val, queries, bindings, value_cells);
             }
         }
         CompiledExprKind::IndexAccess { object, index } => {
-            expand_purpose_reflective_placeholders(object, queries, entity_ref, value_cells);
-            expand_purpose_reflective_placeholders(index, queries, entity_ref, value_cells);
+            expand_purpose_reflective_placeholders(object, queries, bindings, value_cells);
+            expand_purpose_reflective_placeholders(index, queries, bindings, value_cells);
         }
         CompiledExprKind::MethodCall { object, args, .. } => {
-            expand_purpose_reflective_placeholders(object, queries, entity_ref, value_cells);
+            expand_purpose_reflective_placeholders(object, queries, bindings, value_cells);
             for arg in args {
-                expand_purpose_reflective_placeholders(arg, queries, entity_ref, value_cells);
+                expand_purpose_reflective_placeholders(arg, queries, bindings, value_cells);
             }
         }
         CompiledExprKind::Quantifier {
@@ -714,24 +902,24 @@ fn expand_purpose_reflective_placeholders(
             predicate,
             ..
         } => {
-            expand_purpose_reflective_placeholders(collection, queries, entity_ref, value_cells);
-            expand_purpose_reflective_placeholders(predicate, queries, entity_ref, value_cells);
+            expand_purpose_reflective_placeholders(collection, queries, bindings, value_cells);
+            expand_purpose_reflective_placeholders(predicate, queries, bindings, value_cells);
         }
         CompiledExprKind::OptionSome(inner) => {
-            expand_purpose_reflective_placeholders(inner, queries, entity_ref, value_cells);
+            expand_purpose_reflective_placeholders(inner, queries, bindings, value_cells);
         }
         CompiledExprKind::RangeConstructor { lower, upper, .. } => {
             if let Some(lo) = lower {
-                expand_purpose_reflective_placeholders(lo, queries, entity_ref, value_cells);
+                expand_purpose_reflective_placeholders(lo, queries, bindings, value_cells);
             }
             if let Some(hi) = upper {
-                expand_purpose_reflective_placeholders(hi, queries, entity_ref, value_cells);
+                expand_purpose_reflective_placeholders(hi, queries, bindings, value_cells);
             }
         }
         CompiledExprKind::AdHocSelector { base, args, .. } => {
-            expand_purpose_reflective_placeholders(base, queries, entity_ref, value_cells);
+            expand_purpose_reflective_placeholders(base, queries, bindings, value_cells);
             for arg in args {
-                expand_purpose_reflective_placeholders(arg, queries, entity_ref, value_cells);
+                expand_purpose_reflective_placeholders(arg, queries, bindings, value_cells);
             }
         }
         // task 3540 (SIR-α): exhaustiveness-forced adapter arm for the new
@@ -745,10 +933,10 @@ fn expand_purpose_reflective_placeholders(
             ..
         } => {
             for (_, arg) in ordered_args {
-                expand_purpose_reflective_placeholders(arg, queries, entity_ref, value_cells);
+                expand_purpose_reflective_placeholders(arg, queries, bindings, value_cells);
             }
             for (_, def) in defaults {
-                expand_purpose_reflective_placeholders(def, queries, entity_ref, value_cells);
+                expand_purpose_reflective_placeholders(def, queries, bindings, value_cells);
             }
         }
     }
@@ -807,7 +995,7 @@ mod tests {
             Type::List(Box::new(Type::Real)),
         );
 
-        expand_purpose_reflective_placeholders(&mut expr, &queries, entity, &value_cells);
+        expand_purpose_reflective_placeholders(&mut expr, &queries, &[("subject".to_string(), entity.to_string())], &value_cells);
 
         let elements = match &expr.kind {
             CompiledExprKind::ReflectiveCellList(elements) => elements,
@@ -865,7 +1053,7 @@ mod tests {
             Type::List(Box::new(Type::Real)),
         );
 
-        expand_purpose_reflective_placeholders(&mut expr, &queries, entity, &value_cells);
+        expand_purpose_reflective_placeholders(&mut expr, &queries, &[("subject".to_string(), entity.to_string())], &value_cells);
 
         let elements = match &expr.kind {
             CompiledExprKind::ReflectiveCellList(elements) => elements,
@@ -967,7 +1155,7 @@ mod tests {
         // release builds both complete and let us read the warn counter.
         let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
             tracing::subscriber::with_default(subscriber, || {
-                expand_purpose_reflective_placeholders(&mut expr, &queries, entity, &value_cells);
+                expand_purpose_reflective_placeholders(&mut expr, &queries, &[("subject".to_string(), entity.to_string())], &value_cells);
             });
         }));
 
@@ -1078,7 +1266,7 @@ mod tests {
 
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
             tracing::subscriber::with_default(subscriber, || {
-                expand_purpose_reflective_placeholders(&mut expr, &queries, entity, &value_cells);
+                expand_purpose_reflective_placeholders(&mut expr, &queries, &[("subject".to_string(), entity.to_string())], &value_cells);
             });
         }));
 
@@ -1146,7 +1334,7 @@ mod tests {
             Type::List(Box::new(Type::Real)),
         );
 
-        expand_purpose_reflective_placeholders(&mut expr, &queries, entity, &value_cells);
+        expand_purpose_reflective_placeholders(&mut expr, &queries, &[("subject".to_string(), entity.to_string())], &value_cells);
 
         let elements = match &expr.kind {
             CompiledExprKind::ReflectiveCellList(elements) => elements,
@@ -1256,7 +1444,7 @@ mod tests {
         let mut failures: Vec<String> = Vec::new();
         for (label, wrap) in &wrappers {
             let mut wrapped = wrap(make_placeholder());
-            expand_purpose_reflective_placeholders(&mut wrapped, &queries, entity, &value_cells);
+            expand_purpose_reflective_placeholders(&mut wrapped, &queries, &[("subject".to_string(), entity.to_string())], &value_cells);
             if tree_contains_placeholder(&wrapped) {
                 failures.push(format!("{label}: placeholder not rewritten"));
             }
@@ -1630,7 +1818,7 @@ mod tests {
             Type::List(Box::new(Type::Real)),
         );
 
-        expand_purpose_reflective_placeholders(&mut expr, &queries, entity, &value_cells);
+        expand_purpose_reflective_placeholders(&mut expr, &queries, &[("subject".to_string(), entity.to_string())], &value_cells);
 
         // task-2458: must be ReflectiveCellList, NOT ListLiteral.
         let elements = match &expr.kind {
@@ -1705,7 +1893,7 @@ mod tests {
             Type::List(Box::new(Type::Real)),
         );
 
-        expand_purpose_reflective_placeholders(&mut expr, &queries, entity, &value_cells);
+        expand_purpose_reflective_placeholders(&mut expr, &queries, &[("subject".to_string(), entity.to_string())], &value_cells);
 
         // task-2458: must be ReflectiveCellList (empty), NOT ListLiteral.
         let elements = match &expr.kind {

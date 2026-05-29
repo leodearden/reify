@@ -31,7 +31,7 @@ use reify_eval::Engine;
 use reify_test_support::{
     make_engine, make_simple_engine, parse_and_compile, parse_and_compile_with_stdlib,
 };
-use reify_core::{ModulePath, Severity, Type, ValueCellId, VersionId};
+use reify_core::{ContentHash, ModulePath, Severity, Type, ValueCellId, VersionId};
 use reify_ir::{CompiledExprKind, OptimizationObjective, Satisfaction};
 
 const EXAMPLE_PATH: &str = concat!(
@@ -1003,6 +1003,73 @@ purpose fits_within(part : Structure, envelope : Structure) {
     );
 }
 
+/// Reviewer regression: activating a ZERO-param purpose via the single-entity
+/// `activate_purpose` shim must be refused (no-op + warn), NOT panic.
+///
+/// Background:
+///   `activate_purpose_constraints` builds `vec![(purpose.params[0].name.clone(), …)]`
+///   (engine_purposes.rs:138) after ONLY the `params.len() > 1` guard. A zero-param
+///   purpose therefore reaches `purpose.params[0]` and panics index-out-of-bounds.
+///   Zero-param purposes compile cleanly: the grammar's `commaSep` accepts an empty
+///   `()`, `compile_purpose` has no zero-param rejection, and `constraint 1 > 0` is a
+///   literal constraint used pervasively across this suite with no diagnostic.
+///
+///   The single-entity shim binds exactly one entity to exactly one param; with zero
+///   params there is nothing to bind, so refusal (warn + return false) is the correct
+///   contract — mirroring `activate_multi_param_purpose_via_single_entity_shim_is_refused`.
+///   No capability is lost: zero-param purposes remain activatable via
+///   `activate_purpose_with_bindings(name, &[])` (C2/C3 pass vacuously).
+///
+/// RED state (before step-13): `activate_purpose` panics at `purpose.params[0]`
+/// instead of refusing. Step-13 widens the refusal guard from `> 1` to `!= 1`.
+#[test]
+fn activate_zero_param_purpose_via_single_entity_shim_does_not_panic() {
+    let source = r#"
+structure Bracket {
+    param length : Length = 80mm
+}
+
+purpose always_ok() {
+    constraint 1 > 0
+}
+"#;
+
+    // Precondition: compiles cleanly to exactly one zero-param purpose.
+    // parse_and_compile panics on any error-severity diagnostic.
+    let compiled = parse_and_compile(source);
+    assert_eq!(
+        compiled.compiled_purposes.len(),
+        1,
+        "precondition: always_ok must compile to exactly one purpose"
+    );
+    assert_eq!(
+        compiled.compiled_purposes[0].params.len(),
+        0,
+        "precondition: always_ok must have zero params"
+    );
+
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+    let before = constraint_count(&engine);
+
+    // Single-entity activation of a zero-param purpose.
+    // TODAY THIS PANICS at `purpose.params[0]` (index out of bounds).
+    engine.activate_purpose("always_ok", "Bracket");
+
+    // Refusal contract (mirrors the multi-param refusal): purpose must NOT
+    // activate, and zero constraints injected.
+    assert!(
+        !engine.is_purpose_active("always_ok"),
+        "zero-param purpose must NOT activate via the single-entity shim \
+         (the shim binds exactly one param; refuse rather than panic)"
+    );
+    assert_eq!(
+        constraint_count(&engine),
+        before,
+        "a refused zero-param activation must inject zero constraints"
+    );
+}
+
 // ── §5c: Objective ValueRef remap on activation (task-2181 β, reviewer test_coverage) ───────────
 
 /// Verifies that the inner `ValueRef` of a `minimize subject.mass` objective is remapped
@@ -1557,4 +1624,393 @@ purpose p1(subject : S) {
             trace.reads
         );
     }
+}
+
+// ── §11: Multi-param activation via activate_purpose_with_bindings (task γ) ──
+
+/// B1 / RED (step-01): `activate_purpose_with_bindings` remaps each param to
+/// its own distinct entity, producing per-param `ValueRef` entities in the
+/// injected constraint expression.
+///
+/// Inline source: two structures with a same-named param but distinct values,
+/// and a 2-param purpose that constraints `part.length < envelope.length`.
+/// Distinct binding → 80mm < 100mm → the expr has PartA on the left and BoxB
+/// on the right; aliased binding would give PartA on both sides.
+///
+/// Verifies the DISTINCT-binding structural property by inspecting injected
+/// constraint expression ValueRef entities directly (not the eval outcome).
+///
+/// RED because `Engine::activate_purpose_with_bindings` does not yet exist.
+#[test]
+fn activate_purpose_with_bindings_remaps_each_param_to_distinct_entity() {
+    let source = r#"
+structure PartA { param length : Length = 80mm }
+structure BoxB { param length : Length = 100mm }
+purpose fits_within(part : Structure, envelope : Structure) {
+    constraint part.length < envelope.length
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_simple_engine();
+    engine.eval(&compiled);
+
+    // Call the new API — RED: this method does not yet exist.
+    let result = engine.activate_purpose_with_bindings(
+        "fits_within",
+        &[
+            ("part".to_string(), "PartA".to_string()),
+            ("envelope".to_string(), "BoxB".to_string()),
+        ],
+    );
+    assert!(
+        result.is_ok(),
+        "expected Ok from activate_purpose_with_bindings, got {:?}",
+        result
+    );
+
+    assert!(
+        engine.is_purpose_active("fits_within"),
+        "purpose should be active after activate_purpose_with_bindings"
+    );
+
+    let snapshot = engine.snapshot().expect("snapshot after activate");
+
+    // Find the injected constraint by purpose prefix.
+    let (constraint_id, data) = snapshot
+        .graph
+        .constraints
+        .iter()
+        .find(|(id, _)| id.entity.starts_with("purpose:fits_within@"))
+        .expect("expected injected constraint with entity prefix 'purpose:fits_within@'");
+
+    // B1: expr must be a BinOp with DISTINCT ValueRef entities for each param.
+    // `constraint part.length < envelope.length` compiles to BinOp(Less, left, right).
+    let (left_entity, right_entity) = match &data.expr.kind {
+        CompiledExprKind::BinOp { left, right, .. } => {
+            let left_ent = match &left.kind {
+                CompiledExprKind::ValueRef(id) => id.entity.clone(),
+                other => panic!("expected ValueRef in BinOp left, got {:?}", other),
+            };
+            let right_ent = match &right.kind {
+                CompiledExprKind::ValueRef(id) => id.entity.clone(),
+                other => panic!("expected ValueRef in BinOp right, got {:?}", other),
+            };
+            (left_ent, right_ent)
+        }
+        other => panic!("expected BinOp in injected constraint expr, got {:?}", other),
+    };
+    assert_eq!(
+        left_entity, "PartA",
+        "left operand (part.length) must resolve to PartA after per-param remap"
+    );
+    assert_eq!(
+        right_entity, "BoxB",
+        "right operand (envelope.length) must resolve to BoxB after per-param remap"
+    );
+
+    // Multi-binding entity must use the digest prefix (not a raw entity name).
+    // Canonical = bindings sorted by param name, each "{param}={entity}", joined by ","
+    // sorted: "envelope" < "part" → "envelope=BoxB,part=PartA"
+    let canonical = "envelope=BoxB,part=PartA";
+    let digest = ContentHash::of_str(canonical);
+    let expected_entity = format!("purpose:fits_within@{}", digest);
+    assert_eq!(
+        constraint_id.entity, expected_entity,
+        "multi-binding activation must produce entity '{}', got '{}'",
+        expected_entity, constraint_id.entity
+    );
+}
+
+/// C3 / RED (step-03): `activate_purpose_with_bindings` must return Err when a
+/// binding names a param not declared by the purpose, and must NOT inject any
+/// constraints.
+///
+/// RED because step-02's implementation does not yet validate C3.
+/// (Step-04 adds the C3 guard.)
+#[test]
+fn activate_with_bindings_unknown_param_is_diagnostic() {
+    let source = r#"
+structure PartA { param length : Length = 80mm }
+structure BoxB { param length : Length = 100mm }
+purpose fits_within(part : Structure, envelope : Structure) {
+    constraint part.length < envelope.length
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_simple_engine();
+    engine.eval(&compiled);
+    let before = constraint_count(&engine);
+
+    // "bogus" is not a declared param of fits_within.
+    let result = engine.activate_purpose_with_bindings(
+        "fits_within",
+        &[
+            ("part".to_string(), "PartA".to_string()),
+            ("bogus".to_string(), "BoxB".to_string()),
+        ],
+    );
+
+    // C3: must return Err naming the unknown param.
+    let err_msg = result.expect_err(
+        "expected Err for an unknown binding param, got Ok"
+    );
+    assert!(
+        err_msg.contains("bogus"),
+        "error message must name the unknown param 'bogus', got: {err_msg}"
+    );
+
+    // No injection must have occurred.
+    assert!(
+        !engine.is_purpose_active("fits_within"),
+        "purpose must NOT be active after a C3 validation failure"
+    );
+    assert_eq!(
+        constraint_count(&engine),
+        before,
+        "zero constraints must be injected on a C3 validation failure"
+    );
+}
+
+/// C2 / (step-05): `activate_purpose_with_bindings` must return Err when a
+/// declared purpose param is missing from the bindings, and must NOT inject
+/// any constraints.
+///
+/// Note: C2 validation was included in step-02's implementation, so this test
+/// is GREEN immediately (not RED as planned). It documents and pins the C2
+/// contract correctly.
+#[test]
+fn activate_with_bindings_unbound_param_is_diagnostic() {
+    let source = r#"
+structure PartA { param length : Length = 80mm }
+structure BoxB { param length : Length = 100mm }
+purpose fits_within(part : Structure, envelope : Structure) {
+    constraint part.length < envelope.length
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_simple_engine();
+    engine.eval(&compiled);
+    let before = constraint_count(&engine);
+
+    // Only "part" is bound; "envelope" is missing.
+    let result = engine.activate_purpose_with_bindings(
+        "fits_within",
+        &[("part".to_string(), "PartA".to_string())],
+    );
+
+    // C2: must return Err naming the unbound param.
+    let err_msg = result.expect_err(
+        "expected Err for an unbound purpose param, got Ok"
+    );
+    assert!(
+        err_msg.contains("envelope"),
+        "error message must name the unbound param 'envelope', got: {err_msg}"
+    );
+
+    // No injection must have occurred.
+    assert!(
+        !engine.is_purpose_active("fits_within"),
+        "purpose must NOT be active after a C2 validation failure"
+    );
+    assert_eq!(
+        constraint_count(&engine),
+        before,
+        "zero constraints must be injected on a C2 validation failure"
+    );
+}
+
+/// Robustness (amend): `activate_purpose_with_bindings` must reject a binding
+/// set that binds the same param more than once, BEFORE any injection.
+///
+/// Both C3 (every binding names a declared param) and C2 (every declared param
+/// has a binding) pass for `[part:PartA, envelope:BoxB, part:BoxC]` — every
+/// param is bound and every binding names a real param — yet `part` is bound
+/// twice. Without an explicit duplicate check the inner remap loop consumes the
+/// `fits_within::part` stamp on the first remap, so the second (`part`→BoxC)
+/// finds nothing and is silently dropped, leaving a partially-bound constraint
+/// with no diagnostic (while `purpose_binding_token` still hashes both pairs).
+/// The method must instead return Err naming the duplicated param and inject
+/// nothing.
+#[test]
+fn activate_with_bindings_duplicate_param_is_diagnostic() {
+    let source = r#"
+structure PartA { param length : Length = 80mm }
+structure BoxB { param length : Length = 100mm }
+structure BoxC { param length : Length = 120mm }
+purpose fits_within(part : Structure, envelope : Structure) {
+    constraint part.length < envelope.length
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_simple_engine();
+    engine.eval(&compiled);
+    let before = constraint_count(&engine);
+
+    // "part" is bound twice; "envelope" is bound once. C2 and C3 both pass.
+    let result = engine.activate_purpose_with_bindings(
+        "fits_within",
+        &[
+            ("part".to_string(), "PartA".to_string()),
+            ("envelope".to_string(), "BoxB".to_string()),
+            ("part".to_string(), "BoxC".to_string()),
+        ],
+    );
+
+    // Must return Err naming the duplicated param.
+    let err_msg =
+        result.expect_err("expected Err for a param bound more than once, got Ok");
+    assert!(
+        err_msg.contains("part"),
+        "error message must name the duplicated param 'part', got: {err_msg}"
+    );
+
+    // No injection must have occurred (validation precedes injection).
+    assert!(
+        !engine.is_purpose_active("fits_within"),
+        "purpose must NOT be active after a duplicate-param validation failure"
+    );
+    assert_eq!(
+        constraint_count(&engine),
+        before,
+        "zero constraints must be injected on a duplicate-param validation failure"
+    );
+}
+
+/// C7 / RED (step-07): when a 2-param purpose has reflective members on BOTH
+/// params, `activate_purpose_with_bindings` must resolve the `a.params` and
+/// `b.params` placeholders to their RESPECTIVE bound entities — NOT to a single
+/// representative entity.
+///
+/// RED because step-02 passes `bindings[0].1` as the representative entity to
+/// `expand_purpose_reflective_placeholders` for all placeholders, so the
+/// `b.params` placeholder mis-resolves to `Sa` instead of `Sb`. Step-08 will
+/// fix this by passing the full bindings slice for per-param entity lookup.
+#[test]
+fn activate_with_bindings_resolves_reflective_query_per_param() {
+    // Sa has param "pa"; Sb has param "pb" — DISTINCT member names.
+    // A mis-bind would put Sa's entity on both constraints.
+    let source = r#"
+structure Sa { param pa : Real }
+structure Sb { param pb : Real }
+purpose pp(a : Structure, b : Structure) {
+    constraint forall x in a.params: determined(x)
+    constraint forall y in b.params: determined(y)
+}
+"#;
+    let compiled = parse_and_compile(source);
+    assert_eq!(compiled.compiled_purposes.len(), 1, "fixture must compile");
+
+    let mut engine = make_simple_engine();
+    engine.eval(&compiled);
+
+    let result = engine.activate_purpose_with_bindings(
+        "pp",
+        &[
+            ("a".to_string(), "Sa".to_string()),
+            ("b".to_string(), "Sb".to_string()),
+        ],
+    );
+    assert!(result.is_ok(), "expected Ok, got {:?}", result);
+    assert!(engine.is_purpose_active("pp"));
+
+    let snapshot = engine.snapshot().expect("snapshot after activate");
+
+    // Collect the two injected purpose constraints.
+    let mut injected: Vec<_> = snapshot
+        .graph
+        .constraints
+        .iter()
+        .filter(|(id, _)| id.entity.starts_with("purpose:pp@"))
+        .collect();
+    // Sort by constraint index for determinism.
+    injected.sort_by_key(|(id, _)| id.index);
+    assert_eq!(injected.len(), 2, "expected exactly 2 injected constraints");
+
+    // Helper: extract entities from a ReflectiveCellList inside a Quantifier.
+    let rcl_entities = |data: &reify_eval::graph::ConstraintNodeData| -> Vec<String> {
+        let collection = match &data.expr.kind {
+            CompiledExprKind::Quantifier { collection, .. } => collection,
+            other => panic!("expected Quantifier, got {:?}", other),
+        };
+        match &collection.kind {
+            CompiledExprKind::ReflectiveCellList(elements) => elements
+                .iter()
+                .map(|e| match &e.kind {
+                    CompiledExprKind::ValueRef(id) => id.entity.clone(),
+                    other => panic!("expected ValueRef, got {:?}", other),
+                })
+                .collect(),
+            other => panic!("expected ReflectiveCellList, got {:?}", other),
+        }
+    };
+
+    // First constraint (index 0): `forall x in a.params: determined(x)`
+    // a→Sa, so collection elements must have entity "Sa".
+    let entities_0 = rcl_entities(injected[0].1);
+    assert!(
+        !entities_0.is_empty(),
+        "a.params constraint (index 0) must expand to a non-empty ReflectiveCellList"
+    );
+    for entity in &entities_0 {
+        assert_eq!(
+            entity, "Sa",
+            "a.params constraint must reference entity 'Sa', got '{entity}'"
+        );
+    }
+
+    // Second constraint (index 1): `forall y in b.params: determined(y)`
+    // b→Sb, so collection elements must have entity "Sb".
+    let entities_1 = rcl_entities(injected[1].1);
+    assert!(
+        !entities_1.is_empty(),
+        "b.params constraint (index 1) must expand to a non-empty ReflectiveCellList"
+    );
+    for entity in &entities_1 {
+        assert_eq!(
+            entity, "Sb",
+            "b.params constraint must reference entity 'Sb' (not 'Sa'), got '{entity}'"
+        );
+    }
+}
+
+/// C6 parity / RED (step-01): `activate_purpose_with_bindings` with a single
+/// binding must produce the same `purpose:{name}@{entity}` prefix as the
+/// existing `activate_purpose` shim — NO digest in the single-binding path.
+///
+/// RED because `Engine::activate_purpose_with_bindings` does not yet exist.
+#[test]
+fn activate_with_bindings_single_param_keeps_entity_prefix() {
+    // SIMPLE_MFG_SRC: `purpose mfg_ready(subject : Structure) { constraint 1 > 0 }`
+    let compiled = parse_and_compile(SIMPLE_MFG_SRC);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+
+    // Single-param: C6 parity path — entity, NOT digest.
+    let result = engine.activate_purpose_with_bindings(
+        "mfg_ready",
+        &[("subject".to_string(), "Bracket".to_string())],
+    );
+    assert!(
+        result.is_ok(),
+        "expected Ok from activate_purpose_with_bindings, got {:?}",
+        result
+    );
+    assert!(engine.is_purpose_active("mfg_ready"), "purpose should be active");
+
+    let snapshot = engine.snapshot().expect("snapshot after activate");
+
+    // C6: entity must be exactly "purpose:mfg_ready@Bracket" (no digest).
+    let injected_entity = snapshot
+        .graph
+        .constraints
+        .keys()
+        .find(|id| id.entity.starts_with("purpose:mfg_ready@"))
+        .map(|id| id.entity.as_str())
+        .expect("expected injected constraint with purpose:mfg_ready@ prefix");
+
+    assert_eq!(
+        injected_entity,
+        "purpose:mfg_ready@Bracket",
+        "single-binding activation must use '@{{entity}}' (C6 parity, no digest)"
+    );
 }
