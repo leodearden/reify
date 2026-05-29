@@ -223,15 +223,36 @@ pub struct TransverseIsoConstants {
 
 /// User-supplied coupon overrides for measured effective properties.
 ///
-/// Any set field beats the corresponding computed default; unset fields fall
-/// back to the correlation result. This is the Rust mirror of the stdlib
-/// `FDMCouponOverride` structure; δ reads that stdlib `Value` and builds this.
+/// Any set (`Some`) field beats the corresponding computed default; unset
+/// (`None`) fields fall back to the correlation result. This is the Rust
+/// mirror of the stdlib `FDMCouponOverride` structure; δ reads that stdlib
+/// `Value` and builds this. All values are SI (`f64`): moduli in Pa.
 ///
-/// The override fields and their application are wired in a later step
-/// (coupon-override path); this placeholder lets the assembler carry an inert
-/// `coupon` argument first.
+/// `Default` yields the all-`None` (no-override) coupon.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct CouponOverride {}
+pub struct CouponOverride {
+    /// Measured in-plane (print-plane) Young's modulus Ex, Pa. Overrides
+    /// `e_in_plane` / `e1`. Takes priority over [`ey`](Self::ey).
+    pub ex: Option<f64>,
+    /// Measured in-plane Young's modulus Ey, Pa. Overrides the in-plane
+    /// modulus when [`ex`](Self::ex) is unset; sets `e2` on the orthotropic
+    /// path.
+    pub ey: Option<f64>,
+    /// Measured build-direction (Z) Young's modulus Ez, Pa. Overrides
+    /// `e_axial` / `e3`.
+    pub ez: Option<f64>,
+    /// Measured shear modulus, Pa. Overrides the conformer's independent
+    /// stored shear constant — `g_axial` on the transverse-isotropic path,
+    /// `g12` on the orthotropic path.
+    pub gxy: Option<f64>,
+    /// Override for the Gibson-Ashby coefficient C of the infill knockdown
+    /// law (`E_eff/E_solid = C·ρ^n`); the "infill curve override". Replaces
+    /// [`GIBSON_ASHBY_C`] before the factor is computed.
+    pub infill_c: Option<f64>,
+    /// Override for the Gibson-Ashby exponent n of the infill knockdown law.
+    /// Replaces [`GIBSON_ASHBY_N`] before the factor is computed.
+    pub infill_n: Option<f64>,
+}
 
 /// Build the default-path transverse-isotropic constants for an FDM-printed
 /// region: base filament + infill solid fraction + infill pattern.
@@ -239,24 +260,39 @@ pub struct CouponOverride {}
 /// In-plane modulus is the base modulus knocked down by the Gibson-Ashby
 /// infill law and scaled by the pattern's strong-direction factor; the axial
 /// (build-Z) modulus applies the [`BUILD_Z_MODULUS_RATIO`] knockdown so the
-/// build direction is the weakest axis (PRD C4 invariant). The `coupon`
-/// argument is inert until the coupon-override path is wired.
+/// build direction is the weakest axis (PRD C4 invariant).
+///
+/// Coupon overrides (set fields of `coupon`) beat the computed defaults:
+/// `infill_c`/`infill_n` replace the Gibson-Ashby `(C, n)` before the factor
+/// is computed; `ex` (else `ey`) sets `e_in_plane`; `ez` sets `e_axial`; `gxy`
+/// sets the independent stored shear `g_axial`. Each unset field falls back to
+/// the correlation result.
 pub fn effective_transverse_isotropic(
     base: BaseElastic,
     solid_fraction: f64,
     pattern: InfillPattern,
-    _coupon: &CouponOverride,
+    coupon: &CouponOverride,
 ) -> TransverseIsoConstants {
-    let infill = gibson_ashby_infill_factor(solid_fraction, GIBSON_ASHBY_C, GIBSON_ASHBY_N);
+    let c = coupon.infill_c.unwrap_or(GIBSON_ASHBY_C);
+    let n = coupon.infill_n.unwrap_or(GIBSON_ASHBY_N);
+    let infill = gibson_ashby_infill_factor(solid_fraction, c, n);
     let pf = pattern_factors(pattern);
 
-    let e_in_plane = base.youngs_modulus * infill * pf.in_plane_strong;
-    let e_axial = e_in_plane * BUILD_Z_MODULUS_RATIO;
+    // In-plane modulus: ex (else ey) override beats the computed default.
+    let e_in_plane = coupon
+        .ex
+        .or(coupon.ey)
+        .unwrap_or(base.youngs_modulus * infill * pf.in_plane_strong);
+    // Axial (build-Z) modulus: ez override beats the knockdown of the
+    // (possibly overridden) in-plane modulus.
+    let e_axial = coupon.ez.unwrap_or(e_in_plane * BUILD_Z_MODULUS_RATIO);
     let nu_in_plane = base.poisson_ratio;
     let nu_axial = base.poisson_ratio;
-    // Default axial shear from the axial modulus (isotropic-like relation); the
-    // independent transverse-isotropic shear constant.
-    let g_axial = e_axial / (2.0 * (1.0 + nu_axial));
+    // Axial shear: gxy override beats the default derived from the axial
+    // modulus (the independent transverse-isotropic shear constant).
+    let g_axial = coupon
+        .gxy
+        .unwrap_or(e_axial / (2.0 * (1.0 + nu_axial)));
     let density = base.density * solid_fraction;
 
     TransverseIsoConstants {
