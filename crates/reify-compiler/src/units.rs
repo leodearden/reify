@@ -1299,4 +1299,96 @@ mod tests {
         let expected_dim = DimensionVector::FORCE.div(&DimensionVector::LENGTH);
         assert_eq!(dim, expected_dim, "kN/m: dimension must be FORCE/LENGTH");
     }
+
+    // --- Step-7: Pow fold arm (RED — todo!() panics) ---
+
+    #[test]
+    fn resolve_unit_expr_pow_mm_squared_is_area() {
+        use reify_core::{DimensionVector, SourceSpan};
+        let reg = make_resolver_registry();
+        let use_span = SourceSpan::new(60, 64);
+        // mm^2 = Pow(Unit("mm"), 2)
+        let expr = reify_ast::UnitExpr::Pow(
+            Box::new(reify_ast::UnitExpr::Unit("mm".to_string())),
+            2,
+        );
+        let (factor, dim) = resolve_unit_expr(&expr, &reg, use_span)
+            .expect("mm^2 must resolve successfully");
+        // 0.001.powi(2) = 1e-6
+        assert!(
+            (factor - 1e-6).abs() < 1e-15,
+            "mm^2: factor must ≈ 1e-6, got {factor}"
+        );
+        assert_eq!(dim, DimensionVector::AREA, "mm^2: dimension must be AREA");
+    }
+
+    #[test]
+    fn resolve_unit_expr_pow_negative_exponent_s_minus2() {
+        use reify_core::{DimensionVector, SourceSpan};
+        let reg = make_resolver_registry();
+        let use_span = SourceSpan::new(70, 74);
+        // s^-2 = Pow(Unit("s"), -2)
+        let expr = reify_ast::UnitExpr::Pow(
+            Box::new(reify_ast::UnitExpr::Unit("s".to_string())),
+            -2,
+        );
+        let (factor, dim) = resolve_unit_expr(&expr, &reg, use_span)
+            .expect("s^-2 must resolve successfully");
+        assert!(
+            (factor - 1.0).abs() < 1e-9,
+            "s^-2: factor must ≈ 1.0 (1.0^-2), got {factor}"
+        );
+        let expected_dim = DimensionVector::TIME.pow(-2);
+        assert_eq!(dim, expected_dim, "s^-2: dimension must be TIME^-2");
+    }
+
+    #[test]
+    fn resolve_unit_expr_pow_zero_exponent_is_dimensionless() {
+        use reify_core::{DimensionVector, SourceSpan};
+        let reg = make_resolver_registry();
+        let use_span = SourceSpan::new(80, 83);
+        // m^0 = Pow(Unit("m"), 0)
+        let expr = reify_ast::UnitExpr::Pow(
+            Box::new(reify_ast::UnitExpr::Unit("m".to_string())),
+            0,
+        );
+        let (factor, dim) = resolve_unit_expr(&expr, &reg, use_span)
+            .expect("m^0 must resolve successfully");
+        assert!(
+            (factor - 1.0).abs() < 1e-9,
+            "m^0: factor must ≈ 1.0 (1.0^0), got {factor}"
+        );
+        assert_eq!(
+            dim,
+            DimensionVector::DIMENSIONLESS,
+            "m^0: dimension must be DIMENSIONLESS"
+        );
+    }
+
+    #[test]
+    fn resolve_unit_expr_div_pow_kg_per_m3_is_mass_density() {
+        use reify_core::{DimensionVector, SourceSpan};
+        let reg = make_resolver_registry();
+        let use_span = SourceSpan::new(90, 96);
+        // kg/m^3 = Div(Unit("kg"), Pow(Unit("m"), 3))
+        let expr = reify_ast::UnitExpr::Div(
+            Box::new(reify_ast::UnitExpr::Unit("kg".to_string())),
+            Box::new(reify_ast::UnitExpr::Pow(
+                Box::new(reify_ast::UnitExpr::Unit("m".to_string())),
+                3,
+            )),
+        );
+        let (factor, dim) = resolve_unit_expr(&expr, &reg, use_span)
+            .expect("kg/m^3 must resolve successfully");
+        // factor = 1.0 / 1.0^3 = 1.0
+        assert!(
+            (factor - 1.0).abs() < 1e-9,
+            "kg/m^3: factor must ≈ 1.0, got {factor}"
+        );
+        assert_eq!(
+            dim,
+            DimensionVector::MASS_DENSITY,
+            "kg/m^3: dimension must be MASS_DENSITY"
+        );
+    }
 }
