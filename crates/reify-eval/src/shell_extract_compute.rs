@@ -166,11 +166,71 @@ fn shell_extraction_result_to_value(
     }));
 
     // ── naming ───────────────────────────────────────────────────────────────
+    // ζ task #3596 step-2: project full face_records and edges lists so the
+    // engine-side fold hook (step-6) can reconstruct TopologyAttribute entries
+    // from the cached Value without re-running the producer.
+    //
+    // Each face record carries: feature_id (String) + local_index (Int).
+    // Role is implied by the list (face_records → MidSurfaceFace,
+    // edges → MidSurfaceEdge) and is not re-encoded.
+    // Iteration is in index order (deterministic).
     let face_count = Value::Int(result.naming.face_records.len() as i64);
     let edge_count = Value::Int(result.naming.edges.len() as i64);
+
+    let face_records_value = Value::List(
+        result
+            .naming
+            .face_records
+            .iter()
+            .map(|attr| {
+                let mut rf = PersistentMap::default();
+                rf.insert(
+                    "feature_id".to_string(),
+                    Value::String(attr.feature_id.to_string()),
+                );
+                rf.insert("local_index".to_string(), Value::Int(attr.local_index as i64));
+                Value::StructureInstance(Box::new(StructureInstanceData {
+                    type_id: StructureTypeId(0),
+                    type_name: "MidSurfaceFaceRecord".to_string(),
+                    version: 1,
+                    fields: rf,
+                }))
+            })
+            .collect::<Vec<_>>(),
+    );
+
+    // Edges: sorted order already guaranteed by populate_mid_surface_attributes
+    // (BTreeSet dedup → ascending (min,max) region-pair order).
+    let edges_value = Value::List(
+        result
+            .naming
+            .edges
+            .iter()
+            .map(|edge| {
+                let mut ef = PersistentMap::default();
+                ef.insert(
+                    "feature_id".to_string(),
+                    Value::String(edge.attribute.feature_id.to_string()),
+                );
+                ef.insert(
+                    "local_index".to_string(),
+                    Value::Int(edge.attribute.local_index as i64),
+                );
+                Value::StructureInstance(Box::new(StructureInstanceData {
+                    type_id: StructureTypeId(0),
+                    type_name: "MidSurfaceEdgeRecord".to_string(),
+                    version: 1,
+                    fields: ef,
+                }))
+            })
+            .collect::<Vec<_>>(),
+    );
+
     let mut naming_fields = PersistentMap::default();
     naming_fields.insert("face_count".to_string(), face_count);
     naming_fields.insert("edge_count".to_string(), edge_count);
+    naming_fields.insert("face_records".to_string(), face_records_value);
+    naming_fields.insert("edges".to_string(), edges_value);
     let naming_value = Value::StructureInstance(Box::new(StructureInstanceData {
         type_id: StructureTypeId(0),
         type_name: "MidSurfaceAttributes".to_string(),
