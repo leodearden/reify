@@ -339,4 +339,27 @@ mod tests {
             "standalone F1200 updates the running feedrate consumed by G1 Y10"
         );
     }
+
+    /// A parse failure short-circuits: the `reify_gcode::ParseError` is carried
+    /// verbatim in `parse_error` (1-indexed line + `UnknownCommand` reason) and
+    /// no profiles are emitted (even the valid line-1 move is discarded).
+    #[test]
+    fn marlin_parse_error_is_carried_with_no_profiles() {
+        let src = "G1 X10\nG99 BOGUS";
+        let result = lower_gcode(src, GcodeImportDialect::Marlin);
+
+        let err = result
+            .parse_error
+            .expect("a malformed line must surface as parse_error");
+        assert_eq!(err.line, 2, "G99 is on the second physical line");
+        assert!(
+            matches!(err.kind, reify_gcode::error::ParseErrorKind::UnknownCommand(_)),
+            "G99 is an unrecognised command, got {:?}",
+            err.kind
+        );
+        assert!(
+            result.profiles.is_empty(),
+            "a parse error short-circuits to zero profiles"
+        );
+    }
 }
