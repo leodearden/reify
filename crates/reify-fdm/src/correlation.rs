@@ -244,4 +244,60 @@ mod tests {
             assert!(f.in_plane_weak > 0.0, "{:?} weak factor must be positive", p);
         }
     }
+
+    /// `|a - b| <= rel · |b|` — relative-tolerance comparison.
+    fn approx_rel(a: f64, b: f64, rel: f64) -> bool {
+        (a - b).abs() <= rel * b.abs()
+    }
+
+    /// A PLA-like base filament: E ≈ 2.3 GPa, ν = 0.35, ρ ≈ 1.24 g/cc.
+    fn pla_base() -> BaseElastic {
+        BaseElastic {
+            youngs_modulus: 2.3e9,
+            poisson_ratio: 0.35,
+            density: 1240.0,
+        }
+    }
+
+    #[test]
+    fn transverse_iso_dense_gyroid_recovers_base_in_plane_and_weak_axial() {
+        let base = pla_base();
+        let c = effective_transverse_isotropic(base, 1.0, InfillPattern::Gyroid, &CouponOverride::default());
+        // Dense (ρ=1) + near-isotropic (factor 1) ⇒ in-plane modulus ≈ base E.
+        assert!(
+            approx_rel(c.e_in_plane, base.youngs_modulus, 1e-3),
+            "dense gyroid e_in_plane {} should ≈ base E {}",
+            c.e_in_plane,
+            base.youngs_modulus
+        );
+        // Build-Z axial modulus = in-plane · 0.67 exactly (PRD C4 invariant).
+        assert!(
+            (c.e_axial - c.e_in_plane * BUILD_Z_MODULUS_RATIO).abs() < EPS,
+            "e_axial {} should equal e_in_plane · BUILD_Z_MODULUS_RATIO {}",
+            c.e_axial,
+            c.e_in_plane * BUILD_Z_MODULUS_RATIO
+        );
+        // Build-Z (axial) is the weakest axis — the load-bearing invariant.
+        assert!(
+            c.e_axial < c.e_in_plane,
+            "build-Z (axial {}) must be weaker than in-plane ({})",
+            c.e_axial,
+            c.e_in_plane
+        );
+    }
+
+    #[test]
+    fn transverse_iso_sparse_infill_applies_gibson_ashby_knockdown() {
+        let base = pla_base();
+        let c =
+            effective_transverse_isotropic(base, 0.2, InfillPattern::Gyroid, &CouponOverride::default());
+        // ρ=0.2 ⇒ Gibson-Ashby factor 0.2^2 = 0.04 ⇒ e_in_plane = base E · 0.04.
+        let expected = base.youngs_modulus * 0.04;
+        assert!(
+            approx_rel(c.e_in_plane, expected, 1e-3),
+            "sparse-infill e_in_plane {} should ≈ base E · 0.04 = {}",
+            c.e_in_plane,
+            expected
+        );
+    }
 }
