@@ -538,7 +538,7 @@ mod tests {
         }];
         graph.realizations.insert(
             r0_id.clone(),
-            RealizationNodeData {
+            RealizationNodeData { geometry_cell: None,
                 id: r0_id.clone(),
                 operations: r0_ops,
                 content_hash: ContentHash::of_str("r0"),

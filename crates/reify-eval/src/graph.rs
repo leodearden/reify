@@ -49,6 +49,18 @@ pub struct RealizationNodeData {
     /// Task ε (3436) will write the per-op dispatcher choice at execution time.
     /// NOT included in `content_hash` — this is dispatcher/cache metadata, not identity.
     pub produced_repr: ReprKind,
+    /// GHR-δ (PRD geometry-handle-runtime.md §8 Phase 4): the value cell that
+    /// holds this realization's `Value::GeometryHandle`, if any. Populated by
+    /// [`EvaluationGraph::from_templates`] when a template has a `Type::Geometry`
+    /// value cell whose member name matches this realization's name (the same
+    /// rule GHR-γ uses in `post_process_geometry_handle_cells`). `None` for
+    /// realizations with no backing geometry cell. Riding this link on the graph
+    /// lets the trace builders record the Realization→ValueCell freshness edge in
+    /// both directions without re-deriving the cell↔realization correspondence,
+    /// which is otherwise lost (RealizationNodeData carries no name/member link).
+    /// NOT included in `content_hash` — it is an evaluation-graph wiring detail,
+    /// not realization identity.
+    pub geometry_cell: Option<ValueCellId>,
 }
 
 /// A resolution node in the evaluation graph.
@@ -318,7 +330,7 @@ impl EvaluationGraph {
                         .iter()
                         .map(|op| ContentHash::of_str(&format!("{:?}", op))),
                 );
-                let node = RealizationNodeData {
+                let node = RealizationNodeData { geometry_cell: None,
                     id: realization.id.clone(),
                     operations: realization.operations.clone(),
                     content_hash: id_hash.combine(ops_hash),
@@ -932,7 +944,7 @@ mod tests {
         }];
         let hash = ContentHash::of_str("realization0");
 
-        let node = RealizationNodeData {
+        let node = RealizationNodeData { geometry_cell: None,
             id: id.clone(),
             operations: ops,
             content_hash: hash,
@@ -1352,7 +1364,7 @@ mod tests {
         assert_eq!(graph.constraints.len(), 1);
 
         let rnid = RealizationNodeId::new("Bracket", 0);
-        let rnode = RealizationNodeData {
+        let rnode = RealizationNodeData { geometry_cell: None,
             id: rnid.clone(),
             operations: vec![],
             content_hash: ContentHash::of_str("r0"),
@@ -1813,7 +1825,7 @@ mod tests {
         let mut graph_c = EvaluationGraph::default();
         graph_c.realizations.insert(
             RealizationNodeId::new("X", 0),
-            RealizationNodeData {
+            RealizationNodeData { geometry_cell: None,
                 id: RealizationNodeId::new("X", 0),
                 operations: vec![],
                 content_hash: hash_h,

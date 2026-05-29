@@ -588,7 +588,7 @@ mod tests {
         let r0_id = RealizationNodeId::new(e, 0);
         graph.realizations.insert(
             r0_id.clone(),
-            RealizationNodeData {
+            RealizationNodeData { geometry_cell: None,
                 id: r0_id.clone(),
                 operations: vec![],
                 content_hash: ContentHash::of_str("r0"),
@@ -681,7 +681,7 @@ mod tests {
         let r0_id = RealizationNodeId::new(e, 0);
         graph.realizations.insert(
             r0_id.clone(),
-            RealizationNodeData {
+            RealizationNodeData { geometry_cell: None,
                 id: r0_id.clone(),
                 operations: vec![],
                 content_hash: ContentHash::of_str("r0"),
@@ -770,7 +770,7 @@ mod tests {
         let r0_id = RealizationNodeId::new(e, 0);
         graph.realizations.insert(
             r0_id.clone(),
-            RealizationNodeData {
+            RealizationNodeData { geometry_cell: None,
                 id: r0_id.clone(),
                 operations: vec![],
                 content_hash: ContentHash::of_str("r0"),
