@@ -244,7 +244,7 @@ fn handle_parse_errors_gracefully() {
                 default: Some(Expr {
                     kind: ExprKind::QuantityLiteral {
                         value: 80.0,
-                        unit: "mm".into(),
+                        unit: UnitExpr::Unit("mm".to_string()),
                     },
                     span: SourceSpan::new(9, 13),
                 }),

@@ -2727,18 +2727,36 @@ fn resolve_driving_params_from_ast(
                     use reify_ast::ExprKind;
                     let initial_value_si = match &literal_expr.kind {
                         ExprKind::QuantityLiteral { value, unit } => {
-                            // Look up the unit in UNIT_TABLE for SI scale.
-                            match UNIT_TABLE.iter().find(|(u, _, _)| *u == unit.as_str()) {
-                                Some((_, scale, _)) => Some(value * scale),
-                                None => {
-                                    // Unknown unit: emit debug so the silent value-loss is observable.
-                                    // Supported units: mm, cm, m, deg, rad.
+                            // Only bare units resolve here; compound unit expressions
+                            // (Mul/Div/Pow) get their registry resolver in task γ (3803).
+                            match unit {
+                                reify_ast::UnitExpr::Unit(unit) => {
+                                    // Look up the unit in UNIT_TABLE for SI scale.
+                                    match UNIT_TABLE.iter().find(|(u, _, _)| *u == unit.as_str()) {
+                                        Some((_, scale, _)) => Some(value * scale),
+                                        None => {
+                                            // Unknown unit: emit debug so the silent value-loss is observable.
+                                            // Supported units: mm, cm, m, deg, rad.
+                                            tracing::debug!(
+                                                target: "reify_gui::engine::literal_bind",
+                                                joint = %joint_cell_name,
+                                                unit = %unit,
+                                                "bind(joint, <quantity>) with unsupported unit — not in UNIT_TABLE; \
+                                                 initial_value_si will be None (supported units: mm, cm, m, deg, rad)"
+                                            );
+                                            None
+                                        }
+                                    }
+                                }
+                                reify_ast::UnitExpr::Mul(..)
+                                | reify_ast::UnitExpr::Div(..)
+                                | reify_ast::UnitExpr::Pow(..) => {
                                     tracing::debug!(
                                         target: "reify_gui::engine::literal_bind",
                                         joint = %joint_cell_name,
-                                        unit = %unit,
-                                        "bind(joint, <quantity>) with unsupported unit — not in UNIT_TABLE; \
-                                         initial_value_si will be None (supported units: mm, cm, m, deg, rad)"
+                                        "bind(joint, <quantity>) with a compound unit expression — \
+                                         not yet supported; resolver lands in task γ (3803); \
+                                         initial_value_si will be None"
                                     );
                                     None
                                 }

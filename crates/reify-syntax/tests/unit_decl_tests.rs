@@ -182,7 +182,7 @@ fn parse_unit_quantity_literal_conversion() {
                     "expected value=0.0254, got {}",
                     value
                 );
-                assert_eq!(unit, "mm");
+                assert_eq!(unit, &UnitExpr::Unit("mm".to_string()));
             }
             other => panic!("expected QuantityLiteral, got {:?}", other),
         },

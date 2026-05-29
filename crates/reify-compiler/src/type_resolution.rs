@@ -355,6 +355,25 @@ pub(crate) fn evaluate_const_expr(
             }
         }
         reify_ast::ExprKind::QuantityLiteral { value, unit } => {
+            // Only bare units resolve in unit-conversion expressions. Compound unit
+            // expressions (Mul/Div/Pow) need registry folding, which lands in task
+            // γ (3803); reject them with a placeholder diagnostic until then.
+            let unit = match unit {
+                reify_ast::UnitExpr::Unit(name) => name,
+                reify_ast::UnitExpr::Mul(..)
+                | reify_ast::UnitExpr::Div(..)
+                | reify_ast::UnitExpr::Pow(..) => {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "compound unit expressions are not yet supported in unit \
+                             conversion expressions; resolver lands in task γ (3803)"
+                                .to_string(),
+                        )
+                        .with_label(DiagnosticLabel::new(expr.span, "compound unit")),
+                    );
+                    return None;
+                }
+            };
             // Try registry first, then hardcoded fallback.
             if let Some(entry) = registry.lookup(unit) {
                 // Affine (offset) units cannot be used in unit conversion expressions —

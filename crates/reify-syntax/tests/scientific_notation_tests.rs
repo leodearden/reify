@@ -112,7 +112,7 @@ fn preserved_quantity_literal_5mm() {
     match &let_decl.value.kind {
         ExprKind::QuantityLiteral { value, unit } => {
             assert_eq!(*value, 5.0_f64, "quantity value should be 5.0");
-            assert_eq!(unit, "mm", "quantity unit should be 'mm'");
+            assert_eq!(unit, &UnitExpr::Unit("mm".to_string()), "quantity unit should be 'mm'");
         }
         other => panic!("expected QuantityLiteral, got {:?}", other),
     }
@@ -284,7 +284,8 @@ fn disambiguation_5e_parses_as_quantity_literal() {
         ExprKind::QuantityLiteral { value, unit } => {
             assert_eq!(*value, 5.0_f64, "quantity value should be 5.0");
             assert_eq!(
-                unit, "e",
+                unit,
+                &UnitExpr::Unit("e".to_string()),
                 "unit should be 'e' (unregistered, but parses cleanly)"
             );
         }

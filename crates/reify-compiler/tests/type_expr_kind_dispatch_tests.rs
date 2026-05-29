@@ -297,7 +297,7 @@ fn module_with_field_domain(domain_type: TypeExpr) -> ParsedModule {
                             // top of the expected "unresolved field type" domain error.
                             kind: ExprKind::QuantityLiteral {
                                 value: 1.0,
-                                unit: "m".to_string(),
+                                unit: UnitExpr::Unit("m".to_string()),
                             },
                             span: dummy_span(),
                         }),
