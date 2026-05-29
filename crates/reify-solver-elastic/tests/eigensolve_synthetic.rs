@@ -527,7 +527,6 @@ fn solve_eigen_shift_invert_panics_on_non_finite_tol() {
 /// Numerical accuracy is not checked here — that is pinned by the closed-form
 /// fixtures.  This test guards only against the "panic on small problems"
 /// regression documented in eigensolve.rs FAER_MIN_DIM comment.
-#[cfg_attr(debug_assertions, ignore = "heavy/debug-pathological: release-only at the merge gate; debug skips it. Un-ignore when task 4055 makes it fast in debug.")]
 #[test]
 fn shift_invert_no_panic_at_min_dim_boundaries() {
     for n in 2_usize..=128 {
