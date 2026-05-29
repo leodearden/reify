@@ -1709,6 +1709,49 @@ pub trait GeometryKernel: Send + Sync {
         ))
     }
 
+    /// Ingest an externally-supplied [`Mesh`] and return a handle to the stored
+    /// geometry.
+    ///
+    /// # Producer-side-only mesh ingest
+    ///
+    /// This method is the **structural enforcement** of "producer-side-only"
+    /// mesh ingest: kernels whose geometry model is _not_ based on triangle
+    /// meshes (Fidget's implicit SDF representations, OpenVDB's voxel grids,
+    /// OCCT's B-rep topology, mocks, stubs) inherit this default unchanged, and
+    /// the `Err(OperationFailed)` return is the observable contract for that
+    /// absence.  The pattern is exactly analogous to [`attribute_hook`]'s
+    /// `None` default (geometry.rs ~line 1735): the absence of an override IS
+    /// the "not supported" contract — no per-kernel opt-out code is needed.
+    ///
+    /// `ManifoldKernel` is the only current override; it accepts closed
+    /// orientable triangle meshes and stores them as `Manifold` values (see
+    /// `crates/reify-kernel-manifold/src/kernel.rs`).
+    ///
+    /// # Object safety
+    ///
+    /// The trait remains object-safe — `Self` appears only in the `&mut self`
+    /// receiver.  The `type_name::<Self>()` call lives in the method *body*;
+    /// object safety is determined by the *signature* alone, so
+    /// `Box<dyn GeometryKernel>` upcasts (e.g. `register.rs:58`,
+    /// `kernel.rs:353`) keep compiling.  When invoked through a trait object,
+    /// `Self = dyn GeometryKernel` and `type_name` yields `"dyn GeometryKernel"`
+    /// (acceptable for the not-supported path); when called on a concrete kernel
+    /// directly, `type_name` yields the concrete kernel's fully-qualified name.
+    ///
+    /// # This is intentionally additive
+    ///
+    /// Following the established pattern at
+    /// [`GeometryKernel::execute_with_history`] (default
+    /// `AttributeHistory::None`) and [`GeometryKernel::attribute_hook`] (default
+    /// `None`), this default allows all existing kernels to continue compiling
+    /// without per-impl changes.
+    fn ingest_mesh(&mut self, _mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
+        Err(GeometryError::OperationFailed(format!(
+            "{} does not accept Mesh inputs",
+            std::any::type_name::<Self>()
+        )))
+    }
+
     /// Optional best-effort `TopologyAttribute` propagation hook for non-OCCT
     /// kernels with native parent→child correspondence (e.g. Manifold's
     /// `MeshGL` merge vectors + per-triangle `faceID` / `originalID`).
