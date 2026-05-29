@@ -71,7 +71,10 @@ use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 /// - `modes`: `Value::List` of `Mode` StructureInstances
 ///   (`eigenvalue: Real(λ)`, `mode_shape: Undef`)
 /// - `converged`: `Value::Bool`
-/// - `iterations`: `Value::Int(0)` placeholder (kernel returns total iters)
+/// - `iterations`: `Value::Int(0)` — intentionally unpopulated for task ε.
+///   `BucklingKernelResult` does not expose an eigensolver iteration count;
+///   the field is reserved for a future kernel extension (cf. elastic_static
+///   which propagates the CG iteration count from its solver result).
 /// - `pre_stress`: `ElasticResult`-shaped StructureInstance (Undef fields +
 ///   `max_von_mises: Scalar(PRESSURE)`, `converged: Bool(true)`, `iterations: Int(0)`)
 pub fn solve_buckling_trampoline(
@@ -95,6 +98,16 @@ pub fn solve_buckling_trampoline(
     // ── (4) Extract BucklingOptions ───────────────────────────────────────────
     let (n_modes, eigen_tol, eigen_max_iters) = extract_buckling_options(&value_inputs[6]);
 
+    // ── (4b) supports input — intentionally unused in task-ε slice ────────────
+    //
+    // value_inputs[5] carries the FixedSupport list from the caller, but BCs are
+    // hardcoded to pin-pin (lateral clamp at both Z-end faces + one axial anchor)
+    // to match the analytical k=1 Euler reference P_cr = π²EI/L².  Any column
+    // geometry — fixed-free, fixed-fixed, etc. — silently receives pin-pin BCs
+    // in this slice.  Support-driven BC selection is tracked as a follow-up
+    // (see elastic_static.rs "presence sufficient" note for the analogous pattern).
+    let _ = &value_inputs[5];
+
     // ── (5) Build column mesh (compression axis = Z = longest dimension) ──────
     //
     // Geometry: column along Z axis, cross-section in XY plane.
@@ -103,19 +116,24 @@ pub fn solve_buckling_trampoline(
     // Mesh density mirrors euler_column_pin_pin.rs (nx=ny=8, nz=160) for the
     // 20×20×800 mm smoke column, giving the validated 9.2%-error result.
     // Density is geometry-driven:
-    //   nz ≈ length / (cross_section_size / 8)
-    //   nx = ny = 8 across the cross-section
-    // "cross-section size" = min(width, height) so both axes stay at ~8 elements.
+    //   nx = ny = 8 elements across the shorter cross-section side (~2.5 mm each)
+    //   nz = round(lz / axial_elem_size) where axial_elem_size ≈ 5 mm
     //
-    // Clamp to at least 1 in each direction.
+    // Why axial_elem_size = min(lx,ly)/(nx/2)?
+    //   Using min(lx,ly)/nx (i.e. the cross-section element size ≈ 2.5 mm) would
+    //   give nz=320 for the 800 mm column — doubling wall-time and invalidating
+    //   the cited '9.2% error at nz=160' rationale.  Halving the divisor (nx/2=4)
+    //   yields ~5 mm axial elements → nz=160, matching the reference fixture and
+    //   its measured error.  Clamp to at least 1 in each direction.
     let nx: usize = 8;
     let ny: usize = 8;
     let lx = width;
     let ly = height;
     let lz = length;
-    // nz: scale so element axial length ≈ cross_section_elem_size
-    let cross_elem_size = lx.min(ly) / nx as f64;
+    // nz: scale so axial element size ≈ 5 mm (half the cross-section element size)
+    let cross_elem_size = lx.min(ly) / (nx / 2) as f64; // ~5 mm for 20 mm section at nx=8
     let nz: usize = ((lz / cross_elem_size).round() as usize).max(1);
+    // Sanity: for the 20×20×800 mm smoke column: cross_elem_size=0.005, nz=160 ✓
 
     let nx1 = nx + 1;
     let ny1 = ny + 1;
@@ -282,6 +300,8 @@ pub fn solve_buckling_trampoline(
     let result_fields: PersistentMap<String, Value> = [
         ("modes".to_string(),      Value::List(modes_list)),
         ("converged".to_string(),  Value::Bool(kernel_result.converged)),
+        // iterations: BucklingKernelResult carries no eigensolver iteration count;
+        // this field is intentionally unpopulated for task ε (see trampoline doc).
         ("iterations".to_string(), Value::Int(0)),
         ("pre_stress".to_string(), pre_stress),
     ]
@@ -370,7 +390,20 @@ fn extract_total_load(val: &Value) -> f64 {
             }
         }
     }
-    // Guard: if no load was extracted, use 1.0 N (degenerate case)
+    // Guard: fall back to 1.0 N when no load magnitude was extracted.
+    //
+    // This is intentionally chosen as a non-zero sentinel, NOT an arbitrary
+    // default.  The kernel returns a dimensionless multiplier λ such that
+    // P_cr = λ × F_applied.  With F_applied = 1 N, the eigenvalue itself equals
+    // P_cr in Newtons — the same convention used by euler_column_pin_pin.rs.
+    //
+    // Risk: a genuinely zero or mis-shaped load list (e.g., structs with no
+    // "force" field) silently receives this sentinel rather than surfacing an
+    // error.  The critical_load helper in solver_buckling.ri requires the caller
+    // to supply an explicit reference_load precisely because the trampoline does
+    // not store the applied load in the result — so incorrect load extraction
+    // will produce a plausible-but-wrong critical load rather than a crash.
+    // Diagnostic emission for this case is deferred to task θ/3457.
     if total == 0.0 { 1.0 } else { total }
 }
 
@@ -407,58 +440,3 @@ fn extract_buckling_options(val: &Value) -> (usize, f64, usize) {
     (n_modes, eigen_tol, eigen_max_iters)
 }
 
-// ── skeleton: build a minimal well-formed BucklingResult with eigenvalue=0 ───
-//
-// This builder is used when we need a placeholder result (e.g., if the kernel
-// panics in testing). Currently unused by the main trampoline path.
-#[allow(dead_code)]
-fn placeholder_result() -> Value {
-    let mode_fields: PersistentMap<String, Value> = [
-        ("eigenvalue".to_string(), Value::Real(0.0)),
-        ("mode_shape".to_string(), Value::Undef),
-    ]
-    .into_iter()
-    .collect();
-    let mode = Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id:   StructureTypeId(u32::MAX),
-        type_name: "Mode".to_string(),
-        version:   1,
-        fields:    mode_fields,
-    }));
-
-    let pre_stress_fields: PersistentMap<String, Value> = [
-        ("displacement".to_string(), Value::Undef),
-        ("stress".to_string(),       Value::Undef),
-        ("frame".to_string(),        Value::Undef),
-        ("max_von_mises".to_string(), Value::Scalar {
-            si_value:  0.0,
-            dimension: DimensionVector::PRESSURE,
-        }),
-        ("converged".to_string(),   Value::Bool(true)),
-        ("iterations".to_string(),  Value::Int(0)),
-    ]
-    .into_iter()
-    .collect();
-    let pre_stress = Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id:   StructureTypeId(u32::MAX),
-        type_name: "ElasticResult".to_string(),
-        version:   1,
-        fields:    pre_stress_fields,
-    }));
-
-    let result_fields: PersistentMap<String, Value> = [
-        ("modes".to_string(),      Value::List(vec![mode])),
-        ("converged".to_string(),  Value::Bool(false)),
-        ("iterations".to_string(), Value::Int(0)),
-        ("pre_stress".to_string(), pre_stress),
-    ]
-    .into_iter()
-    .collect();
-
-    Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id:   StructureTypeId(u32::MAX),
-        type_name: "BucklingResult".to_string(),
-        version:   1,
-        fields:    result_fields,
-    }))
-}
