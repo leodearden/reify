@@ -222,6 +222,25 @@ impl OcctKernel {
     ) -> Result<bool, QueryError> {
         Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
     }
+
+    /// Stub contains-solid membership probe — always errors because OCCT is unavailable.
+    /// Mirrors the real `OcctKernel::contains` signature so call sites compile
+    /// under both `has_occt` and `!has_occt`.
+    ///
+    /// The real implementation uses `BRepClass3d_SolidClassifier(shape).Perform(pnt, tol)`
+    /// and returns `true` for `TopAbs_IN || TopAbs_ON`. See `lib.rs` for the full contract,
+    /// including the tolerance precondition (non-negative finite `f64`) and the
+    /// `DEFAULT_CONTAINS_TOLERANCE_M` (= `DEFAULT_POINT_ON_SHAPE_TOLERANCE_M`, ~1e-7) default.
+    pub fn contains(
+        &self,
+        _handle: GeometryHandleId,
+        _px: f64,
+        _py: f64,
+        _pz: f64,
+        _tolerance: f64,
+    ) -> Result<bool, QueryError> {
+        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
+    }
 }
 
 impl Default for OcctKernel {
@@ -691,6 +710,20 @@ mod tests {
             reify_ir::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
         );
         let err = result.expect_err("stub point_on_shape should error");
+        assert_stub_message(&format!("{err:?}"));
+    }
+
+    #[test]
+    fn stub_kernel_contains_returns_error() {
+        let kernel = OcctKernel::new();
+        let result = kernel.contains(
+            GeometryHandleId(1),
+            0.0,
+            0.0,
+            0.0,
+            reify_ir::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
+        );
+        let err = result.expect_err("stub contains should error");
         assert_stub_message(&format!("{err:?}"));
     }
 }

@@ -773,6 +773,22 @@ pub mod ffi {
             tolerance: f64,
         ) -> Result<bool>;
 
+        /// Test whether `(px, py, pz)` is inside or on the boundary of a closed solid.
+        ///
+        /// Wraps `BRepClass3d_SolidClassifier(shape).Perform(gp_Pnt, tolerance)`;
+        /// returns `true` when `State() == TopAbs_IN || State() == TopAbs_ON`.
+        ///
+        /// **Tolerance precondition:** `tolerance` must be a non-negative finite `f64`.
+        /// Negative or NaN values cause the C++ implementation to throw, which maps to
+        /// `Err(QueryError::QueryFailed(_))` at the Rust call site.
+        fn contains_solid(
+            shape: &OcctShape,
+            px: f64,
+            py: f64,
+            pz: f64,
+            tolerance: f64,
+        ) -> Result<bool>;
+
         fn query_moment_of_inertia(shape: &OcctShape, ax: f64, ay: f64, az: f64) -> Result<f64>;
 
         /// Compute the full 3×3 inertia tensor (kg·m²) about the centroid.

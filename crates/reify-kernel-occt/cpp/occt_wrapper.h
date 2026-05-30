@@ -866,6 +866,18 @@ Point3 vertex_point(const OcctShape& shape);
 /// and parent task 2324.
 bool point_on_shape(const OcctShape& shape, double px, double py, double pz, double tolerance);
 
+/// Test whether `(px, py, pz)` is inside or on the boundary of a closed solid.
+///
+/// Uses `BRepClass3d_SolidClassifier(shape).Perform(gp_Pnt(px,py,pz), tolerance)`.
+/// Returns `true` when the classifier state is `TopAbs_IN` (strictly inside) or
+/// `TopAbs_ON` (on the boundary surface within `tolerance`); returns `false` for
+/// `TopAbs_OUT`. This is the conventional closed-solid membership predicate per
+/// PRD §8.1 (KGQ-β).
+///
+/// **Tolerance precondition:** `tolerance` must be a non-negative finite `double`.
+/// Negative or NaN values cause the implementation to throw `std::runtime_error`.
+bool contains_solid(const OcctShape& shape, double px, double py, double pz, double tolerance);
+
 double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, double az);
 
 /// Compute the full 3×3 inertia tensor about the shape's centroid,
