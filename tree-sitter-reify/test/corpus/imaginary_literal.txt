@@ -111,3 +111,43 @@ structure S {
         value: (number_literal)
         unit: (unit_expr
           (unit_name))))))
+
+================================================================================
+no-whitespace: 2 j with a space must NOT form an imaginary_literal
+================================================================================
+
+structure S {
+  let x = 2 j
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (number_literal))
+    (ERROR
+      (UNEXPECTED 'j'))))
+
+================================================================================
+composition: 2j + 3j forms a binary_expression over two imaginary_literals
+================================================================================
+
+structure S {
+  let x = 2j + 3j
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (binary_expression
+        left: (imaginary_literal
+          value: (number_literal))
+        right: (imaginary_literal
+          value: (number_literal))))))

@@ -1,13 +1,15 @@
 //! Grammar integration tests for `imaginary_literal` (j-suffix on a number).
 //!
-//! Task 3947, step-1 (TDD RED): verifies the CST shape for imaginary literals
-//! after step-2 (grammar.js + scanner.c edit) lands.
+//! Task 3947: verifies the CST shape for imaginary literals.  The grammar
+//! change (grammar.js + scanner.c) has landed; all fixtures below should pass.
 //!
-//! Until step-2 lands:
-//!   - fixtures (a)-(c) FAIL: 4.1j/2j/1.5e-3j parse as quantity_literal today.
-//!   - fixtures (d)-(e) PASS: quantity regression guards (4.1mm, 4.1jk remain
-//!     quantity_literal) are already correct and serve as non-regression anchors.
-//!   - fixture (f) PASSES: capital-J stays quantity_literal (D1: only lowercase j).
+//! These tests focus on the assertions the corpus harness cannot express via
+//! Rust API:
+//!   - fixture (a): `.child_by_field_name("value")` field-kind check
+//!   - guard (e): byte-span verification that unit_name covers "jk" (not just "k")
+//!
+//! Broader CST shape assertions (imaginary_literal node exists, quantity guards)
+//! are also retained here because `cargo test` is the pipeline-exercised gate.
 //!
 //! All members are wrapped in `structure S { let x = <expr> }` so the grammar
 //! sees them in a valid declaration context.
@@ -59,12 +61,13 @@ fn find_node_by_kind<'a>(
     None
 }
 
-// ── Fixture (a): 4.1j → imaginary_literal ────────────────────────────────
+// ── Fixture (a): 4.1j → imaginary_literal with value-field check ──────────
 
 /// Fixture (a): `let x = 4.1j` must parse without errors and produce an
-/// `imaginary_literal` node.
+/// `imaginary_literal` node whose `value` field is a `number_literal`.
 ///
-/// RED until step-2 grammar change: currently parses as quantity_literal.
+/// The field-kind check (`.child_by_field_name("value")`) is the unique
+/// assertion not expressible in the corpus S-expr harness.
 #[test]
 fn fixture_a_decimal_j_is_imaginary_literal() {
     let mut parser = make_parser();
@@ -92,58 +95,9 @@ fn fixture_a_decimal_j_is_imaginary_literal() {
     );
 }
 
-// ── Fixture (b): 2j → imaginary_literal ──────────────────────────────────
-
-/// Fixture (b): `let x = 2j` (integer mantissa) must produce an
-/// `imaginary_literal` node.
-///
-/// RED until step-2.
-#[test]
-fn fixture_b_integer_j_is_imaginary_literal() {
-    let mut parser = make_parser();
-    let source = b"structure S { let x = 2j }";
-    let tree = parser.parse(source, None).expect("parse failed");
-    assert!(
-        !tree.root_node().has_error(),
-        "fixture (b): `2j` must parse cleanly; got kinds: {:?}",
-        collect_kinds(tree.root_node())
-    );
-    let imag = find_node_by_kind(tree.root_node(), "imaginary_literal");
-    assert!(
-        imag.is_some(),
-        "fixture (b): expected an `imaginary_literal` node for `2j`; got kinds: {:?}",
-        collect_kinds(tree.root_node())
-    );
-}
-
-// ── Fixture (c): 1.5e-3j → imaginary_literal (scientific mantissa) ────────
-
-/// Fixture (c): `let x = 1.5e-3j` (scientific-notation mantissa + j) must
-/// produce an `imaginary_literal` node.
-///
-/// RED until step-2.
-#[test]
-fn fixture_c_scientific_j_is_imaginary_literal() {
-    let mut parser = make_parser();
-    let source = b"structure S { let x = 1.5e-3j }";
-    let tree = parser.parse(source, None).expect("parse failed");
-    assert!(
-        !tree.root_node().has_error(),
-        "fixture (c): `1.5e-3j` must parse cleanly; got kinds: {:?}",
-        collect_kinds(tree.root_node())
-    );
-    let imag = find_node_by_kind(tree.root_node(), "imaginary_literal");
-    assert!(
-        imag.is_some(),
-        "fixture (c): expected an `imaginary_literal` node for `1.5e-3j`; got kinds: {:?}",
-        collect_kinds(tree.root_node())
-    );
-}
-
 // ── Regression guard (d): 4.1mm → quantity_literal ───────────────────────
 
 /// Regression guard (d): `let x = 4.1mm` must remain a `quantity_literal`.
-/// GREEN before and after grammar change.
 #[test]
 fn guard_d_mm_stays_quantity_literal() {
     let mut parser = make_parser();
@@ -172,7 +126,9 @@ fn guard_d_mm_stays_quantity_literal() {
 
 /// Regression guard (e): `let x = 4.1jk` must remain a `quantity_literal`
 /// whose unit_name spans the full string "jk", not just "k".
-/// GREEN before and after grammar change.
+///
+/// This byte-span assertion is not expressible in the corpus S-expr harness
+/// (the corpus only asserts node kind, not text content).
 #[test]
 fn guard_e_jk_multi_char_stays_quantity_literal() {
     let mut parser = make_parser();
@@ -210,7 +166,6 @@ fn guard_e_jk_multi_char_stays_quantity_literal() {
 
 /// Regression guard (f): `let x = 4.1J` (capital J = Joule) must remain a
 /// `quantity_literal`.  D1 specifies only lowercase `j` becomes imaginary.
-/// GREEN before and after grammar change.
 #[test]
 fn guard_f_capital_j_stays_quantity_literal() {
     let mut parser = make_parser();
