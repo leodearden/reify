@@ -1930,14 +1930,28 @@ impl<'a> Lowering<'a> {
                     }
                     let key_node = match entry.child_by_field_name("key") {
                         Some(n) => n,
+                        // Missing `key` or `overrides` field can only occur on
+                        // ERROR CST nodes (the grammar makes both fields mandatory).
+                        // The ERROR node itself surfaces a diagnostic to the user;
+                        // silently skipping the entry here keeps downstream consumers
+                        // from seeing a half-populated keyed_members Vec.
                         None => continue,
                     };
                     let overrides_node = match entry.child_by_field_name("overrides") {
                         Some(n) => n,
-                        None => continue,
+                        None => continue, // same rationale as the `key` arm above
                     };
                     // Unquote the key string_literal.
                     // Reuses the strip-quotes pattern from lower_pragma_value (~lines 1224-1231).
+                    //
+                    // NOTE: escape sequences (e.g. `"in\"take"`, `"a\nb"`) are NOT
+                    // decoded — the raw text between the outer quotes is stored as-is.
+                    // This is intentional for v1 (keys are expected to be plain
+                    // identifier-like strings with no escapes).  If/when a shared
+                    // string-literal unescape helper is introduced, both this site and
+                    // lower_pragma_value should route through it; the downstream
+                    // E_DUP_MEMBER_KEY / key-comparison work (PRD tasks β/γ) must also
+                    // handle escape-decoded vs raw equality.
                     let raw_key = self.node_text(key_node);
                     let key = raw_key
                         .strip_prefix('"')

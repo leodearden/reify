@@ -215,8 +215,6 @@ pub struct ConstraintInstDecl {
     pub content_hash: ContentHash,
 }
 
-/// `sub mount_hole = Hole(diameter: 6mm)` or `sub part = Box<Bolt>()`
-///
 /// A single entry in a keyed sub-member block (task 3929, PRD §2.2).
 ///
 /// Represents one `"key" => { overrides }` entry inside a
@@ -238,6 +236,8 @@ pub struct KeyedSubMemberEntry {
     pub span: SourceSpan,
 }
 
+/// `sub mount_hole = Hole(diameter: 6mm)` or `sub part = Box<Bolt>()`
+///
 /// Specialization-scope body (`sub motor : T { ... }`) is represented by
 /// `body: Some(...)`; `None` means a bare instantiation or collection form.
 /// The `Some(_)` discriminator IS the spec §8.7 specialization-scope flag —
