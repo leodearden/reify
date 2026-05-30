@@ -788,6 +788,14 @@ pub struct ValueCellDecl {
     pub id: ValueCellId,
     pub kind: ValueCellKind,
     pub visibility: Visibility,
+    /// True when declared with the `aux` modifier (PRD §2.2).
+    ///
+    /// `aux` and `visibility` (the `pub` axis) are **orthogonal**: both may
+    /// co-occur (`pub aux let`). `aux` means "no external geometric effect"
+    /// (not surfaced/FEA/mass-props); `pub` controls export visibility. They
+    /// are kept as separate fields so all four `(visibility, is_aux)` states
+    /// are independently representable.
+    pub is_aux: bool,
     pub cell_type: Type,
     pub default_expr: Option<CompiledExpr>,
     pub solver_hints: Vec<SolverHint>,
