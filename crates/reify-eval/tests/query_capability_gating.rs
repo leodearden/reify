@@ -61,6 +61,7 @@ fn capability_kind_table_matches_prd_5_4() {
         GeometryQuery::ClosestPointOnShape { handle: h, px: 0.0, py: 0.0, pz: 0.0 },
         GeometryQuery::PointOnShape { handle: h, px: 0.0, py: 0.0, pz: 0.0, tolerance: 1e-7 },
         GeometryQuery::SurfaceAngle { face_a: h, face_b: h2 },
+        GeometryQuery::Contains { handle: h, px: 0.0, py: 0.0, pz: 0.0, tolerance: 1e-7 },
     ];
 
     for q in brep_and_mesh_cases {

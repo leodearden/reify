@@ -3237,6 +3237,26 @@ mod tests {
         }
     }
 
+    /// Pins the §5.2 tolerance-default value invariant for `contains`:
+    /// `DEFAULT_CONTAINS_TOLERANCE_M` must equal `1e-7` AND equal
+    /// `DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` (same OCCT `Precision::Confusion()` origin).
+    ///
+    /// RED until step-4 adds `DEFAULT_CONTAINS_TOLERANCE_M` to this file.
+    #[test]
+    fn default_contains_tolerance_m_equals_1e_7_and_matches_point_on_shape_tolerance() {
+        assert_eq!(
+            super::DEFAULT_CONTAINS_TOLERANCE_M,
+            1e-7,
+            "DEFAULT_CONTAINS_TOLERANCE_M must be 1e-7 (OCCT Precision::Confusion)"
+        );
+        assert_eq!(
+            super::DEFAULT_CONTAINS_TOLERANCE_M,
+            super::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
+            "DEFAULT_CONTAINS_TOLERANCE_M must equal DEFAULT_POINT_ON_SHAPE_TOLERANCE_M \
+             per §5.2 tolerance precedent"
+        );
+    }
+
     #[test]
     fn surface_angle_variant_is_constructible_and_matchable() {
         // Pin the shape of the new SurfaceAngle variant — kernel returns
