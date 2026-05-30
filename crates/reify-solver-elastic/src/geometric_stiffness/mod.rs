@@ -36,6 +36,7 @@
 pub mod bar;
 pub mod stubs;
 pub mod tet;
+pub mod tet_p2;
 
 pub use bar::{bar_tangent_stiffness, geometric_element_stiffness_bar_p1};
 pub use stubs::{
@@ -43,6 +44,7 @@ pub use stubs::{
     geometric_element_stiffness_wedge_p1,
 };
 pub use tet::geometric_element_stiffness_tet_p1;
+pub use tet_p2::geometric_element_stiffness_tet_p2;
 
 /// Constant 3×3 symmetric Cauchy stress in the global frame.
 ///

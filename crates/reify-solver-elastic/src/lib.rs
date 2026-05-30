@@ -430,7 +430,9 @@ pub use progressive::{
     TerminationReason, coarse_pass_tuning, near_constraint_boundary, refinement_pass_tuning,
     should_refine,
 };
-pub use result::{StressElement, element_stress_p1, recover_nodal_stress_p1, tet_volume_p1};
+pub use result::{
+    StressElement, element_stress_p1, element_stress_p2, recover_nodal_stress_p1, tet_volume_p1,
+};
 pub use shell_assembly::{
     ShellFrame, build_shell_frame, plane_stress_d, shell_element_stiffness,
     shell_element_stiffness_mitc3_plus,
@@ -452,14 +454,18 @@ pub use eigensolve::{
 };
 // Task 3453: buckling-kernel orchestrator — pre-stress → K_g → eigensolve → mode-shape.
 // PRD: docs/prds/v0_5/buckling-eigensolver.md §13 task δ.
-pub use buckling_kernel::{BucklingKernelOptions, BucklingKernelResult, Mode, solve_buckling_kernel};
+pub use buckling_kernel::{
+    BucklingKernelOptions, BucklingKernelResult, Mode,
+    solve_buckling_kernel, solve_buckling_kernel_p2,
+};
 // Task 3452: P1-tet K_g element kernel + global assembly + shell/hex/wedge stubs.
 // PRD: docs/prds/v0_5/buckling-eigensolver.md §13 task γ.
 // Task 3797: T3a bar/cable K_g element kernel + per-member tangent stiffness.
 pub use geometric_stiffness::{
     InitialStress3, bar_tangent_stiffness, geometric_element_stiffness_bar_p1,
     geometric_element_stiffness_hex_p1, geometric_element_stiffness_shell,
-    geometric_element_stiffness_tet_p1, geometric_element_stiffness_wedge_p1,
+    geometric_element_stiffness_tet_p1, geometric_element_stiffness_tet_p2,
+    geometric_element_stiffness_wedge_p1,
 };
 // Task 3818: P1-tet consistent mass-matrix element kernel; reuses
 // `assemble_global_stiffness` for the global scatter (the assembler treats
