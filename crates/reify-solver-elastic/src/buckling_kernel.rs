@@ -1240,8 +1240,8 @@ mod tests {
     /// - pre_stress_displacement.len() == 3·n_nodes_p2
     /// - one stress tensor per P2 tet (6 tets)
     /// - every mode_shape.len() == 3·n_nodes_p2
-    /// (b) all Dirichlet-constrained DOFs are exactly 0.0 in pre_stress and
-    ///     every mode shape.
+    ///   (b) all Dirichlet-constrained DOFs are exactly 0.0 in pre_stress and
+    ///   every mode shape.
     ///
     /// RED signal: the symbol does not exist → compile failure.
     #[test]
