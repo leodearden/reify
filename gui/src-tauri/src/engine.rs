@@ -1184,6 +1184,7 @@ impl EngineSession {
     /// - no `StructureInstance` with `type_name == "BucklingResult"` is found, or
     /// - `base_node_positions` is absent/malformed, or
     /// - `modes` list is absent/malformed.
+    #[allow(clippy::type_complexity)]
     fn extract_buckling_data(
         values: &reify_ir::ValueMap,
     ) -> Option<(Vec<f64>, Vec<Vec<f64>>, Vec<f64>)> {
