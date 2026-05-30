@@ -271,6 +271,45 @@ mod tests {
         );
     }
 
+    // ── step-9: EI train construction ────────────────────────────────────────
+
+    /// EI (2-hump): exactly 4 impulses; amplitude_sum≈1; all amplitudes > 0;
+    /// times strictly increasing from t1=0; residual_vibration(design) ≤ v_tol + 1e-9.
+    #[test]
+    fn ei_train_construction_invariants() {
+        let omega_n = 2.0 * PI * 10.0;
+        let zeta = 0.0_f64;
+        let v_tol = 0.05_f64;
+        let train = ImpulseTrain::ei(omega_n, zeta, v_tol);
+
+        assert_eq!(train.impulses.len(), 4, "EI must have exactly 4 impulses");
+
+        // All amplitudes strictly positive.
+        for (i, imp) in train.impulses.iter().enumerate() {
+            assert!(imp.amplitude > 0.0, "EI A[{i}] must be > 0, got {}", imp.amplitude);
+        }
+
+        // Times strictly increasing.
+        assert_close(train.impulses[0].time, 0.0, 1e-12, "EI t0 must be 0");
+        for i in 1..4 {
+            assert!(
+                train.impulses[i].time > train.impulses[i - 1].time,
+                "EI times must be strictly increasing: t[{}]={} <= t[{}]={}",
+                i, train.impulses[i].time, i - 1, train.impulses[i - 1].time
+            );
+        }
+
+        // Σ amplitudes = 1.
+        assert_close(train.amplitude_sum(), 1.0, 1e-12, "EI amplitude_sum");
+
+        // Residual ≤ v_tol at design frequency.
+        let v = train.residual_vibration(omega_n, zeta);
+        assert!(
+            v <= v_tol + 1e-9,
+            "EI residual at design should be ≤ v_tol={v_tol}, got {v:.6e}"
+        );
+    }
+
     // ── step-7: cascade ──────────────────────────────────────────────────────
 
     /// cascade([]) → identity {(0,1)}.
