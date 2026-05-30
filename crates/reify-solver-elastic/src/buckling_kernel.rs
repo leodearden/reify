@@ -32,9 +32,11 @@ use crate::assembly::{
 use crate::boundary::DirichletBc;
 use crate::constitutive::IsotropicElastic;
 use crate::eigensolve::{EigenSolverOptions, solve_eigen_shift_invert};
-use crate::geometric_stiffness::{InitialStress3, geometric_element_stiffness_tet_p1};
+use crate::geometric_stiffness::{
+    InitialStress3, geometric_element_stiffness_tet_p1, geometric_element_stiffness_tet_p2,
+};
 use crate::mpc::MpcRow;
-use crate::result::element_stress_p1;
+use crate::result::{element_stress_p1, element_stress_p2};
 use crate::solver::{CgSolverOptions, SolverMode, solve_cg};
 
 // ---------------------------------------------------------------------------
@@ -457,6 +459,207 @@ pub fn solve_buckling_kernel(
     }
 
     // ---- Phase 4b: assemble full −K_g and project via expansion map --------
+    let neg_k_g_assembly: Vec<AssemblyElement<'_>> = tets
+        .iter()
+        .zip(neg_k_g_elems.iter())
+        .enumerate()
+        .map(|(id, (conn, k_e))| AssemblyElement { id, connectivity: conn, k_e })
+        .collect();
+
+    let neg_k_g_full =
+        assemble_global_stiffness(n_nodes, &neg_k_g_assembly, AssemblyMode::Deterministic);
+    let neg_k_g_red = project_with_expansion(&neg_k_g_full, &expansion, n_indep);
+
+    // ---- Phase 5: generalized eigensolve K φ = λ (−K_g) φ ------------------
+    let eigen_opts = EigenSolverOptions {
+        n_modes: opts.n_modes,
+        tol: opts.eigen_tol,
+        max_iters: opts.eigen_max_iters,
+        sigma: 0.0,
+    };
+    let eig = solve_eigen_shift_invert(&k_red, &neg_k_g_red, eigen_opts);
+
+    // ---- Phase 6: expand mode shapes to full DOF space ----------------------
+    let mut modes: Vec<Mode> = Vec::with_capacity(eig.eigenvalues.len());
+    for i in 0..eig.eigenvalues.len() {
+        let phi_red = eig.eigenvectors.col_as_slice(i);
+        let mut mode_shape = vec![0.0_f64; 3 * n_nodes];
+        for g in 0..3 * n_nodes {
+            for &(r, w) in &expansion[g] {
+                mode_shape[g] += w * phi_red[r];
+            }
+        }
+        modes.push(Mode { eigenvalue: eig.eigenvalues[i], mode_shape });
+    }
+
+    BucklingKernelResult {
+        modes,
+        pre_stress_displacement: u_full,
+        pre_stress_per_element,
+        converged: eig.converged,
+    }
+}
+
+/// Orchestrate the four-phase buckling pipeline for a P2 (quadratic, 10-node)
+/// tetrahedral mesh.
+///
+/// Identical contract to [`solve_buckling_kernel`], but takes a P2 connectivity
+/// `tets: &[[usize;10]]` and internally uses the P2 element kernels:
+/// - `element_stiffness(ElementOrder::P2, …)` for K_e
+/// - `element_stress_p2` for per-element stress recovery
+/// - `geometric_element_stiffness_tet_p2` for K_g
+///
+/// The MPC/Dirichlet reduction (`build_expansion_map`, `project_with_expansion`)
+/// and the CG / eigensolve phases are identical to the P1 path — they operate on
+/// DOF indices and are element-order-agnostic.
+///
+/// # Design rationale
+///
+/// A sibling function rather than a generalised dispatch is chosen to keep the
+/// shipped P1 path bit-identical (zero regression risk) and to isolate the
+/// 10-node `[usize;10]` type-level difference. See the design decisions in
+/// `.task/plan.json` for the full rationale.
+///
+/// # Panics
+///
+/// Same contract as [`solve_buckling_kernel`] — see that function's documentation
+/// for the complete list.
+#[allow(clippy::needless_range_loop)]
+pub fn solve_buckling_kernel_p2(
+    nodes: &[[f64; 3]],
+    tets: &[[usize; 10]],
+    material: &IsotropicElastic,
+    bcs: &[DirichletBc],
+    f: &[f64],
+    mpcs: &[MpcRow],
+    opts: BucklingKernelOptions,
+) -> BucklingKernelResult {
+    // ---- Contract checks ---------------------------------------------------
+    assert_eq!(
+        f.len(),
+        3 * nodes.len(),
+        "load vector length {} != 3 * n_nodes {}",
+        f.len(),
+        3 * nodes.len(),
+    );
+    assert!(opts.n_modes >= 1, "opts.n_modes must be >= 1, got {}", opts.n_modes);
+    assert!(
+        opts.eigen_tol.is_finite() && opts.eigen_tol > 0.0,
+        "opts.eigen_tol must be finite and positive, got {}",
+        opts.eigen_tol,
+    );
+    assert!(
+        opts.eigen_max_iters >= 1,
+        "opts.eigen_max_iters must be >= 1, got {}",
+        opts.eigen_max_iters,
+    );
+    assert!(
+        opts.cg_tolerance.is_finite() && opts.cg_tolerance > 0.0,
+        "opts.cg_tolerance must be finite and positive, got {}",
+        opts.cg_tolerance,
+    );
+    assert!(
+        opts.cg_max_iter >= 1,
+        "opts.cg_max_iter must be >= 1, got {}",
+        opts.cg_max_iter,
+    );
+    for bc in bcs {
+        assert!(
+            bc.dof < 3 * nodes.len(),
+            "DirichletBc.dof {} is out of range [0, {})",
+            bc.dof,
+            3 * nodes.len(),
+        );
+    }
+
+    let n_nodes = nodes.len();
+
+    // ---- Phase 1: expansion map (identical to P1 — DOF-based) ---------------
+    let (expansion, n_indep) = build_expansion_map(n_nodes, bcs, mpcs);
+
+    // ---- Phase 2a: K full assembly (P2 element stiffness, 30-DOF K_e) ------
+    let k_elems: Vec<ElementStiffness> = tets
+        .iter()
+        .map(|tet| {
+            let phys: [[f64; 3]; 10] = std::array::from_fn(|i| nodes[tet[i]]);
+            element_stiffness(ElementOrder::P2, &phys[..], material)
+        })
+        .collect();
+
+    let k_assembly: Vec<AssemblyElement<'_>> = tets
+        .iter()
+        .zip(k_elems.iter())
+        .enumerate()
+        .map(|(id, (conn, k_e))| AssemblyElement { id, connectivity: conn, k_e })
+        .collect();
+
+    let k_full = assemble_global_stiffness(n_nodes, &k_assembly, AssemblyMode::Deterministic);
+
+    // ---- Phase 2b: project K to independent-DOF subspace -------------------
+    let k_red = project_with_expansion(&k_full, &expansion, n_indep);
+
+    // ---- Phase 2c: f_red projection -----------------------------------------
+    let mut f_red = vec![0.0_f64; n_indep];
+    for g in 0..3 * n_nodes {
+        for &(r, w) in &expansion[g] {
+            f_red[r] += w * f[g];
+        }
+    }
+    debug_assert_eq!(f_red.len(), n_indep);
+
+    // ---- Phase 3: linear-static CG solve ------------------------------------
+    let cg_opts = CgSolverOptions { tolerance: opts.cg_tolerance, max_iter: opts.cg_max_iter };
+    let cg_result = solve_cg(&k_red, &f_red, cg_opts, SolverMode::Deterministic);
+
+    assert!(
+        cg_result.converged,
+        "P2 pre-stress CG solve did not converge in {} iterations (residual > {:.2e} · ‖f‖). \
+         Increase opts.cg_max_iter or check the BC/mesh setup.",
+        cg_result.iterations,
+        opts.cg_tolerance,
+    );
+
+    // ---- Expand u_red → u_full -----------------------------------------------
+    let u_red: &[f64] = &cg_result.u;
+    let mut u_full = vec![0.0_f64; 3 * n_nodes];
+    for g in 0..u_full.len() {
+        for &(r, w) in &expansion[g] {
+            u_full[g] += w * u_red[r];
+        }
+    }
+
+    // ---- Phase 4: per-element σ recovery + −K_g element matrices (P2) ------
+    let mut pre_stress_per_element: Vec<[[f64; 3]; 3]> = Vec::with_capacity(tets.len());
+    let mut neg_k_g_elems: Vec<ElementStiffness> = Vec::with_capacity(tets.len());
+
+    for tet in tets {
+        let phys: [[f64; 3]; 10] = std::array::from_fn(|i| nodes[tet[i]]);
+
+        // Gather per-element 30-DOF displacement vector.
+        let mut u_e = [0.0_f64; 30];
+        for (local, &global) in tet.iter().enumerate() {
+            u_e[3 * local]     = u_full[3 * global];
+            u_e[3 * local + 1] = u_full[3 * global + 1];
+            u_e[3 * local + 2] = u_full[3 * global + 2];
+        }
+
+        // Recover σ_e = D · B(centroid) · u_e via the P2 stress kernel.
+        let sigma = element_stress_p2(&phys, material, &u_e);
+        pre_stress_per_element.push(sigma);
+
+        // Feed −σ into the P2 K_g kernel to produce −K_g_e.
+        let neg_sigma = InitialStress3 {
+            sigma: [
+                [-sigma[0][0], -sigma[0][1], -sigma[0][2]],
+                [-sigma[1][0], -sigma[1][1], -sigma[1][2]],
+                [-sigma[2][0], -sigma[2][1], -sigma[2][2]],
+            ],
+        };
+        let neg_k_g_e = geometric_element_stiffness_tet_p2(&phys, &neg_sigma);
+        neg_k_g_elems.push(neg_k_g_e);
+    }
+
+    // ---- Phase 4b: assemble full −K_g and project ---------------------------
     let neg_k_g_assembly: Vec<AssemblyElement<'_>> = tets
         .iter()
         .zip(neg_k_g_elems.iter())

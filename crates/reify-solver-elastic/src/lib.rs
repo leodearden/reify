@@ -454,7 +454,10 @@ pub use eigensolve::{
 };
 // Task 3453: buckling-kernel orchestrator — pre-stress → K_g → eigensolve → mode-shape.
 // PRD: docs/prds/v0_5/buckling-eigensolver.md §13 task δ.
-pub use buckling_kernel::{BucklingKernelOptions, BucklingKernelResult, Mode, solve_buckling_kernel};
+pub use buckling_kernel::{
+    BucklingKernelOptions, BucklingKernelResult, Mode,
+    solve_buckling_kernel, solve_buckling_kernel_p2,
+};
 // Task 3452: P1-tet K_g element kernel + global assembly + shell/hex/wedge stubs.
 // PRD: docs/prds/v0_5/buckling-eigensolver.md §13 task γ.
 // Task 3797: T3a bar/cable K_g element kernel + per-member tangent stiffness.
