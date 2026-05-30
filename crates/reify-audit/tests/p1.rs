@@ -17,8 +17,9 @@
 mod p1 {
 
 use reify_audit::{
-    AuditContext, ChangedSymbol, EvidenceRef, Finding, MockGitOps, MockJCodemunchOps, Pattern,
-    Severity, SymbolReference, TaskMetadata, p1_producer_orphan,
+    AuditContext, ChangedSymbol, DeadSymbol, EvidenceRef, Finding, LayerViolation, MockGitOps,
+    MockJCodemunchOps, Pattern, Severity, SymbolReference, TaskMetadata, UntestedSymbol,
+    p1_producer_orphan,
 };
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -1019,6 +1020,90 @@ mod tests {
             "scoped sweep (target_task_id=prod_1) must still see the out-of-scope \
              review consumer and suppress the orphan finding; got {:?}",
             findings
+        );
+    }
+
+    /// Pins the new-detector API surface introduced by L-TRAIT: three new result
+    /// structs (DeadSymbol / UntestedSymbol / LayerViolation) and three new
+    /// Pattern variants (PDeadCode / PUntested / PLayerViolation). Renaming any
+    /// struct field or Pattern variant will fail this test at compile time —
+    /// exactly what downstream detector leaves (L-PDEAD / L-PUNTESTED / L-PLAYER)
+    /// need from a stable API. No serde round-trip or docstring assertions —
+    /// wire-shape decode is L-CLIENT's boundary test.
+    #[test]
+    fn new_detector_types_api_surface_pin() {
+        let jc = MockJCodemunchOps::new();
+
+        // DeadSymbol: destructure every field by name.
+        let DeadSymbol {
+            id: _,
+            name: _,
+            kind: _,
+            file: _,
+            line: _,
+            confidence: _,
+            signals: _,
+        } = DeadSymbol {
+            id: "sym_1".to_string(),
+            name: "orphan_fn".to_string(),
+            kind: "function".to_string(),
+            file: "crates/x/src/lib.rs".to_string(),
+            line: 10,
+            confidence: 0.9,
+            signals: vec!["no_callers".to_string()],
+        };
+
+        // UntestedSymbol: destructure every field by name.
+        let UntestedSymbol {
+            symbol_id: _,
+            name: _,
+            file: _,
+            reached: _,
+            confidence: _,
+        } = UntestedSymbol {
+            symbol_id: "sym_2".to_string(),
+            name: "untested_fn".to_string(),
+            file: "crates/y/src/lib.rs".to_string(),
+            reached: false,
+            confidence: 0.8,
+        };
+
+        // LayerViolation: destructure every field by name.
+        let LayerViolation {
+            from_file: _,
+            to_file: _,
+            rule: _,
+        } = LayerViolation {
+            from_file: "crates/gui/src/main.rs".to_string(),
+            to_file: "crates/kernel/src/solver.rs".to_string(),
+            rule: "gui-must-not-depend-on-kernel".to_string(),
+        };
+
+        // Pattern: reference each new variant.
+        let _: Pattern = Pattern::PDeadCode;
+        let _: Pattern = Pattern::PUntested;
+        let _: Pattern = Pattern::PLayerViolation;
+
+        // New mock methods: default-empty mock must return empty Vecs.
+        let dead = jc.get_dead_code(0.5);
+        assert!(
+            dead.is_empty(),
+            "default mock get_dead_code must return empty Vec; got {:?}",
+            dead
+        );
+
+        let untested = jc.get_untested_symbols(0.5);
+        assert!(
+            untested.is_empty(),
+            "default mock get_untested_symbols must return empty Vec; got {:?}",
+            untested
+        );
+
+        let violations = jc.get_layer_violations();
+        assert!(
+            violations.is_empty(),
+            "default mock get_layer_violations must return empty Vec; got {:?}",
+            violations
         );
     }
 }
