@@ -99,6 +99,69 @@ fn resolve_trait_member_type_annotation(
     }
 }
 
+/// Derive the exact-match [`CompiledAssocFnSig`] for a trait associated function.
+///
+/// The leading `is_self` receiver (sentinel `self` named type, decl.rs:818-823)
+/// is recorded as `has_self` and excluded from `params`; every other param's
+/// `type_expr` and the `return_type` resolve through the same
+/// [`resolve_trait_member_type_annotation`] path the rest of `compile_trait`
+/// uses (so unresolved/DimensionalOp/IntegerLiteral annotations produce the
+/// same diagnostics). A missing return type defaults to `Type::Real`, matching
+/// `compile_function`'s convention. Added by task 3939 δ.
+#[allow(clippy::too_many_arguments)]
+fn assoc_fn_sig(
+    fn_def: &reify_ast::FnDef,
+    trait_decl: &reify_ast::TraitDecl,
+    enum_defs: &[reify_ir::EnumDef],
+    empty_params: &HashSet<String>,
+    alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
+    trait_names: &HashSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CompiledAssocFnSig {
+    let mut has_self = false;
+    let mut params = Vec::new();
+    for p in &fn_def.params {
+        if p.is_self {
+            // The self receiver's sentinel `self` type is not resolved here;
+            // it is mapped to the concrete conformer type during conformance /
+            // dispatch (tasks δ/ζ). Record self-ness and skip.
+            has_self = true;
+            continue;
+        }
+        let ty = resolve_trait_member_type_annotation(
+            &p.type_expr,
+            trait_decl,
+            enum_defs,
+            empty_params,
+            alias_registry,
+            structure_names,
+            trait_names,
+            diagnostics,
+        );
+        params.push(ty);
+    }
+    let return_type = match &fn_def.return_type {
+        Some(te) => resolve_trait_member_type_annotation(
+            te,
+            trait_decl,
+            enum_defs,
+            empty_params,
+            alias_registry,
+            structure_names,
+            trait_names,
+            diagnostics,
+        ),
+        None => Type::Real,
+    };
+    CompiledAssocFnSig {
+        name: fn_def.name.clone(),
+        has_self,
+        params,
+        return_type,
+    }
+}
+
 pub(crate) fn compile_trait(
     trait_decl: &reify_ast::TraitDecl,
     enum_defs: &[reify_ir::EnumDef],
@@ -200,6 +263,34 @@ pub(crate) fn compile_trait(
                     kind: RequirementKind::Sub(sub_decl.structure_name.clone()),
                     span: sub_decl.span,
                 });
+            }
+            reify_ast::MemberDecl::Fn(fn_def) => {
+                // Associated function (task 3939 δ). A bodyless fn is a required
+                // member the conformer must provide; a fn with a body is a
+                // default-providing member injected when not overridden.
+                let sig = assoc_fn_sig(
+                    fn_def,
+                    trait_decl,
+                    enum_defs,
+                    &empty_params,
+                    alias_registry,
+                    structure_names,
+                    trait_names,
+                    diagnostics,
+                );
+                if fn_def.body.is_none() {
+                    required_members.push(TraitRequirement {
+                        name: fn_def.name.clone(),
+                        kind: RequirementKind::Fn(sig),
+                        span: fn_def.span,
+                    });
+                } else {
+                    defaults.push(TraitDefault {
+                        name: Some(fn_def.name.clone()),
+                        kind: DefaultKind::Fn(fn_def.clone()),
+                        span: fn_def.span,
+                    });
+                }
             }
             _ => {
                 // Minimize, Maximize, GuardedGroup, AssociatedType — skip for now
