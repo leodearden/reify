@@ -1450,14 +1450,7 @@ fn invoke_solve_elastic_static(args: &[Value], ctx: &EvalContext) -> Value {
         .find(|f| f.name == "solve_elastic_static" && f.params.len() == args.len())
     {
         Some(f) => f,
-        None => {
-            eprintln!(
-                "[DEBUG invoke_solve_elastic_static] no match for name=solve_elastic_static arity={}: fns={:?}",
-                args.len(),
-                ctx.functions.iter().map(|f| (f.name.as_str(), f.params.len())).collect::<Vec<_>>()
-            );
-            return Value::Undef;
-        }
+        None => return Value::Undef,
     };
 
     if ctx.recursion_depth >= MAX_RECURSION_DEPTH {
