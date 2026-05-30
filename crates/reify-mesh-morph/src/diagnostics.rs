@@ -267,13 +267,17 @@ pub fn format_summary(snap: &DiagnosticSnapshot) -> String {
     out
 }
 
-/// Reset all counters to zero.
+/// Atomically reset all diagnostic counters to zero.
 ///
-/// Available in same-crate `#[cfg(test)]` context, and also when the crate is
-/// compiled with `features = ["testing"]` — enabling cross-crate test isolation
-/// (e.g. from task #2949's debug-RPC tests). Mirrors `stats::reset_for_test`.
-#[cfg(any(test, feature = "testing"))]
-pub fn reset_for_test() {
+/// Production-callable (ungated); intended for use by the cross-crate
+/// `mesh_morph_stats` debug RPC (`gui/src-tauri/src/debug_server.rs`) when the
+/// caller passes `reset: true` to snapshot counters and restart the session clock
+/// in one atomic operation (benchmark-sequence use case).
+///
+// G-allow: only caller is the cross-crate debug RPC (gui/src-tauri/src/debug_server.rs
+// handle_mesh_morph_stats), invisible to the crate-scoped orphan audit; the
+// diagnostics_g_allow.rs test pins the 4 recorders and does not assert orphan_count==0.
+pub fn reset() {
     COUNTERS.morphed.store(0, Ordering::Relaxed);
     COUNTERS
         .remeshed_quality_hard_fail
@@ -289,6 +293,17 @@ pub fn reset_for_test() {
         .store(0, Ordering::Relaxed);
     COUNTERS.ineligible_naming_error.store(0, Ordering::Relaxed);
     COUNTERS.panicked.store(0, Ordering::Relaxed);
+}
+
+/// Reset all counters to zero.
+///
+/// Available in same-crate `#[cfg(test)]` context, and also when the crate is
+/// compiled with `features = ["testing"]` — enabling cross-crate test isolation
+/// (e.g. from task #2949's debug-RPC tests). Mirrors `stats::reset_for_test`.
+/// Delegates to the ungated [`reset()`] so the body stays DRY.
+#[cfg(any(test, feature = "testing"))]
+pub fn reset_for_test() {
+    reset();
 }
 
 #[cfg(test)]
