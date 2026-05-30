@@ -78,7 +78,13 @@ module.exports = grammar({
   ],
 
   rules: {
-    source_file: $ => repeat($._declaration),
+    source_file: $ => seq(optional($.module_declaration), repeat($._declaration)),
+
+    // `module company.products.actuators`
+    // Placed ONLY here (not in _declaration) so that a module decl after any
+    // other declaration is a natural parse ERROR — the grammar enforces the
+    // top-of-file / one-per-file rule (PRD D-5, §7.2) with no extra code.
+    module_declaration: $ => seq('module', field('path', $.import_path)),
 
     _declaration: $ => choice(
       $.structure_definition,
