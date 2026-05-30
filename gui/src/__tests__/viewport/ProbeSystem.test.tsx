@@ -48,13 +48,20 @@ vi.mock('three', () => {
     }
   }
 
+  // Mirrors real THREE.Color: the material stores a Color instance, not a raw number.
+  class MockColor {
+    value: number;
+    set = vi.fn((v: number) => { this.value = v; });
+    constructor(v?: number) { this.value = v ?? 0; }
+  }
+
   class MockMeshBasicMaterial {
-    color: any;
+    color: MockColor;
     opacity: number = 1;
     transparent: boolean = false;
     dispose = vi.fn();
     constructor(opts?: any) {
-      this.color = opts?.color;
+      this.color = new MockColor(opts?.color);
       this.opacity = opts?.opacity ?? 1;
       this.transparent = opts?.transparent ?? false;
       mockMeshBasicMaterialInstances.push(this);
@@ -335,7 +342,7 @@ describe('createProbeSystem — resampleAll', () => {
     });
   });
 
-  it('stale probe has its marker greyed (opacity < 1 or color changed)', () => {
+  it('stale probe has its marker greyed (color.set to STALE color + opacity < 1)', () => {
     createRoot((dispose) => {
       const { system, meshManager } = makeSetup({
         sampleProbe: vi.fn().mockReturnValue(makeSample()),
@@ -344,11 +351,16 @@ describe('createProbeSystem — resampleAll', () => {
       system.addProbe('Body', 0, [1 / 3, 1 / 3, 1 / 3]);
       // The marker material instance is the last created one
       const markerMaterial = mockMeshBasicMaterialInstances[mockMeshBasicMaterialInstances.length - 1];
+      // Capture the Color instance BEFORE resampleAll so we can assert it was mutated in place
+      const colorObj = markerMaterial.color;
 
       meshManager.sampleProbe.mockReturnValue(null);
       system.resampleAll();
 
-      // After marking stale, the material should be greyed (opacity reduced OR transparent set)
+      // Color must be set via .set() on the existing Color instance — not replaced
+      expect(colorObj.set).toHaveBeenCalledWith(0x888888); // MARKER_COLOR_STALE
+      expect(markerMaterial.color).toBe(colorObj);          // same instance, mutated in place
+      // Opacity must also be reduced
       expect(markerMaterial.opacity).toBeLessThan(1);
       dispose();
     });
