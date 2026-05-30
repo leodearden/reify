@@ -12,7 +12,6 @@
 mod common;
 
 use reify_core::{DimensionVector, Severity};
-use reify_ir::{CompiledExprKind, Value};
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
