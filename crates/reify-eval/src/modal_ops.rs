@@ -860,12 +860,12 @@ fn build_dirichlet_bcs(options: &Value, length: f64, width: f64, height: f64) ->
 ///      translation, the Y translation, and the in-plane Z-rotation) must be
 ///      removed or `K_free` is singular and the shift-invert Cholesky fails.
 ///      They are killed at the two end-face NEUTRAL-axis nodes (`z = h/2`):
-///        • pin **X** at the `x_min` neutral node          → removes X translation;
-///        • pin **Y** at the `x_min` AND `x_max` neutral nodes (separated by `L`
-///          along x) → removes Y translation *and* the in-plane Z-rotation
-///          (a single Y anchor cannot remove both — a rotation about the vertical
-///          axis through that one node leaves it fixed; two anchors separated in
-///          x pin the rotation too).
+///      - pin **X** at the `x_min` neutral node → removes X translation;
+///      - pin **Y** at the `x_min` AND `x_max` neutral nodes (separated by `L`
+///        along x) → removes Y translation *and* the in-plane Z-rotation
+///        (a single Y anchor cannot remove both — a rotation about the vertical
+///        axis through that one node leaves it fixed; two anchors separated in
+///        x pin the rotation too).
 ///
 /// Both anchor families are non-intrusive to the vertical bending modes (the
 /// task's headline signal): the vertical mode has `u = 0` at the neutral axis
