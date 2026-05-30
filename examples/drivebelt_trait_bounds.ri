@@ -82,7 +82,7 @@ structure def CeramicLiner : Refractory {
     param name : String = "alumina_ceramic"
 
     // ThermallyCharacterized
-    param thermal_conductivity : ThermalConductivity = 30.0 * 1W / (1m * 1K)
+    param thermal_conductivity : ThermalConductivity = 30.0W/(m*K)
     param specific_heat : SpecificHeat = 880.0 * 1J / (1kg * 1K)
     param thermal_expansion : ThermalExpansion = 0.000008 / 1K  // 8.0e-6 coefficient of linear expansion
     param melting_point : Real = 2072.0        // K
