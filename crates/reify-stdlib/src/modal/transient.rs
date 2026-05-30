@@ -246,6 +246,28 @@ mod tests {
                         * (omega_d * t).sin())
     }
 
+    /// Analytic full response to F₀·sin(Ωt) from rest (u(0)=0, u̇(0)=0).
+    ///
+    /// Steady-state particular: u_ss(t) = (F₀/ω²)·Rd·sin(Ωt − φ)
+    /// where r = Ω/ω, Rd = 1/√[(1−r²)² + (2ζr)²], φ = atan2(2ζr, 1−r²).
+    /// Adds the IC-matched damped-free transient so u(0) = u̇(0) = 0.
+    fn analytic_sine_response(f0: f64, big_omega: f64, omega: f64, zeta: f64, t: f64) -> f64 {
+        use std::f64::consts::PI as _PI;
+        let _ = _PI; // suppress unused warning
+        let omega_d = omega * (1.0 - zeta * zeta).sqrt();
+        let r       = big_omega / omega;
+        let phi     = (2.0 * zeta * r).atan2(1.0 - r * r);
+        let denom   = ((1.0 - r * r).powi(2) + (2.0 * zeta * r).powi(2)).sqrt();
+        let rd      = 1.0 / denom;
+        let uss     = |tt: f64| (f0 / (omega * omega)) * rd * (big_omega * tt - phi).sin();
+        let vss     = |tt: f64| (f0 / (omega * omega)) * rd * big_omega * (big_omega * tt - phi).cos();
+        // IC matching: u(0)=0, u̇(0)=0
+        let c1 = -uss(0.0);
+        let c2 = (zeta * omega * c1 - vss(0.0)) / omega_d;
+        let decay = (-zeta * omega * t).exp();
+        uss(t) + decay * (c1 * (omega_d * t).cos() + c2 * (omega_d * t).sin())
+    }
+
     // ─── step 03: constant-force step-response exactness (RED) ───────────────
 
     /// Drives `duhamel_solve` from rest with a CONSTANT forcing slice p0.
@@ -272,6 +294,63 @@ mod tests {
                 (got - want).abs()
             );
         }
+    }
+
+    // ─── step 07: sine accuracy — SINE ACCURACY PIN ──────────────────────────
+
+    /// Characterises the FOH recurrence for f(t) = sin(Ωt).
+    ///
+    /// Asserts:
+    /// (a) Loose sanity bound: max relative error < 5e-2 (the honest
+    ///     O((ΩΔt)²) method floor — NOT 1e-9).
+    /// (b) Authoritative 2nd-order convergence: error_50 / error_100 ≥ 3.5.
+    ///     Passes under FOH (2nd-order); would fail under ZOH (1st-order).
+    #[test]
+    fn sine_response_accuracy_and_convergence() {
+        use std::f64::consts::PI;
+        let big_omega = 2.0 * PI * 5.0_f64;  // 5 Hz excitation
+        let omega = 50.0_f64;
+        let zeta  = 0.05_f64;
+        let f0    = 1.0_f64;
+        let t_end = 1.0_f64;  // 1 second
+
+        let max_abs_analytic = {
+            // Estimate peak response amplitude at many sample points.
+            let coarse: Vec<f64> = (0..1000)
+                .map(|j| analytic_sine_response(f0, big_omega, omega, zeta, j as f64 * t_end / 999.0).abs())
+                .collect();
+            coarse.iter().cloned().fold(0.0_f64, f64::max)
+        };
+
+        let run = |n: usize| -> f64 {
+            let dt = t_end / (n - 1) as f64;
+            let forcing: Vec<f64> = (0..n)
+                .map(|j| f0 * (big_omega * j as f64 * dt).sin())
+                .collect();
+            let got = duhamel_solve(omega, zeta, dt, &forcing, 0.0, 0.0);
+            let max_err = got.iter().enumerate().map(|(j, &g)| {
+                let t    = j as f64 * dt;
+                let want = analytic_sine_response(f0, big_omega, omega, zeta, t);
+                (g - want).abs()
+            }).fold(0.0_f64, f64::max);
+            max_err / max_abs_analytic   // relative to analytic amplitude
+        };
+
+        let err_50  = run(50);
+        let err_100 = run(100);
+
+        // (a) Loose sanity bound — NOT 1e-9.
+        assert!(
+            err_50 < 5e-2,
+            "coarse-grid (50 pt) relative error {err_50:.3e} ≥ 5e-2"
+        );
+
+        // (b) Authoritative 2nd-order convergence-rate assertion.
+        let ratio = err_50 / err_100;
+        assert!(
+            ratio >= 3.5,
+            "convergence ratio err_50/err_100 = {ratio:.2} < 3.5 (expected ≥ 4 for 2nd-order)"
+        );
     }
 
     // ─── step 05: linear-ramp exactness — EXACTNESS PIN (RED) ────────────────
