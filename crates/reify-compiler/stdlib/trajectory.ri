@@ -800,10 +800,20 @@ structure def KlipperDialect : GcodeDialect { }
 // `(String, StructureInstance)` arguments into a `Value::List` of profile
 // records, mirroring the `mechanism` builtin's `Value::Map` structured-result
 // encoding (the `eval_builtin` path has no `StructureRegistry` to mint a real
-// `Value::StructureInstance`). The `[]` body here is the compile-time
-// type-surface stub — same posture as `end_effector_track(…) -> List<Pose3> { [] }`
-// (:432); the populated list is produced by the eval path, never by this body.
-pub fn gcode_import(source: String, dialect: GcodeDialect) -> List<Profile> { [] }
+// `Value::StructureInstance`).
+//
+// The body delegates to the `gcode_import_lower` intrinsic rather than
+// returning a stub `[]`. Because this fn has a `.ri` declaration the compiler's
+// `resolve_function_overload` returns `Resolved` → `UserFunctionCall`, causing
+// the evaluator to run the body instead of reaching `eval_builtin("gcode_import",
+// …)` directly. `gcode_import_lower` has no `.ri` declaration, so a call to it
+// inside the body resolves `NoUserFunctions` → `FunctionCall` → `eval_builtin`
+// → `eval_trajectory("gcode_import_lower", …)` → `eval_gcode_import`. The fn
+// signature (`List<Profile>`) and the call site's `UserFunctionCall` result type
+// are unchanged, so `imported.count` and the `profile_count > 0` constraint
+// typecheck correctly. `compile_function` applies no body-vs-return-type check,
+// so the delegate body produces zero Error diagnostics.
+pub fn gcode_import(source: String, dialect: GcodeDialect) -> List<Profile> { gcode_import_lower(source, dialect) }
 
 // ── GcodeDialectInput ────────────────────────────────────────────────────────
 //
