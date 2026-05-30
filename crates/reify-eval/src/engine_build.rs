@@ -3333,6 +3333,18 @@ impl Engine {
                         reify_compiler::CompiledGeometryOp::Boolean { .. } => &[],
                     };
                     for (arg_name, expr) in args {
+                        // CrossSubGeometryRef (`self.<sub>.<member>`) is a
+                        // geometry-ref arg compiled into the scalar args list
+                        // by compile_expr (geometry.rs:749). eval_expr would
+                        // panic on it (unreachable! in reify-expr). Its
+                        // identity is already captured in the GeomRef
+                        // `target`/`profiles` field — skip for hash purposes.
+                        if matches!(
+                            expr.kind,
+                            reify_ir::CompiledExprKind::CrossSubGeometryRef(_)
+                        ) {
+                            continue;
+                        }
                         let v = reify_expr::eval_expr(expr, &ctx);
                         h = h
                             .combine(ContentHash::of_str(arg_name))
@@ -3408,6 +3420,13 @@ impl Engine {
                         reify_compiler::CompiledGeometryOp::Boolean { .. } => &[],
                     };
                     for (arg_name, expr) in args {
+                        // CrossSubGeometryRef (`self.<sub>.<member>`) is a geometry-ref
+                        // arg compiled into the scalar args list (geometry.rs). eval_expr
+                        // would panic on it (unreachable! in reify-expr); its identity is
+                        // already captured in the GeomRef target/profiles. Skip for hashing.
+                        if matches!(expr.kind, reify_ir::CompiledExprKind::CrossSubGeometryRef(_)) {
+                            continue;
+                        }
                         let v = reify_expr::eval_expr(expr, &ctx);
                         h = h
                             .combine(ContentHash::of_str(arg_name))
