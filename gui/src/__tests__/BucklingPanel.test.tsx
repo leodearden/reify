@@ -48,7 +48,7 @@ vi.mock('three', () => ({
 }));
 
 import { createBucklingStore } from '../stores/bucklingStore';
-import { BucklingPanel } from '../panels/BucklingPanel';
+import { BucklingPanel, formatEigenvalue } from '../panels/BucklingPanel';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -153,5 +153,60 @@ describe('BucklingPanel', () => {
     const checkbox = screen.getByTestId('buckling-show-undeformed');
     fireEvent.click(checkbox);
     expect(setShowSpy).toHaveBeenCalledWith(true);
+  });
+
+  // ── task-4072 step-11: eigenvalue label + thumbnail ──────────────────────
+
+  it('(g) mode row text includes formatted eigenvalue when eigenvalue is present', () => {
+    let store;
+    createRoot((dispose) => {
+      store = createBucklingStore();
+      store.ingestFrame({ mode_index: 0, phase: 0.0, displaced_positions: BASE });
+      store.ingestFrame({ mode_index: 0, phase: 1.0, displaced_positions: PEAK, eigenvalue: 1000 });
+      render(() => <BucklingPanel store={store!} />);
+      dispose();
+    });
+    const expected = formatEigenvalue(1000);
+    expect(typeof expected).toBe('string');
+    expect(expected.length).toBeGreaterThan(0);
+    // The mode row should contain the formatted value somewhere in its text
+    const modeRow = screen.getByTestId('buckling-mode-row-0');
+    expect(modeRow.textContent).toContain(expected);
+  });
+
+  it('(h) each mode row renders a thumbnail SVG element', () => {
+    let store;
+    createRoot((dispose) => {
+      store = createBucklingStore();
+      store.ingestFrame({ mode_index: 0, phase: 0.0, displaced_positions: BASE });
+      store.ingestFrame({ mode_index: 0, phase: 1.0, displaced_positions: PEAK, eigenvalue: 1000 });
+      store.ingestFrame({ mode_index: 1, phase: 1.0, displaced_positions: PEAK, eigenvalue: 2000 });
+      render(() => <BucklingPanel store={store!} />);
+      dispose();
+    });
+    expect(screen.getByTestId('buckling-mode-thumbnail-0')).toBeTruthy();
+    expect(screen.getByTestId('buckling-mode-thumbnail-1')).toBeTruthy();
+  });
+});
+
+// ── direct unit tests for exported formatEigenvalue ───────────────────────────
+
+describe('formatEigenvalue', () => {
+  it('returns a non-empty string for a finite number', () => {
+    const result = formatEigenvalue(1000);
+    expect(typeof result).toBe('string');
+    expect(result.length).toBeGreaterThan(0);
+  });
+
+  it('returns "—" for null', () => {
+    expect(formatEigenvalue(null)).toBe('—');
+  });
+
+  it('returns "—" for undefined', () => {
+    expect(formatEigenvalue(undefined)).toBe('—');
+  });
+
+  it('returns "—" for NaN', () => {
+    expect(formatEigenvalue(NaN)).toBe('—');
   });
 });
