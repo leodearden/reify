@@ -1180,8 +1180,10 @@ fn demanded_reprs_for_template(template: &TopologyTemplate, format: ExportFormat
         .collect();
 
     // consumer_ops[p_idx] = list of (consumer_idx, consuming_Operation) pairs.
-    // Built by scanning every realization's ops for GeomRef::Sub references.
+    // conservative_producers[p_idx] = true when a downstream reference to p_idx
+    // could not be resolved (absent name / cross-template). Forces BRep on p_idx.
     let mut consumer_ops: Vec<Vec<(usize, Operation)>> = vec![vec![]; n];
+    let mut conservative_producers: Vec<bool> = vec![false; n];
 
     for (c_idx, realization) in template.realizations.iter().enumerate() {
         for op in &realization.operations {
@@ -1191,8 +1193,22 @@ fn demanded_reprs_for_template(template: &TopologyTemplate, format: ExportFormat
                 let base = sub_name.split('.').next().unwrap_or(sub_name);
                 if let Some(&p_idx) = name_to_idx.get(base) {
                     consumer_ops[p_idx].push((c_idx, consuming_op));
+                } else {
+                    // Unresolved / cross-template reference: we cannot determine
+                    // what repr the absent downstream consumer requires, so we
+                    // must treat c_idx's operation conservatively (BRep).
+                    // We mark c_idx itself as a conservative producer so that
+                    // its own producers are also forced to BRep.
+                    conservative_producers[c_idx] = true;
+                    tracing::debug!(
+                        target: "reify_eval::demanded_reprs",
+                        unresolved_ref = sub_name,
+                        realization_idx = c_idx,
+                        "unresolved GeomRef::Sub '{}' in consumer realization; \
+                         defaulting realization and its producers to BRep demand (conservative)",
+                        sub_name
+                    );
                 }
-                // Unresolved / cross-template: step-8 adds conservative BRep + debug log.
             }
         }
     }
@@ -1202,7 +1218,10 @@ fn demanded_reprs_for_template(template: &TopologyTemplate, format: ExportFormat
     let mut demand = vec![ReprKind::BRep; n];
 
     for r_idx in (0..n).rev() {
-        if consumer_ops[r_idx].is_empty() {
+        // If this realization itself has an unresolved downstream ref, force BRep.
+        if conservative_producers[r_idx] {
+            demand[r_idx] = ReprKind::BRep;
+        } else if consumer_ops[r_idx].is_empty() {
             // Terminal realization: sink determines demand.
             demand[r_idx] = match format {
                 ExportFormat::Stl | ExportFormat::Obj => ReprKind::Mesh,
@@ -1211,7 +1230,9 @@ fn demanded_reprs_for_template(template: &TopologyTemplate, format: ExportFormat
         } else {
             // Non-terminal: Mesh unless a disqualifier forces BRep.
             let needs_brep = consumer_ops[r_idx].iter().any(|(c_idx, op)| {
-                !op_accepts_repr(op, ReprKind::Mesh) || demand[*c_idx] == ReprKind::BRep
+                !op_accepts_repr(op, ReprKind::Mesh)
+                    || demand[*c_idx] == ReprKind::BRep
+                    || conservative_producers[*c_idx]
             });
             demand[r_idx] = if needs_brep {
                 ReprKind::BRep
