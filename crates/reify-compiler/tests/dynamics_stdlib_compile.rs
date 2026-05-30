@@ -281,3 +281,73 @@ fn joint_force_has_joint_id_and_value_params() {
         "JointForce.value should be Type::TraitObject(\"JointForceValue\")"
     );
 }
+
+// ─── TrajectorySample shape ───────────────────────────────────────────────────
+
+#[test]
+fn trajectory_sample_has_four_params_with_correct_types() {
+    let template = find_structure("TrajectorySample");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["t", "values", "vels", "accels"],
+        "TrajectorySample should have exactly (t, values, vels, accels) in that order"
+    );
+
+    // `t : Time` — Time dimension scalar
+    let time_ty = Type::Scalar {
+        dimension: DimensionVector::TIME,
+    };
+    // `values/vels/accels : List<JointValue>` — JointValue resolves to Real
+    let list_real_ty = Type::List(Box::new(Type::Real));
+
+    let expected: &[(&str, Type)] = &[
+        ("t", time_ty),
+        ("values", list_real_ty.clone()),
+        ("vels", list_real_ty.clone()),
+        ("accels", list_real_ty),
+    ];
+
+    for (member, expected_ty) in expected {
+        let cell = params
+            .iter()
+            .find(|vc| vc.id.member == *member)
+            .unwrap_or_else(|| panic!("TrajectorySample missing param '{}'", member));
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "TrajectorySample.{} should be {:?}, got {:?}",
+            member, expected_ty, cell.cell_type
+        );
+    }
+}
+
+// ─── MotionTrajectory shape ───────────────────────────────────────────────────
+
+#[test]
+fn motion_trajectory_has_mechanism_and_samples_params() {
+    let template = find_structure("MotionTrajectory");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["mechanism", "samples"],
+        "MotionTrajectory should have exactly (mechanism, samples) in that order"
+    );
+
+    let mechanism = params.iter().find(|p| p.id.member == "mechanism")
+        .expect("MotionTrajectory missing param 'mechanism'");
+    assert_eq!(
+        mechanism.cell_type,
+        Type::Real,
+        "MotionTrajectory.mechanism should be Type::Real (Mechanism placeholder)"
+    );
+
+    let samples = params.iter().find(|p| p.id.member == "samples")
+        .expect("MotionTrajectory missing param 'samples'");
+    assert_eq!(
+        samples.cell_type,
+        Type::List(Box::new(Type::StructureRef("TrajectorySample".to_string()))),
+        "MotionTrajectory.samples should be Type::List(StructureRef(\"TrajectorySample\"))"
+    );
+}
