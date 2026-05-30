@@ -892,8 +892,10 @@ bool contains_solid(const OcctShape& shape, double px, double py, double pz, dou
 ///       evaluate `sample_count` uniform parameter points on both shapes and
 ///       require every `|p_a − p_b| < tolerance`.
 ///
-/// **Tolerance precondition:** `tolerance` must be a non-negative finite `double`.
-/// Negative or NaN values cause the implementation to throw `std::runtime_error`.
+/// **Tolerance precondition:** `tolerance` must be a *strictly positive* finite
+/// `double`.  Zero, negative, or non-finite values cause the implementation to
+/// throw `std::runtime_error`.  (A zero tolerance makes `tol_sq = 0` so the
+/// `>= tol_sq` comparison is always true — even identical shapes return `false`.)
 ///
 /// Powers the v0.1 stdlib `geo_equiv(a, b, tol) -> Bool` (PRD §9 KGQ-δ).
 bool geo_equiv_topo_sample(const OcctShape& a, const OcctShape& b,

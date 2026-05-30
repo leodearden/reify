@@ -195,3 +195,36 @@ fn geo_equiv_negative_tolerance_returns_err() {
         ),
     }
 }
+
+/// NaN tolerance → `Err(QueryError::QueryFailed)` (isfinite precondition).
+///
+/// Pins the `std::isfinite` half of the precondition guard alongside the
+/// existing negative-tolerance test.
+#[test]
+fn geo_equiv_nan_tolerance_returns_err() {
+    let (kernel, box_id, cyl_id) = box_and_cylinder_kernel();
+    match kernel.geo_equiv(box_id, cyl_id, f64::NAN) {
+        Err(QueryError::QueryFailed(_)) => {}
+        other => panic!(
+            "expected Err(QueryFailed) for NaN tolerance, got {:?}",
+            other
+        ),
+    }
+}
+
+/// Zero tolerance → `Err(QueryError::QueryFailed)` (must be strictly positive).
+///
+/// With tol_sq == 0 the comparison `pa.SquareDistance(pb) >= tol_sq` would always
+/// be true (0 >= 0), so even identical shapes would return false.  The precondition
+/// rejects zero to prevent this silent trap.
+#[test]
+fn geo_equiv_zero_tolerance_returns_err() {
+    let (kernel, box_id, cyl_id) = box_and_cylinder_kernel();
+    match kernel.geo_equiv(box_id, cyl_id, 0.0) {
+        Err(QueryError::QueryFailed(_)) => {}
+        other => panic!(
+            "expected Err(QueryFailed) for zero tolerance, got {:?}",
+            other
+        ),
+    }
+}
