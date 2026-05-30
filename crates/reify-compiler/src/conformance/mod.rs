@@ -1117,6 +1117,191 @@ mod tests {
         );
     }
 
+    // --- task 3939 δ step-7/8 fixtures: assoc-fn table population ---
+
+    /// Build a body-carrying `fn <name>(<params>) -> <return_type_name> { <value> }`
+    /// `FnDef`. The distinct `value` lets the override/default tests assert that
+    /// override and default bodies compile to different content hashes.
+    fn assoc_fn_def(
+        name: &str,
+        params: Vec<reify_ast::FnParam>,
+        return_type_name: &str,
+        value: f64,
+    ) -> reify_ast::FnDef {
+        reify_ast::FnDef {
+            name: name.to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            params,
+            return_type: Some(reify_ast::TypeExpr {
+                kind: reify_ast::TypeExprKind::Named {
+                    name: return_type_name.to_string(),
+                    type_args: vec![],
+                },
+                span: SourceSpan::empty(0),
+            }),
+            body: Some(reify_ast::FnBody {
+                let_bindings: vec![],
+                result_expr: reify_ast::Expr {
+                    kind: reify_ast::ExprKind::NumberLiteral {
+                        value,
+                        is_real: true,
+                    },
+                    span: SourceSpan::empty(0),
+                },
+            }),
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+            annotations: vec![],
+        }
+    }
+
+    /// Trait `Shape` with a single default-providing assoc fn
+    /// `fn <fn_name>(self) -> Real { <value> }` and NO required members.
+    fn shape_with_default_fn(fn_name: &str, value: f64) -> CompiledTrait {
+        CompiledTrait {
+            name: "Shape".to_string(),
+            is_pub: false,
+            doc: None,
+            type_params: vec![],
+            refinements: vec![],
+            required_members: vec![],
+            defaults: vec![TraitDefault {
+                name: Some(fn_name.to_string()),
+                kind: DefaultKind::Fn(assoc_fn_def(fn_name, vec![assoc_self_param()], "Real", value)),
+                span: SourceSpan::empty(0),
+            }],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        }
+    }
+
+    /// Sibling of [`run_conformance`] that also surfaces the populated assoc-fn
+    /// table so the table-population tests can assert on its contents.
+    fn run_conformance_with_assoc_fns(
+        traits: &[CompiledTrait],
+        structure_def: &reify_ast::StructureDef,
+        enum_defs: &[reify_ir::EnumDef],
+    ) -> (Vec<Diagnostic>, Vec<CompiledAssocFn>) {
+        let entity_ref = EntityDefRef::from(structure_def);
+        let trait_registry: HashMap<String, &CompiledTrait> =
+            traits.iter().map(|t| (t.name.clone(), t)).collect();
+        let trait_names: HashSet<String> = trait_registry.keys().cloned().collect();
+        let structure_names: HashSet<String> = HashSet::new();
+        let mut scope = CompilationScope::new(&structure_def.name);
+        let mut value_cells: Vec<ValueCellDecl> = vec![];
+        let mut constraints: Vec<CompiledConstraint> = vec![];
+        let mut constraint_index = 0u32;
+        let functions: &[CompiledFunction] = &[];
+        let alias_registry = TypeAliasRegistry::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let mut assoc_fns: Vec<CompiledAssocFn> = vec![];
+
+        check_trait_conformance(
+            &entity_ref,
+            &trait_registry,
+            &structure_names,
+            &trait_names,
+            &mut scope,
+            &mut value_cells,
+            &mut constraints,
+            &mut constraint_index,
+            enum_defs,
+            functions,
+            &alias_registry,
+            &mut diagnostics,
+            &mut assoc_fns,
+        );
+
+        (diagnostics, assoc_fns)
+    }
+
+    /// RED (task 3939 δ, step-7a): a trait's default-providing assoc fn is
+    /// injected into the conformer's assoc-fn table when the structure does NOT
+    /// override it — `is_override == false`, keyed by `(trait, fn)`.
+    ///
+    /// Fails until step-8 wires `check_phase_resolve_assoc_fns` (today
+    /// `DefaultKind::Fn` defaults are dropped during the merge and no phase
+    /// populates the out-param, so the table is empty).
+    #[test]
+    fn default_assoc_fn_injected_into_table_when_not_overridden() {
+        let shape = shape_with_default_fn("area", 1.0);
+        let structure_def = structure_s_conforming_shape(vec![]); // no override
+
+        let (diagnostics, assoc_fns) =
+            run_conformance_with_assoc_fns(&[shape], &structure_def, &[]);
+
+        // A default-providing fn imposes no requirement, so conformance is clean.
+        assert!(
+            !diagnostics.iter().any(|d| {
+                d.code == Some(DiagnosticCode::TraitFnNotSatisfied)
+                    || d.code == Some(DiagnosticCode::TraitFnSignatureMismatch)
+            }),
+            "a default-providing assoc fn should conform cleanly; got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            assoc_fns.len(),
+            1,
+            "expected exactly one injected assoc-fn table entry; got: {:?}",
+            assoc_fns
+        );
+        let entry = &assoc_fns[0];
+        assert_eq!(entry.trait_name, "Shape", "entry should be keyed by the declaring trait");
+        assert_eq!(entry.fn_name, "area", "entry should be keyed by the fn name");
+        assert!(
+            !entry.is_override,
+            "a non-overridden default must have is_override == false; got: {:?}",
+            entry
+        );
+        assert_eq!(entry.function.name, "area");
+        assert_eq!(
+            entry.function.return_type,
+            Type::Real,
+            "the injected default's compiled return type should be Real"
+        );
+    }
+
+    /// RED (task 3939 δ, step-7b): when the structure overrides a trait's
+    /// default-providing assoc fn, the table entry is the OVERRIDE
+    /// (`is_override == true`) and its compiled `function.content_hash` differs
+    /// from the injected-default's (distinct body ⇒ distinct hash). Fails until
+    /// step-8.
+    #[test]
+    fn override_assoc_fn_beats_default_in_table() {
+        // Reference run: no override → the injected default body (1.0).
+        let s_default = structure_s_conforming_shape(vec![]);
+        let (_d0, assoc_default) =
+            run_conformance_with_assoc_fns(&[shape_with_default_fn("area", 1.0)], &s_default, &[]);
+        assert_eq!(assoc_default.len(), 1, "default run should populate one entry");
+        assert!(!assoc_default[0].is_override);
+
+        // Override run: structure provides `fn area(self) -> Real { 2.0 }`.
+        let s_override = structure_s_conforming_shape(vec![reify_ast::MemberDecl::Fn(
+            assoc_fn_def("area", vec![assoc_self_param()], "Real", 2.0),
+        )]);
+        let (_d1, assoc_override) =
+            run_conformance_with_assoc_fns(&[shape_with_default_fn("area", 1.0)], &s_override, &[]);
+        assert_eq!(assoc_override.len(), 1, "override run should populate one entry");
+        let entry = &assoc_override[0];
+        assert_eq!(entry.trait_name, "Shape");
+        assert_eq!(entry.fn_name, "area");
+        assert!(
+            entry.is_override,
+            "a structure-provided body must set is_override == true; got: {:?}",
+            entry
+        );
+
+        // override-beats-default: distinct body (2.0 vs 1.0) ⇒ distinct hash.
+        assert_ne!(
+            entry.function.content_hash, assoc_default[0].function.content_hash,
+            "the override body (2.0) must compile to a different content hash than \
+             the injected default body (1.0)"
+        );
+    }
+
     /// Characterization test that enum-typed `param` and `let` members resolve to
     /// `Type::Enum` through `check_trait_conformance`.
     ///
