@@ -1521,4 +1521,64 @@ describe('engineStore solverProgress', () => {
     });
     vi.useRealTimers();
   });
+
+  it('(step-9a) subscribeToEvents registers onSolverProgress listener', async () => {
+    await createRoot(async (dispose) => {
+      mockOnMeshUpdate.mockResolvedValue(vi.fn());
+      mockOnValueUpdate.mockResolvedValue(vi.fn());
+      mockOnConstraintUpdate.mockResolvedValue(vi.fn());
+      mockOnEvaluationStatus.mockResolvedValue(vi.fn());
+      mockOnMeshRemoved.mockResolvedValue(vi.fn());
+      mockOnValueRemoved.mockResolvedValue(vi.fn());
+      mockOnConstraintRemoved.mockResolvedValue(vi.fn());
+
+      const store = createEngineStore();
+      await store.subscribeToEvents();
+
+      expect(mockOnSolverProgress).toHaveBeenCalledWith(expect.any(Function));
+      dispose();
+    });
+  });
+
+  it('(step-9b) onSolverProgress callback drives state.solverProgress', async () => {
+    await createRoot(async (dispose) => {
+      let progressCb: ((p: { solver_kind: string; iter: number; residual: number }) => void) | undefined;
+      mockOnMeshUpdate.mockResolvedValue(vi.fn());
+      mockOnValueUpdate.mockResolvedValue(vi.fn());
+      mockOnConstraintUpdate.mockResolvedValue(vi.fn());
+      mockOnEvaluationStatus.mockResolvedValue(vi.fn());
+      mockOnMeshRemoved.mockResolvedValue(vi.fn());
+      mockOnValueRemoved.mockResolvedValue(vi.fn());
+      mockOnConstraintRemoved.mockResolvedValue(vi.fn());
+      mockOnSolverProgress.mockImplementation(async (cb) => { progressCb = cb as typeof progressCb; return vi.fn(); });
+
+      const store = createEngineStore();
+      await store.subscribeToEvents();
+
+      progressCb!({ solver_kind: 'cg', iter: 1, residual: 0.5 });
+      expect(store.state.solverProgress.latest).toEqual({ solver_kind: 'cg', iter: 1, residual: 0.5 });
+      expect(store.state.solverProgress.trace).toHaveLength(1);
+      dispose();
+    });
+  });
+
+  it('(step-9c) cleanup invokes the onSolverProgress unlisten fn', async () => {
+    await createRoot(async (dispose) => {
+      const unlistenSolverProgress = vi.fn();
+      mockOnMeshUpdate.mockResolvedValue(vi.fn());
+      mockOnValueUpdate.mockResolvedValue(vi.fn());
+      mockOnConstraintUpdate.mockResolvedValue(vi.fn());
+      mockOnEvaluationStatus.mockResolvedValue(vi.fn());
+      mockOnMeshRemoved.mockResolvedValue(vi.fn());
+      mockOnValueRemoved.mockResolvedValue(vi.fn());
+      mockOnConstraintRemoved.mockResolvedValue(vi.fn());
+      mockOnSolverProgress.mockResolvedValue(unlistenSolverProgress);
+
+      const store = createEngineStore();
+      const cleanup = await store.subscribeToEvents();
+      cleanup();
+      expect(unlistenSolverProgress).toHaveBeenCalled();
+      dispose();
+    });
+  });
 });
