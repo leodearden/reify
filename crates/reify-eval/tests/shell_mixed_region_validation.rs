@@ -786,3 +786,90 @@ fn rigid_body_translation_produces_zero_stress_everywhere_including_interface() 
          (E={E_MOD}, ‖T‖={t_mag:.3}, L_char={l_char})",
     );
 }
+
+// ─── step-5/6 helpers: DEFINED IN STEP-6 ────────────────────────────────────
+//
+// `flexure_tip_deflection` is NOT defined in this step (step-5).  This makes
+// the test file fail to compile — the intended RED state.  Step-6 provides
+// the implementation.
+
+/// Verify that the cantilever tip deflection is in the correct order of
+/// magnitude predicted by Euler-Bernoulli beam theory.
+///
+/// # Validation contract (tip deflection order of magnitude)
+///
+/// Under the cantilever configuration (unit total tip load P=1.0 in +z,
+/// base clamped at x=0), extract the mean z-deflection at the flexure free
+/// edge (x=Lb+Lf).  Compute the Euler-Bernoulli reference in-test:
+///
+/// ```text
+/// δ_beam = P · Lf³ / (3 · E · I),   I = W · t³ / 12
+/// ```
+///
+/// Then assert:
+/// (a) the deflection is finite (no NaN/Inf),
+/// (b) it has the correct sign (positive z for +z load),
+/// (c) it lies in the wide first-principles envelope [0.2·δ_beam, 20·δ_beam].
+///
+/// # Envelope justification
+///
+/// Lower bound (0.2×): block compliance only ADDS deflection (a compliant
+/// base increases tip displacement relative to the pure-beam formula); flat
+/// MITC3+ has no membrane locking and cures transverse-shear locking, so no
+/// gross under-prediction.  A 5× safety margin covers both effects and coarse
+/// mesh discretisation error.
+///
+/// Upper bound (20×): guards against a runaway solve (e.g. near-singular K).
+///
+/// # Observed ratio (step-6)
+///
+/// Step-6's implementation measures the observed tip_defl and documents the
+/// observed-to-reference ratio in a code comment, matching the
+/// `shell_benchmarks.rs` convention for smoke tests.
+///
+/// # RED state
+///
+/// References `flexure_tip_deflection`, which is defined in step-6.
+/// Until then the file fails to compile — the intended RED state.
+#[test]
+fn cantilever_tip_deflection_matches_beam_theory_order_of_magnitude() {
+    let mat = IsotropicElastic {
+        youngs_modulus: E_MOD,
+        poisson_ratio: NU,
+    };
+    let (mesh, bcs, loads) = cantilever_config(&mat);
+    let u = solve_flexure_on_block(&mesh, &bcs, &loads, &mat);
+
+    // Euler-Bernoulli reference: δ = P · Lf³ / (3 · E · I),  I = W · t³ / 12.
+    // P = 1.0 (total tip load in +z), Lf = 2.0, E = 1.0, W = 1.0, t = 0.05.
+    let total_load = 1.0_f64;
+    let inertia = W * T * T * T / 12.0; // I = W·t³/12
+    let delta_beam = total_load * LF * LF * LF / (3.0 * E_MOD * inertia);
+
+    // flexure_tip_deflection NOT YET DEFINED → compile failure (RED)
+    let tip_defl = flexure_tip_deflection(&mesh, &u);
+
+    // (a) Finite
+    assert!(
+        tip_defl.is_finite(),
+        "tip deflection is not finite: {tip_defl}",
+    );
+
+    // (b) Correct sign: load is in +z, flexure tip should deflect in +z
+    assert!(
+        tip_defl > 0.0,
+        "tip deflection has wrong sign: {tip_defl:.6e} (expected > 0 for +z load)",
+    );
+
+    // (c) Wide first-principles envelope anchored to δ_beam.
+    // Lower: 0.2× (block compliance only adds; MITC3+ not locking)
+    // Upper: 20× (runaway guard)
+    let lo = 0.2 * delta_beam;
+    let hi = 20.0 * delta_beam;
+    assert!(
+        tip_defl >= lo && tip_defl <= hi,
+        "tip deflection outside beam-theory envelope: \
+         tip_defl={tip_defl:.4e}, δ_beam={delta_beam:.4e}, \
+         envelope=[{lo:.4e}, {hi:.4e}]",
+    );
+}
