@@ -19,7 +19,7 @@ use tauri::{Emitter, Manager};
 use reify_constraints::SimpleConstraintChecker;
 use reify_gui::commands::AppState;
 use reify_gui::diff::{StateDelta, compute_delta, delta_to_events};
-use reify_gui::engine::{AutoResolveEmitter, EngineSession, FeaCaseEmitter, WarmPoolEventEmitter};
+use reify_gui::engine::{AutoResolveEmitter, EngineSession, FeaCaseEmitter, ModeShapeFrameEmitter, WarmPoolEventEmitter};
 use reify_gui::event_bus::emit_typed;
 use reify_gui::lsp_bridge::LspBridge;
 use reify_gui::types::EvaluationStatus;
@@ -142,6 +142,23 @@ impl FeaCaseEmitter for TauriFeaCaseEmitter {
     fn changed(&self, payload: reify_gui::types::FeaCaseChanged) {
         if let Err(e) = emit_typed(&self.app, "fea-case-changed", &payload) {
             warn!("fea-case-changed emit failed: {}", e);
+        }
+    }
+}
+
+/// Emits `mode-shape-frame` events to the frontend whenever a BucklingResult-shaped
+/// value is observed at commit time (task ι/3458).
+///
+/// Installed during `setup()` alongside other emitters. Fires one undeformed base frame
+/// (phase=0.0) and one peak frame per mode (phase=1.0).
+struct TauriModeShapeFrameEmitter {
+    app: tauri::AppHandle,
+}
+
+impl ModeShapeFrameEmitter for TauriModeShapeFrameEmitter {
+    fn frame(&self, payload: reify_gui::types::ModeShapeFrame) {
+        if let Err(e) = emit_typed(&self.app, "mode-shape-frame", &payload) {
+            warn!("mode-shape-frame emit failed: {}", e);
         }
     }
 }
@@ -678,6 +695,16 @@ fn main() {
             });
             if let Ok(mut session) = engine_arc.lock() {
                 session.set_fea_case_emitter(fea_case_emitter);
+            }
+
+            // Install the mode-shape-frame emitter so the frontend BucklingPanel
+            // receives reference frames (one undeformed base + one peak per mode)
+            // whenever a BucklingResult is observed at commit time (task ι/3458).
+            let mode_shape_frame_emitter = Arc::new(TauriModeShapeFrameEmitter {
+                app: app.handle().clone(),
+            });
+            if let Ok(mut session) = engine_arc.lock() {
+                session.set_mode_shape_frame_emitter(mode_shape_frame_emitter);
             }
 
             // Always create DebugBridge (inert when debug disabled — no JS listener, no HTTP server)

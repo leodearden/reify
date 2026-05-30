@@ -922,6 +922,29 @@ pub struct FeaCaseChanged {
     pub available_cases: Vec<String>,
 }
 
+/// IPC payload for the `mode-shape-frame` Tauri event channel (GR-024 Phase 9, task ι/3458).
+///
+/// One frame is emitted per mode on solve completion: a phase=0.0 undeformed base
+/// frame and a phase=1.0 peak (unit-scale) displaced frame.  The frontend
+/// reconstructs the animated shape for any phase ∈ [−1, +1] via:
+///
+///   `pos(phase, scale) = base + phase·scale·(peak − base)`
+///
+/// Field names match the TypeScript `ModeShapeFrame` interface in `gui/src/types.ts`
+/// exactly — no `serde(rename_all)` (PRD §3.2 field-name-exactness convention).
+///
+/// `displaced_positions` is a flat `Vec<f32>` of length `3·n_nodes` (xyz per node).
+/// `f32` (not `f64`) matches the existing FEA mesh wire precision in `MeshData.vertices`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModeShapeFrame {
+    /// Index of the buckling mode (0-based, ascending |λ|).
+    pub mode_index: u8,
+    /// Animation phase: 0.0 = undeformed base, 1.0 = unit-scale peak displacement.
+    pub phase: f32,
+    /// Flat xyz displaced positions, length `3·n_nodes`.
+    pub displaced_positions: Vec<f32>,
+}
+
 /// IPC payload for the `solver-progress` Tauri event channel (GR-016 ζ).
 ///
 /// Emitted at the end of each CG iteration (after the residual-norm update,

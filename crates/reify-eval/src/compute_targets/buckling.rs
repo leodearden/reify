@@ -30,11 +30,13 @@
 //! use `StructureTypeId(u32::MAX)` as a synthetic sentinel (same convention as
 //! `elastic_static.rs`).
 //!
-//! # Mode.mode_shape = Undef
+//! # Mode.mode_shape
 //!
-//! The mode_shape field is returned as `Value::Undef` per the tet-result
-//! convention (solver_elastic.ri:280-284). Populating it with displaced-position
-//! Maps is task ι/3458 (GUI animator).
+//! The mode_shape field is a `Value::Map { "displaced_positions": Value::List<Real> }`
+//! of length 3·n_nodes (flat xyz = undeformed base + kernel eigenvector per node).
+//! A companion top-level `base_node_positions: Value::List<Real>` carries the
+//! undeformed node coordinates so the GUI animator can reconstruct any phase/scale
+//! without extra data.  Populated by task ι/3458.
 //!
 //! # reference_load param for critical_load
 //!
@@ -42,6 +44,8 @@
 //! The `critical_load(result, reference_load)` helper in solver_buckling.ri
 //! takes an explicit `reference_load: Force` param — see design decision DD-1
 //! in .task/plan.json and the non-blocking escalate_info filed at task 3454.
+
+use std::collections::BTreeMap;
 
 use reify_core::DimensionVector;
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
@@ -276,14 +280,46 @@ pub fn solve_buckling_trampoline(
     // ── (11) Build modes list ─────────────────────────────────────────────────
     //
     // Modes are already sorted ascending |λ| by the kernel.
-    // mode_shape = Undef per the task-ε scope boundary (task ι/3458 populates it).
+    // mode_shape: Value::Map { "displaced_positions": flat xyz list } (task ι/3458).
+    // Displaced positions = undeformed base node positions + mode-shape eigenvector
+    // (kernel.Mode.mode_shape has length 3·n_nodes, same DOF ordering as `nodes`).
     let modes_list: Vec<Value> = kernel_result
         .modes
         .iter()
         .map(|m| {
+            // Flat displaced-position list: [x0+dx0, y0+dy0, z0+dz0, x1+dx1, ...].
+            // nodes[i] = [xi, yi, zi]; m.mode_shape[3i..3i+3] = [dxi, dyi, dzi].
+            //
+            // Guard: the kernel contract requires mode_shape.len() == 3·n_nodes.
+            // chunks_exact+zip silently truncates when lengths diverge, so we assert
+            // loudly in tests/debug rather than producing a silent too-short list.
+            debug_assert_eq!(
+                m.mode_shape.len(),
+                3 * nodes.len(),
+                "mode_shape length {} != 3·n_nodes {} — kernel contract violated",
+                m.mode_shape.len(),
+                3 * nodes.len(),
+            );
+            let displaced: Vec<Value> = nodes
+                .iter()
+                .zip(m.mode_shape.chunks_exact(3))
+                .flat_map(|(base, disp)| {
+                    [
+                        Value::Real(base[0] + disp[0]),
+                        Value::Real(base[1] + disp[1]),
+                        Value::Real(base[2] + disp[2]),
+                    ]
+                })
+                .collect();
+            let mode_shape_map: BTreeMap<Value, Value> = [(
+                Value::String("displaced_positions".to_string()),
+                Value::List(displaced),
+            )]
+            .into_iter()
+            .collect();
             let mode_fields: PersistentMap<String, Value> = [
                 ("eigenvalue".to_string(), Value::Real(m.eigenvalue)),
-                ("mode_shape".to_string(), Value::Undef),
+                ("mode_shape".to_string(), Value::Map(mode_shape_map)),
             ]
             .into_iter()
             .collect();
@@ -297,13 +333,26 @@ pub fn solve_buckling_trampoline(
         .collect();
 
     // ── (12) Build BucklingResult StructureInstance ───────────────────────────
+    //
+    // base_node_positions: flat xyz list of the undeformed node positions used
+    // to build the mesh.  The GUI animator uses this as the phase=0 reference
+    // frame and reconstructs displaced positions via
+    //   pos(phase, scale) = base + phase·scale·(peak − base).
+    let base_node_positions: Vec<Value> = nodes
+        .iter()
+        .flat_map(|xyz| {
+            [Value::Real(xyz[0]), Value::Real(xyz[1]), Value::Real(xyz[2])]
+        })
+        .collect();
+
     let result_fields: PersistentMap<String, Value> = [
-        ("modes".to_string(),      Value::List(modes_list)),
-        ("converged".to_string(),  Value::Bool(kernel_result.converged)),
+        ("modes".to_string(),               Value::List(modes_list)),
+        ("converged".to_string(),           Value::Bool(kernel_result.converged)),
         // iterations: BucklingKernelResult carries no eigensolver iteration count;
         // this field is intentionally unpopulated for task ε (see trampoline doc).
-        ("iterations".to_string(), Value::Int(0)),
-        ("pre_stress".to_string(), pre_stress),
+        ("iterations".to_string(),          Value::Int(0)),
+        ("pre_stress".to_string(),          pre_stress),
+        ("base_node_positions".to_string(), Value::List(base_node_positions)),
     ]
     .into_iter()
     .collect();

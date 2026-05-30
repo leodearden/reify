@@ -13,3 +13,5 @@ export type { SelectionContext, SelectionOptions } from './selection';
 export { createGhostMaterial } from './ghostMaterial';
 export { applyColormap, bakeColours, viridisLut, magmaLut, rainbowLut } from './colormap';
 export type { Palette, Range, ColormapOptions } from './colormap';
+export { createBucklingAnimator } from './bucklingAnimator';
+export type { BucklingAnimator } from './bucklingAnimator';
