@@ -266,6 +266,13 @@ pub trait GitOps {
     /// (or matches a negated rule that re-ignores).
     fn is_gitignored(&self, path: &str) -> bool;
 
+    /// Returns `true` iff `path` resolves on `branch` to a tracked file OR a
+    /// directory containing tracked files (git does not track empty dirs),
+    /// equivalent to `git ls-tree <branch> -- <path>` returning non-empty.
+    /// Used by P5's deliverable-presence rescue. Fail-safe: returns `false`
+    /// on any git error (missing repo/ref, unknown path).
+    fn path_tracked_on(&self, branch: &str, path: &str) -> bool;
+
     /// Returns the added lines in `git diff <from>..<to> -- <path>` as
     /// `(new_side_line_no, content)` pairs — one entry per `+` line in the
     /// unified diff, with the leading `+` stripped. Line numbers track the
@@ -446,6 +453,13 @@ impl GitOps for RealGitOps {
         }
     }
 
+    fn path_tracked_on(&self, branch: &str, path: &str) -> bool {
+        match self.run_or_warn("ls-tree", &["ls-tree", branch, "--", path]) {
+            Some(stdout) => !stdout.trim().is_empty(),
+            None => false,
+        }
+    }
+
     fn diff_added_lines(&self, from: &str, to: &str, path: &str) -> Vec<(usize, String)> {
         let Some(stdout) = self.run_or_warn(
             "diff",
@@ -502,6 +516,7 @@ pub struct MockGitOps {
     diff_changed_paths: HashMap<(String, String), Vec<String>>,
     is_gitignored: HashMap<String, bool>,
     diff_added_lines: HashMap<(String, String, String), Vec<(usize, String)>>,
+    path_tracked_on: HashMap<(String, String), bool>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -539,6 +554,12 @@ impl MockGitOps {
         self.diff_added_lines
             .insert((from.to_string(), to.to_string(), path.to_string()), added);
     }
+
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn set_path_tracked_on(&mut self, branch: &str, path: &str, present: bool) {
+        self.path_tracked_on
+            .insert((branch.to_string(), path.to_string()), present);
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -566,6 +587,13 @@ impl GitOps for MockGitOps {
             .get(&(from.to_string(), to.to_string(), path.to_string()))
             .cloned()
             .unwrap_or_default()
+    }
+
+    fn path_tracked_on(&self, branch: &str, path: &str) -> bool {
+        self.path_tracked_on
+            .get(&(branch.to_string(), path.to_string()))
+            .copied()
+            .unwrap_or(false)
     }
 }
 
