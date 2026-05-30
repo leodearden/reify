@@ -456,6 +456,17 @@ fn walk_expr_depth(expr: &Expr, diagnostics: &mut Vec<Diagnostic>, depth: usize)
                 walk_expr_depth(u, diagnostics, next);
             }
         }
+        ExprKind::TraitMethodCall { object, args, .. } => {
+            walk_expr_depth(object, diagnostics, next);
+            for a in args {
+                walk_expr_depth(a, diagnostics, next);
+            }
+        }
+        ExprKind::TraitStaticCall { args, .. } => {
+            for a in args {
+                walk_expr_depth(a, diagnostics, next);
+            }
+        }
         // Leaf expressions — no children. `EnumAccess`, like `IndexAccess` and
         // `FunctionCall`, acts as a chain root simply by virtue of not being
         // `ExprKind::MemberAccess` — chain detection in the MemberAccess arm
@@ -581,6 +592,13 @@ mod tests {
             // Covers the trailing `walk_expr_depth(cursor, …, next)` at the
             // leaf-root recursion after the iterative MemberAccess chain walk.
             MemberAccessLeafRoot,
+            // TraitMethodCall: object + first/second arg.
+            TraitMethodCallObject,
+            TraitMethodCallFirstArg,
+            TraitMethodCallSecondArg,
+            // TraitStaticCall: first/second arg (no object).
+            TraitStaticCallFirstArg,
+            TraitStaticCallSecondArg,
         }
 
         const ALL_ARMS: &[ArmKind] = &[
@@ -617,6 +635,11 @@ mod tests {
             ArmKind::AdHocSelectorSecondArg,
             ArmKind::MatchSecondArmBody,
             ArmKind::MemberAccessLeafRoot,
+            ArmKind::TraitMethodCallObject,
+            ArmKind::TraitMethodCallFirstArg,
+            ArmKind::TraitMethodCallSecondArg,
+            ArmKind::TraitStaticCallFirstArg,
+            ArmKind::TraitStaticCallSecondArg,
         ];
 
         fn shallow_leaf(span: SourceSpan) -> Expr {
@@ -795,6 +818,34 @@ mod tests {
                     }),
                     member: "f".to_string(),
                 },
+                ArmKind::TraitMethodCallObject => ExprKind::TraitMethodCall {
+                    object: Box::new(leaf),
+                    trait_name: "T".to_string(),
+                    method: "m".to_string(),
+                    args: vec![],
+                },
+                ArmKind::TraitMethodCallFirstArg => ExprKind::TraitMethodCall {
+                    object: Box::new(shallow_leaf(span)),
+                    trait_name: "T".to_string(),
+                    method: "m".to_string(),
+                    args: vec![leaf],
+                },
+                ArmKind::TraitMethodCallSecondArg => ExprKind::TraitMethodCall {
+                    object: Box::new(shallow_leaf(span)),
+                    trait_name: "T".to_string(),
+                    method: "m".to_string(),
+                    args: vec![shallow_leaf(span), leaf],
+                },
+                ArmKind::TraitStaticCallFirstArg => ExprKind::TraitStaticCall {
+                    trait_name: "T".to_string(),
+                    method: "m".to_string(),
+                    args: vec![leaf],
+                },
+                ArmKind::TraitStaticCallSecondArg => ExprKind::TraitStaticCall {
+                    trait_name: "T".to_string(),
+                    method: "m".to_string(),
+                    args: vec![shallow_leaf(span), leaf],
+                },
             };
             Expr { kind, span }
         }
@@ -844,7 +895,12 @@ mod tests {
                 | ArmKind::MapLiteralSecondKey
                 | ArmKind::MapLiteralSecondValue
                 | ArmKind::AdHocSelectorSecondArg
-                | ArmKind::MatchSecondArmBody => 1,
+                | ArmKind::MatchSecondArmBody
+                | ArmKind::TraitMethodCallObject
+                | ArmKind::TraitMethodCallFirstArg
+                | ArmKind::TraitMethodCallSecondArg
+                | ArmKind::TraitStaticCallFirstArg
+                | ArmKind::TraitStaticCallSecondArg => 1,
             }
         }
 

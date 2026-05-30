@@ -232,6 +232,26 @@ pub(crate) fn substitute_expr(
                 qualified: Box::new(substitute_expr(qualified, bindings)),
             }
         }
+        ExprKind::TraitMethodCall {
+            object,
+            trait_name,
+            method,
+            args,
+        } => ExprKind::TraitMethodCall {
+            object: Box::new(substitute_expr(object, bindings)),
+            trait_name: trait_name.clone(),
+            method: method.clone(),
+            args: args.iter().map(|a| substitute_expr(a, bindings)).collect(),
+        },
+        ExprKind::TraitStaticCall {
+            trait_name,
+            method,
+            args,
+        } => ExprKind::TraitStaticCall {
+            trait_name: trait_name.clone(),
+            method: method.clone(),
+            args: args.iter().map(|a| substitute_expr(a, bindings)).collect(),
+        },
     };
     Expr {
         kind: new_kind,

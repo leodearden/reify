@@ -631,6 +631,17 @@ fn walk_expr_depth(
                 walk_expr_depth(u, frames, diagnostics, next);
             }
         }
+        ExprKind::TraitMethodCall { object, args, .. } => {
+            walk_expr_depth(object, frames, diagnostics, next);
+            for a in args {
+                walk_expr_depth(a, frames, diagnostics, next);
+            }
+        }
+        ExprKind::TraitStaticCall { args, .. } => {
+            for a in args {
+                walk_expr_depth(a, frames, diagnostics, next);
+            }
+        }
         // Leaf expressions — no children.
         ExprKind::NumberLiteral { .. }
         | ExprKind::QuantityLiteral { .. }

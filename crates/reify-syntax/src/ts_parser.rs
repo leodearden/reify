@@ -2516,6 +2516,7 @@ impl<'a> Lowering<'a> {
             "member_access" => self.lower_member_access(node),
             "qualified_access" => self.lower_qualified_access(node),
             "instance_qualified_access" => self.lower_instance_qualified_access(node),
+            "trait_method_call" => self.lower_trait_method_call(node),
             "parenthesized_expression" => {
                 // Unwrap parenthesized expression — find the inner expression
                 let mut cursor = node.walk();
@@ -3234,6 +3235,92 @@ impl<'a> Lowering<'a> {
         })
     }
 
+    /// Lower a `trait_method_call` CST node to either `TraitStaticCall` or
+    /// `TraitMethodCall`, depending on whether the `callee` field is a
+    /// `qualified_access` (static) or `instance_qualified_access` (instance).
+    ///
+    /// Grammar: `trait_method_call` has:
+    /// - field `callee`: `choice(qualified_access, instance_qualified_access)`
+    /// - child `argument_list` (shared with `function_call`)
+    fn lower_trait_method_call(&self, node: tree_sitter::Node) -> Option<Expr> {
+        let callee_node = node.child_by_field_name("callee")?;
+
+        // Collect positional args from the `argument_list` child (same logic as
+        // `lower_function_call`, reusing the existing `lower_call_argument` helper).
+        let mut args = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "argument_list" {
+                let mut arg_cursor = child.walk();
+                for arg_child in child.children(&mut arg_cursor) {
+                    if let Some(expr) = self.lower_call_argument(arg_child) {
+                        args.push(expr);
+                    }
+                }
+            }
+        }
+
+        match callee_node.kind() {
+            "qualified_access" => {
+                // Static form: `Trait::method(args)` — callee is bare qualified_access.
+                let qualifier_node = callee_node.child_by_field_name("qualifier")?;
+                let member_node = callee_node.child_by_field_name("member")?;
+                let trait_name = self.node_text(qualifier_node).to_string();
+                let method = self.node_text(member_node).to_string();
+                Some(Expr {
+                    kind: ExprKind::TraitStaticCall {
+                        trait_name,
+                        method,
+                        args,
+                    },
+                    span: self.span(node),
+                })
+            }
+            "instance_qualified_access" => {
+                // Instance form: `obj.(Trait::method)(args)`.
+                let object_node = callee_node.child_by_field_name("object")?;
+                let qualified_node = callee_node.child_by_field_name("qualified")?;
+
+                // The inner `qualified` must be a `qualified_access` — validated by grammar,
+                // but guarded defensively.
+                if qualified_node.kind() != "qualified_access" {
+                    self.push_error(
+                        "trait method call: expected 'Trait::method' form inside parentheses"
+                            .to_string(),
+                        self.span(callee_node),
+                    );
+                    return None;
+                }
+                let inner_qualifier = qualified_node.child_by_field_name("qualifier")?;
+                let inner_member = qualified_node.child_by_field_name("member")?;
+                let trait_name = self.node_text(inner_qualifier).to_string();
+                let method = self.node_text(inner_member).to_string();
+
+                let object = self.lower_expr(object_node)?;
+                Some(Expr {
+                    kind: ExprKind::TraitMethodCall {
+                        object: Box::new(object),
+                        trait_name,
+                        method,
+                        args,
+                    },
+                    span: self.span(node),
+                })
+            }
+            other => {
+                self.push_error(
+                    format!(
+                        "trait_method_call: unexpected callee kind '{}'; \
+                         expected qualified_access or instance_qualified_access",
+                        other
+                    ),
+                    self.span(callee_node),
+                );
+                None
+            }
+        }
+    }
+
     fn lower_member_access(&self, node: tree_sitter::Node) -> Option<Expr> {
         let object_node = node.child_by_field_name("object")?;
         let member_node = node.child_by_field_name("member")?;
@@ -3350,6 +3437,8 @@ mod tests {
                 MemberDecl::ForallConstraint(_) => "forall_constraint".into(),
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(_) => "match_arm_decl_group".into(),
+                // Produced by lower_function (task 3937).
+                MemberDecl::Fn(f) => format!("fn:{}", f.name),
             })
             .collect();
         assert_eq!(
@@ -3536,6 +3625,8 @@ mod tests {
                 MemberDecl::ForallConstraint(f) => f.span,
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => g.span,
+                // Produced by lower_function (task 3937).
+                MemberDecl::Fn(f) => f.span,
             };
             assert!(span.start < span.end, "member {} span empty", i);
             assert!(
@@ -3668,6 +3759,16 @@ mod tests {
                 }
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(_) => {}
+                // Produced by lower_function (task 3937).
+                MemberDecl::Fn(f) => {
+                    assert!(
+                        text.starts_with("fn"),
+                        "fn member {} text: {:?}",
+                        i,
+                        text
+                    );
+                    assert!(text.contains(&f.name), "fn {} name in text", i);
+                }
             }
         }
 
@@ -3727,6 +3828,8 @@ mod tests {
                 MemberDecl::ForallConstraint(f) => (f.span, f.content_hash),
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => (g.span, g.content_hash),
+                // Produced by lower_function (task 3937).
+                MemberDecl::Fn(f) => (f.span, f.content_hash),
             };
             let text = &source[span.start as usize..span.end as usize];
             assert_eq!(
@@ -3840,6 +3943,8 @@ mod tests {
                 MemberDecl::ForallConstraint(f) => (f.content_hash, f.span),
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => (g.content_hash, g.span),
+                // Produced by lower_function (task 3937).
+                MemberDecl::Fn(f) => (f.content_hash, f.span),
             };
             let (hash_b, span_b) = match m_b {
                 MemberDecl::Param(p) => (p.content_hash, p.span),
@@ -3859,6 +3964,8 @@ mod tests {
                 MemberDecl::ForallConstraint(f) => (f.content_hash, f.span),
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => (g.content_hash, g.span),
+                // Produced by lower_function (task 3937).
+                MemberDecl::Fn(f) => (f.content_hash, f.span),
             };
             assert_eq!(hash_a, hash_b, "member {} hash determinism", i);
             assert_eq!(span_a, span_b, "member {} span determinism", i);

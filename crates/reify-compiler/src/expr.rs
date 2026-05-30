@@ -3182,6 +3182,30 @@ pub(crate) fn compile_expr_guarded(
                 });
             CompiledExpr::value_ref(id, ty)
         }
+        // Trait associated-fn call compilation is deferred to task δ/ζ.
+        // These placeholder arms keep `cargo build --workspace` green after
+        // the AST additions in task γ.  They emit a diagnostic and return a
+        // poison `CompiledExpr` to prevent cascading type errors.
+        reify_ast::ExprKind::TraitMethodCall { .. } => make_poison_literal(
+            diagnostics,
+            Diagnostic::error(
+                "trait associated-fn calls are not yet supported (task δ/ζ)".to_string(),
+            )
+            .with_label(DiagnosticLabel::new(
+                expr.span,
+                "not yet supported",
+            )),
+        ),
+        reify_ast::ExprKind::TraitStaticCall { .. } => make_poison_literal(
+            diagnostics,
+            Diagnostic::error(
+                "trait static-fn calls are not yet supported (task δ/ζ)".to_string(),
+            )
+            .with_label(DiagnosticLabel::new(
+                expr.span,
+                "not yet supported",
+            )),
+        ),
     }
 }
 
