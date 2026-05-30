@@ -1,8 +1,35 @@
 //! P2 — consumer-stub detector.
 //!
-//! Scans the added-lines portion of `git diff main..task-branch` (filtered to
-//! `metadata.files`) for canonical stub markers and emits Medium-severity
-//! Findings (Low when the task title contains "stub" or "placeholder").
+//! Scans the added lines of a task's contribution to `metadata.files` for
+//! canonical stub markers and emits Medium-severity findings (Low when the
+//! task title contains "stub" or "placeholder").
+//!
+//! ## Per-task diff routing (reaped-branch resilient)
+//!
+//! The source of the `(line_no, content)` stream fed into
+//! [`scan_file_added_lines`] is determined per-task as follows:
+//!
+//! 1. **`done_provenance.commit` present AND `is_ancestor(commit, "main")` →
+//!    `diff_added_lines_in_commit(commit, path)`** — the surviving merge
+//!    commit's first-parent diff (`<commit>^1..<commit>`) recovers the task's
+//!    exact added lines even after the orchestrator has reaped the `task/N`
+//!    branch.
+//!
+//! 2. **`done_provenance.commit` present but NOT reachable from `main`**
+//!    (gc'd / recycled SHA) → `file_lines_on("main", path)` — last-resort
+//!    recall via a full-file content scan on the current `main`. This is
+//!    noisier (re-surfaces pre-existing stubs) but is gated strictly to the
+//!    rare unreachable-commit case so it does not reintroduce the
+//!    false-positive volume that dependency 4076 suppressed on the common path.
+//!
+//! 3. **No provenance commit** (in-progress / pre-done-hook task whose
+//!    `task/N` branch is still alive) → `diff_added_lines("main", "task/N",
+//!    path)` — the original behaviour, preserved unchanged so all existing
+//!    tests (every fixture uses `done_provenance: None`) stay green and the
+//!    dark-factory pre-done hook continues to work.
+//!
+//! The reachability gate (`is_ancestor`) is evaluated once per task (not per
+//! path) to bound the extra `git merge-base --is-ancestor` invocation.
 //!
 //! Reference: `docs/architecture-audit/f-infra-design.md` §5 P2.
 
@@ -335,6 +362,18 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
             meta.task_id.parse::<u64>().unwrap_or(u64::MAX),
         );
 
+        // Resolve the per-task routing mode once (not per path) to bound the
+        // extra `git merge-base --is-ancestor` invocation.
+        //
+        // `provenance_commit` = raw commit SHA from done_provenance (may be
+        // Some even for gc'd SHAs).
+        // `resolved_commit`   = Some(sha) only when the SHA is actually
+        // reachable from "main" (is_ancestor gate).
+        let provenance_commit: Option<&str> =
+            meta.done_provenance.as_ref().and_then(|p| p.commit.as_deref());
+        let resolved_commit: Option<&str> = provenance_commit
+            .filter(|c| ctx.git.is_ancestor(c, "main"));
+
         // TODO(perf): coalesce paths per task into a single
         //   `git diff main..task/<id> -- <p1> <p2> ...` invocation.
         //   Reference: docs/architecture-audit/f-infra-design.md §5 P2.
@@ -343,7 +382,20 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
             if !is_code_ext(path) { continue; }
             if path == SELF_SOURCE_PATH { continue; }
 
-            let added = ctx.git.diff_added_lines("main", &task_branch, path);
+            // Three-way routing — see module-level doc for rationale.
+            let added = match (resolved_commit, provenance_commit) {
+                // (1) Merge commit reachable from main → first-parent diff.
+                (Some(commit), _) => ctx.git.diff_added_lines_in_commit(commit, path),
+                // (2) Provenance commit present but not reachable (gc'd / recycled)
+                //     → full-file content scan as last-resort recall.
+                //     Documented precision/recall tradeoff; gated to this rare branch
+                //     so it does not reintroduce 4076's false-positive volume on the
+                //     common reachable-commit path.
+                (None, Some(_)) => ctx.git.file_lines_on("main", path),
+                // (3) No provenance commit (in-progress / pre-done-hook; task/N alive)
+                //     → original branch diff. Preserves all existing behaviour.
+                (None, None) => ctx.git.diff_added_lines("main", &task_branch, path),
+            };
             for (line_no, content, label) in scan_file_added_lines(&added) {
                 raw.push(RawEntry {
                     path: path.clone(),
