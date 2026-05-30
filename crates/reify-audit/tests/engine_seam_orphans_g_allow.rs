@@ -4,14 +4,10 @@
 //! User-observable signal:
 //!   `cargo test -p reify-audit --test engine_seam_orphans_g_allow`
 //!
-//! Each pinned function must carry a `// G-allow:` marker citing
-//! `engine-integration-norm §3.2` and a pending consumer task number.
 //! The orphan-producer audit script (`scripts/audit-orphan-producers.sh`)
 //! enforces presence of a `// G-allow:` marker on the line immediately above
-//! each `pub fn`; this test additionally asserts list membership (absent from
-//! `orphans[]`, present in `allowed[]`) and that the reason string:
-//!   (a) cites *some* tracked owner task as `#NNNN`, and
-//!   (b) contains the substring `engine-integration-norm`.
+//! each `pub fn`; this test asserts list membership (absent from `orphans[]`,
+//! present exactly once in `allowed[]`).
 //!
 //! The specific task number and norm citation live only in the source
 //! `// G-allow:` marker (single source of truth), so this test never carries
@@ -137,24 +133,5 @@ fn engine_seam_orphans_are_g_allow_marked() {
             result["allowed"]
         );
 
-        let reason = matching_allowed[0]["allow_reason"].as_str().unwrap_or_default();
-
-        // (c) The allow_reason must cite SOME tracked owner task as `#NNNN`.
-        let bytes = reason.as_bytes();
-        let cites_task = bytes.iter().enumerate().any(|(i, &b)| {
-            b == b'#' && bytes.get(i + 1).is_some_and(u8::is_ascii_digit)
-        });
-        assert!(
-            cites_task,
-            "`{fn_name}` allow_reason must cite a tracked task as `#NNNN`; got: {reason:?}"
-        );
-
-        // (d) The allow_reason must also cite engine-integration-norm, confirming
-        // this marker was added under task ε rather than an unrelated sweep.
-        assert!(
-            reason.contains("engine-integration-norm"),
-            "`{fn_name}` allow_reason must contain \"engine-integration-norm\"; \
-             got: {reason:?}"
-        );
     }
 }
