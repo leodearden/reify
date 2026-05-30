@@ -18,6 +18,7 @@ use std::f64::consts::PI;
 use faer::sparse::{SparseRowMat, Triplet};
 
 use reify_core::Diagnostic;
+use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_solver_elastic::{
     AssemblyElement, AssemblyMode, DirichletBc, EigenSolverOptions, EigenSolverResult, ElementOrder,
     ElementStiffness, IsotropicElastic, assemble_global_stiffness, consistent_element_mass_tet_p1,
@@ -27,6 +28,8 @@ use reify_stdlib::modal::free_vibration::{
     eigenvalue_to_frequency_hz, is_rigid_body_mode, mass_normalization_scale,
     modal_participation_mass,
 };
+
+use crate::ComputeOutcome;
 
 // ---------------------------------------------------------------------------
 // Beam mesh
@@ -423,6 +426,94 @@ fn solve_generalized_eigen(
     } else {
         solve_eigen_shift_invert(k_free, m_free, opts)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Trampoline density guard (E_ModalNoMassMatrix)
+// ---------------------------------------------------------------------------
+
+/// Extract the material's mass density (kg/m³) for the consistent mass matrix,
+/// or short-circuit to a degenerate result.
+///
+/// The trampoline's first guard. The consistent mass matrix is
+/// `M = ∫ ρ NᵀN dV` — it cannot be assembled without a positive mass density,
+/// and the generalized eigenproblem `K φ = λ M φ` is undefined with no `M`. So a
+/// material that carries no usable `density` (field missing, not a scalar, or
+/// ≤ 0) must NOT reach mesh assembly / eigensolve.
+///
+/// Returns `Ok(density)` for a positive `density` scalar (expected dimension
+/// `MASS_DENSITY`; read in SI = kg/m³). Otherwise returns `Err(outcome)`, where
+/// `outcome` is a [`ComputeOutcome::Completed`] carrying an `E_ModalNoMassMatrix`
+/// `Error` diagnostic and a degenerate empty-modes `ModalResult` — the
+/// trampoline forwards this verbatim (step 14). Message-based diagnostic
+/// (`code: None`) per design_decision #6.
+///
+/// The dimension tag is intentionally NOT asserted here (the guard predicate is
+/// "missing or ≤ 0", mirroring buckling's permissive `Scalar { si_value, .. }`
+/// material reads in `compute_targets::buckling::extract_material`): a
+/// wrong-dimension density is an upstream type-checker concern, not a runtime
+/// modal one. `NaN` fails `> 0.0` and is therefore rejected as well.
+///
+/// `clippy::result_large_err` is allowed: the `Err` carries a [`ComputeOutcome`]
+/// that the trampoline returns by value and consumes immediately (the whole
+/// compute contract traffics in by-value `ComputeOutcome`), so boxing this
+/// transient guard result would add an allocation for no benefit. `dead_code`
+/// until the step-14 trampoline consumes it; until then only the step-11 unit
+/// test calls it.
+#[allow(dead_code, clippy::result_large_err)]
+fn extract_density_or_degenerate(material: &Value) -> Result<f64, ComputeOutcome> {
+    if let Value::StructureInstance(data) = material
+        && let Some(Value::Scalar { si_value, .. }) = data.fields.get(&"density".to_string())
+        && *si_value > 0.0
+    {
+        return Ok(*si_value);
+    }
+    Err(no_mass_matrix_outcome())
+}
+
+/// Build the degenerate short-circuit outcome for a missing / non-positive mass
+/// density: an `E_ModalNoMassMatrix` `Error` diagnostic plus an empty-modes
+/// `ModalResult` (no eigenproblem was solved).
+#[allow(dead_code)]
+fn no_mass_matrix_outcome() -> ComputeOutcome {
+    let diagnostic = Diagnostic::error(
+        "E_ModalNoMassMatrix: the material carries no positive mass density \
+         (`density` missing or ≤ 0), so the consistent mass matrix M cannot be \
+         assembled and the free-vibration eigenproblem Kφ = λMφ is undefined; \
+         returning an empty modal result.",
+    );
+    ComputeOutcome::Completed {
+        result: degenerate_modal_result(),
+        new_warm_state: None,
+        cost_per_byte: None,
+        diagnostics: vec![diagnostic],
+    }
+}
+
+/// Build a degenerate `ModalResult` `Value::StructureInstance`: an empty `modes`
+/// list and zeroed matrix norms — the result returned when the modal solve is
+/// short-circuited (no mass matrix). Shaped to the α structure-def (6 fields,
+/// `modal_analysis.ri`); the trait-typed `damping` field is left `Value::Undef`
+/// (the tet-result convention for unpopulated fields, cf. buckling's
+/// `pre_stress`), and `StructureTypeId(u32::MAX)` is the registry-free sentinel.
+#[allow(dead_code)]
+fn degenerate_modal_result() -> Value {
+    let fields: PersistentMap<String, Value> = [
+        ("part".to_string(), Value::String(String::new())),
+        ("modes".to_string(), Value::List(Vec::new())),
+        ("boundary_conditions".to_string(), Value::List(Vec::new())),
+        ("damping".to_string(), Value::Undef),
+        ("mass_matrix_norm".to_string(), Value::Real(0.0)),
+        ("stiffness_matrix_norm".to_string(), Value::Real(0.0)),
+    ]
+    .into_iter()
+    .collect();
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "ModalResult".to_string(),
+        version: 1,
+        fields,
+    }))
 }
 
 #[cfg(test)]
