@@ -428,11 +428,13 @@ fn solve_generalized_eigen(
 #[cfg(test)]
 mod tests {
     use faer::sparse::SparseRowMat;
-    use reify_core::Severity;
+    use reify_core::{DimensionVector, Severity};
+    use reify_ir::{StructureInstanceData, StructureTypeId, Value};
     use reify_solver_elastic::{DirichletBc, EigenSolverOptions, IsotropicElastic};
     use reify_stdlib::modal::free_vibration::is_rigid_body_mode;
 
-    use super::{ModalCoreResult, build_beam_mesh, solve_modal_core};
+    use super::{ModalCoreResult, build_beam_mesh, extract_density_or_degenerate, solve_modal_core};
+    use crate::ComputeOutcome;
 
     /// `aᵀ · M · b` for the free×free mass matrix `M` (sparse CSR row matvec then
     /// dot). Test-local invariant probe; the production normalization path
@@ -829,5 +831,115 @@ mod tests {
             "expected a Warning starting \"W_ModalConvergence\"; got {:?}",
             result.diagnostics,
         );
+    }
+
+    /// Build a minimal `ElasticMaterial`-shaped `Value::StructureInstance` with
+    /// the usual elastic fields, optionally carrying a `density` scalar. Mirrors
+    /// the runtime material shape the trampoline reads (cf. buckling's
+    /// `extract_material`): `youngs_modulus : Scalar(PRESSURE)`,
+    /// `poisson_ratio : Real`, and (when `Some`) `density : Scalar(MASS_DENSITY)`.
+    fn material_with_density(density: Option<f64>) -> Value {
+        let mut fields: Vec<(String, Value)> = vec![
+            (
+                "youngs_modulus".to_string(),
+                Value::Scalar { si_value: 205e9, dimension: DimensionVector::PRESSURE },
+            ),
+            ("poisson_ratio".to_string(), Value::Real(0.29)),
+        ];
+        if let Some(d) = density {
+            fields.push((
+                "density".to_string(),
+                Value::Scalar { si_value: d, dimension: DimensionVector::MASS_DENSITY },
+            ));
+        }
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "ElasticMaterial".to_string(),
+            version: 1,
+            fields: fields.into_iter().collect(),
+        }))
+    }
+
+    /// Assert the density-guard short-circuit: the returned outcome is a
+    /// `Completed` carrying (a) an `Error` diagnostic whose message starts
+    /// `"E_ModalNoMassMatrix"` and (b) a degenerate `ModalResult` whose `modes`
+    /// list is empty (no eigenproblem was solved). No panic on any path.
+    fn assert_no_mass_degenerate(outcome: ComputeOutcome) {
+        let ComputeOutcome::Completed { result, diagnostics, .. } = outcome else {
+            panic!("expected a Completed degenerate outcome, got a non-Completed variant");
+        };
+
+        // (a) an Error diagnostic identifies the no-mass-matrix condition.
+        let has_err = diagnostics.iter().any(|d| {
+            d.severity == Severity::Error && d.message.starts_with("E_ModalNoMassMatrix")
+        });
+        assert!(
+            has_err,
+            "expected an Error starting \"E_ModalNoMassMatrix\"; got {diagnostics:?}",
+        );
+
+        // (b) the result is a degenerate ModalResult with an empty modes list.
+        let data = match &result {
+            Value::StructureInstance(d) => d,
+            other => panic!("expected a ModalResult StructureInstance, got {other:?}"),
+        };
+        assert_eq!(
+            data.type_name, "ModalResult",
+            "degenerate result must be a ModalResult, got {}",
+            data.type_name,
+        );
+        match data.fields.get(&"modes".to_string()) {
+            Some(Value::List(modes)) => assert!(
+                modes.is_empty(),
+                "degenerate ModalResult.modes must be empty; got {} modes",
+                modes.len(),
+            ),
+            other => {
+                panic!("expected ModalResult.modes to be an (empty) Value::List, got {other:?}")
+            }
+        }
+    }
+
+    /// step-11 (RED → GREEN in step-12): no-mass-matrix density guard at the
+    /// trampoline boundary.
+    ///
+    /// The consistent mass matrix `M` cannot be assembled without a positive
+    /// mass density, and `Kφ = λMφ` is meaningless with no `M`. So the
+    /// trampoline's density-extraction entry must short-circuit — emit an
+    /// `E_ModalNoMassMatrix` Error and a degenerate empty-modes `ModalResult` —
+    /// when the material carries no usable `density` (missing or ≤ 0), rather
+    /// than panicking or assembling/eigensolving. A positive density passes the
+    /// guard and yields `Ok(density)` (PRD diagnostics; design_decision #6:
+    /// message-based, `code: None`).
+    ///
+    /// RED: `extract_density_or_degenerate` is absent until step 12.
+    #[test]
+    fn trampoline_density_guard_flags_missing_or_nonpositive_density() {
+        // (a) missing `density` field → degenerate + E_ModalNoMassMatrix.
+        match extract_density_or_degenerate(&material_with_density(None)) {
+            Err(outcome) => assert_no_mass_degenerate(outcome),
+            Ok(d) => panic!("missing density must short-circuit; got Ok({d})"),
+        }
+
+        // (b) zero density → degenerate (≤ 0 fails the guard).
+        match extract_density_or_degenerate(&material_with_density(Some(0.0))) {
+            Err(outcome) => assert_no_mass_degenerate(outcome),
+            Ok(d) => panic!("zero density must short-circuit; got Ok({d})"),
+        }
+
+        // (c) negative density → degenerate.
+        match extract_density_or_degenerate(&material_with_density(Some(-1.0))) {
+            Err(outcome) => assert_no_mass_degenerate(outcome),
+            Ok(d) => panic!("negative density must short-circuit; got Ok({d})"),
+        }
+
+        // (d) positive density → Ok(density), no short-circuit.
+        match extract_density_or_degenerate(&material_with_density(Some(7850.0))) {
+            Ok(got) => assert!(
+                (got - 7850.0).abs() < 1e-9,
+                "positive density must pass through unchanged; got {got}",
+            ),
+            Err(_) => panic!("positive density must pass the guard"),
+        }
     }
 }
