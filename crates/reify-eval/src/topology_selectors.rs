@@ -2010,4 +2010,63 @@ mod tests {
         let h = compose_sub_handle_hash(&parent, SubKind::Edge, 0);
         assert_ne!(h, [0u8; 32], "hash output must be non-zero");
     }
+
+    // ── step-3 (task 3616): make_sub_handle RED tests ──────────────────────────
+
+    /// make_sub_handle carries the parent's realization_ref unchanged (PRD §4).
+    #[test]
+    fn make_sub_handle_carries_parent_realization_ref() {
+        use reify_core::identity::RealizationNodeId;
+        let rr = RealizationNodeId::new("BoxEdges", 0);
+        let parent_hash: [u8; 32] = [0xAA; 32];
+        let sub = make_sub_handle(&rr, &parent_hash, SubKind::Edge, 0, GeometryHandleId(5));
+        match sub {
+            Value::GeometryHandle { realization_ref, .. } => {
+                assert_eq!(realization_ref.entity, "BoxEdges");
+                assert_eq!(realization_ref.index, 0);
+            }
+            other => panic!("expected Value::GeometryHandle, got {:?}", other),
+        }
+    }
+
+    /// make_sub_handle sets upstream_values_hash to compose_sub_handle_hash output.
+    #[test]
+    fn make_sub_handle_upstream_hash_matches_compose() {
+        use reify_core::identity::RealizationNodeId;
+        let rr = RealizationNodeId::new("BoxEdges", 0);
+        let parent_hash: [u8; 32] = [0xBB; 32];
+        let expected_hash = compose_sub_handle_hash(&parent_hash, SubKind::Edge, 3);
+        let sub = make_sub_handle(&rr, &parent_hash, SubKind::Edge, 3, GeometryHandleId(7));
+        match sub {
+            Value::GeometryHandle { upstream_values_hash, .. } => {
+                assert_eq!(upstream_values_hash, expected_hash);
+            }
+            other => panic!("expected Value::GeometryHandle, got {:?}", other),
+        }
+    }
+
+    /// Two sub-handles of one parent at different topexp indices must compare
+    /// UNEQUAL under PartialEq (PRD §4 iii — upstream_values_hash differs).
+    #[test]
+    fn make_sub_handle_different_indices_are_unequal() {
+        use reify_core::identity::RealizationNodeId;
+        let rr = RealizationNodeId::new("BoxEdges", 0);
+        let parent_hash: [u8; 32] = [0xCC; 32];
+        let a = make_sub_handle(&rr, &parent_hash, SubKind::Edge, 0, GeometryHandleId(1));
+        let b = make_sub_handle(&rr, &parent_hash, SubKind::Edge, 1, GeometryHandleId(2));
+        assert_ne!(a, b, "different topexp indices must compare unequal");
+    }
+
+    /// Two sub-handles at the same (parent, kind, index) but different
+    /// kernel_handle ids must compare EQUAL — kernel_handle is excluded from
+    /// PartialEq (PRD §4 iv cache-hit equality).
+    #[test]
+    fn make_sub_handle_same_parent_kind_index_equal_despite_differing_kernel_handle() {
+        use reify_core::identity::RealizationNodeId;
+        let rr = RealizationNodeId::new("BoxEdges", 0);
+        let parent_hash: [u8; 32] = [0xDD; 32];
+        let a = make_sub_handle(&rr, &parent_hash, SubKind::Edge, 2, GeometryHandleId(100));
+        let b = make_sub_handle(&rr, &parent_hash, SubKind::Edge, 2, GeometryHandleId(999));
+        assert_eq!(a, b, "same (parent, kind, index) must be EQUAL regardless of kernel_handle");
+    }
 }
