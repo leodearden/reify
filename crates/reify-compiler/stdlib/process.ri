@@ -33,3 +33,32 @@ trait Process {
     param duration : Time
     param cost : Money
 }
+
+// ── Process-category marker traits ───────────────────────────────────────────
+// Each refines Process and inherits duration + cost as required members.
+// Bodies are empty — conformers supply Process's requirements directly.
+// Geometry_traits Watertight precedent: empty refining traits inherit the
+// parent's requirements via refinement, not by re-declaring them.
+
+// PRD §11.3 primary categories (Subtracting, Adding, Forming, Joining):
+// Material-removal processes (milling, turning, drilling, EDM, water-jet, …).
+trait Subtracting : Process {}
+
+// Additive manufacturing (FDM, SLA, SLS, metal AM, …).
+trait Adding : Process {}
+
+// Material-deformation processes (forging, stamping, rolling, extrusion, …).
+trait Forming : Process {}
+
+// Assembly / bonding processes (welding, brazing, adhesive, fastening, …).
+trait Joining : Process {}
+
+// Additional categories from task #333 scope:
+// Parting / separation (sawing, shearing, blanking, …).
+trait Parting : Process {}
+
+// Surface finishing and coating (anodising, painting, plating, polishing, …).
+trait SurfaceTreating : Process {}
+
+// Thermal treatment (annealing, quenching, case-hardening, …).
+trait HeatTreating : Process {}
