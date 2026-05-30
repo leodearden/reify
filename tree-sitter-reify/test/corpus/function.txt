@@ -1,6 +1,7 @@
 ; ── Task 3919: expression-body fn sugar ──
-; Corpus tests pinning both fn_body forms: block and expression.
-; Tests are ordered RED-first (block body is a regression guard; expression body is the new form).
+; Corpus tests pinning both fn_body forms.
+; Block form: regression guard for the existing fn_body syntax.
+; Expression form: new sugar from spec §18 #10 (`fn f(x: T) -> T = expr`).
 
 ================================================================================
 fn_body block form with let binding (regression guard)
