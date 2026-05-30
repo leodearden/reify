@@ -30,6 +30,13 @@ source "$REPO_ROOT/scripts/affected-crates-lib.sh"
 
 echo "=== affected-crates-lib drift tests ==="
 
-# (assertions will be added step by step)
+# ---------------------------------------------------------------------------
+# Step 1: C4 global-force — Cargo.lock forces ALL
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- C4: global files force ALL ---"
+
+assert "Cargo.lock forces ALL" \
+    bash -c '[ "$(affected_crates Cargo.lock)" = "ALL" ]'
 
 test_summary
