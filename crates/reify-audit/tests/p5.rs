@@ -1325,6 +1325,84 @@ mod tests {
             f4201.summary
         );
     }
+
+    /// Fix 2 Low finding must cite the corroborating ancestor commit (RED — S7):
+    /// the evidence must include an EvidenceRef::Commit whose sha equals the
+    /// claimed commit.
+    ///
+    /// This FAILS after S6, whose Low finding carries only EvidenceRef::RunsDb
+    /// evidence and no Commit ref.
+    #[test]
+    fn ancestor_corroboration_cites_commit_evidence() {
+        let conn = seed_db();
+        // No task_completed event → Ok(false) arm fires.
+
+        let mut git = MockGitOps::new();
+        git.set_is_ancestor("ancestor_sha2", "main", true);
+        // Provide empty diffs/log-greps so other legs don't rescue.
+        git.set_diff_changed_paths("main", "ancestor_sha2", vec![]);
+        git.set_log_grep("main", "4202", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "4202".to_string(),
+            TaskMetadata {
+                task_id: "4202".to_string(),
+                status: "done".to_string(),
+                files: vec!["crates/x/foo.rs".to_string()],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("ancestor_sha2".to_string()),
+                    note: None,
+                }),
+                title: "Ancestor commit evidence test task".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one finding; got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::P5PhantomDone);
+        assert_eq!(
+            f.severity,
+            Severity::Low,
+            "ancestor commit → must be Low; got {:?}",
+            f.severity
+        );
+        // The evidence must include an EvidenceRef::Commit citing the ancestor sha.
+        let cited_commit = f.evidence.iter().find_map(|e| match e {
+            EvidenceRef::Commit { sha, .. } => Some(sha.as_str()),
+            _ => None,
+        });
+        assert_eq!(
+            cited_commit,
+            Some("ancestor_sha2"),
+            "Low finding must include EvidenceRef::Commit {{ sha: 'ancestor_sha2' }}; got {:?}",
+            f.evidence
+        );
+    }
 }
 
 } // mod p5
