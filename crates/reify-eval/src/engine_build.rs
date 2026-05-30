@@ -8460,6 +8460,126 @@ mod mixed_region_tests {
         );
     }
 
+    /// Backward-pass tests "a" and "b" for `compute_demanded_reprs`
+    /// (PRD §3a.4, task 4049).
+    ///
+    /// Fixture A (test a): mesh-terminal BooleanUnion → Mesh demand.
+    /// One template with three named realizations:
+    ///   realization "a" — Primitive Box (producer)
+    ///   realization "b" — Primitive Box (producer)
+    ///   realization "u" — Boolean{Union, left:Sub("a"), right:Sub("b")} (terminal)
+    /// ExportFormat::Stl (mesh sink) → demand[0][2] == Mesh.
+    ///
+    /// Fixture B (test b): union-then-Fillet → BRep on union, Mesh on fillet.
+    /// Extends fixture A by adding:
+    ///   realization "f" — Modify{Fillet, target:Sub("u")} (terminal, mesh sink)
+    /// demand[0][2] (union) == BRep (its consumer Fillet is BRep-only).
+    /// demand[0][3] (fillet) == Mesh (terminal, mesh sink).
+    ///
+    /// Also asserts shape alignment with compute_demanded_tols (same
+    /// [t_idx][r_idx] outer/inner lengths).
+    ///
+    /// RED before step-6: `compute_demanded_reprs` does not exist.
+    #[test]
+    fn compute_demanded_reprs_mesh_terminal_and_fillet_consumer() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, ModifyKind, PrimitiveKind};
+        use reify_core::ModulePath;
+        use reify_ir::{ExportFormat, ReprKind};
+        use reify_test_support::{CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder};
+
+        let engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        // Shared primitive op used as a leaf source.
+        let prim_box = || CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![],
+        };
+
+        // ── Fixture A: single template, three realizations (a, b, u) ─────────
+        let template_a = TopologyTemplateBuilder::new("EntityA")
+            .realization_named("EntityA_a", 0, "a", vec![prim_box()])
+            .realization_named("EntityA_b", 1, "b", vec![prim_box()])
+            .realization_named(
+                "EntityA_u",
+                2,
+                "u",
+                vec![CompiledGeometryOp::Boolean {
+                    op: BooleanOp::Union,
+                    left: GeomRef::Sub("a".to_string()),
+                    right: GeomRef::Sub("b".to_string()),
+                }],
+            )
+            .build();
+        let module_a = CompiledModuleBuilder::new(ModulePath::single("test_demanded_reprs_a"))
+            .template(template_a)
+            .build();
+
+        // ── Test a: mesh sink → terminal BooleanUnion demands Mesh ───────────
+        let result_a = engine.compute_demanded_reprs(&module_a, ExportFormat::Stl);
+        assert_eq!(result_a.len(), 1, "outer Vec must have one entry per template");
+        assert_eq!(result_a[0].len(), 3, "template has 3 realizations");
+        // demanded_tols alignment: same shape
+        assert_eq!(
+            result_a.len(),
+            engine.compute_demanded_tols(&module_a).len(),
+            "outer length must match compute_demanded_tols"
+        );
+        assert_eq!(
+            result_a[0].len(),
+            engine.compute_demanded_tols(&module_a)[0].len(),
+            "inner length must match compute_demanded_tols"
+        );
+        assert_eq!(
+            result_a[0][2],
+            ReprKind::Mesh,
+            "terminal BooleanUnion under Stl (mesh sink) must demand Mesh"
+        );
+
+        // ── Fixture B: extend with Fillet consuming the union ─────────────────
+        let template_b = TopologyTemplateBuilder::new("EntityB")
+            .realization_named("EntityB_a", 0, "a", vec![prim_box()])
+            .realization_named("EntityB_b", 1, "b", vec![prim_box()])
+            .realization_named(
+                "EntityB_u",
+                2,
+                "u",
+                vec![CompiledGeometryOp::Boolean {
+                    op: BooleanOp::Union,
+                    left: GeomRef::Sub("a".to_string()),
+                    right: GeomRef::Sub("b".to_string()),
+                }],
+            )
+            .realization_named(
+                "EntityB_f",
+                3,
+                "f",
+                vec![CompiledGeometryOp::Modify {
+                    kind: ModifyKind::Fillet,
+                    target: GeomRef::Sub("u".to_string()),
+                    args: vec![],
+                }],
+            )
+            .build();
+        let module_b = CompiledModuleBuilder::new(ModulePath::single("test_demanded_reprs_b"))
+            .template(template_b)
+            .build();
+
+        // ── Test b ────────────────────────────────────────────────────────────
+        let result_b = engine.compute_demanded_reprs(&module_b, ExportFormat::Stl);
+        assert_eq!(result_b.len(), 1, "outer Vec must have one entry per template");
+        assert_eq!(result_b[0].len(), 4, "template has 4 realizations");
+        assert_eq!(
+            result_b[0][2],
+            ReprKind::BRep,
+            "BooleanUnion whose consumer (Fillet) is BRep-only must demand BRep"
+        );
+        assert_eq!(
+            result_b[0][3],
+            ReprKind::Mesh,
+            "terminal Fillet under Stl (mesh sink) must demand Mesh"
+        );
+    }
+
     /// Strum-iterate completeness test (task 4049 test "d", PRD §9 Q10).
     ///
     /// Iterates ALL current `Operation` variants via `strum::IntoEnumIterator`
