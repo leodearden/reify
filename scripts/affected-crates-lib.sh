@@ -58,6 +58,28 @@ _is_noncrate() {
     return 1
 }
 
+# _file_to_crate <path> — map a crate-owned path to its crate name, or print
+# nothing if the path is not under a known crate location.
+# Mapping rules (§5):
+#   crates/<name>/**  -> <name>
+#   gui/src-tauri/**  -> reify-gui
+_file_to_crate() {
+    local path="$1"
+    case "$path" in
+        crates/*/*)
+            # Extract the crate name: crates/<name>/...
+            local rest="${path#crates/}"
+            echo "${rest%%/*}"
+            ;;
+        gui/src-tauri/*)
+            echo "reify-gui"
+            ;;
+        *)
+            # No mapping found.
+            ;;
+    esac
+}
+
 # affected_crates <file>... — print the affected workspace crate set, one name
 # per line, sorted; or print the literal ALL if any C4/C5 condition fires.
 # Always returns 0 so callers are safe under set -e and inside $() capture.
@@ -73,13 +95,20 @@ affected_crates() {
 
     # Accumulate the direct crate set from crate-mappable paths.
     local direct=()
+    local crate
     for arg in "$@"; do
         if _is_noncrate "$arg"; then
             # Non-crate path: skip, contributes nothing.
             continue
         fi
-        # Crate-mappable / unmappable paths handled in later steps.
-        : placeholder
+        crate="$(_file_to_crate "$arg")"
+        if [ -n "$crate" ]; then
+            direct+=("$crate")
+        else
+            # C5: unmappable path — fail wide.
+            echo ALL
+            return 0
+        fi
     done
 
     # If no direct crates were accumulated, print nothing.
