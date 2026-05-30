@@ -35,7 +35,7 @@
 //!     ShellFrame, build_shell_frame, plane_stress_d, shell_element_stiffness,
 //!     IsotropicElastic,
 //!     ShellStress,
-//!     ShellElementStress, shell_element_frame, shell_element_stress,
+//!     ShellElementStress, shell_element_stress,
 //!     DirichletBc, apply_dirichlet_row_elimination,
 //!     FaceOrder, apply_body_force, apply_point_load, apply_traction_load,
 //!     SupportKind, SupportBodyKind, SupportCompatibility, build_support_bcs,
@@ -99,8 +99,8 @@
 //! assert_eq!(ss.mid, field, "homogeneous: mid must equal input");
 //! assert_eq!(ss.bottom, field, "homogeneous: bottom must equal input");
 //!
-//! // T7 smoke tests: shell_element_frame orthonormality + shell_element_stress API typecheck.
-//! let frame_mat: [[f64; 3]; 3] = shell_element_frame(&nodes);
+//! // T7 smoke tests: local_to_global orthonormality + shell_element_stress API typecheck.
+//! let frame_mat: [[f64; 3]; 3] = build_shell_frame(&nodes).local_to_global();
 //! // All three rows of the local-to-global rotation matrix must have unit norm.
 //! for i in 0..3 {
 //!     let norm_sq = frame_mat[i][0]*frame_mat[i][0]
@@ -440,7 +440,7 @@ pub use shell_assembly::{
 pub use shell_boundary::{SupportBodyKind, SupportCompatibility, SupportKind, build_support_bcs};
 pub use shell_kinematics::{ShellKinematics, shell_kinematics};
 pub use shell_result::{
-    ShellElementStress, ShellStress, shell_element_frame, shell_element_stress,
+    ShellElementStress, ShellStress, shell_element_stress,
 };
 // Task 2996: Z-Z error indicator — kernel-layer a-posteriori error estimator.
 // PRD: docs/prds/v0_4/a-posteriori-error-estimation.md, Task decomposition #1.
