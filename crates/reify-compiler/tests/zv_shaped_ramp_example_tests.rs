@@ -16,6 +16,11 @@ use reify_core::Severity;
 
 /// `examples/trajectory/zv_shaped_ramp.ri` must parse and compile under
 /// the stdlib prelude with zero Error-severity diagnostics.
+///
+/// Uses `parse_with_stdlib` (the prelude-aware parser) so that stdlib enum
+/// variants such as `SplineKind.CubicSpline` are disambiguated as
+/// `EnumAccess` nodes rather than member-access chains — identical to how
+/// `examples_smoke.rs::smoke_one` parses every example file.
 #[test]
 fn zv_shaped_ramp_example_compiles_under_stdlib_with_zero_errors() {
     const EXAMPLE_PATH: &str = concat!(
@@ -29,8 +34,13 @@ fn zv_shaped_ramp_example_compiles_under_stdlib_with_zero_errors() {
     );
 
     // ── Parse ──────────────────────────────────────────────────────────────────
+    // Use the prelude-aware parser so stdlib enum names (e.g. SplineKind) are
+    // injected into the EnumAccess disambiguation set before parsing.
 
-    let parsed = reify_syntax::parse(&src, reify_core::ModulePath::single("zv_shaped_ramp"));
+    let parsed = reify_compiler::parse_with_stdlib(
+        &src,
+        reify_core::ModulePath::single("zv_shaped_ramp"),
+    );
     assert!(
         parsed.errors.is_empty(),
         "parse errors in examples/trajectory/zv_shaped_ramp.ri: {:#?}",
