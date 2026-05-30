@@ -480,6 +480,27 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 "worst_case" if evaluated_args.len() == 2 => {
                     eval_worst_case_dispatch(&evaluated_args, ctx)
                 }
+                // solve_load_cases(material, length, width, height, cases, options):
+                // dispatched here (not in `reify_stdlib::eval_builtin` → `eval_fea`)
+                // because the per-case iteration needs to call `solve_elastic_static`
+                // per LoadCase, which requires access to `ctx.functions` (available in
+                // `EvalContext`). Mirrors the `worst_case` / `flat_map` dual-dispatch
+                // pattern: the real implementation lives in `eval_solve_load_cases`;
+                // `eval_fea` carries a permanent `Value::Undef` stub for the
+                // "recognised name" contract.
+                //
+                // Arity guard: the Reify function signature has 6 params:
+                //   (material, length, width, height, cases, options)
+                // After fn-param-default padding (task 3449) `options` defaults to
+                // `ElasticOptions()`, so callers may omit it — either 5 or 6 args
+                // reach here depending on whether the default was padded.
+                // The guard accepts both arities so default-padded and explicit
+                // calls are handled identically.
+                "solve_load_cases" if evaluated_args.len() == 6
+                    || evaluated_args.len() == 5 =>
+                {
+                    eval_solve_load_cases(&evaluated_args, ctx)
+                }
                 _ => {
                     // Composed-field call dispatch: a name in a composed lambda
                     // body (e.g. `base(p)` inside `composed { |p| base(p) * 30 }`)
