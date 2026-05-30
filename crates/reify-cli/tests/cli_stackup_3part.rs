@@ -19,11 +19,17 @@ fn extract_scalar(stdout: &str, key: &str) -> f64 {
         .find(&needle)
         .unwrap_or_else(|| panic!("key '{key}' not found in stdout:\n{stdout}"));
     let rest = &stdout[start + needle.len()..];
-    rest.split_whitespace()
+    let token = rest
+        .split_whitespace()
         .next()
-        .unwrap_or_else(|| panic!("no token after '{key}'"))
+        .unwrap_or_else(|| panic!("no token after '{key}'"));
+    // Scalar (LENGTH) values print as `<si_value> <dimension>`, so the numeric
+    // token is already whitespace-delimited.  Real/Int values print bare — they
+    // pick up trailing map punctuation (`,` or `}`).  Strip both.
+    let clean = token.trim_end_matches(|c: char| matches!(c, ',' | '}'));
+    clean
         .parse::<f64>()
-        .unwrap_or_else(|e| panic!("parse f64 for '{key}': {e}"))
+        .unwrap_or_else(|e| panic!("parse f64 for '{key}' (token={token:?}): {e}"))
 }
 
 fn assert_rel_close(actual: f64, expected: f64, rel_tol: f64, label: &str) {

@@ -51,4 +51,16 @@ structure def ToleranceStackup3Part {
     // stackup_rss: root-sum-square (statistical) analysis at default 3σ.
     // Returns Map: nominal_gap, rss_band, rss_max, rss_min, rss_sigma, sigma_level.
     let rss = stackup_rss(chain)
+
+    // monte_carlo_stackup(chain, samples, seed, spec_min, spec_max)
+    // Returns Map: mc_mean, mc_sigma, mc_yield_fraction, nominal_gap, samples, seed, ...
+    //
+    // mc_mean  ≈ nominal_gap = 3 mm  (unbiased estimator; all contributors symmetric Normal)
+    // mc_sigma ≈ rss_sigma ≈ 0.039721 mm = 3.972e-5 m
+    //   (Normal contributors: MC σ converges to RSS σ within 2% at N=100k — PRD §3.3)
+    // Bit-deterministic at fixed seed=42 (xoshiro256** PRNG, vendored).
+    //
+    // spec window [2.5mm, 3.5mm] = nominal_gap ± 0.5mm ≈ ±12σ_gap
+    //   → mc_yield_fraction ≈ 1.0  (design is comfortably within spec)
+    let mc = monte_carlo_stackup(chain, 100000, 42, 2.5mm, 3.5mm)
 }
