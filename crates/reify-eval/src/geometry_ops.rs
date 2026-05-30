@@ -2368,6 +2368,12 @@ fn dispatch_shared_edges(
 /// onto the dispatcher's `Option<Value>` contract: `Ok` → `Value::List` of
 /// Int handle ids; `Err` → Warning diagnostic + `Value::Undef`. Shared by all
 /// `topology_selectors::*` delegating arms (task 3560).
+///
+/// NOTE: arms using this helper emit `Value::List([Value::Int])` (raw kernel-handle ids),
+/// NOT the canonical `List<Geometry>` = `List<Value::GeometryHandle>` contract required by
+/// PRD §4. They must be migrated to `dispatch_filtered_subhandles` in KGQ-θ (edges_by_length,
+/// faces_by_area, edges_at_height) and subsequent tasks; do not mistake the Int-list output
+/// for the intended final shape.
 fn dispatch_filtered_list(
     result: Result<Vec<GeometryHandleId>, reify_ir::QueryError>,
     helper_name: &str,
@@ -2438,10 +2444,12 @@ fn dispatch_filtered_subhandles(
         }
     };
 
+    let canonical_index_map: std::collections::HashMap<GeometryHandleId, usize> =
+        canonical.iter().enumerate().map(|(i, &id)| (id, i)).collect();
     let mut elements: Vec<reify_ir::Value> = Vec::with_capacity(retained.len());
     for retained_id in retained {
-        match canonical.iter().position(|&id| id == retained_id) {
-            Some(canonical_index) => {
+        match canonical_index_map.get(&retained_id) {
+            Some(&canonical_index) => {
                 elements.push(crate::topology_selectors::make_sub_handle(
                     parent_rr,
                     parent_hash,
@@ -10363,8 +10371,8 @@ mod tests {
                 kernel_handle,
             } => {
                 assert_eq!(
-                    realization_ref.entity, parent_rr.entity,
-                    "realization_ref.entity must match parent"
+                    realization_ref, &parent_rr,
+                    "realization_ref must equal parent (full struct)"
                 );
                 assert_eq!(
                     *kernel_handle,
@@ -10561,8 +10569,8 @@ mod tests {
                 kernel_handle,
             } => {
                 assert_eq!(
-                    realization_ref.entity, parent_rr.entity,
-                    "realization_ref.entity must match parent"
+                    realization_ref, &parent_rr,
+                    "realization_ref must equal parent (full struct)"
                 );
                 assert_eq!(
                     *kernel_handle,
@@ -10584,6 +10592,142 @@ mod tests {
             diagnostics.is_empty(),
             "happy-path edges_parallel_to must emit zero diagnostics; got: {:?}",
             diagnostics
+        );
+    }
+
+    // --- dispatch_filtered_subhandles defensive-branch tests ---
+
+    /// Branch (a): filter_result is Err → dispatch emits a Warning and returns Value::Undef.
+    #[test]
+    fn dispatch_filtered_subhandles_filter_error_yields_undef_and_warning() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+
+        let parent_rr = RealizationNodeId::new("Def", 0);
+        let parent_hash: [u8; 32] = [0x01; 32];
+        let mut kernel = MockGeometryKernel::new();
+        let mut diagnostics = Vec::new();
+
+        let result = super::dispatch_filtered_subhandles(
+            &mut kernel,
+            GeometryHandleId(1),
+            crate::topology_selectors::SubKind::Face,
+            &parent_rr,
+            &parent_hash,
+            Err(reify_ir::QueryError::QueryFailed(
+                "mock filter failure".to_string(),
+            )),
+            "faces_by_normal",
+            &mut diagnostics,
+        );
+
+        assert!(
+            matches!(result, Some(reify_ir::Value::Undef)),
+            "filter Err must yield Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(diagnostics.len(), 1, "must emit exactly one warning");
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_core::Severity::Warning,
+            "diagnostic must be Warning severity, got {:?}",
+            diagnostics[0]
+        );
+    }
+
+    /// Branch (b): filter_result is Ok but canonical re-extract fails → Warning + Value::Undef.
+    #[test]
+    fn dispatch_filtered_subhandles_canonical_reextract_error_yields_undef_and_warning() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+
+        let parent_rr = RealizationNodeId::new("Def", 0);
+        let parent_hash: [u8; 32] = [0x02; 32];
+        // Kernel has no extract_faces entry for the parent → extract_faces returns QueryError.
+        let mut kernel = MockGeometryKernel::new();
+        let mut diagnostics = Vec::new();
+
+        // Filter returned Ok with a retained id, but the re-extract below will fail.
+        let result = super::dispatch_filtered_subhandles(
+            &mut kernel,
+            GeometryHandleId(1),
+            crate::topology_selectors::SubKind::Face,
+            &parent_rr,
+            &parent_hash,
+            Ok(vec![GeometryHandleId(2)]),
+            "faces_by_normal",
+            &mut diagnostics,
+        );
+
+        assert!(
+            matches!(result, Some(reify_ir::Value::Undef)),
+            "canonical re-extract Err must yield Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(diagnostics.len(), 1, "must emit exactly one warning");
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_core::Severity::Warning,
+            "diagnostic must be Warning severity, got {:?}",
+            diagnostics[0]
+        );
+    }
+
+    /// Branch (c): a retained id is absent from the canonical list → that element is silently
+    /// skipped (list is shorter than retained), and a Warning is emitted for the missing id.
+    #[test]
+    fn dispatch_filtered_subhandles_absent_retained_id_is_skipped_with_warning() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+
+        let parent_rr = RealizationNodeId::new("Def", 0);
+        let parent_hash: [u8; 32] = [0x03; 32];
+        let parent_handle = GeometryHandleId(1);
+        // Canonical list: [GHId(2), GHId(3)] — GHId(99) is NOT present.
+        let mut kernel = MockGeometryKernel::new().with_extracted_faces(
+            parent_handle,
+            vec![GeometryHandleId(2), GeometryHandleId(3)],
+        );
+        let mut diagnostics = Vec::new();
+
+        // Retained contains one present id (GHId(2)) and one absent id (GHId(99)).
+        let result = super::dispatch_filtered_subhandles(
+            &mut kernel,
+            parent_handle,
+            crate::topology_selectors::SubKind::Face,
+            &parent_rr,
+            &parent_hash,
+            Ok(vec![GeometryHandleId(2), GeometryHandleId(99)]),
+            "faces_by_normal",
+            &mut diagnostics,
+        );
+
+        let list = match result {
+            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+            other => panic!(
+                "must yield Some(Value::List(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        // GHId(2) at canonical index 0 is included; GHId(99) is absent → skipped.
+        assert_eq!(
+            list.len(),
+            1,
+            "absent retained id must be skipped; expected 1 element, got {}; diags: {:?}",
+            list.len(),
+            diagnostics
+        );
+        assert_eq!(diagnostics.len(), 1, "must emit one warning for the absent id");
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_core::Severity::Warning,
+            "diagnostic must be Warning severity, got {:?}",
+            diagnostics[0]
+        );
+        assert!(
+            diagnostics[0].message.contains("absent from canonical list"),
+            "warning must mention 'absent from canonical list'; got: {}",
+            diagnostics[0].message
         );
     }
 }
