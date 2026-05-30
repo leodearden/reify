@@ -140,6 +140,18 @@ mod tests {
         decay * (xi0 * (omega_d * t).cos() + ((v0 + zeta * omega * xi0) / omega_d) * (omega_d * t).sin())
     }
 
+    // ─── closed-form analytic helpers ────────────────────────────────────────
+
+    /// Analytic constant-force step response from rest (Chopra Table 5.2.1).
+    ///
+    /// ξ(t) = (p₀/ω²)·[1 − e^{−ζωt}·(cos(ωD·t) + (ζω/ωD)·sin(ωD·t))]
+    fn analytic_step_response(p0: f64, omega: f64, zeta: f64, t: f64) -> f64 {
+        let omega_d = omega * (1.0 - zeta * zeta).sqrt();
+        let decay   = (-zeta * omega * t).exp();
+        (p0 / (omega * omega))
+            * (1.0 - decay * ((omega_d * t).cos() + (zeta * omega / omega_d) * (omega_d * t).sin()))
+    }
+
     // ─── step 01: free-vibration-from-IC exactness ───────────────────────────
 
     /// Drives `duhamel_solve` with zero forcing and non-zero IC (ξ₀=1, v̇₀=0).
@@ -162,6 +174,34 @@ mod tests {
         for (j, &got) in result.iter().enumerate() {
             let t    = j as f64 * dt;
             let want = analytic_free_decay(xi0, v0, omega, zeta, t);
+            assert!(
+                (got - want).abs() < 1e-12,
+                "step {j} (t={t:.4}): got {got:.6e}, want {want:.6e}, diff {:.2e}",
+                (got - want).abs()
+            );
+        }
+    }
+
+    // ─── step 03: constant-force step-response exactness (RED) ───────────────
+
+    /// Drives `duhamel_solve` from rest with a CONSTANT forcing slice p0.
+    /// Every sample must match the analytic step response within 1e-12.
+    /// RED: forcing is currently ignored → response stays at 0.
+    #[test]
+    fn constant_force_step_response_exact() {
+        let omega = 50.0_f64;
+        let zeta  = 0.05_f64;
+        let dt    = 0.001_f64;
+        let n     = 60_usize;
+        let p0    = 3.0_f64;
+        let forcing = vec![p0; n];
+
+        let result = duhamel_solve(omega, zeta, dt, &forcing, 0.0, 0.0);
+
+        assert_eq!(result.len(), n);
+        for (j, &got) in result.iter().enumerate() {
+            let t    = j as f64 * dt;
+            let want = analytic_step_response(p0, omega, zeta, t);
             assert!(
                 (got - want).abs() < 1e-12,
                 "step {j} (t={t:.4}): got {got:.6e}, want {want:.6e}, diff {:.2e}",
