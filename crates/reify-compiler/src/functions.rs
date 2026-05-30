@@ -539,6 +539,55 @@ pub(crate) fn compile_field(
             }
         }
         reify_ast::FieldSource::Imported { path, format, grid } => {
+            // Validate required keys: path, format, grid.
+            if path.is_none() {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "imported field source is missing required key: 'path'",
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        field_def.span,
+                        "missing required imported config key",
+                    )),
+                );
+            }
+            if format.is_none() {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "imported field source is missing required key: 'format'",
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        field_def.span,
+                        "missing required imported config key",
+                    )),
+                );
+            }
+            if grid.is_none() {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "imported field source is missing required key: 'grid'",
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        field_def.span,
+                        "missing required imported config key",
+                    )),
+                );
+            }
+            // Validate format value: only "OpenVDB" is supported in v0.2.
+            if let Some(fmt) = format.as_deref() {
+                if fmt != "OpenVDB" {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "unsupported imported field format '{}': only 'OpenVDB' is supported",
+                            fmt
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            field_def.span,
+                            "unsupported format for imported field source",
+                        )),
+                    );
+                }
+            }
             CompiledFieldSource::Imported {
                 path: path.clone(),
                 format: format.clone(),
