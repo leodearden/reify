@@ -182,7 +182,7 @@ function setup() {
 describe('meshManager — computeBarycentric', () => {
   it('returns null for unknown entity', () => {
     const { manager } = setup();
-    const result = (manager as any).computeBarycentric('nope', 0, { x: 0, y: 0, z: 0 });
+    const result = manager.computeBarycentric('nope', 0, { x: 0, y: 0, z: 0 });
     expect(result).toBeNull();
   });
 
@@ -191,7 +191,7 @@ describe('meshManager — computeBarycentric', () => {
     const mesh = makeTriangleMesh('T');
     manager.sync({ T: mesh });
     // Only 1 triangle (indices length = 3), face 1 would need index[5] which is out of range
-    const result = (manager as any).computeBarycentric('T', 1, { x: 0, y: 0, z: 0 });
+    const result = manager.computeBarycentric('T', 1, { x: 0, y: 0, z: 0 });
     expect(result).toBeNull();
   });
 
@@ -204,7 +204,7 @@ describe('meshManager — computeBarycentric', () => {
     // A=(0,0,0), B=(1,0,0), C=(0,1,0)
     // P = 0.2*(0,0,0) + 0.3*(1,0,0) + 0.5*(0,1,0) = (0.3, 0.5, 0)
     const point = { x: 0.3, y: 0.5, z: 0 };
-    const bary = (manager as any).computeBarycentric('T', 0, point) as [number, number, number] | null;
+    const bary = manager.computeBarycentric('T', 0, point);
     expect(bary).not.toBeNull();
     expect(bary![0]).toBeCloseTo(0.2, 4);
     expect(bary![1]).toBeCloseTo(0.3, 4);
@@ -217,7 +217,7 @@ describe('meshManager — computeBarycentric', () => {
     manager.sync({ T: mesh });
 
     const point = { x: 0.5, y: 0.3, z: 0 };
-    const bary = (manager as any).computeBarycentric('T', 0, point) as [number, number, number] | null;
+    const bary = manager.computeBarycentric('T', 0, point);
     expect(bary).not.toBeNull();
     const sum = bary![0] + bary![1] + bary![2];
     expect(sum).toBeCloseTo(1.0, 4);
@@ -230,7 +230,7 @@ describe('meshManager — computeBarycentric', () => {
 
     // Centroid: ((0+1+0)/3, (0+0+1)/3, 0) = (1/3, 1/3, 0)
     const point = { x: 1 / 3, y: 1 / 3, z: 0 };
-    const bary = (manager as any).computeBarycentric('T', 0, point) as [number, number, number] | null;
+    const bary = manager.computeBarycentric('T', 0, point);
     expect(bary).not.toBeNull();
     expect(bary![0]).toBeCloseTo(1 / 3, 4);
     expect(bary![1]).toBeCloseTo(1 / 3, 4);
@@ -242,11 +242,29 @@ describe('meshManager — computeBarycentric', () => {
     const mesh = makeTriangleMesh('T');
     manager.sync({ T: mesh });
     const point = { x: 0, y: 0, z: 0 };
-    const bary = (manager as any).computeBarycentric('T', 0, point) as [number, number, number] | null;
+    const bary = manager.computeBarycentric('T', 0, point);
     expect(bary).not.toBeNull();
     expect(bary![0]).toBeCloseTo(1, 4);
     expect(bary![1]).toBeCloseTo(0, 4);
     expect(bary![2]).toBeCloseTo(0, 4);
+  });
+
+  it('returns null for a degenerate triangle (two coincident vertices)', () => {
+    const { manager } = setup();
+    // Degenerate triangle: A and B are coincident → zero area → denom ≈ 0
+    const degenerateMesh: MeshData = {
+      entity_path: 'Degen',
+      vertices: new Float32Array([
+        0, 0, 0, // A
+        0, 0, 0, // B (coincident with A → zero-area triangle)
+        1, 0, 0, // C
+      ]),
+      indices: new Uint32Array([0, 1, 2]),
+      normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+    };
+    manager.sync({ Degen: degenerateMesh });
+    const result = manager.computeBarycentric('Degen', 0, { x: 0.5, y: 0, z: 0 });
+    expect(result).toBeNull();
   });
 });
 
@@ -257,7 +275,7 @@ describe('meshManager — computeBarycentric', () => {
 describe('meshManager — sampleProbe', () => {
   it('returns null for unknown entity (staleness signal)', () => {
     const { manager } = setup();
-    const result = (manager as any).sampleProbe('nope', 0, [0.2, 0.3, 0.5]);
+    const result = manager.sampleProbe('nope', 0, [0.2, 0.3, 0.5]);
     expect(result).toBeNull();
   });
 
@@ -266,7 +284,7 @@ describe('meshManager — sampleProbe', () => {
     const mesh = makeTriangleMesh('T');
     manager.sync({ T: mesh });
     // Face 1 would need index[5] which is absent
-    const result = (manager as any).sampleProbe('T', 1, [0.2, 0.3, 0.5]);
+    const result = manager.sampleProbe('T', 1, [0.2, 0.3, 0.5]);
     expect(result).toBeNull();
   });
 
@@ -274,7 +292,7 @@ describe('meshManager — sampleProbe', () => {
     const { manager } = setup();
     const mesh = makeTriangleMesh('T'); // no displaced_positions
     manager.sync({ T: mesh });
-    const sample = (manager as any).sampleProbe('T', 0, [1 / 3, 1 / 3, 1 / 3]);
+    const sample = manager.sampleProbe('T', 0, [1 / 3, 1 / 3, 1 / 3]);
     expect(sample).not.toBeNull();
     expect(sample.displacement).toBeNull();
   });
@@ -288,7 +306,7 @@ describe('meshManager — sampleProbe', () => {
     manager.sync({ T: mesh });
 
     // Any bary should give displacement = [0.1, 0.2, 0.3]
-    const sample = (manager as any).sampleProbe('T', 0, [0.2, 0.3, 0.5]);
+    const sample = manager.sampleProbe('T', 0, [0.2, 0.3, 0.5]);
     expect(sample).not.toBeNull();
     expect(sample.displacement[0]).toBeCloseTo(0.1, 4);
     expect(sample.displacement[1]).toBeCloseTo(0.2, 4);
@@ -306,7 +324,7 @@ describe('meshManager — sampleProbe', () => {
     // bary = [0.2, 0.3, 0.5]
     // delta_A = [1,0,0], delta_B = [0,1,0], delta_C = [0,0,1]
     // displacement = 0.2*[1,0,0] + 0.3*[0,1,0] + 0.5*[0,0,1] = [0.2, 0.3, 0.5]
-    const sample = (manager as any).sampleProbe('T', 0, [0.2, 0.3, 0.5]);
+    const sample = manager.sampleProbe('T', 0, [0.2, 0.3, 0.5]);
     expect(sample).not.toBeNull();
     expect(sample.displacement[0]).toBeCloseTo(0.2, 4);
     expect(sample.displacement[1]).toBeCloseTo(0.3, 4);
@@ -317,7 +335,7 @@ describe('meshManager — sampleProbe', () => {
     const { manager } = setup();
     const mesh = makeTriangleMesh('T'); // no scalar_channels
     manager.sync({ T: mesh });
-    const sample = (manager as any).sampleProbe('T', 0, [1 / 3, 1 / 3, 1 / 3]);
+    const sample = manager.sampleProbe('T', 0, [1 / 3, 1 / 3, 1 / 3]);
     expect(sample).not.toBeNull();
     expect(sample.vonMises).toBeNull();
     expect(sample.scalars).toEqual({});
@@ -329,7 +347,7 @@ describe('meshManager — sampleProbe', () => {
     const mesh = makeTriangleMesh('T', { scalar_channels: { vonMises: vonMisesValues } });
     manager.sync({ T: mesh });
 
-    const sample = (manager as any).sampleProbe('T', 0, [0.2, 0.3, 0.5]);
+    const sample = manager.sampleProbe('T', 0, [0.2, 0.3, 0.5]);
     expect(sample).not.toBeNull();
     expect(sample.vonMises).toBeCloseTo(5.0, 4);
     expect(sample.scalars['vonMises']).toBeCloseTo(5.0, 4);
@@ -343,7 +361,7 @@ describe('meshManager — sampleProbe', () => {
     manager.sync({ T: mesh });
 
     // bary = [0.2, 0.3, 0.5]: 0.2*1 + 0.3*2 + 0.5*3 = 0.2 + 0.6 + 1.5 = 2.3
-    const sample = (manager as any).sampleProbe('T', 0, [0.2, 0.3, 0.5]);
+    const sample = manager.sampleProbe('T', 0, [0.2, 0.3, 0.5]);
     expect(sample).not.toBeNull();
     expect(sample.vonMises).toBeCloseTo(2.3, 4);
     expect(sample.scalars['vonMises']).toBeCloseTo(2.3, 4);
@@ -355,7 +373,7 @@ describe('meshManager — sampleProbe', () => {
     const mesh = makeTriangleMesh('T', { scalar_channels: { pressure } });
     manager.sync({ T: mesh });
 
-    const sample = (manager as any).sampleProbe('T', 0, [1 / 3, 1 / 3, 1 / 3]);
+    const sample = manager.sampleProbe('T', 0, [1 / 3, 1 / 3, 1 / 3]);
     expect(sample).not.toBeNull();
     expect(sample.scalars['pressure']).toBeCloseTo(10.0, 4);
     // vonMises absent → null
@@ -371,7 +389,7 @@ describe('meshManager — sampleProbe', () => {
 
     // bary = [0.2, 0.3, 0.5]
     // flux = 0.2*[1,0,0] + 0.3*[0,1,0] + 0.5*[0,0,1] = [0.2, 0.3, 0.5]
-    const sample = (manager as any).sampleProbe('T', 0, [0.2, 0.3, 0.5]);
+    const sample = manager.sampleProbe('T', 0, [0.2, 0.3, 0.5]);
     expect(sample).not.toBeNull();
     expect(sample.vectors['flux'][0]).toBeCloseTo(0.2, 4);
     expect(sample.vectors['flux'][1]).toBeCloseTo(0.3, 4);
@@ -384,10 +402,10 @@ describe('meshManager — sampleProbe', () => {
     const mesh = makeTriangleMesh('T', { vector_channels: { flux } });
     manager.sync({ T: mesh });
     // Verify it exists
-    expect((manager as any).sampleProbe('T', 0, [1 / 3, 1 / 3, 1 / 3])).not.toBeNull();
+    expect(manager.sampleProbe('T', 0, [1 / 3, 1 / 3, 1 / 3])).not.toBeNull();
     // Sync to empty removes the mesh
     manager.sync({});
     // Now sampleProbe should return null (entity gone)
-    expect((manager as any).sampleProbe('T', 0, [1 / 3, 1 / 3, 1 / 3])).toBeNull();
+    expect(manager.sampleProbe('T', 0, [1 / 3, 1 / 3, 1 / 3])).toBeNull();
   });
 });

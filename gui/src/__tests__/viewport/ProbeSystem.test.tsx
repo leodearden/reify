@@ -374,25 +374,6 @@ describe('createProbeSystem — removeProbe / dispose', () => {
     });
   });
 
-  it('removeProbe disposes the marker geometry and material', () => {
-    createRoot((dispose) => {
-      const { system } = makeSetup();
-      system.addProbe('Body', 0, [0.2, 0.3, 0.5]);
-      const geo = mockSphereGeometryInstances[0];
-      const mat = mockMeshBasicMaterialInstances[0];
-      vi.clearAllMocks();
-
-      // Find the id from the last addProbe result
-      const id = system.addProbe('B', 1, [1, 0, 0]); // another probe, get its id
-      // Remove the first probe via the store id
-      const firstId = system.addProbe('C', 2, [0, 1, 0]);
-      void firstId;
-      // Actually test with just one probe and get the id directly
-      dispose();
-      void geo; void mat; void id;
-    });
-  });
-
   it('removeProbe with disposal: geometry.dispose and material.dispose are called', () => {
     createRoot((dispose) => {
       const { system } = makeSetup();
@@ -463,7 +444,8 @@ describe('<ProbePopup>', () => {
       sample: makeSample({ vonMises: 42.0, displacement: [0.1, 0.2, 0.3] }),
     });
     render(() => <ProbePopup store={store} onRemove={vi.fn()} onRepin={vi.fn()} />);
-    expect(screen.getByText(/42/)).toBeTruthy();
+    const vonMisesEl = screen.getByTestId('probe-vonmises');
+    expect(vonMisesEl.textContent).toContain('42.000');
   });
 
   it('stale probe row has a stale marker class', () => {

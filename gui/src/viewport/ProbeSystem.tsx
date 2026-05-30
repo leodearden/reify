@@ -278,7 +278,7 @@ export function ProbePopup(props: ProbePopupProps) {
                 </span>
               </Show>
               <Show when={probe.sample?.vonMises !== null}>
-                <span class="probe-vonmises">
+                <span class="probe-vonmises" data-testid="probe-vonmises">
                   σ_vm {probe.sample!.vonMises!.toFixed(3)}
                 </span>
               </Show>
