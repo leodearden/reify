@@ -14,7 +14,7 @@
 use reify_test_support::{
     assert_no_eval_errors, make_simple_engine, parse_and_compile_with_stdlib,
 };
-use reify_core::{Severity, ValueCellId};
+use reify_core::{DimensionVector, Severity, ValueCellId};
 use reify_ir::{Satisfaction, Value};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
@@ -232,5 +232,46 @@ fn all_constraints_satisfied_for_all_entities() {
                 entity
             );
         }
+    }
+}
+
+// ── (e) Copper.resistivity exact SI value pin ────────────────────────────────
+
+/// Copper.resistivity must resolve to exactly 1.7e-8 Ω·m (dimension
+/// ELECTRIC_RESISTIVITY).  `all_constraints_satisfied_for_all_entities` only
+/// proves the Conductive guard (`resistivity < 1e-4`) holds — a value mistyped
+/// by a factor of ten would still satisfy that.  This pin locks the exact
+/// coefficient so the step-11 migration of the `0.000000017 * 1ohm * 1m`
+/// workaround to the `0.000000017ohm*m` compound literal is guarded against a
+/// zero-count transcription error.
+#[test]
+fn copper_resistivity_si_value_is_1_7e_minus_8() {
+    let (_compiled, _engine, eval) = compile_and_eval();
+    let id = ValueCellId::new("Copper", "resistivity");
+    let val = eval
+        .values
+        .get(&id)
+        .expect("Copper.resistivity not found in eval result");
+    match val {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert!(
+                (si_value - 1.7e-8).abs() < 1.7e-8 * 1e-6,
+                "Copper.resistivity si_value should be ≈1.7e-8 Ω·m, got {}",
+                si_value
+            );
+            assert_eq!(
+                *dimension,
+                DimensionVector::ELECTRIC_RESISTIVITY,
+                "Copper.resistivity dimension should be ELECTRIC_RESISTIVITY, got {:?}",
+                dimension
+            );
+        }
+        other => panic!(
+            "Copper.resistivity should be Value::Scalar, got {:?}",
+            other
+        ),
     }
 }
