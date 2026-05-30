@@ -69,6 +69,13 @@ pub(crate) struct MergeContext {
     /// upgrades the first-seen insert below into a `try_dedup_or_conflict`
     /// call against this same map. (task 3939 δ)
     pub seen_fn_sigs: HashMap<String, (CompiledAssocFnSig, String)>,
+    /// For default-providing assoc fns (`DefaultKind::Fn`): fn name →
+    /// originating trait, recorded when the default is merged so the
+    /// assoc-fn-resolution phase can key the compiled table by
+    /// `(trait_name, fn_name)`. `TraitDefault` itself carries no originating
+    /// trait, so this is the only place the trait is captured for defaults.
+    /// First-seen wins (mirrors `seen_fn_sigs` for requirements). (task 3939 δ)
+    pub seen_fn_default_traits: HashMap<String, String>,
 }
 
 impl MergeContext {
@@ -266,6 +273,29 @@ pub(crate) fn collect_all_requirements(
                 continue;
             }
 
+            // Assoc-fn default (task 3939 δ): record the originating trait so the
+            // assoc-fn-resolution phase can key the table by (trait, fn), then push
+            // so the default reaches conformance (phase 5's default-satisfies-
+            // requirement check and the table-population phase both read it from
+            // `ctx.defaults`). First-seen-by-name dedup keeps a single entry across
+            // a diamond/refinement chain. The value-typed composite-key path below
+            // does not apply to Fn defaults (a fn body has no single "default type"),
+            // so it is handled here and `continue`s. Step-10 layers the refinement
+            // signature-lock on top (a refining trait may override a same-name body
+            // but may not change an inherited assoc-fn signature).
+            if let DefaultKind::Fn(_) = &default.kind {
+                if ctx
+                    .seen_fn_default_traits
+                    .contains_key(name.as_str())
+                {
+                    continue; // already collected this assoc-fn default (first-seen wins)
+                }
+                ctx.seen_fn_default_traits
+                    .insert(name.clone(), trait_name.to_string());
+                ctx.defaults.push(default.clone());
+                continue;
+            }
+
             // Extract type and kind-tag for composite-key dedup.
             // Param and Constraint each get their own (name, kind) slot so they
             // never interfere with each other's dedup or conflict detection.
@@ -279,11 +309,12 @@ pub(crate) fn collect_all_requirements(
                     unreachable!("Let defaults must be handled by the seen_let_hashes block above")
                 }
                 DefaultKind::Constraint(_) => (Type::Bool, DefaultKindTag::Constraint),
-                // Assoc-fn default merge (dedup + push so the default reaches
-                // conformance) is implemented in task 3939 δ step-10; this
-                // value-typed composite-key dedup path does not apply to Fn
-                // defaults, so skip for now (placeholder no-op).
-                DefaultKind::Fn(_) => continue,
+                // Unreachable: all Fn defaults are handled by the early
+                // `if let DefaultKind::Fn(_)` block above, which always exits via
+                // `continue` (task 3939 δ).
+                DefaultKind::Fn(_) => {
+                    unreachable!("Fn defaults must be handled by the seen_fn_default_traits block above")
+                }
             };
 
             // Note: `name.to_string()` allocates even on the `continue` (already-seen) path

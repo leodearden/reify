@@ -737,14 +737,16 @@ mod tests {
         );
     }
 
-    // (b) `fn area(self) -> Real { 3.14 }` → DefaultKind::Fn(fn_def).
+    // (b) `fn area(self) -> Real { 3.5 }` → DefaultKind::Fn(fn_def).
+    // (Body value is irrelevant to this test — it only asserts the member becomes
+    // a default-providing fn. Kept off `3.14…` to avoid clippy::approx_constant.)
     #[test]
     fn assoc_fn_with_body_becomes_default_fn() {
         let body = reify_ast::FnBody {
             let_bindings: vec![],
             result_expr: reify_ast::Expr {
                 kind: reify_ast::ExprKind::NumberLiteral {
-                    value: 3.14,
+                    value: 3.5,
                     is_real: true,
                 },
                 span: span(),

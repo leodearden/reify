@@ -872,6 +872,128 @@ fn render_assoc_fn_sig(sig: &CompiledAssocFnSig) -> String {
     format!("fn {}({}) -> {}", sig.name, parts.join(", "), sig.return_type)
 }
 
+/// Find the structure's own `fn <name>` override member, if it declares one.
+/// Used by the assoc-fn-resolution phase to pick the override body over the
+/// trait default. (task 3939 δ)
+fn find_structure_assoc_fn<'a>(
+    structure: &EntityDefRef<'a>,
+    name: &str,
+) -> Option<&'a reify_ast::FnDef> {
+    structure.members.iter().find_map(|m| match m {
+        reify_ast::MemberDecl::Fn(fd) if fd.name == name => Some(fd),
+        _ => None,
+    })
+}
+
+/// Phase (task 3939 δ): resolve the conformer's associated-function table.
+///
+/// For every assoc fn in the merged trait-bound set — each `DefaultKind::Fn`
+/// default and each `RequirementKind::Fn` requirement — pick the structure's
+/// override `fn` body when the structure declares a same-name `fn`, else the
+/// trait's default body, compile it via [`compile_assoc_function`] against the
+/// conformer receiver type, and push a [`CompiledAssocFn`] keyed by
+/// `(trait_name, fn_name)` with `is_override` set accordingly. This is the
+/// lookup target for task ζ's `TraitMethodCall` lowering (PRD §4.3).
+///
+/// Defaults are processed first (they carry a body to inject); a `handled` set
+/// then suppresses a duplicate entry for a bodyless `RequirementKind::Fn` of the
+/// same name that the same default satisfies. A bodyless requirement with
+/// neither a structure override nor a same-name default contributes no entry
+/// (phase 5 already emitted `TraitFnNotSatisfied`).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn check_phase_resolve_assoc_fns(
+    ctx: &MergeContext,
+    structure: &EntityDefRef<'_>,
+    enum_defs: &[reify_ir::EnumDef],
+    functions: &[CompiledFunction],
+    alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
+    trait_names: &HashSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+    assoc_fns_out: &mut Vec<CompiledAssocFn>,
+) {
+    let conformer = structure.name;
+    // Names already given a table entry — prevents a bodyless requirement and a
+    // same-name default from both producing one.
+    let mut handled: HashSet<String> = HashSet::new();
+
+    // Default-providing assoc fns: the structure override beats the default body.
+    for default in &ctx.defaults {
+        let DefaultKind::Fn(default_fn_def) = &default.kind else {
+            continue;
+        };
+        let Some(fn_name) = default.name.as_deref() else {
+            continue;
+        };
+        if !handled.insert(fn_name.to_string()) {
+            continue;
+        }
+        let trait_name = ctx
+            .seen_fn_default_traits
+            .get(fn_name)
+            .cloned()
+            .unwrap_or_else(|| "<trait>".to_string());
+        let (fn_def_to_compile, is_override) = match find_structure_assoc_fn(structure, fn_name) {
+            Some(override_def) => (override_def, true),
+            None => (default_fn_def, false),
+        };
+        if let Some(function) = compile_assoc_function(
+            fn_def_to_compile,
+            conformer,
+            enum_defs,
+            functions,
+            alias_registry,
+            structure_names,
+            trait_names,
+            diagnostics,
+        ) {
+            assoc_fns_out.push(CompiledAssocFn {
+                trait_name,
+                fn_name: fn_name.to_string(),
+                function,
+                is_override,
+            });
+        }
+    }
+
+    // Bodyless required assoc fns satisfied by a structure override. There is no
+    // default body for these, so an unsatisfied one (no override, no default)
+    // already errored in phase 5 and contributes no entry.
+    for req in &ctx.requirements {
+        if !matches!(req.kind, RequirementKind::Fn(_)) {
+            continue;
+        }
+        if !handled.insert(req.name.clone()) {
+            continue; // a same-name default already produced the entry
+        }
+        let Some(override_def) = find_structure_assoc_fn(structure, &req.name) else {
+            continue; // unsatisfied — phase 5 emitted TraitFnNotSatisfied
+        };
+        let trait_name = ctx
+            .seen_fn_sigs
+            .get(&req.name)
+            .map(|(_, t)| t.clone())
+            .unwrap_or_else(|| "<trait>".to_string());
+        if let Some(function) = compile_assoc_function(
+            override_def,
+            conformer,
+            enum_defs,
+            functions,
+            alias_registry,
+            structure_names,
+            trait_names,
+            diagnostics,
+        ) {
+            assoc_fns_out.push(CompiledAssocFn {
+                trait_name,
+                fn_name: req.name.clone(),
+                function,
+                is_override: true,
+            });
+        }
+    }
+}
+
 /// Phase 5 of trait conformance checking: verify structure members against trait requirements.
 ///
 /// For each requirement in `ctx.requirements`, checks that either:

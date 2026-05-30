@@ -21,10 +21,10 @@ pub(crate) fn check_trait_conformance(
     functions: &[CompiledFunction],
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
-    // task 3939 δ: out-param receiving the resolved assoc-fn table. Populated by
-    // the dedicated assoc-fn phase wired in step-8; threaded here as scaffolding
-    // (pre-2). Unused until then.
-    _assoc_fns_out: &mut Vec<CompiledAssocFn>,
+    // task 3939 δ: out-param receiving the resolved assoc-fn table, populated by
+    // `check_phase_resolve_assoc_fns` (step-8). entity.rs stores it on the
+    // conformer's TopologyTemplate (step-12).
+    assoc_fns_out: &mut Vec<CompiledAssocFn>,
 ) {
     let (structure_param_members, structure_let_members, structure_constraint_labels) =
         check_phase_resolve_structure_members(
@@ -88,6 +88,22 @@ pub(crate) fn check_trait_conformance(
         &available_defaults,
         &structure_fn_sigs,
         diagnostics,
+    );
+
+    // task 3939 δ: resolve the override-or-injected-default assoc-fn table.
+    // Runs after phase 5 (satisfaction checks) but is independent of default
+    // injection — it compiles fn bodies into `assoc_fns_out`, it does not touch
+    // value cells / constraints.
+    check_phase_resolve_assoc_fns(
+        &ctx,
+        structure,
+        enum_defs,
+        functions,
+        alias_registry,
+        structure_names,
+        trait_names,
+        diagnostics,
+        assoc_fns_out,
     );
 
     check_phase_inject_defaults(
