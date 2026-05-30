@@ -3,7 +3,80 @@
 //! Dependency-free `f64` math (no `reify-solver-elastic` / `reify-ir::Value`
 //! deps) so this module stays inside `reify-stdlib`. The `reify-eval` modal
 //! trampoline (`modal_ops.rs`) calls these to convert eigen-solver output into
-//! the `ModalResult` fields. Implementations land in step-2.
+//! the `ModalResult` fields.
+
+use std::f64::consts::PI;
+
+/// Angular-frequency floor (rad/s) below which [`rayleigh_damping_ratio`]
+/// reports `0.0` instead of dividing by ω. A genuine flexible mode has
+/// ω ≫ this; only rigid-body / spurious near-zero modes fall under it, where
+/// ζ = (α + β·ω²)/(2ω) → ∞ is non-physical (a rigid-body mode carries no modal
+/// damping). Distinct from the caller-supplied [`is_rigid_body_mode`]
+/// tolerance: this constant only guards the 1/ω singularity.
+const MIN_OMEGA_FOR_DAMPING: f64 = 1e-9;
+
+/// Natural frequency in Hz from a free-vibration eigenvalue `λ = ω²`
+/// (rad²/s²): `f = √λ / (2π)`.
+///
+/// `λ ≤ 0` — a zero-energy rigid-body mode, or a spurious negative pair from
+/// numerical noise — clamps to `0.0` rather than producing `NaN` from
+/// `√(negative)`. A `NaN` λ likewise maps to `0.0` (the `λ > 0` predicate is
+/// false). PRD §4.1 / §7.
+pub fn eigenvalue_to_frequency_hz(lambda: f64) -> f64 {
+    if lambda > 0.0 {
+        lambda.sqrt() / (2.0 * PI)
+    } else {
+        0.0
+    }
+}
+
+/// Rayleigh (proportional) modal damping ratio ζ for one mode (PRD §4.2):
+///
+/// ```text
+/// ζ = (α + β·ω²) / (2·ω)
+/// ```
+///
+/// where ω is the natural angular frequency (rad/s), α is mass-proportional,
+/// and β is stiffness-proportional. `NoDamping` ⇒ α = β = 0 ⇒ ζ = 0. An ω at
+/// or below [`MIN_OMEGA_FOR_DAMPING`] (rigid-body / spurious mode) returns
+/// `0.0` to avoid the 1/ω singularity.
+pub fn rayleigh_damping_ratio(alpha: f64, beta: f64, omega: f64) -> f64 {
+    if omega.abs() <= MIN_OMEGA_FOR_DAMPING {
+        0.0
+    } else {
+        (alpha + beta * omega * omega) / (2.0 * omega)
+    }
+}
+
+/// Mass-normalization scale `1/√m` for a mode whose generalized mass is
+/// `m = φᵀ·M·φ` (PRD §7.5). Scaling φ by this value makes `φᵀ·M·φ = 1`.
+///
+/// `m ≤ 0` (a degenerate / non-physical generalized mass) returns the `0.0`
+/// sentinel rather than `±∞`/`NaN`; the caller treats a `0.0` scale as "skip
+/// normalization" (the mode is degenerate and is flagged separately).
+pub fn mass_normalization_scale(m: f64) -> f64 {
+    if m > 0.0 {
+        1.0 / m.sqrt()
+    } else {
+        0.0
+    }
+}
+
+/// Effective modal participation mass `m_eff = p²` from the participation
+/// factor `p = φᵀ·M·d` (φ mass-normalized, d the unit reference direction
+/// broadcast to the translational DOFs; PRD §4.1 / §4.3). The sign of `p` is
+/// irrelevant — the effective mass is its square.
+pub fn modal_participation_mass(p: f64) -> f64 {
+    p * p
+}
+
+/// `true` iff `|ω| ≤ tol` — the mode is a rigid-body (zero-frequency) mode
+/// within the caller-supplied angular-frequency tolerance. Used to flag the
+/// `W_ModalRigidBodyMode` diagnostic (an unconstrained / under-constrained
+/// model admits ω ≈ 0 modes). PRD §9.
+pub fn is_rigid_body_mode(omega: f64, tol: f64) -> bool {
+    omega.abs() <= tol
+}
 
 #[cfg(test)]
 mod tests {
