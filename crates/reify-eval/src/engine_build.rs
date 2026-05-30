@@ -2245,6 +2245,20 @@ impl Engine {
             let default_kernel = geometry_kernels
                 .get_mut(default_kernel_name)
                 .expect("default kernel must remain in the map across the per-realization loop");
+            // Task 3616: hydrate geometry-handle value cells before any
+            // post-process that reads them (topology selectors need the parent
+            // Value::GeometryHandle in `values`). Mirrors the
+            // `post_process_geometry_handle_cells` call in `build`/
+            // `build_snapshot` but without cache/freshness recording, since
+            // `tessellate_from_values` is a static fn without access to
+            // `self.cache` or `self.realization_handles`.
+            Engine::hydrate_geometry_handles_into_values(
+                template,
+                &named_steps,
+                values,
+                functions,
+                meta_map,
+            );
             // Task 2320 amendment: mirrors the `build` / `build_snapshot`
             // wire-up so `TessellateResult.values` exposes the same
             // kernel-resolved `Bool` for conformance-query cells as
@@ -3249,7 +3263,7 @@ impl Engine {
         realization_handles: &mut HashMap<reify_core::RealizationNodeId, GeometryHandleId>,
         version: VersionId,
     ) {
-        use reify_core::{Type, hash::ContentHash, identity::ValueCellId};
+        use reify_core::{hash::ContentHash, identity::ValueCellId};
         use reify_ir::Value;
 
         // Two-phase approach: collect entries while holding a &ValueMap borrow
@@ -3269,14 +3283,12 @@ impl Engine {
                     Some(&h) => h,
                     None => continue,
                 };
-                // Only hydrate if a matching Type::Geometry value cell exists.
-                let has_geometry_cell = template
-                    .value_cells
-                    .iter()
-                    .any(|c| c.id.member == name && c.cell_type == Type::Geometry);
-                if !has_geometry_cell {
-                    continue;
-                }
+                // Hydrate all named realizations — geometry params AND geometry
+                // lets. The compiler skips creating value cells for geometry lets
+                // (entity.rs:1138), but topology selectors (post-process tier)
+                // need to look up parent GeometryHandle via values.get(). Omitting
+                // the old `has_geometry_cell` guard ensures both lets and params
+                // are present in `values` before `run_post_processes` fires.
 
                 // GHR-δ §5: record this realization's resolved handle in the
                 // Engine's validity map (the read-time revalidation oracle).
@@ -3347,6 +3359,76 @@ impl Engine {
             }
         } // ctx dropped — &ValueMap borrow released
 
+        for (cell_id, value) in entries {
+            values.insert(cell_id, value);
+        }
+    }
+
+    /// Lightweight geometry-handle hydration for the tessellate path.
+    ///
+    /// Inserts `Value::GeometryHandle` entries into `values` for every named
+    /// realization that has a resolved kernel handle in `named_steps`. This is
+    /// the values-only subset of `post_process_geometry_handle_cells` — it does
+    /// NOT touch `cache` or `realization_handles` (which are unavailable in the
+    /// static `tessellate_from_values` function).
+    ///
+    /// Must run before `run_post_processes` so that topology selectors can
+    /// resolve the parent `Value::GeometryHandle` via `values.get(arg_cell_id)`.
+    fn hydrate_geometry_handles_into_values(
+        template: &reify_compiler::TopologyTemplate,
+        named_steps: &HashMap<String, GeometryHandleId>,
+        values: &mut ValueMap,
+        functions: &[CompiledFunction],
+        meta_map: &HashMap<String, HashMap<String, String>>,
+    ) {
+        use reify_core::{hash::ContentHash, identity::ValueCellId};
+        use reify_ir::Value;
+
+        let mut entries: Vec<(ValueCellId, Value)> = Vec::new();
+        {
+            let ctx = crate::eval_ctx_with_meta(values, functions, meta_map);
+            for realization in &template.realizations {
+                let name = match &realization.name {
+                    Some(n) => n.as_str(),
+                    None => continue,
+                };
+                let kernel_handle = match named_steps.get(name) {
+                    Some(&h) => h,
+                    None => continue,
+                };
+                let mut h = ContentHash::of(b"uvh1");
+                for op in &realization.operations {
+                    let args: &[(String, reify_ir::CompiledExpr)] = match op {
+                        reify_compiler::CompiledGeometryOp::Primitive { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Modify { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Transform { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Pattern { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Sweep { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Curve { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Boolean { .. } => &[],
+                    };
+                    for (arg_name, expr) in args {
+                        let v = reify_expr::eval_expr(expr, &ctx);
+                        h = h
+                            .combine(ContentHash::of_str(arg_name))
+                            .combine(v.content_hash());
+                    }
+                }
+                let lo = h.0.to_le_bytes();
+                let hi = h.combine(ContentHash::of(b"uvh2")).0.to_le_bytes();
+                let mut upstream_values_hash = [0u8; 32];
+                upstream_values_hash[..16].copy_from_slice(&lo);
+                upstream_values_hash[16..].copy_from_slice(&hi);
+                entries.push((
+                    ValueCellId::new(realization.id.entity.as_str(), name),
+                    Value::GeometryHandle {
+                        realization_ref: realization.id.clone(),
+                        upstream_values_hash,
+                        kernel_handle,
+                    },
+                ));
+            }
+        }
         for (cell_id, value) in entries {
             values.insert(cell_id, value);
         }

@@ -302,9 +302,10 @@ fn angle_between_surfaces_with_literal_int_arg_falls_through_to_undef() {
 // literal-args contract in the dispatcher.
 
 /// `let es = edges(body)` on a structure containing `let body = box(10mm, 10mm, 10mm)`
-/// must resolve to `Value::List(vec![Int(2), Int(3), Int(4)])` when the mock
-/// kernel pre-stages `extract_edges(GeometryHandleId(1)) = [2, 3, 4]`. Pins the
-/// 1-arg list-return shape end-to-end through the dispatch.
+/// must resolve to a `Value::List` of three `Value::GeometryHandle` sub-handles
+/// when the mock kernel pre-stages `extract_edges(GeometryHandleId(1)) = [2, 3, 4]`.
+/// Each element must carry the expected `kernel_handle`, and the three
+/// `upstream_values_hash` values must be pairwise distinct (PRD §4 iii).
 #[test]
 fn edges_let_resolves_to_list_of_int_via_extract_edges() {
     let source = "structure def Bracket {\n    \
@@ -321,24 +322,38 @@ fn edges_let_resolves_to_list_of_int_via_extract_edges() {
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let cell = ValueCellId::new("Bracket", "es");
-    assert_eq!(
-        result.values.get(&cell),
-        Some(&Value::List(vec![
-            Value::Int(2),
-            Value::Int(3),
-            Value::Int(4),
-        ])),
-        "Bracket.es must resolve to Value::List of three Value::Int sub-handles \
-         via kernel extract_edges, got {:?}",
-        result.values.get(&cell),
-    );
+    let list = match result.values.get(&cell) {
+        Some(Value::List(elems)) => elems.clone(),
+        other => panic!(
+            "Bracket.es must be Value::List of GeometryHandle sub-handles, got {:?}",
+            other
+        ),
+    };
+    assert_eq!(list.len(), 3, "expected 3 edge sub-handles");
+    let expected_ids = [GeometryHandleId(2), GeometryHandleId(3), GeometryHandleId(4)];
+    let mut hashes: Vec<[u8; 32]> = Vec::new();
+    for (i, (elem, expected_id)) in list.iter().zip(&expected_ids).enumerate() {
+        match elem {
+            Value::GeometryHandle { kernel_handle, upstream_values_hash, .. } => {
+                assert_eq!(
+                    kernel_handle, expected_id,
+                    "es[{i}] kernel_handle must be {expected_id:?}"
+                );
+                hashes.push(*upstream_values_hash);
+            }
+            other => panic!("es[{i}] must be Value::GeometryHandle, got {:?}", other),
+        }
+    }
+    assert_ne!(hashes[0], hashes[1], "edge 0 and 1 upstream hashes must differ");
+    assert_ne!(hashes[1], hashes[2], "edge 1 and 2 upstream hashes must differ");
+    assert_ne!(hashes[0], hashes[2], "edge 0 and 2 upstream hashes must differ");
 }
 
 /// `let fs = faces(body)` on a structure containing `let body = box(10mm, 10mm, 10mm)`
-/// must resolve to `Value::List` of six `Value::Int`s when the mock kernel
-/// pre-stages `extract_faces(GeometryHandleId(1)) = [10, 11, 12, 13, 14, 15]`
-/// (matching a box's six faces). Pins the 1-arg list-return shape for the
-/// face variant.
+/// must resolve to a `Value::List` of six `Value::GeometryHandle` sub-handles when
+/// the mock kernel pre-stages `extract_faces(GeometryHandleId(1)) = [10..15]`
+/// (matching a box's six faces). Each element must carry the expected `kernel_handle`,
+/// and all six `upstream_values_hash` values must be pairwise distinct (PRD §4 iii).
 #[test]
 fn faces_let_resolves_to_list_of_int_via_extract_faces() {
     let source = "structure def Bracket {\n    \
@@ -362,20 +377,44 @@ fn faces_let_resolves_to_list_of_int_via_extract_faces() {
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let cell = ValueCellId::new("Bracket", "fs");
-    assert_eq!(
-        result.values.get(&cell),
-        Some(&Value::List(vec![
-            Value::Int(10),
-            Value::Int(11),
-            Value::Int(12),
-            Value::Int(13),
-            Value::Int(14),
-            Value::Int(15),
-        ])),
-        "Bracket.fs must resolve to Value::List of six Value::Int sub-handles \
-         via kernel extract_faces, got {:?}",
-        result.values.get(&cell),
-    );
+    let list = match result.values.get(&cell) {
+        Some(Value::List(elems)) => elems.clone(),
+        other => panic!(
+            "Bracket.fs must be Value::List of GeometryHandle sub-handles, got {:?}",
+            other
+        ),
+    };
+    assert_eq!(list.len(), 6, "expected 6 face sub-handles");
+    let expected_ids = [
+        GeometryHandleId(10),
+        GeometryHandleId(11),
+        GeometryHandleId(12),
+        GeometryHandleId(13),
+        GeometryHandleId(14),
+        GeometryHandleId(15),
+    ];
+    let mut hashes: Vec<[u8; 32]> = Vec::new();
+    for (i, (elem, expected_id)) in list.iter().zip(&expected_ids).enumerate() {
+        match elem {
+            Value::GeometryHandle { kernel_handle, upstream_values_hash, .. } => {
+                assert_eq!(
+                    kernel_handle, expected_id,
+                    "fs[{i}] kernel_handle must be {expected_id:?}"
+                );
+                hashes.push(*upstream_values_hash);
+            }
+            other => panic!("fs[{i}] must be Value::GeometryHandle, got {:?}", other),
+        }
+    }
+    // All six hashes must be pairwise distinct (PRD §4 iii).
+    for i in 0..hashes.len() {
+        for j in (i + 1)..hashes.len() {
+            assert_ne!(
+                hashes[i], hashes[j],
+                "face {i} and {j} upstream hashes must differ"
+            );
+        }
+    }
 }
 
 /// `let com = center_of_mass(body, density)` on a structure containing
@@ -801,12 +840,13 @@ fn tessellate_realizations_post_processes_topology_selectors() {
 /// Tessellate-path parity for the task-3560 selector cluster. Exercises one
 /// representative new selector — `edges(body)` — via
 /// `engine.tessellate_realizations(&compiled)` and asserts the same
-/// `Bracket.es == Value::List(...)` outcome as the build-path test
-/// `edges_let_resolves_to_list_of_int_via_extract_edges`. Pins that all three
-/// call sites in `engine_build.rs` (build / build_snapshot / tessellate)
-/// consistently propagate the kernel-resolved value through the post-process;
-/// without this, a GUI overlay reading `TessellateResult.values` would see
-/// `Value::Undef` while a parallel build's overlay would see `Value::List(_)`.
+/// `Bracket.es == Value::List(Value::GeometryHandle(_))` outcome as the
+/// build-path test `edges_let_resolves_to_list_of_int_via_extract_edges`. Pins
+/// that all three call sites in `engine_build.rs` (build / build_snapshot /
+/// tessellate) consistently propagate the kernel-resolved value through the
+/// post-process; without this, a GUI overlay reading `TessellateResult.values`
+/// would see `Value::Undef` while a parallel build's overlay would see the
+/// sub-handle list.
 ///
 /// Pinning `edges` specifically also pins the cluster-A widening of
 /// `Engine::post_process_topology_selectors` from `&dyn` to `&mut dyn
@@ -828,17 +868,32 @@ fn tessellate_realizations_post_processes_new_topology_selectors() {
     let result = engine.tessellate_realizations(&compiled);
 
     let cell = ValueCellId::new("Bracket", "es");
-    assert_eq!(
-        result.values.get(&cell),
-        Some(&Value::List(vec![
-            Value::Int(2),
-            Value::Int(3),
-            Value::Int(4),
-        ])),
-        "TessellateResult.values must expose the kernel-resolved Value::List \
-         for edges() cells (parity with BuildResult.values), got {:?}",
-        result.values.get(&cell),
-    );
+    let list = match result.values.get(&cell) {
+        Some(Value::List(elems)) => elems.clone(),
+        other => panic!(
+            "TessellateResult.values must expose Value::List of GeometryHandle \
+             sub-handles for edges() cells (parity with BuildResult.values), got {:?}",
+            other
+        ),
+    };
+    assert_eq!(list.len(), 3, "expected 3 edge sub-handles on tessellate path");
+    let expected_ids = [GeometryHandleId(2), GeometryHandleId(3), GeometryHandleId(4)];
+    let mut hashes: Vec<[u8; 32]> = Vec::new();
+    for (i, (elem, expected_id)) in list.iter().zip(&expected_ids).enumerate() {
+        match elem {
+            Value::GeometryHandle { kernel_handle, upstream_values_hash, .. } => {
+                assert_eq!(
+                    kernel_handle, expected_id,
+                    "es[{i}] kernel_handle must be {expected_id:?} on tessellate path"
+                );
+                hashes.push(*upstream_values_hash);
+            }
+            other => panic!("es[{i}] must be Value::GeometryHandle on tessellate path, got {:?}", other),
+        }
+    }
+    assert_ne!(hashes[0], hashes[1], "tessellate edge 0 and 1 upstream hashes must differ");
+    assert_ne!(hashes[1], hashes[2], "tessellate edge 1 and 2 upstream hashes must differ");
+    assert_ne!(hashes[0], hashes[2], "tessellate edge 0 and 2 upstream hashes must differ");
 }
 
 // ── OCCT-gated end-to-end smoke test ────────────────────────────────────────
@@ -935,9 +990,10 @@ fn closest_point_on_box_via_occt_returns_plus_x_face_hit() {
 /// Confirms the cluster-A dispatch arms (`Edges`, `Faces` in
 /// `try_eval_topology_selector`) compose correctly with the real OCCT
 /// kernel — the dispatch resolves the geometry-arg ValueRef against the
-/// realisation's named-step handle map, round-trips through
-/// `kernel.extract_edges` / `kernel.extract_faces`, and wraps the resulting
-/// `Vec<GeometryHandleId>` as `Value::List(Vec<Value::Int>)`. Sibling to
+/// values map (hydrated by `post_process_geometry_handle_cells`), round-trips
+/// through `kernel.extract_edges` / `kernel.extract_faces`, and wraps the
+/// resulting `Vec<GeometryHandleId>` as `Value::List(Vec<Value::GeometryHandle>)`
+/// sub-handles (task 3616). Sibling to
 /// `closest_point_on_box_via_occt_returns_plus_x_face_hit` above.
 ///
 /// NOTE on kernel wrapping: the sibling closest_point test wraps the
@@ -994,13 +1050,26 @@ fn edges_and_faces_of_box_via_occt_return_canonical_counts() {
          count) via OCCT extract_edges, got {} edges",
         edges.len()
     );
+    let mut edge_hashes: Vec<[u8; 32]> = Vec::new();
     for (i, item) in edges.iter().enumerate() {
-        assert!(
-            matches!(item, Value::Int(_)),
-            "Bracket.es[{}] must be Value::Int(handle), got {:?}",
-            i,
-            item
-        );
+        match item {
+            Value::GeometryHandle { upstream_values_hash, .. } => {
+                edge_hashes.push(*upstream_values_hash);
+            }
+            other => panic!(
+                "Bracket.es[{}] must be Value::GeometryHandle, got {:?}",
+                i, other
+            ),
+        }
+    }
+    // All 12 upstream_values_hashes must be pairwise distinct (PRD §4 iii).
+    for i in 0..edge_hashes.len() {
+        for j in (i + 1)..edge_hashes.len() {
+            assert_ne!(
+                edge_hashes[i], edge_hashes[j],
+                "edge {i} and {j} upstream hashes must differ (OCCT path)"
+            );
+        }
     }
 
     let fs_cell = ValueCellId::new("Bracket", "fs");
@@ -1024,8 +1093,8 @@ fn edges_and_faces_of_box_via_occt_return_canonical_counts() {
     );
     for (i, item) in faces.iter().enumerate() {
         assert!(
-            matches!(item, Value::Int(_)),
-            "Bracket.fs[{}] must be Value::Int(handle), got {:?}",
+            matches!(item, Value::GeometryHandle { .. }),
+            "Bracket.fs[{}] must be Value::GeometryHandle, got {:?}",
             i,
             item
         );
