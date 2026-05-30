@@ -296,3 +296,35 @@ fn eval_complex_literals_prints_re_and_im() {
         "stderr should not contain 'Error', got: {stderr}"
     );
 }
+
+// ── task-3955: complex_numbers.ri combined eval (integration gate) ──
+
+/// End-to-end signal: `reify eval examples/complex_numbers.ri` must succeed.
+/// The file exercises literal sugar + abs/arg + division + complex_pow in a
+/// single structure. Asserts:
+/// - exit 0
+/// - stdout contains "-7+24i" (complex_pow(3+4j, 2) = -7+24i, integer-trimmed Display)
+/// - stdout does NOT contain "undef" (every binding evaluates)
+/// - stderr contains no "Error"
+#[test]
+fn eval_complex_numbers_combined_demo() {
+    let path = common::example_path("complex_numbers.ri");
+    let (status, stdout, stderr) = common::run_subcommand("eval", &path);
+
+    assert!(
+        status.success(),
+        "reify eval should exit 0 for complex_numbers.ri.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("-7+24i"),
+        "stdout should contain '-7+24i' (complex_pow(3+4j,2)), got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("undef"),
+        "stdout should not contain 'undef' (all bindings must evaluate), got: {stdout}"
+    );
+    assert!(
+        !stderr.contains("Error"),
+        "stderr should not contain 'Error', got: {stderr}"
+    );
+}
