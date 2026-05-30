@@ -197,6 +197,7 @@ pub enum QualityVerdict {
 /// `tests/calibration/sweep.rs` exploits this by passing a from-scratch
 /// target as the `source` argument to compute the true
 /// `morphed_AR / from_scratch_AR` ratio.
+// G-allow: mesh-morph public API — §3.2 realization-kind dispatch producer per engine-integration-norm §3.2; consumer pending task #2947 (mesh-morph VolumeMesh realization wiring) / CN-contract §8 task κ #3429
 pub fn quality_check(
     morphed: &VolumeMesh,
     source: &VolumeMesh,
