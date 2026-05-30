@@ -12,11 +12,21 @@
 //! `(ξ, η)` coordinates.  Each node carries 6 DOFs (3 displacement + 3
 //! rotation), giving 18 DOFs per element.
 //!
-//! The "+" distinguishes MITC3+ from plain MITC3: the rotation field is
-//! enriched by a deviatoric cubic bubble `f_b(ξ,η) = ξ·η·(1−ξ−η)` that
-//! eliminates spurious transverse-shear locking without additional DOFs.
-//! Transverse-shear strains are interpolated from values sampled at the
-//! three canonical edge-midpoint tying points A=(½,0), B=(0,½), C=(½,½).
+//! This module provides BOTH transverse-shear schemes:
+//!
+//! - **bare MITC3** (Bathe & Dvorkin 1985) — [`Mitc3Plus::interpolate_assumed_shear`]
+//!   blends covariant shears sampled at the three edge-midpoint tying points
+//!   A=(½,0), B=(0,½), C=(½,½). Consumed by [`crate::shell_element_stiffness`].
+//! - **MITC3+** (Lee, Lee & Bathe 2014) — [`Mitc3Plus::interpolate_assumed_shear_mitc3_plus`]
+//!   re-interpolates covariant shears sampled at the six *interior* tying points
+//!   A–F (Eq. 9). Consumed by [`crate::shell_element_stiffness_mitc3_plus`]; it is
+//!   the genuine flat-facet shear-locking cure (a softer field than bare Eq. 5).
+//!
+//! The "+" rotation bubble `f_b(ξ,η) = ξ·η·(1−ξ−η)` enriches the **bending**
+//! field. On a flat, constant-Jacobian facet it is inert in transverse shear
+//! (`K_NB^shear ≡ 0`; esc-3392, DD#2 retracted) — so the flat-facet shear cure
+//! is the nodal interior-tying assumed field above, not the bubble, which
+//! becomes live only on the curved director substrate (task 4065).
 
 /// A point in the local 2D mid-surface reference-triangle `(ξ, η)` space.
 ///

@@ -22,25 +22,39 @@
 //! formula from `Mitc3Plus::interpolate_assumed_shear`. This corresponds to
 //! the **MITC3** formulation (Bathe & Dvorkin 1985).
 //!
-//! # Why this is MITC3, not MITC3+
+//! # `shell_element_stiffness` is bare MITC3; the MITC3+ sibling is below
 //!
-//! True MITC3+ (Bathe & Lee 2014) adds a deviatoric cubic-bubble rotation
-//! enrichment to relieve residual membrane locking on curved geometry. We
-//! investigated wiring that bubble into the bending block via static
-//! condensation (task 3349) and proved analytically that the approach is
-//! **mathematically inert for flat-facet elements**: the bending cross-
-//! coupling matrix `K_NB = ∫ B_b_nodal^T · D · B_b_bubble dA` is identically
-//! zero because the bubble `f_b = ξη(1−ξ−η)` vanishes on all three reference
-//! edges, so `∫∫ ∂f_b/∂x dA = ∮ f_b · n_x ds = 0` by the divergence theorem
-//! (and likewise for ∂/∂y). Static condensation
-//! `K_eff = K_NN − K_NB·K_BB⁻¹·K_BN` therefore reduces to `K_NN` —
-//! bit-identical to bare MITC3. Empirically confirmed: a WIP bubble
-//! implementation produced the same pinched-cylinder radial displacement
-//! (2.411163e-7) as bare MITC3, vs the MacNeal-Harder reference 1.8248e-5
-//! (~76× under-prediction).
+//! [`shell_element_stiffness`] is the bare-MITC3 baseline (edge-midpoint
+//! assumed shear, no bubble). The genuine flat-facet **MITC3+** element of
+//! Bathe & Lee 2014 lives in the sibling [`shell_element_stiffness_mitc3_plus`]
+//! (task 3392); the two are kept side by side so the shear-locking improvement
+//! is measurable against the bare baseline.
 //!
-//! True MITC3+ requires curved-element geometry (per-element curvature
-//! coupling, not flat-facet) and is filed as a separate follow-up.
+//! ## What the cubic bubble does — and does not — do on a flat facet
+//!
+//! The "+" of MITC3+ is a cubic rotation bubble `f_b = ξη(1−ξ−η)`. On a flat,
+//! constant-Jacobian facet this bubble is **inert in BOTH coupling blocks**:
+//!
+//! - **Bending** (task 3349): the bending cross-coupling `K_NB^bend =
+//!   ∫ B_b_nodal^T · D · B_b_bubble dA` is identically zero because `f_b`
+//!   vanishes on all three edges, so `∫∫ ∂f_b/∂x dA = ∮ f_b · n_x ds = 0` by the
+//!   divergence theorem (likewise ∂/∂y). This is the correct-but-narrow result:
+//!   it kills a *bending* bubble on a flat facet only.
+//! - **Transverse shear** (esc-3392 corrected resolution; DD#2 retracted): the
+//!   shear cross-coupling `K_NB^shear` is *also* identically zero on a flat
+//!   facet — re-deriving the flat-facet covariant-shear kinematics shows the
+//!   bubble does not enter the assumed shear by value or by gradient there.
+//!
+//! It does **not** follow that MITC3+ needs curved geometry. On a flat facet the
+//! genuine MITC3+ shear-locking cure lives entirely in the **nodal** assumed
+//! transverse-shear field: the bare three-node covariant shear is sampled at six
+//! *interior* tying points A–F and re-interpolated via Eq. 9
+//! ([`crate::elements::mitc3_plus::Mitc3Plus::interpolate_assumed_shear_mitc3_plus`]),
+//! a softer field than the bare edge-midpoint Eq. 5. The bubble (carried through
+//! the retained 20×20 skeleton + 2×2 condensation, a no-op here since `K_NB = 0`)
+//! enriches bending only and becomes live in shear/membrane on the curved
+//! director substrate of task 4065. See the doc comment on
+//! [`shell_element_stiffness_mitc3_plus`] for the full block breakdown.
 
 use crate::assembly::ElementStiffness;
 use crate::constitutive::IsotropicElastic;

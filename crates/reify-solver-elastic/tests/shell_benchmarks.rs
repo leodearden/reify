@@ -19,14 +19,22 @@
 //!   - **finiteness** (not NaN, not infinite),
 //!   - **order of magnitude** (within a wide physically-plausible band).
 //!
-//! They do **not** assert against the published MacNeal-Harder reference
-//! values: the bare MITC3 element used today suffers from severe membrane
-//! locking on curved geometry (factor 21–2200× under-prediction at coarse
-//! mesh resolution). Tightening the bands to the published references
-//! requires curved-element MITC3+ (flat-facet bubble enrichment is
-//! mathematically inert — see the file header in `shell_assembly.rs` for
-//! the K_NB ≡ 0 proof). A future curved-element shell formulation will
-//! supplant these smoke envelopes with the proper benchmark bands.
+//! The four **curved** smoke tests do **not** assert against the published
+//! MacNeal-Harder reference values: bare MITC3 suffers from severe membrane
+//! locking on curved geometry (factor 21–2200× under-prediction at coarse mesh
+//! resolution). Tightening those bands needs an ANS-membrane correction on a
+//! curved substrate (task 4065) — flat-facet enrichment cannot cure *membrane*
+//! locking, which is a curvature phenomenon.
+//!
+//! The **twisted-cantilever** test additionally carries a genuine relative
+//! observable signal: `twisted_beam_mitc3_plus_tip_deflection_is_closer_to_reference_than_bare`
+//! shows that the flat-facet MITC3+ element (`shell_element_stiffness_mitc3_plus`,
+//! task 3392) relieves transverse-shear locking and moves the tip deflection
+//! measurably closer to the published reference than bare MITC3. The MITC3+
+//! shear cure lives in the *nodal* assumed-shear field (interior-tying Eq. 9),
+//! NOT the cubic bubble — the bubble is inert in transverse shear on a flat
+//! facet (K_NB^shear ≡ 0; see the `shell_assembly.rs` header) and becomes live
+//! only on the curved director substrate of task 4065.
 //!
 //! In addition to the four geometry smoke tests, this file contains:
 //!   - a **locking-detection** test verifying that MITC3 does not collapse
