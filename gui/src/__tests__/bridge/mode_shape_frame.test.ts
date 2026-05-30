@@ -103,4 +103,45 @@ describe('mode-shape-frame bridge (task ι/3458)', () => {
     expect(warnSpy).toHaveBeenCalled();
     expect(warnSpy.mock.calls[0]?.[0]).toContain('mode-shape-frame');
   });
+
+  // ── task-4072 step-5: eigenvalue bridge guard ──────────────────────────────
+
+  it('(g) happy peak frame: eigenvalue present as number — callback fires, payload includes eigenvalue', async () => {
+    const handle = mockTauriEvent<ModeShapeFrame>('mode-shape-frame');
+    const cb = vi.fn();
+
+    await onModeShapeFrame(cb);
+    handle.emit({ mode_index: 0, phase: 1.0, displaced_positions: [1, 2, 3], eigenvalue: 1000 } as unknown as ModeShapeFrame);
+
+    expect(cb).toHaveBeenCalledOnce();
+    expect(cb).toHaveBeenCalledWith({
+      mode_index: 0,
+      phase: 1.0,
+      displaced_positions: [1, 2, 3],
+      eigenvalue: 1000,
+    });
+  });
+
+  it('(h) base frame: no eigenvalue key — callback still fires (eigenvalue is optional)', async () => {
+    const handle = mockTauriEvent<ModeShapeFrame>('mode-shape-frame');
+    const cb = vi.fn();
+
+    await onModeShapeFrame(cb);
+    handle.emit({ mode_index: 0, phase: 0.0, displaced_positions: [1, 2, 3] } as unknown as ModeShapeFrame);
+
+    expect(cb).toHaveBeenCalledOnce();
+  });
+
+  it('(i) malformed: eigenvalue present but non-number — callback NOT invoked, console.warn mentions mode-shape-frame', async () => {
+    const handle = mockTauriEvent<unknown>('mode-shape-frame');
+    const cb = vi.fn();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await onModeShapeFrame(cb);
+    handle.emit({ mode_index: 0, phase: 1.0, displaced_positions: [1, 2, 3], eigenvalue: 'big' });
+
+    expect(cb).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+    expect(warnSpy.mock.calls[0]?.[0]).toContain('mode-shape-frame');
+  });
 });

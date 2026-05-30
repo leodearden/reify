@@ -770,7 +770,8 @@ export async function onModeShapeFrame(
       typeof p['mode_index'] !== 'number' ||
       typeof p['phase'] !== 'number' ||
       !Array.isArray(p['displaced_positions']) ||
-      !(p['displaced_positions'] as unknown[]).every(n => typeof n === 'number')
+      !(p['displaced_positions'] as unknown[]).every(n => typeof n === 'number') ||
+      ('eigenvalue' in p && typeof (p as Record<string, unknown>)['eigenvalue'] !== 'number')
     ) {
       console.warn('[mode-shape-frame] malformed payload; dropping event', p);
       return;
