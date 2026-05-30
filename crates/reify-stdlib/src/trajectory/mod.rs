@@ -18,6 +18,17 @@ mod spline;
 /// profile records (or `Value::Undef` on bad args / a hard parse error). See
 /// [`gcode_import::eval_gcode_import`] for the argument contract.
 ///
+/// `gcode_import_lower` is an internal delegate intrinsic: the stdlib `.ri`
+/// declaration of `gcode_import` shadows the same-named `eval_builtin` entry
+/// (the compiler's `resolve_function_overload` returns `Resolved` → `UserFunctionCall`
+/// for any fn with a `.ri` body, so the evaluator runs the body rather than
+/// reaching `eval_builtin`). The body therefore delegates via a *distinct* name —
+/// `gcode_import_lower` — which has no `.ri` declaration and thus resolves
+/// `NoUserFunctions` → `FunctionCall` → `eval_builtin` → here. Both names route
+/// to the single `eval_gcode_import` implementation. The original `"gcode_import"`
+/// name is kept so that the Rust eval-boundary tests in `mod.rs::tests` that call
+/// `eval_builtin("gcode_import", …)` directly remain green with zero churn.
+///
 /// The Phase β spline intrinsics still unconditionally return `Some(Value::Undef)`:
 /// the pure-Rust spline math is implemented in the `spline` submodule but is
 /// not yet wired to the Value API.  Full marshalling (parsing a
@@ -28,7 +39,7 @@ mod spline;
 /// treat it as a "not yet implemented" stub, not a computation result.
 pub(crate) fn eval_trajectory(name: &str, args: &[Value]) -> Option<Value> {
     match name {
-        "gcode_import" => Some(gcode_import::eval_gcode_import(args)),
+        "gcode_import" | "gcode_import_lower" => Some(gcode_import::eval_gcode_import(args)),
         "piecewise_polynomial"
         | "evaluate_profile"
         | "evaluate_profile_dot"
