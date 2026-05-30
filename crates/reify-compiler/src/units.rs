@@ -1180,6 +1180,38 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Task 3615 — KGQ-ζ: `normal` compiler registration
+    // -----------------------------------------------------------------------
+
+    /// `is_geometry_query("normal")` must return true once the KGQ-ζ
+    /// registration lands in step-4. Fails until then.
+    #[test]
+    fn is_geometry_query_recognises_normal() {
+        assert!(
+            is_geometry_query("normal"),
+            "is_geometry_query(\"normal\") must be true after KGQ-ζ step-4 registration"
+        );
+    }
+
+    /// `geometry_query_result_type("normal")` must return
+    /// `Some(Type::vec3(Type::Real))` — a dimensionless 3D vector, i.e.
+    /// `Type::Vector { n: 3, quantity: Box::new(Type::Real) }`.
+    ///
+    /// This is the exact type that `Value::Vector(vec![Value::Real(_); 3]).infer_type()`
+    /// produces (verified: value.rs `try_infer_type` for Vector sets quantity =
+    /// first component's `try_infer_type()`, and `Value::Real → Type::Real`).
+    #[test]
+    fn geometry_query_result_type_for_normal_is_vec3_real() {
+        use reify_core::Type;
+        assert_eq!(
+            geometry_query_result_type("normal"),
+            Some(Type::vec3(Type::Real)),
+            "geometry_query_result_type(\"normal\") must be Some(Type::vec3(Type::Real)) \
+             after KGQ-ζ step-4 registration"
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // Task 3803 — resolve_unit_expr: registry-folding evaluator for UnitExpr
     // -----------------------------------------------------------------------
     //
