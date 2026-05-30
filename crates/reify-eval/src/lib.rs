@@ -47,6 +47,7 @@ pub use source_location::resolve_entity_at_source_position;
 pub use source_location::resolve_entity_source_location;
 pub(crate) mod engine_hash_algo;
 pub mod field_import_provenance;
+pub mod modal_ops;
 pub mod morph_stage_b;
 pub mod multi_load_dispatch;
 pub mod persistent_cache;
