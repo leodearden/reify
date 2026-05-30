@@ -121,7 +121,11 @@ check_munch_fixture "get_dead_code_v2.json" "get_dead_code_v2"
 # Fixture: get_untested_symbols → MUNCH-encoded result object
 check_munch_fixture "get_untested_symbols.json" "get_untested_symbols"
 
-# Fixture: get_layer_violations → plain JSON with "violations" key
+# Fixture: get_layer_violations → plain JSON with "violations" key (empty array; clean-repo capture)
 check_json_fixture "get_layer_violations.json" "violations"
 
-echo "check-jcodemunch-fixtures: OK  all 4 fixtures present, valid JSON, correct shapes"
+# Fixture: get_layer_violations_populated → synthetic hand-authored fixture with one violation record
+# Validates the populated decode path that the real wire capture could not exercise (clean repo).
+check_json_fixture "get_layer_violations_populated.json" "violations"
+
+echo "check-jcodemunch-fixtures: OK  all 5 fixtures present, valid JSON, correct shapes"

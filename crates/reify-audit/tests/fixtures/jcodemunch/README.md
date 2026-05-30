@@ -18,18 +18,37 @@ the Rust client without a live serve.
 
 ## Fixture formats
 
-Three tools return MUNCH-encoded responses; one returns plain JSON.
+Three tools return MUNCH-encoded responses; two `get_layer_violations` fixtures are plain JSON.
 
-| File                        | Format     | Top-level key  | Notes                           |
-|-----------------------------|------------|----------------|---------------------------------|
-| `get_changed_symbols.json`  | MUNCH      | `content`      | JSON-RPC result object; `content[0].text` is MUNCH/1 encoded |
-| `get_dead_code_v2.json`     | MUNCH      | `content`      | Same format                     |
-| `get_untested_symbols.json` | MUNCH      | `content`      | Same format                     |
-| `get_layer_violations.json` | plain JSON | `violations`   | Tool text response; empty array (clean repo at capture time) |
+**Shape distinction**: MUNCH fixtures are the raw JSON-RPC result envelope (the decoder's
+input — `content[0].text` holds the MUNCH-encoded text); the `get_layer_violations` fixtures
+are post-decode payloads (the inner JSON object already extracted from the tool text response).
+A consumer test must not assume uniform shape across fixture files.
+
+| File                                   | Format     | Top-level key  | Notes                                                               |
+|----------------------------------------|------------|----------------|---------------------------------------------------------------------|
+| `get_changed_symbols.json`             | MUNCH      | `content`      | JSON-RPC result object; `content[0].text` is MUNCH/1 encoded       |
+| `get_dead_code_v2.json`                | MUNCH      | `content`      | Same format                                                         |
+| `get_untested_symbols.json`            | MUNCH      | `content`      | Same format                                                         |
+| `get_layer_violations.json`            | plain JSON | `violations`   | Post-decode payload; empty array (clean repo at capture time)       |
+| `get_layer_violations_populated.json`  | plain JSON | `violations`   | Synthetic fixture; one representative violation record (non-empty decode path) |
 
 MUNCH format: `#MUNCH/1 tool=<name> enc=gen1` header followed by `@N=<string>` reference
 definitions and compact symbol records.  L-CLIENT must decode these into structured symbol
 data.
+
+> **Non-empty decode coverage**: `get_layer_violations.json` captured an empty `violations`
+> array (the reify corpus had no violations under the minimal inline rule at capture time).
+> `get_layer_violations_populated.json` is a hand-authored companion fixture containing one
+> synthetic violation record (`from`/`to`/`from_symbol`/`to_symbol`/`allowed`/`rule_index`)
+> so that L-CLIENT's decode boundary test can exercise the populated array path.  If future
+> L-CLIENT tests require a live-captured populated fixture, re-run the capture against a repo
+> with known violations and replace this file.
+
+> **Follow-up (L-CLIENT scope)**: the existing `call_tool()` in `fused_memory_client.rs`
+> parses `content[0].text` as JSON directly.  MUNCH-encoded text is not JSON, so MUNCH
+> decoding is not yet wired in the client.  L-CLIENT should add MUNCH decode logic before
+> consuming the three MUNCH fixtures above.
 
 ## Reproduce
 
