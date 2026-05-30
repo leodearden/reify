@@ -103,13 +103,7 @@ impl ShellFrame {
     /// See also [`build_shell_frame`] for how `self.r` is constructed.
     pub fn local_to_global(&self) -> [[f64; 3]; 3] {
         // Transpose: result[i][j] = self.r[j][i].
-        let mut result = [[0.0_f64; 3]; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                result[i][j] = self.r[j][i];
-            }
-        }
-        result
+        std::array::from_fn(|i| std::array::from_fn(|j| self.r[j][i]))
     }
 }
 
