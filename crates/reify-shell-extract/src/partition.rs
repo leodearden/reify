@@ -27,6 +27,185 @@
 //! identified by world-space proximity between region voxel sets, not by shared
 //! voxel faces — a shared face would have fused the two into one component.
 
+use crate::mid_surface::MidSurfaceMesh;
+use crate::segmentation::{SegmentationResult, SingleBodyMask};
+
+/// Per-region routing decision: which mesher a segmented region is sent to.
+///
+/// Maps from [`crate::RegionClassification`]:
+/// - `ShellEligible` → [`RegionMeshKind::Shell`] (thin enough to mid-surface).
+/// - `MixedComponentOfBody` → [`RegionMeshKind::Shell`] (locally shell-able;
+///   the body also has a tet region, so the shell is tied across the interface
+///   via an MPC — see [`ShellTetInterface`]).
+/// - `TetEligible` → [`RegionMeshKind::Tet`] (requires volumetric meshing).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegionMeshKind {
+    /// Region is routed to the mid-surface (T9) shell mesher.
+    Shell,
+    /// Region is routed to the volumetric (Gmsh) tet mesher.
+    Tet,
+}
+
+/// Kernel-agnostic descriptor of one shell↔tet junction.
+///
+/// Carries everything `reify-eval`'s `engine_build` needs to build the MPC
+/// tying rows ([`reify_solver_elastic::mpc::MpcRow::shell_tet_tying`]) without
+/// `reify-shell-extract` depending on `reify-solver-elastic`. The `normal` is
+/// guaranteed unit and `thickness` strictly positive by [`partition_body`], so
+/// the downstream `shell_tet_tying` preconditions hold by construction.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShellTetInterface {
+    /// Label of the shell-routed region on this interface.
+    pub shell_region: u32,
+    /// Label of the tet-routed region on this interface.
+    pub tet_region: u32,
+    /// Unit outward normal of the shell mid-surface at the junction
+    /// (area-weighted over the shell region's triangles). `|normal| ≈ 1`.
+    pub normal: [f64; 3],
+    /// Shell through-thickness at the junction (the shell region's
+    /// `mean_thickness`). Strictly positive.
+    pub thickness: f64,
+    /// World-space location of the tie point (centroid of the shell-region
+    /// voxels nearest the tet region).
+    pub location: [f64; 3],
+}
+
+/// Output of [`partition_body`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct BodyPartition {
+    /// Per-region routing decision, parallel to `seg.regions` by index.
+    pub region_kinds: Vec<RegionMeshKind>,
+    /// Shell↔tet junctions discovered by world-space proximity.
+    pub interfaces: Vec<ShellTetInterface>,
+}
+
+/// Tunable parameters for [`partition_body`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PartitionOptions {
+    /// Scales the characteristic length to the maximum medial-axis gap counted
+    /// as a shell↔tet interface: a (shell, tet) region pair is an interface iff
+    /// the minimum world-space distance between their voxel sets is below
+    /// `interface_proximity_factor · characteristic_length`.
+    ///
+    /// Must be strictly positive. Default `2.0` (≈ a two-voxel medial-axis gap
+    /// at the junction; see the module doc on why the gap exists).
+    pub interface_proximity_factor: f64,
+}
+
+impl Default for PartitionOptions {
+    fn default() -> Self {
+        Self {
+            interface_proximity_factor: 2.0,
+        }
+    }
+}
+
+/// Errors returned by [`partition_body`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum PartitionError {
+    /// `interface_proximity_factor` must be strictly positive. A zero or
+    /// negative factor would make the proximity threshold non-positive and
+    /// suppress every interface.
+    InvalidProximityFactor {
+        /// The offending factor supplied by the caller.
+        value: f64,
+    },
+    /// The shell region's triangles accumulate to a ~zero area-weighted normal
+    /// (all degenerate/zero-area, or no triangles map to the region), so no
+    /// well-defined mid-surface normal exists for the tie.
+    DegenerateInterfaceNormal {
+        /// Label of the shell region whose normal could not be derived.
+        shell_region: u32,
+    },
+    /// `mesh.thickness.len()` must equal `mesh.vertices.len()`. A mismatch
+    /// indicates a caller-constructed (non-T2-produced) mesh with inconsistent
+    /// parallel arrays.
+    MeshLengthMismatch {
+        /// Number of vertices in the mesh.
+        vertices_len: usize,
+        /// Number of thickness entries in the mesh.
+        thickness_len: usize,
+    },
+}
+
+impl std::fmt::Display for PartitionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PartitionError::InvalidProximityFactor { value } => write!(
+                f,
+                "interface_proximity_factor must be strictly positive (got {value}); \
+                 a zero or negative factor would suppress every shell↔tet interface"
+            ),
+            PartitionError::DegenerateInterfaceNormal { shell_region } => write!(
+                f,
+                "shell region {shell_region} has a degenerate (~zero-area) \
+                 area-weighted triangle normal; no mid-surface tie normal can be derived"
+            ),
+            PartitionError::MeshLengthMismatch {
+                vertices_len,
+                thickness_len,
+            } => write!(
+                f,
+                "mesh.thickness.len() ({thickness_len}) ≠ mesh.vertices.len() ({vertices_len}); \
+                 the two parallel arrays must be the same length"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PartitionError {}
+
+/// Route a single body's segmented regions to the shell/tet meshers and
+/// identify the shell↔tet interfaces between them (PRD task T12).
+///
+/// # Parameters
+///
+/// - `mask`: the [`SingleBodyMask`] whose `spacing`/`origin` define the
+///   voxel→world transform used for proximity and tie-location geometry.
+/// - `seg`: the T4 [`SegmentationResult`] — `regions` for routing/proximity,
+///   `triangle_labels` for selecting each shell region's triangles.
+/// - `mesh`: the T2/T9 [`MidSurfaceMesh`] — `vertices` supply the triangle
+///   geometry used to derive interface normals.
+/// - `opts`: tuning ([`PartitionOptions::interface_proximity_factor`]).
+///
+/// # Errors
+///
+/// - [`PartitionError::InvalidProximityFactor`] if
+///   `opts.interface_proximity_factor ≤ 0`.
+/// - [`PartitionError::MeshLengthMismatch`] if
+///   `mesh.thickness.len() ≠ mesh.vertices.len()`.
+/// - [`PartitionError::DegenerateInterfaceNormal`] if a shell region on an
+///   interface has no well-defined area-weighted triangle normal.
+pub fn partition_body(
+    _mask: &SingleBodyMask,
+    _seg: &SegmentationResult,
+    mesh: &MidSurfaceMesh,
+    opts: &PartitionOptions,
+) -> Result<BodyPartition, PartitionError> {
+    // (1) Reject a non-positive proximity factor before any other work.
+    if opts.interface_proximity_factor <= 0.0 {
+        return Err(PartitionError::InvalidProximityFactor {
+            value: opts.interface_proximity_factor,
+        });
+    }
+
+    // (2) Reject a mesh with mismatched parallel arrays.
+    if mesh.thickness.len() != mesh.vertices.len() {
+        return Err(PartitionError::MeshLengthMismatch {
+            vertices_len: mesh.vertices.len(),
+            thickness_len: mesh.thickness.len(),
+        });
+    }
+
+    // Region routing (step-4) and proximity-based interface detection
+    // (step-6/8) are layered on in subsequent steps. For now, empty input
+    // yields an empty partition.
+    Ok(BodyPartition {
+        region_kinds: vec![],
+        interfaces: vec![],
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{

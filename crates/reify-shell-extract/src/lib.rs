@@ -153,6 +153,10 @@ pub use mid_surface::{MidSurfaceError, MidSurfaceMesh, MidSurfaceOptions, extrac
 pub use mid_surface_naming::{
     MidSurfaceAttributes, MidSurfaceEdgeRecord, populate_mid_surface_attributes,
 };
+pub use partition::{
+    BodyPartition, PartitionError, PartitionOptions, RegionMeshKind, ShellTetInterface,
+    partition_body,
+};
 pub use pruning::{PruneError, PruneMetrics, PruneOptions, PruneResult, prune_branches};
 pub use result::{ShellExtractionResult, ShellExtractionResultError};
 pub use segmentation::{
