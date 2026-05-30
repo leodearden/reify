@@ -776,6 +776,60 @@ mod tests {
         );
     }
 
+    /// Verify that non-executable file extensions (.ri, .yaml, .md) are excluded
+    /// from P2 scanning even when they carry stub-pattern text in their diffs.
+    /// Only a `.rs` control path must produce a finding.
+    #[test]
+    fn non_code_extension_paths_excluded() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let task_id = "9202";
+        let task_branch = format!("task/{}", task_id);
+
+        let mut git = MockGitOps::new();
+        git.set_diff_added_lines("main", &task_branch, "crates/reify-stdlib/solver_elastic.ri",
+            vec![(3, "// placeholder".to_string())]);
+        git.set_diff_added_lines("main", &task_branch, "review/briefing.yaml",
+            vec![(15, "  status: TODO(task_42) pending wiring".to_string())]);
+        git.set_diff_added_lines("main", &task_branch, "docs/notes.md",
+            vec![(8, "prose mentioning unimplemented!() here".to_string())]);
+        git.set_diff_added_lines("main", &task_branch, "crates/x/real.rs",
+            vec![(1, "    unimplemented!()".to_string())]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(task_id.to_string(), benign_meta(task_id, vec![
+            "crates/reify-stdlib/solver_elastic.ri".to_string(),
+            "review/briefing.yaml".to_string(),
+            "docs/notes.md".to_string(),
+            "crates/x/real.rs".to_string(),
+        ]));
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p2_consumer_stub::check(&ctx);
+        assert_eq!(findings.len(), 1,
+            "expected exactly 1 finding (only crates/x/real.rs); got {:?}", findings);
+        let f = &findings[0];
+        assert!(f.evidence.iter().any(|e| match e {
+            EvidenceRef::File { path } => path == "crates/x/real.rs", _ => false,
+        }), "the single finding must reference crates/x/real.rs; got {:?}", f.evidence);
+        for excluded in &["crates/reify-stdlib/solver_elastic.ri", "review/briefing.yaml", "docs/notes.md"] {
+            assert!(!f.evidence.iter().any(|e| match e {
+                EvidenceRef::File { path } => path == excluded, _ => false,
+            }), "excluded path {excluded} must not appear in findings");
+        }
+    }
+
     /// Verify that bare-comment prose (where the stub word is a sentence subject,
     /// not a label) is NOT flagged, while label-form comments ARE.
     ///

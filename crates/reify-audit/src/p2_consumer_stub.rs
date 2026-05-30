@@ -97,6 +97,18 @@ fn line_matches_stub(line: &str) -> Option<&'static str> {
 }
 
 
+/// Returns `true` when `path` has an executable-code extension that P2 scans.
+/// Non-code files (.ri, .yaml, .md, .toml, etc.) carry design prose, not
+/// consumer stubs, so they are excluded from P2 scanning.
+fn is_code_ext(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    lower.ends_with(".rs")
+        || lower.ends_with(".ts")
+        || lower.ends_with(".tsx")
+        || lower.ends_with(".js")
+        || lower.ends_with(".jsx")
+}
+
 /// Returns `true` when the task title itself signals that the task is
 /// intentionally a stub or placeholder (case-insensitive substring match).
 /// Used to downgrade finding severity from Medium to Low.
@@ -240,6 +252,11 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
             // Skip test-shaped paths to avoid false positives on intentional
             // stubs inside test helpers (design §5 P2 false-positive guards).
             if crate::is_test_path(path) {
+                continue;
+            }
+            // Skip non-executable-code files (.ri, .yaml, .md, etc.); P2's
+            // families are code constructs and carry no stub meaning in prose.
+            if !is_code_ext(path) {
                 continue;
             }
             let added = ctx.git.diff_added_lines("main", &task_branch, path);
