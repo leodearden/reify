@@ -17,9 +17,9 @@
 mod p1 {
 
 use reify_audit::{
-    AuditContext, ChangedSymbol, DeadSymbol, EvidenceRef, Finding, JCodemunchOps, LayerViolation,
-    MockGitOps, MockJCodemunchOps, Pattern, Severity, SymbolReference, TaskMetadata,
-    UntestedSymbol, p1_producer_orphan,
+    AuditContext, ChangedSymbol, DeadSymbol, DoneProvenance, EvidenceRef, Finding, JCodemunchOps,
+    LayerViolation, MockGitOps, MockJCodemunchOps, Pattern, Severity, SymbolReference,
+    TaskMetadata, UntestedSymbol, p1_producer_orphan,
 };
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -32,18 +32,33 @@ const DAY: i64 = 86_400;
 
 /// Build a `done` producer task with a benign title (does NOT signal a
 /// stub) and the given done-flip timestamp + originating PRD.
+///
+/// `done_provenance.commit` is derived from `task_id` as `"sha_{task_id}"`.
+/// This lets each test compute the expected `(since_sha, until_sha)` range
+/// as `(format!("{sha}^1"), sha)` without an out-of-band sha table.
+/// `done_at` still governs grace-window math — the two fields are orthogonal.
 fn done_meta(task_id: &str, done_at: i64, prd: Option<&str>) -> TaskMetadata {
     TaskMetadata {
         task_id: task_id.to_string(),
         status: "done".to_string(),
         files: vec![],
-        done_provenance: None,
+        done_provenance: Some(DoneProvenance {
+            kind: Some("merged".to_string()),
+            commit: Some(format!("sha_{task_id}")),
+            note: None,
+        }),
         title: "Wire foo into bar".to_string(),
         prd: prd.map(|s| s.to_string()),
         consumer_ref: None,
         audit_foundation: None,
         done_at: Some(done_at),
     }
+}
+
+/// Derive the commit SHA for a task from its task_id (mirrors done_meta's
+/// `done_provenance.commit` convention: `"sha_{task_id}"`).
+fn task_sha(task_id: &str) -> String {
+    format!("sha_{task_id}")
 }
 
 /// Build a `ChangedSymbol` with no suppression metadata (the orphan-candidate
@@ -153,13 +168,14 @@ mod tests {
     #[test]
     fn producer_orphan_flagged_medium_after_grace_window() {
         let done_at = NOW - 15 * DAY;
+        let sha = task_sha("7001");
 
         let conn = Connection::open_in_memory().expect("open in-memory sqlite");
         let git = MockGitOps::new();
         let mut jc = MockJCodemunchOps::new();
         jc.set_changed_symbols(
-            "main",
-            done_at,
+            &format!("{sha}^1"),
+            &sha,
             vec![changed_symbol("new_widget", "crates/reify-x/src/widget.rs")],
         );
         jc.set_find_references("crates/reify-x/src/widget.rs", "new_widget", vec![]);
@@ -216,13 +232,14 @@ mod tests {
     #[test]
     fn non_test_caller_in_workspace_suppresses_finding() {
         let done_at = NOW - 15 * DAY;
+        let sha = task_sha("7003");
 
         let conn = Connection::open_in_memory().expect("open in-memory sqlite");
         let git = MockGitOps::new();
         let mut jc = MockJCodemunchOps::new();
         jc.set_changed_symbols(
-            "main",
-            done_at,
+            &format!("{sha}^1"),
+            &sha,
             vec![
                 changed_symbol("new_widget", "crates/reify-x/src/widget.rs"),
                 changed_symbol("test_only_widget", "crates/reify-x/src/other.rs"),
@@ -299,13 +316,14 @@ mod tests {
     #[test]
     fn low_severity_inside_grace_window() {
         let done_at = NOW - 5 * DAY;
+        let sha = task_sha("7002");
 
         let conn = Connection::open_in_memory().expect("open in-memory sqlite");
         let git = MockGitOps::new();
         let mut jc = MockJCodemunchOps::new();
         jc.set_changed_symbols(
-            "main",
-            done_at,
+            &format!("{sha}^1"),
+            &sha,
             vec![changed_symbol("fresh_widget", "crates/reify-x/src/fresh.rs")],
         );
         jc.set_find_references("crates/reify-x/src/fresh.rs", "fresh_widget", vec![]);
@@ -363,9 +381,12 @@ mod tests {
         let conn = Connection::open_in_memory().expect("open in-memory sqlite");
         let git = MockGitOps::new();
         let mut jc = MockJCodemunchOps::new();
+        // Seed symbols for task 8001 (foundation guard fires first — commit-range
+        // query would never be reached, but the fixture is keyed correctly).
+        let sha_8001 = task_sha("8001");
         jc.set_changed_symbols(
-            "main",
-            done_at,
+            &format!("{sha_8001}^1"),
+            &sha_8001,
             vec![changed_symbol(
                 "scaffold_widget",
                 "crates/reify-x/src/scaffold.rs",
@@ -448,13 +469,14 @@ mod tests {
     #[test]
     fn g_allow_marker_suppresses_finding() {
         let done_at = NOW - 15 * DAY;
+        let sha = task_sha("9001");
 
         let conn = Connection::open_in_memory().expect("open in-memory sqlite");
         let git = MockGitOps::new();
         let mut jc = MockJCodemunchOps::new();
         jc.set_changed_symbols(
-            "main",
-            done_at,
+            &format!("{sha}^1"),
+            &sha,
             vec![
                 ChangedSymbol {
                     g_allow_marker: Some(
@@ -532,13 +554,14 @@ mod tests {
     #[test]
     fn per_symbol_guards_suppress_individually() {
         let done_at = NOW - 15 * DAY;
+        let sha = task_sha("7100");
 
         let conn = Connection::open_in_memory().expect("open in-memory sqlite");
         let git = MockGitOps::new();
         let mut jc = MockJCodemunchOps::new();
         jc.set_changed_symbols(
-            "main",
-            done_at,
+            &format!("{sha}^1"),
+            &sha,
             vec![
                 changed_symbol("stdlib_widget", "crates/reify-stdlib/src/prelude.rs"),
                 ChangedSymbol {
@@ -602,6 +625,11 @@ mod tests {
     ///   - `14 * DAY + 1` old      → Medium.
     ///
     /// A `>=` regression (Medium at exactly 14 days) fails the first case.
+    ///
+    /// `done_at` (distinct per case) still governs the age/severity comparison;
+    /// `done_provenance.commit` (also distinct per case — derived from `name`)
+    /// governs the symbol-lookup range, pinning that the two fields are
+    /// orthogonal.
     #[test]
     fn grace_window_boundary_is_strict() {
         const WINDOW: i64 = 14 * DAY;
@@ -617,8 +645,9 @@ mod tests {
 
         for (age, name, file, expected) in cases {
             let done_at = NOW - age;
+            let sha = task_sha(name);
             let mut jc = MockJCodemunchOps::new();
-            jc.set_changed_symbols("main", done_at, vec![changed_symbol(name, file)]);
+            jc.set_changed_symbols(&format!("{sha}^1"), &sha, vec![changed_symbol(name, file)]);
             jc.set_find_references(file, name, vec![]);
 
             let mut task_metadata = HashMap::new();
@@ -652,81 +681,6 @@ mod tests {
         }
     }
 
-    /// Step 5 (RED→GREEN via step 6) — P1 reads the branch from
-    /// `AuditContext.producer_branch`, defaulting to `"main"` when `None`.
-    ///
-    /// Control leg: symbols registered under `"release/v0.2"` only, with
-    /// `producer_branch: None` → P1 queries `"main"` → no symbols found → 0
-    /// findings.
-    ///
-    /// Override leg: same symbols, with `producer_branch:
-    /// Some("release/v0.2")` → P1 queries `"release/v0.2"` → orphan found →
-    /// exactly 1 Medium finding.
-    ///
-    /// RED: `AuditContext` lacks the `producer_branch` field → compile error.
-    #[test]
-    fn producer_branch_override_honored_by_p1() {
-        const BRANCH: &str = "release/v0.2";
-        let done_at = NOW - 15 * DAY;
-
-        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
-        let git = MockGitOps::new();
-        let mut jc = MockJCodemunchOps::new();
-        // Symbols registered ONLY under "release/v0.2", not under "main".
-        jc.set_changed_symbols(
-            BRANCH,
-            done_at,
-            vec![changed_symbol("branch_widget", "crates/reify-x/src/branch.rs")],
-        );
-        jc.set_find_references("crates/reify-x/src/branch.rs", "branch_widget", vec![]);
-
-        let mut task_metadata = HashMap::new();
-        task_metadata.insert(
-            "6000".to_string(),
-            done_meta("6000", done_at, Some("docs/x.md")),
-        );
-
-        // Control: producer_branch=None → defaults to "main" → no symbols → 0 findings.
-        let ctx_control = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: task_metadata.clone(),
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
-        let findings_control = p1_producer_orphan::check(&ctx_control);
-        assert!(
-            findings_control.is_empty(),
-            "producer_branch=None defaults to 'main'; no symbols on 'main' → 0 findings; got {:?}",
-            findings_control
-        );
-
-        // Override: producer_branch=Some("release/v0.2") → finds the orphan.
-        let ctx_override = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: Some(BRANCH.to_string()),
-        };
-        let findings_override = p1_producer_orphan::check(&ctx_override);
-        assert_eq!(
-            findings_override.len(),
-            1,
-            "producer_branch=Some(\"release/v0.2\") must find the orphan; got {:?}",
-            findings_override
-        );
-        assert_eq!(findings_override[0].severity, Severity::Medium);
-    }
-
     /// Step 3 (RED→GREEN via step 4) — when `target_task_id` is set, P1
     /// restricts scanning to that single task only (mirroring p2's guard).
     ///
@@ -739,24 +693,26 @@ mod tests {
     /// producing two findings.
     #[test]
     fn target_task_id_scopes_p1_to_one_task() {
-        // Give the two tasks distinct done_at values so the mock can return
-        // different symbol sets for each (the mock keys on (branch, since_epoch)).
+        // Both tasks can share the same done_at — the mock now keys on
+        // (since_sha, until_sha), so distinct task commits are sufficient.
         let done_at_a = NOW - 15 * DAY;
-        let done_at_b = NOW - 16 * DAY;
+        let done_at_b = NOW - 15 * DAY;
+        let sha_a = task_sha("task_A");
+        let sha_b = task_sha("task_B");
 
         let conn = Connection::open_in_memory().expect("open in-memory sqlite");
         let git = MockGitOps::new();
         let mut jc = MockJCodemunchOps::new();
-        // task_A → widget_a (keyed by done_at_a).
+        // task_A → widget_a (keyed by its commit range).
         jc.set_changed_symbols(
-            "main",
-            done_at_a,
+            &format!("{sha_a}^1"),
+            &sha_a,
             vec![changed_symbol("widget_a", "crates/reify-x/src/a.rs")],
         );
-        // task_B → widget_b (keyed by done_at_b).
+        // task_B → widget_b (keyed by its commit range).
         jc.set_changed_symbols(
-            "main",
-            done_at_b,
+            &format!("{sha_b}^1"),
+            &sha_b,
             vec![changed_symbol("widget_b", "crates/reify-x/src/b.rs")],
         );
         jc.set_find_references("crates/reify-x/src/a.rs", "widget_a", vec![]);
@@ -812,13 +768,16 @@ mod tests {
     #[test]
     fn review_status_consumer_suppresses_finding() {
         let done_at = NOW - 15 * DAY;
+        let sha = task_sha("9100");
 
         let conn = Connection::open_in_memory().expect("open in-memory sqlite");
         let git = MockGitOps::new();
         let mut jc = MockJCodemunchOps::new();
+        // Consumer guard fires before the commit-range query — the fixture is
+        // keyed correctly but would not be reached in practice.
         jc.set_changed_symbols(
-            "main",
-            done_at,
+            &format!("{sha}^1"),
+            &sha,
             vec![changed_symbol("review_widget", "crates/reify-x/src/review.rs")],
         );
         jc.set_find_references("crates/reify-x/src/review.rs", "review_widget", vec![]);
@@ -881,13 +840,14 @@ mod tests {
     #[test]
     fn find_references_disambiguates_by_declaration_site() {
         let done_at = NOW - 15 * DAY;
+        let sha = task_sha("5000");
 
         let conn = Connection::open_in_memory().expect("open in-memory sqlite");
         let git = MockGitOps::new();
         let mut jc = MockJCodemunchOps::new();
         jc.set_changed_symbols(
-            "main",
-            done_at,
+            &format!("{sha}^1"),
+            &sha,
             vec![
                 // Same name, different declaration files.
                 changed_symbol("Builder", "crates/x/src/widget.rs"),
@@ -967,13 +927,16 @@ mod tests {
     #[test]
     fn target_task_id_does_not_hide_consumer_from_suppression() {
         let done_at = NOW - 15 * DAY;
+        let sha = task_sha("prod_1");
 
         let conn = Connection::open_in_memory().expect("open in-memory sqlite");
         let git = MockGitOps::new();
         let mut jc = MockJCodemunchOps::new();
+        // Consumer guard fires before the commit-range query — fixture keyed
+        // correctly (consumer suppresses before P1 would query jcodemunch).
         jc.set_changed_symbols(
-            "main",
-            done_at,
+            &format!("{sha}^1"),
+            &sha,
             vec![changed_symbol("scoped_widget", "crates/reify-x/src/scoped.rs")],
         );
         jc.set_find_references("crates/reify-x/src/scoped.rs", "scoped_widget", vec![]);
