@@ -332,7 +332,7 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
 
     Some(build_high_finding(
         meta,
-        &missing,
+        &genuinely_absent,
         "metadata.files mismatch / commit not reachable from main",
     ))
 }
