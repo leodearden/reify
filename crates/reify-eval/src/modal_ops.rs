@@ -1020,10 +1020,14 @@ mod tests {
     use reify_core::{DimensionVector, Severity};
     use reify_ir::{StructureInstanceData, StructureTypeId, Value};
     use reify_solver_elastic::{DirichletBc, EigenSolverOptions, IsotropicElastic};
-    use reify_stdlib::modal::free_vibration::is_rigid_body_mode;
+    use reify_stdlib::modal::free_vibration::{is_rigid_body_mode, rayleigh_damping_ratio};
 
-    use super::{ModalCoreResult, build_beam_mesh, extract_density_or_degenerate, solve_modal_core};
-    use crate::ComputeOutcome;
+    use super::{
+        ModalCoreResult, build_beam_mesh, build_dirichlet_bcs, extract_damping,
+        extract_density_or_degenerate, extract_eigen_knobs, extract_reference_direction,
+        simply_supported_pin_pin_bcs, solve_modal_analysis_trampoline, solve_modal_core,
+    };
+    use crate::{CancellationHandle, ComputeOutcome};
 
     /// `aᵀ · M · b` for the free×free mass matrix `M` (sparse CSR row matvec then
     /// dot). Test-local invariant probe; the production normalization path
@@ -1574,6 +1578,311 @@ mod tests {
                 "positive density must pass through unchanged; got {got}",
             ),
             Err(_) => panic!("positive density must pass the guard"),
+        }
+    }
+
+    // -- suggestion 2: trampoline extraction-helper + shaping coverage --------
+
+    /// Build a `Value::StructureInstance` with the given `type_name` and fields
+    /// (the `StructureTypeId(u32::MAX)` registry-free sentinel the trampoline
+    /// uses). Shared constructor for the option/support/damping fixtures below.
+    fn struct_instance(type_name: &str, fields: Vec<(String, Value)>) -> Value {
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: type_name.to_string(),
+            version: 1,
+            fields: fields.into_iter().collect(),
+        }))
+    }
+
+    /// A `FixedSupport { target }` instance — the runtime support shape
+    /// `support_targets` reads to discriminate the BC realization.
+    fn fixed_support(target: &str) -> Value {
+        struct_instance(
+            "FixedSupport",
+            vec![("target".to_string(), Value::String(target.to_string()))],
+        )
+    }
+
+    /// A `RayleighDamping { alpha, beta }` instance — the damped shape
+    /// `extract_damping` discriminates by `type_name`.
+    fn rayleigh_damping(alpha: f64, beta: f64) -> Value {
+        struct_instance(
+            "RayleighDamping",
+            vec![
+                ("alpha".to_string(), Value::Real(alpha)),
+                ("beta".to_string(), Value::Real(beta)),
+            ],
+        )
+    }
+
+    /// Assemble a `ModalOptions`-shaped instance from the given fields.
+    fn modal_options(fields: Vec<(String, Value)>) -> Value {
+        struct_instance("ModalOptions", fields)
+    }
+
+    /// A `Length` scalar (SI metres), as the trampoline reads geometry inputs.
+    fn length_scalar(m: f64) -> Value {
+        Value::Scalar { si_value: m, dimension: DimensionVector::LENGTH }
+    }
+
+    /// Amendment (suggestion 2): `extract_eigen_knobs` reads populated fields and
+    /// falls back to the PRD §4.3 defaults for missing / malformed / non-struct
+    /// inputs.
+    #[test]
+    fn extract_eigen_knobs_reads_fields_and_falls_back() {
+        // Populated: every field present and well-formed.
+        let opts = modal_options(vec![
+            ("n_modes".to_string(), Value::Int(7)),
+            ("tol".to_string(), Value::Real(1e-7)),
+            ("max_iters".to_string(), Value::Int(50)),
+            ("sigma".to_string(), Value::Real(2.5)),
+        ]);
+        assert_eq!(extract_eigen_knobs(&opts), (7, 1e-7, 50, 2.5));
+
+        // Missing fields → defaults (10, 1e-9, 200, 0.0).
+        assert_eq!(extract_eigen_knobs(&modal_options(vec![])), (10, 1e-9, 200, 0.0));
+
+        // Malformed: non-positive n_modes clamps to ≥ 1; non-positive tol and
+        // non-finite sigma fall back to their defaults.
+        let bad = modal_options(vec![
+            ("n_modes".to_string(), Value::Int(0)),
+            ("tol".to_string(), Value::Real(-1.0)),
+            ("sigma".to_string(), Value::Real(f64::NAN)),
+        ]);
+        assert_eq!(extract_eigen_knobs(&bad), (1, 1e-9, 200, 0.0));
+
+        // Non-StructureInstance → all defaults.
+        assert_eq!(extract_eigen_knobs(&Value::Undef), (10, 1e-9, 200, 0.0));
+    }
+
+    /// Amendment (suggestion 2): `extract_reference_direction` normalizes the
+    /// vector and falls back to the bending default `[0,0,1]` for missing /
+    /// zero-norm / non-struct inputs.
+    #[test]
+    fn extract_reference_direction_normalizes_and_falls_back() {
+        let dir = |x: f64, y: f64, z: f64| {
+            modal_options(vec![(
+                "reference_direction".to_string(),
+                Value::Vector(vec![Value::Real(x), Value::Real(y), Value::Real(z)]),
+            )])
+        };
+
+        // Non-unit input is normalized to a unit vector.
+        let got = extract_reference_direction(&dir(3.0, 0.0, 0.0));
+        assert!((got[0] - 1.0).abs() < 1e-12 && got[1] == 0.0 && got[2] == 0.0);
+        let got = extract_reference_direction(&dir(0.0, 0.0, 2.0));
+        assert!(got[0] == 0.0 && got[1] == 0.0 && (got[2] - 1.0).abs() < 1e-12);
+
+        // Zero-norm → bending default; missing field → default; non-struct → default.
+        assert_eq!(extract_reference_direction(&dir(0.0, 0.0, 0.0)), [0.0, 0.0, 1.0]);
+        assert_eq!(extract_reference_direction(&modal_options(vec![])), [0.0, 0.0, 1.0]);
+        assert_eq!(extract_reference_direction(&Value::Undef), [0.0, 0.0, 1.0]);
+    }
+
+    /// Amendment (suggestion 2): `extract_damping` returns the Rayleigh
+    /// coefficients only for a `RayleighDamping` instance; `NoDamping`, a missing
+    /// field, and a non-struct all read as the undamped `(0, 0)`.
+    #[test]
+    fn extract_damping_discriminates_rayleigh_from_none() {
+        let damped = modal_options(vec![("damping".to_string(), rayleigh_damping(0.5, 1e-6))]);
+        assert_eq!(extract_damping(&damped), (0.5, 1e-6));
+
+        let nodamp =
+            modal_options(vec![("damping".to_string(), struct_instance("NoDamping", vec![]))]);
+        assert_eq!(extract_damping(&nodamp), (0.0, 0.0));
+
+        assert_eq!(extract_damping(&modal_options(vec![])), (0.0, 0.0));
+        assert_eq!(extract_damping(&Value::Undef), (0.0, 0.0));
+    }
+
+    /// Amendment (suggestion 2): `build_dirichlet_bcs` selects the pin-pin
+    /// realization iff BOTH beam-axis end faces are named, otherwise clamps the
+    /// named face(s).
+    #[test]
+    fn build_dirichlet_bcs_selects_pin_pin_vs_clamp() {
+        let length = 0.02_f64;
+        let width = 0.05_f64;
+        let height = 0.1_f64;
+        let mesh = build_beam_mesh(length, width, height);
+        let eps = 1e-9_f64;
+        let on_x_min = |n: usize| mesh.nodes[n][0] <= eps;
+        let on_end = |n: usize| mesh.nodes[n][0] <= eps || mesh.nodes[n][0] >= length - eps;
+
+        // (a) Both x_min AND x_max named → pin-pin: some end-face node has ONLY
+        //     its Z DOF constrained (X and Y free) — impossible under a full
+        //     clamp, which constrains all three.
+        let pin_opts = modal_options(vec![(
+            "boundary_conditions".to_string(),
+            Value::List(vec![fixed_support("x_min"), fixed_support("x_max")]),
+        )]);
+        let pin_set: std::collections::HashSet<usize> =
+            build_dirichlet_bcs(&pin_opts, &mesh, length, width, height)
+                .iter()
+                .map(|b| b.dof)
+                .collect();
+        let z_only_end_node = (0..mesh.nodes.len()).any(|n| {
+            on_end(n)
+                && pin_set.contains(&(3 * n + 2))
+                && !pin_set.contains(&(3 * n))
+                && !pin_set.contains(&(3 * n + 1))
+        });
+        assert!(z_only_end_node, "pin-pin must leave an end-face node with only Z constrained");
+
+        // (b) Only x_min named → clamp: every x_min node has all three DOFs.
+        let clamp_opts = modal_options(vec![(
+            "boundary_conditions".to_string(),
+            Value::List(vec![fixed_support("x_min")]),
+        )]);
+        let clamp_set: std::collections::HashSet<usize> =
+            build_dirichlet_bcs(&clamp_opts, &mesh, length, width, height)
+                .iter()
+                .map(|b| b.dof)
+                .collect();
+        let all_x_min_clamped = (0..mesh.nodes.len()).filter(|&n| on_x_min(n)).all(|n| {
+            clamp_set.contains(&(3 * n))
+                && clamp_set.contains(&(3 * n + 1))
+                && clamp_set.contains(&(3 * n + 2))
+        });
+        assert!(
+            all_x_min_clamped,
+            "clamp realization must constrain all three DOFs on every x_min node",
+        );
+    }
+
+    /// Amendment (suggestion 2): `simply_supported_pin_pin_bcs` pins Z on every
+    /// end-face node and adds exactly the three minimal anchors (1 axial X +
+    /// 2 lateral Y) at the end-face neutral-axis nodes — the configuration that
+    /// yields the simply-supported `(nπ)²` family rather than fixed-fixed.
+    #[test]
+    fn simply_supported_pin_pin_bcs_places_minimal_anchors() {
+        let length = 0.02_f64;
+        let width = 0.05_f64;
+        let height = 0.1_f64;
+        let mesh = build_beam_mesh(length, width, height);
+        let eps = 1e-9_f64;
+
+        let bcs = simply_supported_pin_pin_bcs(&mesh, length, height);
+
+        // Count constraints per axis (dof % 3): X = axial anchor, Y = lateral
+        // anchors, Z = simple supports.
+        let (mut nx, mut ny, mut nz) = (0usize, 0usize, 0usize);
+        for b in &bcs {
+            match b.dof % 3 {
+                0 => nx += 1,
+                1 => ny += 1,
+                _ => nz += 1,
+            }
+        }
+        assert_eq!(nx, 1, "expected exactly one X (axial) anchor");
+        assert_eq!(ny, 2, "expected exactly two Y (lateral) anchors");
+
+        let n_end_nodes = (0..mesh.nodes.len())
+            .filter(|&n| mesh.nodes[n][0] <= eps || mesh.nodes[n][0] >= length - eps)
+            .count();
+        assert_eq!(nz, n_end_nodes, "Z must be pinned on every end-face node");
+    }
+
+    /// Amendment (suggestion 2): `solve_modal_analysis_trampoline` happy path — a
+    /// clamped steel beam with a `RayleighDamping` option yields a well-shaped
+    /// `ModalResult` (non-empty modes, positive matrix norms, ascending finite
+    /// frequencies) whose per-mode `damping_ratio` matches the Rayleigh formula
+    /// ζ = (α + β·ω²)/(2ω) — exercising the trampoline shaping the e2e tests
+    /// (steps 15/17) cover only release-gated and end-to-end.
+    #[test]
+    fn trampoline_shapes_modal_result_with_rayleigh_damping() {
+        let (alpha, beta) = (0.5_f64, 1e-6_f64);
+        let value_inputs = vec![
+            material_with_density(Some(STEEL_DENSITY)),
+            length_scalar(0.02), // length
+            length_scalar(0.05), // width
+            length_scalar(0.1),  // height
+            modal_options(vec![
+                ("n_modes".to_string(), Value::Int(3)),
+                (
+                    "boundary_conditions".to_string(),
+                    Value::List(vec![fixed_support("x_min")]),
+                ),
+                ("damping".to_string(), rayleigh_damping(alpha, beta)),
+                (
+                    "reference_direction".to_string(),
+                    Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
+                ),
+            ]),
+        ];
+
+        let outcome = solve_modal_analysis_trampoline(
+            &value_inputs,
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+
+        let ComputeOutcome::Completed { result, diagnostics, .. } = outcome else {
+            panic!("expected a Completed outcome");
+        };
+        // A well-constrained clamped beam produces no Error diagnostics.
+        assert!(
+            !diagnostics.iter().any(|d| d.severity == Severity::Error),
+            "clamped beam must not produce Error diagnostics; got {diagnostics:?}",
+        );
+
+        let data = match &result {
+            Value::StructureInstance(d) => d,
+            other => panic!("expected a ModalResult StructureInstance, got {other:?}"),
+        };
+        assert_eq!(data.type_name, "ModalResult");
+
+        // Matrix-norm diagnostics are positive (a real assembly ran).
+        for field in ["mass_matrix_norm", "stiffness_matrix_norm"] {
+            match data.fields.get(&field.to_string()) {
+                Some(Value::Real(v)) => assert!(*v > 0.0, "{field} must be > 0; got {v}"),
+                other => panic!("{field} must be a positive Real; got {other:?}"),
+            }
+        }
+
+        let modes = match data.fields.get(&"modes".to_string()) {
+            Some(Value::List(m)) => m,
+            other => panic!("ModalResult.modes must be a List; got {other:?}"),
+        };
+        assert!(!modes.is_empty(), "happy-path solve must return ≥ 1 mode");
+
+        // Each mode is well-shaped; frequencies finite/positive/ascending; the
+        // damping_ratio matches the Rayleigh formula for that mode's ω.
+        let mut prev_f = f64::NEG_INFINITY;
+        for (i, mode) in modes.iter().enumerate() {
+            let m = match mode {
+                Value::StructureInstance(d) => d,
+                other => panic!("mode {i} must be a Mode StructureInstance; got {other:?}"),
+            };
+            assert_eq!(m.type_name, "Mode");
+
+            let f = match m.fields.get(&"frequency".to_string()) {
+                Some(Value::Real(f)) => *f,
+                other => panic!("mode {i} frequency must be Real; got {other:?}"),
+            };
+            assert!(f.is_finite() && f > 0.0, "mode {i} frequency {f} must be finite > 0");
+            assert!(f >= prev_f, "modes must be ascending by frequency: {f} < {prev_f}");
+            prev_f = f;
+
+            let omega = 2.0 * std::f64::consts::PI * f;
+            let expected = rayleigh_damping_ratio(alpha, beta, omega);
+            assert!(expected > 0.0, "fixture (α, β) must give nonzero ζ (≠ NoDamping)");
+            match m.fields.get(&"damping_ratio".to_string()) {
+                Some(Value::Real(zeta)) => assert!(
+                    (zeta - expected).abs() < 1e-12,
+                    "mode {i} damping_ratio {zeta} != Rayleigh {expected}",
+                ),
+                other => panic!("mode {i} damping_ratio must be Real; got {other:?}"),
+            }
+            assert!(
+                matches!(
+                    m.fields.get(&"participation_mass".to_string()),
+                    Some(Value::Real(_))
+                ),
+                "mode {i} participation_mass must be Real",
+            );
         }
     }
 }
