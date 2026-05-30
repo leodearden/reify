@@ -2787,11 +2787,31 @@ impl<'a> Lowering<'a> {
         })
     }
 
+    /// Strip `_` digit-separator characters from a numeric literal token and
+    /// parse the result as `f64`.
+    ///
+    /// The grammar (`tree-sitter-reify/grammar.js`) accepts `_` between digit
+    /// groups (e.g. `1_000_000`, `0.000_001`, `1_000e1_0`), but `f64::from_str`
+    /// rejects `_` in raw form.  This helper strips them before parsing so both
+    /// `lower_number_literal` and `lower_quantity_literal` use the same path
+    /// and cannot diverge.
+    ///
+    /// The `is_real` classification (`.`/`e`/`E` scan) in `lower_number_literal`
+    /// is unaffected: `_` is never `.`, `e`, or `E`, so the scan result is
+    /// identical whether run on the original or stripped text.
+    fn strip_underscores_and_parse(text: &str) -> Option<f64> {
+        if text.contains('_') {
+            text.replace('_', "").parse().ok()
+        } else {
+            text.parse().ok()
+        }
+    }
+
     fn lower_quantity_literal(&self, node: tree_sitter::Node) -> Option<Expr> {
         let value_node = node.child_by_field_name("value")?;
         let unit_node = node.child_by_field_name("unit")?;
 
-        let value: f64 = self.node_text(value_node).parse().ok()?;
+        let value: f64 = Self::strip_underscores_and_parse(self.node_text(value_node))?;
         let unit = self.lower_unit_expr(unit_node)?;
 
         Some(Expr {
@@ -2871,12 +2891,19 @@ impl<'a> Lowering<'a> {
 
     fn lower_number_literal(&self, node: tree_sitter::Node) -> Option<Expr> {
         let text = self.node_text(node);
-        let value: f64 = text.parse().ok()?;
+        // Strip `_` digit-separator characters before parsing (task 3912 / β).
+        // `f64::from_str` rejects `_` in raw form; `strip_underscores_and_parse`
+        // removes them first.  Both `lower_number_literal` and
+        // `lower_quantity_literal` share the same helper so they cannot diverge.
+        let value: f64 = Self::strip_underscores_and_parse(text)?;
         // Classify as Real when the token contains the fractional or exponent part of
-        // the grammar's `number_literal` rule: `\d+(\.\d+)?([eE][+-]?\d+)?`
-        // (tree-sitter-reify/grammar.js).  This scan must stay in sync with that regex —
-        // if the grammar gains new number-literal forms (e.g. hex floats, `_` separators),
-        // update both the grammar and this classification.
+        // the grammar's `number_literal` rule:
+        //   `\d(_?\d)*(\.\d(_?\d)*)?([eE][+-]?\d(_?\d)*)?`
+        // (tree-sitter-reify/grammar.js, updated in task 3909 / α to accept `_`).
+        // This scan runs on the ORIGINAL text (before `_` stripping) — `_` is never
+        // `.`, `e`, or `E`, so the is_real result is identical either way.
+        // This scan must stay in sync with the grammar regex: if the grammar gains
+        // new number-literal forms (e.g. hex literals), update both.
         let is_real = text.contains('.') || text.contains('e') || text.contains('E');
         Some(Expr {
             kind: ExprKind::NumberLiteral { value, is_real },
