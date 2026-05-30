@@ -814,6 +814,87 @@ mod tests {
         diagnostics
     }
 
+    /// RED (task 3939 δ, step-3): a required associated function that the
+    /// conforming structure does not provide must surface an
+    /// `E_TRAIT_FN_NOT_SATISFIED` (`DiagnosticCode::TraitFnNotSatisfied`)
+    /// diagnostic naming the declaring trait and the missing fn.
+    ///
+    /// Lives here (not in `checker.rs`) because the `run_conformance` harness
+    /// and the `pub(crate) check_trait_conformance` entry point are in this
+    /// module — integration-test crates can only see `pub` items.
+    ///
+    /// Fails until step-4 wires the phase-5 `RequirementKind::Fn` satisfaction
+    /// check (today `collect_all_requirements` drops Fn requirements and the
+    /// phase-5 arm is a placeholder `continue`, so zero diagnostics fire).
+    #[test]
+    fn required_assoc_fn_not_provided_emits_trait_fn_not_satisfied() {
+        // Trait `Shape` requires a bodyless `fn req(self) -> Real`.
+        let shape = CompiledTrait {
+            name: "Shape".to_string(),
+            is_pub: false,
+            doc: None,
+            type_params: vec![],
+            refinements: vec![],
+            required_members: vec![TraitRequirement {
+                name: "req".to_string(),
+                kind: RequirementKind::Fn(CompiledAssocFnSig {
+                    name: "req".to_string(),
+                    has_self: true,
+                    params: vec![],
+                    return_type: Type::Real,
+                }),
+                span: SourceSpan::empty(0),
+            }],
+            defaults: vec![],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        };
+
+        // Structure `S : Shape { }` provides NO `fn req` member.
+        let structure_def = reify_ast::StructureDef {
+            name: "S".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![reify_ast::TraitBoundRef {
+                name: "Shape".to_string(),
+                type_args: vec![],
+                span: SourceSpan::empty(0),
+            }],
+            members: vec![],
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+            pragmas: vec![],
+            annotations: vec![],
+        };
+
+        let diagnostics = run_conformance(&[shape], &structure_def, &[]);
+
+        let fn_not_satisfied: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::TraitFnNotSatisfied))
+            .collect();
+        assert_eq!(
+            fn_not_satisfied.len(),
+            1,
+            "expected exactly one TraitFnNotSatisfied diagnostic for the missing \
+             required assoc fn 'req'; got: {:?}",
+            diagnostics
+        );
+        let msg = &fn_not_satisfied[0].message;
+        assert!(
+            msg.contains("Shape"),
+            "diagnostic should name the declaring trait 'Shape'; got: {}",
+            msg
+        );
+        assert!(
+            msg.contains("req"),
+            "diagnostic should name the missing fn 'req'; got: {}",
+            msg
+        );
+    }
+
     /// Characterization test that enum-typed `param` and `let` members resolve to
     /// `Type::Enum` through `check_trait_conformance`.
     ///
