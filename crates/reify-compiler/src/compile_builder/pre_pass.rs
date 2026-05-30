@@ -6,7 +6,7 @@
 //! phase modules.
 
 use reify_ast::{Declaration, FieldDef, FnDef, ParsedModule, TraitDecl, TypeAliasDecl, UnitDecl};
-use reify_core::{Diagnostic, DiagnosticLabel};
+use reify_core::{Diagnostic, DiagnosticLabel, ModulePath};
 
 use crate::CompiledModule;
 use crate::annotations::is_known_module_pragma;
@@ -55,6 +55,31 @@ pub(crate) fn effective_prelude<'a>(
 ) -> &'a [&'a CompiledModule] {
     let has_no_prelude = parsed.pragmas.iter().any(|p| p.name == "no_prelude");
     if has_no_prelude { &[] } else { prelude }
+}
+
+/// Check the top-of-file `module` declaration against the resolver-derived path.
+///
+/// Returns `None` if the declared path matches the expected path (spec §7.1: correct).
+/// Returns `Some(Diagnostic::warning(...))` if `declared` is `None` (W_MODULE_DECL_MISSING).
+/// Returns `Some(Diagnostic::error(...))` if `declared` is `Some` but doesn't match (E_MODULE_PATH_MISMATCH).
+///
+/// This is a pure helper so it can be unit-tested without a full compilation context.
+/// Re-exported from the crate root so `reify-cli` can call it via `reify_compiler::check_module_path_decl`.
+pub fn check_module_path_decl(declared: Option<&ModulePath>, expected: &ModulePath) -> Option<Diagnostic> {
+    match declared {
+        None => Some(Diagnostic::warning(format!(
+            "W_MODULE_DECL_MISSING: file has no top-of-file `module` declaration; \
+             expected `module {}` (spec \u{00a7}7.1)",
+            expected.0.join(".")
+        ))),
+        Some(d) if d != expected => Some(Diagnostic::error(format!(
+            "E_MODULE_PATH_MISMATCH: declared module path '{}' does not match \
+             expected path '{}' (derived from file location)",
+            d.0.join("."),
+            expected.0.join(".")
+        ))),
+        Some(_) => None,
+    }
 }
 
 #[cfg(test)]
