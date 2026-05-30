@@ -452,7 +452,10 @@ mod tests {
     };
     use crate::graph::CancellationHandle;
 
-    /// A minimal identity trampoline: returns `value_inputs[0]` as the result.
+    /// A minimal identity trampoline: returns the first entry of `value_inputs`
+    /// as the result, or `Value::Undef` when the slice is empty (defensive
+    /// guard for the @optimized dispatch path where a non-ValueRef arg produces
+    /// an empty `value_inputs` field).
     fn identity_fn(
         value_inputs: &[Value],
         _realization_inputs: &[RealizationReadHandle],
@@ -461,7 +464,7 @@ mod tests {
         _cancellation: &CancellationHandle,
     ) -> ComputeOutcome {
         ComputeOutcome::Completed {
-            result: value_inputs[0].clone(),
+            result: value_inputs.first().cloned().unwrap_or(Value::Undef),
             new_warm_state: None,
             cost_per_byte: None,
             diagnostics: vec![],
