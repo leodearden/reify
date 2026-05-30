@@ -776,6 +776,58 @@ mod tests {
         );
     }
 
+    /// Verify that doc-comment lines (`///` and `//!`) are NOT flagged as stubs,
+    /// even when they contain stub-pattern text (Family 1/2 matches).
+    ///
+    /// Mirrors geometry.rs:3024 where `/// … a stub unimplemented!()` was being
+    /// falsely flagged. Line 102 is a genuine code-level `unimplemented!()`.
+    #[test]
+    fn doc_comment_prose_not_flagged() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let task_id = "9200";
+        let path = "crates/reify-ir/src/geometry.rs";
+
+        let mut git = MockGitOps::new();
+        git.set_diff_added_lines(
+            "main",
+            &format!("task/{}", task_id),
+            path,
+            vec![
+                (100, "    /// not-supported default or a stub `unimplemented!()` — so we can".to_string()),
+                (101, "    //! module doc: TODO(impl pending) historically".to_string()),
+                (102, "    unimplemented!()".to_string()),
+            ],
+        );
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(task_id.to_string(), benign_meta(task_id, vec![path.to_string()]));
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p2_consumer_stub::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly 1 finding (only line 102 is a real stub); got {:?}",
+            findings
+        );
+        let summary = &findings[0].summary;
+        assert!(summary.contains("line 102"), "summary must reference line 102; got: {summary}");
+        assert!(!summary.contains("line 100"), "doc-comment line 100 must NOT appear in summary; got: {summary}");
+        assert!(!summary.contains("line 101"), "doc-comment line 101 must NOT appear in summary; got: {summary}");
+    }
+
 } // mod tests
 
 } // mod p2

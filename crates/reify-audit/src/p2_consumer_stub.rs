@@ -21,6 +21,12 @@ use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
 /// 5. `Value::Undef` + comment substring `pending`, `stub`, or `placeholder`.
 /// 6. Bare line-comments: `// stub`, `// placeholder`, `// fixme` (case-insensitive).
 fn line_matches_stub(line: &str) -> Option<&'static str> {
+    // Doc-comment lines (/// and //!) describe API and never execute — suppress all families.
+    let t = line.trim_start();
+    if t.starts_with("///") || t.starts_with("//!") {
+        return None;
+    }
+
     let lower = line.to_lowercase();
 
     // Family 1 — TODO variants.  Sub-checks run only on the content INSIDE
