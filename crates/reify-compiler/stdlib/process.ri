@@ -62,3 +62,18 @@ trait SurfaceTreating : Process {}
 
 // Thermal treatment (annealing, quenching, case-hardening, …).
 trait HeatTreating : Process {}
+
+// ── DFM rule trait ────────────────────────────────────────────────────────────
+// TRAIT SURFACE ONLY — this trait declares the interface for a DFM rule;
+// it does NOT provide any evaluation engine or geometry-checking capability.
+// A future evaluation task will add the seam for running rules against geometry.
+//
+// applies_to is the process-applicability marker: it names the process (or
+// process category) to which this rule applies. Conformers supply a concrete
+// Process value (e.g. MilledPart()), mirroring fdm.ri's
+// `material : ElasticMaterial = ABS_Plastic()` pattern.
+trait DFMRule {
+    param rule_name : String
+    param severity : DFMSeverity
+    param applies_to : Process
+}
