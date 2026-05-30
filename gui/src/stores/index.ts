@@ -41,3 +41,6 @@ export type { FeaModeState, FeaModeStore } from './feaModeStore';
 
 export { createProbeStore } from './probeStore';
 export type { ProbeStore, ProbeStoreState, PinnedProbe, ProbeSample, BarycentricUV } from './probeStore';
+
+export { createBucklingStore, subscribeModeShapeFrames } from './bucklingStore';
+export type { BucklingStore, BucklingStoreState, BucklingModeData } from './bucklingStore';
