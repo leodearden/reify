@@ -311,8 +311,8 @@ fi
 # merge result, not a curated stage), so force a full verification. Detected via
 # the git-dir-relative MERGE_HEAD so it works correctly inside linked worktrees.
 _MERGE_HEAD="$(git -C "$REPO_ROOT" rev-parse --git-path MERGE_HEAD 2>/dev/null || echo '')"
-if [ -n "$_MERGE_HEAD" ] && [ -f "$_MERGE_HEAD" ] && [ "$SCOPE" = "staged" ]; then
-    echo "verify.sh: MERGE_HEAD present — forcing --scope all (merge index is not a curated stage)" >&2
+if [ -n "$_MERGE_HEAD" ] && [ -f "$_MERGE_HEAD" ] && [ "$SCOPE" != "all" ]; then
+    echo "verify.sh: MERGE_HEAD present — forcing --scope all (merge in progress)" >&2
     SCOPE="all"
 fi
 
