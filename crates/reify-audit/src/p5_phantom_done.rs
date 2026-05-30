@@ -181,13 +181,23 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
                                  no task_completed event in runs.db — stale/rebuilt provenance, \
                                  not phantom-done"
                                     .to_string(),
-                            evidence: vec![EvidenceRef::RunsDb {
-                                table: "events".to_string(),
-                                key: format!(
-                                    "task_id={} AND event_type=task_completed",
-                                    meta.task_id
-                                ),
-                            }],
+                            // Cite both the missing-event RunsDb row and the
+                            // corroborating ancestor commit. Subject left empty
+                            // to avoid an extra `git log` round-trip; the sha
+                            // alone is the inspectable corroboration locator.
+                            evidence: vec![
+                                EvidenceRef::RunsDb {
+                                    table: "events".to_string(),
+                                    key: format!(
+                                        "task_id={} AND event_type=task_completed",
+                                        meta.task_id
+                                    ),
+                                },
+                                EvidenceRef::Commit {
+                                    sha: commit.to_string(),
+                                    subject: String::new(),
+                                },
+                            ],
                         });
                     }
                 }
