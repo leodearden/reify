@@ -1214,6 +1214,117 @@ mod tests {
             entries
         );
     }
+
+    /// Fix 2 downgrade + true-positive preservation (RED — S5): a merged task
+    /// with NO task_completed event in runs.db but whose claimed commit IS an
+    /// ancestor of main must downgrade to Low (rebuild coverage gap, not a
+    /// defect). A sibling task with a non-ancestor commit must stay High.
+    ///
+    /// On current code BOTH tasks are High, so the 4200 "must be Low" assertion
+    /// FAILS (red-first); the 4201 High assertion locks the true-positive after
+    /// the fix.
+    #[test]
+    fn merged_no_event_but_commit_ancestor_downgrades_to_low() {
+        let conn = seed_db();
+        // Deliberately DO NOT insert task_completed events for 4200 or 4201
+        // so the runs.db Ok(false) arm fires for both.
+
+        let mut git = MockGitOps::new();
+        // Task 4200: ancestor_sha is an ancestor of main → eligible for Low.
+        git.set_is_ancestor("ancestor_sha", "main", true);
+        // Task 4201: orphan_sha is NOT an ancestor of main → must stay High.
+        // (not set → defaults false)
+
+        // Provide empty diffs/log-greps so other legs don't rescue these tasks.
+        git.set_diff_changed_paths("main", "ancestor_sha", vec![]);
+        git.set_diff_changed_paths("main", "orphan_sha", vec![]);
+        git.set_log_grep("main", "4200", vec![]);
+        git.set_log_grep("main", "4201", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "4200".to_string(),
+            TaskMetadata {
+                task_id: "4200".to_string(),
+                status: "done".to_string(),
+                files: vec!["crates/x/foo.rs".to_string()],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("ancestor_sha".to_string()),
+                    note: None,
+                }),
+                title: "Ancestor-corroborated task".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+        task_metadata.insert(
+            "4201".to_string(),
+            TaskMetadata {
+                task_id: "4201".to_string(),
+                status: "done".to_string(),
+                files: vec!["crates/x/bar.rs".to_string()],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("orphan_sha".to_string()),
+                    note: None,
+                }),
+                title: "Orphan-commit task".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        // Find findings for each task.
+        let f4200 = findings.iter().find(|f| f.task_id == "4200")
+            .expect("finding for task 4200 must exist");
+        let f4201 = findings.iter().find(|f| f.task_id == "4201")
+            .expect("finding for task 4201 must exist");
+
+        assert_eq!(
+            f4200.severity,
+            Severity::Low,
+            "ancestor commit → must downgrade to Low; got {:?}",
+            f4200.severity
+        );
+        let s4200 = f4200.summary.to_lowercase();
+        assert!(
+            s4200.contains("deliverable") && s4200.contains("ancestor"),
+            "summary should mention 'deliverable' and 'ancestor'; got {:?}",
+            f4200.summary
+        );
+
+        assert_eq!(
+            f4201.severity,
+            Severity::High,
+            "non-ancestor commit → must stay High; got {:?}",
+            f4201.severity
+        );
+        let s4201 = f4201.summary.to_lowercase();
+        assert!(
+            s4201.contains("no task_completed event") || s4201.contains("task_completed"),
+            "summary should mention 'no task_completed event'; got {:?}",
+            f4201.summary
+        );
+    }
 }
 
 } // mod p5
