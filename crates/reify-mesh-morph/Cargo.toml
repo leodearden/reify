@@ -18,6 +18,7 @@ reify-ir.workspace = true
 reify-eval.workspace = true
 reify-solver-elastic.workspace = true
 serde = { workspace = true, features = ["derive"] }
+tracing.workspace = true
 
 [dev-dependencies]
 reify-ir.workspace = true
