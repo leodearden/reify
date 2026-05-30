@@ -51,4 +51,13 @@ assert "docs path -> empty" \
 assert "gui frontend -> empty" \
     test -z "$(affected_crates gui/src/App.tsx)"
 
+# ---------------------------------------------------------------------------
+# Step 5: C5 fail-wide — unmappable path forces ALL
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- C5: unmappable path forces ALL ---"
+
+assert "unmappable path -> ALL" \
+    test "$(affected_crates some/unknown/place.zzz)" = "ALL"
+
 test_summary
