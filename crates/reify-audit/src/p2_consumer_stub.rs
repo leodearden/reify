@@ -174,6 +174,10 @@ const SWEEP_BACKLOG_WARN_THRESHOLD: usize = 50;
 /// because P2 has no internal status filter to suppress legitimate WIP markers.
 ///
 /// Reference: `docs/architecture-audit/f-infra-design.md` §5 P2 and §10.
+///
+/// Key: `(task_id, path)` → `Vec<(line_no, content, label)>`
+type GroupMap = std::collections::HashMap<(String, String), Vec<(usize, String, &'static str)>>;
+
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     // Sweep-mode contract enforcement (esc-3752-365). The # Callers rustdoc
     // above requires sweep-mode callers to narrow `ctx.task_metadata` to
@@ -313,8 +317,7 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     }
 
     // Phase 3 — group winners by (task_id, path).
-    let mut groups: std::collections::HashMap<(String, String), Vec<(usize, String, &'static str)>> =
-        std::collections::HashMap::new();
+    let mut groups: GroupMap = std::collections::HashMap::new();
     for (_, entry) in dedup {
         groups
             .entry((entry.task_id, entry.path))
