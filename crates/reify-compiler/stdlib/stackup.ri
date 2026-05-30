@@ -1,0 +1,20 @@
+// Stdlib: Tolerance Stack-up Authoring Types
+// PRD v0_6 T6 — task 4004.
+// Scope (PRD §0): design DIMENSIONAL tolerancing. Zero contact with the kernel
+// realization-tolerance budget machinery (reify-eval/src/tolerance_budget.rs).
+// Read-only conceptual sibling to stdlib/tolerancing.ri.
+//
+// Field/variant names are aligned with the T1 Value::Map shape (PRD §4.1/§4.2):
+// reify-stdlib/src/stackup.rs (task 3996 DONE @ a416709) emits and consumes
+// maps keyed by {nominal, plus_tol, minus_tol, sign, distribution} and
+// Value::Enum{type_name:"Distribution", variant:"Normal"|"Uniform"|"Triangular"}.
+//
+// Depends only on Length/Int (built-in dimension types) and the mm literal
+// (available via the sequential growing prelude from std.si_units).
+
+// ── Distribution of dimensional variation ─────────────────────────────────────
+
+// Statistical distribution assumed for a contributor's tolerance.
+// Variant names match the Value::Enum variants emitted by the T1 builtins
+// (contributor / contributor_asym in reify-stdlib/src/stackup.rs, PRD §4.1).
+enum Distribution { Normal, Uniform, Triangular }

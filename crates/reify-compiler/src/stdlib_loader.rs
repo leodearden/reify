@@ -177,6 +177,16 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 "std.dynamics",
                 include_str!("../stdlib/dynamics.ri"),
             ),
+            // `std.stackup` declares the tolerance stack-up authoring surface
+            // (Distribution, StackupMethod, Contributor, StackupResult).
+            // Depends only on built-in Length/Int types and the mm literal
+            // (available via std.si_units, earlier in this sequence).
+            // Tail placement after std.dynamics is order-safe and conflict-free.
+            // PRD v0_6 T6 — task 4004.
+            (
+                "std.stackup",
+                include_str!("../stdlib/stackup.ri"),
+            ),
         ];
 
         // SEQUENTIAL COMPILATION WITH GROWING PRELUDE: each module is compiled
