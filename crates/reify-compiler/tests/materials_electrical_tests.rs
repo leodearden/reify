@@ -303,27 +303,31 @@ structure def Copper : Conductive {
                 &left.kind,
                 CompiledExprKind::ValueRef(id) if id.member == "resistivity"
             );
-            // chain_match is defense-in-depth: it is logically subsumed by
+            // shape_match is defense-in-depth: it is logically subsumed by
             // dim_match (a bare Real RHS can never carry an ELECTRIC_RESISTIVITY
             // result_type), but kept deliberately as an explicit shape check so
-            // the expected `Mul/Div unit chain` structure is self-documenting at
-            // the assertion site. dim_match is the load-bearing contract.
-            let chain_match = matches!(
+            // the expected RHS structure is self-documenting at the assertion
+            // site. dim_match is the load-bearing contract. Post-task-ζ the
+            // migrated Conductive bound `0.0001ohm*m` folds to a single
+            // Literal(Scalar); the legacy `0.0001 * 1ohm * 1m` form was a Mul/Div
+            // chain — accept either shape.
+            let shape_match = matches!(
                 &right.kind,
                 CompiledExprKind::BinOp { op: BinOp::Mul | BinOp::Div, .. }
+                    | CompiledExprKind::Literal(Value::Scalar { .. })
             );
             let dim_match = right.result_type
                 == Type::Scalar {
                     dimension: DimensionVector::ELECTRIC_RESISTIVITY,
                 };
-            left_match && chain_match && dim_match
+            left_match && shape_match && dim_match
         } else {
             false
         }
     });
     assert!(
         resistivity_constraint.is_some(),
-        "expected dimensioned constraint `resistivity < 0.0001 * 1ohm * 1m` in Copper \
+        "expected dimensioned constraint `resistivity < 0.0001ohm*m` in Copper \
          template — Lt with RHS typed Scalar{{ dimension: ELECTRIC_RESISTIVITY }}, not \
          bare Real; got constraints: {:?}",
         template.constraints
@@ -422,6 +426,11 @@ structure def Glass : Insulating {
         loop {
             match &cursor.kind {
                 CompiledExprKind::Literal(Value::Real(v)) => return Some(*v),
+                // Migrated compound literal (`1000000ohm*m`, task ζ) folds to a
+                // single Scalar whose si_value is the coefficient.
+                CompiledExprKind::Literal(Value::Scalar { si_value, .. }) => {
+                    return Some(*si_value)
+                }
                 CompiledExprKind::BinOp { op: BinOp::Mul | BinOp::Div, left, .. } => {
                     cursor = left;
                 }
@@ -437,27 +446,32 @@ structure def Glass : Insulating {
                     let coeff_match = rhs_coefficient(right)
                         .map(|v| (v - rhs_real).abs() <= epsilon)
                         .unwrap_or(false);
-                    // chain_match is defense-in-depth: logically subsumed by
+                    // shape_match is defense-in-depth: logically subsumed by
                     // dim_match below (a bare Real RHS can never carry the
                     // expected_dim result_type), but kept as an explicit shape
-                    // check so the expected Mul/Div unit-chain structure is
-                    // self-documenting here. dim_match is the load-bearing pin.
-                    let chain_match = matches!(
+                    // check so the expected RHS structure is self-documenting
+                    // here. dim_match is the load-bearing pin. Post-task-ζ the
+                    // migrated resistivity bound `1000000ohm*m` folds to a single
+                    // Literal(Scalar); the non-migrated dielectric_strength bound
+                    // `0.0 * 1V / 1m` is still a Mul/Div chain — accept either.
+                    let shape_match = matches!(
                         &right.kind,
                         CompiledExprKind::BinOp { op: BinOp::Mul | BinOp::Div, .. }
+                            | CompiledExprKind::Literal(Value::Scalar { .. })
                     );
                     let dim_match =
                         right.result_type == Type::Scalar { dimension: expected_dim };
-                    left_match && coeff_match && chain_match && dim_match
+                    left_match && coeff_match && shape_match && dim_match
                 } else {
                     false
                 }
             });
             assert!(
                 found.is_some(),
-                "expected dimensioned constraint `{member} > {rhs_real} * <units>` injected \
-                 into Glass template — RHS must be a Mul/Div unit chain typed \
-                 Scalar{{ dimension: {expected_dim:?} }}, not bare Real; got: {:?}",
+                "expected dimensioned constraint `{member} > {rhs_real}<units>` injected \
+                 into Glass template — RHS must be a folded Scalar literal or a Mul/Div \
+                 unit chain typed Scalar{{ dimension: {expected_dim:?} }}, not bare Real; \
+                 got: {:?}",
                 template.constraints
             );
         };
