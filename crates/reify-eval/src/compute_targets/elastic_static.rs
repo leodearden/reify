@@ -64,9 +64,15 @@
 //! as a future refinement) once ComputeFn/ComputeOutcome are moved into reify-ir.
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use reify_core::DimensionVector;
-use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use reify_ir::{
+    FieldSourceKind, InterpolationKind, OpaqueState, PersistentMap, SampledField, SampledGridKind,
+    StructureInstanceData, StructureTypeId, Value,
+};
+
+use crate::persistent_cache::ShellChannels;
 use reify_solver_elastic::{
     AnisotropicMaterial, AssemblyElement, AssemblyMode, CgSolverOptions, CgWarmState,
     ConstantField, DirichletBc, ElementOrder, IsotropicElastic, OrthotropicMaterial,
@@ -229,6 +235,119 @@ pub fn solve_elastic_static_trampoline(
         new_warm_state,
         cost_per_byte,
         diagnostics: vec![],
+    }
+}
+
+// ── shell_channels_to_value ───────────────────────────────────────────────────
+
+/// Map a `Option<ShellChannels>` + the mid-surface stress field into a DSL
+/// `ShellStress` `Value::StructureInstance` (task #4067, PRD S1 / DR-1).
+///
+/// # Contract
+///
+/// - `None`   → `Value::Undef` (I-3 honest absence: tet/solid results carry no
+///               through-thickness channels — PRD DR-3).
+/// - `Some(ch)` → a `ShellStress`-shaped `Value::StructureInstance` with three
+///               fields:
+///   - `mid`    = `mid_stress.clone()` — I-2 invariant: `shell_channels.mid ==
+///               ElasticResult.stress` by construction.
+///   - `top`    = `mid_stress` metadata with `data` replaced by `ch.top`.
+///   - `bottom` = `mid_stress` metadata with `data` replaced by `ch.bottom`.
+///
+/// # Rationale for sharing mid_stress's grid
+///
+/// top/mid/bottom are sampled at the SAME mesh nodes (MITC3+ per-element
+/// integration points share the element geometry), so reusing mid's
+/// `SampledField` grid/bounds/spacing is physically correct, not a shortcut.
+/// Mirrors the metadata-clone/data-swap pattern in `reify-stdlib/src/fea.rs`
+/// (`out_stress_sf` construction at ~line 281).
+///
+/// # Defensive fallback
+///
+/// When `mid_stress` is not a `Value::Field { source: Sampled, lambda:
+/// SampledField(_) }` (shouldn't happen on the shell path but may occur in unit
+/// tests or partial results), `top` / `bottom` are built as minimal 1D
+/// `SampledField` wrappers over `ch.top` / `ch.bottom` with index-based grids.
+///
+/// # Called by
+///
+/// Task 3594/δ calls this on the shell-routing path with real `Some(_)` data.
+/// This task (#4067) ships the helper; 3594/δ wires the call site.
+pub fn shell_channels_to_value(channels: &Option<ShellChannels>, mid_stress: &Value) -> Value {
+    let ch = match channels {
+        None => return Value::Undef,
+        Some(ch) => ch,
+    };
+
+    let top = build_channel_field(mid_stress, ch.top.clone(), "shell_channels_top");
+    let bottom = build_channel_field(mid_stress, ch.bottom.clone(), "shell_channels_bottom");
+
+    let fields: PersistentMap<String, Value> = [
+        ("mid".to_string(), mid_stress.clone()),
+        ("top".to_string(), top),
+        ("bottom".to_string(), bottom),
+    ]
+    .into_iter()
+    .collect();
+
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "ShellStress".to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
+/// Build a `Value::Field { source: Sampled }` carrying `data`, cloning the grid
+/// metadata from `template` (the mid-surface stress field) when possible.
+fn build_channel_field(template: &Value, data: Vec<f64>, name: &str) -> Value {
+    if let Value::Field {
+        domain_type,
+        codomain_type,
+        source: FieldSourceKind::Sampled,
+        lambda,
+    } = template
+    {
+        if let Value::SampledField(ref sf) = **lambda {
+            let channel_sf = SampledField {
+                name: name.to_string(),
+                kind: sf.kind,
+                bounds_min: sf.bounds_min.clone(),
+                bounds_max: sf.bounds_max.clone(),
+                spacing: sf.spacing.clone(),
+                axis_grids: sf.axis_grids.clone(),
+                interpolation: sf.interpolation,
+                data,
+                oob_emitted: AtomicBool::new(false),
+            };
+            return Value::Field {
+                domain_type: domain_type.clone(),
+                codomain_type: codomain_type.clone(),
+                source: FieldSourceKind::Sampled,
+                lambda: Arc::new(Value::SampledField(channel_sf)),
+            };
+        }
+    }
+    // Defensive fallback: template is not a Sampled field — wrap data in a
+    // minimal 1D index-grid SampledField with Real domain/codomain.
+    let n = data.len();
+    let axis_grid: Vec<f64> = (0..n).map(|i| i as f64).collect();
+    let fallback_sf = SampledField {
+        name: name.to_string(),
+        kind: SampledGridKind::Regular1D,
+        bounds_min: vec![0.0],
+        bounds_max: vec![n.saturating_sub(1) as f64],
+        spacing: vec![1.0],
+        axis_grids: vec![axis_grid],
+        interpolation: InterpolationKind::Linear,
+        data,
+        oob_emitted: AtomicBool::new(false),
+    };
+    Value::Field {
+        domain_type: reify_core::Type::Real,
+        codomain_type: reify_core::Type::Real,
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(fallback_sf)),
     }
 }
 
