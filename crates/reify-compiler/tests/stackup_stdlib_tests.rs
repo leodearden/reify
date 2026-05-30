@@ -188,3 +188,74 @@ fn stackup_result_trait_declares_required_members() {
         );
     }
 }
+
+// ─── step-9: capstone acceptance test ────────────────────────────────────────
+
+/// Step 9 capstone: a user structure that (a) uses Distribution.Triangular as
+/// a cross-module enum default and (b) conforms to StackupResult compiles with
+/// zero Error diagnostics via the production parse_with_stdlib path.
+///
+/// Proves: cross-module Distribution.Triangular EnumAccess resolves; MyResult :
+/// StackupResult cross-module trait conformance works; the injected
+/// `rss_sigma >= 0mm` constraint with rss_sigma = 0mm compiles clean.
+#[test]
+fn eval_file_using_distribution_triangular_and_stackup_result_compiles_clean() {
+    use reify_test_support::compile_source_with_stdlib;
+
+    let source = r#"
+structure def MyResult : StackupResult {
+    param nominal_gap : Length = 0mm
+    param worst_case_min : Length = 0mm
+    param worst_case_max : Length = 0mm
+    param rss_sigma : Length = 0mm
+    param dist : Distribution = Distribution.Triangular
+}
+"#;
+
+    let compiled = compile_source_with_stdlib(source);
+
+    // (a) Zero error-severity diagnostics.
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "compile_source_with_stdlib should produce no Error diagnostics, got: {:?}",
+        errors
+    );
+
+    let template = compiled
+        .templates
+        .first()
+        .expect("expected at least 1 template");
+
+    // (b) MyResult has StackupResult in trait_bounds.
+    assert!(
+        template.trait_bounds.contains(&"StackupResult".to_string()),
+        "MyResult should have 'StackupResult' in trait_bounds, got: {:?}",
+        template.trait_bounds
+    );
+
+    // (c) The `dist` param has Enum("Distribution") type.
+    let dist_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "dist");
+    assert!(
+        dist_cell.is_some(),
+        "expected 'dist' value cell, got: {:?}",
+        template
+            .value_cells
+            .iter()
+            .map(|vc| &vc.id.member)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        dist_cell.unwrap().cell_type,
+        Type::Enum("Distribution".to_string()),
+        "dist cell should have Enum(Distribution) type, got {:?}",
+        dist_cell.unwrap().cell_type
+    );
+}
