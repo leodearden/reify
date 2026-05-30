@@ -374,6 +374,9 @@ pub mod interpolation;
 pub mod mass_matrix;
 pub mod material_field;
 pub mod math;
+// Task 4066: P2-tet consistent mass-matrix kernel (closed-form degree-4-exact
+// barycentric integration) — the missing primitive for P2 modal analysis.
+pub mod p2_tet;
 pub mod mesher;
 pub mod mpc;
 pub mod progressive;
