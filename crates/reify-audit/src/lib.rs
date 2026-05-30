@@ -95,6 +95,18 @@ pub enum Pattern {
     /// gitignored paths that should be stripped. Distinct from `P5PhantomDone`
     /// (medium-severity cleanliness signal, not a phantom-done).
     P5MetadataFilesGitignored,
+    /// P-dead-code — public symbol with no callers above a minimum confidence
+    /// threshold, as reported by `mcp__jcodemunch__get_dead_code_v2`.
+    /// See `docs/prds/reify-audit-p1-jcodemunch-substrate.md` §3.
+    PDeadCode,
+    /// P-untested — symbol not reached by any test above a minimum confidence
+    /// threshold, as reported by `mcp__jcodemunch__get_untested_symbols`.
+    /// See `docs/prds/reify-audit-p1-jcodemunch-substrate.md` §3.
+    PUntested,
+    /// P-layer-violation — an import that violates the project's layer rules,
+    /// as reported by `mcp__jcodemunch__get_layer_violations`.
+    /// See `docs/prds/reify-audit-p1-jcodemunch-substrate.md` §3.
+    PLayerViolation,
 }
 
 /// A pointer to forensic evidence supporting a [`Finding`]. Renders verbatim
@@ -777,6 +789,72 @@ pub struct SymbolReference {
     pub line: usize,
 }
 
+/// A symbol with no callers above a given confidence, as reported by
+/// `mcp__jcodemunch__get_dead_code_v2`. Mirrors the jcodemunch tool's response
+/// shape for use by the L-PDEAD detector leaf.
+///
+/// Note: `confidence` is `f64` (IEEE 754), so `Eq` and `Hash` are intentionally
+/// NOT derived — floating-point equality semantics are unsuitable for collection
+/// key use. This deviates from [`ChangedSymbol`]'s derive set by design.
+/// Per `docs/prds/reify-audit-p1-jcodemunch-substrate.md` §3.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeadSymbol {
+    /// Unique identifier for the symbol as assigned by jcodemunch.
+    pub id: String,
+    /// The symbol's declared name.
+    pub name: String,
+    /// The kind of symbol (e.g. `"function"`, `"struct"`, `"const"`).
+    pub kind: String,
+    /// Workspace-relative path of the file declaring the symbol.
+    pub file: String,
+    /// 1-based line of the declaration.
+    pub line: usize,
+    /// Jcodemunch's confidence score that the symbol is truly unreachable
+    /// (0.0 = uncertain; 1.0 = certain). Filtered by `min_confidence` in
+    /// [`JCodemunchOps::get_dead_code`].
+    pub confidence: f64,
+    /// Diagnostic signals contributing to the confidence score
+    /// (e.g. `"no_callers"`, `"private_module"`).
+    pub signals: Vec<String>,
+}
+
+/// A symbol not reached by any test, as reported by
+/// `mcp__jcodemunch__get_untested_symbols`. Mirrors the jcodemunch tool's
+/// response shape for use by the L-PUNTESTED detector leaf.
+///
+/// Note: `confidence` is `f64` — `Eq`/`Hash` not derived. See [`DeadSymbol`].
+/// Per `docs/prds/reify-audit-p1-jcodemunch-substrate.md` §3.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UntestedSymbol {
+    /// Unique identifier for the symbol as assigned by jcodemunch.
+    pub symbol_id: String,
+    /// The symbol's declared name.
+    pub name: String,
+    /// Workspace-relative path of the file declaring the symbol.
+    pub file: String,
+    /// `false` when no test path reaches the symbol.
+    pub reached: bool,
+    /// Confidence score (0.0–1.0) that the symbol is genuinely untested.
+    /// Filtered by `min_confidence` in [`JCodemunchOps::get_untested_symbols`].
+    pub confidence: f64,
+}
+
+/// A layer-violation: an import that is forbidden by the project's layering
+/// rules, as reported by `mcp__jcodemunch__get_layer_violations`. Mirrors the
+/// jcodemunch tool's response shape for use by the L-PLAYER detector leaf.
+///
+/// Per `docs/prds/reify-audit-p1-jcodemunch-substrate.md` §3.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LayerViolation {
+    /// Workspace-relative path of the file containing the violating import.
+    pub from_file: String,
+    /// Workspace-relative path of the file (or crate root) being imported.
+    pub to_file: String,
+    /// Human-readable name of the layer rule that was violated
+    /// (e.g. `"gui-must-not-depend-on-kernel"`).
+    pub rule: String,
+}
+
 /// Source-introspection operations the P1 detector needs. Production: a
 /// jcodemunch-MCP-backed impl supplied by the T-4 CLI. Tests:
 /// [`MockJCodemunchOps`] (gated behind `feature = "test-support"`) holds
@@ -801,17 +879,42 @@ pub trait JCodemunchOps {
     /// Returns an empty vec when the symbol has no callers (an orphan
     /// candidate). Per `f-infra-design.md` §5 P1.
     fn find_references(&self, symbol: &ChangedSymbol) -> Vec<SymbolReference>;
+
+    /// Equivalent of `mcp__jcodemunch__get_dead_code_v2(min_confidence)`:
+    /// public symbols with no callers whose confidence score meets or exceeds
+    /// `min_confidence` (0.0–1.0). Returns an empty vec when none found.
+    /// Per `docs/prds/reify-audit-p1-jcodemunch-substrate.md` §4-b.
+    fn get_dead_code(&self, min_confidence: f64) -> Vec<DeadSymbol>;
+
+    /// Equivalent of `mcp__jcodemunch__get_untested_symbols(min_confidence)`:
+    /// symbols not reached by any test whose confidence score meets or exceeds
+    /// `min_confidence`. Returns an empty vec when none found. Per PRD §4-b.
+    fn get_untested_symbols(&self, min_confidence: f64) -> Vec<UntestedSymbol>;
+
+    /// Equivalent of `mcp__jcodemunch__get_layer_violations()`: all detected
+    /// imports that violate the project's layering rules. Returns an empty vec
+    /// when none found. Per PRD §4-b.
+    fn get_layer_violations(&self) -> Vec<LayerViolation>;
 }
 
 /// HashMap-backed [`JCodemunchOps`] for tests. Gated behind
 /// `feature = "test-support"` so it never pollutes the production public API
 /// (mirrors [`MockGitOps`]). The crate self-pulls this feature in its own
 /// `[dev-dependencies]` so integration tests in `tests/p1.rs` see it.
+///
+/// Changed-symbol queries are keyed on `(branch, since_epoch)` (old surface,
+/// preserved here; step-4 migrates this to `(since_sha, until_sha)`);
+/// reference queries are keyed on `(file, name)`.
+/// Dead-code / untested-symbol data is stored as a flat Vec and filtered by
+/// `min_confidence` at query time (mirrors the real tool's semantics).
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Default)]
 pub struct MockJCodemunchOps {
     get_changed_symbols: HashMap<(String, i64), Vec<ChangedSymbol>>,
     find_references: HashMap<(String, String), Vec<SymbolReference>>,
+    dead_code: Vec<DeadSymbol>,
+    untested: Vec<UntestedSymbol>,
+    layer_violations: Vec<LayerViolation>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -836,6 +939,21 @@ impl MockJCodemunchOps {
     pub fn set_find_references(&mut self, file: &str, name: &str, refs: Vec<SymbolReference>) {
         self.find_references.insert((file.to_string(), name.to_string()), refs);
     }
+
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn set_dead_code(&mut self, symbols: Vec<DeadSymbol>) {
+        self.dead_code = symbols;
+    }
+
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn set_untested_symbols(&mut self, symbols: Vec<UntestedSymbol>) {
+        self.untested = symbols;
+    }
+
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn set_layer_violations(&mut self, violations: Vec<LayerViolation>) {
+        self.layer_violations = violations;
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -852,6 +970,26 @@ impl JCodemunchOps for MockJCodemunchOps {
             .get(&(symbol.file.clone(), symbol.name.clone()))
             .cloned()
             .unwrap_or_default()
+    }
+
+    fn get_dead_code(&self, min_confidence: f64) -> Vec<DeadSymbol> {
+        self.dead_code
+            .iter()
+            .filter(|s| s.confidence >= min_confidence)
+            .cloned()
+            .collect()
+    }
+
+    fn get_untested_symbols(&self, min_confidence: f64) -> Vec<UntestedSymbol> {
+        self.untested
+            .iter()
+            .filter(|s| s.confidence >= min_confidence)
+            .cloned()
+            .collect()
+    }
+
+    fn get_layer_violations(&self) -> Vec<LayerViolation> {
+        self.layer_violations.clone()
     }
 }
 

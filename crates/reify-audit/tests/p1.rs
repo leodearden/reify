@@ -17,9 +17,9 @@
 mod p1 {
 
 use reify_audit::{
-    AuditContext, ChangedSymbol, DeadSymbol, EvidenceRef, Finding, LayerViolation, MockGitOps,
-    MockJCodemunchOps, Pattern, Severity, SymbolReference, TaskMetadata, UntestedSymbol,
-    p1_producer_orphan,
+    AuditContext, ChangedSymbol, DeadSymbol, EvidenceRef, Finding, JCodemunchOps, LayerViolation,
+    MockGitOps, MockJCodemunchOps, Pattern, Severity, SymbolReference, TaskMetadata,
+    UntestedSymbol, p1_producer_orphan,
 };
 use rusqlite::Connection;
 use std::collections::HashMap;
