@@ -118,7 +118,46 @@ pub fn reset_for_test() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::eligibility::Reason;
+    use crate::quality::QualityVerdict;
+    use crate::types::{InversionDetails, SoftFailDetails};
+    use crate::{BijectionFailure, NamingLayerErrorReason, SubShapeKind};
     use std::sync::Mutex;
+
+    /// A `QualityVerdict::HardFail` fixture for the remesh-bucket tests.
+    fn hard_fail() -> QualityVerdict {
+        QualityVerdict::HardFail(InversionDetails {
+            element_index: 0,
+            jacobian: -1.0,
+        })
+    }
+
+    /// A `QualityVerdict::SoftFail` fixture (all detail fields `None`).
+    fn soft_fail() -> QualityVerdict {
+        QualityVerdict::SoftFail(SoftFailDetails {
+            min_scaled_jacobian: None,
+            pct_below_025: None,
+            max_aspect_ratio_factor: None,
+            degenerate_morphed_element: None,
+        })
+    }
+
+    /// A `Reason::BijectionFailure` fixture for the bijection-bucket tests.
+    fn bijection_failure() -> Reason {
+        Reason::BijectionFailure(BijectionFailure::CountMismatch {
+            kind: SubShapeKind::Face,
+            old_count: 1,
+            new_count: 2,
+        })
+    }
+
+    /// A `Reason::NamingLayerError` fixture for the naming-bucket tests.
+    fn naming_error() -> Reason {
+        Reason::NamingLayerError {
+            kind: SubShapeKind::Face,
+            reason: NamingLayerErrorReason::Imported,
+        }
+    }
 
     /// Serialize parallel test access to the process-global diagnostic
     /// counters. Each test acquires this before resetting state so tests don't
@@ -161,6 +200,122 @@ mod tests {
                 "ineligible_naming_error should be 0 after reset"
             );
             assert_eq!(s.panicked, 0, "panicked should be 0 after reset");
+        });
+    }
+
+    // ── Step-3: counter routing ───────────────────────────────────────────────
+    //
+    // Each recorder must increment ONLY its bucket and leave the others 0. The
+    // whole-snapshot `assert_eq!` against a `{ field: 1, ..Default::default() }`
+    // literal pins both the increment and the zero-elsewhere invariant at once.
+
+    #[test]
+    fn record_morphed_increments_only_morphed() {
+        with_locked_state(|| {
+            record_morphed();
+            assert_eq!(
+                snapshot(),
+                DiagnosticSnapshot {
+                    morphed: 1,
+                    ..Default::default()
+                }
+            );
+            // Repeated calls accumulate.
+            record_morphed();
+            record_morphed();
+            assert_eq!(snapshot().morphed, 3, "repeated calls must accumulate");
+        });
+    }
+
+    #[test]
+    fn record_quality_remesh_hard_fail_increments_only_hard_bucket() {
+        with_locked_state(|| {
+            record_quality_remesh(&hard_fail());
+            assert_eq!(
+                snapshot(),
+                DiagnosticSnapshot {
+                    remeshed_quality_hard_fail: 1,
+                    ..Default::default()
+                }
+            );
+            record_quality_remesh(&hard_fail());
+            assert_eq!(
+                snapshot().remeshed_quality_hard_fail,
+                2,
+                "repeated calls must accumulate"
+            );
+        });
+    }
+
+    #[test]
+    fn record_quality_remesh_soft_fail_increments_only_soft_bucket() {
+        with_locked_state(|| {
+            record_quality_remesh(&soft_fail());
+            assert_eq!(
+                snapshot(),
+                DiagnosticSnapshot {
+                    remeshed_quality_soft_fail: 1,
+                    ..Default::default()
+                }
+            );
+        });
+    }
+
+    #[test]
+    fn record_ineligible_structural_change_increments_only_structural_bucket() {
+        with_locked_state(|| {
+            record_ineligible(&Reason::StructuralChange);
+            assert_eq!(
+                snapshot(),
+                DiagnosticSnapshot {
+                    ineligible_structural_change: 1,
+                    ..Default::default()
+                }
+            );
+        });
+    }
+
+    #[test]
+    fn record_ineligible_bijection_failure_increments_only_bijection_bucket() {
+        with_locked_state(|| {
+            record_ineligible(&bijection_failure());
+            assert_eq!(
+                snapshot(),
+                DiagnosticSnapshot {
+                    ineligible_bijection_failure: 1,
+                    ..Default::default()
+                }
+            );
+        });
+    }
+
+    #[test]
+    fn record_ineligible_naming_error_increments_only_naming_bucket() {
+        with_locked_state(|| {
+            record_ineligible(&naming_error());
+            assert_eq!(
+                snapshot(),
+                DiagnosticSnapshot {
+                    ineligible_naming_error: 1,
+                    ..Default::default()
+                }
+            );
+        });
+    }
+
+    #[test]
+    fn record_panicked_increments_only_panicked() {
+        with_locked_state(|| {
+            record_panicked("x");
+            assert_eq!(
+                snapshot(),
+                DiagnosticSnapshot {
+                    panicked: 1,
+                    ..Default::default()
+                }
+            );
+            record_panicked("y");
+            assert_eq!(snapshot().panicked, 2, "repeated calls must accumulate");
         });
     }
 }
