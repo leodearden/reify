@@ -1833,6 +1833,7 @@ pub(crate) fn try_eval_topology_selector(
         "angle" => TopologySelectorHelper::Angle,
         "contains" => TopologySelectorHelper::Contains,
         "geo_equiv" => TopologySelectorHelper::GeoEquiv,
+        "normal" => TopologySelectorHelper::Normal,
         _ => return None,
     };
 
@@ -1898,7 +1899,8 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::SharedEdges
                 | TopologySelectorHelper::Angle
                 | TopologySelectorHelper::Contains
-                | TopologySelectorHelper::GeoEquiv => {
+                | TopologySelectorHelper::GeoEquiv
+                | TopologySelectorHelper::Normal => {
                     unreachable!("ClosestPoint/IsOn outer match guarantees this")
                 }
             }
@@ -1996,6 +1998,21 @@ pub(crate) fn try_eval_topology_selector(
             let theta = cos_theta.acos();
             Some(reify_ir::Value::angle(theta))
         }
+        TopologySelectorHelper::Normal => {
+            // `normal(surface, point) -> Vector3<Dimensionless>` (task 3615, KGQ-ζ).
+            // Arg order mirrors `contains`: Surface=args[0], Point3<Length>=args[1].
+            // args[0]: surface geometry ValueRef → named_steps → GeometryHandleId.
+            // args[1]: point ValueRef → values → Value::Point of three Length scalars → [f64;3] SI metres.
+            let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            let point = resolve_point3_length_arg(&args[1], values)?;
+            let query = reify_ir::GeometryQuery::FaceNormalAt {
+                handle,
+                px: point[0],
+                py: point[1],
+                pz: point[2],
+            };
+            dispatch_normal_vector3(kernel, &query, &function.name, diagnostics)
+        }
         TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => {
             // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
             let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
@@ -2021,7 +2038,8 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::SharedEdges
                 | TopologySelectorHelper::Angle
                 | TopologySelectorHelper::Contains
-                | TopologySelectorHelper::GeoEquiv => {
+                | TopologySelectorHelper::GeoEquiv
+                | TopologySelectorHelper::Normal => {
                     unreachable!("Edges/Faces outer match guarantees this")
                 }
             };
@@ -2406,6 +2424,15 @@ enum TopologySelectorHelper {
     /// FUTURE: `geo_equiv_strict(a, b, tol) -> Bool` — symmetric Hausdorff
     /// distance variant deferred to v0.4 (PRD §5.1, Open Question §10).
     GeoEquiv,
+    /// `normal(surface, point) -> Vector3<Dimensionless>` — at-point outward
+    /// unit surface normal (task 3615, KGQ-ζ, PRD §9). Projects the Cartesian
+    /// `point` onto the face's parametric surface via `ShapeAnalysis_Surface::
+    /// ValueOfUV` then returns the orientation-aware outward normal at the
+    /// projected (u,v) — the REVERSED-flip convention shared with `FaceNormal`
+    /// and `surface_normal_at`. Backed by `GeometryQuery::FaceNormalAt` →
+    /// `surface_normal_at_point` in crates/reify-kernel-occt/src/lib.rs.
+    /// Arg order: Surface=args[0] (named_steps), Point3<Length>=args[1] (values).
+    Normal,
 }
 
 impl TopologySelectorHelper {
@@ -2425,7 +2452,8 @@ impl TopologySelectorHelper {
             | TopologySelectorHelper::AdjacentFaces
             | TopologySelectorHelper::SharedEdges
             | TopologySelectorHelper::Angle
-            | TopologySelectorHelper::Contains => 2,
+            | TopologySelectorHelper::Contains
+            | TopologySelectorHelper::Normal => 2,
             TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => 1,
             TopologySelectorHelper::FacesByNormal
             | TopologySelectorHelper::EdgesParallelTo
@@ -2786,6 +2814,48 @@ fn dispatch_point3_length_reply(
                 reify_ir::Value::length(x),
                 reify_ir::Value::length(y),
                 reify_ir::Value::length(z),
+            ])),
+            Err(err) => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "{} kernel reply parse failed: {}",
+                    helper_name, err
+                )));
+                Some(reify_ir::Value::Undef)
+            }
+        },
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} kernel query failed: {}",
+                helper_name, err
+            )));
+            Some(reify_ir::Value::Undef)
+        }
+    }
+}
+
+/// Issue a `FaceNormalAt` query and unwrap the kernel's JSON-Point3 reply
+/// (`{"x":_,"y":_,"z":_}`) into a dimensionless `Value::Vector([Real, Real,
+/// Real])` — the canonical unit normal representation (matches `vec3()` output
+/// and `resolve_vec3_arg` expectations).
+///
+/// Models the same defensive-downgrade contract as `dispatch_point3_length_reply`:
+/// - Kernel `Err` → one Warning ("`normal` kernel query failed: …") + `Some(Value::Undef)`
+/// - Malformed reply (non-String or bad JSON) → one Warning ("`normal` kernel reply parse
+///   failed: …") + `Some(Value::Undef)`
+///
+/// Powers `TopologySelectorHelper::Normal` (task 3615, KGQ-ζ).
+fn dispatch_normal_vector3(
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    query: &reify_ir::GeometryQuery,
+    helper_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    match kernel.query(query) {
+        Ok(value) => match crate::topology_selectors::parse_xyz_value(&value, helper_name) {
+            Ok([x, y, z]) => Some(reify_ir::Value::Vector(vec![
+                reify_ir::Value::Real(x),
+                reify_ir::Value::Real(y),
+                reify_ir::Value::Real(z),
             ])),
             Err(err) => {
                 diagnostics.push(Diagnostic::warning(format!(
