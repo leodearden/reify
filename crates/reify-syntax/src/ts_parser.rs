@@ -1909,60 +1909,68 @@ impl<'a> Lowering<'a> {
 
         let where_clause = self.lower_where_clause(node);
 
-        // Lower the optional `specialization_body` field (task 3571).
-        // The grammar (task 3569) admits `sub name : StructName { body }` where
-        // `specialization_body` contains `repeat(choice($.param_assignment, $._member))`.
+        // Lower the optional body field: either `specialization_body` or
+        // `keyed_member_block` (task 3929, PRD §2.2).
         //
-        // Dispatch strategy:
-        // - `_member` children → `lower_member` (single source of truth; inherits all
-        //   current and future variants automatically, including ERROR-node handling).
-        // - `param_assignment` children → silently skipped for now.
-        //   TODO(task 3573): lower param_assignment once a MemberDecl variant or
-        //   let-rewrite is decided for the `name = value where?` form.
-        // - Absent body field (instantiation/collection/bare-colon forms) → `None`.
-        //
-        // Note: this loop intentionally does NOT run the annotation/pragma machinery
-        // (`pending_annotations` / `pragmas`) used by `lower_members`. Pragmas or
-        // `@annotation` markers written inside a specialization body are silently
-        // dropped. This is acceptable in practice because the validator forbids
-        // `param`/`port`/`sub` (the only members that carry annotations in normal
-        // structures) and `let`/`constraint` (the permitted members) do not
-        // conventionally carry annotations. If future usage demands annotation
-        // propagation here, replace this loop with a call to `lower_members` and
-        // filter the result.
-        let body = node.child_by_field_name("body").map(|body_node| {
-            let mut members = Vec::new();
-            let mut cursor = body_node.walk();
-            for child in body_node.children(&mut cursor) {
-                if child.kind() == "param_assignment" {
-                    // Invoke the shared helper at grammar slot 3 (param_assignment.value,
-                    // grammar.js:595) so auto_keyword lowering is centralised at all five
-                    // _binding_value slots (β = task 3804, PRD §4.2).  The resulting Expr
-                    // is intentionally discarded here: γ = task 3806 ("sub-instance-override
-                    // auto end-to-end") will add the MemberDecl variant or let-rewrite that
-                    // carries it forward.  CST-level coverage for this site lives in
-                    // auto_binding_sites_grammar_tests.rs::param_assignment_auto_strict_produces_auto_keyword
-                    // and param_assignment_auto_free_has_modifier_field.
-                    //
-                    // NOTE: gated on `auto_keyword` only — `lower_binding_value` falls
-                    // through to `lower_expr` for non-auto nodes, which can push diagnostics
-                    // as a side-effect.  Since the result is discarded at this site, calling
-                    // the helper on an ordinary expression would surface spurious errors
-                    // before γ wires the AST plumbing.  Non-auto values remain silently
-                    // skipped (pre-existing behaviour) until γ=3806 replaces the discard.
-                    if let Some(v) = child.child_by_field_name("value")
-                        && v.kind() == "auto_keyword"
-                    {
-                        let _ = self.lower_binding_value(v);
+        // The two body kinds are mutually exclusive by construction:
+        //   specialization_body → body: Some(_), keyed_members: empty
+        //   keyed_member_block  → body: None,    keyed_members: non-empty
+        //   no body field       → body: None,    keyed_members: empty
+        let (body, keyed_members) = match node.child_by_field_name("body") {
+            None => (None, Vec::new()),
+            Some(body_node) if body_node.kind() == "keyed_member_block" => {
+                // Keyed block: `{ "k1" => { overrides }  "k2" => { overrides } }`
+                // Iterate the named keyed_member_entry children; anonymous `{`/`}`
+                // tokens are skipped by `named_children`.
+                let mut entries = Vec::new();
+                let mut cursor = body_node.walk();
+                for entry in body_node.named_children(&mut cursor) {
+                    if entry.kind() != "keyed_member_entry" {
+                        continue;
                     }
-                    continue;
+                    let key_node = match entry.child_by_field_name("key") {
+                        Some(n) => n,
+                        // Missing `key` or `overrides` field can only occur on
+                        // ERROR CST nodes (the grammar makes both fields mandatory).
+                        // The ERROR node itself surfaces a diagnostic to the user;
+                        // silently skipping the entry here keeps downstream consumers
+                        // from seeing a half-populated keyed_members Vec.
+                        None => continue,
+                    };
+                    let overrides_node = match entry.child_by_field_name("overrides") {
+                        Some(n) => n,
+                        None => continue, // same rationale as the `key` arm above
+                    };
+                    // Unquote the key string_literal.
+                    // Reuses the strip-quotes pattern from lower_pragma_value (~lines 1224-1231).
+                    //
+                    // NOTE: escape sequences (e.g. `"in\"take"`, `"a\nb"`) are NOT
+                    // decoded — the raw text between the outer quotes is stored as-is.
+                    // This is intentional for v1 (keys are expected to be plain
+                    // identifier-like strings with no escapes).  If/when a shared
+                    // string-literal unescape helper is introduced, both this site and
+                    // lower_pragma_value should route through it; the downstream
+                    // E_DUP_MEMBER_KEY / key-comparison work (PRD tasks β/γ) must also
+                    // handle escape-decoded vs raw equality.
+                    let raw_key = self.node_text(key_node);
+                    let key = raw_key
+                        .strip_prefix('"')
+                        .and_then(|s| s.strip_suffix('"'))
+                        .unwrap_or(raw_key)
+                        .to_string();
+                    // Lower the override specialization_body via the shared helper.
+                    let overrides = self.lower_specialization_body_members(overrides_node);
+                    let span = self.span(entry);
+                    entries.push(KeyedSubMemberEntry { key, overrides, span });
                 }
-                if let Some(member) = self.lower_member(child) {
-                    members.push(member);
-                }
+                (None, entries)
             }
-            members
-        });
+            Some(body_node) => {
+                // specialization_body: `{ repeat(param_assignment | _member) }`
+                let members = self.lower_specialization_body_members(body_node);
+                (Some(members), Vec::new())
+            }
+        };
 
         // Detect 'aux' modifier (PRD §2.2, task 3899 step-6).
         let is_aux = self.has_aux_keyword(node);
@@ -1982,11 +1990,46 @@ impl<'a> Lowering<'a> {
             is_collection,
             where_clause,
             body,
+            keyed_members,
             is_aux,
             pose_expr,
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
+    }
+
+    /// Lower a `specialization_body` CST node (`{ repeat(param_assignment | _member) }`)
+    /// into a `Vec<MemberDecl>`.
+    ///
+    /// Shared by the `specialization_body` path and the per-entry `overrides` path in
+    /// `keyed_member_block` lowering (task 3929) — both block forms parse via the same
+    /// `specialization_body` grammar rule and both lower via this helper.
+    ///
+    /// Dispatch strategy (mirrors the pre-extracted inline logic in `lower_sub`):
+    /// - `_member` children → `lower_member` (single source of truth).
+    /// - `param_assignment` children → silently skipped for now.
+    ///   TODO(task 3573): lower param_assignment once a MemberDecl variant or
+    ///   let-rewrite is decided for the `name = value where?` form.
+    ///   Exception: `auto_keyword` values invoke `lower_binding_value` for
+    ///   centralised auto-keyword tracking (β = task 3804, PRD §4.2), but
+    ///   the result is discarded until γ = task 3806 wires the AST plumbing.
+    fn lower_specialization_body_members(&mut self, body_node: tree_sitter::Node) -> Vec<MemberDecl> {
+        let mut members = Vec::new();
+        let mut cursor = body_node.walk();
+        for child in body_node.children(&mut cursor) {
+            if child.kind() == "param_assignment" {
+                if let Some(v) = child.child_by_field_name("value")
+                    && v.kind() == "auto_keyword"
+                {
+                    let _ = self.lower_binding_value(v);
+                }
+                continue;
+            }
+            if let Some(member) = self.lower_member(child) {
+                members.push(member);
+            }
+        }
+        members
     }
 
     fn lower_port(&mut self, node: tree_sitter::Node) -> Option<PortDecl> {
@@ -2791,6 +2834,7 @@ impl<'a> Lowering<'a> {
             is_collection: false,
             where_clause: None,
             body: None,
+            keyed_members: Vec::new(),
             is_aux: false,
             pose_expr: None,
             span: self.span(member_node),
