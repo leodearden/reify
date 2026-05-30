@@ -69,7 +69,7 @@ use reify_audit::{
 struct NoopJCodemunchOps;
 
 impl JCodemunchOps for NoopJCodemunchOps {
-    fn get_changed_symbols(&self, _branch: &str, _since_epoch: i64) -> Vec<ChangedSymbol> {
+    fn get_changed_symbols(&self, _since_sha: &str, _until_sha: &str) -> Vec<ChangedSymbol> {
         vec![]
     }
     fn find_references(&self, _symbol: &ChangedSymbol) -> Vec<SymbolReference> {

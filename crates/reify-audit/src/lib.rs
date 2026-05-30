@@ -21,9 +21,9 @@
 //! 3. **[`JCodemunchOps`] trait** — production uses a jcodemunch-MCP-backed
 //!    impl supplied by the T-4 CLI (#3672); tests use [`MockJCodemunchOps`]
 //!    (gated behind `feature = "test-support"`) with HashMap-backed canned
-//!    answers keyed on `(branch, since_epoch)` for changed-symbol queries and
-//!    `(file, name)` for reference queries, enabling file-level disambiguation.
-//!    Per `f-infra-design.md` §5 P1.
+//!    answers keyed on `(since_sha, until_sha)` for changed-symbol queries
+//!    and `(file, name)` for reference queries, enabling per-commit and
+//!    file-level disambiguation. Per `f-infra-design.md` §5 P1.
 //!
 //! All three seams let the integration tests in `tests/{p1,p2,p5}.rs` exercise
 //! every code path (happy path + false-positive guards + `check_pre_done`
@@ -858,17 +858,21 @@ pub struct LayerViolation {
 /// Source-introspection operations the P1 detector needs. Production: a
 /// jcodemunch-MCP-backed impl supplied by the T-4 CLI. Tests:
 /// [`MockJCodemunchOps`] (gated behind `feature = "test-support"`) holds
-/// canned answers.
+/// canned answers keyed on `(since_sha, until_sha)` for changed-symbol
+/// queries and `(file, name)` for reference queries, enabling per-commit and
+/// file-level disambiguation. Per `f-infra-design.md` §3 and §5 P1.
 ///
 /// Object-safe by design — `AuditContext` holds `&'a dyn JCodemunchOps` so
 /// the production and mock impls coexist behind the same vtable (mirrors
 /// [`GitOps`]).
 pub trait JCodemunchOps {
-    /// Equivalent of `mcp__jcodemunch__get_changed_symbols(branch, since)`:
-    /// the public symbols introduced/changed on `branch` since the
-    /// `since_epoch` (epoch-seconds) cutoff. Returns an empty vec when
-    /// nothing changed or the branch does not exist.
-    fn get_changed_symbols(&self, branch: &str, since_epoch: i64) -> Vec<ChangedSymbol>;
+    /// Equivalent of `mcp__jcodemunch__get_changed_symbols(since_sha, until_sha)`
+    /// (jcodemunch v1.108.27+): the public symbols introduced/changed in the
+    /// commit range `since_sha..until_sha`. Typically `since_sha = "{commit}^1"`
+    /// and `until_sha = "{commit}"` for a single merged commit (mirrors the
+    /// `^1..commit` convention from `RealGitOps::diff_added_lines_in_commit`).
+    /// Returns an empty vec when the range is empty or the commits are not found.
+    fn get_changed_symbols(&self, since_sha: &str, until_sha: &str) -> Vec<ChangedSymbol>;
 
     /// Equivalent of `mcp__jcodemunch__find_references(symbol)`: every
     /// non-declaration reference of the symbol across the workspace, scoped
@@ -902,15 +906,15 @@ pub trait JCodemunchOps {
 /// (mirrors [`MockGitOps`]). The crate self-pulls this feature in its own
 /// `[dev-dependencies]` so integration tests in `tests/p1.rs` see it.
 ///
-/// Changed-symbol queries are keyed on `(branch, since_epoch)` (old surface,
-/// preserved here; step-4 migrates this to `(since_sha, until_sha)`);
-/// reference queries are keyed on `(file, name)`.
+/// Changed-symbol queries are keyed on `(since_sha, until_sha)` (the
+/// commit-range surface per jcodemunch v1.108.27+); reference queries are
+/// keyed on `(file, name)` for file-level disambiguation.
 /// Dead-code / untested-symbol data is stored as a flat Vec and filtered by
 /// `min_confidence` at query time (mirrors the real tool's semantics).
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Default)]
 pub struct MockJCodemunchOps {
-    get_changed_symbols: HashMap<(String, i64), Vec<ChangedSymbol>>,
+    get_changed_symbols: HashMap<(String, String), Vec<ChangedSymbol>>,
     find_references: HashMap<(String, String), Vec<SymbolReference>>,
     dead_code: Vec<DeadSymbol>,
     untested: Vec<UntestedSymbol>,
@@ -927,12 +931,12 @@ impl MockJCodemunchOps {
     // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
     pub fn set_changed_symbols(
         &mut self,
-        branch: &str,
-        since_epoch: i64,
+        since_sha: &str,
+        until_sha: &str,
         symbols: Vec<ChangedSymbol>,
     ) {
         self.get_changed_symbols
-            .insert((branch.to_string(), since_epoch), symbols);
+            .insert((since_sha.to_string(), until_sha.to_string()), symbols);
     }
 
     // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
@@ -958,9 +962,9 @@ impl MockJCodemunchOps {
 
 #[cfg(any(test, feature = "test-support"))]
 impl JCodemunchOps for MockJCodemunchOps {
-    fn get_changed_symbols(&self, branch: &str, since_epoch: i64) -> Vec<ChangedSymbol> {
+    fn get_changed_symbols(&self, since_sha: &str, until_sha: &str) -> Vec<ChangedSymbol> {
         self.get_changed_symbols
-            .get(&(branch.to_string(), since_epoch))
+            .get(&(since_sha.to_string(), until_sha.to_string()))
             .cloned()
             .unwrap_or_default()
     }
