@@ -82,13 +82,16 @@ pub struct BodyPartition {
 /// Tunable parameters for [`partition_body`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PartitionOptions {
-    /// Scales the characteristic length to the maximum medial-axis gap counted
-    /// as a shell↔tet interface: a (shell, tet) region pair is an interface iff
-    /// the minimum world-space distance between their voxel sets is below
-    /// `interface_proximity_factor · characteristic_length`.
+    /// Scales the **shell region's mean thickness** (the characteristic length)
+    /// to the maximum medial-axis gap counted as a shell↔tet interface: a
+    /// (shell, tet) region pair is an interface iff the minimum world-space
+    /// distance between their voxel sets is below
+    /// `interface_proximity_factor · shell_region.mean_thickness`.
     ///
-    /// Must be strictly positive. Default `2.0` (≈ a two-voxel medial-axis gap
-    /// at the junction; see the module doc on why the gap exists).
+    /// Thickness is used as the characteristic length because the medial-axis
+    /// gap at a thin-shell/solid junction scales with the shell's thickness
+    /// (the shell's medial axis sits at mid-thickness, the adjacent block's
+    /// deeper inside). Must be strictly positive. Default `2.0`.
     pub interface_proximity_factor: f64,
 }
 
@@ -177,7 +180,7 @@ impl std::error::Error for PartitionError {}
 /// - [`PartitionError::DegenerateInterfaceNormal`] if a shell region on an
 ///   interface has no well-defined area-weighted triangle normal.
 pub fn partition_body(
-    _mask: &SingleBodyMask,
+    mask: &SingleBodyMask,
     seg: &SegmentationResult,
     mesh: &MidSurfaceMesh,
     opts: &PartitionOptions,
@@ -212,11 +215,94 @@ pub fn partition_body(
         })
         .collect();
 
-    // Proximity-based interface detection is layered on in step-6/8.
+    // (4) Identify shell↔tet interfaces by world-space proximity.
+    //
+    // segment_regions builds 6-face connected components, so a shell region and
+    // an adjacent tet region are DISCONNECTED mask components (their medial axes
+    // sit at different depths; a shared voxel face would have fused them into
+    // one component). The junction is therefore found by world-space proximity
+    // between the two regions' voxel sets, not by shared faces.
+    //
+    // Characteristic length = the shell region's mean_thickness; the medial-axis
+    // gap at a thin-shell/solid junction scales with the shell's thickness, so
+    // the threshold is `interface_proximity_factor · mean_thickness`.
+    //
+    // The scan is O(n_shell · n_tet) per (shell, tet) region pair. This brute
+    // force is acceptable for the first T12 vertical slice; a spatial-hash /
+    // KD-tree acceleration is a documented follow-up (PRD T12 perf note).
+    let spacing = mask.inner().spacing;
+    let origin = mask.inner().origin;
+    let mut interfaces: Vec<ShellTetInterface> = Vec::new();
+    for (si, shell_region) in seg.regions.iter().enumerate() {
+        if region_kinds[si] != RegionMeshKind::Shell {
+            continue;
+        }
+        let threshold = opts.interface_proximity_factor * shell_region.mean_thickness;
+        for (ti, tet_region) in seg.regions.iter().enumerate() {
+            // Skip Shell↔Shell and Tet↔Tet pairs — only shell↔tet junctions
+            // are tied. (`si == ti` is excluded since a region cannot be both.)
+            if region_kinds[ti] != RegionMeshKind::Tet {
+                continue;
+            }
+            let min_dist =
+                min_world_distance(&shell_region.voxels, &tet_region.voxels, origin, spacing);
+            if min_dist < threshold {
+                interfaces.push(ShellTetInterface {
+                    shell_region: shell_region.label,
+                    tet_region: tet_region.label,
+                    // Placeholder normal/location — populated from shell-region
+                    // triangle geometry in step-8.
+                    normal: [0.0, 0.0, 0.0],
+                    thickness: shell_region.mean_thickness,
+                    location: [0.0, 0.0, 0.0],
+                });
+            }
+        }
+    }
+
     Ok(BodyPartition {
         region_kinds,
-        interfaces: vec![],
+        interfaces,
     })
+}
+
+/// World-space position of voxel `idx` under the `origin + idx · spacing`
+/// voxel→world transform (matching `MedialMask`'s grid convention).
+fn voxel_to_world(idx: [i32; 3], origin: [f64; 3], spacing: [f64; 3]) -> [f64; 3] {
+    [
+        origin[0] + idx[0] as f64 * spacing[0],
+        origin[1] + idx[1] as f64 * spacing[1],
+        origin[2] + idx[2] as f64 * spacing[2],
+    ]
+}
+
+/// Minimum Euclidean distance (world units) between any voxel of `a` and any
+/// voxel of `b`. Returns `f64::INFINITY` if either set is empty (so an empty
+/// region never forms an interface).
+///
+/// O(|a|·|b|) brute-force pairwise scan; see [`partition_body`] for the
+/// acceleration follow-up note.
+fn min_world_distance(
+    a: &[[i32; 3]],
+    b: &[[i32; 3]],
+    origin: [f64; 3],
+    spacing: [f64; 3],
+) -> f64 {
+    let b_world: Vec<[f64; 3]> = b.iter().map(|&v| voxel_to_world(v, origin, spacing)).collect();
+    let mut min_sq = f64::INFINITY;
+    for &va in a {
+        let wa = voxel_to_world(va, origin, spacing);
+        for wb in &b_world {
+            let dx = wa[0] - wb[0];
+            let dy = wa[1] - wb[1];
+            let dz = wa[2] - wb[2];
+            let d_sq = dx * dx + dy * dy + dz * dz;
+            if d_sq < min_sq {
+                min_sq = d_sq;
+            }
+        }
+    }
+    min_sq.sqrt()
 }
 
 #[cfg(test)]
