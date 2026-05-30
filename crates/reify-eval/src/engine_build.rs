@@ -4008,17 +4008,101 @@ pub(crate) fn build_mixed_region_mesh(
         });
     }
 
-    // ── Interface → MPC wiring (step-12) ──────────────────────────────────────
-    // Populated in step-12; the parameter is accepted now so the public
-    // signature is stable across the RED/GREEN MPC steps.
-    let _ = interfaces;
-    let mpc_rows: Vec<MpcRow> = Vec::new();
+    // ── Interface → MPC wiring (D=6 unified DOF layout) ───────────────────────
+    //
+    // Shell elements force the global DOFs-per-node to 6 (shell dominates, as
+    // assemble_global_stiffness derives D = max d_e), so the tie rows are
+    // emitted in D=6 from the start. Under `6·node + axis`: shell tie node `n` →
+    // disp `[6n+0,1,2]` / rot `[6n+3,4,5]`; tet node `m` (unified) → disp
+    // `[6m+0,1,2]`. Downstream T11 assembly / the engine bridge consume these
+    // rows directly, so they reference the same DOF space the solve will use.
+    let n_tet = nodes.len() - n_shell;
+    let mut mpc_rows: Vec<MpcRow> = Vec::new();
+    for (interface_index, iface) in interfaces.iter().enumerate() {
+        // Shell tie node: nearest shell vertex to the interface location. Its
+        // unified index equals the shell vertex index (shell nodes are first).
+        let shell_n = nearest_node_index(&nodes[..n_shell], iface.location).ok_or(
+            MixedRegionError::InterfaceResolutionFailed { interface_index },
+        )?;
+        // The through-thickness tie needs 3 distinct tet nodes (top/mid/bot);
+        // fewer means the interface cannot be resolved.
+        if n_tet < 3 {
+            return Err(MixedRegionError::InterfaceResolutionFailed { interface_index });
+        }
+        // 3 tet nodes nearest the location (local indices into the tet block),
+        // ordered by projection onto the normal: top (max) … bot (min).
+        let mut nearest3 = three_nearest_node_indices(&nodes[n_shell..], iface.location);
+        nearest3.sort_by(|&m1, &m2| {
+            let p1 = dot3(nodes[n_shell + m1], iface.normal);
+            let p2 = dot3(nodes[n_shell + m2], iface.normal);
+            p2.partial_cmp(&p1).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let tet_top = n_shell + nearest3[0];
+        let tet_mid = n_shell + nearest3[1];
+        let tet_bot = n_shell + nearest3[2];
+
+        let dofs = |node: usize| [6 * node, 6 * node + 1, 6 * node + 2];
+        let shell_rot = [6 * shell_n + 3, 6 * shell_n + 4, 6 * shell_n + 5];
+
+        mpc_rows.extend(MpcRow::shell_tet_tying(
+            dofs(shell_n),
+            shell_rot,
+            dofs(tet_top),
+            dofs(tet_mid),
+            dofs(tet_bot),
+            iface.normal,
+            iface.thickness,
+        ));
+    }
 
     Ok(MixedRegionMesh {
         nodes,
         elements,
         mpc_rows,
     })
+}
+
+/// Dot product of two 3-vectors.
+#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// Squared Euclidean distance between two 3-vectors.
+#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+fn dist3_sq(a: [f64; 3], b: [f64; 3]) -> f64 {
+    let dx = a[0] - b[0];
+    let dy = a[1] - b[1];
+    let dz = a[2] - b[2];
+    dx * dx + dy * dy + dz * dz
+}
+
+/// Index of the node in `nodes` nearest (Euclidean) to `target`; `None` if
+/// `nodes` is empty. Ties resolve to the lowest index (deterministic).
+#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+fn nearest_node_index(nodes: &[[f64; 3]], target: [f64; 3]) -> Option<usize> {
+    let mut best: Option<(usize, f64)> = None;
+    for (i, &p) in nodes.iter().enumerate() {
+        let d_sq = dist3_sq(p, target);
+        if best.is_none_or(|(_, bd)| d_sq < bd) {
+            best = Some((i, d_sq));
+        }
+    }
+    best.map(|(i, _)| i)
+}
+
+/// The 3 indices of `nodes` nearest `target`, nearest first. The caller
+/// guarantees `nodes.len() >= 3`.
+#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+fn three_nearest_node_indices(nodes: &[[f64; 3]], target: [f64; 3]) -> Vec<usize> {
+    let mut idx: Vec<usize> = (0..nodes.len()).collect();
+    idx.sort_by(|&a, &b| {
+        dist3_sq(nodes[a], target)
+            .partial_cmp(&dist3_sq(nodes[b], target))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    idx.truncate(3);
+    idx
 }
 
 #[cfg(test)]
