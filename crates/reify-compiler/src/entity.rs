@@ -1407,6 +1407,11 @@ pub(crate) fn compile_entity(
                     }
                 };
 
+                let pose = sub
+                    .pose_expr
+                    .as_ref()
+                    .map(|e| compile_expr(e, &scope, enum_defs, functions, diagnostics));
+
                 sub_components.push(SubComponentDecl {
                     name: sub.name.clone(),
                     structure_name: sub.structure_name.clone(),
@@ -1416,6 +1421,8 @@ pub(crate) fn compile_entity(
                     is_collection: sub.is_collection,
                     count_cell: None,
                     guard_state,
+                    pose,
+                    is_aux: sub.is_aux,
                     span: sub.span,
                     content_hash: sub.content_hash,
                 });
@@ -2704,6 +2711,11 @@ fn compile_match_arm_decl_group(
                 });
             }
 
+            let pose = sub
+                .pose_expr
+                .as_ref()
+                .map(|e| compile_expr(e, scope, enum_defs, functions, diagnostics));
+
             sub_components.push(SubComponentDecl {
                 name: sub.name.clone(),
                 structure_name: sub.structure_name.clone(),
@@ -2713,6 +2725,8 @@ fn compile_match_arm_decl_group(
                 is_collection: false,
                 count_cell: None,
                 guard_state: GuardState::Compiled(Box::new(arm_guard_expr.clone())),
+                pose,
+                is_aux: sub.is_aux,
                 span: sub.span,
                 content_hash: sub.content_hash,
             });

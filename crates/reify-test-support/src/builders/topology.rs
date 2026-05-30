@@ -288,6 +288,8 @@ impl TopologyTemplateBuilder {
             is_collection: false,
             count_cell: None,
             guard_state: reify_compiler::GuardState::None,
+            pose: None,
+            is_aux: false,
             span: SourceSpan::new(0, 0),
         });
         self
@@ -322,6 +324,8 @@ impl TopologyTemplateBuilder {
             is_collection: false,
             count_cell: None,
             guard_state: reify_compiler::GuardState::Compiled(Box::new(guard_expr)),
+            pose: None,
+            is_aux: false,
             span: SourceSpan::new(0, 0),
         });
         self
@@ -346,6 +350,8 @@ impl TopologyTemplateBuilder {
             is_collection: true,
             count_cell: Some(count_cell),
             guard_state: reify_compiler::GuardState::None,
+            pose: None,
+            is_aux: false,
             span: SourceSpan::new(0, 0),
         });
         self

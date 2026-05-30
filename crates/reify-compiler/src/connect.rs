@@ -397,6 +397,8 @@ pub(crate) fn compile_connection(
             is_collection: false,
             count_cell: None,
             guard_state: GuardState::None,
+            pose: None,
+            is_aux: false,
             span,
             content_hash: conn_hash,
         });
