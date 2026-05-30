@@ -6,11 +6,12 @@
 //! shape, then asserts the propagated tolerance scope is observable via
 //! `Engine::active_tolerance_for`.
 
-use reify_test_support::builders::{CompiledModuleBuilder, TopologyTemplateBuilder};
+use reify_test_support::builders::{CompiledModuleBuilder, CompiledPurposeBuilder, TopologyTemplateBuilder};
 use reify_test_support::{
     make_engine, manufacturing_purpose_with_inner_name, my_design_template_with_subs,
 };
-use reify_core::{ModulePath, Type};
+use reify_core::{DimensionVector, ModulePath, Type, ValueCellId};
+use reify_ir::{CompiledExpr, Value};
 
 /// Build a minimal CompiledModule with templates `MyDesign` (sub `head: Head`)
 /// and `Head`, plus a `manufacturing` purpose whose sole constraint is
@@ -33,6 +34,76 @@ fn build_module_with_manufacturing_purpose(
     // `crates/reify-eval/src/tolerance_scope.rs`).
     let purpose = manufacturing_purpose_with_inner_name(purpose_name, "Bracket", si_tolerance);
 
+    CompiledModuleBuilder::new(ModulePath::new(vec!["test".to_string()]))
+        .template(head_template)
+        .template(my_design_template)
+        .compiled_purpose(purpose)
+        .build()
+}
+
+/// Build a `RepresentationWithin(<ValueRef typed StructureRef(inner_kind)>,
+/// <Scalar LENGTH literal>)` expression whose subject `ValueRef` entity is
+/// `param_name`, matching the "bare-purpose-param" contract used by
+/// `extract_tolerance_bindings`. Mirrors the unit-test helper at
+/// `src/tolerance_scope.rs` but parameterises the subject entity name.
+fn rep_within(param_name: &str, inner_kind: &str, tol: f64) -> CompiledExpr {
+    let subject_arg = CompiledExpr::value_ref(
+        ValueCellId::new(param_name, "self"),
+        Type::StructureRef(inner_kind.to_string()),
+    );
+    let tol_arg = CompiledExpr::literal(
+        Value::Scalar {
+            si_value: tol,
+            dimension: DimensionVector::LENGTH,
+        },
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+    CompiledExpr::user_function_call(
+        "RepresentationWithin".to_string(),
+        vec![subject_arg, tol_arg],
+        Type::Bool,
+    )
+}
+
+/// Build a 2-param purpose `fits` whose constraints are:
+///   - `RepresentationWithin(part.self : StructureRef("Bracket"), tol_part m)`
+///   - `RepresentationWithin(envelope.self : StructureRef("Envelope"), tol_env m)`
+///
+/// Both param entities ("part", "envelope") appear in `purpose.params`, so
+/// the `extract_tolerance_bindings` membership gate accepts them. Used by
+/// the multi-param engine tests (steps 3 and 4).
+fn two_param_fits_purpose(
+    name: &str,
+    tol_part: f64,
+    tol_env: f64,
+) -> reify_compiler::CompiledPurpose {
+    CompiledPurposeBuilder::new(name)
+        .param("part", "Structure")
+        .param("envelope", "Structure")
+        .constraint("part", 0, None, rep_within("part", "Bracket", tol_part))
+        .constraint("envelope", 1, None, rep_within("envelope", "Envelope", tol_env))
+        .build()
+}
+
+/// Build a module with:
+///   - template `Head`: one `diameter : Real` param
+///   - template `MyDesign`: `thickness : Real` param + subs `head: Head`, `tail: Head`
+///   - a 2-param `fits` purpose (via `two_param_fits_purpose`)
+///
+/// Post-eval, entities `MyDesign.head` and `MyDesign.tail` exist and can each
+/// be bound to a distinct purpose param by `activate_purpose_with_bindings`.
+fn build_module_with_two_param_purpose(
+    purpose_name: &str,
+    tol_part: f64,
+    tol_env: f64,
+) -> reify_compiler::CompiledModule {
+    let head_template = TopologyTemplateBuilder::new("Head")
+        .param("Head", "diameter", Type::Real, None)
+        .build();
+    let my_design_template = my_design_template_with_subs(&[("head", "Head"), ("tail", "Head")]);
+    let purpose = two_param_fits_purpose(purpose_name, tol_part, tol_env);
     CompiledModuleBuilder::new(ModulePath::new(vec!["test".to_string()]))
         .template(head_template)
         .template(my_design_template)

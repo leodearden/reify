@@ -538,11 +538,16 @@ impl Engine {
                 Some(p) => p,
                 None => continue, // Compiled purpose disappeared (e.g. across re-eval) — skip.
             };
-            // NOTE: single-binding contract — `entity_ref` is substituted for every matched
-            // constraint's subject unambiguously because today's API binds at most one
-            // entity-ref per purpose. See `extract_tolerance_bindings` § "Single-binding
-            // contract" for what a future multi-param producer must change at this call site.
-            let bindings = crate::tolerance_scope::extract_tolerance_bindings(purpose, entity_ref);
+            // Transitional shim (Phase 1 / task 4070): `active_purpose_bindings` is still
+            // `HashMap<String,String>` (single entity per purpose). Build a 1-entry slice so
+            // the new per-param `extract_tolerance_bindings(&purpose, &[(param,entity)])` API
+            // is satisfied. Phase 2 (step-5) generalises the field and passes the stored
+            // multi-param slice directly, deleting this shim.
+            let shim_bindings = [(
+                purpose.params.first().map(|p| p.name.clone()).unwrap_or_default(),
+                entity_ref.clone(),
+            )];
+            let bindings = crate::tolerance_scope::extract_tolerance_bindings(purpose, &shim_bindings);
             for binding in bindings {
                 let descendants = crate::tolerance_scope::propagate_subject_to_descendants(
                     &binding.subject_entity,
