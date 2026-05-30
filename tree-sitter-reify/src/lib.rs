@@ -514,6 +514,22 @@ mod tests {
             .expect("field_binding missing 'binder' field");
         assert_eq!(field_field.kind(), "identifier");
         assert_eq!(binder_field.kind(), "identifier");
+
+        // (f) Multi-field variant: `Rect { width: w, height: h }` must produce two
+        //     field_binding nodes.  `find_node_by_kind` returns the first match, so
+        //     pin the total count via `collect_kinds` to ensure both bindings are
+        //     present in the tree (the corpus test also asserts this, but asserting
+        //     here keeps the grammar-unit test self-contained).
+        let field_binding_count = kinds
+            .iter()
+            .filter(|k| k.as_str() == "field_binding")
+            .count();
+        assert_eq!(
+            field_binding_count,
+            3,
+            "expected 3 field_binding nodes (1 for Circle, 2 for Rect), got: {field_binding_count} \
+             (kinds: {kinds:?})"
+        );
     }
 
     /// (2) dce-0-baseline: bare + pipe arms still parse cleanly (regression floor).

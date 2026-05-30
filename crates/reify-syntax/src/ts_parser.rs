@@ -2833,16 +2833,40 @@ impl<'a> Lowering<'a> {
                 match self.lower_match_arm_decl_arm(child) {
                     Some(arm) => arms.push(arm),
                     None if !child.has_error() => {
-                        // Arm has no CST error but lowering failed — grammar/lowering
-                        // mismatch.  Push a diagnostic so the mismatch surfaces rather
-                        // than producing a silent non-exhaustive match.
-                        self.push_error(
-                            format!(
-                                "unable to lower match arm: {}",
-                                self.node_text(child)
-                            ),
-                            self.span(child),
-                        );
+                        // Check whether the pattern contains a variant_binding_pattern
+                        // (e.g. `Circle { radius: r } => sub x : Foo`).  The broadened
+                        // grammar accepts this form at the decl level, but decl-level
+                        // named-field binding is out of scope for β — emit a targeted
+                        // message rather than the generic lowering-mismatch fallback.
+                        let has_named_bind = child
+                            .child_by_field_name("pattern")
+                            .map(|pattern_node| {
+                                let mut c = pattern_node.walk();
+                                pattern_node
+                                    .children(&mut c)
+                                    .any(|ch| ch.kind() == "variant_binding_pattern")
+                            })
+                            .unwrap_or(false);
+
+                        if has_named_bind {
+                            self.push_error(
+                                "named-field binding patterns are not supported in \
+                                 decl-level match arms"
+                                    .to_string(),
+                                self.span(child),
+                            );
+                        } else {
+                            // Arm has no CST error but lowering failed — grammar/lowering
+                            // mismatch.  Push a diagnostic so the mismatch surfaces rather
+                            // than producing a silent non-exhaustive match.
+                            self.push_error(
+                                format!(
+                                    "unable to lower match arm: {}",
+                                    self.node_text(child)
+                                ),
+                                self.span(child),
+                            );
+                        }
                     }
                     None => {} // child.has_error() — already caught by check_and_lower! at dispatch
                 }
