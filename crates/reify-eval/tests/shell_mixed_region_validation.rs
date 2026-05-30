@@ -489,6 +489,12 @@ fn cantilever_config(
     (mesh, bcs, loads)
 }
 
+// ─── step-3/4 helpers: DECLARED HERE, DEFINED IN STEP-4 ────────────────────
+//
+// `rigid_translation_config` and `max_stress_component` are NOT defined in
+// this step (step-3). This makes the test file fail to compile — the intended
+// RED state. Step-4 provides all implementations.
+
 // ─── tests ───────────────────────────────────────────────────────────────────
 
 /// Verify that every shell↔tet MPC displacement-tying constraint is satisfied
@@ -548,4 +554,82 @@ fn coupled_interface_displacement_is_continuous_across_mpc() {
             );
         }
     }
+}
+
+/// Verify that a rigid-body translation applied at the block base produces
+/// zero stress everywhere — including at the shell↔tet interface — confirming
+/// that the MPC tying introduces no spurious stress concentration.
+///
+/// # Validation contract (rigid-body zero stress)
+///
+/// Prescribe uniform translation T=(tx,ty,tz)=(1.0,0.5,0.25) on ALL x=0 face
+/// block nodes (inhomogeneous DirichletBc, translations only) with ZERO load:
+///
+/// (a) **Rigid displacement**: every node's translation DOFs equal T to FP tol:
+///     `|u[6n+a] − T[a]| < 1e-9 · ‖T‖` for all nodes n and axes a∈{0,1,2}.
+///
+/// (b) **Zero stress**: the maximum absolute value of any stress component
+///     over all tet elements and all shell elements (top/mid/bottom) satisfies
+///     `max_σ < 1e-6 · E · ‖T‖ / L_char` where `L_char = Lb + Lf = 3.0`.
+///
+/// # Achievability
+///
+/// Rigid translation is a zero-energy mode in both the linear-tet and MITC-shell
+/// spaces. The homogeneous MPC tying rows are satisfied by equal translations +
+/// zero rotation (u_top_a = u_bot_a = T_a → u_top_a − u_bot_a = 0; shell_disp
+/// = block_mid). The orphan-rotation pins + shell drilling pins + base BC make
+/// K_ff non-singular with a unique rigid solution. In exact arithmetic, stress
+/// is identically zero; in floating point, O(ε_mach · E) residual per element
+/// is bounded far below the 1e-6 threshold.
+///
+/// # References not-yet-added helpers (RED state)
+///
+/// This test calls `rigid_translation_config` and `max_stress_component`, which
+/// are defined in step-4. Until then the file fails to compile — the intended
+/// RED state.
+#[test]
+fn rigid_body_translation_produces_zero_stress_everywhere_including_interface() {
+    // Prescribed rigid translation: nonzero and non-uniform components to
+    // exercise all three DOF axes simultaneously.
+    let t_vec: [f64; 3] = [1.0, 0.5, 0.25];
+    let t_mag = (t_vec[0] * t_vec[0] + t_vec[1] * t_vec[1] + t_vec[2] * t_vec[2]).sqrt();
+
+    let mat = IsotropicElastic {
+        youngs_modulus: E_MOD,
+        poisson_ratio: NU,
+    };
+    // rigid_translation_config NOT YET DEFINED → compile failure (RED)
+    let (mesh, bcs, _loads) = rigid_translation_config(&t_vec);
+    let u = solve_flexure_on_block(&mesh, &bcs, &[], &mat);
+
+    // (a) Rigid displacement: every node's translation must equal T.
+    // Both prescribed (x=0 face) and free nodes must satisfy u[6n+a] = T[a]:
+    // prescribed by Dirichlet construction; free because K·u_rigid = 0 and
+    // K_ff is non-singular so the rigid mode is the unique solution.
+    let n_total = mesh.n_block_nodes + mesh.n_shell_nodes;
+    let disp_tol = 1e-9 * f64::max(t_mag, 1e-15);
+    for n in 0..n_total {
+        for (a, &t_a) in t_vec.iter().enumerate() {
+            let u_a = u[6 * n + a];
+            assert!(
+                (u_a - t_a).abs() < disp_tol,
+                "rigid displacement violated at node {n}, axis {a}: \
+                 u={u_a:.6e} expected T={t_a:.6e} |diff|={:.6e} tol={disp_tol:.6e}",
+                (u_a - t_a).abs(),
+            );
+        }
+    }
+
+    // (b) Zero stress everywhere including the interface.
+    // max_stress_component NOT YET DEFINED → compile failure (RED)
+    let max_sigma = max_stress_component(&mesh, &u, &mat);
+    // Tolerance: 1e-6 × (E × ‖T‖ / L_char). Dimensionless E=1, L_char = Lb+Lf.
+    let l_char = LB + LF;
+    let stress_tol = 1e-6 * E_MOD * t_mag / l_char;
+    assert!(
+        max_sigma < stress_tol,
+        "spurious stress detected in rigid-body translation test: \
+         max_sigma={max_sigma:.3e} > tol={stress_tol:.3e} \
+         (E={E_MOD}, ‖T‖={t_mag:.3f}, L_char={l_char})",
+    );
 }
