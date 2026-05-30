@@ -422,6 +422,33 @@ mod tests {
         );
     }
 
+    // ── task 2881 step-7 (RED): post-retirement contract ─────────────────────
+    //
+    // After step-8 (FEA-2 stdlib swap), `body_force` is no longer a
+    // name-dispatched builtin — its role is taken by the
+    // `structure def BodyForce : Load { ... }` declaration in
+    // `crates/reify-compiler/stdlib/fea_multi_case.ri`. Source-level
+    // `BodyForce(...)` calls lower to `CompiledExprKind::StructureInstanceCtor`
+    // and eval into a `Value::StructureInstance`. The
+    // `eval_builtin("body_force", ...)` Rust API path returns `Value::Undef`
+    // because the dispatch arm in `eval_loads` is removed.
+    //
+    // RED: this test currently fails because `eval_builtin("body_force", ...)`
+    // returns a `Value::Map` (the pre-retirement happy path). Step-8 retires
+    // the arm and updates `LOAD_KINDS` so the partition guard stays green.
+
+    #[test]
+    fn body_force_eval_builtin_returns_undef_post_retirement() {
+        let selector = selector_stub("body_stub");
+        let force_density = make_scalar_vec3([0.0, 0.0, -77000.0], DimensionVector::FORCE_DENSITY);
+        assert!(
+            eval_builtin("body_force", &[selector, force_density]).is_undef(),
+            "after step-8 retirement, eval_builtin('body_force', ...) must \
+             return Undef; the structure-instance ctor path (BodyForce) replaces \
+             the builtin entirely (FEA-2 task 2881, Q-SIR-4 — rename body_force → BodyForce)"
+        );
+    }
+
     // ── gravity constructor: 0-arg form ──────────────────────────────────────
 
     #[test]
