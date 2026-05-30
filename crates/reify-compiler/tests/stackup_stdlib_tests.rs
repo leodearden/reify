@@ -96,3 +96,59 @@ fn stackup_method_enum_has_three_variants() {
         );
     }
 }
+
+// ─── step-5: Contributor structure params ────────────────────────────────────
+
+/// Step 5: Contributor structure has exactly five Param cells whose member
+/// names match the §4.1 T1 Value::Map keys verbatim:
+/// {nominal, plus_tol, minus_tol, sign, distribution}.
+/// The `distribution` cell's type must be Type::Enum("Distribution").
+#[test]
+fn contributor_structure_params_align_with_t1_map_keys() {
+    let module = load_stdlib_module();
+
+    let contributor = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Contributor")
+        .expect("expected 'Contributor' template in std/stackup");
+
+    let param_cells: Vec<_> = contributor
+        .value_cells
+        .iter()
+        .filter(|vc| vc.kind == ValueCellKind::Param)
+        .collect();
+
+    assert_eq!(
+        param_cells.len(),
+        5,
+        "Contributor should have 5 Param cells \
+         (nominal, plus_tol, minus_tol, sign, distribution), got: {:?}",
+        param_cells
+            .iter()
+            .map(|vc| &vc.id.member)
+            .collect::<Vec<_>>()
+    );
+
+    let param_names: Vec<&str> = param_cells.iter().map(|vc| vc.id.member.as_str()).collect();
+    for name in &["nominal", "plus_tol", "minus_tol", "sign", "distribution"] {
+        assert!(
+            param_names.contains(name),
+            "Contributor missing param '{}', params: {:?}",
+            name,
+            param_names
+        );
+    }
+
+    // `distribution` cell must be typed as Enum("Distribution").
+    let dist_cell = param_cells
+        .iter()
+        .find(|vc| vc.id.member == "distribution")
+        .expect("expected 'distribution' param cell");
+    assert_eq!(
+        dist_cell.cell_type,
+        Type::Enum("Distribution".to_string()),
+        "Contributor.distribution should be Enum(Distribution), got {:?}",
+        dist_cell.cell_type
+    );
+}
