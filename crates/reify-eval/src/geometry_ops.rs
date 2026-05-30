@@ -9692,6 +9692,85 @@ mod tests {
         );
     }
 
+    /// Guard the point-arg LENGTH-qualification contract end-to-end through the
+    /// dispatcher.  Even when args[0] (surface) resolves successfully via
+    /// `named_steps`, a non-LENGTH-qualified point arg[1] must cause
+    /// `resolve_point3_length_arg` to return `None`, which propagates as a
+    /// silent fall-through (`None`) — zero kernel calls, zero diagnostics.
+    ///
+    /// Complements `try_eval_topology_selector_normal_literal_args_falls_through_to_none`
+    /// (which tests BOTH args failing at the arg-shape level) by exercising the
+    /// case where the SURFACE resolves but the POINT fails its unit-qualification
+    /// check.  Locks the split-arg fall-through path.
+    #[test]
+    fn try_eval_topology_selector_normal_dimensionless_point_falls_through_to_none() {
+        use reify_test_support::mocks::{CountingMockKernel, MockGeometryKernel};
+        let face_handle = reify_ir::GeometryHandleId(55);
+
+        // Wrap in a counting mock so we can assert zero kernel queries.
+        let inner = MockGeometryKernel::new();
+        let mut kernel = CountingMockKernel::new(inner);
+
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        // args[0] = surface → present in named_steps, so resolve_geometry_handle_arg
+        // returns Some(face_handle).
+        named_steps.insert("surface".to_string(), face_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        // args[1] = point → bare Value::Real components, NOT Value::Scalar with
+        // DimensionVector::LENGTH.  resolve_point3_length_arg must return None for
+        // this shape (the `_ => return None` arm on the component match).
+        values.insert(
+            reify_core::ValueCellId::new("NormalSmoke", "pt"),
+            reify_ir::Value::Point(vec![
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(5.0),
+            ]),
+        );
+
+        // normal(surface_ref, pt_ref) — same arg shape as the happy-path test,
+        // but with a dimensionless-Real point value.
+        let expr = topology_selector_call_two_value_refs(
+            "normal",
+            "NormalSmoke",
+            "surface",
+            reify_core::Type::Geometry,
+            "pt",
+            reify_core::Type::point3(reify_core::Type::length()),
+            reify_core::Type::vec3(reify_core::Type::Real),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "normal(surface, dimensionless_point) must return None (silent fall-through); \
+             got {:?}",
+            result
+        );
+        assert_eq!(
+            kernel.total_query_count(),
+            0,
+            "kernel must NOT be consulted when point arg is not LENGTH-qualified; \
+             got {} query calls",
+            kernel.total_query_count()
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "dimensionless-point fall-through must emit zero diagnostics; \
+             got: {:?}",
+            diagnostics
+        );
+    }
+
     #[test]
     fn try_eval_topology_selector_normal_kernel_err_returns_undef_with_warning() {
         use reify_test_support::mocks::MockGeometryKernel;
