@@ -703,3 +703,76 @@ fn compile_field_imported_well_formed_no_error() {
         other => panic!("expected CompiledFieldSource::Imported, got: {:?}", other),
     }
 }
+
+// ── PRD task 5 / step-3: imported block missing required keys emit Severity::Error ──
+
+#[test]
+fn compile_field_imported_missing_path_emits_error() {
+    let module = compile_source(
+        r#"field def f : Point3 -> Scalar { source = imported { format = OpenVDB grid = "density" } }"#,
+    );
+    let errors = errors_only(&module);
+    assert!(
+        !errors.is_empty(),
+        "expected a Severity::Error for missing 'path', got no errors"
+    );
+    assert!(
+        errors.iter().any(|d| d.message.contains("path")),
+        "expected an error mentioning 'path', got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn compile_field_imported_missing_format_emits_error() {
+    let module = compile_source(
+        r#"field def f : Point3 -> Scalar { source = imported { path = "x.vdb" grid = "density" } }"#,
+    );
+    let errors = errors_only(&module);
+    assert!(
+        !errors.is_empty(),
+        "expected a Severity::Error for missing 'format', got no errors"
+    );
+    assert!(
+        errors.iter().any(|d| d.message.contains("format")),
+        "expected an error mentioning 'format', got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn compile_field_imported_missing_grid_emits_error() {
+    let module = compile_source(
+        r#"field def f : Point3 -> Scalar { source = imported { path = "x.vdb" format = OpenVDB } }"#,
+    );
+    let errors = errors_only(&module);
+    assert!(
+        !errors.is_empty(),
+        "expected a Severity::Error for missing 'grid', got no errors"
+    );
+    assert!(
+        errors.iter().any(|d| d.message.contains("grid")),
+        "expected an error mentioning 'grid', got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn compile_field_imported_unsupported_format_emits_error() {
+    let module = compile_source(
+        r#"field def f : Point3 -> Scalar { source = imported { path = "x.hdf5" format = HDF5 grid = "density" } }"#,
+    );
+    let errors = errors_only(&module);
+    assert!(
+        !errors.is_empty(),
+        "expected a Severity::Error for unsupported format 'HDF5', got no errors"
+    );
+    assert!(
+        errors.iter().any(|d| {
+            let m = d.message.to_lowercase();
+            m.contains("unsupported") || m.contains("format")
+        }),
+        "expected an error about unsupported format, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
