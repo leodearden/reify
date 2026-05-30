@@ -118,10 +118,10 @@ trait ElasticMaterial {
 //   - refining traits that add properties (shear modulus, hardening, ...)
 //     compose cleanly with the same parallel-slot convention
 //
-// Density literals use the compositional form `<n>.0 * 1kg / (1m * 1m * 1m)`
-// rather than `<n>kg/m^3` because the tree-sitter grammar's quantity_literal
-// is `number + identifier` only — compound `kg/m^3` is not a single token.
-// The compositional form produces the same dimensioned value (kg·m⁻³).
+// Density literals use the compound-unit form `<n>kg/m^3` (resolved by
+// `resolve_unit_expr`; PRD docs/prds/unit-expressions.md §4). This module
+// compiles after std.units, so the unit registry is in scope and the compound
+// literal folds to a single dimensioned value (kg·m⁻³).
 
 // MMPDS / matweb citation: AISI 1045, hot-rolled, medium-carbon steel.
 //
@@ -132,7 +132,7 @@ trait ElasticMaterial {
 structure def Steel_AISI_1045 : ElasticMaterial {
     param youngs_modulus : Pressure = 205GPa
     param poisson_ratio : Real = 0.29 // dimensionless
-    param density : Density = 7850.0 * 1kg / (1m * 1m * 1m)
+    param density : Density = 7850kg/m^3
     param yield_stress : Option<Pressure> = some(310MPa)
 
     param youngs_modulus_provenance : MaterialPropertyProvenance =
@@ -170,7 +170,7 @@ structure def Steel_AISI_1045 : ElasticMaterial {
 structure def Aluminium_6061_T6 : ElasticMaterial {
     param youngs_modulus : Pressure = 68.9GPa
     param poisson_ratio : Real = 0.33 // dimensionless
-    param density : Density = 2700.0 * 1kg / (1m * 1m * 1m)
+    param density : Density = 2700kg/m^3
     param yield_stress : Option<Pressure> = some(276MPa)
 
     param youngs_modulus_provenance : MaterialPropertyProvenance =
@@ -208,7 +208,7 @@ structure def Aluminium_6061_T6 : ElasticMaterial {
 structure def Titanium_Ti6Al4V : ElasticMaterial {
     param youngs_modulus : Pressure = 113.8GPa
     param poisson_ratio : Real = 0.342 // dimensionless
-    param density : Density = 4430.0 * 1kg / (1m * 1m * 1m)
+    param density : Density = 4430kg/m^3
     param yield_stress : Option<Pressure> = some(880MPa)
 
     param youngs_modulus_provenance : MaterialPropertyProvenance =
@@ -249,7 +249,7 @@ structure def Titanium_Ti6Al4V : ElasticMaterial {
 structure def ABS_Plastic : ElasticMaterial {
     param youngs_modulus : Pressure = 2.3GPa
     param poisson_ratio : Real = 0.35 // dimensionless
-    param density : Density = 1050.0 * 1kg / (1m * 1m * 1m)
+    param density : Density = 1050kg/m^3
     param yield_stress : Option<Pressure> = some(40MPa)
 
     param youngs_modulus_provenance : MaterialPropertyProvenance =
