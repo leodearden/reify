@@ -2156,3 +2156,115 @@ fn seeded_prelude_unit_carries_prelude_span_and_module_through_registry() {
         dup_diag.message
     );
 }
+
+// ─── step-N: evaluate_const_expr compound unit path (task 3803) ──────────────
+//
+// These tests exercise the `QuantityLiteral` compound arm of `evaluate_const_expr`
+// in `type_resolution.rs` — i.e. the conversion-factor RHS of a `unit` declaration.
+// They were RED against the placeholder ("compound unit expressions are not yet
+// supported in unit conversion expressions") and turn GREEN after step-4 wires
+// `resolve_unit_expr` into that arm.
+
+/// `unit area_u : Area = 1mm^2` → factor ≈ 1e-6 m², no errors.
+///
+/// Exercises the `Pow` arm of resolve_unit_expr through evaluate_const_expr:
+/// mm has factor=0.001, so mm^2 has factor=0.001²=1e-6.
+#[test]
+fn evaluate_const_expr_compound_pow_mm2_area_factor() {
+    let module = compile_source_with_stdlib("unit area_u : Area = 1mm^2");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unit area_u : Area = 1mm^2 should compile cleanly, errors: {:?}",
+        errors_only(&module)
+    );
+    let unit = module
+        .units
+        .iter()
+        .find(|u| u.name == "area_u")
+        .expect("area_u not found in compiled units");
+    let expected = 1e-6_f64;
+    let tol = 1e-9 * expected.abs().max(1.0);
+    assert!(
+        (unit.factor - expected).abs() <= tol,
+        "area_u factor should be {} (tol {}), got {}",
+        expected,
+        tol,
+        unit.factor
+    );
+}
+
+/// `unit kj_equiv : Energy = 1kN*m` → factor ≈ 1000 J (kN=1000, m=1), no errors.
+///
+/// Exercises the `Mul` arm of resolve_unit_expr through evaluate_const_expr.
+#[test]
+fn evaluate_const_expr_compound_mul_kn_m_energy_factor() {
+    let module = compile_source_with_stdlib("unit kj_equiv : Energy = 1kN*m");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unit kj_equiv : Energy = 1kN*m should compile cleanly, errors: {:?}",
+        errors_only(&module)
+    );
+    let unit = module
+        .units
+        .iter()
+        .find(|u| u.name == "kj_equiv")
+        .expect("kj_equiv not found in compiled units");
+    let expected = 1000.0_f64;
+    let tol = 1e-6 * expected;
+    assert!(
+        (unit.factor - expected).abs() <= tol,
+        "kj_equiv factor should be {} (tol {}), got {}",
+        expected,
+        tol,
+        unit.factor
+    );
+}
+
+/// `unit bad : Length = 1mm*zzz` with unknown unit `zzz` → Error naming "zzz".
+///
+/// Guards that evaluate_const_expr's compound arm emits the offender name
+/// (not the old generic "compound unit expressions are not yet supported" message).
+#[test]
+fn evaluate_const_expr_compound_unknown_unit_names_offender() {
+    let module = compile_source_with_stdlib("unit bad : Length = 1mm*zzz");
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected an Error diagnostic for unknown unit 'zzz', got none"
+    );
+    let names_zzz = errors.iter().any(|d| d.message.contains("zzz"));
+    assert!(
+        names_zzz,
+        "expected an Error naming 'zzz'; got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// `unit bad2 : Temperature = 1degC*m` with affine unit `degC` in compound
+/// → Error naming "degC".
+///
+/// Guards that evaluate_const_expr's compound arm routes through
+/// `unit_resolve_error_to_diagnostic` so AffineUnitInCompound carries the name.
+#[test]
+fn evaluate_const_expr_compound_affine_unit_names_offender() {
+    let module = compile_source_with_stdlib("unit bad2 : Temperature = 1degC*m");
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected an Error diagnostic for affine unit 'degC' in compound, got none"
+    );
+    let names_degc = errors.iter().any(|d| d.message.contains("degC"));
+    assert!(
+        names_degc,
+        "expected an Error naming 'degC'; got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
