@@ -163,7 +163,23 @@ impl ImpulseTrain {
     /// A single unit impulse `{(0, 1)}` produces `V = 1` (the baseline used for
     /// the ≥ 40 dB suppression check).
     pub(crate) fn residual_vibration(&self, omega_n: f64, zeta: f64) -> f64 {
-        todo!()
+        if self.impulses.is_empty() {
+            return 0.0;
+        }
+        let zeta_c = zeta.min(1.0 - f64::EPSILON.sqrt());
+        let sqrt_term = (1.0 - zeta_c * zeta_c).sqrt();
+        let omega_d = omega_n * sqrt_term;
+
+        let mut c_sum = 0.0_f64;
+        let mut s_sum = 0.0_f64;
+        for imp in &self.impulses {
+            let factor = (zeta_c * omega_n * imp.time).exp() * imp.amplitude;
+            c_sum += factor * (omega_d * imp.time).cos();
+            s_sum += factor * (omega_d * imp.time).sin();
+        }
+
+        let t_n = self.impulses.last().map(|i| i.time).unwrap_or(0.0);
+        (-zeta_c * omega_n * t_n).exp() * (c_sum * c_sum + s_sum * s_sum).sqrt()
     }
 }
 
