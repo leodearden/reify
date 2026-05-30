@@ -11,6 +11,7 @@
 //! recorder functions); the events fire from the engine integration in
 //! `reify-eval`'s `engine_build.rs` (PRD task #10).
 
+use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
@@ -211,6 +212,50 @@ pub fn record_ineligible(reason: &Reason) {
 pub fn record_panicked(detail: &str) {
     tracing::error!("mesh morph panicked: {detail}");
     counter(MorphOutcome::Panicked).fetch_add(1, Ordering::Relaxed);
+}
+
+// ── Verbose summary ───────────────────────────────────────────────────────────
+
+/// Render the one-line `--verbose` exit summary for a snapshot.
+///
+/// Format: `mesh updates: {m} morphed, {r} remeshed, {i} ineligible`, where `r`
+/// aggregates the two remesh buckets and `i` the three ineligible buckets. When
+/// `i > 0`, a parenthetical lists only the non-zero ineligible sub-categories in
+/// the fixed order structural, bijection, naming. When `panicked > 0`, a
+/// `, {p} panicked` suffix is appended. Matches the PRD example exactly:
+/// `mesh updates: 47 morphed, 4 remeshed, 2 ineligible (1 structural, 1 bijection)`.
+pub fn format_summary(snap: &DiagnosticSnapshot) -> String {
+    let remeshed = snap.remeshed_quality_hard_fail + snap.remeshed_quality_soft_fail;
+    let ineligible = snap.ineligible_structural_change
+        + snap.ineligible_bijection_failure
+        + snap.ineligible_naming_error;
+
+    let mut out = format!(
+        "mesh updates: {} morphed, {} remeshed, {} ineligible",
+        snap.morphed, remeshed, ineligible
+    );
+
+    if ineligible > 0 {
+        let mut parts: Vec<String> = Vec::new();
+        if snap.ineligible_structural_change > 0 {
+            parts.push(format!("{} structural", snap.ineligible_structural_change));
+        }
+        if snap.ineligible_bijection_failure > 0 {
+            parts.push(format!("{} bijection", snap.ineligible_bijection_failure));
+        }
+        if snap.ineligible_naming_error > 0 {
+            parts.push(format!("{} naming", snap.ineligible_naming_error));
+        }
+        // `ineligible > 0` ⇒ at least one sub-count is non-zero ⇒ `parts` is
+        // non-empty, so the parenthetical is never rendered empty.
+        let _ = write!(out, " ({})", parts.join(", "));
+    }
+
+    if snap.panicked > 0 {
+        let _ = write!(out, ", {} panicked", snap.panicked);
+    }
+
+    out
 }
 
 /// Reset all counters to zero.
