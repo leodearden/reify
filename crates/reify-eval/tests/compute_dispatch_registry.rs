@@ -529,3 +529,82 @@ fn e2e_registered_failed_trampoline_does_not_silently_body_inline() {
         eval_result.values.get(&result_cell)
     );
 }
+
+// ── step-5: e2e regression-pin — non-ValueRef arg leaves value_inputs empty ──
+// CHARACTERIZATION TEST — intentionally GREEN on first write.
+//
+// γ contract: the shallow walk in engine_eval.rs that populates
+// `ComputeNodeData::value_inputs` collects ONLY direct `ValueRef(cell)` args.
+// A BinOp (or any non-ValueRef sub-expression), even one that transitively
+// references a param cell, contributes NO entries.
+//
+// The trampoline is invoked with `arg_values` (the *evaluated* argument
+// values), NOT with `value_inputs`. So a call `identity_compute_test(2 + input)`
+// still evaluates correctly (2 + 40 = 42 via arg_values) even though
+// `value_inputs` is empty.
+//
+// This pin guards the γ contract against P3.2's planned transitive-dependency
+// walk: if P3.2 changes the shallow walk to include transitive refs,
+// `data.value_inputs.is_empty()` here will turn RED and alert the reviewer
+// that the γ/P3.2 boundary has shifted.
+
+/// Regression-pin (step-5): a non-ValueRef arg (`2 + input`) evaluates to the
+/// correct value via `arg_values` (Int(42)) while leaving `value_inputs` EMPTY
+/// in the ComputeNode — the γ shallow-walk contract.
+#[test]
+fn e2e_optimized_non_valueref_arg_yields_empty_value_inputs() {
+    // Inline fixture: the @optimized call takes a BinOp arg `2 + input`
+    // (param input = 40), so the result is 42 but `value_inputs` is empty.
+    let source = r#"
+        @optimized("test::identity")
+        fn identity_compute_test(x: Int) -> Int {
+            x
+        }
+
+        structure NonValueRefFixture {
+            param input: Int = 40
+            let result = identity_compute_test(2 + input)
+        }
+    "#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn("test::identity", identity_fn as ComputeFn);
+
+    let eval_result = engine.eval(&compiled);
+
+    // (a) The trampoline evaluated the BinOp argument correctly via arg_values:
+    //     2 + 40 == 42.
+    let result_cell = ValueCellId::new("NonValueRefFixture", "result");
+    let result_val = eval_result
+        .values
+        .get(&result_cell)
+        .unwrap_or_else(|| panic!("cell NonValueRefFixture.result not found in eval result"));
+    assert_eq!(
+        *result_val,
+        Value::Int(42),
+        "expected NonValueRefFixture.result == Int(42) (2+40 via arg_values), got {:?}",
+        result_val
+    );
+
+    // (b) The ComputeNode's value_inputs field is EMPTY — the γ shallow walk
+    //     only captures direct ValueRef args; the BinOp `2 + input` is NOT a
+    //     ValueRef, so input is NOT included even transitively.
+    let snapshot = engine
+        .eval_state()
+        .expect("eval_state must be Some after eval()")
+        .snapshot
+        .clone();
+    let (_id, data) = snapshot
+        .graph
+        .compute_nodes
+        .iter()
+        .find(|(_, d)| d.target == "test::identity")
+        .expect("expected a ComputeNode with target == \"test::identity\"");
+    assert!(
+        data.value_inputs.is_empty(),
+        "expected value_inputs to be empty for non-ValueRef arg (γ shallow-walk contract), \
+         got: {:?}",
+        data.value_inputs
+    );
+}
