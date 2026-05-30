@@ -3333,16 +3333,16 @@ impl Engine {
                         reify_compiler::CompiledGeometryOp::Boolean { .. } => &[],
                     };
                     for (arg_name, expr) in args {
-                        // CrossSubGeometryRef (`self.<sub>.<member>`) is a
+                        // A CrossSubGeometryRef (`self.<sub>.<member>`) is a
                         // geometry-ref arg compiled into the scalar args list
                         // by compile_expr (geometry.rs:749). eval_expr would
-                        // panic on it (unreachable! in reify-expr). Its
-                        // identity is already captured in the GeomRef
-                        // `target`/`profiles` field — skip for hash purposes.
-                        if matches!(
-                            expr.kind,
-                            reify_ir::CompiledExprKind::CrossSubGeometryRef(_)
-                        ) {
+                        // panic on it (unreachable! in reify-expr). It may be
+                        // the top-level arg OR nested inside a larger operator
+                        // node (e.g. `translate(rotate(self.inner.body, …), …)`),
+                        // so walk the whole arg tree. Its identity is already
+                        // captured in the GeomRef `target`/`profiles` field —
+                        // skip the arg for hash purposes.
+                        if arg_contains_cross_sub_geometry_ref(expr) {
                             continue;
                         }
                         let v = reify_expr::eval_expr(expr, &ctx);
@@ -3420,11 +3420,13 @@ impl Engine {
                         reify_compiler::CompiledGeometryOp::Boolean { .. } => &[],
                     };
                     for (arg_name, expr) in args {
-                        // CrossSubGeometryRef (`self.<sub>.<member>`) is a geometry-ref
+                        // A CrossSubGeometryRef (`self.<sub>.<member>`) is a geometry-ref
                         // arg compiled into the scalar args list (geometry.rs). eval_expr
-                        // would panic on it (unreachable! in reify-expr); its identity is
-                        // already captured in the GeomRef target/profiles. Skip for hashing.
-                        if matches!(expr.kind, reify_ir::CompiledExprKind::CrossSubGeometryRef(_)) {
+                        // would panic on it (unreachable! in reify-expr); it may be the
+                        // top-level arg OR nested inside a larger operator node, so walk
+                        // the whole arg tree. Its identity is already captured in the
+                        // GeomRef target/profiles. Skip the arg for hashing.
+                        if arg_contains_cross_sub_geometry_ref(expr) {
                             continue;
                         }
                         let v = reify_expr::eval_expr(expr, &ctx);
@@ -4250,9 +4252,70 @@ fn three_nearest_node_indices(nodes: &[[f64; 3]], target: [f64; 3]) -> Vec<usize
     idx
 }
 
+/// Returns `true` if `expr`'s compiled tree contains a `CrossSubGeometryRef`
+/// at any depth.
+///
+/// The `upstream_values_hash` fold (in `post_process_geometry_handle_cells`
+/// and `hydrate_geometry_handles_into_values`) evaluates each realization-op
+/// scalar arg via `reify_expr::eval_expr`, which `unreachable!()`s on a
+/// `CrossSubGeometryRef` (`reify-expr/src/lib.rs:177`). Such a geometry-ref can
+/// be the top-level arg (`rotate(self.inner.body, …)`) *or* nested inside a
+/// larger operator node (`translate(rotate(self.inner.body, …), …)`), so a
+/// top-level `matches!` is insufficient — we walk the whole tree via the
+/// canonical [`reify_ir::CompiledExpr::walk`]. A geometry-ref's identity is
+/// already captured by the op's `GeomRef` target/profiles, so any arg
+/// containing one is skipped from hashing entirely (task 3616; regression
+/// pinned by `cross_sub_geometry_anti_cascade_no_spurious_errors_in_translate_chain`).
+fn arg_contains_cross_sub_geometry_ref(expr: &reify_ir::CompiledExpr) -> bool {
+    let mut found = false;
+    expr.walk(&mut |e| {
+        if matches!(e.kind, reify_ir::CompiledExprKind::CrossSubGeometryRef(_)) {
+            found = true;
+        }
+    });
+    found
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `arg_contains_cross_sub_geometry_ref` must detect a `CrossSubGeometryRef`
+    /// at the top level *and* nested inside a larger operator node, and must not
+    /// false-positive on ref-free args. The nested case is the task-3616
+    /// regression: the old top-level-only `matches!` guard let a
+    /// `CrossSubGeometryRef` nested in a transform-chain arg
+    /// (`translate(rotate(self.inner.body, …), …)`) reach `eval_expr`'s
+    /// `unreachable!()` — pinned end-to-end by
+    /// `cross_sub_geometry_anti_cascade_no_spurious_errors_in_translate_chain`.
+    #[test]
+    fn arg_contains_cross_sub_geometry_ref_walks_nested_refs() {
+        use reify_core::Type;
+        use reify_core::identity::ValueCellId;
+        use reify_ir::{BinOp, CompiledExpr};
+
+        // Top-level cross-sub ref → detected.
+        let xref = CompiledExpr::cross_sub_geometry_ref(
+            ValueCellId::new("Parent.sub", "body"),
+            Type::Geometry,
+        );
+        assert!(arg_contains_cross_sub_geometry_ref(&xref));
+
+        // Cross-sub ref nested inside an operator node → detected (the case the
+        // old top-level `matches!` missed).
+        let scalar = CompiledExpr::value_ref(ValueCellId::new("E", "width"), Type::Bool);
+        let nested = CompiledExpr::binop(BinOp::Gt, xref.clone(), scalar, Type::Bool);
+        assert!(arg_contains_cross_sub_geometry_ref(&nested));
+
+        // Ref-free arg → not skipped.
+        let plain = CompiledExpr::binop(
+            BinOp::Gt,
+            CompiledExpr::value_ref(ValueCellId::new("E", "a"), Type::Bool),
+            CompiledExpr::value_ref(ValueCellId::new("E", "b"), Type::Bool),
+            Type::Bool,
+        );
+        assert!(!arg_contains_cross_sub_geometry_ref(&plain));
+    }
 
     // ── shared test helpers (task ε / 3436, step-8) ───────────────────────────
 
