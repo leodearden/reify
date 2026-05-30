@@ -104,9 +104,15 @@ pub enum BRepKind {
 /// `BRep < Mesh < Sdf < Voxel` ordering stays unchanged for callers that
 /// pass legacy four-variant `available` sets — kernel selection on the
 /// surface-mesh path remains bit-identical.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub enum ReprKind {
     /// Boundary-representation solid (OCCT / OpenCASCADE B-rep kernel).
+    ///
+    /// `Default` is implemented with `BRep` as the `#[default]` variant
+    /// (the v0.2 baseline) so that `strum::EnumIter` can synthesise the
+    /// data-carrying `Operation::Convert { from: ReprKind }` variant via
+    /// `ReprKind::default()` when iterating over `Operation` variants.
+    #[default]
     BRep,
     /// Surface mesh (triangle or quad mesh, e.g. Manifold).
     Mesh,
@@ -165,7 +171,7 @@ pub enum ReprKind {
 /// per call site (e.g. fillet radius, sphere centre) live on
 /// [`GeometryOp`], not here. This enum is `Hash + Eq + Copy + Debug` so it
 /// can act as a `HashMap`/`BTreeMap` key in the dispatcher.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::EnumIter)]
 pub enum Operation {
     // ── Booleans ─────────────────────────────────────────────────────────────
     /// Boolean union of two solids/meshes/SDFs.

@@ -72,6 +72,7 @@ reify-build-utils = { path = "crates/reify-build-utils" }
 reify-test-support = { path = "crates/reify-test-support" }
 
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+strum = { version = "0.26", features = ["derive"] }
 
 bincode = "=1.3" # wire-format pin: see ELASTIC_RESULT_FORMAT_VERSION docs; bumping minor requires FORMAT_VERSION bump
 bytemuck = "1"

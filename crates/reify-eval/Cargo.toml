@@ -80,3 +80,8 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 # MPC row-elimination produces a NON-symmetric reduced matrix so CG (SPD-only)
 # is wrong. faer is a workspace dep; reify-eval currently lacks it.
 faer = { workspace = true }
+# Task 4049: strum dev-dep for `use strum::IntoEnumIterator` in the
+# classifier-completeness test (test d / PRD §9 Q10).  reify-ir is already a
+# reify-eval dev-dep, so `reify_ir::Operation::iter()` is reachable; the trait
+# `IntoEnumIterator` lives in `strum`, which is why strum must also appear here.
+strum.workspace = true
