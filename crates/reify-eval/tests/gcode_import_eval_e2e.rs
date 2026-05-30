@@ -19,7 +19,8 @@
 
 use std::sync::OnceLock;
 
-use reify_core::ValueCellId;
+use reify_compiler::CompiledModule;
+use reify_core::{Type, ValueCellId};
 use reify_ir::{Satisfaction, Value};
 use reify_test_support::{
     check_source_with_stdlib, collect_errors, make_simple_engine, parse_and_compile_with_stdlib,
@@ -44,6 +45,16 @@ fn smoke_source() -> &'static str {
     .as_str()
 }
 
+/// Parse and compile `gcode_import_smoke.ri` with stdlib, caching the result.
+///
+/// Shared across the compile-clean gate and both primary eval tests to avoid
+/// redundant stdlib compiles — stdlib compilation is non-trivial and the
+/// source/compile result is identical for all three.
+fn smoke_compiled() -> &'static CompiledModule {
+    static C: OnceLock<CompiledModule> = OnceLock::new();
+    C.get_or_init(|| parse_and_compile_with_stdlib(smoke_source()))
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Compile-clean gate (sanity check — should always be green)
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -57,7 +68,7 @@ fn gcode_import_smoke_compiles_clean() {
         !source.is_empty(),
         "gcode_import_smoke.ri should be non-empty"
     );
-    let compiled = parse_and_compile_with_stdlib(source);
+    let compiled = smoke_compiled();
     let errors = collect_errors(&compiled.diagnostics);
     assert!(
         errors.is_empty(),
@@ -79,10 +90,9 @@ fn gcode_import_smoke_compiles_clean() {
 /// After the fix: `imported` is a 1-element `Value::List` of profile records.
 #[test]
 fn gcode_import_smoke_imported_is_nonempty_list() {
-    let source = smoke_source();
-    let compiled = parse_and_compile_with_stdlib(source);
+    let compiled = smoke_compiled();
     let mut engine = make_simple_engine();
-    let result = engine.eval(&compiled);
+    let result = engine.eval(compiled);
 
     let id = ValueCellId::new("GcodeImportSmoke", "imported");
     let imported = result
@@ -112,10 +122,9 @@ fn gcode_import_smoke_imported_is_nonempty_list() {
 /// contiguous `G1` move).
 #[test]
 fn gcode_import_smoke_profile_count_is_at_least_one() {
-    let source = smoke_source();
-    let compiled = parse_and_compile_with_stdlib(source);
+    let compiled = smoke_compiled();
     let mut engine = make_simple_engine();
-    let result = engine.eval(&compiled);
+    let result = engine.eval(compiled);
 
     let id = ValueCellId::new("GcodeImportSmoke", "profile_count");
     let count = result
@@ -133,6 +142,113 @@ fn gcode_import_smoke_profile_count_is_at_least_one() {
         }
         other => panic!(
             "expected Value::Int for GcodeImportSmoke.profile_count, got {other:?}"
+        ),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// IR dispatch-contract regression guard (Suggestion 1 from code-review)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// **Dispatch-contract regression guard.**
+///
+/// Pins two properties of the compiled IR that the `gcode_import_lower` delegate
+/// scheme depends on simultaneously:
+///
+/// 1. The `imported` let cell in `GcodeImportSmoke` compiles to
+///    `CompiledExprKind::UserFunctionCall { function_name: "gcode_import" }` with
+///    `result_type == Type::List(_)` — confirming that the `.ri` declaration
+///    shadows the builtin name and the declared `List<Profile>` signature is intact.
+///
+/// 2. The `gcode_import` stdlib function body's result expression compiles to
+///    `CompiledExprKind::FunctionCall` — confirming that `gcode_import_lower`
+///    inside the body resolves via the `NoUserFunctions` → `FunctionCall` →
+///    `eval_builtin` path (not recursively back to `gcode_import`).
+///
+/// If either property breaks (e.g., the `.ri` declaration is removed, the
+/// resolver is changed to prefer builtins, or a body-vs-return-type check is
+/// introduced), this test will fail with a clear diagnostic before any eval
+/// regression surfaces.
+///
+/// NOTE — inner-call type discard (load-bearing implicit): `gcode_import_lower`
+/// inside the body is inferred as `String` (first-arg fallback) rather than
+/// `List<Profile>`. This mis-inferred type is intentionally discarded by
+/// `compile_function` (no body-vs-declared-return-type check). The outer
+/// `UserFunctionCall` result_type (`List<Profile>`) is the authoritative one.
+#[test]
+fn gcode_import_dispatch_ir_contract() {
+    use reify_ir::CompiledExprKind;
+
+    let compiled = smoke_compiled();
+
+    // ── Part 1: call site in GcodeImportSmoke.imported ────────────────────────
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "GcodeImportSmoke")
+        .expect("GcodeImportSmoke template should exist in compiled module");
+
+    let imported_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "imported")
+        .expect("GcodeImportSmoke.imported value cell should exist");
+
+    let init_expr = imported_cell
+        .default_expr
+        .as_ref()
+        .expect("GcodeImportSmoke.imported should have a default_expr (let binding)");
+
+    match &init_expr.kind {
+        CompiledExprKind::UserFunctionCall { function_name, .. } => {
+            assert_eq!(
+                function_name, "gcode_import",
+                "GcodeImportSmoke.imported should call 'gcode_import' as a \
+                 UserFunctionCall — if this fails the .ri declaration may have \
+                 been removed or the resolver changed to prefer builtins"
+            );
+        }
+        other => panic!(
+            "GcodeImportSmoke.imported init expr should be \
+             UserFunctionCall(\"gcode_import\"), got: {other:?}"
+        ),
+    }
+    assert!(
+        matches!(&init_expr.result_type, Type::List(_)),
+        "GcodeImportSmoke.imported init expr should have result_type List<_> \
+         (from the declared gcode_import signature), got: {:?}",
+        init_expr.result_type
+    );
+
+    // ── Part 2: body of the stdlib gcode_import function ──────────────────────
+    // compile_with_stdlib returns a module containing ONLY user definitions;
+    // stdlib functions are compiled context, not copied into the output module.
+    // Use load_stdlib() to access the stdlib compiled modules directly and
+    // find gcode_import in the trajectory module.
+    let stdlib_modules = reify_compiler::stdlib_loader::load_stdlib();
+    let gcode_import_fn = stdlib_modules
+        .iter()
+        .flat_map(|m| m.functions.iter())
+        .find(|f| f.name == "gcode_import")
+        .expect(
+            "stdlib gcode_import function should appear in one of the stdlib \
+             CompiledModules (trajectory stdlib module)",
+        );
+
+    match &gcode_import_fn.body.result_expr.kind {
+        CompiledExprKind::FunctionCall { function, .. } => {
+            assert_eq!(
+                function.name, "gcode_import_lower",
+                "gcode_import body should call 'gcode_import_lower' as a \
+                 FunctionCall (stdlib builtin path), got function name: {:?}",
+                function.name
+            );
+        }
+        other => panic!(
+            "gcode_import body result_expr should be \
+             FunctionCall(\"gcode_import_lower\"), got: {other:?} — \
+             the body may have changed or gcode_import_lower may now have \
+             a .ri declaration (making it resolve as UserFunctionCall)"
         ),
     }
 }
@@ -156,30 +272,42 @@ fn gcode_import_smoke_profile_count_constraint_is_satisfied() {
     let source = smoke_source();
     let check_result = check_source_with_stdlib(source);
 
-    // The GcodeImportSmoke structure has exactly one inline constraint:
-    // `constraint profile_count > 0`.
-    let satisfied = check_result
+    // Scope to the GcodeImportSmoke structure — its id.entity field is the
+    // structure name. This avoids coupling to global constraint state (stdlib or
+    // future example constraints that are unrelated to this fix).
+    let gcode_import_smoke_constraints: Vec<_> = check_result
         .constraint_results
         .iter()
-        .any(|entry| entry.satisfaction == Satisfaction::Satisfied);
+        .filter(|entry| entry.id.entity == "GcodeImportSmoke")
+        .collect();
 
     assert!(
-        satisfied,
-        "expected at least one Satisfied constraint for GcodeImportSmoke.profile_count > 0; \
-         got: {:?}. gcode_import is still returning the stub {{ [] }} body (profile_count == 0).",
-        check_result.constraint_results
+        !gcode_import_smoke_constraints.is_empty(),
+        "expected at least one constraint entry for GcodeImportSmoke, got none — \
+         check that the example still has `constraint profile_count > 0`"
     );
 
-    // Also assert there are no Violated constraints (the only constraint is
-    // profile_count > 0, which should now be Satisfied).
-    let violated: Vec<_> = check_result
-        .constraint_results
+    // The GcodeImportSmoke structure has exactly one inline constraint:
+    // `constraint profile_count > 0`. After the fix it must be Satisfied.
+    let violated: Vec<_> = gcode_import_smoke_constraints
         .iter()
         .filter(|e| e.satisfaction == Satisfaction::Violated)
         .collect();
     assert!(
         violated.is_empty(),
-        "expected no Violated constraints after gcode_import dispatch fix, \
-         got: {violated:?}"
+        "expected no Violated constraints in GcodeImportSmoke after gcode_import \
+         dispatch fix; got: {violated:?}. gcode_import may still be returning \
+         the stub {{ [] }} body (profile_count == 0)."
+    );
+
+    let satisfied: Vec<_> = gcode_import_smoke_constraints
+        .iter()
+        .filter(|e| e.satisfaction == Satisfaction::Satisfied)
+        .collect();
+    assert!(
+        !satisfied.is_empty(),
+        "expected GcodeImportSmoke.profile_count > 0 to be Satisfied; \
+         got: {:?}",
+        gcode_import_smoke_constraints
     );
 }
