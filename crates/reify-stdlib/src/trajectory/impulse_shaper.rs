@@ -338,6 +338,67 @@ mod tests {
         );
     }
 
+    // ── step-11: convolve_at ─────────────────────────────────────────────────
+
+    /// convolve_at: endpoint clamping, shaped-duration, start/final-value preservation,
+    /// and interior sample match.
+    #[test]
+    fn convolve_at_properties() {
+        let omega_n = 2.0 * PI * 10.0;
+        let zeta = 0.05;
+        let train = ImpulseTrain::zv(omega_n, zeta);
+        let delta = train.trailing_time();
+        let t_domain = 0.5_f64; // half-second ramp domain
+
+        // Linear ramp f(t) = t, clamped to [0, t_domain].
+        let ramp = |t: f64| t.clamp(0.0, t_domain);
+
+        // (a) endpoint clamping: at t < t₁ (= 0), f_clamped(t-t_i) = f(0).
+        //     For t=0: both impulses contribute f_clamped(0-0)=0 and f_clamped(0-delta)<0→clamped to 0.
+        //     shaped(0) = A₀·f(0) + A₁·f(clamp(0-delta)) = A₀·0 + A₁·0 = 0 = f(0).
+        let shaped_at_0 = convolve_at(&train, &ramp, t_domain, 0.0);
+        assert_close(shaped_at_0, ramp(0.0), 1e-12, "start preservation");
+
+        // (b) final-value preservation: shaped(t_domain+Δ) = f(t_domain) because Σ Aᵢ=1
+        //     and all arguments t - t_i ≥ t_domain → clamp to t_domain.
+        let t_final = t_domain + delta;
+        let shaped_at_final = convolve_at(&train, &ramp, t_domain, t_final);
+        assert_close(shaped_at_final, ramp(t_domain), 1e-12, "final-value preservation");
+
+        // (c) shaped_duration = t_domain + trailing_time().
+        let expected_duration = t_domain + delta;
+        assert_close(
+            expected_duration,
+            t_domain + train.trailing_time(),
+            1e-12,
+            "shaped duration",
+        );
+
+        // (d) interior sample: for the identity train {(0,1)}, shaped(t) == f(t).
+        let identity = ImpulseTrain {
+            impulses: vec![Impulse { time: 0.0, amplitude: 1.0 }],
+        };
+        let t_mid = t_domain * 0.6;
+        assert_close(
+            convolve_at(&identity, &ramp, t_domain, t_mid),
+            ramp(t_mid),
+            1e-12,
+            "identity convolve equals f",
+        );
+
+        // (e) manual interior sample for ZV train: at t = t_domain / 2.
+        let t_eval = t_domain / 2.0;
+        let expected_manual = train.impulses.iter().map(|imp| {
+            imp.amplitude * ramp((t_eval - imp.time).clamp(0.0, t_domain))
+        }).sum::<f64>();
+        assert_close(
+            convolve_at(&train, &ramp, t_domain, t_eval),
+            expected_manual,
+            1e-14,
+            "ZV interior sample",
+        );
+    }
+
     // ── step-9: EI train construction ────────────────────────────────────────
 
     /// EI (2-hump): exactly 4 impulses; amplitude_sum≈1; all amplitudes > 0;
