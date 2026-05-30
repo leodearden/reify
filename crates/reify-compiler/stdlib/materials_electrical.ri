@@ -74,5 +74,5 @@ trait Conductive : ElectricallyCharacterized {
 // for rationale (esc-3115-112).
 trait Insulating : ElectricallyCharacterized {
     constraint resistivity > 1000000ohm*m
-    constraint dielectric_strength > 0.0 * 1V / 1m
+    constraint dielectric_strength > 0.0V/m
 }
