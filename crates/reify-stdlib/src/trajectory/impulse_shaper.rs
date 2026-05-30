@@ -43,6 +43,26 @@ pub(crate) struct ImpulseTrain {
     impulses: Vec<Impulse>,
 }
 
+// ── Internal helpers ──────────────────────────────────────────────────────────
+
+/// Compute the damped natural frequency `ω_d = ω_n · √(1 − ζ²)` and the
+/// exponential decay factor `K = exp(−ζ π / √(1 − ζ²))`.
+///
+/// For the undamped case (ζ=0): ω_d = ω_n, K = 1.
+fn damped_freq_and_k(omega_n: f64, zeta: f64) -> (f64, f64) {
+    // Guard against ζ≥1 (critically/over-damped): clamp to a small value so
+    // ω_d stays positive. In practice the shaper domain is ζ ∈ [0, 1).
+    let zeta_clamped = zeta.min(1.0 - f64::EPSILON.sqrt());
+    let sqrt_term = (1.0 - zeta_clamped * zeta_clamped).sqrt();
+    let omega_d = omega_n * sqrt_term;
+    let k = if zeta_clamped == 0.0 {
+        1.0
+    } else {
+        (-zeta_clamped * std::f64::consts::PI / sqrt_term).exp()
+    };
+    (omega_d, k)
+}
+
 impl ImpulseTrain {
     /// Construct the two-impulse **Zero-Vibration (ZV)** shaper.
     ///
@@ -59,7 +79,14 @@ impl ImpulseTrain {
     /// A   = [1/(1+K),  K/(1+K)]
     /// ```
     pub(crate) fn zv(omega_n: f64, zeta: f64) -> ImpulseTrain {
-        todo!()
+        let (omega_d, k) = damped_freq_and_k(omega_n, zeta);
+        let norm = 1.0 + k;
+        ImpulseTrain {
+            impulses: vec![
+                Impulse { time: 0.0,                amplitude: 1.0 / norm },
+                Impulse { time: std::f64::consts::PI / omega_d, amplitude: k / norm },
+            ],
+        }
     }
 
     /// Construct the three-impulse **Zero-Vibration-Derivative (ZVD)** shaper.
@@ -113,14 +140,14 @@ impl ImpulseTrain {
 
     /// Sum of all impulse amplitudes (should equal 1.0 for any well-formed shaper).
     pub(crate) fn amplitude_sum(&self) -> f64 {
-        todo!()
+        self.impulses.iter().map(|imp| imp.amplitude).sum()
     }
 
     /// Time offset of the last (trailing) impulse (= the shaper delay Δ).
     ///
     /// Returns 0.0 for a single-impulse identity train.
     pub(crate) fn trailing_time(&self) -> f64 {
-        todo!()
+        self.impulses.last().map(|imp| imp.time).unwrap_or(0.0)
     }
 
     /// Singer-Seering percentage residual vibration V(ω_n, ζ).
