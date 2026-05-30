@@ -510,4 +510,134 @@ mod tests {
             );
         }
     }
+
+    // ── Step 7: interface tying geometry (unit normal + world location) ───────
+
+    /// A flat shell slab in the x–y plane yields an interface whose `normal` is
+    /// a unit vector ≈ ±z (the mid-surface normal, area-weighted from the
+    /// shell-region triangles) and whose `location` is finite and inside the
+    /// slab region's world bounding box.
+    #[test]
+    fn partition_body_interface_normal_is_unit_and_location_in_slab_bbox() {
+        // Shell slab: 5×5 z-plane at k=0 → world bbox x,y ∈ [0,4], z = 0.
+        let slab: Vec<[i32; 3]> = (0..5i32)
+            .flat_map(|i| (0..5i32).map(move |j| [i, j, 0]))
+            .collect();
+        // Near tet cube: 3×3×3 at k∈{2,3,4}, gap 2.0 from the slab.
+        let near_cube: Vec<[i32; 3]> = (0..3i32)
+            .flat_map(|i| (0..3i32).flat_map(move |j| (2..5i32).map(move |k| [i, j, k])))
+            .collect();
+
+        let seg = SegmentationResult {
+            regions: vec![
+                region_with_thickness(0, RegionClassification::ShellEligible, slab, 2.0),
+                region_with_thickness(1, RegionClassification::TetEligible, near_cube, 3.0),
+            ],
+            vertex_labels: vec![0, 0, 0, 0],
+            triangle_labels: vec![0, 0],
+        };
+        let mask = SingleBodyMask::new(MedialMask {
+            spacing: [1.0, 1.0, 1.0],
+            origin: [0.0, 0.0, 0.0],
+            voxels: vec![],
+        });
+        // Two CCW triangles spanning the z=0 plane → both normals point +z.
+        let mesh = MidSurfaceMesh {
+            vertices: vec![
+                [0.0, 0.0, 0.0],
+                [4.0, 0.0, 0.0],
+                [4.0, 4.0, 0.0],
+                [0.0, 4.0, 0.0],
+            ],
+            triangles: vec![[0, 1, 2], [0, 2, 3]],
+            thickness: vec![2.0, 2.0, 2.0, 2.0],
+        };
+
+        let result = partition_body(&mask, &seg, &mesh, &PartitionOptions::default())
+            .expect("partition_body should succeed");
+        assert_eq!(result.interfaces.len(), 1, "one shell↔tet interface");
+        let iface = &result.interfaces[0];
+
+        // Normal: unit length and ≈ ±z (in-plane components vanish).
+        let n = iface.normal;
+        let mag = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        assert!(
+            (mag - 1.0).abs() < 1e-9,
+            "interface normal must be unit (|n| = {mag})"
+        );
+        assert!(
+            n[0].abs() < 1e-9 && n[1].abs() < 1e-9,
+            "normal must be ±z: in-plane components ≈ 0 (got {n:?})"
+        );
+        assert!(
+            (n[2].abs() - 1.0).abs() < 1e-9,
+            "normal z-component must be ±1 (got {})",
+            n[2]
+        );
+
+        // Location: finite and inside the slab world bbox (x,y ∈ [0,4], z = 0).
+        let loc = iface.location;
+        assert!(
+            loc.iter().all(|c| c.is_finite()),
+            "location must be finite (got {loc:?})"
+        );
+        assert!(
+            (0.0..=4.0).contains(&loc[0]),
+            "location x within slab bbox [0,4] (got {})",
+            loc[0]
+        );
+        assert!(
+            (0.0..=4.0).contains(&loc[1]),
+            "location y within slab bbox [0,4] (got {})",
+            loc[1]
+        );
+        assert!(
+            loc[2].abs() < 1e-9,
+            "location z on the slab plane (= 0) (got {})",
+            loc[2]
+        );
+    }
+
+    /// A shell region on an interface whose triangles are all zero-area (here a
+    /// single collinear triangle) has no well-defined mid-surface normal, so
+    /// `partition_body` returns `DegenerateInterfaceNormal` tagged with the
+    /// shell region's label.
+    #[test]
+    fn partition_body_degenerate_shell_normal_errors_with_region_label() {
+        let slab: Vec<[i32; 3]> = (0..5i32)
+            .flat_map(|i| (0..5i32).map(move |j| [i, j, 0]))
+            .collect();
+        let near_cube: Vec<[i32; 3]> = (0..3i32)
+            .flat_map(|i| (0..3i32).flat_map(move |j| (2..5i32).map(move |k| [i, j, k])))
+            .collect();
+
+        let seg = SegmentationResult {
+            regions: vec![
+                region_with_thickness(0, RegionClassification::ShellEligible, slab, 2.0),
+                region_with_thickness(1, RegionClassification::TetEligible, near_cube, 3.0),
+            ],
+            vertex_labels: vec![0, 0, 0],
+            // The single shell-region triangle is collinear → zero area → the
+            // area-weighted normal sums to ~0.
+            triangle_labels: vec![0],
+        };
+        let mask = SingleBodyMask::new(MedialMask {
+            spacing: [1.0, 1.0, 1.0],
+            origin: [0.0, 0.0, 0.0],
+            voxels: vec![],
+        });
+        let mesh = MidSurfaceMesh {
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
+            triangles: vec![[0, 1, 2]],
+            thickness: vec![2.0, 2.0, 2.0],
+        };
+
+        let err = partition_body(&mask, &seg, &mesh, &PartitionOptions::default())
+            .expect_err("degenerate shell normal must error");
+        assert_eq!(
+            err,
+            PartitionError::DegenerateInterfaceNormal { shell_region: 0 },
+            "error must name the offending shell region label"
+        );
+    }
 }
