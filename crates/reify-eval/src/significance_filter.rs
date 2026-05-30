@@ -105,6 +105,62 @@ static NON_DISPLACEMENT_KEY_VALUES: std::sync::LazyLock<[reify_ir::Value; 4]> =
         NON_DISPLACEMENT_KEYS.map(|k| reify_ir::Value::String(k.to_string()))
     });
 
+/// Compare two [`reify_ir::Value::GeometryHandle`] values for cache-key significance.
+///
+/// Returns [`FilterOutcome::Equivalent`] when the two handles represent the
+/// same realized geometry from the caller's caching perspective — i.e. when
+/// **both** their `realization_ref` (entity + index) and `upstream_values_hash`
+/// are identical.  Returns [`FilterOutcome::Different`] in all other cases,
+/// including the conservative fallback when either input is not a
+/// `Value::GeometryHandle`.
+///
+/// # Kernel-handle exclusion (load-bearing)
+///
+/// `kernel_handle` is intentionally **excluded** from the comparison.  It is an
+/// ephemeral session-scoped id: re-realizing the same geometry in a new Engine
+/// session assigns a fresh handle while the semantic identity of the geometry is
+/// unchanged.  Excluding it means a cached downstream computation is NOT
+/// invalidated when the geometry is re-realized to a different handle with
+/// identical parameters — the correct behaviour per PRD §1 / §5 and the
+/// GHR-β design decision recorded in `crates/reify-ir/src/value.rs`.
+///
+/// # Conservative-fallback policy
+///
+/// If either `old` or `new` is not a `Value::GeometryHandle`, the function
+/// returns `Different`.  This mirrors the general over-invalidate-rather-than-
+/// under-invalidate posture used by [`significance_filter`].
+///
+/// See also [`significance_filter`] for the tolerance-bearing ElasticResult
+/// path; geometry handles use exact equality (no tolerance class), which is
+/// why this is a standalone function rather than an arm of that one.
+pub fn geometry_handle_significance(
+    old: &reify_ir::Value,
+    new: &reify_ir::Value,
+) -> FilterOutcome {
+    match (old, new) {
+        (
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr_old,
+                upstream_values_hash: h_old,
+                ..
+            },
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr_new,
+                upstream_values_hash: h_new,
+                ..
+            },
+        ) => {
+            if rr_old == rr_new && h_old == h_new {
+                FilterOutcome::Equivalent
+            } else {
+                FilterOutcome::Different
+            }
+        }
+        // Conservative fallback: non-GeometryHandle inputs → Different.
+        _ => FilterOutcome::Different,
+    }
+}
+
 /// Compare a compute node's previous and new result with per-purpose tolerance.
 ///
 /// # Arguments
