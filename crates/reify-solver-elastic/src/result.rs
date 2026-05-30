@@ -282,6 +282,7 @@ pub fn recover_nodal_stress_p1(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assembly::test_support::scaled_p2_phys_nodes;
     use crate::constitutive::IsotropicElastic;
 
     /// Canonical unit reference tet: vertices `(0,0,0), (1,0,0), (0,1,0),
@@ -579,6 +580,94 @@ mod tests {
         // diagonal into the result for ε = 0 would surface here.
         let mat = dimensionless_steel_like();
         let stress = element_stress_p1(&UNIT_TET_P1, &mat, &[0.0_f64; 12]);
+        for (i, row) in stress.iter().enumerate() {
+            for (j, &sij) in row.iter().enumerate() {
+                assert_eq!(
+                    sij, 0.0,
+                    "zero-displacement σ[{i}][{j}] = {sij} expected 0.0",
+                );
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // step-5: element_stress_p2 unit tests (RED → GREEN in step-6)
+    // -----------------------------------------------------------------------
+
+    /// Uniaxial-strain patch test for the P2 element stress kernel.
+    ///
+    /// Linear displacement field `u(x) = (a·x, 0, 0)` is set at every P2
+    /// node of the canonical unit reference tet (`scaled_p2_phys_nodes(1.0)`).
+    /// The centroid-sampled stress must recover the Lamé diagonal:
+    /// `σ_xx = (λ+2μ)·a`, `σ_yy = σ_zz = λ·a`, off-diagonals ≈ 0.
+    ///
+    /// Pins the B-matrix orientation and Voigt convention of
+    /// `element_stress_p2` against `assembly/tet.rs`, exactly as the
+    /// `element_stress_p1_uniaxial_strain_patch_test_recovers_lame_diagonal`
+    /// test does for the P1 kernel.
+    #[test]
+    fn element_stress_p2_uniaxial_strain_patch_test_recovers_lame_diagonal() {
+        let a = 0.01_f64;
+        let mat = dimensionless_steel_like();
+        let e = mat.youngs_modulus;
+        let nu = mat.poisson_ratio;
+        let factor = e / ((1.0 + nu) * (1.0 - 2.0 * nu));
+        let lambda = factor * nu;
+        let two_mu = factor * (1.0 - 2.0 * nu);
+        let lambda_plus_two_mu = lambda + two_mu;
+
+        let phys = scaled_p2_phys_nodes(1.0);
+
+        // u(x) = (a·x, 0, 0) at every P2 node.
+        let mut u_e = [0.0_f64; 30];
+        for (i, node) in phys.iter().enumerate() {
+            u_e[3 * i] = a * node[0]; // u_x = a·x; u_y = u_z = 0
+        }
+
+        let stress = element_stress_p2(&phys, &mat, &u_e);
+
+        let exp_xx = lambda_plus_two_mu * a;
+        let exp_yy = lambda * a;
+        let exp_zz = lambda * a;
+
+        let scale_xx = exp_xx.abs().max(1.0);
+        let scale_yy = exp_yy.abs().max(1.0);
+        assert!(
+            (stress[0][0] - exp_xx).abs() < 1e-9 * scale_xx,
+            "σ_xx = {} expected (λ+2μ)·a = {exp_xx}",
+            stress[0][0],
+        );
+        assert!(
+            (stress[1][1] - exp_yy).abs() < 1e-9 * scale_yy,
+            "σ_yy = {} expected λ·a = {exp_yy}",
+            stress[1][1],
+        );
+        assert!(
+            (stress[2][2] - exp_zz).abs() < 1e-9 * scale_yy,
+            "σ_zz = {} expected λ·a = {exp_zz}",
+            stress[2][2],
+        );
+        // Off-diagonals must vanish.
+        let scale_off = exp_xx.abs().max(1.0);
+        for (i, j) in [(0, 1), (0, 2), (1, 2)] {
+            assert!(
+                stress[i][j].abs() < 1e-9 * scale_off,
+                "σ[{i}][{j}] = {} expected 0 (uniaxial-strain P2 patch test)",
+                stress[i][j],
+            );
+        }
+    }
+
+    /// Zero-displacement regression guard for the P2 element stress kernel.
+    ///
+    /// An off-by-one that leaks the D-matrix diagonal into the result for
+    /// `ε = 0` would surface here. Mirrors
+    /// `element_stress_p1_zero_displacement_yields_zero_stress` at 30 DOF.
+    #[test]
+    fn element_stress_p2_zero_displacement_yields_zero_stress() {
+        let mat = dimensionless_steel_like();
+        let phys = scaled_p2_phys_nodes(1.0);
+        let stress = element_stress_p2(&phys, &mat, &[0.0_f64; 30]);
         for (i, row) in stress.iter().enumerate() {
             for (j, &sij) in row.iter().enumerate() {
                 assert_eq!(
