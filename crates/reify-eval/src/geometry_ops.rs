@@ -2014,11 +2014,17 @@ pub(crate) fn try_eval_topology_selector(
             dispatch_normal_vector3(kernel, &query, &function.name, diagnostics)
         }
         TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => {
-            // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
-            let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
-            let kind = match helper {
-                TopologySelectorHelper::Edges => ExtractKind::Edges,
-                TopologySelectorHelper::Faces => ExtractKind::Faces,
+            // args[0]: geometry ValueRef → values map → full parent GeometryHandle.
+            // The parent's realization_ref + upstream_values_hash are needed to
+            // construct well-formed sub-handle values (PRD §4). Fall through when
+            // the arg cell is not yet a hydrated Value::GeometryHandle (PRD invariant
+            // #2: do not partially construct a sub-handle; cell retains its compiled
+            // default, i.e. stays at Value::Undef).
+            let (parent_rr, parent_hash, parent_kernel_handle) =
+                resolve_parent_geometry_handle_arg(&args[0], values)?;
+            let sub_kind = match helper {
+                TopologySelectorHelper::Edges => crate::topology_selectors::SubKind::Edge,
+                TopologySelectorHelper::Faces => crate::topology_selectors::SubKind::Face,
                 // Enumerate the complement explicitly (rather than `_`) so that
                 // adding a new `TopologySelectorHelper` variant and grouping it
                 // into the outer `Edges | Faces` or-pattern forces the compiler
@@ -2043,7 +2049,15 @@ pub(crate) fn try_eval_topology_selector(
                     unreachable!("Edges/Faces outer match guarantees this")
                 }
             };
-            dispatch_extract_subshapes(kernel, handle, kind, &function.name, diagnostics)
+            dispatch_extract_subshapes(
+                kernel,
+                parent_kernel_handle,
+                sub_kind,
+                &parent_rr,
+                &parent_hash,
+                &function.name,
+                diagnostics,
+            )
         }
         TopologySelectorHelper::CenterOfMass => {
             // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
@@ -2463,40 +2477,50 @@ impl TopologySelectorHelper {
     }
 }
 
-/// Which sub-shape kind to extract: edges or faces. Drives
-/// `dispatch_extract_subshapes` to route into `extract_edges` /
-/// `extract_faces` on the kernel while keeping a single shared
-/// kernel-error → diagnostic + `Value::Undef` downgrade path.
-#[derive(Clone, Copy)]
-enum ExtractKind {
-    Edges,
-    Faces,
-}
-
-/// Issue `extract_edges(handle)` (or `extract_faces` per `kind`) and wrap the
-/// resulting `Vec<GeometryHandleId>` as `Value::List(Vec<Value::Int>)` whose
-/// elements are the raw u64 handle ids cast to `i64`. Returns
-/// `Some(Value::Undef)` (with a Warning diagnostic) on kernel error.
+/// Issue `extract_edges` (or `extract_faces`, per `sub_kind`) for the given
+/// parent kernel handle and return a `Value::List` of `Value::GeometryHandle`
+/// sub-handles (PRD §4). Each element carries:
+/// - `realization_ref` — cloned from the parent (unchanged per PRD §4).
+/// - `upstream_values_hash` — `compose_sub_handle_hash(parent_hash, sub_kind, index)`.
+/// - `kernel_handle` — the kernel id returned by `extract_edges`/`extract_faces`.
 ///
-/// Sibling to `dispatch_point3_length_reply` / `dispatch_point_on_shape` /
-/// `dispatch_surface_angle` — same defensive-downgrade contract.
+/// Returns `Some(Value::Undef)` (with a Warning diagnostic) on kernel error —
+/// preserving the same defensive-downgrade contract as the sibling dispatchers
+/// (`dispatch_point3_length_reply`, `dispatch_point_on_shape`, etc.).
 fn dispatch_extract_subshapes(
     kernel: &mut dyn reify_ir::GeometryKernel,
-    handle: GeometryHandleId,
-    kind: ExtractKind,
+    parent_kernel_handle: GeometryHandleId,
+    sub_kind: crate::topology_selectors::SubKind,
+    parent_realization_ref: &reify_core::identity::RealizationNodeId,
+    parent_hash: &[u8; 32],
     helper_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_ir::Value> {
-    let result = match kind {
-        ExtractKind::Edges => kernel.extract_edges(handle),
-        ExtractKind::Faces => kernel.extract_faces(handle),
+    let result = match sub_kind {
+        crate::topology_selectors::SubKind::Edge => kernel.extract_edges(parent_kernel_handle),
+        crate::topology_selectors::SubKind::Face => kernel.extract_faces(parent_kernel_handle),
     };
     match result {
-        Ok(sub_handles) => Some(handle_list_value(sub_handles)),
+        Ok(sub_ids) => {
+            let elements = sub_ids
+                .into_iter()
+                .enumerate()
+                .map(|(i, sub_kernel_id)| {
+                    crate::topology_selectors::make_sub_handle(
+                        parent_realization_ref,
+                        parent_hash,
+                        sub_kind,
+                        i as u32,
+                        sub_kernel_id,
+                    )
+                })
+                .collect();
+            Some(reify_ir::Value::List(elements))
+        }
         Err(err) => {
             diagnostics.push(Diagnostic::warning(format!(
                 "{}({:?}): kernel error: {}",
-                helper_name, handle, err
+                helper_name, parent_kernel_handle, err
             )));
             Some(reify_ir::Value::Undef)
         }
@@ -2792,6 +2816,33 @@ fn resolve_geometry_handle_arg(
         _ => return None,
     };
     named_steps.get(&cell_id.member).copied()
+}
+
+/// Resolve a `CompiledExprKind::ValueRef` arg to the full parent
+/// `Value::GeometryHandle` fields: `(realization_ref, upstream_values_hash,
+/// kernel_handle)`. Returns `None` for any non-`ValueRef` shape, a missing
+/// cell, or a cell that is not a `Value::GeometryHandle` — the caller falls
+/// through, leaving the selector cell at its compiled default (`Value::Undef`).
+///
+/// PRD §4 invariant #2: sub-handles must never be partially constructed from
+/// a non-hydrated geometry cell. This gate enforces that contract at the
+/// dispatch boundary.
+fn resolve_parent_geometry_handle_arg(
+    expr: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
+) -> Option<(reify_core::identity::RealizationNodeId, [u8; 32], GeometryHandleId)> {
+    let cell_id = match &expr.kind {
+        reify_ir::CompiledExprKind::ValueRef(id) => id,
+        _ => return None,
+    };
+    match values.get(cell_id)? {
+        reify_ir::Value::GeometryHandle {
+            realization_ref,
+            upstream_values_hash,
+            kernel_handle,
+        } => Some((realization_ref.clone(), *upstream_values_hash, *kernel_handle)),
+        _ => None,
+    }
 }
 
 /// Issue a query whose kernel reply is the canonical JSON-Point3
