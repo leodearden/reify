@@ -355,23 +355,38 @@ pub(crate) fn evaluate_const_expr(
             }
         }
         reify_ast::ExprKind::QuantityLiteral { value, unit } => {
-            // Only bare units resolve in unit-conversion expressions. Compound unit
-            // expressions (Mul/Div/Pow) need registry folding, which lands in task
-            // γ (3803); reject them with a placeholder diagnostic until then.
+            // Route compound unit expressions (Mul/Div/Pow) through resolve_unit_expr,
+            // which folds the factor product and dimension vector.  The bare-unit path
+            // (UnitExpr::Unit(name)) is left unchanged — it handles affine units and
+            // the hardcoded fallback via the existing registry lookup + unit_to_scalar.
+            // Dimension is intentionally discarded from Ok((factor, _dim)) — a unit
+            // conversion factor is a pure scalar; the declared dimension comes from the
+            // unit's `: Dim` annotation, not from the conversion expression.
             let unit = match unit {
                 reify_ast::UnitExpr::Unit(name) => name,
-                reify_ast::UnitExpr::Mul(..)
+                compound @ (reify_ast::UnitExpr::Mul(..)
                 | reify_ast::UnitExpr::Div(..)
-                | reify_ast::UnitExpr::Pow(..) => {
-                    diagnostics.push(
-                        Diagnostic::error(
-                            "compound unit expressions are not yet supported in unit \
-                             conversion expressions; resolver lands in task γ (3803)"
-                                .to_string(),
-                        )
-                        .with_label(DiagnosticLabel::new(expr.span, "compound unit")),
-                    );
-                    return None;
+                | reify_ast::UnitExpr::Pow(..)) => {
+                    match resolve_unit_expr(compound, registry, expr.span) {
+                        Ok((factor, _dim)) => {
+                            let si = value * factor;
+                            if !si.is_finite() {
+                                diagnostics.push(
+                                    Diagnostic::error("overflow in unit conversion expression")
+                                        .with_label(DiagnosticLabel::new(
+                                            expr.span,
+                                            "result is not finite",
+                                        )),
+                                );
+                                return None;
+                            }
+                            return Some(si);
+                        }
+                        Err(e) => {
+                            diagnostics.push(unit_resolve_error_to_diagnostic(&e));
+                            return None;
+                        }
+                    }
                 }
             };
             // Try registry first, then hardcoded fallback.
