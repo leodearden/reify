@@ -140,8 +140,11 @@ pub(crate) struct CantileverFeaSolve {
 /// ```
 ///
 /// Returns an `ElasticResult`-shaped `Value::StructureInstance` with fields:
-/// `displacement`, `stress`, `frame` (all Undef — tet convention),
+/// `displacement`, `stress`, `frame`, `shell_channels` (all Undef — tet/solid
+/// convention; see `solver_elastic.ri` field-semantics doc for rationale),
 /// `max_von_mises` (Scalar[PRESSURE]), `converged` (Bool), `iterations` (Int).
+/// Task 3594/δ replaces `shell_channels = Undef` with a real `ShellStress`
+/// value on the shell-routing path by calling `shell_channels_to_value`.
 ///
 /// The warm-state donate→checkout round-trip is exercised via
 /// `CgWarmState::from_opaque_state` / `CgWarmState::into_opaque_state`.
@@ -182,8 +185,13 @@ pub fn solve_elastic_static_trampoline(
     // ── (7) Build ElasticResult StructureInstance ────────────────────────────
     //
     // StructureTypeId(u32::MAX) is a synthetic sentinel for this slice.
-    // The three Body/Field-typed slots (displacement, stress, frame) are Undef
-    // per the tet-result convention at solver_elastic.ri:280–284.
+    // The four Field/ShellStress-typed slots (displacement, stress, frame,
+    // shell_channels) are Undef per the tet/solid convention:
+    //   - displacement/stress/frame: tet nodes have no per-element local frame.
+    //   - shell_channels: through-thickness top/mid/bottom is undefined for
+    //     solid elements (PRD DR-3, task #4067 I-3). Task 3594/δ replaces
+    //     shell_channels=Undef with shell_channels_to_value(Some(_), mid) on
+    //     the shell path.
     // `cost_per_byte` is derived as 1/(warm-state size in bytes) — larger
     // warm states are more expensive per byte to retain in the pool.
     let n_iters    = fea.iterations as i64;
@@ -199,15 +207,19 @@ pub fn solve_elastic_static_trampoline(
     let new_warm_state = Some(fresh_warm.into_opaque_state());
 
     let fields: PersistentMap<String, Value> = [
-        ("displacement".to_string(), Value::Undef),
-        ("stress".to_string(),       Value::Undef),
-        ("frame".to_string(),        Value::Undef),
-        ("max_von_mises".to_string(), Value::Scalar {
+        ("displacement".to_string(),   Value::Undef),
+        ("stress".to_string(),         Value::Undef),
+        ("frame".to_string(),          Value::Undef),
+        // task #4067 (PRD S1 / DR-3 / I-3): tet/solid results always emit
+        // shell_channels=Undef (through-thickness data is undefined for solid
+        // elements). Task 3594/δ replaces this with shell_channels_to_value(Some(_), mid).
+        ("shell_channels".to_string(), Value::Undef),
+        ("max_von_mises".to_string(),  Value::Scalar {
             si_value:  fea.max_von_mises,
             dimension: DimensionVector::PRESSURE,
         }),
-        ("converged".to_string(),   Value::Bool(converged)),
-        ("iterations".to_string(),  Value::Int(n_iters)),
+        ("converged".to_string(),      Value::Bool(converged)),
+        ("iterations".to_string(),     Value::Int(n_iters)),
     ]
     .into_iter()
     .collect();
