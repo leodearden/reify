@@ -43,6 +43,44 @@ pub(crate) struct ImpulseTrain {
     impulses: Vec<Impulse>,
 }
 
+// ── EI helpers ────────────────────────────────────────────────────────────────
+
+/// Residual vibration of a 2-impulse ZV shaper designed for frequency
+/// ω_n/ρ (with the same ζ/K), evaluated at the target frequency (ω_n, ζ).
+///
+/// Formula (derived from Singer-Seering §3):
+///
+/// ```text
+/// m = K^(1-ρ)
+/// V = K^ρ/(1+K) · √(1 + 2m·cos(πρ) + m²)
+/// ```
+///
+/// Special values: V(ρ=0) = 1, V(ρ=1) = 0, V(ρ=2) = K.
+fn zv_residual_at_rho(rho: f64, k: f64) -> f64 {
+    let m = k.powf(1.0 - rho);
+    let cos_term = (std::f64::consts::PI * rho).cos();
+    k.powf(rho) / (1.0 + k) * (1.0 + 2.0 * m * cos_term + m * m).sqrt()
+}
+
+/// Bisect for ρ in `(lo, hi)` such that `zv_residual_at_rho(ρ, k) = v_target`.
+///
+/// `ascending`: true when V is increasing over the interval (use for ρ ∈ (1,2));
+/// false when V is decreasing (ρ ∈ (0,1)).
+fn bisect_rho(v_target: f64, k: f64, lo: f64, hi: f64, ascending: bool) -> f64 {
+    let mut a = lo + f64::EPSILON;
+    let mut b = hi - f64::EPSILON;
+    for _ in 0..64 {
+        let mid = (a + b) * 0.5;
+        let v_mid = zv_residual_at_rho(mid, k);
+        if ascending {
+            if v_mid < v_target { a = mid; } else { b = mid; }
+        } else {
+            if v_mid > v_target { a = mid; } else { b = mid; }
+        }
+    }
+    (a + b) * 0.5
+}
+
 // ── Internal helpers / convolution ───────────────────────────────────────────
 
 /// Convolve two impulse trains: each output impulse has
@@ -165,7 +203,36 @@ impl ImpulseTrain {
     /// are parameterised by `v_tol`; `Σ amplitudes = 1`, all amplitudes > 0,
     /// and the residual vibration at the design frequency is ≤ `v_tol`.
     pub(crate) fn ei(omega_n: f64, zeta: f64, v_tol: f64) -> ImpulseTrain {
-        todo!()
+        // 2-hump EI: cascade ZV(ω_n/ρ₁, ζ) ⊗ ZV(ω_n/ρ₂, ζ) where
+        //   ρ₁ ∈ (0,1): V(ρ₁) = √v_tol  →  high-frequency atom (short spacing)
+        //   ρ₂ ∈ (1,2): V(ρ₂) = √v_tol  →  low-frequency  atom (long spacing)
+        // Product property: V_cascade = V_A · V_B → √v_tol · √v_tol = v_tol.
+        let (omega_d, k) = damped_freq_and_k(omega_n, zeta);
+
+        // Target each atom's residual at √v_tol so cascade = v_tol.
+        let sqrt_vtol = v_tol.sqrt().min(k); // clamp to k so ρ₂ search has a root in (1,2)
+        let sqrt_vtol = sqrt_vtol.max(1e-12);
+
+        let rho_1 = bisect_rho(sqrt_vtol, k, 0.0, 1.0, false); // V decreasing on (0,1)
+        let rho_2 = bisect_rho(sqrt_vtol, k, 1.0, 2.0, true);  // V increasing on (1,2)
+
+        // Impulse spacings for each ZV atom (same K, different ω').
+        let tau_1 = std::f64::consts::PI * rho_1 / omega_d; // shorter (ρ₁ < 1)
+        let tau_2 = std::f64::consts::PI * rho_2 / omega_d; // longer  (ρ₂ > 1)
+
+        // ZV amplitudes: same K → same a=1/(1+K), b=K/(1+K) for both atoms.
+        let a = 1.0 / (1.0 + k);
+        let b = k  / (1.0 + k);
+
+        // Cartesian cascade (tau_1 < tau_2 → times are strictly ordered).
+        ImpulseTrain {
+            impulses: vec![
+                Impulse { time: 0.0,           amplitude: a * a },
+                Impulse { time: tau_1,         amplitude: a * b },
+                Impulse { time: tau_2,         amplitude: b * a },
+                Impulse { time: tau_1 + tau_2, amplitude: b * b },
+            ],
+        }
     }
 
     /// Convolve a sequence of impulse trains into a single combined train.
