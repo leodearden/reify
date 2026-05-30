@@ -457,7 +457,7 @@ impl ModuleDag {
         self.in_progress.shift_remove(module_path);
 
         // Propagate error after cleanup
-        let compiled = result?;
+        let mut compiled = result?;
 
         // Commit filesystem mode now that the module has compiled successfully.
         // Deferred from the Ok-and-std match arm above so that a parse/compile
@@ -481,6 +481,17 @@ impl ModuleDag {
                 )]);
             }
             self.stdlib_mode = Some(StdlibMode::FileSystem);
+        }
+
+        // Enforce module-path declaration (spec §7.1/§7.2, task γ).
+        // parsed.path == from_dotted(module_path) by construction (D-6): attach
+        // the diagnostic rather than returning Err, consistent with compile-phase
+        // error flow; the caller's severity gate handles exit code.
+        if let Some(diag) = crate::compile_builder::pre_pass::check_module_path_decl(
+            parsed.declared_module_path.as_ref(),
+            &parsed.path,
+        ) {
+            compiled.diagnostics.push(diag);
         }
 
         // Record in post-order (only on success)
