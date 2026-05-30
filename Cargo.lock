@@ -4560,6 +4560,7 @@ dependencies = [
  "reify-test-support",
  "serde",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]

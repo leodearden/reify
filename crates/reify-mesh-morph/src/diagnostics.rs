@@ -152,12 +152,13 @@ fn counter(outcome: MorphOutcome) -> &'static AtomicU64 {
 // ── Recorders ─────────────────────────────────────────────────────────────────
 //
 // Each recorder couples a counter increment with its policy-level `tracing`
-// event (the logging policy is added in a later step). Bucket selection lives
-// here so the engine call site forwards the `&QualityVerdict` / `&Reason` it
-// already holds.
+// event. Bucket selection lives here so the engine call site forwards the
+// `&QualityVerdict` / `&Reason` it already holds. The default event target is
+// this module path (`reify_mesh_morph::diagnostics`).
 
 /// Record a successful morph.
 pub fn record_morphed() {
+    tracing::trace!("mesh morph: morphed");
     counter(MorphOutcome::Morphed).fetch_add(1, Ordering::Relaxed);
 }
 
@@ -168,8 +169,22 @@ pub fn record_morphed() {
 /// contract loud in debug builds at no release-build cost.
 pub fn record_quality_remesh(verdict: &QualityVerdict) {
     let outcome = match verdict {
-        QualityVerdict::HardFail(_) => MorphOutcome::RemeshedQualityHardFail,
-        QualityVerdict::SoftFail(_) => MorphOutcome::RemeshedQualitySoftFail,
+        QualityVerdict::HardFail(details) => {
+            tracing::info!(
+                kind = "hard",
+                ?details,
+                "mesh morph: quality fail, remesh fallback"
+            );
+            MorphOutcome::RemeshedQualityHardFail
+        }
+        QualityVerdict::SoftFail(details) => {
+            tracing::info!(
+                kind = "soft",
+                ?details,
+                "mesh morph: quality fail, remesh fallback"
+            );
+            MorphOutcome::RemeshedQualitySoftFail
+        }
         QualityVerdict::Pass => {
             debug_assert!(
                 false,
@@ -183,6 +198,7 @@ pub fn record_quality_remesh(verdict: &QualityVerdict) {
 
 /// Record an ineligible edit, bucketed by reject category.
 pub fn record_ineligible(reason: &Reason) {
+    tracing::trace!(reason = ?reason, "mesh morph: ineligible edit");
     let outcome = match reason {
         Reason::StructuralChange => MorphOutcome::IneligibleStructuralChange,
         Reason::BijectionFailure(_) => MorphOutcome::IneligibleBijectionFailure,
@@ -191,10 +207,9 @@ pub fn record_ineligible(reason: &Reason) {
     counter(outcome).fetch_add(1, Ordering::Relaxed);
 }
 
-/// Record a caught morph panic. `detail` is surfaced in the error log (added in
-/// a later step).
+/// Record a caught morph panic; `detail` is surfaced in the ERROR log message.
 pub fn record_panicked(detail: &str) {
-    let _ = detail;
+    tracing::error!("mesh morph panicked: {detail}");
     counter(MorphOutcome::Panicked).fetch_add(1, Ordering::Relaxed);
 }
 
