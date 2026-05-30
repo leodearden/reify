@@ -107,7 +107,16 @@ impl ImpulseTrain {
     /// Algebraically equivalent to `cascade([zv(ω,ζ), zv(ω,ζ)])` — used as a
     /// cross-check in the unit tests.
     pub(crate) fn zvd(omega_n: f64, zeta: f64) -> ImpulseTrain {
-        todo!()
+        let (omega_d, k) = damped_freq_and_k(omega_n, zeta);
+        let norm = (1.0 + k) * (1.0 + k);
+        let half_period = std::f64::consts::PI / omega_d;
+        ImpulseTrain {
+            impulses: vec![
+                Impulse { time: 0.0,             amplitude: 1.0 / norm },
+                Impulse { time: half_period,      amplitude: 2.0 * k / norm },
+                Impulse { time: 2.0 * half_period, amplitude: k * k / norm },
+            ],
+        }
     }
 
     /// Construct the four-impulse **Extra-Insensitive (EI / 2-hump EI)** shaper.
