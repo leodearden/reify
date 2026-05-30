@@ -358,9 +358,183 @@ pub fn scaled_p2_phys_nodes(s: f64) -> [[f64; 3]; 10] {
     nodes
 }
 
+/// Promote a P1 tetrahedral mesh to P2 by inserting edge-midpoint nodes.
+///
+/// For each unique edge `(a, b)` in the P1 mesh (determined by the set of
+/// edges across all tets in canonical `EDGES` order), inserts a single
+/// midpoint node at `(nodes_p1[a] + nodes_p1[b]) / 2`. Adjacent tets sharing
+/// an edge reference the **same** midpoint node id — deduplication is done via
+/// a `HashMap` keyed by the sorted `(min(a,b), max(a,b))` corner-node-id pair.
+///
+/// The returned 10-node P2 connectivity follows the canonical Hughes/Gmsh
+/// ordering used throughout this crate: indices 0..=3 are the four original
+/// P1 corner nodes, indices 4..=9 are the edge-midpoint nodes for
+/// [`crate::elements::tet_p2::EDGES`]\[0..=5\] in that order.
+///
+/// # Purpose
+///
+/// Single source of truth for P1 → P2 mesh promotion shared between
+/// `tests/kg_p2_tet.rs` (kernel-level K_g accuracy tests) and the P2
+/// Euler-column pipeline test in `tests/euler_column_pin_pin.rs`. Both files
+/// compile as separate binaries and cannot share a Rust module; routing
+/// through `test_support.rs` (which is `pub` from `assembly::test_support`)
+/// avoids drift.
+pub fn promote_tets_to_p2(
+    nodes_p1: &[[f64; 3]],
+    tets_p1: &[[usize; 4]],
+) -> (Vec<[f64; 3]>, Vec<[usize; 10]>) {
+    use std::collections::HashMap;
+
+    let mut nodes_p2: Vec<[f64; 3]> = nodes_p1.to_vec();
+    // Keyed by (min, max) corner id → midpoint node index in nodes_p2.
+    let mut edge_to_mid: HashMap<(usize, usize), usize> = HashMap::new();
+    let mut tets_p2: Vec<[usize; 10]> = Vec::with_capacity(tets_p1.len());
+
+    for tet in tets_p1 {
+        let mut p2_tet = [0usize; 10];
+        // First 4 entries: copy P1 corner node indices verbatim.
+        p2_tet[..4].copy_from_slice(tet);
+
+        // Entries 4..10: edge-midpoint node indices in EDGES order.
+        for (edge_idx, &(a, b)) in EDGES.iter().enumerate() {
+            let ca = tet[a]; // global corner node id for local vertex a
+            let cb = tet[b]; // global corner node id for local vertex b
+            let key = (ca.min(cb), ca.max(cb));
+            // `or_insert_with` allocates the midpoint only on the first
+            // encounter; subsequent tets sharing the same global edge reuse it.
+            let mid_idx = *edge_to_mid.entry(key).or_insert_with(|| {
+                let pa = nodes_p1[ca];
+                let pb = nodes_p1[cb];
+                let idx = nodes_p2.len();
+                nodes_p2.push([
+                    0.5 * (pa[0] + pb[0]),
+                    0.5 * (pa[1] + pb[1]),
+                    0.5 * (pa[2] + pb[2]),
+                ]);
+                idx
+            });
+            p2_tet[4 + edge_idx] = mid_idx;
+        }
+        tets_p2.push(p2_tet);
+    }
+
+    (nodes_p2, tets_p2)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::elements::tet_p2::EDGES as TET_P2_EDGES;
+
+    /// Six-tet long-diagonal decomposition of a unit brick (identical to the
+    /// decomposition used in `tests/kg_p1_tet.rs` and `tests/euler_column_pin_pin.rs`).
+    const TET_DECOMP: [[usize; 4]; 6] = [
+        [0, 1, 2, 6],
+        [0, 2, 3, 6],
+        [0, 3, 7, 6],
+        [0, 7, 4, 6],
+        [0, 4, 5, 6],
+        [0, 5, 1, 6],
+    ];
+
+    #[test]
+    fn promote_tets_to_p2_single_brick_yields_shared_midpoints() {
+        // Nodes of a unit cube, indexed 0-7 in the same order used by
+        // `TET_DECOMP` (matches `ColumnGrid::build_node_xyz` for a 1×1×1 grid).
+        let nodes_p1: &[[f64; 3]] = &[
+            [0.0, 0.0, 0.0], // 0
+            [1.0, 0.0, 0.0], // 1
+            [1.0, 1.0, 0.0], // 2
+            [0.0, 1.0, 0.0], // 3
+            [0.0, 0.0, 1.0], // 4
+            [1.0, 0.0, 1.0], // 5
+            [1.0, 1.0, 1.0], // 6
+            [0.0, 1.0, 1.0], // 7
+        ];
+        let tets_p1: &[[usize; 4]] = &TET_DECOMP;
+
+        let (nodes_p2, tets_p2) = promote_tets_to_p2(nodes_p1, tets_p1);
+
+        // (a) P2 node count = corner count + number of unique edges across all tets.
+        {
+            use std::collections::HashSet;
+            let mut unique_edges: HashSet<(usize, usize)> = HashSet::new();
+            for tet in tets_p1 {
+                for &(a, b) in TET_P2_EDGES.iter() {
+                    let ca = tet[a];
+                    let cb = tet[b];
+                    unique_edges.insert((ca.min(cb), ca.max(cb)));
+                }
+            }
+            let n_unique_edges = unique_edges.len();
+            assert_eq!(
+                nodes_p2.len(),
+                nodes_p1.len() + n_unique_edges,
+                "P2 node count must equal P1 corners ({}) + unique edges ({})",
+                nodes_p1.len(),
+                n_unique_edges,
+            );
+        }
+
+        // (b) Two tets sharing a P1 edge must reference the same midpoint node id.
+        //
+        // Tets 0 [0,1,2,6] and 1 [0,2,3,6] share the global edge (0,2):
+        //   tet 0: EDGES[2] = (2,0) → local vertices tet[2]=2, tet[0]=0 → global (0,2) → p2_tet[4+2]
+        //   tet 1: EDGES[0] = (0,1) → local vertices tet[0]=0, tet[1]=2 → global (0,2) → p2_tet[4+0]
+        assert_eq!(
+            tets_p2[0][4 + 2],
+            tets_p2[1][4 + 0],
+            "tets 0 and 1 share the P1 edge (0,2); their midpoint node ids must match",
+        );
+
+        // Tets 0 and 1 also share edge (0,6):
+        //   tet 0: EDGES[3] = (0,3) → tet[0]=0, tet[3]=6 → global (0,6) → p2_tet[4+3]
+        //   tet 1: EDGES[3] = (0,3) → tet[0]=0, tet[3]=6 → global (0,6) → p2_tet[4+3]
+        assert_eq!(
+            tets_p2[0][4 + 3],
+            tets_p2[1][4 + 3],
+            "tets 0 and 1 share the P1 edge (0,6); their midpoint node ids must match",
+        );
+
+        // Tets 1 [0,2,3,6] and 2 [0,3,7,6] share edge (0,3):
+        //   tet 1: EDGES[2] = (2,0) → tet[2]=3, tet[0]=0 → global (0,3) → p2_tet[4+2]
+        //   tet 2: EDGES[0] = (0,1) → tet[0]=0, tet[1]=3 → global (0,3) → p2_tet[4+0]
+        assert_eq!(
+            tets_p2[1][4 + 2],
+            tets_p2[2][4 + 0],
+            "tets 1 and 2 share the P1 edge (0,3); their midpoint node ids must match",
+        );
+
+        // (c) Each P2 tet has exactly 10 node indices, all distinct.
+        for (t_idx, p2_tet) in tets_p2.iter().enumerate() {
+            use std::collections::HashSet;
+            let ids: HashSet<usize> = p2_tet.iter().copied().collect();
+            assert_eq!(
+                ids.len(),
+                10,
+                "P2 tet {t_idx} must have 10 distinct node ids (got {} unique)",
+                ids.len(),
+            );
+        }
+
+        // (d) All P2 midpoint node positions lie on the straight-line midpoint
+        //     of their two parent corners.  Verify for the (0,2) midpoint
+        //     (shared between tets 0 and 1).
+        let mid_id = tets_p2[0][4 + 2];
+        let expected_mid = [
+            0.5 * (nodes_p1[0][0] + nodes_p1[2][0]),
+            0.5 * (nodes_p1[0][1] + nodes_p1[2][1]),
+            0.5 * (nodes_p1[0][2] + nodes_p1[2][2]),
+        ];
+        for k in 0..3 {
+            assert!(
+                (nodes_p2[mid_id][k] - expected_mid[k]).abs() < 1e-12,
+                "midpoint of edge (0,2) coord[{k}] = {} expected {}",
+                nodes_p2[mid_id][k],
+                expected_mid[k],
+            );
+        }
+    }
 
     #[test]
     #[should_panic(expected = "phys1.len() must equal n_nodes")]
