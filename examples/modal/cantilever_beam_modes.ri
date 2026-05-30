@@ -1,0 +1,85 @@
+// Cantilever beam modal-analysis smoke fixture for `fn modal_analysis`.
+//
+// PRD reference: docs/prds/v0_3/modal-analysis.md §1, §9.1, §10 task ζ.
+//
+// Analytical reference (Euler–Bernoulli cantilever, fundamental mode):
+//
+//   f₁ = (1.875² / 2π) · √( E·I / (ρ·A·L⁴) )
+//
+// Where (uniform AISI 1045 steel beam):
+//   E = 205 GPa, ρ = 7850 kg/m³
+//   L = 200 mm  (beam length, x-axis)
+//   b = 10 mm   (cross-section width, y-axis)
+//   h = 2 mm    (cross-section height, z-axis — the slender bending direction)
+//   A = b·h = 2.0e-5 m², I = b·h³/12 = 6.667e-12 m⁴ (bending about y, in z)
+//
+//   f₁ ≈ 41.3 Hz   (L/r ≈ 346 — a slender beam)
+//
+// The integration test at `crates/reify-eval/tests/modal_analysis_e2e.rs`
+// asserts the first-mode frequency is within 10% of this value — the committed
+// PRD §1/§9.1 bound (NOT the aspirational 2%, moved to P2-tet follow-up 4066).
+// The measured P1-tet floor is pinned in that test (steps 15/16).
+//
+// The `@optimized("modal::free_vibration")` annotation on `modal_analysis`
+// causes the engine to insert a ComputeNode with target == "modal::free_vibration"
+// when the trampoline is registered via
+// `reify_eval::compute_targets::register_compute_fns`.
+//
+// Type-coercion notes (same pattern as fea_cantilever_smoke.ri /
+// buckling_column_smoke.ri):
+//
+//   Material:
+//     `modal_analysis` declares `material : ElasticMaterial`. The overload
+//     resolver uses exact type equality; `Steel_AISI_1045()` has compile-time
+//     type `StructureRef("Steel_AISI_1045")`, which does not match
+//     `TraitObject("ElasticMaterial")` at the call site. Wrap in
+//     `FEAMaterialInput(material: mat)` and pass `mi.material` (compile-time
+//     type `ElasticMaterial`). The runtime value is still the Steel_AISI_1045
+//     StructureInstance; the trampoline reads youngs_modulus / poisson_ratio /
+//     density off it.
+//
+//   Boundary conditions:
+//     A cantilever is clamped at the root (x_min) face — encoded as a SINGLE
+//     `FixedSupport`. The `modal_analysis` trampoline interprets the
+//     `boundary_conditions` list to realize the Dirichlet DOFs (clamp ALL DOFs
+//     on the x_min face); the exact realization + mesh density are finalized in
+//     step-16. (`ModalOptions` is a structure ctor — it accepts the
+//     `List<FixedSupport>` value for its `List<Support>` param without a
+//     call-site type check, same as `LoadCase.supports`.)
+
+structure CantileverBeamModes {
+    // Geometry: 200 mm slender beam, 10 mm × 2 mm rectangular cross-section.
+    param length : Length = 200mm
+    param width  : Length = 10mm
+    param height : Length = 2mm
+
+    // Material: AISI 1045 medium-carbon steel (E = 205 GPa, ν = 0.29,
+    // ρ = 7850 kg/m³ — density is required for the mass matrix M).
+    let material = Steel_AISI_1045()
+
+    // Wrap material in FEAMaterialInput so that member-access .material has
+    // compile-time type ElasticMaterial (matching the fn param type).
+    let mi = FEAMaterialInput(material: material)
+
+    // Cantilever: clamp the root (x_min) face. A single FixedSupport signals
+    // the clamped-free configuration to the trampoline (step-16).
+    let root = FixedSupport(target: "x_min")
+
+    // Modal options: extract the first 3 modes, undamped, bending in z.
+    // reference_direction = vec3(0,0,1) is the dimensionless unit excitation
+    // direction along which participation mass is projected (the slender
+    // bending direction). tol / max_iters / sigma use ModalOptions defaults.
+    let opts = ModalOptions(
+        n_modes: 3,
+        boundary_conditions: [root],
+        damping: NoDamping(),
+        reference_direction: vec3(0.0, 0.0, 1.0)
+    )
+
+    // Modal solve: the @optimized dispatcher routes this call to the
+    // `modal::free_vibration` trampoline in crates/reify-eval/src/modal_ops.rs.
+    let result = modal_analysis(mi.material, length, width, height, opts)
+
+    // Fundamental (first-mode) natural frequency in Hz — the headline signal.
+    let f1 = first_frequency(result)
+}
