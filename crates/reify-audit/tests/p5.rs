@@ -1118,6 +1118,102 @@ mod tests {
             entries
         );
     }
+
+    /// Fix 1 true-positive guard (RED — S3): when one metadata.files entry IS
+    /// present on main but another is genuinely absent, the finding must stay
+    /// High and the MetadataFiles evidence must cite ONLY the absent entry,
+    /// not the present one.
+    ///
+    /// This FAILS after S2, whose surviving High finding still cites the full
+    /// `missing` set (both present.rs and absent.rs), so the "must not contain
+    /// present.rs" assertion fails.
+    #[test]
+    fn partially_absent_deliverable_stays_high_and_cites_only_absent() {
+        let conn = seed_db();
+        insert_task_completed_event(&conn, "4101");
+
+        let mut git = MockGitOps::new();
+        // Empty primary diff → everything in metadata.files is in `missing`.
+        git.set_diff_changed_paths("main", "stale_sha_2", vec![]);
+        // No sibling-FF rescue.
+        git.set_log_grep("main", "4101", vec![]);
+        // present.rs is on main; absent.rs is NOT (defaults to false).
+        git.set_path_tracked_on("main", "crates/reify-x/src/present.rs", true);
+        // crates/reify-x/src/absent.rs → not set → defaults false (genuinely absent).
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "4101".to_string(),
+            TaskMetadata {
+                task_id: "4101".to_string(),
+                status: "done".to_string(),
+                files: vec![
+                    "crates/reify-x/src/present.rs".to_string(),
+                    "crates/reify-x/src/absent.rs".to_string(),
+                ],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("stale_sha_2".to_string()),
+                    note: None,
+                }),
+                title: "Partially-absent deliverable test task".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one finding; got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::P5PhantomDone);
+        assert_eq!(
+            f.severity,
+            Severity::High,
+            "absent entry remains → must stay High; got {:?}",
+            f.severity
+        );
+        let s = f.summary.to_lowercase();
+        assert!(
+            s.contains("mismatch") || s.contains("not reachable"),
+            "summary should mention 'mismatch' or 'not reachable'; got {:?}",
+            f.summary
+        );
+        let metadata_files_evidence = f.evidence.iter().find_map(|e| match e {
+            EvidenceRef::MetadataFiles { entries } => Some(entries),
+            _ => None,
+        });
+        let entries = metadata_files_evidence.expect("MetadataFiles evidence must be present");
+        assert!(
+            entries.iter().any(|p| p == "crates/reify-x/src/absent.rs"),
+            "absent.rs must appear in evidence; got {:?}",
+            entries
+        );
+        assert!(
+            !entries.iter().any(|p| p == "crates/reify-x/src/present.rs"),
+            "present.rs must NOT appear in evidence (it is on main); got {:?}",
+            entries
+        );
+    }
 }
 
 } // mod p5
