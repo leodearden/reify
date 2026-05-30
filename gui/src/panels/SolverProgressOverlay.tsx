@@ -12,7 +12,7 @@
  * Per PRD §2.2 task ζ and docs/gui-event-channels/solver-progress.md.
  */
 
-import { Show, type JSX } from 'solid-js';
+import { Show, createMemo, type JSX } from 'solid-js';
 import type { SolverProgress } from '../types';
 import styles from './SolverProgressOverlay.module.css';
 
@@ -73,6 +73,14 @@ function formatEta(eta_ms: number): string {
  * in the top-right corner with iteration metrics and a Cancel button.
  */
 export function SolverProgressOverlay(props: SolverProgressOverlayProps): JSX.Element {
+  // Memoize the polyline computation so buildPolylinePoints (5 reduce/map
+  // passes over the full trace) only re-runs when props.trace changes, not on
+  // every other reactive update in the component tree.
+  const polylinePoints = createMemo(() => {
+    if (!props.trace || props.trace.length < 2) return '';
+    return buildPolylinePoints(props.trace);
+  });
+
   return (
     <Show when={props.progress !== null && props.progress}>
       {(p) => (
@@ -103,7 +111,7 @@ export function SolverProgressOverlay(props: SolverProgressOverlayProps): JSX.El
               class={styles.chart}
             >
               <polyline
-                points={buildPolylinePoints(props.trace!)}
+                points={polylinePoints()}
                 fill="none"
                 stroke="var(--accent, #4fc3f7)"
                 stroke-width="1.5"

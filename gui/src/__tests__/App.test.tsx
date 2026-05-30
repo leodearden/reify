@@ -5726,7 +5726,11 @@ describe('App SolverProgressOverlay integration', () => {
 
       expect(screen.queryByTestId('solver-progress-overlay')).toBeTruthy();
 
-      fireEvent.click(screen.getByText('Cancel'));
+      // Scope the query to the overlay to avoid ambiguity if other Cancel
+      // controls (e.g. AutoResolvePanel) are present in the same render tree.
+      fireEvent.click(
+        within(screen.getByTestId('solver-progress-overlay')).getByRole('button', { name: 'Cancel' }),
+      );
 
       // cancelSolve is async — flush microtasks
       await Promise.resolve();

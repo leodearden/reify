@@ -158,7 +158,12 @@ export function createEngineStore(options?: EngineStoreOptions) {
 
   function setEvalStatus(status: EvaluationStatus) {
     setState('evalStatus', status);
-    if (status.phase === 'idle') {
+    // Reset solver progress on any phase that is not an active solve phase.
+    // EvaluationStatus.phase is currently 'idle' | 'evaluating' | 'resolving';
+    // the active-solve phases are 'evaluating' and 'resolving'. Using a negative
+    // guard (rather than === 'idle') means any future terminal phase added to the
+    // union will automatically trigger a reset without needing a code change here.
+    if (status.phase !== 'evaluating' && status.phase !== 'resolving') {
       resetSolverProgress();
     }
   }
@@ -236,10 +241,19 @@ export function createEngineStore(options?: EngineStoreOptions) {
 
   let debounceHandle: ReturnType<typeof setTimeout> | null = null;
 
+  // Maximum trace entries stored for the convergence chart. Matches the chart
+  // pixel width (200px) so we never hold more history than is renderable, and
+  // per-render cost of buildPolylinePoints stays bounded even for long CG runs.
+  const TRACE_CAP = 200;
+
   function applySolverProgress(p: SolverProgress) {
     setState(produce((s) => {
       s.solverProgress.latest = p;
       s.solverProgress.trace.push(p);
+      // Evict the oldest entry once we exceed the cap (sliding window).
+      if (s.solverProgress.trace.length > TRACE_CAP) {
+        s.solverProgress.trace.shift();
+      }
       if (!s.solverProgress.coarseReached && p.residual < 1e-2) {
         s.solverProgress.coarseReached = true;
       }
@@ -279,6 +293,9 @@ export function createEngineStore(options?: EngineStoreOptions) {
     }
 
     return () => {
+      // Clear any pending debounce timer first so it cannot fire after teardown
+      // and call setState on a disposed store.
+      resetSolverProgress();
       for (const unlisten of unlisteners) {
         unlisten();
       }

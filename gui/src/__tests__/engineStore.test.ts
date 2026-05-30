@@ -1597,4 +1597,51 @@ describe('engineStore solverProgress', () => {
       dispose();
     });
   });
+
+  it('(amend-1) cleanup() clears the pending debounce timer so visible never flips after teardown', async () => {
+    await createRoot(async (dispose) => {
+      vi.useFakeTimers();
+      try {
+        mockOnMeshUpdate.mockResolvedValue(vi.fn());
+        mockOnValueUpdate.mockResolvedValue(vi.fn());
+        mockOnConstraintUpdate.mockResolvedValue(vi.fn());
+        mockOnEvaluationStatus.mockResolvedValue(vi.fn());
+        mockOnMeshRemoved.mockResolvedValue(vi.fn());
+        mockOnValueRemoved.mockResolvedValue(vi.fn());
+        mockOnConstraintRemoved.mockResolvedValue(vi.fn());
+
+        const store = createEngineStore();
+        const cleanup = await store.subscribeToEvents();
+
+        // Arm the debounce timer with one tick
+        store.applySolverProgress({ solver_kind: 'cg' as const, iter: 1, residual: 0.5 });
+        expect(store.state.solverProgress.visible).toBe(false);
+
+        // Tear down before the timer fires
+        cleanup();
+
+        // Timer would fire at 1000ms — cleanup should have cancelled it
+        vi.advanceTimersByTime(1000);
+        expect(store.state.solverProgress.visible).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+      dispose();
+    });
+  });
+
+  it('(amend-3) trace is capped at 200 entries (sliding window)', () => {
+    createRoot((dispose) => {
+      const { state, applySolverProgress } = createEngineStore();
+      // Push 201 ticks — the 201st should evict the 1st
+      for (let i = 1; i <= 201; i++) {
+        applySolverProgress({ solver_kind: 'cg' as const, iter: i, residual: 0.5 });
+      }
+      expect(state.solverProgress.trace).toHaveLength(200);
+      // Oldest entry is iter:2 (iter:1 was evicted)
+      expect(state.solverProgress.trace[0].iter).toBe(2);
+      expect(state.solverProgress.trace[199].iter).toBe(201);
+      dispose();
+    });
+  });
 });
