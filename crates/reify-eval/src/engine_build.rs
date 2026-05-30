@@ -8258,4 +8258,123 @@ mod mixed_region_tests {
             "non-positive thickness → InvalidInterfaceGeometry",
         );
     }
+
+    // ── op_accepts_repr / classify_op_input_reprs unit tests (task 4049) ────────
+
+    /// Pins the `(Operation, ReprKind)` input-repr classifier table for the
+    /// consumer-demand backward pass (PRD §3a.4, task 4049).
+    ///
+    /// Asserts the following classifier contract:
+    ///
+    /// - Boolean* and Transform* and Pattern* accept BOTH BRep and Mesh.
+    /// - Modify* (Fillet/Chamfer/Shell/Draft/Thicken) and Sweep* (8 variants)
+    ///   accept BRep but NOT Mesh.
+    /// - `Operation::Convert { from: ReprKind::BRep }` is classified (accepts
+    ///   at least one repr).
+    ///
+    /// RED before step-2 impl: `op_accepts_repr` / `classify_op_input_reprs`
+    /// do not exist yet.
+    #[test]
+    fn op_accepts_repr_classifier_table() {
+        use reify_ir::{Operation, ReprKind};
+
+        // ── Boolean* ─────────────────────────────────────────────────────────
+        for bool_op in [
+            Operation::BooleanUnion,
+            Operation::BooleanDifference,
+            Operation::BooleanIntersection,
+        ] {
+            assert!(
+                op_accepts_repr(&bool_op, ReprKind::BRep),
+                "{bool_op:?} must accept BRep"
+            );
+            assert!(
+                op_accepts_repr(&bool_op, ReprKind::Mesh),
+                "{bool_op:?} must accept Mesh"
+            );
+        }
+
+        // ── Modify* — BRep-only consumer ─────────────────────────────────────
+        for mod_op in [
+            Operation::ModifyFillet,
+            Operation::ModifyChamfer,
+            Operation::ModifyShell,
+            Operation::ModifyDraft,
+            Operation::ModifyThicken,
+        ] {
+            assert!(
+                op_accepts_repr(&mod_op, ReprKind::BRep),
+                "{mod_op:?} must accept BRep"
+            );
+            assert!(
+                !op_accepts_repr(&mod_op, ReprKind::Mesh),
+                "{mod_op:?} must NOT accept Mesh (BRep-only consumer)"
+            );
+        }
+
+        // ── Sweep* — BRep-only consumer ──────────────────────────────────────
+        for sweep_op in [
+            Operation::SweepLoft,
+            Operation::SweepExtrude,
+            Operation::SweepRevolve,
+            Operation::SweepSweep,
+            Operation::SweepExtrudeSymmetric,
+            Operation::SweepSweepGuided,
+            Operation::SweepLoftGuided,
+            Operation::SweepPipe,
+        ] {
+            assert!(
+                op_accepts_repr(&sweep_op, ReprKind::BRep),
+                "{sweep_op:?} must accept BRep"
+            );
+            assert!(
+                !op_accepts_repr(&sweep_op, ReprKind::Mesh),
+                "{sweep_op:?} must NOT accept Mesh (BRep-only consumer)"
+            );
+        }
+
+        // ── Transform* ───────────────────────────────────────────────────────
+        for transform_op in [
+            Operation::TransformTranslate,
+            Operation::TransformRotate,
+            Operation::TransformScale,
+            Operation::TransformRotateAround,
+        ] {
+            assert!(
+                op_accepts_repr(&transform_op, ReprKind::BRep),
+                "{transform_op:?} must accept BRep"
+            );
+            assert!(
+                op_accepts_repr(&transform_op, ReprKind::Mesh),
+                "{transform_op:?} must accept Mesh"
+            );
+        }
+
+        // ── Pattern* ─────────────────────────────────────────────────────────
+        for pattern_op in [
+            Operation::PatternLinear,
+            Operation::PatternCircular,
+            Operation::PatternMirror,
+            Operation::PatternLinear2D,
+            Operation::PatternArbitrary,
+        ] {
+            assert!(
+                op_accepts_repr(&pattern_op, ReprKind::BRep),
+                "{pattern_op:?} must accept BRep"
+            );
+            assert!(
+                op_accepts_repr(&pattern_op, ReprKind::Mesh),
+                "{pattern_op:?} must accept Mesh"
+            );
+        }
+
+        // ── Convert — classified (accepts at least one repr) ─────────────────
+        let convert_op = Operation::Convert {
+            from: ReprKind::BRep,
+        };
+        assert!(
+            classify_op_input_reprs(&convert_op).is_some(),
+            "Convert{{from:BRep}} must be classified (Some)"
+        );
+    }
 }
