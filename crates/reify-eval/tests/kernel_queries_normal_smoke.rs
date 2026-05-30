@@ -112,7 +112,7 @@ fn normal_smoke_compiles_as_vec3_real_and_face_normal_at_ffis() {
         return;
     }
 
-    let mut kernel = reify_kernel_occt::OcctKernelHandle::spawn();
+    let kernel = reify_kernel_occt::OcctKernelHandle::spawn();
 
     // Build box(10mm × 10mm × 10mm) centred at origin.
     let box_handle = kernel
