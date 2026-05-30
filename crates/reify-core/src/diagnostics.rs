@@ -1228,6 +1228,21 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_NONINT_EXP_ON_DIMENSIONED`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     NonIntegerExponentOnDimensioned,
+    /// Origin: `crates/reify-eval/src/engine_eval.rs` (post-eval MassProperties
+    /// PSD hook in the RBD-α dynamics foundation pass).
+    ///
+    /// Emitted as a `Severity::Error` when a `MassProperties(...)` constructor
+    /// produces a `Value::StructureInstance` whose `inertia` field is not
+    /// positive semi-definite (minimum eigenvalue < −tol of the symmetric part
+    /// `(M + Mᵀ)/2`). The cell is replaced with `Value::Undef` so downstream
+    /// dynamics consumers never operate on a physically invalid inertia tensor.
+    ///
+    /// Canonical message form:
+    /// `"MassProperties '<name>': inertia tensor is not positive semi-definite (min eigenvalue ≈ <λ_min>)"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_DynamicsInertiaNotPSD`.
+    /// Registered in task 3822 (RBD-α, PRD §dynamics).
+    DynamicsInertiaNotPSD,
 }
 
 /// A diagnostic message with location and optional labels.
