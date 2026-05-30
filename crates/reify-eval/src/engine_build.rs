@@ -8444,4 +8444,30 @@ mod mixed_region_tests {
             "Convert{{from:BRep}} must be classified (Some)"
         );
     }
+
+    /// Strum-iterate completeness test (task 4049 test "d", PRD §9 Q10).
+    ///
+    /// Iterates ALL current `Operation` variants via `strum::IntoEnumIterator`
+    /// and asserts every one has an explicit classifier entry. This is the
+    /// standing forcing function: a future `Operation` variant auto-appears in
+    /// `Operation::iter()` (via the `EnumIter` derive added in pre-1) and
+    /// fails this test until consciously classified, making silent omission
+    /// impossible.
+    ///
+    /// RED before step-4: `PrimitiveBox/Cylinder/Sphere/Tube` and
+    /// `CurveLineSegment/Arc/Helix/InterpCurve/BezierCurve/NurbsCurve`
+    /// hit the `_ => None` catch-all in step-2's impl.
+    #[test]
+    fn classify_op_all_variants_are_classified() {
+        use reify_ir::Operation;
+        use strum::IntoEnumIterator;
+
+        for op in Operation::iter() {
+            assert!(
+                classify_op_input_reprs(&op).is_some(),
+                "Operation::{op:?} has no explicit classifier entry — \
+                 classify it BRep-vs-Mesh per PRD §3a.4 (task 4049)"
+            );
+        }
+    }
 }
