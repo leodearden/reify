@@ -2938,6 +2938,8 @@ impl Engine {
                         // composition slice that consumes `value_inputs`).
                         // Crucially, the OUTPUT cell (`cell_id`) is NOT in
                         // this list — that would be a graph self-loop.
+                        // Contract pinned by:
+                        //   tests/compute_dispatch_registry.rs::e2e_optimized_non_valueref_arg_yields_empty_value_inputs
                         let value_inputs: Vec<reify_core::ValueCellId> = args
                             .iter()
                             .filter_map(|arg| match &arg.kind {
