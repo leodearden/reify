@@ -434,41 +434,50 @@ pub fn shell_element_stiffness(
 ///
 /// The section rotations are enriched by a cubic bubble `f_b = ξη(1−ξ−η)` tied
 /// to an internal centroid node, adding 2 internal rotational DOFs
-/// `(Δβ_x, Δβ_y)` → a 20×20 *uncondensed* local matrix. The bubble enters the
-/// **transverse-shear** field by its **value** at the six *interior* tying
-/// points (`f_b ≠ 0` there, unlike the edge midpoints where `f_b = 0`), so the
-/// nodal↔bubble shear coupling `K_NB^shear ≠ 0` even on a flat facet — the core
-/// MITC3+ mechanism. The 2 bubble DOFs are then statically condensed:
+/// `(Δβ_x, Δβ_y)` → a 20×20 *uncondensed* local matrix, statically condensed:
 ///
 /// ```text
 /// K* = K_NN − K_NB · K_BB⁻¹ · K_BN        (18×18)
 /// ```
 ///
+/// ## Where the shear-locking cure lives (corrected — esc-3392)
+///
+/// On a flat, constant-Jacobian facet the cubic bubble is **inert in transverse
+/// shear**: the nodal↔bubble shear coupling `K_NB^shear ≡ 0` (the
+/// divergence-theorem result of task 3349, re-derived for the flat-facet shear
+/// field — DD#2 retracted). The genuine MITC3+ shear-locking cure here lives
+/// **entirely in the nodal assumed transverse-shear field**: the bare three-node
+/// (DISP3) covariant shear is sampled at the six *interior* tying points A–F and
+/// re-interpolated via the MITC3+ assumed field (Eq. 9,
+/// [`Mitc3Plus::interpolate_assumed_shear_mitc3_plus`]). That field differs from
+/// bare MITC3's edge-midpoint Eq. 5 by O(1) structural terms, so it is a softer,
+/// patch-consistent, rigid-safe field — and `K*` is **not** bit-identical to
+/// [`shell_element_stiffness`].
+///
 /// ## Block contents
 ///
-/// - **K_NN** — the 18 nodal DOFs: membrane + bending + the bare-MITC3
-///   3-edge-midpoint assumed-shear blocks, **bit-identical to**
-///   [`shell_element_stiffness`]. All bare-MITC3 patch/null-space behaviour is
-///   inherited, and `K* ≤ K_NN` (static condensation only ever softens).
-/// - **K_BB** — the bubble self-stiffness: bending (`∫ ∇f_b·D_b·∇f_b`) plus
-///   shear; SPD (its shear part alone is SPD because the two bubble columns map
-///   through the independent columns of `J2⁻ᵀ`), so the 2×2 inverse is
-///   well-posed.
-/// - **K_NB / K_BN** — bubble↔nodal coupling. The **bending** coupling is
-///   identically zero on a flat facet (`∫_T ∇f_b dA = ∮ f_b·n ds = 0`,
-///   divergence theorem, `f_b = 0` on edges), so it is not assembled. The
-///   **shear** coupling is the load-bearing, non-zero term.
+/// - **K_NN** — the 18 nodal DOFs: membrane + bending (both bit-identical to
+///   bare MITC3) + the **MITC3+ interior-tying assumed-shear** block (the A–F /
+///   Eq. 9 field; softer than and distinct from bare MITC3's edge-midpoint
+///   block). This is what `K*` reduces to (see K_NB below).
+/// - **K_BB** — the bubble bending self-stiffness `∫ ∇f_b·D_b·∇f_b`; SPD, so the
+///   2×2 inverse used by the condensation is well-posed.
+/// - **K_NB / K_BN** — bubble↔nodal coupling, **identically zero on a flat
+///   facet** in *both* bending (`∫_T ∇f_b dA = ∮ f_b·n ds = 0`, divergence
+///   theorem) *and* shear (bubble out of the shear field). The static
+///   condensation correction `K_NB·K_BB⁻¹·K_BN` is therefore zero and
+///   `K* = K_NN` exactly. The 20×20 skeleton + 2×2 condensation are retained for
+///   faithfulness to the formulation and as the substrate the curved/director
+///   element (task 4065) activates — there `K_NB ≠ 0` and the bubble does work.
 ///
 /// ## Patch-test consistency
 ///
-/// The bubble's shear contribution is taken **deviatoric** — `f_b` minus its
-/// quadrature mean `f̄` over the interior tying points — so that
-/// `Σ_k w_k (f_b − f̄) = 0` exactly. A *constant* transverse-shear state then
-/// gives `K_BN·u = 0` (the bubble is not excited), the bubble stays at zero
-/// under condensation, and `K*·u = K_NN·u` reproduces the constant state
-/// exactly (patch test). Only the **higher-order** (parasitic, linearly
-/// varying) shear that causes locking excites the bubble, which condensation
-/// then relieves.
+/// A *constant* transverse-shear state (e.g. uniform `θ_y`, `w = 0`) samples to a
+/// constant covariant shear at all six interior points; Eq. 9 reproduces a
+/// constant field exactly (`ĉ = 0`), so the nodal assumed-shear block reproduces
+/// the constant state and the membrane/bending patch tests are inherited from
+/// bare MITC3. Rigid-body modes give identically-zero covariant shear ⇒ the
+/// assumed field vanishes ⇒ the 6 rigid null modes are preserved.
 #[allow(clippy::needless_range_loop)]
 pub fn shell_element_stiffness_mitc3_plus(
     nodes: &[[f64; 3]; 3],
@@ -598,26 +607,30 @@ pub fn shell_element_stiffness_mitc3_plus(
         }
     }
 
-    // ---- MITC3+ transverse-shear K (Lee, Lee & Bathe 2014, Eqs. 8-9) ----
-    // Sample the bubble-enriched covariant transverse shear of the FULL
-    // displacement field (Eq. 8) at the six interior tying points A-F, then
-    // assemble the assumed covariant shear field (Eq. 9) at the quadrature
-    // points. The bubble enters the samples by the VALUE of f₄ (≠0 interior),
-    // so its α₄/β₄ columns populate K_NB^shear / K_BB^shear naturally.
-    let mut b_tp = [[[0.0_f64; NU]; 2]; Mitc3Plus::N_INTERIOR_TYING_POINTS];
+    // ---- MITC3+ transverse-shear K (Lee, Lee & Bathe 2014, Eq. 9) ----
+    // On a flat facet the cubic bubble is INERT in transverse shear
+    // (K_NB^shear ≡ 0; DD#2 retracted — esc-3392 corrected resolution). The
+    // shear-locking cure lives entirely in the NODAL assumed field: sample the
+    // bare three-node (DISP3) covariant transverse shear at the six interior
+    // tying points A-F and re-interpolate via Eq. 9 — a softer field than bare
+    // MITC3's edge-midpoint Eq. 5 (the difference has O(1) structural terms, so
+    // K* is NOT bit-identical to bare MITC3). The bubble enters BENDING only
+    // (K_BB^bend above), so the shear block touches the 18 nodal DOFs only and
+    // the bubble columns (18, 19) of the shear stay zero ⇒ K_NB = 0.
+    let mut b_tp = [[[0.0_f64; NDOF]; 2]; Mitc3Plus::N_INTERIOR_TYING_POINTS];
     for (kk, tp) in interior.iter().enumerate() {
-        b_tp[kk] = Mitc3Plus.covariant_shear_b_with_bubble(tp.coord);
+        b_tp[kk] = Mitc3Plus.covariant_shear_b_nodal(tp.coord);
     }
 
-    // The assumed covariant field (Eq. 9) is LINEAR in (r,s), so the shear
-    // energy integrand is quadratic; the symmetric 3-point rule at A, B, C
-    // (= interior[0..3], each weight 1/6) integrates it exactly.
+    // The assumed covariant field (Eq. 9) is linear in (r,s), so the shear
+    // energy integrand is quadratic; the symmetric 3-point rule at the interior
+    // A, B, C orbit (= interior[0..3], each weight 1/6) integrates it exactly.
     let quad_pts = [interior[0].coord, interior[1].coord, interior[2].coord];
     let qp_weight = 1.0 / 6.0;
     for qp in quad_pts {
-        // Assumed covariant shear B (2 × NU) at qp, column by column via Eq. 9.
-        let mut b_cov_qp = [[0.0_f64; NU]; 2];
-        for dof in 0..NU {
+        // Assumed covariant shear B (2 × NDOF) at qp, column by column via Eq. 9.
+        let mut b_cov_qp = [[0.0_f64; NDOF]; 2];
+        for dof in 0..NDOF {
             let samples: [ShearStrain; Mitc3Plus::N_INTERIOR_TYING_POINTS] = [
                 ShearStrain { gamma_xi_zeta: b_tp[0][0][dof], gamma_eta_zeta: b_tp[0][1][dof] },
                 ShearStrain { gamma_xi_zeta: b_tp[1][0][dof], gamma_eta_zeta: b_tp[1][1][dof] },
@@ -631,14 +644,14 @@ pub fn shell_element_stiffness_mitc3_plus(
             b_cov_qp[1][dof] = proj.gamma_eta_zeta;
         }
         // covariant → physical via J2⁻ᵀ
-        let mut b_phys = [[0.0_f64; NU]; 2];
-        for dof in 0..NU {
+        let mut b_phys = [[0.0_f64; NDOF]; 2];
+        for dof in 0..NDOF {
             b_phys[0][dof] = inv_t[0][0] * b_cov_qp[0][dof] + inv_t[0][1] * b_cov_qp[1][dof];
             b_phys[1][dof] = inv_t[1][0] * b_cov_qp[0][dof] + inv_t[1][1] * b_cov_qp[1][dof];
         }
         let scale = kappa_g * t * det2 * qp_weight;
-        for a in 0..NU {
-            for b in 0..NU {
+        for a in 0..NDOF {
+            for b in 0..NDOF {
                 k[a][b] += (b_phys[0][a] * b_phys[0][b] + b_phys[1][a] * b_phys[1][b]) * scale;
             }
         }
