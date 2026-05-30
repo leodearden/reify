@@ -1187,6 +1187,35 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_AT_ON_COLLECTION_SUB`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     AtOnCollectionSub,
+    /// Origin: `crates/reify-compiler/src/expr.rs`, BinOp Pow+Scalar branch.
+    ///
+    /// Emitted as `Severity::Error` when a dimensioned (`Scalar<Q>`) value is
+    /// raised to an exponent that is NOT an integer literal.  PRD §4.3 requires
+    /// an integer LITERAL for `Scalar<Q> ^ n → Scalar<Q^n>` because the
+    /// dimension vector `Q^n` must be computed at compile time; a runtime value
+    /// or a real-valued literal cannot provide this.
+    ///
+    /// Accepted exponent forms:
+    ///   - `ExprKind::NumberLiteral { is_real: false, .. }` (positive integer literal)
+    ///   - `ExprKind::UnOp { op: "-", operand: NumberLiteral { is_real: false, .. } }`
+    ///     (negative integer literal — `^` binds tighter than unary `-`)
+    ///
+    /// Rejected exponent forms (all produce this code):
+    ///   - Real literals (`is_real: true`), even when integer-valued (e.g. `2.0`)
+    ///   - Identifier references or any other non-literal expression
+    ///
+    /// Canonical message form:
+    ///   `"non-integer exponent on dimensioned value `T`; only integer-literal
+    ///    exponents are allowed (use sqrt for roots)"`
+    /// with a label `"exponent must be an integer literal"` on the exponent span.
+    ///
+    /// Per PRD §11.2 Q2: a dedicated code is minted rather than reusing the
+    /// Add/Sub-specific `DimensionMismatch` code, whose semantics ("dimension
+    /// mismatch in op: L vs R") do not fit this case.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_NONINT_EXP_ON_DIMENSIONED`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    NonIntegerExponentOnDimensioned,
 }
 
 /// A diagnostic message with location and optional labels.

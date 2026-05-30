@@ -854,8 +854,29 @@ pub(crate) fn compile_expr_guarded(
                                     Type::Scalar { dimension: scaled }
                                 };
                             }
-                            // None case: non-integer exponent on dimensioned base.
-                            // The error diagnostic is emitted in step-7.
+                            // None case: non-integer exponent on dimensioned base
+                            // (task-3805 / PRD §4.3 / E_NONINT_EXP_ON_DIMENSIONED).
+                            //
+                            // A real-valued literal (is_real:true), a non-literal exponent
+                            // (identifier, expression, etc.) all fall here.  Poison to
+                            // `Type::Error` (anti-cascade) and emit a single diagnostic so
+                            // downstream checks see `Type::Error` and suppress follow-on noise.
+                            if int_exp.is_none() {
+                                result_type = make_poison_type(
+                                    diagnostics,
+                                    Diagnostic::error(format!(
+                                        "non-integer exponent on dimensioned value `{}`; \
+                                         only integer-literal exponents are allowed \
+                                         (use sqrt for roots)",
+                                        compiled_left.result_type,
+                                    ))
+                                    .with_code(DiagnosticCode::NonIntegerExponentOnDimensioned)
+                                    .with_label(DiagnosticLabel::new(
+                                        right.span,
+                                        "exponent must be an integer literal",
+                                    )),
+                                );
+                            }
                         }
                     }
 
