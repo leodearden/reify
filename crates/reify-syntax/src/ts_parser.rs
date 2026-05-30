@@ -2952,7 +2952,14 @@ impl<'a> Lowering<'a> {
         let value_node = node.child_by_field_name("value")?;
         let unit_node = node.child_by_field_name("unit")?;
 
-        let value: f64 = Self::strip_underscores_and_parse(self.node_text(value_node))?;
+        // Use the shared radix-aware helper so that hex/binary quantity values
+        // (e.g. `0xFFmm`, `0b1010mm`) lower correctly (PRD D3/D4, task 3913/δ).
+        // strip_underscores_and_parse returns None for "0xFF", so using it here
+        // would silently drop radix quantity literals — the exact gap the γ
+        // grammar (task 3910) opened when it made `0xFFmm` parse as
+        // quantity_literal(number_literal "0xFF", unit_expr "mm").
+        // The `_is_real` component is discarded: QuantityLiteral has no is_real field.
+        let (value, _is_real) = Self::parse_number_literal_text(self.node_text(value_node))?;
         let unit = self.lower_unit_expr(unit_node)?;
 
         Some(Expr {
