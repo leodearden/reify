@@ -1024,6 +1024,100 @@ mod tests {
         // field-by-field comparisons would silently miss newly added fields.
         assert_eq!(pre_done_findings, scoped_findings);
     }
+
+    /// Fix 1 downgrade (RED — S1): when the claimed provenance commit is
+    /// unreachable AND no sibling-FF covers the missing set, but every
+    /// non-gitignored metadata.files entry resolves to a tracked path on
+    /// main (dir-aware), the deliverable landed and only the provenance
+    /// pointer is stale — downgrade High → Low.
+    ///
+    /// This FAILS on current code, which returns Severity::High
+    /// "metadata.files mismatch / commit not reachable from main".
+    #[test]
+    fn deliverable_present_on_main_downgrades_to_low() {
+        let conn = seed_db();
+        insert_task_completed_event(&conn, "4100");
+
+        let mut git = MockGitOps::new();
+        // Claimed commit covers nothing → everything in metadata.files is "missing".
+        git.set_diff_changed_paths("main", "stale_sha", vec![]);
+        // No sibling-FF rescue.
+        git.set_log_grep("main", "4100", vec![]);
+        // Both metadata.files entries are present on main: one is a regular
+        // file, the other exercises the dir-aware case (a directory that
+        // contains tracked files → git ls-tree returns non-empty).
+        git.set_path_tracked_on("main", "crates/reify-x/src/foo.rs", true);
+        git.set_path_tracked_on("main", "gui/src-tauri/src/tests", true);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "4100".to_string(),
+            TaskMetadata {
+                task_id: "4100".to_string(),
+                status: "done".to_string(),
+                files: vec![
+                    "crates/reify-x/src/foo.rs".to_string(),
+                    "gui/src-tauri/src/tests".to_string(),
+                ],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("stale_sha".to_string()),
+                    note: None,
+                }),
+                title: "Fix 1 downgrade test task".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one finding; got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::P5PhantomDone);
+        assert_eq!(
+            f.severity,
+            Severity::Low,
+            "all entries present on main → must downgrade to Low; got {:?}",
+            f.severity
+        );
+        let s = f.summary.to_lowercase();
+        assert!(
+            s.contains("deliverable") && s.contains("present"),
+            "summary should mention 'deliverable' and 'present'; got {:?}",
+            f.summary
+        );
+        let metadata_files_evidence = f.evidence.iter().find_map(|e| match e {
+            EvidenceRef::MetadataFiles { entries } => Some(entries),
+            _ => None,
+        });
+        let entries = metadata_files_evidence
+            .expect("MetadataFiles evidence must be present");
+        assert!(
+            !entries.is_empty(),
+            "MetadataFiles evidence must be non-empty (the missing set); got {:?}",
+            entries
+        );
+    }
 }
 
 } // mod p5
