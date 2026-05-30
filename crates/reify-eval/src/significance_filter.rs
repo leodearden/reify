@@ -251,6 +251,109 @@ pub fn significance_filter(
 #[cfg(test)]
 mod tests {
     use super::{FilterOutcome, is_opted_in, significance_filter};
+
+    // ── geometry_handle_significance tests (step-1 RED) ──────────────────────
+    mod geometry_handle {
+        use super::super::{geometry_handle_significance, FilterOutcome};
+        use reify_core::identity::RealizationNodeId;
+        use reify_ir::{GeometryHandleId, Value};
+
+        /// Build a `Value::GeometryHandle` with the given entity, realization
+        /// index, upstream_values_hash, and kernel_handle id.
+        fn gh(entity: &str, index: u32, hash: [u8; 32], kernel_id: u64) -> Value {
+            Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new(entity, index),
+                upstream_values_hash: hash,
+                kernel_handle: GeometryHandleId(kernel_id),
+            }
+        }
+
+        /// (1) Equal realization_ref + equal upstream_values_hash → Equivalent.
+        #[test]
+        fn equal_rr_and_hash_yields_equivalent() {
+            let a = gh("Widget", 0, [0xAAu8; 32], 1);
+            let b = gh("Widget", 0, [0xAAu8; 32], 1);
+            assert_eq!(
+                geometry_handle_significance(&a, &b),
+                FilterOutcome::Equivalent,
+                "same rr + same hash must be Equivalent",
+            );
+        }
+
+        /// (2) Equal realization_ref + DIFFERENT upstream_values_hash → Different.
+        #[test]
+        fn different_hash_yields_different() {
+            let a = gh("Widget", 0, [0xAAu8; 32], 1);
+            let b = gh("Widget", 0, [0xBBu8; 32], 1);
+            assert_eq!(
+                geometry_handle_significance(&a, &b),
+                FilterOutcome::Different,
+                "same rr but different hash must be Different",
+            );
+        }
+
+        /// (3a) DIFFERENT realization_ref entity + equal hash → Different.
+        #[test]
+        fn different_entity_yields_different() {
+            let a = gh("Widget", 0, [0xAAu8; 32], 1);
+            let b = gh("Gadget", 0, [0xAAu8; 32], 1);
+            assert_eq!(
+                geometry_handle_significance(&a, &b),
+                FilterOutcome::Different,
+                "different entity in rr must be Different",
+            );
+        }
+
+        /// (3b) DIFFERENT realization_ref index + equal hash → Different.
+        #[test]
+        fn different_index_yields_different() {
+            let a = gh("Widget", 0, [0xAAu8; 32], 1);
+            let b = gh("Widget", 1, [0xAAu8; 32], 1);
+            assert_eq!(
+                geometry_handle_significance(&a, &b),
+                FilterOutcome::Different,
+                "different realization index in rr must be Different",
+            );
+        }
+
+        /// (4) Equal rr + equal hash but DIFFERENT kernel_handle → Equivalent.
+        /// kernel_handle is intentionally excluded from significance comparison
+        /// (re-realization to a new handle for semantically-identical geometry
+        /// must NOT invalidate downstream per GHR-β §DD / PRD §1).
+        #[test]
+        fn different_kernel_handle_yields_equivalent() {
+            let a = gh("Widget", 0, [0xAAu8; 32], 1);
+            let b = gh("Widget", 0, [0xAAu8; 32], 999);
+            assert_eq!(
+                geometry_handle_significance(&a, &b),
+                FilterOutcome::Equivalent,
+                "kernel_handle difference must NOT cause Different (excluded from comparison)",
+            );
+        }
+
+        /// (5) Non-GeometryHandle input on either or both sides → Different
+        /// (conservative fallback).
+        #[test]
+        fn non_geometry_handle_input_yields_different() {
+            let gh_val = gh("Widget", 0, [0xAAu8; 32], 1);
+            let other = Value::Undef;
+            assert_eq!(
+                geometry_handle_significance(&other, &gh_val),
+                FilterOutcome::Different,
+                "non-GH old must yield Different",
+            );
+            assert_eq!(
+                geometry_handle_significance(&gh_val, &other),
+                FilterOutcome::Different,
+                "non-GH new must yield Different",
+            );
+            assert_eq!(
+                geometry_handle_significance(&other, &other),
+                FilterOutcome::Different,
+                "both non-GH must yield Different",
+            );
+        }
+    }
     use reify_core::Type;
     use reify_ir::{FieldSourceKind, InterpolationKind, SampledField, SampledGridKind, Value};
     use std::collections::BTreeMap;
