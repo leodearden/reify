@@ -75,6 +75,7 @@ Run: `cargo test -p reify-expr --lib`
 | `kleene_and_truth_table` | All 9 AND rows (private API surface) |
 | `kleene_or_truth_table` | All 9 OR rows (private API surface) |
 | `kleene_not_truth_table` | All 3 NOT rows (private API surface) |
+| `kleene_implies_truth_table` | All 9 IMPLIES rows (private API surface) |
 | `try_from_value_bool_true` | `Value::Bool(true)` → `KBool::True` |
 | `try_from_value_bool_false` | `Value::Bool(false)` → `KBool::False` |
 | `try_from_value_undef` | `Value::Undef` → `KBool::Undef` |
