@@ -1311,8 +1311,8 @@ fn eval_worst_case_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
 
 /// Dispatch `solve_load_cases(material, length, width, height, cases, options)` —
 /// iterate `cases : List<LoadCase>`, call `solve_elastic_static` per case
-/// (using shared `options`; per-case override resolved in step-4), and collect
-/// per-case `ElasticResult` into a `MultiCaseResult`-shaped
+/// (using shared `options` or per-case override), and collect per-case
+/// `ElasticResult` into a `MultiCaseResult`-shaped
 /// `Value::Map { "cases" -> Map<String, ElasticResult> }`.
 ///
 /// Extracted from `eval_expr` to keep that recursive frame small (mirrors the
@@ -1323,6 +1323,30 @@ fn eval_worst_case_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
 /// `invoke_solve_elastic_static`.  The `eval_fea` arm for `"solve_load_cases"`
 /// is a permanent `Value::Undef` stub (recognised-name contract for wrong-arity
 /// callers; mirrors the `"worst_case"` dual-arm pattern).
+///
+/// # Cache-key invariant (step-6 / PRD task 3005)
+///
+/// The geometry/mesh-affecting arguments (`material`, `length`, `width`, `height`)
+/// are bound ONCE from `args[]` and passed by CLONE to every per-case
+/// `invoke_solve_elastic_static` call.  They are never re-evaluated or derived
+/// from per-case data — ensuring that all cases sharing the same outer arguments
+/// pass an identical mesh-cache key to the `@optimized` trampoline (geometry +
+/// mesh params).  Only `loads` and `supports` vary per case.
+///
+/// The effective `ElasticOptions` per case is resolved as:
+///   - `LoadCase.options == Value::Option(Some(X))` → `X` (per-case override)
+///   - `Value::Option(None)` / absent → `shared_options` arg (inherited default)
+///
+/// This means cases that share the same body/material/options AND override their
+/// ElasticOptions to the SAME effective value will produce the SAME mesh-cache key,
+/// while cases that override to a DIFFERENT value (different element_order /
+/// mesh_size) will produce a DIFFERENT mesh-cache key (intentional — they want a
+/// different mesh).
+///
+/// With the current `invoke_solve_elastic_static` implementation (evaluates the
+/// contract body directly, bypassing the `@optimized` ComputeNode trampoline),
+/// no actual ComputeNode realization occurs — mesh-reuse verification requires
+/// routing through the engine's @optimized dispatch (future work; see step-5 test).
 ///
 /// Failure modes (silent-Undef per PRD task #10 deferral):
 /// - `args.len() < 5`: wrong arity (guarded by dispatch arm; defensive here)
