@@ -1177,13 +1177,15 @@ impl EngineSession {
         }
     }
 
-    /// Extract (base_node_positions: Vec<f64>, modes_displaced_positions: Vec<Vec<f64>>)
-    /// from the first `BucklingResult`-shaped `Value::StructureInstance` in `values`.
+    /// Extract `(base_node_positions: Vec<f64>, modes_displaced_positions: Vec<Vec<f64>>,
+    /// eigenvalues: Vec<f64>)` from the first `BucklingResult`-shaped
+    /// `Value::StructureInstance` in `values`.
     ///
     /// Returns `None` when:
     /// - no `StructureInstance` with `type_name == "BucklingResult"` is found, or
     /// - `base_node_positions` is absent/malformed, or
-    /// - `modes` list is absent/malformed.
+    /// - `modes` list is absent/malformed, or
+    /// - any mode's `eigenvalue` field is absent or not `Value::Real`.
     #[allow(clippy::type_complexity)]
     fn extract_buckling_data(
         values: &reify_ir::ValueMap,

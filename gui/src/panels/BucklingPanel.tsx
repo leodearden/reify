@@ -14,7 +14,7 @@
  * logic on the frontend (PRD §14 Q4/Q5 resolution).
  */
 
-import { For, Show, onMount, onCleanup } from 'solid-js';
+import { For, Show, onMount, onCleanup, createMemo } from 'solid-js';
 import type { BucklingStore } from '../stores/bucklingStore';
 import { createBucklingAnimator } from '../viewport/bucklingAnimator';
 import { computeModeThumbnail } from '../viewport/modeThumbnail';
@@ -110,12 +110,12 @@ export function BucklingPanel(props: BucklingPanelProps) {
           <For each={store.modes()}>
             {(modeIdx) => {
               const m = () => store.state.modes[String(modeIdx)];
-              const tn = () => {
+              const tn = createMemo(() => {
                 const base = store.state.base;
                 const peak = m()?.peak;
                 if (!base || !peak || base.length === 0 || peak.length === 0) return null;
                 return computeModeThumbnail(base, peak);
-              };
+              });
               return (
                 <div
                   data-testid={`buckling-mode-row-${modeIdx}`}
