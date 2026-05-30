@@ -776,6 +776,71 @@ mod tests {
         );
     }
 
+    /// Verify that a stub marker appearing in two tasks' diffs at the same location
+    /// produces exactly ONE finding, attributed to the introducer (earliest done_at).
+    ///
+    /// Tasks 7001 (done_at=200) and 7002 (done_at=100) both surface the identical
+    /// added line at widget.rs:42. The introducer is 7002 (smaller done_at).
+    #[test]
+    fn shared_file_markers_attributed_once_to_introducer() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let path = "crates/shared/widget.rs";
+        let shared_line = (42usize, "    unimplemented!()".to_string());
+
+        let mut git = MockGitOps::new();
+        git.set_diff_added_lines("main", "task/7001", path, vec![shared_line.clone()]);
+        git.set_diff_added_lines("main", "task/7002", path, vec![shared_line.clone()]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert("7001".to_string(), TaskMetadata {
+            task_id: "7001".to_string(),
+            status: "done".to_string(),
+            files: vec![path.to_string()],
+            done_provenance: None,
+            title: "Wire foo into bar".to_string(),
+            prd: None,
+            consumer_ref: None,
+            audit_foundation: None,
+            done_at: Some(200), // later → NOT the introducer
+        });
+        task_metadata.insert("7002".to_string(), TaskMetadata {
+            task_id: "7002".to_string(),
+            status: "done".to_string(),
+            files: vec![path.to_string()],
+            done_provenance: None,
+            title: "Wire foo into bar".to_string(),
+            prd: None,
+            consumer_ref: None,
+            audit_foundation: None,
+            done_at: Some(100), // earlier → the introducer
+        });
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p2_consumer_stub::check(&ctx);
+        assert_eq!(findings.len(), 1,
+            "expected exactly 1 finding after de-dup (not one per task); got {:?}", findings);
+        let f = &findings[0];
+        assert_eq!(f.task_id, "7002",
+            "finding must be attributed to introducer task 7002 (done_at=100); got {:?}", f.task_id);
+        assert_eq!(f.pattern, Pattern::P2ConsumerStub);
+        assert_eq!(f.severity, Severity::Medium);
+        assert!(f.evidence.iter().any(|e| match e {
+            EvidenceRef::File { path: p } => p == path, _ => false,
+        }), "finding must reference the shared path; got {:?}", f.evidence);
+    }
+
     /// Verify that `unimplemented!()` lines inside an inline `#[cfg(test)]` module
     /// are suppressed while a genuine production stub BEFORE the gate still flags.
     ///

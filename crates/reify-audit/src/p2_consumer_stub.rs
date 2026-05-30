@@ -228,8 +228,8 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         );
     }
 
-    let mut findings = Vec::new();
-
+    // Phase 1 — collect all surviving (path, line_no, content, label) per task.
+    //
     // NOTE: unlike `p5_phantom_done::check_task` (which filters `meta.status != "done"`
     //   to skip non-`done` tasks), P2 deliberately iterates EVERY task regardless of
     //   status. Reason: the D-1 pre-done hook calls into P2 *before* the orchestrator
@@ -244,6 +244,21 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     //   is what P2 looks for, and there is no further filter inside this function.
     //
     //   Reference: `docs/architecture-audit/f-infra-design.md` §5 P2 and §10.
+
+    // Raw match: all fields needed for dedup and finding emission.
+    struct RawEntry {
+        path: String,
+        line_no: usize,
+        content: String,
+        label: &'static str,
+        task_id: String,
+        /// Ordering key: (done_at_or_max, numeric_task_id_or_max).
+        /// Smaller = introduced earlier = the introducer.
+        sort_key: (i64, u64),
+    }
+
+    let mut raw: Vec<RawEntry> = Vec::new();
+
     for meta in ctx.task_metadata.values() {
         // Optional single-task narrowing (mirrors p5_phantom_done::check_with_target).
         if let Some(target) = ctx.target_task_id.as_deref()
@@ -253,84 +268,106 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         }
 
         let task_branch = format!("task/{}", meta.task_id);
-        let severity = if title_signals_stub(&meta.title) {
-            Severity::Low
-        } else {
-            Severity::Medium
-        };
+        let sort_key = (
+            meta.done_at.unwrap_or(i64::MAX),
+            meta.task_id.parse::<u64>().unwrap_or(u64::MAX),
+        );
 
         // TODO(perf): coalesce paths per task into a single
-        //   `git diff main..task/<id> -- <p1> <p2> ...` invocation instead of
-        //   one subprocess per (task, file) — avoids N×M cost in production
-        //   sweeps over hundreds of tasks. The `+++ b/path` hunk headers
-        //   already delimit per-file sections in a multi-path diff output.
+        //   `git diff main..task/<id> -- <p1> <p2> ...` invocation.
         //   Reference: docs/architecture-audit/f-infra-design.md §5 P2.
-        //
-        //   Additionally: `line_matches_stub` allocates a fresh `String` per
-        //   added line via `to_lowercase()` (see line_matches_stub, top of
-        //   function). When the per-task coalescing follow-up lands, consider
-        //   reusing a per-task `String` scratch buffer via `clear();
-        //   push_str(line); make_ascii_lowercase()` guarded by
-        //   `line.is_ascii()`, falling back to `to_lowercase()` for the
-        //   non-ASCII tail. This collapses the ASCII fast-path and
-        //   scratch-buffer goals into one coherent strategy: zero allocations
-        //   on all-ASCII input (the common case for Rust stub markers), one
-        //   allocation per non-ASCII line (same cost as today). Note: do NOT
-        //   call `make_ascii_lowercase()` on non-ASCII input without the
-        //   `is_ascii()` guard — it silently skips non-ASCII bytes rather than
-        //   case-folding them, changing semantics vs. `to_lowercase()`.
         for path in &meta.files {
-            // Skip test-shaped paths to avoid false positives on intentional
-            // stubs inside test helpers (design §5 P2 false-positive guards).
-            if crate::is_test_path(path) {
-                continue;
-            }
-            // Skip non-executable-code files (.ri, .yaml, .md, etc.); P2's
-            // families are code constructs and carry no stub meaning in prose.
-            if !is_code_ext(path) {
-                continue;
-            }
-            // Skip the detector's own source — its pattern literals self-match.
-            if path == SELF_SOURCE_PATH {
-                continue;
-            }
+            if crate::is_test_path(path) { continue; }
+            if !is_code_ext(path) { continue; }
+            if path == SELF_SOURCE_PATH { continue; }
+
             let added = ctx.git.diff_added_lines("main", &task_branch, path);
-            let matches = scan_file_added_lines(&added);
-            if matches.is_empty() {
-                continue;
+            for (line_no, content, label) in scan_file_added_lines(&added) {
+                raw.push(RawEntry {
+                    path: path.clone(),
+                    line_no,
+                    content,
+                    label,
+                    task_id: meta.task_id.clone(),
+                    sort_key,
+                });
             }
-            let summary = {
-                let count = matches.len();
-                let details: Vec<String> = matches
-                    .iter()
-                    .map(|(ln, snippet, label)| {
-                        // Use char-boundary-safe truncation: count Unicode scalar
-                        // values rather than bytes so a multi-byte character that
-                        // straddles byte 60 never causes a panic.
-                        let snip = if snippet.chars().count() > 60 {
-                            let head: String = snippet.chars().take(60).collect();
-                            format!("{head}…")
-                        } else {
-                            snippet.clone()
-                        };
-                        format!("line {} [{}]: {}", ln, label, snip.trim())
-                    })
-                    .collect();
-                format!(
-                    "{} stub marker(s) in added lines of {}: {}",
-                    count,
-                    path,
-                    details.join("; ")
-                )
-            };
-            findings.push(Finding {
-                pattern: Pattern::P2ConsumerStub,
-                severity,
-                task_id: meta.task_id.clone(),
-                summary,
-                evidence: vec![EvidenceRef::File { path: path.clone() }],
-            });
         }
+    }
+
+    // Phase 2 — de-dup by (path, line_no, content), keeping the introducer
+    // (smallest sort_key = earliest done_at; tie-break ascending numeric task_id).
+    // Window-wide attribution re-reports a shared location under every task whose
+    // diff surfaces it; collapsing here attributes each location exactly once.
+    let mut dedup: std::collections::HashMap<(String, usize, String), RawEntry> =
+        std::collections::HashMap::new();
+    for entry in raw {
+        let key = (entry.path.clone(), entry.line_no, entry.content.clone());
+        let keep = match dedup.get(&key) {
+            None => true,
+            Some(existing) => entry.sort_key < existing.sort_key,
+        };
+        if keep {
+            dedup.insert(key, entry);
+        }
+    }
+
+    // Phase 3 — group winners by (task_id, path).
+    let mut groups: std::collections::HashMap<(String, String), Vec<(usize, String, &'static str)>> =
+        std::collections::HashMap::new();
+    for (_, entry) in dedup {
+        groups
+            .entry((entry.task_id, entry.path))
+            .or_default()
+            .push((entry.line_no, entry.content, entry.label));
+    }
+
+    // Phase 4 — emit one Finding per (task_id, path); sort for determinism.
+    let mut findings = Vec::new();
+    let mut group_keys: Vec<(String, String)> = groups.keys().cloned().collect();
+    group_keys.sort();
+
+    for (task_id, path) in group_keys {
+        let mut matches = groups.remove(&(task_id.clone(), path.clone())).unwrap();
+        matches.sort_by_key(|(ln, _, _)| *ln);
+
+        let severity = ctx.task_metadata
+            .get(&task_id)
+            .map(|m| if title_signals_stub(&m.title) { Severity::Low } else { Severity::Medium })
+            .unwrap_or(Severity::Medium);
+
+        let summary = {
+            let count = matches.len();
+            let details: Vec<String> = matches
+                .iter()
+                .map(|(ln, snippet, label)| {
+                    // Use char-boundary-safe truncation: count Unicode scalar
+                    // values rather than bytes so a multi-byte character that
+                    // straddles byte 60 never causes a panic.
+                    let snip = if snippet.chars().count() > 60 {
+                        let head: String = snippet.chars().take(60).collect();
+                        format!("{head}…")
+                    } else {
+                        snippet.clone()
+                    };
+                    format!("line {} [{}]: {}", ln, label, snip.trim())
+                })
+                .collect();
+            format!(
+                "{} stub marker(s) in added lines of {}: {}",
+                count,
+                path,
+                details.join("; ")
+            )
+        };
+
+        findings.push(Finding {
+            pattern: Pattern::P2ConsumerStub,
+            severity,
+            task_id,
+            summary,
+            evidence: vec![EvidenceRef::File { path }],
+        });
     }
 
     findings
