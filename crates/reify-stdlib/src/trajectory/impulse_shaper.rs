@@ -67,6 +67,24 @@ fn zv_residual_at_rho(rho: f64, k: f64) -> f64 {
 /// `ascending`: true when V is increasing over the interval (use for ρ ∈ (1,2));
 /// false when V is decreasing (ρ ∈ (0,1)).
 fn bisect_rho(v_target: f64, k: f64, lo: f64, hi: f64, ascending: bool) -> f64 {
+    // Precondition: v_target must be bracketed by zv_residual_at_rho over (lo, hi).
+    // If ascending (ρ ∈ (1,2)): V(lo+ε) ≤ v_target ≤ V(hi-ε).
+    // If not ascending (ρ ∈ (0,1)): V(lo+ε) ≥ v_target ≥ V(hi-ε).
+    // Violation causes silent convergence to an endpoint, yielding a non-monotone
+    // or zero-spacing EI train.  The debug_assert fires loudly in tests.
+    debug_assert!(
+        if ascending {
+            zv_residual_at_rho(lo + f64::EPSILON, k) <= v_target
+                && v_target <= zv_residual_at_rho(hi - f64::EPSILON, k)
+        } else {
+            zv_residual_at_rho(lo + f64::EPSILON, k) >= v_target
+                && v_target >= zv_residual_at_rho(hi - f64::EPSILON, k)
+        },
+        "bisect_rho precondition: v_target={v_target} not bracketed in ({lo}, {hi}) \
+         with k={k}; V(lo)={:.6e}, V(hi)={:.6e}, ascending={ascending}",
+        zv_residual_at_rho(lo + f64::EPSILON, k),
+        zv_residual_at_rho(hi - f64::EPSILON, k),
+    );
     let mut a = lo + f64::EPSILON;
     let mut b = hi - f64::EPSILON;
     for _ in 0..64 {
@@ -441,6 +459,83 @@ mod tests {
         );
     }
 
+    /// EI (2-hump), damped case (ζ=0.1): exercises the damped K-formula path.
+    ///
+    /// For ζ=0.1, K ≈ 0.73; with v_tol=0.05, √v_tol ≈ 0.224 < K, so the
+    /// `sqrt_vtol.min(k)` clamp does NOT trigger here — the core damped
+    /// bisection path (not the clamp branch) is exercised.
+    #[test]
+    fn ei_train_construction_invariants_damped() {
+        let omega_n = 2.0 * PI * 10.0;
+        let zeta = 0.1_f64;
+        let v_tol = 0.05_f64;
+        let train = ImpulseTrain::ei(omega_n, zeta, v_tol);
+
+        assert_eq!(train.impulses.len(), 4, "EI (damped ζ=0.1) must have exactly 4 impulses");
+
+        for (i, imp) in train.impulses.iter().enumerate() {
+            assert!(
+                imp.amplitude > 0.0,
+                "EI (damped) A[{i}] must be > 0, got {}",
+                imp.amplitude
+            );
+        }
+
+        assert_close(train.impulses[0].time, 0.0, 1e-12, "EI (damped) t0 must be 0");
+        for i in 1..4 {
+            assert!(
+                train.impulses[i].time > train.impulses[i - 1].time,
+                "EI (damped) times must be strictly increasing: t[{}]={} <= t[{}]={}",
+                i,
+                train.impulses[i].time,
+                i - 1,
+                train.impulses[i - 1].time
+            );
+        }
+
+        assert_close(train.amplitude_sum(), 1.0, 1e-12, "EI (damped) amplitude_sum");
+
+        let v = train.residual_vibration(omega_n, zeta);
+        assert!(
+            v <= v_tol + 1e-9,
+            "EI (damped) residual at design should be ≤ v_tol={v_tol}, got {v:.6e}"
+        );
+    }
+
+    /// EI large v_tol (ζ=0.1, v_tol=0.8): √v_tol ≈ 0.894 > K ≈ 0.73, so the
+    /// `sqrt_vtol.min(k)` clamp branch IS active.  Asserts the same structural
+    /// invariants (4 impulses, positive amplitudes, monotone times, Σ A=1, V ≤
+    /// v_tol at design).
+    #[test]
+    fn ei_train_construction_large_vtol_clamp_branch() {
+        let omega_n = 2.0 * PI * 5.0;
+        let zeta = 0.1_f64;  // K ≈ 0.73; K² ≈ 0.53; v_tol=0.8 > K² → clamp fires
+        let v_tol = 0.8_f64;
+        let train = ImpulseTrain::ei(omega_n, zeta, v_tol);
+
+        assert_eq!(train.impulses.len(), 4, "EI large-vtol must have 4 impulses");
+
+        for (i, imp) in train.impulses.iter().enumerate() {
+            assert!(imp.amplitude > 0.0, "EI large-vtol A[{i}] must be > 0");
+        }
+
+        assert_close(train.impulses[0].time, 0.0, 1e-12, "EI large-vtol t0 must be 0");
+        for i in 1..4 {
+            assert!(
+                train.impulses[i].time > train.impulses[i - 1].time,
+                "EI large-vtol times must be strictly increasing"
+            );
+        }
+
+        assert_close(train.amplitude_sum(), 1.0, 1e-12, "EI large-vtol amplitude_sum");
+
+        let v = train.residual_vibration(omega_n, zeta);
+        assert!(
+            v <= v_tol + 1e-9,
+            "EI large-vtol residual at design should be ≤ {v_tol}, got {v:.6e}"
+        );
+    }
+
     // ── step-7: cascade ──────────────────────────────────────────────────────
 
     /// cascade([]) → identity {(0,1)}.
@@ -486,6 +581,62 @@ mod tests {
             assert_close(c.amplitude, z.amplitude, 1e-12, "cascade(zv,zv) amp vs zvd");
         }
         assert_close(cascaded.amplitude_sum(), 1.0, 1e-12, "cascade(zv,zv) amplitude_sum");
+    }
+
+    /// cascade([zv, zv, zv]): exercises the N≥3 fold path.
+    ///
+    /// Asserts amplitude_sum≈1, times non-decreasing, and the residual product
+    /// property V_{A⊛B⊛C}(ω) = V_A(ω)·V_B(ω)·V_C(ω) at an off-design
+    /// frequency (1.5·ω_n).  This identity holds exactly for the Singer-Seering
+    /// residual because cascade convolution corresponds to multiplication of the
+    /// complex phasors: |Z_A · Z_B · Z_C| = |Z_A|·|Z_B|·|Z_C|.
+    #[test]
+    fn cascade_three_trains_fold_and_residual_product() {
+        let omega_n = 2.0 * PI * 8.0;
+        let zeta = 0.1_f64;
+        let zv = ImpulseTrain::zv(omega_n, zeta);
+        let three = ImpulseTrain::cascade(&[zv.clone(), zv.clone(), zv.clone()]);
+
+        // Σ amplitudes = 1.
+        assert_close(three.amplitude_sum(), 1.0, 1e-12, "cascade-3 amplitude_sum");
+
+        // Times non-decreasing (some coincident times are merged, so strictly
+        // increasing is NOT guaranteed, but non-decreasing must hold).
+        for i in 1..three.impulses.len() {
+            assert!(
+                three.impulses[i].time >= three.impulses[i - 1].time,
+                "cascade-3 times must be non-decreasing: t[{}]={} < t[{}]={}",
+                i,
+                three.impulses[i].time,
+                i - 1,
+                three.impulses[i - 1].time
+            );
+        }
+
+        // Residual product property at an off-design frequency.
+        let omega_test = 1.5 * omega_n;
+        let v_zv = zv.residual_vibration(omega_test, zeta);
+        let v_three = three.residual_vibration(omega_test, zeta);
+        assert_close(
+            v_three,
+            v_zv * v_zv * v_zv,
+            1e-10,
+            "cascade-3 residual product property V = V_zv^3",
+        );
+    }
+
+    /// residual_vibration on an empty ImpulseTrain returns 0.0 (early-return).
+    #[test]
+    fn residual_vibration_empty_train_is_zero() {
+        let empty = ImpulseTrain { impulses: vec![] };
+        let omega_n = 2.0 * PI * 10.0;
+        let zeta = 0.05;
+        assert_close(
+            empty.residual_vibration(omega_n, zeta),
+            0.0,
+            1e-15,
+            "empty ImpulseTrain V=0.0",
+        );
     }
 
     // ── step-5: ZVD train construction ──────────────────────────────────────
