@@ -8,8 +8,9 @@
 // The REST endpoint (`POST /debug/{command}`) provides the same tools via plain JSON
 // for manual `curl` testing.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -506,6 +507,71 @@ async fn handle_mesh_stats(state: &DebugServerState) -> Result<Value, String> {
 async fn handle_morph_stats(_params: Value) -> Result<Value, String> {
     let stats = reify_mesh_morph::stats::snapshot();
     serde_json::to_value(&stats).map_err(|e| format!("failed to serialize MorphStats: {e}"))
+}
+
+// --- Session-start timestamp (process-global) ---
+
+/// Unix-epoch-milliseconds at the time of first access. Zero before first call.
+/// Never rolls back — reset_session_start() stores a new "now" to restart the clock.
+static SESSION_START_UNIX_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Returns the current session-start timestamp, initializing it lazily on the
+/// first call via compare-exchange (0 → now). Subsequent calls return the same
+/// value until reset_session_start() is called.
+fn session_start_unix_ms() -> u64 {
+    let current = SESSION_START_UNIX_MS.load(Ordering::Relaxed);
+    if current != 0 {
+        return current;
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    // CAS: only set if still 0 (first caller wins; harmless race).
+    match SESSION_START_UNIX_MS.compare_exchange(0, now, Ordering::Relaxed, Ordering::Relaxed) {
+        Ok(_) => now,
+        Err(actual) => actual, // another thread raced and won
+    }
+}
+
+/// Restart the session clock to "now". Called by handle_mesh_morph_stats when
+/// reset:true is requested, so the timestamp reflects the post-reset window start.
+fn reset_session_start() {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    SESSION_START_UNIX_MS.store(now, Ordering::Relaxed);
+}
+
+/// `mesh_morph_stats` debug-MCP RPC handler.
+///
+/// Returns a flat JSON object containing all seven diagnostic counters from
+/// `reify_mesh_morph::diagnostics::snapshot()` (morphed,
+/// remeshed_quality_hard_fail, remeshed_quality_soft_fail,
+/// ineligible_structural_change, ineligible_bijection_failure,
+/// ineligible_naming_error, panicked) plus a `session_start_unix_ms` field.
+///
+/// When `params["reset"]` is `true`, atomically zeros all counters via
+/// `diagnostics::reset()` and refreshes the session clock before taking the
+/// snapshot — the response reflects the post-reset zeros and the new clock.
+///
+/// State-free: both the counters and the session timestamp are process-globals,
+/// so no DebugServerState / engine lock is needed.
+async fn handle_mesh_morph_stats(params: Value) -> Result<Value, String> {
+    let reset = params.get("reset").and_then(Value::as_bool).unwrap_or(false);
+    if reset {
+        reify_mesh_morph::diagnostics::reset();
+        reset_session_start();
+    }
+    let ts = session_start_unix_ms();
+    let snapshot = reify_mesh_morph::diagnostics::snapshot();
+    let mut obj = serde_json::to_value(&snapshot)
+        .map_err(|e| format!("failed to serialize DiagnosticSnapshot: {e}"))?;
+    if let Some(map) = obj.as_object_mut() {
+        map.insert("session_start_unix_ms".to_string(), serde_json::Value::Number(ts.into()));
+    }
+    Ok(obj)
 }
 
 async fn handle_open_file(state: &DebugServerState, params: Value) -> Result<Value, String> {
