@@ -1459,4 +1459,21 @@ describe('engineStore solverProgress', () => {
     });
     vi.useRealTimers();
   });
+
+  it('(step-5) coarseReached flips true on first residual < 1e-2 and stays true', () => {
+    createRoot((dispose) => {
+      const { state, applySolverProgress } = createEngineStore();
+      applySolverProgress({ solver_kind: 'cg' as const, iter: 1, residual: 0.5 });
+      expect(state.solverProgress.coarseReached).toBe(false);
+      applySolverProgress({ solver_kind: 'cg' as const, iter: 2, residual: 0.05 });
+      expect(state.solverProgress.coarseReached).toBe(false);
+      // First tick below 1e-2
+      applySolverProgress({ solver_kind: 'cg' as const, iter: 3, residual: 9e-3 });
+      expect(state.solverProgress.coarseReached).toBe(true);
+      // Stays true even if a later residual is above threshold (defensive)
+      applySolverProgress({ solver_kind: 'cg' as const, iter: 4, residual: 0.1 });
+      expect(state.solverProgress.coarseReached).toBe(true);
+      dispose();
+    });
+  });
 });
