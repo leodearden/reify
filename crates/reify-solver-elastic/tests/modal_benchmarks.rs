@@ -359,9 +359,35 @@ fn measure_cantilever(grid: &BeamFixture) -> CantileverMeasurement {
 
 /// Calibrated relative-error bound on the cantilever fundamental frequency.
 ///
-/// **Step-3 RED**: initialized to the aspirational 2% target. **Step-4 GREEN**
-/// recalibrates to the honest measured P2 floor with a documented tuning
-/// history.
+/// **The 2% aspirational target is achieved** by the P2 path at the
+/// example-practical mesh below, so this bound stays at the deliverable's 2%
+/// (it is NOT a loosened measured floor — contrast the euler P2 5% and the P1
+/// 9–11% bounds). The honest measured error is **1.35%** at `nx=16, ny=1,
+/// nz=1`, leaving a comfortable 0.65% margin; the dense QZ eigensolve is fully
+/// deterministic, so there is no Lanczos-style cross-platform variance to
+/// absorb.
+///
+/// # Tuning history (release mode, analytic f₁ = 41.2755 Hz)
+///
+/// | nx×ny×nz | P2 nodes | n_free | f₁ (Hz) | rel_err | note                       |
+/// |----------|----------|--------|---------|---------|----------------------------|
+/// | 8×1×1    | 153      | 432    | 42.256  | 2.38%   | step-3 RED — fails 2%      |
+/// | 10×1×1   | 189      | 540    | 42.082  | 1.95%   | passes, but 0.05% margin   |
+/// | 12×1×1   | 225      | 648    | 41.970  | 1.68%   | passes, 0.32% margin       |
+/// | **16×1×1** | **297** | **864** | **41.832** | **1.35%** | **chosen** — 0.65% margin, ~25 s |
+/// | 16×1×2   | 495      | 1440   | 41.775  | 1.21%   | nz refinement: +0.14% only |
+///
+/// `f₁` decreases monotonically toward a ~1.2% floor as the **span** mesh
+/// refines (the FEA is stiffer than the beam reference at every mesh — `f₁ >
+/// analytic` throughout), and cross-section refinement (`nz=2`) barely moves it
+/// (1.35% → 1.21%). That signature is the 3D-solid-vs-Euler-Bernoulli model gap
+/// (shear/rotary-inertia + Poisson coupling at `L/r ≈ 346`), **not** the P1
+/// constant-strain bending lock the P2 element removes. `nx=16` is the smallest
+/// span mesh with a solid (>0.5%) margin under 2% at sane release runtime
+/// (~25 s for the sequential dense QZ solve on 864 free DOFs); `nx=10` clears 2%
+/// but only by 0.05% (too fragile), and `nz=2` doubles the DOFs (→ ~115 s) for a
+/// negligible 0.14% gain. Because 2% is met, the dedicated lock-free 1-D
+/// beam/frame element (the route a >2% floor would have required) is NOT needed.
 const CANTILEVER_P2_REL_TOL: f64 = 0.02;
 
 /// Cantilever (clamped-free) P2 modal-frequency accuracy benchmark — task 4066.
@@ -386,9 +412,10 @@ const CANTILEVER_P2_REL_TOL: f64 = 0.02;
 )]
 #[test]
 fn cantilever_beam_p2_modal_within_two_percent() {
-    // Step-3 RED: a coarse first-guess span mesh (nx=8). Measured rel_err 2.38%
-    // > 2% — fails the target, motivating the step-4 mesh refinement.
-    let grid = BeamFixture { nx: 8, ny: 1, nz: 1, lx: 0.2, ly: 0.01, lz: 0.002 };
+    // Example-practical P2 mesh (step-4 calibrated): nx=16 along the span clears
+    // 2% at 1.35% with a 0.65% margin in ~25 s — see CANTILEVER_P2_REL_TOL's
+    // tuning history for the full nx/nz sweep.
+    let grid = BeamFixture { nx: 16, ny: 1, nz: 1, lx: 0.2, ly: 0.01, lz: 0.002 };
     let m = measure_cantilever(&grid);
 
     eprintln!(
