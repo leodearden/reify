@@ -83,7 +83,7 @@ vi.mock('three', async () => {
 
 // ── Subject under test ───────────────────────────────────────────────────────
 
-import { createBucklingAnimator } from '../../viewport/bucklingAnimator';
+import { createBucklingAnimator, computePointCloudBounds } from '../../viewport/bucklingAnimator';
 
 // ── Setup ────────────────────────────────────────────────────────────────────
 
@@ -96,6 +96,26 @@ beforeEach(() => {
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 const BASE = [0, 0, 0, 1, 0, 0, 0, 1, 0]; // 3 nodes × 3 floats
+
+describe('computePointCloudBounds', () => {
+  it('returns center and radius for a non-empty flat XYZ array', () => {
+    // 3 nodes: (0,0,0), (2,0,0), (0,2,0)
+    const positions = [0, 0, 0, 2, 0, 0, 0, 2, 0];
+    const { center, radius } = computePointCloudBounds(positions);
+    // bbox: x[0,2] y[0,2] z[0,0] → center [1,1,0]
+    expect(center[0]).toBeCloseTo(1, 10);
+    expect(center[1]).toBeCloseTo(1, 10);
+    expect(center[2]).toBeCloseTo(0, 10);
+    // half space-diagonal of bbox (2,2,0): 0.5 * sqrt(4+4+0) = sqrt(2)
+    expect(radius).toBeCloseTo(Math.SQRT2, 10);
+  });
+
+  it('returns { center:[0,0,0], radius:0 } for an empty array', () => {
+    const { center, radius } = computePointCloudBounds([]);
+    expect(center).toEqual([0, 0, 0]);
+    expect(radius).toBe(0);
+  });
+});
 
 describe('createBucklingAnimator', () => {
   it('creates a BufferGeometry with a "position" attribute sized to base positions', () => {
