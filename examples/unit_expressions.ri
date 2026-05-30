@@ -20,4 +20,5 @@ structure def UnitExpressions {
     param area         : Area                = 25mm^2
     param viscosity    : DynamicViscosity    = 0.001kg/m/s
     param conductivity : ThermalConductivity = 0.5W/(m*K)
+    param stress_sq    : Real                = (5mm ^ 2) / (1mm ^ 2)
 }
