@@ -614,7 +614,7 @@ pub(crate) fn elaborate_field(
                 None => Arc::new(Value::Undef),
             }
         }
-        reify_compiler::CompiledFieldSource::Imported => Arc::new(Value::Undef),
+        reify_compiler::CompiledFieldSource::Imported { .. } => Arc::new(Value::Undef),
     };
 
     let source_kind = match &field.source {
@@ -627,7 +627,7 @@ pub(crate) fn elaborate_field(
         reify_compiler::CompiledFieldSource::Composed { .. } => {
             reify_ir::FieldSourceKind::Composed
         }
-        reify_compiler::CompiledFieldSource::Imported => reify_ir::FieldSourceKind::Imported,
+        reify_compiler::CompiledFieldSource::Imported { .. } => reify_ir::FieldSourceKind::Imported,
     };
 
     Value::Field {
