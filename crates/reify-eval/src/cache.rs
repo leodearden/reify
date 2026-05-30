@@ -4968,4 +4968,98 @@ mod tests {
             "negative cost must sanitise to 0.0",
         );
     }
+
+    // ── GHR-ε step-3: GH cache-key contract-lock (deliverable a) ─────────────
+    //
+    // Pins the in-memory cache key for Value::GeometryHandle cells as seen
+    // through the CachedResult::Value(gh, det) arm.  The cache key IS
+    // CachedResult::content_hash(), which delegates to Value::content_hash()
+    // whose GeometryHandle arm (tag 28) emits entity + index + upstream_values_hash
+    // while intentionally EXCLUDING kernel_handle.
+    //
+    // These tests are non-redundant with the bare-Value tests in reify-ir
+    // (value.rs::tests::geometry_handle) because they exercise the CACHE LAYER
+    // path (CachedResult::Value → content_hash → tag-20 wrap → GH fragment),
+    // conforming to the esc-3607-59 relaxed-scope contract-lock mandate.
+    mod geometry_handle_cache_key {
+        use super::*;
+        use reify_core::identity::RealizationNodeId;
+        use reify_ir::{DeterminacyState, GeometryHandleId, Value};
+
+        /// Build a `CachedResult::Value` wrapping a `Value::GeometryHandle`.
+        fn cached_gh(entity: &str, index: u32, hash: [u8; 32], kernel_id: u64) -> CachedResult {
+            CachedResult::Value(
+                Value::GeometryHandle {
+                    realization_ref: RealizationNodeId::new(entity, index),
+                    upstream_values_hash: hash,
+                    kernel_handle: GeometryHandleId(kernel_id),
+                },
+                DeterminacyState::Determined,
+            )
+        }
+
+        /// (1) Same realization_ref + same upstream_values_hash → equal content_hash.
+        #[test]
+        fn geometry_handle_cache_key_same_rr_and_hash_are_equal() {
+            let a = cached_gh("Widget", 0, [0xAAu8; 32], 1);
+            let b = cached_gh("Widget", 0, [0xAAu8; 32], 1);
+            assert_eq!(
+                a.content_hash(),
+                b.content_hash(),
+                "same rr+hash must produce equal in-memory cache key",
+            );
+        }
+
+        /// (2) Different upstream_values_hash → different content_hash.
+        #[test]
+        fn geometry_handle_cache_key_different_hash_yields_different_key() {
+            let a = cached_gh("Widget", 0, [0xAAu8; 32], 1);
+            let b = cached_gh("Widget", 0, [0xBBu8; 32], 1);
+            assert_ne!(
+                a.content_hash(),
+                b.content_hash(),
+                "different upstream_values_hash must produce different cache key",
+            );
+        }
+
+        /// (3) Different realization_ref (entity) → different content_hash.
+        #[test]
+        fn geometry_handle_cache_key_different_entity_yields_different_key() {
+            let a = cached_gh("Widget", 0, [0xAAu8; 32], 1);
+            let b = cached_gh("Gadget", 0, [0xAAu8; 32], 1);
+            assert_ne!(
+                a.content_hash(),
+                b.content_hash(),
+                "different entity in realization_ref must produce different cache key",
+            );
+        }
+
+        /// (3b) Different realization_ref index → different content_hash.
+        #[test]
+        fn geometry_handle_cache_key_different_index_yields_different_key() {
+            let a = cached_gh("Widget", 0, [0xAAu8; 32], 1);
+            let b = cached_gh("Widget", 1, [0xAAu8; 32], 1);
+            assert_ne!(
+                a.content_hash(),
+                b.content_hash(),
+                "different index in realization_ref must produce different cache key",
+            );
+        }
+
+        /// (4) kernel_handle-only difference → equal content_hash (excluded).
+        /// This is the load-bearing pin: kernel_handle is an ephemeral session id;
+        /// re-realization to a new handle for semantically-identical geometry must
+        /// produce the SAME in-memory cache key so downstream is not spuriously
+        /// invalidated (GHR-β §DD / geometry-handle-runtime.md §6).
+        #[test]
+        fn geometry_handle_cache_key_kernel_handle_excluded() {
+            let a = cached_gh("Widget", 0, [0xAAu8; 32], 1);
+            let b = cached_gh("Widget", 0, [0xAAu8; 32], 999);
+            assert_eq!(
+                a.content_hash(),
+                b.content_hash(),
+                "kernel_handle must be EXCLUDED from the in-memory cache key",
+            );
+        }
+    }
 }
