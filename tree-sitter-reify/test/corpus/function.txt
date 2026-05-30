@@ -1,0 +1,51 @@
+; ── Task 3919: expression-body fn sugar ──
+; Corpus tests pinning both fn_body forms.
+; Block form: regression guard for the existing fn_body syntax.
+; Expression form: new sugar from spec §18 #10 (`fn f(x: T) -> T = expr`).
+
+================================================================================
+fn_body block form with let binding (regression guard)
+================================================================================
+
+fn f(x: Int) -> Int { let y = x; y }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_definition
+    name: (identifier)
+    (fn_param_list
+      (fn_param
+        name: (identifier)
+        type: (type_expr
+          (identifier))))
+    return_type: (type_expr
+      (identifier))
+    (fn_body
+      (fn_let_binding
+        name: (identifier)
+        value: (identifier))
+      result: (identifier))))
+
+================================================================================
+fn_body expression form (fn double(x: Int) -> Int = x * 2)
+================================================================================
+
+fn double(x: Int) -> Int = x * 2
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_definition
+    name: (identifier)
+    (fn_param_list
+      (fn_param
+        name: (identifier)
+        type: (type_expr
+          (identifier))))
+    return_type: (type_expr
+      (identifier))
+    (fn_body
+      result: (binary_expression
+        left: (identifier)
+        right: (number_literal)))))

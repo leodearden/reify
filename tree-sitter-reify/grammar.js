@@ -152,11 +152,13 @@ module.exports = grammar({
       optional(seq('=', field('default', $._expression))),
     ),
 
-    fn_body: $ => seq(
-      '{',
-      repeat($.fn_let_binding),
-      field('result', $._expression),
-      '}',
+    fn_body: $ => choice(
+      // Block form: `{ [let y = e;]* result_expr }`
+      seq('{', repeat($.fn_let_binding), field('result', $._expression), '}'),
+      // Expression form: `= result_expr`  (spec §18 #10 — pure desugar)
+      // The `=` token disambiguates from the block form at the grammar level;
+      // lower_fn_body is unchanged because both arms share the `result` field.
+      seq('=', field('result', $._expression)),
     ),
 
     fn_let_binding: $ => seq(
