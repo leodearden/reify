@@ -83,6 +83,72 @@ fn compound_kg_div_m_div_s_is_dynamic_viscosity_0_001() {
     );
 }
 
+// ─── MIGRATION-TARGET PINS (task ζ) ──────────────────────────────────────────
+//
+// These lock the exact SI value + dimension of the compound literals that
+// stdlib/example workaround sites are migrated TO in this task. They run green
+// against the current (pre-migration) stdlib — the migrations preserve values,
+// so these pins assert the post-migration target before any source is touched
+// and catch a mistyped unit during migration. Guards plan steps 2, 5, 14.
+
+/// `0.0001ohm*m` → ElectricResistivity, si_value = 1e-4 Ω·m
+/// (Conductive `resistivity <` bound, materials_electrical.ri — step 5).
+#[test]
+fn compound_ohm_mul_m_is_electric_resistivity_1e_minus4() {
+    let (si, dim) = common::stdlib_param_si_value("ElectricResistivity", "0.0001ohm*m");
+    assert_approx(si, 1e-4, "0.0001ohm*m SI value");
+    assert_eq!(
+        dim,
+        DimensionVector::ELECTRIC_RESISTIVITY,
+        "0.0001ohm*m dimension should be ELECTRIC_RESISTIVITY"
+    );
+}
+
+/// `1000000ohm*m` → ElectricResistivity, si_value = 1e6 Ω·m
+/// (Insulating `resistivity >` bound, materials_electrical.ri — step 5).
+#[test]
+fn compound_ohm_mul_m_is_electric_resistivity_1e6() {
+    let (si, dim) = common::stdlib_param_si_value("ElectricResistivity", "1000000ohm*m");
+    assert_approx(si, 1e6, "1000000ohm*m SI value");
+    assert_eq!(
+        dim,
+        DimensionVector::ELECTRIC_RESISTIVITY,
+        "1000000ohm*m dimension should be ELECTRIC_RESISTIVITY"
+    );
+}
+
+/// `0W/(m*K)` → ThermalConductivity, si_value = 0.0 W/(m·K)
+/// (ThermallyConductive `>` bound, structural_physical.ri — step 2).
+/// Exercises a parenthesised unit group in the denominator.
+#[test]
+fn compound_w_div_m_times_k_is_thermal_conductivity_zero() {
+    let (si, dim) = common::stdlib_param_si_value("ThermalConductivity", "0W/(m*K)");
+    assert_approx(si, 0.0, "0W/(m*K) SI value");
+    assert_eq!(
+        dim,
+        DimensionVector::THERMAL_CONDUCTIVITY,
+        "0W/(m*K) dimension should be THERMAL_CONDUCTIVITY"
+    );
+}
+
+/// `1m^2` → Area, si_value = 1.0 m² (topology area-range upper bound,
+/// all_topology_selectors_wiring.ri — step 14).
+#[test]
+fn compound_m_pow2_is_area_1() {
+    let (si, dim) = common::stdlib_param_si_value("Area", "1m^2");
+    assert_approx(si, 1.0, "1m^2 SI value");
+    assert_eq!(dim, DimensionVector::AREA, "1m^2 dimension should be AREA");
+}
+
+/// `0mm^2` → Area, si_value = 0.0 m² (topology area-range lower bound,
+/// all_topology_selectors_wiring.ri — step 14).
+#[test]
+fn compound_mm_pow2_is_area_zero() {
+    let (si, dim) = common::stdlib_param_si_value("Area", "0mm^2");
+    assert_approx(si, 0.0, "0mm^2 SI value");
+    assert_eq!(dim, DimensionVector::AREA, "0mm^2 dimension should be AREA");
+}
+
 // ─── ERROR: unknown unit in compound → Severity::Error naming the offender ───
 
 /// `5kgg/m` with unknown unit `kgg` → Error diagnostic naming "kgg".
