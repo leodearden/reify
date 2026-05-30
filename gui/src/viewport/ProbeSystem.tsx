@@ -131,7 +131,7 @@ export function createProbeSystem(options: ProbeSystemOptions): ProbeSystemConte
 
   function updateMarkerStyle(marker: Mesh, stale: boolean): void {
     const mat = marker.material as MeshBasicMaterial;
-    mat.color = stale ? MARKER_COLOR_STALE as any : MARKER_COLOR_ACTIVE as any;
+    mat.color.set(stale ? MARKER_COLOR_STALE : MARKER_COLOR_ACTIVE);
     mat.opacity = stale ? MARKER_OPACITY_STALE : 1.0;
     mat.transparent = stale;
   }
