@@ -18,3 +18,12 @@
 // Variant names match the Value::Enum variants emitted by the T1 builtins
 // (contributor / contributor_asym in reify-stdlib/src/stackup.rs, PRD §4.1).
 enum Distribution { Normal, Uniform, Triangular }
+
+// ── Stack-up computation method ────────────────────────────────────────────────
+
+// Method used to compute the assembly stack-up gap distribution.
+// Variants correspond to the three free-function builtins in T1:
+//   WorstCase → stackup_worst_case
+//   Rss       → stackup_rss
+//   MonteCarlo → monte_carlo_stackup
+enum StackupMethod { WorstCase, Rss, MonteCarlo }
