@@ -229,23 +229,34 @@ mod tests {
 
     // ── Test helpers ──────────────────────────────────────────────────────────
 
-    /// Build a [`RegionInfo`] with the given label, classification, and voxels,
-    /// filling the metric fields with plausible placeholder values (the routing
-    /// and proximity logic reads `classification`, `voxels`, and
-    /// `mean_thickness`, not the ratio fields).
+    /// Build a [`RegionInfo`] with an explicit `mean_thickness`, filling the
+    /// remaining metric fields with plausible placeholders. The routing and
+    /// proximity logic reads `classification`, `voxels`, and `mean_thickness`,
+    /// not the ratio fields.
+    fn region_with_thickness(
+        label: u32,
+        classification: RegionClassification,
+        voxels: Vec<[i32; 3]>,
+        mean_thickness: f64,
+    ) -> RegionInfo {
+        RegionInfo {
+            label,
+            voxels,
+            mean_thickness,
+            extent: 10.0,
+            thickness_extent_ratio: 0.1,
+            classification,
+        }
+    }
+
+    /// Build a [`RegionInfo`] with a default `mean_thickness` of `1.0` (for
+    /// tests that do not exercise proximity thresholds).
     fn region_info(
         label: u32,
         classification: RegionClassification,
         voxels: Vec<[i32; 3]>,
     ) -> RegionInfo {
-        RegionInfo {
-            label,
-            voxels,
-            mean_thickness: 1.0,
-            extent: 10.0,
-            thickness_extent_ratio: 0.1,
-            classification,
-        }
+        region_with_thickness(label, classification, voxels, 1.0)
     }
 
     // ── Step 1: public-surface smoke test ─────────────────────────────────────
@@ -334,5 +345,83 @@ mod tests {
             ],
             "region_kinds must parallel seg.regions by index: Shell/Tet/Shell"
         );
+    }
+
+    // ── Step 5: shell↔tet interface identification by proximity ───────────────
+
+    /// A shell slab and a tet cube separated by a one-voxel gap (within the
+    /// proximity threshold) form exactly one shell↔tet interface. A far tet
+    /// region forms none, and no tet↔tet (or shell↔shell) interface is produced.
+    #[test]
+    fn partition_body_detects_shell_tet_interface_by_proximity() {
+        // Region 0 — shell slab: 8×8 z-plane at k=0, mean_thickness 2.0.
+        let slab: Vec<[i32; 3]> = (0..8i32)
+            .flat_map(|i| (0..8i32).map(move |j| [i, j, 0]))
+            .collect();
+        // Region 1 — near tet cube: 3×3×3 at k∈{2,3,4}. One empty layer (k=1)
+        // separates it from the slab → distinct 6-face component, yet the
+        // center-to-center gap is only 2.0 world units.
+        let near_cube: Vec<[i32; 3]> = (0..3i32)
+            .flat_map(|i| (0..3i32).flat_map(move |j| (2..5i32).map(move |k| [i, j, k])))
+            .collect();
+        // Region 2 — far tet cube: 3×3×3 at k∈{40,41,42}, well beyond threshold.
+        let far_cube: Vec<[i32; 3]> = (0..3i32)
+            .flat_map(|i| (0..3i32).flat_map(move |j| (40..43i32).map(move |k| [i, j, k])))
+            .collect();
+
+        let seg = SegmentationResult {
+            regions: vec![
+                region_with_thickness(0, RegionClassification::ShellEligible, slab, 2.0),
+                region_with_thickness(1, RegionClassification::TetEligible, near_cube, 3.0),
+                region_with_thickness(2, RegionClassification::TetEligible, far_cube, 3.0),
+            ],
+            vertex_labels: vec![],
+            triangle_labels: vec![],
+        };
+        // Only spacing/origin are read for proximity; voxels are taken from
+        // `seg.regions`, so the mask voxel list is intentionally left empty.
+        let mask = SingleBodyMask::new(MedialMask {
+            spacing: [1.0, 1.0, 1.0],
+            origin: [0.0, 0.0, 0.0],
+            voxels: vec![],
+        });
+        // Mesh vertices/thickness map into the slab (z=0 plane).
+        let mesh = MidSurfaceMesh {
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            triangles: vec![[0, 1, 2]],
+            thickness: vec![2.0, 2.0, 2.0],
+        };
+
+        let result = partition_body(&mask, &seg, &mesh, &PartitionOptions::default())
+            .expect("partition_body should succeed");
+
+        // Exactly one interface: slab (0) ↔ near cube (1).
+        assert_eq!(
+            result.interfaces.len(),
+            1,
+            "one shell↔tet interface (slab↔near cube); far region and tet↔tet excluded"
+        );
+        let iface = &result.interfaces[0];
+        assert_eq!(iface.shell_region, 0, "shell side is the slab region (0)");
+        assert_eq!(iface.tet_region, 1, "tet side is the near cube region (1)");
+        assert!(
+            (iface.thickness - 2.0).abs() < 1e-9,
+            "interface thickness ≈ slab mean_thickness 2.0 (got {})",
+            iface.thickness
+        );
+
+        // Every interface must be shell↔tet — never tet↔tet or shell↔shell.
+        for iface in &result.interfaces {
+            assert_eq!(
+                result.region_kinds[iface.shell_region as usize],
+                RegionMeshKind::Shell,
+                "interface.shell_region must route to Shell"
+            );
+            assert_eq!(
+                result.region_kinds[iface.tet_region as usize],
+                RegionMeshKind::Tet,
+                "interface.tet_region must route to Tet"
+            );
+        }
     }
 }
