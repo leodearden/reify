@@ -87,6 +87,39 @@ pub(crate) fn compose_sub_handle_hash(
     out
 }
 
+/// Construct a `Value::GeometryHandle` sub-handle for a single topology
+/// sub-shape (PRD §4, KGQ-η).
+///
+/// - `parent_realization_ref`: inherited unchanged from the parent solid
+///   (PRD §4 invariant i).
+/// - `parent_hash`: the parent's `upstream_values_hash` (used as input to
+///   `compose_sub_handle_hash`).
+/// - `sub_kind`: `SubKind::Edge` or `SubKind::Face` — the domain-separation
+///   byte that distinguishes edge and face hashes at the same index.
+/// - `topexp_index`: 0-based index of this sub-shape in the canonical
+///   `TopExp::MapShapes` order returned by `extract_edges` / `extract_faces`.
+/// - `sub_kernel_id`: the session-scoped kernel handle for this sub-shape.
+///
+/// The resulting `upstream_values_hash` satisfies all PRD §4 invariants:
+///   (ii)  deterministic — same `(parent_hash, sub_kind, topexp_index)` always
+///         yields the same hash;
+///   (iii) per-element distinct — index 0 ≠ index 1 for fixed (parent, kind);
+///   (iv)  cache-hit equality — `kernel_handle` is excluded from `PartialEq`,
+///         so a re-realized sub-shape with a new session id still matches.
+pub(crate) fn make_sub_handle(
+    parent_realization_ref: &reify_core::identity::RealizationNodeId,
+    parent_hash: &[u8; 32],
+    sub_kind: SubKind,
+    topexp_index: u32,
+    sub_kernel_id: GeometryHandleId,
+) -> Value {
+    Value::GeometryHandle {
+        realization_ref: parent_realization_ref.clone(),
+        upstream_values_hash: compose_sub_handle_hash(parent_hash, sub_kind, topexp_index),
+        kernel_handle: sub_kernel_id,
+    }
+}
+
 /// Extract a `Value::Real` payload from a `GeometryQuery` reply, returning a
 /// uniformly-formatted `QueryError::QueryFailed` on a non-`Real` reply.
 ///
