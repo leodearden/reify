@@ -76,3 +76,7 @@ reify-geometry.workspace = true
 # reify-eval's own test binaries.
 reify-runtime.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+# Task 3035 (T22): shell↔tet MPC validation — dense LU solve requires faer;
+# MPC row-elimination produces a NON-symmetric reduced matrix so CG (SPD-only)
+# is wrong. faer is a workspace dep; reify-eval currently lacks it.
+faer = { workspace = true }
