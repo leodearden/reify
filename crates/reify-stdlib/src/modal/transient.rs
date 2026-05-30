@@ -198,6 +198,23 @@ mod tests {
         }
     }
 
+    /// Analytic linear-ramp response from rest: f(t) = s·t (Chopra §5.3).
+    ///
+    /// ξ(t) = (s/ω²)·t − 2ζs/ω³ + e^{−ζωt}·[(2ζs/ω³)·cos(ωD·t)
+    ///          + ((2ζ²−1)s/(ω²·ωD))·sin(ωD·t)]
+    fn analytic_ramp_response(s: f64, omega: f64, zeta: f64, t: f64) -> f64 {
+        let omega_d = omega * (1.0 - zeta * zeta).sqrt();
+        let om2     = omega * omega;
+        let om3     = om2 * omega;
+        let decay   = (-zeta * omega * t).exp();
+        (s / om2) * t
+            - 2.0 * zeta * s / om3
+            + decay
+                * ((2.0 * zeta * s / om3) * (omega_d * t).cos()
+                    + ((2.0 * zeta * zeta - 1.0) * s / (om2 * omega_d))
+                        * (omega_d * t).sin())
+    }
+
     // ─── step 03: constant-force step-response exactness (RED) ───────────────
 
     /// Drives `duhamel_solve` from rest with a CONSTANT forcing slice p0.
@@ -218,6 +235,37 @@ mod tests {
         for (j, &got) in result.iter().enumerate() {
             let t    = j as f64 * dt;
             let want = analytic_step_response(p0, omega, zeta, t);
+            assert!(
+                (got - want).abs() < 1e-12,
+                "step {j} (t={t:.4}): got {got:.6e}, want {want:.6e}, diff {:.2e}",
+                (got - want).abs()
+            );
+        }
+    }
+
+    // ─── step 05: linear-ramp exactness — EXACTNESS PIN (RED) ────────────────
+
+    /// Drives `duhamel_solve` from rest with a linear-ramp forcing f(t)=s·t.
+    /// The FOH recurrence is exact for piecewise-linear forcing → must match
+    /// analytic_ramp_response within 1e-12.
+    /// RED: the ZOH approximation has O(Δt) error on a ramp, ≫ 1e-12.
+    #[test]
+    fn linear_ramp_response_exact() {
+        let omega = 50.0_f64;
+        let zeta  = 0.05_f64;
+        let dt    = 0.001_f64;
+        let n     = 60_usize;
+        let s     = 5.0_f64;          // slope: f(t) = 5·t  N/s
+
+        // exact linear-ramp forcing samples: forcing[j] = s · (j · dt)
+        let forcing: Vec<f64> = (0..n).map(|j| s * (j as f64 * dt)).collect();
+
+        let result = duhamel_solve(omega, zeta, dt, &forcing, 0.0, 0.0);
+
+        assert_eq!(result.len(), n);
+        for (j, &got) in result.iter().enumerate() {
+            let t    = j as f64 * dt;
+            let want = analytic_ramp_response(s, omega, zeta, t);
             assert!(
                 (got - want).abs() < 1e-12,
                 "step {j} (t={t:.4}): got {got:.6e}, want {want:.6e}, diff {:.2e}",
