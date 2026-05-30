@@ -140,6 +140,7 @@ static NON_DISPLACEMENT_KEY_VALUES: std::sync::LazyLock<[reify_ir::Value; 4]> =
 /// compute-node caching path is deferred to GHR-ζ, where geometry persistence
 /// and the active-kernel selection land alongside the call site.  Kept
 /// crate-private until then to prevent premature API surface drift.
+#[expect(dead_code, reason = "wiring deferred to GHR-ζ; used in tests only for now")]
 pub(crate) fn geometry_handle_significance(
     old: &reify_ir::Value,
     new: &reify_ir::Value,
