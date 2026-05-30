@@ -1,0 +1,45 @@
+================================================================================
+Three-segment module declaration at top of file
+================================================================================
+
+module a.b.c
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (module_declaration
+    path: (import_path
+      (identifier)
+      (identifier)
+      (identifier))))
+
+================================================================================
+Single-segment module declaration
+================================================================================
+
+module foo
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (module_declaration
+    path: (import_path
+      (identifier))))
+
+================================================================================
+Module declaration followed by a structure definition
+================================================================================
+
+module a.b
+
+structure S {}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (module_declaration
+    path: (import_path
+      (identifier)
+      (identifier)))
+  (structure_definition
+    name: (identifier)))
