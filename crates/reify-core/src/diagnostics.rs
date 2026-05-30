@@ -1247,6 +1247,49 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_DynamicsInertiaNotPSD`.
     /// Registered in task 3822 (RBD-α, PRD §dynamics).
     DynamicsInertiaNotPSD,
+    /// Origin: `crates/reify-compiler/src/conformance` (assoc-fn satisfaction
+    /// phase) and `crates/reify-compiler/src/trait_requirements.rs`.
+    ///
+    /// Canonical message form:
+    /// `"trait '<Trait>' requires associated function '<fn>', but '<Structure>' does not provide it"`.
+    ///
+    /// Emitted as a `Severity::Error` when a structure declares conformance to a
+    /// trait that has a bodyless required associated function
+    /// (`RequirementKind::Fn`), the structure does not declare a `fn` member of
+    /// that name, and the trait provides no default body (`DefaultKind::Fn`) for
+    /// it. A single label is attached at the structure span naming the missing
+    /// associated function.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_TRAIT_FN_NOT_SATISFIED`
+    /// (see `docs/prds/v0_6/trait-associated-functions.md` §5.4 / §8 Phase 3).
+    TraitFnNotSatisfied,
+    /// Origin: `crates/reify-compiler/src/conformance` (assoc-fn satisfaction
+    /// phase, override check) and `crates/reify-compiler/src/trait_requirements.rs`
+    /// (refinement signature-lock in `collect_all_requirements`).
+    ///
+    /// Canonical message form:
+    /// `"associated function '<fn>' signature mismatch: trait requires <expected>, found <actual>"`
+    /// (override case) or
+    /// `"refining trait may not change inherited associated-function signature for '<fn>'"`
+    /// (refinement case).
+    ///
+    /// Emitted as a `Severity::Error` in two situations, both PRD §5.4 / §8.8
+    /// (associated-function signatures match exactly — self-ness, parameter
+    /// types, and return type — with no subtyping):
+    ///
+    /// 1. A structure provides a `fn` of the required/default name but with a
+    ///    different signature than the trait declares (override mismatch).
+    /// 2. A refining trait re-declares an inherited associated function with a
+    ///    different signature than the trait it refines (refinement
+    ///    signature-lock).
+    ///
+    /// Distinct from [`TraitFnNotSatisfied`] (which covers the absent-fn case):
+    /// here the function is present, just mis-typed. A dedicated code rather than
+    /// reusing [`TypeMismatchForTraitMember`] gives the override-mismatch and
+    /// refinement signature-lock tests an unambiguous signal.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_TRAIT_FN_SIGNATURE_MISMATCH`.
+    TraitFnSignatureMismatch,
 }
 
 /// A diagnostic message with location and optional labels.
