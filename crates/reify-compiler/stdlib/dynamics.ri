@@ -19,7 +19,6 @@
 //   - structure def SphereForce           : JointForceValue (components : List<Real>)
 //   - structure def ZeroForce             : JointForceValue (zero-DOF marker)
 //   - structure def JointForce            (joint_id, value)
-//   - type JointValue = Real              (kinematic-completion PRD placeholder)
 //   - structure def TrajectorySample      (t, values, vels, accels)
 //   - structure def MotionTrajectory      (mechanism, samples)
 //
@@ -40,26 +39,11 @@
 //      PRD — same convention as trajectory.ri `mechanism : Real`, `Pose3 = Real`,
 //      and JointLimit.joint : Real. Retargeting each alias line propagates the
 //      type tightening to every consumer without touching structure_def bodies.
-//   4. `pub type JointValue = Real` is re-declared locally. aliases_phase.rs
-//      uses first-wins/shadow semantics: re-declaration is safe even though
-//      trajectory.ri also declares JointValue. Local declaration makes dynamics
-//      self-contained w.r.t. load order (hard dependency stays std.units only).
-//   5. `constraint mass >= 0kg`: RHS is the dimensioned-zero literal `0kg` (NOT
+//   4. `constraint mass >= 0kg`: RHS is the dimensioned-zero literal `0kg` (NOT
 //      `0`): a bare 0 is Type::Real and dimension-incompatible with a Mass-typed
 //      LHS (esc-3115 rule; cf. ZVShaper `> 0Hz` in trajectory.ri). The PSD
 //      inertia check (negative eigenvalue) is a Rust hook in reify-eval (see
 //      dynamics_psd.rs) because no DSL expression form can compute eigenvalues.
-
-// ── Type aliases ──────────────────────────────────────────────────────────
-
-// JointValue: per-joint scalar — position / velocity / acceleration depending
-// on the call-site. Aliased to `Real` as the kinematic-completion PRD has not
-// landed yet. Same placeholder convention as trajectory.ri `pub type JointValue = Real`.
-// Re-declared locally so dynamics.ri is self-contained w.r.t. load order.
-//
-// TODO(joint-value-type): retarget to the kinematic-completion PRD's `JointValue`
-// when that PRD lands.
-pub type JointValue = Real
 
 // ── MassProperties ────────────────────────────────────────────────────────
 

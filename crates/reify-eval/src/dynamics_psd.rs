@@ -1,26 +1,26 @@
-/// PSD (positive semi-definite) validation helpers for `MassProperties.inertia`.
-///
-/// The inertia tensor of a rigid body must be positive semi-definite (all
-/// eigenvalues ≥ 0) by physics. This module provides a dependency-free
-/// analytic check on the symmetric part of a 3×3 matrix.
-///
-/// # Design
-///
-/// `is_symmetric_psd` computes the three eigenvalues of the symmetric part
-/// `S = (M + Mᵀ)/2` via the closed-form Smith/trigonometric method for
-/// symmetric 3×3 matrices (NaN-free for the diagonal/degenerate cases the
-/// tests exercise — diagonal eigenvalues equal the diagonal entries exactly).
-/// PSD is declared when all eigenvalues ≥ −tol.
-///
-/// `inertia_3x3_from_value` extracts a `[[f64;3];3]` from either a
-/// `Value::Matrix` (3 rows × 3 cols) or a nested `Value::List` (3 elements,
-/// each a 3-element `Value::List`). Scalar entries are extracted via their
-/// `si_value` field.
-///
-/// # References
-///
-/// Smith, O.K. (1961). "Eigenvalues of a symmetric 3×3 matrix."
-/// *Communications of the ACM*, 4(4), 168.
+//! PSD (positive semi-definite) validation helpers for `MassProperties.inertia`.
+//!
+//! The inertia tensor of a rigid body must be positive semi-definite (all
+//! eigenvalues ≥ 0) by physics. This module provides a dependency-free
+//! analytic check on the symmetric part of a 3×3 matrix.
+//!
+//! # Design
+//!
+//! `is_symmetric_psd` computes the three eigenvalues of the symmetric part
+//! `S = (M + Mᵀ)/2` via the closed-form Smith/trigonometric method for
+//! symmetric 3×3 matrices (NaN-free for the diagonal/degenerate cases the
+//! tests exercise — diagonal eigenvalues equal the diagonal entries exactly).
+//! PSD is declared when all eigenvalues ≥ −tol.
+//!
+//! `inertia_3x3_from_value` extracts a `[[f64;3];3]` from either a
+//! `Value::Matrix` (3 rows × 3 cols) or a nested `Value::List` (3 elements,
+//! each a 3-element `Value::List`). Scalar entries are extracted via their
+//! `si_value` field.
+//!
+//! # References
+//!
+//! Smith, O.K. (1961). "Eigenvalues of a symmetric 3×3 matrix."
+//! *Communications of the ACM*, 4(4), 168.
 
 use reify_ir::Value;
 

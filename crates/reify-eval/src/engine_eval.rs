@@ -2172,7 +2172,7 @@ impl Engine {
                         let m = data
                             .fields
                             .get(&"inertia".to_string())
-                            .and_then(|v| crate::dynamics_psd::inertia_3x3_from_value(v))?;
+                            .and_then(crate::dynamics_psd::inertia_3x3_from_value)?;
                         Some((id.clone(), m))
                     } else {
                         None
