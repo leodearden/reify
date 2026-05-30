@@ -1027,8 +1027,8 @@ mod tests {
 
     /// Fix 1 downgrade (RED — S1): when the claimed provenance commit is
     /// unreachable AND no sibling-FF covers the missing set, but every
-    /// non-gitignored metadata.files entry resolves to a tracked path on
-    /// main (dir-aware), the deliverable landed and only the provenance
+    /// metadata.files entry resolves to a tracked path on main (dir-aware,
+    /// via path_tracked_on), the deliverable landed and only the provenance
     /// pointer is stale — downgrade High → Low.
     ///
     /// This FAILS on current code, which returns Severity::High

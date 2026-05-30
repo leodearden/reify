@@ -168,8 +168,9 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
                 // valid ancestor of main, the work is literally on main — a
                 // sufficient corroboration regardless of the runs.db gap (e.g.
                 // rebuild coverage gap, recycled task ID). Downgrade to Low.
-                // File-presence is necessary but not sufficient, so we stay
-                // Low/inspectable rather than suppressing entirely.
+                // Ancestry alone (not file-presence) is the corroboration
+                // signal here; we stay Low/inspectable rather than
+                // suppressing entirely.
                 if let Some(commit) = prov.commit.as_deref()
                     && ctx.git.is_ancestor(commit, MAIN_BASE)
                 {
@@ -334,19 +335,31 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
         }
     }
 
-    // Deliverable-presence rescue. If every non-gitignored metadata.files entry
-    // resolves to a tracked file or directory on main, the work landed — only
-    // the done_provenance.commit pointer is stale (e.g. recycled task ID or
-    // runs.db rebuild). Downgrade to Low so the operator can inspect without
-    // it escalating as a genuine phantom-done.
+    // Deliverable-presence rescue. If every metadata.files entry resolves to a
+    // tracked file or directory on main (via path_tracked_on), the work landed
+    // — only the done_provenance.commit pointer is stale (e.g. recycled task
+    // ID or runs.db rebuild whose squashed commit was later gc'd). Downgrade
+    // to Low so the operator can inspect without it escalating as a genuine
+    // phantom-done.
+    //
+    // Scope: applies only to the git-diff leg. The merged/Ok(false) arm above
+    // has its own ancestry-corroboration rescue; a non-ancestor merged task
+    // with a missing runs.db event correctly stays High and does NOT fall
+    // through here.
     //
     // Note: file-presence is necessary but NOT sufficient (a file can exist
     // yet lack the wired symbol, e.g. task 3803's unwired resolve_unit_expr),
     // so we stay Low / inspectable rather than suppressing entirely.
+    //
+    // Only path_tracked_on is checked — not is_gitignored — so that a
+    // gitignored entry that is also absent from main stays in genuinely_absent
+    // and keeps the finding High. Excluding gitignored entries from
+    // genuinely_absent would incorrectly downgrade to Low for tasks whose sole
+    // missing file happens to be gitignored (check_gitignored handles the
+    // separate Medium breadcrumb for the gitignored aspect).
     let genuinely_absent: Vec<String> = meta
         .files
         .iter()
-        .filter(|p| !ctx.git.is_gitignored(p))
         .filter(|p| !ctx.git.path_tracked_on(MAIN_BASE, p))
         .cloned()
         .collect();
@@ -361,6 +374,11 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
                  file or directory) but claimed provenance commit not reachable — \
                  stale-provenance, not phantom-done"
                     .to_string(),
+            // Cite `missing` (files not in the claimed commit's diff, all
+            // verified present on main via path_tracked_on) as the stale-
+            // provenance locator. `genuinely_absent` is empty here so citing
+            // it would produce an uninformative empty list; the operator
+            // instead sees which paths the stale commit was supposed to cover.
             evidence: vec![EvidenceRef::MetadataFiles {
                 entries: missing.clone(),
             }],
