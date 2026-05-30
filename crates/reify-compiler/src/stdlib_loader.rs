@@ -152,6 +152,13 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 "std.tensegrity",
                 include_str!("../stdlib/tensegrity.ri"),
             ),
+            // `std.process` depends only on `std.units` (Time, Money — the first
+            // module in the sequence). End-append is order-safe and conflict-free.
+            // Reconstruction of lost work from task #333 per PRD §Slice B.
+            (
+                "std.process",
+                include_str!("../stdlib/process.ri"),
+            ),
         ];
 
         // SEQUENTIAL COMPILATION WITH GROWING PRELUDE: each module is compiled
