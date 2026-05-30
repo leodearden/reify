@@ -1,0 +1,48 @@
+// Integration example: numeric & range literals — all three v0.6 slices.
+//
+// Exercises digit separators (task 3912 / β, grammar task 3909 / α),
+// hex/binary radix literals (task 3913 / δ, grammar task 3910 / γ), and
+// single-sided range literals (task 3914 / ζ, grammar task 3911 / ε) in
+// a single realistic structure definition.
+//
+// PRD: docs/prds/v0_6/numeric-and-range-literal-forms.md
+//
+// Verified by: crates/reify-compiler/tests/numeric_and_range_literals_example.rs
+//   (focused gate, task η/3915) and
+//   crates/reify-compiler/tests/examples_smoke.rs
+//   (all_examples_parse_and_compile_with_stdlib — no Error-severity diagnostics).
+
+structure def NumericAndRangeLiterals {
+    // ── Slice 2: hex / binary radix literals ─────────────────────────────────
+
+    // Hex literal — lowers to 255.0 (is_real = false)
+    param count : Int = 0xFF
+
+    // Binary literal — lowers to 10.0 (is_real = false)
+    let flags = 0b1010
+
+    // ── Slice 1: digit separators ─────────────────────────────────────────────
+
+    // Quantity literal with _ separator — lowers to 1000 mm
+    param span : Length = 1_000mm
+
+    // Integer with _ separators — lowers to 1000000.0 (is_real = false)
+    let big = 1_000_000
+
+    // ── Slice 3: single-sided range literals ──────────────────────────────────
+
+    // Exclusive lower bound — Range { lower: Some(0.05mm), upper: None, ... }
+    let fit = >0.05mm
+
+    // ── Constraints ───────────────────────────────────────────────────────────
+
+    // Slice 2: radix equality
+    constraint count == 255
+    constraint flags == 10
+
+    // Slice 1: separator equality (1_000_000 has no semantic difference from 1000000)
+    constraint big == 1000000
+
+    // Slice 3: single-sided range is a concrete value → determined
+    constraint determined(fit)
+}
