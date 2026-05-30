@@ -1411,10 +1411,32 @@ pub(crate) fn compile_entity(
                     }
                 };
 
-                let pose = sub
-                    .pose_expr
-                    .as_ref()
-                    .map(|e| compile_expr(e, &scope, enum_defs, functions, diagnostics));
+                // Compile the optional `at <pose>` clause.  For a collection
+                // sub, carrying a pose is semantically invalid (per-element
+                // placement is out of scope in v1, PRD §10): emit an error and
+                // discard the pose so the IR is not left with a bad expression.
+                // For a single sub, the compiled expression is stored as-is;
+                // evaluation / type-checking as Transform is T4's responsibility.
+                let pose = if sub.is_collection {
+                    if let Some(pose_expr) = &sub.pose_expr {
+                        diagnostics.push(
+                            Diagnostic::error(
+                                "'at' placement is not supported on collection subs; \
+                                 per-element placement is out of scope in v1",
+                            )
+                            .with_code(DiagnosticCode::AtOnCollectionSub)
+                            .with_label(DiagnosticLabel::new(
+                                pose_expr.span,
+                                "'at' not allowed on collection sub",
+                            )),
+                        );
+                    }
+                    None
+                } else {
+                    sub.pose_expr
+                        .as_ref()
+                        .map(|e| compile_expr(e, &scope, enum_defs, functions, diagnostics))
+                };
 
                 sub_components.push(SubComponentDecl {
                     name: sub.name.clone(),
