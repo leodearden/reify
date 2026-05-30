@@ -267,12 +267,14 @@ pub fn format_summary(snap: &DiagnosticSnapshot) -> String {
     out
 }
 
-/// Atomically reset all diagnostic counters to zero.
+/// Reset all diagnostic counters to zero.
 ///
 /// Production-callable (ungated); intended for use by the cross-crate
 /// `mesh_morph_stats` debug RPC (`gui/src-tauri/src/debug_server.rs`) when the
-/// caller passes `reset: true` to snapshot counters and restart the session clock
-/// in one atomic operation (benchmark-sequence use case).
+/// caller passes `reset: true` to zero counters and restart the measurement clock
+/// (benchmark-sequence use case). Note: the seven stores are independent and not
+/// combined into a single atomic operation — a concurrent recorder active during
+/// the reset window may make the post-reset snapshot non-zero.
 ///
 // G-allow: only caller is the cross-crate debug RPC (gui/src-tauri/src/debug_server.rs
 // handle_mesh_morph_stats), invisible to the crate-scoped orphan audit; the
