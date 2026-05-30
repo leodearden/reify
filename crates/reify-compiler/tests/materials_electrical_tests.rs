@@ -477,3 +477,45 @@ structure def Glass : Insulating {
         DimensionVector::ELECTRIC_RESISTIVITY,
     ); // resistivity > 1000000.0 * 1ohm * 1m
 }
+
+// ─── (g) assert_trait_constraint_binop accepts a compound-literal RHS ────────
+
+/// Pins the `assert_trait_constraint_binop` helper contract for a constraint
+/// whose RHS is a COMPOUND quantity literal (`0.0001ohm*m`) — the exact form
+/// the stdlib electrical migration (step-5) produces. A compound literal folds
+/// to a single `ExprKind::QuantityLiteral` node, whereas the legacy
+/// `0.0001 * 1ohm * 1m` is a `BinOp(*)` spine.
+///
+/// Genuinely RED before step-4: the helper's RHS spine-walk matches only
+/// `NumberLiteral`/`BinOp(*|/)` and panics on `QuantityLiteral`. Step-4 adds
+/// the `QuantityLiteral { value, .. } => break *value` arm, turning this GREEN.
+/// The extracted coefficient (0.0001) equals the SI value because `ohm` and `m`
+/// have SI factor 1 — consistent with the existing `NumberLiteral` path.
+#[test]
+fn helper_accepts_compound_quantity_literal_constraint_rhs() {
+    let source = r#"
+trait CompoundRhsProbe {
+    param r : ElectricResistivity
+    constraint r < 0.0001ohm*m
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "CompoundRhsProbe trait should compile cleanly, got errors: {:?}",
+        errors
+    );
+
+    let probe = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "CompoundRhsProbe")
+        .expect("expected 'CompoundRhsProbe' trait def in compiled module");
+
+    assert_trait_constraint_binop(probe, "CompoundRhsProbe", "r", "<", 1.0e-4, 1.0e-16);
+}
