@@ -12,6 +12,7 @@
 mod common;
 
 use common::assert_trait_constraint_binop;
+use reify_ast::{ExprKind, UnitExpr};
 use reify_ir::*;
 use reify_compiler::*;
 use reify_test_support::compile_source_with_stdlib;
@@ -532,4 +533,77 @@ trait CompoundRhsProbe {
         .expect("expected 'CompoundRhsProbe' trait def in compiled module");
 
     assert_trait_constraint_binop(probe, "CompoundRhsProbe", "r", "<", 1.0e-4, 1.0e-16);
+}
+
+// ─── (h) Insulating.dielectric_strength constraint RHS is compound QuantityLiteral ─
+
+/// After step-2 migrates `0.0 * 1V / 1m` → `0.0V/m`, the Insulating
+/// trait's `dielectric_strength > 0.0V/m` constraint must have its comparison
+/// RHS as a single `ExprKind::QuantityLiteral { value: 0.0,
+/// unit: UnitExpr::Div(Unit("V"), Unit("m")) }`.
+///
+/// RED before step-2: the RHS is the `0.0 * 1V / 1m` BinOp(Mul/Div) spine, so
+/// the QuantityLiteral match fails.
+/// GREEN after step-2: compound literal `0.0V/m` folds to a single QuantityLiteral.
+#[test]
+fn insulating_dielectric_strength_constraint_rhs_is_compound_literal() {
+    let module = load_stdlib_module();
+
+    let insulating = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "Insulating")
+        .expect("expected 'Insulating' trait in std/materials/electrical");
+
+    // Find the constraint default whose expression is `dielectric_strength > ...`
+    let constraint_default = insulating
+        .defaults
+        .iter()
+        .find(|d| {
+            if let DefaultKind::Constraint(decl) = &d.kind {
+                matches!(&decl.expr.kind, ExprKind::BinOp { left, .. }
+                    if matches!(&left.kind, ExprKind::Ident(n) if n == "dielectric_strength"))
+            } else {
+                false
+            }
+        })
+        .expect("Insulating must have a dielectric_strength constraint default");
+
+    let DefaultKind::Constraint(decl) = &constraint_default.kind else {
+        unreachable!(
+            "dielectric_strength constraint default must be DefaultKind::Constraint"
+        )
+    };
+    let ExprKind::BinOp { right, .. } = &decl.expr.kind else {
+        unreachable!(
+            "dielectric_strength constraint expr must be ExprKind::BinOp, got {:?}",
+            decl.expr.kind
+        )
+    };
+
+    // After migration to `0.0V/m`, the RHS must be a single compound QuantityLiteral.
+    // RED today: the RHS is BinOp(Div, BinOp(Mul, 0.0, QuantityLiteral(1.0,V)), QuantityLiteral(1.0,m)).
+    let expected_unit = UnitExpr::Div(
+        Box::new(UnitExpr::Unit("V".to_string())),
+        Box::new(UnitExpr::Unit("m".to_string())),
+    );
+    match &right.kind {
+        ExprKind::QuantityLiteral { value, unit } => {
+            assert_eq!(
+                *value, 0.0,
+                "Insulating dielectric_strength constraint RHS value should be 0.0, got {}",
+                value
+            );
+            assert_eq!(
+                unit, &expected_unit,
+                "Insulating dielectric_strength constraint RHS unit should be Div(V,m), got {:?}",
+                unit
+            );
+        }
+        other => panic!(
+            "Insulating dielectric_strength constraint RHS should be compound \
+             QuantityLiteral `0.0V/m` after migration, got: {:?}",
+            other
+        ),
+    }
 }
