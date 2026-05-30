@@ -181,4 +181,104 @@ _after="$(git -C "$FIX" status --porcelain)"
 assert "print-plan does not mutate the working tree/index" \
     test "$_before" = "$_after"
 
+# ===========================================================================
+# Branch-scope scenarios (--scope branch): verify.sh derives changed files
+# from `git diff --name-only "$merge_base"` instead of `git diff --cached`.
+# ===========================================================================
+
+# make_branch_fixture VARNAME — like make_fixture but also commits the
+# scripts on a branch named exactly `main` so `git merge-base main HEAD`
+# can resolve inside the fixture.
+make_branch_fixture() {
+    local _var="$1" dir
+    dir="$(mktemp -d)"
+    _TMPDIRS+=("$dir")
+    mkdir -p "$dir/scripts"
+    cp "$REPO_ROOT/scripts/verify.sh" "$dir/scripts/verify.sh"
+    cp "$REPO_ROOT/scripts/occt-scope-lib.sh" "$dir/scripts/occt-scope-lib.sh"
+    cp "$REPO_ROOT/scripts/occt-touching-crates.txt" "$dir/scripts/occt-touching-crates.txt"
+    chmod +x "$dir/scripts/verify.sh"
+    git -C "$dir" init -q
+    git -C "$dir" config user.email "test@test.com"
+    git -C "$dir" config user.name "Test"
+    git -C "$dir" add scripts
+    git -C "$dir" commit -q -m "base"
+    git -C "$dir" branch -M main
+    printf -v "$_var" '%s' "$dir"
+}
+
+FIX_B=""
+make_branch_fixture FIX_B
+
+# plan_for_branch <file...> — checkout a task-branch off main, commit the
+# given (new) files, capture verify.sh --scope branch --print-plan output
+# into PLAN_OUT, then restore main and delete the branch.
+plan_for_branch() {
+    local f
+    git -C "$FIX_B" checkout -q -b task-branch
+    for f in "$@"; do
+        mkdir -p "$FIX_B/$(dirname "$f")"
+        printf 'x\n' > "$FIX_B/$f"
+        git -C "$FIX_B" add "$f"
+    done
+    git -C "$FIX_B" commit -q -m "task changes"
+    PLAN_OUT="$(cd "$FIX_B" && bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+    git -C "$FIX_B" checkout -q main
+    git -C "$FIX_B" branch -q -D task-branch
+    for f in "$@"; do rm -f "$FIX_B/$f"; done
+}
+
+# ---------------------------------------------------------------------------
+# Scenario B1: docs-only branch -> nothing heavy (empty plan)
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario B1: docs-only branch -> no Rust, no GUI, empty plan ---"
+plan_for_branch docs/note.md
+assert "branch/docs: scope decision RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
+assert "branch/docs: scope=branch reported in plan header" \
+    bash -c 'printf "%s\n" "$1" | grep -q "scope=branch"' _ "$PLAN_OUT"
+assert "branch/docs: zero command leaves (empty plan)" \
+    test "$(plan_cmdcount)" -eq 0
+
+# ---------------------------------------------------------------------------
+# Scenario B2: non-OCCT crate branch -> ungated Rust tail, no gated pass
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario B2: crates/reify-doc (non-OCCT) branch -> ungated tail, NO gated ---"
+plan_for_branch crates/reify-doc/src/lib.rs
+assert "branch/reify-doc: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
+assert "branch/reify-doc: clippy present" plan_has 'cargo clippy --workspace'
+assert "branch/reify-doc: ungated workspace tail present" plan_has 'cargo (test|nextest run) --workspace --exclude'
+assert "branch/reify-doc: gated OCCT pass ABSENT" plan_lacks 'cargo-test-occt-gated\.sh'
+
+# ---------------------------------------------------------------------------
+# Scenario B3: gui/src frontend-only branch -> GUI only, no cargo
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario B3: gui/src/*.ts branch -> GUI only (Rust skipped) ---"
+plan_for_branch gui/src/editor/foo.ts
+assert "branch/gui/src: scope decision RUN_RUST=0 RUN_GUI=1 RUN_OCCT_GATE=0" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=0 RUN_GUI=1 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
+assert "branch/gui/src: GUI npm block present" plan_has 'cd gui &&'
+assert "branch/gui/src: no cargo clippy" plan_lacks 'cargo clippy'
+assert "branch/gui/src: no cargo test/nextest pass" plan_lacks 'cargo (test|nextest run) --workspace'
+assert "branch/gui/src: no gated OCCT pass" plan_lacks 'cargo-test-occt-gated\.sh'
+assert "branch/gui/src: no tree-sitter generate" plan_lacks 'tree-sitter-generate'
+
+# ---------------------------------------------------------------------------
+# Scenario C5: no local main ref -> fail-wide to scope=all (contract C5)
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario C5: no local main ref -> fail-wide to scope=all ---"
+FIX_C5=""
+make_branch_fixture FIX_C5
+git -C "$FIX_C5" branch -m main work  # rename main so no local 'main' ref exists
+PLAN_C5="$(cd "$FIX_C5" && bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+assert "C5/no-main: scope=all in plan header (fail-wide, contract C5)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "scope=all"' _ "$PLAN_C5"
+assert "C5/no-main: full scope forced (RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_C5"
+
 test_summary
