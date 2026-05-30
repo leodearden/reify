@@ -189,6 +189,19 @@ impl OcctKernel {
         Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
     }
 
+    /// Stub surface-normal-at-point probe — always errors because OCCT is unavailable.
+    /// Mirrors the real `OcctKernel::surface_normal_at_point` signature so call sites
+    /// compile under both `has_occt` and `!has_occt`.
+    pub fn surface_normal_at_point(
+        &self,
+        _handle: GeometryHandleId,
+        _px: f64,
+        _py: f64,
+        _pz: f64,
+    ) -> Result<[f64; 3], QueryError> {
+        Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
+    }
+
     /// Stub curvature-at probe — always errors because OCCT is unavailable.
     /// Mirrors the real `OcctKernel::curvature_at` signature so call sites
     /// compile under both `has_occt` and `!has_occt`.

@@ -573,6 +573,15 @@ enum QueryKey {
         face_a: GeometryHandleId,
         face_b: GeometryHandleId,
     },
+    /// FaceNormalAt keys the face handle + query point (f64 bits via
+    /// `density_bits` for ±0.0 canonicalisation + NaN debug-assert).
+    /// Powers the v0.3 stdlib `normal(surface, point)` helper (task 3615, KGQ-ζ).
+    FaceNormalAt {
+        handle: GeometryHandleId,
+        px_bits: u64,
+        py_bits: u64,
+        pz_bits: u64,
+    },
 }
 
 /// Normalize a distance pair to canonical (min, max) order so that
@@ -730,6 +739,14 @@ impl QueryKey {
                 QueryKey::SurfaceAngle {
                     face_a: lo,
                     face_b: hi,
+                }
+            }
+            GeometryQuery::FaceNormalAt { handle, px, py, pz } => {
+                QueryKey::FaceNormalAt {
+                    handle: *handle,
+                    px_bits: density_bits(*px),
+                    py_bits: density_bits(*py),
+                    pz_bits: density_bits(*pz),
                 }
             }
         }
@@ -994,6 +1011,34 @@ impl MockGeometryKernel {
     pub fn with_face_normal_result(mut self, handle: GeometryHandleId, value: Value) -> Self {
         self.typed_queries
             .insert(QueryKey::FaceNormal(handle), value);
+        self
+    }
+
+    /// Configure a `FaceNormalAt` query result for a specific
+    /// (face handle, query point) pair.
+    ///
+    /// The `value` should be a `Value::String` containing a JSON-encoded
+    /// `{"x":..,"y":..,"z":..}` unit normal vector, matching the OCCT
+    /// kernel's wire format for `GeometryQuery::FaceNormalAt`. The point
+    /// coordinates `[px, py, pz]` are routed through `density_bits` for
+    /// stable hashing (±0.0 canonicalisation, NaN debug-assert).
+    ///
+    /// Powers the v0.3 stdlib `normal(surface, point)` helper (task 3615, KGQ-ζ).
+    pub fn with_face_normal_at_result(
+        mut self,
+        handle: GeometryHandleId,
+        point: [f64; 3],
+        value: Value,
+    ) -> Self {
+        self.typed_queries.insert(
+            QueryKey::FaceNormalAt {
+                handle,
+                px_bits: density_bits(point[0]),
+                py_bits: density_bits(point[1]),
+                pz_bits: density_bits(point[2]),
+            },
+            value,
+        );
         self
     }
 
@@ -1423,6 +1468,7 @@ impl GeometryKernel for MockGeometryKernel {
             GeometryQuery::Contains { handle, .. } => handle,
             GeometryQuery::GeoEquiv { left, .. } => left,
             GeometryQuery::SurfaceAngle { face_a, .. } => face_a,
+            GeometryQuery::FaceNormalAt { handle, .. } => handle,
         };
 
         self.queries

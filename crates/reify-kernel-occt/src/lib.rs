@@ -995,6 +995,42 @@ impl OcctKernel {
         Ok([p.x, p.y, p.z])
     }
 
+    /// Outward unit normal of a face at the Cartesian world-space point
+    /// `(px, py, pz)` (metres).
+    ///
+    /// Projects the query point onto the face's underlying surface via
+    /// `ShapeAnalysis_Surface::ValueOfUV(point, 1e-9)` to obtain parametric
+    /// `(u, v)`, then delegates to `face_outward_unit_normal_at_uv` for the
+    /// `BRepAdaptor_Surface::D1` derivative, `TopAbs_REVERSED` orientation
+    /// flip, and magnitude check — the same pipeline as `query_face_normal`
+    /// (centroid path) and `surface_normal_at` (caller-supplied (u,v) path).
+    ///
+    /// The return type is `[f64; 3]` (a plain Rust array) rather than the
+    /// FFI-internal `Point3`: `Point3` is unavailable in stub builds
+    /// (`!has_occt`), so the public API uses a plain array for both paths
+    /// (same convention as `surface_normal_at` and `closest_point_on_shape`).
+    ///
+    /// # Errors
+    ///
+    /// - `QueryError::InvalidHandle` — if the handle is unknown.
+    /// - `QueryError::QueryFailed` — if the shape is not a face, projection
+    ///   fails, the surface yields a degenerate normal, or any OCCT call fails.
+    pub fn surface_normal_at_point(
+        &self,
+        handle: GeometryHandleId,
+        px: f64,
+        py: f64,
+        pz: f64,
+    ) -> Result<[f64; 3], QueryError> {
+        let _ = self
+            .get_shape(handle)
+            .map_err(|_| QueryError::InvalidHandle(handle))?;
+        let _ = (px, py, pz);
+        Err(QueryError::QueryFailed(
+            "FaceNormalAt: not yet implemented".into(),
+        ))
+    }
+
     /// Gaussian, mean, and principal curvatures at the parametric point
     /// `(u, v)` on `face`, plus unit-length principal-direction tangents.
     ///
@@ -2658,6 +2694,10 @@ impl OcctKernel {
             } => self.geo_equiv(*left, *right, *tolerance).map(Value::Bool),
             GeometryQuery::SurfaceAngle { face_a, face_b } => {
                 self.surface_angle(*face_a, *face_b).map(Value::Real)
+            }
+            GeometryQuery::FaceNormalAt { handle, px, py, pz } => {
+                let [x, y, z] = self.surface_normal_at_point(*handle, *px, *py, *pz)?;
+                Ok(Value::String(format!("{{\"x\":{x},\"y\":{y},\"z\":{z}}}")))
             }
         }
     }

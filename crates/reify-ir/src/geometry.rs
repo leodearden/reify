@@ -1033,6 +1033,35 @@ pub enum GeometryQuery {
         face_a: GeometryHandleId,
         face_b: GeometryHandleId,
     },
+    /// Compute the outward unit normal of a face at a Cartesian query point
+    /// `(px, py, pz)` (in metres).
+    ///
+    /// The query point is projected onto the face's underlying surface via
+    /// `ShapeAnalysis_Surface::ValueOfUV(point, 1e-9)` to obtain parametric
+    /// coordinates `(u, v)`, then the orientation-aware outward normal is
+    /// computed via `BRepAdaptor_Surface::D1` at `(u, v)` with a
+    /// `TopAbs_REVERSED` flip to produce the topologically-outward direction.
+    ///
+    /// This is the at-point variant of [`GeometryQuery::FaceNormal`] (centroid):
+    /// while `FaceNormal` evaluates at the face's centroid (correct for flat
+    /// faces), `FaceNormalAt` evaluates at the caller-supplied world-space
+    /// point — required for curved surfaces (future KGQ-μ) where the
+    /// centroid normal diverges from the local normal at the query point.
+    ///
+    /// Returns `Value::String` with JSON encoding `{"x":_,"y":_,"z":_}` of
+    /// the outward unit normal, identical to the `FaceNormal` wire format.
+    /// The eval-side dispatcher decodes this into
+    /// `Value::Vector(vec![Value::Real(x), Value::Real(y), Value::Real(z)])`.
+    ///
+    /// Powers the v0.3 stdlib helper
+    /// `normal(surface: Surface, point: Point3<Length>) -> Vector3<Dimensionless>`
+    /// (PRD `docs/prds/v0_3/kernel-geometry-queries.md` §9 KGQ-ζ).
+    FaceNormalAt {
+        handle: GeometryHandleId,
+        px: f64,
+        py: f64,
+        pz: f64,
+    },
 }
 
 impl GeometryQuery {
@@ -1071,6 +1100,7 @@ impl GeometryQuery {
             GeometryQuery::Contains { .. } => "Contains",
             GeometryQuery::GeoEquiv { .. } => "GeoEquiv",
             GeometryQuery::SurfaceAngle { .. } => "SurfaceAngle",
+            GeometryQuery::FaceNormalAt { .. } => "FaceNormalAt",
         }
     }
 }
@@ -1156,6 +1186,7 @@ impl GeometryQuery {
             GeometryQuery::Contains { .. } => QueryCapability::BRepAndMesh,
             GeometryQuery::GeoEquiv { .. } => QueryCapability::BRepAndMesh,
             GeometryQuery::SurfaceAngle { .. } => QueryCapability::BRepAndMesh,
+            GeometryQuery::FaceNormalAt { .. } => QueryCapability::BRepAndMesh,
         }
     }
 }
