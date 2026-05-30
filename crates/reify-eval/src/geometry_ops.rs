@@ -2178,16 +2178,31 @@ pub(crate) fn try_eval_topology_selector(
             )
         }
         TopologySelectorHelper::AdjacentFaces => {
-            // args[0]: parent solid ValueRef → named_steps map → GeometryHandleId.
-            let parent = resolve_geometry_handle_arg(&args[0], named_steps)?;
-            // args[1]: face sub-handle ValueRef → named_steps map → GeometryHandleId.
-            let face_handle = resolve_geometry_handle_arg(&args[1], named_steps)?;
-            // `adjacent_to_face` internally recovers the 0-based face index via
+            // args[0]: parent solid ValueRef → values map → full Value::GeometryHandle.
+            // Must resolve from `values` (not `named_steps`) so we get the parent's
+            // realization_ref + upstream_values_hash for sub-handle construction (PRD §4).
+            // Falls through to None when the arg cell is not a hydrated Value::GeometryHandle
+            // (PRD invariant #2: never partially construct a sub-handle).
+            let (parent_rr, parent_hash, parent_kh) =
+                resolve_parent_geometry_handle_arg(&args[0], values)?;
+            // args[1]: face sub-handle ValueRef → values map → kernel_handle only.
+            // Real face sub-handles (e.g. from faces(b) / single(faces_by_normal(...)))
+            // live in `values` as Value::GeometryHandle, not in named_steps (design §4).
+            let (_, _, face_kh) = resolve_parent_geometry_handle_arg(&args[1], values)?;
+            // `adjacent_to_face` recovers the 0-based face index via
             // `extract_faces(parent)`, dispatches `GeometryQuery::AdjacentFaces`,
-            // and maps the reply indices back to face handles. Same
-            // Ok→List / Err→warning+Undef contract as the filtered helpers.
-            dispatch_filtered_list(
-                crate::selector_vocabulary_v2::adjacent_to_face(kernel, parent, face_handle),
+            // and maps the reply indices back to face handles.
+            // Result saved before dispatch to avoid a double-mutable-borrow on kernel.
+            // Output: List<Value::GeometryHandle> sub-handles per PRD §4 (KGQ-κ).
+            let filter_result =
+                crate::selector_vocabulary_v2::adjacent_to_face(kernel, parent_kh, face_kh);
+            dispatch_filtered_subhandles(
+                kernel,
+                parent_kh,
+                crate::topology_selectors::SubKind::Face,
+                &parent_rr,
+                &parent_hash,
+                filter_result,
                 &function.name,
                 diagnostics,
             )
