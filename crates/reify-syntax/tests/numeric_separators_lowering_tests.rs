@@ -19,6 +19,11 @@
 
 use reify_ast::*;
 
+/// Helper: parse source and return the `ParsedModule`.
+fn parse_module(source: &str) -> ParsedModule {
+    reify_syntax::parse(source, reify_core::ModulePath::single("numeric_sep_lowering_test"))
+}
+
 /// Helper: parse source and return the first structure's members and errors.
 fn parse_members(source: &str) -> (Vec<MemberDecl>, Vec<ParseError>) {
     let module = reify_syntax::parse(
@@ -141,5 +146,59 @@ fn quantity_literal_1_000mm() {
             );
         }
         other => panic!("expected QuantityLiteral, got {:?}", other),
+    }
+}
+
+// ── Pragma `_` separator cases ───────────────────────────────────────────────
+
+/// `#config(level=1_000)` must lower the pragma number value to
+/// `PragmaValue::Number(1000.0)`.  This exercises the `lower_pragma_value`
+/// `"number_literal"` arm, which previously called raw `text.parse::<f64>()`
+/// and silently returned `None` for `_`-bearing literals.
+#[test]
+fn pragma_number_with_underscores() {
+    let source = "#config(level=1_000)\nstructure S {}";
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "unexpected parse errors: {:?}", module.errors);
+    assert_eq!(module.pragmas.len(), 1, "expected 1 pragma");
+    let pragma = &module.pragmas[0];
+    assert_eq!(pragma.name, "config");
+    assert_eq!(pragma.args.len(), 1, "expected 1 arg, got {:?}", pragma.args);
+    match &pragma.args[0] {
+        PragmaArg::KeyValue { key, value } => {
+            assert_eq!(key, "level");
+            assert_eq!(*value, PragmaValue::Number(1000.0), "1_000 should lower to 1000.0");
+        }
+        other => panic!("expected KeyValue('level', Number(1000.0)), got {:?}", other),
+    }
+}
+
+/// `#config(min_wall=1_000mm)` must lower the pragma quantity value to
+/// `PragmaValue::Quantity { value: 1000.0, unit: "mm" }`.  This exercises the
+/// `lower_pragma_value` `"quantity_literal"` arm, which previously called raw
+/// `self.node_text(value_node).parse().ok()?` and silently returned `None` for
+/// `_`-bearing numeric values inside quantity literals.
+#[test]
+fn pragma_quantity_with_underscores() {
+    let source = "#config(min_wall=1_000mm)\nstructure S {}";
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "unexpected parse errors: {:?}", module.errors);
+    assert_eq!(module.pragmas.len(), 1, "expected 1 pragma");
+    let pragma = &module.pragmas[0];
+    assert_eq!(pragma.name, "config");
+    assert_eq!(pragma.args.len(), 1, "expected 1 arg, got {:?}", pragma.args);
+    match &pragma.args[0] {
+        PragmaArg::KeyValue { key, value } => {
+            assert_eq!(key, "min_wall");
+            assert_eq!(
+                *value,
+                PragmaValue::Quantity { value: 1000.0, unit: "mm".to_string() },
+                "1_000mm should lower to Quantity {{ value: 1000.0, unit: \"mm\" }}"
+            );
+        }
+        other => panic!(
+            "expected KeyValue('min_wall', Quantity {{ value: 1000.0, unit: 'mm' }}), got {:?}",
+            other
+        ),
     }
 }

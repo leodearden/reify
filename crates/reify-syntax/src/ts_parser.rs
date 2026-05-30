@@ -1211,12 +1211,12 @@ impl<'a> Lowering<'a> {
             "identifier" => Some(PragmaValue::Ident(self.node_text(node).to_string())),
             "number_literal" => {
                 let text = self.node_text(node);
-                text.parse::<f64>().ok().map(PragmaValue::Number)
+                Self::strip_underscores_and_parse(text).map(PragmaValue::Number)
             }
             "quantity_literal" => {
                 let value_node = node.child_by_field_name("value")?;
                 let unit_node = node.child_by_field_name("unit")?;
-                let value: f64 = self.node_text(value_node).parse().ok()?;
+                let value: f64 = Self::strip_underscores_and_parse(self.node_text(value_node))?;
                 let unit = self.node_text(unit_node).to_string();
                 Some(PragmaValue::Quantity { value, unit })
             }
@@ -2792,9 +2792,9 @@ impl<'a> Lowering<'a> {
     ///
     /// The grammar (`tree-sitter-reify/grammar.js`) accepts `_` between digit
     /// groups (e.g. `1_000_000`, `0.000_001`, `1_000e1_0`), but `f64::from_str`
-    /// rejects `_` in raw form.  This helper strips them before parsing so both
-    /// `lower_number_literal` and `lower_quantity_literal` use the same path
-    /// and cannot diverge.
+    /// rejects `_` in raw form.  This helper strips them before parsing so all
+    /// three lowering sites — `lower_number_literal`, `lower_quantity_literal`,
+    /// and `lower_pragma_value` — share the same path and cannot diverge.
     ///
     /// The `is_real` classification (`.`/`e`/`E` scan) in `lower_number_literal`
     /// is unaffected: `_` is never `.`, `e`, or `E`, so the scan result is
