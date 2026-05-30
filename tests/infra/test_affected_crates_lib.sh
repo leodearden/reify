@@ -157,4 +157,24 @@ _check_reify_ir_closure_eq_oracle() {
 }
 assert "reify-ir closure == oracle" _check_reify_ir_closure_eq_oracle
 
+# ---------------------------------------------------------------------------
+# Step 11: C5 metadata-failure fail-wide + C4 global precedes crates in list
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- C5: cargo metadata failure -> ALL; C4: global anywhere -> ALL ---"
+
+# Stub cargo as a shell function that returns 1 (failure).
+# The stub is defined locally so it shadows the real cargo only within the
+# subshell created by $(...), which is what _reverse_closure calls.
+_check_cargo_fail_all() {
+    cargo() { return 1; }
+    local result
+    result="$(affected_crates crates/reify-core/src/lib.rs)"
+    [ "$result" = "ALL" ]
+}
+assert "cargo metadata failure -> ALL" _check_cargo_fail_all
+
+assert "global anywhere in list -> ALL" \
+    test "$(affected_crates crates/reify-cli/src/main.rs Cargo.lock)" = "ALL"
+
 test_summary
