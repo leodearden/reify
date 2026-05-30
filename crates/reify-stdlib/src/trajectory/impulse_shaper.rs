@@ -164,4 +164,75 @@ pub(crate) fn convolve_at<F: Fn(f64) -> f64>(
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+    use std::f64::consts::PI;
+
+    // ── helpers ──────────────────────────────────────────────────────────────
+
+    /// Assert two f64 values are within `eps` of each other.
+    fn assert_close(a: f64, b: f64, eps: f64, label: &str) {
+        assert!(
+            (a - b).abs() < eps,
+            "{label}: expected {a:.6e} ≈ {b:.6e} (tolerance {eps:.0e})"
+        );
+    }
+
+    // ── step-1: ZV train construction ────────────────────────────────────────
+
+    /// ZV undamped (ζ=0): amplitudes [0.5, 0.5] at times [0, π/ω_n].
+    #[test]
+    fn zv_undamped_amplitudes_and_times() {
+        let omega_n = 2.0 * PI * 10.0; // 10 Hz → rad/s
+        let train = ImpulseTrain::zv(omega_n, 0.0);
+
+        assert_eq!(train.impulses.len(), 2, "ZV must have exactly 2 impulses");
+
+        // Times: [0, π/ω_n] for ζ=0 (ω_d = ω_n)
+        assert_close(train.impulses[0].time, 0.0, 1e-12, "ZV undamped t0");
+        assert_close(
+            train.impulses[1].time,
+            PI / omega_n,
+            1e-12,
+            "ZV undamped t1",
+        );
+
+        // Amplitudes: [0.5, 0.5] for ζ=0 (K=1)
+        assert_close(train.impulses[0].amplitude, 0.5, 1e-12, "ZV undamped A0");
+        assert_close(train.impulses[1].amplitude, 0.5, 1e-12, "ZV undamped A1");
+
+        // Σ amplitudes = 1
+        assert_close(train.amplitude_sum(), 1.0, 1e-12, "ZV undamped amplitude_sum");
+
+        // trailing_time == last impulse time
+        assert_close(
+            train.trailing_time(),
+            PI / omega_n,
+            1e-12,
+            "ZV undamped trailing_time",
+        );
+    }
+
+    /// ZV damped (ζ=0.1): verify K and ω_d formulas.
+    #[test]
+    fn zv_damped_amplitudes_and_times() {
+        let omega_n = 2.0 * PI * 5.0; // 5 Hz
+        let zeta = 0.1_f64;
+
+        let omega_d = omega_n * (1.0 - zeta * zeta).sqrt();
+        let k = (-zeta * PI / (1.0 - zeta * zeta).sqrt()).exp();
+        let a0 = 1.0 / (1.0 + k);
+        let a1 = k / (1.0 + k);
+        let t1 = PI / omega_d;
+
+        let train = ImpulseTrain::zv(omega_n, zeta);
+
+        assert_eq!(train.impulses.len(), 2);
+        assert_close(train.impulses[0].time, 0.0, 1e-12, "ZV damped t0");
+        assert_close(train.impulses[1].time, t1, 1e-12, "ZV damped t1");
+        assert_close(train.impulses[0].amplitude, a0, 1e-12, "ZV damped A0");
+        assert_close(train.impulses[1].amplitude, a1, 1e-12, "ZV damped A1");
+        assert_close(train.amplitude_sum(), 1.0, 1e-12, "ZV damped amplitude_sum");
+        assert_close(train.trailing_time(), t1, 1e-12, "ZV damped trailing_time");
+    }
+}
