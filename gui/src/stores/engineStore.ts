@@ -146,8 +146,19 @@ export function createEngineStore(options?: EngineStoreOptions) {
     options?.onEntityRemoved?.(nodeId);
   }
 
+  function resetSolverProgress() {
+    if (debounceHandle !== null) {
+      clearTimeout(debounceHandle);
+      debounceHandle = null;
+    }
+    setState('solverProgress', { latest: null, trace: [], visible: false, coarseReached: false });
+  }
+
   function setEvalStatus(status: EvaluationStatus) {
     setState('evalStatus', status);
+    if (status.phase === 'idle') {
+      resetSolverProgress();
+    }
   }
 
   function setTessellationDiagnostics(diags: DiagnosticInfo[]) {
@@ -288,6 +299,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
     applyAutoResolveIteration,
     endAutoResolveLoop,
     applySolverProgress,
+    resetSolverProgress,
     subscribeToEvents,
   };
 }
