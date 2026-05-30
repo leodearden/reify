@@ -76,6 +76,22 @@ Reify is numerically heavy; G6 branches 1 (numeric bound) and 2 (closed-form exa
 - **esc-3453-5/6** (`buckling-eigensolver.md` §13 task δ) — guessed 5% accuracy bound (bending lock gave 9–10%) + wrong BC mapping. "Tuned" fixture comment was aspirational. (Branches 1+2.)
 - **esc-3770-1** (`trajectory-input-shaping.md` §11 task β) — asserted a natural cubic spline reproduces a general cubic to 1e-12; provably impossible. (Branch 2.)
 
+## Capability Manifest — reify evidence forms
+
+Mechanizes `gates.md` → *Capability Manifest — mechanizing G3 + G6 per leaf* for reify. **Manifest path:** `docs/prds/<vM_N>/<slug>.capability-manifest.md` (commit beside the PRD).
+
+- **Empty-value sentinel (field-population check).** Reify's failure sentinel is `Value::Undef` (also `None` option-defaults and trivial constructor placeholders like the `{ ElasticResult() }` contract body). A result-field capability PASSES only if grep shows the **producer** writes a real `Value::Field{source: Sampled, …}` / non-`Undef` value on the production path (`crates/reify-eval/src/compute_targets/*.rs`, `crates/reify-eval/src/modal_ops.rs`). It FAILS (`declared-only`) if the only sampleable construction lives in a `tests/` module or a `significance_filter.rs` unit-test helper.
+- **Wired-on-main evidence (anti-orphan).** Production entry paths to grep: the reify-eval dispatch tables + `engine_eval.rs` / `engine_build.rs` walks, the `@optimized`/ComputeNode registry (`compute_targets/mod.rs`), and the GUI `gui/src-tauri/src/engine.rs` `MeshData.scalar_channels`/`displaced_positions` path. A symbol present only under `tests/`, or declared but absent from the dispatch table, FAILS (`test-only`/`declared-only`) — precedents C-10 `selector_vocabulary_v2` (22+ fns, none in the eval dispatch table) and C-02 ComputeNode (producer built, consumer pending months).
+- **Grammar-fixture (anti-mismatch).** Reuse the G3 grammar gate (`references/grammar-gate.md`): each novel syntax fragment is a committed `.ri` fixture that `tree-sitter parse --quiet` accepts with 0 ERROR nodes, OR names an upstream grammar-producer task (e.g. DCE `3936`). Cite the fixture path as manifest evidence.
+- **Numeric floor.** The G6 domain hazards (P1-tet bending lock, Dirichlet `k≈0.67–0.70`, spline end-conditions, Duhamel `O((ΩΔt)²)`, eigensolver conditioning) are the floors; assert `bound > floor`.
+
+**Worked precedent corpus** (the manifest's cautionary set — 2026-05-30 premise-review, report at `.orchestrator-scratch/v0_6-premise-review-report-2026-05-30.md`). Each is a binding the manifest would have FAILED *before* dispatch:
+- `field-population`: esc-2962-33 (`ElasticResult.{stress,displacement}` = `Undef`), §3-C / task 3823 (`ModalResult.shape` Φ = `Undef`), task 3015 (superposition `linear_combine` over `Undef` fields).
+- `producer-absent` / wrong-layer: esc-3005-32 (cache-reuse capability lives in reify-eval, not the task's reify-expr/reify-stdlib scope), esc-2929-40 (per-Support source-span provenance absent from value model + ComputeFn signature).
+- `declared-only` / `test-only`: esc-3845-77 (bind/couple/prismatic are bare `eval_builtin`s, no compiler signature), esc-3607-59 (no on-disk geometry persistence; RealizationCache is in-memory per-Engine).
+- grammar / substrate: esc-2998-47 (ConvergenceStatus payload enum — resolved by **gating on the DCE cluster `3946`**, which adds named-field payload variants, rather than a C-style re-spec), the C-06 grammar-fiction precedents.
+- `bound≤floor`: esc-3821-44 (Duhamel `1e-9` ≪ `O((ΩΔt)²)≈2e-3` floor), esc-3453 buckling (`5%` < `9–10%` bending lock → 4066).
+
 ## Author-mode Stage 2 — Reify mechanism patterns to surface
 
 - **GR-001 family.** If the PRD assumes struct-ctor runtime evaluation (`Material(...)`, `LoadCase(...)`), confirm it gates on `gap-register.md` GR-001 (resolution: `docs/prds/v0_3/structure-instance-runtime.md` once authored).
