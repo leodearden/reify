@@ -5,10 +5,11 @@ use std::time::Instant;
 
 use reify_compiler::CompiledModule;
 use reify_solver_elastic::{
-    Mesh2d, Mesh2dError, Mesh2dReport, SweepError, SweepParams, SweptMesh3d,
+    Mesh2d, Mesh2dError, Mesh2dReport, MpcRow, SweepError, SweepParams, SweptMesh3d,
 };
 use reify_core::{Diagnostic, DiagnosticLabel, RealizationNodeId, SourceSpan, VersionId};
-use reify_ir::{AttributeHistory, CapabilityDescriptor, CompiledFunction, ErrorRef, ExportFormat, FeatureId, FeatureTag, FeatureTagTable, Freshness, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, LoftOpHistoryRecords, Mesh, Operation, ReprKind, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable, ValueMap, VolumeMesh};
+use reify_ir::{AttributeHistory, CapabilityDescriptor, CompiledFunction, ElementOrderTag, ErrorRef, ExportFormat, FeatureId, FeatureTag, FeatureTagTable, Freshness, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, LoftOpHistoryRecords, Mesh, Operation, ReprKind, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable, ValueMap, VolumeMesh};
+use reify_shell_extract::{MidSurfaceMesh, ShellTetInterface};
 
 use crate::cache::{CacheStore, CachedResult, FAILED_REALIZATION_STUB_HANDLE, NodeCache, NodeId};
 use crate::deps::{DependencyTrace, extract_realization_dependencies};
@@ -3869,6 +3870,155 @@ where
         ))),
         Err(_) => tet_path().map(VolumeMeshOutcome::Tet),
     }
+}
+
+// ── build_mixed_region_mesh (T12 layer B) ─────────────────────────────────────
+//
+// Routing + merge + MPC wiring for a mixed shell/tet body (PRD v0.4
+// structural-analysis-shells.md §124). Consumes already-meshed inputs (a
+// shell `MidSurfaceMesh` from T9 + a tet `VolumeMesh` from the existing
+// `dispatch_volume_mesh` tet seam) plus the kernel-agnostic
+// `ShellTetInterface` descriptors from `reify_shell_extract::partition`, and
+// produces a unified node/element list tagged per element (shell vs. tet)
+// together with the interface `MpcRow` constraint set. It does NOT invoke
+// Gmsh, build element stiffness, or run the solve — those live in the existing
+// tet seam, T6, and the engine-bridge PRD (δ/ε) respectively.
+//
+// The whole seam is `#[allow(dead_code)]` because its consumer — the
+// engine-bridge mixed solve wiring — is a future task; this mirrors the
+// `dispatch_volume_mesh` G-allow pattern above.
+
+/// Per-element kind tag in a [`MixedRegionMesh`].
+#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UnifiedElementKind {
+    /// A mid-surface shell element (one per shell triangle, 6 DOF/node).
+    Shell,
+    /// A volumetric tet element (one per tet, 3 DOF/node).
+    Tet,
+}
+
+/// One element of the unified mixed mesh, referencing unified node ids.
+#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct UnifiedElement {
+    /// Whether this element is meshed as a shell or a tet.
+    pub kind: UnifiedElementKind,
+    /// Unified node indices (shell nodes first, tet nodes offset by the shell
+    /// node count). Length 3 for a shell triangle, 4/10 for a P1/P2 tet.
+    pub connectivity: Vec<usize>,
+}
+
+/// Unified mixed shell/tet mesh: a single node list, per-element kind tags, and
+/// the shell↔tet interface MPC constraint rows.
+#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[derive(Debug, Clone)]
+pub(crate) struct MixedRegionMesh {
+    /// Unified node positions (world, f64). Shell vertices first, then tet
+    /// vertices (f32 → f64) appended at offset `n_shell_nodes`.
+    pub nodes: Vec<[f64; 3]>,
+    /// Unified elements, both shell and tet, referencing `nodes` indices.
+    pub elements: Vec<UnifiedElement>,
+    /// Interface tying constraints under the global D=6 DOF layout (see
+    /// [`build_mixed_region_mesh`]). Empty when there are no interfaces.
+    pub mpc_rows: Vec<MpcRow>,
+}
+
+/// Errors returned by [`build_mixed_region_mesh`].
+#[allow(dead_code)] // InterfaceResolutionFailed constructed in the interface-wiring path (step-12)
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum MixedRegionError {
+    /// An interface could not be tied because a required tie node was missing
+    /// — the shell side has no vertices, or the tet side has no nodes, so the
+    /// nearest-node resolution has no candidate.
+    InterfaceResolutionFailed {
+        /// Index of the offending interface in the input `interfaces` slice.
+        interface_index: usize,
+    },
+}
+
+impl std::fmt::Display for MixedRegionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MixedRegionError::InterfaceResolutionFailed { interface_index } => write!(
+                f,
+                "interface {interface_index} could not be tied: the shell or tet side \
+                 has no candidate tie node (empty mesh on one side)"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for MixedRegionError {}
+
+/// Merge a shell [`MidSurfaceMesh`] and a tet [`VolumeMesh`] into one unified
+/// mesh and wire the shell↔tet interface MPC rows (PRD T12).
+///
+/// # Node numbering
+///
+/// Shell vertices are numbered first (`0..n_shell`), keeping their index; tet
+/// vertices are appended (`f32 → f64`) at offset `n_shell`, so tet local node
+/// `m` becomes unified node `n_shell + m`. This deterministic offset map is
+/// shared by the element connectivity and the MPC DOF wiring.
+///
+/// # Elements
+///
+/// One [`UnifiedElementKind::Shell`] element per shell triangle (connectivity =
+/// the triangle's vertex indices) and one [`UnifiedElementKind::Tet`] per tet
+/// (connectivity chunked from `tet.tet_indices` by the per-element node count
+/// from `element_order`, offset by `n_shell`).
+///
+/// # Errors
+///
+/// Returns [`MixedRegionError::InterfaceResolutionFailed`] if an interface
+/// cannot be resolved to tie nodes (empty shell or tet mesh on one side).
+#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+pub(crate) fn build_mixed_region_mesh(
+    shell: &MidSurfaceMesh,
+    tet: &VolumeMesh,
+    interfaces: &[ShellTetInterface],
+) -> Result<MixedRegionMesh, MixedRegionError> {
+    // ── Merge nodes: shell vertices first, then tet vertices (f32 → f64) ──────
+    let n_shell = shell.vertices.len();
+    let mut nodes: Vec<[f64; 3]> = Vec::with_capacity(n_shell + tet.vertices.len() / 3);
+    nodes.extend_from_slice(&shell.vertices);
+    for chunk in tet.vertices.chunks_exact(3) {
+        nodes.push([chunk[0] as f64, chunk[1] as f64, chunk[2] as f64]);
+    }
+
+    // ── Elements: one shell element per triangle, one tet element per tet ─────
+    let mut elements: Vec<UnifiedElement> =
+        Vec::with_capacity(shell.triangles.len() + tet.tet_indices.len());
+    for tri in &shell.triangles {
+        elements.push(UnifiedElement {
+            kind: UnifiedElementKind::Shell,
+            connectivity: vec![tri[0] as usize, tri[1] as usize, tri[2] as usize],
+        });
+    }
+    // Per-tet node count from the element order (P1 = 4, P2 = 10); tet local
+    // node `m` → unified node `n_shell + m`.
+    let nodes_per_tet = match tet.element_order {
+        ElementOrderTag::P1 => 4,
+        ElementOrderTag::P2 => 10,
+    };
+    for tet_conn in tet.tet_indices.chunks_exact(nodes_per_tet) {
+        elements.push(UnifiedElement {
+            kind: UnifiedElementKind::Tet,
+            connectivity: tet_conn.iter().map(|&i| n_shell + i as usize).collect(),
+        });
+    }
+
+    // ── Interface → MPC wiring (step-12) ──────────────────────────────────────
+    // Populated in step-12; the parameter is accepted now so the public
+    // signature is stable across the RED/GREEN MPC steps.
+    let _ = interfaces;
+    let mpc_rows: Vec<MpcRow> = Vec::new();
+
+    Ok(MixedRegionMesh {
+        nodes,
+        elements,
+        mpc_rows,
+    })
 }
 
 #[cfg(test)]
