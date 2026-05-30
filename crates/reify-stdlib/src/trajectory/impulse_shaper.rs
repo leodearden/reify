@@ -43,7 +43,39 @@ pub(crate) struct ImpulseTrain {
     impulses: Vec<Impulse>,
 }
 
-// ── Internal helpers ──────────────────────────────────────────────────────────
+// ── Internal helpers / convolution ───────────────────────────────────────────
+
+/// Convolve two impulse trains: each output impulse has
+/// `time = t_a + t_b` and `amplitude = A_a * A_b` for all pairs.
+/// Impulses whose times coincide within `MERGE_EPSILON` are merged by
+/// summing their amplitudes.  The result is sorted by time.
+fn convolve_trains(a: &ImpulseTrain, b: &ImpulseTrain) -> ImpulseTrain {
+    const MERGE_EPS: f64 = 1e-10; // seconds
+
+    let mut raw: Vec<(f64, f64)> = Vec::with_capacity(a.impulses.len() * b.impulses.len());
+    for ia in &a.impulses {
+        for ib in &b.impulses {
+            raw.push((ia.time + ib.time, ia.amplitude * ib.amplitude));
+        }
+    }
+
+    // Sort by time (NaN-free — all times are finite and ≥ 0).
+    raw.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap());
+
+    // Merge coincident-time impulses.
+    let mut merged: Vec<Impulse> = Vec::with_capacity(raw.len());
+    for (t, amp) in raw {
+        if let Some(last) = merged.last_mut() {
+            if (last.time - t).abs() < MERGE_EPS {
+                last.amplitude += amp;
+                continue;
+            }
+        }
+        merged.push(Impulse { time: t, amplitude: amp });
+    }
+
+    ImpulseTrain { impulses: merged }
+}
 
 /// Compute the damped natural frequency `ω_d = ω_n · √(1 − ζ²)` and the
 /// exponential decay factor `K = exp(−ζ π / √(1 − ζ²))`.
@@ -144,7 +176,16 @@ impl ImpulseTrain {
     ///   impulses (within a tolerance of 1e-10 s) are merged by summing their
     ///   amplitudes.
     pub(crate) fn cascade(trains: &[ImpulseTrain]) -> ImpulseTrain {
-        todo!()
+        // Empty → identity unit impulse at t=0.
+        if trains.is_empty() {
+            return ImpulseTrain {
+                impulses: vec![Impulse { time: 0.0, amplitude: 1.0 }],
+            };
+        }
+        // Fold pairwise convolution over the slice.
+        trains[1..].iter().fold(trains[0].clone(), |acc, next| {
+            convolve_trains(&acc, next)
+        })
     }
 
     /// Sum of all impulse amplitudes (should equal 1.0 for any well-formed shaper).
