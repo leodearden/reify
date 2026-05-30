@@ -540,4 +540,81 @@ mod tests {
             );
         });
     }
+
+    // ── Step-7: format_summary ────────────────────────────────────────────────
+    //
+    // Pure function over a `DiagnosticSnapshot` — no globals, no lock needed.
+
+    #[test]
+    fn format_summary_all_zero_has_no_parenthetical_or_panicked_suffix() {
+        let snap = DiagnosticSnapshot::default();
+        assert_eq!(
+            format_summary(&snap),
+            "mesh updates: 0 morphed, 0 remeshed, 0 ineligible"
+        );
+    }
+
+    #[test]
+    fn format_summary_matches_prd_example() {
+        // remeshed aggregates hard+soft (3+1=4); the ineligible parenthetical
+        // lists only the non-zero sub-categories (naming omitted at 0).
+        let snap = DiagnosticSnapshot {
+            morphed: 47,
+            remeshed_quality_hard_fail: 3,
+            remeshed_quality_soft_fail: 1,
+            ineligible_structural_change: 1,
+            ineligible_bijection_failure: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            format_summary(&snap),
+            "mesh updates: 47 morphed, 4 remeshed, 2 ineligible (1 structural, 1 bijection)"
+        );
+    }
+
+    #[test]
+    fn format_summary_includes_naming_when_nonzero() {
+        let snap = DiagnosticSnapshot {
+            morphed: 47,
+            remeshed_quality_hard_fail: 3,
+            remeshed_quality_soft_fail: 1,
+            ineligible_structural_change: 1,
+            ineligible_bijection_failure: 1,
+            ineligible_naming_error: 2,
+            ..Default::default()
+        };
+        let summary = format_summary(&snap);
+        assert!(
+            summary.contains("2 naming"),
+            "naming sub-category must appear when non-zero, got: {summary:?}"
+        );
+        assert_eq!(
+            summary,
+            "mesh updates: 47 morphed, 4 remeshed, 4 ineligible \
+             (1 structural, 1 bijection, 2 naming)"
+        );
+    }
+
+    #[test]
+    fn format_summary_appends_panicked_suffix_when_nonzero() {
+        let snap = DiagnosticSnapshot {
+            morphed: 47,
+            remeshed_quality_hard_fail: 3,
+            remeshed_quality_soft_fail: 1,
+            ineligible_structural_change: 1,
+            ineligible_bijection_failure: 1,
+            panicked: 5,
+            ..Default::default()
+        };
+        let summary = format_summary(&snap);
+        assert!(
+            summary.ends_with(", 5 panicked"),
+            "panicked suffix must be appended when panics > 0, got: {summary:?}"
+        );
+        assert_eq!(
+            summary,
+            "mesh updates: 47 morphed, 4 remeshed, 2 ineligible \
+             (1 structural, 1 bijection), 5 panicked"
+        );
+    }
 }
