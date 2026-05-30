@@ -25,6 +25,36 @@
 mod common;
 use common::{find_cst_node, make_ts_parser};
 
+// ── Shared parse helper ──────────────────────────────────────────────────────
+
+/// Parse `structure S { let x = <lit> }`, assert no ERROR nodes, locate the
+/// `let_declaration.value` node, and call `check(root, value_node, source)`.
+///
+/// Centralises the boilerplate shared by all CST-shape tests in this file so
+/// each test only needs to state the assertions specific to it.
+fn with_lit_value<F>(lit: &str, check: F)
+where
+    F: for<'a> FnOnce(tree_sitter::Node<'a>, tree_sitter::Node<'a>, &str),
+{
+    let source = format!("structure S {{\n  let x = {lit}\n}}");
+    let mut parser = make_ts_parser();
+    let tree = parser.parse(source.as_bytes(), None).expect("parse failed");
+    let root = tree.root_node();
+
+    assert!(
+        !root.has_error(),
+        "expected no parse error for {lit:?}; got errors in: {source:?}"
+    );
+
+    let let_decl = find_cst_node(root, "let_declaration")
+        .expect("expected a let_declaration node in the CST");
+    let value_node = let_decl
+        .child_by_field_name("value")
+        .expect("let_declaration must have a `value` field");
+
+    check(root, value_node, &source);
+}
+
 // ── Assertion helpers ────────────────────────────────────────────────────────
 
 /// Parse `structure S { let x = <lit> }` and assert:
@@ -35,48 +65,34 @@ use common::{find_cst_node, make_ts_parser};
 ///    `0` — this is the signal that `xFF`/`b1010` was NOT consumed as a unit suffix).
 /// 4. No `unit_expr` node anywhere in the tree (defeats the misparse).
 fn assert_radix_literal_is_single_number_literal(lit: &str) {
-    let source = format!("structure S {{\n  let x = {lit}\n}}");
-    let mut parser = make_ts_parser();
-    let tree = parser.parse(source.as_bytes(), None).expect("parse failed");
-    let root = tree.root_node();
+    with_lit_value(lit, |root, value_node, source| {
+        // (2) The let_declaration value field must be a number_literal.
+        assert_eq!(
+            value_node.kind(),
+            "number_literal",
+            "let_declaration.value must be `number_literal` for {lit:?}, \
+             got `{}`; this indicates the literal was misparsed as quantity_literal \
+             with a unit-suffix starting at `x`/`b`",
+            value_node.kind()
+        );
 
-    // (1) No ERROR nodes.
-    assert!(
-        !root.has_error(),
-        "expected no parse error for {lit:?}; got errors in: {source:?}"
-    );
+        // (3) The number_literal text must span the whole literal.
+        let actual_text = value_node
+            .utf8_text(source.as_bytes())
+            .expect("utf8_text failed");
+        assert_eq!(
+            actual_text, lit,
+            "number_literal text must span the entire literal including the radix prefix; \
+             got {actual_text:?}, expected {lit:?}"
+        );
 
-    // (2) The let_declaration value field must be a number_literal.
-    let let_decl = find_cst_node(root, "let_declaration")
-        .expect("expected a let_declaration node in the CST");
-    let value_node = let_decl
-        .child_by_field_name("value")
-        .expect("let_declaration must have a `value` field");
-    assert_eq!(
-        value_node.kind(),
-        "number_literal",
-        "let_declaration.value must be `number_literal` for {lit:?}, \
-         got `{}`; this indicates the literal was misparsed as quantity_literal \
-         with a unit-suffix starting at `x`/`b`",
-        value_node.kind()
-    );
-
-    // (3) The number_literal text must span the whole literal.
-    let actual_text = value_node
-        .utf8_text(source.as_bytes())
-        .expect("utf8_text failed");
-    assert_eq!(
-        actual_text, lit,
-        "number_literal text must span the entire literal including the radix prefix; \
-         got {actual_text:?}, expected {lit:?}"
-    );
-
-    // (4) No unit_expr node — the hex/binary digits must NOT be consumed as a unit suffix.
-    assert!(
-        find_cst_node(root, "unit_expr").is_none(),
-        "must not produce a `unit_expr` node for {lit:?}; \
-         a unit_expr means the radix digits were misparsed as a unit suffix"
-    );
+        // (4) No unit_expr node — the hex/binary digits must NOT be consumed as a unit suffix.
+        assert!(
+            find_cst_node(root, "unit_expr").is_none(),
+            "must not produce a `unit_expr` node for {lit:?}; \
+             a unit_expr means the radix digits were misparsed as a unit suffix"
+        );
+    });
 }
 
 // ── (A) Positive CST shape — radix literals ──────────────────────────────────
@@ -129,55 +145,40 @@ fn hex_with_digit_separators_parses_as_number_literal() {
 /// leaving the unit machinery to pick up `mm` via the normal `unit_expr` path.
 #[test]
 fn hex_with_unit_suffix_parses_as_quantity_literal() {
-    let lit = "0xFFmm";
-    let source = format!("structure S {{\n  let x = {lit}\n}}");
-    let mut parser = make_ts_parser();
-    let tree = parser.parse(source.as_bytes(), None).expect("parse failed");
-    let root = tree.root_node();
+    with_lit_value("0xFFmm", |root, value_node, source| {
+        // The let_declaration value must be a quantity_literal.
+        assert_eq!(
+            value_node.kind(),
+            "quantity_literal",
+            "`0xFFmm` must parse as a quantity_literal; got `{}`",
+            value_node.kind()
+        );
 
-    // No error nodes.
-    assert!(
-        !root.has_error(),
-        "expected no parse error for {lit:?}; got errors in: {source:?}"
-    );
+        // The inner number_literal value must be "0xFF".
+        let inner_number = value_node
+            .child_by_field_name("value")
+            .expect("quantity_literal must have a value field");
+        assert_eq!(
+            inner_number.kind(),
+            "number_literal",
+            "quantity_literal.value must be a number_literal; got `{}`",
+            inner_number.kind()
+        );
+        assert_eq!(
+            inner_number.utf8_text(source.as_bytes()).unwrap(),
+            "0xFF",
+            "quantity_literal inner number_literal text must be `0xFF`"
+        );
 
-    // The let_declaration value must be a quantity_literal.
-    let let_decl = find_cst_node(root, "let_declaration")
-        .expect("expected let_declaration");
-    let value_node = let_decl
-        .child_by_field_name("value")
-        .expect("let_declaration must have a value field");
-    assert_eq!(
-        value_node.kind(),
-        "quantity_literal",
-        "`0xFFmm` must parse as a quantity_literal; got `{}`",
-        value_node.kind()
-    );
-
-    // The inner number_literal value must be "0xFF".
-    let inner_number = value_node
-        .child_by_field_name("value")
-        .expect("quantity_literal must have a value field");
-    assert_eq!(
-        inner_number.kind(),
-        "number_literal",
-        "quantity_literal.value must be a number_literal; got `{}`",
-        inner_number.kind()
-    );
-    assert_eq!(
-        inner_number.utf8_text(source.as_bytes()).unwrap(),
-        "0xFF",
-        "quantity_literal inner number_literal text must be `0xFF`"
-    );
-
-    // The unit_expr must be present and its text must be "mm".
-    let unit_node = find_cst_node(root, "unit_expr")
-        .expect("`0xFFmm` must produce a unit_expr node");
-    assert_eq!(
-        unit_node.utf8_text(source.as_bytes()).unwrap(),
-        "mm",
-        "unit_expr text must be `mm`"
-    );
+        // The unit_expr must be present and its text must be "mm".
+        let unit_node = find_cst_node(root, "unit_expr")
+            .expect("`0xFFmm` must produce a unit_expr node");
+        assert_eq!(
+            unit_node.utf8_text(source.as_bytes()).unwrap(),
+            "mm",
+            "unit_expr text must be `mm`"
+        );
+    });
 }
 
 // ── (C) Regression guards ─────────────────────────────────────────────────────
@@ -188,59 +189,13 @@ fn hex_with_unit_suffix_parses_as_quantity_literal() {
 /// handle bare `0` (0 is a valid decimal literal; no radix prefix follows).
 #[test]
 fn bare_zero_still_parses_as_number_literal() {
-    let source = "structure S {\n  let x = 0\n}";
-    let mut parser = make_ts_parser();
-    let tree = parser.parse(source.as_bytes(), None).expect("parse failed");
-    let root = tree.root_node();
-
-    assert!(!root.has_error(), "expected no parse error for bare `0`");
-
-    let let_decl = find_cst_node(root, "let_declaration").expect("expected let_declaration");
-    let value_node = let_decl
-        .child_by_field_name("value")
-        .expect("let_declaration must have a value field");
-    assert_eq!(
-        value_node.kind(),
-        "number_literal",
-        "bare `0` must still be a number_literal, got `{}`",
-        value_node.kind()
-    );
-    assert_eq!(
-        value_node.utf8_text(source.as_bytes()).unwrap(),
-        "0",
-        "bare zero text must be `0`"
-    );
-    assert!(
-        find_cst_node(root, "unit_expr").is_none(),
-        "bare `0` must not produce a unit_expr"
-    );
+    assert_radix_literal_is_single_number_literal("0");
 }
 
 /// `255` (bare integer) must still parse as a single `number_literal "255"`.
 #[test]
 fn bare_integer_still_parses_as_number_literal() {
-    let source = "structure S {\n  let x = 255\n}";
-    let mut parser = make_ts_parser();
-    let tree = parser.parse(source.as_bytes(), None).expect("parse failed");
-    let root = tree.root_node();
-
-    assert!(!root.has_error(), "expected no parse error for `255`");
-
-    let let_decl = find_cst_node(root, "let_declaration").expect("expected let_declaration");
-    let value_node = let_decl
-        .child_by_field_name("value")
-        .expect("let_declaration must have a value field");
-    assert_eq!(
-        value_node.kind(),
-        "number_literal",
-        "bare `255` must still be a number_literal, got `{}`",
-        value_node.kind()
-    );
-    assert_eq!(
-        value_node.utf8_text(source.as_bytes()).unwrap(),
-        "255",
-        "integer text must be `255`"
-    );
+    assert_radix_literal_is_single_number_literal("255");
 }
 
 /// `0.5` (decimal fraction) must still parse as a single `number_literal "0.5"`.
@@ -249,32 +204,7 @@ fn bare_integer_still_parses_as_number_literal() {
 /// nor `b`/`B`, so it must return false and let the decimal DFA match `0.5`.
 #[test]
 fn decimal_fraction_still_parses_as_number_literal() {
-    let source = "structure S {\n  let x = 0.5\n}";
-    let mut parser = make_ts_parser();
-    let tree = parser.parse(source.as_bytes(), None).expect("parse failed");
-    let root = tree.root_node();
-
-    assert!(!root.has_error(), "expected no parse error for `0.5`");
-
-    let let_decl = find_cst_node(root, "let_declaration").expect("expected let_declaration");
-    let value_node = let_decl
-        .child_by_field_name("value")
-        .expect("let_declaration must have a value field");
-    assert_eq!(
-        value_node.kind(),
-        "number_literal",
-        "`0.5` must still be a number_literal, got `{}`",
-        value_node.kind()
-    );
-    assert_eq!(
-        value_node.utf8_text(source.as_bytes()).unwrap(),
-        "0.5",
-        "decimal text must be `0.5`"
-    );
-    assert!(
-        find_cst_node(root, "unit_expr").is_none(),
-        "`0.5` must not produce a unit_expr"
-    );
+    assert_radix_literal_is_single_number_literal("0.5");
 }
 
 /// `5mm` must still parse as a `quantity_literal` containing a `number_literal "5"`
@@ -284,40 +214,31 @@ fn decimal_fraction_still_parses_as_number_literal() {
 /// quantity-literal machinery for non-zero-prefixed numerics.
 #[test]
 fn quantity_literal_5mm_still_parses_as_quantity_literal() {
-    let source = "structure S {\n  let w = 5mm\n}";
-    let mut parser = make_ts_parser();
-    let tree = parser.parse(source.as_bytes(), None).expect("parse failed");
-    let root = tree.root_node();
+    with_lit_value("5mm", |root, value_node, source| {
+        assert_eq!(
+            value_node.kind(),
+            "quantity_literal",
+            "`5mm` must still parse as a quantity_literal; got `{}`",
+            value_node.kind()
+        );
 
-    assert!(!root.has_error(), "expected no parse error for `5mm`");
+        assert!(
+            find_cst_node(root, "unit_expr").is_some(),
+            "`5mm` must still produce a unit_expr node"
+        );
 
-    let let_decl = find_cst_node(root, "let_declaration").expect("expected let_declaration");
-    let value_node = let_decl
-        .child_by_field_name("value")
-        .expect("let_declaration must have a value field");
-    assert_eq!(
-        value_node.kind(),
-        "quantity_literal",
-        "`5mm` must still parse as a quantity_literal; got `{}`",
-        value_node.kind()
-    );
-
-    assert!(
-        find_cst_node(root, "unit_expr").is_some(),
-        "`5mm` must still produce a unit_expr node"
-    );
-
-    let inner_number = value_node
-        .child_by_field_name("value")
-        .expect("quantity_literal must have a value field");
-    assert_eq!(
-        inner_number.kind(),
-        "number_literal",
-        "quantity_literal.value must be a number_literal"
-    );
-    assert_eq!(
-        inner_number.utf8_text(source.as_bytes()).unwrap(),
-        "5",
-        "quantity_literal inner number text must be `5`"
-    );
+        let inner_number = value_node
+            .child_by_field_name("value")
+            .expect("quantity_literal must have a value field");
+        assert_eq!(
+            inner_number.kind(),
+            "number_literal",
+            "quantity_literal.value must be a number_literal"
+        );
+        assert_eq!(
+            inner_number.utf8_text(source.as_bytes()).unwrap(),
+            "5",
+            "quantity_literal inner number text must be `5`"
+        );
+    });
 }
