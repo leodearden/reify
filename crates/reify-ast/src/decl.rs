@@ -217,6 +217,27 @@ pub struct ConstraintInstDecl {
 
 /// `sub mount_hole = Hole(diameter: 6mm)` or `sub part = Box<Bolt>()`
 ///
+/// A single entry in a keyed sub-member block (task 3929, PRD §2.2).
+///
+/// Represents one `"key" => { overrides }` entry inside a
+/// `sub name : Keyed<T> { "k1" => { … }  "k2" => { … } }` declaration.
+///
+/// `key` is the unquoted string key (e.g. `"intake"` in the source becomes
+/// `key = "intake"` here, with the surrounding double-quotes stripped).
+/// `overrides` reuses the same `Vec<MemberDecl>` shape as a specialization
+/// body (PRD §2.2/§9-Q4 — no new override grammar).
+///
+/// Keyed TYPE kind recognition, NodeId identity, E_DUP_MEMBER_KEY,
+/// resolution, eval, connect, and structural-classifier are deferred to
+/// downstream tasks (PRD tasks β/γ/δ/ε); only the grammar + AST shape +
+/// lowering are in scope here.
+#[derive(Debug, Clone)]
+pub struct KeyedSubMemberEntry {
+    pub key: String,
+    pub overrides: Vec<MemberDecl>,
+    pub span: SourceSpan,
+}
+
 /// Specialization-scope body (`sub motor : T { ... }`) is represented by
 /// `body: Some(...)`; `None` means a bare instantiation or collection form.
 /// The `Some(_)` discriminator IS the spec §8.7 specialization-scope flag —
@@ -236,6 +257,16 @@ pub struct SubDecl {
     /// wired. `param_assignment` nodes inside the body are currently dropped
     /// during lowering — their full round-trip is tracked by task 3573.
     pub body: Option<Vec<MemberDecl>>,
+    /// Keyed sub-member entries when this `sub` uses a keyed block
+    /// `{ "k" => { overrides } }` (task 3929, PRD §2.2).
+    ///
+    /// Empty when the sub is NOT a keyed block (instantiation, collection,
+    /// bare-colon-no-body, or specialization-body forms). Non-empty only when
+    /// the `body` field child in the CST was a `keyed_member_block`.
+    ///
+    /// `body` is `None` when `keyed_members` is non-empty (the two
+    /// discriminators are mutually exclusive by construction in `lower_sub`).
+    pub keyed_members: Vec<KeyedSubMemberEntry>,
     /// Whether this sub-component is marked `aux` (PRD §2.1: auxiliary placement).
     /// `aux sub` declares a sub-component used for internal geometry only,
     /// not surfaced in the public component interface.

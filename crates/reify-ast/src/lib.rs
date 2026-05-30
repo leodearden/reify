@@ -43,7 +43,8 @@ pub use decl::{
     MAX_MEMBER_NESTING_DEPTH, MatchArmDeclArmDecl, MatchArmDeclGroupDecl, MaximizeDecl,
     MemberDecl, MemberSpanInfo, MetaBlockDecl, MinimizeDecl, NumberClass, OccurrenceDef,
     ParamDecl, ParseError, ParsedModule, PortDecl, PortRef, Pragma, PragmaArg, PragmaValue,
-    PurposeDef, PurposeParam, StructureDef, SubDecl, TraitBoundRef, TraitDecl, TypeAliasDecl,
+    KeyedSubMemberEntry, PurposeDef, PurposeParam, StructureDef, SubDecl, TraitBoundRef,
+    TraitDecl, TypeAliasDecl,
     TypeParamDecl, UnitDecl, WhereClause, classify_number_literal, find_named_member_span,
     has_test_annotation, walk_specialization_scope_members,
 };
