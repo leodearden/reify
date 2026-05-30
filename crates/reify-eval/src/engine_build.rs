@@ -8768,6 +8768,90 @@ mod mixed_region_tests {
         );
     }
 
+    /// Conservative-default test (task 4049 test "c", PRD §3a.4).
+    ///
+    /// Fixture: one template with two named realizations:
+    ///   realization "a" — Primitive Box (producer)
+    ///   realization "consumer" — Boolean{Union, left:Sub("a"), right:Sub("missing")}
+    ///
+    /// "missing" names no realization → unresolvable downstream reference.
+    /// This exercises the PRD §3a.4 "Default-rule conservatism" trigger
+    /// (downstream realization absent from graph snapshot), which is lumped with
+    /// the unclassified-op trigger in the shared conservative code path.
+    ///
+    /// Expected: realization "a" demands BRep (conservative), and a
+    /// `tracing::debug!` event is emitted naming the unresolved reference.
+    ///
+    /// RED before step-8: step-6 skips unresolved refs without emitting the
+    /// debug log, and realization "a" is seen as terminal → incorrectly gets
+    /// Mesh demand rather than BRep.
+    #[test]
+    fn compute_demanded_reprs_conservative_on_unresolved_sub() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+        use reify_core::ModulePath;
+        use reify_ir::{ExportFormat, ReprKind};
+        use reify_test_support::{
+            CapturingSubscriberBuilder, CompiledModuleBuilder, MockConstraintChecker,
+            TopologyTemplateBuilder, prime_tracing_callsite_cache,
+        };
+
+        prime_tracing_callsite_cache();
+
+        let engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        let prim_box = CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![],
+        };
+        // "missing" is not the name of any realization → unresolved reference.
+        let template = TopologyTemplateBuilder::new("EntityC")
+            .realization_named("EntityC_a", 0, "a", vec![prim_box])
+            .realization_named(
+                "EntityC_consumer",
+                1,
+                "consumer",
+                vec![CompiledGeometryOp::Boolean {
+                    op: BooleanOp::Union,
+                    left: GeomRef::Sub("a".to_string()),
+                    right: GeomRef::Sub("missing".to_string()),
+                }],
+            )
+            .build();
+        let module = CompiledModuleBuilder::new(ModulePath::single("test_demanded_reprs_c"))
+            .template(template)
+            .build();
+
+        let (subscriber, capture) = CapturingSubscriberBuilder::new(tracing::Level::DEBUG)
+            .target_prefix("reify_eval::demanded_reprs")
+            .build();
+
+        let result = tracing::subscriber::with_default(subscriber, || {
+            engine.compute_demanded_reprs(&module, ExportFormat::Stl)
+        });
+
+        // Realization "a" has an unresolved downstream consumer → conservative BRep.
+        assert_eq!(
+            result[0][0],
+            ReprKind::BRep,
+            "realization 'a' has an unresolved downstream ref 'missing'; \
+             must demand BRep (conservative)"
+        );
+
+        // A debug event must have been emitted naming the unresolved reference.
+        assert!(
+            capture.count() >= 1,
+            "expected at least one DEBUG event for the unresolved 'missing' reference; \
+             got {count}",
+            count = capture.count()
+        );
+        let msgs = capture.messages();
+        assert!(
+            msgs.iter().any(|m| m.contains("missing")),
+            "DEBUG message must mention the unresolved reference name 'missing'; \
+             messages: {msgs:?}"
+        );
+    }
+
     /// Strum-iterate completeness test (task 4049 test "d", PRD §9 Q10).
     ///
     /// Iterates ALL current `Operation` variants via `strum::IntoEnumIterator`
