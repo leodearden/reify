@@ -447,6 +447,95 @@ mod tests {
         );
     }
 
+    // ── Task 3938: named-field payload-binding grammar tests ─────────────────
+    // These tests are RED until grammar step-2 lands (step-2 adds
+    // variant_binding_pattern + field_binding rules to grammar.js).
+    //
+    // (1) dce-4-namedbind: `Variant { field: binder }` must parse with no ERROR
+    //     nodes and produce variant_binding_pattern / field_binding nodes.
+    // (2) dce-0-baseline regression floor: bare + pipe arms still parse clean.
+
+    /// (1) Named-field payload binding: `Circle { radius: r }` in a match arm.
+    /// After grammar change: no ERROR, variant_binding_pattern + field_binding present.
+    #[test]
+    fn test_match_pattern_named_field_binding() {
+        let mut parser = make_parser();
+        // dce-4-namedbind source (three arms: bare, one-field, two-field)
+        let source = b"structure W { \
+            let area = match outline { \
+                Point => 0mm, \
+                Circle { radius: r } => r, \
+                Rect { width: w, height: h } => w \
+            } \
+        }";
+        let tree = parser.parse(source, None).expect("parse failed");
+        let root = tree.root_node();
+        let kinds = collect_kinds(root);
+
+        // (a) No parse errors
+        assert!(
+            !root.has_error(),
+            "unexpected parse error in dce-4-namedbind source: {kinds:?}"
+        );
+
+        // (b) No ERROR kind anywhere in the tree
+        assert!(
+            !kinds.contains(&"ERROR".to_string()),
+            "ERROR node found in dce-4-namedbind parse tree: {kinds:?}"
+        );
+
+        // (c) variant_binding_pattern node must be present
+        assert!(
+            kinds.contains(&"variant_binding_pattern".to_string()),
+            "expected variant_binding_pattern node in parse tree, got: {kinds:?}"
+        );
+
+        // (d) field_binding node must be present
+        assert!(
+            kinds.contains(&"field_binding".to_string()),
+            "expected field_binding node in parse tree, got: {kinds:?}"
+        );
+
+        // (e) Verify variant_binding_pattern fields: variant, field, binder
+        let vbp = find_node_by_kind(root, "variant_binding_pattern")
+            .expect("variant_binding_pattern not found");
+        let variant_field = vbp
+            .child_by_field_name("variant")
+            .expect("variant_binding_pattern missing 'variant' field");
+        assert_eq!(variant_field.kind(), "identifier");
+
+        let fb = find_node_by_kind(vbp, "field_binding")
+            .expect("field_binding not found under variant_binding_pattern");
+        let field_field = fb
+            .child_by_field_name("field")
+            .expect("field_binding missing 'field' field");
+        let binder_field = fb
+            .child_by_field_name("binder")
+            .expect("field_binding missing 'binder' field");
+        assert_eq!(field_field.kind(), "identifier");
+        assert_eq!(binder_field.kind(), "identifier");
+    }
+
+    /// (2) dce-0-baseline: bare + pipe arms still parse cleanly (regression floor).
+    #[test]
+    fn test_match_pattern_bare_pipe_baseline() {
+        let mut parser = make_parser();
+        let source = b"structure S { let x = match d { In => 1, Out | Bidi => 2 } }";
+        let tree = parser.parse(source, None).expect("parse failed");
+        let root = tree.root_node();
+        let kinds = collect_kinds(root);
+
+        assert!(
+            !root.has_error(),
+            "unexpected parse error in dce-0-baseline source: {kinds:?}"
+        );
+
+        assert!(
+            !kinds.contains(&"ERROR".to_string()),
+            "ERROR node found in dce-0-baseline parse tree: {kinds:?}"
+        );
+    }
+
     /// (4) REGRESSION: top-level bodyless fn must still produce an ERROR.
     /// Source: `fn f(x: Int) -> Int` (no body, at source_file scope)
     /// function_signature is scoped to trait_member only (not in _declaration),
