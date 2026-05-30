@@ -368,6 +368,67 @@ mod tests {
         }
     }
 
+    // ─── step 11: newmark_solve (RED) ────────────────────────────────────────
+
+    /// Tests `newmark_solve` for correctness on (a) a uniform grid and
+    /// (b) a non-uniform (geometrically-stretched) grid.
+    /// RED: function absent.
+    #[test]
+    fn newmark_solve_uniform_and_nonuniform() {
+        let omega = 50.0_f64;
+        let zeta  = 0.05_f64;
+        let p0    = 2.0_f64;
+        let t_end = 0.5_f64;
+
+        // (a) Uniform grid — constant force from rest.
+        {
+            let n_c = 100_usize;  // coarse: ω·dt = 50·(0.5/99) ≈ 0.253
+            let n_f = 200_usize;  // fine:  ω·dt ≈ 0.126
+            let make_times = |n: usize| -> Vec<f64> {
+                (0..n).map(|i| i as f64 * t_end / (n - 1) as f64).collect()
+            };
+            let run_uniform = |n: usize| -> f64 {
+                let times   = make_times(n);
+                let forcing = vec![p0; n];
+                let got     = newmark_solve(omega, zeta, &times, &forcing, 0.0, 0.0);
+                let max_err = got.iter().enumerate().map(|(j, &g)| {
+                    let t    = times[j];
+                    let want = analytic_step_response(p0, omega, zeta, t);
+                    (g - want).abs()
+                }).fold(0.0_f64, f64::max);
+                // normalise by static deflection p0/ω²
+                max_err * omega * omega / p0
+            };
+            let err_c = run_uniform(n_c);
+            let err_f = run_uniform(n_f);
+            assert!(err_c < 1e-2, "Newmark uniform coarse rel err {err_c:.3e} ≥ 1e-2");
+            let ratio = err_c / err_f;
+            assert!(ratio >= 3.5, "Newmark uniform convergence ratio {ratio:.2} < 3.5");
+        }
+
+        // (b) Non-uniform (geometrically-stretched) grid — constant force.
+        {
+            let n = 80_usize;
+            let ratio = 1.05_f64;  // stretch factor per step
+            // Build times: t_0=0, t_{k+1} = t_k + dt_k where dt_{k+1} = ratio*dt_k.
+            let mut times = Vec::with_capacity(n);
+            times.push(0.0_f64);
+            let mut dt = 0.002_f64;
+            for _ in 1..n {
+                times.push(times.last().unwrap() + dt);
+                dt *= ratio;
+            }
+            let forcing = vec![p0; n];
+            let got     = newmark_solve(omega, zeta, &times, &forcing, 0.0, 0.0);
+            let max_rel = got.iter().enumerate().map(|(j, &g)| {
+                let t    = times[j];
+                let want = analytic_step_response(p0, omega, zeta, t);
+                (g - want).abs()
+            }).fold(0.0_f64, f64::max) * omega * omega / p0;
+            assert!(max_rel < 2e-2, "Newmark non-uniform rel err {max_rel:.3e} ≥ 2e-2");
+        }
+    }
+
     // ─── step 09: is_uniformly_sampled (RED) ─────────────────────────────────
 
     /// Asserts the correct behaviour of `is_uniformly_sampled`.
