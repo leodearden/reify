@@ -77,6 +77,42 @@ pub struct ShellFrame {
     pub area: f64,
 }
 
+impl ShellFrame {
+    /// Returns the local-to-global rotation matrix for this shell element.
+    ///
+    /// # Convention
+    ///
+    /// The returned 3×3 matrix is the *local-to-global* rotation:
+    /// - `result[i][j]` is the *i-th global component of the j-th local basis vector*
+    ///   (equivalently: the j-th column of `result` is the j-th local basis vector expressed
+    ///   in global coordinates).
+    /// - A local-frame displacement vector `v_local` maps to global via `v_global = frame · v_local`.
+    /// - A local-frame rank-2 stress tensor maps to global via `σ_global = frame · σ_local · frameᵀ`.
+    ///
+    /// This is the **transpose** of `self.r`, which stores the *global-to-local* rotation
+    /// (rows = local basis vectors in global coordinates, so `R · v_global = v_local`).
+    /// Transposing gives the local-to-global direction: `result[i][j] = self.r[j][i]`.
+    ///
+    /// # Relation to `ElasticResult.frame`
+    ///
+    /// Matches the `ElasticResult.frame` local-to-global convention documented in
+    /// `crates/reify-compiler/stdlib/solver_elastic.ri:276–294`.  The future
+    /// `to_global(stress, frame)` helper (T18-T20) can use this directly as
+    /// `σ_global = frame · σ_local · frameᵀ` without any transpose step at the call site.
+    ///
+    /// See also [`build_shell_frame`] for how `self.r` is constructed.
+    pub fn local_to_global(&self) -> [[f64; 3]; 3] {
+        // Transpose: result[i][j] = self.r[j][i].
+        let mut result = [[0.0_f64; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                result[i][j] = self.r[j][i];
+            }
+        }
+        result
+    }
+}
+
 /// Build the local mid-surface frame for a three-node shell element.
 ///
 /// # Frame construction
