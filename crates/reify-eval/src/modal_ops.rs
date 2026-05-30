@@ -317,9 +317,28 @@ fn solve_generalized_eigen(
 
 #[cfg(test)]
 mod tests {
+    use faer::sparse::SparseRowMat;
     use reify_solver_elastic::{DirichletBc, EigenSolverOptions, IsotropicElastic};
 
     use super::{ModalCoreResult, build_beam_mesh, solve_modal_core};
+
+    /// `aᵀ · M · b` for the free×free mass matrix `M` (sparse CSR row matvec then
+    /// dot). Test-local invariant probe; the production normalization path
+    /// computes the same generalized mass via its own helper in step 6.
+    fn m_quadratic_form(m: &SparseRowMat<usize, f64>, a: &[f64], b: &[f64]) -> f64 {
+        let sym = m.symbolic();
+        let mut acc = 0.0_f64;
+        for r in 0..m.nrows() {
+            let cols = sym.col_idx_of_row_raw(r);
+            let vals = m.val_of_row(r);
+            let mut mb_r = 0.0_f64;
+            for (col_raw, &v) in cols.iter().zip(vals.iter()) {
+                mb_r += v * b[*col_raw];
+            }
+            acc += a[r] * mb_r;
+        }
+        acc
+    }
 
     /// Steel-like isotropic material (E = 205 GPa, ν = 0.29) shared across the
     /// modal core-solver fixtures.
@@ -435,6 +454,60 @@ mod tests {
                 assert_eq!(
                     phi[g], 0.0,
                     "mode {i}: constrained DOF {g} must be exactly 0.0",
+                );
+            }
+        }
+    }
+
+    /// step-5 (RED → GREEN in step-6): mass-normalization invariant.
+    ///
+    /// On the same coarse root-clamped fixture, after normalization each mode
+    /// must have unit M-generalized mass `φ_free_iᵀ·M_free·φ_free_i = 1` (sound
+    /// by construction: φ is divided by √(generalized mass) — pinned at 1e-12),
+    /// and distinct modes must be M-orthogonal `φ_iᵀ·M_free·φ_j ≈ 0` (looser
+    /// 1e-8: depends on the solver's orthogonalization, not a by-construction
+    /// identity). RED: the raw eigenvectors carry arbitrary scale, so the
+    /// diagonal generalized mass is not 1.
+    #[test]
+    fn solve_modal_core_modes_are_mass_normalized() {
+        let length = 0.02_f64;
+        let width = 0.05_f64;
+        let height = 0.1_f64;
+
+        let mesh = build_beam_mesh(length, width, height);
+        let (bcs, _constrained) = clamp_x_min_face(&mesh.nodes);
+        let eigen_opts =
+            EigenSolverOptions { n_modes: 3, tol: 1e-8, max_iters: 200, sigma: 0.0 };
+
+        let result: ModalCoreResult = solve_modal_core(
+            STEEL_DENSITY,
+            &steel(),
+            length,
+            width,
+            height,
+            &bcs,
+            &eigen_opts,
+        );
+
+        assert!(!result.phi_free.is_empty(), "expect at least 1 mode");
+
+        // (a) Diagonal: unit M-generalized mass (by construction, 1e-12).
+        for (i, phi_i) in result.phi_free.iter().enumerate() {
+            let m_ii = m_quadratic_form(&result.m_free, phi_i, phi_i);
+            assert!(
+                (m_ii - 1.0).abs() < 1e-12,
+                "mode {i}: φᵀMφ = {m_ii}, expected 1.0 within 1e-12",
+            );
+        }
+
+        // (b) Off-diagonal: cross-mode M-orthogonality (solver-dependent, 1e-8).
+        for i in 0..result.phi_free.len() {
+            for j in (i + 1)..result.phi_free.len() {
+                let m_ij =
+                    m_quadratic_form(&result.m_free, &result.phi_free[i], &result.phi_free[j]);
+                assert!(
+                    m_ij.abs() < 1e-8,
+                    "modes {i},{j}: φ_iᵀMφ_j = {m_ij}, expected ≈ 0 within 1e-8",
                 );
             }
         }
