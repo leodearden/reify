@@ -7,6 +7,7 @@ use reify_ir::Value;
 
 mod gcode_import;
 mod impulse_shaper;
+mod sampling;
 mod spline;
 
 /// Evaluate a trajectory stdlib function by name.
