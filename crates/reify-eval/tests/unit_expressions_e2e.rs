@@ -236,3 +236,40 @@ fn conductivity_resolves_to_thermal_conductivity_si_value() {
         other => panic!("expected Value::Scalar for conductivity, got {:?}", other),
     }
 }
+
+// ── Cycle 2: value-level ^ binding (exercises δ end-to-end) ─────────────────
+
+/// `stress_sq = (5mm ^ 2) / (1mm ^ 2)` → dimensionless Real, si_value ≈ 25.0
+///
+/// (5mm)² / (1mm)² = (5mm)² / (1mm)² = 25mm² / 1mm² = 25 (clean cancellation).
+/// The result is a dimensionless `Real` because the LENGTH² dimension cancels.
+#[test]
+fn stress_sq_evaluates_to_dimensionless_25() {
+    let mut engine = make_engine();
+    let result = engine.eval(compiled());
+    let id = ValueCellId::new("UnitExpressions", "stress_sq");
+    let val = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("'stress_sq' not found in eval result"));
+    match val {
+        Value::Real(v) => {
+            assert!(
+                (*v - 25.0).abs() < EPSILON,
+                "expected 25.0 for (5mm^2)/(1mm^2), got {}",
+                v
+            );
+        }
+        Value::Scalar { si_value, dimension } if dimension.is_dimensionless() => {
+            assert!(
+                (*si_value - 25.0).abs() < EPSILON,
+                "expected si_value 25.0 for (5mm^2)/(1mm^2), got {}",
+                si_value
+            );
+        }
+        other => panic!(
+            "expected dimensionless Real or Scalar for stress_sq, got {:?}",
+            other
+        ),
+    }
+}
