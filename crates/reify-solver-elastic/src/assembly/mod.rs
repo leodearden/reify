@@ -17,6 +17,7 @@ pub mod hex;
 pub mod tet;
 pub mod wedge;
 
+pub use bar::{BarSection, element_stiffness_bar_p1};
 pub use global::{
     AssemblyElement, AssemblyMode, OrphanDofsSummary, assemble_global_stiffness,
     detect_orphan_dofs,

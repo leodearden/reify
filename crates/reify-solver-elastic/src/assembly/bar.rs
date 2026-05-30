@@ -5,10 +5,110 @@
 //!
 //! See PRD `docs/prds/v0_6/tensegrity-structures.md` §6 task T3a.
 
+use crate::assembly::ElementStiffness;
+
+/// Cross-section properties required for bar/cable axial stiffness.
+///
+/// A pin-jointed bar depends only on Young's modulus `E` and cross-sectional
+/// area `A` — never Poisson's ratio. Using a dedicated struct (rather than
+/// [`crate::constitutive::IsotropicElastic`]) avoids forcing callers to supply
+/// an irrelevant `ν` that `IsotropicElastic::debug_assert_valid` then
+/// range-checks.
+pub struct BarSection {
+    /// Young's modulus `E` [Pa or consistent units]. Must be positive.
+    pub youngs_modulus: f64,
+    /// Cross-sectional area `A` [m² or consistent units]. Must be positive.
+    pub area: f64,
+}
+
+/// Minimum bar length guard — mirrors `MIN_JACOBIAN_DET` degeneracy convention
+/// in the tet and geometric-stiffness modules.
+const MIN_BAR_LENGTH: f64 = 1.0e-30;
+
+/// Compute the 6×6 elastic stiffness matrix `K_e` for a 2-node pin-jointed bar.
+///
+/// `phys_nodes` are the two endpoint positions in physical (global) coordinates.
+/// `section` provides the material and cross-section properties.
+///
+/// # Formula
+///
+/// With unit direction vector `c = (node1 − node0) / L` and axial stiffness
+/// `k = EA / L`:
+///
+/// ```text
+/// K_e = k · [[cc^T,  −cc^T],
+///             [−cc^T, cc^T]]
+/// ```
+///
+/// The four 3×3 blocks occupy DOFs `[u0x,u0y,u0z, u1x,u1y,u1z]` in row-major
+/// layout. The matrix is rank-1 per node-pair (axial coupling only); all
+/// transverse entries are zero.
+///
+/// # DOF layout
+///
+/// `dof = 3 * node_idx + axis`, matching [`ElementStiffness`]'s `3·node+axis`
+/// convention. Node 0 → DOFs 0–2, node 1 → DOFs 3–5.
+///
+/// # Panics
+///
+/// Panics under `debug_assertions` when:
+/// - `section.youngs_modulus <= 0` or non-finite,
+/// - `section.area <= 0` or non-finite,
+/// - `L <= MIN_BAR_LENGTH` (degenerate/zero-length bar).
+pub fn element_stiffness_bar_p1(
+    phys_nodes: &[[f64; 3]; 2],
+    section: &BarSection,
+) -> ElementStiffness {
+    debug_assert!(
+        section.youngs_modulus.is_finite() && section.youngs_modulus > 0.0,
+        "youngs_modulus must be finite and positive, got {}",
+        section.youngs_modulus,
+    );
+    debug_assert!(
+        section.area.is_finite() && section.area > 0.0,
+        "area must be finite and positive, got {}",
+        section.area,
+    );
+
+    let r = [
+        phys_nodes[1][0] - phys_nodes[0][0],
+        phys_nodes[1][1] - phys_nodes[0][1],
+        phys_nodes[1][2] - phys_nodes[0][2],
+    ];
+    let l = (r[0] * r[0] + r[1] * r[1] + r[2] * r[2]).sqrt();
+
+    debug_assert!(
+        l > MIN_BAR_LENGTH,
+        "degenerate bar: L = {} (must be > {})",
+        l,
+        MIN_BAR_LENGTH,
+    );
+
+    let c = [r[0] / l, r[1] / l, r[2] / l];
+    let k = section.youngs_modulus * section.area / l;
+
+    let mut ke = ElementStiffness::zeros(6);
+    // Block pattern: [[+k·cc^T, −k·cc^T], [−k·cc^T, +k·cc^T]]
+    // node_a ∈ {0,1}, node_b ∈ {0,1}: sign = +1 if a==b, −1 otherwise.
+    for a in 0..2usize {
+        for b in 0..2usize {
+            let sign = if a == b { 1.0 } else { -1.0 };
+            for i in 0..3usize {
+                for j in 0..3usize {
+                    let row = 3 * a + i;
+                    let col = 3 * b + j;
+                    ke.data[row * 6 + col] = sign * k * c[i] * c[j];
+                }
+            }
+        }
+    }
+    ke
+}
+
 #[cfg(test)]
 #[allow(clippy::needless_range_loop)]
 mod tests {
-    use crate::assembly::{ElementStiffness, bar::{BarSection, element_stiffness_bar_p1}};
+    use super::{BarSection, element_stiffness_bar_p1};
 
     /// Relative-tolerance assert matching the crate convention.
     fn assert_close(lhs: f64, rhs: f64, tol: f64, label: &str) {

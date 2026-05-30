@@ -392,8 +392,8 @@ pub mod warm_state;
 mod warm_register;
 
 pub use assembly::{
-    AssemblyElement, AssemblyMode, ElementOrder, ElementStiffness, OrphanDofsSummary,
-    assemble_global_stiffness, detect_orphan_dofs, element_stiffness,
+    AssemblyElement, AssemblyMode, BarSection, ElementOrder, ElementStiffness, OrphanDofsSummary,
+    assemble_global_stiffness, detect_orphan_dofs, element_stiffness, element_stiffness_bar_p1,
     hex::element_stiffness_hex_p1, wedge::element_stiffness_wedge_p1,
     // Task 3778: foundation β — field-aware assembly entry points.
     element_stiffness_hex_p1_with_field, element_stiffness_p1_with_field,
