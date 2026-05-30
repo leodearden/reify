@@ -4407,6 +4407,98 @@ fn laplacian_result_arc_shares_source_lambda() {
     assert_unary_op_shares_source_lambda("laplacian", Type::Real, make_trivial_3d_scalar_lambda());
 }
 
+/// `sample` of an `Imported` field whose lambda slot holds a `Value::SampledField`
+/// dispatches to `sampled::sample_at_point` and returns the interpolated value,
+/// NOT `Value::Undef`.
+///
+/// Step-5 RED guard (task 3576 — OpenVDB ingest end-to-end):
+/// Prior to the fix, `(Value::SampledField(_), FieldSourceKind::Imported)` falls
+/// through to the `_ => Value::Undef` arm in the sample dispatch (lib.rs:319-326).
+/// After step-6 adds the new arm, both `Sampled` and `Imported` fields backed by a
+/// `SampledField` lambda must call `sampled::sample_at_point`.
+///
+/// The fixture is a 2×2×2 Regular3D grid with data = [1,2,3,4,5,6,7,8] at the
+/// corners; the probe point (0.5, 0.5, 0.5) is strictly in-bounds.  The assertion
+/// cross-validates the dispatch result against a direct `sampled::sample_at_point`
+/// call on the same `SampledField` (exact equality — same math path), so the numeric
+/// expectation is derived, not guessed.
+///
+/// cfg-independent: no FFI — the `SampledField` is constructed entirely in Rust.
+#[test]
+fn sample_imported_field_with_sampled_field_lambda_dispatches_to_interpolation() {
+    use std::sync::atomic::AtomicBool;
+    use reify_ir::{InterpolationKind, SampledField, SampledGridKind};
+
+    // 2×2×2 Regular3D SampledField: axes [0.0, 1.0] on each dimension,
+    // row-major data[i0*4 + i1*2 + i2] with known corner values.
+    let sf = SampledField {
+        name: "test_imported".to_string(),
+        kind: SampledGridKind::Regular3D,
+        bounds_min: vec![0.0, 0.0, 0.0],
+        bounds_max: vec![1.0, 1.0, 1.0],
+        spacing: vec![1.0, 1.0, 1.0],
+        axis_grids: vec![vec![0.0, 1.0], vec![0.0, 1.0], vec![0.0, 1.0]],
+        interpolation: InterpolationKind::Linear,
+        data: vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+        oob_emitted: AtomicBool::new(false),
+    };
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::Real;
+
+    // Probe point strictly in-bounds — trilinear interpolation at (0.5,0.5,0.5)
+    // yields the average of all 8 corners = 4.5.
+    let probe = Value::Point(vec![Value::Real(0.5), Value::Real(0.5), Value::Real(0.5)]);
+
+    // Reference: direct sample_at_point call BEFORE consuming sf.
+    let expected = {
+        let values = ValueMap::new();
+        reify_expr::sampled::sample_at_point(&sf, &probe, &codomain_type, &EvalContext::simple(&values))
+    };
+
+    // Verify the fixture is not itself broken (probe must be in-bounds).
+    assert!(
+        !matches!(expected, Value::Undef),
+        "sample_at_point reference returned Undef — probe is out of bounds or fixture is broken"
+    );
+
+    // Construct Value::Field with source = Imported and lambda = SampledField.
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Imported,
+        lambda: Arc::new(Value::SampledField(sf)),
+    };
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // Evaluate sample(field, probe) via eval_expr.
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(field, field_type),
+            CompiledExpr::literal(probe, domain_type),
+        ],
+        codomain_type,
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    // Assert dispatch result equals the direct reference (exact identity — same code path).
+    assert_eq!(
+        result,
+        expected,
+        "sample(Imported field with SampledField lambda, probe) should equal \
+         sampled::sample_at_point directly; \
+         got {:?} (expected {:?})",
+        result,
+        expected
+    );
+}
+
 /// Meta-test: asserts that every `#[ignore = "..."]` attribute in this file
 /// complies with the Task 1622 convention — reason strings must be
 /// self-contained inline summaries beginning with `"known bug:"`.  The two
