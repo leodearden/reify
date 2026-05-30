@@ -19,14 +19,22 @@
 //!   - **finiteness** (not NaN, not infinite),
 //!   - **order of magnitude** (within a wide physically-plausible band).
 //!
-//! They do **not** assert against the published MacNeal-Harder reference
-//! values: the bare MITC3 element used today suffers from severe membrane
-//! locking on curved geometry (factor 21–2200× under-prediction at coarse
-//! mesh resolution). Tightening the bands to the published references
-//! requires curved-element MITC3+ (flat-facet bubble enrichment is
-//! mathematically inert — see the file header in `shell_assembly.rs` for
-//! the K_NB ≡ 0 proof). A future curved-element shell formulation will
-//! supplant these smoke envelopes with the proper benchmark bands.
+//! The four **curved** smoke tests do **not** assert against the published
+//! MacNeal-Harder reference values: bare MITC3 suffers from severe membrane
+//! locking on curved geometry (factor 21–2200× under-prediction at coarse mesh
+//! resolution). Tightening those bands needs an ANS-membrane correction on a
+//! curved substrate (task 4065) — flat-facet enrichment cannot cure *membrane*
+//! locking, which is a curvature phenomenon.
+//!
+//! The **twisted-cantilever** test additionally carries a genuine relative
+//! observable signal: `twisted_beam_mitc3_plus_tip_deflection_is_closer_to_reference_than_bare`
+//! shows that the flat-facet MITC3+ element (`shell_element_stiffness_mitc3_plus`,
+//! task 3392) relieves transverse-shear locking and moves the tip deflection
+//! measurably closer to the published reference than bare MITC3. The MITC3+
+//! shear cure lives in the *nodal* assumed-shear field (interior-tying Eq. 9),
+//! NOT the cubic bubble — the bubble is inert in transverse shear on a flat
+//! facet (K_NB^shear ≡ 0; see the `shell_assembly.rs` header) and becomes live
+//! only on the curved director substrate of task 4065.
 //!
 //! In addition to the four geometry smoke tests, this file contains:
 //!   - a **locking-detection** test verifying that MITC3 does not collapse
@@ -56,6 +64,7 @@
 use reify_solver_elastic::{
     AssemblyElement, AssemblyMode, DirichletBc, ElementStiffness, IsotropicElastic,
     apply_dirichlet_row_elimination, assemble_global_stiffness, shell_element_stiffness,
+    shell_element_stiffness_mitc3_plus,
 };
 
 // ─── test-local helpers ──────────────────────────────────────────────────────
@@ -165,6 +174,26 @@ fn build_shell_stiffnesses(
         .map(|conn| {
             let elem_nodes = [nodes[conn[0]], nodes[conn[1]], nodes[conn[2]]];
             shell_element_stiffness(&elem_nodes, thickness, mat)
+        })
+        .collect()
+}
+
+/// MITC3+ counterpart of [`build_shell_stiffnesses`]: builds one per-element
+/// stiffness matrix per triangle via the genuine flat-facet MITC3+ element
+/// [`shell_element_stiffness_mitc3_plus`] (Lee, Lee & Bathe 2014). Used to run
+/// the twisted-cantilever benchmark with both formulations on the identical
+/// mesh / BCs / loads so the shear-locking improvement is observable end-to-end.
+fn build_shell_stiffnesses_mitc3_plus(
+    nodes: &[[f64; 3]],
+    connectivity: &[[usize; 3]],
+    thickness: f64,
+    mat: &IsotropicElastic,
+) -> Vec<ElementStiffness> {
+    connectivity
+        .iter()
+        .map(|conn| {
+            let elem_nodes = [nodes[conn[0]], nodes[conn[1]], nodes[conn[2]]];
+            shell_element_stiffness_mitc3_plus(&elem_nodes, thickness, mat)
         })
         .collect()
 }
@@ -1191,6 +1220,100 @@ fn twisted_beam_tip_out_of_plane_load_smoke_test_displacement_is_finite_and_sign
          MITC3 12×2 output is ~1.0e-3; published MacNeal-Harder reference \
          is {MACNEAL_HARDER_REF:.4e}. A correctness fix should land inside \
          this band, not outside it."
+    );
+}
+
+/// MITC3+ observable signal: on the MacNeal-Harder twisted cantilever, the
+/// genuine flat-facet MITC3+ element ([`shell_element_stiffness_mitc3_plus`])
+/// must produce a tip out-of-plane deflection that is STRICTLY CLOSER to the
+/// published reference (1.754×10⁻³) than bare flat-facet MITC3 on the identical
+/// mesh / BCs / loads — the relative shear-locking-relief deliverable for task
+/// 3392 (the absolute ~50% MacNeal-Harder bound needs the curved substrate +
+/// membrane cure of task 4065 and is NOT chased here).
+#[test]
+fn twisted_beam_mitc3_plus_tip_deflection_is_closer_to_reference_than_bare() {
+    const L: f64 = 12.0;
+    const NZ: usize = 12;
+    const NY: usize = 2;
+    const MACNEAL_HARDER_REF: f64 = 1.754e-3;
+
+    let mat = IsotropicElastic {
+        youngs_modulus: 29.0e6,
+        poisson_ratio: 0.22,
+    };
+    let thickness = 0.32;
+
+    let (nodes, connectivity) = twisted_beam_mesh(NZ, NY);
+    let n_nodes = nodes.len();
+    let tol = 0.1_f64;
+
+    // BCs: fully clamp every z=0 root node (all 6 DOFs = 0).
+    let mut bcs: Vec<DirichletBc> = Vec::new();
+    for (node, n) in nodes.iter().enumerate() {
+        if n[2].abs() < tol {
+            for dof_idx in 0..6_usize {
+                bcs.push(DirichletBc {
+                    dof: node * 6 + dof_idx,
+                    value: 0.0,
+                });
+            }
+        }
+    }
+
+    // Load: F_y = 1.0 distributed equally among the NY+1 tip nodes (the root
+    // out-of-plane direction is +y).
+    let tip_f = 1.0 / (NY + 1) as f64;
+    let mut point_loads: Vec<(usize, f64)> = Vec::new();
+    for (node, n) in nodes.iter().enumerate() {
+        if (n[2] - L).abs() < tol {
+            point_loads.push((node * 6 + 1, tip_f));
+        }
+    }
+
+    let centroid_node = nodes
+        .iter()
+        .position(|n| (n[2] - L).abs() < tol && n[0].abs() < tol && n[1].abs() < tol)
+        .expect("tip centroid node (0, 0, L) not found in twisted-beam mesh");
+
+    // Bare flat-facet MITC3.
+    let k_bare = build_shell_stiffnesses(&nodes, &connectivity, thickness, &mat);
+    let e_bare = assembly_elements_for(&connectivity, &k_bare);
+    let u_bare = solve_shell_system(&e_bare, n_nodes, &bcs, &point_loads);
+    let tip_bare = u_bare[centroid_node * 6 + 1];
+
+    // Genuine flat-facet MITC3+ (same mesh / BCs / loads).
+    let k_plus = build_shell_stiffnesses_mitc3_plus(&nodes, &connectivity, thickness, &mat);
+    let e_plus = assembly_elements_for(&connectivity, &k_plus);
+    let u_plus = solve_shell_system(&e_plus, n_nodes, &bcs, &point_loads);
+    let tip_plus = u_plus[centroid_node * 6 + 1];
+
+    // Observed (12×2 mesh, t=0.32): bare MITC3 tip ≈ 1.0233e-3, MITC3+ tip ≈
+    // 1.1637e-3, reference 1.754e-3 → the MITC3+ shear-locking relief moves the
+    // tip ~19% closer to the reference (err 7.31e-4 → 5.90e-4) without overshoot.
+    let err_bare = (tip_bare - MACNEAL_HARDER_REF).abs();
+    let err_plus = (tip_plus - MACNEAL_HARDER_REF).abs();
+
+    // Finite & physically signed (positive in the +F_y direction).
+    assert!(
+        tip_plus.is_finite() && tip_bare.is_finite(),
+        "tip deflections must be finite: bare={tip_bare}, plus={tip_plus}"
+    );
+    assert!(
+        tip_plus > 0.0,
+        "MITC3+ tip deflection {tip_plus:.4e} must be positive under +F_y load"
+    );
+    // Sane upper ceiling to catch runaway (the reference is 1.754e-3).
+    assert!(
+        tip_plus < 1.0e-1,
+        "MITC3+ tip deflection {tip_plus:.4e} exceeds the runaway ceiling 1e-1"
+    );
+    // The shear-locking-relief deliverable: MITC3+ is STRICTLY closer to the
+    // MacNeal-Harder reference than bare MITC3.
+    assert!(
+        err_plus < err_bare,
+        "MITC3+ must be strictly closer to the MacNeal-Harder reference than bare \
+         MITC3: |{tip_plus:.6e} − {MACNEAL_HARDER_REF:.6e}| = {err_plus:.6e} must be \
+         < |{tip_bare:.6e} − {MACNEAL_HARDER_REF:.6e}| = {err_bare:.6e}"
     );
 }
 
