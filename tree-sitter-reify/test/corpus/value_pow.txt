@@ -1,0 +1,122 @@
+================================================================================
+value_pow: basic binary_expression (a ^ b)
+================================================================================
+
+structure S {
+  let r = a ^ b
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (binary_expression
+        left: (identifier)
+        right: (identifier)))))
+
+================================================================================
+value_pow: quantity_literal base (5mm ^ 2) — NOT a unit_expr pow (PRD §7)
+================================================================================
+
+structure S {
+  let r = 5mm ^ 2
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (binary_expression
+        left: (quantity_literal
+          value: (number_literal)
+          unit: (unit_expr
+            (unit_name)))
+        right: (number_literal)))))
+
+================================================================================
+value_pow: right-associativity (2 ^ 3 ^ 2) → 2 ^ (3 ^ 2)
+================================================================================
+
+structure S {
+  let r = 2 ^ 3 ^ 2
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (binary_expression
+        left: (number_literal)
+        right: (binary_expression
+          left: (number_literal)
+          right: (number_literal))))))
+
+================================================================================
+value_pow: tighter than unary (-2 ^ 2) → -(2 ^ 2)
+================================================================================
+
+structure S {
+  let r = -2 ^ 2
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (unary_expression
+        operand: (binary_expression
+          left: (number_literal)
+          right: (number_literal))))))
+
+================================================================================
+value_pow: tighter than multiplicative (2 * 3 ^ 2) → 2 * (3 ^ 2)
+================================================================================
+
+structure S {
+  let r = 2 * 3 ^ 2
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (binary_expression
+        left: (number_literal)
+        right: (binary_expression
+          left: (number_literal)
+          right: (number_literal))))))
+
+================================================================================
+value_pow: negative exponent (a ^ -b) → a ^ (-b)
+================================================================================
+
+structure S {
+  let r = a ^ -b
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (binary_expression
+        left: (identifier)
+        right: (unary_expression
+          operand: (identifier))))))
