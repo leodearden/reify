@@ -789,6 +789,23 @@ pub mod ffi {
             tolerance: f64,
         ) -> Result<bool>;
 
+        /// Test whether two shapes are geometrically equivalent within `tolerance`
+        /// by topology-count matching and sampled-vertex proximity.
+        ///
+        /// STRICT-VARIANT NOTE: This is the asymmetric sampled-point geo_equiv
+        /// (PRD §5.1, KGQ-δ).  A future `geo_equiv_strict` using symmetric
+        /// Hausdorff distance is deferred to v0.4 per PRD §5.1 + Open Question §10.
+        ///
+        /// **Tolerance precondition:** `tolerance` must be a non-negative finite `f64`.
+        /// Negative or NaN values cause the C++ implementation to throw, which maps to
+        /// `Err(QueryError::QueryFailed(_))` at the Rust call site.
+        fn geo_equiv_topo_sample(
+            a: &OcctShape,
+            b: &OcctShape,
+            tolerance: f64,
+            sample_count: usize,
+        ) -> Result<bool>;
+
         fn query_moment_of_inertia(shape: &OcctShape, ax: f64, ay: f64, az: f64) -> Result<f64>;
 
         /// Compute the full 3×3 inertia tensor (kg·m²) about the centroid.

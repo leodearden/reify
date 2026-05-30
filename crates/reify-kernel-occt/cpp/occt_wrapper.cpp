@@ -3167,6 +3167,87 @@ bool contains_solid(const OcctShape& shape, double px, double py, double pz, dou
     });
 }
 
+bool geo_equiv_topo_sample(const OcctShape& a, const OcctShape& b,
+                           double tolerance, size_t sample_count) {
+    // STRICT-VARIANT NOTE: This is the asymmetric sampled-point geo_equiv (PRD §5.1,
+    // KGQ-δ).  A future `geo_equiv_strict` using symmetric Hausdorff distance is
+    // deferred to v0.4 per PRD §5.1 + Open Question §10.
+    //
+    // Validate tolerance: negative or non-finite silently produce wrong results.
+    // Mirrors the `contains_solid` precondition check.
+    if (!(std::isfinite(tolerance) && tolerance >= 0.0)) {
+        throw std::runtime_error(
+            "geo_equiv_topo_sample: tolerance must be a non-negative finite value");
+    }
+    return wrap_occt_call("geo_equiv_topo_sample", [&]() -> bool {
+        // (1) Topology check: compare per-kind counts for vertex, edge, and face.
+        // A count mismatch means the shapes cannot be equivalent — return false
+        // without reaching the sampling step.
+        for (TopAbs_ShapeEnum kind : {TopAbs_VERTEX, TopAbs_EDGE, TopAbs_FACE}) {
+            TopTools_IndexedMapOfShape ma, mb;
+            TopExp::MapShapes(a.shape, kind, ma);
+            TopExp::MapShapes(b.shape, kind, mb);
+            if (ma.Extent() != mb.Extent()) {
+                return false;
+            }
+        }
+
+        if (sample_count == 0) {
+            return true;
+        }
+
+        const double tol_sq = tolerance * tolerance;
+
+        // (2) Face sampling in canonical face_map() order.
+        // For each pair of corresponding faces, evaluate `sample_count` uniform
+        // UV parameter points on both and check |p_a − p_b|² < tol².
+        const TopTools_IndexedMapOfShape& fa = a.face_map();
+        const TopTools_IndexedMapOfShape& fb = b.face_map();
+        for (Standard_Integer i = 1; i <= fa.Extent(); ++i) {
+            BRepAdaptor_Surface sa(TopoDS::Face(fa.FindKey(i)));
+            BRepAdaptor_Surface sb(TopoDS::Face(fb.FindKey(i)));
+            double u1a = sa.FirstUParameter(), u2a = sa.LastUParameter();
+            double v1a = sa.FirstVParameter(), v2a = sa.LastVParameter();
+            double u1b = sb.FirstUParameter(), u2b = sb.LastUParameter();
+            double v1b = sb.FirstVParameter(), v2b = sb.LastVParameter();
+            for (size_t j = 0; j < sample_count; ++j) {
+                double t = (sample_count > 1)
+                    ? static_cast<double>(j) / static_cast<double>(sample_count - 1)
+                    : 0.5;
+                gp_Pnt pa = sa.Value(u1a + t * (u2a - u1a), v1a + t * (v2a - v1a));
+                gp_Pnt pb = sb.Value(u1b + t * (u2b - u1b), v1b + t * (v2b - v1b));
+                if (pa.SquareDistance(pb) >= tol_sq) {
+                    return false;
+                }
+            }
+        }
+
+        // (3) Edge sampling in canonical edge_map() order.
+        // For each pair of corresponding edges, evaluate `sample_count` uniform
+        // t parameter points on both and check |p_a − p_b|² < tol².
+        const TopTools_IndexedMapOfShape& ea = a.edge_map();
+        const TopTools_IndexedMapOfShape& eb = b.edge_map();
+        for (Standard_Integer i = 1; i <= ea.Extent(); ++i) {
+            BRepAdaptor_Curve ca(TopoDS::Edge(ea.FindKey(i)));
+            BRepAdaptor_Curve cb(TopoDS::Edge(eb.FindKey(i)));
+            double t1a = ca.FirstParameter(), t2a = ca.LastParameter();
+            double t1b = cb.FirstParameter(), t2b = cb.LastParameter();
+            for (size_t j = 0; j < sample_count; ++j) {
+                double t = (sample_count > 1)
+                    ? static_cast<double>(j) / static_cast<double>(sample_count - 1)
+                    : 0.5;
+                gp_Pnt pa = ca.Value(t1a + t * (t2a - t1a));
+                gp_Pnt pb = cb.Value(t1b + t * (t2b - t1b));
+                if (pa.SquareDistance(pb) >= tol_sq) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    });
+}
+
 double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, double az) {
     return wrap_occt_call("query_moment_of_inertia", [&]() {
         GProp_GProps props;

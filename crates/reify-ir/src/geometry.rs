@@ -732,6 +732,18 @@ pub const DEFAULT_POINT_ON_SHAPE_TOLERANCE_M: f64 = 1e-7;
 /// tolerance instead.
 pub const DEFAULT_CONTAINS_TOLERANCE_M: f64 = 1e-7;
 
+/// Default number of parameter-space sample points per face / edge for
+/// the `geo_equiv` topology-hash + sampled-vertex equivalence check.
+///
+/// Threaded from the eval-side dispatcher into `OcctKernel::geo_equiv`
+/// → `ffi::geo_equiv_topo_sample(…, DEFAULT_GEO_EQUIV_SAMPLE_COUNT)`
+/// so this constant remains the single authoritative source.
+/// `GeometryQuery::GeoEquiv` has no `sample_count` field; the eval arm
+/// reads this const at dispatch time.
+///
+/// Per PRD §5.2 (KGQ-δ): "geo_equiv samples N=8 points per face / edge."
+pub const DEFAULT_GEO_EQUIV_SAMPLE_COUNT: usize = 8;
+
 /// Queries against geometry handles.
 #[derive(Debug, Clone)]
 pub enum GeometryQuery {
