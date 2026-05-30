@@ -94,6 +94,32 @@ fn trait_static_call_preserves_args() {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// Test 3b: args preserved in TraitMethodCall (instance form)
+// ────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn instance_trait_call_with_args_preserves_args() {
+    let (decls, errors) =
+        parse_decls("structure def A { sub pin : P  let w = pin.(C::scaled)(2mm, x) }");
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let let_decl = first_let_in_structure(&decls);
+    match &let_decl.value.kind {
+        ExprKind::TraitMethodCall { object, trait_name, method, args } => {
+            assert!(
+                matches!(&object.kind, ExprKind::Ident(n) if n == "pin"),
+                "expected object Ident(pin), got {:?}",
+                object.kind
+            );
+            assert_eq!(trait_name, "C");
+            assert_eq!(method, "scaled");
+            assert_eq!(args.len(), 2, "expected 2 args, got {:?}", args);
+        }
+        other => panic!("expected TraitMethodCall with 2 args, got {:?}", other),
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Test 4 (regression): bare C::make (no ()) stays QualifiedAccess
 // ────────────────────────────────────────────────────────────────────────────
 

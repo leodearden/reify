@@ -492,6 +492,9 @@ fn walk_members_depth(
             MemberDecl::AssociatedType(_)
             // Trait fn members: no expressions to walk for shadow lint at γ.
             // Fn compilation is deferred to task δ/ζ.
+            // TODO(task δ/ζ): add shadow-lint walking for trait fn body
+            // expressions (let-bindings, where-clauses, result expr) once
+            // trait-fn compilation is live.
             | MemberDecl::Fn(_)
             | MemberDecl::MetaBlock(_)
             | MemberDecl::MatchArmDeclGroup(_) => {}
