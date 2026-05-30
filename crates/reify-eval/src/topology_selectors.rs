@@ -1905,4 +1905,56 @@ mod tests {
             diagnostics,
         );
     }
+
+    // ── step-1 (task 3616): SubKind + compose_sub_handle_hash RED tests ────────
+
+    /// SubKind::Edge discriminant must be 0x01 (PRD §4 domain-separator).
+    #[test]
+    fn sub_kind_edge_discriminant_is_0x01() {
+        assert_eq!(SubKind::Edge.as_byte(), 0x01u8);
+    }
+
+    /// SubKind::Face discriminant must be 0x02.
+    #[test]
+    fn sub_kind_face_discriminant_is_0x02() {
+        assert_eq!(SubKind::Face.as_byte(), 0x02u8);
+    }
+
+    /// compose_sub_handle_hash is deterministic: same (parent, kind, index)
+    /// produces bit-identical output across two independent calls (PRD §4 ii).
+    #[test]
+    fn compose_sub_handle_hash_is_deterministic() {
+        let parent: [u8; 32] = [0xAB; 32];
+        let a = compose_sub_handle_hash(&parent, SubKind::Edge, 0);
+        let b = compose_sub_handle_hash(&parent, SubKind::Edge, 0);
+        assert_eq!(a, b, "identical inputs must produce identical outputs");
+    }
+
+    /// Different topexp indices must produce different hashes (PRD §4 iii).
+    #[test]
+    fn compose_sub_handle_hash_differs_by_index() {
+        let parent: [u8; 32] = [0x11; 32];
+        let h0 = compose_sub_handle_hash(&parent, SubKind::Edge, 0);
+        let h1 = compose_sub_handle_hash(&parent, SubKind::Edge, 1);
+        assert_ne!(h0, h1, "index 0 and index 1 must hash differently");
+    }
+
+    /// Edge and Face at the same index must produce different hashes
+    /// (PRD §4 iii — sub_kind is part of the domain separation).
+    #[test]
+    fn compose_sub_handle_hash_differs_by_sub_kind() {
+        let parent: [u8; 32] = [0x22; 32];
+        let he = compose_sub_handle_hash(&parent, SubKind::Edge, 0);
+        let hf = compose_sub_handle_hash(&parent, SubKind::Face, 0);
+        assert_ne!(he, hf, "Edge and Face at same index must hash differently");
+    }
+
+    /// The output hash must be non-zero (a zero hash is the collision-free
+    /// domain sentinel; an honest ContentHash of non-zero input must differ).
+    #[test]
+    fn compose_sub_handle_hash_is_non_zero() {
+        let parent: [u8; 32] = [0x33; 32];
+        let h = compose_sub_handle_hash(&parent, SubKind::Edge, 0);
+        assert_ne!(h, [0u8; 32], "hash output must be non-zero");
+    }
 }
