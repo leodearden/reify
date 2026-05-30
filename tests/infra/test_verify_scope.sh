@@ -268,6 +268,29 @@ assert "branch/gui/src: no gated OCCT pass" plan_lacks 'cargo-test-occt-gated\.s
 assert "branch/gui/src: no tree-sitter generate" plan_lacks 'tree-sitter-generate'
 
 # ---------------------------------------------------------------------------
+# Scenario B4: MERGE_HEAD present + --scope branch -> forces scope=all
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario B4: MERGE_HEAD + --scope branch -> forced scope=all ---"
+# Use a branch fixture, commit a task change, plant MERGE_HEAD, run branch scope.
+FIX_B4=""
+make_branch_fixture FIX_B4
+git -C "$FIX_B4" checkout -q -b task-branch
+mkdir -p "$FIX_B4/crates/reify-doc/src"
+printf 'x\n' > "$FIX_B4/crates/reify-doc/src/lib.rs"
+git -C "$FIX_B4" add crates
+git -C "$FIX_B4" commit -q -m "task changes"
+: > "$FIX_B4/.git/MERGE_HEAD"
+PLAN_B4="$(cd "$FIX_B4" && bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+rm -f "$FIX_B4/.git/MERGE_HEAD"
+git -C "$FIX_B4" checkout -q main
+git -C "$FIX_B4" branch -q -D task-branch
+assert "B4/MERGE_HEAD+branch: scope=all in plan header (merge forces full scope)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "scope=all"' _ "$PLAN_B4"
+assert "B4/MERGE_HEAD+branch: full scope (RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_B4"
+
+# ---------------------------------------------------------------------------
 # Scenario C5: no local main ref -> fail-wide to scope=all (contract C5)
 # ---------------------------------------------------------------------------
 echo ""
