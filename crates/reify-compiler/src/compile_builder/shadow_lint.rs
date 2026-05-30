@@ -142,20 +142,24 @@ fn walk_declaration(decl: &reify_ast::Declaration, diagnostics: &mut Vec<Diagnos
             // The fn body is a CHILD scope of the params: a body `let` whose
             // name matches a fn-param is a shadow per spec §8.5. Delegate
             // the params/body-frame scaffolding to `walk_child_scope_body`.
-            walk_child_scope_body(
-                f.params.iter().map(|p| (p.name.clone(), p.span)),
-                f.body.let_bindings.iter().map(|l| (l.name.clone(), l.span)),
-                |body_stack, diagnostics| {
-                    for l in &f.body.let_bindings {
-                        walk_expr(&l.value, Some(body_stack), diagnostics);
-                        if let Some(wc) = &l.where_clause {
-                            walk_expr(&wc.condition, Some(body_stack), diagnostics);
+            // Top-level fns always have Some body; bodyless trait fns (None)
+            // are deferred to task δ and have nothing to shadow-check.
+            if let Some(body) = &f.body {
+                walk_child_scope_body(
+                    f.params.iter().map(|p| (p.name.clone(), p.span)),
+                    body.let_bindings.iter().map(|l| (l.name.clone(), l.span)),
+                    |body_stack, diagnostics| {
+                        for l in &body.let_bindings {
+                            walk_expr(&l.value, Some(body_stack), diagnostics);
+                            if let Some(wc) = &l.where_clause {
+                                walk_expr(&wc.condition, Some(body_stack), diagnostics);
+                            }
                         }
-                    }
-                    walk_expr(&f.body.result_expr, Some(body_stack), diagnostics);
-                },
-                diagnostics,
-            );
+                        walk_expr(&body.result_expr, Some(body_stack), diagnostics);
+                    },
+                    diagnostics,
+                );
+            }
         }
         Declaration::Constraint(cd) => {
             // Build a frame from the constraint def's params and walk every
@@ -331,6 +335,9 @@ fn collect_body_frame_into(members: &[reify_ast::MemberDecl], frame: &mut Frame,
             | MemberDecl::Minimize(_)
             | MemberDecl::Maximize(_)
             | MemberDecl::AssociatedType(_)
+            // Trait fn members do not contribute named binders to the enclosing
+            // body scope.  Fn compilation is deferred to task δ/ζ.
+            | MemberDecl::Fn(_)
             | MemberDecl::Connect(_)
             | MemberDecl::Chain(_)
             | MemberDecl::MetaBlock(_)
@@ -483,6 +490,12 @@ fn walk_members_depth(
                 );
             }
             MemberDecl::AssociatedType(_)
+            // Trait fn members: no expressions to walk for shadow lint at γ.
+            // Fn compilation is deferred to task δ/ζ.
+            // TODO(task δ/ζ): add shadow-lint walking for trait fn body
+            // expressions (let-bindings, where-clauses, result expr) once
+            // trait-fn compilation is live.
+            | MemberDecl::Fn(_)
             | MemberDecl::MetaBlock(_)
             | MemberDecl::MatchArmDeclGroup(_) => {}
         }
@@ -619,6 +632,17 @@ fn walk_expr_depth(
             }
             if let Some(u) = upper {
                 walk_expr_depth(u, frames, diagnostics, next);
+            }
+        }
+        ExprKind::TraitMethodCall { object, args, .. } => {
+            walk_expr_depth(object, frames, diagnostics, next);
+            for a in args {
+                walk_expr_depth(a, frames, diagnostics, next);
+            }
+        }
+        ExprKind::TraitStaticCall { args, .. } => {
+            for a in args {
+                walk_expr_depth(a, frames, diagnostics, next);
             }
         }
         // Leaf expressions — no children.

@@ -3182,6 +3182,30 @@ pub(crate) fn compile_expr_guarded(
                 });
             CompiledExpr::value_ref(id, ty)
         }
+        // Trait associated-fn call compilation is deferred to task δ/ζ.
+        // These placeholder arms keep `cargo build --workspace` green after
+        // the AST additions in task γ.  They emit a diagnostic and return a
+        // poison `CompiledExpr` to prevent cascading type errors.
+        reify_ast::ExprKind::TraitMethodCall { .. } => make_poison_literal(
+            diagnostics,
+            Diagnostic::error(
+                "trait associated-fn calls are not yet supported (task δ/ζ)".to_string(),
+            )
+            .with_label(DiagnosticLabel::new(
+                expr.span,
+                "not yet supported",
+            )),
+        ),
+        reify_ast::ExprKind::TraitStaticCall { .. } => make_poison_literal(
+            diagnostics,
+            Diagnostic::error(
+                "trait static-fn calls are not yet supported (task δ/ζ)".to_string(),
+            )
+            .with_label(DiagnosticLabel::new(
+                expr.span,
+                "not yet supported",
+            )),
+        ),
     }
 }
 
@@ -3995,6 +4019,73 @@ pub structure Rack {
             matches!(result.kind, CompiledExprKind::FunctionCall { .. }),
             "builtin `cos` must remain a FunctionCall, got {:?}",
             result.kind
+        );
+    }
+
+    /// `compile_expr_guarded` placeholder arms for `TraitStaticCall` and
+    /// `TraitMethodCall` (task γ keep-green) emit a "not yet supported
+    /// (task δ/ζ)" diagnostic and return a poison `CompiledExpr`.
+    ///
+    /// ## What this test pins
+    ///
+    /// * The placeholder arms reach correctly — no panic, no early return
+    ///   that silently drops the expression.
+    /// * Exactly **one** error fires per call site (no cascade from the
+    ///   poison `Type::Error` return propagating into downstream checks).
+    /// * The diagnostic message contains "not yet supported" so callers can
+    ///   identify it as a deliberate deferral rather than an ICE.
+    ///
+    /// These arms are replaced by real dispatch in task δ/ζ; at that point
+    /// this test can be updated to expect successful compilation instead.
+    #[test]
+    fn trait_call_exprs_emit_not_yet_supported_diagnostic_and_return_poison() {
+        use reify_core::Severity;
+        use reify_test_support::compile_source;
+
+        // TraitStaticCall: `C::make()`.  The trait_name "C" is never resolved
+        // as an identifier — the TraitStaticCall arm short-circuits before any
+        // identifier lookup — so exactly one error should fire.
+        let source = "pub structure A { let s = C::make() }";
+        let compiled = compile_source(source);
+        let errors: Vec<_> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "TraitStaticCall: expected exactly one error (the not-yet-supported \
+             placeholder), got: {:?}",
+            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert!(
+            errors[0].message.contains("not yet supported"),
+            "TraitStaticCall: expected 'not yet supported' in diagnostic, got: {:?}",
+            errors[0].message
+        );
+
+        // TraitMethodCall: `pin.(C::area)()`.  The placeholder arm uses `{ .. }`
+        // destructuring so the `object` sub-expression (`pin`) is never compiled,
+        // preventing any cascading "undefined variable" second diagnostic.
+        let source2 = "pub structure A { let w = pin.(C::area)() }";
+        let compiled2 = compile_source(source2);
+        let errors2: Vec<_> = compiled2
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert_eq!(
+            errors2.len(),
+            1,
+            "TraitMethodCall: expected exactly one error (the not-yet-supported \
+             placeholder), got: {:?}",
+            errors2.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert!(
+            errors2[0].message.contains("not yet supported"),
+            "TraitMethodCall: expected 'not yet supported' in diagnostic, got: {:?}",
+            errors2[0].message
         );
     }
 }

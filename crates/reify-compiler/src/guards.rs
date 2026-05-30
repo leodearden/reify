@@ -572,6 +572,8 @@ pub(crate) fn compile_guarded_members(
             | reify_ast::MemberDecl::Connect(_)
             | reify_ast::MemberDecl::Chain(_)
             | reify_ast::MemberDecl::AssociatedType(_)
+            // Trait fn members inside a where{} guard: deferred to task δ/ζ.
+            | reify_ast::MemberDecl::Fn(_)
             | reify_ast::MemberDecl::MetaBlock(_)
             | reify_ast::MemberDecl::ConstraintInst(_)
             // task 2372: match-arm decl group members inside a where{} guard are

@@ -163,9 +163,28 @@ pub(crate) fn compile_function(
         scope.register(name, ty.clone());
     }
 
-    // Compile body let bindings
+    // Compile body let bindings — bodyless trait fns (body = None) are not compiled
+    // here; they are deferred to task δ/ζ. Top-level Declaration::Function always
+    // has Some body, so the defensive guard is effectively unreachable for them.
+    let body = match &fn_def.body {
+        Some(b) => b,
+        None => {
+            diagnostics.push(
+                reify_core::Diagnostic::error(
+                    "internal compiler error: compile_function called on a bodyless \
+                     trait fn (body = None); this should not be reached until task δ/ζ"
+                        .to_string(),
+                )
+                .with_label(reify_core::DiagnosticLabel::new(
+                    fn_def.span,
+                    "bodyless fn".to_string(),
+                )),
+            );
+            return None;
+        }
+    };
     let mut compiled_lets = Vec::new();
-    for let_decl in &fn_def.body.let_bindings {
+    for let_decl in &body.let_bindings {
         let compiled_expr =
             compile_expr(&let_decl.value, &scope, enum_defs, functions, diagnostics);
         let let_type = compiled_expr.result_type.clone();
@@ -176,7 +195,7 @@ pub(crate) fn compile_function(
 
     // Compile result expression
     let result_expr = compile_expr(
-        &fn_def.body.result_expr,
+        &body.result_expr,
         &scope,
         enum_defs,
         functions,

@@ -23,7 +23,7 @@ fn parse_fn_body(source: &str) -> FnBody {
         module.errors,
     );
     match module.declarations.as_slice() {
-        [Declaration::Function(f)] => f.body.clone(),
+        [Declaration::Function(f)] => f.body.clone().expect("top-level fn always has a body"),
         other => panic!(
             "expected exactly one Function declaration; got: {:?}",
             other

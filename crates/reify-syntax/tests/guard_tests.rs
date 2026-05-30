@@ -387,6 +387,8 @@ fn bracket_backward_compat_no_guards() {
             MemberDecl::ForallConstraint(f) => f.content_hash,
             // Not produced by the tree-sitter parser yet (task 2372).
             MemberDecl::MatchArmDeclGroup(g) => g.content_hash,
+            // Produced by lower_function (task 3937); fn members have a content_hash.
+            MemberDecl::Fn(f) => f.content_hash,
         };
         let h2 = match m2 {
             MemberDecl::Param(p) => p.content_hash,
@@ -406,6 +408,8 @@ fn bracket_backward_compat_no_guards() {
             MemberDecl::ForallConstraint(f) => f.content_hash,
             // Not produced by the tree-sitter parser yet (task 2372).
             MemberDecl::MatchArmDeclGroup(g) => g.content_hash,
+            // Produced by lower_function (task 3937); fn members have a content_hash.
+            MemberDecl::Fn(f) => f.content_hash,
         };
         assert_eq!(h1, h2);
     }

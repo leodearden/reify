@@ -457,6 +457,11 @@ pub(crate) fn compile_purpose(
                     )),
                 );
             }
+            reify_ast::MemberDecl::Fn(_) => {
+                // Associated fn compilation deferred to task δ/ζ.
+                // Trait fns are not valid in purpose bodies (grammar-enforced),
+                // so this arm is unreachable in practice at γ.
+            }
         }
     }
 

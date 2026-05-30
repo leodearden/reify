@@ -104,6 +104,24 @@ pub enum ExprKind {
         lower_inclusive: bool,
         upper_inclusive: bool,
     },
+    /// Trait-associated function call on an instance: `obj.(Trait::method)(args)`.
+    /// Produced by a `trait_method_call` CST node whose callee is
+    /// `instance_qualified_access`.  The `self` receiver is `object`; dispatch
+    /// to the concrete implementation is deferred to task δ.
+    TraitMethodCall {
+        object: Box<Expr>,
+        trait_name: String,
+        method: String,
+        args: Vec<Expr>,
+    },
+    /// Trait-associated static-function call: `Trait::method(args)`.
+    /// Produced by a `trait_method_call` CST node whose callee is
+    /// `qualified_access`.  No receiver; dispatch deferred to task δ.
+    TraitStaticCall {
+        trait_name: String,
+        method: String,
+        args: Vec<Expr>,
+    },
 }
 
 /// A unit expression attached to a [`ExprKind::QuantityLiteral`] — the

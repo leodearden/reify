@@ -752,12 +752,39 @@ impl<'a> Lowering<'a> {
         // Extract optional type parameters
         let type_params = self.lower_type_parameters(node);
 
-        // Extract function params from fn_param_list
+        // Extract function params from fn_param_list.
+        //
+        // When `fn_param_list` has a `receiver` field (the `self` keyword),
+        // prepend a synthetic FnParam with `is_self = true` and a sentinel
+        // `TypeExprKind::Named { name: "self" }` type (placeholder, replaced by
+        // the concrete receiver type during dispatch in task δ/ζ).  Typed params
+        // that follow `self` are lowered as normal (is_self = false).
+        //
+        // Top-level `Declaration::Function` never has a receiver field; only
+        // trait-member `function_definition`/`function_signature` nodes do.
         let params = {
             let mut cursor = node.walk();
             let mut params = Vec::new();
             for child in node.children(&mut cursor) {
                 if child.kind() == "fn_param_list" {
+                    // Check for a `self` receiver field.
+                    if let Some(receiver_node) = child.child_by_field_name("receiver") {
+                        let receiver_span = self.span(receiver_node);
+                        params.push(FnParam {
+                            name: "self".to_string(),
+                            is_self: true,
+                            type_expr: TypeExpr {
+                                kind: TypeExprKind::Named {
+                                    name: "self".to_string(),
+                                    type_args: vec![],
+                                },
+                                span: receiver_span,
+                            },
+                            default: None,
+                            span: receiver_span,
+                        });
+                    }
+                    // Collect typed fn_param children (is_self = false via lower_fn_param).
                     let mut param_cursor = child.walk();
                     for param_child in child.children(&mut param_cursor) {
                         if param_child.kind() == "fn_param"
@@ -777,7 +804,8 @@ impl<'a> Lowering<'a> {
             .child_by_field_name("return_type")
             .map(|t| self.lower_type_expr_node(t));
 
-        // Extract fn_body
+        // Extract fn_body — `Some` for function_definition (has a body block),
+        // `None` for function_signature (bodyless required trait fn).
         let body = {
             let mut cursor = node.walk();
             let mut body = None;
@@ -787,7 +815,7 @@ impl<'a> Lowering<'a> {
                     break;
                 }
             }
-            body?
+            body
         };
 
         Some(FnDef {
@@ -1322,6 +1350,7 @@ impl<'a> Lowering<'a> {
 
         Some(FnParam {
             name,
+            is_self: false,
             type_expr,
             default,
             span: self.span(node),
@@ -1479,6 +1508,11 @@ impl<'a> Lowering<'a> {
             "associated_type" => self
                 .lower_associated_type(child)
                 .map(MemberDecl::AssociatedType),
+            // Trait-body fn members: `fn f(self) -> T { ... }` (function_definition)
+            // or `fn req(self) -> T` (bodyless function_signature).
+            "function_definition" | "function_signature" => {
+                self.lower_function(child).map(MemberDecl::Fn)
+            }
             "port_declaration" => check_and_lower!(
                 self,
                 child,
@@ -2366,7 +2400,7 @@ impl<'a> Lowering<'a> {
                 Some(MemberDecl::ForallConnect(ForallConnectDecl {
                     variable,
                     collection,
-                    body: ForallConnectBody::Connect(connect),
+                    body: ForallConnectBody::Connect(Box::new(connect)),
                     span: self.span(node),
                     content_hash: self.content_hash(node),
                 }))
@@ -2482,6 +2516,7 @@ impl<'a> Lowering<'a> {
             "member_access" => self.lower_member_access(node),
             "qualified_access" => self.lower_qualified_access(node),
             "instance_qualified_access" => self.lower_instance_qualified_access(node),
+            "trait_method_call" => self.lower_trait_method_call(node),
             "parenthesized_expression" => {
                 // Unwrap parenthesized expression — find the inner expression
                 let mut cursor = node.walk();
@@ -3200,6 +3235,92 @@ impl<'a> Lowering<'a> {
         })
     }
 
+    /// Lower a `trait_method_call` CST node to either `TraitStaticCall` or
+    /// `TraitMethodCall`, depending on whether the `callee` field is a
+    /// `qualified_access` (static) or `instance_qualified_access` (instance).
+    ///
+    /// Grammar: `trait_method_call` has:
+    /// - field `callee`: `choice(qualified_access, instance_qualified_access)`
+    /// - child `argument_list` (shared with `function_call`)
+    fn lower_trait_method_call(&self, node: tree_sitter::Node) -> Option<Expr> {
+        let callee_node = node.child_by_field_name("callee")?;
+
+        // Collect positional args from the `argument_list` child (same logic as
+        // `lower_function_call`, reusing the existing `lower_call_argument` helper).
+        let mut args = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "argument_list" {
+                let mut arg_cursor = child.walk();
+                for arg_child in child.children(&mut arg_cursor) {
+                    if let Some(expr) = self.lower_call_argument(arg_child) {
+                        args.push(expr);
+                    }
+                }
+            }
+        }
+
+        match callee_node.kind() {
+            "qualified_access" => {
+                // Static form: `Trait::method(args)` — callee is bare qualified_access.
+                let qualifier_node = callee_node.child_by_field_name("qualifier")?;
+                let member_node = callee_node.child_by_field_name("member")?;
+                let trait_name = self.node_text(qualifier_node).to_string();
+                let method = self.node_text(member_node).to_string();
+                Some(Expr {
+                    kind: ExprKind::TraitStaticCall {
+                        trait_name,
+                        method,
+                        args,
+                    },
+                    span: self.span(node),
+                })
+            }
+            "instance_qualified_access" => {
+                // Instance form: `obj.(Trait::method)(args)`.
+                let object_node = callee_node.child_by_field_name("object")?;
+                let qualified_node = callee_node.child_by_field_name("qualified")?;
+
+                // The inner `qualified` must be a `qualified_access` — validated by grammar,
+                // but guarded defensively.
+                if qualified_node.kind() != "qualified_access" {
+                    self.push_error(
+                        "trait method call: expected 'Trait::method' form inside parentheses"
+                            .to_string(),
+                        self.span(callee_node),
+                    );
+                    return None;
+                }
+                let inner_qualifier = qualified_node.child_by_field_name("qualifier")?;
+                let inner_member = qualified_node.child_by_field_name("member")?;
+                let trait_name = self.node_text(inner_qualifier).to_string();
+                let method = self.node_text(inner_member).to_string();
+
+                let object = self.lower_expr(object_node)?;
+                Some(Expr {
+                    kind: ExprKind::TraitMethodCall {
+                        object: Box::new(object),
+                        trait_name,
+                        method,
+                        args,
+                    },
+                    span: self.span(node),
+                })
+            }
+            other => {
+                self.push_error(
+                    format!(
+                        "trait_method_call: unexpected callee kind '{}'; \
+                         expected qualified_access or instance_qualified_access",
+                        other
+                    ),
+                    self.span(callee_node),
+                );
+                None
+            }
+        }
+    }
+
     fn lower_member_access(&self, node: tree_sitter::Node) -> Option<Expr> {
         let object_node = node.child_by_field_name("object")?;
         let member_node = node.child_by_field_name("member")?;
@@ -3316,6 +3437,8 @@ mod tests {
                 MemberDecl::ForallConstraint(_) => "forall_constraint".into(),
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(_) => "match_arm_decl_group".into(),
+                // Produced by lower_function (task 3937).
+                MemberDecl::Fn(f) => format!("fn:{}", f.name),
             })
             .collect();
         assert_eq!(
@@ -3502,6 +3625,8 @@ mod tests {
                 MemberDecl::ForallConstraint(f) => f.span,
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => g.span,
+                // Produced by lower_function (task 3937).
+                MemberDecl::Fn(f) => f.span,
             };
             assert!(span.start < span.end, "member {} span empty", i);
             assert!(
@@ -3634,6 +3759,16 @@ mod tests {
                 }
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(_) => {}
+                // Produced by lower_function (task 3937).
+                MemberDecl::Fn(f) => {
+                    assert!(
+                        text.starts_with("fn"),
+                        "fn member {} text: {:?}",
+                        i,
+                        text
+                    );
+                    assert!(text.contains(&f.name), "fn {} name in text", i);
+                }
             }
         }
 
@@ -3693,6 +3828,8 @@ mod tests {
                 MemberDecl::ForallConstraint(f) => (f.span, f.content_hash),
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => (g.span, g.content_hash),
+                // Produced by lower_function (task 3937).
+                MemberDecl::Fn(f) => (f.span, f.content_hash),
             };
             let text = &source[span.start as usize..span.end as usize];
             assert_eq!(
@@ -3806,6 +3943,8 @@ mod tests {
                 MemberDecl::ForallConstraint(f) => (f.content_hash, f.span),
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => (g.content_hash, g.span),
+                // Produced by lower_function (task 3937).
+                MemberDecl::Fn(f) => (f.content_hash, f.span),
             };
             let (hash_b, span_b) = match m_b {
                 MemberDecl::Param(p) => (p.content_hash, p.span),
@@ -3825,6 +3964,8 @@ mod tests {
                 MemberDecl::ForallConstraint(f) => (f.content_hash, f.span),
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => (g.content_hash, g.span),
+                // Produced by lower_function (task 3937).
+                MemberDecl::Fn(f) => (f.content_hash, f.span),
             };
             assert_eq!(hash_a, hash_b, "member {} hash determinism", i);
             assert_eq!(span_a, span_b, "member {} span determinism", i);
@@ -4546,8 +4687,8 @@ mod tests {
         assert!(
             matches!(&f.return_type.as_ref().unwrap().kind, TypeExprKind::Named { name, .. } if name == "Scalar")
         );
-        assert!(f.body.let_bindings.is_empty());
-        assert!(matches!(&f.body.result_expr.kind, ExprKind::BinOp { op, .. } if op == "*"));
+        assert!(f.body.as_ref().unwrap().let_bindings.is_empty());
+        assert!(matches!(&f.body.as_ref().unwrap().result_expr.kind, ExprKind::BinOp { op, .. } if op == "*"));
     }
 
     #[test]
@@ -4579,7 +4720,7 @@ mod tests {
             matches!(&f.return_type.as_ref().unwrap().kind, TypeExprKind::Named { name, .. } if name == "Real")
         );
         assert!(matches!(
-            &f.body.result_expr.kind,
+            &f.body.as_ref().unwrap().result_expr.kind,
             ExprKind::Conditional { .. }
         ));
     }
@@ -4600,12 +4741,12 @@ mod tests {
             other => panic!("expected Function, got {:?}", other),
         };
         assert_eq!(f.params.len(), 1);
-        assert_eq!(f.body.let_bindings.len(), 1);
-        assert_eq!(f.body.let_bindings[0].name, "y");
+        assert_eq!(f.body.as_ref().unwrap().let_bindings.len(), 1);
+        assert_eq!(f.body.as_ref().unwrap().let_bindings[0].name, "y");
         assert!(
-            matches!(&f.body.let_bindings[0].value.kind, ExprKind::BinOp { op, .. } if op == "*")
+            matches!(&f.body.as_ref().unwrap().let_bindings[0].value.kind, ExprKind::BinOp { op, .. } if op == "*")
         );
-        assert!(matches!(&f.body.result_expr.kind, ExprKind::BinOp { op, .. } if op == "+"));
+        assert!(matches!(&f.body.as_ref().unwrap().result_expr.kind, ExprKind::BinOp { op, .. } if op == "+"));
     }
 
     #[test]

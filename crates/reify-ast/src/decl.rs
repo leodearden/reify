@@ -94,6 +94,10 @@ pub enum MemberDecl {
     Maximize(MaximizeDecl),
     GuardedGroup(GuardedGroupDecl),
     AssociatedType(AssociatedTypeDecl),
+    /// An associated function declared inside a trait body:
+    /// `fn area(self) -> Scalar { ... }` (with body) or
+    /// `fn req(self) -> Real` (bodyless / required, `body = None`).
+    Fn(FnDef),
     Port(PortDecl),
     Connect(ConnectDecl),
     Chain(ChainDecl),
@@ -550,7 +554,7 @@ pub struct ForallConnectDecl {
 #[derive(Debug, Clone)]
 pub enum ForallConnectBody {
     /// `forall v in coll: connect v.a -> b.c`
-    Connect(ConnectDecl),
+    Connect(Box<ConnectDecl>),
     /// `forall v in coll: chain v.a -> b -> c`
     Chain(ChainDecl),
 }
@@ -631,7 +635,10 @@ pub struct FnDef {
     pub type_params: Vec<TypeParamDecl>,
     pub params: Vec<FnParam>,
     pub return_type: Option<TypeExpr>,
-    pub body: FnBody,
+    /// The function body. `Some` for a defined function; `None` for a
+    /// bodyless required associated function inside a trait
+    /// (`fn req(self) -> Real` with no `{ ... }`).
+    pub body: Option<FnBody>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
     /// Annotations preceding this declaration.
@@ -808,6 +815,12 @@ pub struct TypeParamDecl {
 #[derive(Debug, Clone)]
 pub struct FnParam {
     pub name: String,
+    /// `true` when this parameter is the implicit `self` receiver of a
+    /// trait-associated function. The `type_expr` in that case is a sentinel
+    /// `TypeExprKind::Named { name: "self", .. }` — `is_self` is the source
+    /// of truth and the sentinel type is replaced by the concrete receiver
+    /// type during dispatch in later task δ/ζ.
+    pub is_self: bool,
     pub type_expr: TypeExpr,
     pub default: Option<Expr>,
     pub span: SourceSpan,

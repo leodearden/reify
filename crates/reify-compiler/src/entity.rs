@@ -232,6 +232,26 @@ pub(crate) fn substitute_expr(
                 qualified: Box::new(substitute_expr(qualified, bindings)),
             }
         }
+        ExprKind::TraitMethodCall {
+            object,
+            trait_name,
+            method,
+            args,
+        } => ExprKind::TraitMethodCall {
+            object: Box::new(substitute_expr(object, bindings)),
+            trait_name: trait_name.clone(),
+            method: method.clone(),
+            args: args.iter().map(|a| substitute_expr(a, bindings)).collect(),
+        },
+        ExprKind::TraitStaticCall {
+            trait_name,
+            method,
+            args,
+        } => ExprKind::TraitStaticCall {
+            trait_name: trait_name.clone(),
+            method: method.clone(),
+            args: args.iter().map(|a| substitute_expr(a, bindings)).collect(),
+        },
     };
     Expr {
         kind: new_kind,
@@ -1485,6 +1505,11 @@ pub(crate) fn compile_entity(
             }
             reify_ast::MemberDecl::AssociatedType(_) => {
                 // Associated type compilation deferred to a later milestone.
+            }
+            reify_ast::MemberDecl::Fn(_) => {
+                // Trait associated-fn compilation deferred to task δ/ζ.
+                // The member is lowered into MemberDecl::Fn by task γ (ts_parser);
+                // conformance checking and dispatch are added in later tasks.
             }
             reify_ast::MemberDecl::Port(port_decl) => {
                 // Skip duplicate port names (already reported in first pass).
