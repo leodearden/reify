@@ -131,23 +131,35 @@ pub(crate) fn to_trajectory_samples(
         return None;
     }
 
-    // Tolerance for deciding whether the last interior grid point already
-    // lands exactly on the endpoint.
-    const TOL: f64 = 1e-9;
+    // Minimum gap between the last interior grid point and the endpoint.
+    // Using a dt-relative threshold (rather than an absolute constant) ensures:
+    //
+    // 1. No near-coincident final knots: if the last i*dt lands within
+    //    `min_gap` of d we skip it and let the explicit endpoint close the
+    //    interval — preventing ill-conditioned cubic fits where consecutive
+    //    knot spacing approaches the SINGULAR_PIVOT threshold (~2.2e-10).
+    //
+    // 2. The ≥ 2 sample guarantee holds for all d > 0: t = 0 is emitted
+    //    unconditionally before the loop, so even d ≤ 1e-9 trajectories
+    //    contain at least the start and end samples.
+    let min_gap = dt * 1e-6;
 
-    // Collect samples at t = 0, dt, 2*dt, … while strictly below d.
-    let mut samples: Vec<TrajectorySample> = Vec::new();
-    let mut i: usize = 0;
+    // Always emit t = 0 (the profile start).
+    let mut samples: Vec<TrajectorySample> = vec![sample_at(spline, 0.0)];
+
+    // Emit t = dt, 2*dt, … while strictly below d - min_gap.
+    let mut i: usize = 1;
     loop {
         let t = (i as f64) * dt;
-        if t >= d - TOL {
+        if t >= d - min_gap {
             break;
         }
         samples.push(sample_at(spline, t));
         i += 1;
     }
 
-    // Always append the exact endpoint.
+    // Always append the exact endpoint (d).
+    // For d > 0, the start sample at 0.0 ≠ d, so no dedup is needed.
     samples.push(sample_at(spline, d));
 
     Some(MotionTrajectory { samples })
@@ -417,6 +429,56 @@ mod tests {
         assert!(
             err2 < err1,
             "error should decrease as dt halves: err(dt2)={err2} >= err(dt1)={err1}"
+        );
+
+        // The ratio should be ≈ 16 (2⁴) for O(h⁴) clamped-cubic convergence;
+        // assert ≥ 8 to tolerate numerical variability while still catching
+        // degraded convergence (O(h²) gives ratio ≈ 4, O(h) gives ratio ≈ 2).
+        let ratio = err1 / err2;
+        assert!(
+            ratio >= 8.0,
+            "expected O(h⁴) convergence: ratio err1/err2 should be ≥ 8, got {ratio:.2} \
+             (err1={err1:.2e}, err2={err2:.2e})"
+        );
+    }
+
+    // ─── resample_cubic degenerate early-return paths ─────────────────────────
+
+    /// `resample_cubic` must return `None` for every documented early-exit:
+    /// fewer than 2 samples, empty trajectory, and zero joints.
+    #[test]
+    fn resample_cubic_returns_none_for_degenerate_inputs() {
+        // Single sample → fewer than 2 samples → None.
+        let single = MotionTrajectory {
+            samples: vec![TrajectorySample {
+                t: 0.0,
+                values: vec![1.0],
+                vels: vec![0.0],
+                accels: vec![0.0],
+            }],
+        };
+        assert!(
+            single.resample_cubic().is_none(),
+            "single-sample trajectory should yield None"
+        );
+
+        // Empty trajectory → fewer than 2 samples → None.
+        let empty = MotionTrajectory { samples: vec![] };
+        assert!(
+            empty.resample_cubic().is_none(),
+            "empty trajectory should yield None"
+        );
+
+        // Two samples but zero joints (values is empty) → None.
+        let zero_joints = MotionTrajectory {
+            samples: vec![
+                TrajectorySample { t: 0.0, values: vec![], vels: vec![], accels: vec![] },
+                TrajectorySample { t: 1.0, values: vec![], vels: vec![], accels: vec![] },
+            ],
+        };
+        assert!(
+            zero_joints.resample_cubic().is_none(),
+            "zero-joint trajectory should yield None"
         );
     }
 }
