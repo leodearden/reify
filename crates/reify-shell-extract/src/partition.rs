@@ -247,14 +247,31 @@ pub fn partition_body(
             let min_dist =
                 min_world_distance(&shell_region.voxels, &tet_region.voxels, origin, spacing);
             if min_dist < threshold {
+                // Area-weighted mid-surface normal of the shell region. A
+                // ~zero accumulation (all selected triangles zero-area, or none
+                // labelled to this region) has no well-defined tie normal — the
+                // guard fires only here, where an interface actually needs it.
+                let normal = shell_region_normal(shell_region.label, mesh, &seg.triangle_labels)
+                    .ok_or(PartitionError::DegenerateInterfaceNormal {
+                        shell_region: shell_region.label,
+                    })?;
+                // Tie point: the centroid of the shell voxels closest to this
+                // tet region. A detected interface implies both voxel sets are
+                // non-empty (else `min_dist` would be ∞ ≥ threshold), so this is
+                // always `Some`.
+                let location = nearest_shell_centroid(
+                    &shell_region.voxels,
+                    &tet_region.voxels,
+                    origin,
+                    spacing,
+                )
+                .expect("a detected interface implies non-empty shell and tet voxel sets");
                 interfaces.push(ShellTetInterface {
                     shell_region: shell_region.label,
                     tet_region: tet_region.label,
-                    // Placeholder normal/location — populated from shell-region
-                    // triangle geometry in step-8.
-                    normal: [0.0, 0.0, 0.0],
+                    normal,
                     thickness: shell_region.mean_thickness,
-                    location: [0.0, 0.0, 0.0],
+                    location,
                 });
             }
         }
@@ -303,6 +320,112 @@ fn min_world_distance(
         }
     }
     min_sq.sqrt()
+}
+
+/// Normalized **area-weighted** normal of the mid-surface triangles belonging
+/// to the region `shell_label`.
+///
+/// Triangles are selected by `triangle_labels[i] == shell_label` (parallel to
+/// `mesh.triangles`); each contributes its raw cross product
+/// `(v1−v0)×(v2−v0)`, whose magnitude is `2·area`, so the accumulation is area
+/// weighted without an explicit area factor. Returns `None` if the accumulated
+/// magnitude is ~0 — every selected triangle is zero-area (degenerate), or none
+/// is labelled to the region — meaning no mid-surface tie normal exists.
+fn shell_region_normal(
+    shell_label: u32,
+    mesh: &MidSurfaceMesh,
+    triangle_labels: &[u32],
+) -> Option<[f64; 3]> {
+    let mut acc = [0.0f64; 3];
+    for (tri_idx, tri) in mesh.triangles.iter().enumerate() {
+        // Only triangles labelled to this shell region contribute. `.get`
+        // tolerates a `triangle_labels` array shorter than `mesh.triangles`.
+        if triangle_labels.get(tri_idx).copied() != Some(shell_label) {
+            continue;
+        }
+        let v0 = mesh.vertices[tri[0] as usize];
+        let v1 = mesh.vertices[tri[1] as usize];
+        let v2 = mesh.vertices[tri[2] as usize];
+        let e1 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
+        let e2 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
+        // cross = e1 × e2 (|cross| = 2·triangle area).
+        acc[0] += e1[1] * e2[2] - e1[2] * e2[1];
+        acc[1] += e1[2] * e2[0] - e1[0] * e2[2];
+        acc[2] += e1[0] * e2[1] - e1[1] * e2[0];
+    }
+    let mag = (acc[0] * acc[0] + acc[1] * acc[1] + acc[2] * acc[2]).sqrt();
+    // Degenerate-normal threshold. World units are squared in the cross product,
+    // so this is generous against float noise while still catching true zeros.
+    const NORMAL_EPS: f64 = 1e-12;
+    if mag < NORMAL_EPS {
+        return None;
+    }
+    Some([acc[0] / mag, acc[1] / mag, acc[2] / mag])
+}
+
+/// World centroid of the shell voxels closest to the tet region — the tie
+/// "contact patch".
+///
+/// Each shell voxel's minimum distance to the tet voxel set is computed; the
+/// voxels achieving the global minimum (within a small tolerance) are averaged
+/// in world space. Returns `None` if either voxel set is empty.
+///
+/// O(|shell|·|tet|) — same brute-force scan as [`min_world_distance`]; shares
+/// the documented spatial-hash acceleration follow-up.
+fn nearest_shell_centroid(
+    shell_voxels: &[[i32; 3]],
+    tet_voxels: &[[i32; 3]],
+    origin: [f64; 3],
+    spacing: [f64; 3],
+) -> Option<[f64; 3]> {
+    if shell_voxels.is_empty() || tet_voxels.is_empty() {
+        return None;
+    }
+    let tet_world: Vec<[f64; 3]> = tet_voxels
+        .iter()
+        .map(|&v| voxel_to_world(v, origin, spacing))
+        .collect();
+    let shell_world: Vec<[f64; 3]> = shell_voxels
+        .iter()
+        .map(|&v| voxel_to_world(v, origin, spacing))
+        .collect();
+
+    // Per-shell-voxel minimum squared distance to the tet set, tracking the
+    // global minimum.
+    let mut min_sq_per_shell = Vec::with_capacity(shell_world.len());
+    let mut global_min = f64::INFINITY;
+    for ws in &shell_world {
+        let mut m = f64::INFINITY;
+        for wt in &tet_world {
+            let dx = ws[0] - wt[0];
+            let dy = ws[1] - wt[1];
+            let dz = ws[2] - wt[2];
+            let d_sq = dx * dx + dy * dy + dz * dz;
+            if d_sq < m {
+                m = d_sq;
+            }
+        }
+        if m < global_min {
+            global_min = m;
+        }
+        min_sq_per_shell.push(m);
+    }
+
+    // Average the voxels at (≈) the global minimum distance.
+    const TOL: f64 = 1e-9;
+    let mut sum = [0.0f64; 3];
+    let mut count = 0usize;
+    for (i, &d_sq) in min_sq_per_shell.iter().enumerate() {
+        if d_sq <= global_min + TOL {
+            sum[0] += shell_world[i][0];
+            sum[1] += shell_world[i][1];
+            sum[2] += shell_world[i][2];
+            count += 1;
+        }
+    }
+    // `count >= 1` since at least the global-min voxel qualifies.
+    let n = count as f64;
+    Some([sum[0] / n, sum[1] / n, sum[2] / n])
 }
 
 #[cfg(test)]
@@ -461,8 +584,10 @@ mod tests {
                 region_with_thickness(1, RegionClassification::TetEligible, near_cube, 3.0),
                 region_with_thickness(2, RegionClassification::TetEligible, far_cube, 3.0),
             ],
-            vertex_labels: vec![],
-            triangle_labels: vec![],
+            // The one mesh triangle belongs to the slab (region 0) so its tie
+            // normal is well-defined (non-degenerate) once the interface forms.
+            vertex_labels: vec![0, 0, 0],
+            triangle_labels: vec![0],
         };
         // Only spacing/origin are read for proximity; voxels are taken from
         // `seg.regions`, so the mask voxel list is intentionally left empty.
@@ -471,7 +596,7 @@ mod tests {
             origin: [0.0, 0.0, 0.0],
             voxels: vec![],
         });
-        // Mesh vertices/thickness map into the slab (z=0 plane).
+        // Mesh: a single non-degenerate slab triangle in the z=0 plane.
         let mesh = MidSurfaceMesh {
             vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             triangles: vec![[0, 1, 2]],
