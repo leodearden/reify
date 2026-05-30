@@ -51,6 +51,41 @@ pub(crate) fn eval_trajectory(name: &str, args: &[Value]) -> Option<Value> {
     }
 }
 
+/// Analytic reference polynomials shared by sibling submodule tests.
+///
+/// `spline.rs` and `sampling.rs` both test against the same closed-form cubic
+/// `p(t) = 1 + 2t - 0.5t² + 0.3t³` and quintic
+/// `q(t) = 1 + t + t² + t³ - 0.5t⁴ + 0.1t⁵`.  Defining them once here
+/// prevents the two copies from drifting independently.
+#[cfg(test)]
+pub(crate) mod test_polynomials {
+    /// Cubic polynomial `p(t) = 1 + 2t - 0.5t² + 0.3t³`.
+    pub(crate) fn cubic_p(t: f64) -> f64 {
+        1.0 + 2.0 * t - 0.5 * t * t + 0.3 * t * t * t
+    }
+    /// First derivative `p'(t) = 2 - t + 0.9t²`.
+    pub(crate) fn cubic_dp(t: f64) -> f64 {
+        2.0 - t + 0.9 * t * t
+    }
+    /// Second derivative `p''(t) = -1 + 1.8t`.
+    pub(crate) fn cubic_ddp(t: f64) -> f64 {
+        -1.0 + 1.8 * t
+    }
+
+    /// Quintic polynomial `q(t) = 1 + t + t² + t³ - 0.5t⁴ + 0.1t⁵`.
+    pub(crate) fn quintic_q(t: f64) -> f64 {
+        1.0 + t + t * t + t * t * t - 0.5 * t.powi(4) + 0.1 * t.powi(5)
+    }
+    /// First derivative `q'(t) = 1 + 2t + 3t² - 2t³ + 0.5t⁴`.
+    pub(crate) fn quintic_dq(t: f64) -> f64 {
+        1.0 + 2.0 * t + 3.0 * t * t - 2.0 * t * t * t + 0.5 * t.powi(4)
+    }
+    /// Second derivative `q''(t) = 2 + 6t - 6t² + 2t³`.
+    pub(crate) fn quintic_ddq(t: f64) -> f64 {
+        2.0 + 6.0 * t - 6.0 * t * t + 2.0 * t * t * t
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;

@@ -767,19 +767,9 @@ fn solve_cyclic_tridiagonal(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::test_polynomials::{cubic_p, cubic_dp, cubic_ddp, quintic_q, quintic_dq, quintic_ddq};
 
     const TOL: f64 = 1e-12;
-
-    fn cubic_p(t: f64) -> f64 {
-        1.0 + 2.0 * t - 0.5 * t * t + 0.3 * t * t * t
-    }
-    fn cubic_dp(t: f64) -> f64 {
-        2.0 - t + 0.9 * t * t
-    }
-    #[allow(dead_code)]
-    fn cubic_ddp(t: f64) -> f64 {
-        -1.0 + 1.8 * t
-    }
 
     // ── Step-1: natural cubic — corrected contract ────────────────────────────
 
@@ -977,16 +967,6 @@ mod tests {
     }
 
     // ── Step-7: quintic Hermite — exact reproduction of general quintic ───────
-
-    fn quintic_q(t: f64) -> f64 {
-        1.0 + t + t * t + t * t * t - 0.5 * t * t * t * t + 0.1 * t * t * t * t * t
-    }
-    fn quintic_dq(t: f64) -> f64 {
-        1.0 + 2.0 * t + 3.0 * t * t - 2.0 * t * t * t + 0.5 * t * t * t * t
-    }
-    fn quintic_ddq(t: f64) -> f64 {
-        2.0 + 6.0 * t - 6.0 * t * t + 2.0 * t * t * t
-    }
 
     /// Quintic Hermite uniquely determines a degree-5 poly per segment from
     /// endpoint value/vel/accel; exact reproduction IS valid here.

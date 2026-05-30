@@ -181,6 +181,7 @@ fn sample_at(spline: &MultiJointSpline, t: f64) -> TrajectorySample {
 mod tests {
     use super::*;
     use super::super::spline::{BoundaryCondition, CubicSpline, KnotData, MultiJointSpline, QuinticSpline};
+    use super::super::test_polynomials::{cubic_p, cubic_dp, cubic_ddp, quintic_q, quintic_dq, quintic_ddq};
 
     // ─── helpers ───────────────────────────────────────────────────────────────
 
@@ -202,28 +203,6 @@ mod tests {
         let s0 = CubicSpline::fit(knots, j0_values, &bc).expect("j0 spline fit");
         let s1 = CubicSpline::fit(knots, j1_values, &bc).expect("j1 spline fit");
         MultiJointSpline::new_cubic(vec![s0, s1]).expect("multi-joint cubic")
-    }
-
-    /// Closed-form cubic polynomial p(t) = 1 + 2t - 0.5t² + 0.3t³
-    fn cubic_p(t: f64) -> f64 {
-        1.0 + 2.0 * t - 0.5 * t * t + 0.3 * t * t * t
-    }
-    fn cubic_dp(t: f64) -> f64 {
-        2.0 - t + 0.9 * t * t
-    }
-    fn cubic_ddp(t: f64) -> f64 {
-        -1.0 + 1.8 * t
-    }
-
-    /// Closed-form quintic polynomial q(t) = 1 + t + t² + t³ - 0.5t⁴ + 0.1t⁵
-    fn quintic_q(t: f64) -> f64 {
-        1.0 + t + t * t + t * t * t - 0.5 * t.powi(4) + 0.1 * t.powi(5)
-    }
-    fn quintic_dq(t: f64) -> f64 {
-        1.0 + 2.0 * t + 3.0 * t * t - 2.0 * t.powi(3) + 0.5 * t.powi(4)
-    }
-    fn quintic_ddq(t: f64) -> f64 {
-        2.0 + 6.0 * t - 6.0 * t * t + 2.0 * t.powi(3)
     }
 
     // ─── step-1: RED — core uniform-grid sampling ──────────────────────────────
