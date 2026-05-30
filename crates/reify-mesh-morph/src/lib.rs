@@ -70,6 +70,7 @@
 //! Calibration was performed against the [`StiffnessRule::InverseVolume`]
 //! production default (PRD task #8 / task 2945, shipped on main).
 pub mod boundary;
+pub mod diagnostics;
 pub mod elasticity;
 pub mod eligibility;
 pub mod laplacian;
