@@ -1073,6 +1073,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dispatch_stateless_tool_handles_mesh_morph_stats_arm() {
+        // Unique coverage: the exact "mesh_morph_stats" match-arm string in
+        // dispatch_stateless_tool. A typo or deletion returns None, caught
+        // by the unwrap. Shape assertions live in
+        // handle_mesh_morph_stats_returns_counters_and_session_start.
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reify_mesh_morph::diagnostics::reset_for_test();
+
+        let direct = super::handle_mesh_morph_stats(serde_json::json!({}))
+            .await
+            .expect("handle_mesh_morph_stats must succeed");
+
+        let via_dispatch =
+            super::dispatch_stateless_tool("mesh_morph_stats", &serde_json::json!({}))
+                .await
+                .expect("dispatch_stateless_tool must return Some for 'mesh_morph_stats'")
+                .expect("mesh_morph_stats handler must succeed");
+
+        assert_eq!(
+            via_dispatch, direct,
+            "dispatch_stateless_tool must delegate to handle_mesh_morph_stats"
+        );
+    }
+
+    #[tokio::test]
     async fn handle_mesh_morph_stats_returns_counters_and_session_start() {
         // Acquire process-global lock so no concurrent test races on counters.
         let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
