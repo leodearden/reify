@@ -1069,6 +1069,14 @@ module.exports = grammar({
 
     _primary_expression: $ => choice(
       $.quantity_literal,
+      // alias($._radix_literal, $.number_literal): makes hex/binary literals (0xFF,
+      // 0b1010) appear as number_literal nodes in the CST.  number_literal is kept
+      // as a plain token() rule so error recovery inserts a MISSING leaf (is_missing=true)
+      // rather than a degenerate rule node — preserving task-3725's auto_type_arg
+      // span-narrowing behaviour.  The standalone alias here handles expression context
+      // (let x = 0xFF); the quantity_literal radix arm handles the unit-suffix case
+      // (0xFFmm).
+      alias($._radix_literal, $.number_literal),
       $.number_literal,
       $.string_literal,
       $.bool_literal,
@@ -1084,10 +1092,24 @@ module.exports = grammar({
     // Quantity literal: number immediately followed by a unit expression (e.g. 80mm, 9.81m/s^2)
     // _unit_expr_start (external scanner) fires only when next char is a unit-start char
     // with no whitespace, enforcing the contiguity invariant from PRD §3.1.
-    quantity_literal: $ => seq(
-      field('value', $.number_literal),
-      $._unit_expr_start,
-      field('unit', $.unit_expr),
+    //
+    // Two arms handle radix literals (0xFFmm) and decimal literals (5mm) separately.
+    // alias($._radix_literal, $.number_literal) makes the radix prefix appear in the CST
+    // as a number_literal node (same as the decimal arm) so callers see a uniform
+    // quantity_literal { value: (number_literal), unit: (unit_expr) } structure.
+    quantity_literal: $ => choice(
+      // Radix arm: 0xFFmm → quantity_literal(value: number_literal "0xFF", unit: unit_expr "mm")
+      seq(
+        field('value', alias($._radix_literal, $.number_literal)),
+        $._unit_expr_start,
+        field('unit', $.unit_expr),
+      ),
+      // Decimal arm: 5mm → quantity_literal(value: number_literal "5", unit: unit_expr "mm")
+      seq(
+        field('value', $.number_literal),
+        $._unit_expr_start,
+        field('unit', $.unit_expr),
+      ),
     ),
 
     // Unit expression: composite unit with mul (*), div (/), and pow (^) operators.
@@ -1205,20 +1227,19 @@ module.exports = grammar({
 
     // ── Literals ────────────────────────────────────────────
     //
-    // _decimal_literal is a named hidden rule (not an anonymous token) so that
-    // tree-sitter's error recovery produces a NAMED MISSING node when
-    // number_literal is expected but absent.  A named MISSING node has
-    // is_named()=true and child_count≥1 via the cursor API, which lets
-    // first_error_or_missing_descendant find it and narrow error spans.
-    // An anonymous token() alternative produces an aux_sym_* MISSING node
-    // with child_count=0 — invisible to the cursor — so first_error_or_missing_descendant
-    // returns None and falls back to the wide span, breaking task-3725's
-    // auto_type_arg span-narrowing test.
-    _decimal_literal: $ => token(/\d(_?\d)*(\.\d(_?\d)*)?([eE][+-]?\d(_?\d)*)?/),
-    number_literal: $ => choice(
-      $._decimal_literal,
-      $._radix_literal,
-    ),
+    // number_literal is kept as a PLAIN token() (not a choice) so that
+    // tree-sitter's error recovery inserts a MISSING leaf node rather than a
+    // degenerate rule node.  A plain-token MISSING node has is_missing()=true
+    // which is detectable by first_error_or_missing_descendant; a choice-rule
+    // MISSING node gets has_error()=true but is_missing()=false with no children
+    // — invisible to that function — and breaks task-3725's auto_type_arg
+    // span-narrowing test.
+    //
+    // Radix literals (hex/binary) are integrated via alias($._radix_literal,
+    // $.number_literal) at each call site (_primary_expression and
+    // quantity_literal) so they appear as number_literal in the CST without
+    // modifying this token rule.
+    number_literal: $ => token(/\d(_?\d)*(\.\d(_?\d)*)?([eE][+-]?\d(_?\d)*)?/),
 
     string_literal: $ => token(seq(
       '"',
