@@ -273,6 +273,28 @@ fn tool_defs() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
+            name: "mesh_morph_stats",
+            description: "Session diagnostic counter snapshot from the mesh-morph engine \
+                          (morphed, remeshed_quality_hard_fail, remeshed_quality_soft_fail, \
+                          ineligible_structural_change, ineligible_bijection_failure, \
+                          ineligible_naming_error, panicked) plus a session_start_unix_ms \
+                          timestamp. Pass reset:true to atomically zero all counters and \
+                          restart the session clock before returning the (post-reset) snapshot \
+                          — useful for benchmark sequences. Per mesh-morphing PRD #12 / \
+                          docs/prds/v0_3/mesh-morphing.md.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "reset": {
+                        "type": "boolean",
+                        "description": "When true, atomically zero all diagnostic counters \
+                                        and restart the session clock before returning the \
+                                        post-reset snapshot. Defaults to false."
+                    }
+                }
+            }),
+        },
+        ToolDef {
             name: "wait_for_idle",
             description: "Block until the engine is idle (no in-flight evaluation) and one frame has rendered. Returns {ok: true, idle_after_ms: N} or {error: 'timeout'}. Used by the visual-regression harness to replace engine_state polling.",
             input_schema: json!({
