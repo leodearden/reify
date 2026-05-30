@@ -2517,8 +2517,22 @@ pub(crate) fn compile_expr_guarded(
                         current_guard,
                         lambda_counter,
                     );
+                    // β lossy bridge: derive Vec<String> variant-tag strings from
+                    // the structured Vec<MatchPattern>.  Binders are dropped at β;
+                    // γ/ε widen CompiledMatchArm.patterns to CompiledPattern.
+                    let tag_patterns: Vec<String> = arm
+                        .patterns
+                        .iter()
+                        .map(|p| match p {
+                            reify_ast::MatchPattern::Wildcard => "_".to_string(),
+                            reify_ast::MatchPattern::Variant(n) => n.clone(),
+                            reify_ast::MatchPattern::VariantBind { name, .. } => {
+                                name.clone()
+                            }
+                        })
+                        .collect();
                     reify_ir::CompiledMatchArm {
-                        patterns: arm.patterns.clone(),
+                        patterns: tag_patterns,
                         body,
                     }
                 })
@@ -4086,6 +4100,76 @@ pub structure Rack {
             errors2[0].message.contains("not yet supported"),
             "TraitMethodCall: expected 'not yet supported' in diagnostic, got: {:?}",
             errors2[0].message
+        );
+    }
+
+    /// β-bridge contract: the lossy pattern mapping in the match compiler correctly
+    /// maps `MatchPattern::Wildcard` → `"_"` and
+    /// `MatchPattern::VariantBind { name, .. }` → `name` (binders dropped).
+    ///
+    /// These two branches are the new β additions; `MatchPattern::Variant` is already
+    /// exercised by existing compiler tests (constructor_hash_tests, geometry tests).
+    /// This test pins the bridge so a regression — e.g. accidentally emitting binders
+    /// or the wrong tag — would be caught before silently breaking exhaustiveness
+    /// checking or variant-validation downstream.
+    #[test]
+    fn beta_bridge_wildcard_and_variantbind_produce_correct_tag_patterns() {
+        use reify_ir::CompiledExprKind;
+
+        let sp = SourceSpan::prelude();
+        let num = |v: f64| reify_ast::Expr {
+            kind: reify_ast::ExprKind::NumberLiteral {
+                value: v,
+                is_real: false,
+            },
+            span: sp,
+        };
+
+        let arms = vec![
+            // arm0: Wildcard → compiled pattern tag must be "_"
+            reify_ast::MatchArm {
+                patterns: vec![reify_ast::MatchPattern::Wildcard],
+                body: num(0.0),
+                span: sp,
+            },
+            // arm1: VariantBind → compiled pattern tag must be "Circle" (binders dropped)
+            reify_ast::MatchArm {
+                patterns: vec![reify_ast::MatchPattern::VariantBind {
+                    name: "Circle".to_string(),
+                    binders: vec![("radius".to_string(), "r".to_string())],
+                }],
+                body: num(1.0),
+                span: sp,
+            },
+        ];
+        let expr = reify_ast::Expr {
+            kind: reify_ast::ExprKind::Match {
+                discriminant: Box::new(num(0.0)),
+                arms,
+            },
+            span: sp,
+        };
+
+        let scope = CompilationScope::new("S");
+        let mut diags: Vec<Diagnostic> = vec![];
+        let result = compile_expr(&expr, &scope, &[], &[], &mut diags);
+
+        let CompiledExprKind::Match { arms: compiled_arms, .. } = &result.kind else {
+            panic!("expected CompiledExprKind::Match, got: {:?}", result.kind);
+        };
+        assert_eq!(compiled_arms.len(), 2);
+        assert_eq!(
+            compiled_arms[0].patterns,
+            vec!["_".to_string()],
+            "Wildcard should produce tag \"_\", got: {:?}",
+            compiled_arms[0].patterns,
+        );
+        assert_eq!(
+            compiled_arms[1].patterns,
+            vec!["Circle".to_string()],
+            "VariantBind {{ name: \"Circle\", .. }} should produce tag \"Circle\" (binders dropped), \
+             got: {:?}",
+            compiled_arms[1].patterns,
         );
     }
 }

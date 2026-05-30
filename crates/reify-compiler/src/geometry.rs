@@ -2689,7 +2689,9 @@ mod tests {
             .into_iter()
             .enumerate()
             .map(|(i, body)| reify_ast::MatchArm {
-                patterns: vec![pattern_names[i % pattern_names.len()].to_string()],
+                patterns: vec![reify_ast::MatchPattern::Variant(
+                    pattern_names[i % pattern_names.len()].to_string(),
+                )],
                 body,
                 span: reify_core::SourceSpan::new(0, 1),
             })

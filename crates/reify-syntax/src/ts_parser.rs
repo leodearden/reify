@@ -2749,19 +2749,49 @@ impl<'a> Lowering<'a> {
 
         let body = self.lower_expr(body_node)?;
 
-        // Collect patterns from the match_pattern node.
-        // Pattern is either '_' (wildcard) or one or more identifiers separated by '|'.
-        let mut patterns = Vec::new();
+        // Collect structured MatchPattern values from the match_pattern node.
+        // Choices:
+        //   '_'                              → [Wildcard]
+        //   variant_binding_pattern child    → [VariantBind { name, binders }]
+        //   identifier(s) separated by '|'  → [Variant(n), ...] one per identifier
+        let mut patterns: Vec<MatchPattern> = Vec::new();
         let pattern_text = self.node_text(pattern_node).trim();
 
         if pattern_text == "_" {
-            patterns.push("_".to_string());
+            patterns.push(MatchPattern::Wildcard);
         } else {
-            // Iterate named children (identifiers) of the match_pattern node
             let mut cursor = pattern_node.walk();
             for child in pattern_node.children(&mut cursor) {
-                if child.kind() == "identifier" {
-                    patterns.push(self.node_text(child).to_string());
+                match child.kind() {
+                    "variant_binding_pattern" => {
+                        // Named-field payload binding: `Circle { radius: r }`.
+                        let variant_node =
+                            child.child_by_field_name("variant")?;
+                        let name = self.node_text(variant_node).to_string();
+
+                        // Collect (field, binder) pairs from field_binding children.
+                        let mut binders: Vec<(String, String)> = Vec::new();
+                        let mut fb_cursor = child.walk();
+                        for fb_child in child.children(&mut fb_cursor) {
+                            if fb_child.kind() == "field_binding" {
+                                let field_node =
+                                    fb_child.child_by_field_name("field")?;
+                                let binder_node =
+                                    fb_child.child_by_field_name("binder")?;
+                                binders.push((
+                                    self.node_text(field_node).to_string(),
+                                    self.node_text(binder_node).to_string(),
+                                ));
+                            }
+                        }
+                        patterns.push(MatchPattern::VariantBind { name, binders });
+                    }
+                    "identifier" => {
+                        patterns.push(MatchPattern::Variant(
+                            self.node_text(child).to_string(),
+                        ));
+                    }
+                    _ => {}
                 }
             }
         }
@@ -2803,16 +2833,40 @@ impl<'a> Lowering<'a> {
                 match self.lower_match_arm_decl_arm(child) {
                     Some(arm) => arms.push(arm),
                     None if !child.has_error() => {
-                        // Arm has no CST error but lowering failed — grammar/lowering
-                        // mismatch.  Push a diagnostic so the mismatch surfaces rather
-                        // than producing a silent non-exhaustive match.
-                        self.push_error(
-                            format!(
-                                "unable to lower match arm: {}",
-                                self.node_text(child)
-                            ),
-                            self.span(child),
-                        );
+                        // Check whether the pattern contains a variant_binding_pattern
+                        // (e.g. `Circle { radius: r } => sub x : Foo`).  The broadened
+                        // grammar accepts this form at the decl level, but decl-level
+                        // named-field binding is out of scope for β — emit a targeted
+                        // message rather than the generic lowering-mismatch fallback.
+                        let has_named_bind = child
+                            .child_by_field_name("pattern")
+                            .map(|pattern_node| {
+                                let mut c = pattern_node.walk();
+                                pattern_node
+                                    .children(&mut c)
+                                    .any(|ch| ch.kind() == "variant_binding_pattern")
+                            })
+                            .unwrap_or(false);
+
+                        if has_named_bind {
+                            self.push_error(
+                                "named-field binding patterns are not supported in \
+                                 decl-level match arms"
+                                    .to_string(),
+                                self.span(child),
+                            );
+                        } else {
+                            // Arm has no CST error but lowering failed — grammar/lowering
+                            // mismatch.  Push a diagnostic so the mismatch surfaces rather
+                            // than producing a silent non-exhaustive match.
+                            self.push_error(
+                                format!(
+                                    "unable to lower match arm: {}",
+                                    self.node_text(child)
+                                ),
+                                self.span(child),
+                            );
+                        }
                     }
                     None => {} // child.has_error() — already caught by check_and_lower! at dispatch
                 }

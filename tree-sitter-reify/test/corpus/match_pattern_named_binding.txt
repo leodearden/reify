@@ -1,0 +1,70 @@
+================================================================================
+dce-4-namedbind: named-field payload binding in match arms
+================================================================================
+
+structure W {
+  let area = match outline { Point => 0mm, Circle { radius: r } => r, Rect { width: w, height: h } => w }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (match_expression
+        discriminant: (identifier)
+        (match_arm
+          pattern: (match_pattern
+            (identifier))
+          body: (quantity_literal
+            value: (number_literal)
+            unit: (unit_expr
+              (unit_name))))
+        (match_arm
+          pattern: (match_pattern
+            (variant_binding_pattern
+              variant: (identifier)
+              (field_binding
+                field: (identifier)
+                binder: (identifier))))
+          body: (identifier))
+        (match_arm
+          pattern: (match_pattern
+            (variant_binding_pattern
+              variant: (identifier)
+              (field_binding
+                field: (identifier)
+                binder: (identifier))
+              (field_binding
+                field: (identifier)
+                binder: (identifier))))
+          body: (identifier))))))
+
+================================================================================
+dce-0-baseline: bare and pipe match arms (regression floor)
+================================================================================
+
+structure S {
+  let x = match d { In => 1, Out | Bidi => 2 }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (match_expression
+        discriminant: (identifier)
+        (match_arm
+          pattern: (match_pattern
+            (identifier))
+          body: (number_literal))
+        (match_arm
+          pattern: (match_pattern
+            (identifier)
+            (identifier))
+          body: (number_literal))))))

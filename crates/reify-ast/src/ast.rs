@@ -150,10 +150,33 @@ pub enum UnitExpr {
     Pow(Box<UnitExpr>, i32),
 }
 
+/// A single alternative in a match pattern.
+///
+/// Mirrors the PRD §7.1 IR `CompiledPattern` shape so γ/ε get a 1:1 lowering
+/// target.  The outer `Vec<MatchPattern>` in `MatchArm.patterns` still encodes
+/// pipe-alternation (each alternative is a `Variant`) and the wildcard (a
+/// single `Wildcard` element).
+///
+/// `VariantBind` binders are dropped at the reify-compiler β boundary
+/// (lossy bridge); γ/ε/ζ widen `CompiledMatchArm` to carry them.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MatchPattern {
+    /// `_` wildcard arm.
+    Wildcard,
+    /// A bare variant name: `In`, `Circle`, etc.
+    Variant(String),
+    /// A named-field payload-binding pattern: `Circle { radius: r }`.
+    /// `binders` is ordered by source declaration order.
+    VariantBind {
+        name: String,
+        binders: Vec<(String, String)>,
+    },
+}
+
 /// A match arm: `Pattern1 | Pattern2 => body`
 #[derive(Debug, Clone, PartialEq)]
 pub struct MatchArm {
-    pub patterns: Vec<String>,
+    pub patterns: Vec<MatchPattern>,
     pub body: Expr,
     pub span: SourceSpan,
 }
