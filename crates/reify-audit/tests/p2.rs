@@ -1098,6 +1098,197 @@ mod tests {
         assert!(!summary.contains("line 101"), "doc-comment line 101 must NOT appear in summary; got: {summary}");
     }
 
+    /// Regression guard: `#[cfg(not(test))]` must NOT trigger the inline-test gate.
+    ///
+    /// `#[cfg(not(test))]` is a production-only guard — code following it compiles
+    /// ONLY when not running under the test harness. It must NOT suppress subsequent
+    /// stub markers; those are genuine production stubs that P2 should flag.
+    ///
+    /// Before the fix the gate predicate was `starts_with("#[cfg(") && contains("test")`,
+    /// which blindly matched `not(test)` and permanently suppressed all lines after it.
+    #[test]
+    fn cfg_not_test_does_not_suppress_production_stubs() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let task_id = "9205";
+        let path = "crates/x/prod_guarded.rs";
+
+        let mut git = MockGitOps::new();
+        git.set_diff_added_lines(
+            "main",
+            &format!("task/{}", task_id),
+            path,
+            vec![
+                // production-only guard — must NOT suppress the stub that follows
+                (10, "#[cfg(not(test))]".to_string()),
+                (11, "    unimplemented!() // production stub after not(test)".to_string()),
+            ],
+        );
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(task_id.to_string(), benign_meta(task_id, vec![path.to_string()]));
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p2_consumer_stub::check(&ctx);
+        assert_eq!(
+            findings.len(), 1,
+            "#[cfg(not(test))] must NOT suppress the production stub at line 11; got {:?}",
+            findings
+        );
+        assert!(
+            findings[0].summary.contains("line 11"),
+            "production stub at line 11 must appear in summary; got: {}",
+            findings[0].summary
+        );
+    }
+
+    /// Pins the deliberate exclusion of `.py` and other non-allowlist extensions.
+    ///
+    /// P2 scanning is restricted to `.rs`/`.ts`/`.tsx`/`.js`/`.jsx` by `is_code_ext`.
+    /// This test documents that `.py` (e.g. vendored sandbox helpers) and `.sh`
+    /// exclusion is intentional — updating the extension set requires updating this
+    /// test alongside `is_code_ext`, making the decision discoverable.
+    #[test]
+    fn python_and_other_extensions_excluded() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let task_id = "9206";
+        let task_branch = format!("task/{}", task_id);
+
+        let mut git = MockGitOps::new();
+        // .py: vendored sandbox helper with a stub-like raise — excluded
+        git.set_diff_added_lines("main", &task_branch,
+            "gui/src-tauri/sandbox/landlock.py",
+            vec![(5, "    raise NotImplementedError('TODO(pending)')".to_string())]);
+        // .sh: build script — excluded
+        git.set_diff_added_lines("main", &task_branch,
+            "scripts/build.sh",
+            vec![(3, "    unimplemented!()".to_string())]);
+        // .rs: production code — must be flagged (control)
+        git.set_diff_added_lines("main", &task_branch,
+            "crates/x/real.rs",
+            vec![(1, "    unimplemented!()".to_string())]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(task_id.to_string(), benign_meta(task_id, vec![
+            "gui/src-tauri/sandbox/landlock.py".to_string(),
+            "scripts/build.sh".to_string(),
+            "crates/x/real.rs".to_string(),
+        ]));
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p2_consumer_stub::check(&ctx);
+        assert_eq!(
+            findings.len(), 1,
+            "only the .rs path must produce a finding; .py/.sh must be excluded; got {:?}",
+            findings
+        );
+        assert!(findings[0].evidence.iter().any(|e| match e {
+            EvidenceRef::File { path } => path == "crates/x/real.rs", _ => false,
+        }), "the single finding must reference the .rs path; got {:?}", findings[0].evidence);
+        assert!(!findings[0].evidence.iter().any(|e| match e {
+            EvidenceRef::File { path } => path.ends_with(".py"), _ => false,
+        }), ".py path must not appear in findings");
+        assert!(!findings[0].evidence.iter().any(|e| match e {
+            EvidenceRef::File { path } => path.ends_with(".sh"), _ => false,
+        }), ".sh path must not appear in findings");
+    }
+
+    /// Verify that `Severity::Low` is preserved through de-dup when the winning
+    /// (introducer) task's title signals a stub.
+    ///
+    /// Task 8001 (done_at=50, title contains "stub") is the introducer and
+    /// would individually yield Severity::Low.  Task 8002 (done_at=200, benign
+    /// title) is the later task and would yield Severity::Medium.  After de-dup
+    /// the single finding must carry Severity::Low, attributed to task 8001.
+    /// This pins the Phase-4 severity lookup path through the winning task's
+    /// `title_signals_stub` branch.
+    #[test]
+    fn low_severity_preserved_after_dedup() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let path = "crates/shared/stub_module.rs";
+        let shared_line = (10usize, "    unimplemented!()".to_string());
+
+        let mut git = MockGitOps::new();
+        // Task 8001: earliest done_at → the introducer; stub-signaling title → Low.
+        git.set_diff_added_lines("main", "task/8001", path, vec![shared_line.clone()]);
+        // Task 8002: later done_at → NOT the introducer; benign title → would be Medium.
+        git.set_diff_added_lines("main", "task/8002", path, vec![shared_line.clone()]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert("8001".to_string(), TaskMetadata {
+            task_id: "8001".to_string(),
+            status: "done".to_string(),
+            files: vec![path.to_string()],
+            done_provenance: None,
+            title: "Add stub for new subsystem".to_string(), // signals "stub" → Low
+            prd: None,
+            consumer_ref: None,
+            audit_foundation: None,
+            done_at: Some(50), // earliest → the introducer
+        });
+        task_metadata.insert("8002".to_string(), TaskMetadata {
+            task_id: "8002".to_string(),
+            status: "done".to_string(),
+            files: vec![path.to_string()],
+            done_provenance: None,
+            title: "Wire foo into bar".to_string(), // benign → would be Medium
+            prd: None,
+            consumer_ref: None,
+            audit_foundation: None,
+            done_at: Some(200), // later → NOT the introducer
+        });
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p2_consumer_stub::check(&ctx);
+        assert_eq!(findings.len(), 1,
+            "expected exactly 1 finding after de-dup; got {:?}", findings);
+        let f = &findings[0];
+        assert_eq!(f.task_id, "8001",
+            "finding must be attributed to introducer 8001 (done_at=50); got: {:?}", f.task_id);
+        assert_eq!(f.severity, Severity::Low,
+            "introducer's stub-signaling title must yield Severity::Low after dedup; got: {:?}",
+            f.severity);
+        assert_eq!(f.pattern, Pattern::P2ConsumerStub);
+        assert!(f.evidence.iter().any(|e| match e {
+            EvidenceRef::File { path: p } => p == path, _ => false,
+        }), "finding must reference the shared path; got {:?}", f.evidence);
+    }
+
 } // mod tests
 
 } // mod p2

@@ -109,21 +109,79 @@ fn is_code_ext(path: &str) -> bool {
         || lower.ends_with(".jsx")
 }
 
+/// Returns `true` when `trimmed_lower` (already lowercased, leading whitespace
+/// stripped) is a `#[cfg(...)]` attribute that enables a **test-only** code path.
+///
+/// Matches:
+/// - `#[cfg(test)]`
+/// - `#[cfg(any(test, ...))]`
+/// - `#[cfg(feature = "test-...")]` (feature name starting with "test")
+///
+/// Does **not** match:
+/// - `#[cfg(not(test))]` — production-only guard; explicitly excluded so that
+///   genuine production stubs following such an attribute are still flagged.
+/// - Attributes where "test" appears only as a substring of another word in a
+///   feature name, e.g. `#[cfg(feature = "fastest")]`: the token-boundary check
+///   requires `test` to be preceded by `(`, `,`, or space on the left and
+///   followed by `)`, `,`, or space on the right.
+fn is_test_cfg_attr(trimmed_lower: &str) -> bool {
+    if !trimmed_lower.starts_with("#[cfg(") {
+        return false;
+    }
+    // #[cfg(not(test))] guards production-only code — must NOT suppress.
+    if trimmed_lower.contains("not(test") {
+        return false;
+    }
+    // Token-boundary check: "test" must appear as a standalone cfg-predicate
+    // identifier, not as a substring of another word (e.g. "fastest").
+    // Valid left boundaries: '(', ',', ' '.
+    // Valid right boundaries: ')', ',', ' '.
+    let b = trimmed_lower.as_bytes();
+    let pat = b"test";
+    let mut i = 0;
+    while i + 4 <= b.len() {
+        if &b[i..i + 4] == pat {
+            let left_ok = i == 0 || matches!(b[i - 1], b'(' | b',' | b' ');
+            let right_ok = i + 4 == b.len() || matches!(b[i + 4], b')' | b',' | b' ');
+            if left_ok && right_ok {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    // Also match feature="test-..." (feature name starting with "test", with or
+    // without spaces around `=`), e.g. #[cfg(feature="test-support")].
+    trimmed_lower.contains("feature = \"test") || trimmed_lower.contains("feature=\"test")
+}
+
 /// Scan a single file's added-line stream for stub markers, returning
 /// `(line_no, content, label)` for each match.
 ///
 /// Implements positional `#[cfg(test)]` gating: once a line whose trimmed
-/// form starts with `#[cfg(` AND contains `test` is seen, all subsequent
-/// lines in that file's stream are suppressed. Lines before the gate are
-/// still flagged (genuine production stubs). Safe because diff_added_lines
+/// form is recognised as a test-cfg attribute (see [`is_test_cfg_attr`]), all
+/// subsequent lines in that file's stream are suppressed. Lines before the gate
+/// are still flagged (genuine production stubs). Safe because `diff_added_lines`
 /// returns lines in file order and Rust convention places test modules last.
+///
+/// `#[cfg(not(test))]` (production-only guard) does **not** trigger the gate,
+/// so genuine production stubs following it remain detected.
+///
+/// # Known limitation
+///
+/// The gate fires only when the `#[cfg(test)]` attribute line itself appears
+/// among the *added* lines. If a task adds stub lines inside a **pre-existing**
+/// inline test module (the `#[cfg(test)]` was already on `main` and thus not
+/// in the diff), the gate never engages and those test-only stubs may be
+/// reported as production stubs. `is_test_path` only protects dedicated test
+/// files, not inline test modules in production `.rs` files. Accepted v1
+/// behaviour; a full fix would require scanning the unmodified file head.
 fn scan_file_added_lines(added: &[(usize, String)]) -> Vec<(usize, String, &'static str)> {
     let mut result = Vec::new();
     let mut in_cfg_test = false;
     for (line_no, content) in added {
         if !in_cfg_test {
             let trimmed_lower = content.trim_start().to_lowercase();
-            if trimmed_lower.starts_with("#[cfg(") && content.to_lowercase().contains("test") {
+            if is_test_cfg_attr(&trimmed_lower) {
                 in_cfg_test = true;
                 continue;
             }
