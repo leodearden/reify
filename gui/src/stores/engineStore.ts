@@ -227,6 +227,9 @@ export function createEngineStore(options?: EngineStoreOptions) {
     setState(produce((s) => {
       s.solverProgress.latest = p;
       s.solverProgress.trace.push(p);
+      if (!s.solverProgress.coarseReached && p.residual < 1e-2) {
+        s.solverProgress.coarseReached = true;
+      }
     }));
     if (debounceHandle === null && !state.solverProgress.visible) {
       debounceHandle = setTimeout(() => {
