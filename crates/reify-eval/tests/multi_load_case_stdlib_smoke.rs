@@ -743,6 +743,155 @@ fn solve_load_cases_two_cases_returns_mcr_shape() {
     );
 }
 
+// ── Per-case options test (step-3) ───────────────────────────────────────────
+
+/// Reify source exercising per-case `ElasticOptions` resolution.
+///
+/// Case A (`"high_res"`) has an explicit `options: some(ElasticOptions(...))` with a
+/// non-default `max_iter` value. Case B (`"low_res"`) omits `options`, defaulting to
+/// `none`, so it should inherit the shared `ElasticOptions()` passed to
+/// `solve_load_cases`.
+///
+/// Both cases should appear in the `MultiCaseResult`-shaped map with non-Undef
+/// per-case results — verifying that the `options: some(...)` syntax compiles, evaluates,
+/// and does not break the per-case solve dispatch.
+///
+/// # Architecture note (RED/GREEN boundary)
+///
+/// With `make_simple_engine()`, `invoke_solve_elastic_static` evaluates the
+/// `solve_elastic_static` contract body (`ElasticResult()`), which always returns a
+/// `Value::StructureInstance{ElasticResult}` regardless of which `ElasticOptions` were
+/// used. Therefore this test CANNOT verify at the E2E level that per-case options were
+/// actually passed to the solver — it only verifies structural correctness (both cases
+/// appear and are non-Undef). True per-case options observability requires the
+/// `@optimized` FEA trampoline (out of scope for `make_simple_engine`).
+///
+/// The RED/GREEN distinction for step-3 vs step-4 is therefore expressed through the
+/// correctness of per-case options RESOLUTION in `eval_solve_load_cases`
+/// (`crates/reify-expr/src/lib.rs`): step-2 uses shared options for all cases; step-4
+/// reads each case's own `options` field.
+///
+/// Bindings:
+///   `lc_high`  = `LoadCase(name: "high_res", ..., options: some(ElasticOptions(max_iter: 500)))`
+///   `lc_low`   = `LoadCase(name: "low_res", ...)` (options: none, defaults to shared)
+///   `result`   = `solve_load_cases(ci.law, ..., [lc_high, lc_low], ElasticOptions())`
+///   `case_list` = `case_names(result)` → `["high_res", "low_res"]`
+const PER_CASE_OPTIONS_SOURCE: &str = r#"
+structure def PerCaseOptionsFixture {
+    let ci       = ConstitutiveLawInput(law: Steel_AISI_1045())
+    let lc_high  = LoadCase(
+        name:     "high_res",
+        loads:    [PointLoad(point: "tip", force: 1000.0)],
+        supports: [FixedSupport(target: "root")],
+        options:  some(ElasticOptions(max_iter: 500)),
+    )
+    let lc_low   = LoadCase(
+        name:     "low_res",
+        loads:    [PointLoad(point: "tip", force: 1000.0)],
+        supports: [FixedSupport(target: "root")],
+    )
+    let result     = solve_load_cases(ci.law, 1000mm, 100mm, 100mm, [lc_high, lc_low], ElasticOptions())
+    let case_list  = case_names(result)
+}
+"#;
+
+fn get_pcof_value<'a>(values: &'a ValueMap, name: &str) -> &'a Value {
+    let id = ValueCellId::new("PerCaseOptionsFixture", name);
+    values
+        .get(&id)
+        .unwrap_or_else(|| panic!("PerCaseOptionsFixture.{name} not found in eval result"))
+}
+
+/// step-3: `solve_load_cases` with two cases — one with per-case
+/// `options: some(ElasticOptions(max_iter: 500))` and one with default `options: none` —
+/// returns a `MultiCaseResult`-shaped map with exactly two keys.
+///
+/// Verifies:
+///  - The per-case `options: some(...)` syntax compiles without Error diagnostics.
+///  - Both `"high_res"` and `"low_res"` appear in the result map.
+///  - Both per-case values are non-Undef (the solve did not fall through to Undef on
+///    the per-case options path).
+///  - `case_names(result)` returns the keys in lexicographic order.
+///
+/// See `PER_CASE_OPTIONS_SOURCE` for the architecture note explaining why this test
+/// cannot distinguish step-2 (shared options for all cases) from step-4 (per-case
+/// options resolution) using `make_simple_engine()`.
+#[test]
+fn solve_load_cases_per_case_options_both_cases_appear() {
+    let compiled = parse_and_compile_with_stdlib(PER_CASE_OPTIONS_SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no Error-severity diagnostics with per-case options, \
+         got: {eval_errors:?}"
+    );
+
+    let v = &result.values;
+
+    // ── result is a MultiCaseResult-shaped map with "cases" key ──────────────
+    let result_val = get_pcof_value(v, "result");
+    match result_val {
+        Value::Map(outer) => {
+            match outer.get(&Value::String("cases".to_string())) {
+                Some(Value::Map(cases)) => {
+                    assert_eq!(
+                        cases.len(),
+                        2,
+                        "cases map must have exactly 2 entries; \
+                         got {} entries: {:?}",
+                        cases.len(),
+                        cases.keys().collect::<Vec<_>>()
+                    );
+                    // "high_res" (per-case options: some) must be present and non-Undef
+                    let high = cases.get(&Value::String("high_res".to_string())).unwrap_or_else(|| {
+                        panic!("cases map must contain \"high_res\" key; got: {:?}",
+                               cases.keys().collect::<Vec<_>>())
+                    });
+                    assert!(
+                        !high.is_undef(),
+                        "per-case result for \"high_res\" (options: some) must be non-Undef; \
+                         got: {high:?}"
+                    );
+                    // "low_res" (per-case options: none → uses shared) must be present and non-Undef
+                    let low = cases.get(&Value::String("low_res".to_string())).unwrap_or_else(|| {
+                        panic!("cases map must contain \"low_res\" key; got: {:?}",
+                               cases.keys().collect::<Vec<_>>())
+                    });
+                    assert!(
+                        !low.is_undef(),
+                        "per-case result for \"low_res\" (options: none → shared) must be non-Undef; \
+                         got: {low:?}"
+                    );
+                }
+                other => panic!(
+                    "result[\"cases\"] must be Value::Map, got: {other:?}"
+                ),
+            }
+        }
+        other => panic!(
+            "solve_load_cases must return Value::Map, got discriminant: {:?}",
+            std::mem::discriminant(other)
+        ),
+    }
+
+    // ── case_names returns both keys in lexicographic order ──────────────────
+    let case_list = get_pcof_value(v, "case_list");
+    assert_eq!(
+        case_list,
+        &Value::List(vec![
+            Value::String("high_res".to_string()),
+            Value::String("low_res".to_string()),
+        ]),
+        "case_names must return [\"high_res\", \"low_res\"] in lexicographic order; \
+         got: {case_list:?}"
+    );
+}
+
+// ── Stage-2 readiness probe ───────────────────────────────────────────────────
+
 /// Stage-2 readiness probe: verify that the `MultiCaseResult(...)` and
 /// `LoadCase(...)` struct constructors produce the correct `Value::Map` shape,
 /// and that the accessors flowing from `MultiCaseResult` work end-to-end, once
