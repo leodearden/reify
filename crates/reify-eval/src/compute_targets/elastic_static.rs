@@ -258,11 +258,11 @@ pub fn solve_elastic_static_trampoline(
 /// # Contract
 ///
 /// - `None`   → `Value::Undef` (I-3 honest absence: tet/solid results carry no
-///               through-thickness channels — PRD DR-3).
+///   through-thickness channels — PRD DR-3).
 /// - `Some(ch)` → a `ShellStress`-shaped `Value::StructureInstance` with three
-///               fields:
+///   fields:
 ///   - `mid`    = `mid_stress.clone()` — I-2 invariant: `shell_channels.mid ==
-///               ElasticResult.stress` by construction.
+///     `ElasticResult.stress` by construction.
 ///   - `top`    = `mid_stress` metadata with `data` replaced by `ch.top`.
 ///   - `bottom` = `mid_stress` metadata with `data` replaced by `ch.bottom`.
 ///
@@ -319,26 +319,25 @@ fn build_channel_field(template: &Value, data: Vec<f64>, name: &str) -> Value {
         source: FieldSourceKind::Sampled,
         lambda,
     } = template
+        && let Value::SampledField(ref sf) = **lambda
     {
-        if let Value::SampledField(ref sf) = **lambda {
-            let channel_sf = SampledField {
-                name: name.to_string(),
-                kind: sf.kind,
-                bounds_min: sf.bounds_min.clone(),
-                bounds_max: sf.bounds_max.clone(),
-                spacing: sf.spacing.clone(),
-                axis_grids: sf.axis_grids.clone(),
-                interpolation: sf.interpolation,
-                data,
-                oob_emitted: AtomicBool::new(false),
-            };
-            return Value::Field {
-                domain_type: domain_type.clone(),
-                codomain_type: codomain_type.clone(),
-                source: FieldSourceKind::Sampled,
-                lambda: Arc::new(Value::SampledField(channel_sf)),
-            };
-        }
+        let channel_sf = SampledField {
+            name: name.to_string(),
+            kind: sf.kind,
+            bounds_min: sf.bounds_min.clone(),
+            bounds_max: sf.bounds_max.clone(),
+            spacing: sf.spacing.clone(),
+            axis_grids: sf.axis_grids.clone(),
+            interpolation: sf.interpolation,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        };
+        return Value::Field {
+            domain_type: domain_type.clone(),
+            codomain_type: codomain_type.clone(),
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(Value::SampledField(channel_sf)),
+        };
     }
     // Defensive fallback: template is not a Sampled field — wrap data in a
     // minimal 1D index-grid SampledField with Real domain/codomain.
