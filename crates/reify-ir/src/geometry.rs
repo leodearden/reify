@@ -111,7 +111,12 @@ pub enum ReprKind {
     /// `Default` is implemented with `BRep` as the `#[default]` variant
     /// (the v0.2 baseline) so that `strum::EnumIter` can synthesise the
     /// data-carrying `Operation::Convert { from: ReprKind }` variant via
-    /// `ReprKind::default()` when iterating over `Operation` variants.
+    /// `ReprKind::default()` when iterating over `Operation` variants
+    /// (classifier completeness test, task 4049).
+    ///
+    /// **Do not use `ReprKind::default()` in production demand or kernel-
+    /// selection logic.** A silent default to BRep there would mask a
+    /// missing-repr case rather than surfacing it as a diagnostic.
     #[default]
     BRep,
     /// Surface mesh (triangle or quad mesh, e.g. Manifold).

@@ -966,13 +966,21 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
 /// variants once step-4 is landed; it exists to handle genuinely-new future
 /// variants conservatively until they are explicitly classified.
 ///
+/// **Intentional asymmetry with `compiled_geometry_op_to_operation`**: that
+/// function uses an exhaustive match (compile error on new variant), while this
+/// function uses a `_ => None` catch-all (runtime miss → conservative BRep,
+/// surfaced by the strum completeness test). Together they provide two
+/// independent forcing functions — compile-time for structural mapping,
+/// test-time for demand classification — so a new variant fails loudly on both
+/// axes without coupling the two concerns.
+///
 /// Table (PRD §3a.4):
 /// - Boolean* / Transform* / Pattern* → `[BRep, Mesh]`
 /// - Modify* / Sweep*                 → `[BRep]` (BRep-only consumers)
 /// - Convert { from }                 → `[BRep, Mesh]`
 /// - Primitive* / Curve*              → `[BRep]` (sources; classified to
 ///   document the 'not a Mesh-accepting consumer' decision; step-4 adds arms)
-#[allow(dead_code)] // production wiring blocked on consumer task φ (task 4049 follow-up)
+#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
 fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
     use Operation::*;
     use ReprKind::{BRep, Mesh};
@@ -1036,7 +1044,7 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
 /// Unclassified ops (`classify_op_input_reprs` returns `None`) return `false`,
 /// making them conservative: they do not accept Mesh, which forces their
 /// producers to demand BRep.
-#[allow(dead_code)] // production wiring blocked on consumer task φ (task 4049 follow-up)
+#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
 fn op_accepts_repr(op: &Operation, repr: ReprKind) -> bool {
     classify_op_input_reprs(op).is_some_and(|s| s.contains(&repr))
 }
@@ -1046,7 +1054,7 @@ fn op_accepts_repr(op: &Operation, repr: ReprKind) -> bool {
 /// Exhaustive match over `CompiledGeometryOp`/kind sub-enums so a new variant
 /// fails to compile until mapped — same discipline as `geometry_op_to_operation`
 /// at :902, but over the compiled-IR form rather than the runtime `GeometryOp`.
-#[allow(dead_code)] // production wiring blocked on consumer task φ (task 4049 follow-up)
+#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
 fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
     match op {
         CompiledGeometryOp::Primitive { kind, .. } => match kind {
@@ -1102,7 +1110,7 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
 }
 
 /// Collect all `GeomRef::Sub` operands referenced by a compiled geometry op.
-#[allow(dead_code)] // production wiring blocked on consumer task φ (task 4049 follow-up)
+#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
 fn sub_refs_in_op(op: &CompiledGeometryOp) -> Vec<&str> {
     let mut refs = Vec::new();
     match op {
@@ -1154,9 +1162,11 @@ impl Engine {
     /// **Consumer-edge encoding**: cross-realization dependencies are encoded
     /// as `GeomRef::Sub(name)` operands inside compiled ops; consumer edges are
     /// built by scanning ops and resolving name → realization index. Compound
-    /// `"sub.member"` names (cross-template, Task 3441) are treated
-    /// conservatively (BRep) — see step-8 for the debug log.
-    #[allow(dead_code)] // production wiring blocked on consumer task φ (task 4049 follow-up)
+    /// `"sub.member"` names (cross-template, Task 3441) are always routed to
+    /// the conservative path (BRep) regardless of whether the base component
+    /// coincidentally matches a local realization name — see step-8 for the
+    /// debug log.
+    #[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
     pub(crate) fn compute_demanded_reprs(
         &self,
         module: &CompiledModule,
@@ -1170,7 +1180,7 @@ impl Engine {
     }
 }
 
-#[allow(dead_code)] // production wiring blocked on consumer task φ (task 4049 follow-up)
+#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
 fn demanded_reprs_for_template(template: &TopologyTemplate, format: ExportFormat) -> Vec<ReprKind> {
     let n = template.realizations.len();
     if n == 0 {
@@ -1195,16 +1205,37 @@ fn demanded_reprs_for_template(template: &TopologyTemplate, format: ExportFormat
         for op in &realization.operations {
             let consuming_op = compiled_geometry_op_to_operation(op);
             for sub_name in sub_refs_in_op(op) {
-                // Strip compound "sub.member" to its base component.
-                let base = sub_name.split('.').next().unwrap_or(sub_name);
-                if let Some(&p_idx) = name_to_idx.get(base) {
+                if sub_name.contains('.') {
+                    // Compound "sub.member" names reference cross-template
+                    // producers (Task 3441). Always conservative: even if the
+                    // base component coincidentally matches a local realization
+                    // name, the producer being referenced is a different
+                    // template's output whose consumer requirements are unknown.
+                    conservative_producers[c_idx] = true;
+                    tracing::debug!(
+                        target: "reify_eval::demanded_reprs",
+                        unresolved_ref = sub_name,
+                        realization_idx = c_idx,
+                        "compound GeomRef::Sub '{}' in consumer realization \
+                         (cross-template, Task 3441); defaulting realization and \
+                         its producers to BRep demand (conservative)",
+                        sub_name
+                    );
+                } else if let Some(&p_idx) = name_to_idx.get(sub_name) {
+                    // Producer-before-consumer ordering: bindings reference only
+                    // earlier bindings, so c_idx must exceed p_idx. A violation
+                    // would yield an over-conservative result (demand[p_idx]
+                    // still BRep-default when the reverse pass reaches it).
+                    debug_assert!(
+                        c_idx > p_idx,
+                        "producer-before-consumer ordering violated: realization \
+                         {c_idx} (consumer) references realization {p_idx} \
+                         (producer) at same or earlier index; transitive demand \
+                         pass may produce over-conservative (BRep) results"
+                    );
                     consumer_ops[p_idx].push((c_idx, consuming_op));
                 } else {
-                    // Unresolved / cross-template reference: we cannot determine
-                    // what repr the absent downstream consumer requires, so we
-                    // must treat c_idx's operation conservatively (BRep).
-                    // We mark c_idx itself as a conservative producer so that
-                    // its own producers are also forced to BRep.
+                    // Unresolved: name absent from this template.
                     conservative_producers[c_idx] = true;
                     tracing::debug!(
                         target: "reify_eval::demanded_reprs",
@@ -1235,10 +1266,12 @@ fn demanded_reprs_for_template(template: &TopologyTemplate, format: ExportFormat
             };
         } else {
             // Non-terminal: Mesh unless a disqualifier forces BRep.
+            // `demand[*c_idx] == ReprKind::BRep` subsumes the conservative case:
+            // any c_idx with conservative_producers[c_idx]==true had demand[c_idx]
+            // set to BRep in the first branch above, and c_idx > r_idx so it was
+            // resolved before this point in the reverse pass.
             let needs_brep = consumer_ops[r_idx].iter().any(|(c_idx, op)| {
-                !op_accepts_repr(op, ReprKind::Mesh)
-                    || demand[*c_idx] == ReprKind::BRep
-                    || conservative_producers[*c_idx]
+                !op_accepts_repr(op, ReprKind::Mesh) || demand[*c_idx] == ReprKind::BRep
             });
             demand[r_idx] = if needs_brep {
                 ReprKind::BRep
