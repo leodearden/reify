@@ -489,7 +489,7 @@ structure def Glass : Insulating {
         1_000_000.0,
         0.0,
         DimensionVector::ELECTRIC_RESISTIVITY,
-    ); // resistivity > 1000000.0 * 1ohm * 1m
+    ); // resistivity > 1000000ohm*m
 }
 
 // ─── (g) assert_trait_constraint_binop accepts a compound-literal RHS ────────

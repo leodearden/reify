@@ -330,8 +330,14 @@ pub fn assert_trait_constraint_binop(
                 ExprKind::NumberLiteral { value: v, .. } => break *v,
                 // Compound unit literal (`0.0001ohm*m`, task ζ): the whole
                 // dimensioned RHS folds to a single QuantityLiteral whose
-                // `value` is the leading coefficient — equal to the SI value
-                // here because the migrated bounds use SI-factor-1 units.
+                // `value` is the leading coefficient. This helper compares
+                // COEFFICIENTS, not resolved SI values (mirroring the
+                // NumberLiteral path above); the two coincide here only
+                // because every current caller's unit has SI factor 1 (ohm,
+                // m). Foot-gun for a future caller: a scaled unit such as
+                // `1mm` or `1MPa` yields coefficient 1, NOT its SI magnitude
+                // (1e-3, 1e6), so pass `expected_rhs` as the coefficient, not
+                // the SI value, or this assertion will spuriously mismatch.
                 ExprKind::QuantityLiteral { value, .. } => break *value,
                 ExprKind::BinOp { op, left, .. }
                     if op.as_str() == "*" || op.as_str() == "/" =>
