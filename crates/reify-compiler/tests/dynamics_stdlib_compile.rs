@@ -131,3 +131,153 @@ fn mass_properties_has_mass_non_negativity_constraint() {
          but template.constraints is empty"
     );
 }
+
+// ─── JointForceValue trait ────────────────────────────────────────────────────
+
+#[test]
+fn joint_force_value_is_empty_marker_trait() {
+    let module = load_stdlib_module();
+    let trait_def = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "JointForceValue")
+        .expect("expected JointForceValue trait in std/dynamics");
+    assert!(
+        trait_def.required_members.is_empty() && trait_def.defaults.is_empty(),
+        "JointForceValue trait should be an empty marker (body intentionally \
+         empty; payload-carrying dispatch uses the SIR-α nominal type-tag), \
+         got requirements: {:?}, defaults: {:?}",
+        trait_def.required_members.iter().map(|r| &r.name).collect::<Vec<_>>(),
+        trait_def.defaults.iter().map(|d| &d.name).collect::<Vec<_>>(),
+    );
+}
+
+// ─── JointForceValue variants ─────────────────────────────────────────────────
+
+#[test]
+fn scalar_force_has_one_real_param_and_refines_joint_force_value() {
+    let template = find_structure("ScalarForce");
+    assert_eq!(
+        template.trait_bounds,
+        vec!["JointForceValue"],
+        "ScalarForce should conform to JointForceValue"
+    );
+    let params = param_cells(template);
+    assert_eq!(params.len(), 1, "ScalarForce should have exactly 1 param (magnitude)");
+    let mag = params[0];
+    assert_eq!(mag.id.member, "magnitude");
+    assert_eq!(mag.cell_type, Type::Real, "ScalarForce.magnitude should be Type::Real");
+}
+
+#[test]
+fn scalar_torque_has_one_real_param_and_refines_joint_force_value() {
+    let template = find_structure("ScalarTorque");
+    assert_eq!(
+        template.trait_bounds,
+        vec!["JointForceValue"],
+        "ScalarTorque should conform to JointForceValue"
+    );
+    let params = param_cells(template);
+    assert_eq!(params.len(), 1, "ScalarTorque should have exactly 1 param (magnitude)");
+    let mag = params[0];
+    assert_eq!(mag.id.member, "magnitude");
+    assert_eq!(mag.cell_type, Type::Real, "ScalarTorque.magnitude should be Type::Real");
+}
+
+#[test]
+fn cyl_force_has_list_real_param_and_refines_joint_force_value() {
+    let template = find_structure("CylForce");
+    assert_eq!(
+        template.trait_bounds,
+        vec!["JointForceValue"],
+        "CylForce should conform to JointForceValue"
+    );
+    let params = param_cells(template);
+    assert_eq!(params.len(), 1, "CylForce should have exactly 1 param (components)");
+    let comp = params[0];
+    assert_eq!(comp.id.member, "components");
+    assert_eq!(
+        comp.cell_type,
+        Type::List(Box::new(Type::Real)),
+        "CylForce.components should be Type::List(Real)"
+    );
+}
+
+#[test]
+fn planar_force_has_list_real_param_and_refines_joint_force_value() {
+    let template = find_structure("PlanarForce");
+    assert_eq!(
+        template.trait_bounds,
+        vec!["JointForceValue"],
+        "PlanarForce should conform to JointForceValue"
+    );
+    let params = param_cells(template);
+    assert_eq!(params.len(), 1, "PlanarForce should have exactly 1 param (components)");
+    assert_eq!(params[0].id.member, "components");
+    assert_eq!(
+        params[0].cell_type,
+        Type::List(Box::new(Type::Real)),
+        "PlanarForce.components should be Type::List(Real)"
+    );
+}
+
+#[test]
+fn sphere_force_has_list_real_param_and_refines_joint_force_value() {
+    let template = find_structure("SphereForce");
+    assert_eq!(
+        template.trait_bounds,
+        vec!["JointForceValue"],
+        "SphereForce should conform to JointForceValue"
+    );
+    let params = param_cells(template);
+    assert_eq!(params.len(), 1, "SphereForce should have exactly 1 param (components)");
+    assert_eq!(params[0].id.member, "components");
+    assert_eq!(
+        params[0].cell_type,
+        Type::List(Box::new(Type::Real)),
+        "SphereForce.components should be Type::List(Real)"
+    );
+}
+
+#[test]
+fn zero_force_has_no_params_and_refines_joint_force_value() {
+    let template = find_structure("ZeroForce");
+    assert_eq!(
+        template.trait_bounds,
+        vec!["JointForceValue"],
+        "ZeroForce should conform to JointForceValue"
+    );
+    let params = param_cells(template);
+    assert_eq!(
+        params.len(),
+        0,
+        "ZeroForce should have zero params (zero-DOF marker), got: {:?}",
+        params.iter().map(|p| &p.id.member).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn joint_force_has_joint_id_and_value_params() {
+    let template = find_structure("JointForce");
+    let params = param_cells(template);
+    assert_eq!(
+        params.len(),
+        2,
+        "JointForce should have exactly 2 params (joint_id, value), got: {:?}",
+        params.iter().map(|p| &p.id.member).collect::<Vec<_>>()
+    );
+    let joint_id = params.iter().find(|p| p.id.member == "joint_id")
+        .expect("JointForce missing param 'joint_id'");
+    assert_eq!(
+        joint_id.cell_type,
+        Type::Real,
+        "JointForce.joint_id should be Type::Real (BodyId placeholder)"
+    );
+    let value = params.iter().find(|p| p.id.member == "value")
+        .expect("JointForce missing param 'value'");
+    assert_eq!(
+        value.cell_type,
+        Type::TraitObject("JointForceValue".to_string()),
+        "JointForce.value should be Type::TraitObject(\"JointForceValue\")"
+    );
+}
