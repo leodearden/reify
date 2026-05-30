@@ -10730,4 +10730,157 @@ mod tests {
             diagnostics[0].message
         );
     }
+
+    // ── step-1 (task 3619): adjacent_faces dispatch RED unit tests ───────────
+    //
+    // These tests are RED because the current arm returns Value::List(Value::Int)
+    // via dispatch_filtered_list instead of Value::List(Value::GeometryHandle).
+
+    /// `adjacent_faces` dispatch returns `Value::List` of one
+    /// `Value::GeometryHandle` when the mock kernel returns the adjacent face
+    /// at index 0. The element must carry the parent's `realization_ref` and
+    /// an `upstream_values_hash` equal to
+    /// `compose_sub_handle_hash(parent_hash, SubKind::Face, 0)`.
+    #[test]
+    fn adjacent_faces_dispatch_returns_geometry_handle_list() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+
+        let parent_handle = GeometryHandleId(1);
+        let parent_rr = RealizationNodeId::new("Solid", 0);
+        let parent_hash: [u8; 32] = [0x77; 32];
+
+        // args[0]: parent solid; args[1]: face sub-handle (same handle in mock)
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_faces(parent_handle, vec![GeometryHandleId(1)])
+            .with_adjacent_faces_result(
+                parent_handle,
+                0,
+                reify_ir::Value::List(vec![reify_ir::Value::Int(0)]),
+            );
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("b".to_string(), parent_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        // Seed parent solid (args[0])
+        values.insert(
+            ValueCellId::new("Solid", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: parent_handle,
+            },
+        );
+        // Seed face arg (args[1]) — same kernel handle for the mock
+        values.insert(
+            ValueCellId::new("Solid", "face"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: parent_handle,
+            },
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "adjacent_faces",
+            "Solid",
+            "b",
+            Type::Geometry,
+            "face",
+            Type::Geometry,
+            Type::List(Box::new(Type::Geometry)),
+        );
+        let mut diagnostics = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let list = match result {
+            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+            other => panic!(
+                "expected Some(Value::List(..)), got {:?}; diagnostics: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(list.len(), 1, "expected 1 adjacent face sub-handle; diags: {:?}", diagnostics);
+
+        let expected_hash = crate::topology_selectors::compose_sub_handle_hash(
+            &parent_hash,
+            crate::topology_selectors::SubKind::Face,
+            0,
+        );
+        match &list[0] {
+            reify_ir::Value::GeometryHandle { realization_ref, upstream_values_hash, kernel_handle } => {
+                assert_eq!(realization_ref.entity, parent_rr.entity, "realization_ref.entity must match parent");
+                assert_eq!(realization_ref.index, parent_rr.index, "realization_ref.index must match parent");
+                assert_eq!(*kernel_handle, GeometryHandleId(1), "kernel_handle must be GHId(1)");
+                assert_eq!(*upstream_values_hash, expected_hash, "upstream_values_hash must be compose_sub_handle_hash(parent_hash, Face, 0)");
+            }
+            other => panic!("elem[0] is not Value::GeometryHandle: {:?}", other),
+        }
+    }
+
+    /// When args[1]'s cell is absent from `values`, the `adjacent_faces` arm
+    /// must fall through to `None` (PRD invariant #2: never partial-construct).
+    #[test]
+    fn adjacent_faces_dispatch_falls_through_when_face_arg_not_hydrated() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+
+        let parent_handle = GeometryHandleId(1);
+        let parent_rr = RealizationNodeId::new("Solid", 0);
+        let parent_hash: [u8; 32] = [0x77; 32];
+
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_faces(parent_handle, vec![GeometryHandleId(1)]);
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("b".to_string(), parent_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        // Only the parent is seeded; the face cell is absent
+        values.insert(
+            ValueCellId::new("Solid", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: parent_handle,
+            },
+        );
+        // "face" cell intentionally absent from values
+
+        let expr = topology_selector_call_two_value_refs(
+            "adjacent_faces",
+            "Solid",
+            "b",
+            Type::Geometry,
+            "face",
+            Type::Geometry,
+            Type::List(Box::new(Type::Geometry)),
+        );
+        let mut diagnostics = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "must fall through to None when face arg is not a hydrated Value::GeometryHandle, \
+             got {:?}",
+            result
+        );
+    }
 }
