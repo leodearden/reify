@@ -187,6 +187,18 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 "std.stackup",
                 include_str!("../stdlib/stackup.ri"),
             ),
+            // `std.kinematic` declares the DrivingJoint marker trait, per-kind
+            // joint structures (Prismatic/Revolute/Cylindrical/Planar/Spherical),
+            // non-conforming joints (Coupling/Fixed), and top-level container types
+            // (BodyId/Mechanism/Snapshot/SweepDim). Depends on std.trajectory
+            // (Vec3 and JointValue aliases) and std.units (Bool/Int/Real).
+            // Tail placement after std.trajectory satisfies both alias dependencies.
+            // Joints stay Value::Map per PRD §7.1 (esc-3845-91); units.rs/sweep.rs
+            // per-name hooks KEPT per esc-3845-91. KCC-ζ task 3845.
+            (
+                "std.kinematic",
+                include_str!("../stdlib/kinematic.ri"),
+            ),
         ];
 
         // SEQUENTIAL COMPILATION WITH GROWING PRELUDE: each module is compiled
