@@ -949,40 +949,36 @@ fn get_two_case_shared_value<'a>(values: &'a ValueMap, name: &str) -> &'a Value 
         .unwrap_or_else(|| panic!("TwoCaseSharedMeshFixture.{name} not found in eval result"))
 }
 
-/// step-5 regression: 2-case `solve_load_cases` with different loads but identical
-/// geometry/material/options produces exactly 2 per-case results, both non-Undef.
+/// Entry-count guard: 1-case and 2-case `solve_load_cases` produce the
+/// expected number of per-case entries (1 and 2 respectively), both non-Undef.
 ///
 /// # What this verifies
 ///
-/// - A 1-case solve (baseline) produces a MultiCaseResult with 1 entry.
+/// - A 1-case solve (baseline) produces a MultiCaseResult with exactly 1 entry.
 /// - A 2-case solve on the SAME body/material/options but DIFFERENT loads produces
 ///   exactly 2 distinct entries — verifying each case is solved independently.
 /// - Neither case result is `Value::Undef` — neither solve fell through to the
 ///   silent-Undef path.
 ///
-/// # Cache-reuse note (architectural context)
+/// # What this does NOT verify (and why the name was corrected)
 ///
-/// The original plan for this step (task 3005) intended to assert cache reuse via
-/// `engine.cache_stats().realization_entries` — verifying that the volume-mesh
-/// ComputeNode is realized exactly once for both cases (because they share
-/// geometry/material/options). That API does NOT exist in the current
+/// This test was originally named `solve_load_cases_two_case_reuse_no_extra_realization`
+/// and framed as a mesh cache-reuse regression guard. That framing was misleading:
+/// the required `CacheStats.realization_entries` API does not exist in the current
 /// `reify_eval::CacheStats` (which only exposes `cache_hits`, `cache_misses`,
-/// `early_cutoffs`). Furthermore, `invoke_solve_elastic_static` in
-/// `crates/reify-expr/src/lib.rs` evaluates the `solve_elastic_static` contract
-/// body DIRECTLY (bypassing the `@optimized` trampoline), so no volume-mesh
-/// ComputeNode is created by the current implementation.
+/// `early_cutoffs`), and `invoke_solve_elastic_static` evaluates the contract body
+/// DIRECTLY without routing through the `@optimized` trampoline, so no volume-mesh
+/// ComputeNode is created. The 1-case/2-case entry-count comparison is the only
+/// observable assertion available with `make_simple_engine()`, and it is fully
+/// covered by `solve_load_cases_two_cases_returns_mcr_shape` — this test adds the
+/// 1-case baseline count for completeness.
 ///
 /// True mesh-reuse verification requires either:
-///   (a) Routing the per-case solve through the `@optimized` trampoline
-///       (engine_eval.rs changes, out of scope for task 3005), OR
-///   (b) A new `CacheStats.realization_entries` counter (out of scope).
-///
-/// This test is therefore a STRUCTURAL regression guard: it confirms that the
-/// 2-case solve produces 2 distinct non-Undef results, which is the observable
-/// contract with `make_simple_engine()`. Mesh-reuse verification is deferred
-/// to a future task that routes per-case solves through the engine trampoline.
+///   (a) Routing the per-case solve through the `@optimized` trampoline, OR
+///   (b) A new `CacheStats.realization_entries` counter.
+/// Both are out of scope for task 3005 and deferred to a follow-up task.
 #[test]
-fn solve_load_cases_two_case_reuse_no_extra_realization() {
+fn solve_load_cases_one_vs_two_cases_entry_count() {
     // ── 1-case baseline ───────────────────────────────────────────────────────
     let compiled1 = parse_and_compile_with_stdlib(SINGLE_CASE_SOURCE);
     let mut engine1 = make_simple_engine();
