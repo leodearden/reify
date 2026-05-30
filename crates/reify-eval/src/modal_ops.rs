@@ -167,10 +167,16 @@ pub(crate) struct ModalCoreResult {
     pub(crate) diagnostics: Vec<Diagnostic>,
 }
 
-/// Core free-vibration FEA eigensolve: build the beam mesh, assemble `K` and the
-/// consistent mass `M`, project to the free-DOF subspace, solve
+/// Core free-vibration FEA eigensolve over a prebuilt [`BeamMesh`]: assemble `K`
+/// and the consistent mass `M`, project to the free-DOF subspace, solve
 /// `K_free φ = λ M_free φ`, and scatter the mode shapes back to the full DOF
 /// space.
+///
+/// Takes the mesh by reference rather than rebuilding it from geometry scalars,
+/// so the trampoline builds it once and shares it with the BC realization
+/// ([`build_dirichlet_bcs`]); both then index DOFs against the same node
+/// numbering, with no redundant rebuild. The unit tests likewise build their
+/// fixture mesh once and pass it here.
 ///
 /// Operates in the free-DOF subspace (extracting `K_free` / `M_free` over the
 /// non-Dirichlet DOFs) rather than via row elimination, which would inject
@@ -183,22 +189,14 @@ pub(crate) struct ModalCoreResult {
 /// it is broadcast to every free node's three translational DOFs to form
 /// `d_free` (the caller is responsible for supplying a unit vector — see the
 /// trampoline). It does not affect the eigensolve, only the participation field.
-// 8 args: density + material + 3 geometry scalars + reference_direction + bcs +
-// eigen_opts — the flat physical-input surface mirrors solve_cantilever_fea /
-// solve_buckling_kernel; bundling them into a struct would just relocate the
-// fan-out. (dead_code until the step-14 trampoline consumes this.)
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn solve_modal_core(
+    mesh: &BeamMesh,
     density: f64,
     material: &IsotropicElastic,
-    length: f64,
-    width: f64,
-    height: f64,
     reference_direction: [f64; 3],
     bcs: &[DirichletBc],
     eigen_opts: &EigenSolverOptions,
 ) -> ModalCoreResult {
-    let mesh = build_beam_mesh(length, width, height);
     let n_nodes = mesh.nodes.len();
     let n_dofs = 3 * n_nodes;
 
@@ -278,7 +276,20 @@ pub(crate) fn solve_modal_core(
     let md = m_matvec(&m_free, &d_free);
 
     // ---- Generalized eigensolve  K_free φ = λ M_free φ --------------------
-    let eig = solve_generalized_eigen(&k_free, &m_free, eigen_opts.clone());
+    // A connected 3-D elastic solid has a 6-dimensional rigid-body null space, so
+    // K_free is SPD (hence Cholesky-factorable) only once the Dirichlet BCs remove
+    // all six rigid-body modes — which needs at least 6 constrained DOFs. Fewer
+    // than that leaves K_free singular, and solve_eigen_shift_invert factors K up
+    // front (before its own dense fallback), so it would PANIC on such an
+    // under-constrained model whenever n_free is large enough to take the
+    // shift-invert path (e.g. the production default n_modes = 10 on n_free > 64).
+    // Route these cases to the dense generalized solver, which tolerates a
+    // singular K_free and lets the W_ModalRigidBodyMode diagnostic surface
+    // gracefully regardless of mesh size — matching the small-mesh behaviour the
+    // rigid-body diagnostic was designed for (suggestion 1 / robustness).
+    const RIGID_BODY_DOFS: usize = 6;
+    let under_constrained = n_dofs.saturating_sub(n_free) < RIGID_BODY_DOFS;
+    let eig = solve_generalized_eigen(&k_free, &m_free, eigen_opts.clone(), under_constrained);
 
     // ---- Convert λ→f and scatter φ_free → φ_full --------------------------
     let n_modes_out = eig.eigenvalues.len();
@@ -319,6 +330,31 @@ pub(crate) fn solve_modal_core(
         phi_free.push(phi_f);
         phi_full.push(phi_u);
     }
+
+    // ---- Enforce the ascending-frequency contract explicitly --------------
+    // stdlib `first_frequency`/`mode_frequency` and the ModalResult contract
+    // require modes[0] to be the fundamental. The eigensolver returns eigenpairs
+    // ascending by |λ|, which equals ascending-frequency ONLY because λ = ω² ≥ 0
+    // for free vibration (K PSD, M PD); a spurious negative-λ eigenpair (clamped
+    // to f = 0 by eigenvalue_to_frequency_hz) could otherwise land out of |λ|
+    // order and displace the fundamental. A stable sort by frequency is a no-op
+    // in the normal case but makes the ordering self-enforcing rather than
+    // dependent on the solver invariant (suggestion 3 / architecture).
+    let mut order: Vec<usize> = (0..n_modes_out).collect();
+    order.sort_by(|&a, &b| {
+        frequencies[a].partial_cmp(&frequencies[b]).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    if order.iter().enumerate().any(|(i, &src)| i != src) {
+        frequencies = permute_by(frequencies, &order);
+        eigenvalues = permute_by(eigenvalues, &order);
+        participation_mass = permute_by(participation_mass, &order);
+        phi_free = permute_by(phi_free, &order);
+        phi_full = permute_by(phi_full, &order);
+    }
+    debug_assert!(
+        frequencies.windows(2).all(|w| w[0] <= w[1]),
+        "modal frequencies must be sorted ascending after the reorder",
+    );
 
     // ---- Diagnostics (message-based, code: None; design_decision #6) ------
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -432,6 +468,16 @@ fn frobenius_norm(a: &SparseRowMat<usize, f64>) -> f64 {
     sum_sq.sqrt()
 }
 
+/// Reorder `items` so that result position `i` holds the original
+/// `items[order[i]]`, moving elements out (no deep clone) via `std::mem::take`.
+/// `order` must be a permutation of `0..items.len()` (each index used exactly
+/// once) — guaranteed by the sort that produces it — so no element is taken
+/// twice. Applies the ascending-frequency sort across `solve_modal_core`'s
+/// parallel per-mode arrays in lockstep.
+fn permute_by<T: Default>(mut items: Vec<T>, order: &[usize]) -> Vec<T> {
+    order.iter().map(|&i| std::mem::take(&mut items[i])).collect()
+}
+
 /// Solve the generalized symmetric eigenproblem `K_free φ = λ M_free φ`,
 /// returning eigenvalues ascending by |λ| with column-major eigenvectors.
 ///
@@ -444,13 +490,26 @@ fn frobenius_norm(a: &SparseRowMat<usize, f64>) -> f64 {
 /// wrapper would pick — minus the premature factorization. Larger constrained
 /// problems (`K_free` SPD after BCs) take the shift-invert Lanczos path
 /// (design_decision #4).
+///
+/// `force_dense` overrides the size heuristic to take the dense path regardless
+/// of `n`. The caller sets it when the model is detected as under-constrained
+/// (too few Dirichlet DOFs to remove the rigid-body null space), so a singular
+/// `K_free` never reaches `solve_eigen_shift_invert`'s up-front Cholesky and
+/// panics. NOTE: the caller's detector (constrained-DOF count) is a *necessary*
+/// condition for SPD-ness, not a sufficient one — a pathological
+/// ≥6-but-rank-deficient constraint set on a mesh large enough to take the
+/// shift-invert path could still reach the panicking factorization. Closing that
+/// residual edge would need an explicit SPD probe (a throwaway Cholesky attempt
+/// with graceful fallback) and is deferred as a follow-up; the common
+/// no/insufficient-supports user error is handled here.
 fn solve_generalized_eigen(
     k_free: &SparseRowMat<usize, f64>,
     m_free: &SparseRowMat<usize, f64>,
     opts: EigenSolverOptions,
+    force_dense: bool,
 ) -> EigenSolverResult {
     let n = k_free.nrows();
-    if n <= 64_usize.max(2 * opts.n_modes) {
+    if force_dense || n <= 64_usize.max(2 * opts.n_modes) {
         solve_eigen_dense(k_free, m_free, opts)
     } else {
         solve_eigen_shift_invert(k_free, m_free, opts)
@@ -594,22 +653,23 @@ pub fn solve_modal_analysis_trampoline(
     let length = read_scalar_si(&value_inputs[1]);
     let width = read_scalar_si(&value_inputs[2]);
     let height = read_scalar_si(&value_inputs[3]);
+    // Build the beam mesh once and share it between the BC realization (4) and
+    // the eigensolve (5); both index DOFs against the same node numbering.
+    let mesh = build_beam_mesh(length, width, height);
 
     // ── (4) ModalOptions: eigen knobs, excitation direction, damping, BCs ────
     let options = &value_inputs[4];
     let (n_modes, tol, max_iters, sigma) = extract_eigen_knobs(options);
     let reference_direction = extract_reference_direction(options);
     let (alpha, beta) = extract_damping(options);
-    let bcs = build_dirichlet_bcs(options, length, width, height);
+    let bcs = build_dirichlet_bcs(options, &mesh, length, width, height);
     let eigen_opts = EigenSolverOptions { n_modes, tol, max_iters, sigma };
 
     // ── (5) core free-vibration eigensolve ───────────────────────────────────
     let core = solve_modal_core(
+        &mesh,
         density,
         &material,
-        length,
-        width,
-        height,
         reference_direction,
         &bcs,
         &eigen_opts,
@@ -801,19 +861,25 @@ fn extract_damping(val: &Value) -> (f64, f64) {
 ///     (`"x_min"`/`"x_max"`/`"y_min"`/`"y_max"`/`"z_min"`/`"z_max"`) has all three
 ///     translational DOFs clamped — the cantilever root clamp (step-16).
 ///
-/// The mesh is rebuilt here (cheap, O(n)) via the same [`build_beam_mesh`] helper
-/// `solve_modal_core` uses, so the DOF indices line up with the solve's mesh.
-/// Duplicate DOFs (a corner shared by two named faces) are harmless —
-/// `solve_modal_core` records constraints idempotently.
-fn build_dirichlet_bcs(options: &Value, length: f64, width: f64, height: f64) -> Vec<DirichletBc> {
-    let mesh = build_beam_mesh(length, width, height);
+/// Takes the same [`BeamMesh`] the trampoline hands to [`solve_modal_core`], so
+/// the DOF indices line up with the solve's mesh without a redundant rebuild
+/// (suggestion 4 / performance). `length`/`width`/`height` still parameterize the
+/// face-coordinate thresholds. Duplicate DOFs (a corner shared by two named
+/// faces) are harmless — `solve_modal_core` records constraints idempotently.
+fn build_dirichlet_bcs(
+    options: &Value,
+    mesh: &BeamMesh,
+    length: f64,
+    width: f64,
+    height: f64,
+) -> Vec<DirichletBc> {
     let targets = support_targets(options);
 
     // Simply-supported (pin-pin) discriminator: BOTH beam-axis end faces named.
     let pins_x_min = targets.iter().any(|t| t == "x_min");
     let pins_x_max = targets.iter().any(|t| t == "x_max");
     if pins_x_min && pins_x_max {
-        return simply_supported_pin_pin_bcs(&mesh, length, height);
+        return simply_supported_pin_pin_bcs(mesh, length, height);
     }
 
     // General "clamp the named face" realization (cantilever root clamp).
@@ -1032,11 +1098,9 @@ mod tests {
             EigenSolverOptions { n_modes: 3, tol: 1e-8, max_iters: 200, sigma: 0.0 };
 
         let result: ModalCoreResult = solve_modal_core(
+            &mesh,
             STEEL_DENSITY,
             &steel(),
-            length,
-            width,
-            height,
             [0.0, 0.0, 1.0], // reference_direction; unused by this assertion
             &bcs,
             &eigen_opts,
@@ -1118,11 +1182,9 @@ mod tests {
             EigenSolverOptions { n_modes: 3, tol: 1e-8, max_iters: 200, sigma: 0.0 };
 
         let result: ModalCoreResult = solve_modal_core(
+            &mesh,
             STEEL_DENSITY,
             &steel(),
-            length,
-            width,
-            height,
             [0.0, 0.0, 1.0], // reference_direction; unused by this assertion
             &bcs,
             &eigen_opts,
@@ -1194,11 +1256,9 @@ mod tests {
             EigenSolverOptions { n_modes: n_free, tol: 1e-8, max_iters: 200, sigma: 0.0 };
 
         let result: ModalCoreResult = solve_modal_core(
+            &mesh,
             STEEL_DENSITY,
             &steel(),
-            length,
-            width,
-            height,
             reference_direction,
             &bcs,
             &eigen_opts,
@@ -1271,11 +1331,9 @@ mod tests {
         };
 
         let result: ModalCoreResult = solve_modal_core(
+            &mesh,
             STEEL_DENSITY,
             &steel(),
-            length,
-            width,
-            height,
             [0.0, 0.0, 1.0],
             &[], // unconstrained
             &eigen_opts,
@@ -1331,11 +1389,9 @@ mod tests {
         };
 
         let result: ModalCoreResult = solve_modal_core(
+            &mesh,
             STEEL_DENSITY,
             &steel(),
-            length,
-            width,
-            height,
             [0.0, 0.0, 1.0],
             &bcs,
             &eigen_opts,
@@ -1352,6 +1408,61 @@ mod tests {
         assert!(
             has_conv_warning,
             "expected a Warning starting \"W_ModalConvergence\"; got {:?}",
+            result.diagnostics,
+        );
+    }
+
+    /// Amendment (suggestion 1 / robustness): an under-constrained model must NOT
+    /// panic the engine, regardless of mesh size.
+    ///
+    /// The production trampoline uses the default `n_modes = 10`. On a mesh whose
+    /// free-DOF count exceeds `max(64, 2·n_modes) = 64`, the size heuristic alone
+    /// would route to `solve_eigen_shift_invert`, whose up-front Cholesky PANICS
+    /// on the singular `K_free` of a no/insufficient-supports model. The
+    /// under-constraint guard (constrained DOFs < 6 rigid-body modes → force the
+    /// dense path) must keep the solve graceful: it returns a result and surfaces
+    /// the `W_ModalRigidBodyMode` diagnostic instead of crashing.
+    ///
+    /// This fixture has `n_free = 84 > 64` with empty BCs (0 constrained DOFs),
+    /// so pre-fix it took the panicking shift-invert path under the default
+    /// `n_modes` — unlike `solve_modal_core_flags_rigid_body_modes_when_unconstrained`,
+    /// which masks the bug by hand-picking `n_modes = n_free/2` to force dense.
+    #[test]
+    fn solve_modal_core_unconstrained_default_n_modes_does_not_panic() {
+        let length = 0.02_f64;
+        let width = 0.05_f64;
+        let height = 0.1_f64;
+        let mesh = build_beam_mesh(length, width, height);
+        assert!(
+            3 * mesh.nodes.len() > 64,
+            "fixture must exceed the dense-regime threshold to exercise the guard",
+        );
+
+        // Production default n_modes; empty BCs → 0 constrained DOFs (< 6).
+        let eigen_opts =
+            EigenSolverOptions { n_modes: 10, tol: 1e-8, max_iters: 200, sigma: 0.0 };
+
+        let result: ModalCoreResult = solve_modal_core(
+            &mesh,
+            STEEL_DENSITY,
+            &steel(),
+            [0.0, 0.0, 1.0],
+            &[], // unconstrained → singular K_free
+            &eigen_opts,
+        );
+
+        // Graceful: ≥ 1 mode returned (no panic) and the rigid-body warning fires.
+        assert!(
+            !result.frequencies.is_empty(),
+            "under-constrained solve must still return modes (not panic)",
+        );
+        let has_rigid_warning = result.diagnostics.iter().any(|d| {
+            d.severity == Severity::Warning && d.message.starts_with("W_ModalRigidBodyMode")
+        });
+        assert!(
+            has_rigid_warning,
+            "expected a W_ModalRigidBodyMode Warning for the under-constrained \
+             model; got {:?}",
             result.diagnostics,
         );
     }
