@@ -6,7 +6,14 @@
 use reify_ir::Value;
 
 mod gcode_import;
-mod impulse_shaper;
+// `pub` so `reify-eval/src/trajectory_ops.rs` can reach the impulse-shaper API
+// (ImpulseTrain + residual_vibration) for the engine-side band-sweep robustness
+// metric — re-exported at the crate root in `lib.rs` (task ζ, prereq-1).
+pub mod impulse_shaper;
+// `pub(crate)` (not private) so the crate-root re-export
+// `pub use trajectory::input_shape::build_train_for_shaper;` in `lib.rs` can
+// name the `input_shape` path segment (task ζ, prereq-1).
+pub(crate) mod input_shape;
 mod sampling;
 mod simulate;
 mod spline;

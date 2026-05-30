@@ -39,7 +39,7 @@ struct Impulse {
 /// The impulses are stored in strictly increasing time order (up to floating-point
 /// tolerance).  All factory constructors (`zv`, `zvd`, `ei`) uphold this invariant.
 #[derive(Debug, Clone)]
-pub(crate) struct ImpulseTrain {
+pub struct ImpulseTrain {
     impulses: Vec<Impulse>,
 }
 
@@ -156,7 +156,7 @@ impl ImpulseTrain {
     /// t   = [0,  π / ω_d]
     /// A   = [1/(1+K),  K/(1+K)]
     /// ```
-    pub(crate) fn zv(omega_n: f64, zeta: f64) -> ImpulseTrain {
+    pub fn zv(omega_n: f64, zeta: f64) -> ImpulseTrain {
         let (omega_d, k) = damped_freq_and_k(omega_n, zeta);
         let norm = 1.0 + k;
         ImpulseTrain {
@@ -185,7 +185,7 @@ impl ImpulseTrain {
     /// Algebraically equivalent to `cascade([zv(ω,ζ), zv(ω,ζ)])` — used as a
     /// cross-check in the unit tests.
     // G-allow: impulse-shaping producer (ZVD shaper), task #3866 (ε, DONE); consumer is task #3867 (ζ — input_shape dispatcher + reify-eval/src/trajectory_ops.rs eval wiring), PENDING, so no in-tree caller yet.
-    pub(crate) fn zvd(omega_n: f64, zeta: f64) -> ImpulseTrain {
+    pub fn zvd(omega_n: f64, zeta: f64) -> ImpulseTrain {
         let (omega_d, k) = damped_freq_and_k(omega_n, zeta);
         let norm = (1.0 + k) * (1.0 + k);
         let half_period = std::f64::consts::PI / omega_d;
@@ -230,7 +230,7 @@ impl ImpulseTrain {
     /// Guarantees: exactly 4 impulses, `Σ amplitudes = 1`, all amplitudes > 0
     /// (for `v_tol ∈ (0, 1)`), strictly increasing times from `t₀ = 0`, and
     /// residual ≤ `v_tol` across the ±band (not merely at the design point).
-    pub(crate) fn ei(omega_n: f64, zeta: f64, v_tol: f64) -> ImpulseTrain {
+    pub fn ei(omega_n: f64, zeta: f64, v_tol: f64) -> ImpulseTrain {
         let (omega_d, k) = damped_freq_and_k(omega_n, zeta);
 
         // Outer/inner amplitude weights with both humps pinned to v_tol exactly.
@@ -263,7 +263,7 @@ impl ImpulseTrain {
     ///   impulses (within a tolerance of 1e-10 s) are merged by summing their
     ///   amplitudes.
     // G-allow: impulse-shaping producer (train cascade/convolution), task #3866 (ε, DONE); consumer is task #3867 (ζ — input_shape dispatcher), PENDING, so no in-tree caller yet.
-    pub(crate) fn cascade(trains: &[ImpulseTrain]) -> ImpulseTrain {
+    pub fn cascade(trains: &[ImpulseTrain]) -> ImpulseTrain {
         // Empty → identity unit impulse at t=0.
         if trains.is_empty() {
             return ImpulseTrain {
@@ -278,7 +278,7 @@ impl ImpulseTrain {
 
     /// Sum of all impulse amplitudes (should equal 1.0 for any well-formed shaper).
     // G-allow: impulse-shaping producer (amplitude-sum check), task #3866 (ε, DONE); consumer is task #3867 (ζ — input_shape dispatcher), PENDING, so no in-tree caller yet.
-    pub(crate) fn amplitude_sum(&self) -> f64 {
+    pub fn amplitude_sum(&self) -> f64 {
         self.impulses.iter().map(|imp| imp.amplitude).sum()
     }
 
@@ -286,7 +286,7 @@ impl ImpulseTrain {
     ///
     /// Returns 0.0 for a single-impulse identity train.
     // G-allow: impulse-shaping producer (shaper-delay query), task #3866 (ε, DONE); consumer is task #3867 (ζ — input_shape dispatcher), PENDING, so no in-tree caller yet.
-    pub(crate) fn trailing_time(&self) -> f64 {
+    pub fn trailing_time(&self) -> f64 {
         self.impulses.last().map(|imp| imp.time).unwrap_or(0.0)
     }
 
@@ -303,7 +303,7 @@ impl ImpulseTrain {
     /// A single unit impulse `{(0, 1)}` produces `V = 1` (the baseline used for
     /// the ≥ 40 dB suppression check).
     // G-allow: impulse-shaping producer (residual-vibration metric), task #3866 (ε, DONE); consumer is task #3867 (ζ — input_shape dispatcher), PENDING, so no in-tree caller yet.
-    pub(crate) fn residual_vibration(&self, omega_n: f64, zeta: f64) -> f64 {
+    pub fn residual_vibration(&self, omega_n: f64, zeta: f64) -> f64 {
         if self.impulses.is_empty() {
             return 0.0;
         }
@@ -339,7 +339,7 @@ impl ImpulseTrain {
 /// After that the final value is frozen (all samples beyond `t_domain` clamp to
 /// `f(t_domain)` and `Σ A_i = 1`).
 // G-allow: impulse-shaping producer (shaped-command convolution), task #3866 (ε, DONE); consumer is task #3867 (ζ — input_shape dispatcher), PENDING, so no in-tree caller yet.
-pub(crate) fn convolve_at<F: Fn(f64) -> f64>(
+pub fn convolve_at<F: Fn(f64) -> f64>(
     train: &ImpulseTrain,
     f: &F,
     t_domain: f64,

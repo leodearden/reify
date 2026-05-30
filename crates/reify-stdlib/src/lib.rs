@@ -56,6 +56,15 @@ pub use flexures::flexure_diagnose;
 /// duplicating the formula inlined at
 /// `crates/reify-eval/src/compute_targets/elastic_static.rs:667`.
 pub use analysis::compute_von_mises_3x3;
+/// Public re-export of the impulse-shaper math (`ImpulseTrain` + its residual /
+/// convolution API) and the `Shaper`→`ImpulseTrain` marshalling boundary.
+///
+/// `reify-eval/src/trajectory_ops.rs` calls [`build_train_for_shaper`] to turn a
+/// `Shaper` `Value` into an [`impulse_shaper::ImpulseTrain`] and then sweeps
+/// [`impulse_shaper::ImpulseTrain::residual_vibration`] across a frequency band
+/// for the engine-side robustness metric (task ζ).
+pub use trajectory::impulse_shaper;
+pub use trajectory::input_shape::build_train_for_shaper;
 
 #[cfg(test)]
 #[macro_use]
