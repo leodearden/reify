@@ -515,6 +515,122 @@ mod tests {
         );
     }
 
+    /// Build a bodyless-assoc-fn requirement `fn <name>(self) -> <return_type>`
+    /// for the refinement signature-lock tests. (task 3939 δ)
+    fn assoc_fn_req(name: &str, return_type: Type) -> TraitRequirement {
+        TraitRequirement {
+            name: name.to_string(),
+            kind: RequirementKind::Fn(CompiledAssocFnSig {
+                name: name.to_string(),
+                has_self: true,
+                params: vec![],
+                return_type,
+            }),
+            span: SourceSpan::empty(0),
+        }
+    }
+
+    /// RED (task 3939 δ, step-9): a refining trait that CHANGES an inherited
+    /// assoc-fn signature must produce exactly one `TraitFnSignatureMismatch`.
+    /// Base declares `fn f(self) -> Real`; Derived (: Base) declares
+    /// `fn f(self) -> Length` — same name, different inherited signature.
+    ///
+    /// Fails until step-10 replaces the first-seen `or_insert` in the
+    /// `RequirementKind::Fn` merge arm with `try_dedup_or_conflict` (today the
+    /// arm records first-seen and pushes BOTH copies, emitting zero diagnostics).
+    #[test]
+    fn refining_trait_changing_inherited_assoc_fn_signature_conflicts() {
+        let base = make_compiled_trait("Base", vec![], vec![assoc_fn_req("f", Type::Real)]);
+        let derived = make_compiled_trait(
+            "Derived",
+            vec!["Base".to_string()],
+            vec![assoc_fn_req("f", Type::length())],
+        );
+
+        let mut trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        trait_registry.insert("Base".to_string(), &base);
+        trait_registry.insert("Derived".to_string(), &derived);
+
+        let mut ctx = MergeContext::new();
+        let mut diags: Vec<Diagnostic> = vec![];
+        collect_all_requirements(
+            "Derived",
+            &trait_registry,
+            &mut ctx,
+            &HashMap::new(),
+            SourceSpan::empty(0),
+            0,
+            &mut diags,
+        );
+
+        let mismatch: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::TraitFnSignatureMismatch))
+            .collect();
+        assert_eq!(
+            mismatch.len(),
+            1,
+            "a refining trait may not change an inherited assoc-fn signature — \
+             expected exactly one TraitFnSignatureMismatch; got: {:?}",
+            diags
+        );
+        assert!(
+            mismatch[0].message.contains("f"),
+            "the conflict diagnostic should name the fn 'f'; got: {}",
+            mismatch[0].message
+        );
+        // The conflicting (second) requirement is dropped → a single 'f' entry.
+        let f_count = ctx.requirements.iter().filter(|r| r.name == "f").count();
+        assert_eq!(
+            f_count, 1,
+            "the conflicting requirement should be dropped, leaving one 'f'; got {}",
+            f_count
+        );
+    }
+
+    /// RED (task 3939 δ, step-9): a refining trait that re-declares an inherited
+    /// assoc fn with the IDENTICAL signature deduplicates to a single requirement
+    /// and emits zero diagnostics. Fails until step-10 (today both copies are
+    /// pushed → two 'f' entries).
+    #[test]
+    fn refining_trait_with_identical_assoc_fn_signature_dedups() {
+        let base = make_compiled_trait("Base", vec![], vec![assoc_fn_req("f", Type::Real)]);
+        let derived = make_compiled_trait(
+            "Derived",
+            vec!["Base".to_string()],
+            vec![assoc_fn_req("f", Type::Real)],
+        );
+
+        let mut trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        trait_registry.insert("Base".to_string(), &base);
+        trait_registry.insert("Derived".to_string(), &derived);
+
+        let mut ctx = MergeContext::new();
+        let mut diags: Vec<Diagnostic> = vec![];
+        collect_all_requirements(
+            "Derived",
+            &trait_registry,
+            &mut ctx,
+            &HashMap::new(),
+            SourceSpan::empty(0),
+            0,
+            &mut diags,
+        );
+
+        let f_count = ctx.requirements.iter().filter(|r| r.name == "f").count();
+        assert_eq!(
+            f_count, 1,
+            "identical inherited assoc-fn signature should dedup to one 'f' \
+             requirement; got {}",
+            f_count
+        );
+        assert!(
+            diags.is_empty(),
+            "identical signatures must not conflict; got: {:?}",
+            diags
+        );
+    }
+
     /// Verify that `collect_all_requirements` deduplicates `RequirementKind::Sub`
     /// requirements via `seen_sub_names` when two sibling parent traits both declare
     /// the same sub-component name and structure.
