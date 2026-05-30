@@ -9653,7 +9653,7 @@ fn mode_shape_scale_degenerate_fallback() {
         let mut values = ValueMap::new();
         values.insert(
             ValueCellId::new("Test", "result"),
-            make_buckling_result_custom(&base, &[disp0.clone()]),
+            make_buckling_result_custom(&base, std::slice::from_ref(&disp0)),
         );
         let check = CheckResult {
             values,
