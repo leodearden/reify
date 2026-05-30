@@ -7185,6 +7185,177 @@ mod tests {
     // `eval_expr`) because the build pipeline owns both the kernel and the
     // per-realization name → handle map (`named_steps`).
 
+    /// Build a `CompiledExpr` for a stdlib call `helper(<entity>.<member>)` with
+    /// a single `ValueRef` arg. Used for the `edges(b)` / `faces(b)` dispatch
+    /// unit tests (task 3616 step-5).
+    fn topology_selector_call_one_value_ref(
+        helper_name: &str,
+        entity: &str,
+        member: &str,
+        arg_type: reify_core::Type,
+        result_type: reify_core::Type,
+    ) -> reify_ir::CompiledExpr {
+        let arg = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new(entity, member),
+            arg_type,
+        );
+        let content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str(helper_name))
+            .combine(arg.content_hash);
+        reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: helper_name.to_string(),
+                    qualified_name: helper_name.to_string(),
+                },
+                args: vec![arg],
+            },
+            result_type,
+            content_hash,
+        }
+    }
+
+    // ── step-5 (task 3616): edges/faces dispatch RED unit tests ─────────────
+    //
+    // These tests are RED because the current arm returns Value::List(Value::Int)
+    // via handle_list_value instead of Value::List(Value::GeometryHandle).
+
+    /// `edges` dispatch returns `Value::List` of three `Value::GeometryHandle`
+    /// elements when the mock kernel returns [GHId(2),GHId(3),GHId(4)] and the
+    /// `values` map carries the parent `Value::GeometryHandle`. Each element
+    /// must carry the parent's `realization_ref`, and the three
+    /// `upstream_values_hash` fields must be pairwise distinct (PRD §4 iii).
+    /// RED: current arm returns `Value::Int` via `handle_list_value`.
+    #[test]
+    fn edges_dispatch_returns_geometry_handle_list() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+
+        let parent_handle = GeometryHandleId(1);
+        let parent_rr = RealizationNodeId::new("BoxEdges", 0);
+        let parent_hash: [u8; 32] = [0x77; 32];
+
+        let mut kernel = MockGeometryKernel::new().with_extracted_edges(
+            parent_handle,
+            vec![GeometryHandleId(2), GeometryHandleId(3), GeometryHandleId(4)],
+        );
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("b".to_string(), parent_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("BoxEdges", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: parent_handle,
+            },
+        );
+
+        let expr = topology_selector_call_one_value_ref(
+            "edges",
+            "BoxEdges",
+            "b",
+            Type::Geometry,
+            Type::List(Box::new(Type::Geometry)),
+        );
+        let mut diagnostics = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let list = match result {
+            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+            other => panic!(
+                "expected Some(Value::List(..)), got {:?}; diagnostics: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(list.len(), 3, "expected 3 edge sub-handles");
+
+        let expected_ids = [GeometryHandleId(2), GeometryHandleId(3), GeometryHandleId(4)];
+        let mut hashes: Vec<[u8; 32]> = Vec::new();
+        for (i, (elem, expected_id)) in list.iter().zip(&expected_ids).enumerate() {
+            match elem {
+                reify_ir::Value::GeometryHandle { realization_ref, upstream_values_hash, kernel_handle } => {
+                    assert_eq!(
+                        realization_ref.entity, parent_rr.entity,
+                        "elem[{i}] realization_ref.entity must match parent"
+                    );
+                    assert_eq!(
+                        realization_ref.index, parent_rr.index,
+                        "elem[{i}] realization_ref.index must match parent"
+                    );
+                    assert_eq!(
+                        kernel_handle, expected_id,
+                        "elem[{i}] kernel_handle must be {expected_id:?}"
+                    );
+                    hashes.push(*upstream_values_hash);
+                }
+                other => panic!("elem[{i}] is not Value::GeometryHandle: {:?}", other),
+            }
+        }
+        // All three upstream_values_hashes must be pairwise distinct (PRD §4 iii).
+        assert_ne!(hashes[0], hashes[1], "edge 0 and 1 hashes must differ");
+        assert_ne!(hashes[1], hashes[2], "edge 1 and 2 hashes must differ");
+        assert_ne!(hashes[0], hashes[2], "edge 0 and 2 hashes must differ");
+    }
+
+    /// When the `values` map does not carry a `Value::GeometryHandle` for the
+    /// arg cell, the `edges` arm must fall through to `None` (cell stays Undef)
+    /// rather than partially constructing a sub-handle (PRD invariant #2).
+    /// RED: current arm dispatches via `named_steps` regardless of `values` and
+    /// returns `Some(Value::List(Value::Int))`.
+    #[test]
+    fn edges_dispatch_falls_through_to_none_when_parent_not_hydrated() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::Type;
+
+        let parent_handle = GeometryHandleId(1);
+        let mut kernel = MockGeometryKernel::new().with_extracted_edges(
+            parent_handle,
+            vec![GeometryHandleId(2), GeometryHandleId(3)],
+        );
+
+        // named_steps has the handle so the kernel could serve the call …
+        let mut named_steps = HashMap::new();
+        named_steps.insert("b".to_string(), parent_handle);
+
+        // … but values has NO Value::GeometryHandle for the arg cell.
+        let values = reify_ir::ValueMap::new();
+
+        let expr = topology_selector_call_one_value_ref(
+            "edges",
+            "BoxEdges",
+            "b",
+            Type::Geometry,
+            Type::List(Box::new(Type::Geometry)),
+        );
+        let mut diagnostics = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "must fall through to None when parent is not a hydrated Value::GeometryHandle, \
+             got {:?}",
+            result
+        );
+    }
+
     /// Build a `CompiledExpr` for a stdlib call `helper(<entity>.<member_a>,
     /// <entity>.<member_b>)` with two `ValueRef` args resolving to let-bound
     /// cells. Mirrors `conformance_call` above.
