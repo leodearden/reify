@@ -822,8 +822,9 @@ pub(crate) fn compile_expr_guarded(
                     //
                     // Non-integer exponents on dimensioned bases (the error path) are handled
                     // in step-7 via `DiagnosticCode::NonIntegerExponentOnDimensioned`.
-                    if bin_op == BinOp::Pow {
-                        if let Type::Scalar { dimension } = compiled_left.result_type {
+                    if bin_op == BinOp::Pow
+                        && let Type::Scalar { dimension } = compiled_left.result_type
+                    {
                             // Extract a signed integer literal from the right AST node.
                             let int_exp: Option<i32> = match &right.kind {
                                 reify_ast::ExprKind::NumberLiteral {
@@ -877,7 +878,6 @@ pub(crate) fn compile_expr_guarded(
                                     )),
                                 );
                             }
-                        }
                     }
 
                     // Dimension compatibility check for Add/Sub
