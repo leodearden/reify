@@ -33,9 +33,11 @@
 //! is constant over the element, so the integral collapses to
 //! `(∇N_a · σ⁰ · ∇N_b) · V_e` per node pair `(a, b)`.
 
+pub mod bar;
 pub mod stubs;
 pub mod tet;
 
+pub use bar::{bar_tangent_stiffness, geometric_element_stiffness_bar_p1};
 pub use stubs::{
     geometric_element_stiffness_hex_p1, geometric_element_stiffness_shell,
     geometric_element_stiffness_wedge_p1,

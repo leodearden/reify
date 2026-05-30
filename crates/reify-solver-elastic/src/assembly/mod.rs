@@ -11,11 +11,13 @@
 //! `assemble_global_stiffness` entry point is now D-agnostic, deriving each
 //! element's `dofs_per_node` from `k_e.n_dofs / connectivity.len()`.
 
+pub mod bar;
 pub mod global;
 pub mod hex;
 pub mod tet;
 pub mod wedge;
 
+pub use bar::{BarSection, element_stiffness_bar_p1};
 pub use global::{
     AssemblyElement, AssemblyMode, OrphanDofsSummary, assemble_global_stiffness,
     detect_orphan_dofs,

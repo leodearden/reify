@@ -55,6 +55,24 @@ pub(crate) fn linf(v: &[f64]) -> f64 {
     v.iter().fold(0.0_f64, |acc, x| acc.max(x.abs()))
 }
 
+/// Relative-tolerance assert for floating-point values.
+///
+/// Asserts `|lhs − rhs| < tol · scale` where
+/// `scale = lhs.abs().max(rhs.abs()).max(1.0)`.
+///
+/// This is the single source of truth for the relative-tolerance convention
+/// used across bar, tet, and integration-test modules. Hoisted here so that
+/// changes to the tolerance logic propagate uniformly without per-module drift.
+pub fn assert_close(lhs: f64, rhs: f64, tol: f64, label: &str) {
+    let scale = lhs.abs().max(rhs.abs()).max(1.0);
+    assert!(
+        (lhs - rhs).abs() < tol * scale,
+        "{label}: |{lhs} − {rhs}| = {} ≥ tol·scale = {}",
+        (lhs - rhs).abs(),
+        tol * scale,
+    );
+}
+
 /// Compute U_K = 0.5 · uᵀ K u and U_analytical = 0.5 · εᵀ D ε · V.
 pub(crate) fn strain_energies(
     k: &ElementStiffness,
