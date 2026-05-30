@@ -110,7 +110,7 @@ structure def Copper : Conductive {
     // ElectricallyCharacterized
     param resistivity : ElectricResistivity = 0.000000017ohm*m  // 1.7e-8 Ω·m — clears Conductive < 1e-4 guard
     param dielectric_constant : Real = 1.0      // placeholder (not meaningful for metals)
-    param dielectric_strength : DielectricStrength = 0.0 * 1V / 1m     // placeholder (infinite for conductors)
+    param dielectric_strength : DielectricStrength = 0.0V/m             // placeholder (infinite for conductors)
     param magnetic_permeability : Real = 1.0    // μ_r ≈ 1 for copper (diamagnetic)
 }
 
