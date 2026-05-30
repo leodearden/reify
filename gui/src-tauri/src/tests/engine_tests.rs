@@ -9447,3 +9447,239 @@ fn mode_shape_frame_emitter_no_fire_when_no_buckling_result() {
         frames.len()
     );
 }
+
+// ── task-3458 amend: mode_shape_scale regression tests ───────────────────────
+
+/// Build a BucklingResult Value with explicit base positions and per-mode
+/// displaced positions.  Mirrors `make_buckling_result_value` but lets tests
+/// supply arbitrary geometry for precise scale assertions.
+fn make_buckling_result_custom(
+    base_positions: &[f64],
+    displaced_per_mode: &[Vec<f64>],
+) -> reify_ir::Value {
+    use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+    use std::collections::BTreeMap;
+
+    let modes_list: Vec<Value> = displaced_per_mode
+        .iter()
+        .enumerate()
+        .map(|(k, displaced)| {
+            let displaced_vals: Vec<Value> = displaced.iter().map(|&v| Value::Real(v)).collect();
+            let mode_shape_map: BTreeMap<Value, Value> = [(
+                Value::String("displaced_positions".to_string()),
+                Value::List(displaced_vals),
+            )]
+            .into_iter()
+            .collect();
+            let mode_fields: PersistentMap<String, Value> = [
+                ("eigenvalue".to_string(), Value::Real((k + 1) as f64 * 1000.0)),
+                ("mode_shape".to_string(), Value::Map(mode_shape_map)),
+            ]
+            .into_iter()
+            .collect();
+            Value::StructureInstance(Box::new(StructureInstanceData {
+                type_id: StructureTypeId(u32::MAX),
+                type_name: "Mode".to_string(),
+                version: 1,
+                fields: mode_fields,
+            }))
+        })
+        .collect();
+
+    let base_val: Vec<Value> = base_positions.iter().map(|&v| Value::Real(v)).collect();
+
+    let result_fields: PersistentMap<String, Value> = [
+        ("modes".to_string(),               Value::List(modes_list)),
+        ("converged".to_string(),           Value::Bool(true)),
+        ("iterations".to_string(),          Value::Int(0)),
+        ("pre_stress".to_string(),          Value::Undef),
+        ("base_node_positions".to_string(), Value::List(base_val)),
+    ]
+    .into_iter()
+    .collect();
+
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "BucklingResult".to_string(),
+        version: 1,
+        fields: result_fields,
+    }))
+}
+
+/// (d) mode_shape_scale_verified_geometry — hand-computed scale assertion.
+///
+/// Geometry: 2 nodes at (0,0,0) and (4,0,0).
+///   bbox_diag = sqrt(4² + 0 + 0) = 4.0
+///
+/// Mode 0 displaced_positions: [1,0,0, 5,0,0] (each node shifted +1 in x).
+///   displacement = [1,0,0, 1,0,0]
+///   max_disp = L2‖[1,0,0]‖ = 1.0
+///   scale = 0.1 × 4.0 / 1.0 = 0.4
+///
+/// Expected peak = base + 0.4 × displacement = [0.4, 0, 0, 4.4, 0, 0].
+///
+/// This test locks in the 0.1 factor, the bbox computation, and the max-disp
+/// calculation so a regression in any of them fails loudly rather than silently.
+#[test]
+fn mode_shape_scale_verified_geometry_matches_hand_computed() {
+    use std::sync::Arc;
+    use reify_eval::CheckResult;
+    use reify_core::ValueCellId;
+    use reify_ir::ValueMap;
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    let recorder = RecordingModeShapeFrameEmitter::new();
+    let captured = Arc::clone(&recorder.frames);
+    session.set_mode_shape_frame_emitter(Arc::new(recorder));
+
+    // 2 nodes at (0,0,0) and (4,0,0).  bbox_diag = 4.0.
+    let base = vec![0.0_f64, 0.0, 0.0, 4.0, 0.0, 0.0];
+    // Mode 0: each node shifted +1 in x → displacement magnitude = 1.0.
+    // scale = 0.1 × 4.0 / 1.0 = 0.4.
+    let disp0 = vec![1.0_f64, 0.0, 0.0, 5.0, 0.0, 0.0];
+
+    let mut values = ValueMap::new();
+    values.insert(
+        ValueCellId::new("Test", "result"),
+        make_buckling_result_custom(&base, &[disp0]),
+    );
+    let check = CheckResult {
+        values,
+        constraint_results: vec![],
+        diagnostics: vec![],
+        resolved_params: std::collections::HashMap::new(),
+    };
+
+    session.emit_mode_shape_frames_for_test_with_result(&check);
+    let frames = captured.lock().unwrap();
+
+    // 1 base frame + 1 peak frame = 2 total.
+    assert_eq!(frames.len(), 2, "expected 2 frames (1 base + 1 peak)");
+
+    let base_frame  = frames.iter().find(|f| f.phase == 0.0).expect("base frame missing");
+    let peak_frame  = frames.iter().find(|f| f.phase == 1.0).expect("peak frame missing");
+
+    // Base frame carries the undeformed positions verbatim.
+    let expected_base: Vec<f32> = base.iter().map(|&v| v as f32).collect();
+    assert_eq!(
+        base_frame.displaced_positions, expected_base,
+        "base frame positions must equal undeformed node positions"
+    );
+
+    // Peak frame: base + 0.4 × displacement = [0.4, 0.0, 0.0, 4.4, 0.0, 0.0].
+    let expected_peak: Vec<f32> = vec![0.4_f32, 0.0, 0.0, 4.4, 0.0, 0.0];
+    let eps = 1e-5_f32;
+    for (i, (&got, &want)) in peak_frame
+        .displaced_positions
+        .iter()
+        .zip(expected_peak.iter())
+        .enumerate()
+    {
+        assert!(
+            (got - want).abs() < eps,
+            "peak_frame.displaced_positions[{i}]: got {got}, want {want} (tol {eps})"
+        );
+    }
+}
+
+/// (e) mode_shape_scale_degenerate_fallback — zero-displacement and single-node.
+///
+/// Case A: zero displacement.
+///   displacement = [0,0,0, ...] → max_disp = 0.0 → scale fallback = 1.0.
+///   Expected peak = base + 1.0 × 0 = base (positions unchanged).
+///
+/// Case B: single node (bbox_diag = 0).
+///   1 node at (5,5,5), displaced to (6,5,5) → displacement = (1,0,0).
+///   bbox: single point → dx=dy=dz=0 → bbox_diag = 0.0 → scale fallback = 1.0.
+///   Expected peak = base + 1.0 × displacement = (6,5,5).
+#[test]
+fn mode_shape_scale_degenerate_fallback() {
+    use std::sync::Arc;
+    use reify_eval::CheckResult;
+    use reify_core::ValueCellId;
+    use reify_ir::ValueMap;
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    // ── Case A: zero displacement ───────────────────────────────────────────
+    {
+        let recorder = RecordingModeShapeFrameEmitter::new();
+        let captured = Arc::clone(&recorder.frames);
+        // Re-use the same session; install a fresh recorder.
+        session.set_mode_shape_frame_emitter(Arc::new(recorder));
+
+        let base = vec![0.0_f64, 0.0, 0.0, 4.0, 0.0, 0.0];
+        // displaced == base → displacement = [0,0,0, 0,0,0] → scale = 1.0 (fallback).
+        let disp0 = base.clone();
+
+        let mut values = ValueMap::new();
+        values.insert(
+            ValueCellId::new("Test", "result"),
+            make_buckling_result_custom(&base, &[disp0]),
+        );
+        let check = CheckResult {
+            values,
+            constraint_results: vec![],
+            diagnostics: vec![],
+            resolved_params: std::collections::HashMap::new(),
+        };
+
+        session.emit_mode_shape_frames_for_test_with_result(&check);
+        let frames = captured.lock().unwrap();
+        assert_eq!(frames.len(), 2, "zero-disp: expected 2 frames");
+
+        let peak_frame = frames.iter().find(|f| f.phase == 1.0).expect("peak frame missing");
+        // With scale=1.0 and displacement=0, peak == base.
+        let expected: Vec<f32> = base.iter().map(|&v| v as f32).collect();
+        assert_eq!(
+            peak_frame.displaced_positions, expected,
+            "zero-displacement: peak frame must equal base positions (scale=1.0 fallback)"
+        );
+    }
+
+    // ── Case B: single node → bbox_diag = 0 → scale fallback = 1.0 ─────────
+    {
+        let recorder = RecordingModeShapeFrameEmitter::new();
+        let captured = Arc::clone(&recorder.frames);
+        session.set_mode_shape_frame_emitter(Arc::new(recorder));
+
+        // 1 node at (5,5,5).  bbox: single point → diagonal = 0.  scale → 1.0.
+        let base = vec![5.0_f64, 5.0, 5.0];
+        let disp0 = vec![6.0_f64, 5.0, 5.0]; // displacement = [1,0,0]
+
+        let mut values = ValueMap::new();
+        values.insert(
+            ValueCellId::new("Test", "result"),
+            make_buckling_result_custom(&base, &[disp0.clone()]),
+        );
+        let check = CheckResult {
+            values,
+            constraint_results: vec![],
+            diagnostics: vec![],
+            resolved_params: std::collections::HashMap::new(),
+        };
+
+        session.emit_mode_shape_frames_for_test_with_result(&check);
+        let frames = captured.lock().unwrap();
+        assert_eq!(frames.len(), 2, "single-node: expected 2 frames");
+
+        let peak_frame = frames.iter().find(|f| f.phase == 1.0).expect("peak frame missing");
+        // scale=1.0 fallback → peak = base + 1.0 × [1,0,0] = [6,5,5].
+        let expected: Vec<f32> = disp0.iter().map(|&v| v as f32).collect();
+        let eps = 1e-5_f32;
+        for (i, (&got, &want)) in peak_frame
+            .displaced_positions
+            .iter()
+            .zip(expected.iter())
+            .enumerate()
+        {
+            assert!(
+                (got - want).abs() < eps,
+                "single-node peak[{i}]: got {got}, want {want}"
+            );
+        }
+    }
+}

@@ -1134,6 +1134,11 @@ impl EngineSession {
         let n = base_f64.len(); // 3 · n_nodes
 
         // Emit undeformed base frame (phase=0.0, mode_index=0).
+        //
+        // NOTE: the base frame and the first peak frame (mode 0) intentionally
+        // share mode_index=0.  `phase` is the sole discriminator: phase=0.0
+        // identifies the undeformed reference; phase=1.0 identifies a mode-peak.
+        // Consumers must key on `phase`, not `mode_index`, to distinguish them.
         let base_f32: Vec<f32> = base_f64.iter().map(|&v| v as f32).collect();
         emitter.frame(crate::types::ModeShapeFrame {
             mode_index: 0,
@@ -1143,6 +1148,10 @@ impl EngineSession {
 
         // Emit one peak frame per mode (phase=1.0).
         for (k, mode_disp) in modes_displaced.iter().enumerate() {
+            // mode_index is u8 on the wire; assert no silent wrapping for large
+            // n_modes values (normal buckling analyses are ≤ ~20 modes).
+            debug_assert!(k < 256, "mode_index would overflow u8: n_modes={}", k + 1);
+
             // Displacement vector: displaced − base (per DOF).
             let displacement: Vec<f64> = base_f64
                 .iter()

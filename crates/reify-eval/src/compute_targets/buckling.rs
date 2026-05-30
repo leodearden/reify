@@ -289,6 +289,17 @@ pub fn solve_buckling_trampoline(
         .map(|m| {
             // Flat displaced-position list: [x0+dx0, y0+dy0, z0+dz0, x1+dx1, ...].
             // nodes[i] = [xi, yi, zi]; m.mode_shape[3i..3i+3] = [dxi, dyi, dzi].
+            //
+            // Guard: the kernel contract requires mode_shape.len() == 3·n_nodes.
+            // chunks_exact+zip silently truncates when lengths diverge, so we assert
+            // loudly in tests/debug rather than producing a silent too-short list.
+            debug_assert_eq!(
+                m.mode_shape.len(),
+                3 * nodes.len(),
+                "mode_shape length {} != 3·n_nodes {} — kernel contract violated",
+                m.mode_shape.len(),
+                3 * nodes.len(),
+            );
             let displaced: Vec<Value> = nodes
                 .iter()
                 .zip(m.mode_shape.chunks_exact(3))
