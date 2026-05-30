@@ -483,7 +483,7 @@ mod tests {
         //   tet 1: EDGES[0] = (0,1) → local vertices tet[0]=0, tet[1]=2 → global (0,2) → p2_tet[4+0]
         assert_eq!(
             tets_p2[0][4 + 2],
-            tets_p2[1][4 + 0],
+            tets_p2[1][4],
             "tets 0 and 1 share the P1 edge (0,2); their midpoint node ids must match",
         );
 
