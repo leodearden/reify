@@ -20,11 +20,21 @@
 //! **Removal contract**: each PINS entry is owned by the consumer task cited in
 //! its source `// G-allow:` marker.  Once that task wires its consumer the
 //! function gains a non-test caller, leaves `allowed[]`, and assertion (b)
-//! below will fail with "found 0 entries".  The owning task MUST delete its
-//! row from `PINS` as part of the consumer-wiring commit.  Delete this file
-//! entirely when all rows are removed.  The failure message includes the fn
-//! name — search for it in this file when
-//! `assert_eq!(matching_allowed.len(), 1)` fires unexpectedly.
+//! fails.  The owning task MUST delete its row from `PINS` as part of the
+//! consumer-wiring commit.  Delete this file entirely when all rows are removed.
+//! The failure message lists all failing (file_suffix, fn_name) pairs — search
+//! for them in this file when `PINS pin(s) failed` appears unexpectedly.
+//!
+//! **Wide-scope trade-off**: the audit runs at the wide `crates/reify-*/src`
+//! scope (same as `new_orphans_2026_05_16_g_allow.rs`), so any name-token
+//! occurrence of a pinned function name elsewhere in that scope — e.g. a local
+//! `let eligible = ...` in another crate — can push `callers > 0`, silently
+//! removing the function from `allowed[]` and tripping assertion (b) without a
+//! real consumer being wired.  The `eligible` pin
+//! (crates/reify-mesh-morph/src/lib.rs) carries the highest collision risk due
+//! to the word's frequency in English.  Before deleting any PINS row after an
+//! assertion-(b) failure, confirm a real call edge was wired:
+//! `rg '\bFN_NAME\b' crates/reify-*/src`.
 //!
 //! Graceful skip: if `python3`, `git`, or the audit script are absent from
 //! PATH/disk the test prints a note to stderr and returns without failing.
@@ -68,6 +78,10 @@ const PINS: &[(&str, &str)] = &[
         "crates/reify-mesh-morph/src/laplacian.rs",
         "laplacian_smooth",
     ),
+    // NOTE: `eligible` is a common English word; at the wide `crates/reify-*/src`
+    // scope a future `let eligible = ...` in any crate could create a name-token
+    // collision (callers > 0 → exits allowed[]).  See module-doc "Wide-scope
+    // trade-off" before deleting this row after an assertion-(b) failure.
     (
         "crates/reify-mesh-morph/src/lib.rs",
         "eligible",
@@ -84,6 +98,8 @@ fn engine_seam_orphans_are_g_allow_marked() {
         return;
     };
 
+    let mut failures: Vec<String> = Vec::new();
+
     for &(file_suffix, fn_name) in PINS {
         // (a) Must NOT appear in orphans[] for the given file.
         let in_orphans = result["orphans"]
@@ -98,14 +114,13 @@ fn engine_seam_orphans_are_g_allow_marked() {
                     && entry["name"].as_str() == Some(fn_name)
             });
 
-        assert!(
-            !in_orphans,
-            "`{fn_name}` in {file_suffix} is still listed as an orphan — \
-             the `// G-allow:` marker may be missing or misplaced (must be \
-             on the line immediately above `pub fn`, with no blank line).\n\
-             Full orphans list:\n{:#}",
-            result["orphans"]
-        );
+        if in_orphans {
+            failures.push(format!(
+                "  FAIL (a) `{fn_name}` ({file_suffix}): still listed as an orphan \
+                 — the `// G-allow:` marker may be missing or misplaced (must be \
+                 on the line immediately above `pub fn`, with no blank line)."
+            ));
+        }
 
         // (b) Must appear EXACTLY ONCE in allowed[] for the given file.
         let matching_allowed: Vec<_> = result["allowed"]
@@ -121,17 +136,36 @@ fn engine_seam_orphans_are_g_allow_marked() {
             })
             .collect();
 
-        assert_eq!(
-            matching_allowed.len(),
-            1,
-            "`{fn_name}` in {file_suffix} must appear exactly once in \
-             allowed[]; found {} entries.  If you just wired a consumer \
-             for `{fn_name}`, delete its row from \
-             PINS in `crates/reify-audit/tests/engine_seam_orphans_g_allow.rs`.\n\
+        if matching_allowed.len() != 1 {
+            let n = matching_allowed.len();
+            let detail = if n == 0 {
+                format!(
+                    "0 entries — either a real consumer call was wired (delete \
+                     this PINS row) OR a same-name token elsewhere in \
+                     `crates/reify-*/src` pushed callers > 0 (incidental \
+                     collision); run `rg '\\b{fn_name}\\b' crates/reify-*/src` \
+                     to distinguish before removing the row."
+                )
+            } else {
+                format!("{n} entries — unexpected duplicate `// G-allow:` markers")
+            };
+            failures.push(format!(
+                "  FAIL (b) `{fn_name}` ({file_suffix}): expected exactly 1 \
+                 entry in allowed[]; {detail}"
+            ));
+        }
+    }
+
+    if !failures.is_empty() {
+        panic!(
+            "{} PINS pin(s) failed:\n{}\n\n\
+             PINS: `crates/reify-audit/tests/engine_seam_orphans_g_allow.rs`\n\
+             Full orphans list:\n{:#}\n\
              Full allowed list:\n{:#}",
-            matching_allowed.len(),
+            failures.len(),
+            failures.join("\n"),
+            result["orphans"],
             result["allowed"]
         );
-
     }
 }
