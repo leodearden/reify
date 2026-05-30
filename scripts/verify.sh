@@ -560,8 +560,8 @@ build_plan() {
     # GUI ecosystem (npm). Rust changes imply these too; they are fast. Only
     # meaningful when there is a GUI check to run — the GUI has a test side
     # (npm test) and a lint side (npm run typecheck) but no `cargo check`
-    # analogue, so a pure typecheck action skips it entirely (matching the
-    # orchestrator's cargo-check-only type_check_command).
+    # analogue, so a pure typecheck action skips it entirely (verify.sh's own
+    # `typecheck` action is cargo-check-only; the GUI ecosystem has no equivalent).
     if [ "$RUN_GUI" -eq 1 ] && { [ "$DO_TEST" -eq 1 ] || [ "$DO_LINT" -eq 1 ]; }; then
         local gui_inner="npm ci"
         [ "$DO_LINT" -eq 1 ] && gui_inner+=" && npm run typecheck"
