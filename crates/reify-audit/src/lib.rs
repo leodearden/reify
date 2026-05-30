@@ -280,6 +280,14 @@ pub trait GitOps {
     /// Returns an empty vec when the branch does not exist or the path has no
     /// added lines.
     fn diff_added_lines(&self, from: &str, to: &str, path: &str) -> Vec<(usize, String)>;
+
+    /// Returns `true` iff `commit` is a valid ancestor of `branch` (reachable
+    /// from it), equivalent to `git merge-base --is-ancestor <commit> <branch>`
+    /// (exit 0 = ancestor, exit 1 = not). Used by P5's scope-extension to
+    /// corroborate a merged task whose runs.db task_completed event is missing.
+    /// Fail-safe: returns `false` on any git error or spawn failure (exit 128
+    /// from an unknown commit correctly maps to "not an ancestor").
+    fn is_ancestor(&self, commit: &str, branch: &str) -> bool;
 }
 
 /// Production [`GitOps`] impl that shells out to `git`. Untested by the
@@ -460,6 +468,23 @@ impl GitOps for RealGitOps {
         }
     }
 
+    fn is_ancestor(&self, commit: &str, branch: &str) -> bool {
+        // Use .output() (not .status()) so git's stderr ("fatal: not a git
+        // repository", "fatal: Not a valid commit name", etc.) is captured and
+        // does not leak to our process's stderr / corrupt JSON output.
+        // exit 0 = ancestor; exit 1 = not an ancestor; exit 128 = bad object
+        // or not-a-repo — all non-zero cases correctly map to false (fail-safe).
+        match std::process::Command::new("git")
+            .arg("-C")
+            .arg(&self.project_root)
+            .args(["merge-base", "--is-ancestor", commit, branch])
+            .output()
+        {
+            Ok(out) => out.status.code() == Some(0),
+            Err(_) => false,
+        }
+    }
+
     fn diff_added_lines(&self, from: &str, to: &str, path: &str) -> Vec<(usize, String)> {
         let Some(stdout) = self.run_or_warn(
             "diff",
@@ -517,6 +542,7 @@ pub struct MockGitOps {
     is_gitignored: HashMap<String, bool>,
     diff_added_lines: HashMap<(String, String, String), Vec<(usize, String)>>,
     path_tracked_on: HashMap<(String, String), bool>,
+    is_ancestor: HashMap<(String, String), bool>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -560,6 +586,12 @@ impl MockGitOps {
         self.path_tracked_on
             .insert((branch.to_string(), path.to_string()), present);
     }
+
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn set_is_ancestor(&mut self, commit: &str, branch: &str, ancestor: bool) {
+        self.is_ancestor
+            .insert((commit.to_string(), branch.to_string()), ancestor);
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -592,6 +624,13 @@ impl GitOps for MockGitOps {
     fn path_tracked_on(&self, branch: &str, path: &str) -> bool {
         self.path_tracked_on
             .get(&(branch.to_string(), path.to_string()))
+            .copied()
+            .unwrap_or(false)
+    }
+
+    fn is_ancestor(&self, commit: &str, branch: &str) -> bool {
+        self.is_ancestor
+            .get(&(commit.to_string(), branch.to_string()))
             .copied()
             .unwrap_or(false)
     }
