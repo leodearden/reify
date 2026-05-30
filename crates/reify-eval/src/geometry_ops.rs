@@ -2398,6 +2398,7 @@ fn dispatch_filtered_list(
 /// Defensively warns + skips any retained id absent from the canonical list
 /// rather than crashing — surfaces a malformed kernel state as a
 /// shorter-than-expected list rather than total cell collapse.
+#[allow(clippy::too_many_arguments)]
 fn dispatch_filtered_subhandles(
     kernel: &mut dyn reify_ir::GeometryKernel,
     parent_kernel_handle: GeometryHandleId,
