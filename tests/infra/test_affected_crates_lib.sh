@@ -39,4 +39,16 @@ echo "--- C4: global files force ALL ---"
 assert "Cargo.lock forces ALL" \
     test "$(affected_crates Cargo.lock)" = "ALL"
 
+# ---------------------------------------------------------------------------
+# Step 3: C1/§5 non-crate paths — no crates contributed, must NOT force ALL
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- §5 non-crate paths contribute nothing (not ALL) ---"
+
+assert "docs path -> empty" \
+    test -z "$(affected_crates docs/architecture/x.md)"
+
+assert "gui frontend -> empty" \
+    test -z "$(affected_crates gui/src/App.tsx)"
+
 test_summary
