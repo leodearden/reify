@@ -795,46 +795,20 @@ mod tests {
     /// Run `check_trait_conformance` against the given traits and structure, returning all
     /// diagnostics emitted.
     ///
-    /// Centralises the ~20-line scaffolding (scope/value_cells/constraints init, registry
-    /// construction, alias_registry, the call itself) that would otherwise be repeated
-    /// verbatim in every conformance unit test.  Each test only needs to build its trait
-    /// and structure fixtures and then assert on the returned `Vec<Diagnostic>`.
+    /// Thin wrapper over [`run_conformance_with_assoc_fns`] that discards the
+    /// populated assoc-fn table — the two differ ONLY in whether they surface
+    /// that table, so the shared ~20-line scaffolding (scope/value_cells/
+    /// constraints init, registry construction, alias_registry, the 13-arg call
+    /// itself) lives in exactly one place and a future signature change to
+    /// `check_trait_conformance` is edited once. Each test only needs to build
+    /// its trait and structure fixtures and then assert on the returned
+    /// `Vec<Diagnostic>`.
     fn run_conformance(
         traits: &[CompiledTrait],
         structure_def: &reify_ast::StructureDef,
         enum_defs: &[reify_ir::EnumDef],
     ) -> Vec<Diagnostic> {
-        let entity_ref = EntityDefRef::from(structure_def);
-        let trait_registry: HashMap<String, &CompiledTrait> =
-            traits.iter().map(|t| (t.name.clone(), t)).collect();
-        let trait_names: HashSet<String> = trait_registry.keys().cloned().collect();
-        let structure_names: HashSet<String> = HashSet::new();
-        let mut scope = CompilationScope::new(&structure_def.name);
-        let mut value_cells: Vec<ValueCellDecl> = vec![];
-        let mut constraints: Vec<CompiledConstraint> = vec![];
-        let mut constraint_index = 0u32;
-        let functions: &[CompiledFunction] = &[];
-        let alias_registry = TypeAliasRegistry::new();
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        let mut assoc_fns: Vec<CompiledAssocFn> = vec![];
-
-        check_trait_conformance(
-            &entity_ref,
-            &trait_registry,
-            &structure_names,
-            &trait_names,
-            &mut scope,
-            &mut value_cells,
-            &mut constraints,
-            &mut constraint_index,
-            enum_defs,
-            functions,
-            &alias_registry,
-            &mut diagnostics,
-            &mut assoc_fns,
-        );
-
-        diagnostics
+        run_conformance_with_assoc_fns(traits, structure_def, enum_defs).0
     }
 
     /// RED (task 3939 δ, step-3): a required associated function that the
@@ -1316,6 +1290,110 @@ mod tests {
             entry.function.content_hash, assoc_default[0].function.content_hash,
             "the override body (2.0) must compile to a different content hash than \
              the injected default body (1.0)"
+        );
+    }
+
+    /// Regression (task 3939 δ, reviewer amendment): overriding a trait's
+    /// default-providing assoc fn with a MISMATCHED signature must surface
+    /// `TraitFnSignatureMismatch` and keep the wrongly-typed override OUT of the
+    /// dispatch table. A default-only fn produces no `RequirementKind::Fn`, so
+    /// phase 5 never checks it — `check_phase_resolve_assoc_fns` is the sole
+    /// validation site (PRD §5.4 exact-match-for-overrides). Before the
+    /// amendment the bad override landed in the table with no diagnostic.
+    #[test]
+    fn override_of_default_assoc_fn_with_wrong_signature_emits_mismatch_and_skips_table() {
+        // Trait default `fn area(self) -> Real { 1.0 }`.
+        let shape = shape_with_default_fn("area", 1.0);
+        // Structure overrides with `fn area(self) -> Length { 0.0 }` (Length != Real).
+        let s_override = structure_s_conforming_shape(vec![assoc_fn_member(
+            "area",
+            vec![assoc_self_param()],
+            "Length",
+        )]);
+
+        let (diagnostics, assoc_fns) = run_conformance_with_assoc_fns(&[shape], &s_override, &[]);
+
+        let mismatch: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::TraitFnSignatureMismatch))
+            .collect();
+        assert_eq!(
+            mismatch.len(),
+            1,
+            "a default override with a wrong return type must emit exactly one \
+             TraitFnSignatureMismatch; got: {:?}",
+            diagnostics
+        );
+        assert!(
+            mismatch[0].message.contains("area"),
+            "signature-mismatch diagnostic should name the fn 'area'; got: {}",
+            mismatch[0].message
+        );
+        // The wrongly-typed override must NOT enter the dispatch table — task ζ
+        // would otherwise key dispatch on an entry inconsistent with the error.
+        assert!(
+            assoc_fns.is_empty(),
+            "a signature-mismatched default override must be kept out of the \
+             assoc-fn table; got: {:?}",
+            assoc_fns
+        );
+    }
+
+    /// Regression (task 3939 δ, reviewer amendment): a required-fn override whose
+    /// return annotation is UNRESOLVABLE must yield exactly one diagnostic — the
+    /// `UnresolvedType` from `compile_assoc_function` — with NO accompanying
+    /// `TraitFnSignatureMismatch`. The structure-derived sig carries `Type::Error`,
+    /// which `assoc_fn_sig_has_error` recognises so the otherwise-spurious mismatch
+    /// is suppressed (the sig "differs" only because resolution failed). Locks in
+    /// the documented anti-cascade contract (one root cause → one diagnostic) and
+    /// confirms the errored override is also kept out of the dispatch table.
+    #[test]
+    fn required_assoc_fn_override_with_unresolved_annotation_yields_single_diagnostic() {
+        // Trait requires bodyless `fn area(self) -> Real`.
+        let shape = shape_requiring_fn("area");
+        // Structure provides `fn area(self) -> Nonexistent { 0.0 }` — the return
+        // annotation does not resolve to any built-in / alias / structure / trait.
+        let s_override = structure_s_conforming_shape(vec![assoc_fn_member(
+            "area",
+            vec![assoc_self_param()],
+            "Nonexistent",
+        )]);
+
+        let (diagnostics, assoc_fns) = run_conformance_with_assoc_fns(&[shape], &s_override, &[]);
+
+        let unresolved: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::UnresolvedType))
+            .collect();
+        assert_eq!(
+            unresolved.len(),
+            1,
+            "the unresolved return annotation should produce exactly one \
+             UnresolvedType diagnostic; got: {:?}",
+            diagnostics
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.code == Some(DiagnosticCode::TraitFnSignatureMismatch)),
+            "the Type::Error sig must suppress a spurious TraitFnSignatureMismatch \
+             (anti-cascade: one root cause, one diagnostic); got: {:?}",
+            diagnostics
+        );
+        // The fn IS present (just mis-annotated), so absence is not the failure.
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.code == Some(DiagnosticCode::TraitFnNotSatisfied)),
+            "the fn 'area' is present — TraitFnNotSatisfied must NOT fire; got: {:?}",
+            diagnostics
+        );
+        // The errored override must not enter the dispatch table.
+        assert!(
+            assoc_fns.is_empty(),
+            "an errored / sig-mismatched required override must be kept out of the \
+             assoc-fn table; got: {:?}",
+            assoc_fns
         );
     }
 
