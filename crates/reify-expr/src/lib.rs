@@ -2316,6 +2316,34 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
                 }
             }
         }
+        // Real/Int + Complex{DIMENSIONLESS} or Complex{DIMENSIONLESS} + Real/Int:
+        // Promote the dimensionless scalar to a Complex and sum. Addition is commutative,
+        // so both orderings are handled by the combined `|` pattern.
+        // A dimensioned Complex (e.g. Complex{LENGTH}) → Undef (dimensionless-only, D3).
+        (Value::Real(a), Value::Complex { re, im, dimension })
+        | (Value::Complex { re, im, dimension }, Value::Real(a)) => {
+            if *dimension != DimensionVector::DIMENSIONLESS {
+                Value::Undef
+            } else {
+                Value::Complex {
+                    re: a + re,
+                    im: *im,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                }
+            }
+        }
+        (Value::Int(a), Value::Complex { re, im, dimension })
+        | (Value::Complex { re, im, dimension }, Value::Int(a)) => {
+            if *dimension != DimensionVector::DIMENSIONLESS {
+                Value::Undef
+            } else {
+                Value::Complex {
+                    re: *a as f64 + re,
+                    im: *im,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                }
+            }
+        }
         (Value::String(a), Value::String(b)) => Value::String(format!("{}{}", a, b)),
         // Component-wise Tensor addition (with rank-2 validation)
         (Value::Tensor(a), Value::Tensor(b)) => {
