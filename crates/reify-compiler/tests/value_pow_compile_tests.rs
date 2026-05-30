@@ -21,7 +21,7 @@
 
 mod common;
 
-use common::{UNIT_EPSILON, expect_binop, expect_scalar};
+use common::expect_binop;
 use reify_test_support::{compile_source, errors_only};
 use reify_core::{DimensionVector, Type};
 use reify_ir::BinOp;
