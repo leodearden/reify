@@ -441,6 +441,28 @@ mod tests {
         let _: StiffnessRule = StiffnessRule::InverseEdgeLengthSquared;
     };
 
+    // ── task 2948: lib re-export fence for the diagnostics surface ───────────
+
+    // Compile fence: verifies the diagnostics surface is re-exported from the
+    // crate root. `snapshot` is referenced via the `diagnostics::` module path
+    // (NOT bare) to avoid colliding with the existing `stats::snapshot`
+    // re-export. Dropping any re-export breaks compilation immediately.
+    const _: fn() = || {
+        use crate::{
+            DiagnosticSnapshot, MorphOutcome, format_summary, record_ineligible, record_morphed,
+            record_panicked, record_quality_remesh,
+        };
+        let _: fn() = record_morphed;
+        let _: fn(&crate::QualityVerdict) = record_quality_remesh;
+        let _: fn(&crate::Reason) = record_ineligible;
+        let _: fn(&str) = record_panicked;
+        let _: fn(&DiagnosticSnapshot) -> String = format_summary;
+        let _: Option<MorphOutcome> = None;
+        // `snapshot` via the module path, not a bare re-export (avoids the
+        // collision with `stats::snapshot`).
+        let _: fn() -> DiagnosticSnapshot = crate::diagnostics::snapshot;
+    };
+
     // ── Step 1 (task 3153): pin the by-value `eligible` signature ────────────
 
     // Compile fence: fails to compile until `eligible` takes `BRep` by value.
