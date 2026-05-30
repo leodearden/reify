@@ -15,14 +15,17 @@
 //!
 //! - [`element_stress_p1`] — per-element constant Cauchy stress
 //!   `σ_e = D · B · u_e` returned as a 3×3 symmetric tensor (Voigt is
-//!   internal to the multiplication).
+//!   internal to the multiplication). P1 (4-node, 12-DOF) element.
+//! - [`element_stress_p2`] — centroid-sampled Cauchy stress for a P2
+//!   (10-node, 30-DOF) tetrahedron. Supplies the constant `σ⁰` per
+//!   element for the P2 buckling pipeline (`solve_buckling_kernel_p2`).
 //! - [`tet_volume_p1`] — `|det J| / 6` from the affine map.
 //! - [`recover_nodal_stress_p1`] + [`StressElement`] — volume-weighted
 //!   averaging across incident elements, producing a continuous nodal
 //!   stress field interpolatable via the same P1 shape functions.
 
 use crate::constitutive::IsotropicElastic;
-use crate::elements::{ReferenceCoord, ReferenceElement, tet_p1::TetP1};
+use crate::elements::{ReferenceCoord, ReferenceElement, tet_p1::TetP1, tet_p2::TetP2};
 use crate::math::{MIN_JACOBIAN_DET, inverse_transpose_3x3};
 
 /// Compute the constant per-element Cauchy stress tensor for a P1
@@ -144,6 +147,118 @@ pub fn element_stress_p1(
     }
 
     // Unpack to symmetric 3×3 tensor.
+    [
+        [sigma_voigt[0], sigma_voigt[3], sigma_voigt[5]],
+        [sigma_voigt[3], sigma_voigt[1], sigma_voigt[4]],
+        [sigma_voigt[5], sigma_voigt[4], sigma_voigt[2]],
+    ]
+}
+
+/// Compute the centroid-sampled per-element Cauchy stress tensor for a P2
+/// (quadratic, 10-node) tetrahedron: `σ_e = D · B(centroid) · u_e`.
+///
+/// Returns a 3×3 symmetric tensor in the same layout as
+/// [`element_stress_p1`]: `[[σxx, σxy, σxz], [σxy, σyy, σyz], [σxz, σyz,
+/// σzz]]`. The result is a constant per-element `σ⁰` suitable for the P2
+/// buckling pipeline ([`crate::buckling_kernel`]'s `solve_buckling_kernel_p2`).
+///
+/// # Algorithm
+///
+/// Mirrors [`element_stress_p1`] at the P2 surface:
+/// 1. Compute reference gradients at the centroid `(0.25, 0.25, 0.25)` via
+///    [`TetP2::shape_grad_at`]. For straight-edge P2 tets the Jacobian is
+///    constant, so the centroid is as good as any other point.
+/// 2. Compute the forward Jacobian `J_ij = Σ_k phys_nodes[k][i] · ∇ξ N_k[j]`
+///    from all 10 nodes.
+/// 3. Push reference gradients to physical: `∇x N_i = J⁻ᵀ · ∇ξ N_i`.
+/// 4. Build the 6×30 strain-displacement matrix `B` with the same
+///    engineering-shear Voigt convention as `assembly/tet.rs:208-222`.
+/// 5. Compute `ε_voigt = B · u_e` (engineering strain, length 6).
+/// 6. Compute `σ_voigt = D · ε_voigt` via [`IsotropicElastic::d_matrix`].
+/// 7. Unpack to the symmetric 3×3 tensor.
+///
+/// # Voigt convention
+///
+/// Identical to [`element_stress_p1`] — see that doc for full details.
+/// The uniaxial-strain patch test
+/// (`element_stress_p2_uniaxial_strain_patch_test_recovers_lame_diagonal`)
+/// pins the layout: `u(x) = (a·x, 0, 0)` round-trips to
+/// `σ = diag((λ+2μ)·a, λ·a, λ·a)` exactly.
+///
+/// # Preconditions
+///
+/// The tet must be non-degenerate (`det J != 0`).
+#[allow(clippy::needless_range_loop)]
+pub fn element_stress_p2(
+    phys_nodes: &[[f64; 3]; 10],
+    material: &IsotropicElastic,
+    u_e: &[f64; 30],
+) -> [[f64; 3]; 3] {
+    const N_NODES: usize = 10;
+
+    // Reference gradients at the centroid (constant Jacobian for straight-edge P2).
+    let grads_ref = TetP2.shape_grad_at(ReferenceCoord::new(0.25, 0.25, 0.25));
+
+    // Forward Jacobian J_ij = Σ_k phys_nodes[k][i] · grads_ref[k][j].
+    let mut j_mat = [[0.0_f64; 3]; 3];
+    for k in 0..N_NODES {
+        for i in 0..3 {
+            for j in 0..3 {
+                j_mat[i][j] += phys_nodes[k][i] * grads_ref[k][j];
+            }
+        }
+    }
+    let det = j_mat[0][0] * (j_mat[1][1] * j_mat[2][2] - j_mat[1][2] * j_mat[2][1])
+        - j_mat[0][1] * (j_mat[1][0] * j_mat[2][2] - j_mat[1][2] * j_mat[2][0])
+        + j_mat[0][2] * (j_mat[1][0] * j_mat[2][1] - j_mat[1][1] * j_mat[2][0]);
+
+    debug_assert!(
+        det.is_normal() && det.abs() > MIN_JACOBIAN_DET,
+        "degenerate tet in element_stress_p2: |det J| = {} (must be > {} and finite)",
+        det.abs(),
+        MIN_JACOBIAN_DET,
+    );
+    let j_inv_t = inverse_transpose_3x3(&j_mat, det);
+
+    // Push to physical gradients: ∇x N_i = J⁻ᵀ · ∇ξ N_i.
+    let mut grads_phys = [[0.0_f64; 3]; N_NODES];
+    for i in 0..N_NODES {
+        for r in 0..3 {
+            let mut s = 0.0;
+            for c in 0..3 {
+                s += j_inv_t[r][c] * grads_ref[i][c];
+            }
+            grads_phys[i][r] = s;
+        }
+    }
+
+    // Build B (6×30) and compute ε_voigt = B · u_e in one fused loop.
+    // Same engineering-shear Voigt row layout as element_stress_p1 / assembly/tet.rs:208-222,
+    // generalised to N_NODES nodes (30 DOFs instead of 12).
+    let mut eps = [0.0_f64; 6];
+    for i in 0..N_NODES {
+        let (gx, gy, gz) = (grads_phys[i][0], grads_phys[i][1], grads_phys[i][2]);
+        let (ux, uy, uz) = (u_e[3 * i], u_e[3 * i + 1], u_e[3 * i + 2]);
+        eps[0] += gx * ux;
+        eps[1] += gy * uy;
+        eps[2] += gz * uz;
+        eps[3] += gy * ux + gx * uy;
+        eps[4] += gz * uy + gy * uz;
+        eps[5] += gz * ux + gx * uz;
+    }
+
+    // σ_voigt = D · ε_voigt.
+    let d_mat = material.d_matrix();
+    let mut sigma_voigt = [0.0_f64; 6];
+    for i in 0..6 {
+        let mut s = 0.0;
+        for j in 0..6 {
+            s += d_mat[i][j] * eps[j];
+        }
+        sigma_voigt[i] = s;
+    }
+
+    // Unpack to symmetric 3×3 tensor (same layout as element_stress_p1).
     [
         [sigma_voigt[0], sigma_voigt[3], sigma_voigt[5]],
         [sigma_voigt[3], sigma_voigt[1], sigma_voigt[4]],

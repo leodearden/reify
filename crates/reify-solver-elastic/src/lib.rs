@@ -430,7 +430,9 @@ pub use progressive::{
     TerminationReason, coarse_pass_tuning, near_constraint_boundary, refinement_pass_tuning,
     should_refine,
 };
-pub use result::{StressElement, element_stress_p1, recover_nodal_stress_p1, tet_volume_p1};
+pub use result::{
+    StressElement, element_stress_p1, element_stress_p2, recover_nodal_stress_p1, tet_volume_p1,
+};
 pub use shell_assembly::{
     ShellFrame, build_shell_frame, plane_stress_d, shell_element_stiffness,
     shell_element_stiffness_mitc3_plus,
