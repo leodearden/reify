@@ -785,6 +785,93 @@ pub(super) fn check_phase_build_available_defaults_map(
         .collect()
 }
 
+/// Derive the exact-match [`CompiledAssocFnSig`] for every structure-body
+/// associated function (`MemberDecl::Fn`), keyed by fn name.
+///
+/// Conformer-side sibling of `traits::assoc_fn_sig`: the leading `is_self`
+/// receiver is recorded as `has_self` and excluded from `params`; every other
+/// param's `type_expr` and the `return_type` resolve through
+/// `resolve_type_expr_with_aliases` — the SAME resolver the trait side funnels
+/// through — so the structure-derived sig is directly `PartialEq`-comparable
+/// with the trait-derived requirement sig. A missing return type defaults to
+/// `Type::Real`, matching `compile_function` / `assoc_fn_sig`.
+///
+/// Resolution here is deliberately side-effect-free: a failure resolves to
+/// `Type::Error` and emits NO diagnostic (a throwaway sink absorbs any the
+/// resolver pushes). δ is producer-only and this map exists only to compare
+/// signatures; a genuinely unresolvable structure-fn annotation is reported
+/// when the structure body is compiled (entity.rs) or the override is compiled
+/// into the assoc-fn table (task ζ), not duplicated here. (task 3939 δ)
+pub(super) fn collect_structure_assoc_fn_sigs(
+    structure: &EntityDefRef<'_>,
+    alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
+    trait_names: &HashSet<String>,
+) -> HashMap<String, CompiledAssocFnSig> {
+    let empty_params: HashSet<String> = HashSet::new();
+    let mut sigs: HashMap<String, CompiledAssocFnSig> = HashMap::new();
+    for m in structure.members.iter() {
+        if let reify_ast::MemberDecl::Fn(fn_def) = m {
+            // Throwaway sink: signature derivation must not emit or duplicate diagnostics.
+            let mut sink: Vec<Diagnostic> = Vec::new();
+            let mut has_self = false;
+            let mut params = Vec::new();
+            for p in &fn_def.params {
+                if p.is_self {
+                    has_self = true;
+                    continue;
+                }
+                let ty = resolve_type_expr_with_aliases(
+                    &p.type_expr,
+                    &empty_params,
+                    alias_registry,
+                    &mut sink,
+                    structure_names,
+                    trait_names,
+                )
+                .unwrap_or(Type::Error);
+                params.push(ty);
+            }
+            let return_type = match &fn_def.return_type {
+                Some(te) => resolve_type_expr_with_aliases(
+                    te,
+                    &empty_params,
+                    alias_registry,
+                    &mut sink,
+                    structure_names,
+                    trait_names,
+                )
+                .unwrap_or(Type::Error),
+                None => Type::Real,
+            };
+            sigs.insert(
+                fn_def.name.clone(),
+                CompiledAssocFnSig {
+                    name: fn_def.name.clone(),
+                    has_self,
+                    params,
+                    return_type,
+                },
+            );
+        }
+    }
+    sigs
+}
+
+/// Render a [`CompiledAssocFnSig`] in source-like form for diagnostics, e.g.
+/// `fn area(self) -> Real` or `fn scale(self, Real) -> Length`. Used by the
+/// phase-5 signature-mismatch diagnostic. (task 3939 δ)
+fn render_assoc_fn_sig(sig: &CompiledAssocFnSig) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if sig.has_self {
+        parts.push("self".to_string());
+    }
+    for p in &sig.params {
+        parts.push(p.to_string());
+    }
+    format!("fn {}({}) -> {}", sig.name, parts.join(", "), sig.return_type)
+}
+
 /// Phase 5 of trait conformance checking: verify structure members against trait requirements.
 ///
 /// For each requirement in `ctx.requirements`, checks that either:
@@ -818,6 +905,10 @@ pub(super) fn check_phase_check_members_against_requirements(
     structure_param_members: &HashMap<String, Type>,
     structure_let_members: &HashMap<String, Type>,
     available_defaults: &HashMap<(String, AvailableDefaultKind), Type>,
+    // Exact-match signatures of the structure's own `fn` members, keyed by fn
+    // name (built by `collect_structure_assoc_fn_sigs`). Consulted by the
+    // `RequirementKind::Fn` arm to verify a provided assoc fn's signature.
+    structure_fn_sigs: &HashMap<String, CompiledAssocFnSig>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     for req in &ctx.requirements {
@@ -849,38 +940,74 @@ pub(super) fn check_phase_check_members_against_requirements(
                 }
                 continue;
             }
-            // Assoc-fn requirement: satisfied when the structure declares a
-            // `fn` member of the same name, OR a trait `DefaultKind::Fn` of
-            // that name was merged in (a default-providing assoc fn). Otherwise
-            // emit `TraitFnNotSatisfied` naming the declaring trait + fn.
-            // Exact signature matching for a provided fn is added in step-6.
-            // (task 3939 δ step-4)
-            RequirementKind::Fn(_) => {
-                let provided_by_structure = structure.members.iter().any(|m| {
-                    matches!(m, reify_ast::MemberDecl::Fn(f) if f.name == req.name)
-                });
-                let provided_by_default = ctx.defaults.iter().any(|d| {
-                    d.name.as_deref() == Some(req.name.as_str())
-                        && matches!(d.kind, DefaultKind::Fn(_))
-                });
-                if !provided_by_structure && !provided_by_default {
-                    let declaring_trait = ctx
-                        .seen_fn_sigs
+            // Assoc-fn requirement (task 3939 δ). Three outcomes:
+            //   * structure provides a `fn` of this name → exact-match its
+            //     signature (§5.4: self-ness, param types, return type — no
+            //     subtyping) against the requirement; on mismatch emit
+            //     `TraitFnSignatureMismatch`. A present-but-mismatched fn is a
+            //     DISTINCT failure mode from a missing one, so it must NOT also
+            //     fire `TraitFnNotSatisfied`.
+            //   * structure does not provide it, but a trait `DefaultKind::Fn`
+            //     of the same name was merged in → satisfied by the default.
+            //   * neither → emit `TraitFnNotSatisfied` naming the trait + fn.
+            RequirementKind::Fn(expected_sig) => {
+                // Resolve the declaring trait lazily — only needed on a failure path.
+                let declaring_trait = || {
+                    ctx.seen_fn_sigs
                         .get(&req.name)
                         .map(|(_, t)| t.clone())
-                        .unwrap_or_else(|| "<trait>".to_string());
-                    diagnostics.push(
-                        Diagnostic::error(format!(
-                            "associated function '{}' required by trait '{}' is not \
-                             satisfied by structure '{}'",
-                            req.name, declaring_trait, structure.name
-                        ))
-                        .with_code(DiagnosticCode::TraitFnNotSatisfied)
-                        .with_label(DiagnosticLabel::new(
-                            structure.span,
-                            "required associated function not provided",
-                        )),
-                    );
+                        .unwrap_or_else(|| "<trait>".to_string())
+                };
+                match structure_fn_sigs.get(&req.name) {
+                    Some(actual_sig) => {
+                        // Present → exact `PartialEq` match. The structure-derived
+                        // sig and the requirement sig both resolve through
+                        // `resolve_type_expr_with_aliases`, so equal annotations
+                        // compare equal.
+                        if actual_sig != expected_sig {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "associated function '{}' provided by structure '{}' has \
+                                     signature `{}` but trait '{}' requires `{}`",
+                                    req.name,
+                                    structure.name,
+                                    render_assoc_fn_sig(actual_sig),
+                                    declaring_trait(),
+                                    render_assoc_fn_sig(expected_sig),
+                                ))
+                                .with_code(DiagnosticCode::TraitFnSignatureMismatch)
+                                .with_label(DiagnosticLabel::new(
+                                    structure.span,
+                                    "associated function signature does not match the trait",
+                                )),
+                            );
+                        }
+                    }
+                    None => {
+                        // Absent from the structure: a same-name `DefaultKind::Fn`
+                        // (default-providing assoc fn) satisfies it; otherwise it
+                        // is unsatisfied.
+                        let provided_by_default = ctx.defaults.iter().any(|d| {
+                            d.name.as_deref() == Some(req.name.as_str())
+                                && matches!(d.kind, DefaultKind::Fn(_))
+                        });
+                        if !provided_by_default {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "associated function '{}' required by trait '{}' is not \
+                                     satisfied by structure '{}'",
+                                    req.name,
+                                    declaring_trait(),
+                                    structure.name
+                                ))
+                                .with_code(DiagnosticCode::TraitFnNotSatisfied)
+                                .with_label(DiagnosticLabel::new(
+                                    structure.span,
+                                    "required associated function not provided",
+                                )),
+                            );
+                        }
+                    }
                 }
                 continue;
             }

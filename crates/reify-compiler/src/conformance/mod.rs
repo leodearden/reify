@@ -49,6 +49,11 @@ pub(crate) fn check_trait_conformance(
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
 
+    // Derive the structure's own assoc-fn signatures (task 3939 δ) so phase 5
+    // can exact-match a provided `fn` override against its trait requirement.
+    let structure_fn_sigs =
+        collect_structure_assoc_fn_sigs(structure, alias_registry, structure_names, trait_names);
+
     let ctx = check_phase_collect_trait_bounds(
         structure,
         trait_registry,
@@ -81,6 +86,7 @@ pub(crate) fn check_trait_conformance(
         &structure_param_members,
         &structure_let_members,
         &available_defaults,
+        &structure_fn_sigs,
         diagnostics,
     );
 
@@ -1645,6 +1651,8 @@ mod tests {
             &empty_param_members,
             &empty_let_members,
             &available_defaults,
+            // No structure assoc fns in this test.
+            &HashMap::<String, CompiledAssocFnSig>::new(),
             &mut diagnostics,
         );
 
@@ -3473,6 +3481,8 @@ mod tests {
             &structure_param_members,
             &structure_let_members,
             &available_defaults,
+            // No structure assoc fns in this test.
+            &HashMap::<String, CompiledAssocFnSig>::new(),
             &mut diagnostics,
         );
 
@@ -3543,6 +3553,8 @@ mod tests {
             &structure_param_members,
             &structure_let_members,
             &available_defaults,
+            // No structure assoc fns in this test.
+            &HashMap::<String, CompiledAssocFnSig>::new(),
             &mut diagnostics,
         );
 
@@ -3613,6 +3625,8 @@ mod tests {
             &structure_param_members,
             &structure_let_members,
             &available_defaults,
+            // No structure assoc fns in this test.
+            &HashMap::<String, CompiledAssocFnSig>::new(),
             &mut diagnostics,
         );
 
@@ -3680,6 +3694,8 @@ mod tests {
             &structure_param_members,
             &structure_let_members,
             &available_defaults,
+            // No structure assoc fns in this test.
+            &HashMap::<String, CompiledAssocFnSig>::new(),
             &mut diagnostics,
         );
 
@@ -3742,6 +3758,8 @@ mod tests {
             &structure_param_members,
             &structure_let_members,
             &available_defaults,
+            // No structure assoc fns in this test.
+            &HashMap::<String, CompiledAssocFnSig>::new(),
             &mut diagnostics,
         );
 
