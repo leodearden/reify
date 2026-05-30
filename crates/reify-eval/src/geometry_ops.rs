@@ -9175,6 +9175,7 @@ mod tests {
     /// Build a `CompiledExpr` for `helper(member_a, member_b, member_c)` where
     /// all three args are ValueRefs. Mirrors `topology_selector_call_two_value_refs`
     /// but with a third arg — used by the geo_equiv 3-arg dispatch tests.
+    #[allow(clippy::too_many_arguments)]
     fn topology_selector_call_three_value_refs(
         helper_name: &str,
         entity: &str,
