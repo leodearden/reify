@@ -604,28 +604,76 @@ pub(crate) fn compile_expr_guarded(
             }
         }
         reify_ast::ExprKind::QuantityLiteral { value, unit } => {
-            // Only bare units resolve here. Compound unit expressions (Mul/Div/Pow)
-            // need registry folding (factor product + dimension-vector sum), which
-            // lands in task γ (3803). Emit a placeholder diagnostic until then.
+            // Route compound unit expressions (Mul/Div/Pow) through resolve_unit_expr,
+            // which folds the factor product and dimension vector.  The bare-unit path
+            // (UnitExpr::Unit(name)) is left unchanged — it handles affine units like
+            // `20degC` correctly via lookup_unit_in_registry / unit_to_scalar (offset
+            // applied), whereas resolve_unit_expr rejects ALL offset units.
             let unit = match unit {
                 reify_ast::UnitExpr::Unit(name) => name,
-                reify_ast::UnitExpr::Mul(..)
+                compound @ (reify_ast::UnitExpr::Mul(..)
                 | reify_ast::UnitExpr::Div(..)
-                | reify_ast::UnitExpr::Pow(..) => {
-                    diagnostics.push(
-                        Diagnostic::error(
-                            "compound unit expressions are not yet supported; \
-                             resolver lands in task γ (3803)"
-                                .to_string(),
-                        )
-                        .with_label(DiagnosticLabel::new(expr.span, "compound unit")),
-                    );
-                    return CompiledExpr::literal(
-                        Value::Undef,
-                        Type::Scalar {
-                            dimension: DimensionVector::DIMENSIONLESS,
-                        },
-                    );
+                | reify_ast::UnitExpr::Pow(..)) => {
+                    match scope.unit_registry {
+                        Some(registry) => {
+                            match resolve_unit_expr(compound, registry, expr.span) {
+                                Ok((factor, dimension)) => {
+                                    let si_value = value * factor;
+                                    if !si_value.is_finite() {
+                                        diagnostics.push(
+                                            Diagnostic::error(
+                                                "overflow in quantity literal: result is not finite"
+                                                    .to_string(),
+                                            )
+                                            .with_label(DiagnosticLabel::new(
+                                                expr.span,
+                                                "non-finite result",
+                                            )),
+                                        );
+                                        return CompiledExpr::literal(
+                                            Value::Undef,
+                                            Type::Scalar {
+                                                dimension: DimensionVector::DIMENSIONLESS,
+                                            },
+                                        );
+                                    }
+                                    return CompiledExpr::literal(
+                                        Value::Scalar { si_value, dimension },
+                                        Type::Scalar { dimension },
+                                    );
+                                }
+                                Err(e) => {
+                                    diagnostics.push(unit_resolve_error_to_diagnostic(&e));
+                                    return CompiledExpr::literal(
+                                        Value::Undef,
+                                        Type::Scalar {
+                                            dimension: DimensionVector::DIMENSIONLESS,
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                        None => {
+                            // Defensive path: compound units require a unit registry.
+                            // This branch is unreachable from entity/param scopes (which
+                            // always seed the registry), but emitting a diagnostic here
+                            // avoids silent mis-resolution if a compound literal ever
+                            // appears in a registry-less bootstrap scope.
+                            diagnostics.push(
+                                Diagnostic::error(
+                                    "compound unit expression requires a unit registry in scope"
+                                        .to_string(),
+                                )
+                                .with_label(DiagnosticLabel::new(expr.span, "compound unit")),
+                            );
+                            return CompiledExpr::literal(
+                                Value::Undef,
+                                Type::Scalar {
+                                    dimension: DimensionVector::DIMENSIONLESS,
+                                },
+                            );
+                        }
+                    }
                 }
             };
             // Check the unit registry first (for user-declared units), then fall back to hardcoded.

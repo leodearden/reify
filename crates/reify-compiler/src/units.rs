@@ -569,6 +569,38 @@ pub enum UnitResolveError {
     ExponentOutOfRange { exponent: i32, span: SourceSpan },
 }
 
+/// Convert a [`UnitResolveError`] into a user-facing [`Diagnostic`].
+///
+/// Centralises diagnostic messaging for compound unit resolution failures so
+/// that both call sites (`expr.rs` and `type_resolution.rs`) emit consistent
+/// error messages, and a future fourth `UnitResolveError` variant is handled in
+/// exactly one place.
+///
+/// The span embedded in each error variant is used as the diagnostic label
+/// location — it equals the `expr.span` threaded into `resolve_unit_expr` at
+/// the call site, which covers the entire quantity literal source region.
+pub(crate) fn unit_resolve_error_to_diagnostic(err: &UnitResolveError) -> Diagnostic {
+    match err {
+        UnitResolveError::UnknownUnit { name, span } => Diagnostic::error(format!(
+            "unknown unit: {}",
+            name
+        ))
+        .with_label(DiagnosticLabel::new(*span, "unrecognized unit")),
+
+        UnitResolveError::AffineUnitInCompound { name, span } => Diagnostic::error(format!(
+            "affine (offset) unit '{}' cannot be used in a compound unit expression",
+            name
+        ))
+        .with_label(DiagnosticLabel::new(*span, "affine unit in compound")),
+
+        UnitResolveError::ExponentOutOfRange { exponent, span } => Diagnostic::error(format!(
+            "unit exponent {} out of range",
+            exponent
+        ))
+        .with_label(DiagnosticLabel::new(*span, "exponent out of range")),
+    }
+}
+
 /// Fold a `UnitExpr` AST node against `registry`, returning the combined
 /// SI conversion factor and [`DimensionVector`] for the expression.
 ///
