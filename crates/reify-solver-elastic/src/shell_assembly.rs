@@ -174,6 +174,155 @@ fn mat3_mul(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
     c
 }
 
+// --- Element-size constants (full-path initializers; no `use`, so the shared
+// helpers below can size their array signatures without a redundant import). ---
+
+/// Total element DOFs (18), used by the shared local→global / symmetrize helpers.
+const NDOF_ELEM: usize = crate::elements::mitc3_plus::Mitc3Plus::N_DOFS;
+/// DOFs per node (6).
+const NDP_ELEM: usize = crate::elements::mitc3_plus::Mitc3Plus::N_DOFS_PER_NODE;
+/// Lagrangian nodes per element (3).
+const NN_ELEM: usize = crate::elements::mitc3_plus::Mitc3Plus::N_NODES;
+
+/// Accumulate the membrane block `Bₘᵀ·(t·D)·Bₘ·A` into the nodal DOFs of `k`.
+///
+/// Shared verbatim by the bare-MITC3 [`shell_element_stiffness`] and the MITC3+
+/// [`shell_element_stiffness_mitc3_plus`]: membrane is identical in both
+/// formulations and touches only the 18 nodal DOFs, so this is generic over the
+/// matrix size `N ∈ {18 (bare), 20 (MITC3+ uncondensed)}`. Sharing one body
+/// makes the "membrane is bit-identical to bare MITC3" guarantee structural
+/// rather than a property of two copies staying in lockstep.
+///
+/// `t_dpl` is the pre-scaled `t · D_pl`; `dn` are the constant shape gradients.
+#[inline]
+#[allow(clippy::needless_range_loop)]
+fn accumulate_membrane_k<const N: usize>(
+    k: &mut [[f64; N]; N],
+    dn: &[[f64; 2]; NN_ELEM],
+    t_dpl: &[[f64; 3]; 3],
+    area: f64,
+) {
+    for ni in 0..NN_ELEM {
+        for nj in 0..NN_ELEM {
+            let doi = [NDP_ELEM * ni, NDP_ELEM * ni + 1];
+            let doj = [NDP_ELEM * nj, NDP_ELEM * nj + 1];
+            let bmi = [[dn[ni][0], 0.0], [0.0, dn[ni][1]], [dn[ni][1], dn[ni][0]]];
+            let bmj = [[dn[nj][0], 0.0], [0.0, dn[nj][1]], [dn[nj][1], dn[nj][0]]];
+            for a in 0..2 {
+                for b in 0..2 {
+                    let mut v = 0.0;
+                    for rr in 0..3 {
+                        for s in 0..3 {
+                            v += bmi[rr][a] * t_dpl[rr][s] * bmj[s][b];
+                        }
+                    }
+                    k[doi[a]][doj[b]] += v * area;
+                }
+            }
+        }
+    }
+}
+
+/// Accumulate the nodal bending block `B_bᵀ·(t³/12·D)·B_b·A` into the rotational
+/// nodal DOFs of `k`.
+///
+/// Shared verbatim by both element variants (the MITC3+ nodal bending K_NN is
+/// bit-identical to bare MITC3); generic over `N ∈ {18, 20}` for the same reason
+/// as [`accumulate_membrane_k`]. `t3_dpl` is the pre-scaled `t³/12 · D_pl`.
+///
+/// This assembles the **nodal** bending only; the MITC3+ bubble bending
+/// self-term `K_BB^bend` is variant-specific and stays in
+/// [`shell_element_stiffness_mitc3_plus`].
+#[inline]
+#[allow(clippy::needless_range_loop)]
+fn accumulate_bending_k_nodal<const N: usize>(
+    k: &mut [[f64; N]; N],
+    dn: &[[f64; 2]; NN_ELEM],
+    t3_dpl: &[[f64; 3]; 3],
+    area: f64,
+) {
+    for ni in 0..NN_ELEM {
+        for nj in 0..NN_ELEM {
+            let doi = [NDP_ELEM * ni + 3, NDP_ELEM * ni + 4];
+            let doj = [NDP_ELEM * nj + 3, NDP_ELEM * nj + 4];
+            let bbi = [[0.0, -dn[ni][0]], [dn[ni][1], 0.0], [dn[ni][0], -dn[ni][1]]];
+            let bbj = [[0.0, -dn[nj][0]], [dn[nj][1], 0.0], [dn[nj][0], -dn[nj][1]]];
+            for a in 0..2 {
+                for b in 0..2 {
+                    let mut v = 0.0;
+                    for rr in 0..3 {
+                        for s in 0..3 {
+                            v += bbi[rr][a] * t3_dpl[rr][s] * bbj[s][b];
+                        }
+                    }
+                    k[doi[a]][doj[b]] += v * area;
+                }
+            }
+        }
+    }
+}
+
+/// Average the upper and lower triangles of an 18×18 local matrix in place.
+///
+/// Each B^T·D·B contribution is symmetric in form, so the two triangles agree to
+/// within floating-point rounding; averaging (rather than copying one triangle)
+/// minimises the residual asymmetry. Shared by both element variants.
+#[inline]
+#[allow(clippy::needless_range_loop)]
+fn symmetrize_in_place(k_loc: &mut [[f64; NDOF_ELEM]; NDOF_ELEM]) {
+    for a in 0..NDOF_ELEM {
+        for b in (a + 1)..NDOF_ELEM {
+            let m = 0.5 * (k_loc[a][b] + k_loc[b][a]);
+            k_loc[a][b] = m;
+            k_loc[b][a] = m;
+        }
+    }
+}
+
+/// Rotate a local-frame 18×18 element matrix into the global frame:
+/// `K_glob[a..a+3, b..b+3] = Rᵀ · K_loc[a..a+3, b..b+3] · R`.
+///
+/// `T = blkdiag(R, …, R)` over the 2·N_NODES three-DOF blocks (a displacement
+/// triple and a rotation triple per node). Shared verbatim by both element
+/// variants — the only thing that differs between bare MITC3 and MITC3+ is the
+/// transverse-shear treatment that produced `k_loc`, not this rotation.
+#[inline]
+#[allow(clippy::needless_range_loop)]
+fn rotate_local_to_global(
+    k_loc: &[[f64; NDOF_ELEM]; NDOF_ELEM],
+    r: &[[f64; 3]; 3],
+) -> [[f64; NDOF_ELEM]; NDOF_ELEM] {
+    let n_blocks = 2 * NN_ELEM; // displacement triple + rotation triple per node
+    let mut k_glob = [[0.0_f64; NDOF_ELEM]; NDOF_ELEM];
+    for bi in 0..n_blocks {
+        for bj in 0..n_blocks {
+            let row_off = 3 * bi;
+            let col_off = 3 * bj;
+            let mut sub = [[0.0_f64; 3]; 3];
+            for p in 0..3 {
+                for q in 0..3 {
+                    sub[p][q] = k_loc[row_off + p][col_off + q];
+                }
+            }
+            let rt_sub = mat3_mul(
+                &[
+                    [r[0][0], r[1][0], r[2][0]],
+                    [r[0][1], r[1][1], r[2][1]],
+                    [r[0][2], r[1][2], r[2][2]],
+                ],
+                &sub,
+            );
+            let rt_sub_r = mat3_mul(&rt_sub, r);
+            for p in 0..3 {
+                for q in 0..3 {
+                    k_glob[row_off + p][col_off + q] = rt_sub_r[p][q];
+                }
+            }
+        }
+    }
+    k_glob
+}
+
 /// Compute the 18×18 element stiffness matrix for a MITC3 shell element.
 ///
 /// `nodes` are the three physical vertex positions in global coordinates.
@@ -215,10 +364,9 @@ pub fn shell_element_stiffness(
         thickness > 0.0,
         "shell_element_stiffness: thickness must be positive, got {thickness}"
     );
-    // Element-size constants — avoid hard-coding 18/6/3 throughout.
+    // Element-size constant — avoid hard-coding 18 throughout. (Per-node and
+    // node counts now live in the shared assembly helpers.)
     const NDOF: usize = Mitc3Plus::N_DOFS; // 18 total DOFs
-    const NDP: usize = Mitc3Plus::N_DOFS_PER_NODE; // 6 DOFs per node
-    const NN: usize = Mitc3Plus::N_NODES; // 3 nodes
 
     let frame = build_shell_frame(nodes);
     let r = frame.r; // rotation matrix: row i = local basis eᵢ in global coords
@@ -239,16 +387,10 @@ pub fn shell_element_stiffness(
     // --- 18×18 K_local (assembled in local frame) ---
     let mut k_loc = [[0.0_f64; NDOF]; NDOF];
 
-    // ---- Membrane K (step 8) ----
-    // B_m is 3×9 (rows: ε_xx, ε_yy, γ_xy; cols: u_x_0,u_y_0, u_x_1,u_y_1, u_x_2,u_y_2)
-    // Per node i, the 2-col block in B_m is:
-    //   row 0 (ε_xx):  [dN_i/dx, 0      ]
-    //   row 1 (ε_yy):  [0,       dN_i/dy]
-    //   row 2 (γ_xy):  [dN_i/dy, dN_i/dx]
-    //
-    // Global DOFs for in-plane: node i → local DOFs 6i+0 (u_x), 6i+1 (u_y)
-    // K_m[a][b] += Σ_r Σ_s B_m[r][col_a] · (t·D_pl)[r][s] · B_m[s][col_b] · area
-    // (1-point rule, integrand constant)
+    // ---- Membrane K ----
+    // B_m is 3×9 (rows: ε_xx, ε_yy, γ_xy; per-node 2-col blocks map (u_x, u_y) →
+    // local DOFs 6i+{0,1}). Assembled by the shared helper, so it is structurally
+    // bit-identical to the MITC3+ membrane block.
     let t_dpl = {
         let mut td = [[0.0_f64; 3]; 3];
         for i in 0..3 {
@@ -258,41 +400,12 @@ pub fn shell_element_stiffness(
         }
         td
     };
-    for ni in 0..NN {
-        for nj in 0..NN {
-            // B_m columns for node i (2 cols) × B_m columns for node j (2 cols)
-            // col offsets within the 9-col membrane sub-block: 2·n
-            // but in local K, DOF = NDP·n + {0,1}
-            let doi = [NDP * ni, NDP * ni + 1]; // local DOF indices for (u_x, u_y) of node i
-            let doj = [NDP * nj, NDP * nj + 1];
-            // B_m sub-block for node i (3×2):
-            let bmi = [[dn[ni][0], 0.0], [0.0, dn[ni][1]], [dn[ni][1], dn[ni][0]]];
-            let bmj = [[dn[nj][0], 0.0], [0.0, dn[nj][1]], [dn[nj][1], dn[nj][0]]];
-            // K_m sub-block (2×2) for (node_i, node_j):
-            // K_m_ij[a][b] = Σ_r Σ_s bmi[r][a] · t_dpl[r][s] · bmj[s][b] · area
-            for a in 0..2 {
-                for b in 0..2 {
-                    let mut v = 0.0;
-                    for r in 0..3 {
-                        for s in 0..3 {
-                            v += bmi[r][a] * t_dpl[r][s] * bmj[s][b];
-                        }
-                    }
-                    k_loc[doi[a]][doj[b]] += v * area;
-                }
-            }
-        }
-    }
+    accumulate_membrane_k(&mut k_loc, &dn, &t_dpl, area);
 
-    // ---- Bending K (step 12, implemented here together) ----
-    // B_b is 3×9 (rows: κ_xx, κ_yy, 2κ_xy; mapping per-node (θ_x, θ_y))
-    // Per node i, 2-col block:
-    //   row 0 (κ_xx = -∂θ_y/∂x): [0,        -dN_i/dx]
-    //   row 1 (κ_yy = +∂θ_x/∂y): [+dN_i/dy,  0      ]
-    //   row 2 (2κ_xy = ∂θ_x/∂x - ∂θ_y/∂y): [+dN_i/dx, -dN_i/dy]
-    //
-    // Global DOFs for rotations: node i → 6i+3 (θ_x), 6i+4 (θ_y)
-    // K_b = B_bᵀ · (t³/12 · D_pl) · B_b · area
+    // ---- Bending K (nodal) ----
+    // B_b is 3×9 (rows: κ_xx, κ_yy, 2κ_xy; per-node 2-col blocks map (θ_x, θ_y) →
+    // local DOFs 6i+{3,4}). Assembled by the shared helper, so it is structurally
+    // bit-identical to the MITC3+ nodal bending block.
     let t3_12_dpl = {
         let factor = t * t * t / 12.0;
         let mut td = [[0.0_f64; 3]; 3];
@@ -303,26 +416,7 @@ pub fn shell_element_stiffness(
         }
         td
     };
-    for ni in 0..NN {
-        for nj in 0..NN {
-            let doi = [NDP * ni + 3, NDP * ni + 4]; // θ_x, θ_y DOF indices for node i
-            let doj = [NDP * nj + 3, NDP * nj + 4];
-            // B_b sub-block (3×2) for node i:
-            let bbi = [[0.0, -dn[ni][0]], [dn[ni][1], 0.0], [dn[ni][0], -dn[ni][1]]];
-            let bbj = [[0.0, -dn[nj][0]], [dn[nj][1], 0.0], [dn[nj][0], -dn[nj][1]]];
-            for a in 0..2 {
-                for b in 0..2 {
-                    let mut v = 0.0;
-                    for r in 0..3 {
-                        for s in 0..3 {
-                            v += bbi[r][a] * t3_12_dpl[r][s] * bbj[s][b];
-                        }
-                    }
-                    k_loc[doi[a]][doj[b]] += v * area;
-                }
-            }
-        }
-    }
+    accumulate_bending_k_nodal(&mut k_loc, &dn, &t3_12_dpl, area);
 
     // ---- Transverse-shear K (step 10, implemented here) ----
     // MITC3 assumed-strain interpolation.
@@ -377,54 +471,11 @@ pub fn shell_element_stiffness(
         }
     }
 
-    // ---- Symmetrize K_local (average upper and lower triangle) ----
-    // Each contribution (B_mᵀ D B_m, B_bᵀ D B_b, B_sᵀ D_s B_s) is
-    // intrinsically symmetric in form, so the upper and lower entries
-    // agree to within floating-point rounding. Averaging both triangles
-    // (rather than discarding the lower) minimises the residual asymmetry.
-    for a in 0..NDOF {
-        for b in (a + 1)..NDOF {
-            let m = 0.5 * (k_loc[a][b] + k_loc[b][a]);
-            k_loc[a][b] = m;
-            k_loc[b][a] = m;
-        }
-    }
-
-    // ---- Local → Global rotation: K_global[a..a+3, b..b+3] = Rᵀ · K_loc[a..a+3, b..b+3] · R ----
-    // T = blkdiag(R, R, R, R, R, R) — 2·NN blocks of 3×3 (two 3-DOF triples per node).
-    // Apply Rᵀ on left, R on right, for each pair of 3-DOF blocks.
-    let n_blocks = 2 * NN; // 6 = displacement triple + rotation triple per node
-    let mut k_glob = [[0.0_f64; NDOF]; NDOF];
-    for bi in 0..n_blocks {
-        // block row index
-        for bj in 0..n_blocks {
-            // block col index
-            let row_off = 3 * bi;
-            let col_off = 3 * bj;
-            // Extract 3×3 sub-block from k_loc
-            let mut sub = [[0.0_f64; 3]; 3];
-            for p in 0..3 {
-                for q in 0..3 {
-                    sub[p][q] = k_loc[row_off + p][col_off + q];
-                }
-            }
-            // Rᵀ · sub · R
-            let rt_sub = mat3_mul(
-                &[
-                    [r[0][0], r[1][0], r[2][0]],
-                    [r[0][1], r[1][1], r[2][1]],
-                    [r[0][2], r[1][2], r[2][2]],
-                ],
-                &sub,
-            );
-            let rt_sub_r = mat3_mul(&rt_sub, &r);
-            for p in 0..3 {
-                for q in 0..3 {
-                    k_glob[row_off + p][col_off + q] = rt_sub_r[p][q];
-                }
-            }
-        }
-    }
+    // ---- Symmetrize, then rotate local → global (shared helpers) ----
+    // Each B^T·D·B contribution is symmetric in form; averaging the triangles
+    // minimises residual asymmetry before the Rᵀ·K·R block rotation.
+    symmetrize_in_place(&mut k_loc);
+    let k_glob = rotate_local_to_global(&k_loc, &r);
 
     // Pack into ElementStiffness
     let mut k_e = ElementStiffness::zeros(NDOF);
@@ -470,10 +521,12 @@ pub fn shell_element_stiffness(
 ///
 /// ## Block contents
 ///
-/// - **K_NN** — the 18 nodal DOFs: membrane + bending (both bit-identical to
-///   bare MITC3) + the **MITC3+ interior-tying assumed-shear** block (the A–F /
-///   Eq. 9 field; softer than and distinct from bare MITC3's edge-midpoint
-///   block). This is what `K*` reduces to (see K_NB below).
+/// - **K_NN** — the 18 nodal DOFs: membrane + nodal bending (both assembled by
+///   the shared [`accumulate_membrane_k`] / [`accumulate_bending_k_nodal`]
+///   helpers, so bit-identical to bare MITC3 *by construction*) + the **MITC3+
+///   interior-tying assumed-shear** block (the A–F / Eq. 9 field; softer than and
+///   distinct from bare MITC3's edge-midpoint block). This is what `K*` reduces
+///   to (see K_NB below).
 /// - **K_BB** — the bubble bending self-stiffness `∫ ∇f_b·D_b·∇f_b`; SPD, so the
 ///   2×2 inverse used by the condensation is well-posed.
 /// - **K_NB / K_BN** — bubble↔nodal coupling, **identically zero on a flat
@@ -504,11 +557,10 @@ pub fn shell_element_stiffness_mitc3_plus(
         "shell_element_stiffness_mitc3_plus: thickness must be positive, got {thickness}"
     );
     const NDOF: usize = Mitc3Plus::N_DOFS; // 18 nodal DOFs
-    const NDP: usize = Mitc3Plus::N_DOFS_PER_NODE; // 6 DOFs per node
-    const NN: usize = Mitc3Plus::N_NODES; // 3 nodes
     const NU: usize = Mitc3Plus::N_DOFS_UNCONDENSED; // 20 = 18 + 2 bubble DOFs
     const BX: usize = NDOF; // 18 = Δβ_x bubble column
     const BY: usize = NDOF + 1; // 19 = Δβ_y bubble column
+    // (Per-node / node counts live in the shared assembly helpers.)
 
     let frame = build_shell_frame(nodes);
     let r = frame.r;
@@ -530,6 +582,7 @@ pub fn shell_element_stiffness_mitc3_plus(
     let mut k = [[0.0_f64; NU]; NU];
 
     // ---- Membrane K (nodal only; the bubble does not enter membrane) ----
+    // Shared helper → bit-identical to bare MITC3's membrane block by construction.
     let t_dpl = {
         let mut td = [[0.0_f64; 3]; 3];
         for i in 0..3 {
@@ -539,25 +592,7 @@ pub fn shell_element_stiffness_mitc3_plus(
         }
         td
     };
-    for ni in 0..NN {
-        for nj in 0..NN {
-            let doi = [NDP * ni, NDP * ni + 1];
-            let doj = [NDP * nj, NDP * nj + 1];
-            let bmi = [[dn[ni][0], 0.0], [0.0, dn[ni][1]], [dn[ni][1], dn[ni][0]]];
-            let bmj = [[dn[nj][0], 0.0], [0.0, dn[nj][1]], [dn[nj][1], dn[nj][0]]];
-            for a in 0..2 {
-                for b in 0..2 {
-                    let mut v = 0.0;
-                    for rr in 0..3 {
-                        for s in 0..3 {
-                            v += bmi[rr][a] * t_dpl[rr][s] * bmj[s][b];
-                        }
-                    }
-                    k[doi[a]][doj[b]] += v * area;
-                }
-            }
-        }
-    }
+    accumulate_membrane_k(&mut k, &dn, &t_dpl, area);
 
     // ---- Bending K ----
     let t3_dpl = {
@@ -570,26 +605,8 @@ pub fn shell_element_stiffness_mitc3_plus(
         }
         td
     };
-    // Nodal bending K_NN (bit-identical to bare MITC3).
-    for ni in 0..NN {
-        for nj in 0..NN {
-            let doi = [NDP * ni + 3, NDP * ni + 4];
-            let doj = [NDP * nj + 3, NDP * nj + 4];
-            let bbi = [[0.0, -dn[ni][0]], [dn[ni][1], 0.0], [dn[ni][0], -dn[ni][1]]];
-            let bbj = [[0.0, -dn[nj][0]], [dn[nj][1], 0.0], [dn[nj][0], -dn[nj][1]]];
-            for a in 0..2 {
-                for b in 0..2 {
-                    let mut v = 0.0;
-                    for rr in 0..3 {
-                        for s in 0..3 {
-                            v += bbi[rr][a] * t3_dpl[rr][s] * bbj[s][b];
-                        }
-                    }
-                    k[doi[a]][doj[b]] += v * area;
-                }
-            }
-        }
-    }
+    // Nodal bending K_NN — shared helper → bit-identical to bare MITC3.
+    accumulate_bending_k_nodal(&mut k, &dn, &t3_dpl, area);
 
     // Interior tying points + their reference quadrature weight (weights sum to
     // the reference-triangle area 1/2; `× det2` maps to physical area).
@@ -599,6 +616,15 @@ pub fn shell_element_stiffness_mitc3_plus(
     // Bubble bending self-term K_BB^bend. The nodal↔bubble bending coupling is
     // identically zero on a flat facet (divergence theorem; see doc above), so
     // it is intentionally not assembled.
+    //
+    // INTENTIONALLY UNUSED NUMERIC VALUE: because K_NB ≡ 0 here (see the
+    // condensation site below), the static condensation is a no-op and K* = K_NN
+    // — so K_BB's only consumer is the `det_bb > 0` SPD `debug_assert`. The
+    // six-interior-point sum below is therefore NOT an exact quadrature rule for
+    // the degree-4 integrand ∇f_b·D_b·∇f_b; it only needs to preserve positive
+    // definiteness (sign), which it does. Task 4065 — where the curved/director
+    // substrate makes K_NB ≠ 0 and K_BB's value actually feeds K* — must replace
+    // this with an exact rule before trusting the numeric block.
     for tp in interior.iter() {
         let g_ref = Mitc3Plus.bubble_grad_at(tp.coord);
         // physical bubble gradient = J2⁻ᵀ · ∇_ref f_b
@@ -673,6 +699,23 @@ pub fn shell_element_stiffness_mitc3_plus(
 
     // ---- Static condensation of the 2 bubble DOFs ----
     // K* = K_NN − K_NB · K_BB⁻¹ · K_BN, closed-form 2×2 inverse of K_BB.
+    //
+    // PROVABLY A NO-OP ON A FLAT FACET: the bubble↔nodal coupling K_NB is never
+    // assembled — membrane/bending touch only nodal DOFs, the bubble bending
+    // self-term writes only the (BX,BY) block, and the bubble is inert in shear
+    // (K_NB^shear ≡ 0; DD#2 retracted). So K_NB ≡ 0 (bit-zero), the correction
+    // K_NB·K_BB⁻¹·K_BN is identically zero, and K* = K_NN exactly. The full 2×2
+    // condensation is retained as faithful scaffolding for task 4065, where the
+    // curved/director substrate makes K_NB ≠ 0 and the bubble does work.
+    debug_assert!(
+        (0..NDOF).all(|i| {
+            k[i][BX].to_bits() == 0
+                && k[i][BY].to_bits() == 0
+                && k[BX][i].to_bits() == 0
+                && k[BY][i].to_bits() == 0
+        }),
+        "MITC3+ flat-facet invariant: K_NB/K_BN must be bit-zero so condensation is a no-op (K* = K_NN)"
+    );
     let k_bb = [[k[BX][BX], k[BX][BY]], [k[BY][BX], k[BY][BY]]];
     let det_bb = k_bb[0][0] * k_bb[1][1] - k_bb[0][1] * k_bb[1][0];
     debug_assert!(
@@ -698,44 +741,10 @@ pub fn shell_element_stiffness_mitc3_plus(
         }
     }
 
-    // ---- Symmetrize K_local ----
-    for a in 0..NDOF {
-        for b in (a + 1)..NDOF {
-            let m = 0.5 * (k_loc[a][b] + k_loc[b][a]);
-            k_loc[a][b] = m;
-            k_loc[b][a] = m;
-        }
-    }
-
-    // ---- Local → Global block rotation (identical to the bare path) ----
-    let n_blocks = 2 * NN;
-    let mut k_glob = [[0.0_f64; NDOF]; NDOF];
-    for bi in 0..n_blocks {
-        for bj in 0..n_blocks {
-            let row_off = 3 * bi;
-            let col_off = 3 * bj;
-            let mut sub = [[0.0_f64; 3]; 3];
-            for p in 0..3 {
-                for q in 0..3 {
-                    sub[p][q] = k_loc[row_off + p][col_off + q];
-                }
-            }
-            let rt_sub = mat3_mul(
-                &[
-                    [r[0][0], r[1][0], r[2][0]],
-                    [r[0][1], r[1][1], r[2][1]],
-                    [r[0][2], r[1][2], r[2][2]],
-                ],
-                &sub,
-            );
-            let rt_sub_r = mat3_mul(&rt_sub, &r);
-            for p in 0..3 {
-                for q in 0..3 {
-                    k_glob[row_off + p][col_off + q] = rt_sub_r[p][q];
-                }
-            }
-        }
-    }
+    // ---- Symmetrize, then rotate local → global (shared helpers, identical to
+    // the bare path — only the transverse-shear treatment differs) ----
+    symmetrize_in_place(&mut k_loc);
+    let k_glob = rotate_local_to_global(&k_loc, &r);
 
     let mut k_e = ElementStiffness::zeros(NDOF);
     for i in 0..NDOF {
@@ -1096,9 +1105,11 @@ mod tests {
 
     #[test]
     fn mitc3_plus_shear_patch_test_uniform_theta_y_matches_analytical_energy() {
-        // Uniform θ_y = α → uniform γ_xz = α. The deviatoric bubble shear means
-        // a constant shear state does not excite the bubble, so MITC3+
-        // reproduces the analytical shear energy 0.5·α²·κ·G·t·A exactly.
+        // Uniform θ_y = α → uniform covariant transverse-shear state. A constant
+        // covariant shear samples identically at all six interior tying points,
+        // so the MITC3+ assumed field (Eq. 9) has twist ĉ = 0 and reproduces the
+        // constant state exactly; the nodal assumed-shear block therefore yields
+        // the analytical shear energy 0.5·α²·κ·G·t·A.
         let mat = steel_like();
         let t = 0.05_f64;
         let alpha = 0.003_f64;
@@ -1214,10 +1225,13 @@ mod tests {
 
     #[test]
     fn mitc3_plus_is_not_bit_identical_to_bare_mitc3() {
-        // The bubble is LIVE in shear on a flat facet (K_NB^shear ≠ 0), so static
-        // condensation genuinely modifies K_NN: at least one entry of K_mitc3+
-        // must differ from bare MITC3 by more than fp tolerance. Refutes the old
-        // "bit-identical to bare MITC3" claim (task 3349).
+        // MITC3+ swaps bare MITC3's edge-midpoint Eq. 5 assumed-shear field for
+        // the interior-tying Eq. 9 field (six interior points A–F) — a different,
+        // softer transverse-shear block. THAT swapped shear block (NOT a live
+        // shear bubble: K_NB^shear ≡ 0 here, so condensation is a no-op and
+        // K* = K_NN) makes at least one entry of K_mitc3+ differ from bare MITC3
+        // by more than fp tolerance. Refutes the old "flat-facet bubble enrichment
+        // is bit-identical to bare MITC3" claim (task 3349).
         let mat = steel_like();
         let t = 0.05_f64;
         for nodes in [&UNIT_TRI, &DISTORTED_TRI] {
@@ -1243,16 +1257,24 @@ mod tests {
 
     #[test]
     fn mitc3_plus_softens_shear_dominated_modes_relative_to_bare() {
-        // Static condensation gives K* = K_bare − (PSD), so ½uᵀK*u ≤ ½uᵀK_bare·u
-        // for EVERY mode, and strictly less for any mode that excites the bubble
-        // (non-constant parasitic shear). The shear-locking-relief gate.
+        // MITC3+ swaps bare MITC3's edge-midpoint Eq. 5 shear block for the
+        // interior-tying Eq. 9 field (condensation is a no-op here: K_NB ≡ 0 ⇒
+        // K* = K_NN). The Eq. 9 field under-represents the parasitic linear shear
+        // these bending/shear-dominated modes induce, so it stores ≤ the energy of
+        // the Eq. 5 block for the modes exercised below — the shear-locking-relief
+        // gate. NOTE: this per-mode inequality is an EMPIRICALLY OBSERVED bound for
+        // these specific modes, NOT a Schur-complement / general-theorem guarantee
+        // (there is no proof that the Eq. 9 block is energy-≤ the Eq. 5 block for
+        // every conceivable mode); it would need re-checking if the assumed field
+        // is ever retuned.
         let mat = steel_like();
         let t = 0.05_f64;
         let ndp = Mitc3Plus::N_DOFS_PER_NODE;
 
-        // A battery of bending/shear-dominated nodal modes. θ_x at node1 gives a
-        // linearly-varying covariant shear (assumed-field c ≠ 0) → excites the
-        // bubble → strict softening.
+        // A battery of bending/shear-dominated nodal modes. θ_x at node1 induces a
+        // linearly-varying covariant shear; the Eq. 9 interior-tying field (twist
+        // ĉ ≠ 0) under-represents it relative to bare MITC3's edge-midpoint Eq. 5
+        // field, giving strictly lower stored energy for ≥ 1 of these modes.
         let mut m1 = [0.0_f64; Mitc3Plus::N_DOFS];
         m1[ndp + 3] = 1.0; // θ_x at node1
         let mut m2 = [0.0_f64; Mitc3Plus::N_DOFS];
