@@ -1,0 +1,54 @@
+// tolerance-stackup-3part.ri — 3-part bore-stack assembly tolerance analysis.
+//
+// PRD docs/prds/v0_6/tolerance-stackup-analysis.md §0–3 (T7 integration gate).
+//
+// DESIGN-DIMENSIONAL vs KERNEL-REALIZATION tolerance (PRD §0):
+//   THIS subsystem: stdlib/stackup.ri types + crates/reify-stdlib/src/stackup.rs
+//   eval builtins (contributor / stackup_worst_case / stackup_rss / monte_carlo_stackup).
+//   Do NOT conflate with reify-eval's kernel-realization tolerance subsystem
+//   (tolerance_budget.rs / tolerance_combine.rs) — those address a different
+//   engineering question at a lower abstraction level.
+//
+// Assembly: housing bore depth + 3 stacked parts (shaft, spacer, retaining ring).
+//   Named consumer question: does the axial clearance (gap) stay in spec?
+//
+//   Contributor       nominal    tol    sign
+//   ────────────────────────────────────────
+//   bore_depth (ref.)   40 mm  ±0.05    +1
+//   shaft               25 mm  ±0.10    -1
+//   spacer              10 mm  ±0.04    -1
+//   retaining ring       2 mm  ±0.01    -1
+//
+// Hand-calc (eval prints SI meters):
+//   gap_nominal     = +40 − 25 − 10 − 2 = 3 mm = 3.0e-3 m
+//
+//   Worst-case (extreme-value):
+//     worst_case_band = Σtᵢ = 0.05+0.10+0.04+0.01 = 0.20 mm = 2.0e-4 m
+//     worst_case_max  = 3.0 + 0.20 = 3.20 mm = 3.2e-3 m
+//     worst_case_min  = 3.0 − 0.20 = 2.80 mm = 2.8e-3 m
+//
+//   RSS at 3σ (default sigma_level):
+//     sum_tol_sq = (0.05)²+(0.10)²+(0.04)²+(0.01)² = 0.0142 mm²
+//     rss_band   = √0.0142 ≈ 0.11916 mm = 1.1916e-4 m
+//     rss_sigma  = rss_band / 3 ≈ 0.039721 mm = 3.972e-5 m
+
+structure def ToleranceStackup3Part {
+    // contributor(nominal, symmetric_tol, sign)
+    //   sign=+1  gap increases when this dim grows (bore depth)
+    //   sign=-1  gap decreases when this dim grows (stacked parts)
+    let c_bore  = contributor(40mm, 0.05mm,  1)   // housing bore depth, reference
+    let c_shaft = contributor(25mm, 0.10mm, -1)   // shaft
+    let c_space = contributor(10mm, 0.04mm, -1)   // spacer
+    let c_ring  = contributor( 2mm, 0.01mm, -1)   // retaining ring
+
+    // Explicit dimension chain as an ordered list of contributors.
+    let chain = [c_bore, c_shaft, c_space, c_ring]
+
+    // stackup_worst_case: extreme-value (linear worst-case) analysis.
+    // Returns Map: nominal_gap, worst_case_band, worst_case_max, worst_case_min.
+    let worst = stackup_worst_case(chain)
+
+    // stackup_rss: root-sum-square (statistical) analysis at default 3σ.
+    // Returns Map: nominal_gap, rss_band, rss_max, rss_min, rss_sigma, sigma_level.
+    let rss = stackup_rss(chain)
+}
