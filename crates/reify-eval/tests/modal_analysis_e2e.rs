@@ -20,8 +20,6 @@ fn cantilever_source() -> &'static str {
 }
 
 /// Load and compile the simply-supported modal smoke fixture.
-// Consumed by the step-17 simply-supported e2e test (added next step).
-#[allow(dead_code)]
 fn simply_supported_source() -> &'static str {
     include_str!("../../../examples/modal/simply_supported_beam_modes.ri")
 }
@@ -202,5 +200,188 @@ fn e2e_cantilever_first_mode_within_ten_percent() {
         f1,
         f1_analytic,
         rel_err * 100.0
+    );
+}
+
+// ── step-17: RED — simply-supported first-mode + higher-mode band ────────────
+//
+// The simply-supported fixture (examples/modal/simply_supported_beam_modes.ri)
+// PINS BOTH end faces (x_min and x_max). Five observable signals:
+//   (a) no Error-severity diagnostics after parse + eval
+//   (b) a ComputeNode with target == "modal::free_vibration" in the graph
+//   (c) the `result` cell is a non-Undef StructureInstance/Map
+//   (d) the FIRST-mode frequency f1 is within 10% of the analytic Euler–Bernoulli
+//       simply-supported fundamental f₁ = (π²/2π)·√(EI/ρAL⁴) ≈ 115.8 Hz — the
+//       committed PRD §1/§9.1 bound, anchored on the fundamental (the task's
+//       headline signal).
+//   (e) f2, f3 are present, finite, positive, and strictly sorted ascending,
+//       each within a looser MEASURED band (documented; higher modes lock harder
+//       per PRD §9.1). The measured tolerances are pinned in step-18.
+//
+// Release-gated like the cantilever e2e: the same slender-beam mesh (~25k DOFs)
+// + generalized eigensolve — heavy in debug. The registration pin runs always;
+// this e2e gate runs release-only.
+//
+// ── step-18: MEASURED simply-supported floors (the pinned tolerances) ────────
+// (the BC realization + measured f2/f3 bands are finalized in step-18; until
+// then the higher-mode band assertions below are structural only.)
+
+/// Read each mode's `(frequency_hz, participation_mass)` from a ModalResult
+/// value — a measurement aid (printed under `--nocapture`) for telling vertical
+/// bending modes (high participation along the z reference direction) apart from
+/// lateral / torsional modes (≈ 0 z-participation) in the simply-supported
+/// spectrum.
+fn modes_freq_participation(result: &Value) -> Vec<(f64, f64)> {
+    let modes = match result {
+        Value::StructureInstance(d) => d.fields.get(&"modes".to_string()).cloned(),
+        Value::Map(m) => m.get(&Value::String("modes".to_string())).cloned(),
+        _ => None,
+    };
+    let as_f64 = |v: Option<&Value>| -> f64 {
+        match v {
+            Some(Value::Real(r)) => *r,
+            Some(Value::Scalar { si_value, .. }) => *si_value,
+            _ => f64::NAN,
+        }
+    };
+    match modes {
+        Some(Value::List(items)) => items
+            .iter()
+            .map(|m| match m {
+                Value::StructureInstance(d) => (
+                    as_f64(d.fields.get(&"frequency".to_string())),
+                    as_f64(d.fields.get(&"participation_mass".to_string())),
+                ),
+                _ => (f64::NAN, f64::NAN),
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Simply-supported: first-mode frequency within 10% of the analytic value; the
+/// higher modes (2-3) present, sorted, and within a measured band (step-18).
+#[cfg_attr(debug_assertions, ignore = "heavy modal solve; release-only")]
+#[test]
+fn e2e_simply_supported_modes_match_analytic() {
+    use std::f64::consts::PI;
+
+    let source = simply_supported_source();
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+
+    let eval_result = engine.eval(&compiled);
+
+    // (a) No Error-severity diagnostics.
+    let errors: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no Error diagnostics, got: {:?}", errors);
+
+    // (b) A ComputeNode with target == "modal::free_vibration" must be present.
+    let snapshot = engine
+        .eval_state()
+        .expect("eval_state must be Some after eval()")
+        .snapshot
+        .clone();
+    let has_compute_node = snapshot
+        .graph
+        .compute_nodes
+        .iter()
+        .any(|(_, data)| data.target == "modal::free_vibration");
+    assert!(
+        has_compute_node,
+        "expected a ComputeNode with target==\"modal::free_vibration\"; found targets: {:?}",
+        snapshot
+            .graph
+            .compute_nodes
+            .iter()
+            .map(|(_, d)| d.target.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    // (c) The `result` cell must hold a non-Undef StructureInstance/Map.
+    let result_cell = ValueCellId::new("SimplySupportedBeamModes", "result");
+    let result_val = eval_result
+        .values
+        .get(&result_cell)
+        .unwrap_or_else(|| panic!("cell SimplySupportedBeamModes.result not found in eval result"));
+    assert!(
+        matches!(result_val, Value::StructureInstance(_) | Value::Map(_)),
+        "expected result to be StructureInstance or Map (NOT Undef), got: {:?}",
+        result_val
+    );
+
+    // Read f1 / f2 / f3.
+    let read_cell = |name: &str| -> f64 {
+        read_frequency(
+            eval_result
+                .values
+                .get(&ValueCellId::new("SimplySupportedBeamModes", name))
+                .unwrap_or_else(|| {
+                    panic!("cell SimplySupportedBeamModes.{name} not found in eval result")
+                }),
+        )
+    };
+    let f1 = read_cell("f1");
+    let f2 = read_cell("f2");
+    let f3 = read_cell("f3");
+
+    // Analytic simply-supported Euler–Bernoulli modes (βL = nπ).
+    let f1_analytic = analytic_beam_frequency(PI);
+    let f2_analytic = analytic_beam_frequency(2.0 * PI);
+    let f3_analytic = analytic_beam_frequency(3.0 * PI);
+
+    // Measurement diagnostics (visible with `--nocapture`); the modes list with
+    // per-mode z-participation distinguishes vertical-bending modes from
+    // lateral / torsional ones in the spectrum.
+    eprintln!(
+        "[modal ss] f1={:.3} Hz (analytic {:.3}, err {:+.2}%)",
+        f1,
+        f1_analytic,
+        (f1 - f1_analytic) / f1_analytic * 100.0
+    );
+    eprintln!(
+        "[modal ss] f2={:.3} Hz (analytic {:.3}, err {:+.2}%)",
+        f2,
+        f2_analytic,
+        (f2 - f2_analytic) / f2_analytic * 100.0
+    );
+    eprintln!(
+        "[modal ss] f3={:.3} Hz (analytic {:.3}, err {:+.2}%)",
+        f3,
+        f3_analytic,
+        (f3 - f3_analytic) / f3_analytic * 100.0
+    );
+    for (i, (f, p)) in modes_freq_participation(result_val).iter().enumerate() {
+        eprintln!("[modal ss]   mode {i}: f={f:.3} Hz, participation_mass(z)={p:.6e}");
+    }
+
+    // (d) f1 within 10% of the analytic simply-supported fundamental (βL = π).
+    assert!(f1.is_finite() && f1 > 0.0, "f1 must be finite and positive, got: {}", f1);
+    let f1_err = (f1 - f1_analytic).abs() / f1_analytic;
+    assert!(
+        f1_err < 0.10,
+        "ss f1 = {:.3} Hz, analytic = {:.3} Hz, rel_err = {:.2}% > 10%",
+        f1,
+        f1_analytic,
+        f1_err * 100.0
+    );
+
+    // (e) f2, f3 present, finite, positive, strictly ascending. The looser
+    //     measured analytic band for the higher modes is pinned in step-18.
+    for (name, f) in [("f2", f2), ("f3", f3)] {
+        assert!(f.is_finite() && f > 0.0, "{} must be finite and positive, got: {}", name, f);
+    }
+    assert!(
+        f1 < f2 && f2 < f3,
+        "frequencies must be strictly ascending: f1={} f2={} f3={}",
+        f1,
+        f2,
+        f3
     );
 }
