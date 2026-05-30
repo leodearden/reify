@@ -808,54 +808,79 @@ pub(super) fn collect_structure_assoc_fn_sigs(
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
 ) -> HashMap<String, CompiledAssocFnSig> {
-    let empty_params: HashSet<String> = HashSet::new();
     let mut sigs: HashMap<String, CompiledAssocFnSig> = HashMap::new();
     for m in structure.members.iter() {
         if let reify_ast::MemberDecl::Fn(fn_def) = m {
-            // Throwaway sink: signature derivation must not emit or duplicate diagnostics.
-            let mut sink: Vec<Diagnostic> = Vec::new();
-            let mut has_self = false;
-            let mut params = Vec::new();
-            for p in &fn_def.params {
-                if p.is_self {
-                    has_self = true;
-                    continue;
-                }
-                let ty = resolve_type_expr_with_aliases(
-                    &p.type_expr,
-                    &empty_params,
-                    alias_registry,
-                    &mut sink,
-                    structure_names,
-                    trait_names,
-                )
-                .unwrap_or(Type::Error);
-                params.push(ty);
-            }
-            let return_type = match &fn_def.return_type {
-                Some(te) => resolve_type_expr_with_aliases(
-                    te,
-                    &empty_params,
-                    alias_registry,
-                    &mut sink,
-                    structure_names,
-                    trait_names,
-                )
-                .unwrap_or(Type::Error),
-                None => Type::Real,
-            };
             sigs.insert(
                 fn_def.name.clone(),
-                CompiledAssocFnSig {
-                    name: fn_def.name.clone(),
-                    has_self,
-                    params,
-                    return_type,
-                },
+                derive_assoc_fn_sig_silent(fn_def, alias_registry, structure_names, trait_names),
             );
         }
     }
     sigs
+}
+
+/// Derive a side-effect-free [`CompiledAssocFnSig`] from a single `FnDef`.
+///
+/// The leading `is_self` receiver is recorded as `has_self` and excluded from
+/// `params`; every other param's `type_expr` and the `return_type` resolve
+/// through `resolve_type_expr_with_aliases` — the same resolver `assoc_fn_sig`
+/// (traits.rs) uses on the trait side — so equal annotations on a trait default
+/// and a structure override compare equal under the derived `PartialEq`. A
+/// missing return type defaults to `Type::Real`, matching `compile_function` /
+/// `assoc_fn_sig`.
+///
+/// Resolution is deliberately side-effect-free: a failure resolves to
+/// `Type::Error` and emits NO diagnostic (a throwaway sink absorbs anything the
+/// resolver pushes). The genuine root cause is reported once when the body is
+/// compiled by `compile_assoc_function`; `assoc_fn_sig_has_error` then lets the
+/// signature-comparison sites (phase 5, and the default-override gate in
+/// `check_phase_resolve_assoc_fns`) skip a spurious mismatch. (task 3939 δ)
+fn derive_assoc_fn_sig_silent(
+    fn_def: &reify_ast::FnDef,
+    alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
+    trait_names: &HashSet<String>,
+) -> CompiledAssocFnSig {
+    let empty_params: HashSet<String> = HashSet::new();
+    // Throwaway sink: signature derivation must not emit or duplicate diagnostics.
+    let mut sink: Vec<Diagnostic> = Vec::new();
+    let mut has_self = false;
+    let mut params = Vec::new();
+    for p in &fn_def.params {
+        if p.is_self {
+            has_self = true;
+            continue;
+        }
+        let ty = resolve_type_expr_with_aliases(
+            &p.type_expr,
+            &empty_params,
+            alias_registry,
+            &mut sink,
+            structure_names,
+            trait_names,
+        )
+        .unwrap_or(Type::Error);
+        params.push(ty);
+    }
+    let return_type = match &fn_def.return_type {
+        Some(te) => resolve_type_expr_with_aliases(
+            te,
+            &empty_params,
+            alias_registry,
+            &mut sink,
+            structure_names,
+            trait_names,
+        )
+        .unwrap_or(Type::Error),
+        None => Type::Real,
+    };
+    CompiledAssocFnSig {
+        name: fn_def.name.clone(),
+        has_self,
+        params,
+        return_type,
+    }
 }
 
 /// Render a [`CompiledAssocFnSig`] in source-like form for diagnostics, e.g.
@@ -953,7 +978,10 @@ pub(super) fn check_phase_resolve_assoc_fns(
             Some(override_def) => (override_def, true),
             None => (default_fn_def, false),
         };
-        if let Some(function) = compile_assoc_function(
+        // Compile unconditionally so a genuine body/type error in the chosen
+        // body (default or override) is surfaced even when a signature mismatch
+        // keeps the override out of the table below.
+        let compiled = compile_assoc_function(
             fn_def_to_compile,
             conformer,
             enum_defs,
@@ -962,7 +990,46 @@ pub(super) fn check_phase_resolve_assoc_fns(
             structure_names,
             trait_names,
             diagnostics,
-        ) {
+        );
+        // Override signature-lock (reviewer amendment): a default-providing assoc
+        // fn imposes the default's signature on any structure override (PRD §5.4
+        // exact-match-for-overrides). A default-only fn produces no
+        // `RequirementKind::Fn`, so phase 5 never validates it — this is the sole
+        // site the override's signature is checked. On mismatch, emit
+        // `TraitFnSignatureMismatch` and keep the wrongly-typed override OUT of
+        // the dispatch table (symmetric with the required-fn gate below) so task
+        // ζ's dispatch never keys on an entry inconsistent with the diagnostic.
+        // The `assoc_fn_sig_has_error` guard suppresses a spurious mismatch when
+        // the override's annotation failed to resolve — `compile_assoc_function`
+        // already reported that as `UnresolvedType` (Type::Error anti-cascade).
+        if is_override && let Some(actual_sig) = structure_fn_sigs.get(fn_name) {
+            let expected_sig = derive_assoc_fn_sig_silent(
+                default_fn_def,
+                alias_registry,
+                structure_names,
+                trait_names,
+            );
+            if *actual_sig != expected_sig && !assoc_fn_sig_has_error(actual_sig) {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "associated function '{}' provided by structure '{}' has signature \
+                         `{}` but trait '{}' default declares `{}`",
+                        fn_name,
+                        structure.name,
+                        render_assoc_fn_sig(actual_sig),
+                        trait_name,
+                        render_assoc_fn_sig(&expected_sig),
+                    ))
+                    .with_code(DiagnosticCode::TraitFnSignatureMismatch)
+                    .with_label(DiagnosticLabel::new(
+                        structure.span,
+                        "associated function signature does not match the trait default",
+                    )),
+                );
+                continue; // keep the wrongly-typed override out of the dispatch table
+            }
+        }
+        if let Some(function) = compiled {
             assoc_fns_out.push(CompiledAssocFn {
                 trait_name,
                 fn_name: fn_name.to_string(),
