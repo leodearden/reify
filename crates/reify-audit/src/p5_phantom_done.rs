@@ -170,36 +170,36 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
                 // rebuild coverage gap, recycled task ID). Downgrade to Low.
                 // File-presence is necessary but not sufficient, so we stay
                 // Low/inspectable rather than suppressing entirely.
-                if let Some(commit) = prov.commit.as_deref() {
-                    if ctx.git.is_ancestor(commit, MAIN_BASE) {
-                        return Some(Finding {
-                            pattern: Pattern::P5PhantomDone,
-                            severity: Severity::Low,
-                            task_id: meta.task_id.clone(),
-                            summary:
-                                "deliverable present (claimed commit is an ancestor of main); \
-                                 no task_completed event in runs.db — stale/rebuilt provenance, \
-                                 not phantom-done"
-                                    .to_string(),
-                            // Cite both the missing-event RunsDb row and the
-                            // corroborating ancestor commit. Subject left empty
-                            // to avoid an extra `git log` round-trip; the sha
-                            // alone is the inspectable corroboration locator.
-                            evidence: vec![
-                                EvidenceRef::RunsDb {
-                                    table: "events".to_string(),
-                                    key: format!(
-                                        "task_id={} AND event_type=task_completed",
-                                        meta.task_id
-                                    ),
-                                },
-                                EvidenceRef::Commit {
-                                    sha: commit.to_string(),
-                                    subject: String::new(),
-                                },
-                            ],
-                        });
-                    }
+                if let Some(commit) = prov.commit.as_deref()
+                    && ctx.git.is_ancestor(commit, MAIN_BASE)
+                {
+                    return Some(Finding {
+                        pattern: Pattern::P5PhantomDone,
+                        severity: Severity::Low,
+                        task_id: meta.task_id.clone(),
+                        summary:
+                            "deliverable present (claimed commit is an ancestor of main); \
+                             no task_completed event in runs.db — stale/rebuilt provenance, \
+                             not phantom-done"
+                                .to_string(),
+                        // Cite both the missing-event RunsDb row and the
+                        // corroborating ancestor commit. Subject left empty
+                        // to avoid an extra `git log` round-trip; the sha
+                        // alone is the inspectable corroboration locator.
+                        evidence: vec![
+                            EvidenceRef::RunsDb {
+                                table: "events".to_string(),
+                                key: format!(
+                                    "task_id={} AND event_type=task_completed",
+                                    meta.task_id
+                                ),
+                            },
+                            EvidenceRef::Commit {
+                                sha: commit.to_string(),
+                                subject: String::new(),
+                            },
+                        ],
+                    });
                 }
                 return Some(Finding {
                     pattern: Pattern::P5PhantomDone,
