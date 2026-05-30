@@ -311,6 +311,12 @@ pub const GEOMETRY_QUERY_NAMES: &[&str] = &[
     "geo_equiv",
     "angle",
     "curvature",
+    // KGQ-ζ (task 3615, Phase 6): at-point surface normal.
+    // normal(surface: Surface, point: Point3<Length>) -> Vector3<Dimensionless>
+    // GHR-α (task 3603) registered the original 12 Phase-1 names above and
+    // omitted `normal` (it fell through the gap between the two PRDs). KGQ-ζ
+    // absorbs the registration since 3603 is already done.
+    "normal",
 ];
 
 pub(crate) fn is_geometry_query(name: &str) -> bool {
