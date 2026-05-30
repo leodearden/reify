@@ -2245,6 +2245,20 @@ impl Engine {
             let default_kernel = geometry_kernels
                 .get_mut(default_kernel_name)
                 .expect("default kernel must remain in the map across the per-realization loop");
+            // Task 3616: hydrate geometry-handle value cells before any
+            // post-process that reads them (topology selectors need the parent
+            // Value::GeometryHandle in `values`). Mirrors the
+            // `post_process_geometry_handle_cells` call in `build`/
+            // `build_snapshot` but without cache/freshness recording, since
+            // `tessellate_from_values` is a static fn without access to
+            // `self.cache` or `self.realization_handles`.
+            Engine::hydrate_geometry_handles_into_values(
+                template,
+                &named_steps,
+                values,
+                functions,
+                meta_map,
+            );
             // Task 2320 amendment: mirrors the `build` / `build_snapshot`
             // wire-up so `TessellateResult.values` exposes the same
             // kernel-resolved `Bool` for conformance-query cells as
@@ -3249,7 +3263,7 @@ impl Engine {
         realization_handles: &mut HashMap<reify_core::RealizationNodeId, GeometryHandleId>,
         version: VersionId,
     ) {
-        use reify_core::{Type, hash::ContentHash, identity::ValueCellId};
+        use reify_core::{hash::ContentHash, identity::ValueCellId};
         use reify_ir::Value;
 
         // Two-phase approach: collect entries while holding a &ValueMap borrow
@@ -3269,14 +3283,12 @@ impl Engine {
                     Some(&h) => h,
                     None => continue,
                 };
-                // Only hydrate if a matching Type::Geometry value cell exists.
-                let has_geometry_cell = template
-                    .value_cells
-                    .iter()
-                    .any(|c| c.id.member == name && c.cell_type == Type::Geometry);
-                if !has_geometry_cell {
-                    continue;
-                }
+                // Hydrate all named realizations — geometry params AND geometry
+                // lets. The compiler skips creating value cells for geometry lets
+                // (entity.rs:1138), but topology selectors (post-process tier)
+                // need to look up parent GeometryHandle via values.get(). Omitting
+                // the old `has_geometry_cell` guard ensures both lets and params
+                // are present in `values` before `run_post_processes` fires.
 
                 // GHR-δ §5: record this realization's resolved handle in the
                 // Engine's validity map (the read-time revalidation oracle).
@@ -3321,6 +3333,18 @@ impl Engine {
                         reify_compiler::CompiledGeometryOp::Boolean { .. } => &[],
                     };
                     for (arg_name, expr) in args {
+                        // A CrossSubGeometryRef (`self.<sub>.<member>`) is a
+                        // geometry-ref arg compiled into the scalar args list
+                        // by compile_expr (geometry.rs:749). eval_expr would
+                        // panic on it (unreachable! in reify-expr). It may be
+                        // the top-level arg OR nested inside a larger operator
+                        // node (e.g. `translate(rotate(self.inner.body, …), …)`),
+                        // so walk the whole arg tree. Its identity is already
+                        // captured in the GeomRef `target`/`profiles` field —
+                        // skip the arg for hash purposes.
+                        if arg_contains_cross_sub_geometry_ref(expr) {
+                            continue;
+                        }
                         let v = reify_expr::eval_expr(expr, &ctx);
                         h = h
                             .combine(ContentHash::of_str(arg_name))
@@ -3347,6 +3371,85 @@ impl Engine {
             }
         } // ctx dropped — &ValueMap borrow released
 
+        for (cell_id, value) in entries {
+            values.insert(cell_id, value);
+        }
+    }
+
+    /// Lightweight geometry-handle hydration for the tessellate path.
+    ///
+    /// Inserts `Value::GeometryHandle` entries into `values` for every named
+    /// realization that has a resolved kernel handle in `named_steps`. This is
+    /// the values-only subset of `post_process_geometry_handle_cells` — it does
+    /// NOT touch `cache` or `realization_handles` (which are unavailable in the
+    /// static `tessellate_from_values` function).
+    ///
+    /// Must run before `run_post_processes` so that topology selectors can
+    /// resolve the parent `Value::GeometryHandle` via `values.get(arg_cell_id)`.
+    fn hydrate_geometry_handles_into_values(
+        template: &reify_compiler::TopologyTemplate,
+        named_steps: &HashMap<String, GeometryHandleId>,
+        values: &mut ValueMap,
+        functions: &[CompiledFunction],
+        meta_map: &HashMap<String, HashMap<String, String>>,
+    ) {
+        use reify_core::{hash::ContentHash, identity::ValueCellId};
+        use reify_ir::Value;
+
+        let mut entries: Vec<(ValueCellId, Value)> = Vec::new();
+        {
+            let ctx = crate::eval_ctx_with_meta(values, functions, meta_map);
+            for realization in &template.realizations {
+                let name = match &realization.name {
+                    Some(n) => n.as_str(),
+                    None => continue,
+                };
+                let kernel_handle = match named_steps.get(name) {
+                    Some(&h) => h,
+                    None => continue,
+                };
+                let mut h = ContentHash::of(b"uvh1");
+                for op in &realization.operations {
+                    let args: &[(String, reify_ir::CompiledExpr)] = match op {
+                        reify_compiler::CompiledGeometryOp::Primitive { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Modify { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Transform { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Pattern { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Sweep { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Curve { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Boolean { .. } => &[],
+                    };
+                    for (arg_name, expr) in args {
+                        // A CrossSubGeometryRef (`self.<sub>.<member>`) is a geometry-ref
+                        // arg compiled into the scalar args list (geometry.rs). eval_expr
+                        // would panic on it (unreachable! in reify-expr); it may be the
+                        // top-level arg OR nested inside a larger operator node, so walk
+                        // the whole arg tree. Its identity is already captured in the
+                        // GeomRef target/profiles. Skip the arg for hashing.
+                        if arg_contains_cross_sub_geometry_ref(expr) {
+                            continue;
+                        }
+                        let v = reify_expr::eval_expr(expr, &ctx);
+                        h = h
+                            .combine(ContentHash::of_str(arg_name))
+                            .combine(v.content_hash());
+                    }
+                }
+                let lo = h.0.to_le_bytes();
+                let hi = h.combine(ContentHash::of(b"uvh2")).0.to_le_bytes();
+                let mut upstream_values_hash = [0u8; 32];
+                upstream_values_hash[..16].copy_from_slice(&lo);
+                upstream_values_hash[16..].copy_from_slice(&hi);
+                entries.push((
+                    ValueCellId::new(realization.id.entity.as_str(), name),
+                    Value::GeometryHandle {
+                        realization_ref: realization.id.clone(),
+                        upstream_values_hash,
+                        kernel_handle,
+                    },
+                ));
+            }
+        }
         for (cell_id, value) in entries {
             values.insert(cell_id, value);
         }
@@ -4149,9 +4252,70 @@ fn three_nearest_node_indices(nodes: &[[f64; 3]], target: [f64; 3]) -> Vec<usize
     idx
 }
 
+/// Returns `true` if `expr`'s compiled tree contains a `CrossSubGeometryRef`
+/// at any depth.
+///
+/// The `upstream_values_hash` fold (in `post_process_geometry_handle_cells`
+/// and `hydrate_geometry_handles_into_values`) evaluates each realization-op
+/// scalar arg via `reify_expr::eval_expr`, which `unreachable!()`s on a
+/// `CrossSubGeometryRef` (`reify-expr/src/lib.rs:177`). Such a geometry-ref can
+/// be the top-level arg (`rotate(self.inner.body, …)`) *or* nested inside a
+/// larger operator node (`translate(rotate(self.inner.body, …), …)`), so a
+/// top-level `matches!` is insufficient — we walk the whole tree via the
+/// canonical [`reify_ir::CompiledExpr::walk`]. A geometry-ref's identity is
+/// already captured by the op's `GeomRef` target/profiles, so any arg
+/// containing one is skipped from hashing entirely (task 3616; regression
+/// pinned by `cross_sub_geometry_anti_cascade_no_spurious_errors_in_translate_chain`).
+fn arg_contains_cross_sub_geometry_ref(expr: &reify_ir::CompiledExpr) -> bool {
+    let mut found = false;
+    expr.walk(&mut |e| {
+        if matches!(e.kind, reify_ir::CompiledExprKind::CrossSubGeometryRef(_)) {
+            found = true;
+        }
+    });
+    found
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `arg_contains_cross_sub_geometry_ref` must detect a `CrossSubGeometryRef`
+    /// at the top level *and* nested inside a larger operator node, and must not
+    /// false-positive on ref-free args. The nested case is the task-3616
+    /// regression: the old top-level-only `matches!` guard let a
+    /// `CrossSubGeometryRef` nested in a transform-chain arg
+    /// (`translate(rotate(self.inner.body, …), …)`) reach `eval_expr`'s
+    /// `unreachable!()` — pinned end-to-end by
+    /// `cross_sub_geometry_anti_cascade_no_spurious_errors_in_translate_chain`.
+    #[test]
+    fn arg_contains_cross_sub_geometry_ref_walks_nested_refs() {
+        use reify_core::Type;
+        use reify_core::identity::ValueCellId;
+        use reify_ir::{BinOp, CompiledExpr};
+
+        // Top-level cross-sub ref → detected.
+        let xref = CompiledExpr::cross_sub_geometry_ref(
+            ValueCellId::new("Parent.sub", "body"),
+            Type::Geometry,
+        );
+        assert!(arg_contains_cross_sub_geometry_ref(&xref));
+
+        // Cross-sub ref nested inside an operator node → detected (the case the
+        // old top-level `matches!` missed).
+        let scalar = CompiledExpr::value_ref(ValueCellId::new("E", "width"), Type::Bool);
+        let nested = CompiledExpr::binop(BinOp::Gt, xref.clone(), scalar, Type::Bool);
+        assert!(arg_contains_cross_sub_geometry_ref(&nested));
+
+        // Ref-free arg → not skipped.
+        let plain = CompiledExpr::binop(
+            BinOp::Gt,
+            CompiledExpr::value_ref(ValueCellId::new("E", "a"), Type::Bool),
+            CompiledExpr::value_ref(ValueCellId::new("E", "b"), Type::Bool),
+            Type::Bool,
+        );
+        assert!(!arg_contains_cross_sub_geometry_ref(&plain));
+    }
 
     // ── shared test helpers (task ε / 3436, step-8) ───────────────────────────
 

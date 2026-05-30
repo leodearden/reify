@@ -31,8 +31,94 @@
 
 use std::collections::HashSet;
 
-use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, hash::ContentHash};
 use reify_ir::{FeatureTag, FeatureTagTable, GeometryHandleId, GeometryKernel, GeometryQuery, QueryError, Value};
+
+// ── Sub-handle lowering primitives (task 3616, KGQ-η) ──────────────────────
+
+/// The kind of a topology sub-shape, used as a domain-separation byte in the
+/// sub-handle hash (PRD §4).  Discriminant values are intentionally fixed and
+/// stable: downstream tasks (KGQ-θ/ι/κ) rely on the hashes being
+/// bit-identical across sessions, so the values must never change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SubKind {
+    /// An edge sub-shape.  Discriminant byte: `0x01`.
+    Edge = 0x01,
+    /// A face sub-shape.  Discriminant byte: `0x02`.
+    Face = 0x02,
+}
+
+impl SubKind {
+    /// Return the stable 1-byte domain-separator for this sub-shape kind.
+    pub(crate) fn as_byte(self) -> u8 {
+        self as u8
+    }
+}
+
+/// Build the `upstream_values_hash` for a sub-handle (PRD §4).
+///
+/// The hash is a deterministic 32-byte digest derived from:
+///   - `parent_hash`: the parent solid's `upstream_values_hash`
+///   - `sub_kind`: Edge (`0x01`) or Face (`0x02`) — domain separator
+///   - `topexp_index`: 0-based canonical index from `TopExp::MapShapes`
+///
+/// Uses the same `ContentHash` (XXH3-128) + lo/hi 32-byte packing as the
+/// parent-hash construction in `engine_build.rs:3311-3336`.  This keeps all
+/// hashes in one deterministic domain and adds no new dependencies.
+///
+/// PRD §4 invariants guaranteed:
+///   (ii)  determinism — pure function of `(parent_hash, sub_kind, index)`
+///   (iii) index-inequality — index 0 ≠ 1 for any fixed (parent, kind)
+///   (iv)  cache-hit equality — same (parent, kind, index) always matches
+pub(crate) fn compose_sub_handle_hash(
+    parent_hash: &[u8; 32],
+    sub_kind: SubKind,
+    topexp_index: u32,
+) -> [u8; 32] {
+    let h = ContentHash::of(b"subh1")
+        .combine(ContentHash::of(parent_hash))
+        .combine(ContentHash::of(&[sub_kind.as_byte()]))
+        .combine(ContentHash::of(&topexp_index.to_le_bytes()));
+    let lo = h.0.to_le_bytes();
+    let hi = h.combine(ContentHash::of(b"subh2")).0.to_le_bytes();
+    let mut out = [0u8; 32];
+    out[..16].copy_from_slice(&lo);
+    out[16..].copy_from_slice(&hi);
+    out
+}
+
+/// Construct a `Value::GeometryHandle` sub-handle for a single topology
+/// sub-shape (PRD §4, KGQ-η).
+///
+/// - `parent_realization_ref`: inherited unchanged from the parent solid
+///   (PRD §4 invariant i).
+/// - `parent_hash`: the parent's `upstream_values_hash` (used as input to
+///   `compose_sub_handle_hash`).
+/// - `sub_kind`: `SubKind::Edge` or `SubKind::Face` — the domain-separation
+///   byte that distinguishes edge and face hashes at the same index.
+/// - `topexp_index`: 0-based index of this sub-shape in the canonical
+///   `TopExp::MapShapes` order returned by `extract_edges` / `extract_faces`.
+/// - `sub_kernel_id`: the session-scoped kernel handle for this sub-shape.
+///
+/// The resulting `upstream_values_hash` satisfies all PRD §4 invariants:
+///   (ii)  deterministic — same `(parent_hash, sub_kind, topexp_index)` always
+///         yields the same hash;
+///   (iii) per-element distinct — index 0 ≠ index 1 for fixed (parent, kind);
+///   (iv)  cache-hit equality — `kernel_handle` is excluded from `PartialEq`,
+///         so a re-realized sub-shape with a new session id still matches.
+pub(crate) fn make_sub_handle(
+    parent_realization_ref: &reify_core::identity::RealizationNodeId,
+    parent_hash: &[u8; 32],
+    sub_kind: SubKind,
+    topexp_index: u32,
+    sub_kernel_id: GeometryHandleId,
+) -> Value {
+    Value::GeometryHandle {
+        realization_ref: parent_realization_ref.clone(),
+        upstream_values_hash: compose_sub_handle_hash(parent_hash, sub_kind, topexp_index),
+        kernel_handle: sub_kernel_id,
+    }
+}
 
 /// Extract a `Value::Real` payload from a `GeometryQuery` reply, returning a
 /// uniformly-formatted `QueryError::QueryFailed` on a non-`Real` reply.
@@ -1904,5 +1990,116 @@ mod tests {
              got diagnostics: {:?}",
             diagnostics,
         );
+    }
+
+    // ── step-1 (task 3616): SubKind + compose_sub_handle_hash RED tests ────────
+
+    /// SubKind::Edge discriminant must be 0x01 (PRD §4 domain-separator).
+    #[test]
+    fn sub_kind_edge_discriminant_is_0x01() {
+        assert_eq!(SubKind::Edge.as_byte(), 0x01u8);
+    }
+
+    /// SubKind::Face discriminant must be 0x02.
+    #[test]
+    fn sub_kind_face_discriminant_is_0x02() {
+        assert_eq!(SubKind::Face.as_byte(), 0x02u8);
+    }
+
+    /// compose_sub_handle_hash is deterministic: same (parent, kind, index)
+    /// produces bit-identical output across two independent calls (PRD §4 ii).
+    #[test]
+    fn compose_sub_handle_hash_is_deterministic() {
+        let parent: [u8; 32] = [0xAB; 32];
+        let a = compose_sub_handle_hash(&parent, SubKind::Edge, 0);
+        let b = compose_sub_handle_hash(&parent, SubKind::Edge, 0);
+        assert_eq!(a, b, "identical inputs must produce identical outputs");
+    }
+
+    /// Different topexp indices must produce different hashes (PRD §4 iii).
+    #[test]
+    fn compose_sub_handle_hash_differs_by_index() {
+        let parent: [u8; 32] = [0x11; 32];
+        let h0 = compose_sub_handle_hash(&parent, SubKind::Edge, 0);
+        let h1 = compose_sub_handle_hash(&parent, SubKind::Edge, 1);
+        assert_ne!(h0, h1, "index 0 and index 1 must hash differently");
+    }
+
+    /// Edge and Face at the same index must produce different hashes
+    /// (PRD §4 iii — sub_kind is part of the domain separation).
+    #[test]
+    fn compose_sub_handle_hash_differs_by_sub_kind() {
+        let parent: [u8; 32] = [0x22; 32];
+        let he = compose_sub_handle_hash(&parent, SubKind::Edge, 0);
+        let hf = compose_sub_handle_hash(&parent, SubKind::Face, 0);
+        assert_ne!(he, hf, "Edge and Face at same index must hash differently");
+    }
+
+    /// The output hash must be non-zero (a zero hash is the collision-free
+    /// domain sentinel; an honest ContentHash of non-zero input must differ).
+    #[test]
+    fn compose_sub_handle_hash_is_non_zero() {
+        let parent: [u8; 32] = [0x33; 32];
+        let h = compose_sub_handle_hash(&parent, SubKind::Edge, 0);
+        assert_ne!(h, [0u8; 32], "hash output must be non-zero");
+    }
+
+    // ── step-3 (task 3616): make_sub_handle RED tests ──────────────────────────
+
+    /// make_sub_handle carries the parent's realization_ref unchanged (PRD §4).
+    #[test]
+    fn make_sub_handle_carries_parent_realization_ref() {
+        use reify_core::identity::RealizationNodeId;
+        let rr = RealizationNodeId::new("BoxEdges", 0);
+        let parent_hash: [u8; 32] = [0xAA; 32];
+        let sub = make_sub_handle(&rr, &parent_hash, SubKind::Edge, 0, GeometryHandleId(5));
+        match sub {
+            Value::GeometryHandle { realization_ref, .. } => {
+                assert_eq!(realization_ref.entity, "BoxEdges");
+                assert_eq!(realization_ref.index, 0);
+            }
+            other => panic!("expected Value::GeometryHandle, got {:?}", other),
+        }
+    }
+
+    /// make_sub_handle sets upstream_values_hash to compose_sub_handle_hash output.
+    #[test]
+    fn make_sub_handle_upstream_hash_matches_compose() {
+        use reify_core::identity::RealizationNodeId;
+        let rr = RealizationNodeId::new("BoxEdges", 0);
+        let parent_hash: [u8; 32] = [0xBB; 32];
+        let expected_hash = compose_sub_handle_hash(&parent_hash, SubKind::Edge, 3);
+        let sub = make_sub_handle(&rr, &parent_hash, SubKind::Edge, 3, GeometryHandleId(7));
+        match sub {
+            Value::GeometryHandle { upstream_values_hash, .. } => {
+                assert_eq!(upstream_values_hash, expected_hash);
+            }
+            other => panic!("expected Value::GeometryHandle, got {:?}", other),
+        }
+    }
+
+    /// Two sub-handles of one parent at different topexp indices must compare
+    /// UNEQUAL under PartialEq (PRD §4 iii — upstream_values_hash differs).
+    #[test]
+    fn make_sub_handle_different_indices_are_unequal() {
+        use reify_core::identity::RealizationNodeId;
+        let rr = RealizationNodeId::new("BoxEdges", 0);
+        let parent_hash: [u8; 32] = [0xCC; 32];
+        let a = make_sub_handle(&rr, &parent_hash, SubKind::Edge, 0, GeometryHandleId(1));
+        let b = make_sub_handle(&rr, &parent_hash, SubKind::Edge, 1, GeometryHandleId(2));
+        assert_ne!(a, b, "different topexp indices must compare unequal");
+    }
+
+    /// Two sub-handles at the same (parent, kind, index) but different
+    /// kernel_handle ids must compare EQUAL — kernel_handle is excluded from
+    /// PartialEq (PRD §4 iv cache-hit equality).
+    #[test]
+    fn make_sub_handle_same_parent_kind_index_equal_despite_differing_kernel_handle() {
+        use reify_core::identity::RealizationNodeId;
+        let rr = RealizationNodeId::new("BoxEdges", 0);
+        let parent_hash: [u8; 32] = [0xDD; 32];
+        let a = make_sub_handle(&rr, &parent_hash, SubKind::Edge, 2, GeometryHandleId(100));
+        let b = make_sub_handle(&rr, &parent_hash, SubKind::Edge, 2, GeometryHandleId(999));
+        assert_eq!(a, b, "same (parent, kind, index) must be EQUAL regardless of kernel_handle");
     }
 }
