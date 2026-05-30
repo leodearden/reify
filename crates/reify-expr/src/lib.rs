@@ -1375,9 +1375,20 @@ fn eval_solve_load_cases(args: &[Value], ctx: &EvalContext) -> Value {
             None => return Value::Undef,
         };
 
-        // Step-2: use shared options for every case.  Step-4 will resolve the
-        // per-case `options : Option<ElasticOptions>` field override.
-        let effective_options = shared_options.clone();
+        // Step-4: resolve effective options per case.
+        //
+        // LoadCase.options is declared as `Option<ElasticOptions> = none`
+        // (fea_multi_case.ri), so at runtime:
+        //   - `options: none`          → Value::Option(None)   → use shared_options
+        //   - `options: some(X)`       → Value::Option(Some(X)) → use X
+        //
+        // If the field is absent (malformed LoadCase) or has an unexpected
+        // variant, fall back to shared_options (silent-Undef discipline:
+        // per-field diagnostic surfacing is PRD task #10).
+        let effective_options = match data.fields.get(&"options".to_string()) {
+            Some(Value::Option(Some(per_case_opts))) => (**per_case_opts).clone(),
+            _ => shared_options.clone(),
+        };
 
         let per_case = invoke_solve_elastic_static(
             &[
