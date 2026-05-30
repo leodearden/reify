@@ -58,6 +58,38 @@
 // Duhamel uniform-sampling integrator
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Sampling-uniformity checker
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Returns `true` iff `times` is a uniformly-spaced grid within the relative
+/// tolerance `rel_tol`.
+///
+/// "Uniform" means every consecutive gap `(times[k+1] − times[k])` equals the
+/// first gap `dt₀ = times[1] − times[0]` within `rel_tol · dt₀`.
+///
+/// Returns `false` if:
+/// * `times.len() < 2` (no spacing defined).
+/// * `dt₀ ≤ 0` (non-increasing or zero first gap).
+/// * Any subsequent gap deviates from `dt₀` by more than `rel_tol · dt₀`.
+pub fn is_uniformly_sampled(times: &[f64], rel_tol: f64) -> bool {
+    if times.len() < 2 {
+        return false;
+    }
+    let dt0 = times[1] - times[0];
+    if dt0 <= 0.0 {
+        return false;
+    }
+    let tol = rel_tol * dt0;
+    for w in times.windows(2) {
+        let gap = w[1] - w[0];
+        if (gap - dt0).abs() > tol {
+            return false;
+        }
+    }
+    true
+}
+
 /// Pre-computed per-timestep coefficients for the exact piecewise-linear
 /// Duhamel recurrence (Chopra Table 5.3.1).
 ///
