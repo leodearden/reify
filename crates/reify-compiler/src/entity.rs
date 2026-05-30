@@ -1486,6 +1486,11 @@ pub(crate) fn compile_entity(
             reify_ast::MemberDecl::AssociatedType(_) => {
                 // Associated type compilation deferred to a later milestone.
             }
+            reify_ast::MemberDecl::Fn(_) => {
+                // Trait associated-fn compilation deferred to task δ/ζ.
+                // The member is lowered into MemberDecl::Fn by task γ (ts_parser);
+                // conformance checking and dispatch are added in later tasks.
+            }
             reify_ast::MemberDecl::Port(port_decl) => {
                 // Skip duplicate port names (already reported in first pass).
                 // The first occurrence is compiled; subsequent duplicates are skipped.

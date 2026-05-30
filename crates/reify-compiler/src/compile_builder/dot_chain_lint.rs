@@ -103,13 +103,17 @@ fn walk_declaration(decl: &reify_ast::Declaration, diagnostics: &mut Vec<Diagnos
         }
         Declaration::Function(f) => {
             walk_annotations(&f.annotations, diagnostics);
-            for binding in &f.body.let_bindings {
-                walk_expr(&binding.value, diagnostics);
-                if let Some(wc) = &binding.where_clause {
-                    walk_expr(&wc.condition, diagnostics);
+            // Top-level fns always have Some body; bodyless trait fns (None)
+            // are deferred to task δ and have no expressions to walk.
+            if let Some(body) = &f.body {
+                for binding in &body.let_bindings {
+                    walk_expr(&binding.value, diagnostics);
+                    if let Some(wc) = &binding.where_clause {
+                        walk_expr(&wc.condition, diagnostics);
+                    }
                 }
+                walk_expr(&body.result_expr, diagnostics);
             }
-            walk_expr(&f.body.result_expr, diagnostics);
         }
         Declaration::Field(f) => {
             walk_annotations(&f.annotations, diagnostics);
@@ -278,6 +282,8 @@ fn walk_members(
             }
             // Members with no embedded expressions (or not yet handled).
             MemberDecl::AssociatedType(_)
+            // Trait fn members: expressions not walked at γ; deferred to task δ/ζ.
+            | MemberDecl::Fn(_)
             | MemberDecl::MetaBlock(_)
             | MemberDecl::MatchArmDeclGroup(_) => {}
         }

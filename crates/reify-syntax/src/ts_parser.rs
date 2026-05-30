@@ -752,12 +752,39 @@ impl<'a> Lowering<'a> {
         // Extract optional type parameters
         let type_params = self.lower_type_parameters(node);
 
-        // Extract function params from fn_param_list
+        // Extract function params from fn_param_list.
+        //
+        // When `fn_param_list` has a `receiver` field (the `self` keyword),
+        // prepend a synthetic FnParam with `is_self = true` and a sentinel
+        // `TypeExprKind::Named { name: "self" }` type (placeholder, replaced by
+        // the concrete receiver type during dispatch in task δ/ζ).  Typed params
+        // that follow `self` are lowered as normal (is_self = false).
+        //
+        // Top-level `Declaration::Function` never has a receiver field; only
+        // trait-member `function_definition`/`function_signature` nodes do.
         let params = {
             let mut cursor = node.walk();
             let mut params = Vec::new();
             for child in node.children(&mut cursor) {
                 if child.kind() == "fn_param_list" {
+                    // Check for a `self` receiver field.
+                    if let Some(receiver_node) = child.child_by_field_name("receiver") {
+                        let receiver_span = self.span(receiver_node);
+                        params.push(FnParam {
+                            name: "self".to_string(),
+                            is_self: true,
+                            type_expr: TypeExpr {
+                                kind: TypeExprKind::Named {
+                                    name: "self".to_string(),
+                                    type_args: vec![],
+                                },
+                                span: receiver_span,
+                            },
+                            default: None,
+                            span: receiver_span,
+                        });
+                    }
+                    // Collect typed fn_param children (is_self = false via lower_fn_param).
                     let mut param_cursor = child.walk();
                     for param_child in child.children(&mut param_cursor) {
                         if param_child.kind() == "fn_param"
@@ -777,7 +804,8 @@ impl<'a> Lowering<'a> {
             .child_by_field_name("return_type")
             .map(|t| self.lower_type_expr_node(t));
 
-        // Extract fn_body
+        // Extract fn_body — `Some` for function_definition (has a body block),
+        // `None` for function_signature (bodyless required trait fn).
         let body = {
             let mut cursor = node.walk();
             let mut body = None;
@@ -787,7 +815,7 @@ impl<'a> Lowering<'a> {
                     break;
                 }
             }
-            body?
+            body
         };
 
         Some(FnDef {
@@ -1322,6 +1350,7 @@ impl<'a> Lowering<'a> {
 
         Some(FnParam {
             name,
+            is_self: false,
             type_expr,
             default,
             span: self.span(node),
@@ -1479,6 +1508,11 @@ impl<'a> Lowering<'a> {
             "associated_type" => self
                 .lower_associated_type(child)
                 .map(MemberDecl::AssociatedType),
+            // Trait-body fn members: `fn f(self) -> T { ... }` (function_definition)
+            // or `fn req(self) -> T` (bodyless function_signature).
+            "function_definition" | "function_signature" => {
+                self.lower_function(child).map(MemberDecl::Fn)
+            }
             "port_declaration" => check_and_lower!(
                 self,
                 child,
@@ -4546,8 +4580,8 @@ mod tests {
         assert!(
             matches!(&f.return_type.as_ref().unwrap().kind, TypeExprKind::Named { name, .. } if name == "Scalar")
         );
-        assert!(f.body.let_bindings.is_empty());
-        assert!(matches!(&f.body.result_expr.kind, ExprKind::BinOp { op, .. } if op == "*"));
+        assert!(f.body.as_ref().unwrap().let_bindings.is_empty());
+        assert!(matches!(&f.body.as_ref().unwrap().result_expr.kind, ExprKind::BinOp { op, .. } if op == "*"));
     }
 
     #[test]
@@ -4579,7 +4613,7 @@ mod tests {
             matches!(&f.return_type.as_ref().unwrap().kind, TypeExprKind::Named { name, .. } if name == "Real")
         );
         assert!(matches!(
-            &f.body.result_expr.kind,
+            &f.body.as_ref().unwrap().result_expr.kind,
             ExprKind::Conditional { .. }
         ));
     }
@@ -4600,12 +4634,12 @@ mod tests {
             other => panic!("expected Function, got {:?}", other),
         };
         assert_eq!(f.params.len(), 1);
-        assert_eq!(f.body.let_bindings.len(), 1);
-        assert_eq!(f.body.let_bindings[0].name, "y");
+        assert_eq!(f.body.as_ref().unwrap().let_bindings.len(), 1);
+        assert_eq!(f.body.as_ref().unwrap().let_bindings[0].name, "y");
         assert!(
-            matches!(&f.body.let_bindings[0].value.kind, ExprKind::BinOp { op, .. } if op == "*")
+            matches!(&f.body.as_ref().unwrap().let_bindings[0].value.kind, ExprKind::BinOp { op, .. } if op == "*")
         );
-        assert!(matches!(&f.body.result_expr.kind, ExprKind::BinOp { op, .. } if op == "+"));
+        assert!(matches!(&f.body.as_ref().unwrap().result_expr.kind, ExprKind::BinOp { op, .. } if op == "+"));
     }
 
     #[test]
