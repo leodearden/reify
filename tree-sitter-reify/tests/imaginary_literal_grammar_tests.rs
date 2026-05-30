@@ -85,7 +85,7 @@ fn fixture_a_decimal_j_is_imaginary_literal() {
     let imag_node = imag.unwrap();
     let value_child = imag_node.child_by_field_name("value");
     assert!(
-        value_child.map_or(false, |n| n.kind() == "number_literal"),
+        value_child.is_some_and(|n| n.kind() == "number_literal"),
         "fixture (a): imaginary_literal must have a `value` field of kind `number_literal`; \
          found: {:?}",
         collect_kinds(imag_node)
