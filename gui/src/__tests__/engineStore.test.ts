@@ -1431,4 +1431,32 @@ describe('engineStore solverProgress', () => {
       dispose();
     });
   });
+
+  it('(step-3a) visible becomes true after >1s debounce', () => {
+    vi.useFakeTimers();
+    createRoot((dispose) => {
+      const { state, applySolverProgress } = createEngineStore();
+      applySolverProgress({ solver_kind: 'cg' as const, iter: 1, residual: 0.5 });
+      expect(state.solverProgress.visible).toBe(false);
+      vi.advanceTimersByTime(1000);
+      expect(state.solverProgress.visible).toBe(true);
+      dispose();
+    });
+    vi.useRealTimers();
+  });
+
+  it('(step-3b) subsequent ticks keep visible true once debounce fires', () => {
+    vi.useFakeTimers();
+    createRoot((dispose) => {
+      const { state, applySolverProgress } = createEngineStore();
+      applySolverProgress({ solver_kind: 'cg' as const, iter: 1, residual: 0.5 });
+      vi.advanceTimersByTime(1000);
+      expect(state.solverProgress.visible).toBe(true);
+      applySolverProgress({ solver_kind: 'cg' as const, iter: 2, residual: 0.3 });
+      applySolverProgress({ solver_kind: 'cg' as const, iter: 3, residual: 0.1 });
+      expect(state.solverProgress.visible).toBe(true);
+      dispose();
+    });
+    vi.useRealTimers();
+  });
 });
