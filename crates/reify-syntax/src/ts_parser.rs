@@ -2551,6 +2551,7 @@ impl<'a> Lowering<'a> {
             "lambda_expression" => self.lower_lambda_expression(node),
             "quantifier_expression" => self.lower_quantifier_expression(node),
             "quantity_literal" => self.lower_quantity_literal(node),
+            "imaginary_literal" => self.lower_imaginary_literal(node),
             "number_literal" => self.lower_number_literal(node),
             "string_literal" => self.lower_string_literal(node),
             "bool_literal" => self.lower_bool_literal(node),
@@ -3182,6 +3183,38 @@ impl<'a> Lowering<'a> {
         let (value, is_real) = Self::parse_number_literal_text(text)?;
         Some(Expr {
             kind: ExprKind::NumberLiteral { value, is_real },
+            span: self.span(node),
+        })
+    }
+
+    /// Desugar an `imaginary_literal` CST node to `complex(0.0, x)`.
+    ///
+    /// Grammar: `imaginary_literal = seq(field('value', $.number_literal), token.immediate('j'))`.
+    /// The `value` child is the mantissa `number_literal`; the `j` suffix is anonymous.
+    ///
+    /// Desugars to `ExprKind::FunctionCall { name: "complex", args: [re, im] }` where:
+    /// - `re` = `NumberLiteral { value: 0.0, is_real: true }` (synthetic zero real part)
+    /// - `im` = the lowered mantissa via `lower_number_literal`
+    ///
+    /// This avoids introducing a new `ExprKind::ImaginaryLiteral` variant (which would
+    /// require exhaustive match updates across ~12 files in reify-compiler/eval/lsp).
+    fn lower_imaginary_literal(&self, node: tree_sitter::Node) -> Option<Expr> {
+        let value_node = node.child_by_field_name("value")?;
+        // Lower the mantissa number_literal to get the imaginary-part Expr.
+        let im_expr = self.lower_number_literal(value_node)?;
+        // Build a synthetic real-part literal: NumberLiteral { value: 0.0, is_real: true }.
+        let re_expr = Expr {
+            kind: ExprKind::NumberLiteral {
+                value: 0.0,
+                is_real: true,
+            },
+            span: self.span(node),
+        };
+        Some(Expr {
+            kind: ExprKind::FunctionCall {
+                name: "complex".to_string(),
+                args: vec![re_expr, im_expr],
+            },
             span: self.span(node),
         })
     }

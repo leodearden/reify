@@ -260,3 +260,39 @@ fn eval_complex_div_prints_one_over_i_is_minus_i() {
         "stderr should not contain 'Error', got: {stderr}"
     );
 }
+
+// ── task-3950 step-7: complex_literals.ri eval exercises imaginary literal + add ─
+
+/// End-to-end signal: `reify eval examples/complex_literals.ri` must succeed.
+/// The file exercises `3.2 + 4.1j` (Real + imaginary literal → Complex) and
+/// `3 + 4j` (Int + imaginary literal → Complex). Asserts:
+///   - exit 0
+///   - stdout contains "3.2" (re(z)) and "4.1" (im(z))
+///   - stdout does NOT contain "undef" for the w = 3 + 4j binding
+///   - stderr contains no "Error"
+#[test]
+fn eval_complex_literals_prints_re_and_im() {
+    let path = common::example_path("complex_literals.ri");
+    let (status, stdout, stderr) = common::run_subcommand("eval", &path);
+
+    assert!(
+        status.success(),
+        "reify eval should exit 0 for complex_literals.ri.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("3.2"),
+        "stdout should contain '3.2' (re(z) or z value), got: {stdout}"
+    );
+    assert!(
+        stdout.contains("4.1"),
+        "stdout should contain '4.1' (im(z) or z value), got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("undef"),
+        "stdout should not contain 'undef' (w = 3+4j must evaluate to a Complex), got: {stdout}"
+    );
+    assert!(
+        !stderr.contains("Error"),
+        "stderr should not contain 'Error', got: {stderr}"
+    );
+}
