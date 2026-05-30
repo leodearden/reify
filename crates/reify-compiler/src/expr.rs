@@ -2517,8 +2517,22 @@ pub(crate) fn compile_expr_guarded(
                         current_guard,
                         lambda_counter,
                     );
+                    // β lossy bridge: derive Vec<String> variant-tag strings from
+                    // the structured Vec<MatchPattern>.  Binders are dropped at β;
+                    // γ/ε widen CompiledMatchArm.patterns to CompiledPattern.
+                    let tag_patterns: Vec<String> = arm
+                        .patterns
+                        .iter()
+                        .map(|p| match p {
+                            reify_ast::MatchPattern::Wildcard => "_".to_string(),
+                            reify_ast::MatchPattern::Variant(n) => n.clone(),
+                            reify_ast::MatchPattern::VariantBind { name, .. } => {
+                                name.clone()
+                            }
+                        })
+                        .collect();
                     reify_ir::CompiledMatchArm {
-                        patterns: arm.patterns.clone(),
+                        patterns: tag_patterns,
                         body,
                     }
                 })

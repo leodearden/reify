@@ -2749,19 +2749,49 @@ impl<'a> Lowering<'a> {
 
         let body = self.lower_expr(body_node)?;
 
-        // Collect patterns from the match_pattern node.
-        // Pattern is either '_' (wildcard) or one or more identifiers separated by '|'.
-        let mut patterns = Vec::new();
+        // Collect structured MatchPattern values from the match_pattern node.
+        // Choices:
+        //   '_'                              → [Wildcard]
+        //   variant_binding_pattern child    → [VariantBind { name, binders }]
+        //   identifier(s) separated by '|'  → [Variant(n), ...] one per identifier
+        let mut patterns: Vec<MatchPattern> = Vec::new();
         let pattern_text = self.node_text(pattern_node).trim();
 
         if pattern_text == "_" {
-            patterns.push("_".to_string());
+            patterns.push(MatchPattern::Wildcard);
         } else {
-            // Iterate named children (identifiers) of the match_pattern node
             let mut cursor = pattern_node.walk();
             for child in pattern_node.children(&mut cursor) {
-                if child.kind() == "identifier" {
-                    patterns.push(self.node_text(child).to_string());
+                match child.kind() {
+                    "variant_binding_pattern" => {
+                        // Named-field payload binding: `Circle { radius: r }`.
+                        let variant_node =
+                            child.child_by_field_name("variant")?;
+                        let name = self.node_text(variant_node).to_string();
+
+                        // Collect (field, binder) pairs from field_binding children.
+                        let mut binders: Vec<(String, String)> = Vec::new();
+                        let mut fb_cursor = child.walk();
+                        for fb_child in child.children(&mut fb_cursor) {
+                            if fb_child.kind() == "field_binding" {
+                                let field_node =
+                                    fb_child.child_by_field_name("field")?;
+                                let binder_node =
+                                    fb_child.child_by_field_name("binder")?;
+                                binders.push((
+                                    self.node_text(field_node).to_string(),
+                                    self.node_text(binder_node).to_string(),
+                                ));
+                            }
+                        }
+                        patterns.push(MatchPattern::VariantBind { name, binders });
+                    }
+                    "identifier" => {
+                        patterns.push(MatchPattern::Variant(
+                            self.node_text(child).to_string(),
+                        ));
+                    }
+                    _ => {}
                 }
             }
         }

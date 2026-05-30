@@ -11,7 +11,7 @@
 //! types don't yet exist in reify-ast.
 
 // ── flat root imports ────────────────────────────────────────────────────────
-use reify_ast::{DimOp, Expr, ExprKind, LambdaParam, MatchArm, QuantifierKind, TypeExpr, TypeExprKind};
+use reify_ast::{DimOp, Expr, ExprKind, LambdaParam, MatchArm, MatchPattern, QuantifierKind, TypeExpr, TypeExprKind};
 
 // ── module-path imports ──────────────────────────────────────────────────────
 use reify_ast::ast::{
