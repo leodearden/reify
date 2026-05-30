@@ -31,8 +31,61 @@
 
 use std::collections::HashSet;
 
-use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, hash::ContentHash};
 use reify_ir::{FeatureTag, FeatureTagTable, GeometryHandleId, GeometryKernel, GeometryQuery, QueryError, Value};
+
+// ── Sub-handle lowering primitives (task 3616, KGQ-η) ──────────────────────
+
+/// The kind of a topology sub-shape, used as a domain-separation byte in the
+/// sub-handle hash (PRD §4).  Discriminant values are intentionally fixed and
+/// stable: downstream tasks (KGQ-θ/ι/κ) rely on the hashes being
+/// bit-identical across sessions, so the values must never change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SubKind {
+    /// An edge sub-shape.  Discriminant byte: `0x01`.
+    Edge = 0x01,
+    /// A face sub-shape.  Discriminant byte: `0x02`.
+    Face = 0x02,
+}
+
+impl SubKind {
+    /// Return the stable 1-byte domain-separator for this sub-shape kind.
+    pub(crate) fn as_byte(self) -> u8 {
+        self as u8
+    }
+}
+
+/// Build the `upstream_values_hash` for a sub-handle (PRD §4).
+///
+/// The hash is a deterministic 32-byte digest derived from:
+///   - `parent_hash`: the parent solid's `upstream_values_hash`
+///   - `sub_kind`: Edge (`0x01`) or Face (`0x02`) — domain separator
+///   - `topexp_index`: 0-based canonical index from `TopExp::MapShapes`
+///
+/// Uses the same `ContentHash` (XXH3-128) + lo/hi 32-byte packing as the
+/// parent-hash construction in `engine_build.rs:3311-3336`.  This keeps all
+/// hashes in one deterministic domain and adds no new dependencies.
+///
+/// PRD §4 invariants guaranteed:
+///   (ii)  determinism — pure function of `(parent_hash, sub_kind, index)`
+///   (iii) index-inequality — index 0 ≠ 1 for any fixed (parent, kind)
+///   (iv)  cache-hit equality — same (parent, kind, index) always matches
+pub(crate) fn compose_sub_handle_hash(
+    parent_hash: &[u8; 32],
+    sub_kind: SubKind,
+    topexp_index: u32,
+) -> [u8; 32] {
+    let h = ContentHash::of(b"subh1")
+        .combine(ContentHash::of(parent_hash))
+        .combine(ContentHash::of(&[sub_kind.as_byte()]))
+        .combine(ContentHash::of(&topexp_index.to_le_bytes()));
+    let lo = h.0.to_le_bytes();
+    let hi = h.combine(ContentHash::of(b"subh2")).0.to_le_bytes();
+    let mut out = [0u8; 32];
+    out[..16].copy_from_slice(&lo);
+    out[16..].copy_from_slice(&hi);
+    out
+}
 
 /// Extract a `Value::Real` payload from a `GeometryQuery` reply, returning a
 /// uniformly-formatted `QueryError::QueryFailed` on a non-`Real` reply.
