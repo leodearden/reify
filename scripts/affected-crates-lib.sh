@@ -80,15 +80,73 @@ _file_to_crate() {
     esac
 }
 
-# _reverse_closure <crate>... — given a list of seed crate names on stdin (one
-# per line), print the reverse-dependency BFS closure (seeds + all workspace
-# crates that transitively depend on them), sorted-unique, one per line.
-# This is the identity function until step 10 wires in the real cargo-metadata
-# implementation. A no-arg or empty-stdin call prints nothing.
+# _reverse_closure — read seed crate names from stdin (one per line), emit the
+# BFS reverse-dependency closure (seeds + all workspace crates that transitively
+# depend on them), sorted-unique, one per line.
+#
+# Technique mirrors occt-scope-lib.sh:occt_touching_set (lines 59-110):
+#   - single `cargo metadata --format-version 1` piped into python3
+#   - reverse adjacency R[dep_id] += pkg_id over workspace-internal edges of
+#     ALL kinds (null/build/dev)
+#   - BFS from the seed IDs, inclusive
+#   - intersect with workspace_members, print sorted-unique names
+#
+# On any cargo failure or python error, prints ALL (C5).
 _reverse_closure() {
-    # Identity: pass seed crates through unchanged.
-    # Real implementation in step 10.
-    cat
+    local seeds
+    seeds="$(cat)"
+    [ -n "$seeds" ] || return 0
+
+    # Collect metadata once; guard failure -> ALL.
+    local meta
+    meta="$(cargo metadata --format-version 1 2>/dev/null)" || { echo ALL; return 0; }
+    [ -n "$meta" ] || { echo ALL; return 0; }
+
+    printf '%s\n' "$meta" | python3 -c "
+import sys, json
+try:
+    seeds_raw = '''$seeds'''
+    seed_names = set(s.strip() for s in seeds_raw.strip().splitlines() if s.strip())
+
+    m = json.load(sys.stdin)
+    members = set(m['workspace_members'])
+    id_to_name = {p['id']: p['name'] for p in m['packages']}
+    name_to_ids = {}
+    for p in m['packages']:
+        name_to_ids.setdefault(p['name'], []).append(p['id'])
+
+    # Build reverse adjacency over workspace-internal edges, all dep kinds.
+    # R[dep_id] = set of pkg_ids in workspace that depend on dep_id.
+    rev = {}
+    for node in m['resolve']['nodes']:
+        if node['id'] not in members:
+            continue
+        for d in node['deps']:
+            if d['pkg'] not in members:
+                continue
+            rev.setdefault(d['pkg'], set()).add(node['id'])
+
+    # BFS from all IDs matching any seed name, inclusive.
+    seed_ids = set()
+    for sn in seed_names:
+        seed_ids.update(name_to_ids.get(sn, []))
+
+    visited = set(seed_ids)
+    queue = list(seed_ids)
+    while queue:
+        curr = queue.pop()
+        for dep_on_curr in rev.get(curr, []):
+            if dep_on_curr not in visited:
+                visited.add(dep_on_curr)
+                queue.append(dep_on_curr)
+
+    result = sorted({id_to_name[i] for i in visited if i in members})
+    for name in result:
+        print(name)
+except Exception:
+    print('ALL')
+    sys.exit(0)
+" || { echo ALL; return 0; }
 }
 
 # affected_crates <file>... — print the affected workspace crate set, one name
