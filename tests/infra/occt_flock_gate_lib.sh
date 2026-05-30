@@ -22,9 +22,14 @@
 # At 2000ms the upper bound no longer discriminates N=2 (~800ms) from fully-serial
 # N=1 (~1200ms); it becomes a load-tolerant sanity ceiling that still flags gross
 # wedges (a true hang lands in LOCK_WAIT/timeout territory, orders of magnitude
-# larger). The >=700ms LOWER bound remains the serialization proof (all-parallel
-# N>=3 finishes ~400ms), and Test 19 independently guards the 2-invocation
-# parallel case (<900ms).
+# larger). The >=700ms LOWER bound guards against under-serialization only
+# (all-parallel N>=3 finishes ~400ms).
+#
+# COVERAGE GAP (accepted tradeoff per esc-3939-94): no test in this suite currently
+# detects an over-serialization regression (N collapsing to 1, producing ~1200ms for
+# three invocations — inside [700,2000], undetected). Test 19 does NOT cover this
+# case: two fully-serial invocations complete in ~800ms, below Test 19's own <900ms
+# threshold, so Test 19 also passes under a fully-serial regression.
 
 # Source guard — prevent double-sourcing.
 if [ "${_REIFY_OCCT_FLOCK_GATE_LIB_SH_SOURCED:-}" = "1" ]; then

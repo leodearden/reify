@@ -343,8 +343,11 @@ assert "Test 19: two 0.4s sleep invocations run in parallel with N=2 (elapsed < 
 # raised 1200->2000 per esc-3939-94: verify-pipeline load inflated the
 # serialized 3rd invocation to 1473ms in one run with no logic defect).
 # At 2000ms the upper bound no longer discriminates N=2 (~800ms) from fully-serial
-# N=1 (~1200ms); the >=700ms lower bound is the serialization proof and Test 19
-# independently guards the 2-invocation parallel case (<900ms).
+# N=1 (~1200ms); the >=700ms lower bound guards against under-serialization only.
+# COVERAGE GAP (accepted tradeoff per esc-3939-94): a fully-serial regression
+# (N->1) produces ~1200ms for three invocations — inside [700,2000], undetected.
+# Test 19 does NOT guard this: two fully-serial invocations complete in ~800ms,
+# below Test 19's <900ms threshold (both pass under a fully-serial regression).
 # This validates that the acquire-loop bounds N strictly (not ">=N" slots).
 echo ""
 echo "--- Test 20: REIFY_OCCT_CONCURRENCY=2 serializes the 3rd invocation when both slots are busy ---"
