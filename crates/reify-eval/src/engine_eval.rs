@@ -702,7 +702,6 @@ pub(crate) fn elaborate_field(
 ///   `true` → cache invalidation signal (wired by PRD task 5).
 /// - File-path change with same content → same hash → `imported_file_hash_changed` returns
 ///   `false` → cache hit.
-#[allow(dead_code, reason = "wired into elaborate_field by PRD task 5")]
 pub(crate) fn hash_imported_file_content(path: &str) -> std::io::Result<reify_core::ContentHash> {
     // TODO(task-5-perf): `fs::read` allocates a `Vec<u8>` sized to the full file before
     // hashing.  For multi-MB .vdb assets on the hot evaluation path this is a noticeable
@@ -1313,6 +1312,25 @@ impl Engine {
             snapshot
                 .values
                 .insert(field_id, (field_value, DeterminacyState::Determined));
+
+            // Record the file content-hash for Imported field sources so the
+            // cache side-table stays current and the future incremental-skip
+            // optimisation can gate on `imported_file_hash_changed` (PRD task 5 / D).
+            // Hash recording is independent of whether ingest succeeded — even a
+            // failed read updates the recorded hash, ensuring the next eval detects
+            // any subsequent fix to the file.  IO errors (e.g. file deleted between
+            // elaboration and hashing) are silently ignored here; the ingest error
+            // path in `elaborate_field` already surfaced a `FieldImportFailed`
+            // diagnostic for the user.
+            if let reify_compiler::CompiledFieldSource::Imported {
+                path: Some(ref p), ..
+            } = field.source
+            {
+                if let Ok(h) = hash_imported_file_content(p) {
+                    let _changed = self.cache.imported_file_hash_changed(p, h);
+                    self.cache.record_imported_file_hash(p, h);
+                }
+            }
         }
 
         // Two-pass evaluation (same logic as before)
