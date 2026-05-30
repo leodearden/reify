@@ -627,8 +627,8 @@ fn degenerate_modal_result() -> Value {
 /// shape: List<Vector3<Dimensionless>>, participation_mass: Real, damping_ratio: Real }`,
 /// where `damping_ratio` is the Rayleigh ratio `ζ_i = (α + β·ω_i²)/(2·ω_i)` (0
 /// for `NoDamping`). `Mode.shape` is the mass-normalized eigenvector reshaped
-/// as per-node displacement vectors (`phi_full` from [`solve_modal_core`],
-/// length `n_nodes`, `(0,0,0)` at every Dirichlet-constrained node).
+/// from `phi_full` (length `3·n_nodes`) into `n_nodes` per-node `Vector3`,
+/// `(0,0,0)` at every Dirichlet-constrained node.
 ///
 /// A material with no positive `density` short-circuits to a degenerate
 /// empty-modes result plus an `E_ModalNoMassMatrix` Error (the
@@ -676,6 +676,15 @@ pub fn solve_modal_analysis_trampoline(
     );
 
     // ── (6) modes list: one Mode StructureInstance per returned mode ─────────
+    // phi_full and frequencies are pushed in lockstep by solve_modal_core; assert
+    // the invariant in debug builds so a future upstream change trips loudly.
+    debug_assert_eq!(
+        core.phi_full.len(),
+        core.frequencies.len(),
+        "phi_full and frequencies must have equal length (got {} vs {})",
+        core.phi_full.len(),
+        core.frequencies.len()
+    );
     let modes_list: Vec<Value> = core
         .frequencies
         .iter()
@@ -1007,6 +1016,12 @@ fn support_targets(options: &Value) -> Vec<String> {
 /// declared on `Mode.shape`: one per-node displacement `Vector([Real;3])` per
 /// mesh node, collected into a `List`.
 fn mode_shape_value(phi_full: &[f64]) -> Value {
+    debug_assert_eq!(
+        phi_full.len() % 3,
+        0,
+        "phi_full must have exactly 3 DOFs per node (got len={})",
+        phi_full.len()
+    );
     Value::List(
         phi_full
             .chunks_exact(3)
