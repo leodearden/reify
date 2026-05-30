@@ -58,6 +58,94 @@
 // Duhamel uniform-sampling integrator
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Pre-computed per-timestep coefficients for the exact piecewise-linear
+/// Duhamel recurrence (Chopra Table 5.3.1).
+///
+/// The recurrence advances one SDOF step:
+/// ```text
+/// u_{i+1} = a·u_i  + b·v_i  + c·p_i + d·p_{i+1}
+/// v_{i+1} = a_p·u_i + b_p·v_i + c_p·p_i + d_p·p_{i+1}
+/// ```
+///
+/// Homogeneous coefficients `(a, b, a_p, b_p)` form the exact SDOF
+/// state-transition matrix e^{AΔt} (Chopra §5.2).  Particular coefficients
+/// `(c, d, c_p, d_p)` are the exact convolution of the linear-interpolated
+/// force over `[tᵢ, tᵢ₊₁]`.
+///
+/// # Accuracy contract (Leo-ratified esc-3821-44 option A)
+///
+/// * **Exact** (≤ 1 × 10⁻¹²) for constant and piecewise-linear forcing —
+///   the interpolation residual is identically zero by construction.
+/// * **2nd-order** O((ΩΔt)²) for smooth forcing (e.g. a true sinusoid).
+/// * The original "rel error < 1 × 10⁻⁹ vs analytic sine at 50 points"
+///   target is **NOT** asserted — it is ~6 orders below the method floor for
+///   50-point sine sampling.  See the module-level accuracy note.
+#[derive(Debug, Clone, Copy)]
+pub struct DuhamelCoeffs {
+    /// A  — homogeneous displacement-from-displacement coefficient.
+    pub a:   f64,
+    /// B  — homogeneous displacement-from-velocity coefficient.
+    pub b:   f64,
+    /// A' — homogeneous velocity-from-displacement coefficient.
+    pub a_p: f64,
+    /// B' — homogeneous velocity-from-velocity coefficient.
+    pub b_p: f64,
+    /// C  — particular displacement coefficient for p_i.
+    pub c:   f64,
+    /// D  — particular displacement coefficient for p_{i+1}.
+    pub d:   f64,
+    /// C' — particular velocity coefficient for p_i.
+    pub c_p: f64,
+    /// D' — particular velocity coefficient for p_{i+1}.
+    pub d_p: f64,
+}
+
+/// Compute the [`DuhamelCoeffs`] for a given `(omega, zeta, dt)` triple.
+///
+/// Derived from the Duhamel integral for f(τ) = p_i·(1−τ/Δt) + p_{i+1}·(τ/Δt):
+///
+/// ```text
+/// G  = (1 − A) / ω²                    [step-response particular displacement]
+/// H  = ∫₀^Δt s·g(s) ds                 [first moment of impulse response]
+///    = −A/ω² + 2ζ(1−e·cos_d)/(Δt·ω³) + e(1−2ζ²)sin_d/(Δt·ω²·ωD)
+/// C  = H / Δt
+/// D  = G − C
+/// C' = B − G/Δt
+/// D' = G / Δt
+/// ```
+///
+/// For constant forcing `(p_i = p_{i+1})`: `C + D = G` (reduces to ZOH).
+/// Valid only for underdamped modes (ζ < 1, ω > 0).
+pub fn duhamel_coefficients(omega: f64, zeta: f64, dt: f64) -> DuhamelCoeffs {
+    let omega_sq  = omega * omega;
+    let omega_cub = omega_sq * omega;
+    let omega_d   = omega * (1.0 - zeta * zeta).sqrt();
+    let exp_dt    = (-zeta * omega * dt).exp();
+    let cos_d     = (omega_d * dt).cos();
+    let sin_d     = (omega_d * dt).sin();
+    let zeta_r    = zeta * omega / omega_d; // ζω / ωD
+
+    // Homogeneous state-transition (Chopra §5.2).
+    let a   = exp_dt * (cos_d + zeta_r * sin_d);
+    let b   = exp_dt * sin_d / omega_d;
+    let a_p = -exp_dt * (omega_sq / omega_d) * sin_d;
+    let b_p = exp_dt * (cos_d - zeta_r * sin_d);
+
+    // G = (1−A)/ω² and the H integral.
+    let g_step        = (1.0 - a) / omega_sq;
+    let two_zeta_term = 2.0 * zeta * (1.0 - exp_dt * cos_d) / (dt * omega_cub);
+    let foh_sin_term  = exp_dt * (1.0 - 2.0 * zeta * zeta) * sin_d
+                            / (dt * omega_sq * omega_d);
+
+    let c   = -a / omega_sq + two_zeta_term + foh_sin_term;
+    let d   =  1.0 / omega_sq - two_zeta_term - foh_sin_term;
+    let g_over_dt = g_step / dt;
+    let c_p = b - g_over_dt;
+    let d_p = g_over_dt;
+
+    DuhamelCoeffs { a, b, a_p, b_p, c, d, c_p, d_p }
+}
+
 /// Integrate the scalar SDOF modal ODE on a **uniform** time grid via the
 /// exact per-timestep Duhamel recurrence (Chopra Table 5.3.1).
 ///
@@ -74,9 +162,12 @@
 /// # Returns
 /// A `Vec<f64>` of length `forcing.len()` where index 0 = ξ(0) = `xi0`.
 ///
-/// # Accuracy
-/// Exact (≤ 1 × 10⁻¹²) for constant and piecewise-linear forcing; globally
-/// 2nd-order O((ΩΔt)²) for smooth forcing.  See the module-level accuracy note.
+/// # Accuracy contract (Leo-ratified esc-3821-44 option A)
+/// * **Exact** (≤ 1 × 10⁻¹²) for constant and piecewise-linear forcing.
+/// * **2nd-order** O((ΩΔt)²) for smooth forcing.
+/// * The original "rel error < 1 × 10⁻⁹ vs analytic sine at 50 points"
+///   target is **NOT** asserted — it is ~6 orders below the O((ΩΔt)²)
+///   linear-interpolation method floor at 50 sample points.
 pub fn duhamel_solve(
     omega: f64,
     zeta: f64,
@@ -91,70 +182,19 @@ pub fn duhamel_solve(
         return out;
     }
 
-    // Damped natural frequency.
-    let omega_d = omega * (1.0 - zeta * zeta).sqrt();
-    let exp_dt  = (-zeta * omega * dt).exp();
-    let cos_d   = (omega_d * dt).cos();
-    let sin_d   = (omega_d * dt).sin();
-    let zeta_r  = zeta * omega / omega_d; // ζω / ωD
-
-    // Exact homogeneous state-transition matrix coefficients (Chopra §5.2):
-    //   A  =  e^{-ζωΔt} · (cos ωD Δt + (ζω/ωD)·sin ωD Δt)
-    //   B  =  e^{-ζωΔt} · sin(ωD Δt) / ωD
-    //   A' = -e^{-ζωΔt} · (ω²/ωD)·sin ωD Δt
-    //   B' =  e^{-ζωΔt} · (cos ωD Δt − (ζω/ωD)·sin ωD Δt)
-    let a_hom   = exp_dt * (cos_d + zeta_r * sin_d);
-    let b_hom   = exp_dt * sin_d / omega_d;
-    let a_p_hom = -exp_dt * (omega * omega / omega_d) * sin_d;
-    let b_p_hom = exp_dt * (cos_d - zeta_r * sin_d);
+    let DuhamelCoeffs { a, b, a_p, b_p, c, d, c_p, d_p } =
+        duhamel_coefficients(omega, zeta, dt);
 
     // State: (u, v) = (displacement, velocity) in modal coordinates.
     let mut u = xi0;
     let mut v = v0;
     out.push(u);
 
-    let omega_sq  = omega * omega;
-    let omega_cub = omega_sq * omega;
-
-    // Exact piecewise-LINEAR (first-order-hold) Duhamel coefficients
-    // (Chopra Table 5.3.1).  Derived from the Duhamel integral with
-    // f(τ) = p_i·(1−τ/Δt) + p_{i+1}·(τ/Δt) over [0, Δt]:
-    //
-    //   G     = (1 − A) / ω²                            [step-response u_p]
-    //   H     = ∫₀^{Δt} s·g(s) ds / 1  where g(s) = e^{−ζωs}·sin(ωDs)/ωD
-    //   C     = H / Δt
-    //   D     = G − C
-    //   C'    = B − G/Δt
-    //   D'    = G / Δt
-    //
-    // The H integral evaluates to (see derivation in module doc):
-    //   H = −A/ω² + 2ζ·(1−ed·cos_d)/(Δt·ω³) + ed·(1−2ζ²)·sin_d/(Δt·ω²·ωD)
-    // so G and H are pure functions of the pre-computed homogeneous scalars.
-    //
-    // For constant forcing (p_i = p_{i+1}):  C+D = G ⇒ reduces to ZOH.
-    // For linear forcing:  exact at 1e-12 (the recurrence carries zero
-    // interpolation residual for piecewise-linear f).
-
-    let g_step = (1.0 - a_hom) / omega_sq;            // (1−A)/ω²
-
-    let two_zeta_term = 2.0 * zeta * (1.0 - exp_dt * cos_d) / (dt * omega_cub);
-    let foh_sin_term  = exp_dt * (1.0 - 2.0 * zeta * zeta) * sin_d
-                            / (dt * omega_sq * omega_d);
-
-    // Displacement particular coefficients.
-    let c_disp = -a_hom / omega_sq + two_zeta_term + foh_sin_term;
-    let d_disp = 1.0 / omega_sq    - two_zeta_term - foh_sin_term;
-
-    // Velocity particular coefficients (exact from ∫₀^Δt s·g'(s) ds = Δt·B − G).
-    let g_over_dt = g_step / dt;
-    let c_vel = b_hom - g_over_dt;
-    let d_vel = g_over_dt;
-
     for i in 1..n {
         // Piecewise-LINEAR (FOH) Duhamel recurrence (Chopra Table 5.3.1):
         //
-        //   u_i = A·u_{i-1} + B·v_{i-1} + C·p_{i-1} + D·p_i
-        //   v_i = A'·u_{i-1} + B'·v_{i-1} + C'·p_{i-1} + D'·p_i
+        //   u_i = a·u_{i-1} + b·v_{i-1} + c·p_{i-1} + d·p_i
+        //   v_i = a_p·u_{i-1} + b_p·v_{i-1} + c_p·p_{i-1} + d_p·p_i
         //
         // Exact for piecewise-linear forcing; the interpolation residual is zero
         // by construction, giving machine-exact results for constant and ramp
@@ -162,8 +202,8 @@ pub fn duhamel_solve(
         let p_start = forcing[i - 1];
         let p_end   = forcing[i];
 
-        let u_new = a_hom   * u + b_hom   * v + c_disp * p_start + d_disp * p_end;
-        let v_new = a_p_hom * u + b_p_hom * v + c_vel  * p_start + d_vel  * p_end;
+        let u_new = a   * u + b   * v + c   * p_start + d   * p_end;
+        let v_new = a_p * u + b_p * v + c_p * p_start + d_p * p_end;
         u = u_new;
         v = v_new;
         out.push(u);
