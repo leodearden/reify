@@ -9,6 +9,7 @@ import type {
   DiagnosticInfo,
   AutoResolveIteration,
   TensegrityWireData,
+  SolverProgress,
 } from '../types';
 import {
   onMeshUpdate,
@@ -23,8 +24,18 @@ import {
   onAutoResolveStart,
   onAutoResolveIteration,
   onAutoResolveComplete,
+  onSolverProgress,
+  cancelSolve as bridgeCancelSolve,
 } from '../bridge';
 import type { KernelStatus } from '../bridge';
+
+/** State for an in-flight FEA CG solver (shown as overlay while solve is active >1s). */
+export interface SolverProgressState {
+  latest: SolverProgress | null;
+  trace: SolverProgress[];
+  visible: boolean;
+  coarseReached: boolean;
+}
 
 /** State for an auto-resolve loop (param x = auto optimisation). */
 export interface AutoResolveLoopState {
@@ -57,6 +68,7 @@ export interface EngineState {
   autoResolve: AutoResolveLoopState;
   /** Tensegrity wire endpoint pairs with member-type tags (T0b). Empty when none present. */
   tensegrityWires: TensegrityWireData[];
+  solverProgress: SolverProgressState;
 }
 
 export interface EngineStoreOptions {
@@ -78,6 +90,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
     kernelStatus: null,
     autoResolve: { active: false, iterations: [], canonicalDrivingMetric: undefined, warnedEmptyMetric: undefined },
     tensegrityWires: [],
+    solverProgress: { latest: null, trace: [], visible: false, coarseReached: false },
   });
 
   function initFromState(guiState: GuiState) {
@@ -135,8 +148,24 @@ export function createEngineStore(options?: EngineStoreOptions) {
     options?.onEntityRemoved?.(nodeId);
   }
 
+  function resetSolverProgress() {
+    if (debounceHandle !== null) {
+      clearTimeout(debounceHandle);
+      debounceHandle = null;
+    }
+    setState('solverProgress', { latest: null, trace: [], visible: false, coarseReached: false });
+  }
+
   function setEvalStatus(status: EvaluationStatus) {
     setState('evalStatus', status);
+    // Reset solver progress on any phase that is not an active solve phase.
+    // EvaluationStatus.phase is currently 'idle' | 'evaluating' | 'resolving';
+    // the active-solve phases are 'evaluating' and 'resolving'. Using a negative
+    // guard (rather than === 'idle') means any future terminal phase added to the
+    // union will automatically trigger a reset without needing a code change here.
+    if (status.phase !== 'evaluating' && status.phase !== 'resolving') {
+      resetSolverProgress();
+    }
   }
 
   function setTessellationDiagnostics(diags: DiagnosticInfo[]) {
@@ -210,6 +239,33 @@ export function createEngineStore(options?: EngineStoreOptions) {
     setState('autoResolve', { active: false, iterations: [], canonicalDrivingMetric: undefined, warnedEmptyMetric: undefined });
   }
 
+  let debounceHandle: ReturnType<typeof setTimeout> | null = null;
+
+  // Maximum trace entries stored for the convergence chart. Matches the chart
+  // pixel width (200px) so we never hold more history than is renderable, and
+  // per-render cost of buildPolylinePoints stays bounded even for long CG runs.
+  const TRACE_CAP = 200;
+
+  function applySolverProgress(p: SolverProgress) {
+    setState(produce((s) => {
+      s.solverProgress.latest = p;
+      s.solverProgress.trace.push(p);
+      // Evict the oldest entry once we exceed the cap (sliding window).
+      if (s.solverProgress.trace.length > TRACE_CAP) {
+        s.solverProgress.trace.shift();
+      }
+      if (!s.solverProgress.coarseReached && p.residual < 1e-2) {
+        s.solverProgress.coarseReached = true;
+      }
+    }));
+    if (debounceHandle === null && !state.solverProgress.visible) {
+      debounceHandle = setTimeout(() => {
+        setState('solverProgress', 'visible', true);
+        debounceHandle = null;
+      }, 1000);
+    }
+  }
+
   async function subscribeToEvents(): Promise<() => void> {
     const results = await Promise.allSettled([
       onMeshUpdate(applyMeshUpdate),
@@ -224,6 +280,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
       onAutoResolveStart(beginAutoResolveLoop),
       onAutoResolveIteration(applyAutoResolveIteration),
       onAutoResolveComplete(endAutoResolveLoop),
+      onSolverProgress(applySolverProgress),
     ]);
 
     const unlisteners: (() => void)[] = [];
@@ -236,6 +293,9 @@ export function createEngineStore(options?: EngineStoreOptions) {
     }
 
     return () => {
+      // Clear any pending debounce timer first so it cannot fire after teardown
+      // and call setState on a disposed store.
+      resetSolverProgress();
       for (const unlisten of unlisteners) {
         unlisten();
       }
@@ -258,6 +318,12 @@ export function createEngineStore(options?: EngineStoreOptions) {
     beginAutoResolveLoop,
     applyAutoResolveIteration,
     endAutoResolveLoop,
+    applySolverProgress,
+    resetSolverProgress,
+    async cancelSolve() {
+      await bridgeCancelSolve();
+      resetSolverProgress();
+    },
     subscribeToEvents,
   };
 }

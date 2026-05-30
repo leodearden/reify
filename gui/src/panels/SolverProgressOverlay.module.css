@@ -67,3 +67,20 @@
   border-color: var(--status-violation, #ef5350);
   color: #fff;
 }
+
+/* ── Convergence mini-chart ─────────────────────────────────────────── */
+
+.chart {
+  display: block;
+  margin: 4px 0;
+  border-radius: 2px;
+  background: var(--surface-1, #1e1e1e);
+}
+
+/* ── Coarse-phase indicator ─────────────────────────────────────────── */
+
+.refining {
+  font-size: 10px;
+  color: var(--accent, #4fc3f7);
+  font-style: italic;
+}

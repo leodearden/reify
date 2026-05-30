@@ -52,4 +52,49 @@ describe('SolverProgressOverlay', () => {
     fireEvent.click(cancelBtn);
     expect(onCancel).toHaveBeenCalledOnce();
   });
+
+  it('(d) renders svg chart with polyline when trace has >=2 points', () => {
+    const trace: SolverProgress[] = [
+      { solver_kind: 'cg', iter: 1, residual: 0.5 },
+      { solver_kind: 'cg', iter: 2, residual: 0.1 },
+      { solver_kind: 'cg', iter: 3, residual: 0.01 },
+    ];
+    render(() => (
+      <SolverProgressOverlay progress={sampleProgress} onCancel={vi.fn()} trace={trace} />
+    ));
+    const chart = screen.getByTestId('solver-progress-chart');
+    expect(chart.tagName.toLowerCase()).toBe('svg');
+    const polyline = chart.querySelector('polyline');
+    expect(polyline).not.toBeNull();
+    // points attribute should have same count of coordinate pairs as trace.length
+    const pairs = polyline!.getAttribute('points')!.trim().split(/\s+/);
+    expect(pairs).toHaveLength(trace.length);
+  });
+
+  it('(e) no polyline when trace is absent or has <2 points', () => {
+    render(() => (
+      <SolverProgressOverlay progress={sampleProgress} onCancel={vi.fn()} />
+    ));
+    // chart may exist but polyline must not
+    const chart = screen.queryByTestId('solver-progress-chart');
+    if (chart) {
+      expect(chart.querySelector('polyline')).toBeNull();
+    }
+  });
+
+  it('(f) shows refining indicator when coarseReached is true', () => {
+    render(() => (
+      <SolverProgressOverlay progress={sampleProgress} onCancel={vi.fn()} coarseReached={true} />
+    ));
+    const overlay = screen.getByTestId('solver-progress-overlay');
+    expect(overlay.textContent).toMatch(/refin/i);
+  });
+
+  it('(f2) no refining indicator when coarseReached is false or absent', () => {
+    render(() => (
+      <SolverProgressOverlay progress={sampleProgress} onCancel={vi.fn()} coarseReached={false} />
+    ));
+    const overlay = screen.getByTestId('solver-progress-overlay');
+    expect(overlay.textContent).not.toMatch(/refin/i);
+  });
 });
