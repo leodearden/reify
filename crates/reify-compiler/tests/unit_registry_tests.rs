@@ -2268,3 +2268,101 @@ fn evaluate_const_expr_compound_affine_unit_names_offender() {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+
+/// `unit bad_exp : Area = 1mm^200` with exponent 200 out of i8 range → Error.
+///
+/// Exercises the ExponentOutOfRange variant of unit_resolve_error_to_diagnostic
+/// through evaluate_const_expr's compound arm.  The message must mention the
+/// exponent (200) or describe it as out of range.
+#[test]
+fn evaluate_const_expr_compound_exponent_out_of_range_error() {
+    let module = compile_source_with_stdlib("unit bad_exp : Area = 1mm^200");
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected an Error diagnostic for exponent 200 out of i8 range, got none"
+    );
+    let mentions_exponent = errors.iter().any(|d| {
+        d.message.contains("200")
+            || d.message.contains("exponent")
+            || d.message.contains("out of range")
+    });
+    assert!(
+        mentions_exponent,
+        "expected an Error message mentioning the out-of-range exponent; got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// Overflow guard: compound conversion expression that produces a non-finite SI value.
+///
+/// A 309-digit numeric value parses as `f64::INFINITY`; multiplied by the
+/// compound factor for `kN*m` (1000.0) the product stays infinite.  The
+/// `!si.is_finite()` guard in evaluate_const_expr's compound arm must fire,
+/// emit an overflow diagnostic, and return `None` so the unit is NOT registered.
+#[test]
+fn evaluate_const_expr_compound_overflow_emits_error_and_is_not_registered() {
+    // 309 nines → f64::INFINITY when parsed
+    let big_num = "9".repeat(309);
+    let src = format!("unit big_energy : Energy = {}kN*m", big_num);
+    let module = compile_source_with_stdlib(&src);
+    // Unit should NOT be registered — evaluate_const_expr returned None
+    assert!(
+        !module.units.iter().any(|u| u.name == "big_energy"),
+        "unit with overflow compound conversion should not be registered; units: {:?}",
+        module.units.iter().map(|u| &u.name).collect::<Vec<_>>()
+    );
+    let errors = errors_only(&module);
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("overflow") || d.message.contains("finite")),
+        "expected overflow diagnostic for compound conversion overflow; got: {:?}",
+        errors
+    );
+}
+
+/// Dimension-mismatch documentation test: compound conversion dimension is NOT
+/// cross-checked against the unit's `: Dim` annotation.
+///
+/// `unit mismatch_dim : Length = 1mm^2` folds to an Area dimension via
+/// resolve_unit_expr, but evaluate_const_expr intentionally discards the folded
+/// dimension (`_dim`) — it returns only the scalar factor (1e-6).  The declared
+/// dimension (`Length`) comes from the `: Dim` annotation and is never validated
+/// against the compound's dimension.  This matches the bare-unit path behaviour.
+///
+/// This test documents the gap so a future regression (accidentally enabling
+/// validation) is immediately visible.
+#[test]
+fn evaluate_const_expr_compound_dimension_mismatch_accepted_silently() {
+    // Area compound (mm^2 → dimension AREA), but declared as Length.
+    // No error expected — dimension cross-check is not implemented.
+    let module = compile_source_with_stdlib("unit mismatch_dim : Length = 1mm^2");
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "dimension mismatch in compound conversion should not produce an error \
+         (folded dimension is intentionally discarded; no cross-check implemented); \
+         got: {:?}",
+        errors
+    );
+    // The unit is registered with the compound's numeric factor (1e-6).
+    let unit = module.units.iter().find(|u| u.name == "mismatch_dim");
+    assert!(
+        unit.is_some(),
+        "mismatch_dim should be registered despite the declared and compound dimensions differing"
+    );
+    let unit = unit.unwrap();
+    let expected_factor = 1e-6_f64;
+    let tol = 1e-9;
+    assert!(
+        (unit.factor - expected_factor).abs() <= tol,
+        "mismatch_dim factor should be {} (1mm^2), got {}",
+        expected_factor,
+        unit.factor
+    );
+}

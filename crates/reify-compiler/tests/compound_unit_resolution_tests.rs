@@ -16,15 +16,6 @@ use reify_test_support::{compile_source_with_stdlib, errors_only};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
-/// Compile a structure whose single param uses `literal` as its default, using
-/// the full stdlib (so kN/mm/GPa/… are in the unit registry).
-/// Returns `(si_value, dimension)` from the param's default expression.
-///
-/// Panics if compilation produces any Error diagnostics.
-fn stdlib_scalar_param(param_type: &str, literal: &str) -> (f64, DimensionVector) {
-    common::stdlib_param_si_value(param_type, literal)
-}
-
 /// Assert two floats are approximately equal within a 1e-6 relative tolerance.
 fn assert_approx(actual: f64, expected: f64, label: &str) {
     let tol = 1e-6 * expected.abs().max(1.0);
@@ -43,7 +34,7 @@ fn assert_approx(actual: f64, expected: f64, label: &str) {
 /// `5kN*m` → Energy, si_value = 5000.0 J
 #[test]
 fn compound_kn_mul_m_is_energy_5000_j() {
-    let (si, dim) = stdlib_scalar_param("Energy", "5kN*m");
+    let (si, dim) = common::stdlib_param_si_value("Energy", "5kN*m");
     assert_approx(si, 5000.0, "5kN*m SI value");
     assert_eq!(dim, DimensionVector::ENERGY, "5kN*m dimension should be ENERGY");
 }
@@ -51,7 +42,7 @@ fn compound_kn_mul_m_is_energy_5000_j() {
 /// `25mm^2` → Area, si_value = 2.5e-5 m²
 #[test]
 fn compound_mm_pow2_is_area_25e_minus6_m2() {
-    let (si, dim) = stdlib_scalar_param("Area", "25mm^2");
+    let (si, dim) = common::stdlib_param_si_value("Area", "25mm^2");
     assert_approx(si, 2.5e-5, "25mm^2 SI value");
     assert_eq!(dim, DimensionVector::AREA, "25mm^2 dimension should be AREA");
 }
@@ -59,7 +50,7 @@ fn compound_mm_pow2_is_area_25e_minus6_m2() {
 /// `9.81m/s^2` → Acceleration, si_value = 9.81 m/s²
 #[test]
 fn compound_m_div_s2_is_acceleration_9_81() {
-    let (si, dim) = stdlib_scalar_param("Acceleration", "9.81m/s^2");
+    let (si, dim) = common::stdlib_param_si_value("Acceleration", "9.81m/s^2");
     assert_approx(si, 9.81, "9.81m/s^2 SI value");
     assert_eq!(
         dim,
@@ -71,7 +62,7 @@ fn compound_m_div_s2_is_acceleration_9_81() {
 /// `7850kg/m^3` → Density, si_value = 7850.0 kg/m³
 #[test]
 fn compound_kg_div_m3_is_density_7850() {
-    let (si, dim) = stdlib_scalar_param("Density", "7850kg/m^3");
+    let (si, dim) = common::stdlib_param_si_value("Density", "7850kg/m^3");
     assert_approx(si, 7850.0, "7850kg/m^3 SI value");
     assert_eq!(
         dim,
@@ -83,7 +74,7 @@ fn compound_kg_div_m3_is_density_7850() {
 /// `0.001kg/m/s` → DynamicViscosity, si_value = 0.001 Pa·s
 #[test]
 fn compound_kg_div_m_div_s_is_dynamic_viscosity_0_001() {
-    let (si, dim) = stdlib_scalar_param("DynamicViscosity", "0.001kg/m/s");
+    let (si, dim) = common::stdlib_param_si_value("DynamicViscosity", "0.001kg/m/s");
     assert_approx(si, 0.001, "0.001kg/m/s SI value");
     assert_eq!(
         dim,
@@ -142,6 +133,36 @@ fn compound_affine_unit_degc_emits_error_naming_degc() {
     );
 }
 
+// ─── OVERFLOW: compound literal that produces non-finite SI value ─────────────
+
+/// Overflow guard — a 309-digit numeric value parses as `f64::INFINITY`.
+/// Multiplied by any finite compound factor (`kN*m` has factor=1000) the
+/// product stays infinite, so the non-finite guard fires before the value
+/// is stored.  This exercises the `!si_value.is_finite()` branch added in
+/// step-2 and verifies both the diagnostic text and the early-return shape.
+#[test]
+fn compound_overflow_emits_error_and_discards_value() {
+    // 309 nines → f64::INFINITY when parsed (exceeds f64::MAX exponent range)
+    let big_num = "9".repeat(309);
+    let src = format!(
+        "structure def S {{ param x : Energy = {}kN*m }}",
+        big_num
+    );
+    let module = compile_source_with_stdlib(&src);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("overflow") || d.message.contains("finite")),
+        "expected an overflow diagnostic for infinite compound literal; got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
 // ─── REGRESSION: bare-unit path stays unchanged ───────────────────────────────
 
 /// `20degC` (bare affine unit) → si ≈ 293.15 K via standalone offset path.
@@ -177,7 +198,7 @@ fn regression_bare_degc_applies_offset_to_kelvin() {
 /// lookup path, not through `resolve_unit_expr`.
 #[test]
 fn regression_bare_mm_resolves_to_0_005_m() {
-    let (si, dim) = stdlib_scalar_param("Length", "5mm");
+    let (si, dim) = common::stdlib_param_si_value("Length", "5mm");
     assert_approx(si, 0.005, "bare 5mm SI value");
     assert_eq!(dim, DimensionVector::LENGTH, "bare 5mm dimension should be LENGTH");
 }

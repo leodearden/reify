@@ -359,9 +359,18 @@ pub(crate) fn evaluate_const_expr(
             // which folds the factor product and dimension vector.  The bare-unit path
             // (UnitExpr::Unit(name)) is left unchanged — it handles affine units and
             // the hardcoded fallback via the existing registry lookup + unit_to_scalar.
-            // Dimension is intentionally discarded from Ok((factor, _dim)) — a unit
+            //
+            // Dimension is intentionally discarded from Ok((factor, _dim)).  A unit
             // conversion factor is a pure scalar; the declared dimension comes from the
             // unit's `: Dim` annotation, not from the conversion expression.
+            //
+            // NOTE: there is no cross-check between the folded DimensionVector and the
+            // declared `: Dim` annotation.  A declaration like `unit foo : Length = 1mm^2`
+            // (compound yields Area, annotation says Length) is accepted silently — the
+            // folded `_dim` is simply dropped.  This matches the bare-unit path (which
+            // also returns only a scalar factor).  If mismatch validation is ever desired
+            // it would live here: compare `_dim` against the dimension resolved from the
+            // `: Dim` annotation at the call site in `compile_unit`.
             let unit = match unit {
                 reify_ast::UnitExpr::Unit(name) => name,
                 compound @ (reify_ast::UnitExpr::Mul(..)
