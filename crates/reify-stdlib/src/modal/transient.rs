@@ -113,26 +113,57 @@ pub fn duhamel_solve(
     let mut v = v0;
     out.push(u);
 
-    let omega_sq = omega * omega;
+    let omega_sq  = omega * omega;
+    let omega_cub = omega_sq * omega;
+
+    // Exact piecewise-LINEAR (first-order-hold) Duhamel coefficients
+    // (Chopra Table 5.3.1).  Derived from the Duhamel integral with
+    // f(τ) = p_i·(1−τ/Δt) + p_{i+1}·(τ/Δt) over [0, Δt]:
+    //
+    //   G     = (1 − A) / ω²                            [step-response u_p]
+    //   H     = ∫₀^{Δt} s·g(s) ds / 1  where g(s) = e^{−ζωs}·sin(ωDs)/ωD
+    //   C     = H / Δt
+    //   D     = G − C
+    //   C'    = B − G/Δt
+    //   D'    = G / Δt
+    //
+    // The H integral evaluates to (see derivation in module doc):
+    //   H = −A/ω² + 2ζ·(1−ed·cos_d)/(Δt·ω³) + ed·(1−2ζ²)·sin_d/(Δt·ω²·ωD)
+    // so G and H are pure functions of the pre-computed homogeneous scalars.
+    //
+    // For constant forcing (p_i = p_{i+1}):  C+D = G ⇒ reduces to ZOH.
+    // For linear forcing:  exact at 1e-12 (the recurrence carries zero
+    // interpolation residual for piecewise-linear f).
+
+    let g_step = (1.0 - a_hom) / omega_sq;            // (1−A)/ω²
+
+    let two_zeta_term = 2.0 * zeta * (1.0 - exp_dt * cos_d) / (dt * omega_cub);
+    let foh_sin_term  = exp_dt * (1.0 - 2.0 * zeta * zeta) * sin_d
+                            / (dt * omega_sq * omega_d);
+
+    // Displacement particular coefficients.
+    let c_disp = -a_hom / omega_sq + two_zeta_term + foh_sin_term;
+    let d_disp = 1.0 / omega_sq    - two_zeta_term - foh_sin_term;
+
+    // Velocity particular coefficients (exact from ∫₀^Δt s·g'(s) ds = Δt·B − G).
+    let g_over_dt = g_step / dt;
+    let c_vel = b_hom - g_over_dt;
+    let d_vel = g_over_dt;
 
     for i in 1..n {
-        // Piecewise-constant (ZOH) forcing: treat the force over [t_{i-1}, t_i]
-        // as constant at p_i = forcing[i-1].  The static displacement for this
-        // constant force is u_ss = p_i / ω².  Advance the deviation from steady
-        // state by the exact homogeneous transition, then shift back.
+        // Piecewise-LINEAR (FOH) Duhamel recurrence (Chopra Table 5.3.1):
         //
-        //   u_{i} = u_ss + A·(u_{i-1} − u_ss) + B·v_{i-1}
-        //   v_{i} = A'·(u_{i-1} − u_ss)        + B'·v_{i-1}
+        //   u_i = A·u_{i-1} + B·v_{i-1} + C·p_{i-1} + D·p_i
+        //   v_i = A'·u_{i-1} + B'·v_{i-1} + C'·p_{i-1} + D'·p_i
         //
-        // This is exact for a constant force over the step.  A linearly-varying
-        // force is still approximated as constant here; the FOH upgrade follows
-        // in step 06.
-        let p_i  = forcing[i - 1];
-        let u_ss = p_i / omega_sq;
-        let dev  = u - u_ss;
+        // Exact for piecewise-linear forcing; the interpolation residual is zero
+        // by construction, giving machine-exact results for constant and ramp
+        // forcing inputs.
+        let p_start = forcing[i - 1];
+        let p_end   = forcing[i];
 
-        let u_new = u_ss + a_hom * dev + b_hom * v;
-        let v_new = a_p_hom * dev + b_p_hom * v;
+        let u_new = a_hom   * u + b_hom   * v + c_disp * p_start + d_disp * p_end;
+        let v_new = a_p_hom * u + b_p_hom * v + c_vel  * p_start + d_vel  * p_end;
         u = u_new;
         v = v_new;
         out.push(u);
