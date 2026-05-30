@@ -709,6 +709,95 @@ fn scalar_add_complex_dimensionless_undef() {
     assert!(result.is_undef());
 }
 
+// ─── task-3950 step-3: Real/Int - Complex subtraction (non-commutative) ──────
+
+/// Real(5.0) - Complex{1,2,DIMENSIONLESS} → Complex{4,-2,DIMENSIONLESS}.
+/// re: 5-1=4; im: 0-2=-2 (negated imaginary part).
+#[test]
+fn real_sub_complex_dimensionless() {
+    let result = eval_binop(
+        BinOp::Sub,
+        Value::Real(5.0),
+        Type::Real,
+        complex_val(1.0, 2.0, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        Type::complex(Type::Real),
+    );
+    assert_eq!(result, complex_val(4.0, -2.0, DimensionVector::DIMENSIONLESS));
+}
+
+/// Complex{5,7,DIMENSIONLESS} - Real(2.0) → Complex{3,7,DIMENSIONLESS}.
+/// re: 5-2=3; im: 7 (unchanged).
+#[test]
+fn complex_sub_real_dimensionless() {
+    let result = eval_binop(
+        BinOp::Sub,
+        complex_val(5.0, 7.0, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        Value::Real(2.0),
+        Type::Real,
+        Type::complex(Type::Real),
+    );
+    assert_eq!(result, complex_val(3.0, 7.0, DimensionVector::DIMENSIONLESS));
+}
+
+/// Int(5) - Complex{1,2,DIMENSIONLESS} → Complex{4,-2,DIMENSIONLESS}.
+#[test]
+fn int_sub_complex_dimensionless() {
+    let result = eval_binop(
+        BinOp::Sub,
+        Value::Int(5),
+        Type::Int,
+        complex_val(1.0, 2.0, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        Type::complex(Type::Real),
+    );
+    assert_eq!(result, complex_val(4.0, -2.0, DimensionVector::DIMENSIONLESS));
+}
+
+/// Complex{5,7,DIMENSIONLESS} - Int(2) → Complex{3,7,DIMENSIONLESS}.
+#[test]
+fn complex_sub_int_dimensionless() {
+    let result = eval_binop(
+        BinOp::Sub,
+        complex_val(5.0, 7.0, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        Value::Int(2),
+        Type::Int,
+        Type::complex(Type::Real),
+    );
+    assert_eq!(result, complex_val(3.0, 7.0, DimensionVector::DIMENSIONLESS));
+}
+
+/// Dimensionless-only guard: Real(5.0) - Complex{1,2,LENGTH} → Undef.
+#[test]
+fn real_sub_dimensioned_complex_undef() {
+    let result = eval_binop(
+        BinOp::Sub,
+        Value::Real(5.0),
+        Type::Real,
+        complex_val(1.0, 2.0, DimensionVector::LENGTH),
+        Type::complex(Type::length()),
+        Type::complex(Type::length()),
+    );
+    assert!(result.is_undef());
+}
+
+/// Regression guard: Scalar{0.005,LENGTH}(=5mm) - Complex{0,4.1,DIMENSIONLESS} → Undef.
+/// Dimensioned Scalar does not match the new Real/Int arms; falls through to `_ => Undef`.
+#[test]
+fn scalar_sub_complex_dimensionless_undef() {
+    let result = eval_binop(
+        BinOp::Sub,
+        scalar_val(0.005, DimensionVector::LENGTH),
+        Type::length(),
+        complex_val(0.0, 4.1, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        Type::complex(Type::Real),
+    );
+    assert!(result.is_undef());
+}
+
 /// Undef + Complex returns Undef (propagation through eval_binop).
 #[test]
 fn complex_undef_propagation() {
