@@ -13,15 +13,19 @@
 //! projection helpers have no non-test caller, so they carry `#[allow(dead_code)]`
 //! (removed once the trampoline consumes them).
 
+use std::f64::consts::PI;
+
 use faer::sparse::{SparseRowMat, Triplet};
 
+use reify_core::Diagnostic;
 use reify_solver_elastic::{
     AssemblyElement, AssemblyMode, DirichletBc, EigenSolverOptions, EigenSolverResult, ElementOrder,
     ElementStiffness, IsotropicElastic, assemble_global_stiffness, consistent_element_mass_tet_p1,
     element_stiffness, solve_eigen_dense, solve_eigen_shift_invert,
 };
 use reify_stdlib::modal::free_vibration::{
-    eigenvalue_to_frequency_hz, mass_normalization_scale, modal_participation_mass,
+    eigenvalue_to_frequency_hz, is_rigid_body_mode, mass_normalization_scale,
+    modal_participation_mass,
 };
 
 // ---------------------------------------------------------------------------
@@ -143,6 +147,12 @@ pub(crate) struct ModalCoreResult {
     pub(crate) converged: bool,
     /// Number of eigenpairs the underlying solver reported converged.
     pub(crate) n_converged: usize,
+    /// Non-fatal diagnostics surfaced by the solve: `W_ModalRigidBodyMode` (a
+    /// near-zero / rigid-body mode → possible under-constraint) and
+    /// `W_ModalConvergence` (fewer modes converged than requested). Message-
+    /// based (`code: None`) per design_decision #6; the trampoline forwards
+    /// these into the `ComputeOutcome` (step 14).
+    pub(crate) diagnostics: Vec<Diagnostic>,
 }
 
 /// Core free-vibration FEA eigensolve: build the beam mesh, assemble `K` and the
@@ -291,6 +301,35 @@ pub(crate) fn solve_modal_core(
         phi_full.push(phi_u);
     }
 
+    // ---- Diagnostics (message-based, code: None; design_decision #6) ------
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+    // Rigid-body / spurious near-zero modes: ω ≈ 0 signals an under-constrained
+    // model. RIGID_BODY_OMEGA_TOL sits in the wide gap between rigid modes
+    // (ω → 0) and the lowest flexible angular frequency of any realistic stiff
+    // metal part (≫ 1 rad/s ≈ 0.16 Hz) — see step-9's measured spectrum.
+    const RIGID_BODY_OMEGA_TOL: f64 = 1.0; // rad/s
+    for (i, &f) in frequencies.iter().enumerate() {
+        let omega = 2.0 * PI * f;
+        if is_rigid_body_mode(omega, RIGID_BODY_OMEGA_TOL) {
+            diagnostics.push(Diagnostic::warning(format!(
+                "W_ModalRigidBodyMode: mode {i} has near-zero angular frequency \
+                 ω = {omega:.3e} rad/s (≤ {RIGID_BODY_OMEGA_TOL:.1e}); the model \
+                 may be under-constrained (rigid-body or spurious mode)."
+            )));
+        }
+    }
+
+    // Convergence shortfall: `eig.converged` is false iff fewer modes were
+    // returned than requested (holds for both the dense and shift-invert paths).
+    if !eig.converged {
+        diagnostics.push(Diagnostic::warning(format!(
+            "W_ModalConvergence: eigensolver returned {} of {} requested modes; \
+             the result is partial (raise max_iters/tol or lower n_modes).",
+            n_modes_out, eigen_opts.n_modes,
+        )));
+    }
+
     ModalCoreResult {
         frequencies,
         eigenvalues,
@@ -301,6 +340,7 @@ pub(crate) fn solve_modal_core(
         n_nodes,
         converged: eig.converged,
         n_converged: eig.n_converged,
+        diagnostics,
     }
 }
 
