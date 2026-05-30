@@ -1007,7 +1007,22 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
         // second element of the capability tuple — not relevant here)
         Convert { .. } => Some(BREP_MESH),
 
-        // Catch-all: genuinely-new future variants → conservative (None)
+        // Primitives — sources (no geometric input); classified as BRep to
+        // document the conscious 'not a Mesh-accepting consumer' decision and
+        // satisfy the strum-completeness test (test d, step-3).
+        PrimitiveBox | PrimitiveCylinder | PrimitiveSphere | PrimitiveTube => Some(BREP_ONLY),
+
+        // Curves — sources (no geometric input); same rationale as Primitives.
+        CurveLineSegment
+        | CurveArc
+        | CurveHelix
+        | CurveInterpCurve
+        | CurveBezierCurve
+        | CurveNurbsCurve => Some(BREP_ONLY),
+
+        // Catch-all: genuinely-new future variants → conservative (None).
+        // Unreachable for all current variants (strum test above enforces this).
+        #[allow(unreachable_patterns)]
         _ => None,
     }
 }
