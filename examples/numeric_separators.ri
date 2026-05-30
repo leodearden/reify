@@ -1,0 +1,21 @@
+// Numeric digit-separator examples.
+//
+// Demonstrates `_` separator support in number literals per
+// docs/prds/v0_6/numeric-and-range-literal-forms.md (task 3912 / β).
+// The grammar (task 3909 / α) tokenises `_`-bearing literals as single
+// `number_literal` CST nodes; this file exercises the AST-lowering layer
+// so `1_000_000`, `0.000_001`, and `1_000mm` all lower correctly.
+
+structure def NumericSeparators {
+    // Integer with _ separators — lowers to 1000000.0 (is_real = false)
+    let big = 1_000_000
+
+    // Decimal with _ separator in fractional part — lowers to 1e-6 (is_real = true)
+    let small = 0.000_001
+
+    // Quantity literal with _ separator in numeric value — lowers to 1000 mm
+    let len = 1_000mm
+
+    // PRD signal: 1_000_000 == 1000000 (no semantic difference)
+    constraint big == 1000000
+}
