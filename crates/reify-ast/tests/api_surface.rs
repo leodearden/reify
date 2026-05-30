@@ -90,12 +90,12 @@ fn match_arm_flat_and_module_path_constructible() {
     let body = Expr { kind: ExprKind::BoolLiteral(true), span };
 
     let arm: MatchArm = MatchArm {
-        patterns: vec!["In".into()],
+        patterns: vec![MatchPattern::Variant("In".into())],
         body,
         span,
     };
     assert_eq!(arm.patterns.len(), 1);
-    assert_eq!(arm.patterns[0], "In");
+    assert_eq!(arm.patterns[0], MatchPattern::Variant("In".into()));
 
     // Module-path alias resolves to the same type.
     let _arm_mod: MatchArmMod = arm;
