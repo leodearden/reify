@@ -297,6 +297,39 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
         }
     }
 
+    // Deliverable-presence rescue. If every non-gitignored metadata.files entry
+    // resolves to a tracked file or directory on main, the work landed — only
+    // the done_provenance.commit pointer is stale (e.g. recycled task ID or
+    // runs.db rebuild). Downgrade to Low so the operator can inspect without
+    // it escalating as a genuine phantom-done.
+    //
+    // Note: file-presence is necessary but NOT sufficient (a file can exist
+    // yet lack the wired symbol, e.g. task 3803's unwired resolve_unit_expr),
+    // so we stay Low / inspectable rather than suppressing entirely.
+    let genuinely_absent: Vec<String> = meta
+        .files
+        .iter()
+        .filter(|p| !ctx.git.is_gitignored(p))
+        .filter(|p| !ctx.git.path_tracked_on(MAIN_BASE, p))
+        .cloned()
+        .collect();
+
+    if genuinely_absent.is_empty() {
+        return Some(Finding {
+            pattern: Pattern::P5PhantomDone,
+            severity: Severity::Low,
+            task_id: meta.task_id.clone(),
+            summary:
+                "deliverable present on main (every metadata.files entry resolves to a tracked \
+                 file or directory) but claimed provenance commit not reachable — \
+                 stale-provenance, not phantom-done"
+                    .to_string(),
+            evidence: vec![EvidenceRef::MetadataFiles {
+                entries: missing.clone(),
+            }],
+        });
+    }
+
     Some(build_high_finding(
         meta,
         &missing,
