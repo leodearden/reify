@@ -9,6 +9,7 @@ import type {
   DiagnosticInfo,
   AutoResolveIteration,
   TensegrityWireData,
+  SolverProgress,
 } from '../types';
 import {
   onMeshUpdate,
@@ -25,6 +26,14 @@ import {
   onAutoResolveComplete,
 } from '../bridge';
 import type { KernelStatus } from '../bridge';
+
+/** State for an in-flight FEA CG solver (shown as overlay while solve is active >1s). */
+export interface SolverProgressState {
+  latest: SolverProgress | null;
+  trace: SolverProgress[];
+  visible: boolean;
+  coarseReached: boolean;
+}
 
 /** State for an auto-resolve loop (param x = auto optimisation). */
 export interface AutoResolveLoopState {
@@ -57,6 +66,7 @@ export interface EngineState {
   autoResolve: AutoResolveLoopState;
   /** Tensegrity wire endpoint pairs with member-type tags (T0b). Empty when none present. */
   tensegrityWires: TensegrityWireData[];
+  solverProgress: SolverProgressState;
 }
 
 export interface EngineStoreOptions {
@@ -78,6 +88,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
     kernelStatus: null,
     autoResolve: { active: false, iterations: [], canonicalDrivingMetric: undefined, warnedEmptyMetric: undefined },
     tensegrityWires: [],
+    solverProgress: { latest: null, trace: [], visible: false, coarseReached: false },
   });
 
   function initFromState(guiState: GuiState) {
@@ -210,6 +221,13 @@ export function createEngineStore(options?: EngineStoreOptions) {
     setState('autoResolve', { active: false, iterations: [], canonicalDrivingMetric: undefined, warnedEmptyMetric: undefined });
   }
 
+  function applySolverProgress(p: SolverProgress) {
+    setState(produce((s) => {
+      s.solverProgress.latest = p;
+      s.solverProgress.trace.push(p);
+    }));
+  }
+
   async function subscribeToEvents(): Promise<() => void> {
     const results = await Promise.allSettled([
       onMeshUpdate(applyMeshUpdate),
@@ -258,6 +276,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
     beginAutoResolveLoop,
     applyAutoResolveIteration,
     endAutoResolveLoop,
+    applySolverProgress,
     subscribeToEvents,
   };
 }
