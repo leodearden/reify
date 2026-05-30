@@ -36,6 +36,14 @@ module.exports = grammar({
     // AUTO_TOKEN even at operand positions where AUTO_TOKEN is not in
     // valid_symbols (producing ERROR via out-of-valid emission).
     $._auto_reservation_sentinel,
+    // RADIX_LITERAL: emitted (consuming the whole 0x.../0b... run) by the
+    // external scanner.  A plain token() regex alternative for hex/binary would
+    // be defeated by $._auto_reservation_sentinel in `extras`: the decimal DFA
+    // matches only the leading `0`, then _unit_expr_start fires at `x`/`b`
+    // (both unit-start chars) and the DFA consumes the rest as a unit_expr
+    // unit_name — yielding quantity_literal(number_literal "0", unit_expr "xFF").
+    // Only an external token consuming the WHOLE 0xFF/0b1010 run defeats this.
+    $._radix_literal,
   ],
 
   extras: $ => [
@@ -1196,7 +1204,21 @@ module.exports = grammar({
     )),
 
     // ── Literals ────────────────────────────────────────────
-    number_literal: $ => token(/\d(_?\d)*(\.\d(_?\d)*)?([eE][+-]?\d(_?\d)*)?/),
+    //
+    // _decimal_literal is a named hidden rule (not an anonymous token) so that
+    // tree-sitter's error recovery produces a NAMED MISSING node when
+    // number_literal is expected but absent.  A named MISSING node has
+    // is_named()=true and child_count≥1 via the cursor API, which lets
+    // first_error_or_missing_descendant find it and narrow error spans.
+    // An anonymous token() alternative produces an aux_sym_* MISSING node
+    // with child_count=0 — invisible to the cursor — so first_error_or_missing_descendant
+    // returns None and falls back to the wide span, breaking task-3725's
+    // auto_type_arg span-narrowing test.
+    _decimal_literal: $ => token(/\d(_?\d)*(\.\d(_?\d)*)?([eE][+-]?\d(_?\d)*)?/),
+    number_literal: $ => choice(
+      $._decimal_literal,
+      $._radix_literal,
+    ),
 
     string_literal: $ => token(seq(
       '"',

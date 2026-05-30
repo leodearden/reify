@@ -23,7 +23,8 @@
 
 /* IMPORTANT: enum order MUST match the grammar.js externals array order.
  * grammar.js externals: [_unit_expr_start(0), _unit_mul_op(1), _unit_div_op(2),
- *                         _auto_token(3), _auto_reservation_sentinel(4)] */
+ *                         _auto_token(3), _auto_reservation_sentinel(4),
+ *                         _radix_literal(5)] */
 enum TokenType {
   UNIT_EXPR_START,            /* index 0 — zero-width quantity-literal gate    */
   UNIT_MUL_OP,                /* index 1 — '*' inside unit_expr                */
@@ -41,6 +42,7 @@ enum TokenType {
                                *   - auto_operand_rejection.txt (:error fixtures)
                                *   - section C of auto_binding_sites_grammar_tests.rs
                                */
+  RADIX_LITERAL,              /* index 5 — 0x.../0b... integer literal          */
 };
 
 void *tree_sitter_reify_external_scanner_create(void) {
@@ -94,6 +96,17 @@ void tree_sitter_reify_external_scanner_deserialize(void *payload,
 static bool is_unit_start(int32_t c) {
   return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' ||
          c == '(';
+}
+
+/* Helper: returns true iff c is a valid hexadecimal digit [0-9a-fA-F]. */
+static bool is_hex_digit(int32_t c) {
+  return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+         (c >= 'A' && c <= 'F');
+}
+
+/* Helper: returns true iff c is a valid binary digit [01]. */
+static bool is_bin_digit(int32_t c) {
+  return c == '0' || c == '1';
 }
 
 /**
@@ -192,6 +205,113 @@ bool tree_sitter_reify_external_scanner_scan(void *payload, TSLexer *lexer,
     /* Whitespace or non-unit-start: fall through to AUTO_TOKEN check. */
   }
 
+  /* ── RADIX_LITERAL: 0x.../0b... integer literals ──────────────────────────
+   *
+   * Emits RADIX_LITERAL (consuming the whole radix-literal run) when:
+   *   1. The parser is requesting it (valid_symbols[RADIX_LITERAL]).
+   *   2. After skipping leading whitespace, the lookahead is `0`.
+   *   3. The char after `0` is a radix prefix: `x`/`X` (hex) or `b`/`B` (binary).
+   *   4. At least one radix digit follows the prefix.
+   *
+   * DIGIT CONSUMING: additional digits are consumed greedily with `_`-separator
+   * support via the pattern (digit | `_` digit)*.  INCREMENTAL mark_end after
+   * each complete digit ensures a trailing `_` (e.g. `0xFF_`) is NOT absorbed.
+   *
+   * FALL-THROUGH on non-`0`: if the first non-whitespace char is NOT `0`, we do
+   * NOT return false — instead we fall through to the AUTO_TOKEN block so that
+   * `auto` at binding sites still lexes correctly (both RADIX_LITERAL and
+   * AUTO_TOKEN can be valid at the same parser state).
+   *
+   * RETURN-FALSE on 0-not-radix: if `0` is followed by something other than a
+   * valid radix prefix+digit, we return false.  Tree-sitter's "advance + return
+   * false rewinds all advances" contract ensures the decimal DFA token then lexes
+   * `0`, `0.5`, `0e5`, etc.
+   *
+   * STOP AT NON-DIGIT: the scanner stops at the first non-radix char (e.g. `m`
+   * in `0xFFmm`), leaving the rest for the unit_expr machinery to handle.
+   */
+  if (valid_symbols[RADIX_LITERAL]) {
+    /* Skip leading whitespace — scanner fires at the ws position before `0`. */
+    int32_t rch = lexer->lookahead;
+    while (rch == ' ' || rch == '\t' || rch == '\n' || rch == '\r') {
+      lexer->advance(lexer, true); /* skip=true: mark whitespace as skipped */
+      rch = lexer->lookahead;
+    }
+
+    if (rch != '0') {
+      /* Not a radix literal — fall through to AUTO_TOKEN block. */
+      goto auto_token_block;
+    }
+
+    /* Consume the leading `0`. */
+    lexer->advance(lexer, false);
+    rch = lexer->lookahead;
+
+    /* Determine radix from prefix char. */
+    bool is_hex = (rch == 'x' || rch == 'X');
+    bool is_bin = (rch == 'b' || rch == 'B');
+
+    if (!is_hex && !is_bin) {
+      /* `0` not followed by a valid radix prefix (e.g. `0.5`, `0`, `0e5`).
+       * Return false — tree-sitter rewinds all advances and the decimal DFA
+       * token lexes the literal. */
+      return false;
+    }
+
+    /* Consume the prefix char (`x`/`X` or `b`/`B`). */
+    lexer->advance(lexer, false);
+    rch = lexer->lookahead;
+
+    /* Require at least one valid digit immediately after the prefix. */
+    bool first_digit = is_hex ? is_hex_digit(rch) : is_bin_digit(rch);
+    if (!first_digit) {
+      /* Prefix with no digits (e.g. `0x` or `0b` alone) — return false so
+       * tree-sitter rewinds.  These parse as quantity_literal(number_literal "0",
+       * unit_expr "x"/"b") with no error node per task spec. */
+      return false;
+    }
+
+    /* Consume digits with `_`-separator support.
+     * Pattern: digit (_? digit)* — use INCREMENTAL mark_end after each digit
+     * so a trailing `_` is NOT absorbed into the token. */
+    lexer->advance(lexer, false);
+    lexer->mark_end(lexer); /* mark after first digit */
+    rch = lexer->lookahead;
+
+    for (;;) {
+      if (rch == '_') {
+        /* Peek ahead: only consume `_` if a valid digit follows it. */
+        lexer->advance(lexer, false); /* tentatively consume `_` */
+        rch = lexer->lookahead;
+        bool next_ok = is_hex ? is_hex_digit(rch) : is_bin_digit(rch);
+        if (!next_ok) {
+          /* Trailing `_` — do NOT update mark_end; stop here.
+           * Tree-sitter will rewind the `_` advance (return true uses mark_end). */
+          break;
+        }
+        /* Valid `_digit` pair — consume the digit and advance mark_end. */
+        lexer->advance(lexer, false);
+        lexer->mark_end(lexer);
+        rch = lexer->lookahead;
+      } else if (is_hex ? is_hex_digit(rch) : is_bin_digit(rch)) {
+        lexer->advance(lexer, false);
+        lexer->mark_end(lexer);
+        rch = lexer->lookahead;
+      } else {
+        break;
+      }
+    }
+
+    lexer->result_symbol = RADIX_LITERAL;
+    return true;
+  }
+
+  /* ── AUTO_TOKEN: narrow lexer-level reservation of `auto` ─────────────────
+   *
+   * Label used as a fall-through target from the RADIX_LITERAL block when the
+   * first non-whitespace char is not `0`.  C89 requires a statement after a
+   * label, so the opening brace of the existing block serves as that statement. */
+  auto_token_block:
   /* ── AUTO_TOKEN: narrow lexer-level reservation of `auto` ─────────────────
    *
    * Emits AUTO_TOKEN (consuming 'auto', 4 chars) when:
