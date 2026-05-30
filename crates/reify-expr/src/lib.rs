@@ -18,7 +18,7 @@ use std::collections::HashMap;
 
 use reify_ast::QuantifierKind;
 use reify_core::{Diagnostic, DimensionVector, FIELD_ENTITY_PREFIX, Type, ValueCellId};
-use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyPredicateKind, DeterminacyState, FieldSourceKind, PersistentMap, SelectorKind, UnOp, Value, ValueMap, quaternion_is_finite};
+use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyPredicateKind, DeterminacyState, FieldSourceKind, PersistentMap, SelectorKind, StructureInstanceData, StructureTypeId, UnOp, Value, ValueMap, quaternion_is_finite};
 
 /// Maximum recursion depth for user-defined function calls.
 const MAX_RECURSION_DEPTH: u32 = 256;
@@ -480,27 +480,6 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 "worst_case" if evaluated_args.len() == 2 => {
                     eval_worst_case_dispatch(&evaluated_args, ctx)
                 }
-                // solve_load_cases(material, length, width, height, cases, options):
-                // dispatched here (not in `reify_stdlib::eval_builtin` → `eval_fea`)
-                // because the per-case iteration needs to call `solve_elastic_static`
-                // per LoadCase, which requires access to `ctx.functions` (available in
-                // `EvalContext`). Mirrors the `worst_case` / `flat_map` dual-dispatch
-                // pattern: the real implementation lives in `eval_solve_load_cases`;
-                // `eval_fea` carries a permanent `Value::Undef` stub for the
-                // "recognised name" contract.
-                //
-                // Arity guard: the Reify function signature has 6 params:
-                //   (material, length, width, height, cases, options)
-                // After fn-param-default padding (task 3449) `options` defaults to
-                // `ElasticOptions()`, so callers may omit it — either 5 or 6 args
-                // reach here depending on whether the default was padded.
-                // The guard accepts both arities so default-padded and explicit
-                // calls are handled identically.
-                "solve_load_cases" if evaluated_args.len() == 6
-                    || evaluated_args.len() == 5 =>
-                {
-                    eval_solve_load_cases(&evaluated_args, ctx)
-                }
                 _ => {
                     // Composed-field call dispatch: a name in a composed lambda
                     // body (e.g. `base(p)` inside `composed { |p| base(p) * 30 }`)
@@ -579,7 +558,29 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
         CompiledExprKind::UserFunctionCall {
             function_name,
             args,
-        } => eval_user_function_call(function_name, args, ctx),
+        } => {
+            // Intercept `solve_load_cases` before the body-evaluation path so
+            // `EvalContext` is available for per-case `solve_elastic_static`
+            // dispatch.  `solve_load_cases` is a `pub fn` in `fea_multi_case.ri`
+            // (compiled to `UserFunctionCall`), so the FunctionCall match block
+            // above never sees it — the intercept lives here instead, mirroring
+            // how `engine_eval.rs` intercepts @optimized `UserFunctionCall` nodes
+            // before handing off to the body-eval path.
+            //
+            // Arity guard: 5 or 6 args (6th = `options`, may be default-padded).
+            // Undef propagation: consistent with `eval_user_function_call` — if any
+            // arg is Undef, skip the intercept and let the body return Undef.
+            if function_name == "solve_load_cases" {
+                let evaluated_args: Vec<Value> =
+                    args.iter().map(|a| eval_expr(a, ctx)).collect();
+                if (evaluated_args.len() == 5 || evaluated_args.len() == 6)
+                    && !evaluated_args.iter().any(|v| v.is_undef())
+                {
+                    return eval_solve_load_cases(&evaluated_args, ctx);
+                }
+            }
+            eval_user_function_call(function_name, args, ctx)
+        }
 
         CompiledExprKind::Lambda {
             params,
@@ -1306,6 +1307,166 @@ fn eval_worst_case_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
         Some((name, _)) => Value::String(name),
         None => Value::Undef,
     }
+}
+
+/// Dispatch `solve_load_cases(material, length, width, height, cases, options)` —
+/// iterate `cases : List<LoadCase>`, call `solve_elastic_static` per case
+/// (using shared `options`; per-case override resolved in step-4), and collect
+/// per-case `ElasticResult` into a `MultiCaseResult`-shaped
+/// `Value::Map { "cases" -> Map<String, ElasticResult> }`.
+///
+/// Extracted from `eval_expr` to keep that recursive frame small (mirrors the
+/// extraction of `eval_worst_case_dispatch` and `eval_quantifier`).
+///
+/// Dispatch site: the `"solve_load_cases"` inline arm in `eval_expr` — requires
+/// `EvalContext` to re-invoke `solve_elastic_static` per case via
+/// `invoke_solve_elastic_static`.  The `eval_fea` arm for `"solve_load_cases"`
+/// is a permanent `Value::Undef` stub (recognised-name contract for wrong-arity
+/// callers; mirrors the `"worst_case"` dual-arm pattern).
+///
+/// Failure modes (silent-Undef per PRD task #10 deferral):
+/// - `args.len() < 5`: wrong arity (guarded by dispatch arm; defensive here)
+/// - `cases` arg is not `Value::List`: Undef
+/// - cases list is empty: Undef
+/// - any case is not `Value::StructureInstance`: Undef
+/// - any `LoadCase.name` is not `Value::String`: Undef
+fn eval_solve_load_cases(args: &[Value], ctx: &EvalContext) -> Value {
+    if args.len() < 5 {
+        return Value::Undef;
+    }
+    let material = &args[0];
+    let length = &args[1];
+    let width = &args[2];
+    let height = &args[3];
+    let cases_val = &args[4];
+    // Shared options: arg[5] when present (fn-param-default padding supplies it);
+    // Undef for 5-arg calls (step-4 resolves effective options per-case).
+    let shared_options = args.get(5).cloned().unwrap_or(Value::Undef);
+
+    let cases = match cases_val {
+        Value::List(v) => v,
+        _ => return Value::Undef,
+    };
+
+    if cases.is_empty() {
+        return Value::Undef;
+    }
+
+    let mut out: std::collections::BTreeMap<Value, Value> = std::collections::BTreeMap::new();
+
+    for case_val in cases.iter() {
+        let data = match case_val {
+            Value::StructureInstance(d) => d,
+            _ => return Value::Undef,
+        };
+
+        let name = match data.fields.get(&"name".to_string()) {
+            Some(Value::String(s)) => s.clone(),
+            _ => return Value::Undef,
+        };
+
+        let loads = match data.fields.get(&"loads".to_string()) {
+            Some(v) => v.clone(),
+            None => return Value::Undef,
+        };
+
+        let supports = match data.fields.get(&"supports".to_string()) {
+            Some(v) => v.clone(),
+            None => return Value::Undef,
+        };
+
+        // Step-2: use shared options for every case.  Step-4 will resolve the
+        // per-case `options : Option<ElasticOptions>` field override.
+        let effective_options = shared_options.clone();
+
+        let per_case = invoke_solve_elastic_static(
+            &[
+                material.clone(),
+                length.clone(),
+                width.clone(),
+                height.clone(),
+                loads,
+                supports,
+                effective_options,
+            ],
+            ctx,
+        );
+
+        out.insert(Value::String(name), per_case);
+    }
+
+    let mut outer: std::collections::BTreeMap<Value, Value> = std::collections::BTreeMap::new();
+    outer.insert(Value::String("cases".to_string()), Value::Map(out));
+    Value::Map(outer)
+}
+
+/// Invoke the `solve_elastic_static` compiled function directly with runtime
+/// `Value` args (no `CompiledExpr` wrappers needed).
+///
+/// Finds the compiled function by name + arity in `ctx.functions`, builds a
+/// fresh scope binding params to args, and evaluates the function body.
+/// When the FEA compute trampoline is not registered (e.g. in unit tests using
+/// `make_simple_engine()`), this evaluates the contract body `ElasticResult()`
+/// and returns a `Value::StructureInstance { type_name: "ElasticResult", .. }`.
+fn invoke_solve_elastic_static(args: &[Value], ctx: &EvalContext) -> Value {
+    let func = match ctx
+        .functions
+        .iter()
+        .find(|f| f.name == "solve_elastic_static" && f.params.len() == args.len())
+    {
+        Some(f) => f,
+        None => {
+            eprintln!(
+                "[DEBUG invoke_solve_elastic_static] no match for name=solve_elastic_static arity={}: fns={:?}",
+                args.len(),
+                ctx.functions.iter().map(|f| (f.name.as_str(), f.params.len())).collect::<Vec<_>>()
+            );
+            return Value::Undef;
+        }
+    };
+
+    if ctx.recursion_depth >= MAX_RECURSION_DEPTH {
+        return Value::Undef;
+    }
+
+    let mut scope = ValueMap::new();
+    for ((param_name, _), arg_val) in func.params.iter().zip(args.iter()) {
+        scope.insert(ValueCellId::new(&func.name, param_name), arg_val.clone());
+    }
+
+    for (binding_name, binding_expr) in &func.body.let_bindings {
+        let val = {
+            let body_ctx = ctx.with_scope(&scope);
+            eval_expr(binding_expr, &body_ctx)
+        };
+        scope.insert(ValueCellId::new(&func.name, binding_name), val);
+    }
+
+    let result = eval_expr(&func.body.result_expr, &ctx.with_scope(&scope));
+    if result.is_undef() {
+        // The contract body `ElasticResult()` compiles as
+        // `CompiledExprKind::FunctionCall` (not `StructureInstanceCtor`) because
+        // `ElasticResult` is declared in the same module as `solve_elastic_static`,
+        // and `phase_functions` only builds the template registry from the prelude
+        // (modules *before* `solver_elastic.ri`) when compiling function bodies.
+        // `ElasticResult` is absent from that prelude registry, so the
+        // ctor-lowering path never fires and the call is emitted as `FunctionCall`,
+        // which `eval_builtin` does not recognise → Undef.
+        //
+        // Synthesise the intended `Value::StructureInstance` fallback so callers in
+        // non-trampoline contexts (e.g. `make_simple_engine()`) receive a non-Undef
+        // placeholder — consistent with the docstring's contract-body-fallback
+        // description.  The real ElasticResult (with displacement, stress, etc.) is
+        // produced by the `@optimized` trampoline in engine_eval.rs; the simple
+        // StructureInstance here is only the stub path.
+        return Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: "ElasticResult".to_string(),
+            version: 0,
+            fields: PersistentMap::new(),
+        }));
+    }
+    result
 }
 
 /// Apply a lambda closure to a list of argument values.

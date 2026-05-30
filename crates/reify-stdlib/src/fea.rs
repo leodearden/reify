@@ -55,6 +55,12 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
         // callers; mirrors the dual-arm pattern of `von_mises`'s lib.rs
         // Field-arg arm coexisting with `eval_analysis`'s tensor-arg arm.
         "worst_case" => Value::Undef,
+        // `solve_load_cases` real implementation lives in
+        // `crates/reify-expr/src/lib.rs::eval_solve_load_cases`
+        // (EvalContext-aware, requires `ctx` to call `solve_elastic_static`
+        // per LoadCase).  This stub fires when the lib.rs dispatch declines
+        // (wrong arity), preserving the "recognised name" contract.
+        "solve_load_cases" => Value::Undef,
         _ => return None,
     })
 }
