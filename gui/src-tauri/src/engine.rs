@@ -1126,7 +1126,7 @@ impl EngineSession {
         };
 
         // Find the first BucklingResult StructureInstance in check.values.
-        let (base_f64, modes_displaced) = match Self::extract_buckling_data(&check.values) {
+        let (base_f64, modes_displaced, eigenvalues) = match Self::extract_buckling_data(&check.values) {
             Some(d) => d,
             None => return,
         };
@@ -1172,7 +1172,7 @@ impl EngineSession {
                 mode_index: k as u8,
                 phase: 1.0_f32,
                 displaced_positions: peak_f32,
-                eigenvalue: None, // threaded from extract_buckling_data in step-4
+                eigenvalue: Some(eigenvalues[k]), // per-mode buckling load multiplier λ
             });
         }
     }
@@ -1186,7 +1186,7 @@ impl EngineSession {
     /// - `modes` list is absent/malformed.
     fn extract_buckling_data(
         values: &reify_ir::ValueMap,
-    ) -> Option<(Vec<f64>, Vec<Vec<f64>>)> {
+    ) -> Option<(Vec<f64>, Vec<Vec<f64>>, Vec<f64>)> {
         use reify_ir::Value;
 
         for (_, value) in values.iter() {
@@ -1213,12 +1213,18 @@ impl EngineSession {
                 _ => continue,
             };
 
-            // Extract displaced_positions for each mode.
+            // Extract displaced_positions and eigenvalue for each mode.
             let mut modes_displaced = Vec::with_capacity(modes_list.len());
+            let mut eigenvalues = Vec::with_capacity(modes_list.len());
             let mut all_ok = true;
             for mode_val in modes_list.iter() {
                 let mode_data = match mode_val {
                     Value::StructureInstance(d) => d,
+                    _ => { all_ok = false; break; }
+                };
+                // Extract eigenvalue (task 4072): must be Value::Real.
+                let eigenvalue = match mode_data.fields.get(&"eigenvalue".to_string()) {
+                    Some(Value::Real(r)) => *r,
                     _ => { all_ok = false; break; }
                 };
                 let mode_shape_map = match mode_data.fields.get(&"mode_shape".to_string()) {
@@ -1236,13 +1242,14 @@ impl EngineSession {
                     all_ok = false;
                     break;
                 }
+                eigenvalues.push(eigenvalue);
                 modes_displaced.push(disp_f64);
             }
             if !all_ok || modes_displaced.is_empty() {
                 continue;
             }
 
-            return Some((base_f64, modes_displaced));
+            return Some((base_f64, modes_displaced, eigenvalues));
         }
         None
     }
