@@ -4,6 +4,7 @@
 //! "synthetic input" G2 gap. Uses `shell_element_stress` / `shell_element_frame`
 //! directly (`pub`, callable from external crates; `UNIT_TRI` / `steel_like()`
 //! are `#[cfg(test)]`-only in reify-solver-elastic and cannot be imported).
+//! Frame matrix obtained via `build_shell_frame(&nodes).r`.
 //!
 //! RED until step-4 implements
 //! `reify_eval::compute_targets::elastic_static::shell_channels_to_value`.
@@ -15,7 +16,8 @@ use reify_core::Type;
 use reify_eval::persistent_cache::ShellChannels;
 use reify_ir::{FieldSourceKind, InterpolationKind, SampledField, SampledGridKind, Value};
 use reify_solver_elastic::constitutive::IsotropicElastic;
-use reify_solver_elastic::shell_result::{shell_element_frame, shell_element_stress};
+use reify_solver_elastic::shell_assembly::build_shell_frame;
+use reify_solver_elastic::shell_result::shell_element_stress;
 
 // 3-node right triangle in the XY plane; side length 1m.
 const TRI: [[f64; 3]; 3] = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
@@ -93,7 +95,7 @@ fn shell_channels_to_value_some_yields_shell_stress_instance() {
     u[2] = 1e-3;
 
     let s = shell_element_stress(&TRI, thickness, &mat, &u);
-    let f_frame = shell_element_frame(&TRI);
+    let f_frame = build_shell_frame(&TRI).r;
 
     let top_flat = flatten_3x3(s.top);
     let mid_flat = flatten_3x3(s.mid);
