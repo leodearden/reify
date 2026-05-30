@@ -512,3 +512,178 @@ pub(crate) fn compile_purpose(
         pragmas: purpose_def.pragmas.clone(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Unit tests for `compile_trait` associated-function handling (task 3939 δ).
+    //!
+    //! These pin the producer contract for trait associated functions:
+    //!   * a bodyless `fn req(self) -> Real` (FnDef.body = None) compiles to a
+    //!     `RequirementKind::Fn(sig)` requirement, and
+    //!   * a default-providing `fn area(self) -> Real { 3.14 }` (body = Some)
+    //!     compiles to a `DefaultKind::Fn(fn_def)` default.
+    //!
+    //! `compile_trait` is `pub(crate)`, so these tests must live in-crate.
+    use super::*;
+
+    fn span() -> reify_core::SourceSpan {
+        reify_core::SourceSpan::new(0, 0)
+    }
+
+    fn named_type(name: &str) -> reify_ast::TypeExpr {
+        reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::Named {
+                name: name.to_string(),
+                type_args: vec![],
+            },
+            span: span(),
+        }
+    }
+
+    /// The implicit `self` receiver param: `is_self == true` with the sentinel
+    /// `self` named type (per decl.rs:818-823).
+    fn self_param() -> reify_ast::FnParam {
+        reify_ast::FnParam {
+            name: "self".to_string(),
+            is_self: true,
+            type_expr: named_type("self"),
+            default: None,
+            span: span(),
+        }
+    }
+
+    /// Build an `FnDef` member, with `body` controlling required (None) vs
+    /// default-providing (Some).
+    fn fn_def(
+        name: &str,
+        params: Vec<reify_ast::FnParam>,
+        return_type: Option<reify_ast::TypeExpr>,
+        body: Option<reify_ast::FnBody>,
+    ) -> reify_ast::FnDef {
+        reify_ast::FnDef {
+            name: name.to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            params,
+            return_type,
+            body,
+            span: span(),
+            content_hash: reify_core::ContentHash::of_str(name),
+            annotations: vec![],
+        }
+    }
+
+    /// Wrap members in a `TraitDecl` named `"T"`.
+    fn trait_decl(members: Vec<reify_ast::MemberDecl>) -> reify_ast::TraitDecl {
+        reify_ast::TraitDecl {
+            name: "T".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            refinements: vec![],
+            members,
+            span: span(),
+            content_hash: reify_core::ContentHash::of_str("T"),
+            pragmas: vec![],
+            annotations: vec![],
+        }
+    }
+
+    /// Run `compile_trait` with empty enum/alias/name registries.
+    fn run(decl: &reify_ast::TraitDecl) -> (CompiledTrait, Vec<Diagnostic>) {
+        let enums: Vec<reify_ir::EnumDef> = vec![];
+        let alias_registry = TypeAliasRegistry::new();
+        let structure_names = HashSet::new();
+        let trait_names = HashSet::new();
+        let mut diagnostics = Vec::new();
+        let compiled = compile_trait(
+            decl,
+            &enums,
+            &alias_registry,
+            &structure_names,
+            &trait_names,
+            &mut diagnostics,
+        );
+        (compiled, diagnostics)
+    }
+
+    // (a) Bodyless `fn req(self) -> Real` → RequirementKind::Fn(sig).
+    #[test]
+    fn bodyless_assoc_fn_becomes_required_fn() {
+        let decl = trait_decl(vec![reify_ast::MemberDecl::Fn(fn_def(
+            "req",
+            vec![self_param()],
+            Some(named_type("Real")),
+            None, // bodyless → required
+        ))]);
+        let (compiled, _diags) = run(&decl);
+
+        let sig = compiled
+            .required_members
+            .iter()
+            .find_map(|r| match &r.kind {
+                RequirementKind::Fn(sig) => Some(sig.clone()),
+                _ => None,
+            })
+            .expect("expected a RequirementKind::Fn requirement for the bodyless fn");
+
+        assert_eq!(sig.name, "req");
+        assert!(sig.has_self, "self receiver should set has_self = true");
+        assert!(
+            sig.params.is_empty(),
+            "the self receiver must be excluded from params, got: {:?}",
+            sig.params
+        );
+        assert_eq!(sig.return_type, Type::Real);
+        // A required (bodyless) fn must NOT also appear as a default.
+        assert!(
+            !compiled
+                .defaults
+                .iter()
+                .any(|d| matches!(d.kind, DefaultKind::Fn(_))),
+            "a bodyless required fn must not produce a DefaultKind::Fn"
+        );
+    }
+
+    // (b) `fn area(self) -> Real { 3.14 }` → DefaultKind::Fn(fn_def).
+    #[test]
+    fn assoc_fn_with_body_becomes_default_fn() {
+        let body = reify_ast::FnBody {
+            let_bindings: vec![],
+            result_expr: reify_ast::Expr {
+                kind: reify_ast::ExprKind::NumberLiteral {
+                    value: 3.14,
+                    is_real: true,
+                },
+                span: span(),
+            },
+        };
+        let decl = trait_decl(vec![reify_ast::MemberDecl::Fn(fn_def(
+            "area",
+            vec![self_param()],
+            Some(named_type("Real")),
+            Some(body), // has body → default-providing
+        ))]);
+        let (compiled, _diags) = run(&decl);
+
+        let default_fn_def = compiled
+            .defaults
+            .iter()
+            .find_map(|d| match &d.kind {
+                DefaultKind::Fn(fd) => Some(fd.clone()),
+                _ => None,
+            })
+            .expect("expected a DefaultKind::Fn default for the fn with a body");
+
+        assert_eq!(default_fn_def.name, "area");
+        // A default-providing fn must NOT also appear as a requirement.
+        assert!(
+            !compiled
+                .required_members
+                .iter()
+                .any(|r| matches!(r.kind, RequirementKind::Fn(_))),
+            "a default-providing fn must not produce a RequirementKind::Fn"
+        );
+    }
+}
