@@ -53,3 +53,49 @@
 //!
 //! - Chopra, A. K. (2017). *Dynamics of Structures* (5th ed.), Prentice Hall.
 //!   Tables 5.2.1, 5.3.1, 5.4.2.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Analytic damped free-decay response (Chopra Table 5.2.1, zero forcing).
+    ///
+    /// ξ(t) = e^{-ζωt} · [ξ₀·cos(ωD·t) + ((v₀ + ζω·ξ₀)/ωD)·sin(ωD·t)]
+    ///
+    /// where ωD = ω·√(1 − ζ²).
+    fn analytic_free_decay(xi0: f64, v0: f64, omega: f64, zeta: f64, t: f64) -> f64 {
+        let omega_d = omega * (1.0 - zeta * zeta).sqrt();
+        let decay = (-zeta * omega * t).exp();
+        decay * (xi0 * (omega_d * t).cos() + ((v0 + zeta * omega * xi0) / omega_d) * (omega_d * t).sin())
+    }
+
+    // ─── step 01: free-vibration-from-IC exactness ───────────────────────────
+
+    /// Drives `duhamel_solve` with zero forcing and non-zero IC (ξ₀=1, v̇₀=0).
+    /// Every sample must match the closed-form damped free decay within 1e-12.
+    /// RED: `duhamel_solve` is absent — fails to compile.
+    #[test]
+    fn free_decay_from_ic_exact() {
+        let omega = 50.0_f64;
+        let zeta  = 0.05_f64;
+        // ω·dt ≈ 0.05  →  dt ≈ 0.001 s; use N=60 steps.
+        let dt = 0.001_f64;
+        let n  = 60_usize;
+        let forcing = vec![0.0_f64; n];
+        let xi0 = 1.0_f64;
+        let v0  = 0.0_f64;
+
+        let result = duhamel_solve(omega, zeta, dt, &forcing, xi0, v0);
+
+        assert_eq!(result.len(), n, "output length must equal forcing.len()");
+        for (j, &got) in result.iter().enumerate() {
+            let t    = j as f64 * dt;
+            let want = analytic_free_decay(xi0, v0, omega, zeta, t);
+            assert!(
+                (got - want).abs() < 1e-12,
+                "step {j} (t={t:.4}): got {got:.6e}, want {want:.6e}, diff {:.2e}",
+                (got - want).abs()
+            );
+        }
+    }
+}
