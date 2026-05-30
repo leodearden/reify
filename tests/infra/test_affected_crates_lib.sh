@@ -60,4 +60,18 @@ echo "--- C5: unmappable path forces ALL ---"
 assert "unmappable path -> ALL" \
     test "$(affected_crates some/unknown/place.zzz)" = "ALL"
 
+# ---------------------------------------------------------------------------
+# Step 7: direct-set printing — crate-mapped paths emit the crate name
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Direct-set printing (no closure yet) ---"
+
+assert "leaf crate cli -> itself" \
+    test "$(affected_crates crates/reify-cli/src/main.rs)" = "reify-cli"
+
+_check_gui_maps_reify_gui() {
+    affected_crates gui/src-tauri/src/main.rs | grep -qx reify-gui
+}
+assert "gui/src-tauri maps to reify-gui" _check_gui_maps_reify_gui
+
 test_summary
