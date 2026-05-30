@@ -2612,6 +2612,15 @@ impl OcctKernel {
             } => self
                 .point_on_shape(*handle, *px, *py, *pz, *tolerance)
                 .map(Value::Bool),
+            GeometryQuery::Contains {
+                handle,
+                px,
+                py,
+                pz,
+                tolerance,
+            } => self
+                .contains(*handle, *px, *py, *pz, *tolerance)
+                .map(Value::Bool),
             GeometryQuery::SurfaceAngle { face_a, face_b } => {
                 self.surface_angle(*face_a, *face_b).map(Value::Real)
             }
