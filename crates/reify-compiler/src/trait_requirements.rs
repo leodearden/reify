@@ -182,6 +182,9 @@ pub(crate) fn collect_all_requirements(
                 }
                 ctx.requirements.push(req.clone());
             }
+            // Assoc-fn requirement merge (refinement signature-lock) is
+            // implemented in task 3939 δ step-10; placeholder no-op for now.
+            RequirementKind::Fn(_) => {}
         }
     }
 
@@ -259,6 +262,11 @@ pub(crate) fn collect_all_requirements(
                     unreachable!("Let defaults must be handled by the seen_let_hashes block above")
                 }
                 DefaultKind::Constraint(_) => (Type::Bool, DefaultKindTag::Constraint),
+                // Assoc-fn default merge (dedup + push so the default reaches
+                // conformance) is implemented in task 3939 δ step-10; this
+                // value-typed composite-key dedup path does not apply to Fn
+                // defaults, so skip for now (placeholder no-op).
+                DefaultKind::Fn(_) => continue,
             };
 
             // Note: `name.to_string()` allocates even on the `continue` (already-seen) path

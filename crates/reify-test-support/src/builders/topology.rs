@@ -459,6 +459,9 @@ impl TopologyTemplateBuilder {
             // content_hash above — mirroring the production-side intentional
             // omission so cache keys are stable across the runtime-only field.
             forall_templates: self.forall_templates,
+            // task 3939 δ: builder defaults the assoc-fn table to empty; δ unit
+            // tests exercise the table via in-crate access, not the builder.
+            assoc_fns: Vec::new(),
         }
     }
 }

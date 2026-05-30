@@ -975,6 +975,9 @@ pub(crate) fn compile_entity(
 
     // Trait conformance checking: verify structure satisfies all trait bounds.
     if !structure.trait_bounds.is_empty() {
+        // task 3939 δ: discarded placeholder; real storage onto the
+        // TopologyTemplate.assoc_fns field is wired in step-12.
+        let mut discarded_assoc_fns: Vec<CompiledAssocFn> = Vec::new();
         check_trait_conformance(
             structure,
             trait_registry,
@@ -988,6 +991,7 @@ pub(crate) fn compile_entity(
             functions,
             alias_registry,
             diagnostics,
+            &mut discarded_assoc_fns,
         );
 
         // Trait-bound checks: deprecation warning and parameterized type-argument deferral.
@@ -2348,6 +2352,10 @@ pub(crate) fn compile_entity(
         // statement-form `forall` over deferred-count collection subs.
         // Empty when no such forall exists.
         forall_templates: forall_templates_out,
+        // task 3939 δ: resolved associated functions for conformed traits.
+        // Placeholder empty here (pre-2 scaffolding); real storage wired from
+        // `check_trait_conformance` in step-12.
+        assoc_fns: Vec::new(),
     }
 }
 

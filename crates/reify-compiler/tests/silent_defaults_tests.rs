@@ -161,6 +161,13 @@ trait Configurable {
             reify_compiler::DefaultKind::Constraint(_) => {
                 // Constraints may or may not have names — not checked here
             }
+            reify_compiler::DefaultKind::Fn(_) => {
+                // task 3939 δ: assoc-fn defaults carry the fn name (Some).
+                assert!(
+                    default.name.is_some(),
+                    "DefaultKind::Fn should always have Some(name), got None"
+                );
+            }
         }
     }
 }

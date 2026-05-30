@@ -90,6 +90,7 @@ impl TraitDefBuilder {
                     RequirementKind::Param(ty) => format!("Param:{}", ty),
                     RequirementKind::Let(ty) => format!("Let:{}", ty),
                     RequirementKind::Sub(s) => format!("Sub:{}", s),
+                    RequirementKind::Fn(sig) => format!("Fn:{}", sig.name),
                 };
                 ContentHash::of_str(&format!("{}:{}", r.name, kind_str))
             });
@@ -103,6 +104,7 @@ impl TraitDefBuilder {
                     DefaultKind::Param { .. } => "Param",
                     DefaultKind::Let { .. } => "Let",
                     DefaultKind::Constraint(_) => "Constraint",
+                    DefaultKind::Fn(_) => "Fn",
                 };
                 ContentHash::of_str(&format!("{}:{}", d.name.as_deref().unwrap_or(""), kind_tag))
             });
@@ -226,6 +228,7 @@ impl CompiledTraitBuilder {
                     RequirementKind::Param(ty) => format!("Param:{}", ty),
                     RequirementKind::Let(ty) => format!("Let:{}", ty),
                     RequirementKind::Sub(s) => format!("Sub:{}", s),
+                    RequirementKind::Fn(sig) => format!("Fn:{}", sig.name),
                 };
                 ContentHash::of_str(&format!("{}:{}", r.name, kind_str))
             });
@@ -239,6 +242,7 @@ impl CompiledTraitBuilder {
                     DefaultKind::Param { .. } => "Param",
                     DefaultKind::Let { .. } => "Let",
                     DefaultKind::Constraint(_) => "Constraint",
+                    DefaultKind::Fn(_) => "Fn",
                 };
                 ContentHash::of_str(&format!("{}:{}", d.name.as_deref().unwrap_or(""), kind_tag))
             });

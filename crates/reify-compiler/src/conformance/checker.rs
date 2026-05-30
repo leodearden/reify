@@ -489,6 +489,9 @@ pub(super) fn check_phase_pre_register_default_types(
                     cell_type: None, ..
                 } => continue,
                 DefaultKind::Constraint(_) => continue,
+                // Assoc-fn defaults are resolved in the dedicated assoc-fn
+                // phase (task 3939 δ), not registered as value-cell defaults.
+                DefaultKind::Fn(_) => continue,
             };
             // First-seen type wins. `ty` is moved into `register_if_absent`; on
             // the cold Occupied (conflict) path the method hands it back via
@@ -773,6 +776,9 @@ pub(super) fn check_phase_build_available_defaults_map(
                     (AvailableDefaultKind::Let, resolved)
                 }
                 DefaultKind::Constraint(_) => return None,
+                // Assoc-fn defaults are not value-cell defaults; resolved in
+                // the dedicated assoc-fn phase (task 3939 δ).
+                DefaultKind::Fn(_) => return None,
             };
             Some(((name.to_string(), kind), ty))
         })
@@ -843,6 +849,9 @@ pub(super) fn check_phase_check_members_against_requirements(
                 }
                 continue;
             }
+            // Assoc-fn requirement satisfaction is checked in the dedicated
+            // assoc-fn phase (task 3939 δ, step-4); skip here for now.
+            RequirementKind::Fn(_) => continue,
         };
         // Route the structure-member lookup to the kind-appropriate map.
         // A `param` requirement is satisfied only by a structure `param` member;
@@ -1254,6 +1263,10 @@ pub(super) fn check_phase_inject_defaults(
                     });
                 }
             }
+            // Assoc-fn defaults are not injected as value-cells or constraints;
+            // they are resolved into the assoc-fn table by the dedicated
+            // assoc-fn phase (task 3939 δ, step-8).
+            DefaultKind::Fn(_) => {}
         }
     }
 }

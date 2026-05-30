@@ -21,6 +21,10 @@ pub(crate) fn check_trait_conformance(
     functions: &[CompiledFunction],
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
+    // task 3939 δ: out-param receiving the resolved assoc-fn table. Populated by
+    // the dedicated assoc-fn phase wired in step-8; threaded here as scaffolding
+    // (pre-2). Unused until then.
+    _assoc_fns_out: &mut Vec<CompiledAssocFn>,
 ) {
     let (structure_param_members, structure_let_members, structure_constraint_labels) =
         check_phase_resolve_structure_members(
@@ -789,6 +793,7 @@ mod tests {
         let functions: &[CompiledFunction] = &[];
         let alias_registry = TypeAliasRegistry::new();
         let mut diagnostics: Vec<Diagnostic> = vec![];
+        let mut assoc_fns: Vec<CompiledAssocFn> = vec![];
 
         check_trait_conformance(
             &entity_ref,
@@ -803,6 +808,7 @@ mod tests {
             functions,
             &alias_registry,
             &mut diagnostics,
+            &mut assoc_fns,
         );
 
         diagnostics
@@ -3982,6 +3988,7 @@ mod tests {
             pragmas: vec![],
             match_arm_groups: vec![],
             forall_templates: vec![],
+            assoc_fns: vec![],
         }
     }
 

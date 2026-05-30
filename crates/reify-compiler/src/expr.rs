@@ -3879,6 +3879,7 @@ pub structure Rack {
             pragmas: vec![],
             match_arm_groups: vec![],
             forall_templates: vec![],
+            assoc_fns: vec![],
         }
     }
 

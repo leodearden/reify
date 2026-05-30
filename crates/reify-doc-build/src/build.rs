@@ -308,6 +308,15 @@ fn lower_trait(t: &CompiledTrait) -> ItemDoc {
                 RequirementKind::Param(ty) => format!("param {}: {}", req.name, type_to_string(ty)),
                 RequirementKind::Let(ty) => format!("let {}: {}", req.name, type_to_string(ty)),
                 RequirementKind::Sub(sname) => format!("sub {} = {}", req.name, sname),
+                RequirementKind::Fn(sig) => {
+                    // task 3939 δ: render the associated-function signature.
+                    let params = std::iter::once(sig.has_self.then(|| "self".to_string()))
+                        .flatten()
+                        .chain(sig.params.iter().map(type_to_string))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("fn {}({}) -> {}", req.name, params, type_to_string(&sig.return_type))
+                }
             }
         })
         .collect();

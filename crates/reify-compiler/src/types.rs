@@ -53,6 +53,56 @@ pub enum RequirementKind {
     Let(Type),
     /// A sub-component: `sub hole = Hole`
     Sub(String),
+    /// A bodyless required associated function: `fn area(self) -> Real`.
+    ///
+    /// The conforming structure must provide a `fn` member of the same name
+    /// whose signature matches exactly (self-ness, parameter types, return
+    /// type — no subtyping). Added by task 3939 δ (PRD
+    /// `docs/prds/v0_6/trait-associated-functions.md` §4.3 / §5.4).
+    Fn(CompiledAssocFnSig),
+}
+
+/// The exact-match signature of a trait associated function.
+///
+/// Captures self-ness as a `has_self` flag and lists only the **non-self**
+/// parameter types in `params`, with `return_type` separate. Excluding the
+/// `self` receiver from `params` makes a requirement signature and a
+/// structure-derived signature directly comparable via the derived
+/// `PartialEq` (PRD §5.4 requires exact signature match — no subtyping), and
+/// lets the type plug straight into the generic `try_dedup_or_conflict`
+/// helper (`V: PartialEq + Clone`) for the refinement signature-lock.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompiledAssocFnSig {
+    /// The associated function's name (e.g. `"area"`).
+    pub name: String,
+    /// Whether the function takes a `self` receiver as its first parameter.
+    pub has_self: bool,
+    /// Resolved types of the non-self parameters, in declaration order.
+    pub params: Vec<Type>,
+    /// Resolved return type (defaults to `Type::Real` when unannotated).
+    pub return_type: Type,
+}
+
+/// A resolved associated function on a compiled conformer, keyed by
+/// `(trait_name, fn_name)`.
+///
+/// Populated during conformance checking and stored on
+/// [`TopologyTemplate::assoc_fns`]. `function` is the override-or-injected-default
+/// [`CompiledFunction`]; `is_override` is `true` when the conforming structure
+/// provided its own `fn` body (override) and `false` when the trait's
+/// `DefaultKind::Fn` body was injected. This is the lookup target for task ζ's
+/// `TraitMethodCall` lowering (PRD §4.3).
+#[derive(Debug, Clone)]
+pub struct CompiledAssocFn {
+    /// The trait that declares (or defaults) this associated function.
+    pub trait_name: String,
+    /// The associated function's name.
+    pub fn_name: String,
+    /// The resolved function — the structure override if present, else the
+    /// trait's injected default.
+    pub function: CompiledFunction,
+    /// `true` when the conforming structure overrode the default body.
+    pub is_override: bool,
 }
 
 /// A default member provided by a trait — injected if not overridden.
@@ -85,6 +135,12 @@ pub enum DefaultKind {
     },
     /// A constraint with an expression: `constraint label : expr`
     Constraint(reify_ast::ConstraintDecl),
+    /// A default-providing associated function: `fn area(self) -> Real { … }`.
+    ///
+    /// Injected into the compiled conformer's assoc-fn table when the
+    /// conforming structure does not override it. Added by task 3939 δ (PRD
+    /// `docs/prds/v0_6/trait-associated-functions.md` §4.3 / §5.4).
+    Fn(reify_ast::FnDef),
 }
 
 /// The compiled source of a field.
@@ -583,6 +639,20 @@ pub struct TopologyTemplate {
     /// of this runtime-only metadata. Consumers that need a fingerprint that
     /// varies with these templates must hash them externally.
     pub forall_templates: Vec<CompiledForallTemplate>,
+    /// Resolved associated functions for the traits this structure conforms to,
+    /// keyed by `(trait_name, fn_name)` (task 3939 δ; PRD
+    /// `docs/prds/v0_6/trait-associated-functions.md` §4.3).
+    ///
+    /// Each entry is the override-or-injected-default [`CompiledFunction`] with
+    /// an `is_override` flag. This is the lookup target for task ζ's
+    /// `TraitMethodCall` lowering. Empty for structures that conform to no trait
+    /// with associated functions.
+    ///
+    /// **Hash stability:** intentionally NOT mixed into `content_hash` (mirrors
+    /// the `forall_templates` precedent) so cache keys stay stable across the
+    /// addition of this producer-only metadata; revisit when ζ wires dispatch /
+    /// caching.
+    pub assoc_fns: Vec<CompiledAssocFn>,
 }
 
 impl TopologyTemplate {
