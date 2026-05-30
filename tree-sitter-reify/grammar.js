@@ -971,8 +971,30 @@ module.exports = grammar({
     ),
 
     match_pattern: $ => choice(
+      $.variant_binding_pattern,
       seq($.identifier, repeat(seq('|', $.identifier))),
       '_',
+    ),
+
+    // Named-field payload-binding pattern: `Circle { radius: r }` or
+    // `Rect { width: w, height: h }`.  The variant name is followed by a
+    // brace-delimited, comma-separated list of field_binding entries.
+    // A trailing comma is permitted (optional(',')).
+    // PRD §4.4 / task β (data-carrying-enums).
+    variant_binding_pattern: $ => seq(
+      field('variant', $.identifier),
+      '{',
+      $.field_binding,
+      repeat(seq(',', $.field_binding)),
+      optional(','),
+      '}',
+    ),
+
+    // A single `field: binder` pair inside a variant_binding_pattern.
+    field_binding: $ => seq(
+      field('field', $.identifier),
+      ':',
+      field('binder', $.identifier),
     ),
 
     // ── Decl-level match block (B2, tasks 3563 + 3564) ──────────────────────
