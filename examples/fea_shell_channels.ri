@@ -1,0 +1,88 @@
+// Shell channels surfacing fixture (task #4067, PRD S1).
+//
+// Tests ElasticResult.shell_channels : ShellStress (added in task step-2).
+// Uses ANALYTICAL tensor fields so von_mises(shell_channels.top) routes
+// through validate_tensor_field's Analytical source path (I-4).
+//
+// The lambda ignores the input point p and returns a constant uniaxial
+// stress tensor σ = 100 kPa · (e₁ ⊗ e₁):
+//
+//   σ = 1Pa * outer(vec3(1,0,0), vec3(1,0,0)) * 100000
+//     = [[1e5,0,0],[0,0,0],[0,0,0]]  Pa
+//
+// von Mises for uniaxial σ_x: vm = σ_x = 100000 Pa.
+//
+// PRD: docs/prds/v0_4/shell-stress-channel-surfacing.md task S1.
+// Invariants:
+//   I-2 (shell_channels.mid == stress, by object identity of mid_f)
+//   I-4 (von_mises(shell_channels.top) → Field<Point3<Length>, Pressure>
+//        and sample gives finite positive Pressure scalar)
+//
+// Grammar gate (task #4067 pre-1): confirmed `structure def ElasticResult
+// { ... param shell_channels : ShellStress ... }` + deep member access
+// `result.shell_channels.top` + free-function `von_mises(...)` all parse.
+//
+// Note on SIR-α: structure ctors accept any value; `shell_channels: channels`
+// is silently dropped if ElasticResult has no such param (RED state until
+// step-2 adds the param). The Rust eval test then asserts the field IS
+// present and non-Undef, catching the absent-param failure.
+
+// ── Analytical stress fields (constant 3×3 Pressure tensor) ──────────────────
+//
+// Each field is Field<Point3<Length>, Tensor<2,3,Pressure>>.
+// The lambda ignores the input point p; the body is constant.
+// Three distinct field objects are used so that the data path from
+// shell_channels.top / .mid / .bottom is exercised independently.
+
+field def top_layer : Point3<Length> -> Tensor<2, 3, Pressure> {
+    source = analytical { |p| 100000Pa * outer(vec3(1.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0)) }
+}
+
+field def mid_layer : Point3<Length> -> Tensor<2, 3, Pressure> {
+    source = analytical { |p| 100000Pa * outer(vec3(1.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0)) }
+}
+
+field def bot_layer : Point3<Length> -> Tensor<2, 3, Pressure> {
+    source = analytical { |p| 100000Pa * outer(vec3(1.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0)) }
+}
+
+// ── Main structure ─────────────────────────────────────────────────────────────
+
+structure def FeaShellChannels {
+    // mid_f is the SAME field object passed to both `stress` and
+    // `shell_channels.mid` so that I-2 (shell_channels.mid == stress) holds
+    // by value identity.
+    let mid_f = mid_layer
+
+    // Build a ShellStress with three analytical tensor fields.
+    let channels = ShellStress(top: top_layer, mid: mid_f, bottom: bot_layer)
+
+    // Build an ElasticResult with shell_channels populated.
+    // `stress: mid_f` and `shell_channels.mid = mid_f` by construction (I-2).
+    // `displacement`, `frame`: also set to mid_f (same type; SIR-α accepts any
+    // value for Field-typed params — focus is on shell_channels correctness).
+    //
+    // Note: ElasticResult requires `param shell_channels : ShellStress`
+    // (added by task #4067 step-2). Until step-2 lands, shell_channels is
+    // silently dropped via SIR-α ctor acceptance and the Rust eval test
+    // asserts its presence (catching the RED failure cleanly).
+    let result = ElasticResult(
+        displacement: mid_f,
+        stress: mid_f,
+        frame: mid_f,
+        shell_channels: channels,
+        max_von_mises: 0Pa,
+        converged: true,
+        iterations: 0
+    )
+
+    // I-4: von_mises on an analytical tensor field → Field<Point3<Length>, Pressure>.
+    // validate_tensor_field (reify-expr/src/analysis.rs:83) accepts Analytical
+    // source; compute_von_mises wraps the field.
+    // GR-040: von_mises is a free function, not method syntax.
+    let vt = von_mises(result.shell_channels.top)
+
+    // Sample the von_mises field at the origin.
+    // σ = 100 kPa uniaxial → vm = 100 kPa → a finite positive Pressure scalar.
+    let vt_at = sample(vt, point3(0mm, 0mm, 0mm))
+}
