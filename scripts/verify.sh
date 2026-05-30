@@ -18,8 +18,10 @@
 #                                  orchestrator merge path gets release coverage.
 #   --scope   all|staged|branch    all     = verify everything (orchestrator / merges).
 #                                  staged  = scope by `git diff --cached` (hook fast path).
-#                                  branch  = scope by merge-base(main,HEAD) → working tree
-#                                            (per-task narrowing; fails wide to all on error).
+#                                  branch  = scope by merge-base(main,HEAD) → working tree;
+#                                            tracked changes only (committed, staged, unstaged
+#                                            tracked modifications — untracked new files not
+#                                            classified). Fails wide to all on error.
 #                                  Default: all.
 #   --include-infra                Also run the cheap static infra checks
 #                                  (sync_comments / run_all on the test side;
@@ -412,7 +414,9 @@ decide_scope() {
     # Classify the changed files for staged/branch scope, ignoring the agent
     # scratch dir (.task/). Source depends on scope:
     #   staged: git diff --cached (added/copied/modified/renamed index entries)
-    #   branch: git diff "$_MERGE_BASE" (working tree vs merge-base(main,HEAD))
+    #   branch: git diff "$_MERGE_BASE" (working tree vs merge-base(main,HEAD);
+    #           tracked changes only — committed, staged, unstaged tracked
+    #           modifications; untracked new files are not included)
     # Map each path to its impact:
     #   rust+gui+gate   workspace-global or OCCT-touching crate change
     #   rust+gui        a non-OCCT Rust crate / Tauri crate change (Rust ⊇ GUI)
@@ -420,6 +424,21 @@ decide_scope() {
     #   ignore          docs / markdown / yaml config
     #   conservative    anything unrecognised -> treat as rust+gui+gate
     local rust=0 gui=0 gate=0 f crate
+    # Determine the changed-file list up front. For branch scope, check git diff's
+    # exit status explicitly: if it fails after merge-base resolution (e.g. corrupt
+    # object), fail WIDE rather than silently classifying nothing (contract C5).
+    # The staged path keeps || true to absorb grep's harmless "no matches" exit-1.
+    local _files="" _diff_out=""
+    if [ "$SCOPE" = "branch" ]; then
+        if ! _diff_out="$(git -C "$REPO_ROOT" diff --name-only --diff-filter=ACMR "$_MERGE_BASE")"; then
+            echo "verify.sh: WARNING — --scope branch git diff failed — failing WIDE to --scope all (contract C5)" >&2
+            RUN_RUST=1; RUN_GUI=1; RUN_OCCT_GATE=1
+            return
+        fi
+        _files="$(grep -v '^\.task/' <<< "$_diff_out" || true)"
+    else
+        _files="$(git -C "$REPO_ROOT" diff --cached --name-only --diff-filter=ACMR | grep -v '^\.task/' || true)"
+    fi
     while IFS= read -r f; do
         [ -z "$f" ] && continue
         case "$f" in
@@ -452,11 +471,7 @@ decide_scope() {
                 rust=1; gui=1; gate=1
                 ;;
         esac
-    done < <( if [ "$SCOPE" = "branch" ]; then
-        git -C "$REPO_ROOT" diff --name-only --diff-filter=ACMR "$_MERGE_BASE"
-    else
-        git -C "$REPO_ROOT" diff --cached --name-only --diff-filter=ACMR
-    fi | grep -v '^\.task/' || true)
+    done <<< "$_files"
 
     RUN_RUST=$rust
     # Any Rust change implies the (fast) GUI checks too.
