@@ -562,7 +562,7 @@ fn p2_cross_section_convergence_probe() {
 fn p2_slenderness_probe() {
     use std::f64::consts::PI;
     let material = IsotropicElastic { youngs_modulus: 1.0, poisson_ratio: 0.0 };
-    let sigma = InitialStress3::uniaxial_z(-1.0);
+    let _sigma = InitialStress3::uniaxial_z(-1.0);
     let neg_sigma = InitialStress3 { sigma: [[0.0,0.0,0.0],[0.0,0.0,0.0],[0.0,0.0,1.0]] };
     for (lz, nz) in [(10.0_f64, 16usize), (20.0, 32), (40.0, 64), (80.0, 128)] {
         let lx = 1.0_f64; let ly = 1.0_f64;
