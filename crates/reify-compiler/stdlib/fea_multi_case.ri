@@ -426,3 +426,58 @@ structure def PressureLoad : Load {
 //
 // See `docs/prds/v0_4/structural-analysis-shells.md` § "Stress through
 // thickness" for the full design rationale.
+
+// ── solve_load_cases ─────────────────────────────────────────────────────────
+//
+// Iterates a `List<LoadCase>` and runs `solve_elastic_static` per case,
+// collecting the per-case `ElasticResult` into a `MultiCaseResult` keyed by
+// `LoadCase.name`.
+//
+// The shared `options` arg provides the fallback `ElasticOptions` for cases
+// whose `options` field is `none` (i.e. `Value::Option(None)`).  A case
+// that sets `options : some(...)` uses its own override instead.
+//
+// Dispatch site: the real implementation lives in
+// `crates/reify-expr/src/lib.rs::eval_solve_load_cases` (alongside
+// `eval_worst_case_dispatch` / `flat_map` / `map` — all EvalContext-aware
+// builtins that require `ctx` to re-invoke other functions per element).
+// This contract body is the inline fallback for the rare case where the
+// lib.rs interceptor declines (wrong arity / shape); normal call paths
+// never reach it.  Mirrors the `solve_elastic_static` / `worst_case`
+// dual-dispatch pattern (contract body here, real impl in lib.rs or
+// engine_eval.rs).
+//
+// Failure modes (silent-Undef per PRD task #10 deferral):
+//   - arity != 6 (after default-padding: the 6th arg `options` defaults to
+//     `ElasticOptions()`)
+//   - cases list is empty
+//   - any element of `cases` is not a `LoadCase` StructureInstance
+//   - any `LoadCase.name` is not a String
+//
+// `options : ElasticOptions = ElasticOptions()` uses the fn-param-default
+// grammar (task 3449) so callers may omit the shared options and receive
+// the solver's default configuration for all cases.
+//
+// Signature note: `material : ConstitutiveLaw`, `length : Length`,
+// `width : Length`, `height : Length` mirror the first four params of
+// `solve_elastic_static`, so the same geometry/material bindings thread
+// through unchanged — this is deliberate for the volume-mesh cache key:
+// all cases that share these four inputs share the same mesh realization,
+// regardless of per-case `loads` / `supports` variation.
+//
+// `cases : List<LoadCase>` uses the concrete `LoadCase` structure type (not
+// `List<Real>` placeholder) because the Reify overload resolver sees
+// `[lc1, lc2]` as `List<LoadCase>` and requires an exact match.
+pub fn solve_load_cases(
+    material : ConstitutiveLaw,
+    length   : Length,
+    width    : Length,
+    height   : Length,
+    cases    : List<LoadCase>,
+    options  : ElasticOptions = ElasticOptions()
+) -> MultiCaseResult {
+    // Contract body — inline fallback only (see dispatch-site comment above).
+    // Returns an empty MultiCaseResult; the lib.rs interceptor provides the
+    // real per-case iteration and result assembly.
+    MultiCaseResult(cases: map{})
+}

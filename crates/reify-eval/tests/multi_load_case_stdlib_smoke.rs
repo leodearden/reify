@@ -581,6 +581,168 @@ fn worst_case_lambda_returns_non_field_returns_undef() {
     );
 }
 
+// ── solve_load_cases e2e smoke tests (task 3005) ─────────────────────────────
+
+/// Reify source exercising `solve_load_cases` with two `LoadCase` instances
+/// (different loads, shared supports and options).
+///
+/// # What this source exercises
+///
+/// - `solve_load_cases` is compiled from the stdlib declaration in
+///   `fea_multi_case.ri` and resolved by the name-dispatch interceptor in
+///   `crates/reify-expr/src/lib.rs::eval_solve_load_cases`.
+/// - The two cases differ only in the `force` field of their `PointLoad`
+///   so they share the same geometry/material/options and exercise the
+///   "different loads, same mesh" scenario.
+/// - `ElasticOptions()` is passed explicitly (not via the default) so the
+///   test is independent of whether default-padding fires.
+///
+/// # Bindings
+///   `result`       = `solve_load_cases(...)` → `MultiCaseResult`-shaped Map
+///   `case_list`    = `case_names(result)` → `["operating", "overload"]`
+///   `op_case`      = `result_for(result, "operating")` → per-case ElasticResult
+///   `missing_case` = `result_for(result, "missing")` → `Value::Undef`
+const SOLVE_LOAD_CASES_SOURCE: &str = r#"
+structure def SolveLoadCasesFixture {
+    let ci        = ConstitutiveLawInput(law: Steel_AISI_1045())
+    let lc1       = LoadCase(
+        name:     "operating",
+        loads:    [PointLoad(point: "tip", force: 1000.0)],
+        supports: [FixedSupport(target: "root")],
+    )
+    let lc2       = LoadCase(
+        name:     "overload",
+        loads:    [PointLoad(point: "tip", force: 2000.0)],
+        supports: [FixedSupport(target: "root")],
+    )
+    let result        = solve_load_cases(ci.law, 1000mm, 100mm, 100mm, [lc1, lc2], ElasticOptions())
+    let case_list     = case_names(result)
+    let op_case       = result_for(result, "operating")
+    let missing_case  = result_for(result, "missing")
+}
+"#;
+
+fn get_slcf_value<'a>(values: &'a ValueMap, name: &str) -> &'a Value {
+    let id = ValueCellId::new("SolveLoadCasesFixture", name);
+    values
+        .get(&id)
+        .unwrap_or_else(|| panic!("SolveLoadCasesFixture.{name} not found in eval result"))
+}
+
+/// step-1 RED: `solve_load_cases` with two cases returns a
+/// `MultiCaseResult`-shaped `Value::Map` with exactly the two case keys.
+/// Also verifies the silent-Undef contract via `result_for(result, "missing")`.
+///
+/// Fails RED until step-2 adds the `eval_solve_load_cases` interceptor in
+/// `crates/reify-expr/src/lib.rs` — without it the contract body
+/// `{ MultiCaseResult(cases: map{}) }` evaluates to a `Value::StructureInstance`
+/// with an empty cases map, so `case_names` returns `[]` not `["operating",
+/// "overload"]` and `result_for(result, "operating")` returns `Undef`.
+#[test]
+fn solve_load_cases_two_cases_returns_mcr_shape() {
+    let compiled = parse_and_compile_with_stdlib(SOLVE_LOAD_CASES_SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
+    );
+
+    let v = &result.values;
+
+    // ── result is a Value::Map with a "cases" key ─────────────────────────────
+    // The eval interceptor (eval_solve_load_cases) builds a
+    // Value::Map{"cases" -> Value::Map<String, Value>}, not a
+    // Value::StructureInstance. This shape is required for compatibility with
+    // extract_cases_map in crates/reify-stdlib/src/fea.rs (used by
+    // case_names / result_for / envelope_* / linear_combine).
+    let result_val = get_slcf_value(v, "result");
+    match result_val {
+        Value::Map(outer) => {
+            assert!(
+                outer.contains_key(&Value::String("cases".to_string())),
+                "solve_load_cases result must be Value::Map with a \"cases\" key; \
+                 outer keys: {:?}",
+                outer.keys().collect::<Vec<_>>()
+            );
+            match outer.get(&Value::String("cases".to_string())) {
+                Some(Value::Map(cases)) => {
+                    assert_eq!(
+                        cases.len(),
+                        2,
+                        "cases map must have exactly 2 entries (\"operating\", \"overload\"); \
+                         got {} entries: {:?}",
+                        cases.len(),
+                        cases.keys().collect::<Vec<_>>()
+                    );
+                    assert!(
+                        cases.contains_key(&Value::String("operating".to_string())),
+                        "cases map must contain \"operating\" key; got: {:?}",
+                        cases.keys().collect::<Vec<_>>()
+                    );
+                    assert!(
+                        cases.contains_key(&Value::String("overload".to_string())),
+                        "cases map must contain \"overload\" key; got: {:?}",
+                        cases.keys().collect::<Vec<_>>()
+                    );
+                    // Per-case values must be non-Undef (some ElasticResult shape)
+                    let op_val = cases.get(&Value::String("operating".to_string())).unwrap();
+                    assert!(
+                        !op_val.is_undef(),
+                        "per-case ElasticResult for \"operating\" must be non-Undef; got: {op_val:?}"
+                    );
+                    let ov_val = cases.get(&Value::String("overload".to_string())).unwrap();
+                    assert!(
+                        !ov_val.is_undef(),
+                        "per-case ElasticResult for \"overload\" must be non-Undef; got: {ov_val:?}"
+                    );
+                }
+                other => panic!(
+                    "solve_load_cases result[\"cases\"] must be Value::Map, got: {other:?}"
+                ),
+            }
+        }
+        other => panic!(
+            "solve_load_cases must return Value::Map (not {:?}); \
+             without the eval interceptor the contract body returns \
+             Value::StructureInstance{{MultiCaseResult}} — add \
+             eval_solve_load_cases to crates/reify-expr/src/lib.rs",
+            std::mem::discriminant(other)
+        ),
+    }
+
+    // ── case_names(result) must return ["operating", "overload"] ─────────────
+    // Relies on extract_cases_map, which only accepts Value::Map.
+    let case_list = get_slcf_value(v, "case_list");
+    assert_eq!(
+        case_list,
+        &Value::List(vec![
+            Value::String("operating".to_string()),
+            Value::String("overload".to_string()),
+        ]),
+        "case_names(result) must return [\"operating\", \"overload\"] in \
+         lexicographic order; got: {case_list:?}"
+    );
+
+    // ── result_for(result, "operating") must be non-Undef ────────────────────
+    let op_case = get_slcf_value(v, "op_case");
+    assert!(
+        !op_case.is_undef(),
+        "result_for(result, \"operating\") must return a non-Undef per-case \
+         value (ElasticResult shape); got: {op_case:?}"
+    );
+
+    // ── result_for(result, "missing") → Undef (silent-Undef contract) ────────
+    let missing_case = get_slcf_value(v, "missing_case");
+    assert!(
+        missing_case.is_undef(),
+        "result_for(result, \"missing\") must return Undef for a missing key \
+         (silent-Undef per PRD task #10 deferral); got: {missing_case:?}"
+    );
+}
+
 /// Stage-2 readiness probe: verify that the `MultiCaseResult(...)` and
 /// `LoadCase(...)` struct constructors produce the correct `Value::Map` shape,
 /// and that the accessors flowing from `MultiCaseResult` work end-to-end, once
