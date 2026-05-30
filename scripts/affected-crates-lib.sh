@@ -46,6 +46,18 @@ _is_global() {
     return 1
 }
 
+# _is_noncrate <path> — returns 0 (true) if the path is a non-crate file that
+# contributes no crates and must NOT force ALL.
+# Matches: docs/** (documentation) and gui/src/** (frontend-only).
+_is_noncrate() {
+    local path="$1"
+    case "$path" in
+        docs/*)    return 0 ;;
+        gui/src/*) return 0 ;;
+    esac
+    return 1
+}
+
 # affected_crates <file>... — print the affected workspace crate set, one name
 # per line, sorted; or print the literal ALL if any C4/C5 condition fires.
 # Always returns 0 so callers are safe under set -e and inside $() capture.
@@ -59,6 +71,23 @@ affected_crates() {
         fi
     done
 
-    # Implementation continues in later steps.
+    # Accumulate the direct crate set from crate-mappable paths.
+    local direct=()
+    for arg in "$@"; do
+        if _is_noncrate "$arg"; then
+            # Non-crate path: skip, contributes nothing.
+            continue
+        fi
+        # Crate-mappable / unmappable paths handled in later steps.
+        : placeholder
+    done
+
+    # If no direct crates were accumulated, print nothing.
+    if [ "${#direct[@]}" -eq 0 ]; then
+        return 0
+    fi
+
+    # Emit direct crates sorted (reverse closure expansion comes in later steps).
+    printf '%s\n' "${direct[@]}" | sort -u
     return 0
 }
