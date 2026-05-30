@@ -2149,6 +2149,57 @@ impl Engine {
                 .set_realization_reads(&NodeId::Value(cell), reads);
         }
 
+        // ── RBD-α (task 3822): MassProperties PSD inertia validation ─────────────
+        // Post-eval pass: for every cell whose value is a StructureInstance with
+        // type_name == "MassProperties", extract the `inertia` field, compute the
+        // symmetric-3×3 eigenvalues analytically, and replace the cell with
+        // Value::Undef (Determined) when the matrix is non-PSD.
+        //
+        // Design rationale: `reify-expr::eval_structure_instance_ctor` is
+        // intentionally registry-free and diagnostic-free (SIR-α design decision
+        // 2), so the diagnostic-emitting + value-replacing hook belongs here in
+        // reify-eval, where the diagnostics sink and value maps are both accessible.
+        //
+        // The immutable `values` borrow is released before any mutable insert by
+        // collecting target (id, inertia_matrix) pairs first.
+        {
+            let mass_props_targets: Vec<(ValueCellId, [[f64; 3]; 3])> = values
+                .iter()
+                .filter_map(|(id, val)| {
+                    if let Value::StructureInstance(data) = val
+                        && data.type_name == "MassProperties"
+                    {
+                        let m = data
+                            .fields
+                            .get(&"inertia".to_string())
+                            .and_then(|v| crate::dynamics_psd::inertia_3x3_from_value(v))?;
+                        Some((id.clone(), m))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            for (id, m) in mass_props_targets {
+                let tol = crate::dynamics_psd::psd_tol(&m);
+                if !crate::dynamics_psd::is_symmetric_psd(&m, tol) {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "MassProperties `{}`: inertia tensor is not positive semi-definite \
+                             (E_DynamicsInertiaNotPSD)",
+                            id,
+                        ))
+                        .with_code(DiagnosticCode::DynamicsInertiaNotPSD),
+                    );
+                    values.insert(id.clone(), Value::Undef);
+                    snapshot.values.insert(
+                        id.clone(),
+                        (Value::Undef, DeterminacyState::Determined),
+                    );
+                }
+            }
+        }
+
         // Store internal state for incremental evaluation
         self.eval_state = Some(EvaluationState {
             snapshot,
