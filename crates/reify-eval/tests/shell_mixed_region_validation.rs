@@ -946,3 +946,118 @@ fn cantilever_tip_deflection_matches_beam_theory_order_of_magnitude() {
         tip_defl / delta_beam,
     );
 }
+
+/// Verify that stresses at the shell↔tet interface are finite, bounded by
+/// a generous multiple of the beam-theory root stress, and that tet and shell
+/// stresses agree to within two orders of magnitude — confirming no spurious
+/// concentration from the MPC coupling.
+///
+/// # Validation contract (interface stress bounded, no spurious concentration)
+///
+/// Under the cantilever configuration (unit tip load P=1.0, base clamped),
+/// compute the in-test beam-theory root bending stress anchor:
+///
+/// ```text
+/// σ_root = M · c / I = (P · Lf) · (t/2) / (W · t³/12)
+///        = P · Lf · 6 / (W · t²)
+/// ```
+///
+/// Gather the interface stress magnitudes:
+/// - **TET side**: maximum absolute Cauchy stress component over all tet
+///   elements adjacent to the interface (elements touching the x=Lb block
+///   face).
+/// - **SHELL side**: maximum absolute mid-surface Cauchy stress component
+///   over all shell elements in the first column (is=0, adjacent to x=Lb).
+///
+/// Then assert:
+/// (a) **Finite**: no NaN/Inf in either side.
+/// (b) **Bounded**: both sides < 50·σ_root (a generous no-blow-up guard;
+///     a well-tied interface has O(1) stress concentration, certainly <50×).
+/// (c) **Order-of-magnitude agreement**: each side is within a factor of 100
+///     of σ_root AND the two sides agree to within a factor of 100 (guards
+///     against one side being wildly off due to constraint mismatch).
+///
+/// # References not-yet-added helpers (RED state)
+///
+/// This test calls `beam_root_bending_stress` and `interface_stress_magnitudes`,
+/// which are defined in step-8.  Until then the file fails to compile —
+/// the intended RED state.
+#[test]
+fn interface_stress_is_bounded_with_no_spurious_concentration() {
+    let mat = IsotropicElastic {
+        youngs_modulus: E_MOD,
+        poisson_ratio: NU,
+    };
+    let (mesh, bcs, loads) = cantilever_config(&mat);
+    let u = solve_flexure_on_block(&mesh, &bcs, &loads, &mat);
+
+    // In-test beam-theory root bending stress anchor.
+    // σ_root = M·c/I = (P·Lf)·(t/2)/(W·t³/12)
+    // P=1.0, Lf=2.0, t=0.05, W=1.0 → σ_root = 1·2·6/(1·0.0025) = 4800.
+    //
+    // beam_root_bending_stress NOT YET DEFINED → compile failure (RED)
+    let sigma_root = beam_root_bending_stress(1.0, LF, W, T);
+    assert!(
+        sigma_root.is_finite() && sigma_root > 0.0,
+        "beam_root_bending_stress must be positive-finite: {sigma_root}",
+    );
+
+    // Gather the maximum absolute stress component on each side of the interface.
+    // interface_stress_magnitudes NOT YET DEFINED → compile failure (RED)
+    let (tet_iface_max, shell_iface_max) = interface_stress_magnitudes(&mesh, &u, &mat);
+
+    // (a) Finite: no NaN/Inf from either side.
+    assert!(
+        tet_iface_max.is_finite(),
+        "tet interface stress magnitude is not finite: {tet_iface_max}",
+    );
+    assert!(
+        shell_iface_max.is_finite(),
+        "shell interface stress magnitude is not finite: {shell_iface_max}",
+    );
+
+    // (b) Bounded: < 50·σ_root on both sides.
+    // A well-tied interface has O(1) stress concentration factor. 50× is a
+    // generous guard that catches runaway concentrations while tolerating
+    // numerical roughness at coarse mesh.
+    let bound_50 = 50.0 * sigma_root;
+    assert!(
+        tet_iface_max < bound_50,
+        "tet interface stress exceeds 50·σ_root: \
+         tet_max={tet_iface_max:.3e} > 50·σ_root={bound_50:.3e} \
+         (σ_root={sigma_root:.3e})",
+    );
+    assert!(
+        shell_iface_max < bound_50,
+        "shell interface stress exceeds 50·σ_root: \
+         shell_max={shell_iface_max:.3e} > 50·σ_root={bound_50:.3e} \
+         (σ_root={sigma_root:.3e})",
+    );
+
+    // (c) Order-of-magnitude agreement.
+    //
+    // Each side must be within 100× of σ_root (below the 50× bound above and
+    // above a 1/100× floor — i.e. the stress must be non-trivially nonzero
+    // for a loaded cantilever).  The two sides must agree to within 100×.
+    let floor_100 = sigma_root / 100.0;
+    assert!(
+        tet_iface_max > floor_100,
+        "tet interface stress is suspiciously small vs σ_root: \
+         tet_max={tet_iface_max:.3e} < σ_root/100={floor_100:.3e} \
+         (σ_root={sigma_root:.3e}): constraint mismatch?",
+    );
+    assert!(
+        shell_iface_max > floor_100,
+        "shell interface stress is suspiciously small vs σ_root: \
+         shell_max={shell_iface_max:.3e} < σ_root/100={floor_100:.3e} \
+         (σ_root={sigma_root:.3e}): constraint mismatch?",
+    );
+    // Tet and shell magnitudes must agree to within 100× each other.
+    let ratio = tet_iface_max.max(shell_iface_max) / tet_iface_max.min(shell_iface_max);
+    assert!(
+        ratio < 100.0,
+        "tet and shell interface stress magnitudes disagree by > 100×: \
+         tet_max={tet_iface_max:.3e}, shell_max={shell_iface_max:.3e}, \
+         ratio={ratio:.1}: constraint-mismatch concentration?",
+    );
+}
