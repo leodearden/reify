@@ -2651,6 +2651,11 @@ impl OcctKernel {
             } => self
                 .contains(*handle, *px, *py, *pz, *tolerance)
                 .map(Value::Bool),
+            GeometryQuery::GeoEquiv {
+                left,
+                right,
+                tolerance,
+            } => self.geo_equiv(*left, *right, *tolerance).map(Value::Bool),
             GeometryQuery::SurfaceAngle { face_a, face_b } => {
                 self.surface_angle(*face_a, *face_b).map(Value::Real)
             }

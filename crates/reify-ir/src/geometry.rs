@@ -994,6 +994,31 @@ pub enum GeometryQuery {
         pz: f64,
         tolerance: f64,
     },
+    /// Test whether two shapes `left` and `right` are geometrically equivalent
+    /// within `tolerance` using topology-count matching and sampled-vertex
+    /// proximity.
+    ///
+    /// Algorithm (§5.1): (1) compare per-kind (vertex/edge/face) counts via
+    /// `TopExp::MapShapes` for both shapes — a count mismatch returns `false`
+    /// immediately; (2) evaluate [`DEFAULT_GEO_EQUIV_SAMPLE_COUNT`] (= 8)
+    /// uniform parameter points per face / edge in canonical order and require
+    /// every `|p_left − p_right| < tolerance`.
+    ///
+    /// The tolerance is supplied by the caller (explicit user arg per §5.2;
+    /// no default-tolerance const for geo_equiv).
+    ///
+    /// Capability: [`QueryCapability::BRepAndMesh`] (§5.4).
+    ///
+    /// STRICT-VARIANT NOTE: A future `geo_equiv_strict` using symmetric
+    /// Hausdorff distance is deferred to v0.4 per PRD §5.1 + Open Question §10.
+    ///
+    /// Powers the v0.1 stdlib helper
+    /// `geo_equiv(a: Geometry, b: Geometry, tol: Length) -> Bool` (PRD §9 KGQ-δ).
+    GeoEquiv {
+        left: GeometryHandleId,
+        right: GeometryHandleId,
+        tolerance: f64,
+    },
     /// Compute the unsigned dihedral angle between two surfaces (faces) of a
     /// solid (or two distinct solids) in radians ∈ `[0, π]`.
     ///
@@ -1044,6 +1069,7 @@ impl GeometryQuery {
             GeometryQuery::ClosestPointOnShape { .. } => "ClosestPointOnShape",
             GeometryQuery::PointOnShape { .. } => "PointOnShape",
             GeometryQuery::Contains { .. } => "Contains",
+            GeometryQuery::GeoEquiv { .. } => "GeoEquiv",
             GeometryQuery::SurfaceAngle { .. } => "SurfaceAngle",
         }
     }
@@ -1128,6 +1154,7 @@ impl GeometryQuery {
             GeometryQuery::ClosestPointOnShape { .. } => QueryCapability::BRepAndMesh,
             GeometryQuery::PointOnShape { .. } => QueryCapability::BRepAndMesh,
             GeometryQuery::Contains { .. } => QueryCapability::BRepAndMesh,
+            GeometryQuery::GeoEquiv { .. } => QueryCapability::BRepAndMesh,
             GeometryQuery::SurfaceAngle { .. } => QueryCapability::BRepAndMesh,
         }
     }
@@ -5812,6 +5839,14 @@ mod tests {
                 },
             ),
             (
+                "GeoEquiv",
+                GeometryQuery::GeoEquiv {
+                    left: GeometryHandleId(1),
+                    right: GeometryHandleId(2),
+                    tolerance: 1e-7,
+                },
+            ),
+            (
                 "SurfaceAngle",
                 GeometryQuery::SurfaceAngle {
                     face_a: GeometryHandleId(1),
@@ -5823,7 +5858,7 @@ mod tests {
         // variant is added or removed from GeometryQuery — compile-time
         // exhaustiveness on kind_name() guarantees correctness, this assertion
         // guarantees the token list here stays in sync.
-        const GEOMETRY_QUERY_VARIANT_COUNT: usize = 24;
+        const GEOMETRY_QUERY_VARIANT_COUNT: usize = 25;
         assert_eq!(
             cases.len(),
             GEOMETRY_QUERY_VARIANT_COUNT,
