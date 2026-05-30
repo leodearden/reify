@@ -475,7 +475,7 @@ pub fn shell_element_stiffness_mitc3_plus(
     thickness: f64,
     material: &IsotropicElastic,
 ) -> ElementStiffness {
-    use crate::elements::mitc3_plus::{Mitc3Plus, ShellReferenceCoord, TyingShears};
+    use crate::elements::mitc3_plus::{Mitc3Plus, ShearStrain};
     assert!(
         thickness > 0.0,
         "shell_element_stiffness_mitc3_plus: thickness must be positive, got {thickness}"
@@ -502,7 +502,6 @@ pub fn shell_element_stiffness_mitc3_plus(
     let dn = kin.dn;
     let det2 = kin.det2;
     let inv_t = kin.jac2_inv_t;
-    let b_cov = kin.b_cov_at_tying_points;
 
     // --- 20×20 uncondensed local matrix ---
     let mut k = [[0.0_f64; NU]; NU];
@@ -599,79 +598,50 @@ pub fn shell_element_stiffness_mitc3_plus(
         }
     }
 
-    // ---- Transverse-shear K ----
-    // Nodal assumed covariant→physical shear B at an arbitrary reference coord,
-    // using the bare-MITC3 3-edge-midpoint assumed field (the single source of
-    // truth shared with `shell_element_stiffness`).
-    let nodal_shear_phys = |coord: ShellReferenceCoord| {
-        let mut b_cov_qp = [[0.0_f64; NDOF]; 2];
-        for dof in 0..NDOF {
-            let sampled = TyingShears {
-                gamma_xi_zeta_at_a: b_cov[0][0][dof],
-                gamma_eta_zeta_at_b: b_cov[1][1][dof],
-                gamma_xi_zeta_at_c: b_cov[2][0][dof],
-                gamma_eta_zeta_at_c: b_cov[2][1][dof],
-            };
-            let proj = Mitc3Plus.interpolate_assumed_shear(sampled, coord);
+    // ---- MITC3+ transverse-shear K (Lee, Lee & Bathe 2014, Eqs. 8-9) ----
+    // Sample the bubble-enriched covariant transverse shear of the FULL
+    // displacement field (Eq. 8) at the six interior tying points A-F, then
+    // assemble the assumed covariant shear field (Eq. 9) at the quadrature
+    // points. The bubble enters the samples by the VALUE of f₄ (≠0 interior),
+    // so its α₄/β₄ columns populate K_NB^shear / K_BB^shear naturally.
+    let mut b_tp = [[[0.0_f64; NU]; 2]; Mitc3Plus::N_INTERIOR_TYING_POINTS];
+    for (kk, tp) in interior.iter().enumerate() {
+        b_tp[kk] = Mitc3Plus.covariant_shear_b_with_bubble(tp.coord);
+    }
+
+    // The assumed covariant field (Eq. 9) is LINEAR in (r,s), so the shear
+    // energy integrand is quadratic; the symmetric 3-point rule at A, B, C
+    // (= interior[0..3], each weight 1/6) integrates it exactly.
+    let quad_pts = [interior[0].coord, interior[1].coord, interior[2].coord];
+    let qp_weight = 1.0 / 6.0;
+    for qp in quad_pts {
+        // Assumed covariant shear B (2 × NU) at qp, column by column via Eq. 9.
+        let mut b_cov_qp = [[0.0_f64; NU]; 2];
+        for dof in 0..NU {
+            let samples: [ShearStrain; Mitc3Plus::N_INTERIOR_TYING_POINTS] = [
+                ShearStrain { gamma_xi_zeta: b_tp[0][0][dof], gamma_eta_zeta: b_tp[0][1][dof] },
+                ShearStrain { gamma_xi_zeta: b_tp[1][0][dof], gamma_eta_zeta: b_tp[1][1][dof] },
+                ShearStrain { gamma_xi_zeta: b_tp[2][0][dof], gamma_eta_zeta: b_tp[2][1][dof] },
+                ShearStrain { gamma_xi_zeta: b_tp[3][0][dof], gamma_eta_zeta: b_tp[3][1][dof] },
+                ShearStrain { gamma_xi_zeta: b_tp[4][0][dof], gamma_eta_zeta: b_tp[4][1][dof] },
+                ShearStrain { gamma_xi_zeta: b_tp[5][0][dof], gamma_eta_zeta: b_tp[5][1][dof] },
+            ];
+            let proj = Mitc3Plus.interpolate_assumed_shear_mitc3_plus(&samples, qp);
             b_cov_qp[0][dof] = proj.gamma_xi_zeta;
             b_cov_qp[1][dof] = proj.gamma_eta_zeta;
         }
-        let mut b_phys = [[0.0_f64; NDOF]; 2];
-        for dof in 0..NDOF {
+        // covariant → physical via J2⁻ᵀ
+        let mut b_phys = [[0.0_f64; NU]; 2];
+        for dof in 0..NU {
             b_phys[0][dof] = inv_t[0][0] * b_cov_qp[0][dof] + inv_t[0][1] * b_cov_qp[1][dof];
             b_phys[1][dof] = inv_t[1][0] * b_cov_qp[0][dof] + inv_t[1][1] * b_cov_qp[1][dof];
         }
-        b_phys
-    };
-
-    // Nodal K_NN^shear — bit-identical to bare MITC3 (3 edge-midpoint tying
-    // points, weight 1/6 each).
-    let tying_pts = Mitc3Plus.tying_points();
-    let qp_weight = 1.0 / 6.0;
-    for qp in tying_pts.iter() {
-        let b_phys = nodal_shear_phys(qp.coord);
         let scale = kappa_g * t * det2 * qp_weight;
-        for a in 0..NDOF {
-            for b in 0..NDOF {
+        for a in 0..NU {
+            for b in 0..NU {
                 k[a][b] += (b_phys[0][a] * b_phys[0][b] + b_phys[1][a] * b_phys[1][b]) * scale;
             }
         }
-    }
-
-    // Bubble shear coupling K_NB^shear / K_BB^shear at the interior tying
-    // points. The bubble shear column follows `covariant_shear_b_with_bubble`'s
-    // convention (γ_ξζ ← +f_b·Δβ_y, γ_ηζ ← −f_b·Δβ_x) but uses the **deviatoric**
-    // value `(f_b − f̄)` so a constant shear state does not excite the bubble
-    // (patch-test consistency); `f̄` is the quadrature mean, so the deviation
-    // sums to zero exactly across the tying points.
-    let fbar = interior
-        .iter()
-        .map(|tp| Mitc3Plus.bubble_at(tp.coord))
-        .sum::<f64>()
-        / (interior.len() as f64);
-    for tp in interior.iter() {
-        let dev = Mitc3Plus.bubble_at(tp.coord) - fbar;
-        // physical bubble shear columns (2-vectors):
-        //   Δβ_y ← covariant (+dev, 0); Δβ_x ← covariant (0, −dev)
-        let by_phys = [inv_t[0][0] * dev, inv_t[1][0] * dev];
-        let bx_phys = [inv_t[0][1] * (-dev), inv_t[1][1] * (-dev)];
-        let b_phys = nodal_shear_phys(tp.coord);
-        let scale = kappa_g * t * det2 * w_ref;
-        // K_NB^shear and its symmetric transpose K_BN.
-        for dof in 0..NDOF {
-            let v_bx = (b_phys[0][dof] * bx_phys[0] + b_phys[1][dof] * bx_phys[1]) * scale;
-            let v_by = (b_phys[0][dof] * by_phys[0] + b_phys[1][dof] * by_phys[1]) * scale;
-            k[dof][BX] += v_bx;
-            k[BX][dof] += v_bx;
-            k[dof][BY] += v_by;
-            k[BY][dof] += v_by;
-        }
-        // K_BB^shear.
-        k[BX][BX] += (bx_phys[0] * bx_phys[0] + bx_phys[1] * bx_phys[1]) * scale;
-        k[BY][BY] += (by_phys[0] * by_phys[0] + by_phys[1] * by_phys[1]) * scale;
-        let v_xy = (bx_phys[0] * by_phys[0] + bx_phys[1] * by_phys[1]) * scale;
-        k[BX][BY] += v_xy;
-        k[BY][BX] += v_xy;
     }
 
     // ---- Static condensation of the 2 bubble DOFs ----
