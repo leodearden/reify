@@ -124,7 +124,7 @@ fn pow_int_int_evaluates_to_8() {
 /// `n = -2` from that shape.
 #[test]
 fn pow_5mm_neg2_evaluates_to_inv_length_sq() {
-    let source = "structure S { param p : Real = 5mm ^ -2 }";
+    let source = "structure S { let p = 5mm ^ -2 }";
     let result = eval_source(source);
     let id = ValueCellId::new("S", "p");
     let val = result
