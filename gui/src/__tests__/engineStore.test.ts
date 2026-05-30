@@ -1396,3 +1396,39 @@ describe('engineStore kernelStatus', () => {
     });
   });
 });
+
+describe('engineStore solverProgress', () => {
+  it('(step-1a) initial state.solverProgress is { latest: null, trace: [], visible: false, coarseReached: false }', () => {
+    createRoot((dispose) => {
+      const { state } = createEngineStore();
+      expect(state.solverProgress).toEqual({ latest: null, trace: [], visible: false, coarseReached: false });
+      dispose();
+    });
+  });
+
+  it('(step-1b) applySolverProgress sets latest and appends to trace', () => {
+    createRoot((dispose) => {
+      const { state, applySolverProgress } = createEngineStore();
+      const tick1 = { solver_kind: 'cg' as const, iter: 1, residual: 0.5 };
+      applySolverProgress(tick1);
+      expect(state.solverProgress.latest).toEqual(tick1);
+      expect(state.solverProgress.trace).toHaveLength(1);
+      expect(state.solverProgress.trace[0]).toEqual(tick1);
+
+      const tick2 = { solver_kind: 'cg' as const, iter: 2, residual: 0.3 };
+      applySolverProgress(tick2);
+      expect(state.solverProgress.latest).toEqual(tick2);
+      expect(state.solverProgress.trace).toHaveLength(2);
+      dispose();
+    });
+  });
+
+  it('(step-1c) visible stays false before debounce timer fires', () => {
+    createRoot((dispose) => {
+      const { state, applySolverProgress } = createEngineStore();
+      applySolverProgress({ solver_kind: 'cg' as const, iter: 1, residual: 0.5 });
+      expect(state.solverProgress.visible).toBe(false);
+      dispose();
+    });
+  });
+});
