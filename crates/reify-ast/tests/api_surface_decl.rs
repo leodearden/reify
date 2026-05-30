@@ -20,11 +20,11 @@ use reify_ast::{
     FieldSource, FnBody, FnDef, FnParam, ForallConnectBody, ForallConnectDecl,
     ForallConstraintBody, ForallConstraintDecl, GuardedGroupDecl, ImportDecl, ImportKind,
     LetDecl, MAX_MEMBER_NESTING_DEPTH, MatchArmDeclArmDecl, MatchArmDeclGroupDecl, MaximizeDecl,
-    MemberDecl, MemberSpanInfo, MetaBlockDecl, MinimizeDecl, NumberClass, OccurrenceDef,
-    ParamDecl, ParseError, ParsedModule, PortDecl, PortRef, Pragma, PragmaArg, PragmaValue,
-    PurposeDef, PurposeParam, StructureDef, SubDecl, TraitBoundRef, TraitDecl, TypeAliasDecl,
-    TypeParamDecl, UnitDecl, WhereClause, classify_number_literal, find_named_member_span,
-    has_test_annotation, walk_specialization_scope_members,
+    MemberDecl, MemberSpanInfo, MetaBlockDecl, MinimizeDecl, ModuleDecl, NumberClass,
+    OccurrenceDef, ParamDecl, ParseError, ParsedModule, PortDecl, PortRef, Pragma, PragmaArg,
+    PragmaValue, PurposeDef, PurposeParam, StructureDef, SubDecl, TraitBoundRef, TraitDecl,
+    TypeAliasDecl, TypeParamDecl, UnitDecl, WhereClause, classify_number_literal,
+    find_named_member_span, has_test_annotation, walk_specialization_scope_members,
 };
 
 // ── module-path imports ──────────────────────────────────────────────────────
@@ -32,6 +32,7 @@ use reify_ast::decl::{
     Annotation as AnnotationMod,
     Declaration as DeclarationMod,
     MAX_MEMBER_NESTING_DEPTH as MAX_MOD,
+    ModuleDecl as ModuleDeclMod,
     NumberClass as NumberClassMod,
     ParseError as ParseErrorMod,
     ParsedModule as ParsedModuleMod,
@@ -45,6 +46,10 @@ use reify_ast::decl::{
 
 // ── reify-core dep edge ──────────────────────────────────────────────────────
 use reify_core::{ContentHash, ModulePath, SourceSpan};
+
+// ── ModuleDecl / Declaration::Module / declared_module_path ─────────────────
+// Step-3 (RED): these tests fail to compile until ModuleDecl, Declaration::Module,
+// and ParsedModule.declared_module_path exist (step-4 impl).
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Cross-assignment proofs (flat == module-path)
@@ -158,4 +163,39 @@ fn pragma_with_quantity_arg_constructible() {
         }
         _ => panic!("expected KeyValue(Quantity)"),
     }
+}
+
+#[test]
+fn module_decl_flat_and_module_path_cross_assign() {
+    // Build ModuleDecl via flat path, cross-assign to module-path alias.
+    let md: ModuleDeclMod = ModuleDecl {
+        path: "a.b.c".into(),
+        span: SourceSpan::empty(0),
+        content_hash: ContentHash(0),
+    };
+    // Wrap as Declaration::Module and cross-assign proves same type.
+    let d: Declaration = Declaration::Module(md);
+    let _same: DeclarationMod = d;
+}
+
+#[test]
+fn parsed_module_with_declared_module_path() {
+    // ParsedModule with declared_module_path: Some(...) must compile (step-4).
+    let md = ModuleDecl {
+        path: "a.b.c".into(),
+        span: SourceSpan::empty(0),
+        content_hash: ContentHash(0),
+    };
+    let m = ParsedModule {
+        path: ModulePath::single("test"),
+        declarations: vec![Declaration::Module(md)],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+        declared_module_path: Some(ModulePath::from_dotted("a.b.c").unwrap()),
+    };
+    assert!(m.declared_module_path.is_some());
+    assert_eq!(m.declarations.len(), 1);
+    // Cross-assign to module-path alias.
+    let _same: ParsedModuleMod = m;
 }
