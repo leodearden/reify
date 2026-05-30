@@ -1868,4 +1868,43 @@ mod tests {
         // cross product = (1,0,0)×(2,0,0) = (0,0,0) → len_n = 0 → second assert fires.
         build_shell_frame(&[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]]);
     }
+
+    // --- ShellFrame::local_to_global contract test (task 3159 step-1) ---
+
+    /// `ShellFrame::local_to_global()` must return the transpose of `self.r`.
+    ///
+    /// `frame.r` rows = local basis vectors in global coordinates (global→local map).
+    /// The local-to-global matrix is therefore `rᵀ`: `result[i][j] = r[j][i]`.
+    ///
+    /// Also verified: each column of `local_to_global()` (= each row of `r`) has unit
+    /// norm within 1e-12, confirming the orthonormality contract is preserved after
+    /// transposition.
+    #[test]
+    fn shell_frame_local_to_global_is_transpose_of_r() {
+        let frame = build_shell_frame(&WIDE_TRI);
+        let ltg = frame.local_to_global();
+
+        // Transpose identity: ltg[i][j] == frame.r[j][i] for all i, j.
+        for i in 0..3 {
+            for j in 0..3 {
+                let expected = frame.r[j][i];
+                let got = ltg[i][j];
+                assert!(
+                    (got - expected).abs() < 1e-12,
+                    "local_to_global()[{i}][{j}] = {got}, expected frame.r[{j}][{i}] = {expected}",
+                );
+            }
+        }
+
+        // Column orthonormality: each column of ltg (= each row of r) has unit norm.
+        for col in 0..3 {
+            let norm_sq = ltg[0][col] * ltg[0][col]
+                + ltg[1][col] * ltg[1][col]
+                + ltg[2][col] * ltg[2][col];
+            assert!(
+                (norm_sq - 1.0).abs() < 1e-12,
+                "local_to_global() column {col} norm² = {norm_sq}, expected 1.0",
+            );
+        }
+    }
 }
