@@ -5,10 +5,11 @@ use std::time::Instant;
 
 use reify_compiler::CompiledModule;
 use reify_solver_elastic::{
-    Mesh2d, Mesh2dError, Mesh2dReport, SweepError, SweepParams, SweptMesh3d,
+    Mesh2d, Mesh2dError, Mesh2dReport, MpcRow, SweepError, SweepParams, SweptMesh3d,
 };
 use reify_core::{Diagnostic, DiagnosticLabel, RealizationNodeId, SourceSpan, VersionId};
-use reify_ir::{AttributeHistory, CapabilityDescriptor, CompiledFunction, ErrorRef, ExportFormat, FeatureId, FeatureTag, FeatureTagTable, Freshness, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, LoftOpHistoryRecords, Mesh, Operation, ReprKind, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable, ValueMap, VolumeMesh};
+use reify_ir::{AttributeHistory, CapabilityDescriptor, CompiledFunction, ElementOrderTag, ErrorRef, ExportFormat, FeatureId, FeatureTag, FeatureTagTable, Freshness, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, LoftOpHistoryRecords, Mesh, Operation, ReprKind, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable, ValueMap, VolumeMesh};
+use reify_shell_extract::{MidSurfaceMesh, ShellTetInterface};
 
 use crate::cache::{CacheStore, CachedResult, FAILED_REALIZATION_STUB_HANDLE, NodeCache, NodeId};
 use crate::deps::{DependencyTrace, extract_realization_dependencies};
@@ -3871,6 +3872,283 @@ where
     }
 }
 
+// ── build_mixed_region_mesh (T12 layer B) ─────────────────────────────────────
+//
+// Routing + merge + MPC wiring for a mixed shell/tet body (PRD v0.4
+// structural-analysis-shells.md §124). Consumes already-meshed inputs (a
+// shell `MidSurfaceMesh` from T9 + a tet `VolumeMesh` from the existing
+// `dispatch_volume_mesh` tet seam) plus the kernel-agnostic
+// `ShellTetInterface` descriptors from `reify_shell_extract::partition`, and
+// produces a unified node/element list tagged per element (shell vs. tet)
+// together with the interface `MpcRow` constraint set. It does NOT invoke
+// Gmsh, build element stiffness, or run the solve — those live in the existing
+// tet seam, T6, and the engine-bridge PRD (δ/ε) respectively.
+//
+// The whole seam is `#[allow(dead_code)]` because its consumer — the
+// engine-bridge mixed solve wiring — is a future task; this mirrors the
+// `dispatch_volume_mesh` G-allow pattern above.
+
+/// Per-element kind tag in a [`MixedRegionMesh`].
+#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UnifiedElementKind {
+    /// A mid-surface shell element (one per shell triangle, 6 DOF/node).
+    Shell,
+    /// A volumetric tet element (one per tet, 3 DOF/node).
+    Tet,
+}
+
+/// One element of the unified mixed mesh, referencing unified node ids.
+#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct UnifiedElement {
+    /// Whether this element is meshed as a shell or a tet.
+    pub kind: UnifiedElementKind,
+    /// Unified node indices (shell nodes first, tet nodes offset by the shell
+    /// node count). Length 3 for a shell triangle, 4/10 for a P1/P2 tet.
+    pub connectivity: Vec<usize>,
+}
+
+/// Unified mixed shell/tet mesh: a single node list, per-element kind tags, and
+/// the shell↔tet interface MPC constraint rows.
+#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[derive(Debug, Clone)]
+pub(crate) struct MixedRegionMesh {
+    /// Unified node positions (world, f64). Shell vertices first, then tet
+    /// vertices (f32 → f64) appended at offset `n_shell_nodes`.
+    pub nodes: Vec<[f64; 3]>,
+    /// Unified elements, both shell and tet, referencing `nodes` indices.
+    pub elements: Vec<UnifiedElement>,
+    /// Interface tying constraints under the global D=6 DOF layout (see
+    /// [`build_mixed_region_mesh`]). Empty when there are no interfaces.
+    pub mpc_rows: Vec<MpcRow>,
+}
+
+/// Errors returned by [`build_mixed_region_mesh`].
+#[allow(dead_code)] // variants constructed in the interface-wiring path (step-12 + amendment)
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum MixedRegionError {
+    /// An interface could not be tied because a required tie node was missing
+    /// — the shell side has no vertices, or the tet side has no nodes, so the
+    /// nearest-node resolution has no candidate.
+    InterfaceResolutionFailed {
+        /// Index of the offending interface in the input `interfaces` slice.
+        interface_index: usize,
+    },
+    /// An interface's tie geometry violates `MpcRow::shell_tet_tying`'s
+    /// preconditions — a non-unit `normal` or a non-positive `thickness`, both
+    /// of which that builder asserts on (and would panic). `partition_body`
+    /// guarantees these invariants, so this only arises for an interface
+    /// constructed directly by a caller that bypasses the partition layer.
+    InvalidInterfaceGeometry {
+        /// Index of the offending interface in the input `interfaces` slice.
+        interface_index: usize,
+    },
+}
+
+impl std::fmt::Display for MixedRegionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MixedRegionError::InterfaceResolutionFailed { interface_index } => write!(
+                f,
+                "interface {interface_index} could not be tied: the shell or tet side \
+                 has no candidate tie node (empty mesh on one side)"
+            ),
+            MixedRegionError::InvalidInterfaceGeometry { interface_index } => write!(
+                f,
+                "interface {interface_index} has invalid tie geometry: `normal` must be \
+                 a unit vector and `thickness` must be positive \
+                 (MpcRow::shell_tet_tying preconditions)"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for MixedRegionError {}
+
+/// Merge a shell [`MidSurfaceMesh`] and a tet [`VolumeMesh`] into one unified
+/// mesh and wire the shell↔tet interface MPC rows (PRD T12).
+///
+/// # Node numbering
+///
+/// Shell vertices are numbered first (`0..n_shell`), keeping their index; tet
+/// vertices are appended (`f32 → f64`) at offset `n_shell`, so tet local node
+/// `m` becomes unified node `n_shell + m`. This deterministic offset map is
+/// shared by the element connectivity and the MPC DOF wiring.
+///
+/// # Elements
+///
+/// One [`UnifiedElementKind::Shell`] element per shell triangle (connectivity =
+/// the triangle's vertex indices) and one [`UnifiedElementKind::Tet`] per tet
+/// (connectivity chunked from `tet.tet_indices` by the per-element node count
+/// from `element_order`, offset by `n_shell`).
+///
+/// # Errors
+///
+/// Returns [`MixedRegionError::InterfaceResolutionFailed`] if an interface
+/// cannot be resolved to tie nodes (empty shell or tet mesh on one side).
+#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+pub(crate) fn build_mixed_region_mesh(
+    shell: &MidSurfaceMesh,
+    tet: &VolumeMesh,
+    interfaces: &[ShellTetInterface],
+) -> Result<MixedRegionMesh, MixedRegionError> {
+    // ── Merge nodes: shell vertices first, then tet vertices (f32 → f64) ──────
+    let n_shell = shell.vertices.len();
+    let mut nodes: Vec<[f64; 3]> = Vec::with_capacity(n_shell + tet.vertices.len() / 3);
+    nodes.extend_from_slice(&shell.vertices);
+    for chunk in tet.vertices.chunks_exact(3) {
+        nodes.push([chunk[0] as f64, chunk[1] as f64, chunk[2] as f64]);
+    }
+
+    // ── Elements: one shell element per triangle, one tet element per tet ─────
+    let mut elements: Vec<UnifiedElement> =
+        Vec::with_capacity(shell.triangles.len() + tet.tet_indices.len());
+    for tri in &shell.triangles {
+        elements.push(UnifiedElement {
+            kind: UnifiedElementKind::Shell,
+            connectivity: vec![tri[0] as usize, tri[1] as usize, tri[2] as usize],
+        });
+    }
+    // Per-tet node count from the element order (P1 = 4, P2 = 10); tet local
+    // node `m` → unified node `n_shell + m`.
+    let nodes_per_tet = match tet.element_order {
+        ElementOrderTag::P1 => 4,
+        ElementOrderTag::P2 => 10,
+    };
+    for tet_conn in tet.tet_indices.chunks_exact(nodes_per_tet) {
+        elements.push(UnifiedElement {
+            kind: UnifiedElementKind::Tet,
+            connectivity: tet_conn.iter().map(|&i| n_shell + i as usize).collect(),
+        });
+    }
+
+    // ── Interface → MPC wiring (D=6 unified DOF layout) ───────────────────────
+    //
+    // Shell elements force the global DOFs-per-node to 6 (shell dominates, as
+    // assemble_global_stiffness derives D = max d_e), so the tie rows are
+    // emitted in D=6 from the start. Under `6·node + axis`: shell tie node `n` →
+    // disp `[6n+0,1,2]` / rot `[6n+3,4,5]`; tet node `m` (unified) → disp
+    // `[6m+0,1,2]`. Downstream T11 assembly / the engine bridge consume these
+    // rows directly, so they reference the same DOF space the solve will use.
+    let n_tet = nodes.len() - n_shell;
+    let mut mpc_rows: Vec<MpcRow> = Vec::new();
+    for (interface_index, iface) in interfaces.iter().enumerate() {
+        // Validate the tie geometry up front. `MpcRow::shell_tet_tying` asserts a
+        // unit `normal` and a positive `thickness` (mpc.rs) and would panic
+        // otherwise. `partition_body` guarantees both invariants, but this seam
+        // is reachable directly — and its `Result` return type implies graceful
+        // handling — so a violating interface is surfaced as a structured error
+        // instead of a panic. The accept conditions mirror the downstream asserts
+        // exactly, so any interface passing here also passes `shell_tet_tying`;
+        // binding to booleans first keeps a NaN normal/thickness rejected (NaN
+        // comparisons are false) without tripping clippy::neg_cmp_op_on_partial_ord.
+        let normal_mag = (iface.normal[0] * iface.normal[0]
+            + iface.normal[1] * iface.normal[1]
+            + iface.normal[2] * iface.normal[2])
+            .sqrt();
+        let thickness_ok = iface.thickness > 0.0;
+        let normal_is_unit = (normal_mag - 1.0).abs() < 1e-9;
+        if !thickness_ok || !normal_is_unit {
+            return Err(MixedRegionError::InvalidInterfaceGeometry { interface_index });
+        }
+
+        // Shell tie node: nearest shell vertex to the interface location. Its
+        // unified index equals the shell vertex index (shell nodes are first).
+        let shell_n = nearest_node_index(&nodes[..n_shell], iface.location).ok_or(
+            MixedRegionError::InterfaceResolutionFailed { interface_index },
+        )?;
+        // The through-thickness tie needs 3 distinct tet nodes (top/mid/bot);
+        // fewer means the interface cannot be resolved.
+        if n_tet < 3 {
+            return Err(MixedRegionError::InterfaceResolutionFailed { interface_index });
+        }
+        // 3 tet nodes nearest the location (local indices into the tet block),
+        // ordered by projection onto the normal: top (max) … bot (min).
+        //
+        // CAVEAT (load-bearing geometric assumption): the 3 Euclidean-nearest tet
+        // nodes are assumed to form a through-thickness column — one above / near
+        // / below the mid-surface. On a dense volumetric mesh they can instead
+        // cluster on the near face, so `mid` (used for the displacement tie) may
+        // not be the true through-thickness midpoint the MPC assumes; the
+        // single-column tie fixtures here mask this. When the engine-bridge
+        // consumer lands, prefer selecting by signed projection distance along
+        // `normal` (one node above, one near, one below `location`) over pure
+        // nearest-3. Tracked as a T12 follow-up.
+        let mut nearest3 = three_nearest_node_indices(&nodes[n_shell..], iface.location);
+        nearest3.sort_by(|&m1, &m2| {
+            let p1 = dot3(nodes[n_shell + m1], iface.normal);
+            let p2 = dot3(nodes[n_shell + m2], iface.normal);
+            p2.partial_cmp(&p1).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let tet_top = n_shell + nearest3[0];
+        let tet_mid = n_shell + nearest3[1];
+        let tet_bot = n_shell + nearest3[2];
+
+        let dofs = |node: usize| [6 * node, 6 * node + 1, 6 * node + 2];
+        let shell_rot = [6 * shell_n + 3, 6 * shell_n + 4, 6 * shell_n + 5];
+
+        mpc_rows.extend(MpcRow::shell_tet_tying(
+            dofs(shell_n),
+            shell_rot,
+            dofs(tet_top),
+            dofs(tet_mid),
+            dofs(tet_bot),
+            iface.normal,
+            iface.thickness,
+        ));
+    }
+
+    Ok(MixedRegionMesh {
+        nodes,
+        elements,
+        mpc_rows,
+    })
+}
+
+/// Dot product of two 3-vectors.
+#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// Squared Euclidean distance between two 3-vectors.
+#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+fn dist3_sq(a: [f64; 3], b: [f64; 3]) -> f64 {
+    let dx = a[0] - b[0];
+    let dy = a[1] - b[1];
+    let dz = a[2] - b[2];
+    dx * dx + dy * dy + dz * dz
+}
+
+/// Index of the node in `nodes` nearest (Euclidean) to `target`; `None` if
+/// `nodes` is empty. Ties resolve to the lowest index (deterministic).
+#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+fn nearest_node_index(nodes: &[[f64; 3]], target: [f64; 3]) -> Option<usize> {
+    let mut best: Option<(usize, f64)> = None;
+    for (i, &p) in nodes.iter().enumerate() {
+        let d_sq = dist3_sq(p, target);
+        if best.is_none_or(|(_, bd)| d_sq < bd) {
+            best = Some((i, d_sq));
+        }
+    }
+    best.map(|(i, _)| i)
+}
+
+/// The 3 indices of `nodes` nearest `target`, nearest first. The caller
+/// guarantees `nodes.len() >= 3`.
+#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+fn three_nearest_node_indices(nodes: &[[f64; 3]], target: [f64; 3]) -> Vec<usize> {
+    let mut idx: Vec<usize> = (0..nodes.len()).collect();
+    idx.sort_by(|&a, &b| {
+        dist3_sq(nodes[a], target)
+            .partial_cmp(&dist3_sq(nodes[b], target))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    idx.truncate(3);
+    idx
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7462,6 +7740,358 @@ mod p2_substitution_diagnostic_tests {
             sweep_diag.message,
             expected_msg("SweptBar"),
             "SweepLinear diagnostic must match PRD wording verbatim"
+        );
+    }
+}
+
+// ── build_mixed_region_mesh unit tests (T12 layer B) ──────────────────────────
+
+#[cfg(test)]
+mod mixed_region_tests {
+    use super::*;
+    use reify_ir::{ElementOrderTag, VolumeMesh};
+    use reify_shell_extract::{MidSurfaceMesh, ShellTetInterface};
+
+    /// Small shell mesh: 3 vertices, 1 triangle, thickness len 3. Vertex 0 sits
+    /// at the origin (the unique nearest vertex to `location = [0,0,0]`).
+    fn make_shell_mesh() -> MidSurfaceMesh {
+        MidSurfaceMesh {
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            triangles: vec![[0, 1, 2]],
+            thickness: vec![0.1, 0.1, 0.1],
+        }
+    }
+
+    /// Tet mesh for interface tying: a through-thickness triple straddling the
+    /// origin along +z (top z=+1, mid z=0, bot z=−1) plus a far 4th node that
+    /// is excluded from the 3 nearest to `location`.
+    fn make_tie_tet_mesh() -> VolumeMesh {
+        VolumeMesh {
+            vertices: vec![
+                0.0, 0.0, 1.0, // node 0 — top (z = +1)
+                0.0, 0.0, 0.0, // node 1 — mid (z =  0, at location)
+                0.0, 0.0, -1.0, // node 2 — bot (z = −1)
+                9.0, 9.0, 9.0, // node 3 — far (not among the 3 nearest)
+            ],
+            tet_indices: vec![0, 1, 2, 3],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        }
+    }
+
+    /// Small P1 tet mesh: 4 vertices = 1 tet (placed a unit above the shell).
+    fn make_p1_tet_mesh() -> VolumeMesh {
+        VolumeMesh {
+            vertices: vec![
+                0.0, 0.0, 1.0, // node 0
+                1.0, 0.0, 1.0, // node 1
+                0.0, 1.0, 1.0, // node 2
+                0.0, 0.0, 2.0, // node 3
+            ],
+            tet_indices: vec![0, 1, 2, 3],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        }
+    }
+
+    // ── Step 9: unified-mesh merge (no MPCs) ─────────────────────────────────
+
+    /// Merging a shell mesh and a tet mesh with no interfaces concatenates the
+    /// node lists (shell first, tet appended as f64), emits one `Shell` element
+    /// per triangle and one `Tet` element per tet (connectivity offset by the
+    /// shell node count), and produces no MPC rows.
+    #[test]
+    fn build_mixed_region_mesh_merges_shell_then_tet_nodes_and_elements() {
+        let shell = make_shell_mesh();
+        let tet = make_p1_tet_mesh();
+        let result = build_mixed_region_mesh(&shell, &tet, &[])
+            .expect("merge with no interfaces should succeed");
+
+        let n_shell = shell.vertices.len(); // 3
+        let n_tet = tet.vertices.len() / 3; // 4
+        assert_eq!(
+            result.nodes.len(),
+            n_shell + n_tet,
+            "merged node count = shell vertices + tet vertices"
+        );
+        // Shell nodes preserved verbatim, first.
+        assert_eq!(result.nodes[0], [0.0, 0.0, 0.0]);
+        assert_eq!(result.nodes[1], [1.0, 0.0, 0.0]);
+        assert_eq!(result.nodes[2], [0.0, 1.0, 0.0]);
+        // Tet vertices appended (f32 → f64) after the shell nodes.
+        assert_eq!(result.nodes[n_shell], [0.0, 0.0, 1.0]);
+        assert_eq!(result.nodes[n_shell + 3], [0.0, 0.0, 2.0]);
+
+        // Elements: 1 shell triangle + 1 tet.
+        assert_eq!(result.elements.len(), 2, "one shell + one tet element");
+        let shell_elems: Vec<&UnifiedElement> = result
+            .elements
+            .iter()
+            .filter(|e| e.kind == UnifiedElementKind::Shell)
+            .collect();
+        assert_eq!(shell_elems.len(), 1, "one shell element");
+        assert_eq!(
+            shell_elems[0].connectivity,
+            vec![0usize, 1, 2],
+            "shell connectivity = triangle vertex indices"
+        );
+        let tet_elems: Vec<&UnifiedElement> = result
+            .elements
+            .iter()
+            .filter(|e| e.kind == UnifiedElementKind::Tet)
+            .collect();
+        assert_eq!(tet_elems.len(), 1, "one tet element");
+        assert_eq!(
+            tet_elems[0].connectivity,
+            vec![n_shell, n_shell + 1, n_shell + 2, n_shell + 3],
+            "tet connectivity offset by n_shell_nodes"
+        );
+
+        // No interfaces → no MPC rows.
+        assert!(result.mpc_rows.is_empty(), "no interfaces → no MPC rows");
+    }
+
+    /// Empty shell + empty tet + no interfaces → an all-empty `MixedRegionMesh`.
+    #[test]
+    fn build_mixed_region_mesh_on_empty_inputs_is_all_empty() {
+        let empty_shell = MidSurfaceMesh {
+            vertices: vec![],
+            triangles: vec![],
+            thickness: vec![],
+        };
+        let empty_tet = VolumeMesh {
+            vertices: vec![],
+            tet_indices: vec![],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        let result = build_mixed_region_mesh(&empty_shell, &empty_tet, &[])
+            .expect("empty merge should succeed");
+        assert!(result.nodes.is_empty(), "no nodes");
+        assert!(result.elements.is_empty(), "no elements");
+        assert!(result.mpc_rows.is_empty(), "no MPC rows");
+    }
+
+    // ── Step 11: interface MPC wiring (D=6 layout) ───────────────────────────
+
+    /// One interface ties the nearest shell vertex to the resolved tet
+    /// top/mid/bot triple, producing `MpcRow::shell_tet_tying`'s 6 rows under
+    /// the global D=6 DOF layout (`6·node + axis`, shell nodes first, tet nodes
+    /// offset by `n_shell`).
+    #[test]
+    fn build_mixed_region_mesh_wires_interface_mpc_rows_in_d6_layout() {
+        let shell = make_shell_mesh();
+        let tet = make_tie_tet_mesh();
+        let n_shell = shell.vertices.len(); // 3
+        let interface = ShellTetInterface {
+            shell_region: 0,
+            tet_region: 1,
+            normal: [0.0, 0.0, 1.0],
+            thickness: 0.1,
+            location: [0.0, 0.0, 0.0],
+        };
+
+        let result = build_mixed_region_mesh(&shell, &tet, std::slice::from_ref(&interface))
+            .expect("interface wiring should succeed");
+
+        // shell_tet_tying emits exactly 6 rows.
+        assert_eq!(result.mpc_rows.len(), 6, "one interface → 6 MPC rows");
+
+        // Resolved tie nodes (unified indices) under the fixture geometry:
+        //   shell tie node = nearest shell vertex to [0,0,0] = shell node 0.
+        //   tet top/mid/bot = tet locals 0/1/2 (z = +1/0/−1) → unified 3/4/5.
+        let shell_n = 0usize;
+        let tet_mid = n_shell + 1; // 4
+
+        // The three displacement-matching rows: u_shell_a − u_tet_mid_a = 0,
+        // pivot at the shell disp DOF (6·shell_n + a) with coeffs [1, −1] and
+        // the tet-mid disp DOF (6·tet_mid + a) as the second term.
+        for a in 0..3 {
+            let shell_disp = 6 * shell_n + a; // 0,1,2
+            let tet_mid_dof = 6 * tet_mid + a; // 24,25,26
+            let row = result
+                .mpc_rows
+                .iter()
+                .find(|r| r.dofs == vec![shell_disp, tet_mid_dof])
+                .unwrap_or_else(|| {
+                    panic!("missing displacement row for axis {a}: dofs [{shell_disp}, {tet_mid_dof}]")
+                });
+            assert_eq!(
+                row.coeffs,
+                vec![1.0, -1.0],
+                "displacement-matching row coeffs for axis {a}"
+            );
+            assert_eq!(row.rhs, 0.0, "homogeneous tie (rhs = 0) for axis {a}");
+        }
+
+        // D=6 sanity: every DOF index lies in the unified 6·node space.
+        let n_total = result.nodes.len(); // 7
+        for row in &result.mpc_rows {
+            for &d in &row.dofs {
+                assert!(
+                    d < 6 * n_total,
+                    "DOF {d} must lie within the D=6 space (6 · {n_total} nodes)"
+                );
+            }
+        }
+
+        // The rotation rows must reference the shell tie node's rotation DOFs
+        // (6·shell_n + 3..5) — confirming the shell side contributes rotations.
+        let shell_rot: Vec<usize> = (3..6).map(|axis| 6 * shell_n + axis).collect(); // [3,4,5]
+        assert!(
+            result
+                .mpc_rows
+                .iter()
+                .any(|r| r.dofs.iter().any(|d| shell_rot.contains(d))),
+            "a rotation row must reference a shell rotation DOF (6·n + 3..5)"
+        );
+    }
+
+    /// An interface whose tet side has no nodes cannot resolve its tie nodes →
+    /// `InterfaceResolutionFailed` tagged with the interface index.
+    #[test]
+    fn build_mixed_region_mesh_errors_when_interface_tie_nodes_unresolvable() {
+        let shell = make_shell_mesh();
+        let empty_tet = VolumeMesh {
+            vertices: vec![],
+            tet_indices: vec![],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        let interface = ShellTetInterface {
+            shell_region: 0,
+            tet_region: 1,
+            normal: [0.0, 0.0, 1.0],
+            thickness: 0.1,
+            location: [0.0, 0.0, 0.0],
+        };
+
+        let err = build_mixed_region_mesh(&shell, &empty_tet, std::slice::from_ref(&interface))
+            .expect_err("an interface against an empty tet mesh must fail to resolve");
+        assert_eq!(
+            err,
+            MixedRegionError::InterfaceResolutionFailed { interface_index: 0 },
+            "error must name the offending interface index"
+        );
+    }
+
+    // ── Amendment: P2 chunking + additional error-path coverage ──────────────
+
+    /// A P2 tet (10 nodes/element) is chunked by 10 and offset by `n_shell`,
+    /// exercising the `ElementOrderTag::P2` branch of `nodes_per_tet` that the
+    /// P1 fixtures leave uncovered. Two tets confirm both the chunk size and the
+    /// per-element offset.
+    #[test]
+    fn build_mixed_region_mesh_chunks_p2_tet_by_ten_nodes() {
+        let shell = make_shell_mesh();
+        let n_shell = shell.vertices.len(); // 3
+        // 20 tet vertices = two P2 tets; the positions are irrelevant to the
+        // connectivity chunking under test (kept clear of any interface).
+        let mut vertices = Vec::new();
+        for i in 0..20 {
+            vertices.push(i as f32);
+            vertices.push(0.0);
+            vertices.push(5.0);
+        }
+        let tet = VolumeMesh {
+            vertices,
+            tet_indices: (0..20u32).collect(),
+            element_order: ElementOrderTag::P2,
+            normals: None,
+        };
+
+        let result = build_mixed_region_mesh(&shell, &tet, &[])
+            .expect("P2 merge with no interfaces should succeed");
+
+        assert_eq!(result.nodes.len(), n_shell + 20, "3 shell + 20 tet nodes");
+        let tet_elems: Vec<&UnifiedElement> = result
+            .elements
+            .iter()
+            .filter(|e| e.kind == UnifiedElementKind::Tet)
+            .collect();
+        assert_eq!(tet_elems.len(), 2, "20 P2 indices → two 10-node tets");
+        assert_eq!(
+            tet_elems[0].connectivity,
+            (0..10).map(|m| n_shell + m).collect::<Vec<usize>>(),
+            "first P2 tet: local nodes 0..10 offset by n_shell",
+        );
+        assert_eq!(
+            tet_elems[1].connectivity,
+            (10..20).map(|m| n_shell + m).collect::<Vec<usize>>(),
+            "second P2 tet: local nodes 10..20 offset by n_shell",
+        );
+    }
+
+    /// An interface against an empty-shell + non-empty-tet mesh cannot resolve
+    /// its shell tie node (`nearest_node_index` over zero shell nodes is `None`)
+    /// → `InterfaceResolutionFailed`. Complements the empty-tet case by covering
+    /// the shell-side `None` branch.
+    #[test]
+    fn build_mixed_region_mesh_errors_when_shell_side_empty() {
+        let empty_shell = MidSurfaceMesh {
+            vertices: vec![],
+            triangles: vec![],
+            thickness: vec![],
+        };
+        let tet = make_tie_tet_mesh();
+        let interface = ShellTetInterface {
+            shell_region: 0,
+            tet_region: 1,
+            normal: [0.0, 0.0, 1.0],
+            thickness: 0.1,
+            location: [0.0, 0.0, 0.0],
+        };
+
+        let err = build_mixed_region_mesh(&empty_shell, &tet, std::slice::from_ref(&interface))
+            .expect_err("an interface against an empty shell mesh must fail to resolve");
+        assert_eq!(
+            err,
+            MixedRegionError::InterfaceResolutionFailed { interface_index: 0 },
+            "empty shell side → no candidate tie node",
+        );
+    }
+
+    /// An interface whose geometry violates `MpcRow::shell_tet_tying`'s
+    /// preconditions (non-unit `normal`, or non-positive `thickness`) is
+    /// surfaced as `InvalidInterfaceGeometry` instead of panicking in the
+    /// downstream assertion. Guards the seam's direct-call contract — the
+    /// partition layer normally guarantees these invariants, but the seam is
+    /// `pub(crate)` and reachable with an arbitrary `ShellTetInterface`.
+    #[test]
+    fn build_mixed_region_mesh_errors_on_invalid_interface_geometry() {
+        let shell = make_shell_mesh();
+        let tet = make_tie_tet_mesh();
+
+        // Case 1: non-unit normal (|n| = 2) — would trip the unit-normal assert.
+        let non_unit = ShellTetInterface {
+            shell_region: 0,
+            tet_region: 1,
+            normal: [0.0, 0.0, 2.0],
+            thickness: 0.1,
+            location: [0.0, 0.0, 0.0],
+        };
+        let err = build_mixed_region_mesh(&shell, &tet, std::slice::from_ref(&non_unit))
+            .expect_err("a non-unit interface normal must be rejected");
+        assert_eq!(
+            err,
+            MixedRegionError::InvalidInterfaceGeometry { interface_index: 0 },
+            "non-unit normal → InvalidInterfaceGeometry",
+        );
+
+        // Case 2: non-positive thickness — would trip the positive-thickness assert.
+        let bad_thickness = ShellTetInterface {
+            shell_region: 0,
+            tet_region: 1,
+            normal: [0.0, 0.0, 1.0],
+            thickness: 0.0,
+            location: [0.0, 0.0, 0.0],
+        };
+        let err = build_mixed_region_mesh(&shell, &tet, std::slice::from_ref(&bad_thickness))
+            .expect_err("a non-positive interface thickness must be rejected");
+        assert_eq!(
+            err,
+            MixedRegionError::InvalidInterfaceGeometry { interface_index: 0 },
+            "non-positive thickness → InvalidInterfaceGeometry",
         );
     }
 }

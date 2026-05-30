@@ -211,6 +211,13 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                             (Value::SampledField(sf), FieldSourceKind::Sampled) => {
                                 sampled::sample_at_point(sf, &evaluated_args[1], codomain_type, ctx)
                             }
+                            // Imported-field dispatch (task 3576 PRD §80): imported fields
+                            // lower to a SampledField via read_vdb_file in elaborate_field
+                            // and are sampled identically to Sampled fields — "indistinguishable
+                            // from sampled at the field-machinery level".
+                            (Value::SampledField(sf), FieldSourceKind::Imported) => {
+                                sampled::sample_at_point(sf, &evaluated_args[1], codomain_type, ctx)
+                            }
                             // Derived-field case: lambda slot contains the original field.
                             // Pass codomain_type (the derived field's already-divided codomain,
                             // stamped by compute_gradient / compute_divergence / etc.) instead

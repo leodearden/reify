@@ -1469,6 +1469,25 @@ impl Engine {
     pub fn journal_event_count(&self) -> usize {
         self.journal.len()
     }
+
+    /// **Test-instrumentation only — not a stable public metric.**
+    ///
+    /// Returns the most-recently-recorded content-hash for an imported field
+    /// source file path, or `None` if no hash has been recorded yet for `path`
+    /// (cold start or after a `cache.clear()`).
+    ///
+    /// Used by cache-invalidation integration tests (task 3576 step-9/10) to
+    /// assert that `Engine::eval` records the file's content-hash after each
+    /// elaboration of an `Imported` field and that the hash updates when the
+    /// file's content changes between evals on the same engine.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    /// Integration tests reach this method via the self-dev-dep with the
+    /// `test-instrumentation` feature enabled (see `crates/reify-eval/Cargo.toml`).
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn imported_file_content_hash(&self, path: &str) -> Option<reify_core::ContentHash> {
+        self.cache.get_imported_file_hash(path)
+    }
 }
 
 /// Perform the full startup-sweep of `cache_root`, binding the current build's

@@ -141,6 +141,7 @@ pub mod medial;
 pub mod mesher;
 pub mod mid_surface;
 pub mod mid_surface_naming;
+pub mod partition;
 pub mod pruning;
 pub mod result;
 pub mod segmentation;
@@ -151,6 +152,10 @@ pub use mesher::{MesherError, MesherOptions, MesherResult, QualityMetrics, mesh_
 pub use mid_surface::{MidSurfaceError, MidSurfaceMesh, MidSurfaceOptions, extract_mid_surface};
 pub use mid_surface_naming::{
     MidSurfaceAttributes, MidSurfaceEdgeRecord, populate_mid_surface_attributes,
+};
+pub use partition::{
+    BodyPartition, PartitionError, PartitionOptions, RegionMeshKind, ShellTetInterface,
+    partition_body,
 };
 pub use pruning::{PruneError, PruneMetrics, PruneOptions, PruneResult, prune_branches};
 pub use result::{ShellExtractionResult, ShellExtractionResultError};

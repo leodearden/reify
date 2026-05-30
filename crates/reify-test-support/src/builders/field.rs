@@ -65,9 +65,19 @@ impl CompiledFieldBuilder {
         self
     }
 
-    /// Set source to `Imported`.
+    /// Set source to `Imported` with no path/format/grid (anonymous placeholder).
     pub fn imported(mut self) -> Self {
-        self.source = Some(CompiledFieldSource::Imported);
+        self.source = Some(CompiledFieldSource::Imported { path: None, format: None, grid: None });
+        self
+    }
+
+    /// Set source to `Imported` with explicit path, format, and grid.
+    pub fn imported_from(mut self, path: &str, format: &str, grid: &str) -> Self {
+        self.source = Some(CompiledFieldSource::Imported {
+            path: Some(path.to_string()),
+            format: Some(format.to_string()),
+            grid: Some(grid.to_string()),
+        });
         self
     }
 
@@ -89,7 +99,12 @@ impl CompiledFieldBuilder {
                     ContentHash::combine_all(hashes)
                 }
                 CompiledFieldSource::Composed { expr } => expr.content_hash,
-                CompiledFieldSource::Imported => ContentHash::of(&[0u8]),
+                CompiledFieldSource::Imported { path, format, grid } => {
+                    let ph = path.as_deref().map(ContentHash::of_str).unwrap_or(ContentHash(0));
+                    let fh = format.as_deref().map(ContentHash::of_str).unwrap_or(ContentHash(0));
+                    let gh = grid.as_deref().map(ContentHash::of_str).unwrap_or(ContentHash(0));
+                    ContentHash::combine_all([ph, fh, gh])
+                }
             };
             ContentHash::combine_all([name_hash, domain_hash, codomain_hash, source_hash])
         };
@@ -209,7 +224,7 @@ mod tests {
         let field = CompiledFieldBuilder::new("ext", Type::Geometry, Type::Real)
             .imported()
             .build();
-        assert!(matches!(field.source, CompiledFieldSource::Imported));
+        assert!(matches!(field.source, CompiledFieldSource::Imported { .. }));
         assert_ne!(field.content_hash, ContentHash(0));
     }
 
