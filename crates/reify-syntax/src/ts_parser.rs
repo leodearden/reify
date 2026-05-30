@@ -75,8 +75,7 @@ pub fn parse_with_prelude_enums(
         errors: lowering.errors.into_inner(),
         content_hash,
         pragmas: lowering.module_pragmas,
-        // Step-4 placeholder: wired to lowering.declared_module_path in step-6.
-        declared_module_path: None,
+        declared_module_path: lowering.declared_module_path,
     }
 }
 
@@ -143,6 +142,9 @@ struct Lowering<'a> {
     known_enums: HashSet<&'a str>,
     /// Module-level pragmas collected during source-file lowering.
     module_pragmas: Vec<Pragma>,
+    /// Structured module path from a top-of-file `module a.b.c` declaration.
+    /// `None` if no module declaration was present in the source file.
+    declared_module_path: Option<ModulePath>,
 }
 
 impl<'a> Lowering<'a> {
@@ -170,6 +172,7 @@ impl<'a> Lowering<'a> {
             errors: RefCell::new(Vec::new()),
             known_enums,
             module_pragmas: Vec::new(),
+            declared_module_path: None,
         }
     }
 
@@ -369,6 +372,49 @@ impl<'a> Lowering<'a> {
                 "pragma" => {
                     if let Some(pragma) = self.lower_pragma(child) {
                         self.module_pragmas.push(pragma);
+                    }
+                }
+                "module_declaration" => {
+                    // Top-of-file `module a.b.c` declaration.
+                    // Extract the dotted path by collecting `identifier` children
+                    // of the `path` (import_path) field — mirrors lower_import's
+                    // segment-collection loop.
+                    if let Some(path_node) = child.child_by_field_name("path") {
+                        let mut segments = Vec::new();
+                        let mut seg_cursor = path_node.walk();
+                        for seg in path_node.children(&mut seg_cursor) {
+                            if seg.kind() == "identifier" {
+                                segments.push(self.node_text(seg).to_string());
+                            }
+                        }
+                        let dotted = segments.join(".");
+                        let span = self.span(child);
+                        // Only treat this as a valid top-of-file declaration if
+                        // no declarations or errors have been accumulated yet.
+                        // When tree-sitter error-recovers by wrapping preceding
+                        // content in an ERROR node, that ERROR arm runs first and
+                        // pushes a parse error, so `errors` is non-empty here —
+                        // in that case we emit an error for the misplaced decl
+                        // and leave `declared_module_path` as `None`.
+                        let is_at_top = self.declarations.is_empty()
+                            && self.errors.borrow().is_empty();
+                        if is_at_top {
+                            let module_decl = ModuleDecl {
+                                path: dotted.clone(),
+                                span,
+                                content_hash: self.content_hash(child),
+                            };
+                            self.declarations.push(Declaration::Module(module_decl));
+                            self.declared_module_path = ModulePath::from_dotted(&dotted).ok();
+                        } else {
+                            self.push_error(
+                                format!(
+                                    "module declaration must be at the top of the file: {}",
+                                    dotted
+                                ),
+                                span,
+                            );
+                        }
                     }
                 }
                 "ERROR" => {
