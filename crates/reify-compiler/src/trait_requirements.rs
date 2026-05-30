@@ -60,6 +60,15 @@ pub(crate) struct MergeContext {
     /// — analogous to the Param/Let conflict block — and the second requirement is still dropped
     /// so the checker sees exactly one entry for that sub-name.
     seen_sub_names: HashMap<String, (String, String)>,
+    /// Assoc-fn signatures collected across the refinement chain, keyed by
+    /// fn name → (signature, originating trait). Populated by the
+    /// `RequirementKind::Fn` arm. `pub` because phase 5 reads it to name the
+    /// declaring trait in the `TraitFnNotSatisfied` diagnostic (like
+    /// `requirements`/`defaults`, it is a downstream-consumed output, not a
+    /// purely-internal tracking map). Step-10's refinement signature-lock
+    /// upgrades the first-seen insert below into a `try_dedup_or_conflict`
+    /// call against this same map. (task 3939 δ)
+    pub seen_fn_sigs: HashMap<String, (CompiledAssocFnSig, String)>,
 }
 
 impl MergeContext {
@@ -182,9 +191,17 @@ pub(crate) fn collect_all_requirements(
                 }
                 ctx.requirements.push(req.clone());
             }
-            // Assoc-fn requirement merge (refinement signature-lock) is
-            // implemented in task 3939 δ step-10; placeholder no-op for now.
-            RequirementKind::Fn(_) => {}
+            // Assoc-fn requirement: record (signature, originating trait) so
+            // phase 5 can name the declaring trait, then push the requirement
+            // so phase 5 sees it. First-seen wins here; the refinement
+            // signature-lock (same name + different inherited signature →
+            // conflict) is layered on in step-10. (task 3939 δ step-4)
+            RequirementKind::Fn(sig) => {
+                ctx.seen_fn_sigs
+                    .entry(req.name.clone())
+                    .or_insert_with(|| (sig.clone(), trait_name.to_string()));
+                ctx.requirements.push(req.clone());
+            }
         }
     }
 

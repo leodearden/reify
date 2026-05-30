@@ -849,9 +849,41 @@ pub(super) fn check_phase_check_members_against_requirements(
                 }
                 continue;
             }
-            // Assoc-fn requirement satisfaction is checked in the dedicated
-            // assoc-fn phase (task 3939 δ, step-4); skip here for now.
-            RequirementKind::Fn(_) => continue,
+            // Assoc-fn requirement: satisfied when the structure declares a
+            // `fn` member of the same name, OR a trait `DefaultKind::Fn` of
+            // that name was merged in (a default-providing assoc fn). Otherwise
+            // emit `TraitFnNotSatisfied` naming the declaring trait + fn.
+            // Exact signature matching for a provided fn is added in step-6.
+            // (task 3939 δ step-4)
+            RequirementKind::Fn(_) => {
+                let provided_by_structure = structure.members.iter().any(|m| {
+                    matches!(m, reify_ast::MemberDecl::Fn(f) if f.name == req.name)
+                });
+                let provided_by_default = ctx.defaults.iter().any(|d| {
+                    d.name.as_deref() == Some(req.name.as_str())
+                        && matches!(d.kind, DefaultKind::Fn(_))
+                });
+                if !provided_by_structure && !provided_by_default {
+                    let declaring_trait = ctx
+                        .seen_fn_sigs
+                        .get(&req.name)
+                        .map(|(_, t)| t.clone())
+                        .unwrap_or_else(|| "<trait>".to_string());
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "associated function '{}' required by trait '{}' is not \
+                             satisfied by structure '{}'",
+                            req.name, declaring_trait, structure.name
+                        ))
+                        .with_code(DiagnosticCode::TraitFnNotSatisfied)
+                        .with_label(DiagnosticLabel::new(
+                            structure.span,
+                            "required associated function not provided",
+                        )),
+                    );
+                }
+                continue;
+            }
         };
         // Route the structure-member lookup to the kind-appropriate map.
         // A `param` requirement is satisfied only by a structure `param` member;
