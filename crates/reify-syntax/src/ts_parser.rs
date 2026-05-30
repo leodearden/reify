@@ -1329,9 +1329,26 @@ impl<'a> Lowering<'a> {
     }
 
     fn lower_fn_body(&self, node: tree_sitter::Node) -> Option<FnBody> {
+        // Desugar contract (task 3919, spec §18 #10):
+        //
+        // `fn_body` has two grammar arms:
+        //   block form:      `{ [fn_let_binding*]  result:<expr> }`
+        //   expression form: `= result:<expr>`
+        //
+        // Both arms share the `result` field name.  This function therefore
+        // handles both arms uniformly:
+        //   - Block form: collects fn_let_binding children (may be empty), then
+        //     reads `result`.  Yields FnBody { let_bindings, result_expr }.
+        //   - Expression form: the loop below finds zero fn_let_binding children
+        //     (there are none), so let_bindings = vec![].  `child_by_field_name("result")`
+        //     resolves the `= expr` arm's result field identically.
+        //     Yields FnBody { let_bindings: vec![], result_expr } — structurally
+        //     identical to a block body with no let bindings.  Pure desugar.
+        //
+        // No branching on grammar arm is required.
         let mut let_bindings = Vec::new();
 
-        // Collect fn_let_binding children
+        // Collect fn_let_binding children (zero for the expression form).
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "fn_let_binding"
@@ -1341,7 +1358,7 @@ impl<'a> Lowering<'a> {
             }
         }
 
-        // The result expression is the 'result' field
+        // The result expression is the 'result' field — present in both arms.
         let result_node = node.child_by_field_name("result")?;
         let result_expr = self.lower_expr(result_node)?;
 
