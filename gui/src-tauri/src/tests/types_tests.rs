@@ -2493,3 +2493,71 @@ fn solver_progress_serializes_to_expected_json_shape() {
         "residual round-trip mismatch: {} vs {}", rt.residual, 5.0e-4_f64);
     assert_eq!(rt.eta_ms, None, "eta_ms must be None when absent from wire shape");
 }
+
+// ── task-3458 step-3: ModeShapeFrame IPC struct serde round-trip ─────────────
+
+/// Pin the wire format for the `mode-shape-frame` Tauri event channel (GR-024 Phase 9).
+///
+/// Three assertions:
+/// (a) Serialize→deserialize identity: a `ModeShapeFrame` value must round-trip
+///     without data loss.
+/// (b) Exact JSON key names — `"mode_index"`, `"phase"`, `"displaced_positions"` —
+///     matching the TypeScript `ModeShapeFrame` interface verbatim.
+///     No `serde(rename_all)` on the struct (field names cross the wire unchanged).
+/// (c) Exactly 3 top-level keys in the serialized object (no hidden fields).
+///
+/// Mirrors `solver_progress_serializes_to_expected_json_shape` (line 2433).
+///
+/// **RED at step-3**: fails until `ModeShapeFrame` is added to `types.rs` in step-4.
+#[test]
+fn mode_shape_frame_serde_round_trip_with_exact_key_names() {
+    use crate::types::ModeShapeFrame;
+    use serde_json::json;
+
+    let frame = ModeShapeFrame {
+        mode_index: 2,
+        phase: 0.75_f32,
+        displaced_positions: vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0],
+    };
+
+    // (a) Serialize.
+    let v = serde_json::to_value(&frame)
+        .expect("ModeShapeFrame must serialize without error");
+
+    // (b) Exact JSON key names (no rename_all).
+    assert_eq!(
+        v,
+        json!({
+            "mode_index": 2_u8,
+            "phase": 0.75_f32,
+            "displaced_positions": [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]
+        }),
+        "ModeShapeFrame JSON shape mismatch — check field names match TS interface"
+    );
+
+    // (c) Exactly 3 top-level keys.
+    let obj = v.as_object().unwrap();
+    assert_eq!(
+        obj.len(),
+        3,
+        "ModeShapeFrame must have exactly 3 top-level JSON keys; got {:?}",
+        obj.keys().collect::<Vec<_>>()
+    );
+
+    // Confirm each key is present with the exact name.
+    assert!(obj.contains_key("mode_index"),          "key 'mode_index' must be present");
+    assert!(obj.contains_key("phase"),               "key 'phase' must be present");
+    assert!(obj.contains_key("displaced_positions"), "key 'displaced_positions' must be present");
+
+    // (d) Deserialize back → identity.
+    let rt: ModeShapeFrame = serde_json::from_value(v.clone())
+        .expect("ModeShapeFrame must deserialize from its own JSON");
+    assert_eq!(rt.mode_index, 2, "mode_index must survive round-trip");
+    assert!((rt.phase - 0.75_f32).abs() < f32::EPSILON * 10.0,
+        "phase round-trip mismatch: {} vs 0.75", rt.phase);
+    assert_eq!(
+        rt.displaced_positions,
+        vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0],
+        "displaced_positions must survive round-trip"
+    );
+}
