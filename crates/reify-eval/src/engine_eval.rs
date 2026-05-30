@@ -585,8 +585,11 @@ fn eval_guarded_group_param_cell(
 /// the field's lambda becomes `Arc::new(Value::Undef)` — a poisoned
 /// no-op that produces `Undef` at every sample point.
 ///
-/// `Imported` fields produce a placeholder `Value::Undef` lambda — they
-/// have no callable lambda body to evaluate at this point.
+/// `Imported` fields (task 3576 step-8): call `reify_kernel_openvdb::read_vdb_file`
+/// with the compiled path and grid name.  On success, wrap the resulting
+/// `SampledField` as `Value::SampledField`; on error push a
+/// `DiagnosticCode::FieldImportFailed` runtime error into `runtime_sink` and
+/// return `Value::Undef`.  IngestOutcome warnings are forwarded to `runtime_sink`.
 pub(crate) fn elaborate_field(
     field: &reify_compiler::CompiledField,
     values: &ValueMap,
@@ -614,7 +617,41 @@ pub(crate) fn elaborate_field(
                 None => Arc::new(Value::Undef),
             }
         }
-        reify_compiler::CompiledFieldSource::Imported { .. } => Arc::new(Value::Undef),
+        reify_compiler::CompiledFieldSource::Imported { path, grid, .. } => {
+            // Call read_vdb_file with the compiled path and grid name.
+            // Both cfg branches (real FFI and stub) return Result<IngestOutcome, IngestError>;
+            // errors surface as FieldImportFailed runtime diagnostics + Value::Undef.
+            match (path, grid) {
+                (Some(p), Some(g)) => {
+                    match reify_kernel_openvdb::read_vdb_file(p, g, &field.codomain_type) {
+                        Ok(outcome) => {
+                            // Surface any ingest warnings (e.g. unit mismatch) into the sink.
+                            if !outcome.warnings.is_empty() {
+                                if let Some(sink) = runtime_sink {
+                                    sink.borrow_mut().extend(outcome.warnings);
+                                }
+                            }
+                            Arc::new(Value::SampledField(outcome.field))
+                        }
+                        Err(e) => {
+                            if let Some(sink) = runtime_sink {
+                                sink.borrow_mut().push(
+                                    reify_core::Diagnostic::error(format!(
+                                        "field '{}': failed to import VDB file: {}",
+                                        field.name, e
+                                    ))
+                                    .with_code(reify_core::DiagnosticCode::FieldImportFailed),
+                                );
+                            }
+                            Arc::new(Value::Undef)
+                        }
+                    }
+                }
+                // Missing path or grid: a compiler error was already emitted;
+                // silently produce Undef at eval time (compiler error is the user-visible signal).
+                _ => Arc::new(Value::Undef),
+            }
+        }
     };
 
     let source_kind = match &field.source {
