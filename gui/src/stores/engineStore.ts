@@ -221,11 +221,19 @@ export function createEngineStore(options?: EngineStoreOptions) {
     setState('autoResolve', { active: false, iterations: [], canonicalDrivingMetric: undefined, warnedEmptyMetric: undefined });
   }
 
+  let debounceHandle: ReturnType<typeof setTimeout> | null = null;
+
   function applySolverProgress(p: SolverProgress) {
     setState(produce((s) => {
       s.solverProgress.latest = p;
       s.solverProgress.trace.push(p);
     }));
+    if (debounceHandle === null && !state.solverProgress.visible) {
+      debounceHandle = setTimeout(() => {
+        setState('solverProgress', 'visible', true);
+        debounceHandle = null;
+      }, 1000);
+    }
   }
 
   async function subscribeToEvents(): Promise<() => void> {
