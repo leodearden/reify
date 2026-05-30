@@ -320,7 +320,10 @@ pub(crate) fn convolve_at<F: Fn(f64) -> f64>(
     t_domain: f64,
     t: f64,
 ) -> f64 {
-    todo!()
+    train.impulses.iter().map(|imp| {
+        let tau = (t - imp.time).clamp(0.0, t_domain);
+        imp.amplitude * f(tau)
+    }).sum()
 }
 
 #[cfg(test)]
