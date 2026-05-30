@@ -57,6 +57,62 @@ pub(crate) fn effective_prelude<'a>(
     if has_no_prelude { &[] } else { prelude }
 }
 
+#[cfg(test)]
+mod tests {
+    use reify_core::{ModulePath, Severity};
+
+    use super::check_module_path_decl;
+
+    #[test]
+    fn absent_decl_returns_warning_with_expected_path() {
+        let expected = ModulePath::single("foo");
+        let diag = check_module_path_decl(None, &expected)
+            .expect("should return Some(diag) for absent declaration");
+        assert_eq!(diag.severity, Severity::Warning);
+        assert!(
+            diag.message.contains("W_MODULE_DECL_MISSING"),
+            "message should contain 'W_MODULE_DECL_MISSING', got: {}",
+            diag.message
+        );
+        assert!(
+            !diag.message.contains("error:"),
+            "warning message must not contain 'error:', got: {}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn matching_decl_returns_none() {
+        let path = ModulePath::single("foo");
+        let result = check_module_path_decl(Some(&path), &path);
+        assert!(result.is_none(), "should return None when paths match");
+    }
+
+    #[test]
+    fn mismatched_decl_returns_error_with_both_paths() {
+        let declared = ModulePath::from_dotted("a.b.c").unwrap();
+        let expected = ModulePath::single("foo");
+        let diag = check_module_path_decl(Some(&declared), &expected)
+            .expect("should return Some(diag) for mismatch");
+        assert_eq!(diag.severity, Severity::Error);
+        assert!(
+            diag.message.contains("E_MODULE_PATH_MISMATCH"),
+            "message should contain 'E_MODULE_PATH_MISMATCH', got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("a.b.c"),
+            "message should name the declared path 'a.b.c', got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("foo"),
+            "message should name the expected path 'foo', got: {}",
+            diag.message
+        );
+    }
+}
+
 /// References into `parsed.declarations` collected by [`collect_decl_refs`],
 /// partitioned by the phase that consumes them.
 ///
