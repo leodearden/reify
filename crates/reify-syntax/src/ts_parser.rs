@@ -2903,6 +2903,51 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Parse a `number_literal` token text into `(value, is_real)`.
+    ///
+    /// Dispatches on the radix prefix before attempting `f64` conversion:
+    ///
+    /// - **Hex** (`0x`/`0X`): strips the prefix and any `_` separators, parses
+    ///   via `u64::from_str_radix(.., 16)`, returns `(n as f64, false)`.
+    /// - **Binary** (`0b`/`0B`): same, with radix 2.
+    /// - **Decimal** (everything else): delegates to
+    ///   [`Self::strip_underscores_and_parse`] for `f64::from_str` (preserving
+    ///   β/3912 `_`-separator support), then classifies `is_real` by scanning
+    ///   the *original* text for `.`, `e`, or `E`.
+    ///
+    /// # D4 is_real guard
+    ///
+    /// `is_real` is forced `false` on both radix branches regardless of the
+    /// token text.  Without this guard, `0xBEEF` / `0xe` would false-positive
+    /// as `Real` due to the `E`/`e` in their hex digits.  Hex/binary literals
+    /// are integer-only by grammar (no fractional/exponent form), so
+    /// `is_real = false` is always correct on the radix branches.
+    ///
+    /// # Precision
+    ///
+    /// `u64::from_str_radix` accepts values up to `u64::MAX` (`0xFFFFFFFFFFFFFFFF`).
+    /// Values beyond 2^53 are stored as `(n as f64)` — a lossy conversion that
+    /// the downstream `classify_number_literal` / `LossyReal` path already
+    /// handles for large decimal integers; no special case is needed here.
+    fn parse_number_literal_text(text: &str) -> Option<(f64, bool)> {
+        let parse_radix = |digits: &str, radix: u32| -> Option<f64> {
+            let stripped: String = digits.chars().filter(|c| *c != '_').collect();
+            u64::from_str_radix(&stripped, radix).ok().map(|n| n as f64)
+        };
+
+        if let Some(digits) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+            return Some((parse_radix(digits, 16)?, false));
+        }
+        if let Some(digits) = text.strip_prefix("0b").or_else(|| text.strip_prefix("0B")) {
+            return Some((parse_radix(digits, 2)?, false));
+        }
+
+        // Decimal branch: preserve `_`-separator support via the shared helper.
+        let value = Self::strip_underscores_and_parse(text)?;
+        let is_real = text.contains('.') || text.contains('e') || text.contains('E');
+        Some((value, is_real))
+    }
+
     fn lower_quantity_literal(&self, node: tree_sitter::Node) -> Option<Expr> {
         let value_node = node.child_by_field_name("value")?;
         let unit_node = node.child_by_field_name("unit")?;
@@ -2987,20 +3032,18 @@ impl<'a> Lowering<'a> {
 
     fn lower_number_literal(&self, node: tree_sitter::Node) -> Option<Expr> {
         let text = self.node_text(node);
-        // Strip `_` digit-separator characters before parsing (task 3912 / β).
-        // `f64::from_str` rejects `_` in raw form; `strip_underscores_and_parse`
-        // removes them first.  Both `lower_number_literal` and
-        // `lower_quantity_literal` share the same helper so they cannot diverge.
-        let value: f64 = Self::strip_underscores_and_parse(text)?;
-        // Classify as Real when the token contains the fractional or exponent part of
-        // the grammar's `number_literal` rule:
-        //   `\d(_?\d)*(\.\d(_?\d)*)?([eE][+-]?\d(_?\d)*)?`
-        // (tree-sitter-reify/grammar.js, updated in task 3909 / α to accept `_`).
-        // This scan runs on the ORIGINAL text (before `_` stripping) — `_` is never
-        // `.`, `e`, or `E`, so the is_real result is identical either way.
-        // This scan must stay in sync with the grammar regex: if the grammar gains
-        // new number-literal forms (e.g. hex literals), update both.
-        let is_real = text.contains('.') || text.contains('e') || text.contains('E');
+        // Dispatch through the radix-aware helper (task 3913 / δ).
+        //
+        // `parse_number_literal_text` handles:
+        //   - Hex (0x/0X): u64::from_str_radix(.., 16), is_real = false
+        //   - Binary (0b/0B): u64::from_str_radix(.., 2), is_real = false
+        //   - Decimal: strip_underscores_and_parse + `.`/`e`/`E` scan
+        //
+        // is_real is forced false on radix branches (D4 guard) so that hex
+        // tokens containing `e`/`E` (e.g. 0xBEEF, 0xe) do not false-positive
+        // as Real literals.  The decimal branch preserves β/3912 `_`-separator
+        // support and the `.`/`e`/`E` is_real scan on the original text.
+        let (value, is_real) = Self::parse_number_literal_text(text)?;
         Some(Expr {
             kind: ExprKind::NumberLiteral { value, is_real },
             span: self.span(node),
