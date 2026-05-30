@@ -574,19 +574,19 @@ pub(crate) fn compile_field(
                 );
             }
             // Validate format value: only "OpenVDB" is supported in v0.2.
-            if let Some(fmt) = format.as_deref() {
-                if fmt != "OpenVDB" {
-                    diagnostics.push(
-                        Diagnostic::error(format!(
-                            "unsupported imported field format '{}': only 'OpenVDB' is supported",
-                            fmt
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            field_def.span,
-                            "unsupported format for imported field source",
-                        )),
-                    );
-                }
+            if let Some(fmt) = format.as_deref()
+                && fmt != "OpenVDB"
+            {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "unsupported imported field format '{}': only 'OpenVDB' is supported",
+                        fmt
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        field_def.span,
+                        "unsupported format for imported field source",
+                    )),
+                );
             }
             CompiledFieldSource::Imported {
                 path: path.clone(),
