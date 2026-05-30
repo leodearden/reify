@@ -28,7 +28,7 @@
 //! voxel faces — a shared face would have fused the two into one component.
 
 use crate::mid_surface::MidSurfaceMesh;
-use crate::segmentation::{SegmentationResult, SingleBodyMask};
+use crate::segmentation::{RegionClassification, SegmentationResult, SingleBodyMask};
 
 /// Per-region routing decision: which mesher a segmented region is sent to.
 ///
@@ -178,7 +178,7 @@ impl std::error::Error for PartitionError {}
 ///   interface has no well-defined area-weighted triangle normal.
 pub fn partition_body(
     _mask: &SingleBodyMask,
-    _seg: &SegmentationResult,
+    seg: &SegmentationResult,
     mesh: &MidSurfaceMesh,
     opts: &PartitionOptions,
 ) -> Result<BodyPartition, PartitionError> {
@@ -197,11 +197,24 @@ pub fn partition_body(
         });
     }
 
-    // Region routing (step-4) and proximity-based interface detection
-    // (step-6/8) are layered on in subsequent steps. For now, empty input
-    // yields an empty partition.
+    // (3) Route each region to a mesher by its T4 classification. Both
+    // `ShellEligible` and `MixedComponentOfBody` are locally shell-able, so
+    // both map to `Shell`; the body-context distinction (MPC tying) is carried
+    // by the interface set, not the per-region kind. Parallel to `seg.regions`.
+    let region_kinds: Vec<RegionMeshKind> = seg
+        .regions
+        .iter()
+        .map(|r| match r.classification {
+            RegionClassification::ShellEligible | RegionClassification::MixedComponentOfBody => {
+                RegionMeshKind::Shell
+            }
+            RegionClassification::TetEligible => RegionMeshKind::Tet,
+        })
+        .collect();
+
+    // Proximity-based interface detection is layered on in step-6/8.
     Ok(BodyPartition {
-        region_kinds: vec![],
+        region_kinds,
         interfaces: vec![],
     })
 }
@@ -210,8 +223,30 @@ pub fn partition_body(
 mod tests {
     use crate::{
         BodyPartition, MedialMask, MidSurfaceMesh, PartitionError, PartitionOptions,
-        RegionMeshKind, SegmentationResult, ShellTetInterface, SingleBodyMask, partition_body,
+        RegionClassification, RegionInfo, RegionMeshKind, SegmentationResult, ShellTetInterface,
+        SingleBodyMask, partition_body,
     };
+
+    // ── Test helpers ──────────────────────────────────────────────────────────
+
+    /// Build a [`RegionInfo`] with the given label, classification, and voxels,
+    /// filling the metric fields with plausible placeholder values (the routing
+    /// and proximity logic reads `classification`, `voxels`, and
+    /// `mean_thickness`, not the ratio fields).
+    fn region_info(
+        label: u32,
+        classification: RegionClassification,
+        voxels: Vec<[i32; 3]>,
+    ) -> RegionInfo {
+        RegionInfo {
+            label,
+            voxels,
+            mean_thickness: 1.0,
+            extent: 10.0,
+            thickness_extent_ratio: 0.1,
+            classification,
+        }
+    }
 
     // ── Step 1: public-surface smoke test ─────────────────────────────────────
 
@@ -251,5 +286,53 @@ mod tests {
         let _: PartitionError = PartitionError::InvalidProximityFactor { value: 0.0 };
         let _: Option<RegionMeshKind> = None;
         let _: Option<ShellTetInterface> = None;
+    }
+
+    // ── Step 3: region routing by classification ──────────────────────────────
+
+    /// `partition_body` maps each region's classification to a `RegionMeshKind`,
+    /// parallel to `seg.regions` by index:
+    ///   `ShellEligible → Shell`, `TetEligible → Tet`,
+    ///   `MixedComponentOfBody → Shell`.
+    #[test]
+    fn partition_body_routes_regions_by_classification() {
+        // Three regions placed far apart so no interface is produced (proximity
+        // is exercised in step-5). Classifications cover all three variants.
+        let seg = SegmentationResult {
+            regions: vec![
+                region_info(0, RegionClassification::ShellEligible, vec![[0, 0, 0]]),
+                region_info(1, RegionClassification::TetEligible, vec![[100, 0, 0]]),
+                region_info(
+                    2,
+                    RegionClassification::MixedComponentOfBody,
+                    vec![[0, 100, 0]],
+                ),
+            ],
+            vertex_labels: vec![],
+            triangle_labels: vec![],
+        };
+        let mask = SingleBodyMask::new(MedialMask {
+            spacing: [1.0, 1.0, 1.0],
+            origin: [0.0, 0.0, 0.0],
+            voxels: vec![[0, 0, 0], [100, 0, 0], [0, 100, 0]],
+        });
+        let mesh = MidSurfaceMesh {
+            vertices: vec![],
+            triangles: vec![],
+            thickness: vec![],
+        };
+
+        let result = partition_body(&mask, &seg, &mesh, &PartitionOptions::default())
+            .expect("partition_body should succeed");
+
+        assert_eq!(
+            result.region_kinds,
+            vec![
+                RegionMeshKind::Shell, // ShellEligible
+                RegionMeshKind::Tet,   // TetEligible
+                RegionMeshKind::Shell, // MixedComponentOfBody (locally shell-able)
+            ],
+            "region_kinds must parallel seg.regions by index: Shell/Tet/Shell"
+        );
     }
 }
