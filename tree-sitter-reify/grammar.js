@@ -627,7 +627,7 @@ module.exports = grammar({
         field('structure_name', $.identifier),
         optional(field('type_args', seq('<', $.type_arg_list, '>'))),
         optional(field('guard', $.where_clause)),
-        optional(field('body', $.specialization_body)),
+        optional(field('body', choice($.specialization_body, $.keyed_member_block))),
         optional(seq('at', field('pose', $._expression))),
       ),
     ),
@@ -641,6 +641,41 @@ module.exports = grammar({
       '{',
       repeat(choice($.param_assignment, $._member)),
       '}',
+    ),
+
+    // ── Keyed sub-member block (task 3929, PRD §2.2) ─────────────────────────
+    // Keyed sub-member block: `{ "key" => { overrides }  ... }`.
+    // Used as the body of `sub name : Keyed<T> { "k" => { overrides } }`.
+    //
+    // Disambiguation from `specialization_body`:
+    //   Both block forms open with `{`.  `keyed_member_block` requires at
+    //   least ONE entry (`repeat1`), so an empty `{}` is unambiguously a
+    //   `specialization_body` (which uses `repeat`, i.e. zero-or-more).
+    //   When the block is non-empty, the first token after `{` determines
+    //   the winner: a `string_literal` leads to `keyed_member_block`; an
+    //   identifier or member-keyword leads to `specialization_body`.
+    //   A `conflicts` entry is added only if `tree-sitter generate` reports
+    //   an unresolved conflict between the two rules.
+    //
+    // Scope note: the grammar accepts a keyed block after ANY `structure_name<…>`,
+    // not only after `Keyed<…>`.  Restricting the keyed block to the Keyed
+    // collection kind is a resolution/compiler concern (PRD task β), mirroring
+    // the established pattern where `at <pose>` is grammatically accepted on
+    // the collection form but semantically rejected by the compiler (PRD §10).
+    keyed_member_block: $ => seq(
+      '{',
+      repeat1($.keyed_member_entry),
+      '}',
+    ),
+
+    // A single keyed entry: `"key" => { overrides }`.
+    // The `overrides` specialization_body is reused verbatim (PRD §2.2/§9-Q4)
+    // so override blocks inside a keyed sub parse identically to a
+    // standalone specialization-scope body.
+    keyed_member_entry: $ => seq(
+      field('key', $.string_literal),
+      '=>',
+      field('overrides', $.specialization_body),
     ),
 
     // ── Param assignment (specialization body only) ──────────
