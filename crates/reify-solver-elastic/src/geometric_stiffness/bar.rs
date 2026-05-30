@@ -7,10 +7,7 @@
 //! See PRD `docs/prds/v0_6/tensegrity-structures.md` §6 task T3a.
 
 use crate::assembly::{BarSection, ElementStiffness, element_stiffness_bar_p1};
-
-/// Minimum bar length guard — mirrors `MIN_JACOBIAN_DET` degeneracy convention
-/// in the tet elastic and tet geometric-stiffness modules.
-const MIN_BAR_LENGTH: f64 = 1.0e-30;
+use crate::assembly::bar::MIN_BAR_LENGTH;
 
 /// Compute the 6×6 geometric stiffness matrix `K_g` for a 2-node pin-jointed
 /// bar under an axial member force `N` (tension positive).
@@ -123,16 +120,7 @@ pub fn bar_tangent_stiffness(
 mod tests {
     use super::{bar_tangent_stiffness, geometric_element_stiffness_bar_p1};
     use crate::assembly::{BarSection, element_stiffness_bar_p1};
-
-    fn assert_close(lhs: f64, rhs: f64, tol: f64, label: &str) {
-        let scale = lhs.abs().max(rhs.abs()).max(1.0);
-        assert!(
-            (lhs - rhs).abs() < tol * scale,
-            "{label}: |{lhs} − {rhs}| = {} ≥ tol·scale = {}",
-            (lhs - rhs).abs(),
-            tol * scale,
-        );
-    }
+    use crate::assembly::test_support::assert_close;
 
     // (a) returns 6×6
     #[test]
@@ -176,6 +164,30 @@ mod tests {
             assert_close(kg.get(j, 0), 0.0, 1e-12, &format!("K_g({j},0) axial=0"));
             assert_close(kg.get(3, j), 0.0, 1e-12, &format!("K_g(3,{j}) axial=0"));
             assert_close(kg.get(j, 3), 0.0, 1e-12, &format!("K_g({j},3) axial=0"));
+        }
+    }
+
+    // (c-neg) compression (N < 0) on axial bar: transverse entries must be N/L (negative)
+    #[test]
+    fn kg_axial_bar_compression_softens_transverse() {
+        let l = 4.0_f64;
+        let n = -80.0_f64; // compression — negative axial force
+        let nodes = [[0.0, 0.0, 0.0], [l, 0.0, 0.0]];
+        let kg = geometric_element_stiffness_bar_p1(&nodes, n);
+        let n_over_l = n / l; // negative
+
+        // Transverse diagonal (y, z): must be n/l < 0 — K_g softens under compression
+        assert_close(kg.get(1, 1), n_over_l, 1e-12, "K_g(1,1)=N/L<0 under compression");
+        assert_close(kg.get(2, 2), n_over_l, 1e-12, "K_g(2,2)=N/L<0 under compression");
+        assert_close(kg.get(4, 4), n_over_l, 1e-12, "K_g(4,4)=N/L<0 under compression");
+        assert_close(kg.get(5, 5), n_over_l, 1e-12, "K_g(5,5)=N/L<0 under compression");
+        // Off-diagonal transverse coupling (cross-node, y↔y and z↔z) must be −N/L > 0
+        assert_close(kg.get(1, 4), -n_over_l, 1e-12, "K_g(1,4)=-N/L>0 under compression");
+        assert_close(kg.get(2, 5), -n_over_l, 1e-12, "K_g(2,5)=-N/L>0 under compression");
+        // Axial DOFs must remain zero regardless of sign of N
+        for j in 0..6 {
+            assert_close(kg.get(0, j), 0.0, 1e-12, &format!("K_g(0,{j}) axial=0 (compression)"));
+            assert_close(kg.get(3, j), 0.0, 1e-12, &format!("K_g(3,{j}) axial=0 (compression)"));
         }
     }
 

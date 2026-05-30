@@ -26,6 +26,7 @@ use reify_solver_elastic::{
     apply_dirichlet_row_elimination, apply_point_load, assemble_global_stiffness,
     bar_tangent_stiffness, solve_cg,
 };
+use reify_solver_elastic::assembly::test_support::assert_close;
 
 const L: f64 = 2.5; // bar length [m]
 const E: f64 = 200.0e9; // Young's modulus [Pa]
@@ -62,17 +63,6 @@ fn solve_single_bar(force: [f64; 3]) -> Vec<f64> {
     let result = solve_cg(&k_global, &f, opts, SolverMode::Deterministic);
     assert!(result.converged, "CG did not converge: {} iters", result.iterations);
     result.u.to_vec()
-}
-
-/// Relative-tolerance assert matching the crate convention.
-fn assert_close(lhs: f64, rhs: f64, tol: f64, label: &str) {
-    let scale = lhs.abs().max(rhs.abs()).max(1.0);
-    assert!(
-        (lhs - rhs).abs() < tol * scale,
-        "{label}: |{lhs} − {rhs}| = {} ≥ tol·scale = {}",
-        (lhs - rhs).abs(),
-        tol * scale,
-    );
 }
 
 /// (1) Axial load P along x: analytic δ = PL/(EA).

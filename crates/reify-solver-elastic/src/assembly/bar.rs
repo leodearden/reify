@@ -23,7 +23,10 @@ pub struct BarSection {
 
 /// Minimum bar length guard — mirrors `MIN_JACOBIAN_DET` degeneracy convention
 /// in the tet and geometric-stiffness modules.
-const MIN_BAR_LENGTH: f64 = 1.0e-30;
+///
+/// Declared `pub(crate)` so [`crate::geometric_stiffness::bar`] can import it
+/// rather than defining a duplicate constant that could silently drift.
+pub(crate) const MIN_BAR_LENGTH: f64 = 1.0e-30;
 
 /// Compute the 6×6 elastic stiffness matrix `K_e` for a 2-node pin-jointed bar.
 ///
@@ -109,17 +112,7 @@ pub fn element_stiffness_bar_p1(
 #[allow(clippy::needless_range_loop)]
 mod tests {
     use super::{BarSection, element_stiffness_bar_p1};
-
-    /// Relative-tolerance assert matching the crate convention.
-    fn assert_close(lhs: f64, rhs: f64, tol: f64, label: &str) {
-        let scale = lhs.abs().max(rhs.abs()).max(1.0);
-        assert!(
-            (lhs - rhs).abs() < tol * scale,
-            "{label}: |{lhs} − {rhs}| = {} ≥ tol·scale = {}",
-            (lhs - rhs).abs(),
-            tol * scale,
-        );
-    }
+    use crate::assembly::test_support::assert_close;
 
     // (a) returns 6×6
     #[test]
