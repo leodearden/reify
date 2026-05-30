@@ -294,6 +294,7 @@ describe('meshManager — sampleProbe', () => {
     manager.sync({ T: mesh });
     const sample = manager.sampleProbe('T', 0, [1 / 3, 1 / 3, 1 / 3]);
     expect(sample).not.toBeNull();
+    if (sample === null) throw new Error('unreachable');
     expect(sample.displacement).toBeNull();
   });
 
@@ -308,6 +309,7 @@ describe('meshManager — sampleProbe', () => {
     // Any bary should give displacement = [0.1, 0.2, 0.3]
     const sample = manager.sampleProbe('T', 0, [0.2, 0.3, 0.5]);
     expect(sample).not.toBeNull();
+    if (sample === null || sample.displacement === null) throw new Error('unreachable');
     expect(sample.displacement[0]).toBeCloseTo(0.1, 4);
     expect(sample.displacement[1]).toBeCloseTo(0.2, 4);
     expect(sample.displacement[2]).toBeCloseTo(0.3, 4);
@@ -326,6 +328,7 @@ describe('meshManager — sampleProbe', () => {
     // displacement = 0.2*[1,0,0] + 0.3*[0,1,0] + 0.5*[0,0,1] = [0.2, 0.3, 0.5]
     const sample = manager.sampleProbe('T', 0, [0.2, 0.3, 0.5]);
     expect(sample).not.toBeNull();
+    if (sample === null || sample.displacement === null) throw new Error('unreachable');
     expect(sample.displacement[0]).toBeCloseTo(0.2, 4);
     expect(sample.displacement[1]).toBeCloseTo(0.3, 4);
     expect(sample.displacement[2]).toBeCloseTo(0.5, 4);
@@ -337,6 +340,7 @@ describe('meshManager — sampleProbe', () => {
     manager.sync({ T: mesh });
     const sample = manager.sampleProbe('T', 0, [1 / 3, 1 / 3, 1 / 3]);
     expect(sample).not.toBeNull();
+    if (sample === null) throw new Error('unreachable');
     expect(sample.vonMises).toBeNull();
     expect(sample.scalars).toEqual({});
   });
@@ -349,6 +353,7 @@ describe('meshManager — sampleProbe', () => {
 
     const sample = manager.sampleProbe('T', 0, [0.2, 0.3, 0.5]);
     expect(sample).not.toBeNull();
+    if (sample === null) throw new Error('unreachable');
     expect(sample.vonMises).toBeCloseTo(5.0, 4);
     expect(sample.scalars['vonMises']).toBeCloseTo(5.0, 4);
   });
@@ -363,6 +368,7 @@ describe('meshManager — sampleProbe', () => {
     // bary = [0.2, 0.3, 0.5]: 0.2*1 + 0.3*2 + 0.5*3 = 0.2 + 0.6 + 1.5 = 2.3
     const sample = manager.sampleProbe('T', 0, [0.2, 0.3, 0.5]);
     expect(sample).not.toBeNull();
+    if (sample === null) throw new Error('unreachable');
     expect(sample.vonMises).toBeCloseTo(2.3, 4);
     expect(sample.scalars['vonMises']).toBeCloseTo(2.3, 4);
   });
@@ -375,6 +381,7 @@ describe('meshManager — sampleProbe', () => {
 
     const sample = manager.sampleProbe('T', 0, [1 / 3, 1 / 3, 1 / 3]);
     expect(sample).not.toBeNull();
+    if (sample === null) throw new Error('unreachable');
     expect(sample.scalars['pressure']).toBeCloseTo(10.0, 4);
     // vonMises absent → null
     expect(sample.vonMises).toBeNull();
@@ -391,6 +398,7 @@ describe('meshManager — sampleProbe', () => {
     // flux = 0.2*[1,0,0] + 0.3*[0,1,0] + 0.5*[0,0,1] = [0.2, 0.3, 0.5]
     const sample = manager.sampleProbe('T', 0, [0.2, 0.3, 0.5]);
     expect(sample).not.toBeNull();
+    if (sample === null) throw new Error('unreachable');
     expect(sample.vectors['flux'][0]).toBeCloseTo(0.2, 4);
     expect(sample.vectors['flux'][1]).toBeCloseTo(0.3, 4);
     expect(sample.vectors['flux'][2]).toBeCloseTo(0.5, 4);

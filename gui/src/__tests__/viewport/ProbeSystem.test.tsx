@@ -311,7 +311,7 @@ describe('createProbeSystem — resampleAll', () => {
       const id = system.addProbe('Body', 0, [1 / 3, 1 / 3, 1 / 3]);
       vi.clearAllMocks();
 
-      meshManager.sampleProbe.mockReturnValue(newSample);
+      vi.mocked(meshManager.sampleProbe).mockReturnValue(newSample);
       system.resampleAll();
 
       expect(store.state.probes[0].stale).toBe(false);
@@ -332,7 +332,7 @@ describe('createProbeSystem — resampleAll', () => {
       expect(store.state.probes[0].sample).toEqual(originalSample);
 
       // Next resample returns null → stale
-      meshManager.sampleProbe.mockReturnValue(null);
+      vi.mocked(meshManager.sampleProbe).mockReturnValue(null);
       system.resampleAll();
 
       expect(store.state.probes[0].stale).toBe(true);
@@ -354,7 +354,7 @@ describe('createProbeSystem — resampleAll', () => {
       // Capture the Color instance BEFORE resampleAll so we can assert it was mutated in place
       const colorObj = markerMaterial.color;
 
-      meshManager.sampleProbe.mockReturnValue(null);
+      vi.mocked(meshManager.sampleProbe).mockReturnValue(null);
       system.resampleAll();
 
       // Color must be set via .set() on the existing Color instance — not replaced
