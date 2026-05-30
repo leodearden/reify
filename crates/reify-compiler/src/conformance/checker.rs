@@ -872,6 +872,17 @@ fn render_assoc_fn_sig(sig: &CompiledAssocFnSig) -> String {
     format!("fn {}({}) -> {}", sig.name, parts.join(", "), sig.return_type)
 }
 
+/// True when a derived [`CompiledAssocFnSig`] carries a `Type::Error` in its
+/// (receiver-excluded) params or its return type — i.e. an annotation that
+/// failed to resolve. `collect_structure_assoc_fn_sigs` records `Type::Error`
+/// (via a throwaway diagnostic sink) for unresolvable annotations, while
+/// `compile_assoc_function` reports the real `UnresolvedType`; this predicate
+/// lets the phase-5 Fn arm skip the spurious `TraitFnSignatureMismatch` so one
+/// root cause yields one diagnostic. (task 3939 δ, reviewer amendment)
+fn assoc_fn_sig_has_error(sig: &CompiledAssocFnSig) -> bool {
+    sig.return_type == Type::Error || sig.params.iter().any(|t| *t == Type::Error)
+}
+
 /// Find the structure's own `fn <name>` override member, if it declares one.
 /// Used by the assoc-fn-resolution phase to pick the override body over the
 /// trait default. (task 3939 δ)
@@ -909,6 +920,11 @@ pub(super) fn check_phase_resolve_assoc_fns(
     alias_registry: &TypeAliasRegistry,
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
+    // Exact-match signatures of the structure's own `fn` members (built by
+    // `collect_structure_assoc_fn_sigs`, shared with phase 5). Consulted before
+    // pushing a required-fn override so a signature-mismatched override never
+    // lands in the dispatch table. (reviewer amendment)
+    structure_fn_sigs: &HashMap<String, CompiledAssocFnSig>,
     diagnostics: &mut Vec<Diagnostic>,
     assoc_fns_out: &mut Vec<CompiledAssocFn>,
 ) {
@@ -960,9 +976,9 @@ pub(super) fn check_phase_resolve_assoc_fns(
     // default body for these, so an unsatisfied one (no override, no default)
     // already errored in phase 5 and contributes no entry.
     for req in &ctx.requirements {
-        if !matches!(req.kind, RequirementKind::Fn(_)) {
+        let RequirementKind::Fn(expected_sig) = &req.kind else {
             continue;
-        }
+        };
         if !handled.insert(req.name.clone()) {
             continue; // a same-name default already produced the entry
         }
@@ -974,6 +990,9 @@ pub(super) fn check_phase_resolve_assoc_fns(
             .get(&req.name)
             .map(|(_, t)| t.clone())
             .unwrap_or_else(|| "<trait>".to_string());
+        // Compile the override unconditionally so a genuine body/type error in
+        // it (e.g. an unresolved param/return annotation) is still surfaced by
+        // `compile_assoc_function`, even when it will not enter the table below.
         if let Some(function) = compile_assoc_function(
             override_def,
             conformer,
@@ -984,12 +1003,23 @@ pub(super) fn check_phase_resolve_assoc_fns(
             trait_names,
             diagnostics,
         ) {
-            assoc_fns_out.push(CompiledAssocFn {
-                trait_name,
-                fn_name: req.name.clone(),
-                function,
-                is_override: true,
-            });
+            // Robustness (reviewer amendment): only populate the dispatch table
+            // when the override's derived signature exactly matches the
+            // requirement. A signature-mismatched override already triggered
+            // `TraitFnSignatureMismatch` in phase 5 and the errored module will
+            // not ship, but the table must not carry a wrongly-typed
+            // `CompiledAssocFn` that task ζ's dispatch would key on — that would
+            // leave the table internally inconsistent with the emitted
+            // diagnostic. (A sig carrying `Type::Error` from an unresolved
+            // annotation also fails this equality and is likewise kept out.)
+            if structure_fn_sigs.get(&req.name) == Some(expected_sig) {
+                assoc_fns_out.push(CompiledAssocFn {
+                    trait_name,
+                    fn_name: req.name.clone(),
+                    function,
+                    is_override: true,
+                });
+            }
         }
     }
 }
@@ -1086,7 +1116,17 @@ pub(super) fn check_phase_check_members_against_requirements(
                         // sig and the requirement sig both resolve through
                         // `resolve_type_expr_with_aliases`, so equal annotations
                         // compare equal.
-                        if actual_sig != expected_sig {
+                        //
+                        // Consistency (reviewer amendment): suppress the mismatch
+                        // when the structure-derived sig carries a `Type::Error`
+                        // (an unresolvable param/return annotation). The genuine
+                        // root cause is reported as `UnresolvedType` by
+                        // `compile_assoc_function` during table resolution; firing
+                        // a signature mismatch here too would double-report one
+                        // error and mislead (the sig "differs" only because
+                        // resolution failed). Mirrors the `Type::Error`
+                        // anti-cascade convention documented on this phase.
+                        if actual_sig != expected_sig && !assoc_fn_sig_has_error(actual_sig) {
                             diagnostics.push(
                                 Diagnostic::error(format!(
                                     "associated function '{}' provided by structure '{}' has \

@@ -102,6 +102,7 @@ pub(crate) fn check_trait_conformance(
         alias_registry,
         structure_names,
         trait_names,
+        &structure_fn_sigs,
         diagnostics,
         assoc_fns_out,
     );
