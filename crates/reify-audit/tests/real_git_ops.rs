@@ -178,3 +178,43 @@ fn file_lines_on_real_commit() {
         missing,
     );
 }
+
+// -----------------------------------------------------------------------
+// Trailing-newline invariant: both forms yield the same logical line count
+// -----------------------------------------------------------------------
+
+/// Pin that `RealGitOps::file_lines_on` handles a file with **no trailing
+/// newline** identically to a file that ends with `\n`.
+///
+/// The rustdoc on `file_lines_on` states that `str::lines()` does not produce
+/// a spurious empty entry for either form.  [`file_lines_on_real_commit`]
+/// verifies the trailing-newline case; this test covers the complementary
+/// no-trailing-newline case so the doc-claimed invariant is fully exercised.
+///
+/// Input:  `"a\nb"` (two logical lines, no final `\n`)
+/// Expected: `vec![(1, "a"), (2, "b")]` — same logical line count as `"a\nb\n"`.
+#[test]
+fn file_lines_on_no_trailing_newline() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    git_init(root);
+
+    // Write a two-line file WITHOUT a trailing newline.
+    write_file(root, "no_newline.rs", "a\nb");
+    git_commit(root, "no-trailing-newline commit");
+
+    let git = RealGitOps::new(root);
+
+    let lines = git.file_lines_on("HEAD", "no_newline.rs");
+    assert_eq!(
+        lines,
+        vec![
+            (1usize, "a".to_string()),
+            (2, "b".to_string()),
+        ],
+        "file_lines_on for a file WITHOUT a trailing newline must return 2 lines, \
+         same logical count as if a trailing newline were present; got: {:?}",
+        lines,
+    );
+}

@@ -369,6 +369,24 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         // Some even for gc'd SHAs).
         // `resolved_commit`   = Some(sha) only when the SHA is actually
         // reachable from "main" (is_ancestor gate).
+        //
+        // NOTE (transient-error routing): `is_ancestor` is fail-safe — it
+        // returns `false` on ANY git error (lock contention, corrupted index,
+        // spawn failure) in addition to the legitimate "not an ancestor" case.
+        // When `provenance_commit` is Some but `is_ancestor` transiently
+        // errors, `resolved_commit` becomes `None` and routing falls to branch
+        // (2) — full-file content scan — rather than branch (3) — branch diff.
+        // Branch (2) is noisier: it re-surfaces pre-existing stubs that may be
+        // mis-attributed to this task. The accepted mitigation is that branch
+        // (2) is gated strictly to tasks with a provenance commit (the rare
+        // gc'd-SHA case plus transient errors), so it cannot reintroduce
+        // 4076's false-positive volume on the common reachable-commit path.
+        // A more robust fix — having `is_ancestor` return `Option<bool>` to
+        // distinguish an error from a genuine "not an ancestor" — would route
+        // transient errors to branch (3) instead, preserving the original
+        // branch-diff behaviour rather than escalating to the noisy content
+        // scan. That change is recorded as a known limitation; it requires a
+        // trait-breaking refactor that is out of scope for this task.
         let provenance_commit: Option<&str> =
             meta.done_provenance.as_ref().and_then(|p| p.commit.as_deref());
         let resolved_commit: Option<&str> = provenance_commit

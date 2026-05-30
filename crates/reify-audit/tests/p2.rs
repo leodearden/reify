@@ -1485,6 +1485,116 @@ mod tests {
         );
     }
 
+    /// Documents the accepted precision/recall tradeoff of the unreachable-commit
+    /// content-scan fallback: a **pre-existing** stub that predates the task IS
+    /// attributed to the task whose commit is gc'd / recycled.
+    ///
+    /// This is NOT a bug — it is the documented last-resort recall strategy (see
+    /// module-level doc of `p2_consumer_stub`, branch (2) and design decision 4
+    /// in plan.json). When the recorded commit is gc'd the only remaining recall
+    /// anchor is the file's current state on `main`, which includes any stubs that
+    /// were already there before the task landed.
+    ///
+    /// This test guards against someone "fixing" this behaviour without realising
+    /// it is deliberate: a failing test here means the content-scan fallback has
+    /// been narrowed in a way that also drops genuine last-resort recall. If the
+    /// tradeoff is ever revisited (e.g. by cross-referencing `git blame`), update
+    /// this test alongside the routing logic.
+    ///
+    /// Cross-reference: module-level rustdoc of `p2_consumer_stub` (branch (2),
+    /// "documented precision/recall tradeoff") and the `is_ancestor` transient-
+    /// error NOTE comment in `p2_consumer_stub::check`.
+    #[test]
+    fn content_scan_fallback_attributes_preexisting_stubs_to_unreachable_commit_task() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let task_id = "4700";
+        let path = "crates/x/legacy.rs";
+
+        let mut git = MockGitOps::new();
+        // SHA does not exist in main (gc'd / recycled).
+        git.set_is_ancestor("old_sha", "main", false);
+        // The file on main contains a stub that PRE-DATES this task — it was
+        // written by a prior task, not by task 4700. The content-scan fallback
+        // surfaces it anyway because there is no diff to anchor attribution.
+        git.set_file_lines_on(
+            "main",
+            path,
+            vec![
+                (1, "fn existing_api() {}".to_string()),
+                (2, "    unimplemented!() // written by a prior task".to_string()),
+                (3, "fn another_fn() {}".to_string()),
+            ],
+        );
+        // Deliberately do NOT set diff_added_lines_in_commit or diff_added_lines.
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            task_id.to_string(),
+            TaskMetadata {
+                task_id: task_id.to_string(),
+                status: "done".to_string(),
+                files: vec![path.to_string()],
+                done_provenance: Some(reify_audit::DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("old_sha".to_string()),
+                    note: None,
+                }),
+                title: "Wire foo into bar".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: Some(9999),
+            },
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p2_consumer_stub::check(&ctx);
+        // The pre-existing stub IS attributed to the unreachable-commit task.
+        // This is intentional: the content-scan fallback trades precision for
+        // recall (it re-surfaces pre-existing stubs) and is gated strictly to
+        // the rare unreachable-commit case so it does not reintroduce 4076's
+        // false-positive volume on the common reachable-commit path.
+        assert_eq!(
+            findings.len(),
+            1,
+            "pre-existing stub on main MUST be attributed to the unreachable-commit \
+             task (accepted precision/recall tradeoff); got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        assert_eq!(
+            f.task_id, task_id,
+            "finding must be attributed to the unreachable-commit task; got {:?}",
+            f.task_id
+        );
+        assert_eq!(f.pattern, Pattern::P2ConsumerStub);
+        assert!(
+            f.evidence.iter().any(|e| match e {
+                EvidenceRef::File { path: p } => p == path,
+                _ => false,
+            }),
+            "finding must reference {path}; got {:?}",
+            f.evidence
+        );
+        assert!(
+            f.summary.contains("line 2"),
+            "summary must reference the pre-existing stub at line 2; got: {}",
+            f.summary
+        );
+    }
+
 } // mod tests
 
 } // mod p2
