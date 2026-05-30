@@ -459,7 +459,8 @@ pub use buckling_kernel::{BucklingKernelOptions, BucklingKernelResult, Mode, sol
 pub use geometric_stiffness::{
     InitialStress3, bar_tangent_stiffness, geometric_element_stiffness_bar_p1,
     geometric_element_stiffness_hex_p1, geometric_element_stiffness_shell,
-    geometric_element_stiffness_tet_p1, geometric_element_stiffness_wedge_p1,
+    geometric_element_stiffness_tet_p1, geometric_element_stiffness_tet_p2,
+    geometric_element_stiffness_wedge_p1,
 };
 // Task 3818: P1-tet consistent mass-matrix element kernel; reuses
 // `assemble_global_stiffness` for the global scatter (the assembler treats
