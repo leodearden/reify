@@ -107,11 +107,30 @@ fn register_compute_fns_installs_modal_free_vibration() {
 // (~25k DOFs) and runs a generalized eigensolve — heavy in debug. The
 // registration pin above runs always; this e2e gate runs release-only.
 //
-// RED until step-16 finalizes the cantilever BC realization + CI-practical mesh
-// density so the measured P1 first-mode error clears 10%. The measured floor is
-// pinned (comment) in step-16.
+// ── step-16: MEASURED P1 first-mode floor (the pinned tolerance) ─────────────
+//
+// BC realization (build_dirichlet_bcs): the single FixedSupport(target:"x_min")
+// clamps ALL THREE translational DOFs on every root-face (x ≈ 0) node — the
+// cantilever clamped-free configuration.
+//
+// Mesh (build_beam_mesh, mirroring solve_cantilever_fea): nz = 6 through the
+// 2 mm height, nx = round(L/h·nz) = 600 near-cubic bending-plane (XZ) elements,
+// ny = 1. This is the CI-practical density: the shear-locking-aware near-cubic
+// aspect ratio is the anti-locking lever, not raw nz.
+//
+// MEASURED on this mesh: f1 = 44.715 Hz vs analytic 41.271 Hz → +8.34% error
+// (P1 constant-strain tets lock in bending → overestimate K → bias frequency
+// high, since f ∝ √K). 8.34% clears the committed 10% PRD §1/§9.1 gate with
+// ~1.66% headroom — no mesh refinement was required. Consistent with the
+// buckling Euler-column's validated ~9.2% P1 eigenvalue floor on a comparable
+// column (f ∝ √λ halves the eigenvalue error) and the 2026-05-29 achievability
+// survey (2% deferred to P2-tet follow-up 4066). The assertion stays at the
+// committed 10% bound (mirroring buckling_smoke.rs, which pins 10% while
+// documenting its 9.2% measured error): the ~1.66% headroom absorbs minor
+// cross-platform / faer-version numerical drift without false-failing CI.
 
-/// Cantilever: first-mode frequency within 10% of the analytic value.
+/// Cantilever: first-mode frequency within 10% of the analytic value
+/// (MEASURED P1 floor +8.34%; see the step-16 note above).
 #[cfg_attr(debug_assertions, ignore = "heavy modal solve; release-only")]
 #[test]
 fn e2e_cantilever_first_mode_within_ten_percent() {
