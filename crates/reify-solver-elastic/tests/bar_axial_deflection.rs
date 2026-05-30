@@ -58,11 +58,7 @@ fn solve_single_bar(force: [f64; 3]) -> Vec<f64> {
     apply_dirichlet_row_elimination(&mut k_global, &mut f, &bcs);
 
     // Solve with tight CG tolerance
-    let opts = CgSolverOptions {
-        tolerance: 1.0e-12,
-        max_iter: 1000,
-        ..Default::default()
-    };
+    let opts = CgSolverOptions { tolerance: 1.0e-12, max_iter: 1000 };
     let result = solve_cg(&k_global, &f, opts, SolverMode::Deterministic);
     assert!(result.converged, "CG did not converge: {} iters", result.iterations);
     result.u.to_vec()
@@ -118,7 +114,7 @@ fn transverse_load_matches_pt_l_over_n() {
     assert_close(u[3], 0.0, 1e-9, "u_x[node1] = 0 under transverse load");
     assert_close(u[5], 0.0, 1e-9, "u_z[node1] = 0 under transverse y-load");
     // Fixed node 0 must not move
-    for i in 0..3 {
-        assert_close(u[i], 0.0, 1e-12, &format!("u[node0 dof {i}] = 0 (fixed)"));
+    for (i, &u_val) in u[..3].iter().enumerate() {
+        assert_close(u_val, 0.0, 1e-12, &format!("u[node0 dof {i}] = 0 (fixed)"));
     }
 }

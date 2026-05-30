@@ -84,11 +84,11 @@ pub fn geometric_element_stiffness_bar_p1(
     for a in 0..2usize {
         for b in 0..2usize {
             let sign = if a == b { 1.0 } else { -1.0 };
-            for i in 0..3usize {
-                for j in 0..3usize {
+            for (i, t_row) in t.iter().enumerate() {
+                for (j, &t_val) in t_row.iter().enumerate() {
                     let row = 3 * a + i;
                     let col = 3 * b + j;
-                    kg.data[row * 6 + col] = sign * scale * t[i][j];
+                    kg.data[row * 6 + col] = sign * scale * t_val;
                 }
             }
         }
@@ -196,7 +196,7 @@ mod tests {
         assert_close(kg.get(1, 0), -0.5 * s, 1e-12, "K_g(1,0)=-0.5·N/L");
         assert_close(kg.get(0, 3), -0.5 * s, 1e-12, "K_g(0,3)=-0.5·N/L");
         assert_close(kg.get(1, 4), -0.5 * s, 1e-12, "K_g(1,4)=-0.5·N/L");
-        assert_close(kg.get(2, 5), -1.0 * s, 1e-12, "K_g(2,5)=-N/L");
+        assert_close(kg.get(2, 5), -s, 1e-12, "K_g(2,5)=-N/L");
         assert_close(kg.get(0, 2), 0.0, 1e-12, "K_g(0,2)=0");
         assert_close(kg.get(1, 2), 0.0, 1e-12, "K_g(1,2)=0");
     }
