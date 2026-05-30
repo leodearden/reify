@@ -205,6 +205,50 @@ mod tests {
         );
     }
 
+    // ── step-3: residual_vibration ───────────────────────────────────────────
+
+    /// A unit impulse at t=0 has V=1 (baseline).
+    #[test]
+    fn residual_vibration_unit_impulse_is_one() {
+        let unit = ImpulseTrain {
+            impulses: vec![Impulse { time: 0.0, amplitude: 1.0 }],
+        };
+        let omega_n = 2.0 * PI * 10.0;
+        let zeta = 0.05;
+        assert_close(unit.residual_vibration(omega_n, zeta), 1.0, 1e-12, "unit impulse V=1");
+    }
+
+    /// ZV train at design (ω_n, ζ) has V≈0 (≤1e-12) — proven telescoping identity.
+    #[test]
+    fn residual_vibration_zv_at_design_is_zero() {
+        let omega_n = 2.0 * PI * 10.0;
+        let zeta = 0.05;
+        let train = ImpulseTrain::zv(omega_n, zeta);
+        let v = train.residual_vibration(omega_n, zeta);
+        assert!(
+            v.abs() <= 1e-12,
+            "ZV residual at design should be ≈0, got {v:.3e}"
+        );
+    }
+
+    /// ≥40 dB suppression: V_zv ≤ 0.01·V_unshaped at design frequency.
+    #[test]
+    fn residual_vibration_zv_40db_suppression() {
+        let omega_n = 2.0 * PI * 10.0; // 10 Hz
+        let zeta = 0.05;
+        let unit = ImpulseTrain {
+            impulses: vec![Impulse { time: 0.0, amplitude: 1.0 }],
+        };
+        let v_unshaped = unit.residual_vibration(omega_n, zeta);
+        let v_shaped = ImpulseTrain::zv(omega_n, zeta).residual_vibration(omega_n, zeta);
+        // V_unshaped = 1.0 by the identity above; V_shaped ≈ 0 → ratio ≤ 0.01
+        assert!(
+            v_shaped <= 0.01 * v_unshaped,
+            "ZV must suppress ≥40 dB; V_shaped={v_shaped:.3e}, 0.01*V_unshaped={:.3e}",
+            0.01 * v_unshaped
+        );
+    }
+
     // ── step-1: ZV train construction ────────────────────────────────────────
 
     /// ZV undamped (ζ=0): amplitudes [0.5, 0.5] at times [0, π/ω_n].
