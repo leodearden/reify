@@ -545,4 +545,91 @@ mod tests {
             }
         }
     }
+
+    /// step-7 (RED → GREEN in step-8): participation-mass completeness identity.
+    ///
+    /// On the coarse root-clamped fixture solved for the FULL spectrum
+    /// (`n_modes = n_free`, dense path), the per-mode effective masses must
+    /// satisfy the Parseval/completeness identity for the reference direction
+    /// `d`:
+    ///
+    /// ```text
+    /// Σ_i (φ_free_iᵀ·M_free·d_free)²  =  d_freeᵀ·M_free·d_free
+    /// ```
+    ///
+    /// i.e. `Σ_i participation_mass[i]` equals the total translational mass of
+    /// the free DOFs along `d` — EXACTLY, because a complete M-orthonormal basis
+    /// resolves the identity `Σ_i φ_i φ_iᵀ M = I`. Each φ is mass-normalized
+    /// (φᵀMφ = 1, step 6) and the clamped fixture's eigenvalues are distinct, so
+    /// the eigenvectors are mutually M-orthogonal and the basis is M-orthonormal.
+    /// This pins the participation computation and the normalization together
+    /// with a deterministic, by-construction-exact assertion (design_decision
+    /// #5; avoids the fuzzy "≥99% capture" bound).
+    ///
+    /// RED: `participation_mass` (and the `reference_direction` parameter) are
+    /// absent until step 8.
+    #[test]
+    fn solve_modal_core_participation_mass_satisfies_completeness() {
+        let length = 0.02_f64;
+        let width = 0.05_f64;
+        let height = 0.1_f64;
+        // Bending (Z) direction; a unit vector so the identity's RHS is the
+        // exact total Z-translational mass of the free DOFs.
+        let reference_direction = [0.0_f64, 0.0, 1.0];
+
+        let mesh = build_beam_mesh(length, width, height);
+        let (bcs, constrained_dofs) = clamp_x_min_face(&mesh.nodes);
+        let n_dofs = 3 * mesh.nodes.len();
+        let n_free = n_dofs - constrained_dofs.len();
+        assert!(n_free > 0, "fixture must leave at least one free DOF");
+
+        // Full spectrum: request every free mode so {φ_i} is a complete basis.
+        let eigen_opts =
+            EigenSolverOptions { n_modes: n_free, tol: 1e-8, max_iters: 200, sigma: 0.0 };
+
+        let result: ModalCoreResult = solve_modal_core(
+            STEEL_DENSITY,
+            &steel(),
+            length,
+            width,
+            height,
+            reference_direction,
+            &bcs,
+            &eigen_opts,
+        );
+
+        // Precondition: the dense path returned the entire free spectrum (so the
+        // completeness sum is over a complete basis, not a truncated one).
+        assert_eq!(
+            result.participation_mass.len(),
+            n_free,
+            "full-spectrum solve must return n_free = {n_free} effective masses",
+        );
+
+        // Rebuild d_free (the reference direction broadcast to each free node's
+        // translational DOFs; axis = full DOF index mod 3) from the same clamp,
+        // independently of the solver's internal map.
+        let mut is_constrained = vec![false; n_dofs];
+        for &g in &constrained_dofs {
+            is_constrained[g] = true;
+        }
+        let full_of_free: Vec<usize> =
+            (0..n_dofs).filter(|&g| !is_constrained[g]).collect();
+        let d_free: Vec<f64> =
+            full_of_free.iter().map(|&g| reference_direction[g % 3]).collect();
+
+        // RHS: total translational mass of the free DOFs along d.
+        let total_mass = m_quadratic_form(&result.m_free, &d_free, &d_free);
+        assert!(total_mass > 0.0, "reference-direction mass must be positive");
+
+        // LHS: Σ_i participation_mass[i] = Σ_i (φ_iᵀ M d)².
+        let captured: f64 = result.participation_mass.iter().sum();
+
+        assert!(
+            (captured - total_mass).abs() < 1e-9,
+            "completeness identity: Σ participation = {captured}, total mass = \
+             {total_mass}, |Δ| = {} exceeds 1e-9",
+            (captured - total_mass).abs(),
+        );
+    }
 }
