@@ -1,0 +1,21 @@
+// Fixture: edges(Solid) sub-handle selector for a parametric box
+// PRD: docs/prds/v0_3/kernel-geometry-queries.md §4/§9 KGQ-η
+//
+// A 10×20×30 mm box has 12 unique edges (4 edges × 3 axis directions).
+// `param width` is the editable scalar that drives the freshness-cascade test
+// (PRD §4 invariant v): width → R0 → b (geometry cell) → es (selector cell).
+//
+// Let-bound `b` satisfies the ValueRef arg-shape contract; inline
+// edges(box(...)) would fall through to None because the dispatcher resolves
+// args via `values.get(cell_id)`, which requires a previously-hydrated cell.
+//
+// Pinning tests:
+//   crates/reify-eval/tests/topology_selectors_tests.rs::
+//     box_edges_integration_test  (OCCT-gated, asserts 12 Value::GeometryHandle)
+//     box_edges_freshness_cascade (OCCT-gated, asserts es goes Pending on width edit)
+
+structure def BoxEdges {
+    param width : Length = 10mm
+    let b = box(width, 20mm, 30mm)
+    let es = edges(b)
+}

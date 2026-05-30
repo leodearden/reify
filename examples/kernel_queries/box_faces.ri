@@ -1,0 +1,17 @@
+// Fixture: faces(Solid) sub-handle selector for a parametric box
+// PRD: docs/prds/v0_3/kernel-geometry-queries.md §4/§9 KGQ-η
+//
+// A 10×20×30 mm box has 6 unique faces (one per axis-aligned pair of normals).
+// Let-bound `b` satisfies the ValueRef arg-shape contract; inline
+// faces(box(...)) would fall through to None because the dispatcher resolves
+// args via `values.get(cell_id)`, which requires a previously-hydrated cell.
+// Mirrors the moment_of_inertia_box.ri structure-def + let-bound-box convention.
+//
+// Pinning tests:
+//   crates/reify-eval/tests/topology_selectors_tests.rs::
+//     box_faces_integration_test  (OCCT-gated, asserts 6 Value::GeometryHandle)
+
+structure def BoxFaces {
+    let b = box(10mm, 20mm, 30mm)
+    let fs = faces(b)
+}
