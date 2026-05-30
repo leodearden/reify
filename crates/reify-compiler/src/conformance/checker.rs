@@ -880,7 +880,7 @@ fn render_assoc_fn_sig(sig: &CompiledAssocFnSig) -> String {
 /// lets the phase-5 Fn arm skip the spurious `TraitFnSignatureMismatch` so one
 /// root cause yields one diagnostic. (task 3939 δ, reviewer amendment)
 fn assoc_fn_sig_has_error(sig: &CompiledAssocFnSig) -> bool {
-    sig.return_type == Type::Error || sig.params.iter().any(|t| *t == Type::Error)
+    sig.return_type == Type::Error || sig.params.contains(&Type::Error)
 }
 
 /// Find the structure's own `fn <name>` override member, if it declares one.
