@@ -164,6 +164,33 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
         match has_task_completed_event(ctx, &meta.task_id) {
             Ok(true) => {}
             Ok(false) => {
+                // Ancestor-corroboration rescue. If the claimed commit is a
+                // valid ancestor of main, the work is literally on main — a
+                // sufficient corroboration regardless of the runs.db gap (e.g.
+                // rebuild coverage gap, recycled task ID). Downgrade to Low.
+                // File-presence is necessary but not sufficient, so we stay
+                // Low/inspectable rather than suppressing entirely.
+                if let Some(commit) = prov.commit.as_deref() {
+                    if ctx.git.is_ancestor(commit, MAIN_BASE) {
+                        return Some(Finding {
+                            pattern: Pattern::P5PhantomDone,
+                            severity: Severity::Low,
+                            task_id: meta.task_id.clone(),
+                            summary:
+                                "deliverable present (claimed commit is an ancestor of main); \
+                                 no task_completed event in runs.db — stale/rebuilt provenance, \
+                                 not phantom-done"
+                                    .to_string(),
+                            evidence: vec![EvidenceRef::RunsDb {
+                                table: "events".to_string(),
+                                key: format!(
+                                    "task_id={} AND event_type=task_completed",
+                                    meta.task_id
+                                ),
+                            }],
+                        });
+                    }
+                }
                 return Some(Finding {
                     pattern: Pattern::P5PhantomDone,
                     severity: Severity::High,
