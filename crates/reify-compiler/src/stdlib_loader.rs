@@ -169,6 +169,13 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 "std.process",
                 include_str!("../stdlib/process.ri"),
             ),
+            // `std.dynamics` depends only on `std.units` (Mass / Length / Time —
+            // the first module in the sequence). Tail placement is order-safe and
+            // keeps the v0.3 RBD cluster grouped. RBD-α task 3822.
+            (
+                "std.dynamics",
+                include_str!("../stdlib/dynamics.ri"),
+            ),
         ];
 
         // SEQUENTIAL COMPILATION WITH GROWING PRELUDE: each module is compiled
