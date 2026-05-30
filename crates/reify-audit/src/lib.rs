@@ -281,6 +281,30 @@ pub trait GitOps {
     /// added lines.
     fn diff_added_lines(&self, from: &str, to: &str, path: &str) -> Vec<(usize, String)>;
 
+    /// Returns the added lines introduced by commit `commit` into `path`, i.e.
+    /// `git diff <commit>^1..<commit> -- <path>`. For a standard `--no-ff` merge
+    /// commit M (first parent M^1 = pre-merge main tip, result = M), this yields
+    /// exactly the task's net delta on the given path. Fail-safe: returns an empty
+    /// vec on any git error, including an unreachable or recycled commit SHA.
+    ///
+    /// Used by P2's reaped-branch recall path: when `done_provenance.commit` is
+    /// set and reachable from `main`, the task's `task/N` branch has typically
+    /// been reaped by the orchestrator — but the merge commit M survives on
+    /// `main`, so `git diff M^1..M` recovers the exact task delta.
+    fn diff_added_lines_in_commit(&self, commit: &str, path: &str) -> Vec<(usize, String)>;
+
+    /// Returns all lines of `path` at `reference` (e.g. `"main"`, `"HEAD"`) as
+    /// `(1-based_line_no, content)` pairs, equivalent to `git show
+    /// <reference>:<path>` split on `\n`. Fail-safe: returns an empty vec when
+    /// the path is missing on that ref or any git error occurs. Trailing
+    /// newlines produce no spurious empty entry (a file ending with `\n` returns
+    /// the same line count as its logical line count).
+    ///
+    /// Used by P2's recycled-commit fallback: when `done_provenance.commit` is
+    /// set but NOT reachable from `main` (gc'd / recycled SHA), the full-file
+    /// content scan on `main` serves as a last-resort recall path.
+    fn file_lines_on(&self, reference: &str, path: &str) -> Vec<(usize, String)>;
+
     /// Returns `true` iff `commit` is a valid ancestor of `branch` (reachable
     /// from it), equivalent to `git merge-base --is-ancestor <commit> <branch>`
     /// (exit 0 = ancestor, exit 1 = not). Used by P5's scope-extension to
@@ -330,6 +354,44 @@ pub struct RealGitOps {
     /// single-instance construction requirement that makes this budget
     /// meaningful in production.
     gitignore_unavailable: AtomicBool,
+}
+
+/// Parse the `+` lines from a unified diff (`git diff` stdout) into
+/// `(new_side_line_no, content)` pairs, with the leading `+` stripped.
+/// Line numbers track the new-file side (the `+c` field of each
+/// `@@ -a,b +c,d @@` hunk header). Shared by [`RealGitOps::diff_added_lines`]
+/// and [`RealGitOps::diff_added_lines_in_commit`] to avoid duplicating ~20 lines.
+fn parse_added_lines(stdout: &str) -> Vec<(usize, String)> {
+    let mut result = Vec::new();
+    let mut new_line: usize = 0;
+    let mut in_hunk = false;
+    for line in stdout.lines() {
+        if line.starts_with("@@ ") {
+            in_hunk = true;
+            // Parse "@@ -a,b +c,d @@" to extract c (new-file start line).
+            if let Some(plus_pos) = line.find(" +") {
+                let rest = &line[plus_pos + 2..];
+                let delim = rest.find([',', ' ']).unwrap_or(rest.len());
+                if let Ok(c) = rest[..delim].parse::<usize>() {
+                    // Set counter so first context/+ line yields c.
+                    new_line = c.saturating_sub(1);
+                }
+            }
+        } else if !in_hunk {
+            // Pre-hunk header lines (diff/index/---/+++ headers): skip.
+        } else if let Some(stripped) = line.strip_prefix('+') {
+            new_line += 1;
+            result.push((new_line, stripped.to_string()));
+        } else if line.starts_with('-') {
+            // Removed line: new-side counter does not advance.
+        } else if line.starts_with('\\') {
+            // "\ No newline at end of file" — ignore.
+        } else {
+            // Context line (starts with ' '): both sides advance.
+            new_line += 1;
+        }
+    }
+    result
 }
 
 impl RealGitOps {
@@ -492,36 +554,35 @@ impl GitOps for RealGitOps {
         ) else {
             return vec![];
         };
-        let mut result = Vec::new();
-        let mut new_line: usize = 0;
-        let mut in_hunk = false;
-        for line in stdout.lines() {
-            if line.starts_with("@@ ") {
-                in_hunk = true;
-                // Parse "@@ -a,b +c,d @@" to extract c (new-file start line).
-                if let Some(plus_pos) = line.find(" +") {
-                    let rest = &line[plus_pos + 2..];
-                    let delim = rest.find([',', ' ']).unwrap_or(rest.len());
-                    if let Ok(c) = rest[..delim].parse::<usize>() {
-                        // Set counter so first context/+ line yields c.
-                        new_line = c.saturating_sub(1);
-                    }
-                }
-            } else if !in_hunk {
-                // Pre-hunk header lines (diff/index/---/+++ headers): skip.
-            } else if let Some(stripped) = line.strip_prefix('+') {
-                new_line += 1;
-                result.push((new_line, stripped.to_string()));
-            } else if line.starts_with('-') {
-                // Removed line: new-side counter does not advance.
-            } else if line.starts_with('\\') {
-                // "\ No newline at end of file" — ignore.
-            } else {
-                // Context line (starts with ' '): both sides advance.
-                new_line += 1;
-            }
-        }
-        result
+        parse_added_lines(&stdout)
+    }
+
+    fn diff_added_lines_in_commit(&self, commit: &str, path: &str) -> Vec<(usize, String)> {
+        // `<commit>^1..<commit>` is the first-parent diff of the merge commit:
+        //   - M^1 = pre-merge main tip
+        //   - M   = merged result
+        // This yields exactly the task's net delta on `path`.
+        let range = format!("{}^1..{}", commit, commit);
+        let Some(stdout) = self.run_or_warn(
+            "diff (commit)",
+            &["diff", &range, "--", path],
+        ) else {
+            return vec![];
+        };
+        parse_added_lines(&stdout)
+    }
+
+    fn file_lines_on(&self, reference: &str, path: &str) -> Vec<(usize, String)> {
+        // `git show <reference>:<path>` prints the file at that ref.
+        let spec = format!("{}:{}", reference, path);
+        let Some(stdout) = self.run_or_warn("show", &["show", &spec]) else {
+            return vec![];
+        };
+        stdout
+            .lines()
+            .enumerate()
+            .map(|(i, l)| (i + 1, l.to_string()))
+            .collect()
     }
 }
 
@@ -541,6 +602,8 @@ pub struct MockGitOps {
     diff_changed_paths: HashMap<(String, String), Vec<String>>,
     is_gitignored: HashMap<String, bool>,
     diff_added_lines: HashMap<(String, String, String), Vec<(usize, String)>>,
+    diff_added_lines_in_commit: HashMap<(String, String), Vec<(usize, String)>>,
+    file_lines_on: HashMap<(String, String), Vec<(usize, String)>>,
     path_tracked_on: HashMap<(String, String), bool>,
     is_ancestor: HashMap<(String, String), bool>,
 }
@@ -592,6 +655,28 @@ impl MockGitOps {
         self.is_ancestor
             .insert((commit.to_string(), branch.to_string()), ancestor);
     }
+
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn set_diff_added_lines_in_commit(
+        &mut self,
+        commit: &str,
+        path: &str,
+        added: Vec<(usize, String)>,
+    ) {
+        self.diff_added_lines_in_commit
+            .insert((commit.to_string(), path.to_string()), added);
+    }
+
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn set_file_lines_on(
+        &mut self,
+        reference: &str,
+        path: &str,
+        lines: Vec<(usize, String)>,
+    ) {
+        self.file_lines_on
+            .insert((reference.to_string(), path.to_string()), lines);
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -617,6 +702,20 @@ impl GitOps for MockGitOps {
     fn diff_added_lines(&self, from: &str, to: &str, path: &str) -> Vec<(usize, String)> {
         self.diff_added_lines
             .get(&(from.to_string(), to.to_string(), path.to_string()))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn diff_added_lines_in_commit(&self, commit: &str, path: &str) -> Vec<(usize, String)> {
+        self.diff_added_lines_in_commit
+            .get(&(commit.to_string(), path.to_string()))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn file_lines_on(&self, reference: &str, path: &str) -> Vec<(usize, String)> {
+        self.file_lines_on
+            .get(&(reference.to_string(), path.to_string()))
             .cloned()
             .unwrap_or_default()
     }

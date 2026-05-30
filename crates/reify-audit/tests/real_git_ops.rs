@@ -9,7 +9,7 @@
 //!
 //! Run with: `cargo test -p reify-audit real_git_ops`
 
-use reify_audit::RealGitOps;
+use reify_audit::{GitOps, RealGitOps};
 use std::process::Command;
 use tempfile::TempDir;
 
