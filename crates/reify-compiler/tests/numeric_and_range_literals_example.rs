@@ -26,24 +26,24 @@ const EXAMPLE_PATH: &str = concat!(
 ///   (a) parse with zero errors, and
 ///   (b) compile under the stdlib prelude with zero Error-severity diagnostics.
 ///
-/// This is the focused TDD gate for task η/3915.  The bulk
-/// `all_examples_parse_and_compile_with_stdlib` test in `examples_smoke.rs`
-/// also auto-discovers and exercises this file (belt-and-suspenders; no edit
-/// to the harness is required).
+/// The bulk `all_examples_parse_and_compile_with_stdlib` test in
+/// `examples_smoke.rs` also auto-discovers and exercises this file via its
+/// recursive walk of `examples/`.  The overlap is intentional and permanent:
+/// this focused gate provides a targeted, descriptive failure message scoped
+/// to this one file, while the bulk harness provides breadth coverage.
 #[test]
 fn numeric_and_range_literals_example_parses_and_compiles_with_zero_errors() {
     let src = std::fs::read_to_string(EXAMPLE_PATH).unwrap_or_else(|e| {
         panic!(
             "failed to read examples/numeric_and_range_literals.ri — \
-             check that the file exists (task η/3915 step-2 must create it): {}",
+             check that the file exists: {}",
             e
         )
     });
 
     // ── Parse ──────────────────────────────────────────────────────────────
-    // Use parse_with_stdlib so stdlib enum-access identifiers (e.g.
-    // `CorrosionClass.C5`) resolve as EnumAccess nodes — consistent with
-    // how compile_with_stdlib sees the module.
+    // Use parse_with_stdlib so the module is seen the same way
+    // compile_with_stdlib sees it.
     let parsed = parse_with_stdlib(&src, ModulePath::single("numeric_and_range_literals"));
 
     assert!(
