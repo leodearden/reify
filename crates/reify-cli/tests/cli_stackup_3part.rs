@@ -72,3 +72,45 @@ fn eval_tolerance_stackup_3part_exact_values() {
     assert_rel_close(extract_scalar(&stdout, "rss_band"),        rss_band_oracle(),         1e-12, "rss_band");
     assert_rel_close(extract_scalar(&stdout, "rss_sigma"),       rss_band_oracle() / 3.0,   1e-12, "rss_sigma");
 }
+
+/// Monte-Carlo gate: mc_sigma converges to rss_sigma within 2% (all-Normal chain,
+/// N=100k, seed=42 — PRD §3.3); mc_yield_fraction ≈ 1.0 for the [2.5mm, 3.5mm]
+/// spec window (~±12σ_gap); two runs are byte-identical (INV-3).
+///
+/// RED until step-4 adds the monte_carlo_stackup cell to the example.
+#[test]
+fn eval_tolerance_stackup_3part_mc_gate() {
+    let path = common::example_path("tolerance-stackup-3part.ri");
+    let (status, stdout, stderr) = common::run_subcommand("eval", &path);
+
+    assert!(
+        status.success(),
+        "reify eval tolerance-stackup-3part.ri should exit 0;\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("mc_sigma"),
+        "stdout should contain 'mc_sigma' (MC cell missing from example);\n{stdout}"
+    );
+
+    let rss_sigma = extract_scalar(&stdout, "rss_sigma");
+    let mc_sigma  = extract_scalar(&stdout, "mc_sigma");
+    let rel_err   = (mc_sigma - rss_sigma).abs() / rss_sigma;
+    assert!(
+        rel_err <= 0.02,
+        "mc_sigma not within 2% of rss_sigma: mc_sigma={mc_sigma:.6e}, rss_sigma={rss_sigma:.6e}, rel_err={rel_err:.4}"
+    );
+
+    let mc_yf = extract_scalar(&stdout, "mc_yield_fraction");
+    assert!(
+        (0.0..=1.0).contains(&mc_yf),
+        "mc_yield_fraction out of [0,1]: {mc_yf}"
+    );
+    assert!(
+        mc_yf >= 0.999,
+        "mc_yield_fraction below 0.999 for ~±12σ spec window: {mc_yf}"
+    );
+
+    // INV-3: two runs must produce byte-identical stdout.
+    let (_, stdout2, _) = common::run_subcommand("eval", &path);
+    assert_eq!(stdout, stdout2, "two reify eval runs must be byte-identical (INV-3)");
+}
