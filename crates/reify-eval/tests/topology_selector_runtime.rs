@@ -761,19 +761,18 @@ fn adjacent_faces_let_resolves_via_selector_vocabulary_v2() {
     }
 }
 
-/// `let es = shared_edges(body, body)` must derive a common parent solid
-/// via `GeometryQuery::OwnerBody`, recover face indices via `extract_faces`,
-/// dispatch `GeometryQuery::SharedEdges`, and map the reply integer indices
-/// back to edge handles via `extract_edges(parent)`. This exercises the full
-/// dispatch wiring (handle→OwnerBody→index→SharedEdges→index→edge_handle).
+/// `let es = shared_edges(body, body)` must resolve to a `Value::List` of one
+/// `Value::GeometryHandle` sub-handle (kernel_handle GHId(2)) via the full
+/// OwnerBody→face-index→SharedEdges→edge-index→dispatch_filtered_subhandles
+/// pipeline (PRD §4 KGQ-κ, task 3619).
 ///
 /// NOTE: like `adjacent_faces_let_resolves_via_selector_vocabulary_v2`, the
 /// natural fixture would let-bind two face handles (e.g. via `single(faces_by_normal(...))`),
-/// but `single` is out of scope (#2698) and `Type::Geometry` face cells are
-/// not directly representable. The artificial `shared_edges(body, body)` form
+/// but the selector→list-helper→selector eval-chaining is out of scope
+/// (engine_build.rs:3942-3949). The artificial `shared_edges(body, body)` form
 /// stages `body` as its own owner (OwnerBody(1)=1), its own sole face
 /// (extract_faces(1)=[1] so face_index=0), and stages a SharedEdges reply
-/// `[0]` that maps back via extract_edges(1)=[2] → handle 2.
+/// `[0]` that maps back via extract_edges(1)=[2] → sub-handle with GHId(2).
 #[test]
 fn shared_edges_let_resolves_to_list_via_owner_body_derivation() {
     let source = "structure def Bracket {\n    \
@@ -795,13 +794,28 @@ fn shared_edges_let_resolves_to_list_via_owner_body_derivation() {
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let cell = ValueCellId::new("Bracket", "es");
-    assert_eq!(
-        result.values.get(&cell),
-        Some(&Value::List(vec![Value::Int(2)])),
-        "Bracket.es must resolve to the SharedEdges Value::List via \
-         OwnerBody-derivation (SharedEdges index 0 → edge handle 2), got {:?}",
-        result.values.get(&cell),
-    );
+    let list = match result.values.get(&cell) {
+        Some(Value::List(elems)) => elems.clone(),
+        other => panic!(
+            "Bracket.es must be Value::List of GeometryHandle sub-handles \
+             (PRD §4 KGQ-κ), got {:?}",
+            other
+        ),
+    };
+    assert_eq!(list.len(), 1, "expected 1 shared edge sub-handle");
+    match &list[0] {
+        Value::GeometryHandle { kernel_handle, .. } => {
+            assert_eq!(
+                *kernel_handle,
+                GeometryHandleId(2),
+                "es[0] kernel_handle must be GHId(2) (SharedEdges index 0 → edge handle 2)"
+            );
+        }
+        other => panic!(
+            "es[0] must be Value::GeometryHandle, got {:?}",
+            other
+        ),
+    }
 }
 
 /// `shared_edges(face_a, face_b)` where the two faces' OwnerBody replies
