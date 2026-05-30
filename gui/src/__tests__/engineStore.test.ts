@@ -1476,4 +1476,49 @@ describe('engineStore solverProgress', () => {
       dispose();
     });
   });
+
+  it('(step-7a) setEvalStatus({phase:idle}) resets solverProgress to initial state', () => {
+    vi.useFakeTimers();
+    createRoot((dispose) => {
+      const { state, applySolverProgress, setEvalStatus } = createEngineStore();
+      applySolverProgress({ solver_kind: 'cg' as const, iter: 1, residual: 0.5 });
+      vi.advanceTimersByTime(1000);
+      expect(state.solverProgress.visible).toBe(true);
+      expect(state.solverProgress.trace).toHaveLength(1);
+
+      setEvalStatus({ phase: 'idle' });
+      expect(state.solverProgress).toEqual({ latest: null, trace: [], visible: false, coarseReached: false });
+      dispose();
+    });
+    vi.useRealTimers();
+  });
+
+  it('(step-7b) fast-solve: timer cleared when idle arrives before 1s, visible stays false', () => {
+    vi.useFakeTimers();
+    createRoot((dispose) => {
+      const { state, applySolverProgress, setEvalStatus } = createEngineStore();
+      applySolverProgress({ solver_kind: 'cg' as const, iter: 1, residual: 0.5 });
+      expect(state.solverProgress.visible).toBe(false);
+      setEvalStatus({ phase: 'idle' });
+      vi.advanceTimersByTime(1000);
+      // Timer must have been cleared — visible stays false after reset
+      expect(state.solverProgress.visible).toBe(false);
+      dispose();
+    });
+    vi.useRealTimers();
+  });
+
+  it('(step-7c) resetSolverProgress() directly resets state', () => {
+    vi.useFakeTimers();
+    createRoot((dispose) => {
+      const { state, applySolverProgress, resetSolverProgress } = createEngineStore();
+      applySolverProgress({ solver_kind: 'cg' as const, iter: 1, residual: 0.5 });
+      vi.advanceTimersByTime(1000);
+      expect(state.solverProgress.visible).toBe(true);
+      resetSolverProgress();
+      expect(state.solverProgress).toEqual({ latest: null, trace: [], visible: false, coarseReached: false });
+      dispose();
+    });
+    vi.useRealTimers();
+  });
 });
