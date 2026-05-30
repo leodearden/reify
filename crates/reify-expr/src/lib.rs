@@ -2412,6 +2412,57 @@ fn eval_sub(lv: &Value, rv: &Value) -> Value {
                 }
             }
         }
+        // Subtraction is non-commutative, so Real/Int ± Complex needs four distinct arms.
+        // Guard: Complex must be DIMENSIONLESS; otherwise → Undef (D3 policy).
+        //
+        // Real(a) - Complex{re,im,DIMENSIONLESS} → Complex{ re: a-re, im: -im }
+        (Value::Real(a), Value::Complex { re, im, dimension }) => {
+            if *dimension != DimensionVector::DIMENSIONLESS {
+                Value::Undef
+            } else {
+                Value::Complex {
+                    re: a - re,
+                    im: -im,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                }
+            }
+        }
+        // Complex{re,im,DIMENSIONLESS} - Real(a) → Complex{ re: re-a, im }
+        (Value::Complex { re, im, dimension }, Value::Real(a)) => {
+            if *dimension != DimensionVector::DIMENSIONLESS {
+                Value::Undef
+            } else {
+                Value::Complex {
+                    re: re - a,
+                    im: *im,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                }
+            }
+        }
+        // Int(a) - Complex{re,im,DIMENSIONLESS} → Complex{ re: a-re, im: -im }
+        (Value::Int(a), Value::Complex { re, im, dimension }) => {
+            if *dimension != DimensionVector::DIMENSIONLESS {
+                Value::Undef
+            } else {
+                Value::Complex {
+                    re: *a as f64 - re,
+                    im: -im,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                }
+            }
+        }
+        // Complex{re,im,DIMENSIONLESS} - Int(a) → Complex{ re: re-a, im }
+        (Value::Complex { re, im, dimension }, Value::Int(a)) => {
+            if *dimension != DimensionVector::DIMENSIONLESS {
+                Value::Undef
+            } else {
+                Value::Complex {
+                    re: re - *a as f64,
+                    im: *im,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                }
+            }
+        }
         // Component-wise Tensor subtraction (with rank-2 validation)
         (Value::Tensor(a), Value::Tensor(b)) => {
             if let Some(undef) = validate_rank2_tensors(a, b) {
