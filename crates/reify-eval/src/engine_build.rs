@@ -3,7 +3,10 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Instant;
 
-use reify_compiler::CompiledModule;
+use reify_compiler::{
+    BooleanOp, CompiledGeometryOp, CompiledModule, CurveKind, GeomRef, ModifyKind, PatternKind,
+    PrimitiveKind, SweepKind, TopologyTemplate, TransformKind,
+};
 use reify_solver_elastic::{
     Mesh2d, Mesh2dError, Mesh2dReport, MpcRow, SweepError, SweepParams, SweptMesh3d,
 };
@@ -1034,6 +1037,191 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
 /// producers to demand BRep.
 fn op_accepts_repr(op: &Operation, repr: ReprKind) -> bool {
     classify_op_input_reprs(op).is_some_and(|s| s.contains(&repr))
+}
+
+/// Map a compiled geometry op to its `Operation` classifier key.
+///
+/// Exhaustive match over `CompiledGeometryOp`/kind sub-enums so a new variant
+/// fails to compile until mapped — same discipline as `geometry_op_to_operation`
+/// at :902, but over the compiled-IR form rather than the runtime `GeometryOp`.
+fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
+    match op {
+        CompiledGeometryOp::Primitive { kind, .. } => match kind {
+            PrimitiveKind::Box => Operation::PrimitiveBox,
+            PrimitiveKind::Cylinder => Operation::PrimitiveCylinder,
+            PrimitiveKind::Sphere => Operation::PrimitiveSphere,
+            PrimitiveKind::Tube => Operation::PrimitiveTube,
+        },
+        CompiledGeometryOp::Boolean { op, .. } => match op {
+            BooleanOp::Union => Operation::BooleanUnion,
+            BooleanOp::Difference => Operation::BooleanDifference,
+            BooleanOp::Intersection => Operation::BooleanIntersection,
+        },
+        CompiledGeometryOp::Modify { kind, .. } => match kind {
+            ModifyKind::Fillet => Operation::ModifyFillet,
+            ModifyKind::Chamfer => Operation::ModifyChamfer,
+            ModifyKind::Shell => Operation::ModifyShell,
+            ModifyKind::Draft => Operation::ModifyDraft,
+            ModifyKind::Thicken => Operation::ModifyThicken,
+        },
+        CompiledGeometryOp::Transform { kind, .. } => match kind {
+            TransformKind::Translate => Operation::TransformTranslate,
+            TransformKind::Rotate => Operation::TransformRotate,
+            TransformKind::Scale => Operation::TransformScale,
+            TransformKind::RotateAround => Operation::TransformRotateAround,
+        },
+        CompiledGeometryOp::Pattern { kind, .. } => match kind {
+            PatternKind::Linear => Operation::PatternLinear,
+            PatternKind::Circular => Operation::PatternCircular,
+            PatternKind::Mirror => Operation::PatternMirror,
+            PatternKind::Linear2D => Operation::PatternLinear2D,
+            PatternKind::Arbitrary => Operation::PatternArbitrary,
+        },
+        CompiledGeometryOp::Sweep { kind, .. } => match kind {
+            SweepKind::Loft => Operation::SweepLoft,
+            SweepKind::Extrude => Operation::SweepExtrude,
+            SweepKind::Revolve => Operation::SweepRevolve,
+            SweepKind::Sweep => Operation::SweepSweep,
+            SweepKind::ExtrudeSymmetric => Operation::SweepExtrudeSymmetric,
+            SweepKind::SweepGuided => Operation::SweepSweepGuided,
+            SweepKind::LoftGuided => Operation::SweepLoftGuided,
+            SweepKind::Pipe => Operation::SweepPipe,
+        },
+        CompiledGeometryOp::Curve { kind, .. } => match kind {
+            CurveKind::LineSegment => Operation::CurveLineSegment,
+            CurveKind::Arc => Operation::CurveArc,
+            CurveKind::Helix => Operation::CurveHelix,
+            CurveKind::InterpCurve => Operation::CurveInterpCurve,
+            CurveKind::BezierCurve => Operation::CurveBezierCurve,
+            CurveKind::NurbsCurve => Operation::CurveNurbsCurve,
+        },
+    }
+}
+
+/// Collect all `GeomRef::Sub` operands referenced by a compiled geometry op.
+fn sub_refs_in_op(op: &CompiledGeometryOp) -> Vec<&str> {
+    let mut refs = Vec::new();
+    match op {
+        CompiledGeometryOp::Boolean { left, right, .. } => {
+            if let GeomRef::Sub(n) = left {
+                refs.push(n.as_str());
+            }
+            if let GeomRef::Sub(n) = right {
+                refs.push(n.as_str());
+            }
+        }
+        CompiledGeometryOp::Modify { target, .. }
+        | CompiledGeometryOp::Transform { target, .. }
+        | CompiledGeometryOp::Pattern { target, .. } => {
+            if let GeomRef::Sub(n) = target {
+                refs.push(n.as_str());
+            }
+        }
+        CompiledGeometryOp::Sweep { profiles, .. } => {
+            for p in profiles {
+                if let GeomRef::Sub(n) = p {
+                    refs.push(n.as_str());
+                }
+            }
+        }
+        CompiledGeometryOp::Primitive { .. } | CompiledGeometryOp::Curve { .. } => {}
+    }
+    refs
+}
+
+impl Engine {
+    /// Compute the per-realization demanded [`ReprKind`] for each template in
+    /// `module`, given the build's output `format` (Stl/Obj → mesh sink;
+    /// Step → BRep sink).
+    ///
+    /// Returns a positionally-indexed `Vec<Vec<ReprKind>>` aligned with
+    /// `module.templates × realizations` — same `[t_idx][r_idx]` indexing as
+    /// [`Self::compute_demanded_tols`].
+    ///
+    /// **Demand rule** (PRD §3a.4): a realization's OWN op kind does NOT factor
+    /// into its own demand — only its consumers and (if terminal) its export-
+    /// format sink do. Terminal realizations get Mesh for Stl/Obj, BRep for
+    /// Step. Non-terminal realizations get Mesh unless a consumer op does not
+    /// accept Mesh or a consumer already demands BRep (transitive). A single
+    /// reverse-index pass computes transitive demand with no fixpoint loop
+    /// because bindings reference only earlier bindings (producer-before-
+    /// consumer ordering).
+    ///
+    /// **Consumer-edge encoding**: cross-realization dependencies are encoded
+    /// as `GeomRef::Sub(name)` operands inside compiled ops; consumer edges are
+    /// built by scanning ops and resolving name → realization index. Compound
+    /// `"sub.member"` names (cross-template, Task 3441) are treated
+    /// conservatively (BRep) — see step-8 for the debug log.
+    pub(crate) fn compute_demanded_reprs(
+        &self,
+        module: &CompiledModule,
+        format: ExportFormat,
+    ) -> Vec<Vec<ReprKind>> {
+        module
+            .templates
+            .iter()
+            .map(|t| demanded_reprs_for_template(t, format))
+            .collect()
+    }
+}
+
+fn demanded_reprs_for_template(template: &TopologyTemplate, format: ExportFormat) -> Vec<ReprKind> {
+    let n = template.realizations.len();
+    if n == 0 {
+        return vec![];
+    }
+
+    // Map realization name → index (only named realizations participate).
+    let name_to_idx: HashMap<&str, usize> = template
+        .realizations
+        .iter()
+        .enumerate()
+        .filter_map(|(i, r)| r.name.as_deref().map(|name| (name, i)))
+        .collect();
+
+    // consumer_ops[p_idx] = list of (consumer_idx, consuming_Operation) pairs.
+    // Built by scanning every realization's ops for GeomRef::Sub references.
+    let mut consumer_ops: Vec<Vec<(usize, Operation)>> = vec![vec![]; n];
+
+    for (c_idx, realization) in template.realizations.iter().enumerate() {
+        for op in &realization.operations {
+            let consuming_op = compiled_geometry_op_to_operation(op);
+            for sub_name in sub_refs_in_op(op) {
+                // Strip compound "sub.member" to its base component.
+                let base = sub_name.split('.').next().unwrap_or(sub_name);
+                if let Some(&p_idx) = name_to_idx.get(base) {
+                    consumer_ops[p_idx].push((c_idx, consuming_op));
+                }
+                // Unresolved / cross-template: step-8 adds conservative BRep + debug log.
+            }
+        }
+    }
+
+    // Compute demand by iterating realization indices in REVERSE order so
+    // consumer demand is always resolved before its producers.
+    let mut demand = vec![ReprKind::BRep; n];
+
+    for r_idx in (0..n).rev() {
+        if consumer_ops[r_idx].is_empty() {
+            // Terminal realization: sink determines demand.
+            demand[r_idx] = match format {
+                ExportFormat::Stl | ExportFormat::Obj => ReprKind::Mesh,
+                ExportFormat::Step => ReprKind::BRep,
+            };
+        } else {
+            // Non-terminal: Mesh unless a disqualifier forces BRep.
+            let needs_brep = consumer_ops[r_idx].iter().any(|(c_idx, op)| {
+                !op_accepts_repr(op, ReprKind::Mesh) || demand[*c_idx] == ReprKind::BRep
+            });
+            demand[r_idx] = if needs_brep {
+                ReprKind::BRep
+            } else {
+                ReprKind::Mesh
+            };
+        }
+    }
+
+    demand
 }
 
 /// Derive the output [`ReprKind`] for a dispatched op by reading the chosen
