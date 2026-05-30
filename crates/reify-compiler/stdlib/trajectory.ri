@@ -813,6 +813,18 @@ structure def KlipperDialect : GcodeDialect { }
 // are unchanged, so `imported.count` and the `profile_count > 0` constraint
 // typecheck correctly. `compile_function` applies no body-vs-return-type check,
 // so the delegate body produces zero Error diagnostics.
+//
+// NOTE — inner-call type discard: `gcode_import_lower(source, dialect)` inside
+// the body is typed by the compiler via the first-arg fallback (result_type =
+// `String`, the type of `source`), NOT as `List<Profile>`. This mis-typed
+// inferred type is intentionally discarded; the outer `UserFunctionCall` at the
+// call site uses the declared return type (`List<Profile>`) as its result_type,
+// so callers typecheck correctly. The discard is load-bearing: if a future
+// body-vs-declared-return-type check is added to `compile_function`, or the
+// first-arg fallback changes, this delegate pattern will need revisiting.
+// The IR dispatch contract (UserFunctionCall at the call site, FunctionCall
+// inside the body) is pinned by `gcode_import_dispatch_ir_contract` in
+// `crates/reify-eval/tests/gcode_import_eval_e2e.rs`.
 pub fn gcode_import(source: String, dialect: GcodeDialect) -> List<Profile> { gcode_import_lower(source, dialect) }
 
 // ── GcodeDialectInput ────────────────────────────────────────────────────────
