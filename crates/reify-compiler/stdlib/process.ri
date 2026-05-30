@@ -21,3 +21,15 @@
 // Warning — potential manufacturability concern; review recommended.
 // Error — serious manufacturability violation; action required.
 enum DFMSeverity { Info, Warning, Error }
+
+// ── Base process trait ────────────────────────────────────────────────────────
+
+// Base trait for any manufacturing process.
+// duration: how long the process takes (Time — e.g. 30min).
+// cost: per-part process cost (Money — e.g. 50USD).
+// Params carry no defaults so they appear in required_members and must be
+// supplied by every conforming structure (matching io.ri Buy/Input convention).
+trait Process {
+    param duration : Time
+    param cost : Money
+}
