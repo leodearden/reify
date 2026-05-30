@@ -12,10 +12,9 @@
 //! path (registered as `modal::free_vibration` in `compute_targets::mod`). The
 //! trampoline transitively reaches the mesh / projection / density-guard helpers,
 //! so they need no `#[allow(dead_code)]`. `ModalCoreResult` keeps a struct-level
-//! `#[allow(dead_code)]`: several fields (eigenvalues, the per-mode shapes, the
-//! `m_free` handle, the convergence counts) are read only by the unit tests, not
-//! by the trampoline (which serializes only frequency / participation / norms /
-//! diagnostics).
+//! `#[allow(dead_code)]`: several fields (eigenvalues, `phi_free`, the `m_free`
+//! handle, the convergence counts) are read only by the unit tests; `phi_full`
+//! is read by both the trampoline (serialized as `Mode.shape`) and the tests.
 
 use std::f64::consts::PI;
 
@@ -138,6 +137,7 @@ pub(crate) struct ModalCoreResult {
     /// Free-DOF mode shapes (length `n_free`), one per mode.
     pub(crate) phi_free: Vec<Vec<f64>>,
     /// Full-DOF mode shapes (length `3·n_nodes`, `0.0` at constrained DOFs).
+    /// Read by the trampoline to serialize `Mode.shape` as per-node Vector3.
     pub(crate) phi_full: Vec<Vec<f64>>,
     /// Effective modal participation mass `m_eff,i = (φ_iᵀ·M_free·d_free)²`
     /// along the reference direction (φ mass-normalized), one per mode. Summed
@@ -624,11 +624,11 @@ fn degenerate_modal_result() -> Value {
 /// faces, runs [`solve_modal_core`], and shapes a `ModalResult`
 /// `Value::StructureInstance` (6 fields, α struct-def; `StructureTypeId(u32::MAX)`
 /// sentinel). Each mode is a `Mode` StructureInstance `{ frequency: Real(Hz),
-/// shape: Undef, participation_mass: Real, damping_ratio: Real }`, where
-/// `damping_ratio` is the Rayleigh ratio `ζ_i = (α + β·ω_i²)/(2·ω_i)` (0 for
-/// `NoDamping`). `Mode.shape` is `Undef`: the eigenvector is computed and
-/// unit-tested internally but not serialized this task (design_decision #7,
-/// mirroring buckling's `Mode.mode_shape = Undef`).
+/// shape: List<Vector3<Dimensionless>>, participation_mass: Real, damping_ratio: Real }`,
+/// where `damping_ratio` is the Rayleigh ratio `ζ_i = (α + β·ω_i²)/(2·ω_i)` (0
+/// for `NoDamping`). `Mode.shape` is the mass-normalized eigenvector reshaped
+/// as per-node displacement vectors (`phi_full` from [`solve_modal_core`],
+/// length `n_nodes`, `(0,0,0)` at every Dirichlet-constrained node).
 ///
 /// A material with no positive `density` short-circuits to a degenerate
 /// empty-modes result plus an `E_ModalNoMassMatrix` Error (the
@@ -686,7 +686,7 @@ pub fn solve_modal_analysis_trampoline(
             let participation_mass = core.participation_mass.get(i).copied().unwrap_or(0.0);
             let fields: PersistentMap<String, Value> = [
                 ("frequency".to_string(), Value::Real(f)),
-                ("shape".to_string(), Value::Undef),
+                ("shape".to_string(), core.phi_full.get(i).map(|p| mode_shape_value(p)).unwrap_or(Value::Undef)),
                 ("participation_mass".to_string(), Value::Real(participation_mass)),
                 ("damping_ratio".to_string(), Value::Real(damping_ratio)),
             ]
@@ -1000,6 +1000,19 @@ fn support_targets(options: &Value) -> Vec<String> {
         }
     }
     targets
+}
+
+/// Reshape a full-DOF mode shape `phi_full` (length `3·n_nodes`, `0.0` at
+/// constrained DOFs) into the `List<Vector3<Dimensionless>>` representation
+/// declared on `Mode.shape`: one per-node displacement `Vector([Real;3])` per
+/// mesh node, collected into a `List`.
+fn mode_shape_value(phi_full: &[f64]) -> Value {
+    Value::List(
+        phi_full
+            .chunks_exact(3)
+            .map(|c| Value::Vector(vec![Value::Real(c[0]), Value::Real(c[1]), Value::Real(c[2])]))
+            .collect(),
+    )
 }
 
 /// Fetch field `name` from a StructureInstance `val`, cloning it; returns
@@ -1884,5 +1897,204 @@ mod tests {
                 "mode {i} participation_mass must be Real",
             );
         }
+    }
+
+    /// step-1 (RED → GREEN in step-2): trampoline serializes Mode.shape as a
+    /// per-node `Value::List<Vector3<Dimensionless>>`.
+    ///
+    /// Structural checks: shape is `Value::List` of length `n_nodes`; each
+    /// element is `Value::Vector([Real, Real, Real])`; clamped-face nodes have
+    /// exactly (0.0, 0.0, 0.0); at least one component is nonzero (mode
+    /// carries real data, not the Undef placeholder).
+    #[test]
+    fn trampoline_serializes_mode_shape_as_per_node_vectors() {
+        let value_inputs = vec![
+            material_with_density(Some(STEEL_DENSITY)),
+            length_scalar(0.02),
+            length_scalar(0.05),
+            length_scalar(0.1),
+            modal_options(vec![
+                ("n_modes".to_string(), Value::Int(3)),
+                (
+                    "boundary_conditions".to_string(),
+                    Value::List(vec![fixed_support("x_min")]),
+                ),
+                (
+                    "reference_direction".to_string(),
+                    Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
+                ),
+            ]),
+        ];
+        let outcome = solve_modal_analysis_trampoline(
+            &value_inputs,
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+        let ComputeOutcome::Completed { result, .. } = outcome else {
+            panic!("expected a Completed outcome");
+        };
+        let data = match &result {
+            Value::StructureInstance(d) => d,
+            other => panic!("expected a ModalResult StructureInstance; got {other:?}"),
+        };
+        let modes = match data.fields.get(&"modes".to_string()) {
+            Some(Value::List(m)) => m,
+            other => panic!("ModalResult.modes must be a List; got {other:?}"),
+        };
+        assert!(!modes.is_empty(), "happy-path solve must return ≥ 1 mode");
+
+        let mesh = build_beam_mesh(0.02, 0.05, 0.1);
+        let n_nodes = mesh.nodes.len();
+
+        for (i, mode) in modes.iter().enumerate() {
+            let m = match mode {
+                Value::StructureInstance(d) => d,
+                other => panic!("mode {i} must be a Mode StructureInstance; got {other:?}"),
+            };
+            let shape = match m.fields.get(&"shape".to_string()) {
+                Some(v) => v,
+                None => panic!("mode {i} missing 'shape' field"),
+            };
+            let nodes = match shape {
+                Value::List(ns) => ns,
+                other => panic!("mode {i} shape must be Value::List; got {other:?}"),
+            };
+            assert_eq!(
+                nodes.len(),
+                n_nodes,
+                "mode {i} shape must have {n_nodes} per-node vectors; got {}",
+                nodes.len(),
+            );
+            let mut any_nonzero = false;
+            for (j, node_val) in nodes.iter().enumerate() {
+                let comps = match node_val {
+                    Value::Vector(c) => c,
+                    other => {
+                        panic!("mode {i} shape[{j}] must be Value::Vector; got {other:?}")
+                    }
+                };
+                assert_eq!(
+                    comps.len(),
+                    3,
+                    "mode {i} shape[{j}] Vector must have 3 components; got {}",
+                    comps.len(),
+                );
+                for (k, comp) in comps.iter().enumerate() {
+                    assert!(
+                        matches!(comp, Value::Real(_)),
+                        "mode {i} shape[{j}][{k}] must be Value::Real; got {comp:?}",
+                    );
+                }
+                // Clamped x_min face nodes must be exactly (0.0, 0.0, 0.0).
+                if mesh.nodes[j][0] <= 1e-9 {
+                    for (k, comp) in comps.iter().enumerate() {
+                        let Value::Real(v) = comp else { unreachable!() };
+                        assert_eq!(
+                            *v, 0.0,
+                            "mode {i} shape[{j}][{k}] on clamped face must be exactly 0.0; got {v}",
+                        );
+                    }
+                }
+                for comp in comps.iter() {
+                    if let Value::Real(v) = comp {
+                        if *v != 0.0 {
+                            any_nonzero = true;
+                        }
+                    }
+                }
+            }
+            assert!(
+                any_nonzero,
+                "mode {i} shape must have ≥ 1 nonzero component (not Undef / all-zero)",
+            );
+        }
+    }
+
+    /// step-1 (RED → GREEN in step-2): trampoline's serialized `modes[0].shape`
+    /// equals `solve_modal_core` phi_full[0] reshaped to `List<Vector3>`.
+    ///
+    /// Both paths use the same deterministic dense eigensolver with identical
+    /// mesh/BCs/opts/material — exact `Value` equality holds (no tolerance).
+    #[test]
+    fn trampoline_mode_shape_matches_core_phi_full() {
+        let length = 0.02_f64;
+        let width = 0.05_f64;
+        let height = 0.1_f64;
+
+        // Oracle: direct solve_modal_core call with the same inputs the trampoline uses.
+        let mesh = build_beam_mesh(length, width, height);
+        let (bcs, _) = clamp_x_min_face(&mesh.nodes);
+        let eigen_opts = EigenSolverOptions { n_modes: 3, tol: 1e-9, max_iters: 200, sigma: 0.0 };
+        let core = solve_modal_core(
+            &mesh,
+            STEEL_DENSITY,
+            &steel(),
+            [0.0, 0.0, 1.0],
+            &bcs,
+            &eigen_opts,
+        );
+        assert!(!core.phi_full.is_empty(), "oracle must return ≥ 1 phi_full vector");
+
+        // Reshape phi_full[0] into the expected List<Vector3<Dimensionless>>.
+        let expected = Value::List(
+            core.phi_full[0]
+                .chunks_exact(3)
+                .map(|c| {
+                    Value::Vector(vec![Value::Real(c[0]), Value::Real(c[1]), Value::Real(c[2])])
+                })
+                .collect(),
+        );
+
+        // Trampoline call with equivalent value_inputs.
+        let value_inputs = vec![
+            material_with_density(Some(STEEL_DENSITY)),
+            length_scalar(length),
+            length_scalar(width),
+            length_scalar(height),
+            modal_options(vec![
+                ("n_modes".to_string(), Value::Int(3)),
+                (
+                    "boundary_conditions".to_string(),
+                    Value::List(vec![fixed_support("x_min")]),
+                ),
+                (
+                    "reference_direction".to_string(),
+                    Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
+                ),
+            ]),
+        ];
+        let outcome = solve_modal_analysis_trampoline(
+            &value_inputs,
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+        let ComputeOutcome::Completed { result, .. } = outcome else {
+            panic!("expected a Completed outcome");
+        };
+        let data = match &result {
+            Value::StructureInstance(d) => d,
+            other => panic!("expected ModalResult StructureInstance; got {other:?}"),
+        };
+        let modes = match data.fields.get(&"modes".to_string()) {
+            Some(Value::List(m)) => m,
+            other => panic!("ModalResult.modes must be a List; got {other:?}"),
+        };
+        assert!(!modes.is_empty(), "trampoline must return ≥ 1 mode");
+        let mode0 = match &modes[0] {
+            Value::StructureInstance(d) => d,
+            other => panic!("modes[0] must be a Mode StructureInstance; got {other:?}"),
+        };
+        let got_shape = match mode0.fields.get(&"shape".to_string()) {
+            Some(v) => v.clone(),
+            None => panic!("modes[0] missing 'shape' field"),
+        };
+        assert_eq!(
+            got_shape, expected,
+            "modes[0].shape must equal solve_modal_core phi_full[0] reshaped to List<Vector3>",
+        );
     }
 }
