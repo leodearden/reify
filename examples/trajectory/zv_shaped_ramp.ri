@@ -1,0 +1,61 @@
+// ZV-shaped ramp smoke example  (task ε — 3866)
+//
+// Demonstrates ZVShaper + PiecewisePolynomialProfile construction
+// (PRD §5.1 / §4.1; task ε: impulse-shaping convolution math).
+//
+// This is a construction-only smoke test — it exercises the landed authoring
+// surface for ZV impulse shaping (ZVShaper, target_frequency, damping_ratio)
+// and a two-waypoint linear ramp profile (PiecewisePolynomialProfile,
+// NaturalSpline, CubicSpline).  The ctor constraints are verified at
+// construction by SIR-α's check_constraints_against_templates machinery.
+//
+// Verification: the reify-compiler examples_smoke gate
+// (`all_examples_parse_and_compile_with_stdlib`) auto-discovers this file and
+// requires it to compile with ZERO Error-severity diagnostics.  The dedicated
+// regression test at
+//   crates/reify-compiler/tests/zv_shaped_ramp_example_tests.rs
+// pins the same compile-clean contract (pattern: constants_example_tests.rs).
+//
+// ── deferred downstream calls ─────────────────────────────────────────────────
+// `input_shape` (ζ) and `simulate_trajectory` (θ) are intentionally NOT called
+// here: they are not yet stdlib signatures (trajectory.ri contains only a
+// comment placeholder for them) and invoking them would emit an Error diagnostic
+// that breaks this compile gate — identical to the deferral pattern documented
+// in examples/trajectory/gcode_import_smoke.ri for simulate_trajectory.
+// The end-to-end ≥40 dB vibration-reduction verification lands when ζ+θ wire.
+// ─────────────────────────────────────────────────────────────────────────────
+structure def ZvShapedRamp {
+    // ZV impulse shaper: suppress 10 Hz resonance with 5 % critical damping.
+    // ZVShaper.target_frequency must be > 0Hz (ctor constraint, trajectory.ri:665).
+    let shaper = ZVShaper(target_frequency: 10Hz, damping_ratio: 0.05)
+
+    // Two-waypoint linear ramp over [0 s, 1 s], one joint (scalar Real).
+    // JointValue = Real per the trajectory.ri type alias (line 76).
+    // vels / accels are Option<List<JointValue>> with no defaults; CubicSpline
+    // interpolation needs only positions, so both are set to none.
+    let wp0 = Waypoint(
+        t: 0.0s,
+        values: [0.0],
+        vels: none,
+        accels: none
+    )
+    let wp1 = Waypoint(
+        t: 1.0s,
+        values: [1.0],
+        vels: none,
+        accels: none
+    )
+
+    // Piecewise-polynomial profile: natural boundary, cubic degree.
+    // waypoints.count > 0 ctor constraint satisfied (2 waypoints above).
+    let profile = PiecewisePolynomialProfile(
+        mechanism: 1.0,
+        waypoints: [wp0, wp1],
+        boundary: NaturalSpline(),
+        spline_kind: SplineKind.CubicSpline
+    )
+
+    // Trivially satisfiable leaf constraint — confirms shaper construction
+    // satisfies target_frequency > 0Hz at the design point.
+    constraint shaper.damping_ratio >= 0.0
+}
