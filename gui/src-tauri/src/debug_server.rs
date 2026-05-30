@@ -380,6 +380,7 @@ async fn dispatch_stateless_tool(name: &str, params: &Value) -> Option<Result<Va
     match name {
         "health" => Some(Ok(json!({"ok": true}))),
         "morph_stats" => Some(handle_morph_stats(params.clone()).await),
+        "mesh_morph_stats" => Some(handle_mesh_morph_stats(params.clone()).await),
         _ => None,
     }
 }
