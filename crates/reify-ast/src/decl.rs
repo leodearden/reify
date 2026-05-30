@@ -554,7 +554,7 @@ pub struct ForallConnectDecl {
 #[derive(Debug, Clone)]
 pub enum ForallConnectBody {
     /// `forall v in coll: connect v.a -> b.c`
-    Connect(ConnectDecl),
+    Connect(Box<ConnectDecl>),
     /// `forall v in coll: chain v.a -> b -> c`
     Chain(ChainDecl),
 }

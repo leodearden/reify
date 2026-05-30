@@ -2400,7 +2400,7 @@ impl<'a> Lowering<'a> {
                 Some(MemberDecl::ForallConnect(ForallConnectDecl {
                     variable,
                     collection,
-                    body: ForallConnectBody::Connect(connect),
+                    body: ForallConnectBody::Connect(Box::new(connect)),
                     span: self.span(node),
                     content_hash: self.content_hash(node),
                 }))
