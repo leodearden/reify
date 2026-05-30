@@ -32,6 +32,8 @@ const DEFAULT_SCALE = 1.0;
 /** Per-mode storage: the displaced positions at phase=1 (backend-normalised). */
 export interface BucklingModeData {
   peak: number[];
+  /** Buckling load multiplier λ, or null when the frame carried no eigenvalue. */
+  eigenvalue: number | null;
 }
 
 /** Reactive state shape exposed by createBucklingStore(). */
@@ -103,7 +105,7 @@ export function createBucklingStore(): BucklingStore {
     } else {
       // phase ≈ 1 → peak displaced frame for this mode
       const key = String(frame.mode_index);
-      setState('modes', key, { peak: [...frame.displaced_positions] });
+      setState('modes', key, { peak: [...frame.displaced_positions], eigenvalue: frame.eigenvalue ?? null });
     }
   }
 

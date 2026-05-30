@@ -14,9 +14,25 @@
  * logic on the frontend (PRD §14 Q4/Q5 resolution).
  */
 
-import { For, Show, onMount, onCleanup } from 'solid-js';
+import { For, Show, onMount, onCleanup, createMemo } from 'solid-js';
 import type { BucklingStore } from '../stores/bucklingStore';
 import { createBucklingAnimator } from '../viewport/bucklingAnimator';
+import { computeModeThumbnail } from '../viewport/modeThumbnail';
+
+// ---------------------------------------------------------------------------
+// Pure helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Format a buckling eigenvalue λ for display (task 4072).
+ * Returns '—' for null/undefined/NaN; otherwise toPrecision(4).
+ */
+export function formatEigenvalue(v: number | null | undefined): string {
+  if (v === null || v === undefined || typeof v !== 'number' || !Number.isFinite(v)) {
+    return '—';
+  }
+  return v.toPrecision(4);
+}
 
 // ---------------------------------------------------------------------------
 // Props
@@ -92,23 +108,49 @@ export function BucklingPanel(props: BucklingPanelProps) {
           fallback={<div style={{ 'font-size': '11px', color: '#888' }}>No buckling modes available</div>}
         >
           <For each={store.modes()}>
-            {(modeIdx) => (
-              <div
-                role="button"
-                tabIndex={0}
-                style={{
-                  cursor: 'pointer',
-                  padding: '3px 6px',
-                  'border-radius': '3px',
-                  background: store.state.selectedMode === modeIdx ? 'rgba(68,136,255,0.25)' : 'transparent',
-                  'font-size': '12px',
-                }}
-                onClick={() => store.selectMode(modeIdx)}
-                onKeyDown={(e) => { if (e.key === 'Enter') store.selectMode(modeIdx); }}
-              >
-                Mode {modeIdx + 1}
-              </div>
-            )}
+            {(modeIdx) => {
+              const m = () => store.state.modes[String(modeIdx)];
+              const tn = createMemo(() => {
+                const base = store.state.base;
+                const peak = m()?.peak;
+                if (!base || !peak || base.length === 0 || peak.length === 0) return null;
+                return computeModeThumbnail(base, peak);
+              });
+              return (
+                <div
+                  data-testid={`buckling-mode-row-${modeIdx}`}
+                  role="button"
+                  tabIndex={0}
+                  style={{
+                    cursor: 'pointer',
+                    padding: '3px 6px',
+                    'border-radius': '3px',
+                    display: 'flex',
+                    'align-items': 'center',
+                    gap: '6px',
+                    background: store.state.selectedMode === modeIdx ? 'rgba(68,136,255,0.25)' : 'transparent',
+                    'font-size': '12px',
+                  }}
+                  onClick={() => store.selectMode(modeIdx)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') store.selectMode(modeIdx); }}
+                >
+                  <Show when={tn() !== null}>
+                    <svg
+                      data-testid={`buckling-mode-thumbnail-${modeIdx}`}
+                      viewBox={tn()!.viewBox}
+                      width="24"
+                      height="24"
+                      style={{ flex: 'none', border: '1px solid #555', 'border-radius': '2px' }}
+                    >
+                      <For each={tn()!.points}>
+                        {([x, y]) => <circle cx={x} cy={y} r="0.04" fill="#4488ff" />}
+                      </For>
+                    </svg>
+                  </Show>
+                  Mode {modeIdx + 1} · λ = {formatEigenvalue(m()?.eigenvalue)}
+                </div>
+              );
+            }}
           </For>
         </Show>
       </div>

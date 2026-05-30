@@ -9375,6 +9375,29 @@ fn mode_shape_frame_emitter_fires_for_buckling_result_two_modes() {
             "peak frame {i} must differ from the base frame"
         );
     }
+
+    // ── task-4072 step-3: eigenvalue threading assertions ──────────────────
+    // (e) Base frame eigenvalue must be None.
+    assert_eq!(
+        base_frames[0].eigenvalue,
+        None,
+        "base frame (phase=0.0) must have eigenvalue=None"
+    );
+
+    // (f) Peak frame k must carry eigenvalue = Some((k+1)*1000.0).
+    // make_buckling_result_value sets mode k eigenvalue = (k+1)*1000.0.
+    // RED at step-3: currently peaks have eigenvalue=None from the placeholder;
+    // GREEN after step-4 threads eigenvalues from extract_buckling_data.
+    assert_eq!(
+        peak_frames[0].eigenvalue,
+        Some(1000.0_f64),
+        "peak frame 0 must carry eigenvalue=Some(1000.0)"
+    );
+    assert_eq!(
+        peak_frames[1].eigenvalue,
+        Some(2000.0_f64),
+        "peak frame 1 must carry eigenvalue=Some(2000.0)"
+    );
 }
 
 /// (b) mode_shape_frame_emitter_no_fire_when_no_emitter.
