@@ -626,10 +626,10 @@ pub(crate) fn elaborate_field(
                     match reify_kernel_openvdb::read_vdb_file(p, g, &field.codomain_type) {
                         Ok(outcome) => {
                             // Surface any ingest warnings (e.g. unit mismatch) into the sink.
-                            if !outcome.warnings.is_empty() {
-                                if let Some(sink) = runtime_sink {
-                                    sink.borrow_mut().extend(outcome.warnings);
-                                }
+                            if !outcome.warnings.is_empty()
+                                && let Some(sink) = runtime_sink
+                            {
+                                sink.borrow_mut().extend(outcome.warnings);
                             }
                             Arc::new(Value::SampledField(outcome.field))
                         }
@@ -1325,11 +1325,10 @@ impl Engine {
             if let reify_compiler::CompiledFieldSource::Imported {
                 path: Some(ref p), ..
             } = field.source
+                && let Ok(h) = hash_imported_file_content(p)
             {
-                if let Ok(h) = hash_imported_file_content(p) {
-                    let _changed = self.cache.imported_file_hash_changed(p, h);
-                    self.cache.record_imported_file_hash(p, h);
-                }
+                let _changed = self.cache.imported_file_hash_changed(p, h);
+                self.cache.record_imported_file_hash(p, h);
             }
         }
 
