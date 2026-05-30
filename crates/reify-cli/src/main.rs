@@ -155,7 +155,16 @@ fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitC
         return Err(ExitCode::FAILURE);
     }
 
-    let compiled = reify_compiler::compile_with_stdlib(&parsed);
+    let mut compiled = reify_compiler::compile_with_stdlib(&parsed);
+
+    // Enforce module-path declaration (spec §7.1/§7.2, task γ).
+    // parsed.path == ModulePath::single(module_name) by construction (PRD D-6).
+    if let Some(diag) = reify_compiler::check_module_path_decl(
+        parsed.declared_module_path.as_ref(),
+        &parsed.path,
+    ) {
+        compiled.diagnostics.push(diag);
+    }
 
     for diag in &compiled.diagnostics {
         eprintln!("{}: {}", diag.severity, diag.message);
