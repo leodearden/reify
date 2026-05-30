@@ -1194,6 +1194,100 @@ fn twisted_beam_tip_out_of_plane_load_smoke_test_displacement_is_finite_and_sign
     );
 }
 
+/// MITC3+ observable signal: on the MacNeal-Harder twisted cantilever, the
+/// genuine flat-facet MITC3+ element ([`shell_element_stiffness_mitc3_plus`])
+/// must produce a tip out-of-plane deflection that is STRICTLY CLOSER to the
+/// published reference (1.754×10⁻³) than bare flat-facet MITC3 on the identical
+/// mesh / BCs / loads — the relative shear-locking-relief deliverable for task
+/// 3392 (the absolute ~50% MacNeal-Harder bound needs the curved substrate +
+/// membrane cure of task 4065 and is NOT chased here).
+#[test]
+fn twisted_beam_mitc3_plus_tip_deflection_is_closer_to_reference_than_bare() {
+    const L: f64 = 12.0;
+    const NZ: usize = 12;
+    const NY: usize = 2;
+    const MACNEAL_HARDER_REF: f64 = 1.754e-3;
+
+    let mat = IsotropicElastic {
+        youngs_modulus: 29.0e6,
+        poisson_ratio: 0.22,
+    };
+    let thickness = 0.32;
+
+    let (nodes, connectivity) = twisted_beam_mesh(NZ, NY);
+    let n_nodes = nodes.len();
+    let tol = 0.1_f64;
+
+    // BCs: fully clamp every z=0 root node (all 6 DOFs = 0).
+    let mut bcs: Vec<DirichletBc> = Vec::new();
+    for (node, n) in nodes.iter().enumerate() {
+        if n[2].abs() < tol {
+            for dof_idx in 0..6_usize {
+                bcs.push(DirichletBc {
+                    dof: node * 6 + dof_idx,
+                    value: 0.0,
+                });
+            }
+        }
+    }
+
+    // Load: F_y = 1.0 distributed equally among the NY+1 tip nodes (the root
+    // out-of-plane direction is +y).
+    let tip_f = 1.0 / (NY + 1) as f64;
+    let mut point_loads: Vec<(usize, f64)> = Vec::new();
+    for (node, n) in nodes.iter().enumerate() {
+        if (n[2] - L).abs() < tol {
+            point_loads.push((node * 6 + 1, tip_f));
+        }
+    }
+
+    let centroid_node = nodes
+        .iter()
+        .position(|n| (n[2] - L).abs() < tol && n[0].abs() < tol && n[1].abs() < tol)
+        .expect("tip centroid node (0, 0, L) not found in twisted-beam mesh");
+
+    // Bare flat-facet MITC3.
+    let k_bare = build_shell_stiffnesses(&nodes, &connectivity, thickness, &mat);
+    let e_bare = assembly_elements_for(&connectivity, &k_bare);
+    let u_bare = solve_shell_system(&e_bare, n_nodes, &bcs, &point_loads);
+    let tip_bare = u_bare[centroid_node * 6 + 1];
+
+    // Genuine flat-facet MITC3+ (same mesh / BCs / loads).
+    let k_plus = build_shell_stiffnesses_mitc3_plus(&nodes, &connectivity, thickness, &mat);
+    let e_plus = assembly_elements_for(&connectivity, &k_plus);
+    let u_plus = solve_shell_system(&e_plus, n_nodes, &bcs, &point_loads);
+    let tip_plus = u_plus[centroid_node * 6 + 1];
+
+    // Observed (12×2 mesh, t=0.32): bare MITC3 tip ≈ 1.0233e-3, MITC3+ tip ≈
+    // 1.1637e-3, reference 1.754e-3 → the MITC3+ shear-locking relief moves the
+    // tip ~19% closer to the reference (err 7.31e-4 → 5.90e-4) without overshoot.
+    let err_bare = (tip_bare - MACNEAL_HARDER_REF).abs();
+    let err_plus = (tip_plus - MACNEAL_HARDER_REF).abs();
+
+    // Finite & physically signed (positive in the +F_y direction).
+    assert!(
+        tip_plus.is_finite() && tip_bare.is_finite(),
+        "tip deflections must be finite: bare={tip_bare}, plus={tip_plus}"
+    );
+    assert!(
+        tip_plus > 0.0,
+        "MITC3+ tip deflection {tip_plus:.4e} must be positive under +F_y load"
+    );
+    // Sane upper ceiling to catch runaway (the reference is 1.754e-3).
+    assert!(
+        tip_plus < 1.0e-1,
+        "MITC3+ tip deflection {tip_plus:.4e} exceeds the runaway ceiling 1e-1"
+    );
+    // The shear-locking-relief deliverable: MITC3+ is STRICTLY closer to the
+    // MacNeal-Harder reference than bare MITC3.
+    assert!(
+        err_plus < err_bare,
+        "MITC3+ must be strictly closer to the MacNeal-Harder reference than bare \
+         MITC3: |{tip_plus:.6e} − {MACNEAL_HARDER_REF:.6e}| = {err_plus:.6e} must be \
+         < |{tip_bare:.6e} − {MACNEAL_HARDER_REF:.6e}| = {err_bare:.6e}"
+    );
+}
+
 // ─── step-11: locking detection ──────────────────────────────────────────────
 
 /// MITC3 shear-locking detection test for the pinched cylinder.
