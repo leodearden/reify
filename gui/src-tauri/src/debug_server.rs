@@ -836,6 +836,34 @@ mod tests {
     }
 
     #[test]
+    fn tool_defs_registers_mesh_morph_stats() {
+        let defs = tool_defs();
+        let entry = defs
+            .iter()
+            .find(|t| t.name == "mesh_morph_stats")
+            .expect("mesh_morph_stats must be present in tool_defs()");
+
+        let schema = &entry.input_schema;
+        assert_eq!(
+            schema["type"].as_str(),
+            Some("object"),
+            "input_schema.type must be 'object'"
+        );
+        assert!(
+            !entry.description.is_empty(),
+            "mesh_morph_stats must have a non-empty description"
+        );
+        // `reset` is optional — required may be absent entirely; if present it
+        // must not list `reset`.
+        if let Some(required) = schema["required"].as_array() {
+            assert!(
+                !required.iter().any(|v| v.as_str() == Some("reset")),
+                "'reset' must NOT be listed in required (it is optional)"
+            );
+        }
+    }
+
+    #[test]
     fn tool_defs_registers_morph_stats() {
         let defs = tool_defs();
         let entry = defs
