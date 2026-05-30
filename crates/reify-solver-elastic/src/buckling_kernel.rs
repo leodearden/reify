@@ -974,4 +974,240 @@ mod tests {
         let opts = BucklingKernelOptions { n_modes: 1, ..Default::default() };
         let _ = solve_buckling_kernel(&nodes, &tets, &material, &bcs, &f, &[mpc0, mpc1], opts);
     }
+
+    // -----------------------------------------------------------------------
+    // step-7 (RED → GREEN in step-8): solve_buckling_kernel_p2 unit tests.
+    //
+    // Reuse the single 1×1×1 m brick fixture, promoted to P2 via
+    // `promote_tets_to_p2`.  The P2 mesh has 8 corners + 18 edge-midpoints
+    // (from 6 tets × 6 edges, deduped) = 26 nodes, 78 DOFs.
+    // Corner node indices (0–7) are identical in P1 and P2 (corners come
+    // first); top-face corners are still nodes 4–7 at z=1.
+    // -----------------------------------------------------------------------
+
+    /// Build the P2 brick fixture: promote P1 brick to P2 and return
+    /// (nodes_p2, tets_p2, n_nodes_p2, n_tets_p2).
+    fn unit_brick_p2() -> (Vec<[f64; 3]>, Vec<[usize; 10]>) {
+        use crate::assembly::test_support::promote_tets_to_p2;
+        let nodes_p1 = unit_brick_nodes();
+        let tets_p1 = unit_brick_tets();
+        promote_tets_to_p2(&nodes_p1, &tets_p1)
+    }
+
+    /// Build BCs for the P2 brick fixture: clamp all DOFs on the z=0 face,
+    /// and clamp u_x, u_y on the z=1 face.  Identifies face nodes by
+    /// coordinate rather than hard-coded index so it works for both the 8
+    /// corner nodes AND the additional P2 midpoint nodes on those faces.
+    fn shape_test_bcs_p2(nodes_p2: &[[f64; 3]]) -> Vec<DirichletBc> {
+        let mut bcs = Vec::new();
+        for (n, xyz) in nodes_p2.iter().enumerate() {
+            if (xyz[2] - 0.0).abs() < 1e-10 {
+                // Bottom face (z ≈ 0): clamp all 3 DOFs.
+                for axis in 0..3_usize {
+                    bcs.push(DirichletBc { dof: 3 * n + axis, value: 0.0 });
+                }
+            } else if (xyz[2] - 1.0).abs() < 1e-10 {
+                // Top face (z ≈ 1): clamp lateral DOFs only.
+                bcs.push(DirichletBc { dof: 3 * n,     value: 0.0 }); // u_x
+                bcs.push(DirichletBc { dof: 3 * n + 1, value: 0.0 }); // u_y
+            }
+        }
+        bcs
+    }
+
+    /// Collect all constrained DOF indices for the P2 shape-test BC set.
+    fn shape_test_constrained_dofs_p2(nodes_p2: &[[f64; 3]]) -> Vec<usize> {
+        let mut v = Vec::new();
+        for (n, xyz) in nodes_p2.iter().enumerate() {
+            if (xyz[2] - 0.0).abs() < 1e-10 {
+                v.push(3 * n);
+                v.push(3 * n + 1);
+                v.push(3 * n + 2);
+            } else if (xyz[2] - 1.0).abs() < 1e-10 {
+                v.push(3 * n);
+                v.push(3 * n + 1);
+            }
+        }
+        v
+    }
+
+    /// (a) verify that `solve_buckling_kernel_p2` accepts an empty mpcs slice and
+    /// returns a well-shaped `BucklingKernelResult`:
+    /// - modes non-empty
+    /// - pre_stress_displacement.len() == 3·n_nodes_p2
+    /// - one stress tensor per P2 tet (6 tets)
+    /// - every mode_shape.len() == 3·n_nodes_p2
+    /// (b) all Dirichlet-constrained DOFs are exactly 0.0 in pre_stress and
+    ///     every mode shape.
+    ///
+    /// RED signal: the symbol does not exist → compile failure.
+    #[test]
+    fn solve_buckling_kernel_p2_returns_well_shaped_result_for_single_brick_fixture() {
+        let (nodes_p2, tets_p2) = unit_brick_p2();
+        let n_nodes_p2 = nodes_p2.len();
+        let n_tets_p2 = tets_p2.len(); // 6 tets (same as P1 — promotion keeps tet count)
+        let material = IsotropicElastic { youngs_modulus: 1.0, poisson_ratio: 0.0 };
+        let bcs = shape_test_bcs_p2(&nodes_p2);
+
+        // Downward unit load split across the four top-face corner nodes (4–7).
+        let mut f = vec![0.0_f64; 3 * n_nodes_p2];
+        for top_node in 4..8_usize {
+            f[3 * top_node + 2] = -0.25;
+        }
+
+        let opts = BucklingKernelOptions {
+            n_modes: 3,
+            eigen_tol: 1e-8,
+            eigen_max_iters: 200,
+            cg_tolerance: 1e-10,
+            cg_max_iter: 2000,
+        };
+
+        let result =
+            solve_buckling_kernel_p2(&nodes_p2, &tets_p2, &material, &bcs, &f, &[], opts);
+
+        // (a) shape assertions
+        assert!(
+            !result.modes.is_empty(),
+            "expect at least 1 mode; got {}",
+            result.modes.len(),
+        );
+        assert_eq!(
+            result.pre_stress_displacement.len(),
+            3 * n_nodes_p2,
+            "displacement must have length 3 * n_nodes_p2 = {}",
+            3 * n_nodes_p2,
+        );
+        assert_eq!(
+            result.pre_stress_per_element.len(),
+            n_tets_p2,
+            "one stress tensor per P2 tet ({n_tets_p2})",
+        );
+        for (m, mode) in result.modes.iter().enumerate() {
+            assert_eq!(
+                mode.mode_shape.len(),
+                3 * n_nodes_p2,
+                "mode {m} shape must have length 3 * n_nodes_p2 = {}",
+                3 * n_nodes_p2,
+            );
+        }
+
+        // (b) all Dirichlet-constrained DOFs must be exactly 0.0
+        let constrained = shape_test_constrained_dofs_p2(&nodes_p2);
+        for &g in &constrained {
+            assert_eq!(
+                result.pre_stress_displacement[g], 0.0,
+                "constrained DOF {g} must be 0.0 in pre_stress_displacement",
+            );
+        }
+        for (m, mode) in result.modes.iter().enumerate() {
+            for &g in &constrained {
+                assert_eq!(
+                    mode.mode_shape[g], 0.0,
+                    "mode {m}: constrained DOF {g} must be 0.0 in mode_shape",
+                );
+            }
+        }
+    }
+
+    /// (c) uniform axial pre-stress recovery under ν=0 compression.
+    /// (d) λ_min > 0.
+    /// (e) homogeneous MPC tying u_z of two top-face corner nodes forces
+    ///     bit-identical values in pre_stress and mode shape (mirrors the
+    ///     P1 MPC enforcement test).
+    ///
+    /// RED signal: the symbol does not exist → compile failure.
+    #[test]
+    fn solve_buckling_kernel_p2_recovers_uniform_axial_pre_stress_and_enforces_mpc() {
+        let (nodes_p2, tets_p2) = unit_brick_p2();
+        let n_nodes_p2 = nodes_p2.len();
+        let material = IsotropicElastic { youngs_modulus: 1.0, poisson_ratio: 0.0 };
+        let bcs = shape_test_bcs_p2(&nodes_p2);
+
+        // Total compressive force F = 0.1, split across 4 top-face corner nodes.
+        const F: f64 = 0.1;
+        let mut f = vec![0.0_f64; 3 * n_nodes_p2];
+        for top_node in 4..8_usize {
+            f[3 * top_node + 2] = -F / 4.0;
+        }
+
+        let opts = BucklingKernelOptions {
+            n_modes: 2,
+            eigen_tol: 1e-8,
+            eigen_max_iters: 200,
+            cg_tolerance: 1e-10,
+            cg_max_iter: 2000,
+        };
+
+        let result =
+            solve_buckling_kernel_p2(&nodes_p2, &tets_p2, &material, &bcs, &f, &[], opts.clone());
+
+        // (c) Uniform axial pre-stress: σ_zz ≈ −F for all 6 tets.
+        //     25% tolerance — the long-diagonal 6-tet decomposition breaks
+        //     4-fold symmetry (same as P1 shape test above).
+        assert!(result.converged, "eigensolve must converge on small P2 fixture");
+        const TOL_25: f64 = 0.25 * F;
+        for (t, sigma) in result.pre_stress_per_element.iter().enumerate() {
+            assert!(
+                (sigma[2][2] - (-F)).abs() < TOL_25,
+                "tet {t}: σ_zz = {:.6}, expected within 25% of {:.3}",
+                sigma[2][2],
+                -F,
+            );
+            assert!(
+                sigma[0][0].abs() < TOL_25,
+                "tet {t}: σ_xx = {:.6}, expected ≈ 0 under ν=0",
+                sigma[0][0],
+            );
+            assert!(
+                sigma[1][1].abs() < TOL_25,
+                "tet {t}: σ_yy = {:.6}, expected ≈ 0 under ν=0",
+                sigma[1][1],
+            );
+        }
+
+        // (d) λ_min > 0 under compression.
+        assert!(!result.modes.is_empty(), "expect at least 1 mode");
+        let lambda_min = result.modes[0].eigenvalue;
+        assert!(
+            lambda_min > 0.0,
+            "λ_min = {lambda_min} must be positive for compressive load",
+        );
+
+        // (e) MPC: tie u_z[4] to u_z[5] (both are top-face corner nodes,
+        //     indices 4 and 5 unchanged in P2).  Apply asymmetric load on
+        //     node 4 only so the unconstrained paths would give u_z[4] ≠ u_z[5].
+        let mut f_mpc = vec![0.0_f64; 3 * n_nodes_p2];
+        f_mpc[3 * 4 + 2] = -0.1; // all force on node 4
+        let mpc = MpcRow::new(vec![3 * 4 + 2, 3 * 5 + 2], vec![1.0, -1.0], 0.0);
+
+        let result_mpc = solve_buckling_kernel_p2(
+            &nodes_p2,
+            &tets_p2,
+            &material,
+            &bcs,
+            &f_mpc,
+            &[mpc],
+            opts,
+        );
+
+        assert!(result_mpc.converged, "eigensolve must converge with one P2 MPC");
+
+        // u_z[4] == u_z[5] bit-identically in both pre_stress and mode[0].
+        assert_eq!(
+            result_mpc.pre_stress_displacement[3 * 4 + 2].to_bits(),
+            result_mpc.pre_stress_displacement[3 * 5 + 2].to_bits(),
+            "P2 pre_stress: u_z[4]={} must be bit-identical to u_z[5]={} (MPC)",
+            result_mpc.pre_stress_displacement[3 * 4 + 2],
+            result_mpc.pre_stress_displacement[3 * 5 + 2],
+        );
+        assert!(!result_mpc.modes.is_empty(), "expect at least 1 mode under P2 MPC");
+        assert_eq!(
+            result_mpc.modes[0].mode_shape[3 * 4 + 2].to_bits(),
+            result_mpc.modes[0].mode_shape[3 * 5 + 2].to_bits(),
+            "P2 mode[0]: mode_shape[u_z=4]={} must be bit-identical to mode_shape[u_z=5]={}",
+            result_mpc.modes[0].mode_shape[3 * 4 + 2],
+            result_mpc.modes[0].mode_shape[3 * 5 + 2],
+        );
+    }
 }
