@@ -312,6 +312,12 @@ pub fn shell_channels_to_value(channels: &Option<ShellChannels>, mid_stress: &Va
 
 /// Build a `Value::Field { source: Sampled }` carrying `data`, cloning the grid
 /// metadata from `template` (the mid-surface stress field) when possible.
+///
+/// Falls through to a 1D index-grid fallback when `template` is not a Sampled
+/// field OR when `data.len()` does not match the grid's node count (product of
+/// `axis_grids` lengths). The debug assertion fires in debug/test builds so the
+/// mismatch is caught early; release builds silently produce a 1D field instead
+/// of a malformed Sampled field that would panic downstream.
 fn build_channel_field(template: &Value, data: Vec<f64>, name: &str) -> Value {
     if let Value::Field {
         domain_type,
@@ -321,26 +327,38 @@ fn build_channel_field(template: &Value, data: Vec<f64>, name: &str) -> Value {
     } = template
         && let Value::SampledField(ref sf) = **lambda
     {
-        let channel_sf = SampledField {
-            name: name.to_string(),
-            kind: sf.kind,
-            bounds_min: sf.bounds_min.clone(),
-            bounds_max: sf.bounds_max.clone(),
-            spacing: sf.spacing.clone(),
-            axis_grids: sf.axis_grids.clone(),
-            interpolation: sf.interpolation,
-            data,
-            oob_emitted: AtomicBool::new(false),
-        };
-        return Value::Field {
-            domain_type: domain_type.clone(),
-            codomain_type: codomain_type.clone(),
-            source: FieldSourceKind::Sampled,
-            lambda: Arc::new(Value::SampledField(channel_sf)),
-        };
+        let expected_len: usize = sf.axis_grids.iter().map(|g| g.len()).product();
+        debug_assert_eq!(
+            data.len(),
+            expected_len,
+            "build_channel_field: channel data length {} != grid node count {} for '{}'",
+            data.len(),
+            expected_len,
+            name,
+        );
+        if data.len() == expected_len {
+            let channel_sf = SampledField {
+                name: name.to_string(),
+                kind: sf.kind,
+                bounds_min: sf.bounds_min.clone(),
+                bounds_max: sf.bounds_max.clone(),
+                spacing: sf.spacing.clone(),
+                axis_grids: sf.axis_grids.clone(),
+                interpolation: sf.interpolation,
+                data,
+                oob_emitted: AtomicBool::new(false),
+            };
+            return Value::Field {
+                domain_type: domain_type.clone(),
+                codomain_type: codomain_type.clone(),
+                source: FieldSourceKind::Sampled,
+                lambda: Arc::new(Value::SampledField(channel_sf)),
+            };
+        }
     }
-    // Defensive fallback: template is not a Sampled field — wrap data in a
-    // minimal 1D index-grid SampledField with Real domain/codomain.
+    // Defensive fallback: template is not a Sampled field, OR data length does
+    // not match the grid's node count — wrap data in a minimal 1D index-grid
+    // SampledField with Real domain/codomain.
     let n = data.len();
     let axis_grid: Vec<f64> = (0..n).map(|i| i as f64).collect();
     let fallback_sf = SampledField {

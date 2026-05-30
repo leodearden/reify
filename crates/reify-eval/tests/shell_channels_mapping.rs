@@ -166,3 +166,58 @@ fn shell_channels_to_value_none_yields_undef() {
     );
     assert_eq!(result, Value::Undef, "shell_channels_to_value(None, ..) must return Undef (I-3)");
 }
+
+/// Covers the `build_channel_field` defensive fallback: when `mid_stress` is
+/// NOT a `Value::Field { source: Sampled }` (here `Value::Undef`), the helper
+/// must still produce a valid `ShellStress` StructureInstance — top/bottom come
+/// back as minimal 1D Sampled fields whose `data` equals the raw channel vectors.
+///
+/// This exercises the previously-untested fallback branch in `build_channel_field`.
+#[test]
+fn shell_channels_to_value_non_sampled_mid_uses_fallback() {
+    let top_data: Vec<f64> = (0..9).map(|i| i as f64).collect();
+    let bot_data: Vec<f64> = (9..18).map(|i| i as f64).collect();
+    let channels = ShellChannels {
+        top: top_data.clone(),
+        bottom: bot_data.clone(),
+        frame: vec![0.0; 9],
+    };
+    // Non-Sampled mid → triggers the defensive fallback in build_channel_field.
+    let mid_stress = Value::Undef;
+
+    let result = reify_eval::compute_targets::elastic_static::shell_channels_to_value(
+        &Some(channels),
+        &mid_stress,
+    );
+
+    let data = match &result {
+        Value::StructureInstance(d) => d,
+        other => panic!(
+            "expected StructureInstance with non-Sampled mid, got: {:?}",
+            other
+        ),
+    };
+    assert_eq!(data.type_name, "ShellStress");
+
+    // top / bottom must be 1D Sampled Real fields carrying the raw channel data.
+    let top_val = data.fields.get(&"top".to_string())
+        .expect("ShellStress missing 'top' field");
+    assert_eq!(
+        sampled_field_data(top_val),
+        top_data,
+        "fallback top data must equal channels.top"
+    );
+
+    let bot_val = data.fields.get(&"bottom".to_string())
+        .expect("ShellStress missing 'bottom' field");
+    assert_eq!(
+        sampled_field_data(bot_val),
+        bot_data,
+        "fallback bottom data must equal channels.bottom"
+    );
+
+    // mid must equal mid_stress (Value::Undef) unchanged.
+    let mid_val = data.fields.get(&"mid".to_string())
+        .expect("ShellStress missing 'mid' field");
+    assert_eq!(mid_val, &Value::Undef, "mid must equal mid_stress unchanged");
+}
