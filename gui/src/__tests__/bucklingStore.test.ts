@@ -363,3 +363,39 @@ describe('subscribeModeShapeFrames', () => {
     });
   });
 });
+
+// ── task-4072 step-7: store records per-mode eigenvalue ───────────────────────
+
+describe('createBucklingStore > eigenvalue storage (task 4072)', () => {
+  it('ingesting a peak frame with eigenvalue stores it on the mode', () => {
+    withRoot(() => {
+      const store = createBucklingStore();
+      store.ingestFrame({ mode_index: 0, phase: 0.0, displaced_positions: BASE });
+      store.ingestFrame({ mode_index: 0, phase: 1.0, displaced_positions: PEAK, eigenvalue: 1000 });
+      const mode = (store.state.modes as Record<string, { peak: number[]; eigenvalue: number | null }>)['0'];
+      expect(mode).toBeDefined();
+      expect(mode.eigenvalue).toBe(1000);
+      expect(mode.peak).toEqual(PEAK);
+    });
+  });
+
+  it('ingesting a peak frame without eigenvalue stores eigenvalue: null', () => {
+    withRoot(() => {
+      const store = createBucklingStore();
+      store.ingestFrame({ mode_index: 0, phase: 0.0, displaced_positions: BASE });
+      store.ingestFrame({ mode_index: 0, phase: 1.0, displaced_positions: PEAK });
+      const mode = (store.state.modes as Record<string, { peak: number[]; eigenvalue: number | null }>)['0'];
+      expect(mode.eigenvalue).toBeNull();
+    });
+  });
+
+  it('base frame ingest (phase≈0) does not affect modes eigenvalue', () => {
+    withRoot(() => {
+      const store = createBucklingStore();
+      store.ingestFrame({ mode_index: 0, phase: 1.0, displaced_positions: PEAK, eigenvalue: 1000 });
+      store.ingestFrame({ mode_index: 0, phase: 0.0, displaced_positions: BASE });
+      const mode = (store.state.modes as Record<string, { peak: number[]; eigenvalue: number | null }>)['0'];
+      expect(mode.eigenvalue).toBe(1000);
+    });
+  });
+});
