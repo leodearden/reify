@@ -81,21 +81,22 @@ fn build_and_get_body(source: &str) -> Value {
 }
 
 /// Cross-Engine cache-key stability: the same source compiled and built in two
-/// independent Engine instances must produce byte-identical `content_hash()`
+/// independent `Engine` instances must produce byte-identical `content_hash()`
 /// values for `Widget.body`.
 ///
-/// This validates that the in-memory cache key (= `content_hash()`) is stable
-/// across Engine restarts: it derives purely from `realization_ref` + `upstream_values_hash`,
+/// This verifies `content_hash()` determinism across independent Engine instances:
+/// the cache key derives purely from `realization_ref` + `upstream_values_hash`,
 /// both of which are deterministic from the source text, with `kernel_handle`
 /// excluded (per GHR-β §DD / geometry-handle-runtime.md §6).
 ///
-/// Compiling the same source string TWICE faithfully models a restart re-parsing
-/// the file and confirms realization-index determinism.  Two independent Engine
-/// instances confirm the key is stable WITHOUT shared Engine state.
+/// Compiling the same source string TWICE in two independent Engine instances
+/// confirms realization-index determinism (indices assigned at compile time are
+/// stable) and that the key is stable WITHOUT shared Engine state.
 #[test]
 fn cross_engine_geometry_handle_cache_key_is_stable() {
-    // Compile the same source twice (models restart re-parse; realization indices
-    // are compile-deterministic so we get the same RealizationNodeId).
+    // Compile the same source twice (verifies content_hash determinism across
+    // independent Engine instances; realization indices are compile-deterministic
+    // so we get the same RealizationNodeId).
     let value_a = build_and_get_body(SOURCE_10);
     let value_b = build_and_get_body(SOURCE_10);
 

@@ -133,7 +133,14 @@ static NON_DISPLACEMENT_KEY_VALUES: std::sync::LazyLock<[reify_ir::Value; 4]> =
 /// See also [`significance_filter`] for the tolerance-bearing ElasticResult
 /// path; geometry handles use exact equality (no tolerance class), which is
 /// why this is a standalone function rather than an arm of that one.
-pub fn geometry_handle_significance(
+///
+/// # Wiring status
+///
+/// Currently **not called by any production code** — wiring into the
+/// compute-node caching path is deferred to GHR-ζ, where geometry persistence
+/// and the active-kernel selection land alongside the call site.  Kept
+/// crate-private until then to prevent premature API surface drift.
+pub(crate) fn geometry_handle_significance(
     old: &reify_ir::Value,
     new: &reify_ir::Value,
 ) -> FilterOutcome {

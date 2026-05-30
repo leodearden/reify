@@ -4997,10 +4997,12 @@ mod tests {
     // whose GeometryHandle arm (tag 28) emits entity + index + upstream_values_hash
     // while intentionally EXCLUDING kernel_handle.
     //
-    // These tests are non-redundant with the bare-Value tests in reify-ir
-    // (value.rs::tests::geometry_handle) because they exercise the CACHE LAYER
-    // path (CachedResult::Value → content_hash → tag-20 wrap → GH fragment),
-    // conforming to the esc-3607-59 relaxed-scope contract-lock mandate.
+    // Only two tests are kept here — the two assertions unique to the cache
+    // layer: (a) delegation works (equal key for same inputs), and (b) the
+    // load-bearing kernel_handle exclusion.  The full sensitivity matrix
+    // (different hash / entity / index → different key) is already covered by
+    // reify-ir value.rs::tests::geometry_handle; duplicating it here would
+    // only re-assert delegation and add maintenance weight with no new signal.
     mod geometry_handle_cache_key {
         use super::*;
         use reify_core::identity::RealizationNodeId;
@@ -5019,6 +5021,8 @@ mod tests {
         }
 
         /// (1) Same realization_ref + same upstream_values_hash → equal content_hash.
+        /// Confirms that `CachedResult::Value` delegates GH key derivation correctly
+        /// through the cache-layer path (CachedResult::Value → content_hash → GH arm).
         #[test]
         fn geometry_handle_cache_key_same_rr_and_hash_are_equal() {
             let a = cached_gh("Widget", 0, [0xAAu8; 32], 1);
@@ -5030,47 +5034,13 @@ mod tests {
             );
         }
 
-        /// (2) Different upstream_values_hash → different content_hash.
-        #[test]
-        fn geometry_handle_cache_key_different_hash_yields_different_key() {
-            let a = cached_gh("Widget", 0, [0xAAu8; 32], 1);
-            let b = cached_gh("Widget", 0, [0xBBu8; 32], 1);
-            assert_ne!(
-                a.content_hash(),
-                b.content_hash(),
-                "different upstream_values_hash must produce different cache key",
-            );
-        }
-
-        /// (3) Different realization_ref (entity) → different content_hash.
-        #[test]
-        fn geometry_handle_cache_key_different_entity_yields_different_key() {
-            let a = cached_gh("Widget", 0, [0xAAu8; 32], 1);
-            let b = cached_gh("Gadget", 0, [0xAAu8; 32], 1);
-            assert_ne!(
-                a.content_hash(),
-                b.content_hash(),
-                "different entity in realization_ref must produce different cache key",
-            );
-        }
-
-        /// (3b) Different realization_ref index → different content_hash.
-        #[test]
-        fn geometry_handle_cache_key_different_index_yields_different_key() {
-            let a = cached_gh("Widget", 0, [0xAAu8; 32], 1);
-            let b = cached_gh("Widget", 1, [0xAAu8; 32], 1);
-            assert_ne!(
-                a.content_hash(),
-                b.content_hash(),
-                "different index in realization_ref must produce different cache key",
-            );
-        }
-
-        /// (4) kernel_handle-only difference → equal content_hash (excluded).
-        /// This is the load-bearing pin: kernel_handle is an ephemeral session id;
-        /// re-realization to a new handle for semantically-identical geometry must
-        /// produce the SAME in-memory cache key so downstream is not spuriously
-        /// invalidated (GHR-β §DD / geometry-handle-runtime.md §6).
+        /// (2) kernel_handle-only difference → equal content_hash (excluded).
+        /// This is the load-bearing cache-layer pin: kernel_handle is an ephemeral
+        /// session id; re-realization to a new handle for semantically-identical
+        /// geometry must produce the SAME in-memory cache key so downstream is not
+        /// spuriously invalidated (GHR-β §DD / geometry-handle-runtime.md §6).
+        /// The equal/different/entity/index sensitivity is covered by reify-ir
+        /// value.rs::tests::geometry_handle and is not duplicated here.
         #[test]
         fn geometry_handle_cache_key_kernel_handle_excluded() {
             let a = cached_gh("Widget", 0, [0xAAu8; 32], 1);
