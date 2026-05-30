@@ -5,9 +5,16 @@
 // `param width` is the editable scalar that drives the freshness-cascade test
 // (PRD §4 invariant v): width → R0 → b (geometry cell) → es (selector cell).
 //
-// Let-bound `b` satisfies the ValueRef arg-shape contract; inline
-// edges(box(...)) would fall through to None because the dispatcher resolves
-// args via `values.get(cell_id)`, which requires a previously-hydrated cell.
+// `param b : Solid` (not `let b`) is required for the freshness-cascade test:
+// geometry `let` bindings do NOT have a compiler-generated Type::Geometry value
+// cell, so the graph's `geometry_cell` link on R0 is None and
+// `realization_reads` never gets wired into the b-cell cache entry.
+// `param b` creates a proper value cell → geometry_cell link → realization_reads=[R0]
+// → the freshness walk propagates width → R0 → b → es as expected (PRD §4 v).
+//
+// `param b : Solid` still satisfies the arg-shape contract: edges(b) compiles
+// `b` as ValueRef(BoxEdges.b), not an inline call; the dispatcher resolves it
+// via values.get(cell_id) which is populated by post_process_geometry_handle_cells.
 //
 // Pinning tests:
 //   crates/reify-eval/tests/topology_selectors_tests.rs::
@@ -16,6 +23,6 @@
 
 structure def BoxEdges {
     param width : Length = 10mm
-    let b = box(width, 20mm, 30mm)
+    param b : Solid = box(width, 20mm, 30mm)
     let es = edges(b)
 }
