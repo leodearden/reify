@@ -20,7 +20,7 @@ use reify_solver_elastic::{
     ElementStiffness, IsotropicElastic, assemble_global_stiffness, consistent_element_mass_tet_p1,
     element_stiffness, solve_eigen_dense, solve_eigen_shift_invert,
 };
-use reify_stdlib::modal::free_vibration::eigenvalue_to_frequency_hz;
+use reify_stdlib::modal::free_vibration::{eigenvalue_to_frequency_hz, mass_normalization_scale};
 
 // ---------------------------------------------------------------------------
 // Beam mesh
@@ -234,7 +234,19 @@ pub(crate) fn solve_modal_core(
         eigenvalues.push(lambda);
         frequencies.push(eigenvalue_to_frequency_hz(lambda));
 
-        let phi_f: Vec<f64> = eig.eigenvectors.col_as_slice(i).to_vec();
+        // Mass-normalize so that φᵀ·M_free·φ = 1 (PRD §7.5): scale the raw
+        // eigenvector by 1/√(generalized mass). A degenerate (≤ 0) generalized
+        // mass yields a 0.0 scale (the helper's guard) — the mode collapses to
+        // zero rather than producing NaN/∞.
+        let mut phi_f: Vec<f64> = eig.eigenvectors.col_as_slice(i).to_vec();
+        let m_phi = m_matvec(&m_free, &phi_f);
+        let generalized_mass: f64 =
+            phi_f.iter().zip(m_phi.iter()).map(|(a, b)| a * b).sum();
+        let scale = mass_normalization_scale(generalized_mass);
+        for x in &mut phi_f {
+            *x *= scale;
+        }
+
         let mut phi_u = vec![0.0_f64; n_dofs];
         for (free_i, &g) in full_of_free.iter().enumerate() {
             phi_u[g] = phi_f[free_i];
@@ -289,6 +301,27 @@ fn project_free(
         .expect("free-DOF submatrix construction must not violate CSR invariants")
 }
 
+/// Sparse matvec `M · v` over the free×free mass matrix (CSR row dot products).
+///
+/// The reusable mass-metric primitive: the generalized mass `φᵀMφ` (step 6
+/// normalization) and the participation factor `φᵀMd` (step 8) are both
+/// `dot(·, M··)`.
+#[allow(dead_code)]
+fn m_matvec(m: &SparseRowMat<usize, f64>, v: &[f64]) -> Vec<f64> {
+    let sym = m.symbolic();
+    let mut out = vec![0.0_f64; m.nrows()];
+    for (r, out_r) in out.iter_mut().enumerate() {
+        let cols = sym.col_idx_of_row_raw(r);
+        let vals = m.val_of_row(r);
+        let mut acc = 0.0_f64;
+        for (col_raw, &val) in cols.iter().zip(vals.iter()) {
+            acc += val * v[*col_raw];
+        }
+        *out_r = acc;
+    }
+    out
+}
+
 /// Solve the generalized symmetric eigenproblem `K_free φ = λ M_free φ`,
 /// returning eigenvalues ascending by |λ| with column-major eigenvectors.
 ///
@@ -328,14 +361,14 @@ mod tests {
     fn m_quadratic_form(m: &SparseRowMat<usize, f64>, a: &[f64], b: &[f64]) -> f64 {
         let sym = m.symbolic();
         let mut acc = 0.0_f64;
-        for r in 0..m.nrows() {
+        for (r, &a_r) in a.iter().enumerate() {
             let cols = sym.col_idx_of_row_raw(r);
             let vals = m.val_of_row(r);
             let mut mb_r = 0.0_f64;
             for (col_raw, &v) in cols.iter().zip(vals.iter()) {
                 mb_r += v * b[*col_raw];
             }
-            acc += a[r] * mb_r;
+            acc += a_r * mb_r;
         }
         acc
     }
