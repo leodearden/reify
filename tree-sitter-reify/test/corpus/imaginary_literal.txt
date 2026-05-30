@@ -1,0 +1,113 @@
+================================================================================
+imaginary literal: decimal mantissa (4.1j)
+================================================================================
+
+structure S {
+  let x = 4.1j
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (imaginary_literal
+        value: (number_literal)))))
+
+================================================================================
+imaginary literal: integer mantissa (2j)
+================================================================================
+
+structure S {
+  let x = 2j
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (imaginary_literal
+        value: (number_literal)))))
+
+================================================================================
+imaginary literal: scientific notation mantissa (1.5e-3j)
+================================================================================
+
+structure S {
+  let x = 1.5e-3j
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (imaginary_literal
+        value: (number_literal)))))
+
+================================================================================
+regression guard: 4.1mm stays quantity_literal
+================================================================================
+
+structure S {
+  let x = 4.1mm
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (quantity_literal
+        value: (number_literal)
+        unit: (unit_expr
+          (unit_name))))))
+
+================================================================================
+regression guard: 4.1jk stays quantity_literal (multi-char j-unit)
+================================================================================
+
+structure S {
+  let x = 4.1jk
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (quantity_literal
+        value: (number_literal)
+        unit: (unit_expr
+          (unit_name))))))
+
+================================================================================
+regression guard: 4.1J stays quantity_literal (capital J = Joule, D1)
+================================================================================
+
+structure S {
+  let x = 4.1J
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (quantity_literal
+        value: (number_literal)
+        unit: (unit_expr
+          (unit_name))))))
