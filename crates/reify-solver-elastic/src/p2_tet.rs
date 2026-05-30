@@ -34,6 +34,162 @@
 //! test (`vᵀ M v = ρ ∫ v² dV`) is the gate that fails on any under-degree rule
 //! (see the test module for why a *linear* field is insufficient).
 
+use crate::assembly::ElementStiffness;
+use crate::elements::tet_p2::{EDGES, TetP2};
+use crate::elements::{ReferenceCoord, ReferenceElement};
+use crate::math::MIN_JACOBIAN_DET;
+
+/// Factorial of a small non-negative integer. The largest argument reached
+/// here is 7 — the maximum total barycentric degree of a product of two
+/// quadratic P2 shapes (4) plus the spatial-dimension offset (3) — so every
+/// value (≤ 5040) is exactly representable in `f64`.
+fn factorial(n: usize) -> f64 {
+    (1..=n).map(|k| k as f64).product()
+}
+
+/// Exact integral of the barycentric monomial `λ0^e0 · λ1^e1 · λ2^e2 · λ3^e3`
+/// over the **reference** tetrahedron (volume `1/6`):
+///
+/// ```text
+/// ∫_ref Π λ_i^{e_i} dV = (e0! e1! e2! e3!) / (e0+e1+e2+e3+3)!
+/// ```
+///
+/// This is the classical simplex formula
+/// `∫_T Π λ_i^{e_i} dV = (Π e_i!) · d! / (Σe_i + d)! · V` with spatial
+/// dimension `d = 3`, where the reference volume `V = 1/6` cancels the
+/// `d! = 3! = 6`. Exact-by-construction — no quadrature, so it integrates the
+/// degree-4 mass integrand `N_a · N_b` exactly (the requirement that the
+/// degree-2 Stroud rule on [`TetP2`] cannot meet).
+fn ref_monomial_integral(e: [usize; 4]) -> f64 {
+    let num = factorial(e[0]) * factorial(e[1]) * factorial(e[2]) * factorial(e[3]);
+    let denom = factorial(e[0] + e[1] + e[2] + e[3] + 3);
+    num / denom
+}
+
+/// Barycentric monomial terms `(coefficient, exponent-vector)` of the P2 shape
+/// function for local node `node` (canonical Hughes/Gmsh ordering):
+///
+/// - vertex `i ∈ 0..4`: `N_i = λ_i (2 λ_i − 1) = 2 λ_i² − λ_i` → two terms;
+/// - edge `4 + e`: `N = 4 λ_a λ_b` for `(a, b) = EDGES[e]` → one term.
+///
+/// Returned as a fixed `[_; 2]` so the kernel stays allocation-free; an edge
+/// shape's unused second slot is the zero term `(0.0, …)`, which contributes
+/// nothing to any product.
+fn shape_monomials(node: usize) -> [(f64, [usize; 4]); 2] {
+    if node < 4 {
+        let mut e_sq = [0usize; 4];
+        e_sq[node] = 2;
+        let mut e_lin = [0usize; 4];
+        e_lin[node] = 1;
+        [(2.0, e_sq), (-1.0, e_lin)]
+    } else {
+        let (a, b) = EDGES[node - 4];
+        let mut e = [0usize; 4];
+        e[a] += 1;
+        e[b] += 1;
+        [(4.0, e), (0.0, [0; 4])]
+    }
+}
+
+/// Compute the 30×30 **consistent mass matrix** `M_e` for a P2 (quadratic,
+/// 10-node) tetrahedron with constant density `density`.
+///
+/// `phys_nodes` are the 10 node positions in canonical Hughes/Gmsh ordering: 4
+/// vertices `(0,0,0), (1,0,0), (0,1,0), (0,0,1)` followed by the 6 edge-midpoint
+/// nodes for [`EDGES`]`[0..=5]` — the same convention as
+/// [`crate::element_stiffness`] at `ElementOrder::P2` and `promote_tets_to_p2`.
+///
+/// The returned matrix shares the row-major `(3·node_idx + axis)` layout of
+/// [`ElementStiffness`] (30 DOFs = 10 nodes × 3 axes), so it can be fed into
+/// [`crate::assemble_global_stiffness`] without repacking (the assembler treats
+/// `k_e` opaquely — K vs K_g vs M).
+///
+/// # Formula
+///
+/// For a straight-edge P2 tet with constant density `ρ` and constant Jacobian
+/// determinant `det J`,
+///
+/// ```text
+/// M_e[3a+α, 3b+α] = ρ · |det J| · G_ref[a, b]      α ∈ {0,1,2}
+/// M_e[3a+α, 3b+β] = 0                               α ≠ β
+/// ```
+///
+/// where `G_ref[a, b] = ∫_ref N_a N_b dV` is integrated **exactly** to degree 4
+/// via [`ref_monomial_integral`] over the P2 shapes' barycentric monomials.
+/// Block-diagonal in axes (off-axis blocks are 0); total mass per axis sums to
+/// `ρ · |det J| · Σ_{a,b} G_ref = ρ · |det J| · ∫_ref (Σ N_a)² = ρ · |det J| / 6
+/// = ρ · V_e` by partition of unity.
+///
+/// # Panics
+///
+/// Panics under `debug_assertions` when:
+/// - `density` is non-finite or non-positive (NaN, ±∞, 0.0, negative) — the
+///   same density guard as [`crate::consistent_element_mass_tet_p1`];
+/// - `|det J| <= MIN_JACOBIAN_DET` or `det J` is non-finite/subnormal — the
+///   shared degeneracy guard.
+///
+/// Uses `|det J|` so left-handed (mirror-flipped) node orderings still produce
+/// the physically correct positive `V_e` and a positive-mass `M_e`.
+#[allow(clippy::needless_range_loop)]
+pub fn consistent_element_mass_tet_p2(
+    phys_nodes: &[[f64; 3]; 10],
+    density: f64,
+) -> ElementStiffness {
+    const N_NODES: usize = 10;
+    const N_DOFS: usize = 30;
+    debug_assert!(
+        density.is_finite() && density > 0.0,
+        "density must be finite and positive, got {density}",
+    );
+
+    // Constant straight-edge Jacobian determinant via the P2 shape gradients
+    // (evaluated at the centroid; constant over the element for straight
+    // edges). `det.abs()` so left-handed (mirror) orderings still yield a
+    // positive volume factor — mirrors the P1 mass kernel.
+    let det = TetP2
+        .jacobian(&phys_nodes[..], ReferenceCoord::new(0.25, 0.25, 0.25))
+        .det;
+    debug_assert!(
+        det.is_normal() && det.abs() > MIN_JACOBIAN_DET,
+        "degenerate element: |det J| = {} (must be > {} and finite)",
+        det.abs(),
+        MIN_JACOBIAN_DET,
+    );
+    let abs_det = det.abs();
+
+    let mut m_e = ElementStiffness::zeros(N_DOFS);
+    for a in 0..N_NODES {
+        let terms_a = shape_monomials(a);
+        for b in 0..N_NODES {
+            let terms_b = shape_monomials(b);
+            // G_ref[a,b] = ∫_ref N_a N_b dV, integrated term-by-term over the
+            // barycentric monomial products (degree ≤ 4 — exact).
+            let mut g = 0.0_f64;
+            for &(ca, ea) in &terms_a {
+                for &(cb, eb) in &terms_b {
+                    let e = [
+                        ea[0] + eb[0],
+                        ea[1] + eb[1],
+                        ea[2] + eb[2],
+                        ea[3] + eb[3],
+                    ];
+                    g += ca * cb * ref_monomial_integral(e);
+                }
+            }
+            let coef = density * abs_det * g;
+            // Write coef · I_3 into the (a,b) 3×3 block; off-axis (α ≠ β) slots
+            // stay 0.0 from ElementStiffness::zeros — block-diagonal-in-axes.
+            for alpha in 0..3 {
+                let row = 3 * a + alpha;
+                let col = 3 * b + alpha;
+                m_e.data[row * N_DOFS + col] += coef;
+            }
+        }
+    }
+
+    m_e
+}
+
 #[cfg(test)]
 mod tests {
     use crate::assembly::ElementStiffness;

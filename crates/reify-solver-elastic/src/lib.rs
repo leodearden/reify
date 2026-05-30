@@ -475,6 +475,11 @@ pub use geometric_stiffness::{
 // `k_e` opaquely — K vs K_g vs M).
 // PRD: docs/prds/v0_3/modal-analysis.md §10 Phase 1 task δ.
 pub use mass_matrix::consistent_element_mass_tet_p1;
+// Task 4066: P2-tet consistent mass-matrix element kernel (closed-form
+// degree-4-exact barycentric integration). Pairs with the P2 stiffness
+// (`element_stiffness` at `ElementOrder::P2`) for the modal eigenproblem
+// `K φ = λ M φ`; assembled via the same `assemble_global_stiffness` scatter.
+pub use p2_tet::consistent_element_mass_tet_p2;
 pub use solver::{
     CgIterationControl, CgResult, CgSolverOptions, SolverMode, solve_cg, solve_cg_warm,
     solve_cg_with_progress,
