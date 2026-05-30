@@ -109,6 +109,32 @@ fn is_code_ext(path: &str) -> bool {
         || lower.ends_with(".jsx")
 }
 
+/// Scan a single file's added-line stream for stub markers, returning
+/// `(line_no, content, label)` for each match.
+///
+/// Implements positional `#[cfg(test)]` gating: once a line whose trimmed
+/// form starts with `#[cfg(` AND contains `test` is seen, all subsequent
+/// lines in that file's stream are suppressed. Lines before the gate are
+/// still flagged (genuine production stubs). Safe because diff_added_lines
+/// returns lines in file order and Rust convention places test modules last.
+fn scan_file_added_lines(added: &[(usize, String)]) -> Vec<(usize, String, &'static str)> {
+    let mut result = Vec::new();
+    let mut in_cfg_test = false;
+    for (line_no, content) in added {
+        if !in_cfg_test {
+            let trimmed_lower = content.trim_start().to_lowercase();
+            if trimmed_lower.starts_with("#[cfg(") && content.to_lowercase().contains("test") {
+                in_cfg_test = true;
+                continue;
+            }
+            if let Some(label) = line_matches_stub(content) {
+                result.push((*line_no, content.clone(), label));
+            }
+        }
+    }
+    result
+}
+
 /// Returns `true` when the task title itself signals that the task is
 /// intentionally a stub or placeholder (case-insensitive substring match).
 /// Used to downgrade finding severity from Medium to Low.
@@ -269,12 +295,7 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
                 continue;
             }
             let added = ctx.git.diff_added_lines("main", &task_branch, path);
-            let mut matches: Vec<(usize, String, &'static str)> = Vec::new();
-            for (line_no, content) in &added {
-                if let Some(label) = line_matches_stub(content) {
-                    matches.push((*line_no, content.clone(), label));
-                }
-            }
+            let matches = scan_file_added_lines(&added);
             if matches.is_empty() {
                 continue;
             }

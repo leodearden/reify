@@ -776,6 +776,55 @@ mod tests {
         );
     }
 
+    /// Verify that `unimplemented!()` lines inside an inline `#[cfg(test)]` module
+    /// are suppressed while a genuine production stub BEFORE the gate still flags.
+    ///
+    /// Mirrors geometry.rs where CountingKernel/FailAfterKernel stubs at lines
+    /// 3035/3049 live inside `#[cfg(test)] mod tests {` opened at line 2688.
+    #[test]
+    fn cfg_test_inline_module_markers_suppressed() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let task_id = "9204";
+        let path = "crates/reify-ir/src/geometry.rs";
+
+        let mut git = MockGitOps::new();
+        git.set_diff_added_lines(
+            "main",
+            &format!("task/{}", task_id),
+            path,
+            vec![
+                (10,   "    unimplemented!() // genuine production stub".to_string()),
+                (2688, "#[cfg(test)]".to_string()),
+                (2689, "mod tests {".to_string()),
+                (3035, "        unimplemented!(\"CountingKernel only supports query\")".to_string()),
+                (3049, "        unimplemented!(\"CountingKernel only supports query\")".to_string()),
+            ],
+        );
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(task_id.to_string(), benign_meta(task_id, vec![path.to_string()]));
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p2_consumer_stub::check(&ctx);
+        assert_eq!(findings.len(), 1, "expected exactly 1 finding; got {:?}", findings);
+        let summary = &findings[0].summary;
+        assert!(summary.contains("line 10"), "production stub at line 10 must be in summary; got: {summary}");
+        assert!(!summary.contains("line 3035"), "inline-test stub at 3035 must NOT be in summary; got: {summary}");
+        assert!(!summary.contains("line 3049"), "inline-test stub at 3049 must NOT be in summary; got: {summary}");
+    }
+
     /// Verify that the detector's own source file is excluded from P2 scanning.
     ///
     /// The live code `return Some("TODO(post-)")` at p2_consumer_stub.rs:41
