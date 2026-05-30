@@ -113,3 +113,33 @@ fn regression_plain_integer_1000() {
         "1000 (no decimal point, no exponent) should have is_real = false"
     );
 }
+
+// ── Quantity-literal `_` separator cases ─────────────────────────────────────
+
+/// `1_000mm` (quantity with `_` separator in numeric value) must lower to
+/// `ExprKind::QuantityLiteral { value: 1000.0, unit: UnitExpr::Unit("mm") }`.
+///
+/// Grammar: `quantity_literal = field('value', number_literal) + _unit_expr_start
+/// + field('unit', unit_expr)`, so `1_000mm` produces
+/// `quantity_literal(value="1_000", unit=mm)`.  The value child text "1_000"
+/// must have `_` stripped before `f64::from_str` is called.
+#[test]
+fn quantity_literal_1_000mm() {
+    let (members, errors) = parse_members("structure S {\n  let len = 1_000mm\n}");
+    assert!(errors.is_empty(), "unexpected parse errors: {:?}", errors);
+    let let_decl = match &members[0] {
+        MemberDecl::Let(l) => l,
+        other => panic!("expected Let, got {:?}", other),
+    };
+    match &let_decl.value.kind {
+        ExprKind::QuantityLiteral { value, unit } => {
+            assert_eq!(*value, 1000.0_f64, "1_000mm quantity value should be 1000.0");
+            assert_eq!(
+                unit,
+                &UnitExpr::Unit("mm".to_string()),
+                "1_000mm unit should be 'mm'"
+            );
+        }
+        other => panic!("expected QuantityLiteral, got {:?}", other),
+    }
+}
