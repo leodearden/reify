@@ -200,7 +200,8 @@ fn aux_and_pub_are_independent() {
 // ── Step 5: collection+`at` diagnostic and clean-compile guard ───────────────
 
 /// `at` on a collection sub must produce at least one Error-severity diagnostic
-/// (per PRD §10 and the AST doc-comment on `SubDecl.pose_expr`).
+/// with `DiagnosticCode::AtOnCollectionSub`, and the lowered `SubComponentDecl`
+/// must have `pose == None` (the invalid pose is discarded, per PRD §10).
 ///
 /// This is a runtime RED in step-5: the compiler does not yet reject this
 /// combination, so no diagnostic is produced and the assertion fails.
@@ -225,6 +226,33 @@ structure Parent {
         "`at` on a collection sub must produce at least one Error diagnostic; got zero. \
          Diagnostics: {:?}",
         compiled.diagnostics
+    );
+
+    // The error must carry the specific AtOnCollectionSub code so test assertions
+    // don't pass on a spurious / unrelated error.
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.code == Some(reify_core::DiagnosticCode::AtOnCollectionSub)),
+        "expected at least one diagnostic with code AtOnCollectionSub; got: {:?}",
+        errors
+    );
+
+    // The lowered SubComponentDecl must have pose == None: the compiler must
+    // discard the invalid pose rather than propagating it into the IR.
+    let parent = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Parent")
+        .expect("Parent template not found");
+    let bolts = parent
+        .sub_components
+        .iter()
+        .find(|s| s.name == "bolts")
+        .expect("sub 'bolts' not found in Parent.sub_components");
+    assert!(
+        bolts.pose.is_none(),
+        "collection sub's pose must be discarded (None) when `at` is present; got Some(…)"
     );
 }
 
@@ -253,5 +281,160 @@ structure Parent {
         errors.is_empty(),
         "valid at/aux usage must produce zero Error diagnostics; got: {:?}",
         errors
+    );
+}
+
+// ── Match-arm pose lowering (suggestion 3) ───────────────────────────────────
+
+/// `sub … at <pose>` inside a `match`-arm decl group is lowered correctly:
+/// the resulting `SubComponentDecl` carries `pose = Some(…)`.
+///
+/// Uses a hand-constructed `ParsedModule` (the tree-sitter grammar restricts
+/// `match_arm_sub_decl` to bare `sub name : Type` with no `at` clause, so
+/// source-string compilation cannot exercise this path directly).
+#[test]
+fn match_arm_sub_pose_is_lowered() {
+    use reify_ast::{
+        Declaration, EnumDecl, Expr, ExprKind, MatchArmDeclArmDecl, MatchArmDeclGroupDecl,
+        MemberDecl, ParamDecl, ParsedModule, StructureDef, SubDecl, TypeExpr, TypeExprKind,
+    };
+    use reify_core::{ContentHash, ModulePath, SourceSpan};
+
+    fn zero_span() -> SourceSpan {
+        SourceSpan::new(0, 0)
+    }
+
+    fn ident_expr(name: &str) -> Expr {
+        Expr {
+            kind: ExprKind::Ident(name.to_string()),
+            span: zero_span(),
+        }
+    }
+
+    fn named_type(name: &str) -> TypeExpr {
+        TypeExpr {
+            kind: TypeExprKind::Named {
+                name: name.to_string(),
+                type_args: vec![],
+            },
+            span: zero_span(),
+        }
+    }
+
+    fn empty_struct(name: &str) -> Declaration {
+        Declaration::Structure(StructureDef {
+            name: name.to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![],
+            members: vec![],
+            span: zero_span(),
+            content_hash: ContentHash(0),
+            pragmas: vec![],
+            annotations: vec![],
+        })
+    }
+
+    // Build a SubDecl that carries a pose expression: `sub comp : ChildA at kind`
+    // (using the discriminant param `kind` as the pose expression — T4 will
+    // type-check it as Transform; T2 just needs to lower it to Some(CompiledExpr)).
+    // Both variants must be covered (exhaustiveness check); both arms carry a pose.
+    let make_arm_sub = |structure: &str| {
+        MemberDecl::Sub(SubDecl {
+            name: "comp".to_string(),
+            structure_name: structure.to_string(),
+            type_args: vec![],
+            args: vec![],
+            is_collection: false,
+            where_clause: None,
+            body: None,
+            is_aux: false,
+            pose_expr: Some(ident_expr("kind")),
+            span: zero_span(),
+            content_hash: ContentHash(0),
+        })
+    };
+
+    let match_group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+        discriminant: ident_expr("kind"),
+        arms: vec![
+            MatchArmDeclArmDecl {
+                patterns: vec!["A".to_string()],
+                member: Box::new(make_arm_sub("ChildA")),
+                span: zero_span(),
+            },
+            MatchArmDeclArmDecl {
+                patterns: vec!["B".to_string()],
+                member: Box::new(make_arm_sub("ChildA")),
+                span: zero_span(),
+            },
+        ],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+    });
+
+    let parent = Declaration::Structure(StructureDef {
+        name: "Parent".to_string(),
+        doc: None,
+        is_pub: false,
+        type_params: vec![],
+        trait_bounds: vec![],
+        members: vec![
+            MemberDecl::Param(ParamDecl {
+                name: "kind".to_string(),
+                doc: None,
+                type_expr: Some(named_type("ShapeKind")),
+                default: None,
+                where_clause: None,
+                annotations: vec![],
+                span: zero_span(),
+                content_hash: ContentHash(0),
+            }),
+            match_group,
+        ],
+        span: zero_span(),
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+        annotations: vec![],
+    });
+
+    let parsed = ParsedModule {
+        path: ModulePath::single("test_match_arm_pose"),
+        declarations: vec![
+            Declaration::Enum(EnumDecl {
+                name: "ShapeKind".to_string(),
+                doc: None,
+                is_pub: false,
+                variants: vec!["A".to_string(), "B".to_string()],
+                span: zero_span(),
+                content_hash: ContentHash(0),
+                annotations: vec![],
+            }),
+            empty_struct("ChildA"),
+            parent,
+        ],
+        errors: vec![],
+        content_hash: ContentHash(0),
+        pragmas: vec![],
+    };
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    let parent_tpl = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Parent")
+        .expect("Parent template not found");
+
+    let comp = parent_tpl
+        .sub_components
+        .iter()
+        .find(|s| s.name == "comp")
+        .expect("sub 'comp' not found in Parent.sub_components after match-arm lowering");
+
+    assert!(
+        comp.pose.is_some(),
+        "match-arm sub with `at <pose>` must lower to SubComponentDecl.pose = Some(…); got None"
     );
 }

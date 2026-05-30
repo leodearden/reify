@@ -1608,7 +1608,12 @@ pub(crate) fn compile_entity(
                                 id,
                                 kind: ValueCellKind::Let,
                                 visibility,
-                                is_aux: false,
+                                // Propagate `is_aux` from the AST consistently with the
+                                // structure-level Let path (entity.rs ~1179) and the guarded-member
+                                // path (guards.rs ~469).  If `aux` turns out to be semantically
+                                // invalid inside ports, the validator/T4 can emit a diagnostic
+                                // rather than silently dropping the flag here.
+                                is_aux: let_decl.is_aux,
                                 cell_type,
                                 default_expr: Some(compiled_expr),
                                 solver_hints: Vec::new(),
@@ -2740,10 +2745,31 @@ fn compile_match_arm_decl_group(
                 });
             }
 
-            let pose = sub
-                .pose_expr
-                .as_ref()
-                .map(|e| compile_expr(e, scope, enum_defs, functions, diagnostics));
+            // Mirror the collection+`at` rejection from the main sub-lowering path
+            // (entity.rs ~1420) so the semantic rule is enforced uniformly.
+            // Although the grammar currently hardcodes `is_collection: false` for
+            // match-arm subs, the AST field may be true if the module was
+            // hand-constructed; guarding on `sub.is_collection` is defensive.
+            let pose = if sub.is_collection {
+                if let Some(pose_expr) = &sub.pose_expr {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "'at' placement is not supported on collection subs; \
+                             per-element placement is out of scope in v1",
+                        )
+                        .with_code(DiagnosticCode::AtOnCollectionSub)
+                        .with_label(DiagnosticLabel::new(
+                            pose_expr.span,
+                            "'at' not allowed on collection sub",
+                        )),
+                    );
+                }
+                None
+            } else {
+                sub.pose_expr
+                    .as_ref()
+                    .map(|e| compile_expr(e, scope, enum_defs, functions, diagnostics))
+            };
 
             sub_components.push(SubComponentDecl {
                 name: sub.name.clone(),
