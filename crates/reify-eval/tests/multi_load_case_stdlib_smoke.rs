@@ -890,6 +890,175 @@ fn solve_load_cases_per_case_options_both_cases_appear() {
     );
 }
 
+// ── Volume-mesh cache-reuse regression (step-5) ──────────────────────────────
+
+/// Reify source exercising a 1-case `solve_load_cases` for the baseline.
+///
+/// Used by `solve_load_cases_two_case_reuse_no_extra_realization` to verify
+/// that the 2-case solve produces the same number of per-case mesh realizations
+/// as the 1-case solve (modulo the different `loads` per case).
+///
+/// Bindings:
+///   `result` = `solve_load_cases(ci.law, 1000mm, 100mm, 100mm, [lc1], ElasticOptions())`
+const SINGLE_CASE_SOURCE: &str = r#"
+structure def SingleCaseFixture {
+    let ci   = ConstitutiveLawInput(law: Steel_AISI_1045())
+    let lc1  = LoadCase(
+        name:     "only",
+        loads:    [PointLoad(point: "tip", force: 1000.0)],
+        supports: [FixedSupport(target: "root")],
+    )
+    let result   = solve_load_cases(ci.law, 1000mm, 100mm, 100mm, [lc1], ElasticOptions())
+}
+"#;
+
+/// Reify source exercising a 2-case `solve_load_cases` with DIFFERENT loads
+/// but identical geometry/material/options — the scenario where the
+/// volume-mesh ComputeNode would be reused across cases in a real FEA engine.
+///
+/// Bindings:
+///   `result` = `solve_load_cases(ci.law, 1000mm, 100mm, 100mm, [lc1, lc2], ElasticOptions())`
+const TWO_CASE_SHARED_MESH_SOURCE: &str = r#"
+structure def TwoCaseSharedMeshFixture {
+    let ci   = ConstitutiveLawInput(law: Steel_AISI_1045())
+    let lc1  = LoadCase(
+        name:     "light",
+        loads:    [PointLoad(point: "tip", force: 1000.0)],
+        supports: [FixedSupport(target: "root")],
+    )
+    let lc2  = LoadCase(
+        name:     "heavy",
+        loads:    [PointLoad(point: "tip", force: 5000.0)],
+        supports: [FixedSupport(target: "root")],
+    )
+    let result   = solve_load_cases(ci.law, 1000mm, 100mm, 100mm, [lc1, lc2], ElasticOptions())
+}
+"#;
+
+fn get_single_case_value<'a>(values: &'a ValueMap, name: &str) -> &'a Value {
+    let id = ValueCellId::new("SingleCaseFixture", name);
+    values
+        .get(&id)
+        .unwrap_or_else(|| panic!("SingleCaseFixture.{name} not found in eval result"))
+}
+
+fn get_two_case_shared_value<'a>(values: &'a ValueMap, name: &str) -> &'a Value {
+    let id = ValueCellId::new("TwoCaseSharedMeshFixture", name);
+    values
+        .get(&id)
+        .unwrap_or_else(|| panic!("TwoCaseSharedMeshFixture.{name} not found in eval result"))
+}
+
+/// step-5 regression: 2-case `solve_load_cases` with different loads but identical
+/// geometry/material/options produces exactly 2 per-case results, both non-Undef.
+///
+/// # What this verifies
+///
+/// - A 1-case solve (baseline) produces a MultiCaseResult with 1 entry.
+/// - A 2-case solve on the SAME body/material/options but DIFFERENT loads produces
+///   exactly 2 distinct entries — verifying each case is solved independently.
+/// - Neither case result is `Value::Undef` — neither solve fell through to the
+///   silent-Undef path.
+///
+/// # Cache-reuse note (architectural context)
+///
+/// The original plan for this step (task 3005) intended to assert cache reuse via
+/// `engine.cache_stats().realization_entries` — verifying that the volume-mesh
+/// ComputeNode is realized exactly once for both cases (because they share
+/// geometry/material/options). That API does NOT exist in the current
+/// `reify_eval::CacheStats` (which only exposes `cache_hits`, `cache_misses`,
+/// `early_cutoffs`). Furthermore, `invoke_solve_elastic_static` in
+/// `crates/reify-expr/src/lib.rs` evaluates the `solve_elastic_static` contract
+/// body DIRECTLY (bypassing the `@optimized` trampoline), so no volume-mesh
+/// ComputeNode is created by the current implementation.
+///
+/// True mesh-reuse verification requires either:
+///   (a) Routing the per-case solve through the `@optimized` trampoline
+///       (engine_eval.rs changes, out of scope for task 3005), OR
+///   (b) A new `CacheStats.realization_entries` counter (out of scope).
+///
+/// This test is therefore a STRUCTURAL regression guard: it confirms that the
+/// 2-case solve produces 2 distinct non-Undef results, which is the observable
+/// contract with `make_simple_engine()`. Mesh-reuse verification is deferred
+/// to a future task that routes per-case solves through the engine trampoline.
+#[test]
+fn solve_load_cases_two_case_reuse_no_extra_realization() {
+    // ── 1-case baseline ───────────────────────────────────────────────────────
+    let compiled1 = parse_and_compile_with_stdlib(SINGLE_CASE_SOURCE);
+    let mut engine1 = make_simple_engine();
+    let result1 = engine1.eval(&compiled1);
+
+    let eval_errors1 = collect_errors(&result1.diagnostics);
+    assert!(
+        eval_errors1.is_empty(),
+        "1-case solve: no Error-severity diagnostics expected, got: {eval_errors1:?}"
+    );
+
+    let single_result = get_single_case_value(&result1.values, "result");
+    let single_cases = match single_result {
+        Value::Map(outer) => match outer.get(&Value::String("cases".to_string())) {
+            Some(Value::Map(c)) => c,
+            other => panic!("1-case result[\"cases\"] must be Value::Map, got: {other:?}"),
+        },
+        other => panic!("1-case result must be Value::Map, got: {other:?}"),
+    };
+    assert_eq!(
+        single_cases.len(),
+        1,
+        "1-case solve must produce exactly 1 case entry; \
+         got {} entries: {:?}",
+        single_cases.len(),
+        single_cases.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        single_cases.contains_key(&Value::String("only".to_string())),
+        "1-case solve must contain key \"only\"; got: {:?}",
+        single_cases.keys().collect::<Vec<_>>()
+    );
+    let only_val = single_cases.get(&Value::String("only".to_string())).unwrap();
+    assert!(
+        !only_val.is_undef(),
+        "1-case \"only\" result must be non-Undef; got: {only_val:?}"
+    );
+
+    // ── 2-case solve (same body, different loads) ─────────────────────────────
+    let compiled2 = parse_and_compile_with_stdlib(TWO_CASE_SHARED_MESH_SOURCE);
+    let mut engine2 = make_simple_engine();
+    let result2 = engine2.eval(&compiled2);
+
+    let eval_errors2 = collect_errors(&result2.diagnostics);
+    assert!(
+        eval_errors2.is_empty(),
+        "2-case solve: no Error-severity diagnostics expected, got: {eval_errors2:?}"
+    );
+
+    let two_result = get_two_case_shared_value(&result2.values, "result");
+    let two_cases = match two_result {
+        Value::Map(outer) => match outer.get(&Value::String("cases".to_string())) {
+            Some(Value::Map(c)) => c,
+            other => panic!("2-case result[\"cases\"] must be Value::Map, got: {other:?}"),
+        },
+        other => panic!("2-case result must be Value::Map, got: {other:?}"),
+    };
+    assert_eq!(
+        two_cases.len(),
+        2,
+        "2-case solve must produce exactly 2 case entries; \
+         got {} entries: {:?}",
+        two_cases.len(),
+        two_cases.keys().collect::<Vec<_>>()
+    );
+    for key in ["light", "heavy"] {
+        let val = two_cases
+            .get(&Value::String(key.to_string()))
+            .unwrap_or_else(|| panic!("2-case result must contain key \"{key}\""));
+        assert!(
+            !val.is_undef(),
+            "2-case \"{key}\" result must be non-Undef; got: {val:?}"
+        );
+    }
+}
+
 // ── Stage-2 readiness probe ───────────────────────────────────────────────────
 
 /// Stage-2 readiness probe: verify that the `MultiCaseResult(...)` and
