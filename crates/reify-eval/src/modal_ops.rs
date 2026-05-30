@@ -7,18 +7,22 @@
 //! `reify-solver-elastic` (which `reify-stdlib` does not depend on); `reify-eval`
 //! depends on both. Mirrors `compute_targets/buckling.rs`.
 //!
-//! `solve_modal_core` (step 4) is the core FEA eigensolve; the public
-//! `solve_modal_analysis_trampoline` (step 14) is what wires it into the
-//! `@optimized` dispatch path. Until that lands, the core solver + its mesh /
-//! projection helpers have no non-test caller, so they carry `#[allow(dead_code)]`
-//! (removed once the trampoline consumes them).
+//! `solve_modal_core` is the core FEA eigensolve; the public
+//! `solve_modal_analysis_trampoline` wires it into the `@optimized` dispatch
+//! path (registered as `modal::free_vibration` in `compute_targets::mod`). The
+//! trampoline transitively reaches the mesh / projection / density-guard helpers,
+//! so they need no `#[allow(dead_code)]`. `ModalCoreResult` keeps a struct-level
+//! `#[allow(dead_code)]`: several fields (eigenvalues, the per-mode shapes, the
+//! `m_free` handle, the convergence counts) are read only by the unit tests, not
+//! by the trampoline (which serializes only frequency / participation / norms /
+//! diagnostics).
 
 use std::f64::consts::PI;
 
 use faer::sparse::{SparseRowMat, Triplet};
 
 use reify_core::Diagnostic;
-use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_solver_elastic::{
     AssemblyElement, AssemblyMode, DirichletBc, EigenSolverOptions, EigenSolverResult, ElementOrder,
     ElementStiffness, IsotropicElastic, assemble_global_stiffness, consistent_element_mass_tet_p1,
@@ -26,10 +30,10 @@ use reify_solver_elastic::{
 };
 use reify_stdlib::modal::free_vibration::{
     eigenvalue_to_frequency_hz, is_rigid_body_mode, mass_normalization_scale,
-    modal_participation_mass,
+    modal_participation_mass, rayleigh_damping_ratio,
 };
 
-use crate::ComputeOutcome;
+use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
 // ---------------------------------------------------------------------------
 // Beam mesh
@@ -39,7 +43,6 @@ use crate::ComputeOutcome;
 ///
 /// Layout: X = beam axis (length), Y = width, Z = height (bending axis) —
 /// identical to `compute_targets::elastic_static::solve_cantilever_fea`.
-#[allow(dead_code)]
 pub(crate) struct BeamMesh {
     /// Node coordinates `[x, y, z]`, length `n_nodes`.
     pub(crate) nodes: Vec<[f64; 3]>,
@@ -54,7 +57,6 @@ pub(crate) struct BeamMesh {
 /// (XZ) elements near-cubic so the P1 constant-strain tets do not lock in
 /// bending; `ny = 1` (bending is about Y). This mirrors `solve_cantilever_fea`'s
 /// meshing so the modal mesh matches the validated elastic-static pattern.
-#[allow(dead_code)]
 pub(crate) fn build_beam_mesh(length: f64, width: f64, height: f64) -> BeamMesh {
     let nz: usize = 6;
     // Clamp to ≥ 1 to handle degenerate geometry (height ≈ or ≫ length).
@@ -150,6 +152,13 @@ pub(crate) struct ModalCoreResult {
     pub(crate) converged: bool,
     /// Number of eigenpairs the underlying solver reported converged.
     pub(crate) n_converged: usize,
+    /// Frobenius norm `‖M‖_F` of the full assembled consistent mass matrix —
+    /// a BC-independent conditioning / sanity diagnostic surfaced on
+    /// `ModalResult.mass_matrix_norm` (PRD §4.1).
+    pub(crate) mass_matrix_norm: f64,
+    /// Frobenius norm `‖K‖_F` of the full assembled stiffness matrix —
+    /// the companion `ModalResult.stiffness_matrix_norm` diagnostic (PRD §4.1).
+    pub(crate) stiffness_matrix_norm: f64,
     /// Non-fatal diagnostics surfaced by the solve: `W_ModalRigidBodyMode` (a
     /// near-zero / rigid-body mode → possible under-constraint) and
     /// `W_ModalConvergence` (fewer modes converged than requested). Message-
@@ -178,7 +187,7 @@ pub(crate) struct ModalCoreResult {
 // eigen_opts — the flat physical-input surface mirrors solve_cantilever_fea /
 // solve_buckling_kernel; bundling them into a struct would just relocate the
 // fan-out. (dead_code until the step-14 trampoline consumes this.)
-#[allow(dead_code, clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn solve_modal_core(
     density: f64,
     material: &IsotropicElastic,
@@ -230,6 +239,13 @@ pub(crate) fn solve_modal_core(
         .map(|(id, (conn, m_e))| AssemblyElement { id, connectivity: conn, k_e: m_e })
         .collect();
     let m_full = assemble_global_stiffness(n_nodes, &m_assembly, AssemblyMode::Deterministic);
+
+    // ---- Matrix-norm diagnostics (‖K‖_F, ‖M‖_F over the full assembly) -----
+    // Computed before the free-DOF projection consumes the matrices: these are
+    // BC-independent conditioning diagnostics of the discretization itself
+    // (surfaced on ModalResult.{stiffness,mass}_matrix_norm).
+    let stiffness_matrix_norm = frobenius_norm(&k_full);
+    let mass_matrix_norm = frobenius_norm(&m_full);
 
     // ---- Free-DOF subspace map (Dirichlet-only; no MPC) -------------------
     let mut is_constrained = vec![false; n_dofs];
@@ -343,6 +359,8 @@ pub(crate) fn solve_modal_core(
         n_nodes,
         converged: eig.converged,
         n_converged: eig.n_converged,
+        mass_matrix_norm,
+        stiffness_matrix_norm,
         diagnostics,
     }
 }
@@ -354,7 +372,6 @@ pub(crate) fn solve_modal_core(
 /// of `buckling_kernel`'s `project_with_expansion`: every free DOF expands to
 /// itself with weight 1.0 and every constrained DOF to nothing. `faer`'s
 /// `try_new_from_triplets` sums duplicate triplets, preserving CSR invariants.
-#[allow(dead_code)]
 fn project_free(
     full: &SparseRowMat<usize, f64>,
     free_of_full: &[usize],
@@ -386,7 +403,6 @@ fn project_free(
 /// The reusable mass-metric primitive: the generalized mass `φᵀMφ` (step 6
 /// normalization) and the participation factor `φᵀMd` (step 8) are both
 /// `dot(·, M··)`.
-#[allow(dead_code)]
 fn m_matvec(m: &SparseRowMat<usize, f64>, v: &[f64]) -> Vec<f64> {
     let sym = m.symbolic();
     let mut out = vec![0.0_f64; m.nrows()];
@@ -402,6 +418,20 @@ fn m_matvec(m: &SparseRowMat<usize, f64>, v: &[f64]) -> Vec<f64> {
     out
 }
 
+/// Frobenius norm `‖A‖_F = √(Σ_ij a_ij²)` of a sparse matrix (sum of squares
+/// over the stored nonzeros). Feeds the `ModalResult.{mass,stiffness}_matrix_norm`
+/// conditioning diagnostics. Explicit zeros stored in the CSR contribute 0, so
+/// the result is independent of structural-zero bookkeeping.
+fn frobenius_norm(a: &SparseRowMat<usize, f64>) -> f64 {
+    let mut sum_sq = 0.0_f64;
+    for r in 0..a.nrows() {
+        for &val in a.val_of_row(r) {
+            sum_sq += val * val;
+        }
+    }
+    sum_sq.sqrt()
+}
+
 /// Solve the generalized symmetric eigenproblem `K_free φ = λ M_free φ`,
 /// returning eigenvalues ascending by |λ| with column-major eigenvectors.
 ///
@@ -414,7 +444,6 @@ fn m_matvec(m: &SparseRowMat<usize, f64>, v: &[f64]) -> Vec<f64> {
 /// wrapper would pick — minus the premature factorization. Larger constrained
 /// problems (`K_free` SPD after BCs) take the shift-invert Lanczos path
 /// (design_decision #4).
-#[allow(dead_code)]
 fn solve_generalized_eigen(
     k_free: &SparseRowMat<usize, f64>,
     m_free: &SparseRowMat<usize, f64>,
@@ -460,7 +489,7 @@ fn solve_generalized_eigen(
 /// transient guard result would add an allocation for no benefit. `dead_code`
 /// until the step-14 trampoline consumes it; until then only the step-11 unit
 /// test calls it.
-#[allow(dead_code, clippy::result_large_err)]
+#[allow(clippy::result_large_err)]
 fn extract_density_or_degenerate(material: &Value) -> Result<f64, ComputeOutcome> {
     if let Value::StructureInstance(data) = material
         && let Some(Value::Scalar { si_value, .. }) = data.fields.get(&"density".to_string())
@@ -474,7 +503,6 @@ fn extract_density_or_degenerate(material: &Value) -> Result<f64, ComputeOutcome
 /// Build the degenerate short-circuit outcome for a missing / non-positive mass
 /// density: an `E_ModalNoMassMatrix` `Error` diagnostic plus an empty-modes
 /// `ModalResult` (no eigenproblem was solved).
-#[allow(dead_code)]
 fn no_mass_matrix_outcome() -> ComputeOutcome {
     let diagnostic = Diagnostic::error(
         "E_ModalNoMassMatrix: the material carries no positive mass density \
@@ -496,7 +524,6 @@ fn no_mass_matrix_outcome() -> ComputeOutcome {
 /// `modal_analysis.ri`); the trait-typed `damping` field is left `Value::Undef`
 /// (the tet-result convention for unpopulated fields, cf. buckling's
 /// `pre_stress`), and `StructureTypeId(u32::MAX)` is the registry-free sentinel.
-#[allow(dead_code)]
 fn degenerate_modal_result() -> Value {
     let fields: PersistentMap<String, Value> = [
         ("part".to_string(), Value::String(String::new())),
@@ -514,6 +541,317 @@ fn degenerate_modal_result() -> Value {
         version: 1,
         fields,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// Trampoline (modal::free_vibration)
+// ---------------------------------------------------------------------------
+
+/// `@optimized("modal::free_vibration")` trampoline for `fn modal_analysis`
+/// (task ζ). Receives the five flat `value_inputs` matching the fn signature:
+///
+/// ```text
+/// [0] material : ElasticMaterial  (StructureInstance — youngs_modulus, poisson_ratio, density)
+/// [1] length   : Length           (Scalar { LENGTH })
+/// [2] width    : Length           (Scalar { LENGTH })
+/// [3] height   : Length           (Scalar { LENGTH })
+/// [4] options  : ModalOptions     (StructureInstance — n_modes/tol/max_iters/sigma/
+///                                  damping/reference_direction/boundary_conditions)
+/// ```
+///
+/// Reconstructs the beam mesh from length/width/height (no Part→trampoline
+/// geometry channel — the same deviation `solve_buckling` documents,
+/// design_decision #1), realizes the Dirichlet BCs from the `boundary_conditions`
+/// faces, runs [`solve_modal_core`], and shapes a `ModalResult`
+/// `Value::StructureInstance` (6 fields, α struct-def; `StructureTypeId(u32::MAX)`
+/// sentinel). Each mode is a `Mode` StructureInstance `{ frequency: Real(Hz),
+/// shape: Undef, participation_mass: Real, damping_ratio: Real }`, where
+/// `damping_ratio` is the Rayleigh ratio `ζ_i = (α + β·ω_i²)/(2·ω_i)` (0 for
+/// `NoDamping`). `Mode.shape` is `Undef`: the eigenvector is computed and
+/// unit-tested internally but not serialized this task (design_decision #7,
+/// mirroring buckling's `Mode.mode_shape = Undef`).
+///
+/// A material with no positive `density` short-circuits to a degenerate
+/// empty-modes result plus an `E_ModalNoMassMatrix` Error (the
+/// [`extract_density_or_degenerate`] guard) — no mesh / eigensolve runs.
+pub fn solve_modal_analysis_trampoline(
+    value_inputs: &[Value],
+    _realization_inputs: &[RealizationReadHandle],
+    _options: &Value,
+    _prior_warm_state: Option<&OpaqueState>,
+    _cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    // ── (1) density guard — no M without a positive density (short-circuit) ──
+    let density = match extract_density_or_degenerate(&value_inputs[0]) {
+        Ok(d) => d,
+        Err(outcome) => return outcome,
+    };
+
+    // ── (2) material elastic constants (E, ν) ────────────────────────────────
+    let material = extract_isotropic_material(&value_inputs[0]);
+
+    // ── (3) geometry scalars (SI metres) ─────────────────────────────────────
+    let length = read_scalar_si(&value_inputs[1]);
+    let width = read_scalar_si(&value_inputs[2]);
+    let height = read_scalar_si(&value_inputs[3]);
+
+    // ── (4) ModalOptions: eigen knobs, excitation direction, damping, BCs ────
+    let options = &value_inputs[4];
+    let (n_modes, tol, max_iters, sigma) = extract_eigen_knobs(options);
+    let reference_direction = extract_reference_direction(options);
+    let (alpha, beta) = extract_damping(options);
+    let bcs = build_dirichlet_bcs(options, length, width, height);
+    let eigen_opts = EigenSolverOptions { n_modes, tol, max_iters, sigma };
+
+    // ── (5) core free-vibration eigensolve ───────────────────────────────────
+    let core = solve_modal_core(
+        density,
+        &material,
+        length,
+        width,
+        height,
+        reference_direction,
+        &bcs,
+        &eigen_opts,
+    );
+
+    // ── (6) modes list: one Mode StructureInstance per returned mode ─────────
+    let modes_list: Vec<Value> = core
+        .frequencies
+        .iter()
+        .enumerate()
+        .map(|(i, &f)| {
+            let omega = 2.0 * PI * f;
+            let damping_ratio = rayleigh_damping_ratio(alpha, beta, omega);
+            let participation_mass = core.participation_mass.get(i).copied().unwrap_or(0.0);
+            let fields: PersistentMap<String, Value> = [
+                ("frequency".to_string(), Value::Real(f)),
+                ("shape".to_string(), Value::Undef),
+                ("participation_mass".to_string(), Value::Real(participation_mass)),
+                ("damping_ratio".to_string(), Value::Real(damping_ratio)),
+            ]
+            .into_iter()
+            .collect();
+            Value::StructureInstance(Box::new(StructureInstanceData {
+                type_id: StructureTypeId(u32::MAX),
+                type_name: "Mode".to_string(),
+                version: 1,
+                fields,
+            }))
+        })
+        .collect();
+
+    // ── (7) ModalResult: echo the input BCs + damping, report matrix norms ───
+    let boundary_conditions = field_or(options, "boundary_conditions", Value::List(Vec::new()));
+    let damping = field_or(options, "damping", Value::Undef);
+    let result_fields: PersistentMap<String, Value> = [
+        ("part".to_string(), Value::String(String::new())),
+        ("modes".to_string(), Value::List(modes_list)),
+        ("boundary_conditions".to_string(), boundary_conditions),
+        ("damping".to_string(), damping),
+        ("mass_matrix_norm".to_string(), Value::Real(core.mass_matrix_norm)),
+        ("stiffness_matrix_norm".to_string(), Value::Real(core.stiffness_matrix_norm)),
+    ]
+    .into_iter()
+    .collect();
+    let result = Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "ModalResult".to_string(),
+        version: 1,
+        fields: result_fields,
+    }));
+
+    ComputeOutcome::Completed {
+        result,
+        new_warm_state: None,
+        cost_per_byte: None,
+        diagnostics: core.diagnostics,
+    }
+}
+
+/// Read an SI scalar magnitude from a numeric `Value`, tolerating the runtime
+/// spellings a stdlib numeric field takes: `Scalar { si_value }` (dimensioned —
+/// geometry, density, E), `Real`, and `Int`. Non-numeric values read as `0.0`
+/// (the upstream type-checker guarantees the shape; this is a defensive floor,
+/// not a validation point — mirrors buckling's permissive scalar reads).
+fn read_scalar_si(val: &Value) -> f64 {
+    match val {
+        Value::Scalar { si_value, .. } => *si_value,
+        Value::Real(r) => *r,
+        Value::Int(n) => *n as f64,
+        _ => 0.0,
+    }
+}
+
+/// Extract `IsotropicElastic { youngs_modulus, poisson_ratio }` from the
+/// material StructureInstance (`youngs_modulus : Scalar(PRESSURE)`,
+/// `poisson_ratio : Real`). Missing fields read as `0.0` via [`read_scalar_si`]
+/// (defensive; the type-checker guarantees presence for a real ElasticMaterial).
+fn extract_isotropic_material(val: &Value) -> IsotropicElastic {
+    let mut youngs_modulus = 0.0;
+    let mut poisson_ratio = 0.0;
+    if let Value::StructureInstance(data) = val {
+        if let Some(v) = data.fields.get(&"youngs_modulus".to_string()) {
+            youngs_modulus = read_scalar_si(v);
+        }
+        if let Some(v) = data.fields.get(&"poisson_ratio".to_string()) {
+            poisson_ratio = read_scalar_si(v);
+        }
+    }
+    IsotropicElastic { youngs_modulus, poisson_ratio }
+}
+
+/// Extract the eigensolver knobs `(n_modes, tol, max_iters, sigma)` from a
+/// `ModalOptions` StructureInstance, falling back to the PRD §4.3 defaults
+/// (`n_modes = 10`, `tol = 1e-9`, `max_iters = 200`, `sigma = 0`) when the value
+/// is not a StructureInstance or a field is missing / malformed. Mirrors
+/// buckling's `extract_buckling_options`.
+fn extract_eigen_knobs(val: &Value) -> (usize, f64, usize, f64) {
+    let default_n_modes = 10_usize;
+    let default_tol = 1e-9_f64;
+    let default_max_iters = 200_usize;
+    let default_sigma = 0.0_f64;
+
+    let data = match val {
+        Value::StructureInstance(d) => d,
+        _ => return (default_n_modes, default_tol, default_max_iters, default_sigma),
+    };
+    let n_modes = match data.fields.get(&"n_modes".to_string()) {
+        Some(Value::Int(n)) => (*n).max(1) as usize,
+        _ => default_n_modes,
+    };
+    let tol = match data.fields.get(&"tol".to_string()) {
+        Some(Value::Real(r)) if r.is_finite() && *r > 0.0 => *r,
+        _ => default_tol,
+    };
+    let max_iters = match data.fields.get(&"max_iters".to_string()) {
+        Some(Value::Int(n)) => (*n).max(1) as usize,
+        _ => default_max_iters,
+    };
+    let sigma = match data.fields.get(&"sigma".to_string()) {
+        Some(Value::Real(r)) if r.is_finite() => *r,
+        _ => default_sigma,
+    };
+    (n_modes, tol, max_iters, sigma)
+}
+
+/// Extract the unit excitation `reference_direction` (along which per-mode
+/// participation mass is projected) from a `ModalOptions` StructureInstance.
+/// Reads the `Value::Vector` field's three components (each via
+/// [`read_scalar_si`]) and normalizes to a unit vector — realizing the
+/// `reference_direction.norm() > 0` invariant deferred from the structure-def to
+/// this trampoline (modal_analysis.ri:382-389). A missing / degenerate
+/// (zero-norm) direction falls back to the slender bending default `[0, 0, 1]`.
+fn extract_reference_direction(val: &Value) -> [f64; 3] {
+    let default_dir = [0.0, 0.0, 1.0];
+    let raw = match val {
+        Value::StructureInstance(data) => {
+            match data.fields.get(&"reference_direction".to_string()) {
+                Some(Value::Vector(items)) if items.len() == 3 => [
+                    read_scalar_si(&items[0]),
+                    read_scalar_si(&items[1]),
+                    read_scalar_si(&items[2]),
+                ],
+                _ => return default_dir,
+            }
+        }
+        _ => return default_dir,
+    };
+    let norm = (raw[0] * raw[0] + raw[1] * raw[1] + raw[2] * raw[2]).sqrt();
+    if norm > 0.0 {
+        [raw[0] / norm, raw[1] / norm, raw[2] / norm]
+    } else {
+        default_dir
+    }
+}
+
+/// Extract the Rayleigh damping coefficients `(α, β)` from a `ModalOptions`
+/// StructureInstance's `damping` field. A `RayleighDamping { alpha, beta }`
+/// StructureInstance yields its coefficients; `NoDamping` (or any other shape)
+/// yields `(0, 0)` — the undamped case (ζ_i = 0 for every mode). The
+/// discriminator is the runtime `type_name`, matching the SIR-α nominal type-tag
+/// the structure-defs document.
+fn extract_damping(val: &Value) -> (f64, f64) {
+    if let Value::StructureInstance(data) = val
+        && let Some(Value::StructureInstance(damping)) = data.fields.get(&"damping".to_string())
+        && damping.type_name == "RayleighDamping"
+    {
+        let alpha = damping.fields.get(&"alpha".to_string()).map(read_scalar_si).unwrap_or(0.0);
+        let beta = damping.fields.get(&"beta".to_string()).map(read_scalar_si).unwrap_or(0.0);
+        return (alpha, beta);
+    }
+    (0.0, 0.0)
+}
+
+/// Build the homogeneous Dirichlet BCs from the `boundary_conditions` faces.
+///
+/// Each `FixedSupport { target }` in the options' `boundary_conditions` list
+/// names a face of the beam box (`"x_min"`/`"x_max"`/`"y_min"`/`"y_max"`/
+/// `"z_min"`/`"z_max"`); every mesh node on that face has all three translational
+/// DOFs clamped. The mesh is rebuilt here (cheap, O(n)) via the same
+/// [`build_beam_mesh`] helper `solve_modal_core` uses, so the DOF indices line up
+/// with the solve's mesh. Duplicate DOFs (a corner shared by two named faces) are
+/// harmless — `solve_modal_core` records constraints idempotently.
+///
+/// This is the general "clamp the named face" realization: a single `x_min`
+/// support gives the cantilever root clamp (finalized step-16); the
+/// simply-supported pin-pin refinement (pin only the bending DOF + minimal
+/// anchors, NOT a full clamp of both faces) lands in step-18.
+fn build_dirichlet_bcs(options: &Value, length: f64, width: f64, height: f64) -> Vec<DirichletBc> {
+    let mesh = build_beam_mesh(length, width, height);
+    let targets = support_targets(options);
+    let eps = 1e-9_f64;
+    let mut bcs = Vec::new();
+    for target in &targets {
+        for (n, coord) in mesh.nodes.iter().enumerate() {
+            let on_face = match target.as_str() {
+                "x_min" => coord[0] <= eps,
+                "x_max" => coord[0] >= length - eps,
+                "y_min" => coord[1] <= eps,
+                "y_max" => coord[1] >= width - eps,
+                "z_min" => coord[2] <= eps,
+                "z_max" => coord[2] >= height - eps,
+                _ => false,
+            };
+            if on_face {
+                for axis in 0..3 {
+                    bcs.push(DirichletBc { dof: 3 * n + axis, value: 0.0 });
+                }
+            }
+        }
+    }
+    bcs
+}
+
+/// Collect the `target` face names from the options' `boundary_conditions` list
+/// (`FixedSupport { target : String }` instances). Non-StructureInstance entries
+/// and entries without a string `target` are skipped.
+fn support_targets(options: &Value) -> Vec<String> {
+    let mut targets = Vec::new();
+    if let Value::StructureInstance(data) = options
+        && let Some(Value::List(items)) = data.fields.get(&"boundary_conditions".to_string())
+    {
+        for item in items {
+            if let Value::StructureInstance(support) = item
+                && let Some(Value::String(target)) = support.fields.get(&"target".to_string())
+            {
+                targets.push(target.clone());
+            }
+        }
+    }
+    targets
+}
+
+/// Fetch field `name` from a StructureInstance `val`, cloning it; returns
+/// `fallback` if `val` is not a StructureInstance or lacks the field. Used to
+/// echo the input `boundary_conditions` / `damping` onto the `ModalResult`.
+fn field_or(val: &Value, name: &str, fallback: Value) -> Value {
+    if let Value::StructureInstance(data) = val
+        && let Some(v) = data.fields.get(&name.to_string())
+    {
+        return v.clone();
+    }
+    fallback
 }
 
 #[cfg(test)]
