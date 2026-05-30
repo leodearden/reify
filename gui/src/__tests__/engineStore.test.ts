@@ -1581,4 +1581,20 @@ describe('engineStore solverProgress', () => {
       dispose();
     });
   });
+
+  it('(step-11) cancelSolve calls bridge cancelSolve and resets solverProgress', async () => {
+    await createRoot(async (dispose) => {
+      vi.useFakeTimers();
+      const store = createEngineStore();
+      store.applySolverProgress({ solver_kind: 'cg' as const, iter: 1, residual: 0.5 });
+      vi.advanceTimersByTime(1000);
+      expect(store.state.solverProgress.visible).toBe(true);
+
+      await store.cancelSolve();
+      expect(mockCancelSolve).toHaveBeenCalledOnce();
+      expect(store.state.solverProgress).toEqual({ latest: null, trace: [], visible: false, coarseReached: false });
+      vi.useRealTimers();
+      dispose();
+    });
+  });
 });
