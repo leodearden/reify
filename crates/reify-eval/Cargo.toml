@@ -14,6 +14,20 @@ reify-syntax.workspace = true
 reify-compiler.workspace = true
 reify-shell-extract.workspace = true
 reify-solver-elastic.workspace = true
+# Task 3819 (Modal ζ): modal_ops.rs assembles K/M, extracts the free×free
+# subspace as faer sparse matrices, and calls
+# reify_solver_elastic::solve_eigen_shift_invert on the (K_free, M_free) pair
+# (per the FEA-solve-in-reify-eval placement, design_decision #2). faer is
+# already a workspace dep (used by reify-solver-elastic); naming it here is
+# unavoidable because the solver crate exposes no public free-DOF projection
+# helper or all-in-one modal kernel.
+faer.workspace = true
+# Promoted from [dev-dependencies] for task 3819: modal_ops.rs (library code,
+# not just tests) reuses the pure scalar helpers in
+# reify_stdlib::modal::free_vibration (eigenvalue_to_frequency_hz etc.). No
+# dependency cycle — reify-stdlib does not depend on reify-eval (same direction
+# as the existing transitive reify-eval -> reify-expr -> reify-stdlib edge).
+reify-stdlib.workspace = true
 bincode.workspace = true
 bytemuck.workspace = true
 inventory.workspace = true
@@ -47,10 +61,11 @@ reify-test-support = { workspace = true, features = ["eval-helpers"] }
 reify-kernel-occt.workspace = true
 reify-constraints.workspace = true
 reify-geometry.workspace = true
-# Task 3843 (KCC-γ): integration tests in `kinematic_loop_closure_machinery.rs`
-# call `reify_stdlib::loop_closure::{chain_transform, loop_residual_twist}` to
-# verify the closed-chain residual at convergence on the planar e2e fixture.
-reify-stdlib.workspace = true
+# NOTE (task 3819): reify-stdlib was promoted to a normal [dependencies] entry
+# above (modal_ops.rs uses it as library code). It remains available to the
+# integration tests here — e.g. task 3843 (KCC-γ) tests in
+# `kinematic_loop_closure_machinery.rs` call
+# `reify_stdlib::loop_closure::{chain_transform, loop_residual_twist}`.
 # Task 3579 (PRD §5 B5 / I-3): T5 boundary tests in
 # `tests/node_traits_boundary.rs` need `reify_runtime::concurrent::{
 # SchedulerConfig, ConcurrentScheduler}` plus a tokio runtime. This is the

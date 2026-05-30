@@ -4339,6 +4339,7 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "bytemuck",
+ "faer",
  "inventory",
  "reify-ast",
  "reify-compiler",
