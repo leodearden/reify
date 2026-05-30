@@ -80,13 +80,18 @@ fn line_matches_stub(line: &str) -> Option<&'static str> {
         return Some("Value::Undef(pending/stub/placeholder)");
     }
 
-    // Family 6 — bare line-comment markers (case-insensitive).
-    // Three independent checks rather than an outer guard + inner ladder to
-    // avoid evaluating each substring twice (maintenance hazard if a fourth
-    // marker is added later).
-    if lower.contains("// stub") { return Some("// stub"); }
-    if lower.contains("// placeholder") { return Some("// placeholder"); }
-    if lower.contains("// fixme") { return Some("// fixme"); }
+    // Family 6 — bare line-comment markers (case-insensitive, label-anchored).
+    // A match requires that after "// word" the remainder is empty/whitespace or
+    // starts with ':' — distinguishing a stub LABEL (`// stub`, `// placeholder: …`)
+    // from PROSE where the word is a sentence subject (`// Placeholder is a leaf`).
+    for (needle, label) in &[("// stub", "// stub"), ("// placeholder", "// placeholder"), ("// fixme", "// fixme")] {
+        if let Some(pos) = lower.find(needle) {
+            let after = &lower[pos + needle.len()..];
+            if after.is_empty() || after.trim_start().is_empty() || after.trim_start().starts_with(':') {
+                return Some(label);
+            }
+        }
+    }
 
     None
 }

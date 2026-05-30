@@ -776,6 +776,56 @@ mod tests {
         );
     }
 
+    /// Verify that bare-comment prose (where the stub word is a sentence subject,
+    /// not a label) is NOT flagged, while label-form comments ARE.
+    ///
+    /// Mirrors expr.rs:545 `// Placeholder is a leaf — no children to traverse.`
+    /// which was falsely flagged by the bare `contains("// placeholder")` check.
+    /// Lines 546–548 are label-form markers that must still flag.
+    #[test]
+    fn bare_comment_prose_not_flagged_label_form_still_flagged() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let task_id = "9201";
+        let path = "crates/reify-ir/src/expr.rs";
+
+        let mut git = MockGitOps::new();
+        git.set_diff_added_lines(
+            "main",
+            &format!("task/{}", task_id),
+            path,
+            vec![
+                (545, "            // Placeholder is a leaf \u{2014} no children to traverse.".to_string()),
+                (546, "    // placeholder: TBD".to_string()),
+                (547, "    // stub".to_string()),
+                (548, "    // fixme".to_string()),
+            ],
+        );
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(task_id.to_string(), benign_meta(task_id, vec![path.to_string()]));
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p2_consumer_stub::check(&ctx);
+        assert_eq!(findings.len(), 1, "expected exactly 1 finding (bundled for expr.rs); got {:?}", findings);
+        let summary = &findings[0].summary;
+        assert!(summary.contains("line 546"), "label-form placeholder at 546 must be in summary; got: {summary}");
+        assert!(summary.contains("line 547"), "label-form stub at 547 must be in summary; got: {summary}");
+        assert!(summary.contains("line 548"), "label-form fixme at 548 must be in summary; got: {summary}");
+        assert!(!summary.contains("line 545"), "prose placeholder at 545 must NOT be in summary; got: {summary}");
+    }
+
     /// Verify that doc-comment lines (`///` and `//!`) are NOT flagged as stubs,
     /// even when they contain stub-pattern text (Family 1/2 matches).
     ///
