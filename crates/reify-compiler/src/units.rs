@@ -349,6 +349,13 @@ pub(crate) fn is_geometry_query(name: &str) -> bool {
 /// - `curvature(curve, t)`   → `Scalar<Curvature>` (Curve overload only;
 ///   Surface overload deferred — see [`GEOMETRY_QUERY_NAMES`])
 ///
+/// KGQ-ζ Phase 6 addition (task 3615):
+/// - `normal(surface, point)` → `Vector3<Dimensionless>` (`Type::vec3(Type::Real)`)
+///   The quantity is `Type::Real` (dimensionless), NOT a `Scalar` dimension,
+///   matching the `Value::Vector(vec![Value::Real(_); 3])` shape that
+///   `dispatch_normal_vector3` constructs and that `Value.infer_type()` maps
+///   back to `Type::Vector { n: 3, quantity: Box::new(Type::Real) }`.
+///
 /// Returns `None` for any other name (caller falls through to its default
 /// type-inference path). Mirrors the contract of the sibling
 /// [`topology_selector_result_type`].
@@ -379,6 +386,11 @@ pub(crate) fn geometry_query_result_type(name: &str) -> Option<reify_core::Type>
         "curvature" => Type::Scalar {
             dimension: DimensionVector::CURVATURE,
         },
+        // KGQ-ζ (task 3615, Phase 6): at-point surface normal.
+        // Returns a dimensionless unit vector — Value::Vector([Real,Real,Real]).
+        // Type::Real (not a Scalar dimension) is the quantity so that the
+        // dispatched Value::Vector(vec![Value::Real(_);3]).infer_type() == this.
+        "normal" => Type::vec3(Type::Real),
         _ => return None,
     })
 }
