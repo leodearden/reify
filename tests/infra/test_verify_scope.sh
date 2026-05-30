@@ -268,6 +268,48 @@ assert "branch/gui/src: no gated OCCT pass" plan_lacks 'cargo-test-occt-gated\.s
 assert "branch/gui/src: no tree-sitter generate" plan_lacks 'tree-sitter-generate'
 
 # ---------------------------------------------------------------------------
+# Scenario B5: staged-but-uncommitted working-tree change -> still classified
+# ---------------------------------------------------------------------------
+# plan_for_branch always commits changes, so the branch scenarios above only
+# exercise the committed path of `git diff $MERGE_BASE`. This scenario
+# exercises the uncommitted (staged) path: a file `git add`-ed but not yet
+# committed is still visible to `git diff $MERGE_BASE` because that command
+# compares the merge-base commit to the WORKING TREE (not to HEAD), and a
+# staged file exists on disk with its new content.
+echo ""
+echo "--- Scenario B5: staged-but-not-committed change -> --scope branch still classifies it ---"
+FIX_B5=""
+make_branch_fixture FIX_B5
+git -C "$FIX_B5" checkout -q -b task-branch
+mkdir -p "$FIX_B5/crates/reify-doc/src"
+printf 'x\n' > "$FIX_B5/crates/reify-doc/src/lib.rs"
+git -C "$FIX_B5" add crates/reify-doc/src/lib.rs
+# Intentionally NOT committed — the staged file is on disk, so
+# `git diff "$_MERGE_BASE"` sees it via the working-tree comparison.
+PLAN_B5="$(cd "$FIX_B5" && bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+# FIX_B5 left dirty; cleaned up by the EXIT trap via _TMPDIRS.
+assert "B5/staged-uncommitted: RUN_RUST=1 (staged file classified by --scope branch)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1"' _ "$PLAN_B5"
+assert "B5/staged-uncommitted: gated OCCT pass ABSENT (reify-doc is non-OCCT)" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "cargo-test-occt-gated"' _ "$PLAN_B5"
+
+# ---------------------------------------------------------------------------
+# Scenario B6: OCCT-touching crate branch -> gated pass present
+# ---------------------------------------------------------------------------
+# The staged-scope suite covers the OCCT->gate path (Scenarios 4/5/6/9).
+# This scenario verifies that --scope branch also correctly sets RUN_OCCT_GATE=1
+# and includes cargo-test-occt-gated.sh when a declared OCCT crate is changed —
+# i.e. the fail-wide paths (B4/C5) are not the only way to reach RUN_OCCT_GATE=1
+# under branch scope.
+echo ""
+echo "--- Scenario B6: crates/reify-eval (OCCT-touching) branch -> gated pass present ---"
+plan_for_branch crates/reify-eval/src/lib.rs
+assert "branch/reify-eval: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_OUT"
+assert "branch/reify-eval: gated OCCT pass present" plan_has 'cargo-test-occt-gated\.sh'
+assert "branch/reify-eval: clippy present" plan_has 'cargo clippy --workspace'
+
+# ---------------------------------------------------------------------------
 # Scenario B4: MERGE_HEAD present + --scope branch -> forces scope=all
 # ---------------------------------------------------------------------------
 echo ""
