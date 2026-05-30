@@ -6,6 +6,11 @@
 // normalize (→dimensionless), magnitude (Length→Length), clamp (Length→Length).
 
 structure def DimensionalConsistency {
+    // KEEP the compositional unit forms in this fixture (n_unit, g_accel):
+    // m8_stdlib_integration.rs compiles it via the no-prelude
+    // `reify_compiler::compile` entry point, where no unit registry is in
+    // scope, so compound-unit literals fail to resolve. Bare literals resolve
+    // via the standalone fallback. See esc-3809-89 / PRD §8 ζ.
     // --- Newton unit helper ---
     let n_unit = 1kg * 1m / (1s * 1s)
 

@@ -25,7 +25,13 @@ type Acceleration = Velocity / Time
 type Jerk = Acceleration / Time
 
 structure def JerkDemo {
-    // 1mm / (1s * 1s * 1s) = 1mm/s³ — dimensionally correct Jerk value
+    // 1mm / (1s * 1s * 1s) = 1mm/s³ — dimensionally correct Jerk value.
+    // KEEP compositional form (not the compound literal `1mm/s^3`): this
+    // fixture is compiled by integration_corner_cases.rs via the no-prelude
+    // `reify_compiler::compile` entry point, where no unit registry is in
+    // scope. Bare literals (1mm, 1s) resolve via the standalone fallback, but
+    // a compound-unit literal routes through resolve_unit_expr against the
+    // empty registry and fails ("unknown unit: mm"). See esc-3809-89 / PRD §8 ζ.
     param j : Jerk = 1mm / (1s * 1s * 1s)
     constraint determined(j)
 }

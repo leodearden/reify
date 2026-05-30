@@ -250,10 +250,7 @@ Dependency edges: α→β→γ; α→δ; γ→ε; δ→ε; ε→ζ; ε→η.
 `crates/reify-compiler/stdlib/materials_fea.ri:135,173,211,252` (4 densities),
 `crates/reify-compiler/stdlib/materials_electrical.ri:62,76` (resistivity bounds),
 `crates/reify-compiler/stdlib/structural_physical.ri`,
-`examples/dimensional_chains.ri:13,84,87,99,111`,
-`examples/math_linalg.ri:9`, `examples/dimensional_consistency.ri:10,32`,
 `examples/drivebelt_trait_bounds.ri:111`,
-`examples/integration_corner_cases.ri:29`,
 `examples/topology_selectors/all_topology_selectors_wiring.ri:44`.
 
 **KEEP (not migratable) — `std.units` registry-bootstrap constraint:**
@@ -271,6 +268,27 @@ constant carries a keep-reason comment at its definition site so future
 readers / task η do not retry. Unblocking this would require `expr.rs` to
 forward the in-construction registry into `std.units` function-body
 compilation — out of scope for this PRD.
+
+**KEEP (not migratable) — no-prelude example-harness compile context:**
+`examples/integration_corner_cases.ri` (jerk), `examples/dimensional_chains.ri`
+(n_unit/rho/mu_dyn/p_area/g_earth), `examples/math_linalg.ri` (n_unit), and
+`examples/dimensional_consistency.ri` (n_unit/g_accel) stay in their
+compositional bare-literal form. These four fixtures are compiled by their
+test harnesses (`integration_corner_cases.rs`, `stress_dimensional_chains.rs`,
+`m8_stdlib_integration.rs`) through the **no-prelude** `reify_compiler::compile`
+entry point, which has no unit registry in scope (see `lib.rs` doc-comment).
+Bare unit literals (`1kg`, `1mm`, `1s`) resolve via the standalone fallback, but
+compound-unit literals route through `resolve_unit_expr` against the empty
+registry and fail with "unknown unit" — even base units like `m`/`s`/`kg` are
+absent, so there is no value-preserving compound form here. Originally listed
+above as migratable; corrected to KEEP per esc-3809-89 (2026-05-30) — same
+root-cause class as the std.units constraint. Each fixture carries a
+keep-reason comment. Migrating these would mean switching the harnesses to
+`compile_with_stdlib`, which risks prelude collisions with the fixtures'
+locally-defined aliases (`type Velocity`, `let n_unit`) and expands scope to
+two harness files outside this task — out of scope. The example sites that DO
+compile with the stdlib prelude (`drivebelt_trait_bounds.ri`,
+`all_topology_selectors_wiring.ri`) remain in the migrate inventory above.
 
 ## 9. Cross-PRD relationship
 
