@@ -25,6 +25,8 @@ vi.mock('../bridge', () => ({
   onAutoResolveStart: vi.fn(),
   onAutoResolveIteration: vi.fn(),
   onAutoResolveComplete: vi.fn(),
+  onSolverProgress: vi.fn(() => Promise.resolve(() => {})),
+  cancelSolve: vi.fn(() => Promise.resolve()),
 }));
 
 import {
@@ -40,6 +42,8 @@ import {
   onAutoResolveStart,
   onAutoResolveIteration,
   onAutoResolveComplete,
+  onSolverProgress,
+  cancelSolve,
 } from '../bridge';
 import { createEngineStore } from '../stores/engineStore';
 
@@ -55,6 +59,8 @@ const mockOnCompileDiagnostics = vi.mocked(onCompileDiagnostics);
 const mockOnAutoResolveStart = vi.mocked(onAutoResolveStart);
 const mockOnAutoResolveIteration = vi.mocked(onAutoResolveIteration);
 const mockOnAutoResolveComplete = vi.mocked(onAutoResolveComplete);
+const mockOnSolverProgress = vi.mocked(onSolverProgress);
+const mockCancelSolve = vi.mocked(cancelSolve);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -65,6 +71,8 @@ beforeEach(() => {
   mockOnAutoResolveStart.mockResolvedValue(vi.fn());
   mockOnAutoResolveIteration.mockResolvedValue(vi.fn());
   mockOnAutoResolveComplete.mockResolvedValue(vi.fn());
+  mockOnSolverProgress.mockResolvedValue(vi.fn());
+  mockCancelSolve.mockResolvedValue(undefined);
 });
 
 const sampleMesh: MeshData = {
