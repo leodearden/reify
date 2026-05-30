@@ -2,7 +2,7 @@
 //!
 //! # Structure
 //!
-//! Three test groups:
+//! Five test groups:
 //!
 //! 1. **Compile smoke** (`imported_field_compiles_without_errors`) — verifies
 //!    that a well-formed imported block produces no `Severity::Error` diagnostics
@@ -22,6 +22,16 @@
 //!    - (G2#3) SDF sign probe: inside face → sample < 0, outside → sample > 0;
 //!    - (G2#4) exact cross-validation against direct `read_vdb_file` + `sample_at_point`.
 //!    Guarded: `cfg(has_openvdb)` real test + `cfg(not(has_openvdb))` skip-stub.
+//!
+//! 4. **Cache hash records and updates** (`imported_field_cache_hash_records_and_updates_on_content_change`)
+//!    — writes non-VDB bytes to a tempfile, evals, and asserts the content-hash is
+//!    recorded via `Engine::imported_file_content_hash`; overwrites with different bytes,
+//!    evals again, asserts the recorded hash changed. cfg-independent.
+//!
+//! 5. **Cache hash triggers re-ingest** (`imported_field_cache_hash_triggers_reingest_on_content_change`)
+//!    — generates two differently-sized cube SDF fixtures to the same tempfile path and
+//!    asserts that the evaluated `SampledField` and recorded content-hash both change after
+//!    overwriting. Guarded: `cfg(has_openvdb)` real test + `cfg(not(has_openvdb))` skip-stub.
 //!
 //! # Why `compile_source_with_stdlib`
 //!
@@ -423,4 +433,233 @@ field def cube_sdf : Point3 -> Scalar {{
 #[test]
 fn imported_field_e2e_vdb_cube_sdf() {
     eprintln!("SKIP: has_openvdb not set — skipping OpenVDB e2e fixture test");
+}
+
+// ── Test 4: Cache hash records and updates (cfg-independent) ─────────────────
+
+/// Asserts that `Engine::imported_file_content_hash` returns the content-hash
+/// of the most recently eval'd imported file, and that the hash updates when
+/// the file's content changes between evals on the same engine.
+///
+/// Uses arbitrary (non-VDB) bytes — the ingest will fail with `FieldImportFailed`
+/// but hash recording is independent of ingest success.  cfg-independent.
+#[test]
+fn imported_field_cache_hash_records_and_updates_on_content_change() {
+    use reify_core::ContentHash;
+
+    // Write bytes X to a tempfile.
+    let tmp = tempfile::NamedTempFile::new().expect("tempfile creation");
+    let bytes_x: &[u8] = b"not a valid vdb file, just bytes for hashing X";
+    std::fs::write(tmp.path(), bytes_x).expect("write bytes_x");
+
+    let path_str = tmp.path().to_str().expect("tempfile path utf-8").to_owned();
+
+    // Build an imported-field source with the tempfile path.
+    let source = format!(
+        r#"
+field def hash_test : Point3 -> Scalar {{
+    source = imported {{
+        path = "{path}"
+        format = OpenVDB
+        grid = "density"
+    }}
+}}
+"#,
+        path = path_str.replace('\\', "\\\\").replace('"', "\\\"")
+    );
+
+    let compiled = compile_source_with_stdlib(&source);
+    let checker = SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let _ = engine.eval(&compiled);
+
+    // Hash must be recorded after eval.
+    let expected_x = ContentHash::of(bytes_x);
+    assert_eq!(
+        engine.imported_file_content_hash(&path_str),
+        Some(expected_x),
+        "after first eval: expected hash of bytes_x to be recorded; \
+         got {:?}",
+        engine.imported_file_content_hash(&path_str)
+    );
+
+    // Overwrite the file with different bytes Y.
+    let bytes_y: &[u8] = b"different content Y for cache invalidation test -- changed";
+    std::fs::write(tmp.path(), bytes_y).expect("overwrite with bytes_y");
+
+    // Eval again on the SAME engine.
+    let _ = engine.eval(&compiled);
+
+    let expected_y = ContentHash::of(bytes_y);
+    assert_eq!(
+        engine.imported_file_content_hash(&path_str),
+        Some(expected_y),
+        "after second eval: expected hash of bytes_y to be recorded; \
+         got {:?}",
+        engine.imported_file_content_hash(&path_str)
+    );
+    assert_ne!(
+        expected_x,
+        expected_y,
+        "sanity: bytes_x and bytes_y must have different hashes (bytes differ)"
+    );
+}
+
+// ── Test 5: Cache hash triggers re-ingest on content change (cfg(has_openvdb)) ─────────────
+
+/// Generates two differently-sized cube SDF fixtures, writes them to the same
+/// tempfile path in sequence, and asserts that after each eval the engine
+/// returns a different `SampledField` and a different recorded content-hash.
+///
+/// Proves re-ingest on content change: if the `SampledField` were cached and
+/// not re-read, bounds would be identical across the two evals.
+///
+/// Guarded: `cfg(has_openvdb)` real test + `cfg(not(has_openvdb))` skip-stub.
+#[cfg(has_openvdb)]
+#[test]
+fn imported_field_cache_hash_triggers_reingest_on_content_change() {
+    use reify_kernel_openvdb::OpenVdbKernel;
+    use reify_core::ContentHash;
+
+    /// Build a cube mesh with the given half-extent.
+    fn cube_mesh(half: f32) -> (Vec<[f32; 3]>, Vec<[u32; 3]>) {
+        let h = half;
+        let verts = vec![
+            [-h, -h, -h], [ h, -h, -h], [ h,  h, -h], [-h,  h, -h],
+            [-h, -h,  h], [ h, -h,  h], [ h,  h,  h], [-h,  h,  h],
+        ];
+        #[rustfmt::skip]
+        let tris: Vec<[u32; 3]> = vec![
+            // Bottom (z=-1): outward = -Z
+            [0, 2, 1], [0, 3, 2],
+            // Top (z=+1): outward = +Z
+            [4, 5, 6], [4, 6, 7],
+            // Front (y=-1): outward = -Y
+            [0, 1, 5], [0, 5, 4],
+            // Back (y=+1): outward = +Y
+            [2, 3, 7], [2, 7, 6],
+            // Left (x=-1): outward = -X
+            [3, 0, 4], [3, 4, 7],
+            // Right (x=+1): outward = +X
+            [1, 2, 6], [1, 6, 5],
+        ];
+        (verts, tris)
+    }
+
+    let voxel_size = 0.1_f64;
+    let half_width = 3.0_f64;
+
+    // Create a NamedTempFile as the mutable VDB path (kept alive until end of test).
+    let tmp = tempfile::NamedTempFile::new().expect("tempfile creation");
+    let vdb_path = tmp.path().to_path_buf();
+    let path_str = vdb_path.to_str().expect("tempfile path utf-8").to_owned();
+
+    // ── Cube A: half-extent = 0.5 ────────────────────────────────────────────
+    let mut kernel_a = OpenVdbKernel::new();
+    let (verts_a, tris_a) = cube_mesh(0.5_f32);
+    let handle_a = kernel_a
+        .realize_voxel_from_mesh(&verts_a, &tris_a, voxel_size, half_width)
+        .expect("realize cube A (half=0.5)");
+    kernel_a
+        .write_vdb_grid(handle_a, &vdb_path, "density")
+        .expect("write cube A to tempfile");
+
+    let source = format!(
+        r#"
+field def cache_test : Point3 -> Scalar {{
+    source = imported {{
+        path = "{path}"
+        format = OpenVDB
+        grid = "density"
+    }}
+}}
+"#,
+        path = path_str.replace('\\', "\\\\").replace('"', "\\\"")
+    );
+
+    let compiled = compile_source_with_stdlib(&source);
+    let checker = SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result_a = engine.eval(&compiled);
+
+    // Assert no runtime errors from eval A.
+    let errors_a: Vec<_> = result_a
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors_a.is_empty(), "eval A: unexpected runtime errors: {:?}", errors_a);
+
+    // Capture SampledField and content-hash from eval A.
+    let field_def = &compiled.fields[0];
+    let cell_id = ValueCellId::new(FIELD_ENTITY_PREFIX, &field_def.name);
+    let sf_a = match result_a.values.get(&cell_id) {
+        Some(Value::Field { lambda, .. }) => match lambda.as_ref() {
+            Value::SampledField(sf) => sf.clone(),
+            other => panic!("eval A: expected lambda = SampledField, got {:?}", other),
+        },
+        other => panic!("eval A: expected Value::Field, got {:?}", other),
+    };
+    let hash_a = engine
+        .imported_file_content_hash(&path_str)
+        .expect("hash must be recorded after eval A");
+
+    // ── Cube B: half-extent = 1.0 ────────────────────────────────────────────
+    let mut kernel_b = OpenVdbKernel::new();
+    let (verts_b, tris_b) = cube_mesh(1.0_f32);
+    let handle_b = kernel_b
+        .realize_voxel_from_mesh(&verts_b, &tris_b, voxel_size, half_width)
+        .expect("realize cube B (half=1.0)");
+    // Overwrite the SAME path with the larger cube.
+    kernel_b
+        .write_vdb_grid(handle_b, &vdb_path, "density")
+        .expect("write cube B to same tempfile path");
+
+    // Eval again on the SAME engine, SAME compiled module, SAME path.
+    let result_b = engine.eval(&compiled);
+
+    // Assert no runtime errors from eval B.
+    let errors_b: Vec<_> = result_b
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors_b.is_empty(), "eval B: unexpected runtime errors: {:?}", errors_b);
+
+    // Capture SampledField and content-hash from eval B.
+    let sf_b = match result_b.values.get(&cell_id) {
+        Some(Value::Field { lambda, .. }) => match lambda.as_ref() {
+            Value::SampledField(sf) => sf.clone(),
+            other => panic!("eval B: expected lambda = SampledField, got {:?}", other),
+        },
+        other => panic!("eval B: expected Value::Field, got {:?}", other),
+    };
+    let hash_b = engine
+        .imported_file_content_hash(&path_str)
+        .expect("hash must be recorded after eval B");
+
+    // Content-hash must change: cubes A and B have different byte content.
+    assert_ne!(
+        hash_a,
+        hash_b,
+        "content-hash must change after overwriting with a different cube (A half=0.5 → B half=1.0)"
+    );
+
+    // SampledField must change: cube B is larger so bounds_min/max differ.
+    // Comparing bounds_min is sufficient (cube A has smaller active bbox than cube B).
+    assert_ne!(
+        sf_a.bounds_min,
+        sf_b.bounds_min,
+        "SampledField bounds_min must differ: cube A (half=0.5) vs cube B (half=1.0) \
+         have different active bboxes; got sf_a.bounds_min={:?}, sf_b.bounds_min={:?}",
+        sf_a.bounds_min,
+        sf_b.bounds_min
+    );
+}
+
+/// Skip-stub: `has_openvdb` is not set in this build environment.
+#[cfg(not(has_openvdb))]
+#[test]
+fn imported_field_cache_hash_triggers_reingest_on_content_change() {
+    eprintln!("SKIP: has_openvdb not set — skipping cache re-ingest test");
 }
