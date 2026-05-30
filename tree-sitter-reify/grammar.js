@@ -1068,6 +1068,7 @@ module.exports = grammar({
     )),
 
     _primary_expression: $ => choice(
+      $.imaginary_literal,
       $.quantity_literal,
       // alias($._radix_literal, $.number_literal): makes hex/binary literals (0xFF,
       // 0b1010) appear as number_literal nodes in the CST.  number_literal is kept
@@ -1087,6 +1088,23 @@ module.exports = grammar({
       $.map_literal,
       $.identifier,
       $.parenthesized_expression,
+    ),
+
+    // Imaginary literal: a decimal/scientific number immediately followed by the
+    // lowercase letter `j` with NO whitespace and NO further word characters.
+    // Examples: 4.1j, 2j, 1.5e-3j.
+    //
+    // The scanner's UNIT_EXPR_START block (src/scanner.c) special-cases bare `j`:
+    // when the lookahead is `j` and the char AFTER it is NOT a word character
+    // [A-Za-z0-9_], the scanner refuses to emit UNIT_EXPR_START, allowing
+    // token.immediate('j') to match instead.  Multi-char j-units (`jk`, `joule`)
+    // and capital-J (Joule) are unaffected — they fall through to quantity_literal.
+    //
+    // CST shape: (imaginary_literal value: (number_literal))
+    // PRD v0_6 complex-literals-and-stdmath, slice 1, D1 — `j` suffix only (not `i`).
+    imaginary_literal: $ => seq(
+      field('value', $.number_literal),
+      token.immediate('j'),
     ),
 
     // Quantity literal: number immediately followed by a unit expression (e.g. 80mm, 9.81m/s^2)

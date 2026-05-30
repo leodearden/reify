@@ -198,8 +198,32 @@ bool tree_sitter_reify_external_scanner_scan(void *payload, TSLexer *lexer,
        * BEFORE the AUTO_TOKEN block.  The regular DFA then consumes 'auto' as a
        * unit_name.  If AUTO_TOKEN ran first it would consume 'auto' and break
        * quantity parsing. */
+
+      /* D1 IMAGINARY-LITERAL GATE (PRD v0_6 complex-literals-and-stdmath):
+       * When the lookahead is a bare lowercase `j` NOT followed by a word
+       * character ([A-Za-z0-9_]), refuse UNIT_EXPR_START so that the grammar's
+       * token.immediate('j') can match instead, forming an imaginary_literal.
+       *
+       * mark_end is called BEFORE the lookahead peek so UNIT_EXPR_START stays
+       * zero-width regardless of how far we advance to inspect the char after `j`.
+       * Multi-char j-units (jk, joule, ...) and capital J (Joule) fall through
+       * the normal path — only a lone lowercase `j` triggers this gate. */
+      lexer->mark_end(lexer); /* zero-width: fix boundary before any peek */
+      if (c == 'j') {
+        lexer->advance(lexer, false);
+        int32_t after = lexer->lookahead;
+        bool is_word = (after >= 'a' && after <= 'z') ||
+                       (after >= 'A' && after <= 'Z') ||
+                       (after >= '0' && after <= '9') ||
+                       (after == '_');
+        if (!is_word) {
+          /* Bare `j`: refuse UNIT_EXPR_START; let token.immediate('j') match. */
+          return false;
+        }
+        /* Multi-char j-unit (jk, joule, ...): fall through to emit UNIT_EXPR_START. */
+      }
+
       lexer->result_symbol = UNIT_EXPR_START;
-      lexer->mark_end(lexer); /* zero-width: do not advance past the lookahead */
       return true;
     }
     /* Whitespace or non-unit-start: fall through to AUTO_TOKEN check. */
