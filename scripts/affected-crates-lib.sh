@@ -28,8 +28,6 @@ if [ "${_REIFY_AFFECTED_CRATES_LIB_SOURCED:-}" = "1" ]; then
 fi
 _REIFY_AFFECTED_CRATES_LIB_SOURCED=1
 
-set -euo pipefail
-
 _AFFECTED_CRATES_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # _is_global <path> — returns 0 (true) if the path is a C4 workspace-global file.
@@ -102,11 +100,10 @@ _reverse_closure() {
     meta="$(cargo metadata --format-version 1 2>/dev/null)" || { echo ALL; return 0; }
     [ -n "$meta" ] || { echo ALL; return 0; }
 
-    printf '%s\n' "$meta" | python3 -c "
-import sys, json
+    printf '%s\n' "$meta" | _AFFECTED_CRATES_SEEDS="$seeds" python3 -c "
+import sys, json, os
 try:
-    seeds_raw = '''$seeds'''
-    seed_names = set(s.strip() for s in seeds_raw.strip().splitlines() if s.strip())
+    seed_names = set(s.strip() for s in os.environ.get('_AFFECTED_CRATES_SEEDS', '').strip().splitlines() if s.strip())
 
     m = json.load(sys.stdin)
     members = set(m['workspace_members'])
@@ -187,6 +184,6 @@ affected_crates() {
 
     # Expand the direct crate set through the reverse-dependency closure, then
     # emit sorted-unique (one crate per line).
-    printf '%s\n' "${direct[@]}" | _reverse_closure | sort -u
+    printf '%s\n' "${direct[@]}" | _reverse_closure
     return 0
 }
