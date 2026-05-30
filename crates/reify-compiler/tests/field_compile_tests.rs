@@ -671,39 +671,35 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
     }
 }
 
-// ── Step 2344: imported field emits v0.2 deferral diagnostic ────────────────
+// ── PRD task 5 / step-1: well-formed imported block compiles without errors ──
 
 #[test]
-fn compile_field_imported_emits_v02_deferral_diagnostic() {
+fn compile_field_imported_well_formed_no_error() {
     let module = compile_source(
-        r#"field def data : Point3 -> Scalar { source = imported { path = "data.vtu" format = OpenVDB grid = "voxel" } }"#,
+        r#"field def f : Point3 -> Scalar { source = imported { path = "x.vdb" format = OpenVDB grid = "density" } }"#,
     );
 
+    // (a) No FieldImportedV02 deferral; no Severity::Error diagnostics.
     let errors = errors_only(&module);
     assert!(
-        !errors.is_empty(),
-        "expected at least one error for imported field source, got: {:?}",
-        module.diagnostics
+        errors.iter().all(|d| d.code != Some(DiagnosticCode::FieldImportedV02)),
+        "expected no FieldImportedV02 diagnostic, got: {:?}",
+        errors.iter().map(|d| (d.code, &d.message)).collect::<Vec<_>>()
     );
-
-    let has_code_and_msg = errors.iter().any(|d| {
-        d.code == Some(DiagnosticCode::FieldImportedV02)
-            && d.message.contains("v0.2")
-            && d.message.contains("imported")
-    });
     assert!(
-        has_code_and_msg,
-        "expected DiagnosticCode::FieldImportedV02 with message containing 'v0.2' and 'imported', got: {:?}",
-        errors
-            .iter()
-            .map(|d| (d.code, &d.message))
-            .collect::<Vec<_>>()
+        errors.is_empty(),
+        "expected no Severity::Error diagnostics, got: {:?}",
+        errors.iter().map(|d| (d.code, &d.message)).collect::<Vec<_>>()
     );
 
-    let first = errors
-        .iter()
-        .find(|d| d.code == Some(DiagnosticCode::FieldImportedV02))
-        .unwrap();
-    assert!(!first.labels.is_empty(), "expected at least one label");
-    assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
+    // (b) The compiled field carries the path/format/grid in the Imported variant.
+    assert_eq!(module.fields.len(), 1, "expected 1 compiled field");
+    match &module.fields[0].source {
+        reify_compiler::CompiledFieldSource::Imported { path, format, grid } => {
+            assert_eq!(path.as_deref(), Some("x.vdb"), "expected path == \"x.vdb\"");
+            assert_eq!(format.as_deref(), Some("OpenVDB"), "expected format == \"OpenVDB\"");
+            assert_eq!(grid.as_deref(), Some("density"), "expected grid == \"density\"");
+        }
+        other => panic!("expected CompiledFieldSource::Imported, got: {:?}", other),
+    }
 }
