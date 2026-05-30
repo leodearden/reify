@@ -86,22 +86,54 @@ fn failing_fn(
     }
 }
 
-// ── guard: identity_fn empty value_inputs ────────────────────────────────────
+// ── e2e: zero-arg @optimized call drives trampoline with empty arg slice ─────
+//
+// This exercises the actual engine path that the empty-slice guard in
+// identity_fn protects: a zero-argument @optimized call produces an empty
+// arg_values vector when the engine evaluates the call. The trampoline
+// receives &[] as its `value_inputs` parameter (which is the evaluated
+// arg_values, not the ComputeNodeData.value_inputs graph field). The guard
+// `value_inputs.first().cloned().unwrap_or(Value::Undef)` prevents a panic;
+// the result written to the cell is Value::Undef.
 
-/// RED (step-3): `identity_fn` called with an empty `value_inputs` slice must
-/// return `ComputeOutcome::Completed { result: Value::Undef }` instead of
-/// panicking. Mirrors the engine_compute.rs unit test for the integration-file
-/// copy of the same helper.
+/// e2e: a zero-argument @optimized call invokes the trampoline with an empty
+/// arg_values slice, triggering the empty-slice guard in identity_fn and
+/// writing Value::Undef to the output cell.
 #[test]
-fn identity_fn_empty_value_inputs_returns_undef_without_panic() {
-    let result = identity_fn(&[], &[], &Value::Undef, None, &CancellationHandle::new());
-    match result {
-        ComputeOutcome::Completed { result: Value::Undef, .. } => {}
-        other => panic!(
-            "expected ComputeOutcome::Completed {{ result: Value::Undef }}, got {:?}",
-            other
-        ),
-    }
+fn e2e_optimized_zero_arg_call_invokes_trampoline_with_empty_inputs() {
+    let source = r#"
+        @optimized("test::identity")
+        fn zero_arg_compute() -> Int {
+            42
+        }
+
+        structure ZeroArgFixture {
+            let result = zero_arg_compute()
+        }
+    "#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn("test::identity", identity_fn as ComputeFn);
+
+    let eval_result = engine.eval(&compiled);
+
+    // The trampoline received &[] (zero args → empty arg_values) and returned
+    // Value::Undef via the empty-slice guard. The function body literal `42`
+    // is NOT returned because for a registered trampoline the engine uses the
+    // trampoline's ComputeOutcome directly (no body-inlining fallback).
+    let result_cell = ValueCellId::new("ZeroArgFixture", "result");
+    let result_val = eval_result
+        .values
+        .get(&result_cell)
+        .unwrap_or_else(|| panic!("cell ZeroArgFixture.result not found in eval result"));
+    assert_eq!(
+        *result_val,
+        Value::Undef,
+        "expected ZeroArgFixture.result == Value::Undef (empty-slice guard fired) \
+         for zero-arg @optimized call, got {:?}",
+        result_val
+    );
 }
 
 // ── step-3: RED — dispatch helper contract ───────────────────────────────────

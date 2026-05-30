@@ -454,8 +454,8 @@ mod tests {
 
     /// A minimal identity trampoline: returns the first entry of `value_inputs`
     /// as the result, or `Value::Undef` when the slice is empty (defensive
-    /// guard for the @optimized dispatch path where a non-ValueRef arg produces
-    /// an empty `value_inputs` field).
+    /// guard for the case where the engine invokes the trampoline with zero
+    /// evaluated arguments — e.g. a zero-argument @optimized call).
     fn identity_fn(
         value_inputs: &[Value],
         _realization_inputs: &[RealizationReadHandle],
@@ -473,10 +473,11 @@ mod tests {
 
     // ── Test: identity_fn with empty value_inputs ───────────────────────────
 
-    /// RED (step-1): `identity_fn` called with an empty `value_inputs` slice
-    /// must return `ComputeOutcome::Completed { result: Value::Undef }` instead
-    /// of panicking with IndexOutOfBounds. Driven by the @optimized dispatch
-    /// path where a non-ValueRef arg produces an empty `value_inputs` field.
+    /// Guard test: `identity_fn` called with an empty `value_inputs` slice must
+    /// return `ComputeOutcome::Completed { result: Value::Undef }` instead of
+    /// panicking with IndexOutOfBounds. The empty-slice path arises when a
+    /// zero-argument @optimized call causes the engine to pass an empty
+    /// arg_values slice to the trampoline.
     #[test]
     fn identity_fn_empty_value_inputs_returns_undef_without_panic() {
         let result = identity_fn(&[], &[], &Value::Undef, None, &CancellationHandle::new());
