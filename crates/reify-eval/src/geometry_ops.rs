@@ -9510,4 +9510,255 @@ mod tests {
             diag.message
         );
     }
+
+    // ── try_eval_topology_selector — `normal` dispatch unit tests (task 3615, KGQ-ζ) ─────────
+    //
+    // Four contracts (mirrors the four `try_eval_topology_selector_contains_*` tests):
+    //   (a) HAPPY        — kernel reply `Value::String("{\"x\":0,\"y\":0,\"z\":1}")` → `Some(Value::Vector([Real(0), Real(0), Real(1)]))`
+    //   (b) FALL-THROUGH — non-ValueRef literal args → `None` with zero kernel calls
+    //   (c) ERROR        — kernel `Err` → `Some(Value::Undef)` + exactly one Warning mentioning "normal" + "kernel query failed"
+    //   (d) MALFORMED    — non-`Value::String` kernel reply → `Some(Value::Undef)` + exactly one Warning
+    //
+    // Arg order: Surface = args[0] (resolved via named_steps["surface"]),
+    //            Point3  = args[1] (resolved via values[(entity, "pt")]).
+    // This mirrors the `contains(solid, point)` precedent (KGQ-β), NOT closest_point.
+    //
+    // Depends on `MockGeometryKernel::with_face_normal_at_result` (pre-1, task 3615).
+
+    #[test]
+    fn try_eval_topology_selector_normal_kernel_reply_returns_vec3_real() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let face_handle = reify_ir::GeometryHandleId(55);
+        // Stage the mock: point (0m, 0m, 0.005m) ≈ (0, 0, 5mm) in SI.
+        // The kernel wire format for FaceNormalAt is the same JSON-Point3 encoding
+        // as FaceNormal / surface_normal_at: {"x":_,"y":_,"z":_}.
+        let mut kernel = MockGeometryKernel::new().with_face_normal_at_result(
+            face_handle,
+            [0.0, 0.0, 0.005],
+            reify_ir::Value::String("{\"x\":0,\"y\":0,\"z\":1}".to_string()),
+        );
+
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        // args[0] = surface → resolved via named_steps by member name "surface"
+        named_steps.insert("surface".to_string(), face_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        // args[1] = point3 → resolved via values by ValueCellId
+        values.insert(
+            reify_core::ValueCellId::new("NormalSmoke", "pt"),
+            point3_length_value(0.0, 0.0, 0.005),
+        );
+
+        // normal(surface_ref, point3_ref) — Surface=args[0], Point3=args[1]
+        let expr = topology_selector_call_two_value_refs(
+            "normal",
+            "NormalSmoke",
+            "surface",
+            reify_core::Type::Geometry,
+            "pt",
+            reify_core::Type::point3(reify_core::Type::length()),
+            reify_core::Type::vec3(reify_core::Type::Real),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Vector(vec![
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(1.0),
+            ])),
+            "normal(surface, point3) with kernel reply {{x:0,y:0,z:1}} must produce \
+             Some(Value::Vector([Real(0),Real(0),Real(1)])); got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "happy-path normal must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_normal_literal_args_falls_through_to_none() {
+        use reify_test_support::mocks::CountingMockKernel;
+        // `normal(<literal>, <literal>)` — non-ValueRef args: both
+        // resolve_geometry_handle_arg (args[0]) and resolve_point3_length_arg (args[1])
+        // return None, so the dispatcher must return None without consulting the kernel.
+        let inner = reify_test_support::mocks::MockGeometryKernel::new();
+        let mut kernel = CountingMockKernel::new(inner);
+
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let values = reify_ir::ValueMap::new();
+
+        let expr = topology_selector_call_literal_args("normal");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "normal(<literal>, <literal>) must return None, got {:?}",
+            result
+        );
+        assert_eq!(
+            kernel.total_query_count(),
+            0,
+            "kernel must NOT be consulted for non-ValueRef args"
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_normal_kernel_err_returns_undef_with_warning() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        // No `with_face_normal_at_result` staging — MockGeometryKernel.query() falls
+        // through to the generic handle-only map which also has no entry for this
+        // handle, so it returns `Err(QueryError::QueryFailed(...))`.
+        // `dispatch_normal_vector3` must downgrade this to `Some(Value::Undef)`
+        // and emit exactly one Warning diagnostic naming "normal" + "kernel query failed".
+        let face_handle = reify_ir::GeometryHandleId(55);
+        let mut kernel = MockGeometryKernel::new();
+
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        named_steps.insert("surface".to_string(), face_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            reify_core::ValueCellId::new("NormalSmoke", "pt"),
+            point3_length_value(0.0, 0.0, 0.005),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "normal",
+            "NormalSmoke",
+            "surface",
+            reify_core::Type::Geometry,
+            "pt",
+            reify_core::Type::point3(reify_core::Type::length()),
+            reify_core::Type::vec3(reify_core::Type::Real),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Undef),
+            "normal(...) with kernel Err must yield Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "kernel Err must emit exactly one Warning, got {} diagnostics: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Warning,
+            "diagnostic severity must be Warning, got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("normal"),
+            "diagnostic must mention the helper name 'normal', got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("kernel query failed"),
+            "diagnostic must indicate the kernel failure, got: {}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_normal_malformed_kernel_reply_emits_warning_and_returns_undef() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        // Stage a non-`Value::String` reply (Value::Real) — parse_xyz_value rejects
+        // non-String replies, so dispatch_normal_vector3 must produce
+        // `Some(Value::Undef)` with a Warning diagnostic naming "normal".
+        let face_handle = reify_ir::GeometryHandleId(55);
+        let mut kernel = MockGeometryKernel::new().with_face_normal_at_result(
+            face_handle,
+            [0.0, 0.0, 0.005],
+            // Wrong type: a Real, not the expected JSON String.
+            reify_ir::Value::Real(42.0),
+        );
+
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        named_steps.insert("surface".to_string(), face_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            reify_core::ValueCellId::new("NormalSmoke", "pt"),
+            point3_length_value(0.0, 0.0, 0.005),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "normal",
+            "NormalSmoke",
+            "surface",
+            reify_core::Type::Geometry,
+            "pt",
+            reify_core::Type::point3(reify_core::Type::length()),
+            reify_core::Type::vec3(reify_core::Type::Real),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Undef),
+            "normal(...) with malformed kernel reply must yield Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "malformed reply must emit exactly one Warning, got {} diagnostics: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Warning,
+            "diagnostic severity must be Warning, got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("normal"),
+            "diagnostic must mention the helper name 'normal', got: {}",
+            diag.message
+        );
+    }
 }
