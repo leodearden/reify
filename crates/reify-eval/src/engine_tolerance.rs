@@ -283,6 +283,12 @@ impl Engine {
         // whatever `check_imported_tolerance_promise` returns. The helper is
         // code-agnostic: both `ImportedTolerancePromiseInsufficient` and
         // `InputTolerancePromiseIsZero` codes flow through unchanged.
+        //
+        // Edge case: if two params of the same purpose bind the same entity_ref,
+        // check_imported_tolerance_promise fires twice for that entity — emitting a
+        // duplicate diagnostic.  This is accepted: cross-purpose duplicates were
+        // already possible pre-4070, C-validation only rejects duplicate *params*
+        // (not duplicate entity targets), and single-param behaviour is unaffected.
         for input_name in &input_template_names {
             for output_name in &output_template_names {
                 for param_bindings in self.active_purpose_bindings.values() {

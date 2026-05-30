@@ -1216,11 +1216,12 @@ impl Engine {
         // dependencies change (task 2343 step-8).
         self.compiled_fields = Arc::new(module.fields.clone());
         // Preserve user-intent purpose bindings across eval() (task 3103).
-        // `active_purpose_bindings` (purpose_name → entity_ref) is pure user
-        // intent and does not reference any snapshot data, so it can be carried
-        // across a fresh eval() losslessly.  We snapshot it here via mem::take
-        // (leaving the field empty) so the derived-state clears below are safe,
-        // then re-apply each binding via activate_purpose() AFTER the new
+        // `active_purpose_bindings` (purpose_name → Vec<(param, entity)>) is
+        // pure user intent and does not reference any snapshot data, so it can
+        // be carried across a fresh eval() losslessly.  We snapshot it here via
+        // mem::take (leaving the field empty) so the derived-state clears below
+        // are safe, then re-apply each binding via
+        // activate_purpose_constraints_with_bindings_inner() AFTER the new
         // eval_state is stored at the end of this function.
         //
         // `active_purposes`, `active_objective_map`, and `active_tolerance_scope`
@@ -2264,12 +2265,13 @@ impl Engine {
         self.last_eval_set = Vec::new(); // Cold start: no incremental eval set
 
         // Re-apply preserved purpose bindings against the fresh snapshot (task 3103).
-        // activate_purpose_constraints() requires eval_state to be Some — satisfied
-        // by the assignment above.  For each captured binding it injects constraints
-        // into the new graph, restores the optimization objective, and populates
+        // activate_purpose_constraints_with_bindings_inner() requires eval_state to
+        // be Some — satisfied by the assignment above.  For each captured
+        // (purpose_name, Vec<(param, entity)>) it injects constraints into the new
+        // graph, restores the optimization objective, and records the bindings in
         // active_purpose_bindings.  If a purpose was removed by the re-eval
-        // (different module), activate_purpose_constraints() returns false silently
-        // — the stale binding is dropped automatically.  The already-active guard
+        // (different module), the inner returns false silently — the stale binding
+        // is dropped automatically.  The already-active guard
         // (active_purposes.contains_key) is NOT hit because active_purposes was
         // cleared above; re-injection is safe.
         //

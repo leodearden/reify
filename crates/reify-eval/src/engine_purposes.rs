@@ -159,8 +159,9 @@ impl Engine {
     /// Returns `true` if injection was performed, `false` on any early-return
     /// condition (purpose already active, not found, no eval state).
     ///
-    /// **Does NOT** rebuild infrastructure or record `active_purpose_bindings`
-    /// for multi-binding activations — callers handle both.
+    /// Records `active_purpose_bindings` unconditionally for ALL activations
+    /// (single- and multi-param alike); only infrastructure rebuild is left to
+    /// callers.
     pub(crate) fn activate_purpose_constraints_with_bindings_inner(
         &mut self,
         purpose_name: &str,
