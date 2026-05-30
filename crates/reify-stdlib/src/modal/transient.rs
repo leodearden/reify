@@ -336,6 +336,37 @@ mod tests {
         }
     }
 
+    // ─── step 09: is_uniformly_sampled (RED) ─────────────────────────────────
+
+    /// Asserts the correct behaviour of `is_uniformly_sampled`.
+    /// RED: function absent.
+    #[test]
+    fn is_uniformly_sampled_cases() {
+        // Evenly-spaced grid → true.
+        let uniform: Vec<f64> = (0..10).map(|i| i as f64 * 0.1).collect();
+        assert!(is_uniformly_sampled(&uniform, 1e-9));
+
+        // Evenly-spaced grid with tiny float jitter within rel_tol → true.
+        let mut jittered = uniform.clone();
+        jittered[5] += 1e-13;  // sub-rel-tol jitter (rel_tol=1e-9, dt0=0.1)
+        assert!(is_uniformly_sampled(&jittered, 1e-9));
+
+        // Grid with one unequal gap (jitter > rel_tol) → false.
+        let mut unequal = uniform.clone();
+        unequal[5] += 0.01;    // obvious gap change
+        assert!(!is_uniformly_sampled(&unequal, 1e-9));
+
+        // len < 2 → false (no spacing defined).
+        assert!(!is_uniformly_sampled(&[], 1e-9));
+        assert!(!is_uniformly_sampled(&[0.0], 1e-9));
+
+        // Non-increasing / zero-gap → false.
+        let non_increasing = vec![0.0, 0.1, 0.1, 0.3]; // repeated point
+        assert!(!is_uniformly_sampled(&non_increasing, 1e-9));
+        let decreasing = vec![0.3, 0.2, 0.1];
+        assert!(!is_uniformly_sampled(&decreasing, 1e-9));
+    }
+
     // ─── step 07: sine accuracy — SINE ACCURACY PIN ──────────────────────────
 
     /// Characterises the FOH recurrence for f(t) = sin(Ωt).
