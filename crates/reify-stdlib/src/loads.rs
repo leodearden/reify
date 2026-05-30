@@ -254,6 +254,33 @@ mod tests {
     // scalar validation now lives on the structure-def's field contracts and
     // is exercised by the SIR-β-load boundary suite, not here.
 
+    // ── task 2881 step-3 (RED): post-retirement contract ─────────────────────
+    //
+    // After step-4 (FEA-2 stdlib swap), `traction_load` is no longer a
+    // name-dispatched builtin — its role is taken by the
+    // `structure def TractionLoad : Load { ... }` declaration in
+    // `crates/reify-compiler/stdlib/fea_multi_case.ri`. Source-level
+    // `TractionLoad(...)` calls lower to `CompiledExprKind::StructureInstanceCtor`
+    // and eval into a `Value::StructureInstance`. The
+    // `eval_builtin("traction_load", ...)` Rust API path returns `Value::Undef`
+    // because the dispatch arm in `eval_loads` is removed.
+    //
+    // RED: this test currently fails because `eval_builtin("traction_load", ...)`
+    // returns a `Value::Map` (the pre-retirement happy path). Step-4 retires
+    // the arm and updates `LOAD_KINDS` so the partition guard stays green.
+
+    #[test]
+    fn traction_load_eval_builtin_returns_undef_post_retirement() {
+        let selector = selector_stub("face_stub");
+        let traction = make_scalar_vec3([2e6, 0.0, -1e6], DimensionVector::PRESSURE);
+        assert!(
+            eval_builtin("traction_load", &[selector, traction]).is_undef(),
+            "after step-4 retirement, eval_builtin('traction_load', ...) must \
+             return Undef; the structure-instance ctor path (TractionLoad) replaces \
+             the builtin entirely (FEA-2 task 2881, Q-SIR-4 — rename traction_load → TractionLoad)"
+        );
+    }
+
     // ── traction_load constructor: happy path ────────────────────────────────
 
     #[test]
