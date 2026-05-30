@@ -682,6 +682,15 @@ pub fn compile_project_with_entry_source(
             .collect();
         crate::compile_with_prelude_refs(&parsed, &preludes)
     };
+    // Enforce module-path declaration (spec §7.1/§7.2, task γ).
+    // parsed.path == ModulePath::single(entry_name) by construction (D-6).
+    let mut compiled_entry = compiled_entry;
+    if let Some(diag) = crate::compile_builder::pre_pass::check_module_path_decl(
+        parsed.declared_module_path.as_ref(),
+        &parsed.path,
+    ) {
+        compiled_entry.diagnostics.push(diag);
+    }
     let entry_key = entry_name.to_string();
     dag.topo_order.push(entry_key.clone());
     dag.modules.insert(entry_key, compiled_entry);
