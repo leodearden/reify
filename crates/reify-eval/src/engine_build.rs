@@ -7622,14 +7622,32 @@ mod p2_substitution_diagnostic_tests {
 mod mixed_region_tests {
     use super::*;
     use reify_ir::{ElementOrderTag, VolumeMesh};
-    use reify_shell_extract::MidSurfaceMesh;
+    use reify_shell_extract::{MidSurfaceMesh, ShellTetInterface};
 
-    /// Small shell mesh: 3 vertices, 1 triangle, thickness len 3.
+    /// Small shell mesh: 3 vertices, 1 triangle, thickness len 3. Vertex 0 sits
+    /// at the origin (the unique nearest vertex to `location = [0,0,0]`).
     fn make_shell_mesh() -> MidSurfaceMesh {
         MidSurfaceMesh {
             vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             triangles: vec![[0, 1, 2]],
             thickness: vec![0.1, 0.1, 0.1],
+        }
+    }
+
+    /// Tet mesh for interface tying: a through-thickness triple straddling the
+    /// origin along +z (top z=+1, mid z=0, bot z=−1) plus a far 4th node that
+    /// is excluded from the 3 nearest to `location`.
+    fn make_tie_tet_mesh() -> VolumeMesh {
+        VolumeMesh {
+            vertices: vec![
+                0.0, 0.0, 1.0, // node 0 — top (z = +1)
+                0.0, 0.0, 0.0, // node 1 — mid (z =  0, at location)
+                0.0, 0.0, -1.0, // node 2 — bot (z = −1)
+                9.0, 9.0, 9.0, // node 3 — far (not among the 3 nearest)
+            ],
+            tet_indices: vec![0, 1, 2, 3],
+            element_order: ElementOrderTag::P1,
+            normals: None,
         }
     }
 
@@ -7724,5 +7742,108 @@ mod mixed_region_tests {
         assert!(result.nodes.is_empty(), "no nodes");
         assert!(result.elements.is_empty(), "no elements");
         assert!(result.mpc_rows.is_empty(), "no MPC rows");
+    }
+
+    // ── Step 11: interface MPC wiring (D=6 layout) ───────────────────────────
+
+    /// One interface ties the nearest shell vertex to the resolved tet
+    /// top/mid/bot triple, producing `MpcRow::shell_tet_tying`'s 6 rows under
+    /// the global D=6 DOF layout (`6·node + axis`, shell nodes first, tet nodes
+    /// offset by `n_shell`).
+    #[test]
+    fn build_mixed_region_mesh_wires_interface_mpc_rows_in_d6_layout() {
+        let shell = make_shell_mesh();
+        let tet = make_tie_tet_mesh();
+        let n_shell = shell.vertices.len(); // 3
+        let interface = ShellTetInterface {
+            shell_region: 0,
+            tet_region: 1,
+            normal: [0.0, 0.0, 1.0],
+            thickness: 0.1,
+            location: [0.0, 0.0, 0.0],
+        };
+
+        let result = build_mixed_region_mesh(&shell, &tet, std::slice::from_ref(&interface))
+            .expect("interface wiring should succeed");
+
+        // shell_tet_tying emits exactly 6 rows.
+        assert_eq!(result.mpc_rows.len(), 6, "one interface → 6 MPC rows");
+
+        // Resolved tie nodes (unified indices) under the fixture geometry:
+        //   shell tie node = nearest shell vertex to [0,0,0] = shell node 0.
+        //   tet top/mid/bot = tet locals 0/1/2 (z = +1/0/−1) → unified 3/4/5.
+        let shell_n = 0usize;
+        let tet_mid = n_shell + 1; // 4
+
+        // The three displacement-matching rows: u_shell_a − u_tet_mid_a = 0,
+        // pivot at the shell disp DOF (6·shell_n + a) with coeffs [1, −1] and
+        // the tet-mid disp DOF (6·tet_mid + a) as the second term.
+        for a in 0..3 {
+            let shell_disp = 6 * shell_n + a; // 0,1,2
+            let tet_mid_dof = 6 * tet_mid + a; // 24,25,26
+            let row = result
+                .mpc_rows
+                .iter()
+                .find(|r| r.dofs == vec![shell_disp, tet_mid_dof])
+                .unwrap_or_else(|| {
+                    panic!("missing displacement row for axis {a}: dofs [{shell_disp}, {tet_mid_dof}]")
+                });
+            assert_eq!(
+                row.coeffs,
+                vec![1.0, -1.0],
+                "displacement-matching row coeffs for axis {a}"
+            );
+            assert_eq!(row.rhs, 0.0, "homogeneous tie (rhs = 0) for axis {a}");
+        }
+
+        // D=6 sanity: every DOF index lies in the unified 6·node space.
+        let n_total = result.nodes.len(); // 7
+        for row in &result.mpc_rows {
+            for &d in &row.dofs {
+                assert!(
+                    d < 6 * n_total,
+                    "DOF {d} must lie within the D=6 space (6 · {n_total} nodes)"
+                );
+            }
+        }
+
+        // The rotation rows must reference the shell tie node's rotation DOFs
+        // (6·shell_n + 3..5) — confirming the shell side contributes rotations.
+        let shell_rot: Vec<usize> = (3..6).map(|axis| 6 * shell_n + axis).collect(); // [3,4,5]
+        assert!(
+            result
+                .mpc_rows
+                .iter()
+                .any(|r| r.dofs.iter().any(|d| shell_rot.contains(d))),
+            "a rotation row must reference a shell rotation DOF (6·n + 3..5)"
+        );
+    }
+
+    /// An interface whose tet side has no nodes cannot resolve its tie nodes →
+    /// `InterfaceResolutionFailed` tagged with the interface index.
+    #[test]
+    fn build_mixed_region_mesh_errors_when_interface_tie_nodes_unresolvable() {
+        let shell = make_shell_mesh();
+        let empty_tet = VolumeMesh {
+            vertices: vec![],
+            tet_indices: vec![],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        let interface = ShellTetInterface {
+            shell_region: 0,
+            tet_region: 1,
+            normal: [0.0, 0.0, 1.0],
+            thickness: 0.1,
+            location: [0.0, 0.0, 0.0],
+        };
+
+        let err = build_mixed_region_mesh(&shell, &empty_tet, std::slice::from_ref(&interface))
+            .expect_err("an interface against an empty tet mesh must fail to resolve");
+        assert_eq!(
+            err,
+            MixedRegionError::InterfaceResolutionFailed { interface_index: 0 },
+            "error must name the offending interface index"
+        );
     }
 }
