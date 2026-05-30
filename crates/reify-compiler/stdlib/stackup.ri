@@ -43,3 +43,17 @@ structure def Contributor {
     param sign         : Int = 1
     param distribution : Distribution = Distribution.Normal
 }
+
+// ── StackupResult result contract ─────────────────────────────────────────────
+
+// Trait describing the outputs of a tolerance stack-up computation.
+// Members are a subset of the §4.2 result-Map keys produced by the T1 builtins
+// (stackup_worst_case / stackup_rss in reify-stdlib/src/stackup.rs).
+// rss_sigma is a standard deviation, so non-negativity is a meaningful invariant.
+trait StackupResult {
+    param nominal_gap     : Length
+    param worst_case_min  : Length
+    param worst_case_max  : Length
+    param rss_sigma       : Length
+    constraint rss_sigma >= 0mm
+}
