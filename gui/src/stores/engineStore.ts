@@ -25,6 +25,7 @@ import {
   onAutoResolveIteration,
   onAutoResolveComplete,
   onSolverProgress,
+  cancelSolve as bridgeCancelSolve,
 } from '../bridge';
 import type { KernelStatus } from '../bridge';
 
@@ -302,6 +303,10 @@ export function createEngineStore(options?: EngineStoreOptions) {
     endAutoResolveLoop,
     applySolverProgress,
     resetSolverProgress,
+    async cancelSolve() {
+      await bridgeCancelSolve();
+      resetSolverProgress();
+    },
     subscribeToEvents,
   };
 }
