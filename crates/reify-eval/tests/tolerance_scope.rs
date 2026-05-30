@@ -293,3 +293,118 @@ fn engine_active_tolerance_for_takes_minimum_across_overlapping_purposes() {
         "root must remain at loose's 50e-6 across the deactivation"
     );
 }
+
+/// A 2-param purpose activated via `activate_purpose_with_bindings` must
+/// propagate each param's tolerance to its own bound entity (not collapsed).
+///
+/// After `activate_purpose_with_bindings("fits", &[(part, MyDesign.head),
+/// (envelope, MyDesign.tail)])`:
+///   - `active_tolerance_for("MyDesign.head")` == Some(1e-6)  (part's tol)
+///   - `active_tolerance_for("MyDesign.tail")` == Some(5e-6)  (envelope's tol)
+///   - `active_tolerance_for("MyDesign")`      == None  (root outside either subtree)
+///
+/// RED today: the `if bindings.len() == 1` guard in `activate_purpose_constraints_
+/// with_bindings_inner` records nothing for multi-param activations, so
+/// `recompute_tolerance_scope` produces an empty scope.
+#[test]
+fn multi_param_purpose_contributes_per_param_tolerance_scope() {
+    let module = build_module_with_two_param_purpose("fits", 1e-6, 5e-6);
+
+    let mut engine = make_engine();
+    engine.eval(&module);
+
+    engine
+        .activate_purpose_with_bindings(
+            "fits",
+            &[
+                ("part".to_string(), "MyDesign.head".to_string()),
+                ("envelope".to_string(), "MyDesign.tail".to_string()),
+            ],
+        )
+        .expect("activate_purpose_with_bindings must succeed for valid 2-param purpose");
+
+    // (a) part param's tolerance at its bound entity.
+    assert_eq!(
+        engine.active_tolerance_for("MyDesign.head"),
+        Some(1e-6),
+        "part param (bound to MyDesign.head) must contribute 1e-6 tolerance there"
+    );
+    // (b) envelope param's tolerance at its bound entity.
+    assert_eq!(
+        engine.active_tolerance_for("MyDesign.tail"),
+        Some(5e-6),
+        "envelope param (bound to MyDesign.tail) must contribute 5e-6 tolerance there"
+    );
+    // (c) root is outside both subtrees — no tolerance contributed by either param.
+    assert_eq!(
+        engine.active_tolerance_for("MyDesign"),
+        None,
+        "root entity (MyDesign) is not a descendant of either bound entity; \
+         neither param's prefix-scan reaches it"
+    );
+}
+
+/// A 2-param purpose activated via `activate_purpose_with_bindings` must
+/// survive a second `eval(&module)` call: `is_purpose_active` stays true and
+/// both per-param tolerances persist.
+///
+/// Pre-condition asserts verify the purpose is active and tolerances are set
+/// before the re-eval so that a failure isolates the round-trip path.
+///
+/// RED today: eval()'s `mem::take` sees an empty `active_purpose_bindings` for
+/// the multi-param purpose (nothing recorded due to the `len==1` guard), so
+/// the preserved_bindings list is empty and the purpose is dropped on re-eval.
+/// Even if recording were fixed, the re-apply loop calls
+/// `activate_purpose_constraints(name, entity)` which REFUSES purposes with
+/// `params.len() != 1` and would silently drop the purpose.
+#[test]
+fn multi_param_purpose_survives_eval_round_trip() {
+    let module = build_module_with_two_param_purpose("fits", 1e-6, 5e-6);
+
+    let mut engine = make_engine();
+    engine.eval(&module);
+
+    engine
+        .activate_purpose_with_bindings(
+            "fits",
+            &[
+                ("part".to_string(), "MyDesign.head".to_string()),
+                ("envelope".to_string(), "MyDesign.tail".to_string()),
+            ],
+        )
+        .expect("activate_purpose_with_bindings must succeed for valid 2-param purpose");
+
+    // Precondition: purpose active and tolerances set before the re-eval.
+    assert!(
+        engine.is_purpose_active("fits"),
+        "precondition: fits must be active before round-trip"
+    );
+    assert_eq!(
+        engine.active_tolerance_for("MyDesign.head"),
+        Some(1e-6),
+        "precondition: MyDesign.head must carry 1e-6 before round-trip"
+    );
+    assert_eq!(
+        engine.active_tolerance_for("MyDesign.tail"),
+        Some(5e-6),
+        "precondition: MyDesign.tail must carry 5e-6 before round-trip"
+    );
+
+    // Re-eval: purpose must survive and tolerances must persist.
+    engine.eval(&module);
+
+    assert!(
+        engine.is_purpose_active("fits"),
+        "fits must remain active after eval() round-trip"
+    );
+    assert_eq!(
+        engine.active_tolerance_for("MyDesign.head"),
+        Some(1e-6),
+        "MyDesign.head must retain 1e-6 after eval() round-trip"
+    );
+    assert_eq!(
+        engine.active_tolerance_for("MyDesign.tail"),
+        Some(5e-6),
+        "MyDesign.tail must retain 5e-6 after eval() round-trip"
+    );
+}
