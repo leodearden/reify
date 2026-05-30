@@ -973,11 +973,13 @@ pub(crate) fn compile_entity(
         }
     }
 
+    // task 3939 δ (step-12): accumulates the override-or-injected-default
+    // assoc-fn table resolved by conformance, stored onto this conformer's
+    // TopologyTemplate below. Declared before the trait-bounds guard so it is
+    // in scope at the struct literal (and stays empty for bound-less entities).
+    let mut structure_assoc_fns: Vec<CompiledAssocFn> = Vec::new();
     // Trait conformance checking: verify structure satisfies all trait bounds.
     if !structure.trait_bounds.is_empty() {
-        // task 3939 δ: discarded placeholder; real storage onto the
-        // TopologyTemplate.assoc_fns field is wired in step-12.
-        let mut discarded_assoc_fns: Vec<CompiledAssocFn> = Vec::new();
         check_trait_conformance(
             structure,
             trait_registry,
@@ -991,7 +993,7 @@ pub(crate) fn compile_entity(
             functions,
             alias_registry,
             diagnostics,
-            &mut discarded_assoc_fns,
+            &mut structure_assoc_fns,
         );
 
         // Trait-bound checks: deprecation warning and parameterized type-argument deferral.
@@ -1511,9 +1513,12 @@ pub(crate) fn compile_entity(
                 // Associated type compilation deferred to a later milestone.
             }
             reify_ast::MemberDecl::Fn(_) => {
-                // Trait associated-fn compilation deferred to task δ/ζ.
-                // The member is lowered into MemberDecl::Fn by task γ (ts_parser);
-                // conformance checking and dispatch are added in later tasks.
+                // task 3939 δ: structure-body assoc fns are recognized as
+                // trait-fn overrides by `check_trait_conformance` (which scans
+                // `structure.members` directly) and compiled into the conformer's
+                // `assoc_fns` table. They lower to no value cell here, so this
+                // member-compilation arm intentionally remains a no-op.
+                // Instance dispatch (`self.member` resolution) is task ζ (3941).
             }
             reify_ast::MemberDecl::Port(port_decl) => {
                 // Skip duplicate port names (already reported in first pass).
@@ -2352,10 +2357,11 @@ pub(crate) fn compile_entity(
         // statement-form `forall` over deferred-count collection subs.
         // Empty when no such forall exists.
         forall_templates: forall_templates_out,
-        // task 3939 δ: resolved associated functions for conformed traits.
-        // Placeholder empty here (pre-2 scaffolding); real storage wired from
-        // `check_trait_conformance` in step-12.
-        assoc_fns: Vec::new(),
+        // task 3939 δ (step-12): the override-or-injected-default assoc-fn table
+        // resolved by `check_trait_conformance` above. Deliberately excluded from
+        // `content_hash` (see plan design decision); ζ (3941) looks this up by
+        // (trait_name, fn_name) for `TraitMethodCall` dispatch.
+        assoc_fns: structure_assoc_fns,
     }
 }
 
