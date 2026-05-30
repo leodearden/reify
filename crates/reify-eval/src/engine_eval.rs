@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use reify_compiler::{CompiledModule, ValueCellDecl, ValueCellKind, find_template};
 use reify_ir::sampled::{LinspaceError, linspace_inclusive};
-use reify_core::{Diagnostic, DiagnosticCode, FIELD_ENTITY_PREFIX, SnapshotId, ValueCellId, VersionId};
+use reify_core::{ContentHash, Diagnostic, DiagnosticCode, FIELD_ENTITY_PREFIX, SnapshotId, ValueCellId, VersionId};
 use reify_ir::{AutoParam, CompiledFunction, DeterminacyState, ErrorRef, Freshness, InterpolationKind, PersistentMap, ResolutionProblem, SampledField, SampledGridKind, SnapshotProvenance, SolveResult, Value, ValueMap};
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
@@ -585,15 +585,39 @@ fn eval_guarded_group_param_cell(
 /// the field's lambda becomes `Arc::new(Value::Undef)` — a poisoned
 /// no-op that produces `Undef` at every sample point.
 ///
-/// `Imported` fields produce a placeholder `Value::Undef` lambda — they
-/// have no callable lambda body to evaluate at this point.
+/// `Imported` fields (task 3576 step-8): call `reify_kernel_openvdb::read_vdb_file`
+/// with the compiled path and grid name.  On success, wrap the resulting
+/// `SampledField` as `Value::SampledField`; on error push a
+/// `DiagnosticCode::FieldImportFailed` runtime error into `runtime_sink` and
+/// return `Value::Undef`.  IngestOutcome warnings are forwarded to `runtime_sink`.
+/// Elaborate a compiled field declaration into a runtime [`Value::Field`].
+///
+/// ## Return value
+///
+/// Returns `(value, content_hash)` where `content_hash` is `Some` for
+/// `Imported` sources whose file was successfully read for hashing, and
+/// `None` for all other source kinds (or when the hash read fails).  The
+/// caller (typically `Engine::eval`) stores this hash into the
+/// `CacheStore` imported-file side-table so subsequent evals can detect
+/// file-content changes without a second `fs::read` call — see
+/// `CacheStore::record_imported_file_hash`.
+///
+/// Computing the hash here (inside the same elaboration step that calls
+/// `read_vdb_file`) avoids a redundant `fs::read` in the caller.  The
+/// VDB library issues its own file I/O internally through the C++ boundary
+/// so the bytes cannot be shared, but the separate top-level `fs::read`
+/// that the caller would otherwise perform is eliminated.
 pub(crate) fn elaborate_field(
     field: &reify_compiler::CompiledField,
     values: &ValueMap,
     functions: &[CompiledFunction],
     meta_map: &HashMap<String, HashMap<String, String>>,
     runtime_sink: Option<&RefCell<Vec<Diagnostic>>>,
-) -> Value {
+) -> (Value, Option<ContentHash>) {
+    // For Imported sources, the hash is computed alongside the VDB read so the
+    // caller can record it without issuing a separate fs::read.
+    let mut imported_hash: Option<ContentHash> = None;
+
     let lambda_value = match &field.source {
         reify_compiler::CompiledFieldSource::Analytical { expr }
         | reify_compiler::CompiledFieldSource::Composed { expr } => {
@@ -614,7 +638,46 @@ pub(crate) fn elaborate_field(
                 None => Arc::new(Value::Undef),
             }
         }
-        reify_compiler::CompiledFieldSource::Imported => Arc::new(Value::Undef),
+        reify_compiler::CompiledFieldSource::Imported { path, grid, .. } => {
+            // Call read_vdb_file with the compiled path and grid name.
+            // Both cfg branches (real FFI and stub) return Result<IngestOutcome, IngestError>;
+            // errors surface as FieldImportFailed runtime diagnostics + Value::Undef.
+            match (path, grid) {
+                (Some(p), Some(g)) => {
+                    // Hash the raw file bytes here so the caller has the hash without
+                    // issuing a separate fs::read after elaboration returns.  IO errors
+                    // (e.g. file not found) leave imported_hash as None; the VDB read
+                    // below will then also fail and emit FieldImportFailed.
+                    imported_hash = hash_imported_file_content(p).ok();
+                    match reify_kernel_openvdb::read_vdb_file(p, g, &field.codomain_type) {
+                        Ok(outcome) => {
+                            // Surface any ingest warnings (e.g. unit mismatch) into the sink.
+                            if !outcome.warnings.is_empty()
+                                && let Some(sink) = runtime_sink
+                            {
+                                sink.borrow_mut().extend(outcome.warnings);
+                            }
+                            Arc::new(Value::SampledField(outcome.field))
+                        }
+                        Err(e) => {
+                            if let Some(sink) = runtime_sink {
+                                sink.borrow_mut().push(
+                                    reify_core::Diagnostic::error(format!(
+                                        "field '{}': failed to import VDB file: {}",
+                                        field.name, e
+                                    ))
+                                    .with_code(reify_core::DiagnosticCode::FieldImportFailed),
+                                );
+                            }
+                            Arc::new(Value::Undef)
+                        }
+                    }
+                }
+                // Missing path or grid: a compiler error was already emitted;
+                // silently produce Undef at eval time (compiler error is the user-visible signal).
+                _ => Arc::new(Value::Undef),
+            }
+        }
     };
 
     let source_kind = match &field.source {
@@ -627,15 +690,18 @@ pub(crate) fn elaborate_field(
         reify_compiler::CompiledFieldSource::Composed { .. } => {
             reify_ir::FieldSourceKind::Composed
         }
-        reify_compiler::CompiledFieldSource::Imported => reify_ir::FieldSourceKind::Imported,
+        reify_compiler::CompiledFieldSource::Imported { .. } => reify_ir::FieldSourceKind::Imported,
     };
 
-    Value::Field {
-        domain_type: field.domain_type.clone(),
-        codomain_type: field.codomain_type.clone(),
-        source: source_kind,
-        lambda: lambda_value,
-    }
+    (
+        Value::Field {
+            domain_type: field.domain_type.clone(),
+            codomain_type: field.codomain_type.clone(),
+            source: source_kind,
+            lambda: lambda_value,
+        },
+        imported_hash,
+    )
 }
 
 /// Hash the raw bytes of an imported field source file.
@@ -665,7 +731,6 @@ pub(crate) fn elaborate_field(
 ///   `true` → cache invalidation signal (wired by PRD task 5).
 /// - File-path change with same content → same hash → `imported_file_hash_changed` returns
 ///   `false` → cache hit.
-#[allow(dead_code, reason = "wired into elaborate_field by PRD task 5")]
 pub(crate) fn hash_imported_file_content(path: &str) -> std::io::Result<reify_core::ContentHash> {
     // TODO(task-5-perf): `fs::read` allocates a `Vec<u8>` sized to the full file before
     // hashing.  For multi-MB .vdb assets on the hot evaluation path this is a noticeable
@@ -1264,7 +1329,7 @@ impl Engine {
         // to refresh composed fields when their tracked dependencies change
         // — see `engine_edit.rs` for the incremental call site.
         for field in &module.fields {
-            let field_value = elaborate_field(
+            let (field_value, imported_hash) = elaborate_field(
                 field,
                 &values,
                 &functions,
@@ -1276,6 +1341,19 @@ impl Engine {
             snapshot
                 .values
                 .insert(field_id, (field_value, DeterminacyState::Determined));
+
+            // Record the file content-hash for Imported field sources so the
+            // cache side-table stays current and the future incremental-skip
+            // optimisation can gate on `imported_file_hash_changed` (PRD task 5 / D).
+            // The hash was already computed inside elaborate_field alongside the VDB
+            // read, so no separate fs::read is needed here.
+            if let reify_compiler::CompiledFieldSource::Imported {
+                path: Some(ref p), ..
+            } = field.source
+                && let Some(h) = imported_hash
+            {
+                self.cache.record_imported_file_hash(p, h);
+            }
         }
 
         // Two-pass evaluation (same logic as before)

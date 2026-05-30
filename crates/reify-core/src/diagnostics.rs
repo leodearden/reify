@@ -251,6 +251,18 @@ pub enum DiagnosticCode {
     /// Emitted when a field declaration uses the `imported { ... }` source form,
     /// which is deferred to v0.2 (v0.1 supports `analytical` and `composed` only).
     FieldImportedV02,
+    /// Origin: `crates/reify-eval/src/engine_eval.rs::elaborate_field` (Imported arm).
+    /// Emitted as a `Severity::Error` at eval time when an `imported` field's
+    /// source file cannot be read (file not found, wrong grid name, FFI not
+    /// compiled in, etc.).  The field's lambda becomes `Value::Undef` and any
+    /// subsequent `sample(...)` call returns `Undef`.
+    ///
+    /// Canonical message form:
+    /// `"field '<name>': failed to import VDB file: <detail>"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_FIELD_IMPORT_FAILED`.
+    /// Registered in task 3576 (PRD §9 / GR-003 task θ step-8).
+    FieldImportFailed,
     /// Origin: `crates/reify-expr/src/sampled.rs::sample_at_point`.
     /// Emitted as a `Severity::Warning` once per Sampled field per session
     /// when a `sample(field, point)` query falls outside the configured
@@ -2129,6 +2141,32 @@ mod tests {
             assert_eq!(d.severity, Severity::Error, "severity mismatch for {code:?}");
             assert_eq!(d.code, Some(code), "code mismatch for {code:?}");
         }
+    }
+
+    // --- FieldImportFailed tests (task 3576 step-8) ---
+
+    /// `DiagnosticCode::FieldImportFailed` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` and Debug-prints as
+    /// `"FieldImportFailed"`. Shape mirrors
+    /// `diagnostic_code_geometry_unbounded_with_code_round_trips`.
+    #[test]
+    fn diagnostic_code_field_import_failed_with_code_round_trips() {
+        let d = Diagnostic::error("field 'x': failed to import VDB file: not found")
+            .with_code(DiagnosticCode::FieldImportFailed);
+        assert_eq!(d.code, Some(DiagnosticCode::FieldImportFailed));
+        assert_eq!(
+            format!("{:?}", DiagnosticCode::FieldImportFailed),
+            "FieldImportFailed"
+        );
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::FieldImportFailed` serializes
+    /// as `"FieldImportFailed"` (PascalCase).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_field_import_failed_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::FieldImportFailed).unwrap();
+        assert_eq!(s, "\"FieldImportFailed\"");
     }
 
     /// Under `feature = "serde"`, each §4.4 stackup code serializes to its

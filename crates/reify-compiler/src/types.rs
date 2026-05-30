@@ -96,8 +96,12 @@ pub enum CompiledFieldSource {
     Sampled { config: Vec<(String, CompiledExpr)> },
     /// Composed field: defined by a composition lambda.
     Composed { expr: CompiledExpr },
-    /// Imported field: placeholder for externally-sourced field data.
-    Imported,
+    /// Imported field: externally-sourced field data (e.g. OpenVDB file).
+    Imported {
+        path: Option<String>,
+        format: Option<String>,
+        grid: Option<String>,
+    },
 }
 
 /// A compiled field declaration.

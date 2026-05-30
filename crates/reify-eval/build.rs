@@ -56,6 +56,15 @@ fn main() {
         std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set by cargo");
     let manifest_path = Path::new(&manifest_dir);
 
+    // Declare has_openvdb as a known cfg so rustc doesn't warn about unknown cfgs.
+    println!("cargo::rustc-check-cfg=cfg(has_openvdb)");
+    // Enable has_openvdb if OpenVDB native libraries are available.
+    if reify_build_utils::find(reify_build_utils::NativeDep::OpenVdb).is_some() {
+        println!("cargo:rustc-cfg=has_openvdb");
+    }
+    // Emit RPATH so test binaries that transitively link libopenvdb resolve it at runtime.
+    reify_build_utils::emit_rpath_for_tests(reify_build_utils::NativeDep::OpenVdb);
+
     // Re-run this build script whenever it changes itself.
     println!("cargo:rerun-if-changed=build.rs");
     // Re-run when the shared algorithm source changes.

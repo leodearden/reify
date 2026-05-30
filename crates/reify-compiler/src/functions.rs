@@ -538,18 +538,65 @@ pub(crate) fn compile_field(
                 expr: compiled_expr,
             }
         }
-        reify_ast::FieldSource::Imported { .. } => {
-            diagnostics.push(
-                Diagnostic::error(
-                    "imported field sources are deferred to v0.2; v0.1 supports analytical and composed only",
-                )
-                .with_code(DiagnosticCode::FieldImportedV02)
-                .with_label(DiagnosticLabel::new(
-                    field_def.span,
-                    "imported field source is deferred to v0.2",
-                )),
-            );
-            CompiledFieldSource::Imported
+        reify_ast::FieldSource::Imported { path, format, grid } => {
+            // Validate required keys: path, format, grid.
+            if path.is_none() {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "imported field source is missing required key: 'path'",
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        field_def.span,
+                        "missing required imported config key",
+                    )),
+                );
+            }
+            if format.is_none() {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "imported field source is missing required key: 'format'",
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        field_def.span,
+                        "missing required imported config key",
+                    )),
+                );
+            }
+            if grid.is_none() {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "imported field source is missing required key: 'grid'",
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        field_def.span,
+                        "missing required imported config key",
+                    )),
+                );
+            }
+            // Validate format value: only "OpenVDB" is supported in v0.2.
+            if let Some(fmt) = format.as_deref()
+                && fmt != "OpenVDB"
+            {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "unsupported imported field format '{}': only 'OpenVDB' is supported",
+                        fmt
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        field_def.span,
+                        "unsupported format for imported field source",
+                    )),
+                );
+            }
+            // Note: the struct is populated with whatever was parsed even when the
+            // validation diagnostics above were emitted.  Eval relies on (Some path,
+            // Some grid) and treats anything else as Undef; compile errors are the
+            // user-visible signal for missing or invalid keys.
+            CompiledFieldSource::Imported {
+                path: path.clone(),
+                format: format.clone(),
+                grid: grid.clone(),
+            }
         }
     };
 
@@ -571,7 +618,12 @@ pub(crate) fn compile_field(
                 ContentHash::combine_all(hashes)
             }
             CompiledFieldSource::Composed { expr } => expr.content_hash,
-            CompiledFieldSource::Imported => ContentHash::of(&[0u8]),
+            CompiledFieldSource::Imported { path, format, grid } => {
+                let ph = path.as_deref().map(ContentHash::of_str).unwrap_or(ContentHash(0));
+                let fh = format.as_deref().map(ContentHash::of_str).unwrap_or(ContentHash(0));
+                let gh = grid.as_deref().map(ContentHash::of_str).unwrap_or(ContentHash(0));
+                ContentHash::combine_all([ph, fh, gh])
+            }
         };
         ContentHash::combine_all([name_hash, domain_hash, codomain_hash, source_hash])
     };
@@ -681,7 +733,7 @@ mod tests {
             is_pub: false,
             domain_type,
             codomain_type,
-            source: CompiledFieldSource::Imported,
+            source: CompiledFieldSource::Imported { path: None, format: None, grid: None },
             content_hash: ContentHash(0),
             annotations: vec![],
         }
