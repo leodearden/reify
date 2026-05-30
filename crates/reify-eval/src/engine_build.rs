@@ -954,6 +954,73 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
     }
 }
 
+/// Return the set of [`ReprKind`]s an [`Operation`] accepts as its geometric
+/// input, per the PRD §3a.4 classifier table (task 4049).
+///
+/// Returns `None` for variants not yet classified — the conservative fallback
+/// `op_accepts_repr` returns `false` (does not accept Mesh) for unclassified
+/// ops. The `_ => None` catch-all is intentionally unreachable for all current
+/// variants once step-4 is landed; it exists to handle genuinely-new future
+/// variants conservatively until they are explicitly classified.
+///
+/// Table (PRD §3a.4):
+/// - Boolean* / Transform* / Pattern* → `[BRep, Mesh]`
+/// - Modify* / Sweep*                 → `[BRep]` (BRep-only consumers)
+/// - Convert { from }                 → `[BRep, Mesh]`
+/// - Primitive* / Curve*              → `[BRep]` (sources; classified to
+///   document the 'not a Mesh-accepting consumer' decision; step-4 adds arms)
+fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
+    use Operation::*;
+    use ReprKind::{BRep, Mesh};
+    const BREP_MESH: &[ReprKind] = &[BRep, Mesh];
+    const BREP_ONLY: &[ReprKind] = &[BRep];
+    match op {
+        // Booleans — accept both reprs
+        BooleanUnion | BooleanDifference | BooleanIntersection => Some(BREP_MESH),
+
+        // Modify — BRep-only consumers
+        ModifyFillet | ModifyChamfer | ModifyShell | ModifyDraft | ModifyThicken => {
+            Some(BREP_ONLY)
+        }
+
+        // Transform — accept both reprs
+        TransformTranslate | TransformRotate | TransformScale | TransformRotateAround => {
+            Some(BREP_MESH)
+        }
+
+        // Pattern — accept both reprs
+        PatternLinear | PatternCircular | PatternMirror | PatternLinear2D | PatternArbitrary => {
+            Some(BREP_MESH)
+        }
+
+        // Sweep — BRep-only consumers
+        SweepLoft
+        | SweepExtrude
+        | SweepRevolve
+        | SweepSweep
+        | SweepExtrudeSymmetric
+        | SweepSweepGuided
+        | SweepLoftGuided
+        | SweepPipe => Some(BREP_ONLY),
+
+        // Convert — accepts both reprs (source repr is `from`, dest is the
+        // second element of the capability tuple — not relevant here)
+        Convert { .. } => Some(BREP_MESH),
+
+        // Catch-all: genuinely-new future variants → conservative (None)
+        _ => None,
+    }
+}
+
+/// Return `true` if `op` accepts `repr` as a geometric input.
+///
+/// Unclassified ops (`classify_op_input_reprs` returns `None`) return `false`,
+/// making them conservative: they do not accept Mesh, which forces their
+/// producers to demand BRep.
+fn op_accepts_repr(op: &Operation, repr: ReprKind) -> bool {
+    classify_op_input_reprs(op).is_some_and(|s| s.contains(&repr))
+}
+
 /// Derive the output [`ReprKind`] for a dispatched op by reading the chosen
 /// kernel's capability descriptor (task ε / 3436, PRD §8 step-6).
 ///
