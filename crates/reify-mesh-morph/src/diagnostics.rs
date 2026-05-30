@@ -386,6 +386,34 @@ mod tests {
         });
     }
 
+    // ── Step-1 (task #2949): production reset() zeroes all counters ──────────
+
+    #[test]
+    fn reset_zeros_all_counters() {
+        with_locked_state(|| {
+            // Prime several distinct buckets so they're non-zero before reset.
+            record_morphed();
+            record_quality_remesh(&hard_fail());
+            record_ineligible(&Reason::StructuralChange);
+            assert_ne!(snapshot().morphed, 0, "morphed must be non-zero before reset");
+            assert_ne!(
+                snapshot().remeshed_quality_hard_fail, 0,
+                "remeshed_quality_hard_fail must be non-zero before reset"
+            );
+            assert_ne!(
+                snapshot().ineligible_structural_change, 0,
+                "ineligible_structural_change must be non-zero before reset"
+            );
+            // Call the NEW production reset() and assert all counters return to zero.
+            super::reset();
+            assert_eq!(
+                snapshot(),
+                DiagnosticSnapshot::default(),
+                "reset() must zero all counters"
+            );
+        });
+    }
+
     // ── Step-3: counter routing ───────────────────────────────────────────────
     //
     // Each recorder must increment ONLY its bucket and leave the others 0. The
