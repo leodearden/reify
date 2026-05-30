@@ -230,6 +230,53 @@ mod tests {
         );
     }
 
+    // ── step-7: cascade ──────────────────────────────────────────────────────
+
+    /// cascade([]) → identity {(0,1)}.
+    #[test]
+    fn cascade_empty_is_identity() {
+        let id = ImpulseTrain::cascade(&[]);
+        assert_eq!(id.impulses.len(), 1, "empty cascade must be unit impulse");
+        assert_close(id.impulses[0].time, 0.0, 1e-12, "identity t0");
+        assert_close(id.impulses[0].amplitude, 1.0, 1e-12, "identity A0");
+        assert_close(id.amplitude_sum(), 1.0, 1e-12, "identity amplitude_sum");
+    }
+
+    /// cascade([train]) == that train (single-element identity).
+    #[test]
+    fn cascade_single_is_identity() {
+        let omega_n = 2.0 * PI * 10.0;
+        let zeta = 0.1;
+        let zv = ImpulseTrain::zv(omega_n, zeta);
+        let cascaded = ImpulseTrain::cascade(&[zv.clone()]);
+        assert_eq!(cascaded.impulses.len(), zv.impulses.len());
+        for (c, z) in cascaded.impulses.iter().zip(&zv.impulses) {
+            assert_close(c.time, z.time, 1e-12, "single cascade time");
+            assert_close(c.amplitude, z.amplitude, 1e-12, "single cascade amp");
+        }
+    }
+
+    /// cascade([zv, zv]) == zvd (ZVD ≡ ZV⊛ZV identity, within 1e-12).
+    #[test]
+    fn cascade_zv_zv_equals_zvd() {
+        let omega_n = 2.0 * PI * 8.0;
+        let zeta = 0.1_f64;
+        let zv = ImpulseTrain::zv(omega_n, zeta);
+        let zvd = ImpulseTrain::zvd(omega_n, zeta);
+        let cascaded = ImpulseTrain::cascade(&[zv.clone(), zv.clone()]);
+
+        assert_eq!(
+            cascaded.impulses.len(),
+            zvd.impulses.len(),
+            "cascade(zv,zv) must have same number of impulses as zvd"
+        );
+        for (c, z) in cascaded.impulses.iter().zip(&zvd.impulses) {
+            assert_close(c.time, z.time, 1e-12, "cascade(zv,zv) time vs zvd");
+            assert_close(c.amplitude, z.amplitude, 1e-12, "cascade(zv,zv) amp vs zvd");
+        }
+        assert_close(cascaded.amplitude_sum(), 1.0, 1e-12, "cascade(zv,zv) amplitude_sum");
+    }
+
     // ── step-5: ZVD train construction ──────────────────────────────────────
 
     /// ZVD: exactly 3 impulses; times [0, π/ω_d, 2π/ω_d]; amplitudes [1,2K,K²]/(1+K)²;
