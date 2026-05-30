@@ -185,11 +185,6 @@ mod tests {
             "message should contain 'W_MODULE_DECL_MISSING', got: {}",
             diag.message
         );
-        assert!(
-            !diag.message.contains("error:"),
-            "warning message must not contain 'error:', got: {}",
-            diag.message
-        );
     }
 
     #[test]

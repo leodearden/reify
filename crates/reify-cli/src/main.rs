@@ -141,6 +141,10 @@ fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitC
         }
     };
 
+    // file_stem() strips only the last extension: "foo.ri" → "foo". Dotted stems
+    // like "v1.2" (from a file named "v1.2.ri") yield a single-segment ModulePath
+    // ["v1.2"], which will mismatch a `module v1.2` declaration (parsed as ["v1","2"]).
+    // This is a known limitation: Reify module names are expected to be bare identifiers.
     let module_name = std::path::Path::new(path)
         .file_stem()
         .and_then(|s| s.to_str())
