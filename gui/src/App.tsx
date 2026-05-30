@@ -18,6 +18,7 @@ import {
   MechanismPanel,
   DiagnosticsPanel,
   AutoResolvePanel,
+  SolverProgressOverlay,
 } from './panels';
 import type { DiagnosticEntry } from './panels';
 import { WarmPoolDebugPanel } from './debug/WarmPoolDebugPanel';
@@ -1470,6 +1471,16 @@ const App: Component = () => {
                   auto-restores (unmounts) when complete — no bookkeeping needed. */}
               <Show when={engineStore.state.autoResolve.active}>
                 <AutoResolvePanel state={engineStore.state.autoResolve} />
+              </Show>
+              {/* SolverProgressOverlay: shows after >1s of in-flight CG solver
+                  progress ticks; hidden (debounce) for sub-second solves. */}
+              <Show when={engineStore.state.solverProgress.visible}>
+                <SolverProgressOverlay
+                  progress={engineStore.state.solverProgress.latest}
+                  trace={engineStore.state.solverProgress.trace}
+                  coarseReached={engineStore.state.solverProgress.coarseReached}
+                  onCancel={engineStore.cancelSolve}
+                />
               </Show>
               {/* WarmPoolDebugPanel: REIFY_DEBUG=1 only — PRD §11 Q6 resolution */}
               <Show when={debugEnabled()}>
