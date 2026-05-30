@@ -565,10 +565,11 @@ fn faces_by_area_let_resolves_to_filtered_list_via_helper() {
 }
 
 /// `let fs = faces_by_normal(body, dir, tol)` with `let dir = vec3(0.0, 0.0, 1.0)`
-/// and `let tol = 1deg` must resolve to the normal-filtered `Value::List`. The
-/// single staged face's normal is exactly `+z` (matching `dir`), so it survives
-/// the 1° tolerance. Pins the Vec3-arg + angle-arg resolution + delegation to
-/// `topology_selectors::faces_by_normal`.
+/// and `let tol = 1deg` must resolve to a `Value::List` of one
+/// `Value::GeometryHandle` (PRD §4 KGQ-ι). The single staged face's normal is
+/// exactly `+z`, so it survives the 1° tolerance. Pins the Vec3-arg + angle-arg
+/// resolution + delegation to `topology_selectors::faces_by_normal` and the
+/// sub-handle output contract (task 3618).
 #[test]
 fn faces_by_normal_let_resolves_to_filtered_list_via_helper() {
     let source = "structure def Bracket {\n    \
@@ -588,20 +589,39 @@ fn faces_by_normal_let_resolves_to_filtered_list_via_helper() {
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let cell = ValueCellId::new("Bracket", "fs");
-    assert_eq!(
-        result.values.get(&cell),
-        Some(&Value::List(vec![Value::Int(2)])),
-        "Bracket.fs must resolve to the normal-filtered Value::List via \
-         topology_selectors::faces_by_normal, got {:?}",
-        result.values.get(&cell),
-    );
+    let list = match result.values.get(&cell) {
+        Some(Value::List(elems)) => elems.clone(),
+        other => panic!(
+            "Bracket.fs must be Value::List of GeometryHandle sub-handles \
+             (PRD §4 KGQ-ι); got {:?}",
+            other
+        ),
+    };
+    assert_eq!(list.len(), 1, "expected 1 face sub-handle");
+    match &list[0] {
+        Value::GeometryHandle { kernel_handle, upstream_values_hash, .. } => {
+            assert_eq!(
+                kernel_handle,
+                &GeometryHandleId(2),
+                "fs[0] kernel_handle must be GHId(2)"
+            );
+            assert_ne!(
+                upstream_values_hash,
+                &[0u8; 32],
+                "fs[0] upstream_values_hash must be non-zero (PRD §4)"
+            );
+        }
+        other => panic!("fs[0] must be Value::GeometryHandle, got {:?}", other),
+    }
 }
 
 /// `let es = edges_parallel_to(body, axis, tol)` with `let axis = vec3(0.0, 0.0, 1.0)`
-/// and `let tol = 1deg` must resolve to the tangent-filtered `Value::List`. The
-/// single staged edge's tangent is `+z` (parallel to `axis`), so it survives
-/// the 1° tolerance. Pins the Vec3-arg + angle-arg resolution + delegation to
-/// `topology_selectors::edges_parallel_to` (sign-tolerant tangent predicate).
+/// and `let tol = 1deg` must resolve to a `Value::List` of one
+/// `Value::GeometryHandle` (PRD §4 KGQ-ι). The single staged edge's tangent is
+/// `+z` (parallel to `axis`), so it survives the 1° tolerance. Pins the
+/// Vec3-arg + angle-arg resolution + delegation to
+/// `topology_selectors::edges_parallel_to` (sign-tolerant predicate) and the
+/// sub-handle output contract (task 3618).
 #[test]
 fn edges_parallel_to_let_resolves_to_filtered_list_via_helper() {
     let source = "structure def Bracket {\n    \
@@ -621,13 +641,30 @@ fn edges_parallel_to_let_resolves_to_filtered_list_via_helper() {
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let cell = ValueCellId::new("Bracket", "es");
-    assert_eq!(
-        result.values.get(&cell),
-        Some(&Value::List(vec![Value::Int(2)])),
-        "Bracket.es must resolve to the tangent-filtered Value::List via \
-         topology_selectors::edges_parallel_to, got {:?}",
-        result.values.get(&cell),
-    );
+    let list = match result.values.get(&cell) {
+        Some(Value::List(elems)) => elems.clone(),
+        other => panic!(
+            "Bracket.es must be Value::List of GeometryHandle sub-handles \
+             (PRD §4 KGQ-ι); got {:?}",
+            other
+        ),
+    };
+    assert_eq!(list.len(), 1, "expected 1 edge sub-handle");
+    match &list[0] {
+        Value::GeometryHandle { kernel_handle, upstream_values_hash, .. } => {
+            assert_eq!(
+                kernel_handle,
+                &GeometryHandleId(2),
+                "es[0] kernel_handle must be GHId(2)"
+            );
+            assert_ne!(
+                upstream_values_hash,
+                &[0u8; 32],
+                "es[0] upstream_values_hash must be non-zero (PRD §4)"
+            );
+        }
+        other => panic!("es[0] must be Value::GeometryHandle, got {:?}", other),
+    }
 }
 
 /// `let es = edges_at_height(body, z, tol)` with `let z = 0mm` and

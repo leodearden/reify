@@ -2111,29 +2111,55 @@ pub(crate) fn try_eval_topology_selector(
             )
         }
         TopologySelectorHelper::FacesByNormal => {
-            // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
-            let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            // args[0]: parent geometry ValueRef → values map → full Value::GeometryHandle.
+            // Must resolve from `values` (not `named_steps`) so we get the parent's
+            // realization_ref + upstream_values_hash for sub-handle construction (PRD §4).
+            // Falls through to None when the arg cell is not a hydrated Value::GeometryHandle
+            // (PRD invariant #2: never partially construct a sub-handle).
+            let (parent_rr, parent_hash, parent_kernel_handle) =
+                resolve_parent_geometry_handle_arg(&args[0], values)?;
             // args[1]: Vec3 direction ValueRef → values map → [f64; 3].
             let dir = resolve_vec3_arg(&args[1], values)?;
             // args[2]: angular tolerance ValueRef → values map → ANGLE Scalar
             // (SI radians — `topology_selectors::faces_by_normal` expects rad).
             let tol = resolve_angle_scalar_arg(&args[2], values)?;
-            dispatch_filtered_list(
-                crate::topology_selectors::faces_by_normal(kernel, handle, dir, tol),
+            let filter_result =
+                crate::topology_selectors::faces_by_normal(kernel, parent_kernel_handle, dir, tol);
+            dispatch_filtered_subhandles(
+                kernel,
+                parent_kernel_handle,
+                crate::topology_selectors::SubKind::Face,
+                &parent_rr,
+                &parent_hash,
+                filter_result,
                 &function.name,
                 diagnostics,
             )
         }
         TopologySelectorHelper::EdgesParallelTo => {
-            // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
-            let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            // args[0]: parent geometry ValueRef → values map → full Value::GeometryHandle.
+            // Must resolve from `values` (not `named_steps`) — same rationale as
+            // FacesByNormal (PRD §4 invariant #2).
+            let (parent_rr, parent_hash, parent_kernel_handle) =
+                resolve_parent_geometry_handle_arg(&args[0], values)?;
             // args[1]: Vec3 axis ValueRef → values map → [f64; 3].
             let axis = resolve_vec3_arg(&args[1], values)?;
             // args[2]: angular tolerance ValueRef → values map → ANGLE Scalar
             // (SI radians — `topology_selectors::edges_parallel_to` expects rad).
             let tol = resolve_angle_scalar_arg(&args[2], values)?;
-            dispatch_filtered_list(
-                crate::topology_selectors::edges_parallel_to(kernel, handle, axis, tol),
+            let filter_result = crate::topology_selectors::edges_parallel_to(
+                kernel,
+                parent_kernel_handle,
+                axis,
+                tol,
+            );
+            dispatch_filtered_subhandles(
+                kernel,
+                parent_kernel_handle,
+                crate::topology_selectors::SubKind::Edge,
+                &parent_rr,
+                &parent_hash,
+                filter_result,
                 &function.name,
                 diagnostics,
             )
@@ -2357,6 +2383,81 @@ fn dispatch_filtered_list(
             Some(reify_ir::Value::Undef)
         }
     }
+}
+
+/// Run a pre-computed filtered-selector result and emit a `Value::List` of
+/// `Value::GeometryHandle` sub-handles whose `upstream_values_hash` encodes the
+/// canonical TopExp index of each retained sub-shape (PRD §4 iii/iv).
+///
+/// After the filter returns the retained `Vec<GeometryHandleId>`, we
+/// re-extract the canonical sub-shape list and map each retained id to its
+/// 0-based position, so `faces_by_normal(box,+z,1°)[0]` hashes identically to
+/// `faces(box)[k]` for the same physical face.  Relies on PRD §4 intra-session
+/// handle persistence (extract_* yields stable ids within a session).
+///
+/// Defensively warns + skips any retained id absent from the canonical list
+/// rather than crashing — surfaces a malformed kernel state as a
+/// shorter-than-expected list rather than total cell collapse.
+fn dispatch_filtered_subhandles(
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    parent_kernel_handle: GeometryHandleId,
+    sub_kind: crate::topology_selectors::SubKind,
+    parent_rr: &reify_core::identity::RealizationNodeId,
+    parent_hash: &[u8; 32],
+    filter_result: Result<Vec<GeometryHandleId>, reify_ir::QueryError>,
+    helper_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    let retained = match filter_result {
+        Ok(ids) => ids,
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} kernel query failed: {}",
+                helper_name, err
+            )));
+            return Some(reify_ir::Value::Undef);
+        }
+    };
+
+    // Re-extract the canonical list to recover each retained id's TopExp index.
+    // The filter helper already called extract_* once; this second call is safe
+    // because PRD §4 intra-session handle persistence guarantees stable ids+order.
+    let canonical = match sub_kind {
+        crate::topology_selectors::SubKind::Edge => kernel.extract_edges(parent_kernel_handle),
+        crate::topology_selectors::SubKind::Face => kernel.extract_faces(parent_kernel_handle),
+    };
+    let canonical = match canonical {
+        Ok(ids) => ids,
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{}: canonical re-extract failed: {}",
+                helper_name, err
+            )));
+            return Some(reify_ir::Value::Undef);
+        }
+    };
+
+    let mut elements: Vec<reify_ir::Value> = Vec::with_capacity(retained.len());
+    for retained_id in retained {
+        match canonical.iter().position(|&id| id == retained_id) {
+            Some(canonical_index) => {
+                elements.push(crate::topology_selectors::make_sub_handle(
+                    parent_rr,
+                    parent_hash,
+                    sub_kind,
+                    canonical_index as u32,
+                    retained_id,
+                ));
+            }
+            None => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "{}: retained handle {:?} absent from canonical list; skipping",
+                    helper_name, retained_id
+                )));
+            }
+        }
+    }
+    Some(reify_ir::Value::List(elements))
 }
 
 /// Wrap a `Vec<GeometryHandleId>` as `Value::List(Vec<Value::Int>)` whose
@@ -10130,6 +10231,358 @@ mod tests {
             diag.message.contains("normal"),
             "diagnostic must mention the helper name 'normal', got: {}",
             diag.message
+        );
+    }
+
+    // ── try_eval_topology_selector directional-selector dispatch unit tests ───
+    // (task 3618, KGQ-ι: faces_by_normal + edges_parallel_to)
+    //
+    // These tests pin that the rewired arms resolve arg[0] via `values` (not
+    // `named_steps`), run the filter helper, recover canonical TopExp indices,
+    // and emit Value::List([Value::GeometryHandle]) — not Value::Int.
+    //
+    // The canonical-index correctness requirement: faces_by_normal(box,+z,1°)[0]
+    // must hash identically to faces(box)[k] for the same physical face.
+    // Each test places the retained face/edge at a NON-ZERO canonical index to
+    // exercise the index recovery (if the arm hardcoded index 0 it would pass a
+    // trivial index-0-only case but fail these).
+
+    /// `faces_by_normal` dispatch emits `Value::List([Value::GeometryHandle])`
+    /// with the retained face's canonical TopExp index (not filtered position).
+    ///
+    /// Setup: canonical list [GHId(2), GHId(3), GHId(4)]; only GHId(3) (index 1)
+    /// has a +z normal within 1°; GHId(2) (+x) and GHId(4) (−z, sign-sensitive)
+    /// are rejected. The result must carry canonical index 1, not position 0.
+    #[test]
+    fn faces_by_normal_dispatch_returns_geometry_handle_sub_handles() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{DimensionVector, Type, ValueCellId};
+
+        let parent_handle = GeometryHandleId(1);
+        let parent_rr = RealizationNodeId::new("Directional", 0);
+        let parent_hash: [u8; 32] = [0xAA; 32];
+
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_faces(
+                parent_handle,
+                vec![GeometryHandleId(2), GeometryHandleId(3), GeometryHandleId(4)],
+            )
+            .with_face_normal_result(
+                GeometryHandleId(2),
+                reify_ir::Value::String("{\"x\":1.0,\"y\":0.0,\"z\":0.0}".to_string()),
+            )
+            .with_face_normal_result(
+                GeometryHandleId(3),
+                reify_ir::Value::String("{\"x\":0.0,\"y\":0.0,\"z\":1.0}".to_string()),
+            )
+            .with_face_normal_result(
+                GeometryHandleId(4),
+                reify_ir::Value::String("{\"x\":0.0,\"y\":0.0,\"z\":-1.0}".to_string()),
+            );
+
+        // named_steps carries a different handle id to prove the arm reads from
+        // values, not named_steps.
+        let mut named_steps = HashMap::new();
+        named_steps.insert("b".to_string(), GeometryHandleId(99));
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("Directional", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: parent_handle,
+            },
+        );
+        values.insert(
+            ValueCellId::new("Directional", "dir"),
+            reify_ir::Value::Vector(vec![
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(1.0),
+            ]),
+        );
+        let tol_rad = std::f64::consts::PI / 180.0; // 1°
+        values.insert(
+            ValueCellId::new("Directional", "tol"),
+            reify_ir::Value::Scalar {
+                si_value: tol_rad,
+                dimension: DimensionVector::ANGLE,
+            },
+        );
+
+        let expr = topology_selector_call_three_value_refs(
+            "faces_by_normal",
+            "Directional",
+            "b",
+            Type::Geometry,
+            "dir",
+            Type::vec3(Type::Real),
+            "tol",
+            Type::angle(),
+            Type::List(Box::new(Type::Geometry)),
+        );
+        let mut diagnostics = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let list = match result {
+            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+            other => panic!(
+                "faces_by_normal(..) must yield Some(Value::List(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(
+            list.len(),
+            1,
+            "exactly 1 face matches +z within 1° (index 1); got {} elements; diags: {:?}",
+            list.len(),
+            diagnostics
+        );
+
+        // Expected hash: canonical index 1 (GHId(3) is at position 1 in the list).
+        let expected_hash = crate::topology_selectors::compose_sub_handle_hash(
+            &parent_hash,
+            crate::topology_selectors::SubKind::Face,
+            1,
+        );
+
+        match &list[0] {
+            reify_ir::Value::GeometryHandle {
+                realization_ref,
+                upstream_values_hash,
+                kernel_handle,
+            } => {
+                assert_eq!(
+                    realization_ref.entity, parent_rr.entity,
+                    "realization_ref.entity must match parent"
+                );
+                assert_eq!(
+                    *kernel_handle,
+                    GeometryHandleId(3),
+                    "retained face must be GHId(3)"
+                );
+                assert_eq!(
+                    upstream_values_hash, &expected_hash,
+                    "upstream_values_hash must be compose_sub_handle_hash(parent_hash, Face, 1) \
+                     — canonical index 1, NOT filtered position 0"
+                );
+            }
+            other => panic!(
+                "faces_by_normal result[0] must be Value::GeometryHandle, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "happy-path faces_by_normal must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// `faces_by_normal` falls through to `None` when the parent arg is not a
+    /// hydrated `Value::GeometryHandle` in `values` (PRD §4 invariant #2).
+    #[test]
+    fn faces_by_normal_dispatch_falls_through_when_parent_not_hydrated() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::{DimensionVector, Type, ValueCellId};
+
+        let mut kernel = MockGeometryKernel::new();
+        let named_steps = HashMap::new();
+
+        // values has NO Value::GeometryHandle for the arg cell.
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("Directional", "dir"),
+            reify_ir::Value::Vector(vec![
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(1.0),
+            ]),
+        );
+        values.insert(
+            ValueCellId::new("Directional", "tol"),
+            reify_ir::Value::Scalar {
+                si_value: std::f64::consts::PI / 180.0,
+                dimension: DimensionVector::ANGLE,
+            },
+        );
+
+        let expr = topology_selector_call_three_value_refs(
+            "faces_by_normal",
+            "Directional",
+            "b",
+            Type::Geometry,
+            "dir",
+            Type::vec3(Type::Real),
+            "tol",
+            Type::angle(),
+            Type::List(Box::new(Type::Geometry)),
+        );
+        let mut diagnostics = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "must fall through to None when parent is not a hydrated Value::GeometryHandle; \
+             got {:?}",
+            result
+        );
+    }
+
+    /// `edges_parallel_to` dispatch emits `Value::List([Value::GeometryHandle])`
+    /// with the retained edge's canonical TopExp index (not filtered position).
+    ///
+    /// Setup: canonical list [GHId(2), GHId(3), GHId(4)]; only GHId(4) (index 2)
+    /// is (anti-)parallel to +z within 1° (tangent = −z; sign-tolerant predicate).
+    /// GHId(2) and GHId(3) have +x tangents and are rejected. The result must
+    /// carry canonical index 2, not position 0.
+    #[test]
+    fn edges_parallel_to_dispatch_returns_geometry_handle_sub_handles() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{DimensionVector, Type, ValueCellId};
+
+        let parent_handle = GeometryHandleId(1);
+        let parent_rr = RealizationNodeId::new("Directional", 0);
+        let parent_hash: [u8; 32] = [0xBB; 32];
+
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_edges(
+                parent_handle,
+                vec![GeometryHandleId(2), GeometryHandleId(3), GeometryHandleId(4)],
+            )
+            .with_edge_tangent_result(
+                GeometryHandleId(2),
+                reify_ir::Value::String("{\"x\":1.0,\"y\":0.0,\"z\":0.0}".to_string()),
+            )
+            .with_edge_tangent_result(
+                GeometryHandleId(3),
+                reify_ir::Value::String("{\"x\":1.0,\"y\":0.0,\"z\":0.0}".to_string()),
+            )
+            // GHId(4) has tangent −z: sign-tolerant |dot(−z, +z)| = 1 ≥ cos(1°), retained.
+            .with_edge_tangent_result(
+                GeometryHandleId(4),
+                reify_ir::Value::String("{\"x\":0.0,\"y\":0.0,\"z\":-1.0}".to_string()),
+            );
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("b".to_string(), GeometryHandleId(99));
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("Directional", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: parent_handle,
+            },
+        );
+        values.insert(
+            ValueCellId::new("Directional", "axis"),
+            reify_ir::Value::Vector(vec![
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(1.0),
+            ]),
+        );
+        let tol_rad = std::f64::consts::PI / 180.0; // 1°
+        values.insert(
+            ValueCellId::new("Directional", "tol"),
+            reify_ir::Value::Scalar {
+                si_value: tol_rad,
+                dimension: DimensionVector::ANGLE,
+            },
+        );
+
+        let expr = topology_selector_call_three_value_refs(
+            "edges_parallel_to",
+            "Directional",
+            "b",
+            Type::Geometry,
+            "axis",
+            Type::vec3(Type::Real),
+            "tol",
+            Type::angle(),
+            Type::List(Box::new(Type::Geometry)),
+        );
+        let mut diagnostics = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let list = match result {
+            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+            other => panic!(
+                "edges_parallel_to(..) must yield Some(Value::List(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(
+            list.len(),
+            1,
+            "exactly 1 edge is (anti-)parallel to +z (index 2, tangent −z); got {}; diags: {:?}",
+            list.len(),
+            diagnostics
+        );
+
+        // Expected hash: canonical index 2 (GHId(4) is at position 2 in the list).
+        let expected_hash = crate::topology_selectors::compose_sub_handle_hash(
+            &parent_hash,
+            crate::topology_selectors::SubKind::Edge,
+            2,
+        );
+
+        match &list[0] {
+            reify_ir::Value::GeometryHandle {
+                realization_ref,
+                upstream_values_hash,
+                kernel_handle,
+            } => {
+                assert_eq!(
+                    realization_ref.entity, parent_rr.entity,
+                    "realization_ref.entity must match parent"
+                );
+                assert_eq!(
+                    *kernel_handle,
+                    GeometryHandleId(4),
+                    "retained edge must be GHId(4)"
+                );
+                assert_eq!(
+                    upstream_values_hash, &expected_hash,
+                    "upstream_values_hash must be compose_sub_handle_hash(parent_hash, Edge, 2) \
+                     — canonical index 2, NOT filtered position 0"
+                );
+            }
+            other => panic!(
+                "edges_parallel_to result[0] must be Value::GeometryHandle, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "happy-path edges_parallel_to must emit zero diagnostics; got: {:?}",
+            diagnostics
         );
     }
 }
