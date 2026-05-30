@@ -440,6 +440,36 @@ mod tests {
     }
 
     #[test]
+    fn record_quality_remesh_pass_never_touches_a_counter() {
+        with_locked_state(|| {
+            // `QualityVerdict::Pass` is not a remesh trigger: the engine only
+            // calls this on a fail verdict. In debug builds the `debug_assert!`
+            // fires (caught here); in release the call is a silent early return.
+            // The release no-op path is otherwise untested — a regression that
+            // incremented a bucket on `Pass` would slip through release runs.
+            let prev_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(|_| {})); // silence the expected debug-only panic
+            let outcome = std::panic::catch_unwind(|| {
+                record_quality_remesh(&QualityVerdict::Pass);
+            });
+            std::panic::set_hook(prev_hook);
+
+            // Debug: the `debug_assert!` unwinds before any counter mutation.
+            // Release: the call returns without touching a counter.
+            assert_eq!(
+                outcome.is_err(),
+                cfg!(debug_assertions),
+                "Pass must panic via debug_assert! only in debug builds"
+            );
+            assert_eq!(
+                snapshot(),
+                DiagnosticSnapshot::default(),
+                "QualityVerdict::Pass must not increment any counter"
+            );
+        });
+    }
+
+    #[test]
     fn record_ineligible_structural_change_increments_only_structural_bucket() {
         with_locked_state(|| {
             record_ineligible(&Reason::StructuralChange);
