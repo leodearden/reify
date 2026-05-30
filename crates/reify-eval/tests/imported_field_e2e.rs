@@ -21,7 +21,7 @@
 //!    - (G2#2) `lambda` is `Value::SampledField` (not Undef);
 //!    - (G2#3) SDF sign probe: inside face → sample < 0, outside → sample > 0;
 //!    - (G2#4) exact cross-validation against direct `read_vdb_file` + `sample_at_point`.
-//!    Guarded: `cfg(has_openvdb)` real test + `cfg(not(has_openvdb))` skip-stub.
+//!      Guarded: `cfg(has_openvdb)` real test + `cfg(not(has_openvdb))` skip-stub.
 //!
 //! 4. **Cache hash records and updates** (`imported_field_cache_hash_records_and_updates_on_content_change`)
 //!    — writes non-VDB bytes to a tempfile, evals, and asserts the content-hash is
@@ -519,7 +519,6 @@ field def hash_test : Point3 -> Scalar {{
 #[test]
 fn imported_field_cache_hash_triggers_reingest_on_content_change() {
     use reify_kernel_openvdb::OpenVdbKernel;
-    use reify_core::ContentHash;
 
     /// Build a cube mesh with the given half-extent.
     fn cube_mesh(half: f32) -> (Vec<[f32; 3]>, Vec<[u32; 3]>) {
