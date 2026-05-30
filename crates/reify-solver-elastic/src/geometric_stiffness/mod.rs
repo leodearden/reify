@@ -37,6 +37,7 @@ pub mod bar;
 pub mod stubs;
 pub mod tet;
 
+pub use bar::{bar_tangent_stiffness, geometric_element_stiffness_bar_p1};
 pub use stubs::{
     geometric_element_stiffness_hex_p1, geometric_element_stiffness_shell,
     geometric_element_stiffness_wedge_p1,

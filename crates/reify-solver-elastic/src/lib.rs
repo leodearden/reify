@@ -455,8 +455,10 @@ pub use eigensolve::{
 pub use buckling_kernel::{BucklingKernelOptions, BucklingKernelResult, Mode, solve_buckling_kernel};
 // Task 3452: P1-tet K_g element kernel + global assembly + shell/hex/wedge stubs.
 // PRD: docs/prds/v0_5/buckling-eigensolver.md §13 task γ.
+// Task 3797: T3a bar/cable K_g element kernel + per-member tangent stiffness.
 pub use geometric_stiffness::{
-    InitialStress3, geometric_element_stiffness_hex_p1, geometric_element_stiffness_shell,
+    InitialStress3, bar_tangent_stiffness, geometric_element_stiffness_bar_p1,
+    geometric_element_stiffness_hex_p1, geometric_element_stiffness_shell,
     geometric_element_stiffness_tet_p1, geometric_element_stiffness_wedge_p1,
 };
 // Task 3818: P1-tet consistent mass-matrix element kernel; reuses
