@@ -229,7 +229,14 @@ mod tests {
     use crate::quality::QualityVerdict;
     use crate::types::{InversionDetails, SoftFailDetails};
     use crate::{BijectionFailure, NamingLayerErrorReason, SubShapeKind};
+    use reify_test_support::{CapturingSubscriberBuilder, prime_tracing_callsite_cache};
     use std::sync::Mutex;
+    use tracing::Level;
+
+    /// The default event target for `tracing` events emitted from this module —
+    /// matches the recorders' module path so `target_prefix` filtering admits
+    /// exactly the events under test.
+    const TARGET: &str = "reify_mesh_morph::diagnostics";
 
     /// A `QualityVerdict::HardFail` fixture for the remesh-bucket tests.
     fn hard_fail() -> QualityVerdict {
@@ -423,6 +430,99 @@ mod tests {
             );
             record_panicked("y");
             assert_eq!(snapshot().panicked, 2, "repeated calls must accumulate");
+        });
+    }
+
+    // ── Step-5: logging policy ────────────────────────────────────────────────
+    //
+    // Each recorder emits exactly one tracing event at its policy level,
+    // targeted at this module path. `prime_tracing_callsite_cache()` is
+    // mandatory before the count assertions: without it a sibling parallel test
+    // thread can poison the per-callsite Interest cache to `never`, silently
+    // bypassing `with_default` and capturing nothing.
+
+    #[test]
+    fn record_morphed_logs_at_trace() {
+        with_locked_state(|| {
+            prime_tracing_callsite_cache();
+            let (subscriber, capture) = CapturingSubscriberBuilder::new(Level::TRACE)
+                .target_prefix(TARGET)
+                .build();
+            tracing::subscriber::with_default(subscriber, || {
+                record_morphed();
+            });
+            assert_eq!(
+                capture.count(),
+                1,
+                "record_morphed must emit exactly one TRACE event"
+            );
+        });
+    }
+
+    #[test]
+    fn record_ineligible_logs_at_trace() {
+        with_locked_state(|| {
+            prime_tracing_callsite_cache();
+            let (subscriber, capture) = CapturingSubscriberBuilder::new(Level::TRACE)
+                .target_prefix(TARGET)
+                .build();
+            tracing::subscriber::with_default(subscriber, || {
+                record_ineligible(&Reason::StructuralChange);
+            });
+            assert_eq!(
+                capture.count(),
+                1,
+                "record_ineligible must emit exactly one TRACE event"
+            );
+        });
+    }
+
+    #[test]
+    fn record_quality_remesh_logs_at_info_mentioning_remesh() {
+        with_locked_state(|| {
+            prime_tracing_callsite_cache();
+            let (subscriber, capture) = CapturingSubscriberBuilder::new(Level::INFO)
+                .target_prefix(TARGET)
+                .build();
+            tracing::subscriber::with_default(subscriber, || {
+                record_quality_remesh(&hard_fail());
+            });
+            // INFO is load-bearing: it answers "why was that slider tick slow?".
+            assert_eq!(
+                capture.count(),
+                1,
+                "record_quality_remesh must emit exactly one INFO event"
+            );
+            let msgs = capture.messages();
+            assert!(
+                msgs[0].contains("remesh"),
+                "INFO message must mention 'remesh', got: {:?}",
+                msgs[0]
+            );
+        });
+    }
+
+    #[test]
+    fn record_panicked_logs_at_error_with_detail() {
+        with_locked_state(|| {
+            prime_tracing_callsite_cache();
+            let (subscriber, capture) = CapturingSubscriberBuilder::new(Level::ERROR)
+                .target_prefix(TARGET)
+                .build();
+            tracing::subscriber::with_default(subscriber, || {
+                record_panicked("kaboom-detail");
+            });
+            assert_eq!(
+                capture.count(),
+                1,
+                "record_panicked must emit exactly one ERROR event"
+            );
+            let msgs = capture.messages();
+            assert!(
+                msgs[0].contains("kaboom-detail"),
+                "ERROR message must contain the passed detail, got: {:?}",
+                msgs[0]
+            );
         });
     }
 }
