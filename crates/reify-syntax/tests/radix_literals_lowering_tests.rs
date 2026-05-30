@@ -153,6 +153,21 @@ fn d4_guard_hex_lowercase_e_0xbeef() {
     );
 }
 
+/// Extract `(value, unit)` from a quantity-literal member `let x = <lit>`,
+/// asserting no parse errors.
+fn extract_quantity_literal(source: &str) -> (f64, UnitExpr) {
+    let (members, errors) = parse_members(source);
+    assert!(errors.is_empty(), "unexpected parse errors: {:?}", errors);
+    let let_decl = match &members[0] {
+        MemberDecl::Let(l) => l,
+        other => panic!("expected Let, got {:?}", other),
+    };
+    match &let_decl.value.kind {
+        ExprKind::QuantityLiteral { value, unit } => (*value, unit.clone()),
+        other => panic!("expected QuantityLiteral, got {:?}", other),
+    }
+}
+
 // ── Separator in hex: `0xDEAD_BEEF` ──────────────────────────────────────────
 
 /// `0xDEAD_BEEF` — hex literal with `_` digit separator.
@@ -194,3 +209,26 @@ fn hex_u64_boundary_0x8000000000000000() {
     );
 }
 
+// ── Quantity literal with radix value: `0xFFmm` ───────────────────────────────
+
+/// `0xFFmm` — hex quantity literal.
+///
+/// The γ grammar (task 3910) parses `0xFFmm` as
+/// `quantity_literal(number_literal "0xFF", unit_expr "mm")`.
+/// `lower_quantity_literal` must use the shared radix-aware helper so it
+/// does not silently drop this case (strip_underscores_and_parse returns
+/// `None` for "0xFF").
+///
+/// RED until step 4 wires `parse_number_literal_text` into
+/// `lower_quantity_literal`.
+#[test]
+fn quantity_literal_0xff_mm() {
+    let (value, unit) =
+        extract_quantity_literal("structure S {\n  let x = 0xFFmm\n}");
+    assert_eq!(value, 255.0_f64, "0xFFmm quantity value should be 255.0");
+    assert_eq!(
+        unit,
+        UnitExpr::Unit("mm".to_string()),
+        "0xFFmm unit should be UnitExpr::Unit(\"mm\")"
+    );
+}
