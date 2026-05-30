@@ -166,10 +166,14 @@ The integration-gate task (ε) names this table as its observable signal.
 ## 7. Pre-conditions for activating
 
 - **Done & relied upon:** 2920 (interpolation primitives), 2911 (ElasticResult type), 2924 (`@optimized` ComputeNode integration), 2925/2917 (Gmsh mesher), 3426 (stdlib `solve_elastic_static` decl), 3005 (relaxed `solve_load_cases` shape), the multi-case reduction layer (`reify-stdlib/src/fea.rs`).
-- **Cross-PRD prerequisites for the gated bracket (2930) only** — owned by `structural-analysis-fea.md`, named here, to be filed/wired at decompose so 2930's gate is a real upstream edge:
-  - **P1** — `solve_elastic_static_trampoline` consumes the realized `VolumeMesh` (reads `_realization_inputs`; solves on the realization tet mesh).
-  - **P2** — face-selector boundary conditions (typed `Load`/`Support` 2881/2882 → node sets via topology selectors).
+- **Cross-PRD prerequisites for the gated bracket (2930) only** — owned by `structural-analysis-fea.md`. **Filed + wired + activated at decompose (2026-05-30)** as the complete arbitrary-geometry producer-half / typed-Load-Support consumer chain:
+  - **2881 / 2882** (now `pending`) — typed `Load` / `Support` stdlib hierarchy. *G3 caveat:* spec assumes typed `FaceSelector`/`BodySelector` value types, but the codebase models selectors as runtime query fns + tag strings (`topology_selectors.rs`) — re-check the selector value-model before building.
+  - **A = 4093** — tighten `solve_elastic_static` signature `List<Real>` → `List<Load>`/`List<Support>` + move Load/Support trait decls earlier in stdlib load order + retire string targets (`TODO(load-trait)`, `solver_elastic.ri:476`). Deps 2881/2882.
+  - **P1 = 4091** — `solve_elastic_static_trampoline` consumes the realized `VolumeMesh` (reads `_realization_inputs`; today hardcoded to the synthetic cantilever `extract_tip_force`). Deps α + **3429**.
+  - **P2 = 4092** — face-selector BCs: typed `Load`/`Support` → node sets on the realized mesh + general BC assembly (replaces the cantilever-only model). Deps 2881/2882 + **P1**.
+  - **C = 4094** — migrate FEA callers/fixtures to the typed form (drop the `List<Real>`/`ConstitutiveLawInput` workarounds). Deps A.
   - **3429** (pending) — realization-op execution edge at `VolumeMesh` dispatch.
+  - Full bracket chain: `2881/2882 → A → C` (type/idiom) + `3429 → P1 → P2` (functional), converging on **2930** (`α, β, A, P1, P2`). All `pending`, schedulable in dependency order now that 2881/2882 are activated.
 - **No novel substrate for the prismatic slice** — α/β/γ/δ/ε use only existing grammar and existing primitives (G3 fixtures `fea-result-model-1.ri`, `-2.ri` parse with 0 ERROR nodes).
 
 ---
@@ -178,7 +182,7 @@ The integration-gate task (ε) names this table as its observable signal.
 
 | Other PRD | Direction | Seam mechanism | Owner | Status |
 |---|---|---|---|---|
-| `docs/prds/v0_3/structural-analysis-fea.md` | this **consumes** | realized-mesh solve + face-selector BCs (P1/P2/3429) — the arbitrary-geometry producer half | **structural-analysis-fea** | pending/to-file (gates 2930 only) |
+| `docs/prds/v0_3/structural-analysis-fea.md` | this **consumes** | realized-mesh solve + face-selector BCs — the arbitrary-geometry producer half: 2881/2882 (typed Load/Support) → A=4093 → C=4094, and 3429 → P1=4091 → P2=4092 | **structural-analysis-fea** | filed + wired + activated 2026-05-30 (gates 2930 only) |
 | `docs/prds/v0_3/structural-analysis-fea.md` | this **produces** | `ElasticResult.{stress,displacement}` as Sampled fields (α) | **this PRD** | this PRD |
 | `docs/prds/v0_3/multi-load-case-fea.md` | this **produces for** | `envelope_*`/`linear_combine` consume the now-real Sampled stress/displacement fields | this PRD populates; multi-load-case consumes | wired (3015/3018 re-homed here) |
 | `docs/prds/v0_3/fea-gui-rendering.md` | this **produces for** | `scalar_channels`/`displaced_positions` populated (δ); `register_compute_fns` dispatch (γ) | **this PRD** | this PRD (2962/2966/2968 re-homed here) |
@@ -222,7 +226,7 @@ Greek labels are PRD-local; task IDs are assigned/reused at decompose. Re-homed 
 
 **Gated cross-PRD (kept, not shipped in the prismatic batch).**
 
-- **2930 — bracket auto-thickness, minimize-mass, end-to-end (kept a bracket).** Rewrite to honest grammar (decision #5). *Signal (leaf):* `reify build` of the bracket example converges a thickness and the design loop holds. *Prereqs:* α, β, **P1, P2, 3429** (producer-completion, cross-PRD). Re-dep 2930: `[2924,2926,2928,3092]` → `[α, β, P1, P2, 3429, 2926, 2928]`.
+- **2930 — bracket auto-thickness, minimize-mass, end-to-end (kept a bracket).** Rewrite to honest grammar (decision #5). *Signal (leaf):* `reify build` of the bracket example converges a thickness and the design loop holds. *Prereqs:* α, β, **A=4093, P1=4091, P2=4092** (producer-completion, cross-PRD; P2→P1, A→2881/2882, 3429 transitive via P1). Re-dep 2930 (applied): `[2924,2926,2928,3092]` → `[α(4084), β(4085), A(4093), P1(4091), P2(4092), 2926, 2928, 3092]`.
 
 ---
 
@@ -241,4 +245,4 @@ Greek labels are PRD-local; task IDs are assigned/reused at decompose. Re-homed 
 1. **Resample grid resolution rule.** Default to the solve mesh's `nx/ny/nz`? Or a fixed/he-derived resolution decoupled from solve density? *Suggested:* mirror solve mesh counts for exactness; revisit if GUI sampling looks coarse. Decide in α.
 2. **OOB surface-vertex policy.** Sample at a vertex marginally outside the grid (tessellation vs grid-bound rounding): clamp to nearest in-bounds grid cell, or emit NaN? *Suggested:* small `tol` expansion on `locate_element_p1`, NaN beyond. Decide in δ.
 3. **Whether β also covers `SafetyFactor`/`PrincipalStresses` reductions** opportunistically (cheap once the VonMises projection pattern exists) or strictly `VonMises`. *Suggested:* `VonMises` only; file a follow-up if a consumer needs the others. Decide in β.
-4. **P1/P2 filing.** File P1/P2 as new tasks under `structural-analysis-fea` at decompose, or fold into existing structural-analysis-fea decomposition items? *Suggested:* file as new tasks referencing structural-analysis-fea #16/#17 + 3429; wire 2930 → them. Decide at decompose.
+4. **P1/P2 filing.** ~~File P1/P2 as new tasks under `structural-analysis-fea`?~~ **RESOLVED at decompose (2026-05-30):** filed P1=4091, P2=4092, plus A=4093 (signature tightening) and C=4094 (caller migration) — the full typed-Load/Support consumer chain, since 2881/2882 alone were a 4-piece-short orphan. Wired `P2→P1`, `A→2881/2882`, `C→A`, `2930→{α,β,A,P1,P2}`. Activated 2881/2882 → pending so the whole chain is schedulable in dependency order.

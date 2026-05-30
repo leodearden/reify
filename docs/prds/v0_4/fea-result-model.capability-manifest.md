@@ -128,14 +128,14 @@ Sentinel for this PRD: `Value::Undef` (and the `{ ElasticResult() }` stub body, 
 |---|---|---|
 | grammar `minimize mass(body) where max(von_mises(fea.stress)) < yield`, `face(body,…)` | `grammar-fixture:fea-result-model-2.ri` (0 ERROR); `minimize_declaration` `grep:tree-sitter-reify/grammar.js:548` | ✅ |
 | `max(von_mises(stress))` predicate | `producer:β-upstream` + `producer:α-upstream` | ⏳ via α/β |
-| **arbitrary-geometry solve on realized bracket + face-selector BC** | `producer:P1/P2/3429` (structural-analysis-fea) — **not yet filed** | ⛔ **BLOCK until P1/P2 filed upstream + dep wired** (§11 Q4); P1/P2 must be UPSTREAM of 2930 (DAG-direction) |
+| **arbitrary-geometry solve on realized bracket + face-selector BC** | `producer:P1=4091 / P2=4092 / A=4093 / 3429` (structural-analysis-fea) — **filed + wired upstream 2026-05-30** (`2930 → {A,P1,P2}`; `P2→P1`; `A→2881/2882`) | ✅ resolved (DAG-direction holds; gated until the chain lands) |
 | `param thickness : Length = auto` | `grep` valid at param-default (overlay note); `grammar-fixture:fea-result-model-2.ri` | ✅ |
 
 ---
 
 ## Blocking summary (must resolve before/at queue)
 
-1. **2930** — file P1 (trampoline-consumes-realized-mesh) + P2 (face-selector BCs) under `structural-analysis-fea` ownership and wire `2930 → {P1,P2,3429}` so the producer is upstream. Until then 2930 stays `deferred`, not `pending`.
+1. **2930** — RESOLVED 2026-05-30: filed the complete arbitrary-geometry producer-half / typed-Load-Support consumer chain (2881/2882 → A=4093 → C=4094, and 3429 → P1=4091 → P2=4092), wired `2930 → {α,β,A,P1,P2}` (producers upstream, DAG-direction holds), and activated 2881/2882 → pending. 2930 is `pending` but gated until the chain lands. (2881/2882 carry a G3 caveat: typed-selector value-model vs the codebase's runtime query-fn/tag-string selectors — re-check before building.)
 2. **η (3018)** — ship the prismatic multi-case variant in this batch; split/hold the bracket-geometry variant behind the same P1/P2 gate.
 3. **κ (2968)** — scope to cantilever contour/deformed; `log` the cylinder/bracket/full-window scenes as explicitly deferred (no silent truncation).
 
