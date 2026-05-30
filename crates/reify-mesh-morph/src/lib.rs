@@ -80,12 +80,15 @@ pub mod stats;
 pub mod types;
 
 pub use stats::{MorphStats, record_morph_attempt, record_rejection, record_remesh, snapshot};
-// Bare diagnostics re-exports. `snapshot` is deliberately omitted — it stays
-// reachable as `diagnostics::snapshot()` to avoid colliding with the
-// `stats::snapshot` re-export above.
+// Bare diagnostics re-exports. Two symbols are deliberately omitted:
+//   - `snapshot` stays reachable as `diagnostics::snapshot()` to avoid
+//     colliding with the `stats::snapshot` re-export above; and
+//   - `MorphOutcome` is kept crate-internal — it carries no external behaviour
+//     (its only consumer is the private bucket-routing `fn counter`), so it is
+//     not part of the public API surface.
 pub use diagnostics::{
-    DiagnosticSnapshot, MorphOutcome, format_summary, record_ineligible, record_morphed,
-    record_panicked, record_quality_remesh,
+    DiagnosticSnapshot, format_summary, record_ineligible, record_morphed, record_panicked,
+    record_quality_remesh,
 };
 pub use boundary::{
     BoundaryAssociation, NodeAttachment, ProjectionFailure, Projector, ProjectorPayload,
@@ -451,20 +454,22 @@ mod tests {
     // ── task 2948: lib re-export fence for the diagnostics surface ───────────
 
     // Compile fence: verifies the diagnostics surface is re-exported from the
-    // crate root. `snapshot` is referenced via the `diagnostics::` module path
-    // (NOT bare) to avoid colliding with the existing `stats::snapshot`
-    // re-export. Dropping any re-export breaks compilation immediately.
+    // crate root. Two symbols are intentionally absent from the bare re-export
+    // (and therefore from this fence): `snapshot`, reached via the
+    // `diagnostics::` module path to avoid colliding with the existing
+    // `stats::snapshot` re-export; and `MorphOutcome`, kept crate-internal
+    // (internal bucket-routing only). Dropping any bare re-export breaks
+    // compilation immediately.
     const _: fn() = || {
         use crate::{
-            DiagnosticSnapshot, MorphOutcome, format_summary, record_ineligible, record_morphed,
-            record_panicked, record_quality_remesh,
+            DiagnosticSnapshot, format_summary, record_ineligible, record_morphed, record_panicked,
+            record_quality_remesh,
         };
         let _: fn() = record_morphed;
         let _: fn(&crate::QualityVerdict) = record_quality_remesh;
         let _: fn(&crate::Reason) = record_ineligible;
         let _: fn(&str) = record_panicked;
         let _: fn(&DiagnosticSnapshot) -> String = format_summary;
-        let _: Option<MorphOutcome> = None;
         // `snapshot` via the module path, not a bare re-export (avoids the
         // collision with `stats::snapshot`).
         let _: fn() -> DiagnosticSnapshot = crate::diagnostics::snapshot;

@@ -101,8 +101,13 @@ pub fn snapshot() -> DiagnosticSnapshot {
 /// produce. One variant per [`DiagnosticSnapshot`] counter bucket; selected
 /// inside the recorders from the existing `&QualityVerdict` / `&Reason` the
 /// engine already holds.
+///
+/// Crate-internal: this type carries no external behaviour — its only consumer
+/// is the private bucket-routing [`counter`] — so it is deliberately neither
+/// `pub` nor re-exported from the crate root. The public diagnostic surface is
+/// the recorders, [`snapshot`], and [`DiagnosticSnapshot`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MorphOutcome {
+pub(crate) enum MorphOutcome {
     /// Existing mesh deformed in place.
     Morphed,
     /// Remeshed after a quality hard-fail (element inversion).
