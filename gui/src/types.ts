@@ -645,3 +645,22 @@ export interface SolverProgress {
   /** Estimated time to completion in milliseconds; absent when ETA not yet estimable. */
   eta_ms?: number;
 }
+
+/**
+ * One reference frame emitted by the `mode-shape-frame` Tauri event channel (task ι/3458).
+ *
+ * Field names match `gui/src-tauri/src/types.rs::ModeShapeFrame` exactly — no
+ * `serde(rename_all)` (IPC mirror convention). Two frame types are emitted per
+ * solve: one undeformed base frame (phase=0.0) and one peak frame per mode
+ * (phase=1.0). The frontend uses these to drive the BucklingPanel animator.
+ *
+ * Consumer: `BucklingPanel` / `bucklingStore`.
+ */
+export interface ModeShapeFrame {
+  /** 0-based index of the mode this frame belongs to. */
+  mode_index: number;
+  /** 0.0 = undeformed base frame; 1.0 = scaled peak displacement frame. */
+  phase: number;
+  /** Flat XYZ array: [x0, y0, z0, x1, y1, z1, …], length 3·n_nodes. */
+  displaced_positions: number[];
+}

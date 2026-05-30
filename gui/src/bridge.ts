@@ -25,6 +25,7 @@ import type {
   WarmPoolEvent,
   FeaCaseChanged,
   SolverProgress,
+  ModeShapeFrame,
 } from './types';
 import { convertRawMesh, convertRawGuiState } from './types';
 import type {
@@ -745,6 +746,36 @@ export async function onSolverProgress(
       return;
     }
     callback(p as unknown as SolverProgress);
+  });
+}
+
+/**
+ * Subscribe to mode-shape-frame events from the backend (task ι/3458).
+ *
+ * The backend emits one undeformed base frame (phase=0.0) and one peak frame
+ * per mode (phase=1.0) on each solve completion that produces a BucklingResult.
+ * Applies the inline structural-shape-guard idiom (listen<unknown> +
+ * isPlainObject + per-field type checks + console.warn drop on malformed),
+ * mirroring `onSolverProgress`.
+ *
+ * Per-channel spec: docs/gui-event-channels.md §2 (mode-shape-frame row, ACTIVE)
+ */
+export async function onModeShapeFrame(
+  callback: (payload: ModeShapeFrame) => void,
+): Promise<UnlistenFn> {
+  return listen<unknown>('mode-shape-frame', (event) => {
+    const p = event.payload;
+    if (
+      !isPlainObject(p) ||
+      typeof p['mode_index'] !== 'number' ||
+      typeof p['phase'] !== 'number' ||
+      !Array.isArray(p['displaced_positions']) ||
+      !(p['displaced_positions'] as unknown[]).every(n => typeof n === 'number')
+    ) {
+      console.warn('[mode-shape-frame] malformed payload; dropping event', p);
+      return;
+    }
+    callback(p as unknown as ModeShapeFrame);
   });
 }
 
