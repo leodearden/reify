@@ -1074,6 +1074,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_mesh_morph_stats_reset_true_zeros_counters() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        // --- (a) reset:true path: counter recorded, then handler zeros it ---
+        reify_mesh_morph::diagnostics::reset_for_test();
+        reify_mesh_morph::diagnostics::record_morphed();
+        // Pre-condition: morphed == 1 before the call.
+        assert_eq!(reify_mesh_morph::diagnostics::snapshot().morphed, 1);
+
+        let result = super::handle_mesh_morph_stats(serde_json::json!({"reset": true}))
+            .await
+            .expect("handle_mesh_morph_stats({reset:true}) must succeed");
+
+        // Response must show post-reset zeros.
+        assert_eq!(
+            result["morphed"].as_u64(),
+            Some(0),
+            "reset:true — response.morphed must be 0 after reset"
+        );
+        // Process-global counter must actually be zeroed.
+        assert_eq!(
+            reify_mesh_morph::diagnostics::snapshot().morphed,
+            0,
+            "reset:true — process-global morphed counter must be 0 after reset"
+        );
+
+        // --- (b) control: no reset flag — counter must survive ---
+        reify_mesh_morph::diagnostics::reset_for_test();
+        reify_mesh_morph::diagnostics::record_morphed();
+
+        let result_no_reset = super::handle_mesh_morph_stats(serde_json::json!({}))
+            .await
+            .expect("handle_mesh_morph_stats({}) must succeed");
+
+        // Response must preserve the non-zero value.
+        assert_eq!(
+            result_no_reset["morphed"].as_u64(),
+            Some(1),
+            "omitted reset — response.morphed must be 1 (unchanged)"
+        );
+        // Process-global counter must not be zeroed.
+        assert_eq!(
+            reify_mesh_morph::diagnostics::snapshot().morphed,
+            1,
+            "omitted reset — process-global morphed counter must remain 1"
+        );
+    }
+
+    #[tokio::test]
     async fn dispatch_stateless_tool_handles_mesh_morph_stats_arm() {
         // Unique coverage: the exact "mesh_morph_stats" match-arm string in
         // dispatch_stateless_tool. A typo or deletion returns None, caught
