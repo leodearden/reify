@@ -9239,7 +9239,7 @@ fn make_buckling_result_value(n_modes: usize) -> reify_ir::Value {
     use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
     use std::collections::BTreeMap;
 
-    let base_positions = vec![0.0_f64, 0.0, 0.0, 1.0, 0.0, 0.0];
+    let base_positions = [0.0_f64, 0.0, 0.0, 1.0, 0.0, 0.0];
 
     let modes_list: Vec<Value> = (0..n_modes)
         .map(|k| {
@@ -9299,7 +9299,7 @@ fn make_buckling_result_value(n_modes: usize) -> reify_ir::Value {
 /// emit_mode_shape_frames_for_test_with_result must emit:
 ///   - 1 base frame (phase=0.0)
 ///   - 2 peak frames (phase=1.0, mode_index ascending 0, 1)
-/// Total = 3 frames.
+///     Total = 3 frames.
 ///
 /// Also asserts: each frame's displaced_positions.len() == 6 (= 3·n_nodes),
 /// and peak frames differ from the base frame's positions.
@@ -9390,7 +9390,7 @@ fn mode_shape_frame_emitter_no_fire_when_no_emitter() {
     use reify_ir::ValueMap;
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let session = EngineSession::new(Box::new(checker), None);
     // No emitter installed.
 
     let mut values = ValueMap::new();

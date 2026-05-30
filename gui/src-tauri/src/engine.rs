@@ -1120,8 +1120,6 @@ impl EngineSession {
     /// Early-returns silently when no emitter is installed or when `check.values`
     /// contains no `BucklingResult`-shaped cell.
     fn emit_mode_shape_frames_if_any(&self, check: &CheckResult) {
-        use reify_ir::Value;
-
         let emitter = match &self.mode_shape_frame_emitter {
             Some(e) => e,
             None => return,
