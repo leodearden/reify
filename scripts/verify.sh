@@ -13,6 +13,9 @@
 #   --profile debug|release|both   Which build profile(s) to TEST. Default: debug.
 #                                  Ignored by lint/typecheck (single pass each).
 #                                  'both' runs debug then release test passes.
+#                                  When DF_VERIFY_ROLE=merge and no explicit --profile
+#                                  is given, defaults to 'both' automatically so the
+#                                  orchestrator merge path gets release coverage.
 #   --scope   all|staged           all     = verify everything (orchestrator / merges).
 #                                  staged  = scope by `git diff --cached` (hook fast path).
 #                                  Default: all.
@@ -211,6 +214,7 @@ psi_gate() {
 # ---------------------------------------------------------------------------
 ACTION=""
 PROFILE="debug"
+PROFILE_EXPLICIT=0   # set to 1 if --profile was given explicitly; keeps explicit authoritative
 SCOPE="all"
 INCLUDE_INFRA=0
 PRINT_PLAN=0
@@ -224,9 +228,9 @@ while [ "$#" -gt 0 ]; do
             fi
             ACTION="$1"; shift ;;
         --profile)
-            PROFILE="${2:?--profile requires an argument}"; shift 2 ;;
+            PROFILE="${2:?--profile requires an argument}"; PROFILE_EXPLICIT=1; shift 2 ;;
         --profile=*)
-            PROFILE="${1#*=}"; shift ;;
+            PROFILE="${1#*=}"; PROFILE_EXPLICIT=1; shift ;;
         --scope)
             SCOPE="${2:?--scope requires an argument}"; shift 2 ;;
         --scope=*)
@@ -256,6 +260,14 @@ case "$SCOPE" in all|staged) ;; *)
     echo "verify.sh: ERROR — invalid --scope '$SCOPE' (want all|staged)" >&2; exit 64 ;;
 esac
 DF_VERIFY_ROLE="${DF_VERIFY_ROLE:-task}"
+# Role-based PROFILE default: when no explicit --profile was given and the
+# orchestrator merge path stamps DF_VERIFY_ROLE=merge, default to 'both' so
+# release-only tests are exercised on every merge (matching the local
+# hooks/pre-merge-commit gate which also runs --profile both).
+# Explicit --profile always wins; task/unset roles keep debug (fast feedback).
+if [ "$PROFILE_EXPLICIT" -eq 0 ] && [ "$DF_VERIFY_ROLE" = "merge" ]; then
+    PROFILE="both"
+fi
 # Probe scheduling-tool availability once; degrade gracefully on non-Linux hosts
 # where util-linux may not be installed.
 _HAS_NICE=0; _HAS_IONICE=0

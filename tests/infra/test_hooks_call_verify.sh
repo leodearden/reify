@@ -54,6 +54,12 @@ echo ""
 echo "--- orchestrator.yaml command keys delegate to verify.sh ---"
 assert "test_command calls ./scripts/verify.sh test" \
     bash -c "grep '^test_command:' '$ORCH' | grep -qF './scripts/verify.sh test'"
+# The orchestrator merge path runs test_command verbatim with DF_VERIFY_ROLE=merge
+# injected. verify.sh's role-based default (merge=>both) must govern the profile;
+# an explicit --profile in test_command would override it and pin the merge path
+# to that profile, defeating the task-4078 fix.
+assert "test_command relies on the role-based profile default (no explicit --profile so merge=>both)" \
+    bash -c "grep '^test_command:' '$ORCH' | grep -vq -- '--profile'"
 assert "lint_command calls ./scripts/verify.sh lint" \
     bash -c "grep '^lint_command:' '$ORCH' | grep -qF './scripts/verify.sh lint'"
 # Single positive assertion: requires the key to exist AND hold the value 'true' — cannot
