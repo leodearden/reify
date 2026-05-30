@@ -141,6 +141,7 @@ pub mod medial;
 pub mod mesher;
 pub mod mid_surface;
 pub mod mid_surface_naming;
+pub mod partition;
 pub mod pruning;
 pub mod result;
 pub mod segmentation;
