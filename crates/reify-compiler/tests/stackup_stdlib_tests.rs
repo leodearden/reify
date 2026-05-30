@@ -152,3 +152,39 @@ fn contributor_structure_params_align_with_t1_map_keys() {
         dist_cell.cell_type
     );
 }
+
+// ─── step-7: StackupResult trait members ─────────────────────────────────────
+
+/// Step 7: StackupResult trait is present with exactly four required members:
+/// {nominal_gap, worst_case_min, worst_case_max, rss_sigma}.
+#[test]
+fn stackup_result_trait_declares_required_members() {
+    let module = load_stdlib_module();
+
+    let sr = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "StackupResult")
+        .expect("expected 'StackupResult' trait in std/stackup");
+
+    let member_names: Vec<&str> = sr
+        .required_members
+        .iter()
+        .map(|r| r.name.as_str())
+        .collect();
+
+    assert_eq!(
+        member_names.len(),
+        4,
+        "StackupResult should have 4 required members, got: {:?}",
+        member_names
+    );
+    for name in &["nominal_gap", "worst_case_min", "worst_case_max", "rss_sigma"] {
+        assert!(
+            member_names.contains(name),
+            "StackupResult missing required member '{}', members: {:?}",
+            name,
+            member_names
+        );
+    }
+}
