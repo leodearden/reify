@@ -895,6 +895,222 @@ mod tests {
         );
     }
 
+    // --- task 3939 δ step-5/6 fixtures: assoc-fn signature exact-match ---
+
+    /// The implicit `self` receiver: `is_self == true` with the sentinel `self`
+    /// named type (per decl.rs:818-823). Excluded from the derived signature's
+    /// `params` and recorded as `has_self`.
+    fn assoc_self_param() -> reify_ast::FnParam {
+        reify_ast::FnParam {
+            name: "self".to_string(),
+            is_self: true,
+            type_expr: reify_ast::TypeExpr {
+                kind: reify_ast::TypeExprKind::Named {
+                    name: "self".to_string(),
+                    type_args: vec![],
+                },
+                span: SourceSpan::empty(0),
+            },
+            default: None,
+            span: SourceSpan::empty(0),
+        }
+    }
+
+    /// A non-self param `name : type_name` (bare named type).
+    fn assoc_named_param(name: &str, type_name: &str) -> reify_ast::FnParam {
+        reify_ast::FnParam {
+            name: name.to_string(),
+            is_self: false,
+            type_expr: reify_ast::TypeExpr {
+                kind: reify_ast::TypeExprKind::Named {
+                    name: type_name.to_string(),
+                    type_args: vec![],
+                },
+                span: SourceSpan::empty(0),
+            },
+            default: None,
+            span: SourceSpan::empty(0),
+        }
+    }
+
+    /// A structure-body `fn <name>(<params>) -> <return_type_name> { 0.0 }` member.
+    /// The trivial body is irrelevant to signature matching — δ compares only the
+    /// receiver / param / return signature.
+    fn assoc_fn_member(
+        name: &str,
+        params: Vec<reify_ast::FnParam>,
+        return_type_name: &str,
+    ) -> reify_ast::MemberDecl {
+        reify_ast::MemberDecl::Fn(reify_ast::FnDef {
+            name: name.to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            params,
+            return_type: Some(reify_ast::TypeExpr {
+                kind: reify_ast::TypeExprKind::Named {
+                    name: return_type_name.to_string(),
+                    type_args: vec![],
+                },
+                span: SourceSpan::empty(0),
+            }),
+            body: Some(reify_ast::FnBody {
+                let_bindings: vec![],
+                result_expr: reify_ast::Expr {
+                    kind: reify_ast::ExprKind::NumberLiteral {
+                        value: 0.0,
+                        is_real: true,
+                    },
+                    span: SourceSpan::empty(0),
+                },
+            }),
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+            annotations: vec![],
+        })
+    }
+
+    /// Build trait `Shape` requiring a single bodyless `fn <fn_name>(self) -> Real`.
+    fn shape_requiring_fn(fn_name: &str) -> CompiledTrait {
+        CompiledTrait {
+            name: "Shape".to_string(),
+            is_pub: false,
+            doc: None,
+            type_params: vec![],
+            refinements: vec![],
+            required_members: vec![TraitRequirement {
+                name: fn_name.to_string(),
+                kind: RequirementKind::Fn(CompiledAssocFnSig {
+                    name: fn_name.to_string(),
+                    has_self: true,
+                    params: vec![],
+                    return_type: Type::Real,
+                }),
+                span: SourceSpan::empty(0),
+            }],
+            defaults: vec![],
+            content_hash: ContentHash(0),
+            annotations: vec![],
+            pragmas: vec![],
+        }
+    }
+
+    /// Build structure `S : Shape { <members> }`.
+    fn structure_s_conforming_shape(
+        members: Vec<reify_ast::MemberDecl>,
+    ) -> reify_ast::StructureDef {
+        reify_ast::StructureDef {
+            name: "S".to_string(),
+            doc: None,
+            is_pub: false,
+            type_params: vec![],
+            trait_bounds: vec![reify_ast::TraitBoundRef {
+                name: "Shape".to_string(),
+                type_args: vec![],
+                span: SourceSpan::empty(0),
+            }],
+            members,
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash(0),
+            pragmas: vec![],
+            annotations: vec![],
+        }
+    }
+
+    /// RED (task 3939 δ, step-5): a provided assoc fn whose RETURN TYPE differs
+    /// from the trait requirement must surface `TraitFnSignatureMismatch`
+    /// (§8.8 same-name-different-type) and must NOT also surface
+    /// `TraitFnNotSatisfied` — the fn IS present, it is just mis-typed.
+    ///
+    /// Fails until step-6 adds exact-match signature comparison (today the
+    /// phase-5 Fn arm checks the fn NAME only, so a wrong-typed `area` is
+    /// silently treated as satisfying the requirement).
+    #[test]
+    fn provided_assoc_fn_with_wrong_return_type_emits_signature_mismatch() {
+        let shape = shape_requiring_fn("area");
+        // Structure provides `fn area(self) -> Length { 0.0 }` (Length != Real).
+        let structure_def = structure_s_conforming_shape(vec![assoc_fn_member(
+            "area",
+            vec![assoc_self_param()],
+            "Length",
+        )]);
+
+        let diagnostics = run_conformance(&[shape], &structure_def, &[]);
+
+        let mismatch: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::TraitFnSignatureMismatch))
+            .collect();
+        assert_eq!(
+            mismatch.len(),
+            1,
+            "expected exactly one TraitFnSignatureMismatch for the wrong-return-type \
+             provided fn 'area'; got: {:?}",
+            diagnostics
+        );
+        assert!(
+            mismatch[0].message.contains("area"),
+            "signature-mismatch diagnostic should name the fn 'area'; got: {}",
+            mismatch[0].message
+        );
+
+        let not_satisfied: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::TraitFnNotSatisfied))
+            .collect();
+        assert!(
+            not_satisfied.is_empty(),
+            "the fn 'area' is present (just mis-typed) — TraitFnNotSatisfied must NOT \
+             fire; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// RED (task 3939 δ, step-5): a provided assoc fn with the wrong ARITY (an
+    /// extra non-self param) is also a signature mismatch. Same assertions as
+    /// the return-type case. Fails until step-6.
+    #[test]
+    fn provided_assoc_fn_with_wrong_arity_emits_signature_mismatch() {
+        let shape = shape_requiring_fn("area");
+        // Structure provides `fn area(self, extra: Real) -> Real { 0.0 }`
+        // (params [Real] != the required []).
+        let structure_def = structure_s_conforming_shape(vec![assoc_fn_member(
+            "area",
+            vec![assoc_self_param(), assoc_named_param("extra", "Real")],
+            "Real",
+        )]);
+
+        let diagnostics = run_conformance(&[shape], &structure_def, &[]);
+
+        let mismatch: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::TraitFnSignatureMismatch))
+            .collect();
+        assert_eq!(
+            mismatch.len(),
+            1,
+            "expected exactly one TraitFnSignatureMismatch for the wrong-arity \
+             provided fn 'area'; got: {:?}",
+            diagnostics
+        );
+        assert!(
+            mismatch[0].message.contains("area"),
+            "signature-mismatch diagnostic should name the fn 'area'; got: {}",
+            mismatch[0].message
+        );
+
+        let not_satisfied: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::TraitFnNotSatisfied))
+            .collect();
+        assert!(
+            not_satisfied.is_empty(),
+            "the fn 'area' is present (just wrong arity) — TraitFnNotSatisfied must \
+             NOT fire; got: {:?}",
+            diagnostics
+        );
+    }
+
     /// Characterization test that enum-typed `param` and `let` members resolve to
     /// `Type::Enum` through `check_trait_conformance`.
     ///
