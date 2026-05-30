@@ -113,10 +113,26 @@ pub fn duhamel_solve(
     let mut v = v0;
     out.push(u);
 
-    for _i in 1..n {
-        // Step forward using homogeneous transition only (forcing ignored here).
-        let u_new = a_hom * u + b_hom * v;
-        let v_new = a_p_hom * u + b_p_hom * v;
+    let omega_sq = omega * omega;
+
+    for i in 1..n {
+        // Piecewise-constant (ZOH) forcing: treat the force over [t_{i-1}, t_i]
+        // as constant at p_i = forcing[i-1].  The static displacement for this
+        // constant force is u_ss = p_i / ω².  Advance the deviation from steady
+        // state by the exact homogeneous transition, then shift back.
+        //
+        //   u_{i} = u_ss + A·(u_{i-1} − u_ss) + B·v_{i-1}
+        //   v_{i} = A'·(u_{i-1} − u_ss)        + B'·v_{i-1}
+        //
+        // This is exact for a constant force over the step.  A linearly-varying
+        // force is still approximated as constant here; the FOH upgrade follows
+        // in step 06.
+        let p_i  = forcing[i - 1];
+        let u_ss = p_i / omega_sq;
+        let dev  = u - u_ss;
+
+        let u_new = u_ss + a_hom * dev + b_hom * v;
+        let v_new = a_p_hom * dev + b_p_hom * v;
         u = u_new;
         v = v_new;
         out.push(u);
