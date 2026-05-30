@@ -46,9 +46,20 @@ structure def Contributor {
 
 // ── StackupResult result contract ─────────────────────────────────────────────
 
-// Trait describing the outputs of a tolerance stack-up computation.
-// Members are a subset of the §4.2 result-Map keys produced by the T1 builtins
-// (stackup_worst_case / stackup_rss in reify-stdlib/src/stackup.rs).
+// Aggregate authoring trait describing the outputs of a tolerance stack-up
+// computation. The four members span the two T1 builtin result shapes (PRD §4.2):
+//
+//   stackup_worst_case → nominal_gap / worst_case_min / worst_case_max
+//                        (no rss_sigma — reify-stdlib/src/stackup.rs lines 355-358)
+//   stackup_rss        → nominal_gap / rss_sigma
+//                        (no worst_case_min / worst_case_max — lines 414-418)
+//
+// IMPORTANT: this is an AGGREGATE authoring view. No single T1 builtin result
+// Map satisfies all four fields simultaneously — worst_case and rss results
+// carry disjoint sub-keys. Conforming structures are expected to be user-authored
+// wrappers (e.g. a combined summary structure) that aggregate values from both
+// computation paths, NOT direct conformance targets for a single builtin output.
+//
 // rss_sigma is a standard deviation, so non-negativity is a meaningful invariant.
 trait StackupResult {
     param nominal_gap     : Length

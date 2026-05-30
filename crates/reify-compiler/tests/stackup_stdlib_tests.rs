@@ -198,6 +198,16 @@ fn stackup_result_trait_declares_required_members() {
 /// Proves: cross-module Distribution.Triangular EnumAccess resolves; MyResult :
 /// StackupResult cross-module trait conformance works; the injected
 /// `rss_sigma >= 0mm` constraint with rss_sigma = 0mm compiles clean.
+///
+/// Note on constraint violation testing: the `constraint rss_sigma >= 0mm`
+/// declared in StackupResult is compiled into the IR and injected into
+/// conforming structures (assertion (d) below). Actual VIOLATION detection
+/// (e.g. rss_sigma = -1mm → Satisfaction::Violated) is evaluated at eval time
+/// via `reify_constraints::SimpleConstraintChecker`, not at compile time — this
+/// matches the project convention pinned by
+/// `crates/reify-eval/tests/stress_error_messages.rs::constraint_violation_diagnostic`
+/// ("The source is syntactically valid — only the constraint is violated at
+/// runtime"). Eval-time violation testing is out of scope for this crate.
 #[test]
 fn eval_file_using_distribution_triangular_and_stackup_result_compiles_clean() {
     use reify_test_support::compile_source_with_stdlib;
@@ -257,5 +267,20 @@ structure def MyResult : StackupResult {
         Type::Enum("Distribution".to_string()),
         "dist cell should have Enum(Distribution) type, got {:?}",
         dist_cell.unwrap().cell_type
+    );
+
+    // (d) The StackupResult constraint `rss_sigma >= 0mm` was injected into
+    // MyResult and NOT silently dropped. At least one constraint must be
+    // present — if this fires, the constraint compiled out of the IR.
+    //
+    // Eval-time violation testing (rss_sigma = -1mm → Satisfaction::Violated)
+    // is handled in crates/reify-eval/tests/stress_error_messages.rs per
+    // project convention; compile-time constraint evaluation is Indeterminate
+    // by design (auto_type_param_phase.rs MockConstraintChecker).
+    assert!(
+        !template.constraints.is_empty(),
+        "MyResult : StackupResult should have the injected 'rss_sigma >= 0mm' \
+         constraint in template.constraints, but got 0 constraints — \
+         the constraint may have been silently dropped during compilation"
     );
 }
