@@ -328,3 +328,55 @@ fn ceramicliner_thermal_conductivity_folds_to_scalar_30() {
         ),
     }
 }
+
+// ── (g) CeramicLiner.specific_heat compile-time fold pin ─────────────────────
+
+/// After step-6 migrates `880.0 * 1J / (1kg * 1K)` → `880.0J/(kg*K)`, the
+/// CeramicLiner template's specific_heat param default must fold at compile
+/// time to a single `CompiledExprKind::Literal(Value::Scalar { .. })`
+/// with si_value ≈ 880.0 and dimension == SPECIFIC_HEAT.
+///
+/// RED before step-6: the default is the `880.0 * 1J / (1kg * 1K)` BinOp tree,
+/// so the Literal(Scalar) match fails.
+#[test]
+fn ceramicliner_specific_heat_folds_to_scalar_880() {
+    let (compiled, _engine, _eval) = compile_and_eval();
+
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "CeramicLiner")
+        .expect("CeramicLiner template should exist");
+
+    let vc = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "specific_heat")
+        .expect("CeramicLiner should have a specific_heat value cell");
+
+    let default_expr = vc
+        .default_expr
+        .as_ref()
+        .expect("CeramicLiner.specific_heat must have a default expression");
+
+    match &default_expr.kind {
+        CompiledExprKind::Literal(Value::Scalar { si_value, dimension }) => {
+            assert!(
+                (si_value - 880.0).abs() < 880.0 * 1e-6,
+                "CeramicLiner.specific_heat si_value should be ≈880.0 J/(kg·K), got {}",
+                si_value
+            );
+            assert_eq!(
+                *dimension,
+                DimensionVector::SPECIFIC_HEAT,
+                "CeramicLiner.specific_heat dimension should be SPECIFIC_HEAT, got {:?}",
+                dimension
+            );
+        }
+        other => panic!(
+            "CeramicLiner.specific_heat default_expr should be \
+             Literal(Scalar) after compound-literal migration, got {:?}",
+            other
+        ),
+    }
+}
