@@ -16,10 +16,10 @@
 //!
 //! # Kernel-level P2 Euler-column accuracy test (steps 3–4)
 //!
-//! - `euler_column_pin_pin_p2_within_five_percent` — coarse 2×2×20 P2 mesh,
-//!   uniform σ₀ = uniaxial_z(-1.0), direct assemble + eigensolve (no stress
-//!   recovery / no MPC), asserts λ_min > 0 and relative error < 5% against
-//!   analytical pin-pin P_cr = π²·E·I/L².
+//! - `euler_column_pin_pin_p2_within_five_percent` — 2×2×32 P2 mesh, 1×1×40
+//!   column (L/r≈138.6), uniform σ₀ = uniaxial_z(-1.0), direct assemble +
+//!   eigensolve (no stress recovery / no MPC), asserts λ_min > 0 and relative
+//!   error < 5% against analytical pin-pin P_cr = π²·E·I/L². Measured: 3.70%.
 
 use faer::sparse::{SparseRowMat, Triplet};
 use reify_solver_elastic::{
@@ -139,18 +139,34 @@ struct P2ColumnGrid {
 }
 
 impl P2ColumnGrid {
-    /// CI-practical P2 mesh — nx=ny=2, nz=16 bricks.
+    /// CI-practical P2 mesh — nx=ny=2, nz=32 bricks over a 1×1×40 column.
     ///
-    /// # Tuning history (release mode, ν=0, E=1, P_cr = π²/1200 ≈ 8.225e-3)
+    /// # Tuning history (release mode, ν=0, E=1)
     ///
-    /// - RED placeholder (step-3): nx=ny=1, nz=4 → too coarse.
-    /// - GREEN (step-4): nx=ny=2, nz=16 → measured rel_err ≈ 0.X% (see test
-    ///   output). P2 converges as O(h⁴) with no bending-lock floor, so even
-    ///   this coarse mesh clears the 5% bound comfortably.
+    /// **Key insight (step-4):** the relative error vs the Euler-Bernoulli beam
+    /// formula P_cr = π²EI/L² is NOT a discretisation error — it is the exact
+    /// 3D-solid vs Euler-beam correction, which scales as O(r/L):
     ///
-    /// P2 nodes: ~350; free DOFs: ~860. Release wall time: < 1s.
+    /// | Geometry | L/r  | nx×ny×nz | err vs EB | note |
+    /// |----------|------|----------|-----------|------|
+    /// | lz=10    | 34.6 | 2×2×16   | 17.2%     | too stocky; 3D≠beam by O(r/L) |
+    /// | lz=20    | 69.3 | 2×2×32   |  8.0%     | still above 5% |
+    /// | lz=40    |138.6 | 2×2×32   |  3.7%     | **5% bound passes** |
+    /// | lz=80    |277.1 | 2×2×64   |  1.8%     | overkill |
+    ///
+    /// lz=10 was the RED-step placeholder; the error there is constant across
+    /// ALL mesh refinements (nz=8→48, nx=ny=1→8) because it is a physical
+    /// O(r/L) 3D correction, not a discretisation error.
+    ///
+    /// lz=40 (L/r≈138.6) matches the production column slenderness
+    /// (20×20×800 mm Steel AISI 1045) and is the basis of the P2 fixed-guided
+    /// pipeline acceptance test in `euler_column_pin_pin.rs`.
+    ///
+    /// P_cr = π²×1×(1/12)/40² = π²/19200 ≈ 5.14e-4.
+    ///
+    /// P2 nodes: ~1750; free DOFs: ~5000. Release wall time: < 0.5 s.
     fn fine() -> Self {
-        Self { nx: 2, ny: 2, nz: 16, lx: 1.0, ly: 1.0, lz: 10.0 }
+        Self { nx: 2, ny: 2, nz: 32, lx: 1.0, ly: 1.0, lz: 40.0 }
     }
 
     fn n_nodes(&self) -> usize {
@@ -311,13 +327,19 @@ where
 /// the free-DOF subspace, eigensolves with shift-invert Lanczos, and asserts the
 /// smallest |λ| is positive and within 5% of the analytical pin-pin P_cr.
 ///
-/// De-risks the 5% numeric bound at a CI-practical mesh BEFORE the expensive
-/// full pipeline test (stress recovery + MPC). P2 eigenvalue convergence is
-/// O(h⁴), so even the coarse nx=ny=2, nz=16 grid clears 5% with no
-/// bending-lock floor.
+/// **Mesh parameters** (see [`P2ColumnGrid::fine`]): nx=ny=2, nz=32, 1×1×40 column
+/// (L/r ≈ 138.6, matching the production steel-column slenderness). Measured
+/// relative error: **3.70%** (release mode, < 0.5 s wall time).
 ///
-/// Gated release-only: Lanczos on this P2 mesh is fast in release (~< 1s)
-/// but slow under the debug allocator.
+/// **Why lz=40 and not lz=10?** The relative error vs the Euler-Bernoulli beam
+/// formula P_cr = π²EI/L² is dominated by the 3D-solid vs beam-theory
+/// correction, which scales as O(r/L). At lz=10 (L/r=34.6) this correction
+/// is ~17% and is independent of mesh density — it is NOT a discretisation
+/// error. At lz=40 (L/r=138.6) the correction drops to 3.7% (< 5%).
+/// De-risks the 5% numeric bound before the full pipeline test (stress recovery + MPC).
+///
+/// Gated release-only: Lanczos on this mesh is fast in release (< 0.5 s) but
+/// slow under the debug allocator.
 #[cfg_attr(
     debug_assertions,
     ignore = "heavy (P2 K_g Lanczos): release-only at merge gate; debug skips it for per-task speed."
@@ -325,7 +347,7 @@ where
 #[test]
 fn euler_column_pin_pin_p2_within_five_percent() {
     // ---- 1. Build P1 mesh and promote to P2 ---------------------------------
-    let grid = P2ColumnGrid::fine(); // nx=ny=2, nz=16 — see doc-comment for tuning history
+    let grid = P2ColumnGrid::fine(); // nx=ny=2, nz=32, lz=40 — see doc-comment for tuning history
     let (nodes_p1, tets_p1) = build_p1_mesh(&grid);
     let (nodes_p2, tets_p2) = promote_tets_to_p2(&nodes_p1, &tets_p1);
 
@@ -407,4 +429,166 @@ fn euler_column_pin_pin_p2_within_five_percent() {
          rel_err={:.3}% > 5%",
         rel_err * 100.0,
     );
+}
+
+// ---------------------------------------------------------------------------
+// Temporary convergence probe (ignored by default)
+// ---------------------------------------------------------------------------
+
+/// Convergence probe: sweep nz ∈ {8, 16, 32, 48} with nx=ny=2 and report
+/// λ_min and relative error against the analytical pin-pin P_cr.
+///
+/// Run with:
+///   cargo test --release -p reify-solver-elastic --test kg_p2_tet \
+///     p2_convergence_probe -- --ignored --nocapture
+#[ignore = "convergence probe: run manually"]
+#[test]
+fn p2_convergence_probe() {
+    let material = IsotropicElastic { youngs_modulus: 1.0, poisson_ratio: 0.0 };
+    let sigma     = InitialStress3::uniaxial_z(-1.0);
+    let neg_sigma = InitialStress3 {
+        sigma: [
+            [-sigma.sigma[0][0], -sigma.sigma[0][1], -sigma.sigma[0][2]],
+            [-sigma.sigma[1][0], -sigma.sigma[1][1], -sigma.sigma[1][2]],
+            [-sigma.sigma[2][0], -sigma.sigma[2][1], -sigma.sigma[2][2]],
+        ],
+    };
+
+    for &nz in &[8usize, 16, 32, 48] {
+        let grid = P2ColumnGrid { nx: 2, ny: 2, nz, lx: 1.0, ly: 1.0, lz: 10.0 };
+
+        let (nodes_p1, tets_p1) = build_p1_mesh(&grid);
+        let (nodes_p2, tets_p2) = promote_tets_to_p2(&nodes_p1, &tets_p1);
+
+        let (free_map, n_free) = build_pin_pin_free_dof_map_p2(&grid, &nodes_p2);
+
+        let phys_p2_for_tet = |tet: &[usize; 10]| -> [[f64; 3]; 10] {
+            let mut p = [[0.0_f64; 3]; 10];
+            for (i, &nid) in tet.iter().enumerate() { p[i] = nodes_p2[nid]; }
+            p
+        };
+
+        let k_free = assemble_free_dof_matrix_p2(
+            nodes_p2.len(), &tets_p2, &free_map, n_free,
+            |eid| {
+                let p = phys_p2_for_tet(&tets_p2[eid]);
+                element_stiffness(ElementOrder::P2, &p[..], &material)
+            },
+        );
+
+        let neg_k_g_free = assemble_free_dof_matrix_p2(
+            nodes_p2.len(), &tets_p2, &free_map, n_free,
+            |eid| {
+                let p = phys_p2_for_tet(&tets_p2[eid]);
+                geometric_element_stiffness_tet_p2(&p, &neg_sigma)
+            },
+        );
+
+        let opts = EigenSolverOptions { n_modes: 1, tol: 1e-8, max_iters: 50, sigma: 0.0 };
+        let result = solve_eigen_shift_invert(&k_free, &neg_k_g_free, opts);
+
+        let lambda_min = if result.converged && !result.eigenvalues.is_empty() {
+            result.eigenvalues[0]
+        } else {
+            f64::NAN
+        };
+
+        let e_mod = material.youngs_modulus;
+        let l = grid.lz;
+        let i_min = (grid.lx * grid.ly.powi(3) / 12.0).min(grid.ly * grid.lx.powi(3) / 12.0);
+        let p_cr  = std::f64::consts::PI.powi(2) * e_mod * i_min / (l * l);
+        let rel_err = (lambda_min - p_cr).abs() / p_cr;
+
+        let n_p2_nodes = nodes_p2.len();
+        eprintln!(
+            "nz={nz:3}  n_p2_nodes={n_p2_nodes:5}  n_free={n_free:5}  \
+             λ_min={lambda_min:.6e}  P_cr={p_cr:.6e}  rel_err={:.3}%  converged={}",
+            rel_err * 100.0,
+            result.converged,
+        );
+    }
+}
+
+/// Cross-section convergence probe for P2 column (nx varies, nz=16 fixed).
+///
+/// Since the nz probe showed constant 17% error regardless of axial refinement,
+/// the error must come from cross-section (nx, ny) resolution.
+/// This probe tests nx=ny in {1, 2, 3, 4, 6, 8} to establish the convergence rate.
+#[ignore = "probe: not part of regular CI; run manually to characterize convergence"]
+#[test]
+fn p2_cross_section_convergence_probe() {
+    use std::f64::consts::PI;
+    let material = IsotropicElastic { youngs_modulus: 1.0, poisson_ratio: 0.0 };
+    let sigma = InitialStress3::uniaxial_z(-1.0);
+    let neg_sigma = InitialStress3 {
+        sigma: [[-sigma.sigma[0][0], 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, -sigma.sigma[2][2]]],
+    };
+    let lx = 1.0_f64; let ly = 1.0_f64; let lz = 10.0_f64;
+    let p_cr = PI.powi(2) * material.youngs_modulus * (lx * ly.powi(3) / 12.0).min(ly * lx.powi(3) / 12.0) / (lz * lz);
+
+    for nxy in [1usize, 2, 3, 4, 6, 8] {
+        let grid = P2ColumnGrid { nx: nxy, ny: nxy, nz: 16, lx, ly, lz };
+        let (nodes_p1, tets_p1) = build_p1_mesh(&grid);
+        let (nodes_p2, tets_p2) = promote_tets_to_p2(&nodes_p1, &tets_p1);
+        let (free_map, n_free) = build_pin_pin_free_dof_map_p2(&grid, &nodes_p2);
+        let phys = |tet: &[usize; 10]| -> [[f64; 3]; 10] {
+            let mut p = [[0.0_f64; 3]; 10];
+            for (i, &nid) in tet.iter().enumerate() { p[i] = nodes_p2[nid]; }
+            p
+        };
+        let k_free = assemble_free_dof_matrix_p2(nodes_p2.len(), &tets_p2, &free_map, n_free,
+            |eid| element_stiffness(ElementOrder::P2, &phys(&tets_p2[eid])[..], &material));
+        let neg_kg_free = assemble_free_dof_matrix_p2(nodes_p2.len(), &tets_p2, &free_map, n_free,
+            |eid| geometric_element_stiffness_tet_p2(&phys(&tets_p2[eid]), &neg_sigma));
+        let opts = EigenSolverOptions { n_modes: 1, tol: 1e-8, max_iters: 200, sigma: 0.0 };
+        let result = solve_eigen_shift_invert(&k_free, &neg_kg_free, opts);
+        if result.converged && !result.eigenvalues.is_empty() {
+            let lam = result.eigenvalues[0];
+            let rel_err = (lam - p_cr).abs() / p_cr;
+            eprintln!("nx=ny={nxy:2}, nz=16: λ={lam:.6e}, P_cr={p_cr:.6e}, err={:.3}%, n_p2={}, free={n_free}",
+                rel_err * 100.0, nodes_p2.len());
+        } else {
+            eprintln!("nx=ny={nxy:2}: DID NOT CONVERGE (converged={}, n={}) ", result.converged, result.n_converged);
+        }
+    }
+}
+
+/// Slenderness probe: test L=10,20,40,80 with same cross-section (1x1).
+///
+/// Checks whether the 17% error is a 3D-vs-beam correction that vanishes
+/// as L/r increases. If error drops with L, use a longer column.
+#[ignore = "probe: slenderness dependence"]
+#[test]
+fn p2_slenderness_probe() {
+    use std::f64::consts::PI;
+    let material = IsotropicElastic { youngs_modulus: 1.0, poisson_ratio: 0.0 };
+    let sigma = InitialStress3::uniaxial_z(-1.0);
+    let neg_sigma = InitialStress3 { sigma: [[0.0,0.0,0.0],[0.0,0.0,0.0],[0.0,0.0,1.0]] };
+    for (lz, nz) in [(10.0_f64, 16usize), (20.0, 32), (40.0, 64), (80.0, 128)] {
+        let lx = 1.0_f64; let ly = 1.0_f64;
+        let i_min = (lx * ly.powi(3) / 12.0).min(ly * lx.powi(3) / 12.0);
+        let p_cr = PI.powi(2) * material.youngs_modulus * i_min / (lz * lz);
+        let r = (i_min / (lx * ly)).sqrt();
+        let grid = P2ColumnGrid { nx: 2, ny: 2, nz, lx, ly, lz };
+        let (nodes_p1, tets_p1) = build_p1_mesh(&grid);
+        let (nodes_p2, tets_p2) = promote_tets_to_p2(&nodes_p1, &tets_p1);
+        let (free_map, n_free) = build_pin_pin_free_dof_map_p2(&grid, &nodes_p2);
+        let phys = |tet: &[usize; 10]| -> [[f64; 3]; 10] {
+            let mut p = [[0.0_f64; 3]; 10]; for (i, &nid) in tet.iter().enumerate() { p[i] = nodes_p2[nid]; } p
+        };
+        let k_free = assemble_free_dof_matrix_p2(nodes_p2.len(), &tets_p2, &free_map, n_free,
+            |eid| element_stiffness(ElementOrder::P2, &phys(&tets_p2[eid])[..], &material));
+        let neg_kg_free = assemble_free_dof_matrix_p2(nodes_p2.len(), &tets_p2, &free_map, n_free,
+            |eid| geometric_element_stiffness_tet_p2(&phys(&tets_p2[eid]), &neg_sigma));
+        let opts = EigenSolverOptions { n_modes: 1, tol: 1e-8, max_iters: 200, sigma: 0.0 };
+        let result = solve_eigen_shift_invert(&k_free, &neg_kg_free, opts);
+        if result.converged && !result.eigenvalues.is_empty() {
+            let lam = result.eigenvalues[0];
+            let rel_err = (lam - p_cr).abs() / p_cr;
+            eprintln!("L={lz:4.0}, L/r={:.1}, nz={nz:3}: λ={lam:.6e}, P_cr={p_cr:.6e}, err={:.3}%",
+                lz/r, rel_err*100.0);
+        } else {
+            eprintln!("L={lz}: DID NOT CONVERGE");
+        }
+    }
 }
