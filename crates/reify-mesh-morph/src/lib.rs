@@ -80,6 +80,13 @@ pub mod stats;
 pub mod types;
 
 pub use stats::{MorphStats, record_morph_attempt, record_rejection, record_remesh, snapshot};
+// Bare diagnostics re-exports. `snapshot` is deliberately omitted — it stays
+// reachable as `diagnostics::snapshot()` to avoid colliding with the
+// `stats::snapshot` re-export above.
+pub use diagnostics::{
+    DiagnosticSnapshot, MorphOutcome, format_summary, record_ineligible, record_morphed,
+    record_panicked, record_quality_remesh,
+};
 pub use boundary::{
     BoundaryAssociation, NodeAttachment, ProjectionFailure, Projector, ProjectorPayload,
     compute_dirichlet_bcs,
