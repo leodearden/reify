@@ -86,6 +86,24 @@ fn failing_fn(
     }
 }
 
+// ── guard: identity_fn empty value_inputs ────────────────────────────────────
+
+/// RED (step-3): `identity_fn` called with an empty `value_inputs` slice must
+/// return `ComputeOutcome::Completed { result: Value::Undef }` instead of
+/// panicking. Mirrors the engine_compute.rs unit test for the integration-file
+/// copy of the same helper.
+#[test]
+fn identity_fn_empty_value_inputs_returns_undef_without_panic() {
+    let result = identity_fn(&[], &[], &Value::Undef, None, &CancellationHandle::new());
+    match result {
+        ComputeOutcome::Completed { result: Value::Undef, .. } => {}
+        other => panic!(
+            "expected ComputeOutcome::Completed {{ result: Value::Undef }}, got {:?}",
+            other
+        ),
+    }
+}
+
 // ── step-3: RED — dispatch helper contract ───────────────────────────────────
 
 /// Test: dispatch helper with registered identity trampoline returns the input
