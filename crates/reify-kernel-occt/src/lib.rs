@@ -1022,13 +1022,12 @@ impl OcctKernel {
         py: f64,
         pz: f64,
     ) -> Result<[f64; 3], QueryError> {
-        let _ = self
+        let s = self
             .get_shape(handle)
             .map_err(|_| QueryError::InvalidHandle(handle))?;
-        let _ = (px, py, pz);
-        Err(QueryError::QueryFailed(
-            "FaceNormalAt: not yet implemented".into(),
-        ))
+        let p = ffi::ffi::surface_normal_at_point(s, px, py, pz)
+            .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+        Ok([p.x, p.y, p.z])
     }
 
     /// Gaussian, mean, and principal curvatures at the parametric point

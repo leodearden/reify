@@ -682,6 +682,18 @@ pub mod ffi {
         /// surface, or yields a degenerate (zero-magnitude) cross product at `(u, v)`.
         fn surface_normal_at(face: &OcctShape, u: f64, v: f64) -> Result<Point3>;
 
+        /// Outward unit normal of a face at the Cartesian world-space point
+        /// `(px, py, pz)` (metres).
+        ///
+        /// Projects the query point via `ShapeAnalysis_Surface::ValueOfUV(p, 1e-9)`
+        /// then delegates to `face_outward_unit_normal_at_uv` — the same
+        /// orientation-aware helper as `query_face_normal` and `surface_normal_at`.
+        ///
+        /// Throws (surfaces as `Err`) if the shape is not a face, has no underlying
+        /// surface, or yields a degenerate (zero-magnitude) normal at the projected
+        /// `(u, v)`.
+        fn surface_normal_at_point(face: &OcctShape, px: f64, py: f64, pz: f64) -> Result<Point3>;
+
         /// Gaussian, mean, and principal curvatures at the parametric point
         /// `(u, v)` on `face`, plus unit-length principal-direction tangents.
         ///

@@ -1058,6 +1058,25 @@ rust::String edge_curve_kind(const OcctShape& shape);
 /// surface, or yields a degenerate (zero-magnitude) normal at `(u, v)`.
 Point3 surface_normal_at(const OcctShape& face, double u, double v);
 
+/// Outward unit normal of a face at the Cartesian world-space point
+/// `(px, py, pz)` (metres).
+///
+/// The shape MUST be a `TopoDS_Face`. Algorithm:
+///   (a) project `gp_Pnt(px, py, pz)` onto the face's underlying surface via
+///       `ShapeAnalysis_Surface::ValueOfUV(p, 1e-9)` to obtain `(u, v)`,
+///   (b) delegate to `face_outward_unit_normal_at_uv(face, u, v, who)` for
+///       the `BRepAdaptor_Surface::D1` derivative, `Du × Dv` cross product,
+///       magnitude check, `TopAbs_REVERSED` orientation flip, and normalize.
+///
+/// Reuses the same orientation-aware helper as `query_face_normal` (centroid
+/// path) and `surface_normal_at` (caller-supplied (u,v) path), so the
+/// REVERSED-flip outward convention and magnitude/error handling are shared.
+///
+/// Throws `std::runtime_error` if the shape is not a face, projection fails,
+/// or the surface yields a degenerate (zero-magnitude) normal at the projected
+/// `(u, v)`.
+Point3 surface_normal_at_point(const OcctShape& face, double px, double py, double pz);
+
 /// Curvature properties at the parametric point `(u, v)` on a face surface.
 /// Defined by the cxx bridge (ffi.rs); forward-declared here for use in the
 /// `curvature_at` function signature.

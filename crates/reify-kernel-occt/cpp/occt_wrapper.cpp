@@ -2776,6 +2776,37 @@ Point3 surface_normal_at(const OcctShape& shape, double u, double v) {
     });
 }
 
+Point3 surface_normal_at_point(const OcctShape& shape, double px, double py, double pz) {
+    return wrap_occt_call("surface_normal_at_point", [&]() {
+        if (shape.shape.ShapeType() != TopAbs_FACE) {
+            throw std::runtime_error(
+                "surface_normal_at_point: shape is not a face"
+            );
+        }
+        TopoDS_Face face = TopoDS::Face(shape.shape);
+        if (face.IsNull()) {
+            throw std::runtime_error("surface_normal_at_point: face is null");
+        }
+        Handle(Geom_Surface) surf = BRep_Tool::Surface(face);
+        if (surf.IsNull()) {
+            throw std::runtime_error(
+                "surface_normal_at_point: face has no underlying surface"
+            );
+        }
+        // Project the Cartesian query point to (u, v) via ValueOfUV — same
+        // approach as face_outward_unit_normal (centroid path). The tolerance
+        // 1e-9 matches the centroid projection in face_outward_unit_normal.
+        ShapeAnalysis_Surface analyzer(surf);
+        gp_Pnt2d uv = analyzer.ValueOfUV(gp_Pnt(px, py, pz), 1e-9);
+        // Delegate to the shared orientation-aware normal helper; the REVERSED-
+        // flip outward convention is shared with query_face_normal / surface_normal_at.
+        gp_Vec n = face_outward_unit_normal_at_uv(
+            face, uv.X(), uv.Y(), "surface_normal_at_point"
+        );
+        return Point3{ n.X(), n.Y(), n.Z() };
+    });
+}
+
 CurvatureProps curvature_at(const OcctShape& shape, double u, double v) {
     return wrap_occt_call("curvature_at", [&]() {
         if (shape.shape.ShapeType() != TopAbs_FACE) {
