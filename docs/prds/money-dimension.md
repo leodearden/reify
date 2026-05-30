@@ -160,6 +160,11 @@ let total       : Scalar<Money>      = cost_per_kg * quantity  // types to USD
 `total` has dimension `Money·Mass^-1 * Mass = Money`. The compiler verifies this
 statically; no runtime cost.
 
+Note: `25USD/kg` in the expression above parses as a single compound-unit quantity
+literal (`Div(USD, kg)`, dimension CostPerMass) per spec §2.7 — it is one quantity
+literal, not `25USD` divided by a bare `kg` identifier. See `docs/prds/unit-expressions.md`
+§2.7 for the full compound-unit literal grammar.
+
 ### Target test file
 
 `crates/reify-eval/tests/money_arithmetic_tests.rs` (owned by task 2379)
