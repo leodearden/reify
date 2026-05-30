@@ -23,10 +23,8 @@
 //   - structure def MotionTrajectory      (mechanism, samples)
 //
 // Module placement: registered last in `stdlib_loader.rs` after `std.process`.
-// Hard dependencies: `std.units` (Mass / Length / Time).  `JointValue` is
-// re-declared locally (see below) so `std.dynamics` does NOT depend on
-// `std.trajectory` load order — tail placement is safe even if `std.trajectory`
-// were removed or reordered.
+// Hard dependencies: `std.units` (Mass / Length / Time) and `std.trajectory`
+// (for the `JointValue` alias used by TrajectorySample).
 //
 // Encoding notes:
 //   1. `JointForceValue` is a marker trait + refining structures — the Reify
@@ -47,21 +45,6 @@
 //      LHS (esc-3115 rule; cf. ZVShaper `> 0Hz` in trajectory.ri). The PSD
 //      inertia check (negative eigenvalue) is a Rust hook in reify-eval (see
 //      dynamics_psd.rs) because no DSL expression form can compute eigenvalues.
-
-// ── Local type aliases ───────────────────────────────────────────────────────
-
-// JointValue — per-joint scalar (position / velocity / acceleration).
-//
-// Re-declared locally so that `std.dynamics` is self-contained with respect
-// to load order: aliases_phase.rs uses first-wins semantics, so this local
-// declaration shadows the identical `JointValue = Real` from `std.trajectory`
-// without a duplicate-declaration error.  If `std.dynamics` were ever loaded
-// before `std.trajectory`, `JointValue` would still resolve from this alias.
-//
-// TODO(joint-value-type): retarget to a proper JointValue type when the
-// kinematic-constraints PRD introduces one (mirrors the same TODO in
-// trajectory.ri).
-pub type JointValue = Real
 
 // ── MassProperties ────────────────────────────────────────────────────────
 

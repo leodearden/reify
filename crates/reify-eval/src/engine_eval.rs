@@ -2232,8 +2232,8 @@ impl Engine {
                         }
                         InertiaResult::Valid(m) => {
                             let tol = crate::dynamics_psd::psd_tol(&m);
-                            let min_eig = crate::dynamics_psd::min_eigenvalue(&m);
-                            if min_eig < -tol {
+                            if !crate::dynamics_psd::is_symmetric_psd(&m, tol) {
+                                let min_eig = crate::dynamics_psd::min_eigenvalue(&m);
                                 diagnostics.push(
                                     Diagnostic::error(format!(
                                         "MassProperties '{}': inertia tensor is not positive \
