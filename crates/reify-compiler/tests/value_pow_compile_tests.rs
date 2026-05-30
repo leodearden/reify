@@ -132,3 +132,115 @@ fn pow_real_real_result_type_is_real() {
     let (op, _, _) = expect_binop(&expr);
     assert_eq!(*op, BinOp::Pow, "op should be BinOp::Pow");
 }
+
+// ── Error-path tests ──────────────────────────────────────────────────────────
+//
+// These tests are RED in step-6 for two reasons:
+//   1. `DiagnosticCode::NonIntegerExponentOnDimensioned` does not yet exist
+//      (causes a compile-time error in this test file).
+//   2. No such diagnostic is emitted by the compiler yet.
+// GREEN after step-7 adds the variant to `DiagnosticCode` and the error emission
+// in the Pow+Scalar branch of `expr.rs`.
+
+use reify_core::DiagnosticCode;
+
+/// Helper: compile `structure def S { param x : Int = 2  let p = <expr> }` and
+/// return all Error-severity diagnostics.  Used for error-path tests where we
+/// expect compilation to fail with a specific diagnostic code.
+fn compile_let_expr_errors(expr: &str) -> Vec<reify_core::Diagnostic> {
+    use reify_test_support::compile_source;
+    let source = format!("structure def S {{ param x : Int = 2  let p = {expr} }}");
+    let module = compile_source(&source);
+    module
+        .diagnostics
+        .into_iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect()
+}
+
+/// `5mm ^ 1.5` must produce `DiagnosticCode::NonIntegerExponentOnDimensioned`.
+///
+/// A real-literal exponent (is_real:true) is rejected on a dimensioned base
+/// because PRD §4.3 requires an integer LITERAL for `Scalar<Q>^n → Scalar<Q^n>`.
+///
+/// RED (step-6): the variant does not yet exist; the compiler emits no diagnostic.
+/// GREEN (step-7): variant added; error emitted in the Pow+Scalar None branch.
+#[test]
+fn pow_dimensioned_real_exp_flagged() {
+    let errors = compile_let_expr_errors("5mm ^ 1.5");
+    let flagged = errors
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::NonIntegerExponentOnDimensioned));
+    assert!(
+        flagged,
+        "5mm ^ 1.5 should produce DiagnosticCode::NonIntegerExponentOnDimensioned, \
+         got errors: {:?}",
+        errors
+    );
+}
+
+/// `5mm ^ 2.0` must produce `DiagnosticCode::NonIntegerExponentOnDimensioned`.
+///
+/// A real-literal exponent with an integer value (2.0, is_real:true) is still
+/// rejected — PRD §4.3 requires an integer LITERAL; the author must write `5mm ^ 2`.
+///
+/// RED (step-6): the variant does not yet exist; the compiler emits no diagnostic.
+/// GREEN (step-7): same path as the 1.5 case.
+#[test]
+fn pow_dimensioned_real_int_valued_exp_flagged() {
+    let errors = compile_let_expr_errors("5mm ^ 2.0");
+    let flagged = errors
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::NonIntegerExponentOnDimensioned));
+    assert!(
+        flagged,
+        "5mm ^ 2.0 should produce DiagnosticCode::NonIntegerExponentOnDimensioned, \
+         got errors: {:?}",
+        errors
+    );
+}
+
+/// `5mm ^ x` (identifier exponent) must produce `DiagnosticCode::NonIntegerExponentOnDimensioned`.
+///
+/// A non-literal exponent (here: a parameter reference) is rejected on a dimensioned
+/// base — the dimension-scaling `Q^n` must be computed at compile time, so only
+/// integer-literal exponents are allowed (PRD §4.3).
+///
+/// RED (step-6): the variant does not yet exist; the compiler emits no diagnostic.
+/// GREEN (step-7): same path — `x` is not a NumberLiteral or UnOp{"-", NumberLiteral},
+/// so the None arm fires.
+#[test]
+fn pow_dimensioned_ident_exp_flagged() {
+    let errors = compile_let_expr_errors("5mm ^ x");
+    let flagged = errors
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::NonIntegerExponentOnDimensioned));
+    assert!(
+        flagged,
+        "5mm ^ x should produce DiagnosticCode::NonIntegerExponentOnDimensioned, \
+         got errors: {:?}",
+        errors
+    );
+}
+
+/// `2.0 ^ 1.5` (dimensionless base) must NOT be flagged with
+/// `DiagnosticCode::NonIntegerExponentOnDimensioned`.
+///
+/// The constraint only applies to dimensioned (`Scalar`) bases; a dimensionless
+/// `Real ^ Real` raises no dimensional error and compiles cleanly.
+///
+/// GREEN on arrival (no change needed): the Pow+Scalar branch only fires when
+/// `compiled_left.result_type` is `Type::Scalar{..}`.
+#[test]
+fn pow_dimensionless_real_exp_not_flagged() {
+    let errors = compile_let_expr_errors("2.0 ^ 1.5");
+    let flagged = errors
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::NonIntegerExponentOnDimensioned));
+    assert!(
+        !flagged,
+        "2.0 ^ 1.5 should NOT produce DiagnosticCode::NonIntegerExponentOnDimensioned, \
+         got errors: {:?}",
+        errors
+    );
+}
