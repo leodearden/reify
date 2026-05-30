@@ -7465,3 +7465,114 @@ mod p2_substitution_diagnostic_tests {
         );
     }
 }
+
+// ── build_mixed_region_mesh unit tests (T12 layer B) ──────────────────────────
+
+#[cfg(test)]
+mod mixed_region_tests {
+    use super::*;
+    use reify_ir::{ElementOrderTag, VolumeMesh};
+    use reify_shell_extract::MidSurfaceMesh;
+
+    /// Small shell mesh: 3 vertices, 1 triangle, thickness len 3.
+    fn make_shell_mesh() -> MidSurfaceMesh {
+        MidSurfaceMesh {
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            triangles: vec![[0, 1, 2]],
+            thickness: vec![0.1, 0.1, 0.1],
+        }
+    }
+
+    /// Small P1 tet mesh: 4 vertices = 1 tet (placed a unit above the shell).
+    fn make_p1_tet_mesh() -> VolumeMesh {
+        VolumeMesh {
+            vertices: vec![
+                0.0, 0.0, 1.0, // node 0
+                1.0, 0.0, 1.0, // node 1
+                0.0, 1.0, 1.0, // node 2
+                0.0, 0.0, 2.0, // node 3
+            ],
+            tet_indices: vec![0, 1, 2, 3],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        }
+    }
+
+    // ── Step 9: unified-mesh merge (no MPCs) ─────────────────────────────────
+
+    /// Merging a shell mesh and a tet mesh with no interfaces concatenates the
+    /// node lists (shell first, tet appended as f64), emits one `Shell` element
+    /// per triangle and one `Tet` element per tet (connectivity offset by the
+    /// shell node count), and produces no MPC rows.
+    #[test]
+    fn build_mixed_region_mesh_merges_shell_then_tet_nodes_and_elements() {
+        let shell = make_shell_mesh();
+        let tet = make_p1_tet_mesh();
+        let result = build_mixed_region_mesh(&shell, &tet, &[])
+            .expect("merge with no interfaces should succeed");
+
+        let n_shell = shell.vertices.len(); // 3
+        let n_tet = tet.vertices.len() / 3; // 4
+        assert_eq!(
+            result.nodes.len(),
+            n_shell + n_tet,
+            "merged node count = shell vertices + tet vertices"
+        );
+        // Shell nodes preserved verbatim, first.
+        assert_eq!(result.nodes[0], [0.0, 0.0, 0.0]);
+        assert_eq!(result.nodes[1], [1.0, 0.0, 0.0]);
+        assert_eq!(result.nodes[2], [0.0, 1.0, 0.0]);
+        // Tet vertices appended (f32 → f64) after the shell nodes.
+        assert_eq!(result.nodes[n_shell], [0.0, 0.0, 1.0]);
+        assert_eq!(result.nodes[n_shell + 3], [0.0, 0.0, 2.0]);
+
+        // Elements: 1 shell triangle + 1 tet.
+        assert_eq!(result.elements.len(), 2, "one shell + one tet element");
+        let shell_elems: Vec<&UnifiedElement> = result
+            .elements
+            .iter()
+            .filter(|e| e.kind == UnifiedElementKind::Shell)
+            .collect();
+        assert_eq!(shell_elems.len(), 1, "one shell element");
+        assert_eq!(
+            shell_elems[0].connectivity,
+            vec![0usize, 1, 2],
+            "shell connectivity = triangle vertex indices"
+        );
+        let tet_elems: Vec<&UnifiedElement> = result
+            .elements
+            .iter()
+            .filter(|e| e.kind == UnifiedElementKind::Tet)
+            .collect();
+        assert_eq!(tet_elems.len(), 1, "one tet element");
+        assert_eq!(
+            tet_elems[0].connectivity,
+            vec![n_shell, n_shell + 1, n_shell + 2, n_shell + 3],
+            "tet connectivity offset by n_shell_nodes"
+        );
+
+        // No interfaces → no MPC rows.
+        assert!(result.mpc_rows.is_empty(), "no interfaces → no MPC rows");
+    }
+
+    /// Empty shell + empty tet + no interfaces → an all-empty `MixedRegionMesh`.
+    #[test]
+    fn build_mixed_region_mesh_on_empty_inputs_is_all_empty() {
+        let empty_shell = MidSurfaceMesh {
+            vertices: vec![],
+            triangles: vec![],
+            thickness: vec![],
+        };
+        let empty_tet = VolumeMesh {
+            vertices: vec![],
+            tet_indices: vec![],
+            element_order: ElementOrderTag::P1,
+            normals: None,
+        };
+        let result = build_mixed_region_mesh(&empty_shell, &empty_tet, &[])
+            .expect("empty merge should succeed");
+        assert!(result.nodes.is_empty(), "no nodes");
+        assert!(result.elements.is_empty(), "no elements");
+        assert!(result.mpc_rows.is_empty(), "no MPC rows");
+    }
+}
