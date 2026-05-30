@@ -170,8 +170,12 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 include_str!("../stdlib/process.ri"),
             ),
             // `std.dynamics` depends only on `std.units` (Mass / Length / Time —
-            // the first module in the sequence). Tail placement is order-safe and
-            // keeps the v0.3 RBD cluster grouped. RBD-α task 3822.
+            // the first module in the sequence).  `JointValue` is re-declared as
+            // `pub type JointValue = Real` locally in dynamics.ri (aliases_phase
+            // first-wins semantics shadow the identical alias from `std.trajectory`
+            // without error), so dynamics.ri does NOT have an order dependency on
+            // `std.trajectory`. Tail placement is order-safe and keeps the v0.3
+            // RBD cluster grouped. RBD-α task 3822.
             (
                 "std.dynamics",
                 include_str!("../stdlib/dynamics.ri"),

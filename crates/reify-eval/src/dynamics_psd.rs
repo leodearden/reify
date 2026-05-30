@@ -6,16 +6,32 @@
 //!
 //! # Design
 //!
-//! `is_symmetric_psd` computes the three eigenvalues of the symmetric part
-//! `S = (M + Mᵀ)/2` via the closed-form Smith/trigonometric method for
-//! symmetric 3×3 matrices (NaN-free for the diagonal/degenerate cases the
-//! tests exercise — diagonal eigenvalues equal the diagonal entries exactly).
-//! PSD is declared when all eigenvalues ≥ −tol.
+//! `is_symmetric_psd` and `min_eigenvalue` compute the three eigenvalues of
+//! the symmetric part `S = (M + Mᵀ)/2` via the closed-form Smith/trigonometric
+//! method for symmetric 3×3 matrices (NaN-free for the diagonal/degenerate
+//! cases the tests exercise — diagonal eigenvalues equal the diagonal entries
+//! exactly).  PSD is declared when all eigenvalues ≥ −tol.
 //!
 //! `inertia_3x3_from_value` extracts a `[[f64;3];3]` from either a
 //! `Value::Matrix` (3 rows × 3 cols) or a nested `Value::List` (3 elements,
 //! each a 3-element `Value::List`). Scalar entries are extracted via their
 //! `si_value` field.
+//!
+//! # Relationship to `reify-solver-elastic/src/eigensolve.rs`
+//!
+//! `reify-solver-elastic` provides a general shift-invert Lanczos + dense
+//! eigensolver for the FEA/buckling solver stack.  The closed-form 3×3 solver
+//! here is **intentionally separate**:
+//!
+//! * `reify-eval` must stay dependency-free from the solver stack to avoid a
+//!   circular crate dependency;
+//! * The analytic Smith 1961 method is exact and NaN-free for the
+//!   diagonal/degenerate cases that arise in practice (no iteration, no
+//!   convergence tolerance tuning);
+//! * The implementation is ~50 lines of pure Rust vs. a sparse-matrix
+//!   eigensolver invocation.
+//!
+//! This duplication is deliberate, not an oversight.
 //!
 //! # References
 //!
@@ -89,16 +105,14 @@ pub fn inertia_3x3_from_value(v: &Value) -> Option<[[f64; 3]; 3]> {
     }
 }
 
-/// Check whether the symmetric 3×3 matrix `m` is positive semi-definite.
+/// Compute the three eigenvalues of the symmetric part `S = (M + Mᵀ)/2`
+/// of a 3×3 matrix `m`, using the analytic closed-form Smith 1961 /
+/// trigonometric method.  Returns the eigenvalues as `[λ0, λ1, λ2]`
+/// (order unspecified).
 ///
-/// Computes the three eigenvalues of the symmetric part `S = (M + Mᵀ)/2`
-/// via the closed-form trigonometric method for real symmetric 3×3 matrices
-/// (Smith 1961). Returns `true` iff the minimum eigenvalue ≥ `−tol`.
-///
-/// The tolerance `tol` should be a small non-negative fraction of the
-/// matrix's maximum-absolute-value norm.  Use [`psd_tol`] to get a
-/// sensible default.
-pub fn is_symmetric_psd(m: &[[f64; 3]; 3], tol: f64) -> bool {
+/// This private helper is shared by [`is_symmetric_psd`] and [`min_eigenvalue`]
+/// to avoid duplicating the eigenvalue logic.
+fn sym_3x3_eigenvalues(m: &[[f64; 3]; 3]) -> [f64; 3] {
     // Symmetrize: S = (M + Mᵀ) / 2
     let s = [
         [
@@ -135,8 +149,7 @@ pub fn is_symmetric_psd(m: &[[f64; 3]; 3], tol: f64) -> bool {
 
     if p1 < f64::EPSILON {
         // Matrix is already diagonal; eigenvalues are the diagonal entries.
-        let min = a.min(b).min(c);
-        return min >= -tol;
+        return [a, b, c];
     }
 
     let q = (a + b + c) / 3.0; // mean of diagonal
@@ -168,8 +181,33 @@ pub fn is_symmetric_psd(m: &[[f64; 3]; 3], tol: f64) -> bool {
     // eig1 is determined by the trace: trace(S) = λ0 + λ1 + λ2
     let eig1 = 3.0 * q - eig0 - eig2;
 
-    let min_eig = eig0.min(eig1).min(eig2);
+    [eig0, eig1, eig2]
+}
+
+/// Check whether the symmetric 3×3 matrix `m` is positive semi-definite.
+///
+/// Computes the three eigenvalues of the symmetric part `S = (M + Mᵀ)/2`
+/// via the closed-form trigonometric method for real symmetric 3×3 matrices
+/// (Smith 1961). Returns `true` iff the minimum eigenvalue ≥ `−tol`.
+///
+/// The tolerance `tol` should be a small non-negative fraction of the
+/// matrix's maximum-absolute-value norm.  Use [`psd_tol`] to get a
+/// sensible default.
+pub fn is_symmetric_psd(m: &[[f64; 3]; 3], tol: f64) -> bool {
+    let eigvals = sym_3x3_eigenvalues(m);
+    let min_eig = eigvals[0].min(eigvals[1]).min(eigvals[2]);
     min_eig >= -tol
+}
+
+/// Returns the minimum eigenvalue of the symmetric part `S = (M + Mᵀ)/2`
+/// of the 3×3 matrix `m`.
+///
+/// Use this alongside [`psd_tol`] to embed the minimum eigenvalue in a
+/// diagnostic message when PSD validation fails.  For a purely non-negative
+/// check, prefer [`is_symmetric_psd`].
+pub fn min_eigenvalue(m: &[[f64; 3]; 3]) -> f64 {
+    let eigvals = sym_3x3_eigenvalues(m);
+    eigvals[0].min(eigvals[1]).min(eigvals[2])
 }
 
 /// A sensible default PSD tolerance: `1e-9 * max(|m_ij|, 1.0)`.

@@ -10,6 +10,7 @@
 
 use reify_compiler::*;
 use reify_core::*;
+use reify_ir::{BinOp, CompiledExprKind, Value};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -130,6 +131,67 @@ fn mass_properties_has_mass_non_negativity_constraint() {
         "MassProperties should carry the `constraint mass >= 0kg` bound, \
          but template.constraints is empty"
     );
+
+    // Verify the constraint is specifically `mass >= 0kg` and not just any
+    // unrelated constraint or one with a dimension-incompatible bare `0` RHS
+    // (esc-3115: a bare 0 is Type::Real, which is dimension-incompatible with
+    // the Mass-typed LHS and would compile differently).
+    let cc = &template.constraints[0];
+    let (op, left, right) = match &cc.expr.kind {
+        CompiledExprKind::BinOp { op, left, right } => (op, left.as_ref(), right.as_ref()),
+        other => panic!(
+            "expected `constraint mass >= 0kg` to compile to a BinOp expression, \
+             got {:?}",
+            other
+        ),
+    };
+
+    assert_eq!(
+        *op,
+        BinOp::Ge,
+        "mass constraint should use >= (BinOp::Ge), got {:?}",
+        op
+    );
+
+    match &left.kind {
+        CompiledExprKind::ValueRef(id) => {
+            assert_eq!(
+                id.member, "mass",
+                "constraint LHS should reference `mass`, got `{}`",
+                id.member
+            );
+        }
+        other => panic!(
+            "expected constraint LHS to be a ValueRef to `mass`, got {:?}",
+            other
+        ),
+    }
+
+    match &right.kind {
+        CompiledExprKind::Literal(Value::Scalar {
+            si_value,
+            dimension,
+        }) => {
+            assert!(
+                si_value.abs() < 1e-12,
+                "constraint RHS should be 0kg (si_value 0.0), got {}",
+                si_value
+            );
+            assert_eq!(
+                *dimension,
+                DimensionVector::MASS,
+                "constraint RHS should be Mass-dimensioned (esc-3115: bare `0` would \
+                 be Type::Real and dimension-incompatible with the Mass LHS), \
+                 got {:?}",
+                dimension
+            );
+        }
+        other => panic!(
+            "expected constraint RHS to be a Mass-dimensioned Scalar literal `0kg`, \
+             got {:?}",
+            other
+        ),
+    }
 }
 
 // ─── JointForceValue trait ────────────────────────────────────────────────────

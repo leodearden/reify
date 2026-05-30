@@ -1231,14 +1231,18 @@ pub enum DiagnosticCode {
     /// Origin: `crates/reify-eval/src/engine_eval.rs` (post-eval MassProperties
     /// PSD hook in the RBD-α dynamics foundation pass).
     ///
-    /// Emitted as a `Severity::Error` when a `MassProperties(...)` constructor
-    /// produces a `Value::StructureInstance` whose `inertia` field is not
-    /// positive semi-definite (minimum eigenvalue < −tol of the symmetric part
-    /// `(M + Mᵀ)/2`). The cell is replaced with `Value::Undef` so downstream
-    /// dynamics consumers never operate on a physically invalid inertia tensor.
+    /// Emitted as a `Severity::Error` in two situations, both replacing the
+    /// cell with `Value::Undef` so downstream dynamics consumers never operate
+    /// on a physically invalid or unresolvable inertia tensor:
     ///
-    /// Canonical message form:
-    /// `"MassProperties '<name>': inertia tensor is not positive semi-definite (min eigenvalue ≈ <λ_min>)"`.
+    /// 1. The `inertia` field is present but cannot be parsed as a 3×3 numeric
+    ///    matrix (wrong shape, non-numeric cell).  Canonical message form:
+    ///    `"MassProperties '<name>': inertia field cannot be parsed as a 3×3 numeric matrix"`.
+    ///
+    /// 2. The symmetric part `(M + Mᵀ)/2` has a minimum eigenvalue below −tol,
+    ///    i.e. the inertia tensor is not positive semi-definite.  Canonical
+    ///    message form:
+    ///    `"MassProperties '<name>': inertia tensor is not positive semi-definite (min eigenvalue ≈ <λ_min>)"`.
     ///
     /// The PRD-prose mnemonic for this code is `E_DynamicsInertiaNotPSD`.
     /// Registered in task 3822 (RBD-α, PRD §dynamics).

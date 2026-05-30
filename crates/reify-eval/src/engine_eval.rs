@@ -2153,7 +2153,7 @@ impl Engine {
         // Post-eval pass: for every cell whose value is a StructureInstance with
         // type_name == "MassProperties", extract the `inertia` field, compute the
         // symmetric-3×3 eigenvalues analytically, and replace the cell with
-        // Value::Undef (Determined) when the matrix is non-PSD.
+        // Value::Undef (Determined) when the matrix is non-PSD or malformed.
         //
         // Design rationale: `reify-expr::eval_structure_instance_ctor` is
         // intentionally registry-free and diagnostic-free (SIR-α design decision
@@ -2161,41 +2161,95 @@ impl Engine {
         // reify-eval, where the diagnostics sink and value maps are both accessible.
         //
         // The immutable `values` borrow is released before any mutable insert by
-        // collecting target (id, inertia_matrix) pairs first.
+        // collecting target pairs first.
+        //
+        // Performance: the scan is guarded by a fast any() check so designs that
+        // never instantiate MassProperties skip the extraction pass entirely.
         {
-            let mass_props_targets: Vec<(ValueCellId, [[f64; 3]; 3])> = values
-                .iter()
-                .filter_map(|(id, val)| {
-                    if let Value::StructureInstance(data) = val
-                        && data.type_name == "MassProperties"
-                    {
-                        let m = data
-                            .fields
-                            .get(&"inertia".to_string())
-                            .and_then(crate::dynamics_psd::inertia_3x3_from_value)?;
-                        Some((id.clone(), m))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+            // Fast early-out: skip the O(n) extraction pass when no MassProperties
+            // cell exists (the common case when std.dynamics is unused).
+            let has_mass_props = values.iter().any(|(_, v)| {
+                matches!(v, Value::StructureInstance(d) if d.type_name == "MassProperties")
+            });
 
-            for (id, m) in mass_props_targets {
-                let tol = crate::dynamics_psd::psd_tol(&m);
-                if !crate::dynamics_psd::is_symmetric_psd(&m, tol) {
-                    diagnostics.push(
-                        Diagnostic::error(format!(
-                            "MassProperties `{}`: inertia tensor is not positive semi-definite \
-                             (E_DynamicsInertiaNotPSD)",
-                            id,
-                        ))
-                        .with_code(DiagnosticCode::DynamicsInertiaNotPSD),
-                    );
-                    values.insert(id.clone(), Value::Undef);
-                    snapshot.values.insert(
-                        id.clone(),
-                        (Value::Undef, DeterminacyState::Determined),
-                    );
+            if has_mass_props {
+                // Classify each MassProperties cell's inertia field.
+                enum InertiaResult {
+                    /// Field is absent or already Undef — leave untouched (no false positives).
+                    Skip,
+                    /// Field is present but could not be parsed as a 3×3 numeric matrix.
+                    Malformed,
+                    /// Field parsed successfully — run PSD check.
+                    Valid([[f64; 3]; 3]),
+                }
+
+                let mass_props_cells: Vec<(ValueCellId, InertiaResult)> = values
+                    .iter()
+                    .filter_map(|(id, val)| {
+                        if let Value::StructureInstance(data) = val
+                            && data.type_name == "MassProperties"
+                        {
+                            let result = match data.fields.get(&"inertia".to_string()) {
+                                None | Some(Value::Undef) => InertiaResult::Skip,
+                                Some(v) => {
+                                    match crate::dynamics_psd::inertia_3x3_from_value(v) {
+                                        Some(m) => InertiaResult::Valid(m),
+                                        None => InertiaResult::Malformed,
+                                    }
+                                }
+                            };
+                            // Only collect cells that need attention.
+                            match result {
+                                InertiaResult::Skip => None,
+                                other => Some((id.clone(), other)),
+                            }
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                for (id, result) in mass_props_cells {
+                    match result {
+                        InertiaResult::Skip => unreachable!("Skip filtered above"),
+                        InertiaResult::Malformed => {
+                            // A present-but-unparseable inertia field (wrong shape, non-numeric
+                            // cell) is surfaced as E_DynamicsInertiaNotPSD so malformed tensors
+                            // never silently flow to dynamics consumers.
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "MassProperties '{}': inertia field cannot be parsed as \
+                                     a 3×3 numeric matrix",
+                                    id,
+                                ))
+                                .with_code(DiagnosticCode::DynamicsInertiaNotPSD),
+                            );
+                            values.insert(id.clone(), Value::Undef);
+                            snapshot.values.insert(
+                                id.clone(),
+                                (Value::Undef, DeterminacyState::Determined),
+                            );
+                        }
+                        InertiaResult::Valid(m) => {
+                            let tol = crate::dynamics_psd::psd_tol(&m);
+                            let min_eig = crate::dynamics_psd::min_eigenvalue(&m);
+                            if min_eig < -tol {
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "MassProperties '{}': inertia tensor is not positive \
+                                         semi-definite (min eigenvalue ≈ {:.3e})",
+                                        id, min_eig,
+                                    ))
+                                    .with_code(DiagnosticCode::DynamicsInertiaNotPSD),
+                                );
+                                values.insert(id.clone(), Value::Undef);
+                                snapshot.values.insert(
+                                    id.clone(),
+                                    (Value::Undef, DeterminacyState::Determined),
+                                );
+                            }
+                        }
+                    }
                 }
             }
         }
