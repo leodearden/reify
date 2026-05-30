@@ -380,3 +380,56 @@ fn ceramicliner_specific_heat_folds_to_scalar_880() {
         ),
     }
 }
+
+// ── (h) Copper.dielectric_strength compile-time fold pin ─────────────────────
+
+/// After step-8 migrates `0.0 * 1V / 1m` → `0.0V/m`, the Copper template's
+/// dielectric_strength param default must fold at compile time to a single
+/// `CompiledExprKind::Literal(Value::Scalar { .. })` with si_value exactly 0.0
+/// and dimension == DIELECTRIC_STRENGTH.
+///
+/// RED before step-8: the default is the `0.0 * 1V / 1m` BinOp tree,
+/// so the Literal(Scalar) match fails.
+#[test]
+fn copper_dielectric_strength_folds_to_scalar_zero() {
+    let (compiled, _engine, _eval) = compile_and_eval();
+
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Copper")
+        .expect("Copper template should exist");
+
+    let vc = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "dielectric_strength")
+        .expect("Copper should have a dielectric_strength value cell");
+
+    let default_expr = vc
+        .default_expr
+        .as_ref()
+        .expect("Copper.dielectric_strength must have a default expression");
+
+    match &default_expr.kind {
+        CompiledExprKind::Literal(Value::Scalar { si_value, dimension }) => {
+            assert!(
+                si_value.abs() < 1e-12,
+                "Copper.dielectric_strength si_value should be exactly 0.0, got {}",
+                si_value
+            );
+            assert_eq!(
+                *dimension,
+                DimensionVector::DIELECTRIC_STRENGTH,
+                "Copper.dielectric_strength dimension should be DIELECTRIC_STRENGTH, \
+                 got {:?}",
+                dimension
+            );
+        }
+        other => panic!(
+            "Copper.dielectric_strength default_expr should be \
+             Literal(Scalar) after compound-literal migration, got {:?}",
+            other
+        ),
+    }
+}
