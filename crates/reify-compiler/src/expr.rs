@@ -799,11 +799,65 @@ pub(crate) fn compile_expr_guarded(
             );
             match resolve_binop(op) {
                 Some(bin_op) => {
-                    let result_type = infer_binop_type(
+                    let mut result_type = infer_binop_type(
                         bin_op,
                         &compiled_left.result_type,
                         &compiled_right.result_type,
                     );
+
+                    // Dimension-scaling for `Scalar<Q> ^ n → Scalar<Q^n>` (task-3805 / PRD §4.3).
+                    //
+                    // `infer_binop_type(Pow, Scalar{Q}, _)` returns `left.clone() = Scalar{Q}`,
+                    // which is correct for `Int ^ Int` and `Real ^ Real` but wrong for `Scalar`
+                    // bases — the dimension must be raised to the n-th power.
+                    //
+                    // The EXACT compile-time integer n is needed to compute `Q^n`, so the
+                    // refinement runs here in `expr.rs` where the right `&Expr` AST is in scope.
+                    // (See design_decisions in plan.json — `infer_binop_type` only sees types,
+                    // not literal values, so it structurally cannot compute `Q^n`.)
+                    //
+                    // Because `^` binds tighter than unary `-`, `5mm ^ -2` parses as
+                    // `5mm ^ (-2)` — the exponent arrives as `UnOp{"-", NumberLiteral{2, false}}`,
+                    // not as a negative number literal.  Both shapes are matched.
+                    //
+                    // Non-integer exponents on dimensioned bases (the error path) are handled
+                    // in step-7 via `DiagnosticCode::NonIntegerExponentOnDimensioned`.
+                    if bin_op == BinOp::Pow {
+                        if let Type::Scalar { dimension } = compiled_left.result_type {
+                            // Extract a signed integer literal from the right AST node.
+                            let int_exp: Option<i32> = match &right.kind {
+                                reify_ast::ExprKind::NumberLiteral {
+                                    value,
+                                    is_real: false,
+                                } => Some(*value as i32),
+                                reify_ast::ExprKind::UnOp { op: unary_op, operand }
+                                    if unary_op.as_str() == "-" =>
+                                {
+                                    match &operand.kind {
+                                        reify_ast::ExprKind::NumberLiteral {
+                                            value,
+                                            is_real: false,
+                                        } => Some(-(*value as i32)),
+                                        _ => None,
+                                    }
+                                }
+                                _ => None,
+                            };
+                            if let Some(n) = int_exp {
+                                let scaled = dimension.pow(n as i8);
+                                result_type = if scaled.is_dimensionless() {
+                                    // `5mm ^ 0` or any Scalar<Q^0> collapses to Real,
+                                    // matching the existing BinOp::Div dimensionless→Real
+                                    // convention.
+                                    Type::Real
+                                } else {
+                                    Type::Scalar { dimension: scaled }
+                                };
+                            }
+                            // None case: non-integer exponent on dimensioned base.
+                            // The error diagnostic is emitted in step-7.
+                        }
+                    }
 
                     // Dimension compatibility check for Add/Sub
                     if matches!(bin_op, BinOp::Add | BinOp::Sub) {
