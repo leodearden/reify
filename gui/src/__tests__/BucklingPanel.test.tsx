@@ -243,19 +243,15 @@ describe('BucklingPanel', () => {
     });
 
     it('(h) disposes the renderer on root cleanup', () => {
-      let disposeRoot!: () => void;
-      createRoot((d) => {
-        disposeRoot = d;
-        const store = createBucklingStore();
-        store.ingestFrame({ mode_index: 0, phase: 0.0, displaced_positions: BASE });
-        render(() => <BucklingPanel store={store} />);
-      });
+      const store = createBucklingStore();
+      store.ingestFrame({ mode_index: 0, phase: 0.0, displaced_positions: BASE });
+      const { unmount } = render(() => <BucklingPanel store={store} />);
 
       // Invoke one frame so the renderer is active
       capturedFrame?.(100);
 
-      // Disposing the root triggers Solid's onCleanup callbacks
-      disposeRoot();
+      // unmount() disposes the render root, triggering Solid's onCleanup
+      unmount();
       expect(rendererDisposeSpy).toHaveBeenCalledTimes(1);
     });
   });

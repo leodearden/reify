@@ -15,8 +15,9 @@
  */
 
 import { For, Show, onMount, onCleanup } from 'solid-js';
+import { Scene, PerspectiveCamera, WebGLRenderer } from 'three';
 import type { BucklingStore } from '../stores/bucklingStore';
-import { createBucklingAnimator } from '../viewport/bucklingAnimator';
+import { createBucklingAnimator, computePointCloudBounds } from '../viewport/bucklingAnimator';
 
 // ---------------------------------------------------------------------------
 // Props
@@ -59,6 +60,23 @@ export function BucklingPanel(props: BucklingPanelProps) {
     if (!base) return;
 
     const animator = createBucklingAnimator(base);
+
+    // Build a self-contained mini-scene for the panel canvas.
+    const scene = new Scene();
+    scene.add(animator.object3d);
+    scene.add(animator.undeformedOverlay);
+
+    const { center, radius } = computePointCloudBounds(base);
+    const d = radius > 0 ? radius * 3 : 1;
+    const camera = new PerspectiveCamera(60, canvasRef.width / canvasRef.height, 0.1, 10000);
+    camera.up.set(0, 0, 1); // Z-up — matches kernel convention
+    camera.position.set(center[0] + d, center[1] + d, center[2] + d);
+    camera.lookAt(center[0], center[1], center[2]);
+    camera.updateProjectionMatrix();
+
+    const renderer = new WebGLRenderer({ canvas: canvasRef, antialias: true });
+    renderer.setSize(canvasRef.width, canvasRef.height);
+
     let rafId: number;
     let lastTime: number | null = null;
 
@@ -69,6 +87,7 @@ export function BucklingPanel(props: BucklingPanelProps) {
       const positions = store.currentDisplacedPositions();
       if (positions) animator.update(positions);
       animator.setUndeformedVisible(store.state.showUndeformed);
+      renderer.render(scene, camera);
       rafId = requestAnimationFrame(frame);
     }
 
@@ -77,6 +96,7 @@ export function BucklingPanel(props: BucklingPanelProps) {
     onCleanup(() => {
       cancelAnimationFrame(rafId);
       animator.dispose();
+      renderer.dispose();
     });
   });
 
