@@ -232,46 +232,67 @@ pub fn partition_body(
     // KD-tree acceleration is a documented follow-up (PRD T12 perf note).
     let spacing = mask.inner().spacing;
     let origin = mask.inner().origin;
+
+    // Pre-compute each region's voxel world coordinates once. The voxel→world
+    // transform is shared across every (shell, tet) pair, so caching it here
+    // avoids rebuilding a region's world-coordinate vector inside the O(n²)
+    // pairwise scan below.
+    let region_world: Vec<Vec<[f64; 3]>> = seg
+        .regions
+        .iter()
+        .map(|region| {
+            region
+                .voxels
+                .iter()
+                .map(|&v| voxel_to_world(v, origin, spacing))
+                .collect()
+        })
+        .collect();
+
     let mut interfaces: Vec<ShellTetInterface> = Vec::new();
     for (si, shell_region) in seg.regions.iter().enumerate() {
         if region_kinds[si] != RegionMeshKind::Shell {
             continue;
         }
         let threshold = opts.interface_proximity_factor * shell_region.mean_thickness;
+        let shell_world = &region_world[si];
+        // Area-weighted mid-surface normal of the shell region, derived at most
+        // once per shell region (it depends only on the shell region, not the
+        // tet it ties to). Computed lazily on the first interface so the
+        // degenerate-normal guard fires only where an interface actually needs
+        // it — a shell region with no nearby tet never derives a normal.
+        let mut shell_normal: Option<[f64; 3]> = None;
         for (ti, tet_region) in seg.regions.iter().enumerate() {
             // Skip Shell↔Shell and Tet↔Tet pairs — only shell↔tet junctions
             // are tied. (`si == ti` is excluded since a region cannot be both.)
             if region_kinds[ti] != RegionMeshKind::Tet {
                 continue;
             }
-            let min_dist =
-                min_world_distance(&shell_region.voxels, &tet_region.voxels, origin, spacing);
-            if min_dist < threshold {
-                // Area-weighted mid-surface normal of the shell region. A
-                // ~zero accumulation (all selected triangles zero-area, or none
-                // labelled to this region) has no well-defined tie normal — the
-                // guard fires only here, where an interface actually needs it.
-                let normal = shell_region_normal(shell_region.label, mesh, &seg.triangle_labels)
-                    .ok_or(PartitionError::DegenerateInterfaceNormal {
-                        shell_region: shell_region.label,
-                    })?;
-                // Tie point: the centroid of the shell voxels closest to this
-                // tet region. A detected interface implies both voxel sets are
-                // non-empty (else `min_dist` would be ∞ ≥ threshold), so this is
-                // always `Some`.
-                let location = nearest_shell_centroid(
-                    &shell_region.voxels,
-                    &tet_region.voxels,
-                    origin,
-                    spacing,
-                )
-                .expect("a detected interface implies non-empty shell and tet voxel sets");
+            // One fused pass yields both the minimum shell↔tet distance and the
+            // tie location (centroid of the nearest shell voxels). `None` ⇒ a
+            // voxel set is empty ⇒ no interface (distance would be ∞ ≥ threshold).
+            let Some(scan) = scan_proximity(shell_world, &region_world[ti]) else {
+                continue;
+            };
+            if scan.min_distance < threshold {
+                let normal = match shell_normal {
+                    Some(n) => n,
+                    None => {
+                        let n =
+                            shell_region_normal(shell_region.label, mesh, &seg.triangle_labels)
+                                .ok_or(PartitionError::DegenerateInterfaceNormal {
+                                    shell_region: shell_region.label,
+                                })?;
+                        shell_normal = Some(n);
+                        n
+                    }
+                };
                 interfaces.push(ShellTetInterface {
                     shell_region: shell_region.label,
                     tet_region: tet_region.label,
                     normal,
                     thickness: shell_region.mean_thickness,
-                    location,
+                    location: scan.nearest_shell_centroid,
                 });
             }
         }
@@ -293,33 +314,69 @@ fn voxel_to_world(idx: [i32; 3], origin: [f64; 3], spacing: [f64; 3]) -> [f64; 3
     ]
 }
 
-/// Minimum Euclidean distance (world units) between any voxel of `a` and any
-/// voxel of `b`. Returns `f64::INFINITY` if either set is empty (so an empty
-/// region never forms an interface).
+/// Result of one shell↔tet voxel proximity scan ([`scan_proximity`]).
+struct ProximityScan {
+    /// Minimum Euclidean distance (world units) between the two voxel sets.
+    min_distance: f64,
+    /// World centroid of the shell voxels achieving that minimum distance — the
+    /// tie "contact patch" location.
+    nearest_shell_centroid: [f64; 3],
+}
+
+/// A single O(|shell|·|tet|) pass over pre-computed world coordinates yielding
+/// **both** the minimum shell↔tet distance and the centroid of the nearest
+/// shell voxels. Returns `None` if either set is empty (so an empty region never
+/// forms an interface).
 ///
-/// O(|a|·|b|) brute-force pairwise scan; see [`partition_body`] for the
-/// acceleration follow-up note.
-fn min_world_distance(
-    a: &[[i32; 3]],
-    b: &[[i32; 3]],
-    origin: [f64; 3],
-    spacing: [f64; 3],
-) -> f64 {
-    let b_world: Vec<[f64; 3]> = b.iter().map(|&v| voxel_to_world(v, origin, spacing)).collect();
-    let mut min_sq = f64::INFINITY;
-    for &va in a {
-        let wa = voxel_to_world(va, origin, spacing);
-        for wb in &b_world {
-            let dx = wa[0] - wb[0];
-            let dy = wa[1] - wb[1];
-            let dz = wa[2] - wb[2];
+/// This fuses what were previously two independent O(|shell|·|tet|) scans (one
+/// for the distance, one for the contact-patch centroid): each shell voxel's
+/// minimum squared distance to the tet set is computed once, the global minimum
+/// is tracked, then the shell voxels at (≈) that minimum are averaged. The brute
+/// force is the documented first-slice tradeoff (see [`partition_body`]); a
+/// spatial-hash / KD-tree index is the follow-up.
+fn scan_proximity(shell_world: &[[f64; 3]], tet_world: &[[f64; 3]]) -> Option<ProximityScan> {
+    if shell_world.is_empty() || tet_world.is_empty() {
+        return None;
+    }
+    // Per-shell-voxel minimum squared distance to the tet set, tracking the
+    // global minimum across all shell voxels.
+    let mut min_sq_per_shell = Vec::with_capacity(shell_world.len());
+    let mut global_min = f64::INFINITY;
+    for ws in shell_world {
+        let mut m = f64::INFINITY;
+        for wt in tet_world {
+            let dx = ws[0] - wt[0];
+            let dy = ws[1] - wt[1];
+            let dz = ws[2] - wt[2];
             let d_sq = dx * dx + dy * dy + dz * dz;
-            if d_sq < min_sq {
-                min_sq = d_sq;
+            if d_sq < m {
+                m = d_sq;
             }
         }
+        if m < global_min {
+            global_min = m;
+        }
+        min_sq_per_shell.push(m);
     }
-    min_sq.sqrt()
+
+    // Average the shell voxels at (≈) the global minimum distance.
+    const TOL: f64 = 1e-9;
+    let mut sum = [0.0f64; 3];
+    let mut count = 0usize;
+    for (i, &d_sq) in min_sq_per_shell.iter().enumerate() {
+        if d_sq <= global_min + TOL {
+            sum[0] += shell_world[i][0];
+            sum[1] += shell_world[i][1];
+            sum[2] += shell_world[i][2];
+            count += 1;
+        }
+    }
+    // `count >= 1` since at least the global-min voxel qualifies.
+    let n = count as f64;
+    Some(ProximityScan {
+        min_distance: global_min.sqrt(),
+        nearest_shell_centroid: [sum[0] / n, sum[1] / n, sum[2] / n],
+    })
 }
 
 /// Normalized **area-weighted** normal of the mid-surface triangles belonging
@@ -361,71 +418,6 @@ fn shell_region_normal(
         return None;
     }
     Some([acc[0] / mag, acc[1] / mag, acc[2] / mag])
-}
-
-/// World centroid of the shell voxels closest to the tet region — the tie
-/// "contact patch".
-///
-/// Each shell voxel's minimum distance to the tet voxel set is computed; the
-/// voxels achieving the global minimum (within a small tolerance) are averaged
-/// in world space. Returns `None` if either voxel set is empty.
-///
-/// O(|shell|·|tet|) — same brute-force scan as [`min_world_distance`]; shares
-/// the documented spatial-hash acceleration follow-up.
-fn nearest_shell_centroid(
-    shell_voxels: &[[i32; 3]],
-    tet_voxels: &[[i32; 3]],
-    origin: [f64; 3],
-    spacing: [f64; 3],
-) -> Option<[f64; 3]> {
-    if shell_voxels.is_empty() || tet_voxels.is_empty() {
-        return None;
-    }
-    let tet_world: Vec<[f64; 3]> = tet_voxels
-        .iter()
-        .map(|&v| voxel_to_world(v, origin, spacing))
-        .collect();
-    let shell_world: Vec<[f64; 3]> = shell_voxels
-        .iter()
-        .map(|&v| voxel_to_world(v, origin, spacing))
-        .collect();
-
-    // Per-shell-voxel minimum squared distance to the tet set, tracking the
-    // global minimum.
-    let mut min_sq_per_shell = Vec::with_capacity(shell_world.len());
-    let mut global_min = f64::INFINITY;
-    for ws in &shell_world {
-        let mut m = f64::INFINITY;
-        for wt in &tet_world {
-            let dx = ws[0] - wt[0];
-            let dy = ws[1] - wt[1];
-            let dz = ws[2] - wt[2];
-            let d_sq = dx * dx + dy * dy + dz * dz;
-            if d_sq < m {
-                m = d_sq;
-            }
-        }
-        if m < global_min {
-            global_min = m;
-        }
-        min_sq_per_shell.push(m);
-    }
-
-    // Average the voxels at (≈) the global minimum distance.
-    const TOL: f64 = 1e-9;
-    let mut sum = [0.0f64; 3];
-    let mut count = 0usize;
-    for (i, &d_sq) in min_sq_per_shell.iter().enumerate() {
-        if d_sq <= global_min + TOL {
-            sum[0] += shell_world[i][0];
-            sum[1] += shell_world[i][1];
-            sum[2] += shell_world[i][2];
-            count += 1;
-        }
-    }
-    // `count >= 1` since at least the global-min voxel qualifies.
-    let n = count as f64;
-    Some([sum[0] / n, sum[1] / n, sum[2] / n])
 }
 
 #[cfg(test)]
@@ -763,6 +755,78 @@ mod tests {
             err,
             PartitionError::DegenerateInterfaceNormal { shell_region: 0 },
             "error must name the offending shell region label"
+        );
+    }
+
+    // ── Amendment: validation-branch error-path coverage ──────────────────────
+
+    /// A non-positive `interface_proximity_factor` is rejected with
+    /// `InvalidProximityFactor` carrying the offending value — driven through an
+    /// actual `partition_body` call (not just compile-probed), covering both the
+    /// zero and negative cases.
+    #[test]
+    fn partition_body_rejects_non_positive_proximity_factor() {
+        let mask = SingleBodyMask::new(MedialMask {
+            spacing: [1.0, 1.0, 1.0],
+            origin: [0.0, 0.0, 0.0],
+            voxels: vec![],
+        });
+        let seg = SegmentationResult {
+            regions: vec![],
+            vertex_labels: vec![],
+            triangle_labels: vec![],
+        };
+        let mesh = MidSurfaceMesh {
+            vertices: vec![],
+            triangles: vec![],
+            thickness: vec![],
+        };
+
+        for value in [0.0, -1.0] {
+            let opts = PartitionOptions {
+                interface_proximity_factor: value,
+            };
+            let err = partition_body(&mask, &seg, &mesh, &opts)
+                .expect_err("a non-positive proximity factor must error");
+            assert_eq!(
+                err,
+                PartitionError::InvalidProximityFactor { value },
+                "error must carry the offending factor (value = {value})"
+            );
+        }
+    }
+
+    /// A mesh whose `thickness` and `vertices` arrays disagree in length is
+    /// rejected with `MeshLengthMismatch` reporting both lengths — driven
+    /// through `partition_body`.
+    #[test]
+    fn partition_body_rejects_mesh_with_mismatched_parallel_arrays() {
+        let mask = SingleBodyMask::new(MedialMask {
+            spacing: [1.0, 1.0, 1.0],
+            origin: [0.0, 0.0, 0.0],
+            voxels: vec![],
+        });
+        let seg = SegmentationResult {
+            regions: vec![],
+            vertex_labels: vec![],
+            triangle_labels: vec![],
+        };
+        // 2 vertices but only 1 thickness entry → mismatch.
+        let mesh = MidSurfaceMesh {
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            triangles: vec![],
+            thickness: vec![1.0],
+        };
+
+        let err = partition_body(&mask, &seg, &mesh, &PartitionOptions::default())
+            .expect_err("a mesh with mismatched parallel arrays must error");
+        assert_eq!(
+            err,
+            PartitionError::MeshLengthMismatch {
+                vertices_len: 2,
+                thickness_len: 1,
+            },
+            "error must report both array lengths"
         );
     }
 }
