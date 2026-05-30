@@ -67,7 +67,7 @@ fn identity_fn(
     _cancellation: &CancellationHandle,
 ) -> ComputeOutcome {
     ComputeOutcome::Completed {
-        result: value_inputs[0].clone(),
+        result: value_inputs.first().cloned().unwrap_or(Value::Undef),
         new_warm_state: None,
         cost_per_byte: None,
         diagnostics: vec![],
