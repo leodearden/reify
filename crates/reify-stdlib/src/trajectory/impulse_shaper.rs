@@ -221,6 +221,37 @@ mod tests {
         );
     }
 
+    // ── step-5: ZVD train construction ──────────────────────────────────────
+
+    /// ZVD: exactly 3 impulses; times [0, π/ω_d, 2π/ω_d]; amplitudes [1,2K,K²]/(1+K)²;
+    /// amplitude_sum≈1; residual_vibration at design ≤1e-12.
+    #[test]
+    fn zvd_train_construction_and_zero_residual() {
+        let omega_n = 2.0 * PI * 8.0;
+        let zeta = 0.1_f64;
+
+        let omega_d = omega_n * (1.0 - zeta * zeta).sqrt();
+        let k = (-zeta * PI / (1.0 - zeta * zeta).sqrt()).exp();
+        let norm = (1.0 + k) * (1.0 + k);
+
+        let train = ImpulseTrain::zvd(omega_n, zeta);
+
+        assert_eq!(train.impulses.len(), 3, "ZVD must have 3 impulses");
+        assert_close(train.impulses[0].time, 0.0, 1e-12, "ZVD t0");
+        assert_close(train.impulses[1].time, PI / omega_d, 1e-12, "ZVD t1");
+        assert_close(train.impulses[2].time, 2.0 * PI / omega_d, 1e-12, "ZVD t2");
+        assert_close(train.impulses[0].amplitude, 1.0 / norm, 1e-12, "ZVD A0");
+        assert_close(train.impulses[1].amplitude, 2.0 * k / norm, 1e-12, "ZVD A1");
+        assert_close(train.impulses[2].amplitude, k * k / norm, 1e-12, "ZVD A2");
+        assert_close(train.amplitude_sum(), 1.0, 1e-12, "ZVD amplitude_sum");
+
+        let v = train.residual_vibration(omega_n, zeta);
+        assert!(
+            v.abs() <= 1e-12,
+            "ZVD residual at design should be ≈0, got {v:.3e}"
+        );
+    }
+
     // ── step-3: residual_vibration ───────────────────────────────────────────
 
     /// A unit impulse at t=0 has V=1 (baseline).
