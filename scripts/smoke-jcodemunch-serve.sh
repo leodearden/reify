@@ -63,9 +63,8 @@ trap 'rm -rf "$SMOKE_TMPDIR"' EXIT
 # ── Assertion 1: MCP handshake ─────────────────────────────────────────────────
 echo "smoke-jcodemunch-serve: [1] MCP handshake at $SERVE_URL ..."
 
-SESSION_ID="smoke-$(date +%s)-$$"
-
-# POST initialize; capture response headers + body.
+# POST initialize WITHOUT mcp-session-id — server assigns one and returns it
+# in the response Mcp-Session-Id header (streamable-HTTP MCP protocol).
 http_code=$(curl -s \
     -o "$SMOKE_TMPDIR/init_body.json" \
     -D "$SMOKE_TMPDIR/init_headers.txt" \
@@ -74,7 +73,6 @@ http_code=$(curl -s \
     -X POST "$SERVE_URL" \
     -H "Content-Type: application/json" \
     -H "Accept: application/json, text/event-stream" \
-    -H "mcp-session-id: $SESSION_ID" \
     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke-jcodemunch","version":"0.1"}}}' \
     2>/dev/null) || {
     echo "FAIL [1]: curl to $SERVE_URL failed (connection refused or timeout)." >&2
@@ -129,12 +127,12 @@ echo "smoke-jcodemunch-serve: assertion 1 OK (HTTP 200, JSON-RPC body)"
 # ── Assertion 2: get_changed_symbols returns NON-EMPTY symbol data ─────────────
 echo "smoke-jcodemunch-serve: [2] get_changed_symbols for $REPO_ID ($COMMIT_FROM..$COMMIT_TO) ..."
 
-# Guard: skip assertion 2+3 if commit range not yet resolved.
+# Guard: FAIL assertion 2+3 if commit range not yet resolved.
 if [[ "$COMMIT_FROM" == "__COMMIT_FROM__" || "$COMMIT_TO" == "__COMMIT_TO__" ]]; then
-    echo "SKIP [2+3]: commit range not yet resolved (step-4 will wire this)." >&2
-    echo "            Re-run after step-4 implementation." >&2
-    echo "smoke-jcodemunch-serve: assertion 1 OK — assertions 2+3 pending step-4"
-    exit 0
+    echo "FAIL [2+3]: commit range not yet resolved." >&2
+    echo "            Wire COMMIT_FROM and COMMIT_TO (step-4) with a reify range" >&2
+    echo "            that yields non-empty changed_symbols against repo $REPO_ID." >&2
+    exit 1
 fi
 
 http_code2=$(curl -s \
