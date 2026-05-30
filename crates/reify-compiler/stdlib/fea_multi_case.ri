@@ -339,6 +339,51 @@ structure def PressureLoad : Load {
     param direction : String = "normal"
 }
 
+// TractionLoad — wave-3 replacement for the `traction_load` builtin (loads.rs).
+// Field keys (face, traction) preserve the retired builtin's emitted keys per
+// Q-SIR-4 (preserve-don't-redesign): `face` was the `face` key, `traction` was
+// the `traction` key in the `make_kind_map("traction_load", ...)` call.
+//
+//   `face`     — geometry selector. `String` is a placeholder for `FaceSelector`
+//                until the topology-selector type alias lands; mirrors the `face`
+//                key emitted by the pre-retirement builtin.
+//   `traction` — applied traction. `Real` is a placeholder for
+//                `Vector3<Pressure>` until the dimensional vector type aliases
+//                land; mirrors the `traction` key in the retired builtin.
+//
+// All fields default so a bare `TractionLoad()` constructor succeeds (covers
+// FEA-2 boundary tests in `crates/reify-eval/tests/fea_loads_stdlib_smoke.rs`).
+//
+// PRD: task 2881 (FEA-2) design decision 4.
+structure def TractionLoad : Load {
+    param face     : String = ""
+    param traction : Real   = 0.0
+}
+
+// BodyForce — wave-3 replacement for the `body_force` builtin (loads.rs).
+// Field keys (body, force_density) preserve the retired builtin's emitted keys
+// per Q-SIR-4 (preserve-don't-redesign): `body` was the `body` key,
+// `force_density` was the `force_density` key in the
+// `make_kind_map("body_force", ...)` call.
+//
+//   `body`          — geometry selector. `String` is a placeholder for
+//                     `BodySelector` until the topology-selector type alias
+//                     lands; mirrors the `body` key emitted by the pre-retirement
+//                     builtin.
+//   `force_density` — applied body-force density. `Real` is a placeholder for
+//                     `Vector3<ForceDensity>` until the dimensional vector type
+//                     aliases land; mirrors the `force_density` key in the
+//                     retired builtin.
+//
+// All fields default so a bare `BodyForce()` constructor succeeds (covers
+// FEA-2 boundary tests in `crates/reify-eval/tests/fea_loads_stdlib_smoke.rs`).
+//
+// PRD: task 2881 (FEA-2) design decision 4.
+structure def BodyForce : Load {
+    param body          : String = ""
+    param force_density : Real   = 0.0
+}
+
 // ── SIR-β-mlcfea wave-2 closure ──────────────────────────────────────────────
 //
 // task 3549 (SIR-β-mlcfea) pins `LoadCase` and `MultiCaseResult` as
