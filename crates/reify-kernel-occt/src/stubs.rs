@@ -721,7 +721,7 @@ mod tests {
             0.0,
             0.0,
             0.0,
-            reify_ir::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
+            reify_ir::DEFAULT_CONTAINS_TOLERANCE_M,
         );
         let err = result.expect_err("stub contains should error");
         assert_stub_message(&format!("{err:?}"));

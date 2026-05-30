@@ -122,3 +122,27 @@ fn contains_negative_tolerance_returns_err() {
         other => panic!("expected Err(QueryFailed) for negative tolerance, got {:?}", other),
     }
 }
+
+/// NaN tolerance → `Err(QueryError::QueryFailed)` (non-finite tolerance
+/// precondition). The C++ guard is `std::isfinite(tolerance) && tolerance >= 0.0`;
+/// `f64::NAN` fails `isfinite`, so this is an independent branch from the
+/// negative-tolerance test above.
+#[test]
+fn contains_nan_tolerance_returns_err() {
+    let (kernel, box_id) = box_kernel();
+    match kernel.contains(box_id, 0.0, 0.0, 0.0, f64::NAN) {
+        Err(QueryError::QueryFailed(_)) => {}
+        other => panic!("expected Err(QueryFailed) for NaN tolerance, got {:?}", other),
+    }
+}
+
+/// Infinite tolerance → `Err(QueryError::QueryFailed)` (non-finite tolerance
+/// precondition). `f64::INFINITY` also fails `isfinite`.
+#[test]
+fn contains_infinite_tolerance_returns_err() {
+    let (kernel, box_id) = box_kernel();
+    match kernel.contains(box_id, 0.0, 0.0, 0.0, f64::INFINITY) {
+        Err(QueryError::QueryFailed(_)) => {}
+        other => panic!("expected Err(QueryFailed) for infinite tolerance, got {:?}", other),
+    }
+}

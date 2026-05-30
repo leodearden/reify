@@ -8453,6 +8453,78 @@ mod tests {
         );
     }
 
+    #[test]
+    fn try_eval_topology_selector_contains_kernel_err_returns_undef_with_warning() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        // No `with_contains_result` seeding — MockGeometryKernel.query() falls
+        // through to the generic handle-only map which also has no entry for
+        // this handle, so it returns `Err(QueryError::QueryFailed(...))`.
+        // `dispatch_point_on_shape` must downgrade this to `Some(Value::Undef)`
+        // and emit exactly one Warning diagnostic naming "contains" and
+        // "kernel query failed". Pins the `Err(err)` arm of that helper.
+        let body_handle = reify_ir::GeometryHandleId(42);
+        let mut kernel = MockGeometryKernel::new();
+
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        named_steps.insert("solid".to_string(), body_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            reify_core::ValueCellId::new("ContainsBox", "center"),
+            point3_length_value(0.0, 0.0, 0.0),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "contains",
+            "ContainsBox",
+            "solid",
+            reify_core::Type::Geometry,
+            "center",
+            reify_core::Type::point3(reify_core::Type::length()),
+            reify_core::Type::Bool,
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Undef),
+            "contains(...) with kernel Err must yield Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "kernel Err must emit exactly one Warning, got {} diagnostics: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Warning,
+            "diagnostic severity must be Warning, got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("contains"),
+            "diagnostic must mention the helper name 'contains', got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("kernel query failed"),
+            "diagnostic must indicate the kernel failure, got: {}",
+            diag.message
+        );
+    }
+
     // ── gate_query_capability unit tests (task 3623) ─────────────────────────
     //
     // These tests pin the §5.4 four-branch policy contract of
