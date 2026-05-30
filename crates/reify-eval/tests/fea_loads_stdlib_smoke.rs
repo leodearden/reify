@@ -1,12 +1,10 @@
 //! FEA-2 (task 2881) — `TractionLoad` and `BodyForce` structure-def smoke tests.
 //!
-//! Mirrors the wave-2 pattern in `pressure_load.rs` for the wave-3 migration of
-//! `traction_load` and `body_force` from name-dispatched builtins to stdlib
-//! `structure def`s in `crates/reify-compiler/stdlib/fea_multi_case.ri`.
-//!
-//! Steps are ordered RED → GREEN:
-//!   - step-1 (TractionLoad RED) / step-2 (TractionLoad GREEN)
-//!   - step-5 (BodyForce RED)    / step-6 (BodyForce GREEN)
+//! Pins the wave-3 migration of `traction_load` and `body_force` from
+//! name-dispatched builtins to stdlib `structure def`s declared in
+//! `crates/reify-compiler/stdlib/fea_multi_case.ri`.  Each test verifies that a
+//! source-level `TractionLoad(…)` / `BodyForce(…)` constructor lowers to a
+//! `Value::StructureInstance` with the expected `type_name` and field values.
 
 #![allow(clippy::mutable_key_type)]
 
@@ -22,13 +20,9 @@ fn field<'a>(m: &'a PersistentMap<String, Value>, k: &str) -> Option<&'a Value> 
 
 // ── step-1 (RED) → step-2 (GREEN) : TractionLoad ────────────────────────────
 
-/// task 2881 step-1: bare `TractionLoad()` constructor lowers to a
-/// `Value::StructureInstance` whose `type_name` is `"TractionLoad"` and whose
-/// fields carry the two declared defaults: `face = ""`, `traction = 0.0`.
-///
-/// RED before step-2 declares `structure def TractionLoad : Load { ... }` in
-/// `crates/reify-compiler/stdlib/fea_multi_case.ri`; source-level `TractionLoad()`
-/// currently causes a compile error (unknown type).
+/// Bare `TractionLoad()` constructor lowers to a `Value::StructureInstance`
+/// whose `type_name` is `"TractionLoad"` and whose fields carry the two
+/// declared defaults: `face = ""`, `traction = 0.0`.
 #[test]
 fn traction_load_in_source_lowers_to_structure_instance() {
     const SOURCE: &str = r#"
@@ -77,10 +71,8 @@ structure def TractionLoadFixture {
     }
 }
 
-/// task 2881 step-1: `TractionLoad(face: "top", traction: 5.0)` constructor
-/// round-trips the caller-supplied field values through the structure instance.
-///
-/// RED before step-2 (unknown type → compile error).
+/// `TractionLoad(face: "top", traction: 5.0)` constructor round-trips the
+/// caller-supplied field values through the structure instance.
 #[test]
 fn traction_load_ctor_field_override_round_trips() {
     const SOURCE: &str = r#"
@@ -123,13 +115,9 @@ structure def TractionLoadFixture2 {
 
 // ── step-5 (RED) → step-6 (GREEN) : BodyForce ───────────────────────────────
 
-/// task 2881 step-5: bare `BodyForce()` constructor lowers to a
-/// `Value::StructureInstance` whose `type_name` is `"BodyForce"` and whose
-/// fields carry the two declared defaults: `body = ""`, `force_density = 0.0`.
-///
-/// RED before step-6 declares `structure def BodyForce : Load { ... }` in
-/// `crates/reify-compiler/stdlib/fea_multi_case.ri`; source-level `BodyForce()`
-/// currently causes a compile error (unknown type).
+/// Bare `BodyForce()` constructor lowers to a `Value::StructureInstance` whose
+/// `type_name` is `"BodyForce"` and whose fields carry the two declared
+/// defaults: `body = ""`, `force_density = 0.0`.
 #[test]
 fn body_force_in_source_lowers_to_structure_instance() {
     const SOURCE: &str = r#"
@@ -178,10 +166,8 @@ structure def BodyForceFixture {
     }
 }
 
-/// task 2881 step-5: `BodyForce(body: "all", force_density: -77000.0)` constructor
-/// round-trips the caller-supplied field values through the structure instance.
-///
-/// RED before step-6 (unknown type → compile error).
+/// `BodyForce(body: "all", force_density: -77000.0)` constructor round-trips
+/// the caller-supplied field values through the structure instance.
 #[test]
 fn body_force_ctor_field_override_round_trips() {
     const SOURCE: &str = r#"

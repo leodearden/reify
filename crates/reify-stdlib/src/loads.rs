@@ -298,8 +298,10 @@ mod tests {
     // former happy-path + per-argument validation tests are intentionally
     // removed: with the arm gone, every input collapses to `Undef`, so those
     // assertions no longer exercise distinct behaviour. Selector / dimensioned-
-    // vec3 validation now lives on the structure-def's field contracts and is
-    // exercised by the FEA-2 boundary suite, not here.
+    // vec3 validation is intentionally deferred: `traction : Real` is a
+    // placeholder for `Vector3<Pressure>` and `face : String` for
+    // `FaceSelector` (esc-2881-85); field-contract validation lands with the
+    // type-alias wave (task 4092, solve-time).
 
     // ── body_force constructor: RETIRED (FEA-2, task 2881 step-8) ────────────
     //
@@ -317,8 +319,10 @@ mod tests {
     // former happy-path + per-argument validation tests are intentionally
     // removed: with the arm gone, every input collapses to `Undef`, so those
     // assertions no longer exercise distinct behaviour. Selector / dimensioned-
-    // vec3 validation now lives on the structure-def's field contracts and is
-    // exercised by the FEA-2 boundary suite, not here.
+    // vec3 validation is intentionally deferred: `force_density : Real` is a
+    // placeholder for `Vector3<ForceDensity>` and `body : String` for
+    // `BodySelector` (esc-2881-85); field-contract validation lands with the
+    // type-alias wave (task 4092, solve-time).
 
     // ── task 2881 step-7 (RED): post-retirement contract ─────────────────────
     //
