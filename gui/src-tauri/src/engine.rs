@@ -1144,6 +1144,7 @@ impl EngineSession {
             mode_index: 0,
             phase: 0.0_f32,
             displaced_positions: base_f32.clone(),
+            eigenvalue: None, // base frame has no associated mode eigenvalue
         });
 
         // Emit one peak frame per mode (phase=1.0).
@@ -1171,6 +1172,7 @@ impl EngineSession {
                 mode_index: k as u8,
                 phase: 1.0_f32,
                 displaced_positions: peak_f32,
+                eigenvalue: None, // threaded from extract_buckling_data in step-4
             });
         }
     }
