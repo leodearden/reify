@@ -126,6 +126,8 @@ vi.mock('../bridge', () => ({
   onAutoResolveStart: vi.fn().mockResolvedValue(() => {}),
   onAutoResolveIteration: vi.fn().mockResolvedValue(() => {}),
   onAutoResolveComplete: vi.fn().mockResolvedValue(() => {}),
+  onSolverProgress: vi.fn().mockResolvedValue(() => {}),
+  cancelSolve: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Mock persistence modules so App.tsx's persistence calls can be intercepted.
@@ -188,6 +190,8 @@ beforeEach(() => {
   vi.mocked(sidecarPersistence.saveSidecar).mockResolvedValue(undefined);
   vi.mocked(viewPersistence.loadViewPersistence).mockReturnValue(null);
   vi.mocked((bridge as any).getMechanismDescriptors).mockResolvedValue([]);
+  vi.mocked((bridge as any).onSolverProgress).mockResolvedValue(() => {});
+  vi.mocked((bridge as any).cancelSolve).mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -5659,5 +5663,78 @@ describe('App file-removed event handling', () => {
 
     unmount();
     expect(fileRemovedUnsub).toHaveBeenCalled();
+  });
+});
+
+// ── SolverProgressOverlay integration (step-15) ────────────────────────────
+
+describe('App SolverProgressOverlay integration', () => {
+  it('(a) solver-progress-overlay is absent by default', async () => {
+    await renderAndWaitForReady();
+    expect(screen.queryByTestId('solver-progress-overlay')).toBeNull();
+  });
+
+  it('(b) solver-progress-overlay renders after >1s of solver-progress ticks', async () => {
+    let progressCb: ((p: any) => void) | undefined;
+    vi.mocked((bridge as any).onSolverProgress).mockImplementation(
+      async (cb: (p: any) => void) => {
+        progressCb = cb;
+        return () => {};
+      },
+    );
+
+    // Render with real timers so App init (waitFor) works
+    await renderAndWaitForReady();
+    await waitFor(() => expect(progressCb).toBeDefined());
+
+    // Overlay absent before any tick
+    expect(screen.queryByTestId('solver-progress-overlay')).toBeNull();
+
+    // Switch to fake timers so the debounce setTimeout uses the fake clock
+    vi.useFakeTimers();
+    try {
+      progressCb!({ solver_kind: 'cg', iter: 1, residual: 0.5 });
+
+      // Still absent — debounce has not expired yet
+      expect(screen.queryByTestId('solver-progress-overlay')).toBeNull();
+
+      // Advance past the 1000ms debounce
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(screen.queryByTestId('solver-progress-overlay')).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('(c) clicking Cancel in overlay invokes bridge cancelSolve', async () => {
+    let progressCb: ((p: any) => void) | undefined;
+    vi.mocked((bridge as any).onSolverProgress).mockImplementation(
+      async (cb: (p: any) => void) => {
+        progressCb = cb;
+        return () => {};
+      },
+    );
+
+    await renderAndWaitForReady();
+    await waitFor(() => expect(progressCb).toBeDefined());
+
+    vi.useFakeTimers();
+    try {
+      progressCb!({ solver_kind: 'cg', iter: 1, residual: 0.5 });
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(screen.queryByTestId('solver-progress-overlay')).toBeTruthy();
+
+      fireEvent.click(screen.getByText('Cancel'));
+
+      // cancelSolve is async — flush microtasks
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(vi.mocked((bridge as any).cancelSolve)).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
