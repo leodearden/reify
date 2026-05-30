@@ -9204,3 +9204,246 @@ fn build_tensegrity_wires_filters_non_tensegrity_wire_struct_instances() {
         state.tensegrity_wires.len()
     );
 }
+
+// ── task-3458 step-5: ModeShapeFrameEmitter engine tests ─────────────────────
+
+/// Recording emitter for `ModeShapeFrame` events.
+///
+/// Mirrors `RecordingFeaCaseEmitter` (line 8447) for the mode-shape-frame channel.
+///
+/// **RED at step-5**: compile-fails because `crate::engine::ModeShapeFrameEmitter`
+/// does not exist yet. GREEN after step-6 adds the trait and wiring to engine.rs.
+struct RecordingModeShapeFrameEmitter {
+    frames: std::sync::Arc<std::sync::Mutex<Vec<crate::types::ModeShapeFrame>>>,
+}
+
+impl RecordingModeShapeFrameEmitter {
+    fn new() -> Self {
+        Self {
+            frames: std::sync::Arc::new(std::sync::Mutex::new(vec![])),
+        }
+    }
+}
+
+impl crate::engine::ModeShapeFrameEmitter for RecordingModeShapeFrameEmitter {
+    fn frame(&self, payload: crate::types::ModeShapeFrame) {
+        self.frames.lock().unwrap().push(payload);
+    }
+}
+
+/// Helper: build a BucklingResult-shaped Value::StructureInstance with `n_modes` modes.
+///
+/// n_nodes = 2 (6 positions each), base_node_positions = [0,0,0, 1,0,0].
+/// Mode k displaced_positions: base shifted by +0.1 in coordinate k (k=0→x, 1→y).
+fn make_buckling_result_value(n_modes: usize) -> reify_ir::Value {
+    use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+    use std::collections::BTreeMap;
+
+    let base_positions = vec![0.0_f64, 0.0, 0.0, 1.0, 0.0, 0.0];
+
+    let modes_list: Vec<Value> = (0..n_modes)
+        .map(|k| {
+            // Displace coordinate k by 0.1 for each node.
+            let displaced: Vec<Value> = base_positions
+                .iter()
+                .enumerate()
+                .map(|(coord_idx, &base)| {
+                    let delta = if coord_idx % 3 == k { 0.1 } else { 0.0 };
+                    Value::Real(base + delta)
+                })
+                .collect();
+            let mode_shape_map: BTreeMap<Value, Value> = [(
+                Value::String("displaced_positions".to_string()),
+                Value::List(displaced),
+            )]
+            .into_iter()
+            .collect();
+            let mode_fields: PersistentMap<String, Value> = [
+                ("eigenvalue".to_string(), Value::Real((k + 1) as f64 * 1000.0)),
+                ("mode_shape".to_string(), Value::Map(mode_shape_map)),
+            ]
+            .into_iter()
+            .collect();
+            Value::StructureInstance(Box::new(StructureInstanceData {
+                type_id: StructureTypeId(u32::MAX),
+                type_name: "Mode".to_string(),
+                version: 1,
+                fields: mode_fields,
+            }))
+        })
+        .collect();
+
+    let base_val: Vec<Value> = base_positions.iter().map(|&v| Value::Real(v)).collect();
+
+    let result_fields: PersistentMap<String, Value> = [
+        ("modes".to_string(),               Value::List(modes_list)),
+        ("converged".to_string(),           Value::Bool(true)),
+        ("iterations".to_string(),          Value::Int(0)),
+        ("pre_stress".to_string(),          Value::Undef),
+        ("base_node_positions".to_string(), Value::List(base_val)),
+    ]
+    .into_iter()
+    .collect();
+
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "BucklingResult".to_string(),
+        version: 1,
+        fields: result_fields,
+    }))
+}
+
+/// (a) mode_shape_frame_emitter_fires_for_buckling_result_two_modes.
+///
+/// CheckResult contains a BucklingResult with 2 modes and n_nodes=2.
+/// emit_mode_shape_frames_for_test_with_result must emit:
+///   - 1 base frame (phase=0.0)
+///   - 2 peak frames (phase=1.0, mode_index ascending 0, 1)
+/// Total = 3 frames.
+///
+/// Also asserts: each frame's displaced_positions.len() == 6 (= 3·n_nodes),
+/// and peak frames differ from the base frame's positions.
+///
+/// **RED at step-5**: compile-fails because ModeShapeFrameEmitter,
+/// set_mode_shape_frame_emitter, and emit_mode_shape_frames_for_test_with_result
+/// do not exist yet.
+#[test]
+fn mode_shape_frame_emitter_fires_for_buckling_result_two_modes() {
+    use std::sync::Arc;
+    use reify_eval::CheckResult;
+    use reify_core::ValueCellId;
+    use reify_ir::ValueMap;
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    let recorder = RecordingModeShapeFrameEmitter::new();
+    let captured = Arc::clone(&recorder.frames);
+    session.set_mode_shape_frame_emitter(Arc::new(recorder));
+
+    // Build a CheckResult with a BucklingResult (2 modes, n_nodes=2).
+    let mut values = ValueMap::new();
+    values.insert(
+        ValueCellId::new("BucklingColumnSmoke", "result"),
+        make_buckling_result_value(2),
+    );
+    let check = CheckResult {
+        values,
+        constraint_results: vec![],
+        diagnostics: vec![],
+        resolved_params: std::collections::HashMap::new(),
+    };
+
+    session.emit_mode_shape_frames_for_test_with_result(&check);
+
+    let frames = captured.lock().unwrap();
+
+    // 1 base frame + 2 peak frames = 3 total.
+    assert_eq!(
+        frames.len(),
+        3,
+        "expected 3 frames (1 base + 2 peak) for 2-mode BucklingResult; got {}",
+        frames.len()
+    );
+
+    // Exactly one base frame (phase == 0.0).
+    let base_frames: Vec<_> = frames.iter().filter(|f| f.phase == 0.0).collect();
+    assert_eq!(base_frames.len(), 1, "expected exactly 1 base frame (phase=0.0)");
+    assert_eq!(
+        base_frames[0].displaced_positions.len(),
+        6,
+        "base frame displaced_positions must have length 6 (3·n_nodes)"
+    );
+
+    // Two peak frames (phase == 1.0), mode_index ascending 0, 1.
+    let mut peak_frames: Vec<_> = frames.iter().filter(|f| f.phase == 1.0).collect();
+    peak_frames.sort_by_key(|f| f.mode_index);
+    assert_eq!(peak_frames.len(), 2, "expected exactly 2 peak frames (phase=1.0)");
+    assert_eq!(peak_frames[0].mode_index, 0, "first peak frame must have mode_index=0");
+    assert_eq!(peak_frames[1].mode_index, 1, "second peak frame must have mode_index=1");
+
+    // Each peak frame has the right length and differs from base frame.
+    let base_pos = &base_frames[0].displaced_positions;
+    for (i, peak) in peak_frames.iter().enumerate() {
+        assert_eq!(
+            peak.displaced_positions.len(),
+            6,
+            "peak frame {i} displaced_positions must have length 6"
+        );
+        assert!(
+            peak.displaced_positions != *base_pos,
+            "peak frame {i} must differ from the base frame"
+        );
+    }
+}
+
+/// (b) mode_shape_frame_emitter_no_fire_when_no_emitter.
+///
+/// No emitter installed → calling emit_mode_shape_frames_for_test_with_result
+/// must not panic (the `emit_*_if_any` guard prevents the dispatch).
+///
+/// **RED at step-5**: compile-fails for the same reason as (a).
+#[test]
+fn mode_shape_frame_emitter_no_fire_when_no_emitter() {
+    use reify_eval::CheckResult;
+    use reify_core::ValueCellId;
+    use reify_ir::ValueMap;
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    // No emitter installed.
+
+    let mut values = ValueMap::new();
+    values.insert(
+        ValueCellId::new("BucklingColumnSmoke", "result"),
+        make_buckling_result_value(1),
+    );
+    let check = CheckResult {
+        values,
+        constraint_results: vec![],
+        diagnostics: vec![],
+        resolved_params: std::collections::HashMap::new(),
+    };
+
+    // Must not panic.
+    session.emit_mode_shape_frames_for_test_with_result(&check);
+}
+
+/// (c) mode_shape_frame_emitter_no_fire_when_no_buckling_result.
+///
+/// CheckResult contains no BucklingResult → zero frames emitted.
+///
+/// **RED at step-5**: compile-fails for the same reason as (a).
+#[test]
+fn mode_shape_frame_emitter_no_fire_when_no_buckling_result() {
+    use std::sync::Arc;
+    use reify_eval::CheckResult;
+    use reify_core::ValueCellId;
+    use reify_ir::{ValueMap, Value};
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    let recorder = RecordingModeShapeFrameEmitter::new();
+    let captured = Arc::clone(&recorder.frames);
+    session.set_mode_shape_frame_emitter(Arc::new(recorder));
+
+    // Ordinary (non-BucklingResult) value.
+    let mut values = ValueMap::new();
+    values.insert(ValueCellId::new("S", "width"), Value::Int(42));
+    let check = CheckResult {
+        values,
+        constraint_results: vec![],
+        diagnostics: vec![],
+        resolved_params: std::collections::HashMap::new(),
+    };
+
+    session.emit_mode_shape_frames_for_test_with_result(&check);
+
+    let frames = captured.lock().unwrap();
+    assert!(
+        frames.is_empty(),
+        "no frames should be emitted when values contains no BucklingResult; got {}",
+        frames.len()
+    );
+}
