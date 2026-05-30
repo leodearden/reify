@@ -1,0 +1,22 @@
+// Radix (hex / binary) literal examples.
+//
+// Demonstrates radix literal support per
+// docs/prds/v0_6/numeric-and-range-literal-forms.md (task 3913 / δ, slice 2).
+// The γ grammar (task 3910) tokenises 0x.../0b... tokens as single
+// number_literal CST nodes; this file exercises the AST-lowering layer added
+// in task 3913 so 0xFF, 0b1010, and 0xDEAD_BEEF all lower correctly.
+
+structure def RadixLiterals {
+    // Hex literal — lowers to 255.0 (is_real = false)
+    let mask = 0xFF
+
+    // Binary literal — lowers to 10.0 (is_real = false)
+    let flags = 0b1010
+
+    // Hex with _ digit separator — lowers to 3735928559.0 (is_real = false)
+    let addr = 0xDEAD_BEEF
+
+    // PRD signal: 0xFF == 255 and 0b1010 == 10 (integer equality, not Real)
+    constraint mask == 255
+    constraint flags == 10
+}
