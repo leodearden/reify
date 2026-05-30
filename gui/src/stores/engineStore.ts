@@ -24,6 +24,7 @@ import {
   onAutoResolveStart,
   onAutoResolveIteration,
   onAutoResolveComplete,
+  onSolverProgress,
 } from '../bridge';
 import type { KernelStatus } from '../bridge';
 
@@ -264,6 +265,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
       onAutoResolveStart(beginAutoResolveLoop),
       onAutoResolveIteration(applyAutoResolveIteration),
       onAutoResolveComplete(endAutoResolveLoop),
+      onSolverProgress(applySolverProgress),
     ]);
 
     const unlisteners: (() => void)[] = [];
