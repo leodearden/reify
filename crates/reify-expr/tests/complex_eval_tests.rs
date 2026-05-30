@@ -620,6 +620,95 @@ fn method_magnitude_with_args_undef() {
     assert!(result.is_undef());
 }
 
+// ─── task-3950 step-1: Real/Int + Complex addition (dimensionless promotion) ─
+
+/// Real(3.2) + Complex{0,4.1,DIMENSIONLESS} → Complex{3.2,4.1,DIMENSIONLESS}.
+/// Promotes the Real scalar to a dimensionless Complex and sums.
+#[test]
+fn real_add_complex_dimensionless() {
+    let result = eval_binop(
+        BinOp::Add,
+        Value::Real(3.2),
+        Type::Real,
+        complex_val(0.0, 4.1, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        Type::complex(Type::Real),
+    );
+    assert_eq!(result, complex_val(3.2, 4.1, DimensionVector::DIMENSIONLESS));
+}
+
+/// Complex{0,4.1,DIMENSIONLESS} + Real(3.2) → Complex{3.2,4.1,DIMENSIONLESS} (commutative).
+#[test]
+fn complex_add_real_dimensionless() {
+    let result = eval_binop(
+        BinOp::Add,
+        complex_val(0.0, 4.1, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        Value::Real(3.2),
+        Type::Real,
+        Type::complex(Type::Real),
+    );
+    assert_eq!(result, complex_val(3.2, 4.1, DimensionVector::DIMENSIONLESS));
+}
+
+/// Int(3) + Complex{0,4,DIMENSIONLESS} → Complex{3,4,DIMENSIONLESS}.
+#[test]
+fn int_add_complex_dimensionless() {
+    let result = eval_binop(
+        BinOp::Add,
+        Value::Int(3),
+        Type::Int,
+        complex_val(0.0, 4.0, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        Type::complex(Type::Real),
+    );
+    assert_eq!(result, complex_val(3.0, 4.0, DimensionVector::DIMENSIONLESS));
+}
+
+/// Complex{0,4,DIMENSIONLESS} + Int(3) → Complex{3,4,DIMENSIONLESS} (commutative).
+#[test]
+fn complex_add_int_dimensionless() {
+    let result = eval_binop(
+        BinOp::Add,
+        complex_val(0.0, 4.0, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        Value::Int(3),
+        Type::Int,
+        Type::complex(Type::Real),
+    );
+    assert_eq!(result, complex_val(3.0, 4.0, DimensionVector::DIMENSIONLESS));
+}
+
+/// Dimensionless-only guard: Real(3.2) + Complex{1,2,LENGTH} → Undef.
+/// The complex operand carries a LENGTH dimension; promotion is refused.
+#[test]
+fn real_add_dimensioned_complex_undef() {
+    let result = eval_binop(
+        BinOp::Add,
+        Value::Real(3.2),
+        Type::Real,
+        complex_val(1.0, 2.0, DimensionVector::LENGTH),
+        Type::complex(Type::length()),
+        Type::complex(Type::length()),
+    );
+    assert!(result.is_undef());
+}
+
+/// Regression guard: Scalar{0.005,LENGTH}(=5mm) + Complex{0,4.1,DIMENSIONLESS} → Undef.
+/// Dimensioned Scalar does not match the new Real/Int arms; falls through to `_ => Undef`.
+#[test]
+fn scalar_add_complex_dimensionless_undef() {
+    let result = eval_binop(
+        BinOp::Add,
+        scalar_val(0.005, DimensionVector::LENGTH),
+        Type::length(),
+        complex_val(0.0, 4.1, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        Type::complex(Type::Real),
+    );
+    assert!(result.is_undef());
+}
+
 /// Undef + Complex returns Undef (propagation through eval_binop).
 #[test]
 fn complex_undef_propagation() {
