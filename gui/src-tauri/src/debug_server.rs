@@ -278,19 +278,21 @@ fn tool_defs() -> Vec<ToolDef> {
             description: "Session diagnostic counter snapshot from the mesh-morph engine \
                           (morphed, remeshed_quality_hard_fail, remeshed_quality_soft_fail, \
                           ineligible_structural_change, ineligible_bijection_failure, \
-                          ineligible_naming_error, panicked) plus a session_start_unix_ms \
-                          timestamp. Pass reset:true to atomically zero all counters and \
-                          restart the session clock before returning the (post-reset) snapshot \
-                          — useful for benchmark sequences. Per mesh-morphing PRD #12 / \
+                          ineligible_naming_error, panicked) plus session_start_unix_ms \
+                          (debug-server spawn time, or the last reset time). Pass reset:true \
+                          to zero all counters and restart the measurement clock before \
+                          returning the post-reset snapshot — useful for benchmark sequences. \
+                          Concurrent recorders active during the reset window may produce \
+                          non-zero post-reset counters. Per mesh-morphing PRD #12 / \
                           docs/prds/v0_3/mesh-morphing.md.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "reset": {
                         "type": "boolean",
-                        "description": "When true, atomically zero all diagnostic counters \
-                                        and restart the session clock before returning the \
-                                        post-reset snapshot. Defaults to false."
+                        "description": "When true, zero all diagnostic counters and restart \
+                                        the measurement clock before returning the post-reset \
+                                        snapshot. Defaults to false."
                     }
                 }
             }),
@@ -510,15 +512,21 @@ async fn handle_morph_stats(_params: Value) -> Result<Value, String> {
     serde_json::to_value(&stats).map_err(|e| format!("failed to serialize MorphStats: {e}"))
 }
 
-// --- Session-start timestamp (process-global) ---
+// --- Session-start / measurement-window timestamp (process-global) ---
 
-/// Unix-epoch-milliseconds at the time of first access. Zero before first call.
-/// Never rolls back — reset_session_start() stores a new "now" to restart the clock.
+/// Unix-epoch-milliseconds captured at debug-server spawn (see [`spawn_debug_server`]).
+/// Zero before server spawn; falls back to lazy first-call init for direct handler
+/// calls in tests. Rolls forward when [`reset_session_start`] is called (i.e. when a
+/// caller passes `reset:true` to restart the measurement window).
 static SESSION_START_UNIX_MS: AtomicU64 = AtomicU64::new(0);
 
-/// Returns the current session-start timestamp, initializing it lazily on the
-/// first call via compare-exchange (0 → now). Subsequent calls return the same
-/// value until reset_session_start() is called.
+/// Returns the measurement-window start timestamp.
+///
+/// Normally initialized at server spawn via [`spawn_debug_server`] so the value
+/// reflects the true debug-server start time. Falls back to lazy compare-exchange
+/// init (0 → now) so direct handler calls in tests work correctly without a running
+/// server. Subsequent calls return the same value until [`reset_session_start`] is
+/// called.
 fn session_start_unix_ms() -> u64 {
     let current = SESSION_START_UNIX_MS.load(Ordering::Relaxed);
     if current != 0 {
@@ -551,11 +559,14 @@ fn reset_session_start() {
 /// `reify_mesh_morph::diagnostics::snapshot()` (morphed,
 /// remeshed_quality_hard_fail, remeshed_quality_soft_fail,
 /// ineligible_structural_change, ineligible_bijection_failure,
-/// ineligible_naming_error, panicked) plus a `session_start_unix_ms` field.
+/// ineligible_naming_error, panicked) plus a `session_start_unix_ms` field
+/// (debug-server spawn time, or the last reset time).
 ///
-/// When `params["reset"]` is `true`, atomically zeros all counters via
-/// `diagnostics::reset()` and refreshes the session clock before taking the
-/// snapshot — the response reflects the post-reset zeros and the new clock.
+/// When `params["reset"]` is `true`, zeros all counters via
+/// `diagnostics::reset()` and refreshes the measurement clock before taking the
+/// snapshot — the response reflects the post-reset state. Note: the counter
+/// stores are independent (not one atomic operation), so a concurrent recorder
+/// active during the reset window may produce non-zero post-reset counters.
 ///
 /// State-free: both the counters and the session timestamp are process-globals,
 /// so no DebugServerState / engine lock is needed.
@@ -778,6 +789,11 @@ pub async fn spawn_debug_server(
     selection: Arc<RwLock<SelectionInfo>>,
     debug_bridge: Arc<DebugBridge>,
 ) -> Result<(), String> {
+    // Initialize the measurement-window clock at server spawn so
+    // session_start_unix_ms reports the true debug-server start time
+    // rather than the first-query time.
+    session_start_unix_ms();
+
     let state = DebugServerState {
         engine,
         selection,
@@ -1083,6 +1099,14 @@ mod tests {
         // Pre-condition: morphed == 1 before the call.
         assert_eq!(reify_mesh_morph::diagnostics::snapshot().morphed, 1);
 
+        // Capture the session clock before reset to verify reset:true restarts it.
+        // A plain (no-reset) call initializes the clock if not yet set.
+        let ts_before = super::handle_mesh_morph_stats(serde_json::json!({}))
+            .await
+            .expect("baseline read before reset must succeed")["session_start_unix_ms"]
+            .as_u64()
+            .expect("session_start_unix_ms must be present in baseline read");
+
         let result = super::handle_mesh_morph_stats(serde_json::json!({"reset": true}))
             .await
             .expect("handle_mesh_morph_stats({reset:true}) must succeed");
@@ -1098,6 +1122,15 @@ mod tests {
             reify_mesh_morph::diagnostics::snapshot().morphed,
             0,
             "reset:true — process-global morphed counter must be 0 after reset"
+        );
+        // Session clock must have been restarted (>= allows same-millisecond granularity).
+        let ts_after = result["session_start_unix_ms"]
+            .as_u64()
+            .expect("session_start_unix_ms must be present in reset:true response");
+        assert!(
+            ts_after >= ts_before,
+            "reset:true must restart the measurement clock: \
+             ts_after ({ts_after}) must be >= ts_before ({ts_before})"
         );
 
         // --- (b) control: no reset flag — counter must survive ---
