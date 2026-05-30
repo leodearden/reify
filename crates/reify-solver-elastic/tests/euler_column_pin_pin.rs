@@ -51,8 +51,9 @@ use std::f64::consts::PI;
 
 use reify_solver_elastic::{
     BucklingKernelOptions, DirichletBc, IsotropicElastic, MpcRow, apply_point_load,
-    solve_buckling_kernel,
+    solve_buckling_kernel, solve_buckling_kernel_p2,
 };
+use reify_solver_elastic::assembly::test_support::promote_tets_to_p2;
 
 // ---------------------------------------------------------------------------
 // Material constants — Steel AISI 1045 (SI)
@@ -628,6 +629,157 @@ fn fixed_guided_euler_column_within_nine_percent() {
         rel_err < 0.09,
         "fixed-guided Euler: λ·F = {lambda_x_load:.2} N, P_cr = {p_cr:.2} N, \
          rel_err = {:.2}% > 9%",
+        rel_err * 100.0,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Step-9 (RED) / Step-10 (GREEN): Fixed-guided P2 Euler column within 5%
+// ---------------------------------------------------------------------------
+
+/// Fixed-guided (k=0.5) Euler column integration test using the P2 (quadratic,
+/// 10-node) geometric-stiffness kernel — PRD §9.1 / §13 task δ (5% deliverable).
+///
+/// The P1-tet path floors at ~6.8% due to constant-strain bending lock at
+/// L/r ≈ 138 (esc-3813-117). P2 quadratic shape functions capture the
+/// half-sine bending curvature in both K_e and K_g, yielding O(h⁴) eigenvalue
+/// convergence — well under 5% at modest mesh density.
+///
+/// Same fixture geometry as `fixed_guided_euler_column_within_nine_percent`
+/// (Steel AISI 1045, 20×20×800 mm, k=0.5). The mesh is promoted to P2 via
+/// `promote_tets_to_p2`. The reference P_cr = 4·π²·E·I / L².
+///
+/// # Tolerance
+///
+/// `|λ·F − P_cr| / P_cr < 5%` — the PRD §9.1 / §13 task δ deliverable.
+/// This supersedes the P1 9% bound: the P2 path achieves the original PRD
+/// target. The P1 `fixed_guided_euler_column_within_nine_percent` test is
+/// retained as a regression record for the P1 constant-strain floor.
+///
+/// # Mesh (step-10 tuning placeholder → see step-10 GREEN commit for final values)
+///
+/// Placeholder: `nx=ny=2, nz=8` (coarse; step-10 RED signal — 5% not yet met).
+/// Step-10 selects the CI-practical P2 mesh density and documents the measured
+/// error + wall time per the file's tuning-history convention.
+///
+/// # Profile gating
+///
+/// Release-only (same rationale as the P1 fixed-guided test): the P2 Lanczos
+/// solve is fast in release (expected < 2 min) but slow under the debug allocator.
+#[cfg_attr(
+    debug_assertions,
+    ignore = "debug runtime exceeds verify.sh 30m budget; runs in release pass (~2 min) — task 4052"
+)]
+#[test]
+fn fixed_guided_euler_column_p2_within_five_percent() {
+    // ---- Placeholder P2 column fixture (step-9 RED — too coarse for 5%) ----
+    // step-10 GREEN: replace with the CI-practical mesh and document measured error.
+    let p2_grid = ColumnFixture { nx: 2, ny: 2, nz: 8, lx: 0.02, ly: 0.02, lz: 0.8 };
+
+    let nodes_p1 = build_node_xyz(&p2_grid);
+    let tets_p1 = build_tet_mesh(&p2_grid);
+    let (nodes_p2, tets_p2) = promote_tets_to_p2(&nodes_p1, &tets_p1);
+    let n_nodes_p2 = nodes_p2.len();
+
+    let material = IsotropicElastic { youngs_modulus: STEEL_E_PA, poisson_ratio: STEEL_NU };
+
+    // ---- BCs: fixed-guided (identified by z-coordinate to catch P2 midpoints) ----
+    // Bottom face (z ≈ 0): all 3 DOFs clamped.
+    // Top face (z ≈ lz): u_x = u_y = 0 (lateral clamp; u_z governed by MPC).
+    let z_bot = 0.0_f64;
+    let z_top = p2_grid.lz;
+    let mut bcs: Vec<DirichletBc> = Vec::new();
+    for (n, xyz) in nodes_p2.iter().enumerate() {
+        if (xyz[2] - z_bot).abs() < 1e-10 {
+            for axis in 0..3_usize {
+                bcs.push(DirichletBc { dof: 3 * n + axis, value: 0.0 });
+            }
+        } else if (xyz[2] - z_top).abs() < 1e-10 {
+            bcs.push(DirichletBc { dof: 3 * n,     value: 0.0 }); // u_x
+            bcs.push(DirichletBc { dof: 3 * n + 1, value: 0.0 }); // u_y
+        }
+    }
+
+    // ---- MPC group: master = corner top node (0,0,nz); all other top nodes slaves ----
+    // u_z[slave] = u_z[master] (homogeneous, rigidly-guided cross-section).
+    // Includes the P2 edge-midpoint nodes on the top face, so the face truly
+    // behaves as a rigid cross-section.
+    let master_node = p2_grid.node_id(0, 0, p2_grid.nz); // P1 corner → same index in P2
+    let mut mpcs: Vec<MpcRow> = Vec::new();
+    for (n, xyz) in nodes_p2.iter().enumerate() {
+        if (xyz[2] - z_top).abs() < 1e-10 && n != master_node {
+            mpcs.push(MpcRow::new(
+                vec![3 * n + 2, 3 * master_node + 2],
+                vec![1.0, -1.0],
+                0.0,
+            ));
+        }
+    }
+
+    // ---- Load: 1 kN split across top-face nodes (corners only for simplicity) ----
+    let n_top_corners = (p2_grid.nx + 1) * (p2_grid.ny + 1);
+    let mut f = vec![0.0_f64; 3 * n_nodes_p2];
+    for j in 0..=p2_grid.ny {
+        for i in 0..=p2_grid.nx {
+            let n = p2_grid.node_id(i, j, p2_grid.nz);
+            apply_point_load(
+                &mut f,
+                n,
+                [0.0, 0.0, -APPLIED_LOAD_NEWTONS / n_top_corners as f64],
+            );
+        }
+    }
+
+    let opts = BucklingKernelOptions {
+        n_modes: 1,
+        eigen_tol: 1e-8,
+        eigen_max_iters: 200,
+        cg_tolerance: 1e-10,
+        cg_max_iter: 20_000,
+    };
+
+    let result = solve_buckling_kernel_p2(&nodes_p2, &tets_p2, &material, &bcs, &f, &mpcs, opts);
+
+    assert!(result.converged, "eigensolve must converge for P2 fixed-guided column");
+    assert!(!result.modes.is_empty(), "must return at least 1 mode");
+
+    let lambda_min = result.modes[0].eigenvalue;
+    assert!(
+        lambda_min > 0.0,
+        "λ_min = {lambda_min} must be positive for compressive load",
+    );
+
+    // MPC constraint satisfaction: all top-face u_z values must equal the master's.
+    let master_uz = result.pre_stress_displacement[3 * master_node + 2];
+    for (n, xyz) in nodes_p2.iter().enumerate() {
+        if (xyz[2] - z_top).abs() < 1e-10 {
+            assert_eq!(
+                result.pre_stress_displacement[3 * n + 2].to_bits(),
+                master_uz.to_bits(),
+                "P2 top-face node {n}: u_z = {} != master u_z = {} (MPC not satisfied)",
+                result.pre_stress_displacement[3 * n + 2],
+                master_uz,
+            );
+        }
+    }
+
+    // Analytical critical load: fixed-guided (k=0.5): P_cr = 4·π²·E·I / L².
+    let i_min = p2_grid.i_min();
+    let p_cr = 4.0 * PI.powi(2) * STEEL_E_PA * i_min / p2_grid.lz.powi(2);
+
+    let lambda_x_load = lambda_min * APPLIED_LOAD_NEWTONS;
+    let rel_err = (lambda_x_load - p_cr).abs() / p_cr;
+    eprintln!(
+        "P2 fixed-guided (k=0.5): λ·F = {lambda_x_load:.2} N, P_cr = {p_cr:.2} N, \
+         rel_err = {:.2}%",
+        rel_err * 100.0,
+    );
+
+    // 5% deliverable — PRD §9.1 / §13 task δ.
+    assert!(
+        rel_err < 0.05,
+        "P2 fixed-guided Euler: λ·F = {lambda_x_load:.2} N, P_cr = {p_cr:.2} N, \
+         rel_err = {:.2}% > 5%",
         rel_err * 100.0,
     );
 }
