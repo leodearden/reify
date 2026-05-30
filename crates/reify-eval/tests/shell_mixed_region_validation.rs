@@ -34,8 +34,9 @@
 //! margins matching the `shell_benchmarks.rs` convention.
 
 use reify_solver_elastic::{
-    DirichletBc, IsotropicElastic, MpcRow, apply_dirichlet_row_elimination,
-    apply_mpc_row_elimination, shell_element_stiffness_mitc3_plus,
+    DirichletBc, IsotropicElastic, MpcRow, ShellElementStress,
+    apply_dirichlet_row_elimination, apply_mpc_row_elimination,
+    shell_element_stiffness_mitc3_plus,
 };
 
 // ─── geometry / material constants ───────────────────────────────────────────
@@ -489,11 +490,163 @@ fn cantilever_config(
     (mesh, bcs, loads)
 }
 
-// ─── step-3/4 helpers: DECLARED HERE, DEFINED IN STEP-4 ────────────────────
-//
-// `rigid_translation_config` and `max_stress_component` are NOT defined in
-// this step (step-3). This makes the test file fail to compile — the intended
-// RED state. Step-4 provides all implementations.
+// ─── step-4 helpers: stress extraction and rigid-body config ─────────────────
+
+/// Recover per-element P1 Cauchy stress for all tet elements.
+///
+/// For each tet element, extracts the 12-DOF (3 translation axes × 4 nodes)
+/// local displacement from the D=6 global solution vector `u` (axes 0..2 only;
+/// tet rotation axes 3..5 are numbering artifacts and carry no stress), then
+/// calls `element_stress_p1` to get the constant per-element Cauchy stress.
+///
+/// Returns one 3×3 symmetric stress tensor per tet element, in element order.
+fn tet_element_stresses(
+    mesh: &CoupledMesh,
+    u: &[f64],
+    mat: &IsotropicElastic,
+) -> Vec<[[f64; 3]; 3]> {
+    use reify_solver_elastic::element_stress_p1;
+    mesh.tet_conn
+        .iter()
+        .map(|c| {
+            let phys = [mesh.nodes[c[0]], mesh.nodes[c[1]], mesh.nodes[c[2]], mesh.nodes[c[3]]];
+            let mut u_e = [0.0_f64; 12];
+            for (a, &na) in c.iter().enumerate() {
+                u_e[3 * a + 0] = u[6 * na + 0];
+                u_e[3 * a + 1] = u[6 * na + 1];
+                u_e[3 * a + 2] = u[6 * na + 2];
+            }
+            element_stress_p1(&phys, mat, &u_e)
+        })
+        .collect()
+}
+
+/// Recover per-element MITC3+ Cauchy stress for all shell elements.
+///
+/// For each shell triangle, extracts the 18-DOF (6 axes × 3 nodes) global
+/// displacement from `u`, then calls `shell_element_stress` to recover the
+/// Cauchy stress at the top, mid, and bottom surfaces in the element's local
+/// frame.
+///
+/// Returns one [`ShellElementStress`] per shell element, in element order.
+fn shell_element_stresses(
+    mesh: &CoupledMesh,
+    u: &[f64],
+    mat: &IsotropicElastic,
+) -> Vec<ShellElementStress> {
+    use reify_solver_elastic::shell_element_stress;
+    mesh.shell_conn
+        .iter()
+        .map(|c| {
+            let nodes = [mesh.nodes[c[0]], mesh.nodes[c[1]], mesh.nodes[c[2]]];
+            let mut u_global = [0.0_f64; 18];
+            for (a, &na) in c.iter().enumerate() {
+                for alpha in 0..6_usize {
+                    u_global[6 * a + alpha] = u[6 * na + alpha];
+                }
+            }
+            shell_element_stress(&nodes, T, mat, &u_global)
+        })
+        .collect()
+}
+
+/// Maximum absolute value of any Cauchy stress component over the entire mesh.
+///
+/// Scans every tet element via `tet_element_stresses` (per-element constant
+/// P1 stress) and every shell element via `shell_element_stresses` (MITC3+
+/// top/mid/bottom layers), then returns the global peak `|σ_ij|`.
+///
+/// For a rigid-body translation, both tet and shell stress fields are
+/// identically zero in exact arithmetic (rigid translation is a zero-energy
+/// mode in both P1 and MITC3 spaces); in floating point the residual is
+/// O(ε_mach · E), well below the 1e-6 threshold in step-3.
+fn max_stress_component(mesh: &CoupledMesh, u: &[f64], mat: &IsotropicElastic) -> f64 {
+    let mut max_s = 0.0_f64;
+
+    // Tet elements: constant P1 Cauchy stress
+    for sigma in tet_element_stresses(mesh, u, mat) {
+        for row in &sigma {
+            for &s in row {
+                let v = s.abs();
+                if v > max_s {
+                    max_s = v;
+                }
+            }
+        }
+    }
+
+    // Shell elements: MITC3+ Cauchy stress at top, mid, bottom surfaces
+    for ss in shell_element_stresses(mesh, u, mat) {
+        for sigma in [ss.top, ss.mid, ss.bottom] {
+            for row in &sigma {
+                for &s in row {
+                    let v = s.abs();
+                    if v > max_s {
+                        max_s = v;
+                    }
+                }
+            }
+        }
+    }
+
+    max_s
+}
+
+/// Build `(mesh, bcs, loads)` for the rigid-body translation validation.
+///
+/// Prescribes the uniform translation `t_vec` on all block nodes on the x=0
+/// face (inhomogeneous `DirichletBc`, translation axes 0..2 only) with zero
+/// external loads.  The zero-force + rigid-mode unique solution is then
+/// u[6·n + a] = t_vec[a] for all nodes and axes a ∈ {0,1,2}.
+///
+/// Additional pins required for uniqueness (same as `cantilever_config`):
+/// - Shell drilling DOF θ_z (axis 5) = 0 for every shell node.  The flat
+///   MITC3+ plate has no drilling stiffness, so the solve is otherwise
+///   rank-deficient.
+///
+/// Orphan tet-rotation DOFs (axes 3,4,5 of all block nodes) are handled
+/// internally by `solve_flexure_on_block`.
+fn rigid_translation_config(
+    t_vec: &[f64; 3],
+) -> (CoupledMesh, Vec<DirichletBc>, Vec<(usize, f64)>) {
+    let mesh = build_flexure_on_block_mesh();
+
+    let n_bx = NX_B + 1; // 3 x-nodes in block
+    let n_bz = NZ_B + 1; // 3 z-nodes in block
+    let n_sx = NX_F + 1; // 5 x-nodes in shell
+
+    let block_node =
+        |i: usize, j: usize, k: usize| -> usize { k * n_bx * (NY_B + 1) + j * n_bx + i };
+    let shell_node =
+        |is: usize, js: usize| -> usize { mesh.n_block_nodes + js * n_sx + is };
+
+    let mut bcs: Vec<DirichletBc> = Vec::new();
+
+    // ── Uniform translation T on the block base (x=0 face, translations only) ─
+    // Prescribing T rather than 0 forces the rigid translation mode through the
+    // entire coupled system. Axes 3,4,5 of these nodes are handled internally
+    // by solve_flexure_on_block (orphan tet-rotation pins to 0).
+    for k in 0..n_bz {
+        for j in 0..(NY_B + 1) {
+            let n = block_node(0, j, k);
+            for (a, &t_a) in t_vec.iter().enumerate() {
+                bcs.push(DirichletBc { dof: 6 * n + a, value: t_a });
+            }
+        }
+    }
+
+    // ── Shell drilling: θ_z = 0 for all shell nodes ───────────────────────────
+    // Mirrors cantilever_config — required to prevent rank deficiency on the
+    // flat MITC3+ plate.
+    for js in 0..(NY_F + 1) {
+        for is in 0..(NX_F + 1) {
+            let s = shell_node(is, js);
+            bcs.push(DirichletBc { dof: 6 * s + 5, value: 0.0 });
+        }
+    }
+
+    (mesh, bcs, vec![])
+}
 
 // ─── tests ───────────────────────────────────────────────────────────────────
 
@@ -630,6 +783,6 @@ fn rigid_body_translation_produces_zero_stress_everywhere_including_interface() 
         max_sigma < stress_tol,
         "spurious stress detected in rigid-body translation test: \
          max_sigma={max_sigma:.3e} > tol={stress_tol:.3e} \
-         (E={E_MOD}, ‖T‖={t_mag:.3f}, L_char={l_char})",
+         (E={E_MOD}, ‖T‖={t_mag:.3}, L_char={l_char})",
     );
 }
