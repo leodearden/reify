@@ -15,6 +15,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
+use crate::eligibility::Reason;
+use crate::quality::QualityVerdict;
+
 // ── Snapshot DTO ──────────────────────────────────────────────────────────────
 
 /// Point-in-time snapshot of the process-global mesh-morph diagnostic counters.
@@ -89,6 +92,110 @@ pub fn snapshot() -> DiagnosticSnapshot {
         ineligible_naming_error: COUNTERS.ineligible_naming_error.load(Ordering::Relaxed),
         panicked: COUNTERS.panicked.load(Ordering::Relaxed),
     }
+}
+
+// ── Outcome taxonomy + counter routing ────────────────────────────────────────
+
+/// The seven mutually-exclusive per-tick outcomes the mesh-morph engine can
+/// produce. One variant per [`DiagnosticSnapshot`] counter bucket; selected
+/// inside the recorders from the existing `&QualityVerdict` / `&Reason` the
+/// engine already holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MorphOutcome {
+    /// Existing mesh deformed in place.
+    Morphed,
+    /// Remeshed after a quality hard-fail (element inversion).
+    RemeshedQualityHardFail,
+    /// Remeshed after a quality soft-fail (metric threshold breach).
+    RemeshedQualitySoftFail,
+    /// Ineligible: Stage-A structural change.
+    IneligibleStructuralChange,
+    /// Ineligible: Stage-B bijection failure.
+    IneligibleBijectionFailure,
+    /// Ineligible: persistent-naming-layer error.
+    IneligibleNamingError,
+    /// Morph panicked (caught at the engine boundary).
+    Panicked,
+}
+
+// Exhaustive no-wildcard variant compile-fence (crate convention). Adding or
+// renaming a `MorphOutcome` variant without updating `counter` below — and the
+// snapshot/format surfaces — is a compile error.
+const _: fn() = || {
+    fn _assert_exhaustive(outcome: MorphOutcome) {
+        match outcome {
+            MorphOutcome::Morphed
+            | MorphOutcome::RemeshedQualityHardFail
+            | MorphOutcome::RemeshedQualitySoftFail
+            | MorphOutcome::IneligibleStructuralChange
+            | MorphOutcome::IneligibleBijectionFailure
+            | MorphOutcome::IneligibleNamingError
+            | MorphOutcome::Panicked => {}
+        }
+    }
+};
+
+/// Map an outcome to its process-global counter. The single source of truth for
+/// bucket selection; the recorders route through this.
+fn counter(outcome: MorphOutcome) -> &'static AtomicU64 {
+    match outcome {
+        MorphOutcome::Morphed => &COUNTERS.morphed,
+        MorphOutcome::RemeshedQualityHardFail => &COUNTERS.remeshed_quality_hard_fail,
+        MorphOutcome::RemeshedQualitySoftFail => &COUNTERS.remeshed_quality_soft_fail,
+        MorphOutcome::IneligibleStructuralChange => &COUNTERS.ineligible_structural_change,
+        MorphOutcome::IneligibleBijectionFailure => &COUNTERS.ineligible_bijection_failure,
+        MorphOutcome::IneligibleNamingError => &COUNTERS.ineligible_naming_error,
+        MorphOutcome::Panicked => &COUNTERS.panicked,
+    }
+}
+
+// ── Recorders ─────────────────────────────────────────────────────────────────
+//
+// Each recorder couples a counter increment with its policy-level `tracing`
+// event (the logging policy is added in a later step). Bucket selection lives
+// here so the engine call site forwards the `&QualityVerdict` / `&Reason` it
+// already holds.
+
+/// Record a successful morph.
+pub fn record_morphed() {
+    counter(MorphOutcome::Morphed).fetch_add(1, Ordering::Relaxed);
+}
+
+/// Record a quality-driven remesh fallback, bucketed by hard vs soft fail.
+///
+/// [`QualityVerdict::Pass`] is not a remesh trigger — the engine only calls this
+/// on a fail verdict — so it is a no-op here. The `debug_assert!` makes that
+/// contract loud in debug builds at no release-build cost.
+pub fn record_quality_remesh(verdict: &QualityVerdict) {
+    let outcome = match verdict {
+        QualityVerdict::HardFail(_) => MorphOutcome::RemeshedQualityHardFail,
+        QualityVerdict::SoftFail(_) => MorphOutcome::RemeshedQualitySoftFail,
+        QualityVerdict::Pass => {
+            debug_assert!(
+                false,
+                "record_quality_remesh called with QualityVerdict::Pass (not a remesh trigger)"
+            );
+            return;
+        }
+    };
+    counter(outcome).fetch_add(1, Ordering::Relaxed);
+}
+
+/// Record an ineligible edit, bucketed by reject category.
+pub fn record_ineligible(reason: &Reason) {
+    let outcome = match reason {
+        Reason::StructuralChange => MorphOutcome::IneligibleStructuralChange,
+        Reason::BijectionFailure(_) => MorphOutcome::IneligibleBijectionFailure,
+        Reason::NamingLayerError { .. } => MorphOutcome::IneligibleNamingError,
+    };
+    counter(outcome).fetch_add(1, Ordering::Relaxed);
+}
+
+/// Record a caught morph panic. `detail` is surfaced in the error log (added in
+/// a later step).
+pub fn record_panicked(detail: &str) {
+    let _ = detail;
+    counter(MorphOutcome::Panicked).fetch_add(1, Ordering::Relaxed);
 }
 
 /// Reset all counters to zero.
