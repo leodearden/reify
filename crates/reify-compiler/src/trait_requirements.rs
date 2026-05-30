@@ -198,15 +198,41 @@ pub(crate) fn collect_all_requirements(
                 }
                 ctx.requirements.push(req.clone());
             }
-            // Assoc-fn requirement: record (signature, originating trait) so
-            // phase 5 can name the declaring trait, then push the requirement
-            // so phase 5 sees it. First-seen wins here; the refinement
-            // signature-lock (same name + different inherited signature →
-            // conflict) is layered on in step-10. (task 3939 δ step-4)
+            // Assoc-fn requirement: the refinement signature-lock (task 3939 δ).
+            // A refining trait may re-declare an inherited assoc fn, but only with
+            // the IDENTICAL signature — same name + different inherited signature
+            // is a conflict (PRD §5.4 / §8.8 exact-match, no subtyping).
+            // `CompiledAssocFnSig: PartialEq + Clone` plugs straight into the
+            // generic `try_dedup_or_conflict` helper against `seen_fn_sigs`:
+            //   * equal sig    → Break (dedup, requirement not re-pushed),
+            //   * different sig → emit `TraitFnSignatureMismatch`, drop the copy.
+            // Phase 5 still reads `seen_fn_sigs` to name the declaring trait in
+            // its `TraitFnNotSatisfied` diagnostic, so first-seen (the base trait)
+            // remains recorded there.
             RequirementKind::Fn(sig) => {
-                ctx.seen_fn_sigs
-                    .entry(req.name.clone())
-                    .or_insert_with(|| (sig.clone(), trait_name.to_string()));
+                if try_dedup_or_conflict(
+                    &mut ctx.seen_fn_sigs,
+                    &req.name,
+                    sig,
+                    trait_name,
+                    span,
+                    |name, _existing, existing_trait, _new, new_trait| {
+                        (
+                            format!(
+                                "refining trait may not change the inherited associated-function \
+                                 signature for '{}': trait '{}' and trait '{}' declare \
+                                 different signatures",
+                                name, existing_trait, new_trait
+                            ),
+                            DiagnosticCode::TraitFnSignatureMismatch,
+                        )
+                    },
+                    diagnostics,
+                )
+                .is_break()
+                {
+                    continue;
+                }
                 ctx.requirements.push(req.clone());
             }
         }
