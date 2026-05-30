@@ -3167,6 +3167,109 @@ bool contains_solid(const OcctShape& shape, double px, double py, double pz, dou
     });
 }
 
+bool geo_equiv_topo_sample(const OcctShape& a, const OcctShape& b,
+                           double tolerance, size_t sample_count) {
+    // STRICT-VARIANT NOTE: This is the asymmetric sampled-point geo_equiv (PRD §5.1,
+    // KGQ-δ).  A future `geo_equiv_strict` using symmetric Hausdorff distance is
+    // deferred to v0.4 per PRD §5.1 + Open Question §10.
+    //
+    // Validate tolerance: must be strictly positive and finite.  A zero tolerance
+    // makes tol_sq = 0 and causes `pa.SquareDistance(pb) >= tol_sq` to be true even
+    // for exactly-coincident points (0 >= 0), so geo_equiv(a, a, 0) would return
+    // false — a confusing trap.  Negative or non-finite values are similarly
+    // meaningless as a distance bound.
+    if (!(std::isfinite(tolerance) && tolerance > 0.0)) {
+        throw std::runtime_error(
+            "geo_equiv_topo_sample: tolerance must be a strictly positive finite value");
+    }
+    return wrap_occt_call("geo_equiv_topo_sample", [&]() -> bool {
+        // (1) Topology check: compare per-kind counts for vertex, edge, and face.
+        // A count mismatch means the shapes cannot be equivalent — return false
+        // without reaching the sampling step.
+        for (TopAbs_ShapeEnum kind : {TopAbs_VERTEX, TopAbs_EDGE, TopAbs_FACE}) {
+            TopTools_IndexedMapOfShape ma, mb;
+            TopExp::MapShapes(a.shape, kind, ma);
+            TopExp::MapShapes(b.shape, kind, mb);
+            if (ma.Extent() != mb.Extent()) {
+                return false;
+            }
+        }
+
+        if (sample_count == 0) {
+            return true;
+        }
+
+        const double tol_sq = tolerance * tolerance;
+
+        // (2) Face sampling in canonical face_map() order.
+        //
+        // V0.1 KNOWN LIMITATION — canonical-order pairing: faces are matched by
+        // TopExp::MapShapes index (FindKey(i) of a vs FindKey(i) of b).  This assumes
+        // both shapes enumerate faces in the same canonical order.  For shapes built via
+        // different op sequences or boolean histories, OCCT's map ordering is not
+        // guaranteed to align, so non-corresponding faces may be paired, producing false
+        // negatives.  A future improvement should pair faces by nearest-centroid/bbox
+        // matching rather than raw map index.
+        //
+        // V0.1 KNOWN LIMITATION — diagonal-only sampling: points are evaluated along
+        // the parametric diagonal (u = u1+t*(u2-u1), v = v1+t*(v2-v1)) for N values
+        // of t in [0,1].  Off-diagonal UV deviations are not covered — two faces that
+        // differ only away from the corner-to-corner line may compare as equivalent
+        // (false positive).  For the box/cylinder fixtures in tests this is benign, but
+        // callers should treat geo_equiv as a heuristic rather than an exact predicate.
+        // A future `geo_equiv_strict` (PRD §5.1, Open Question §10) will use symmetric
+        // Hausdorff distance.
+        //
+        // For each pair of corresponding faces, evaluate `sample_count` uniform
+        // parameter points along the UV diagonal on both and check |p_a − p_b|² < tol².
+        const TopTools_IndexedMapOfShape& fa = a.face_map();
+        const TopTools_IndexedMapOfShape& fb = b.face_map();
+        for (Standard_Integer i = 1; i <= fa.Extent(); ++i) {
+            BRepAdaptor_Surface sa(TopoDS::Face(fa.FindKey(i)));
+            BRepAdaptor_Surface sb(TopoDS::Face(fb.FindKey(i)));
+            double u1a = sa.FirstUParameter(), u2a = sa.LastUParameter();
+            double v1a = sa.FirstVParameter(), v2a = sa.LastVParameter();
+            double u1b = sb.FirstUParameter(), u2b = sb.LastUParameter();
+            double v1b = sb.FirstVParameter(), v2b = sb.LastVParameter();
+            for (size_t j = 0; j < sample_count; ++j) {
+                double t = (sample_count > 1)
+                    ? static_cast<double>(j) / static_cast<double>(sample_count - 1)
+                    : 0.5;
+                gp_Pnt pa = sa.Value(u1a + t * (u2a - u1a), v1a + t * (v2a - v1a));
+                gp_Pnt pb = sb.Value(u1b + t * (u2b - u1b), v1b + t * (v2b - v1b));
+                if (pa.SquareDistance(pb) >= tol_sq) {
+                    return false;
+                }
+            }
+        }
+
+        // (3) Edge sampling in canonical edge_map() order.
+        // Same canonical-order pairing limitation as faces (see above).
+        // For each pair of corresponding edges, evaluate `sample_count` uniform
+        // t parameter points on both and check |p_a − p_b|² < tol².
+        const TopTools_IndexedMapOfShape& ea = a.edge_map();
+        const TopTools_IndexedMapOfShape& eb = b.edge_map();
+        for (Standard_Integer i = 1; i <= ea.Extent(); ++i) {
+            BRepAdaptor_Curve ca(TopoDS::Edge(ea.FindKey(i)));
+            BRepAdaptor_Curve cb(TopoDS::Edge(eb.FindKey(i)));
+            double t1a = ca.FirstParameter(), t2a = ca.LastParameter();
+            double t1b = cb.FirstParameter(), t2b = cb.LastParameter();
+            for (size_t j = 0; j < sample_count; ++j) {
+                double t = (sample_count > 1)
+                    ? static_cast<double>(j) / static_cast<double>(sample_count - 1)
+                    : 0.5;
+                gp_Pnt pa = ca.Value(t1a + t * (t2a - t1a));
+                gp_Pnt pb = cb.Value(t1b + t * (t2b - t1b));
+                if (pa.SquareDistance(pb) >= tol_sq) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    });
+}
+
 double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, double az) {
     return wrap_occt_call("query_moment_of_inertia", [&]() {
         GProp_GProps props;

@@ -555,6 +555,15 @@ enum QueryKey {
         pz_bits: u64,
         tol_bits: u64,
     },
+    /// GeoEquiv keys the two shape handles (canonicalised to canonical min/max
+    /// order since geo_equiv is symmetric) and the tolerance as bit-keyed
+    /// `u64` (via `density_bits`).
+    /// Powers the v0.1 stdlib `geo_equiv(a, b, tol)` helper (task 3613, KGQ-δ).
+    GeoEquiv {
+        left: GeometryHandleId,
+        right: GeometryHandleId,
+        tol_bits: u64,
+    },
     /// SurfaceAngle keys the two face handles. The angle is unsigned (the
     /// kernel returns `acos(|n_a · n_b|)`-style absolute-cos), so face_a
     /// and face_b are pair-canonicalised with `normalize_distance_pair` so
@@ -704,6 +713,18 @@ impl QueryKey {
                 pz_bits: density_bits(*pz),
                 tol_bits: density_bits(*tolerance),
             },
+            GeometryQuery::GeoEquiv {
+                left,
+                right,
+                tolerance,
+            } => {
+                let (lo, hi) = normalize_distance_pair(*left, *right);
+                QueryKey::GeoEquiv {
+                    left: lo,
+                    right: hi,
+                    tol_bits: density_bits(*tolerance),
+                }
+            }
             GeometryQuery::SurfaceAngle { face_a, face_b } => {
                 let (lo, hi) = normalize_distance_pair(*face_a, *face_b);
                 QueryKey::SurfaceAngle {
@@ -1062,6 +1083,35 @@ impl MockGeometryKernel {
         self
     }
 
+    /// Configure a `GeoEquiv` query result for a specific shape pair and tolerance.
+    ///
+    /// The `value` should be a `Value::Bool(true|false)`.
+    /// The shape pair `(left, right)` is canonicalised via
+    /// `normalize_distance_pair` so `(a, b)` and `(b, a)` map to the same
+    /// key (geo_equiv is symmetric by convention).
+    /// The tolerance is bit-keyed via `density_bits` so distinct tolerances
+    /// produce distinct keys (consistent with `with_contains_result`).
+    ///
+    /// Powers the v0.1 stdlib `geo_equiv(a, b, tol)` helper (task 3613, KGQ-δ).
+    pub fn with_geo_equiv_result(
+        mut self,
+        left: GeometryHandleId,
+        right: GeometryHandleId,
+        tolerance: f64,
+        value: Value,
+    ) -> Self {
+        let (lo, hi) = normalize_distance_pair(left, right);
+        self.typed_queries.insert(
+            QueryKey::GeoEquiv {
+                left: lo,
+                right: hi,
+                tol_bits: density_bits(tolerance),
+            },
+            value,
+        );
+        self
+    }
+
     /// Configure a `SurfaceAngle` query result for a specific face pair.
     ///
     /// The `value` should be a `Value::Real(rad)` where `rad ∈ [0, π]`.
@@ -1371,6 +1421,7 @@ impl GeometryKernel for MockGeometryKernel {
             GeometryQuery::ClosestPointOnShape { handle, .. } => handle,
             GeometryQuery::PointOnShape { handle, .. } => handle,
             GeometryQuery::Contains { handle, .. } => handle,
+            GeometryQuery::GeoEquiv { left, .. } => left,
             GeometryQuery::SurfaceAngle { face_a, .. } => face_a,
         };
 

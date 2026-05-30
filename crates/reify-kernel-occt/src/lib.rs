@@ -1119,6 +1119,36 @@ impl OcctKernel {
             .map_err(|e| QueryError::QueryFailed(e.to_string()))
     }
 
+    /// Test whether shapes `left` and `right` are geometrically equivalent
+    /// within `tolerance` using topology-count matching + sampled-vertex
+    /// proximity.
+    ///
+    /// STRICT-VARIANT NOTE: This is the asymmetric sampled-point geo_equiv
+    /// (PRD §5.1, KGQ-δ).  A future `geo_equiv_strict` using symmetric
+    /// Hausdorff distance is deferred to v0.4 per PRD §5.1 + Open Question §10.
+    ///
+    /// The sample count is threaded from [`reify_ir::DEFAULT_GEO_EQUIV_SAMPLE_COUNT`]
+    /// (= 8 per PRD §5.2) so that constant remains the single authoritative source.
+    ///
+    /// Returns `Err(QueryError::InvalidHandle(_))` if either handle is unknown.
+    /// Returns `Err(QueryError::QueryFailed(_))` if `tolerance` is non-finite
+    /// or negative, or if the OCCT computation fails.
+    pub fn geo_equiv(
+        &self,
+        left: GeometryHandleId,
+        right: GeometryHandleId,
+        tolerance: f64,
+    ) -> Result<bool, QueryError> {
+        let s_left = self
+            .get_shape(left)
+            .map_err(|_| QueryError::InvalidHandle(left))?;
+        let s_right = self
+            .get_shape(right)
+            .map_err(|_| QueryError::InvalidHandle(right))?;
+        ffi::ffi::geo_equiv_topo_sample(s_left, s_right, tolerance, reify_ir::DEFAULT_GEO_EQUIV_SAMPLE_COUNT)
+            .map_err(|e| QueryError::QueryFailed(e.to_string()))
+    }
+
     /// Fuse `left` and `right` via `BRepAlgoAPI_Fuse` and return the
     /// fused-result handle alongside the per-parent face/edge history
     /// records (Modified / Generated / Deleted).
@@ -2621,6 +2651,11 @@ impl OcctKernel {
             } => self
                 .contains(*handle, *px, *py, *pz, *tolerance)
                 .map(Value::Bool),
+            GeometryQuery::GeoEquiv {
+                left,
+                right,
+                tolerance,
+            } => self.geo_equiv(*left, *right, *tolerance).map(Value::Bool),
             GeometryQuery::SurfaceAngle { face_a, face_b } => {
                 self.surface_angle(*face_a, *face_b).map(Value::Real)
             }

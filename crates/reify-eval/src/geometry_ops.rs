@@ -1756,6 +1756,7 @@ fn kernel_distance(
 //   `angle_between_surfaces(a, b)`   → `GeometryQuery::SurfaceAngle`
 //   `angle(a, b)`                    → pure-math acos (task 3614, KGQ-ε)
 //   `contains(solid, point)`         → `GeometryQuery::Contains` (task 3611, KGQ-β)
+//   `geo_equiv(left, right, tol)`   → `GeometryQuery::GeoEquiv`  (task 3613, KGQ-δ)
 //
 // ── Which names are compile-time typed but NOT eval-dispatched (task 2699) ──
 //
@@ -1831,6 +1832,7 @@ pub(crate) fn try_eval_topology_selector(
         "shared_edges" => TopologySelectorHelper::SharedEdges,
         "angle" => TopologySelectorHelper::Angle,
         "contains" => TopologySelectorHelper::Contains,
+        "geo_equiv" => TopologySelectorHelper::GeoEquiv,
         _ => return None,
     };
 
@@ -1895,7 +1897,8 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::AdjacentFaces
                 | TopologySelectorHelper::SharedEdges
                 | TopologySelectorHelper::Angle
-                | TopologySelectorHelper::Contains => {
+                | TopologySelectorHelper::Contains
+                | TopologySelectorHelper::GeoEquiv => {
                     unreachable!("ClosestPoint/IsOn outer match guarantees this")
                 }
             }
@@ -1929,6 +1932,27 @@ pub(crate) fn try_eval_topology_selector(
             // Reuse the Bool-unwrap helper from `is_on`: dispatches
             // `kernel.query(&query)` and unwraps `Value::Bool`, downgrading
             // non-Bool / Err replies to `Some(Value::Undef)` + Warning per §4.
+            dispatch_point_on_shape(kernel, &query, &function.name, diagnostics)
+        }
+        TopologySelectorHelper::GeoEquiv => {
+            // geo_equiv(left, right, tol) → Bool (task 3613, KGQ-δ, PRD §5.1).
+            // True iff BOTH topology equivalence (canonical TopExp::MapShapes
+            // per-kind counts match) AND sampled-vertex tolerance (N=8 uniform
+            // parameter points per face/edge; |p_a - p_b| < tol) hold.
+            //
+            // FUTURE: geo_equiv_strict(a, b, tol) — symmetric Hausdorff distance
+            // variant deferred to v0.4 (PRD §5.1, Open Question §10).
+            //
+            // args[0]: left geometry ValueRef → named_steps → GeometryHandleId.
+            // args[1]: right geometry ValueRef → named_steps → GeometryHandleId.
+            // args[2]: tolerance ValueRef → values → Value::length(m) → SI metres.
+            let left = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            let right = resolve_geometry_handle_arg(&args[1], named_steps)?;
+            let tolerance = resolve_length_scalar_arg(&args[2], values)?;
+            let query = reify_ir::GeometryQuery::GeoEquiv { left, right, tolerance };
+            // Reuse the Bool-unwrap helper: dispatches kernel.query(&query) and
+            // unwraps Value::Bool, downgrading non-Bool / Err replies to
+            // Some(Value::Undef) + Warning (function.name = "geo_equiv").
             dispatch_point_on_shape(kernel, &query, &function.name, diagnostics)
         }
         TopologySelectorHelper::Angle => {
@@ -1996,7 +2020,8 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::AdjacentFaces
                 | TopologySelectorHelper::SharedEdges
                 | TopologySelectorHelper::Angle
-                | TopologySelectorHelper::Contains => {
+                | TopologySelectorHelper::Contains
+                | TopologySelectorHelper::GeoEquiv => {
                     unreachable!("Edges/Faces outer match guarantees this")
                 }
             };
@@ -2371,6 +2396,16 @@ enum TopologySelectorHelper {
     /// `is_on` with args swapped. Default tolerance from
     /// `DEFAULT_CONTAINS_TOLERANCE_M` per §5.2.
     Contains,
+    /// `geo_equiv(left, right, tol) -> Bool` — topology hash + N=8 parameter
+    /// sample per §5.1 (task 3613, KGQ-δ, PRD §9). True iff BOTH topology
+    /// (per-kind shape count) AND sampled-vertex tolerance hold.
+    /// Uses `QueryCapability::BRepAndMesh`; sample count from
+    /// `DEFAULT_GEO_EQUIV_SAMPLE_COUNT` (§5.2). Tolerance is an explicit
+    /// user-supplied Length arg (no default constant per §5.2).
+    ///
+    /// FUTURE: `geo_equiv_strict(a, b, tol) -> Bool` — symmetric Hausdorff
+    /// distance variant deferred to v0.4 (PRD §5.1, Open Question §10).
+    GeoEquiv,
 }
 
 impl TopologySelectorHelper {
@@ -2394,7 +2429,8 @@ impl TopologySelectorHelper {
             TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => 1,
             TopologySelectorHelper::FacesByNormal
             | TopologySelectorHelper::EdgesParallelTo
-            | TopologySelectorHelper::EdgesAtHeight => 3,
+            | TopologySelectorHelper::EdgesAtHeight
+            | TopologySelectorHelper::GeoEquiv => 3,
         }
     }
 }
@@ -9115,5 +9151,363 @@ mod tests {
                 expected
             );
         }
+    }
+
+    // ── try_eval_topology_selector `geo_equiv` unit tests (task 3613, KGQ-δ) ──
+    //
+    // These tests pin the `geo_equiv(left, right, tol) -> Bool` dispatch
+    // contract (PRD §9 KGQ-δ). Args[0]/args[1] are Geometry ValueRefs resolved
+    // via named_steps; args[2] is a Length scalar ValueRef resolved via values
+    // to SI metres. The dispatcher reuses `dispatch_point_on_shape`
+    // (Bool unwrapper), threading `DEFAULT_GEO_EQUIV_SAMPLE_COUNT` to the FFI.
+    //
+    // Four contracts (mirror the four `try_eval_topology_selector_contains_*`):
+    //   (a) happy path: kernel Bool(true) reply → Some(Value::Bool(true)), no diags
+    //   (b) literal-arg fall-through: 3 literal args → None, zero kernel calls
+    //   (c) non-Bool kernel reply → Some(Value::Undef) + exactly-one Warning
+    //       naming "geo_equiv" and "non-Bool"
+    //   (d) kernel-Err: no seeding → Some(Value::Undef) + exactly-one Warning
+    //       naming "geo_equiv" and "kernel query failed"
+    //
+    // All four FAIL (RED) until step-6 wires the `geo_equiv` arm in
+    // try_eval_topology_selector / TopologySelectorHelper.
+
+    /// Build a `CompiledExpr` for `helper(member_a, member_b, member_c)` where
+    /// all three args are ValueRefs. Mirrors `topology_selector_call_two_value_refs`
+    /// but with a third arg — used by the geo_equiv 3-arg dispatch tests.
+    #[allow(clippy::too_many_arguments)]
+    fn topology_selector_call_three_value_refs(
+        helper_name: &str,
+        entity: &str,
+        member_a: &str,
+        type_a: reify_core::Type,
+        member_b: &str,
+        type_b: reify_core::Type,
+        member_c: &str,
+        type_c: reify_core::Type,
+        result_type: reify_core::Type,
+    ) -> reify_ir::CompiledExpr {
+        let arg_a = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new(entity, member_a),
+            type_a,
+        );
+        let arg_b = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new(entity, member_b),
+            type_b,
+        );
+        let arg_c = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new(entity, member_c),
+            type_c,
+        );
+        let mut content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str(helper_name));
+        content_hash = content_hash.combine(arg_a.content_hash);
+        content_hash = content_hash.combine(arg_b.content_hash);
+        content_hash = content_hash.combine(arg_c.content_hash);
+        reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: helper_name.to_string(),
+                    qualified_name: helper_name.to_string(),
+                },
+                args: vec![arg_a, arg_b, arg_c],
+            },
+            result_type,
+            content_hash,
+        }
+    }
+
+    /// Build a `CompiledExpr` for `helper(<literal>, <literal>, <literal>)` —
+    /// used for 3-arg literal fall-through defensive tests. Mirrors
+    /// `topology_selector_call_literal_args` but with three args so the arity
+    /// gate for arity-3 helpers (like `geo_equiv`) passes.
+    fn topology_selector_call_three_literal_args(helper_name: &str) -> reify_ir::CompiledExpr {
+        let arg_a = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Real(1.0),
+            reify_core::Type::Real,
+        );
+        let arg_b = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Real(2.0),
+            reify_core::Type::Real,
+        );
+        let arg_c = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Real(3.0),
+            reify_core::Type::Real,
+        );
+        let mut content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str(helper_name));
+        content_hash = content_hash.combine(arg_a.content_hash);
+        content_hash = content_hash.combine(arg_b.content_hash);
+        content_hash = content_hash.combine(arg_c.content_hash);
+        reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: helper_name.to_string(),
+                    qualified_name: helper_name.to_string(),
+                },
+                args: vec![arg_a, arg_b, arg_c],
+            },
+            result_type: reify_core::Type::Bool,
+            content_hash,
+        }
+    }
+
+    #[test]
+    fn try_eval_topology_selector_geo_equiv_kernel_reply_returns_bool() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let left_handle = reify_ir::GeometryHandleId(41);
+        let right_handle = reify_ir::GeometryHandleId(42);
+        let tol = 1e-6_f64;
+        // Record the mock using `with_geo_equiv_result` — pins that the
+        // dispatcher builds `GeometryQuery::GeoEquiv { left, right, tolerance }`.
+        let mut kernel = MockGeometryKernel::new().with_geo_equiv_result(
+            left_handle,
+            right_handle,
+            tol,
+            reify_ir::Value::Bool(true),
+        );
+
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        // args[0] = left geometry → resolved via named_steps by member "left"
+        named_steps.insert("left".to_string(), left_handle);
+        // args[1] = right geometry → resolved via named_steps by member "right"
+        named_steps.insert("right".to_string(), right_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        // args[2] = tolerance → resolved via values by ValueCellId
+        values.insert(
+            reify_core::ValueCellId::new("GeoEquivSmoke", "tol"),
+            reify_ir::Value::length(tol),
+        );
+
+        // geo_equiv(left, right, tol): args[0]=left (Geometry), args[1]=right (Geometry),
+        //                              args[2]=tol (Scalar<Length>)
+        let expr = topology_selector_call_three_value_refs(
+            "geo_equiv",
+            "GeoEquivSmoke",
+            "left",
+            reify_core::Type::Geometry,
+            "right",
+            reify_core::Type::Geometry,
+            "tol",
+            reify_core::Type::length(),
+            reify_core::Type::Bool,
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Bool(true)),
+            "geo_equiv(left, right, tol) with kernel reply Bool(true) must produce \
+             Some(Value::Bool(true)); got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "happy-path geo_equiv must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_geo_equiv_literal_args_falls_through_to_none() {
+        use reify_test_support::mocks::CountingMockKernel;
+        // `geo_equiv(<literal>, <literal>, <literal>)` — non-ValueRef args, so
+        // resolve_geometry_handle_arg returns None on args[0], and the dispatcher
+        // must return None without consulting the kernel.
+        let inner = reify_test_support::mocks::MockGeometryKernel::new();
+        let mut kernel = CountingMockKernel::new(inner);
+
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let values = reify_ir::ValueMap::new();
+
+        let expr = topology_selector_call_three_literal_args("geo_equiv");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "geo_equiv(<literal>, <literal>, <literal>) must return None, got {:?}",
+            result
+        );
+        assert_eq!(
+            kernel.total_query_count(),
+            0,
+            "kernel must NOT be consulted for non-ValueRef args"
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_geo_equiv_non_bool_kernel_reply_emits_warning_and_returns_undef()
+    {
+        use reify_test_support::mocks::MockGeometryKernel;
+        // Pin the `Ok(other)` warning arm of `dispatch_point_on_shape` (reused
+        // for `geo_equiv`): a kernel reply that is not `Value::Bool(_)` must
+        // produce `Some(Value::Undef)` with a Warning diagnostic naming
+        // "geo_equiv" and "non-Bool".
+        let left_handle = reify_ir::GeometryHandleId(41);
+        let right_handle = reify_ir::GeometryHandleId(42);
+        let tol = 1e-6_f64;
+        let mut kernel = MockGeometryKernel::new().with_geo_equiv_result(
+            left_handle,
+            right_handle,
+            tol,
+            reify_ir::Value::Real(0.5), // Wrong type — triggers non-Bool warning arm
+        );
+
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        named_steps.insert("left".to_string(), left_handle);
+        named_steps.insert("right".to_string(), right_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            reify_core::ValueCellId::new("GeoEquivSmoke", "tol"),
+            reify_ir::Value::length(tol),
+        );
+
+        let expr = topology_selector_call_three_value_refs(
+            "geo_equiv",
+            "GeoEquivSmoke",
+            "left",
+            reify_core::Type::Geometry,
+            "right",
+            reify_core::Type::Geometry,
+            "tol",
+            reify_core::Type::length(),
+            reify_core::Type::Bool,
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Undef),
+            "geo_equiv(...) with non-Bool kernel reply must yield Some(Value::Undef); \
+             got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "non-Bool reply must emit exactly one Warning, got {} diagnostics: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Warning,
+            "diagnostic severity must be Warning, got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("geo_equiv"),
+            "diagnostic must mention the helper name 'geo_equiv', got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("non-Bool"),
+            "diagnostic must indicate the non-Bool reply, got: {}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_geo_equiv_kernel_err_returns_undef_with_warning() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        // No `with_geo_equiv_result` seeding — MockGeometryKernel.query() falls
+        // through to the generic handle-only map which also has no entry for
+        // this handle, so it returns `Err(QueryError::QueryFailed(...))`.
+        // `dispatch_point_on_shape` must downgrade this to `Some(Value::Undef)`
+        // and emit exactly one Warning diagnostic naming "geo_equiv" and
+        // "kernel query failed". Pins the `Err(err)` arm of that helper.
+        let left_handle = reify_ir::GeometryHandleId(41);
+        let right_handle = reify_ir::GeometryHandleId(42);
+        let tol = 1e-6_f64;
+        let mut kernel = MockGeometryKernel::new();
+
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        named_steps.insert("left".to_string(), left_handle);
+        named_steps.insert("right".to_string(), right_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            reify_core::ValueCellId::new("GeoEquivSmoke", "tol"),
+            reify_ir::Value::length(tol),
+        );
+
+        let expr = topology_selector_call_three_value_refs(
+            "geo_equiv",
+            "GeoEquivSmoke",
+            "left",
+            reify_core::Type::Geometry,
+            "right",
+            reify_core::Type::Geometry,
+            "tol",
+            reify_core::Type::length(),
+            reify_core::Type::Bool,
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Undef),
+            "geo_equiv(...) with kernel Err must yield Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "kernel Err must emit exactly one Warning, got {} diagnostics: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Warning,
+            "diagnostic severity must be Warning, got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("geo_equiv"),
+            "diagnostic must mention the helper name 'geo_equiv', got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("kernel query failed"),
+            "diagnostic must indicate the kernel failure, got: {}",
+            diag.message
+        );
     }
 }

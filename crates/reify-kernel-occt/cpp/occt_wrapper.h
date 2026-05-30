@@ -878,6 +878,29 @@ bool point_on_shape(const OcctShape& shape, double px, double py, double pz, dou
 /// Negative or NaN values cause the implementation to throw `std::runtime_error`.
 bool contains_solid(const OcctShape& shape, double px, double py, double pz, double tolerance);
 
+/// Test whether two shapes are geometrically equivalent within `tolerance`
+/// by (1) topology-count matching and (2) sampled-vertex proximity.
+///
+/// STRICT-VARIANT NOTE: This is the asymmetric sampled-point geo_equiv (PRD §5.1,
+/// KGQ-δ).  A future `geo_equiv_strict` using symmetric Hausdorff distance is
+/// deferred to v0.4 per PRD §5.1 + Open Question §10.
+///
+/// Algorithm:
+///   (1) Compare per-kind (vertex/edge/face) counts via `TopExp::MapShapes`;
+///       a count mismatch returns `false` immediately.
+///   (2) For each face / edge in canonical `face_map()` / `edge_map()` order,
+///       evaluate `sample_count` uniform parameter points on both shapes and
+///       require every `|p_a − p_b| < tolerance`.
+///
+/// **Tolerance precondition:** `tolerance` must be a *strictly positive* finite
+/// `double`.  Zero, negative, or non-finite values cause the implementation to
+/// throw `std::runtime_error`.  (A zero tolerance makes `tol_sq = 0` so the
+/// `>= tol_sq` comparison is always true — even identical shapes return `false`.)
+///
+/// Powers the v0.1 stdlib `geo_equiv(a, b, tol) -> Bool` (PRD §9 KGQ-δ).
+bool geo_equiv_topo_sample(const OcctShape& a, const OcctShape& b,
+                           double tolerance, size_t sample_count);
+
 double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, double az);
 
 /// Compute the full 3×3 inertia tensor about the shape's centroid,

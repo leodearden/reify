@@ -1,0 +1,47 @@
+// Fixture: geo_equiv(Geometry, Geometry, Length) -> Bool smoke test (task 3613, KGQ-δ)
+// PRD: docs/prds/v0_3/kernel-geometry-queries.md §9 KGQ-δ
+//
+// User-observable signals (§8.2 three-case pin):
+//   geo_equiv(box(10mm,10mm,10mm), box(10mm,10mm,10mm),    0.001mm) == true
+//     (identical shapes: Δ=0, topology match)
+//   geo_equiv(box(10mm,10mm,10mm), box(10.0001mm,10mm,10mm), 0.001mm) == true
+//     (within-tol: face displacement 5e-8 m < tol 1e-6 m, topology match)
+//   geo_equiv(box(10mm,10mm,10mm), cylinder(5mm,10mm),     0.001mm) == false
+//     (topology mismatch: 6 faces/12 edges vs 3 faces/3 edges)
+//
+// Arg-shape contract (§4 invariant):
+//   All args to geo_equiv() must be ValueRefs (let-bound cells), NOT inline
+//   calls.  Inline calls fall through to None → Value::Undef.
+//
+// Unit-qualification contract:
+//   resolve_length_scalar_arg requires the tolerance to carry a LENGTH
+//   dimension.  Use a unit-qualified literal (0.001mm = 1e-6 m) — a bare
+//   dimensionless value would fail the check and yield Value::Undef.
+//
+// Numeric margins (SI):
+//   box(10mm) → faces at ±5 mm = ±0.005 m
+//   box(10.0001mm) → faces at ±5.00005 mm = ±0.00500005 m
+//   within-tol displacement = 5e-8 m  < tol 1e-6 m  ✓
+//   box has 6 faces / 12 edges; cylinder has 3 faces / 3 edges
+//
+// Pinning test:
+//   crates/reify-eval/tests/kernel_queries_geo_equiv_smoke.rs::
+//     geo_equiv_smoke_evals_expected_booleans
+
+structure def GeoEquivSmoke {
+    // Reference shape and comparison shapes — let-bound so geo_equiv receives
+    // ValueRefs per the §4 arg-shape contract.
+    let a = box(10mm, 10mm, 10mm)           // reference
+    let b = box(10mm, 10mm, 10mm)           // identical to a
+    let c = box(10.0001mm, 10mm, 10mm)      // within-tol: face displacement 5e-8 m
+    let d = cylinder(5mm, 10mm)             // topology-different: 3 faces vs 6
+
+    // Explicit Length tolerance: 0.001 mm = 1e-6 m.
+    // geo_equiv uses an explicit user arg — no default constant (PRD §5.2).
+    let tol = 0.001mm
+
+    // §8.2 three-case results:
+    let identical  = geo_equiv(a, b, tol)   // true  (Δ=0, topology match)
+    let within_tol = geo_equiv(a, c, tol)   // true  (displacement 5e-8 m < tol 1e-6 m)
+    let diff_topo  = geo_equiv(a, d, tol)   // false (box 6 faces vs cylinder 3 faces)
+}
