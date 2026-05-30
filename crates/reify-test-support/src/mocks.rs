@@ -544,6 +544,17 @@ enum QueryKey {
         pz_bits: u64,
         tol_bits: u64,
     },
+    /// Contains keys the solid handle + query point + tolerance.
+    /// Powers the v0.1 stdlib `contains` helper (task 3611, KGQ-β).
+    /// Tolerance is bit-keyed so a future explicit-tolerance overload can
+    /// stage distinct results without re-staging the same handle/point pair.
+    Contains {
+        handle: GeometryHandleId,
+        px_bits: u64,
+        py_bits: u64,
+        pz_bits: u64,
+        tol_bits: u64,
+    },
     /// SurfaceAngle keys the two face handles. The angle is unsigned (the
     /// kernel returns `acos(|n_a · n_b|)`-style absolute-cos), so face_a
     /// and face_b are pair-canonicalised with `normalize_distance_pair` so
@@ -674,6 +685,19 @@ impl QueryKey {
                 pz,
                 tolerance,
             } => QueryKey::PointOnShape {
+                handle: *handle,
+                px_bits: density_bits(*px),
+                py_bits: density_bits(*py),
+                pz_bits: density_bits(*pz),
+                tol_bits: density_bits(*tolerance),
+            },
+            GeometryQuery::Contains {
+                handle,
+                px,
+                py,
+                pz,
+                tolerance,
+            } => QueryKey::Contains {
                 handle: *handle,
                 px_bits: density_bits(*px),
                 py_bits: density_bits(*py),
@@ -1009,6 +1033,35 @@ impl MockGeometryKernel {
         self
     }
 
+    /// Configure a `contains` classifier query result for a specific solid/point/tolerance triple.
+    ///
+    /// The `value` should be a `Value::Bool(true)` (point inside or on the boundary)
+    /// or `Value::Bool(false)` (point outside). The `tolerance` is bit-keyed
+    /// (via `density_bits`) so the stub for `contains(solid, point)` (which the
+    /// dispatcher routes through `reify_ir::DEFAULT_CONTAINS_TOLERANCE_M`)
+    /// is distinguishable from a future explicit-tolerance `contains(solid, point, tol)` overload.
+    ///
+    /// Powers the v0.1 stdlib `contains` helper (task 3611, KGQ-β).
+    pub fn with_contains_result(
+        mut self,
+        handle: GeometryHandleId,
+        point: [f64; 3],
+        tolerance: f64,
+        value: Value,
+    ) -> Self {
+        self.typed_queries.insert(
+            QueryKey::Contains {
+                handle,
+                px_bits: density_bits(point[0]),
+                py_bits: density_bits(point[1]),
+                pz_bits: density_bits(point[2]),
+                tol_bits: density_bits(tolerance),
+            },
+            value,
+        );
+        self
+    }
+
     /// Configure a `SurfaceAngle` query result for a specific face pair.
     ///
     /// The `value` should be a `Value::Real(rad)` where `rad ∈ [0, π]`.
@@ -1317,6 +1370,7 @@ impl GeometryKernel for MockGeometryKernel {
             // canonical first handle, parallel to the Distance arm.
             GeometryQuery::ClosestPointOnShape { handle, .. } => handle,
             GeometryQuery::PointOnShape { handle, .. } => handle,
+            GeometryQuery::Contains { handle, .. } => handle,
             GeometryQuery::SurfaceAngle { face_a, .. } => face_a,
         };
 

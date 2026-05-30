@@ -723,6 +723,15 @@ impl GeometryOp {
 /// no-tolerance-argument default.
 pub const DEFAULT_POINT_ON_SHAPE_TOLERANCE_M: f64 = 1e-7;
 
+/// Default tolerance for the `contains` classifier query.
+///
+/// Equal to `DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` (= OCCT `Precision::Confusion()`, ~1e-7 m)
+/// per PRD §5.2 — both predicates use the same confusion threshold as their default.
+/// Pulled at dispatch time in `geometry_ops::try_eval_topology_selector`; a future
+/// explicit-tolerance `contains(solid, point, tol)` overload will pass user-supplied
+/// tolerance instead.
+pub const DEFAULT_CONTAINS_TOLERANCE_M: f64 = 1e-7;
+
 /// Queries against geometry handles.
 #[derive(Debug, Clone)]
 pub enum GeometryQuery {
@@ -954,6 +963,25 @@ pub enum GeometryQuery {
         pz: f64,
         tolerance: f64,
     },
+    /// Test whether a 3D point `(px, py, pz)` is inside or on the boundary of
+    /// the closed solid identified by `handle`.
+    ///
+    /// Backed by `BRepClass3d_SolidClassifier(shape).Perform(gp_Pnt, tolerance)`.
+    /// Returns `true` when `State() == TopAbs_IN || State() == TopAbs_ON`
+    /// (closed-solid membership: interior and boundary points are both "contained").
+    ///
+    /// The default `tolerance` is [`DEFAULT_CONTAINS_TOLERANCE_M`] (= OCCT
+    /// `Precision::Confusion()`, ~1e-7 m), supplied by the dispatcher per §5.2.
+    ///
+    /// Powers the v0.1 stdlib helper
+    /// `contains(solid: Geometry, point: Point3<Length>) -> Bool` (PRD §9 KGQ-β).
+    Contains {
+        handle: GeometryHandleId,
+        px: f64,
+        py: f64,
+        pz: f64,
+        tolerance: f64,
+    },
     /// Compute the unsigned dihedral angle between two surfaces (faces) of a
     /// solid (or two distinct solids) in radians ∈ `[0, π]`.
     ///
@@ -1003,6 +1031,7 @@ impl GeometryQuery {
             GeometryQuery::OwnerBody(_) => "OwnerBody",
             GeometryQuery::ClosestPointOnShape { .. } => "ClosestPointOnShape",
             GeometryQuery::PointOnShape { .. } => "PointOnShape",
+            GeometryQuery::Contains { .. } => "Contains",
             GeometryQuery::SurfaceAngle { .. } => "SurfaceAngle",
         }
     }
@@ -1086,6 +1115,7 @@ impl GeometryQuery {
             GeometryQuery::OwnerBody(_) => QueryCapability::BRepAndMesh,
             GeometryQuery::ClosestPointOnShape { .. } => QueryCapability::BRepAndMesh,
             GeometryQuery::PointOnShape { .. } => QueryCapability::BRepAndMesh,
+            GeometryQuery::Contains { .. } => QueryCapability::BRepAndMesh,
             GeometryQuery::SurfaceAngle { .. } => QueryCapability::BRepAndMesh,
         }
     }
@@ -3235,6 +3265,26 @@ mod tests {
             }
             _ => panic!("expected PointOnShape variant"),
         }
+    }
+
+    /// Pins the §5.2 tolerance-default value invariant for `contains`:
+    /// `DEFAULT_CONTAINS_TOLERANCE_M` must equal `1e-7` AND equal
+    /// `DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` (same OCCT `Precision::Confusion()` origin).
+    ///
+    /// RED until step-4 adds `DEFAULT_CONTAINS_TOLERANCE_M` to this file.
+    #[test]
+    fn default_contains_tolerance_m_equals_1e_7_and_matches_point_on_shape_tolerance() {
+        assert_eq!(
+            super::DEFAULT_CONTAINS_TOLERANCE_M,
+            1e-7,
+            "DEFAULT_CONTAINS_TOLERANCE_M must be 1e-7 (OCCT Precision::Confusion)"
+        );
+        assert_eq!(
+            super::DEFAULT_CONTAINS_TOLERANCE_M,
+            super::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
+            "DEFAULT_CONTAINS_TOLERANCE_M must equal DEFAULT_POINT_ON_SHAPE_TOLERANCE_M \
+             per §5.2 tolerance precedent"
+        );
     }
 
     #[test]
@@ -5717,6 +5767,16 @@ mod tests {
                 },
             ),
             (
+                "Contains",
+                GeometryQuery::Contains {
+                    handle: GeometryHandleId(1),
+                    px: 0.0,
+                    py: 0.0,
+                    pz: 0.0,
+                    tolerance: super::DEFAULT_CONTAINS_TOLERANCE_M,
+                },
+            ),
+            (
                 "SurfaceAngle",
                 GeometryQuery::SurfaceAngle {
                     face_a: GeometryHandleId(1),
@@ -5728,7 +5788,7 @@ mod tests {
         // variant is added or removed from GeometryQuery — compile-time
         // exhaustiveness on kind_name() guarantees correctness, this assertion
         // guarantees the token list here stays in sync.
-        const GEOMETRY_QUERY_VARIANT_COUNT: usize = 23;
+        const GEOMETRY_QUERY_VARIANT_COUNT: usize = 24;
         assert_eq!(
             cases.len(),
             GEOMETRY_QUERY_VARIANT_COUNT,

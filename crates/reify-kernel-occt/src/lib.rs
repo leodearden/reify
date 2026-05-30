@@ -1088,6 +1088,37 @@ impl OcctKernel {
             .map_err(|e| QueryError::QueryFailed(e.to_string()))
     }
 
+    /// Test whether `(px, py, pz)` is inside or on the boundary of the closed
+    /// solid identified by `handle`.
+    ///
+    /// Uses `BRepClass3d_SolidClassifier(shape).Perform(gp_Pnt, tolerance)` and
+    /// returns `true` when `State() == TopAbs_IN || State() == TopAbs_ON` (closed-
+    /// solid membership; both interior and boundary points are "contained").
+    ///
+    /// Pass [`reify_ir::DEFAULT_CONTAINS_TOLERANCE_M`] (= `DEFAULT_POINT_ON_SHAPE_TOLERANCE_M`
+    /// ≈ OCCT's `Precision::Confusion()`, ~1e-7) for `tolerance` to match OCCT's
+    /// default confusion threshold.
+    ///
+    /// **Tolerance precondition:** `tolerance` must be a non-negative finite `f64`.
+    /// Negative or NaN values map to `Err(QueryError::QueryFailed(_))`.
+    ///
+    /// Returns `Err(QueryError::InvalidHandle(_))` if `handle` is unknown, or
+    /// `Err(QueryError::QueryFailed(_))` if the OCCT computation fails.
+    pub fn contains(
+        &self,
+        handle: GeometryHandleId,
+        px: f64,
+        py: f64,
+        pz: f64,
+        tolerance: f64,
+    ) -> Result<bool, QueryError> {
+        let s = self
+            .get_shape(handle)
+            .map_err(|_| QueryError::InvalidHandle(handle))?;
+        ffi::ffi::contains_solid(s, px, py, pz, tolerance)
+            .map_err(|e| QueryError::QueryFailed(e.to_string()))
+    }
+
     /// Fuse `left` and `right` via `BRepAlgoAPI_Fuse` and return the
     /// fused-result handle alongside the per-parent face/edge history
     /// records (Modified / Generated / Deleted).
@@ -2580,6 +2611,15 @@ impl OcctKernel {
                 tolerance,
             } => self
                 .point_on_shape(*handle, *px, *py, *pz, *tolerance)
+                .map(Value::Bool),
+            GeometryQuery::Contains {
+                handle,
+                px,
+                py,
+                pz,
+                tolerance,
+            } => self
+                .contains(*handle, *px, *py, *pz, *tolerance)
                 .map(Value::Bool),
             GeometryQuery::SurfaceAngle { face_a, face_b } => {
                 self.surface_angle(*face_a, *face_b).map(Value::Real)

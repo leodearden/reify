@@ -102,6 +102,9 @@
 // OCCT distance
 #include <BRepExtrema_DistShapeShape.hxx>
 
+// OCCT solid classifier (contains / BRepClass3d_SolidClassifier)
+#include <BRepClass3d_SolidClassifier.hxx>
+
 // OCCT conformance queries
 #include <BRepCheck_Analyzer.hxx>
 #include <ShapeAnalysis_Shell.hxx>
@@ -3144,6 +3147,23 @@ bool point_on_shape(const OcctShape& shape, double px, double py, double pz, dou
             throw std::runtime_error("point_on_shape: no solution found");
         }
         return dist.Value() <= tolerance;
+    });
+}
+
+bool contains_solid(const OcctShape& shape, double px, double py, double pz, double tolerance) {
+    // Validate tolerance: negative or non-finite silently produce wrong results.
+    // Mirrors the `point_on_shape` precondition check.
+    if (!(std::isfinite(tolerance) && tolerance >= 0.0)) {
+        throw std::runtime_error(
+            "contains_solid: tolerance must be a non-negative finite value");
+    }
+    return wrap_occt_call("contains_solid", [&]() {
+        BRepClass3d_SolidClassifier classifier(shape.shape);
+        classifier.Perform(gp_Pnt(px, py, pz), tolerance);
+        TopAbs_State s = classifier.State();
+        // Closed-solid membership: both interior (IN) and boundary (ON) points
+        // are considered "contained". Only OUT returns false.
+        return s == TopAbs_IN || s == TopAbs_ON;
     });
 }
 

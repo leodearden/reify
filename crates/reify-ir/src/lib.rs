@@ -60,7 +60,8 @@ pub use expr::{
 };
 pub use geometry::{
     AttributeHistory, AxisSign, BRepKind, BooleanOpHistoryRecords, BooleanOpParents,
-    BooleanOpParentsError, CapKind, CapabilityDescriptor, DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
+    BooleanOpParentsError, CapKind, CapabilityDescriptor, DEFAULT_CONTAINS_TOLERANCE_M,
+    DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
     DeletedRecord, EdgeCurveKind, ElementOrderTag, ExportError, ExportFormat, FaceSurfaceKind,
     FeatureId, FeatureTag, FeatureTagTable, GeometryError, GeometryHandle, GeometryHandleId,
     GeometryKernel, GeometryOp, GeometryQuery, HistoryRecord, KernelAttributeHook,

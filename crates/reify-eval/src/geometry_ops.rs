@@ -1755,6 +1755,7 @@ fn kernel_distance(
 //   `is_on(point, geometry)`         → `GeometryQuery::PointOnShape`
 //   `angle_between_surfaces(a, b)`   → `GeometryQuery::SurfaceAngle`
 //   `angle(a, b)`                    → pure-math acos (task 3614, KGQ-ε)
+//   `contains(solid, point)`         → `GeometryQuery::Contains` (task 3611, KGQ-β)
 //
 // ── Which names are compile-time typed but NOT eval-dispatched (task 2699) ──
 //
@@ -1829,6 +1830,7 @@ pub(crate) fn try_eval_topology_selector(
         "adjacent_faces" => TopologySelectorHelper::AdjacentFaces,
         "shared_edges" => TopologySelectorHelper::SharedEdges,
         "angle" => TopologySelectorHelper::Angle,
+        "contains" => TopologySelectorHelper::Contains,
         _ => return None,
     };
 
@@ -1892,7 +1894,8 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::EdgesAtHeight
                 | TopologySelectorHelper::AdjacentFaces
                 | TopologySelectorHelper::SharedEdges
-                | TopologySelectorHelper::Angle => {
+                | TopologySelectorHelper::Angle
+                | TopologySelectorHelper::Contains => {
                     unreachable!("ClosestPoint/IsOn outer match guarantees this")
                 }
             }
@@ -1903,6 +1906,30 @@ pub(crate) fn try_eval_topology_selector(
             let face_b = resolve_geometry_handle_arg(&args[1], named_steps)?;
             let query = reify_ir::GeometryQuery::SurfaceAngle { face_a, face_b };
             dispatch_surface_angle(kernel, &query, &function.name, diagnostics)
+        }
+        TopologySelectorHelper::Contains => {
+            // args[0]: solid geometry ValueRef → named_steps map → GeometryHandleId.
+            // args[1]: point ValueRef → values map → Value::Point of three Length scalars.
+            // Arg order is solid-then-point (mirror of is_on: point-then-geometry).
+            let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            let point = resolve_point3_length_arg(&args[1], values)?;
+            // Use `reify_ir::DEFAULT_CONTAINS_TOLERANCE_M` (= OCCT's
+            // `Precision::Confusion()`, ~1e-7) as the default tolerance for the
+            // v0.1 2-arg `contains(solid, point)` form, matching the is_on
+            // precedent per §5.2. A future explicit-tolerance
+            // `contains(solid, point, tol)` overload will plumb the
+            // user-supplied tolerance through here.
+            let query = reify_ir::GeometryQuery::Contains {
+                handle,
+                px: point[0],
+                py: point[1],
+                pz: point[2],
+                tolerance: reify_ir::DEFAULT_CONTAINS_TOLERANCE_M,
+            };
+            // Reuse the Bool-unwrap helper from `is_on`: dispatches
+            // `kernel.query(&query)` and unwraps `Value::Bool`, downgrading
+            // non-Bool / Err replies to `Some(Value::Undef)` + Warning per §4.
+            dispatch_point_on_shape(kernel, &query, &function.name, diagnostics)
         }
         TopologySelectorHelper::Angle => {
             // Both args: value-flow Vec3 ValueRefs → values map → [f64; 3].
@@ -1968,7 +1995,8 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::EdgesAtHeight
                 | TopologySelectorHelper::AdjacentFaces
                 | TopologySelectorHelper::SharedEdges
-                | TopologySelectorHelper::Angle => {
+                | TopologySelectorHelper::Angle
+                | TopologySelectorHelper::Contains => {
                     unreachable!("Edges/Faces outer match guarantees this")
                 }
             };
@@ -2336,6 +2364,13 @@ enum TopologySelectorHelper {
     /// Args are value-flow `Vector<3>` resolved from `values`; zero-length
     /// or non-finite input emits a Warning and returns `Some(Value::Undef)`.
     Angle,
+    /// `contains(solid, point) -> Bool` — test whether `point` is inside or
+    /// on the boundary of the closed solid `solid` (task 3611, KGQ-β, PRD §9).
+    /// Backed by `GeometryQuery::Contains` → `BRepClass3d_SolidClassifier`
+    /// (IN || ON → true, OUT → false). Arg order is solid-then-point, mirroring
+    /// `is_on` with args swapped. Default tolerance from
+    /// `DEFAULT_CONTAINS_TOLERANCE_M` per §5.2.
+    Contains,
 }
 
 impl TopologySelectorHelper {
@@ -2354,7 +2389,8 @@ impl TopologySelectorHelper {
             | TopologySelectorHelper::FacesByArea
             | TopologySelectorHelper::AdjacentFaces
             | TopologySelectorHelper::SharedEdges
-            | TopologySelectorHelper::Angle => 2,
+            | TopologySelectorHelper::Angle
+            | TopologySelectorHelper::Contains => 2,
             TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => 1,
             TopologySelectorHelper::FacesByNormal
             | TopologySelectorHelper::EdgesParallelTo
@@ -8228,6 +8264,265 @@ mod tests {
                 diagnostics[0].severity
             );
         }
+    }
+
+    // ── try_eval_topology_selector `contains` unit tests (task 3611, KGQ-β) ────
+    //
+    // These tests pin the `contains(solid, point) -> Bool` dispatch contract
+    // (PRD §9 KGQ-β). Arg order is solid-then-point (args[0]=geometry,
+    // args[1]=point3<Length>), mirroring `is_on` with args swapped. The
+    // dispatcher reuses `dispatch_point_on_shape` (Bool unwrapper) and
+    // `DEFAULT_CONTAINS_TOLERANCE_M` per §5.2.
+    //
+    // Three contracts:
+    //   (a) happy path: kernel Bool(true) reply → Some(Value::Bool(true))
+    //   (b) literal-arg fall-through: non-ValueRef args → None, no kernel call
+    //   (c) non-Bool kernel reply → Some(Value::Undef) + exactly-one Warning
+    //       naming "contains"
+    //
+    // All three FAIL (RED) until step-6 wires the `contains` arm in
+    // try_eval_topology_selector / TopologySelectorHelper.
+
+    #[test]
+    fn try_eval_topology_selector_contains_kernel_reply_returns_bool_with_default_tolerance() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let body_handle = reify_ir::GeometryHandleId(42);
+        // Record the mock under DEFAULT_CONTAINS_TOLERANCE_M — pins that the
+        // dispatcher uses this constant and not some ad-hoc value.
+        let mut kernel = MockGeometryKernel::new().with_contains_result(
+            body_handle,
+            [0.0, 0.0, 0.0],
+            reify_ir::DEFAULT_CONTAINS_TOLERANCE_M,
+            reify_ir::Value::Bool(true),
+        );
+
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        // args[0] = solid → resolved via named_steps by member name "solid"
+        named_steps.insert("solid".to_string(), body_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        // args[1] = point → resolved via values by ValueCellId
+        values.insert(
+            reify_core::ValueCellId::new("ContainsBox", "center"),
+            point3_length_value(0.0, 0.0, 0.0),
+        );
+
+        // contains(solid, center): args[0]=solid (Geometry), args[1]=center (Point3<Length>)
+        let expr = topology_selector_call_two_value_refs(
+            "contains",
+            "ContainsBox",
+            "solid",
+            reify_core::Type::Geometry,
+            "center",
+            reify_core::Type::point3(reify_core::Type::length()),
+            reify_core::Type::Bool,
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Bool(true)),
+            "contains(solid, center) with kernel reply Bool(true) must produce \
+             Some(Value::Bool(true)) (default tolerance DEFAULT_CONTAINS_TOLERANCE_M); \
+             got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "happy-path contains must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_contains_literal_args_falls_through_to_none() {
+        use reify_test_support::mocks::CountingMockKernel;
+        // `contains(<literal>, <literal>)` — non-ValueRef args, so both
+        // resolve_geometry_handle_arg and resolve_point3_length_arg return None,
+        // and the dispatcher must return None without consulting the kernel.
+        let inner = reify_test_support::mocks::MockGeometryKernel::new();
+        let mut kernel = CountingMockKernel::new(inner);
+
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let values = reify_ir::ValueMap::new();
+
+        let expr = topology_selector_call_literal_args("contains");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "contains(<literal>, <literal>) must return None, got {:?}",
+            result
+        );
+        assert_eq!(
+            kernel.total_query_count(),
+            0,
+            "kernel must NOT be consulted for non-ValueRef args"
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_contains_non_bool_kernel_reply_emits_warning_and_returns_undef()
+    {
+        use reify_test_support::mocks::MockGeometryKernel;
+        // Pin the `Ok(other)` warning arm of `dispatch_point_on_shape` (reused for
+        // `contains`): a kernel reply that is not `Value::Bool(_)` must produce
+        // `Some(Value::Undef)` with a Warning diagnostic naming "contains".
+        let body_handle = reify_ir::GeometryHandleId(42);
+        let mut kernel = MockGeometryKernel::new().with_contains_result(
+            body_handle,
+            [0.0, 0.0, 0.0],
+            reify_ir::DEFAULT_CONTAINS_TOLERANCE_M,
+            // Wrong type — should trigger the non-Bool warning arm.
+            reify_ir::Value::Real(0.5),
+        );
+
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        named_steps.insert("solid".to_string(), body_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            reify_core::ValueCellId::new("ContainsBox", "center"),
+            point3_length_value(0.0, 0.0, 0.0),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "contains",
+            "ContainsBox",
+            "solid",
+            reify_core::Type::Geometry,
+            "center",
+            reify_core::Type::point3(reify_core::Type::length()),
+            reify_core::Type::Bool,
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Undef),
+            "contains(...) with non-Bool kernel reply must yield Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "non-Bool reply must emit exactly one Warning, got {} diagnostics: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Warning,
+            "diagnostic severity must be Warning, got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("contains"),
+            "diagnostic must mention the helper name 'contains', got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("non-Bool"),
+            "diagnostic must indicate the non-Bool reply, got: {}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_contains_kernel_err_returns_undef_with_warning() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        // No `with_contains_result` seeding — MockGeometryKernel.query() falls
+        // through to the generic handle-only map which also has no entry for
+        // this handle, so it returns `Err(QueryError::QueryFailed(...))`.
+        // `dispatch_point_on_shape` must downgrade this to `Some(Value::Undef)`
+        // and emit exactly one Warning diagnostic naming "contains" and
+        // "kernel query failed". Pins the `Err(err)` arm of that helper.
+        let body_handle = reify_ir::GeometryHandleId(42);
+        let mut kernel = MockGeometryKernel::new();
+
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        named_steps.insert("solid".to_string(), body_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            reify_core::ValueCellId::new("ContainsBox", "center"),
+            point3_length_value(0.0, 0.0, 0.0),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "contains",
+            "ContainsBox",
+            "solid",
+            reify_core::Type::Geometry,
+            "center",
+            reify_core::Type::point3(reify_core::Type::length()),
+            reify_core::Type::Bool,
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Undef),
+            "contains(...) with kernel Err must yield Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "kernel Err must emit exactly one Warning, got {} diagnostics: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Warning,
+            "diagnostic severity must be Warning, got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("contains"),
+            "diagnostic must mention the helper name 'contains', got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("kernel query failed"),
+            "diagnostic must indicate the kernel failure, got: {}",
+            diag.message
+        );
     }
 
     // ── gate_query_capability unit tests (task 3623) ─────────────────────────
