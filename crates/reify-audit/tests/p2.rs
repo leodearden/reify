@@ -776,6 +776,58 @@ mod tests {
         );
     }
 
+    /// Verify that the detector's own source file is excluded from P2 scanning.
+    ///
+    /// The live code `return Some("TODO(post-)")` at p2_consumer_stub.rs:41
+    /// lowercases to contain `todo(post-)` and self-matches Family 1. An identical
+    /// line in a control path must still flag — proving exclusion keys on path, not
+    /// content.
+    #[test]
+    fn detector_own_source_excluded() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let task_id = "9203";
+        let task_branch = format!("task/{}", task_id);
+        let self_path = "crates/reify-audit/src/p2_consumer_stub.rs";
+        let control_path = "crates/other/src/real.rs";
+        let self_matching_line = r#"        if inner.contains("post-") { return Some("TODO(post-)"); }"#;
+
+        let mut git = MockGitOps::new();
+        git.set_diff_added_lines("main", &task_branch, self_path,
+            vec![(41, self_matching_line.to_string())]);
+        git.set_diff_added_lines("main", &task_branch, control_path,
+            vec![(41, self_matching_line.to_string())]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(task_id.to_string(), benign_meta(task_id, vec![
+            self_path.to_string(),
+            control_path.to_string(),
+        ]));
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p2_consumer_stub::check(&ctx);
+        assert_eq!(findings.len(), 1,
+            "expected exactly 1 finding (only control path); got {:?}", findings);
+        let f = &findings[0];
+        assert!(f.evidence.iter().any(|e| match e {
+            EvidenceRef::File { path } => path == control_path, _ => false,
+        }), "finding must reference {control_path}; got {:?}", f.evidence);
+        assert!(!f.evidence.iter().any(|e| match e {
+            EvidenceRef::File { path } => path == self_path, _ => false,
+        }), "detector's own source {self_path} must not appear in findings");
+    }
+
     /// Verify that non-executable file extensions (.ri, .yaml, .md) are excluded
     /// from P2 scanning even when they carry stub-pattern text in their diffs.
     /// Only a `.rs` control path must produce a finding.

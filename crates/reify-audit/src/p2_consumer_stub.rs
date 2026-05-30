@@ -117,6 +117,11 @@ fn title_signals_stub(title: &str) -> bool {
     t.contains("stub") || t.contains("placeholder")
 }
 
+/// The detector's own source path, excluded from P2 scanning. The live code
+/// `return Some("TODO(post-)")` at line 41 lowercases to contain `todo(post-)`
+/// and self-matches Family 1 — excluding the file is the minimal correct fix.
+const SELF_SOURCE_PATH: &str = "crates/reify-audit/src/p2_consumer_stub.rs";
+
 /// Threshold above which `check()` warns about an unbounded backlog
 /// when both `target_task_id` and `window` are unset (sweep mode
 /// without pre-narrowing — see the `# Callers` rustdoc on `check`).
@@ -257,6 +262,10 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
             // Skip non-executable-code files (.ri, .yaml, .md, etc.); P2's
             // families are code constructs and carry no stub meaning in prose.
             if !is_code_ext(path) {
+                continue;
+            }
+            // Skip the detector's own source — its pattern literals self-match.
+            if path == SELF_SOURCE_PATH {
                 continue;
             }
             let added = ctx.git.diff_added_lines("main", &task_branch, path);
