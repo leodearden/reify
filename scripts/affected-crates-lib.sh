@@ -32,10 +32,33 @@ set -euo pipefail
 
 _AFFECTED_CRATES_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# _is_global <path> — returns 0 (true) if the path is a C4 workspace-global file.
+# Matches: root Cargo.toml, Cargo.lock, .cargo/**, tree-sitter-reify/**,
+#          rust-toolchain and rust-toolchain.toml.
+_is_global() {
+    local path="$1"
+    case "$path" in
+        Cargo.toml|Cargo.lock) return 0 ;;
+        .cargo/*)              return 0 ;;
+        tree-sitter-reify/*)   return 0 ;;
+        rust-toolchain*)       return 0 ;;
+    esac
+    return 1
+}
+
 # affected_crates <file>... — print the affected workspace crate set, one name
 # per line, sorted; or print the literal ALL if any C4/C5 condition fires.
 # Always returns 0 so callers are safe under set -e and inside $() capture.
 affected_crates() {
-    : placeholder — implementation pending
+    # C4: if any arg is a global file, immediately emit ALL.
+    local arg
+    for arg in "$@"; do
+        if _is_global "$arg"; then
+            echo ALL
+            return 0
+        fi
+    done
+
+    # Implementation continues in later steps.
     return 0
 }

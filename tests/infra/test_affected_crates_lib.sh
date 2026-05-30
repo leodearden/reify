@@ -37,6 +37,6 @@ echo ""
 echo "--- C4: global files force ALL ---"
 
 assert "Cargo.lock forces ALL" \
-    bash -c '[ "$(affected_crates Cargo.lock)" = "ALL" ]'
+    test "$(affected_crates Cargo.lock)" = "ALL"
 
 test_summary
