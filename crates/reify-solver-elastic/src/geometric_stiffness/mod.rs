@@ -33,6 +33,7 @@
 //! is constant over the element, so the integral collapses to
 //! `(∇N_a · σ⁰ · ∇N_b) · V_e` per node pair `(a, b)`.
 
+pub mod bar;
 pub mod stubs;
 pub mod tet;
 
