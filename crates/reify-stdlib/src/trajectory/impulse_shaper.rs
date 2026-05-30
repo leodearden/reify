@@ -459,7 +459,7 @@ mod tests {
         let omega_n = 2.0 * PI * 10.0;
         let zeta = 0.1;
         let zv = ImpulseTrain::zv(omega_n, zeta);
-        let cascaded = ImpulseTrain::cascade(&[zv.clone()]);
+        let cascaded = ImpulseTrain::cascade(std::slice::from_ref(&zv));
         assert_eq!(cascaded.impulses.len(), zv.impulses.len());
         for (c, z) in cascaded.impulses.iter().zip(&zv.impulses) {
             assert_close(c.time, z.time, 1e-12, "single cascade time");
