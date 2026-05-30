@@ -1167,6 +1167,26 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_StackupBadSamples`
     /// (see `docs/prds/v0_6/tolerance-stackup-analysis.md` §4.4).
     StackupBadSamples,
+    /// Origin: `crates/reify-compiler/src/entity.rs` (main sub-lowering arm).
+    ///
+    /// Canonical message form:
+    /// `"'at' placement is not supported on collection subs; per-element placement is out of scope in v1"`.
+    ///
+    /// Emitted as `Severity::Error` when a `sub` declaration marked as a
+    /// collection (`sub name : List<T>`) also carries an `at <pose>` clause.
+    /// Per PRD §10 and the AST doc-comment on `SubDecl.pose_expr`, per-element
+    /// placement of collection subs requires per-instance realization handles
+    /// deferred to spec §8.3; the grammar admits the syntax but the compiler
+    /// rejects the combination semantically.
+    ///
+    /// The `at` clause's span is attached as a primary label
+    /// (`"'at' not allowed on collection sub"`). The invalid pose expression
+    /// is discarded (`SubComponentDecl.pose` is set to `None`); `aux` on the
+    /// same collection sub remains valid and is lowered normally.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_AT_ON_COLLECTION_SUB`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    AtOnCollectionSub,
 }
 
 /// A diagnostic message with location and optional labels.

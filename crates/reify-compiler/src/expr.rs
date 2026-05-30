@@ -3688,6 +3688,7 @@ pub structure Rack {
                 id: ValueCellId::new(name, *pname),
                 kind: crate::types::ValueCellKind::Param,
                 visibility: crate::types::Visibility::Public,
+                is_aux: false,
                 cell_type: Type::Real,
                 default_expr: default.clone(),
                 solver_hints: vec![],

@@ -1059,6 +1059,7 @@ pub fn wave2_flip_fixture() -> Wave2FlipFixture {
         id: m_id.clone(),
         kind: ValueCellKind::Let,
         visibility: Visibility::Private,
+        is_aux: false,
         cell_type: Type::length(),
         default_expr: Some(value_ref("S", "depth")),
         solver_hints: Vec::new(),

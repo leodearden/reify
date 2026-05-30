@@ -702,6 +702,22 @@ pub struct SubComponentDecl {
     pub count_cell: Option<ValueCellId>,
     /// Guard state for the sub's optional `where` clause.
     pub guard_state: GuardState,
+    /// Compiled `at <pose>` expression, if present (PRD §2.1).
+    ///
+    /// The pose is lowered by `compile_expr` into the IR but is NOT evaluated
+    /// or type-checked as Transform/Frame in T2; pose evaluation is T4's job
+    /// (PRD §9 task split). A non-None pose on a collection sub (`is_collection
+    /// && pose.is_some()`) is rejected with an Error diagnostic at the lowering
+    /// site — see step-6 / PRD §10.
+    pub pose: Option<CompiledExpr>,
+    /// True when the sub was declared with the `aux` modifier (PRD §2.2).
+    ///
+    /// `aux` and `visibility` (the `pub` axis) are **orthogonal**: both may
+    /// co-occur (`pub aux sub`). `aux` means "no external geometric effect"
+    /// (not surfaced/exported/FEA/mass-props), while `pub` controls export
+    /// visibility. They are kept as separate fields so both states are
+    /// independently representable.
+    pub is_aux: bool,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }
@@ -772,6 +788,14 @@ pub struct ValueCellDecl {
     pub id: ValueCellId,
     pub kind: ValueCellKind,
     pub visibility: Visibility,
+    /// True when declared with the `aux` modifier (PRD §2.2).
+    ///
+    /// `aux` and `visibility` (the `pub` axis) are **orthogonal**: both may
+    /// co-occur (`pub aux let`). `aux` means "no external geometric effect"
+    /// (not surfaced/FEA/mass-props); `pub` controls export visibility. They
+    /// are kept as separate fields so all four `(visibility, is_aux)` states
+    /// are independently representable.
+    pub is_aux: bool,
     pub cell_type: Type,
     pub default_expr: Option<CompiledExpr>,
     pub solver_hints: Vec<SolverHint>,
