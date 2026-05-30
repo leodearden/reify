@@ -186,6 +186,24 @@ fn hex_with_underscore_separator() {
     );
 }
 
+// ── Binary with underscore separator ─────────────────────────────────────────
+
+/// `0b1010_1010` — binary literal with `_` digit separator (= 170).
+///
+/// Verifies that underscore stripping applies to the binary branch as well
+/// (same `parse_radix` closure as the hex `_` test).  A regression in the
+/// radix-2 branch would surface here even if the hex path stayed correct.
+#[test]
+fn binary_with_underscore_separator() {
+    let (value, is_real) =
+        extract_number_literal_with_flag("structure S {\n  let x = 0b1010_1010\n}");
+    assert_eq!(value, 170.0_f64, "0b1010_1010 should lower to 170.0");
+    assert!(
+        !is_real,
+        "0b1010_1010 is an integer radix literal; is_real must be false"
+    );
+}
+
 // ── u64 boundary: 0x8000000000000000 (> i64::MAX) ────────────────────────────
 
 /// `0x8000000000000000` — the first value that overflows `i64` (= 2^63).
@@ -193,6 +211,13 @@ fn hex_with_underscore_separator() {
 /// The lowering must use `u64::from_str_radix` (not `i64`) so this value
 /// returns `(9223372036854775808.0, false)` rather than `None`.  This test
 /// pins the u64 design decision documented in `plan.json`.
+///
+/// **Note:** this test only validates the lowering layer.  The downstream
+/// `classify_number_literal` (reify-ast/src/decl.rs) uses an `i64` round-trip
+/// check (`value == (value as i64) as f64`) that saturates at `i64::MAX`; the
+/// round-trip passes for 2^63 and the value is classified `Int(i64::MAX)`
+/// rather than `LossyReal`.  That is a pre-existing limitation outside this
+/// task's scope.
 #[test]
 fn hex_u64_boundary_0x8000000000000000() {
     let (value, is_real) = extract_number_literal_with_flag(
@@ -206,6 +231,35 @@ fn hex_u64_boundary_0x8000000000000000() {
     assert!(
         !is_real,
         "0x8000000000000000 is an integer radix literal; is_real must be false"
+    );
+}
+
+// ── Over-u64 hex: 0x1_0000_0000_0000_0000 (= 2^64) ───────────────────────────
+
+/// `0x1_0000_0000_0000_0000` — a hex literal strictly exceeding `u64::MAX`.
+///
+/// Before the over-u64 fallback was added, `u64::from_str_radix` returned
+/// `Err` and `parse_number_literal_text` returned `None`, silently dropping
+/// the expression.  After the fix, the value is accumulated as `f64` and
+/// the literal lowers successfully, flowing through `classify_number_literal`
+/// as `LossyReal`.
+///
+/// 2^64 = 18446744073709551616 is exactly representable in `f64` (it is an
+/// integer power of 2 within f64's range), so the assertion is exact.
+#[test]
+fn hex_over_u64_max() {
+    let (value, is_real) = extract_number_literal_with_flag(
+        "structure S {\n  let x = 0x1_0000_0000_0000_0000\n}",
+    );
+    // 2^64 = 18446744073709551616.0 — exact in f64 (integer power of 2).
+    assert_eq!(
+        value,
+        18446744073709551616.0_f64,
+        "0x1_0000_0000_0000_0000 (2^64) should lower to 18446744073709551616.0"
+    );
+    assert!(
+        !is_real,
+        "0x1_0000_0000_0000_0000 is an integer radix literal; is_real must be false"
     );
 }
 

@@ -2925,14 +2925,41 @@ impl<'a> Lowering<'a> {
     ///
     /// # Precision
     ///
-    /// `u64::from_str_radix` accepts values up to `u64::MAX` (`0xFFFFFFFFFFFFFFFF`).
-    /// Values beyond 2^53 are stored as `(n as f64)` — a lossy conversion that
-    /// the downstream `classify_number_literal` / `LossyReal` path already
-    /// handles for large decimal integers; no special case is needed here.
+    /// Values up to `u64::MAX` are parsed via `u64::from_str_radix`; values
+    /// exceeding `u64::MAX` are accumulated as `f64` directly (matching the
+    /// decimal path's `f64::parse` approach) so they flow through
+    /// `classify_number_literal`'s `LossyReal` path rather than returning
+    /// `None` and silently dropping the expression.
+    ///
+    /// Values beyond 2^53 are stored as `(n as f64)` — a lossy conversion.
+    ///
+    /// **i64 round-trip boundary:** `classify_number_literal`
+    /// (`reify-ast/src/decl.rs`) tests `value == (value as i64) as f64`.
+    /// Rust's `as i64` saturates at `i64::MAX`, and `(i64::MAX) as f64`
+    /// rounds back to 2^63, so values ≥ 2^63 pass the round-trip check
+    /// falsely and are classified as `Int(i64::MAX)` instead of `LossyReal`.
+    /// This is a pre-existing limitation in `reify-ast` outside this task's
+    /// scope; the `0x8000000000000000` lowering test only validates that this
+    /// function itself does not return `None` for that value.
     fn parse_number_literal_text(text: &str) -> Option<(f64, bool)> {
         let parse_radix = |digits: &str, radix: u32| -> Option<f64> {
             let stripped: String = digits.chars().filter(|c| *c != '_').collect();
-            u64::from_str_radix(&stripped, radix).ok().map(|n| n as f64)
+            if let Ok(n) = u64::from_str_radix(&stripped, radix) {
+                Some(n as f64)
+            } else {
+                // Value exceeds u64::MAX — accumulate as f64 so over-range
+                // radix literals flow to classify_number_literal's LossyReal
+                // path rather than silently returning None (matches the decimal
+                // path, which accepts arbitrary magnitude via f64::parse →
+                // finite or f64::INFINITY).
+                let radix_f = radix as f64;
+                let mut acc = 0.0_f64;
+                for ch in stripped.chars() {
+                    let digit = ch.to_digit(radix)? as f64;
+                    acc = acc * radix_f + digit;
+                }
+                Some(acc)
+            }
         };
 
         if let Some(digits) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
