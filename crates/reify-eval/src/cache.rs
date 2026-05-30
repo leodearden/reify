@@ -110,6 +110,26 @@ pub enum CachedResult {
 impl CachedResult {
     /// Compute a content hash for early cutoff comparison.
     /// Domain-separated with tag bytes [20], [21], [22] per variant.
+    ///
+    /// # Geometry-handle cache-key seam
+    ///
+    /// When the value cell holds a [`reify_ir::Value::GeometryHandle`], the
+    /// in-memory cache key is derived from the GH content-hash fragment
+    /// (tag 28 in `Value::content_hash`): **entity + realization index +
+    /// upstream_values_hash**.  `kernel_handle` is intentionally excluded for
+    /// cross-snapshot stability — re-realizing the same geometry in a new
+    /// Engine session assigns a fresh ephemeral handle while the semantic
+    /// identity is unchanged, and downstream nodes must NOT be spuriously
+    /// invalidated.  See `docs/prds/v0_3/geometry-handle-runtime.md §6` and
+    /// the GHR-β design decision in `crates/reify-ir/src/value.rs`.
+    ///
+    /// This composition is reached via the `CachedResult::Value(val, det)`
+    /// arm below: `val.content_hash()` dispatches to the tag-28 GH arm.
+    /// No separate `CachedResult` arm for geometry handles is required — the
+    /// `Value` layer already carries the correct key fragment.
+    ///
+    /// See also [`crate::significance_filter::geometry_handle_significance`]
+    /// for the corresponding per-handle significance comparison.
     pub fn content_hash(&self) -> ContentHash {
         match self {
             CachedResult::Value(val, det) => {
