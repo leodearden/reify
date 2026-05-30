@@ -835,9 +835,10 @@ module.exports = grammar({
     //   5: +, - (additive)
     //   6: *, /, % (multiplicative)
     //   7: unary -, ! (unary)
-    //   8: postfix index access ([]), qualified access (::)
-    //   9: postfix ad-hoc selector (@)
-    //  10: postfix member access (.), function call
+    //   8: ^ exponentiation (right-assoc)
+    //   9: postfix index access ([]), qualified access (::)
+    //  10: postfix ad-hoc selector (@)
+    //  11: postfix member access (.), function call
 
     _expression: $ => choice(
       $.range_expression,
@@ -979,6 +980,11 @@ module.exports = grammar({
       prec.left(6, seq(field('left', $._expression), field('op', '*'), field('right', $._expression))),
       prec.left(6, seq(field('left', $._expression), field('op', '/'), field('right', $._expression))),
       prec.left(6, seq(field('left', $._expression), field('op', '%'), field('right', $._expression))),
+      // ── Exponentiation (right-associative, prec 8 — tighter than unary (7) and multiplicative (6)) ──
+      // PRD §3.3/§4.3: value-level ^ is right-associative; -2^2 = -(2^2), 2*3^2 = 2*(3^2).
+      // Disambiguated from unit_expr pow by whitespace: unit_expr uses token.immediate('^')
+      // (no whitespace), while this value-level ^ fires in the normal (whitespace-permitted) context.
+      prec.right(8, seq(field('left', $._expression), field('op', '^'), field('right', $._expression))),
     ),
 
     // ── Range expressions ───────────────────────────────────
@@ -1044,7 +1050,9 @@ module.exports = grammar({
     // character ahead and only fire when the operator is immediately adjacent AND the
     // next character is a valid unit-start ([A-Za-z_(]).  This prevents `25USD/1kg`
     // from greedily attempting the div arm when `/` is followed by a digit.
-    // ^ uses token.immediate because `^` is not a binary operator, so no conflict.
+    // ^ uses token.immediate to disambiguate from the value-level binary `^` operator in
+    // binary_expression (prec.right 8): unit_expr pow fires only when ^ is adjacent (no
+    // whitespace), while value-level ^ fires in the normal whitespace-permitted context.
     // PRD §3.2: ^ binds tighter than */; */ are left-associative.
     unit_expr: $ => choice(
       prec.left(1, seq(
@@ -1075,7 +1083,7 @@ module.exports = grammar({
     // An identifier that must immediately follow the previous token (no whitespace)
     immediate_identifier: $ => token.immediate(/[a-zA-Z_][a-zA-Z0-9_]*/),
 
-    function_call: $ => prec(10, seq(
+    function_call: $ => prec(11, seq(
       field('name', $.identifier),
       callTail($),
     )),
@@ -1086,7 +1094,7 @@ module.exports = grammar({
       optional(','),
     ),
 
-    member_access: $ => prec.left(10, seq(
+    member_access: $ => prec.left(11, seq(
       field('object', $._expression),
       '.',
       field('member', $.identifier),
@@ -1109,8 +1117,8 @@ module.exports = grammar({
 
     // ── Ad-hoc port selector ────────────────────────────────
     // expr @ ident(args) — selects a port on a substructure using a named selector
-    // Binds tighter than index_access (prec 8) but looser than member_access (prec 10)
-    ad_hoc_selector: $ => prec.left(9, seq(
+    // Binds tighter than index_access (prec 9) but looser than member_access (prec 11)
+    ad_hoc_selector: $ => prec.left(10, seq(
       field('base', $._expression),
       '@',
       field('selector', $.identifier),
@@ -1118,7 +1126,7 @@ module.exports = grammar({
     )),
 
     // ── Index access ────────────────────────────────────────
-    index_access: $ => prec.left(8, seq(
+    index_access: $ => prec.left(9, seq(
       field('object', $._expression),
       '[',
       field('index', $._expression),
@@ -1127,7 +1135,7 @@ module.exports = grammar({
 
     // ── Qualified access ─────────────────────────────────────
     // Foo::bar — qualified name access (e.g. module/type member lookup)
-    qualified_access: $ => prec.left(8, seq(
+    qualified_access: $ => prec.left(9, seq(
       field('qualifier', $._expression),
       '::',
       field('member', $.identifier),
@@ -1136,7 +1144,7 @@ module.exports = grammar({
     // obj.(Foo::bar) — instance-qualified access (e.g. trait-qualified method call)
     // Inner 'qualified' field accepts any expression; lowering validates it's a
     // qualified_access and emits a specific diagnostic if not.
-    instance_qualified_access: $ => prec.left(8, seq(
+    instance_qualified_access: $ => prec.left(9, seq(
       field('object', $._expression),
       '.',
       '(',
@@ -1145,7 +1153,7 @@ module.exports = grammar({
     )),
 
     // Trait::fn(args) or obj.(Trait::fn)(args) — callable qualified path
-    trait_method_call: $ => prec(10, seq(
+    trait_method_call: $ => prec(11, seq(
       field('callee', choice($.qualified_access, $.instance_qualified_access)),
       callTail($),
     )),
