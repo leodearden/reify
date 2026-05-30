@@ -388,7 +388,9 @@ fn solve_generalized_eigen(
 #[cfg(test)]
 mod tests {
     use faer::sparse::SparseRowMat;
+    use reify_core::Severity;
     use reify_solver_elastic::{DirichletBc, EigenSolverOptions, IsotropicElastic};
+    use reify_stdlib::modal::free_vibration::is_rigid_body_mode;
 
     use super::{ModalCoreResult, build_beam_mesh, solve_modal_core};
 
@@ -669,6 +671,123 @@ mod tests {
             "completeness identity: Σ participation = {captured}, total mass = \
              {total_mass}, |Δ| = {} exceeds 1e-9",
             (captured - total_mass).abs(),
+        );
+    }
+
+    /// step-9 (RED → GREEN in step-10): rigid-body-mode diagnostic.
+    ///
+    /// An UNCONSTRAINED fixture (empty BCs) admits the six rigid-body modes of a
+    /// free 3-D body (ω ≈ 0). The dense generalized path handles the singular
+    /// `K_free` (no up-front Cholesky), so requesting `n_modes = n_free/2`
+    /// (≥ 42, forcing the dense regime for this `n_free = 84` mesh) returns them
+    /// as the lowest modes. `solve_modal_core` must (a) return ≥ 1 mode with
+    /// ω ≈ 0 and (b) surface a `Warning` diagnostic whose message starts
+    /// `"W_ModalRigidBodyMode"`.
+    ///
+    /// The near-zero tolerance (1.0 rad/s ≈ 0.16 Hz) sits in the measured
+    /// 7-decade gap between the rigid modes (ω ≤ ~1e-2 rad/s) and the first
+    /// flexible mode (ω ≥ ~1e5 rad/s). RED: the `diagnostics` field is absent.
+    #[test]
+    fn solve_modal_core_flags_rigid_body_modes_when_unconstrained() {
+        let length = 0.02_f64;
+        let width = 0.05_f64;
+        let height = 0.1_f64;
+
+        let mesh = build_beam_mesh(length, width, height);
+        let n_free = 3 * mesh.nodes.len(); // empty BCs → all DOFs free
+        // n_modes ≥ n_free/2 forces solve_generalized_eigen's dense regime
+        // (n ≤ max(64, 2·n_modes)), avoiding the shift-invert Cholesky panic on
+        // the singular (rigid-body) K_free.
+        let eigen_opts = EigenSolverOptions {
+            n_modes: n_free / 2,
+            tol: 1e-8,
+            max_iters: 200,
+            sigma: 0.0,
+        };
+
+        let result: ModalCoreResult = solve_modal_core(
+            STEEL_DENSITY,
+            &steel(),
+            length,
+            width,
+            height,
+            [0.0, 0.0, 1.0],
+            &[], // unconstrained
+            &eigen_opts,
+        );
+
+        // (a) at least one returned mode is a rigid-body mode (ω ≈ 0).
+        let omega = |f: f64| 2.0 * std::f64::consts::PI * f;
+        let rigid_count = result
+            .frequencies
+            .iter()
+            .filter(|&&f| is_rigid_body_mode(omega(f), 1.0))
+            .count();
+        assert!(
+            rigid_count >= 1,
+            "unconstrained body must expose ≥1 rigid-body mode (ω≈0); got {rigid_count}",
+        );
+
+        // (b) a W_ModalRigidBodyMode Warning is surfaced.
+        let has_rigid_warning = result.diagnostics.iter().any(|d| {
+            d.severity == Severity::Warning && d.message.starts_with("W_ModalRigidBodyMode")
+        });
+        assert!(
+            has_rigid_warning,
+            "expected a Warning starting \"W_ModalRigidBodyMode\"; got {:?}",
+            result.diagnostics,
+        );
+    }
+
+    /// step-9 (RED → GREEN in step-10): convergence-shortfall diagnostic.
+    ///
+    /// Requesting more modes than the free-DOF count can yield (`n_modes` ≫
+    /// `n_free` on the clamped fixture) makes the eigensolver return fewer modes
+    /// than requested (`converged == false`). `solve_modal_core` must surface a
+    /// `Warning` diagnostic whose message starts `"W_ModalConvergence"`. The
+    /// clamped fixture has no rigid-body modes, isolating this signal. RED: the
+    /// `diagnostics` field is absent.
+    #[test]
+    fn solve_modal_core_flags_convergence_shortfall_when_over_requested() {
+        let length = 0.02_f64;
+        let width = 0.05_f64;
+        let height = 0.1_f64;
+
+        let mesh = build_beam_mesh(length, width, height);
+        let (bcs, constrained) = clamp_x_min_face(&mesh.nodes);
+        let n_free = 3 * mesh.nodes.len() - constrained.len();
+
+        // Request far more modes than exist → the dense path returns only n_free.
+        let eigen_opts = EigenSolverOptions {
+            n_modes: n_free + 64,
+            tol: 1e-8,
+            max_iters: 200,
+            sigma: 0.0,
+        };
+
+        let result: ModalCoreResult = solve_modal_core(
+            STEEL_DENSITY,
+            &steel(),
+            length,
+            width,
+            height,
+            [0.0, 0.0, 1.0],
+            &bcs,
+            &eigen_opts,
+        );
+
+        assert!(
+            result.frequencies.len() < eigen_opts.n_modes,
+            "fixture must return fewer modes than requested to trigger the warning",
+        );
+
+        let has_conv_warning = result.diagnostics.iter().any(|d| {
+            d.severity == Severity::Warning && d.message.starts_with("W_ModalConvergence")
+        });
+        assert!(
+            has_conv_warning,
+            "expected a Warning starting \"W_ModalConvergence\"; got {:?}",
+            result.diagnostics,
         );
     }
 }
