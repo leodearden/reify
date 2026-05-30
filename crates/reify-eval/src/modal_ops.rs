@@ -785,21 +785,38 @@ fn extract_damping(val: &Value) -> (f64, f64) {
 
 /// Build the homogeneous Dirichlet BCs from the `boundary_conditions` faces.
 ///
-/// Each `FixedSupport { target }` in the options' `boundary_conditions` list
-/// names a face of the beam box (`"x_min"`/`"x_max"`/`"y_min"`/`"y_max"`/
-/// `"z_min"`/`"z_max"`); every mesh node on that face has all three translational
-/// DOFs clamped. The mesh is rebuilt here (cheap, O(n)) via the same
-/// [`build_beam_mesh`] helper `solve_modal_core` uses, so the DOF indices line up
-/// with the solve's mesh. Duplicate DOFs (a corner shared by two named faces) are
-/// harmless — `solve_modal_core` records constraints idempotently.
+/// Two realizations, discriminated by the named faces (design_decision #1; the
+/// `Part`/`Support`-topology channel that would carry richer BC intent has not
+/// landed, so the support *targets* encode the configuration):
 ///
-/// This is the general "clamp the named face" realization: a single `x_min`
-/// support gives the cantilever root clamp (finalized step-16); the
-/// simply-supported pin-pin refinement (pin only the bending DOF + minimal
-/// anchors, NOT a full clamp of both faces) lands in step-18.
+///   • **Simply-supported (pin-pin)** — both beam-axis end faces (`"x_min"` AND
+///     `"x_max"`) are named (the `simply_supported_beam_modes.ri` two-support
+///     fixture). Delegates to [`simply_supported_pin_pin_bcs`]: pin only the
+///     transverse (Z) DOF on both end faces + minimal axial/lateral anchors, so
+///     the bending rotation stays free and the modes follow the `(nπ)²`
+///     simply-supported family (NOT fixed-fixed).
+///
+///   • **Clamp the named face(s)** — any other target set (the cantilever's lone
+///     `"x_min"` support). Every mesh node on each named face
+///     (`"x_min"`/`"x_max"`/`"y_min"`/`"y_max"`/`"z_min"`/`"z_max"`) has all three
+///     translational DOFs clamped — the cantilever root clamp (step-16).
+///
+/// The mesh is rebuilt here (cheap, O(n)) via the same [`build_beam_mesh`] helper
+/// `solve_modal_core` uses, so the DOF indices line up with the solve's mesh.
+/// Duplicate DOFs (a corner shared by two named faces) are harmless —
+/// `solve_modal_core` records constraints idempotently.
 fn build_dirichlet_bcs(options: &Value, length: f64, width: f64, height: f64) -> Vec<DirichletBc> {
     let mesh = build_beam_mesh(length, width, height);
     let targets = support_targets(options);
+
+    // Simply-supported (pin-pin) discriminator: BOTH beam-axis end faces named.
+    let pins_x_min = targets.iter().any(|t| t == "x_min");
+    let pins_x_max = targets.iter().any(|t| t == "x_max");
+    if pins_x_min && pins_x_max {
+        return simply_supported_pin_pin_bcs(&mesh, length, height);
+    }
+
+    // General "clamp the named face" realization (cantilever root clamp).
     let eps = 1e-9_f64;
     let mut bcs = Vec::new();
     for target in &targets {
@@ -821,6 +838,83 @@ fn build_dirichlet_bcs(options: &Value, length: f64, width: f64, height: f64) ->
         }
     }
     bcs
+}
+
+/// Realize the simply-supported (pin-pin) Dirichlet BCs for the beam (step-18).
+///
+/// A simply-supported beam pins the transverse deflection at both ends while
+/// leaving the bending rotation `dw/dx` free, giving natural frequencies in the
+/// `fₙ = ((nπ)²/2π)·√(EI/ρAL⁴)` family. Realizing that in the 3-D solid model
+/// without spuriously clamping the rotation (which would yield the *fixed-fixed*
+/// family, ~2.45× higher) requires care:
+///
+///   1. **Simple supports** — pin ONLY the transverse Z DOF on every node of
+///      both end faces (`x ≈ 0` and `x ≈ L`). The bending rotation at a support
+///      is carried by the *axial* displacement `u(z) = −(z − z_c)·dw/dx`, NOT by
+///      `w`, so pinning `w` (not `u`) on the end face leaves `dw/dx` free — a
+///      genuine simple support. Pinning `w` across the full end face also removes
+///      three rigid-body modes whose `w`-field is nonzero there: the Z
+///      translation, the X-axis twist, and the global rigid Y-rotation.
+///
+///   2. **Minimal anchors** — the three rigid-body modes left after step 1 (the X
+///      translation, the Y translation, and the in-plane Z-rotation) must be
+///      removed or `K_free` is singular and the shift-invert Cholesky fails.
+///      They are killed at the two end-face NEUTRAL-axis nodes (`z = h/2`):
+///        • pin **X** at the `x_min` neutral node          → removes X translation;
+///        • pin **Y** at the `x_min` AND `x_max` neutral nodes (separated by `L`
+///          along x) → removes Y translation *and* the in-plane Z-rotation
+///          (a single Y anchor cannot remove both — a rotation about the vertical
+///          axis through that one node leaves it fixed; two anchors separated in
+///          x pin the rotation too).
+///
+/// Both anchor families are non-intrusive to the vertical bending modes (the
+/// task's headline signal): the vertical mode has `u = 0` at the neutral axis
+/// (so the X anchor sits on its node line) and `v = 0` everywhere (so the Y
+/// anchors never load it). Anchoring at the neutral axis — rather than clamping
+/// `u` across a full face — is precisely what keeps the support rotation free.
+fn simply_supported_pin_pin_bcs(mesh: &BeamMesh, length: f64, height: f64) -> Vec<DirichletBc> {
+    // `width` is not a parameter: the Z simple-support spans the full end face by
+    // node coordinate, and the anchors sit on the y = 0 neutral-axis node line.
+    let eps = 1e-9_f64;
+    let mut bcs = Vec::new();
+
+    // (1) Simple supports: pin the transverse (Z) DOF on both end faces.
+    for (n, coord) in mesh.nodes.iter().enumerate() {
+        let on_end = coord[0] <= eps || coord[0] >= length - eps;
+        if on_end {
+            bcs.push(DirichletBc { dof: 3 * n + 2, value: 0.0 }); // Z (bending)
+        }
+    }
+
+    // (2) Minimal anchors at the two end-face neutral-axis nodes (z = h/2).
+    let root = nearest_node(mesh, [0.0, 0.0, height / 2.0]);
+    let tip = nearest_node(mesh, [length, 0.0, height / 2.0]);
+    bcs.push(DirichletBc { dof: 3 * root, value: 0.0 }); // X anchor (axial)
+    bcs.push(DirichletBc { dof: 3 * root + 1, value: 0.0 }); // Y anchor (lateral, root)
+    bcs.push(DirichletBc { dof: 3 * tip + 1, value: 0.0 }); // Y anchor (lateral, tip)
+    bcs
+}
+
+/// Index of the mesh node nearest `target` in Euclidean distance.
+///
+/// Used to place the simply-supported anchors on the end-face neutral-axis nodes
+/// robustly — by coordinate, independent of `build_beam_mesh`'s internal node
+/// numbering (mirroring the unit tests' coordinate-based face selection).
+fn nearest_node(mesh: &BeamMesh, target: [f64; 3]) -> usize {
+    let dist2 = |p: &[f64; 3]| -> f64 {
+        let dx = p[0] - target[0];
+        let dy = p[1] - target[1];
+        let dz = p[2] - target[2];
+        dx * dx + dy * dy + dz * dz
+    };
+    mesh.nodes
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| {
+            dist2(a).partial_cmp(&dist2(b)).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(i, _)| i)
+        .expect("beam mesh has at least one node")
 }
 
 /// Collect the `target` face names from the options' `boundary_conditions` list

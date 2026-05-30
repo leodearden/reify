@@ -223,8 +223,36 @@ fn e2e_cantilever_first_mode_within_ten_percent() {
 // this e2e gate runs release-only.
 //
 // ── step-18: MEASURED simply-supported floors (the pinned tolerances) ────────
-// (the BC realization + measured f2/f3 bands are finalized in step-18; until
-// then the higher-mode band assertions below are structural only.)
+//
+// BC realization (build_dirichlet_bcs → simply_supported_pin_pin_bcs): the two
+// FixedSupports targeting x_min AND x_max select the pin-pin branch — pin ONLY
+// the transverse Z DOF on both end faces (the bending rotation dw/dx stays free,
+// carried by the axial u(z)) + minimal axial/lateral anchors at the two end-face
+// neutral-axis nodes (z = h/2). This yields the (nπ)² simply-supported family
+// rather than the fixed-fixed family the prior all-DOF clamp produced.
+//
+// Mesh: the same build_beam_mesh as the cantilever (nz = 6, nx = round(L/h·nz) =
+// 600 near-cubic XZ elements, ny = 1) — the shared CI-practical density.
+//
+// MEASURED on this mesh (release):
+//   mode 0 (Z1, symmetric half-sine):    f1 = 125.752 Hz vs 115.862 → +8.54%
+//   mode 1 (Z2, antisymmetric full-sine): f2 = 501.595 Hz vs 463.448 → +8.23%
+//   mode 2 (Z3, symmetric):              f3 = 1117.190 Hz vs 1042.759 → +7.14%
+// All three are the vertical bending family (P1 constant-strain tets lock in
+// bending → overestimate K → bias f high, f ∝ √K). Mode 1's ≈ 0 z-participation
+// (printed above) is the exact cancellation of an ANTISYMMETRIC shape against a
+// uniform reference direction — it confirms mode 1 is the vertical 2nd bending
+// mode, not a lateral/torsional intruder (which the ny = 1 mesh locks far above
+// f3). NOTE: the higher modes do NOT lock harder here — the near-cubic axial
+// mesh (nx = 600) resolves all three low modes comparably (~7-9%), so the
+// dominant error is the shared through-thickness (nz = 6) P1 floor, not a
+// per-mode wavelength effect.
+//
+// Pinned tolerances: f1 stays at the committed 10% PRD §1/§9.1 bound (measured
+// +8.54%, 1.46% headroom — matching the cantilever's +8.34%/10% precedent in
+// buckling_smoke.rs style). f2/f3 get a looser 12% band (measured +8.23% /
+// +7.14%, ~4-5% headroom) — the documented higher-mode allowance, here covering
+// numeric/platform drift rather than extra locking.
 
 /// Read each mode's `(frequency_hz, participation_mass)` from a ModalResult
 /// value — a measurement aid (printed under `--nocapture`) for telling vertical
@@ -372,8 +400,9 @@ fn e2e_simply_supported_modes_match_analytic() {
         f1_err * 100.0
     );
 
-    // (e) f2, f3 present, finite, positive, strictly ascending. The looser
-    //     measured analytic band for the higher modes is pinned in step-18.
+    // (e) f2, f3 present, finite, positive, strictly ascending, and within the
+    //     looser 12% measured higher-mode band of their analytic (nπ)² values
+    //     (measured +8.23% / +7.14%; see the step-18 note above).
     for (name, f) in [("f2", f2), ("f3", f3)] {
         assert!(f.is_finite() && f > 0.0, "{} must be finite and positive, got: {}", name, f);
     }
@@ -383,5 +412,22 @@ fn e2e_simply_supported_modes_match_analytic() {
         f1,
         f2,
         f3
+    );
+
+    let f2_err = (f2 - f2_analytic).abs() / f2_analytic;
+    assert!(
+        f2_err < 0.12,
+        "ss f2 = {:.3} Hz, analytic = {:.3} Hz, rel_err = {:.2}% > 12% (measured band)",
+        f2,
+        f2_analytic,
+        f2_err * 100.0
+    );
+    let f3_err = (f3 - f3_analytic).abs() / f3_analytic;
+    assert!(
+        f3_err < 0.12,
+        "ss f3 = {:.3} Hz, analytic = {:.3} Hz, rel_err = {:.2}% > 12% (measured band)",
+        f3,
+        f3_analytic,
+        f3_err * 100.0
     );
 }
