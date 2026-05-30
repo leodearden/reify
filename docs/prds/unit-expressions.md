@@ -247,7 +247,6 @@ Labels are PRD-local; task IDs assigned at decompose time.
 Dependency edges: α→β→γ; α→δ; γ→ε; δ→ε; ε→ζ; ε→η.
 
 **Tidy-up inventory (for ζ, verified 2026-05-26):**
-`crates/reify-compiler/stdlib/units.ri:82` (STANDARD_GRAVITY),
 `crates/reify-compiler/stdlib/materials_fea.ri:135,173,211,252` (4 densities),
 `crates/reify-compiler/stdlib/materials_electrical.ri:62,76` (resistivity bounds),
 `crates/reify-compiler/stdlib/structural_physical.ri`,
@@ -256,6 +255,22 @@ Dependency edges: α→β→γ; α→δ; γ→ε; δ→ε; ε→ζ; ε→η.
 `examples/drivebelt_trait_bounds.ri:111`,
 `examples/integration_corner_cases.ri:29`,
 `examples/topology_selectors/all_topology_selectors_wiring.ri:44`.
+
+**KEEP (not migratable) — `std.units` registry-bootstrap constraint:**
+`STANDARD_GRAVITY`, `SPEED_OF_LIGHT`, and `BOLTZMANN_CONSTANT` in
+`crates/reify-compiler/stdlib/units.ri` stay in their compositional
+`<n> * 1m / (1s * 1s)` form. Compound-unit literals resolve via
+`resolve_unit_expr`, which requires a seeded unit registry in scope; but
+`std.units` is the module that *builds* that registry, so its own function
+bodies compile in the registry-less bootstrap scope guarded in `expr.rs`
+(the `None` branch). Param-default scopes in later-compiled modules
+(materials_electrical, structural_physical) DO seed the registry, which is
+why those ζ sites migrated cleanly. STANDARD_GRAVITY was originally listed
+above as migratable; corrected to KEEP per esc-3809-87 (2026-05-30). Each
+constant carries a keep-reason comment at its definition site so future
+readers / task η do not retry. Unblocking this would require `expr.rs` to
+forward the in-construction registry into `std.units` function-body
+compilation — out of scope for this PRD.
 
 ## 9. Cross-PRD relationship
 
