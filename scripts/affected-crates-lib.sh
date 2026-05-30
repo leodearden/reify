@@ -80,6 +80,17 @@ _file_to_crate() {
     esac
 }
 
+# _reverse_closure <crate>... — given a list of seed crate names on stdin (one
+# per line), print the reverse-dependency BFS closure (seeds + all workspace
+# crates that transitively depend on them), sorted-unique, one per line.
+# This is the identity function until step 10 wires in the real cargo-metadata
+# implementation. A no-arg or empty-stdin call prints nothing.
+_reverse_closure() {
+    # Identity: pass seed crates through unchanged.
+    # Real implementation in step 10.
+    cat
+}
+
 # affected_crates <file>... — print the affected workspace crate set, one name
 # per line, sorted; or print the literal ALL if any C4/C5 condition fires.
 # Always returns 0 so callers are safe under set -e and inside $() capture.
@@ -116,7 +127,8 @@ affected_crates() {
         return 0
     fi
 
-    # Emit direct crates sorted (reverse closure expansion comes in later steps).
-    printf '%s\n' "${direct[@]}" | sort -u
+    # Expand the direct crate set through the reverse-dependency closure, then
+    # emit sorted-unique (one crate per line).
+    printf '%s\n' "${direct[@]}" | _reverse_closure | sort -u
     return 0
 }
