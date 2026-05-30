@@ -1289,6 +1289,202 @@ mod tests {
         }), "finding must reference the shared path; got {:?}", f.evidence);
     }
 
+    /// RED step 3 / GREEN step 4: Reaped-branch recall via done_provenance.commit.
+    ///
+    /// A `done` task whose `task/N` branch has been reaped (deleted) by the
+    /// orchestrator still has a surviving `done_provenance.commit` (the merge
+    /// commit on main).  The mock deliberately does NOT register a
+    /// `set_diff_added_lines("main", "task/4500", ...)` entry — exactly as
+    /// `RealGitOps` would return empty for `git diff main..task/4500` on a reaped
+    /// branch (`fatal: bad revision`).
+    ///
+    /// The task HAS:
+    ///   - `done_provenance: Some(commit = "m1")`
+    ///   - `is_ancestor("m1", "main") = true`
+    ///   - `diff_added_lines_in_commit("m1", "crates/x/widget.rs") = [(12, "    unimplemented!()")]`
+    ///
+    /// Expected: exactly 1 P2 finding (sourced from the commit diff, not the
+    /// empty branch diff).  Current behaviour (pre-step-4): 0 findings (reaped
+    /// branch → empty diff → missed).
+    #[test]
+    fn reaped_branch_recall_via_provenance_commit() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let task_id = "4500";
+        let path = "crates/x/widget.rs";
+
+        let mut git = MockGitOps::new();
+        // Merge commit is reachable from main.
+        git.set_is_ancestor("m1", "main", true);
+        // The commit diff surfaces the stub line.
+        git.set_diff_added_lines_in_commit(
+            "m1",
+            path,
+            vec![(12, "    unimplemented!()".to_string())],
+        );
+        // Deliberately do NOT set_diff_added_lines("main", "task/4500", ...)
+        // → simulates a reaped branch returning empty from RealGitOps.
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            task_id.to_string(),
+            TaskMetadata {
+                task_id: task_id.to_string(),
+                status: "done".to_string(),
+                files: vec![path.to_string()],
+                done_provenance: Some(reify_audit::DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("m1".to_string()),
+                    note: None,
+                }),
+                title: "Wire foo into bar".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: Some(1000),
+            },
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p2_consumer_stub::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "reaped-branch task with reachable provenance commit must produce 1 P2 finding; \
+             got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::P2ConsumerStub);
+        assert_eq!(f.severity, Severity::Medium);
+        assert_eq!(f.task_id, task_id);
+        assert!(
+            f.evidence.iter().any(|e| match e {
+                EvidenceRef::File { path: p } => p == path,
+                _ => false,
+            }),
+            "finding must reference {path}; got {:?}",
+            f.evidence
+        );
+    }
+
+    /// RED step 7 / GREEN step 8: Unreachable (recycled/gc'd) commit falls back
+    /// to a full-file content scan via `file_lines_on("main", path)`.
+    ///
+    /// The task has `done_provenance.commit = "gone"` but
+    /// `is_ancestor("gone", "main") = false` (SHA is gc'd / recycled).
+    ///
+    /// The mock registers `file_lines_on("main", path)` with a full-file line
+    /// stream that includes a genuine production stub.  Neither
+    /// `set_diff_added_lines_in_commit` nor `set_diff_added_lines` is set
+    /// (both return empty by default), proving the finding originates from
+    /// the content scan.
+    ///
+    /// Also asserts that `scan_file_added_lines`'s positional `#[cfg(test)]`
+    /// gate still works on the full-file stream: a stub AFTER a `#[cfg(test)]`
+    /// line is suppressed.
+    ///
+    /// Expected: exactly 1 P2 finding (from the pre-gate stub line); the
+    /// post-gate stub is suppressed.  Current behaviour (pre-step-8): 0 findings.
+    #[test]
+    fn unreachable_commit_falls_back_to_content_scan() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let task_id = "4600";
+        let path = "crates/x/recycled.rs";
+
+        let mut git = MockGitOps::new();
+        // SHA is gc'd / recycled — NOT an ancestor of main.
+        git.set_is_ancestor("gone", "main", false);
+        // Full-file content on main: a genuine production stub before the cfg(test) gate.
+        git.set_file_lines_on(
+            "main",
+            path,
+            vec![
+                (1, "fn f() {}".to_string()),
+                (2, "    unimplemented!()".to_string()),
+                (3, "#[cfg(test)]".to_string()),
+                (4, "mod tests {".to_string()),
+                (5, "    unimplemented!() // inside test module — should be suppressed".to_string()),
+            ],
+        );
+        // Deliberately set neither diff_added_lines_in_commit NOR diff_added_lines.
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            task_id.to_string(),
+            TaskMetadata {
+                task_id: task_id.to_string(),
+                status: "done".to_string(),
+                files: vec![path.to_string()],
+                done_provenance: Some(reify_audit::DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("gone".to_string()),
+                    note: None,
+                }),
+                title: "Wire foo into bar".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: Some(2000),
+            },
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p2_consumer_stub::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "unreachable-commit task with content-scan fallback must produce 1 P2 finding; \
+             got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::P2ConsumerStub);
+        assert_eq!(f.severity, Severity::Medium);
+        assert_eq!(f.task_id, task_id);
+        assert!(
+            f.evidence.iter().any(|e| match e {
+                EvidenceRef::File { path: p } => p == path,
+                _ => false,
+            }),
+            "finding must reference {path}; got {:?}",
+            f.evidence
+        );
+        // The summary must reference line 2 (pre-gate stub) but NOT line 5 (post-gate).
+        let summary = &f.summary;
+        assert!(
+            summary.contains("line 2"),
+            "production stub at line 2 must appear in summary; got: {summary}",
+        );
+        assert!(
+            !summary.contains("line 5"),
+            "test-module stub at line 5 must be suppressed by cfg(test) gate; got: {summary}",
+        );
+    }
+
 } // mod tests
 
 } // mod p2
