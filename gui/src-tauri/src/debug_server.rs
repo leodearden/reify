@@ -737,6 +737,11 @@ pub async fn spawn_debug_server(
 mod tests {
     use super::*;
 
+    // Process-global lock for tests that touch the global diagnostics counters.
+    // Acquire this before reset_for_test() + handler call so parallel test
+    // threads do not race on the shared AtomicU64 counters.
+    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[tokio::test]
     async fn run_on_engine_does_not_poison_mutex_when_closure_panics() {
         let engine = crate::tests::make_test_engine();
@@ -999,6 +1004,48 @@ mod tests {
             .expect("morph_stats handler must succeed");
 
         assert_eq!(via_dispatch, direct, "dispatch_stateless_tool must delegate to handle_morph_stats");
+    }
+
+    #[tokio::test]
+    async fn handle_mesh_morph_stats_returns_counters_and_session_start() {
+        // Acquire process-global lock so no concurrent test races on counters.
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Reset all 7 diagnostic counters to zero for a clean baseline.
+        reify_mesh_morph::diagnostics::reset_for_test();
+
+        let result = super::handle_mesh_morph_stats(serde_json::json!({}))
+            .await
+            .expect("handle_mesh_morph_stats must succeed");
+
+        assert!(result.is_object(), "response must be a JSON object");
+
+        // All seven named buckets must be present and zero after reset.
+        let buckets = [
+            "morphed",
+            "remeshed_quality_hard_fail",
+            "remeshed_quality_soft_fail",
+            "ineligible_structural_change",
+            "ineligible_bijection_failure",
+            "ineligible_naming_error",
+            "panicked",
+        ];
+        for bucket in buckets {
+            assert_eq!(
+                result[bucket].as_u64(),
+                Some(0),
+                "bucket '{bucket}' must be present and 0 after reset"
+            );
+        }
+
+        // session_start_unix_ms must be present and non-zero
+        // (epoch-millis in 2026 is ~1.7e12, so > 0 is a safe non-flaky assertion).
+        let session_start = result["session_start_unix_ms"]
+            .as_u64()
+            .expect("session_start_unix_ms must be a non-null u64");
+        assert!(
+            session_start > 0,
+            "session_start_unix_ms must be > 0; got {session_start}"
+        );
     }
 
     // step-5 RED → GREEN: all five viewport-aware tools must expose an optional
