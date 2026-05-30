@@ -56,6 +56,7 @@
 use reify_solver_elastic::{
     AssemblyElement, AssemblyMode, DirichletBc, ElementStiffness, IsotropicElastic,
     apply_dirichlet_row_elimination, assemble_global_stiffness, shell_element_stiffness,
+    shell_element_stiffness_mitc3_plus,
 };
 
 // ─── test-local helpers ──────────────────────────────────────────────────────
@@ -165,6 +166,26 @@ fn build_shell_stiffnesses(
         .map(|conn| {
             let elem_nodes = [nodes[conn[0]], nodes[conn[1]], nodes[conn[2]]];
             shell_element_stiffness(&elem_nodes, thickness, mat)
+        })
+        .collect()
+}
+
+/// MITC3+ counterpart of [`build_shell_stiffnesses`]: builds one per-element
+/// stiffness matrix per triangle via the genuine flat-facet MITC3+ element
+/// [`shell_element_stiffness_mitc3_plus`] (Lee, Lee & Bathe 2014). Used to run
+/// the twisted-cantilever benchmark with both formulations on the identical
+/// mesh / BCs / loads so the shear-locking improvement is observable end-to-end.
+fn build_shell_stiffnesses_mitc3_plus(
+    nodes: &[[f64; 3]],
+    connectivity: &[[usize; 3]],
+    thickness: f64,
+    mat: &IsotropicElastic,
+) -> Vec<ElementStiffness> {
+    connectivity
+        .iter()
+        .map(|conn| {
+            let elem_nodes = [nodes[conn[0]], nodes[conn[1]], nodes[conn[2]]];
+            shell_element_stiffness_mitc3_plus(&elem_nodes, thickness, mat)
         })
         .collect()
 }
