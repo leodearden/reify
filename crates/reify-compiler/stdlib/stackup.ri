@@ -23,7 +23,23 @@ enum Distribution { Normal, Uniform, Triangular }
 
 // Method used to compute the assembly stack-up gap distribution.
 // Variants correspond to the three free-function builtins in T1:
-//   WorstCase → stackup_worst_case
-//   Rss       → stackup_rss
+//   WorstCase  → stackup_worst_case
+//   Rss        → stackup_rss
 //   MonteCarlo → monte_carlo_stackup
 enum StackupMethod { WorstCase, Rss, MonteCarlo }
+
+// ── Contributor authoring front ────────────────────────────────────────────────
+
+// Declaration-only authoring template for a stack-up contributor.
+// Param names mirror the T1 Value::Map keys (PRD §4.1): the builtins in
+// reify-stdlib/src/stackup.rs emit and decode maps keyed by these exact names.
+// No struct-constructor runtime evaluation is required (PRD §2) — this is a
+// declaration template; the contributor/contributor_asym builtins read the
+// primitive map directly.
+structure def Contributor {
+    param nominal      : Length
+    param plus_tol     : Length
+    param minus_tol    : Length
+    param sign         : Int = 1
+    param distribution : Distribution = Distribution.Normal
+}
