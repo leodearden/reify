@@ -277,14 +277,13 @@ impl Engine {
                 .insert(purpose_name.to_string(), objective.clone());
         }
 
-        // Record the per-purpose entity binding ONLY for single-binding activations
-        // (byte-identical to today, C6). Multi-param tolerance-scope contribution
-        // and eval()-round-trip persistence are deferred (scope boundary documented
-        // in the plan; extract_tolerance_bindings docstring names this seam).
-        if bindings.len() == 1 {
-            self.active_purpose_bindings
-                .insert(purpose_name.to_string(), bindings[0].1.clone());
-        }
+        // Record the full per-param bindings for ALL activations — single- and multi-param
+        // alike. The stored Vec<(param,entity)> is consumed by recompute_tolerance_scope
+        // (per-param routing via extract_tolerance_bindings) and by eval()'s round-trip
+        // preservation (mem::take + re-apply). Unconditional recording unifies both paths;
+        // single-param behaviour is byte-identical (a 1-entry Vec).
+        self.active_purpose_bindings
+            .insert(purpose_name.to_string(), bindings.to_vec());
 
         true
     }
@@ -529,7 +528,7 @@ impl Engine {
             None => return,
         };
 
-        for (purpose_name, entity_ref) in &self.active_purpose_bindings {
+        for (purpose_name, param_bindings) in &self.active_purpose_bindings {
             let purpose = match self
                 .compiled_purposes
                 .iter()
@@ -538,16 +537,11 @@ impl Engine {
                 Some(p) => p,
                 None => continue, // Compiled purpose disappeared (e.g. across re-eval) — skip.
             };
-            // Transitional shim (Phase 1 / task 4070): `active_purpose_bindings` is still
-            // `HashMap<String,String>` (single entity per purpose). Build a 1-entry slice so
-            // the new per-param `extract_tolerance_bindings(&purpose, &[(param,entity)])` API
-            // is satisfied. Phase 2 (step-5) generalises the field and passes the stored
-            // multi-param slice directly, deleting this shim.
-            let shim_bindings = [(
-                purpose.params.first().map(|p| p.name.clone()).unwrap_or_default(),
-                entity_ref.clone(),
-            )];
-            let bindings = crate::tolerance_scope::extract_tolerance_bindings(purpose, &shim_bindings);
+            // Pass the stored per-param bindings slice directly: each matched
+            // RepresentationWithin constraint is routed to its own bound entity.
+            // Single-param purposes produce one binding (byte-identical to before);
+            // multi-param produce one per param.
+            let bindings = crate::tolerance_scope::extract_tolerance_bindings(purpose, param_bindings);
             for binding in bindings {
                 let descendants = crate::tolerance_scope::propagate_subject_to_descendants(
                     &binding.subject_entity,

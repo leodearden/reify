@@ -1227,7 +1227,7 @@ impl Engine {
         // are *derived* state — they hold ConstraintNodeIds and value-cell
         // references tied to the OLD snapshot.  These must be rebuilt against the
         // fresh graph, which activate_purpose() does for us.
-        let mut preserved_bindings: Vec<(String, String)> =
+        let mut preserved_bindings: Vec<(String, Vec<(String, String)>)> =
             std::mem::take(&mut self.active_purpose_bindings)
                 .into_iter()
                 .collect();
@@ -2285,8 +2285,14 @@ impl Engine {
         // upstream and `active_tolerance_scope` is already cleared.
         if !preserved_bindings.is_empty() {
             let mut any_injected = false;
-            for (purpose_name, entity_ref) in &preserved_bindings {
-                any_injected |= self.activate_purpose_constraints(purpose_name, entity_ref);
+            for (purpose_name, param_bindings) in &preserved_bindings {
+                // Use the multi-param inner directly: it accepts any bindings slice
+                // (single- or multi-param), performs injection, and records the
+                // bindings in active_purpose_bindings. The single-entity shim
+                // activate_purpose_constraints refuses purposes with params.len()!=1,
+                // so it cannot round-trip multi-param purposes.
+                any_injected |=
+                    self.activate_purpose_constraints_with_bindings_inner(purpose_name, param_bindings);
             }
             if any_injected {
                 self.rebuild_purpose_infrastructure();
