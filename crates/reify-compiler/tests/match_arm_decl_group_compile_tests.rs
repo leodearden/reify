@@ -184,6 +184,7 @@ fn match_arm_decl_group_registers_cluster_without_duplicate_name_diagnostics() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -306,6 +307,7 @@ fn match_arm_decl_group_pipe_patterns_produce_two_arm_cluster() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -394,6 +396,7 @@ fn match_arm_decl_group_unknown_variant_pattern_emits_diagnostic() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -499,6 +502,7 @@ fn match_arm_groups_iteration_order_is_deterministic() {
             errors: vec![],
             content_hash: ContentHash(0),
             pragmas: vec![],
+            declared_module_path: None,
         }
     }
 
@@ -569,6 +573,7 @@ fn match_arm_decl_group_discriminant_not_enum_emits_diagnostic() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -627,6 +632,7 @@ fn match_arm_decl_group_discriminant_unresolved_emits_diagnostic() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -684,6 +690,7 @@ fn match_arm_decl_group_member_access_discriminant_emits_simple_identifier_diagn
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -749,6 +756,7 @@ fn match_arm_decl_group_param_arm_emits_unsupported_diagnostic() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -817,6 +825,7 @@ fn match_arm_decl_group_empty_arms_emits_diagnostic() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -906,6 +915,7 @@ fn match_arm_decl_group_mismatched_arm_names_does_not_orphan_per_arm_member_type
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -986,6 +996,7 @@ fn match_arm_decl_group_mismatched_arm_names_emits_diagnostic() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -1073,6 +1084,7 @@ fn match_arm_decl_group_duplicate_cluster_name_emits_diagnostic() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -1149,6 +1161,7 @@ fn match_arm_decl_group_non_exhaustive_arms_emits_diagnostic_and_skips_cluster()
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -1247,6 +1260,7 @@ fn match_arm_decl_group_non_exhaustive_pipe_arm_emits_diagnostic() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -1327,6 +1341,7 @@ fn match_arm_decl_group_param_only_arms_leave_cluster_unregistered() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -1504,6 +1519,7 @@ fn duplicate_match_cluster_does_not_pollute_first_cluster_sub_member_types() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -1617,6 +1633,7 @@ fn match_arm_decl_group_outside_sub_before_match_emits_collision_diagnostic() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -1730,6 +1747,7 @@ fn match_arm_decl_group_outside_sub_after_match_emits_collision_diagnostic() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -1834,6 +1852,7 @@ fn match_arm_decl_group_outside_param_collision_emits_diagnostic() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -1955,6 +1974,7 @@ fn match_arm_decl_group_outside_let_collision_emits_diagnostic() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -2051,6 +2071,7 @@ fn match_arm_decl_group_outside_collision_suppresses_cluster_registration() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -2157,6 +2178,7 @@ fn match_arm_decl_group_reverse_collision_suppresses_cluster_registration() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -2303,6 +2325,7 @@ fn match_arm_decl_group_duplicate_and_outside_collision_emit_in_order() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -2453,6 +2476,7 @@ fn match_arm_decl_group_outside_sub_before_and_after_match_emits_single_collisio
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -2564,6 +2588,7 @@ fn match_arm_decl_group_outside_sub_with_different_name_emits_no_collision() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -2665,6 +2690,7 @@ fn match_arm_decl_group_unknown_enum_discriminant_emits_no_spurious_non_exhausti
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -2771,6 +2797,7 @@ fn match_arm_decl_group_duplicate_outside_param_anchors_to_first_decl() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -2914,6 +2941,7 @@ fn match_arm_decl_group_duplicate_outside_let_anchors_to_first_decl() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);
@@ -3024,6 +3052,7 @@ fn match_arm_decl_group_duplicate_outside_sub_anchors_to_first_decl() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);

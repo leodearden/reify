@@ -157,6 +157,8 @@ fn walk_declaration(decl: &reify_ast::Declaration, diagnostics: &mut Vec<Diagnos
         Declaration::Enum(e) => walk_annotations(&e.annotations, diagnostics),
         Declaration::Import(i) => walk_annotations(&i.annotations, diagnostics),
         Declaration::TypeAlias(t) => walk_annotations(&t.annotations, diagnostics),
+        // A module declaration has no annotations and no embedded expressions.
+        Declaration::Module(_) => {}
     }
 }
 

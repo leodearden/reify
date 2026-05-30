@@ -418,6 +418,7 @@ fn match_arm_sub_pose_is_lowered() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&parsed);

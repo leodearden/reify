@@ -203,6 +203,9 @@ pub(crate) fn phase_entities(
             reify_ast::Declaration::TypeAlias(_) => {
                 // Already compiled by aliases_phase::phase_aliases.
             }
+            reify_ast::Declaration::Module(_) => {
+                // No entity to build from a module declaration.
+            }
         }
     }
 }

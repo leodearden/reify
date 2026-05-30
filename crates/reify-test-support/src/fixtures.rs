@@ -363,6 +363,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
         errors: vec![],
         content_hash,
         pragmas: vec![],
+        declared_module_path: None,
     }
 }
 

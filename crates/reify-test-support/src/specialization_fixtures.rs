@@ -199,6 +199,7 @@ pub fn parsed_module_with_structure_members(
         errors: Vec::new(),
         content_hash: dummy_hash(),
         pragmas: Vec::new(),
+        declared_module_path: None,
     }
 }
 

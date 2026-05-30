@@ -75,6 +75,8 @@ pub fn parse_with_prelude_enums(
         errors: lowering.errors.into_inner(),
         content_hash,
         pragmas: lowering.module_pragmas,
+        // Step-4 placeholder: wired to lowering.declared_module_path in step-6.
+        declared_module_path: None,
     }
 }
 

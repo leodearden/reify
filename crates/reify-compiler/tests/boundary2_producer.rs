@@ -288,6 +288,7 @@ fn type_error_dimension_mismatch() {
         errors: vec![],
         content_hash: ContentHash::of_str("dim_mismatch module"),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&module);
@@ -395,6 +396,7 @@ fn constraint_non_bool_produces_warning() {
         errors: vec![],
         content_hash: ContentHash::of_str("non_bool_constraint module"),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&module);
@@ -837,6 +839,7 @@ fn mul_div_different_dimensions_no_diagnostic() {
         errors: vec![],
         content_hash: ContentHash::of_str("mul_div_dims module"),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&module);
@@ -1840,6 +1843,7 @@ fn scalar_plus_int_type_error() {
         errors: vec![],
         content_hash: ContentHash::of_str("scalar_plus_int module"),
         pragmas: vec![],
+        declared_module_path: None,
     };
 
     let compiled = reify_compiler::compile(&module);

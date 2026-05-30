@@ -21,6 +21,16 @@ pub struct ParsedModule {
     pub content_hash: ContentHash,
     /// Module-level pragmas (e.g., `#optimize` at the top of a file).
     pub pragmas: Vec<Pragma>,
+    /// Declared module path from a top-of-file `module a.b.c` declaration, if present.
+    ///
+    /// `None` for files without a module declaration (the entire existing corpus).
+    /// `Some(path)` when the parser found a `module_declaration` node at the top.
+    /// This is the structured form of `ModuleDecl.path`; the raw dotted string is
+    /// stored in `Declaration::Module(ModuleDecl)` in the declarations list.
+    ///
+    /// Left untouched for task γ (path-vs-location enforcement); `ParsedModule.path`
+    /// (the resolver-derived path) is the authoritative module identity (PRD D-6).
+    pub declared_module_path: Option<ModulePath>,
 }
 
 /// A top-level declaration in a module.
@@ -37,6 +47,25 @@ pub enum Declaration {
     Constraint(ConstraintDef),
     Unit(UnitDecl),
     TypeAlias(TypeAliasDecl),
+    /// A `module a.b.c` declaration at the top of a file.
+    ///
+    /// Positional: placed via the grammar's `source_file: seq(optional($.module_declaration),
+    /// repeat($._declaration))` rule, so a `module` decl after any other declaration is a
+    /// parse ERROR. No enforcement semantics here — task γ reads `declared_module_path`.
+    Module(ModuleDecl),
+}
+
+/// `module company.products.actuators` — a top-of-file module path declaration.
+///
+/// Mirrors `ImportDecl.path` in using a raw dotted `String` as the wire
+/// representation. The structured form `ModulePath` is stored alongside in
+/// `ParsedModule.declared_module_path` (parsed via `ModulePath::from_dotted`).
+#[derive(Debug, Clone)]
+pub struct ModuleDecl {
+    /// Dot-separated module path string exactly as written in source (e.g., "a.b.c").
+    pub path: String,
+    pub span: SourceSpan,
+    pub content_hash: ContentHash,
 }
 
 /// A structure definition (the primary entity type in Reify).

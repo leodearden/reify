@@ -64,6 +64,7 @@ fn parsed_module_flat_and_module_path_cross_assign() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
     // Cross-assign module-path → flat proves same type.
     let _same: ParsedModule = m;
@@ -139,6 +140,7 @@ fn parsed_module_with_structure_declaration() {
         errors: vec![],
         content_hash: ContentHash(0),
         pragmas: vec![],
+        declared_module_path: None,
     };
     assert_eq!(module.declarations.len(), 1);
     assert!(module.errors.is_empty());
