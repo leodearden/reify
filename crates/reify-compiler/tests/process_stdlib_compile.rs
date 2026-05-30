@@ -280,27 +280,20 @@ fn dfmrule_trait_surface_has_rule_name_severity_and_process_applicability() {
     );
 }
 
-// ─── step-9: capstone — example compiles clean + cardinality locked ───────────
+// ─── step-9: cardinality lock + example compile (split into two tests) ────────
 
-/// examples/stdlib/process.ri must compile without errors, contain
-/// a MilledPart : Subtracting conformer and a : DFMRule conformer.
-/// Also locks std/process cardinality: exactly 1 enum, 9 traits, 0 structures.
+/// Locks the std/process module cardinality: exactly 1 enum (DFMSeverity),
+/// exactly 9 traits (Process + 7 categories + DFMRule), 0 structures.
+/// Any silent expansion of process.ri fails this test — deliberate updates
+/// require an explicit test change.
+///
+/// The zero-error invariant for std/process is already covered by
+/// `std_process_loads_with_no_errors_and_dfmseverity_enum` (step-1) and the
+/// central `stdlib_loader_tests::all_stdlib_modules_have_no_errors`; it is
+/// intentionally not re-checked here to avoid maintenance-surface duplication.
 #[test]
-fn example_compiles_clean_and_module_cardinality_locked() {
-    // ── Cardinality lock on std/process ──────────────────────────────────────
+fn std_process_module_cardinality_locked() {
     let module = load_stdlib_module();
-
-    // Zero error diagnostics.
-    let errors: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "std/process should have zero error diagnostics, got: {:?}",
-        errors
-    );
 
     // Exactly 1 enum: DFMSeverity.
     let enum_names: Vec<&str> = module.enum_defs.iter().map(|e| e.name.as_str()).collect();
@@ -343,8 +336,16 @@ fn example_compiles_clean_and_module_cardinality_locked() {
         "std/process should declare 0 structures, got: {:?}",
         structure_names
     );
+}
 
-    // ── examples/stdlib/process.ri compiles clean ────────────────────────────
+/// examples/stdlib/process.ri must compile without errors and structurally
+/// declare a `MilledPart : Subtracting` conformer and a `: DFMRule` conformer.
+///
+/// Guards are asserted structurally on the compiled module (via
+/// `TopologyTemplate.trait_bounds`) rather than on the raw source text, so
+/// comment-text drift or header edits cannot silently defeat them.
+#[test]
+fn example_process_ri_compiles_clean() {
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let example_path = manifest_dir
         .join("../../examples/stdlib/process.ri")
@@ -367,17 +368,36 @@ fn example_compiles_clean_and_module_cardinality_locked() {
         example_errors
     );
 
-    // Guard: example must declare MilledPart : Subtracting and a : DFMRule conformer.
+    // Guard: example must declare a MilledPart structure conforming to Subtracting.
+    // Structural assertion on `trait_bounds` — immune to comment-text drift.
     assert!(
-        source.contains("MilledPart"),
-        "examples/stdlib/process.ri should declare a MilledPart structure"
+        compiled.templates.iter().any(|t| {
+            t.name == "MilledPart"
+                && t.entity_kind == EntityKind::Structure
+                && t.trait_bounds.contains(&"Subtracting".to_string())
+        }),
+        "examples/stdlib/process.ri should declare \
+         'structure def MilledPart : Subtracting'; \
+         found templates: {:?}",
+        compiled
+            .templates
+            .iter()
+            .map(|t| (&t.name, &t.trait_bounds))
+            .collect::<Vec<_>>()
     );
+
+    // Guard: example must declare a structure conforming to DFMRule.
     assert!(
-        source.contains(": Subtracting"),
-        "examples/stdlib/process.ri should have a : Subtracting conformer"
-    );
-    assert!(
-        source.contains(": DFMRule"),
-        "examples/stdlib/process.ri should have a : DFMRule conformer"
+        compiled.templates.iter().any(|t| {
+            t.entity_kind == EntityKind::Structure
+                && t.trait_bounds.contains(&"DFMRule".to_string())
+        }),
+        "examples/stdlib/process.ri should declare a structure conforming to 'DFMRule'; \
+         found templates: {:?}",
+        compiled
+            .templates
+            .iter()
+            .map(|t| (&t.name, &t.trait_bounds))
+            .collect::<Vec<_>>()
     );
 }
