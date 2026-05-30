@@ -1998,10 +1998,10 @@ mod tests {
                     }
                 }
                 for comp in comps.iter() {
-                    if let Value::Real(v) = comp {
-                        if *v != 0.0 {
-                            any_nonzero = true;
-                        }
+                    if let Value::Real(v) = comp
+                        && *v != 0.0
+                    {
+                        any_nonzero = true;
                     }
                 }
             }
