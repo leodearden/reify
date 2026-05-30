@@ -317,6 +317,16 @@ fn project_with_expansion(
 ///
 /// Only homogeneous Dirichlet BCs are supported; `DirichletBc.value` is silently
 /// ignored. MPCs must be homogeneous (`rhs == 0.0`).
+///
+/// # Implementation sync note
+///
+/// [`solve_buckling_kernel_p2`] is the P2 sibling of this function. The two share
+/// identical DOF-space machinery (contract checks, expansion map, `f_red`/`u_full`
+/// projection, CG solve, generalized eigensolve, and mode-shape expansion). If you
+/// fix a bug in either path, apply the same fix to the other. The material
+/// differences in the P2 path are the connectivity type (`[usize;10]`),
+/// `ElementOrder::P2` for K_e, `element_stress_p2`, and
+/// `geometric_element_stiffness_tet_p2`.
 pub fn solve_buckling_kernel(
     nodes: &[[f64; 3]],
     tets: &[[usize; 4]],
@@ -524,6 +534,13 @@ pub fn solve_buckling_kernel(
 ///
 /// Same contract as [`solve_buckling_kernel`] — see that function's documentation
 /// for the complete list.
+///
+/// # Implementation sync note
+///
+/// [`solve_buckling_kernel`] is the P1 counterpart of this function. The two share
+/// identical DOF-space machinery (contract checks, expansion map, `f_red`/`u_full`
+/// projection, CG solve, generalized eigensolve, and mode-shape expansion). If you
+/// fix a bug in either path, apply the same fix to the other.
 #[allow(clippy::needless_range_loop)]
 pub fn solve_buckling_kernel_p2(
     nodes: &[[f64; 3]],
@@ -570,6 +587,15 @@ pub fn solve_buckling_kernel_p2(
             bc.dof,
             3 * nodes.len(),
         );
+    }
+    for (elem_idx, tet) in tets.iter().enumerate() {
+        for (local_i, &node) in tet.iter().enumerate() {
+            assert!(
+                node < nodes.len(),
+                "tets[{elem_idx}][{local_i}] = {node} is out of range [0, {})",
+                nodes.len(),
+            );
+        }
     }
 
     let n_nodes = nodes.len();
@@ -1219,19 +1245,10 @@ mod tests {
     }
 
     /// Collect all constrained DOF indices for the P2 shape-test BC set.
+    ///
+    /// Derived directly from [`shape_test_bcs_p2`] to guarantee the two stay in sync.
     fn shape_test_constrained_dofs_p2(nodes_p2: &[[f64; 3]]) -> Vec<usize> {
-        let mut v = Vec::new();
-        for (n, xyz) in nodes_p2.iter().enumerate() {
-            if (xyz[2] - 0.0).abs() < 1e-10 {
-                v.push(3 * n);
-                v.push(3 * n + 1);
-                v.push(3 * n + 2);
-            } else if (xyz[2] - 1.0).abs() < 1e-10 {
-                v.push(3 * n);
-                v.push(3 * n + 1);
-            }
-        }
-        v
+        shape_test_bcs_p2(nodes_p2).iter().map(|bc| bc.dof).collect()
     }
 
     /// (a) verify that `solve_buckling_kernel_p2` accepts an empty mpcs slice and

@@ -228,6 +228,48 @@ mod tests {
         }
     }
 
+    /// Lock the numerical magnitude independently of the end-to-end accuracy tests.
+    ///
+    /// For the unit reference tet (`scaled_p2_phys_nodes(1.0)`) the Jacobian is the
+    /// identity (J = I, det J = 1), so physical gradients equal reference gradients.
+    ///
+    /// Under `uniaxial_z(-1.0)` (σ_zz = −1, all other components = 0):
+    ///
+    /// - **Node 3** at `(0,0,1)`: `N_3 = ζ(2ζ−1)` → `∂N_3/∂z = 4ζ−1`.
+    ///   `K_g[11,11] = (−1)·∫_T (4ζ−1)² dV = (−1)·0.1 = −0.1`.
+    ///   (Closed-form: `∫_T (4ζ−1)² dV = 0.1` via substitution; the 4-point Stroud
+    ///   rule integrates degree-2 exactly so there is zero quadrature error.)
+    ///
+    /// - **Node 0** at `(0,0,0)`: `N_0 = λ_0(2λ_0−1)` → `∂N_0/∂z = 4ξ+4η+4ζ−3`.
+    ///   `∫_T (4ξ+4η+4ζ−3)² dV = 0.1` (same value by symmetry of ξ+η+ζ).
+    ///   `K_g[2,2] = −0.1`.
+    ///
+    /// - **Nodes 1, 2** at `(1,0,0)` and `(0,1,0)`:
+    ///   `∂N_1/∂z = 0`, `∂N_2/∂z = 0` → `K_g[5,5] = K_g[8,8] = 0`.
+    ///
+    /// A kernel with a wrong constant scale factor (or wrong gradient sign) would
+    /// violate these values while still passing the structural invariance tests
+    /// (zero-stress, symmetry, linearity, translation null space).
+    #[test]
+    fn reference_value_under_uniaxial_z_stress() {
+        let k_g = geometric_element_stiffness_tet_p2(&unit_p2(), &InitialStress3::uniaxial_z(-1.0));
+        // Corner node 3 (at z=1): K_g[11,11] = -0.1 (4-pt Stroud integrates degree-2 exactly).
+        assert!(
+            (read(&k_g, 11, 11) - (-0.1)).abs() < 1e-14,
+            "K_g[11,11] expected -0.1, got {}",
+            read(&k_g, 11, 11),
+        );
+        // Corner node 0 (at origin): same analytic value by symmetry.
+        assert!(
+            (read(&k_g, 2, 2) - (-0.1)).abs() < 1e-14,
+            "K_g[2,2] expected -0.1, got {}",
+            read(&k_g, 2, 2),
+        );
+        // Corner nodes 1, 2 (no z-gradient): diagonal entries must be exactly 0.
+        assert_eq!(read(&k_g, 5, 5), 0.0, "K_g[5,5] (z-DOF of node 1) must be 0");
+        assert_eq!(read(&k_g, 8, 8), 0.0, "K_g[8,8] (z-DOF of node 2) must be 0");
+    }
+
     #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "stress must be entrywise finite")]
