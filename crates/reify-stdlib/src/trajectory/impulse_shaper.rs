@@ -103,11 +103,11 @@ fn convolve_trains(a: &ImpulseTrain, b: &ImpulseTrain) -> ImpulseTrain {
     // Merge coincident-time impulses.
     let mut merged: Vec<Impulse> = Vec::with_capacity(raw.len());
     for (t, amp) in raw {
-        if let Some(last) = merged.last_mut() {
-            if (last.time - t).abs() < MERGE_EPS {
-                last.amplitude += amp;
-                continue;
-            }
+        if let Some(last) = merged.last_mut()
+            && (last.time - t).abs() < MERGE_EPS
+        {
+            last.amplitude += amp;
+            continue;
         }
         merged.push(Impulse { time: t, amplitude: amp });
     }
