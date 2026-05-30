@@ -3299,6 +3299,29 @@ mod tests {
         );
     }
 
+    /// Pins the §5.4 capability mapping and stable label for the
+    /// `GeoEquiv` variant (task 3613, KGQ-δ, PRD §5.1 + §5.4).
+    ///
+    /// RED until step-4 adds the `GeometryQuery::GeoEquiv` variant.
+    #[test]
+    fn geo_equiv_variant_has_brep_and_mesh_capability_and_stable_kind_name() {
+        let q = GeometryQuery::GeoEquiv {
+            left: GeometryHandleId(1),
+            right: GeometryHandleId(2),
+            tolerance: 1e-7,
+        };
+        assert_eq!(
+            q.capability_kind(),
+            QueryCapability::BRepAndMesh,
+            "GeoEquiv must map to QueryCapability::BRepAndMesh per PRD §5.4"
+        );
+        assert_eq!(
+            q.kind_name(),
+            "GeoEquiv",
+            "kind_name() for GeoEquiv must be the stable token \"GeoEquiv\""
+        );
+    }
+
     #[test]
     fn surface_angle_variant_is_constructible_and_matchable() {
         // Pin the shape of the new SurfaceAngle variant — kernel returns
