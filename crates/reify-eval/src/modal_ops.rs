@@ -20,7 +20,9 @@ use reify_solver_elastic::{
     ElementStiffness, IsotropicElastic, assemble_global_stiffness, consistent_element_mass_tet_p1,
     element_stiffness, solve_eigen_dense, solve_eigen_shift_invert,
 };
-use reify_stdlib::modal::free_vibration::{eigenvalue_to_frequency_hz, mass_normalization_scale};
+use reify_stdlib::modal::free_vibration::{
+    eigenvalue_to_frequency_hz, mass_normalization_scale, modal_participation_mass,
+};
 
 // ---------------------------------------------------------------------------
 // Beam mesh
@@ -113,10 +115,11 @@ pub(crate) fn build_beam_mesh(length: f64, width: f64, height: f64) -> BeamMesh 
 ///
 /// Field consumption is staged: `frequencies` / `phi_full` / `n_nodes` are
 /// pinned now (step 3/4); `eigenvalues` / `phi_free` / `m_free` feed mass
-/// normalization + participation mass (steps 5–8); `converged` / `n_converged`
-/// feed the convergence diagnostics (steps 9–10) and the trampoline outcome
-/// (step 14). `#[allow(dead_code)]` covers the not-yet-read fields during that
-/// staged build-up.
+/// normalization + participation mass (steps 5–8); `participation_mass` is the
+/// per-mode effective mass along the reference direction (step 8);
+/// `converged` / `n_converged` feed the convergence diagnostics (steps 9–10) and
+/// the trampoline outcome (step 14). `#[allow(dead_code)]` covers the
+/// not-yet-read fields during that staged build-up.
 #[allow(dead_code)]
 pub(crate) struct ModalCoreResult {
     /// Natural frequencies (Hz), ascending. One per returned mode.
@@ -127,6 +130,11 @@ pub(crate) struct ModalCoreResult {
     pub(crate) phi_free: Vec<Vec<f64>>,
     /// Full-DOF mode shapes (length `3·n_nodes`, `0.0` at constrained DOFs).
     pub(crate) phi_full: Vec<Vec<f64>>,
+    /// Effective modal participation mass `m_eff,i = (φ_iᵀ·M_free·d_free)²`
+    /// along the reference direction (φ mass-normalized), one per mode. Summed
+    /// over a complete basis it equals the total translational mass along the
+    /// reference direction (the completeness identity, PRD §4.1/§4.3).
+    pub(crate) participation_mass: Vec<f64>,
     /// Free×free mass matrix `M_free` (feeds mass normalization + participation).
     pub(crate) m_free: SparseRowMat<usize, f64>,
     /// Mesh node count.
@@ -147,13 +155,24 @@ pub(crate) struct ModalCoreResult {
 /// spurious unit-diagonal eigenpairs (design_decision #3, mirroring
 /// `buckling_kernel`). Homogeneous Dirichlet BCs only; `DirichletBc.value` is
 /// ignored.
-#[allow(dead_code)]
+///
+/// `reference_direction` is the (unit) direction along which the per-mode
+/// effective participation mass `m_eff,i = (φ_iᵀ·M_free·d_free)²` is computed;
+/// it is broadcast to every free node's three translational DOFs to form
+/// `d_free` (the caller is responsible for supplying a unit vector — see the
+/// trampoline). It does not affect the eigensolve, only the participation field.
+// 8 args: density + material + 3 geometry scalars + reference_direction + bcs +
+// eigen_opts — the flat physical-input surface mirrors solve_cantilever_fea /
+// solve_buckling_kernel; bundling them into a struct would just relocate the
+// fan-out. (dead_code until the step-14 trampoline consumes this.)
+#[allow(dead_code, clippy::too_many_arguments)]
 pub(crate) fn solve_modal_core(
     density: f64,
     material: &IsotropicElastic,
     length: f64,
     width: f64,
     height: f64,
+    reference_direction: [f64; 3],
     bcs: &[DirichletBc],
     eigen_opts: &EigenSolverOptions,
 ) -> ModalCoreResult {
@@ -220,6 +239,15 @@ pub(crate) fn solve_modal_core(
     let k_free = project_free(&k_full, &free_of_full, n_free);
     let m_free = project_free(&m_full, &free_of_full, n_free);
 
+    // ---- Participation metric  md = M_free · d_free -----------------------
+    // d_free broadcasts the reference direction to every free node's three
+    // translational DOFs (axis = full DOF index mod 3). Precomputing
+    // md = M_free·d_free once lets the per-mode participation factor be a single
+    // dot product p_i = φ_iᵀ·M_free·d_free = φ_i·md (M_free symmetric).
+    let d_free: Vec<f64> =
+        full_of_free.iter().map(|&g| reference_direction[g % 3]).collect();
+    let md = m_matvec(&m_free, &d_free);
+
     // ---- Generalized eigensolve  K_free φ = λ M_free φ --------------------
     let eig = solve_generalized_eigen(&k_free, &m_free, eigen_opts.clone());
 
@@ -229,6 +257,7 @@ pub(crate) fn solve_modal_core(
     let mut eigenvalues = Vec::with_capacity(n_modes_out);
     let mut phi_free = Vec::with_capacity(n_modes_out);
     let mut phi_full = Vec::with_capacity(n_modes_out);
+    let mut participation_mass = Vec::with_capacity(n_modes_out);
     for i in 0..n_modes_out {
         let lambda = eig.eigenvalues[i];
         eigenvalues.push(lambda);
@@ -247,6 +276,13 @@ pub(crate) fn solve_modal_core(
             *x *= scale;
         }
 
+        // Effective participation mass along the reference direction (φ now
+        // mass-normalized): factor p_i = φ_iᵀ·M_free·d_free = φ_i·md, then
+        // m_eff,i = p_i² (PRD §4.1/§4.3). Summed over a complete basis this
+        // equals the total translational mass along d (completeness identity).
+        let p_i: f64 = phi_f.iter().zip(md.iter()).map(|(a, b)| a * b).sum();
+        participation_mass.push(modal_participation_mass(p_i));
+
         let mut phi_u = vec![0.0_f64; n_dofs];
         for (free_i, &g) in full_of_free.iter().enumerate() {
             phi_u[g] = phi_f[free_i];
@@ -260,6 +296,7 @@ pub(crate) fn solve_modal_core(
         eigenvalues,
         phi_free,
         phi_full,
+        participation_mass,
         m_free,
         n_nodes,
         converged: eig.converged,
@@ -433,6 +470,7 @@ mod tests {
             length,
             width,
             height,
+            [0.0, 0.0, 1.0], // reference_direction; unused by this assertion
             &bcs,
             &eigen_opts,
         );
@@ -518,6 +556,7 @@ mod tests {
             length,
             width,
             height,
+            [0.0, 0.0, 1.0], // reference_direction; unused by this assertion
             &bcs,
             &eigen_opts,
         );
