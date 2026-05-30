@@ -1350,10 +1350,9 @@ impl Engine {
             if let reify_compiler::CompiledFieldSource::Imported {
                 path: Some(ref p), ..
             } = field.source
+                && let Some(h) = imported_hash
             {
-                if let Some(h) = imported_hash {
-                    self.cache.record_imported_file_hash(p, h);
-                }
+                self.cache.record_imported_file_hash(p, h);
             }
         }
 
