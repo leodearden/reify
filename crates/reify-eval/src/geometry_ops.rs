@@ -1756,6 +1756,7 @@ fn kernel_distance(
 //   `angle_between_surfaces(a, b)`   → `GeometryQuery::SurfaceAngle`
 //   `angle(a, b)`                    → pure-math acos (task 3614, KGQ-ε)
 //   `contains(solid, point)`         → `GeometryQuery::Contains` (task 3611, KGQ-β)
+//   `geo_equiv(left, right, tol)`   → `GeometryQuery::GeoEquiv`  (task 3613, KGQ-δ)
 //
 // ── Which names are compile-time typed but NOT eval-dispatched (task 2699) ──
 //
@@ -1831,6 +1832,7 @@ pub(crate) fn try_eval_topology_selector(
         "shared_edges" => TopologySelectorHelper::SharedEdges,
         "angle" => TopologySelectorHelper::Angle,
         "contains" => TopologySelectorHelper::Contains,
+        "geo_equiv" => TopologySelectorHelper::GeoEquiv,
         _ => return None,
     };
 
@@ -1895,7 +1897,8 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::AdjacentFaces
                 | TopologySelectorHelper::SharedEdges
                 | TopologySelectorHelper::Angle
-                | TopologySelectorHelper::Contains => {
+                | TopologySelectorHelper::Contains
+                | TopologySelectorHelper::GeoEquiv => {
                     unreachable!("ClosestPoint/IsOn outer match guarantees this")
                 }
             }
@@ -1929,6 +1932,27 @@ pub(crate) fn try_eval_topology_selector(
             // Reuse the Bool-unwrap helper from `is_on`: dispatches
             // `kernel.query(&query)` and unwraps `Value::Bool`, downgrading
             // non-Bool / Err replies to `Some(Value::Undef)` + Warning per §4.
+            dispatch_point_on_shape(kernel, &query, &function.name, diagnostics)
+        }
+        TopologySelectorHelper::GeoEquiv => {
+            // geo_equiv(left, right, tol) → Bool (task 3613, KGQ-δ, PRD §5.1).
+            // True iff BOTH topology equivalence (canonical TopExp::MapShapes
+            // per-kind counts match) AND sampled-vertex tolerance (N=8 uniform
+            // parameter points per face/edge; |p_a - p_b| < tol) hold.
+            //
+            // FUTURE: geo_equiv_strict(a, b, tol) — symmetric Hausdorff distance
+            // variant deferred to v0.4 (PRD §5.1, Open Question §10).
+            //
+            // args[0]: left geometry ValueRef → named_steps → GeometryHandleId.
+            // args[1]: right geometry ValueRef → named_steps → GeometryHandleId.
+            // args[2]: tolerance ValueRef → values → Value::length(m) → SI metres.
+            let left = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            let right = resolve_geometry_handle_arg(&args[1], named_steps)?;
+            let tolerance = resolve_length_scalar_arg(&args[2], values)?;
+            let query = reify_ir::GeometryQuery::GeoEquiv { left, right, tolerance };
+            // Reuse the Bool-unwrap helper: dispatches kernel.query(&query) and
+            // unwraps Value::Bool, downgrading non-Bool / Err replies to
+            // Some(Value::Undef) + Warning (function.name = "geo_equiv").
             dispatch_point_on_shape(kernel, &query, &function.name, diagnostics)
         }
         TopologySelectorHelper::Angle => {
@@ -1996,7 +2020,8 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::AdjacentFaces
                 | TopologySelectorHelper::SharedEdges
                 | TopologySelectorHelper::Angle
-                | TopologySelectorHelper::Contains => {
+                | TopologySelectorHelper::Contains
+                | TopologySelectorHelper::GeoEquiv => {
                     unreachable!("Edges/Faces outer match guarantees this")
                 }
             };
@@ -2371,6 +2396,16 @@ enum TopologySelectorHelper {
     /// `is_on` with args swapped. Default tolerance from
     /// `DEFAULT_CONTAINS_TOLERANCE_M` per §5.2.
     Contains,
+    /// `geo_equiv(left, right, tol) -> Bool` — topology hash + N=8 parameter
+    /// sample per §5.1 (task 3613, KGQ-δ, PRD §9). True iff BOTH topology
+    /// (per-kind shape count) AND sampled-vertex tolerance hold.
+    /// Uses `QueryCapability::BRepAndMesh`; sample count from
+    /// `DEFAULT_GEO_EQUIV_SAMPLE_COUNT` (§5.2). Tolerance is an explicit
+    /// user-supplied Length arg (no default constant per §5.2).
+    ///
+    /// FUTURE: `geo_equiv_strict(a, b, tol) -> Bool` — symmetric Hausdorff
+    /// distance variant deferred to v0.4 (PRD §5.1, Open Question §10).
+    GeoEquiv,
 }
 
 impl TopologySelectorHelper {
@@ -2394,7 +2429,8 @@ impl TopologySelectorHelper {
             TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => 1,
             TopologySelectorHelper::FacesByNormal
             | TopologySelectorHelper::EdgesParallelTo
-            | TopologySelectorHelper::EdgesAtHeight => 3,
+            | TopologySelectorHelper::EdgesAtHeight
+            | TopologySelectorHelper::GeoEquiv => 3,
         }
     }
 }
