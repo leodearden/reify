@@ -22,14 +22,15 @@ lock_depth: 4
 # command has no `cargo --workspace` literal). sccache + the shared jobserver
 # keep full-workspace verifies cheap. verify_env below still applies.
 #
-# --profile debug (NOT both): per-task verify runs every TDD iteration, so it
-# stays debug-only for fast feedback. Release coverage — and the heavy
-# release-only tests gated behind #[cfg_attr(debug_assertions, ignore)] in
-# reify-solver-elastic (buckling/eigensolve) — lives at the MERGE GATE
-# (hooks/pre-merge-commit runs --profile both --scope all), which reruns far
-# less often. So release + the heavy numeric tests are exercised exactly once,
-# at merge, instead of on every per-task iteration.
-test_command: "./scripts/verify.sh test --profile debug --scope all --include-infra"
+# No --profile here: verify.sh derives the profile from DF_VERIFY_ROLE (task 4078).
+# Per-task verifies run with DF_VERIFY_ROLE=task => profile=debug (fast feedback).
+# The orchestrator merge path injects DF_VERIFY_ROLE=merge => profile=both,
+# exercising release-only tests (the 4055 sweep test, 4 large-DOF Euler tests,
+# and the cfg(debug_assertions)-gated buckling/eigensolve tests in
+# reify-solver-elastic) without slowing every per-task TDD iteration.
+# hooks/pre-merge-commit pins --profile both explicitly for the local manual-merge
+# gate (git merge on main) and is unchanged.
+test_command: "./scripts/verify.sh test --scope all --include-infra"
 lint_command: "./scripts/verify.sh lint --scope all --include-infra"
 # type_check_command is a passing no-op (task 4063).
 # Rationale: lint_command's `cargo clippy --workspace --all-targets -- -D warnings` is a
