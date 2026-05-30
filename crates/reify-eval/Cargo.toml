@@ -14,6 +14,7 @@ reify-syntax.workspace = true
 reify-compiler.workspace = true
 reify-shell-extract.workspace = true
 reify-solver-elastic.workspace = true
+reify-kernel-openvdb.workspace = true
 bincode.workspace = true
 bytemuck.workspace = true
 inventory.workspace = true
@@ -26,6 +27,7 @@ tempfile.workspace = true
 
 [build-dependencies]
 xxhash-rust = { workspace = true }
+reify-build-utils.workspace = true
 
 [features]
 test-instrumentation = []
