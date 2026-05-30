@@ -679,6 +679,22 @@ fn complex_add_int_dimensionless() {
     assert_eq!(result, complex_val(3.0, 4.0, DimensionVector::DIMENSIONLESS));
 }
 
+/// Regression pin: Real(3.2) + Complex{1.0,4.1,DIMENSIONLESS} → Complex{4.2,4.1,DIMENSIONLESS}.
+/// Complex operand has a non-zero real part (1.0), so both `a` and `re` contribute.
+/// A bug that used `re: a` instead of `re: a + re` would produce {3.2,4.1} and fail here.
+#[test]
+fn real_add_complex_nonzero_re() {
+    let result = eval_binop(
+        BinOp::Add,
+        Value::Real(3.2),
+        Type::Real,
+        complex_val(1.0, 4.1, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        Type::complex(Type::Real),
+    );
+    assert_eq!(result, complex_val(4.2, 4.1, DimensionVector::DIMENSIONLESS));
+}
+
 /// Dimensionless-only guard: Real(3.2) + Complex{1,2,LENGTH} → Undef.
 /// The complex operand carries a LENGTH dimension; promotion is refused.
 #[test]

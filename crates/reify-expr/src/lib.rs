@@ -2267,6 +2267,25 @@ fn validate_rank2_tensors(a: &[Value], b: &[Value]) -> Option<Value> {
     None
 }
 
+/// Build `Complex { re, im, DIMENSIONLESS }` if `dimension` is DIMENSIONLESS, else `Undef`.
+///
+/// Centralises the dimensionless-guard + construction pattern shared by the six
+/// Real/Int ± Complex arms in `eval_add` / `eval_sub`.  Each arm computes the
+/// correct `re`/`im` formulas and delegates the guard to this helper, keeping the
+/// dimension-invariant impossible to get wrong in only one arm.
+#[inline]
+fn guard_dimensionless_complex(re: f64, im: f64, dimension: DimensionVector) -> Value {
+    if dimension != DimensionVector::DIMENSIONLESS {
+        Value::Undef
+    } else {
+        Value::Complex {
+            re,
+            im,
+            dimension: DimensionVector::DIMENSIONLESS,
+        }
+    }
+}
+
 fn eval_add(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
         (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
@@ -2322,27 +2341,11 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
         // A dimensioned Complex (e.g. Complex{LENGTH}) → Undef (dimensionless-only, D3).
         (Value::Real(a), Value::Complex { re, im, dimension })
         | (Value::Complex { re, im, dimension }, Value::Real(a)) => {
-            if *dimension != DimensionVector::DIMENSIONLESS {
-                Value::Undef
-            } else {
-                Value::Complex {
-                    re: a + re,
-                    im: *im,
-                    dimension: DimensionVector::DIMENSIONLESS,
-                }
-            }
+            guard_dimensionless_complex(a + re, *im, *dimension)
         }
         (Value::Int(a), Value::Complex { re, im, dimension })
         | (Value::Complex { re, im, dimension }, Value::Int(a)) => {
-            if *dimension != DimensionVector::DIMENSIONLESS {
-                Value::Undef
-            } else {
-                Value::Complex {
-                    re: *a as f64 + re,
-                    im: *im,
-                    dimension: DimensionVector::DIMENSIONLESS,
-                }
-            }
+            guard_dimensionless_complex(*a as f64 + re, *im, *dimension)
         }
         (Value::String(a), Value::String(b)) => Value::String(format!("{}{}", a, b)),
         // Component-wise Tensor addition (with rank-2 validation)
@@ -2417,51 +2420,19 @@ fn eval_sub(lv: &Value, rv: &Value) -> Value {
         //
         // Real(a) - Complex{re,im,DIMENSIONLESS} → Complex{ re: a-re, im: -im }
         (Value::Real(a), Value::Complex { re, im, dimension }) => {
-            if *dimension != DimensionVector::DIMENSIONLESS {
-                Value::Undef
-            } else {
-                Value::Complex {
-                    re: a - re,
-                    im: -im,
-                    dimension: DimensionVector::DIMENSIONLESS,
-                }
-            }
+            guard_dimensionless_complex(a - re, -im, *dimension)
         }
         // Complex{re,im,DIMENSIONLESS} - Real(a) → Complex{ re: re-a, im }
         (Value::Complex { re, im, dimension }, Value::Real(a)) => {
-            if *dimension != DimensionVector::DIMENSIONLESS {
-                Value::Undef
-            } else {
-                Value::Complex {
-                    re: re - a,
-                    im: *im,
-                    dimension: DimensionVector::DIMENSIONLESS,
-                }
-            }
+            guard_dimensionless_complex(re - a, *im, *dimension)
         }
         // Int(a) - Complex{re,im,DIMENSIONLESS} → Complex{ re: a-re, im: -im }
         (Value::Int(a), Value::Complex { re, im, dimension }) => {
-            if *dimension != DimensionVector::DIMENSIONLESS {
-                Value::Undef
-            } else {
-                Value::Complex {
-                    re: *a as f64 - re,
-                    im: -im,
-                    dimension: DimensionVector::DIMENSIONLESS,
-                }
-            }
+            guard_dimensionless_complex(*a as f64 - re, -im, *dimension)
         }
         // Complex{re,im,DIMENSIONLESS} - Int(a) → Complex{ re: re-a, im }
         (Value::Complex { re, im, dimension }, Value::Int(a)) => {
-            if *dimension != DimensionVector::DIMENSIONLESS {
-                Value::Undef
-            } else {
-                Value::Complex {
-                    re: re - *a as f64,
-                    im: *im,
-                    dimension: DimensionVector::DIMENSIONLESS,
-                }
-            }
+            guard_dimensionless_complex(re - *a as f64, *im, *dimension)
         }
         // Component-wise Tensor subtraction (with rank-2 validation)
         (Value::Tensor(a), Value::Tensor(b)) => {
