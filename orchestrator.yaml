@@ -16,11 +16,14 @@ lock_depth: 4
 # that oracle. Authoritative OCCT crate list: scripts/occt-touching-crates.txt
 # (shared via scripts/occt-scope-lib.sh). See `scripts/verify.sh --help`.
 #
-# --scope all verifies the whole workspace: the orchestrator commits task work
-# before verifying, so there is no staged diff to scope by, and the old
-# scope_cargo `cargo --workspace`→`-p` rewrite no longer applies (the thin
-# command has no `cargo --workspace` literal). sccache + the shared jobserver
-# keep full-workspace verifies cheap. verify_env below still applies.
+# --scope branch narrows per-task verification to files changed since
+# merge-base(main, HEAD) (committed + uncommitted task work). This keeps
+# per-task TDD iterations fast: a docs-only task runs no cargo, a
+# frontend-only task skips the Rust pipeline, etc.
+#
+# The merge path (DF_VERIFY_ROLE=merge) keeps full scope: hooks/pre-merge-commit
+# uses --scope all explicitly, and the orchestrator merge pipeline does not
+# invoke test_command / lint_command below.
 #
 # No --profile here: verify.sh derives the profile from DF_VERIFY_ROLE (task 4078).
 # Per-task verifies run with DF_VERIFY_ROLE=task => profile=debug (fast feedback).
@@ -30,8 +33,8 @@ lock_depth: 4
 # reify-solver-elastic) without slowing every per-task TDD iteration.
 # hooks/pre-merge-commit pins --profile both explicitly for the local manual-merge
 # gate (git merge on main) and is unchanged.
-test_command: "./scripts/verify.sh test --scope all --include-infra"
-lint_command: "./scripts/verify.sh lint --scope all --include-infra"
+test_command: "./scripts/verify.sh test --scope branch --include-infra"
+lint_command: "./scripts/verify.sh lint --scope branch --include-infra"
 # type_check_command is a passing no-op (task 4063).
 # Rationale: lint_command's `cargo clippy --workspace --all-targets -- -D warnings` is a
 # STRICT SUPERSET of `cargo check --workspace --tests` — clippy runs the full compiler
