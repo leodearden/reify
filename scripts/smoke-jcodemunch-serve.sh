@@ -49,13 +49,15 @@ SERVE_URL="http://127.0.0.1:8901/mcp"
 MCP_TIMEOUT=15
 WATCHER_SERVICE="jcodemunch-watcher"
 
-# Repo and commit range resolved in step-4 (wired by the implementation).
-# Placeholders below are replaced when assertions 2+3 are made GREEN.
-REPO_ID="leodearden-reify"
-# A recent reify commit range guaranteed to yield changed symbols.
-# Resolved and pinned during step-4 against the running serve.
-COMMIT_FROM="__COMMIT_FROM__"
-COMMIT_TO="__COMMIT_TO__"
+# Resolved during L-SERVE spike (task 4102, step-4) against the running serve.
+# Repo identifier: the leodearden/reify index in ~/.code-index (schema v16).
+# Source root used by the index for git ops: /home/leo/src/reify-analysis-spec-coverage
+# (or /home/leo/src/reify once the watcher re-indexes the canonical checkout).
+# Commit range: 3 commits ending at the index HEAD 27b212c (Merge task/3773 into main).
+# Both commits exist in the canonical /home/leo/src/reify git history.
+REPO_ID="leodearden/reify"
+SINCE_SHA="00f56f1a20be3a66a0797663506280be4db9ccf3"
+UNTIL_SHA="27b212c61cfe86bf57055d769921805e34d8b467"
 
 SMOKE_TMPDIR=$(mktemp -d /tmp/smoke-jcodemunch-XXXXXX)
 trap 'rm -rf "$SMOKE_TMPDIR"' EXIT
@@ -125,15 +127,7 @@ curl -s \
 echo "smoke-jcodemunch-serve: assertion 1 OK (HTTP 200, JSON-RPC body)"
 
 # ── Assertion 2: get_changed_symbols returns NON-EMPTY symbol data ─────────────
-echo "smoke-jcodemunch-serve: [2] get_changed_symbols for $REPO_ID ($COMMIT_FROM..$COMMIT_TO) ..."
-
-# Guard: FAIL assertion 2+3 if commit range not yet resolved.
-if [[ "$COMMIT_FROM" == "__COMMIT_FROM__" || "$COMMIT_TO" == "__COMMIT_TO__" ]]; then
-    echo "FAIL [2+3]: commit range not yet resolved." >&2
-    echo "            Wire COMMIT_FROM and COMMIT_TO (step-4) with a reify range" >&2
-    echo "            that yields non-empty changed_symbols against repo $REPO_ID." >&2
-    exit 1
-fi
+echo "smoke-jcodemunch-serve: [2] get_changed_symbols for $REPO_ID ($SINCE_SHA..$UNTIL_SHA) ..."
 
 http_code2=$(curl -s \
     -o "$SMOKE_TMPDIR/query_body.txt" \
@@ -144,7 +138,7 @@ http_code2=$(curl -s \
     -H "Content-Type: application/json" \
     -H "Accept: application/json, text/event-stream" \
     -H "mcp-session-id: $SESSION_ID" \
-    -d "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"get_changed_symbols\",\"arguments\":{\"repo\":\"$REPO_ID\",\"from_commit\":\"$COMMIT_FROM\",\"to_commit\":\"$COMMIT_TO\"}}}" \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"get_changed_symbols\",\"arguments\":{\"repo\":\"$REPO_ID\",\"since_sha\":\"$SINCE_SHA\",\"until_sha\":\"$UNTIL_SHA\"}}}" \
     2>/dev/null) || {
     echo "FAIL [2]: curl to $SERVE_URL tools/call failed." >&2
     exit 1
@@ -156,32 +150,61 @@ if [[ "$http_code2" != "200" ]]; then
     exit 1
 fi
 
-# Parse response: handle both plain JSON and SSE data: lines.
-query_body="$SMOKE_TMPDIR/query_body.txt"
-if grep -qi "text/event-stream" "$SMOKE_TMPDIR/query_headers.txt" 2>/dev/null; then
-    sse_data2=$(grep '^data:' "$SMOKE_TMPDIR/query_body.txt" | head -1 | sed 's/^data://')
-    echo "$sse_data2" > "$SMOKE_TMPDIR/query_parsed.json"
-    query_body="$SMOKE_TMPDIR/query_parsed.json"
+# Parse response: handle SSE (data: prefix) and plain JSON.
+# SSE body: "event: message\ndata: {...}\n..."
+# Plain JSON body: "{...}"
+# Extract the JSON payload into a file, then check it.
+query_raw="$SMOKE_TMPDIR/query_body.txt"
+query_json="$SMOKE_TMPDIR/query_json.json"
+if grep -q '^data:' "$query_raw" 2>/dev/null; then
+    grep '^data:' "$query_raw" | head -1 | sed 's/^data:[[:space:]]*//' > "$query_json"
+else
+    cp "$query_raw" "$query_json"
 fi
 
-# Extract symbol data from JSON-RPC result.
-# Server may return structuredContent or content[].text.
-symbol_data=$(jq -r '
-    .result.structuredContent.changed_symbols //
-    (.result.content[]? | select(.type=="text") | .text | fromjson? | .changed_symbols?) //
-    null
-' "$query_body" 2>/dev/null || echo "null")
-
-if [[ "$symbol_data" == "null" || "$symbol_data" == "[]" || -z "$symbol_data" ]]; then
-    echo "FAIL [2]: get_changed_symbols returned empty or null changed_symbols." >&2
-    echo "       Full response: $(cat "$query_body" 2>/dev/null)" >&2
-    echo "       Verify that REPO_ID='$REPO_ID' and commit range '$COMMIT_FROM..$COMMIT_TO'" >&2
-    echo "       are correct for the watcher-indexed /home/leo/src/reify checkout." >&2
+# Check for JSON-RPC error in the response body.
+if jq -e '.result.content[]? | select(.type=="text") | .text | test("\"error\"")' \
+        "$query_json" >/dev/null 2>&1; then
+    err_text=$(jq -r '(.result.content[]? | select(.type=="text") | .text)' "$query_json" 2>/dev/null | head -c 300)
+    echo "FAIL [2]: get_changed_symbols returned an error: $err_text" >&2
     exit 1
 fi
 
-echo "smoke-jcodemunch-serve: assertion 2 OK — changed_symbols (non-empty):"
-echo "$symbol_data" | jq '.[0:3]' 2>/dev/null || echo "$symbol_data" | head -20
+# Non-emptiness check. The server returns result.content[0].text which is:
+#   (a) MUNCH-encoded ("#MUNCH/1 ..." header) — presence = non-empty symbol data.
+#   (b) Plain JSON with .changed_symbols / .added_symbols / .removed_symbols arrays.
+# Write the text field to a temp file for inspection.
+jq -r '(.result.content[]? | select(.type=="text") | .text) // empty' \
+    "$query_json" > "$SMOKE_TMPDIR/result_text.txt" 2>/dev/null || true
+
+result_text_file="$SMOKE_TMPDIR/result_text.txt"
+
+if grep -q '^#MUNCH/1' "$result_text_file" 2>/dev/null; then
+    # MUNCH-encoded: presence of the header confirms non-empty symbol data.
+    munch_header=$(head -1 "$result_text_file")
+    echo "smoke-jcodemunch-serve: assertion 2 OK — non-empty MUNCH-encoded symbol data:"
+    echo "  $munch_header"
+    # Print first few @N= reference definitions as the observable signal.
+    grep '^@' "$result_text_file" | head -5 || true
+elif [[ -s "$result_text_file" ]]; then
+    # Plain JSON path — check symbol count.
+    symbol_count=$(jq -r '
+        (.changed_symbols | length) + (.added_symbols | length) + (.removed_symbols | length)
+    ' "$result_text_file" 2>/dev/null || echo "0")
+    if [[ "$symbol_count" -gt 0 ]]; then
+        echo "smoke-jcodemunch-serve: assertion 2 OK — $symbol_count symbols:"
+        jq '.changed_symbols[0:2], .added_symbols[0:1]' "$result_text_file" 2>/dev/null || true
+    else
+        echo "FAIL [2]: get_changed_symbols returned empty symbol data." >&2
+        echo "       Full response (first 400 chars): $(head -c 400 "$query_json" 2>/dev/null)" >&2
+        echo "       Verify REPO_ID='$REPO_ID', SINCE_SHA='$SINCE_SHA', UNTIL_SHA='$UNTIL_SHA'" >&2
+        exit 1
+    fi
+else
+    echo "FAIL [2]: get_changed_symbols returned no result text." >&2
+    echo "       Full response (first 400 chars): $(head -c 400 "$query_json" 2>/dev/null)" >&2
+    exit 1
+fi
 
 # ── Assertion 3: watcher is concurrently active ────────────────────────────────
 echo "smoke-jcodemunch-serve: [3] jcodemunch-watcher.service active concurrently ..."

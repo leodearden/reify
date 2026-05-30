@@ -25,9 +25,18 @@ watcher + one persistent serve off a single index).
 | **Shared DB file** | `~/.code-index/leodearden-reify.db` |
 | **Serve version** | v1.108.27 (matching watcher pin) |
 | **Index schema** | v16 |
-| **Commit range (smoke)** | resolved in step-4; see smoke script `COMMIT_FROM`/`COMMIT_TO` |
+| **Commit range (smoke)** | `00f56f1a20be..27b212c61cfe` (3 commits ending at index HEAD `27b212c` = Merge task/3773) |
 
 These were resolved live against the running serve during the L-SERVE spike (task 4102).
+
+**Note on source_root**: At capture time the index's `source_root` was `/home/leo/src/reify-analysis-spec-coverage`
+(indexed at `27b212c` = Merge task/3773). Once the watcher re-indexes the canonical `/home/leo/src/reify`
+checkout, `leodearden-reify.db` will update its `source_root` to `/home/leo/src/reify` and its `git_head`
+to the current canonical HEAD. The smoke commit range (`00f56f1a..27b212c`) exists in both histories and
+will remain resolvable.
+
+**Response encoding**: `get_changed_symbols` returns MUNCH-encoded data (`#MUNCH/1 tool=get_changed_symbols enc=gen1`)
+for non-empty results. The smoke script detects this format directly rather than attempting JSON decoding.
 
 ---
 
