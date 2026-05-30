@@ -96,6 +96,11 @@ pub type HeatCapacity = Energy / Temperature
 
 /// Standard acceleration of gravity (g_n), 9.80665 m/s² — BIPM/CGPM 1901 §70
 /// reference value. Use in body-force loads: `gravity(5 * STANDARD_GRAVITY())`.
+/// Body uses the compositional `1m / (1s * 1s)` form rather than the compound
+/// literal `9.80665m/s^2`: compound-unit resolution requires the unit registry
+/// in scope, but std.units bootstraps that registry, so its own function
+/// bodies compile in the registry-less scope guarded in expr.rs (same
+/// constraint documented for BOLTZMANN_CONSTANT below). SI value is identical.
 pub fn STANDARD_GRAVITY() -> Acceleration { 9.80665 * 1m / (1s * 1s) }
 
 /// Speed of light in vacuum (c), 299792458 m/s exactly — SI definition
