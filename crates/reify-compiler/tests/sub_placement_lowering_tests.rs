@@ -196,3 +196,62 @@ fn aux_and_pub_are_independent() {
     );
     assert!(!d.is_aux, "d should be is_aux=false");
 }
+
+// ── Step 5: collection+`at` diagnostic and clean-compile guard ───────────────
+
+/// `at` on a collection sub must produce at least one Error-severity diagnostic
+/// (per PRD §10 and the AST doc-comment on `SubDecl.pose_expr`).
+///
+/// This is a runtime RED in step-5: the compiler does not yet reject this
+/// combination, so no diagnostic is produced and the assertion fails.
+#[test]
+fn at_on_collection_sub_is_rejected() {
+    let source = r#"structure Child {
+    param h: Scalar = 10mm
+}
+structure Parent {
+    param n: Int = 3
+    sub bolts : List<Child> at transform3(orient_identity(), vec3(30mm, 0mm, 0mm))
+}"#;
+    let compiled = reify_test_support::compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "`at` on a collection sub must produce at least one Error diagnostic; got zero. \
+         Diagnostics: {:?}",
+        compiled.diagnostics
+    );
+}
+
+/// A structure using `aux let`, a plain `sub … at <pose>`, and an `aux sub … at <pose>`
+/// together must compile with ZERO Error-severity diagnostics — this pins the
+/// "diagnostics accept at/aux cleanly" acceptance criterion.
+#[test]
+fn valid_at_and_aux_compile_clean() {
+    let source = r#"structure Child {
+    param h: Scalar = 10mm
+}
+structure Parent {
+    param w: Scalar = 80mm
+    aux let offset = 30mm
+    sub plate : Child at transform3(orient_identity(), vec3(10mm, 0mm, 0mm))
+    aux sub jig : Child at transform3(orient_identity(), vec3(30mm, 0mm, 0mm))
+}"#;
+    let compiled = reify_test_support::compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "valid at/aux usage must produce zero Error diagnostics; got: {:?}",
+        errors
+    );
+}
