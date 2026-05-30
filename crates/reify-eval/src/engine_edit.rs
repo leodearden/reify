@@ -1146,7 +1146,10 @@ impl Engine {
             if !dirty_cone.contains(&field_node) {
                 continue;
             }
-            let new_field_value = crate::engine_eval::elaborate_field(
+            // elaborate_field returns (value, Option<ContentHash>); the hash is only
+            // meaningful for Imported sources and is not recorded in the edit path
+            // (hash recording is an Engine::eval concern).
+            let (new_field_value, _imported_hash) = crate::engine_eval::elaborate_field(
                 field,
                 &values,
                 &functions,

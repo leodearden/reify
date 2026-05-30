@@ -588,6 +588,10 @@ pub(crate) fn compile_field(
                     )),
                 );
             }
+            // Note: the struct is populated with whatever was parsed even when the
+            // validation diagnostics above were emitted.  Eval relies on (Some path,
+            // Some grid) and treats anything else as Undef; compile errors are the
+            // user-visible signal for missing or invalid keys.
             CompiledFieldSource::Imported {
                 path: path.clone(),
                 format: format.clone(),
