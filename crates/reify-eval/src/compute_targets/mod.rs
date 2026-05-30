@@ -35,4 +35,12 @@ pub fn register_compute_fns(engine: &mut crate::Engine) {
         "solver::buckling",
         buckling::solve_buckling_trampoline as crate::ComputeFn,
     );
+    // The modal trampoline lives in `crate::modal_ops` (not `compute_targets`):
+    // it shares the FEA-eigensolve machinery with the modal core solver and its
+    // unit tests, which co-locate there. Mirrors the buckling/elastic placement
+    // rationale at the top of this module.
+    engine.register_compute_fn(
+        "modal::free_vibration",
+        crate::modal_ops::solve_modal_analysis_trampoline as crate::ComputeFn,
+    );
 }

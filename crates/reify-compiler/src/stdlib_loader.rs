@@ -118,6 +118,16 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 "std.modal.analysis",
                 include_str!("../stdlib/modal_analysis.ri"),
             ),
+            // `std.modal.analysis.fns` MUST follow `std.modal.analysis` —
+            // the `fn` bodies field-access `ModalResult.modes[n].frequency`,
+            // which requires `ModalResult`/`Mode` to already be in the prelude
+            // template registry when `phase_functions` runs. Same split +
+            // rationale as `std.solver.buckling` / `std.solver.buckling.fns`
+            // (esc-3851-32).
+            (
+                "std.modal.analysis.fns",
+                include_str!("../stdlib/modal_analysis_fns.ri"),
+            ),
             (
                 "std.trajectory",
                 include_str!("../stdlib/trajectory.ri"),

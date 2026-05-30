@@ -40,6 +40,7 @@ pub mod loop_closure_solver;
 pub mod loop_closure_value;
 mod matrix;
 mod mechanism;
+pub mod modal;
 mod numeric;
 mod orientation;
 mod snapshot;

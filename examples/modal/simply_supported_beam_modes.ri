@@ -1,0 +1,80 @@
+// Simply-supported beam modal-analysis smoke fixture for `fn modal_analysis`.
+//
+// PRD reference: docs/prds/v0_3/modal-analysis.md §1, §9.1, §10 task ζ.
+//
+// Analytical reference (Euler–Bernoulli simply-supported beam, mode n):
+//
+//   fₙ = ( (n·π)² / 2π ) · √( E·I / (ρ·A·L⁴) )
+//
+// Where (uniform AISI 1045 steel beam — same section as the cantilever fixture):
+//   E = 205 GPa, ρ = 7850 kg/m³
+//   L = 200 mm  (beam length, x-axis)
+//   b = 10 mm   (cross-section width, y-axis)
+//   h = 2 mm    (cross-section height, z-axis — the slender bending direction)
+//   A = b·h = 2.0e-5 m², I = b·h³/12 = 6.667e-12 m⁴ (bending about y, in z)
+//
+//   f₁ ≈ 115.8 Hz, f₂ ≈ 463 Hz, f₃ ≈ 1042 Hz   (fₙ ∝ n²)
+//
+// The integration test at `crates/reify-eval/tests/modal_analysis_e2e.rs`
+// asserts the FIRST-mode frequency is within 10% of f₁ (the committed PRD
+// §1/§9.1 bound, anchored on the fundamental). Higher modes (2-3) lock harder
+// for P1 tets (PRD §9.1) and are checked present/finite/sorted within a looser
+// measured band; the measured tolerances are pinned in that test (steps 17/18).
+//
+// The `@optimized("modal::free_vibration")` annotation routes this call to the
+// `modal::free_vibration` trampoline (crates/reify-eval/src/modal_ops.rs) when
+// registered via `reify_eval::compute_targets::register_compute_fns`.
+//
+// Type-coercion notes — identical to cantilever_beam_modes.ri:
+//   - FEAMaterialInput(material: mat) → mi.material (ElasticMaterial coercion).
+//   - boundary_conditions accepts the List<FixedSupport> value for its
+//     List<Support> param (structure ctors do not type-check args).
+//
+// Boundary conditions:
+//   A simply-supported beam is PINNED at BOTH end faces (x_min and x_max) in the
+//   bending direction — encoded as TWO `FixedSupport`s. The trampoline (step-18)
+//   interprets the two-support `boundary_conditions` list as the pin-pin
+//   configuration: pin both end faces in z plus minimal axial/lateral anchors to
+//   remove rigid-body translation without over-constraining rotation (so the
+//   modes match the (nπ)² simply-supported family, NOT fixed-fixed). This is the
+//   discriminator from the cantilever fixture's single-support clamp.
+
+structure SimplySupportedBeamModes {
+    // Geometry: 200 mm slender beam, 10 mm × 2 mm rectangular cross-section.
+    param length : Length = 200mm
+    param width  : Length = 10mm
+    param height : Length = 2mm
+
+    // Material: AISI 1045 medium-carbon steel (E = 205 GPa, ν = 0.29,
+    // ρ = 7850 kg/m³ — density is required for the mass matrix M).
+    let material = Steel_AISI_1045()
+
+    // Wrap material in FEAMaterialInput so that member-access .material has
+    // compile-time type ElasticMaterial (matching the fn param type).
+    let mi = FEAMaterialInput(material: material)
+
+    // Simply-supported: pin BOTH end faces (x_min and x_max). Two FixedSupports
+    // signal the pin-pin configuration to the trampoline (step-18).
+    let pin_min = FixedSupport(target: "x_min")
+    let pin_max = FixedSupport(target: "x_max")
+
+    // Modal options: extract the first 3 modes, undamped, bending in z.
+    // reference_direction = vec3(0,0,1) is the dimensionless unit excitation
+    // direction (the slender bending direction). tol / max_iters / sigma use
+    // ModalOptions defaults.
+    let opts = ModalOptions(
+        n_modes: 3,
+        boundary_conditions: [pin_min, pin_max],
+        damping: NoDamping(),
+        reference_direction: vec3(0.0, 0.0, 1.0)
+    )
+
+    // Modal solve: @optimized dispatcher → modal::free_vibration trampoline.
+    let result = modal_analysis(mi.material, length, width, height, opts)
+
+    // First three natural frequencies in Hz. f1 is the headline 10%-bounded
+    // signal; f2/f3 are checked present/finite/sorted (looser band, steps 17/18).
+    let f1 = first_frequency(result)
+    let f2 = mode_frequency(result, 1)
+    let f3 = mode_frequency(result, 2)
+}
