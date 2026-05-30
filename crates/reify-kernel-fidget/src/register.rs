@@ -18,19 +18,17 @@
 //!
 //! Fidget operates on SDF (Signed Distance Field) representations. It does NOT
 //! tessellate B-rep (OCCT's territory) or perform mesh Booleans (Manifold's
-//! territory). The descriptor therefore declares exactly three entries:
+//! territory). The descriptor declares four entries:
 //! - `(BooleanUnion, Sdf)`
 //! - `(BooleanDifference, Sdf)`
 //! - `(BooleanIntersection, Sdf)`
+//! - `(Convert { from: Sdf }, Mesh)` — SDF→Mesh iso-surface meshing (PRD §8 task κ)
 //!
-//! Deliberately excluded from the v0.2 descriptor:
+//! Deliberately excluded from the descriptor:
 //! - SDF primitives: kernel-only support (callers can `execute(Sphere|Box)`
 //!   directly to build SDF inputs), but not declared on the descriptor — the
 //!   task spec keeps descriptor side unchanged so the dispatcher does not
 //!   route primitive builds through fidget.
-//! - SDF→Mesh feature-preserving meshing (`Convert { from: Sdf } → Mesh`):
-//!   Fidget's signature feature (arch §10.8), deferred as a follow-up task
-//!   that requires a Mesh-native consumer.
 //! - BRep→SDF distance-field sampling: deferred to a separate follow-up.
 //!
 //! # Unconditional `inventory::submit!` decision
@@ -90,11 +88,10 @@ pub const FIDGET_KERNEL_NAME: &str = "fidget";
 
 /// Construct the Fidget [`CapabilityDescriptor`].
 ///
-/// Enumerates the three SDF-Boolean operations Fidget supports:
-/// `BooleanUnion`, `BooleanDifference`, and `BooleanIntersection`, all paired
-/// with `ReprKind::Sdf`. Called by the `KernelRegistration::descriptor`
-/// function pointer at engine startup (once per `collect_registry()` call,
-/// not per geometry op).
+/// Enumerates the SDF-Boolean operations and the Sdf→Mesh Convert edge
+/// Fidget supports. Called by the `KernelRegistration::descriptor` function
+/// pointer at engine startup (once per `collect_registry()` call, not per
+/// geometry op).
 ///
 /// Owned return (`CapabilityDescriptor` by value) because the descriptor's
 /// `supports: Vec<...>` field is non-const-constructible — see
@@ -102,10 +99,12 @@ pub const FIDGET_KERNEL_NAME: &str = "fidget";
 pub fn fidget_capability_descriptor() -> CapabilityDescriptor {
     use Operation::*;
     let supports = vec![
-        // SDF Booleans ×3 — Fidget's complete capability surface in v0.2.
+        // SDF Booleans ×3 — Fidget's Sdf Boolean surface.
         (BooleanUnion, ReprKind::Sdf),
         (BooleanDifference, ReprKind::Sdf),
         (BooleanIntersection, ReprKind::Sdf),
+        // Convert ×1 — Sdf→Mesh iso-surface meshing (PRD §8 task κ).
+        (Convert { from: ReprKind::Sdf }, ReprKind::Mesh),
     ];
     CapabilityDescriptor { supports }
 }
