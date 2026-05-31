@@ -9575,6 +9575,117 @@ mod tests {
         );
     }
 
+    // Step-3 RED tests: error-downgrade contract (invariant #3) and
+    // non-ValueRef fall-through (invariant #1).
+    //
+    // (a) Invariant #3 (error downgrade): distance(shape_ref, point_ref) whose
+    // ClosestPointOnShape query returns Err must produce Some(Value::Undef) AND
+    // exactly one Severity::Warning diagnostic — NOT None.
+    // RED against step-2's naive `.ok()? → None` path.
+    //
+    // (b) Invariant #1 (ValueRef contract): distance(<literal>, <literal>)
+    // must return None without consulting the kernel.
+
+    #[test]
+    fn try_eval_topology_selector_distance_kernel_err_returns_undef_with_warning() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        // No with_closest_point_on_shape_result seeding — the mock returns
+        // Err(QueryError::QueryFailed(...)) for unregistered queries.
+        // The step-2 naive `.ok()?` path returns None (RED); step-4 replaces
+        // it with dispatch_point3_length_reply which downgrades to Undef+Warning.
+        let box_handle = reify_ir::GeometryHandleId(55);
+        let mut kernel = MockGeometryKernel::new(); // no canned reply for this handle+point
+
+        let mut named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        named_steps.insert("b".to_string(), box_handle);
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            reify_core::ValueCellId::new("DistanceBoxPoint", "p"),
+            point3_length_value(0.02, 0.0, 0.0),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "distance",
+            "DistanceBoxPoint",
+            "b",
+            reify_core::Type::Geometry,
+            "p",
+            reify_core::Type::point3(reify_core::Type::length()),
+            reify_core::Type::length(),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Undef),
+            "distance(shape, point) with kernel Err must yield Some(Value::Undef) \
+             (not None); got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "kernel Err must emit exactly one Warning, got {} diagnostics: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Warning,
+            "diagnostic severity must be Warning; got {:?}",
+            diag.severity
+        );
+        assert!(
+            diag.message.contains("distance"),
+            "diagnostic must mention the helper name 'distance'; got: {}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn try_eval_topology_selector_distance_literal_args_falls_through_to_none() {
+        use reify_test_support::mocks::CountingMockKernel;
+        // distance(<literal>, <literal>) — non-ValueRef args, both resolvers
+        // return None, dispatcher must return None without consulting the kernel.
+        let inner = reify_test_support::mocks::MockGeometryKernel::new();
+        let mut kernel = CountingMockKernel::new(inner);
+
+        let named_steps: HashMap<String, reify_ir::GeometryHandleId> = HashMap::new();
+        let values = reify_ir::ValueMap::new();
+
+        let expr = topology_selector_call_literal_args("distance");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "distance(<literal>, <literal>) must return None; got {:?}",
+            result
+        );
+        assert_eq!(
+            kernel.total_query_count(),
+            0,
+            "kernel must NOT be consulted for non-ValueRef args"
+        );
+    }
+
     // ── gate_query_capability unit tests (task 3623) ─────────────────────────
     //
     // These tests pin the §5.4 four-branch policy contract of
