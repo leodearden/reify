@@ -536,6 +536,8 @@ impl<'a> Lowering<'a> {
             name,
             doc,
             is_pub,
+            // Placeholder: wired for real in step-6 (task 4029 α).
+            type_params: vec![],
             variants,
             span: self.span(node),
             content_hash: self.content_hash(node),
