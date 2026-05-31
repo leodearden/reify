@@ -997,10 +997,15 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
             Some(BREP_ONLY)
         }
 
-        // Transform — accept both reprs
-        TransformTranslate | TransformRotate | TransformScale | TransformRotateAround => {
-            Some(BREP_MESH)
-        }
+        // Transform — accept both reprs. `TransformApplyTransform` is the
+        // post-realization rigid-isometry application (task 3901); like the
+        // scalar transforms it is repr-agnostic, so it accepts both BRep and
+        // Mesh inputs.
+        TransformTranslate
+        | TransformRotate
+        | TransformScale
+        | TransformRotateAround
+        | TransformApplyTransform => Some(BREP_MESH),
 
         // Pattern — accept both reprs
         PatternLinear | PatternCircular | PatternMirror | PatternLinear2D | PatternArbitrary => {
