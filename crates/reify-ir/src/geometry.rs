@@ -30,6 +30,51 @@ impl GeometryHandleId {
     }
 }
 
+#[cfg(test)]
+mod kernel_id_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    /// step-01: derived `Ord` on `KernelId` must equal the dispatcher's
+    /// `BTreeMap<String, _>` registry-name iteration order. Pinned by
+    /// asserting (a) consecutive `as_registry_name()` strings are strictly
+    /// increasing lexically across `KernelId::ALL` in declaration order, and
+    /// (b) a `BTreeMap` keyed by registry name yields its values in the same
+    /// sequence as `KernelId::ALL`, and (c) sorting `ALL` by derived `Ord`
+    /// is a no-op. (Structural invariant — holds because the canonical names
+    /// "fidget" < "gmsh" < "manifold" < "occt" < "openvdb" sort in
+    /// declaration order.)
+    #[test]
+    fn kernel_id_ord_matches_registry_name_lexical_order() {
+        // (a) registry names strictly increasing in declaration order
+        let names: Vec<&'static str> =
+            KernelId::ALL.iter().map(|k| k.as_registry_name()).collect();
+        for w in names.windows(2) {
+            assert!(
+                w[0] < w[1],
+                "registry names must be strictly lexically increasing in \
+                 declaration order: {:?} !< {:?}",
+                w[0],
+                w[1]
+            );
+        }
+
+        // (b) BTreeMap<String, KernelId> keyed by registry name iterates in
+        // the same order as KernelId::ALL (derived Ord == name order)
+        let map: BTreeMap<String, KernelId> = KernelId::ALL
+            .iter()
+            .map(|k| (k.as_registry_name().to_string(), *k))
+            .collect();
+        let by_name_order: Vec<KernelId> = map.values().copied().collect();
+        assert_eq!(by_name_order, KernelId::ALL.to_vec());
+
+        // (c) derived Ord over the variants equals declaration order
+        let mut sorted = KernelId::ALL.to_vec();
+        sorted.sort();
+        assert_eq!(sorted, KernelId::ALL.to_vec());
+    }
+}
+
 /// An opaque handle to a geometry object managed by a kernel.
 #[derive(Debug, Clone)]
 pub struct GeometryHandle {
