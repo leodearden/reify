@@ -358,4 +358,98 @@ mod tests {
             "a well-posed anchored solve must report converged == true",
         );
     }
+
+    // (a) Sign-convention contract: a cable must carry tension (q > 0). A cable
+    // with q ≤ 0 is infeasible input.
+    #[test]
+    fn cable_with_nonpositive_q_is_sign_violation() {
+        let nodes = vec![
+            [0.0, 0.0, 0.5], // free node 0
+            [1.0, 0.0, 0.0], // anchor 1
+            [-1.0, 0.0, 0.0], // anchor 2
+        ];
+        let members = [(0, 1), (0, 2)];
+        let kinds = [MemberKind::Cable, MemberKind::Cable];
+        let q = [1.0, -1.0]; // cable 1 violates the q > 0 tension contract
+        let anchors = [1, 2];
+
+        assert_eq!(
+            form_find_anchored(&nodes, &members, &kinds, &q, &anchors).unwrap_err(),
+            FormFindError::SignViolation,
+        );
+    }
+
+    // (a) Mirror: a strut must carry compression (q < 0). A strut with q ≥ 0 is
+    // infeasible input.
+    #[test]
+    fn strut_with_nonnegative_q_is_sign_violation() {
+        let nodes = vec![
+            [0.0, 0.0, 0.0], // free node 0
+            [1.0, 0.0, 0.0], // anchor 1
+        ];
+        let members = [(0, 1)];
+        let kinds = [MemberKind::Strut];
+        let q = [1.0]; // strut requires q < 0; +1 violates the compression contract
+        let anchors = [1];
+
+        assert_eq!(
+            form_find_anchored(&nodes, &members, &kinds, &q, &anchors).unwrap_err(),
+            FormFindError::SignViolation,
+        );
+    }
+
+    // (b) A free node with no member path to any anchor leaves a zero row in the
+    // reduced stiffness D_ff → singular. The solve cannot recover that node.
+    #[test]
+    fn disconnected_free_node_is_singular_reduced_stiffness() {
+        let nodes = vec![
+            [0.0, 0.0, 0.0], // free node 0 — connected to the anchor
+            [5.0, 0.0, 0.0], // free node 1 — floating: no members touch it
+            [1.0, 0.0, 0.0], // anchor 2
+        ];
+        let members = [(0, 2)]; // only node 0 ↔ anchor; node 1 has no path
+        let kinds = [MemberKind::Cable];
+        let q = [1.0];
+        let anchors = [2];
+
+        assert_eq!(
+            form_find_anchored(&nodes, &members, &kinds, &q, &anchors).unwrap_err(),
+            FormFindError::SingularReducedStiffness,
+        );
+    }
+
+    // (c) Anchoring every node leaves no free DOF to solve for.
+    #[test]
+    fn all_nodes_anchored_is_empty_free_set() {
+        let nodes = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
+        let members = [(0, 1)];
+        let kinds = [MemberKind::Cable];
+        let q = [1.0];
+        let anchors = [0, 1]; // every node anchored → empty free set
+
+        assert_eq!(
+            form_find_anchored(&nodes, &members, &kinds, &q, &anchors).unwrap_err(),
+            FormFindError::EmptyFreeSet,
+        );
+    }
+
+    // (d) members / kinds / q must agree in length. A short q is a dimension
+    // mismatch, caught up front before any solve.
+    #[test]
+    fn length_mismatch_is_dimension_mismatch() {
+        let nodes = vec![
+            [0.0, 0.0, 0.5],
+            [1.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+        ];
+        let members = [(0, 1), (0, 2)];
+        let kinds = [MemberKind::Cable, MemberKind::Cable];
+        let q = [1.0]; // one density for two members → mismatch
+        let anchors = [1, 2];
+
+        assert_eq!(
+            form_find_anchored(&nodes, &members, &kinds, &q, &anchors).unwrap_err(),
+            FormFindError::DimensionMismatch,
+        );
+    }
 }
