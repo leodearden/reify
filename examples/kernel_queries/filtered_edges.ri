@@ -1,0 +1,35 @@
+// Fixture: edges_by_length, faces_by_area, edges_at_height filtered selectors
+// PRD: docs/prds/v0_3/kernel-geometry-queries.md §9 Phase 3 KGQ-θ (task 3617)
+//
+// Analytic expectations (pinned by the integration test below):
+//   mid_edges   = edges_by_length(b, 15mm..25mm)    →  4 edges (the 20mm y-edges)
+//   small_faces = faces_by_area(b, 196mm²..225mm²)  →  2 faces (the 10×20 z-faces, 200mm²)
+//   top_edges   = edges_at_height(b, z=15mm, ~1µm)  →  4 edges (top z=+15mm plane)
+//
+// Box geometry (box(w=10,h=20,d=30) centred at origin):
+//   12 edges: 4×10mm (x), 4×20mm (y), 4×30mm (z)
+//   6 faces:  200mm² (10×20, z=±15mm), 300mm² (10×30, y=±10mm), 600mm² (20×30, x=±5mm)
+//   z-extent: [-15mm, +15mm] → top face at z=+15mm
+//
+// Let-bound range/scalar args are required — inline FunctionCall args fall through
+// to None in the dispatcher (PRD §4 invariant 1, arg-shape contract).
+//
+// Pinning tests:
+//   crates/reify-eval/tests/kernel_queries_filtered_edges.rs
+
+structure def FilteredEdges {
+    let b = box(10mm, 20mm, 30mm)
+
+    // edges_by_length: select the 4 y-edges (20mm each) within [15,25]mm
+    let len_range = 15mm..25mm
+    let mid_edges = edges_by_length(b, len_range)
+
+    // faces_by_area: select the 2 top/bottom faces (200mm²) within [196,225]mm²
+    let area_range = 14mm*14mm..15mm*15mm
+    let small_faces = faces_by_area(b, area_range)
+
+    // edges_at_height: select the 4 boundary edges of the top face (z=+15mm)
+    let top_z   = 15mm
+    let top_tol = 0.001mm
+    let top_edges = edges_at_height(b, top_z, top_tol)
+}
