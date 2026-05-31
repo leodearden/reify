@@ -1170,9 +1170,10 @@ mod tests {
     use reify_stdlib::modal::free_vibration::{is_rigid_body_mode, rayleigh_damping_ratio};
 
     use super::{
-        ModalCoreResult, ModalMesh, build_beam_mesh, build_dirichlet_bcs, extract_damping,
-        extract_density_or_degenerate, extract_eigen_knobs, extract_reference_direction,
-        simply_supported_pin_pin_bcs, solve_modal_analysis_trampoline, solve_modal_core,
+        ModalAssembly, ModalCoreResult, ModalMesh, assemble_modal_km, build_beam_mesh,
+        build_dirichlet_bcs, eigensolve_modal, extract_damping, extract_density_or_degenerate,
+        extract_eigen_knobs, extract_reference_direction, simply_supported_pin_pin_bcs,
+        solve_modal_analysis_trampoline, solve_modal_core,
     };
     use crate::{CancellationHandle, ComputeOutcome};
 
@@ -1310,6 +1311,87 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// step-3 (RED → GREEN in step-4): the `assemble_modal_km` ↔
+    /// `eigensolve_modal` split that lets the warm-state cache hold the
+    /// BC-/n_modes-independent assembled `(K, M)`.
+    ///
+    /// `solve_modal_core` is split into a `assemble_modal_km` (the expensive
+    /// per-element K/M assembly + the `‖K‖_F`/`‖M‖_F` norms — BC- and
+    /// n_modes-independent) and a cheap `eigensolve_modal` (free-DOF projection +
+    /// eigensolve). This pins both halves on the coarse cantilever fixture:
+    ///
+    /// (a) the `ModalAssembly`'s `n_nodes` and norms BIT-equal what a full
+    ///     `solve_modal_core` reports for the same inputs — equal by construction
+    ///     because step-4 MOVES the assembly + Frobenius-norm code unchanged.
+    /// (b) ONE assembled `ModalAssembly` is reusable across requests that differ
+    ///     only in `n_modes`: `eigensolve_modal` run with n_modes = 2 then 4 on
+    ///     the SAME assembly returns 2 and 4 modes, and the fundamental is
+    ///     bit-stable (both stay in the dense regime — `n_free = 42 ≤
+    ///     max(64, 2·n_modes)` — so the lowest eigenpair of the fixed pencil is
+    ///     identical regardless of the requested count). This is the cache's
+    ///     reason for being: amortize the assembly across an `n_modes` sweep.
+    ///
+    /// RED: `assemble_modal_km` / `eigensolve_modal` / `ModalAssembly` do not
+    /// exist until step-4.
+    #[test]
+    fn assemble_then_eigensolve_splits_core_and_reuses_assembly() {
+        let length = 0.02_f64; // X — beam axis
+        let width = 0.05_f64; // Y — width
+        let height = 0.1_f64; // Z — bending axis
+
+        let mesh = build_beam_mesh(length, width, height);
+        let (bcs, _) = clamp_x_min_face(&mesh.nodes);
+        let reference_direction = [0.0, 0.0, 1.0];
+
+        // ── (a) assembly n_nodes / norms equal a full solve_modal_core's ──────
+        let assembly: ModalAssembly =
+            assemble_modal_km(ModalMesh::P1(&mesh), STEEL_DENSITY, &steel());
+        let opts2 = EigenSolverOptions { n_modes: 2, tol: 1e-9, max_iters: 200, sigma: 0.0 };
+        let core = solve_modal_core(
+            ModalMesh::P1(&mesh),
+            STEEL_DENSITY,
+            &steel(),
+            reference_direction,
+            &bcs,
+            &opts2,
+        );
+        assert_eq!(
+            assembly.n_nodes, core.n_nodes,
+            "assembly n_nodes must equal core n_nodes",
+        );
+        assert_eq!(
+            assembly.mass_matrix_norm.to_bits(),
+            core.mass_matrix_norm.to_bits(),
+            "assembly ‖M‖_F must bit-equal core's (code moved unchanged)",
+        );
+        assert_eq!(
+            assembly.stiffness_matrix_norm.to_bits(),
+            core.stiffness_matrix_norm.to_bits(),
+            "assembly ‖K‖_F must bit-equal core's (code moved unchanged)",
+        );
+
+        // ── (b) one assembly, two eigensolves differing only in n_modes ───────
+        let r2: ModalCoreResult =
+            eigensolve_modal(&assembly, reference_direction, &bcs, &opts2);
+        let opts4 = EigenSolverOptions { n_modes: 4, tol: 1e-9, max_iters: 200, sigma: 0.0 };
+        let r4: ModalCoreResult =
+            eigensolve_modal(&assembly, reference_direction, &bcs, &opts4);
+        assert_eq!(r2.frequencies.len(), 2, "n_modes = 2 must return 2 modes");
+        assert_eq!(r4.frequencies.len(), 4, "n_modes = 4 must return 4 modes");
+
+        // Fundamental is the lowest eigenpair of the SAME (K_free, M_free) pencil
+        // in both runs → identical to a tight relative tolerance (the assembly
+        // was reused, not rebuilt; both runs take the dense path).
+        let (f2, f4) = (r2.frequencies[0], r4.frequencies[0]);
+        assert!(f2 > 0.0 && f2.is_finite(), "fundamental must be finite/positive: {f2}");
+        let rel = (f2 - f4).abs() / f4.abs().max(1.0);
+        assert!(
+            rel < 1e-9,
+            "fundamental must be invariant across n_modes on one reused assembly: \
+             {f2} vs {f4} (rel {rel:e})",
+        );
     }
 
     /// step-7 (RED → GREEN in step-8): the P2 (`ElementOrder::P2`) path of
