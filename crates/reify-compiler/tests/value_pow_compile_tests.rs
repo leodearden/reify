@@ -244,3 +244,79 @@ fn pow_dimensionless_real_exp_not_flagged() {
         errors
     );
 }
+
+// ── ExponentOutOfRange error-path tests (task 4106) ──────────────────────────
+//
+// These tests are RED in step-1 for two reasons:
+//   1. `DiagnosticCode::ExponentOutOfRange` does not yet exist
+//      (causes a compile-time error in this test file).
+//   2. Even once it exists, no such diagnostic is emitted yet (step-2 adds that).
+// GREEN after step-2 adds the variant and the guarded emission in expr.rs.
+
+/// `5mm ^ 256` must produce `DiagnosticCode::ExponentOutOfRange`.
+///
+/// 256 overflows i8 (max 127), so the value-level `^` compile site must emit
+/// this diagnostic and poison the result type.  The unit-literal path already
+/// does this via `i8::try_from` at units.rs:680-681; this brings value-level
+/// `^` into conformance.
+///
+/// RED (step-1): `ExponentOutOfRange` does not exist yet, then no diagnostic is
+/// emitted (lossy `as i8` truncation silently wraps 256 → 0).
+/// GREEN (step-2): variant added; `i8::try_from(n)` Err → diagnostic emitted.
+#[test]
+fn pow_dimensioned_exp_overflow_positive_flagged() {
+    let errors = compile_let_expr_errors("5mm ^ 256");
+    let flagged = errors
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::ExponentOutOfRange));
+    assert!(
+        flagged,
+        "5mm ^ 256 should produce DiagnosticCode::ExponentOutOfRange \
+         (256 overflows i8), got errors: {:?}",
+        errors
+    );
+}
+
+/// `5mm ^ -200` must produce `DiagnosticCode::ExponentOutOfRange`.
+///
+/// -200 is below i8::MIN (-128), so the value-level `^` compile site must emit
+/// this diagnostic.
+///
+/// RED (step-1): `ExponentOutOfRange` does not exist yet, then no diagnostic is
+/// emitted (lossy `as i8` truncation silently wraps -200 → 56).
+/// GREEN (step-2): same Err branch as the positive-overflow case.
+#[test]
+fn pow_dimensioned_exp_overflow_negative_flagged() {
+    let errors = compile_let_expr_errors("5mm ^ -200");
+    let flagged = errors
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::ExponentOutOfRange));
+    assert!(
+        flagged,
+        "5mm ^ -200 should produce DiagnosticCode::ExponentOutOfRange \
+         (-200 underflows i8), got errors: {:?}",
+        errors
+    );
+}
+
+/// `5mm ^ 127` must NOT produce `DiagnosticCode::ExponentOutOfRange`.
+///
+/// 127 is i8::MAX — the largest in-range exponent.  This is a boundary
+/// regression-guard: the check must accept 127 and scale the dimension
+/// correctly to `Scalar{LENGTH^127}`.
+///
+/// GREEN on arrival (once step-2 lands): the `i8::try_from(127)` Ok branch
+/// keeps the existing scaled-dimension logic untouched.
+#[test]
+fn pow_dimensioned_exp_127_not_flagged() {
+    let errors = compile_let_expr_errors("5mm ^ 127");
+    let flagged = errors
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::ExponentOutOfRange));
+    assert!(
+        !flagged,
+        "5mm ^ 127 should NOT produce DiagnosticCode::ExponentOutOfRange \
+         (127 is i8::MAX, in range), got errors: {:?}",
+        errors
+    );
+}
