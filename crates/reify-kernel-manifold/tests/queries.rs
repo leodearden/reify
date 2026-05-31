@@ -466,3 +466,41 @@ fn extract_faces_unit_cube_returns_12_distinct_handles() {
     // (c) ids non-INVALID and distinct.
     assert_handles_valid_and_distinct(&faces, "face");
 }
+
+// ---------------------------------------------------------------------------
+// Topology extraction: extract_edges (steps 3 + 4)
+// ---------------------------------------------------------------------------
+
+/// `extract_edges` on the unit cube returns exactly 18 distinct, valid
+/// sub-handles — one per unique undirected mesh edge.
+///
+/// The closed cube mesh has 8 vertices and 12 triangles; by Euler's formula
+/// for a genus-0 closed surface `V - E + F = 2` => `8 - E + 12 = 2` => `E =
+/// 18`. This equals `Manifold::num_edge()` for the cube. The canonical
+/// edge enumeration (deduped undirected vertex-index pairs) must therefore
+/// yield 18 sub-handles.
+///
+/// RED (step-3): `ManifoldKernel` inherits the trait default for
+/// `extract_edges`, which returns `Err(QueryError::QueryFailed("topology
+/// extraction not supported by this kernel"))`. GREEN is step-4 (canonical
+/// edge enumeration + `extract_edges` override).
+#[test]
+fn extract_edges_unit_cube_returns_18_distinct_handles() {
+    let mut kernel = ManifoldKernel::new();
+    let handle = ingest(&mut kernel, [0.0, 0.0, 0.0]);
+
+    let edges = kernel
+        .extract_edges(handle)
+        .expect("extract_edges on a stored unit cube must return Ok(Vec)");
+
+    // One sub-handle per unique undirected mesh edge: V - E + F = 2 =>
+    // 8 - E + 12 = 2 => E = 18 (= Manifold::num_edge() for the cube).
+    assert_eq!(
+        edges.len(),
+        18,
+        "closed cube mesh has 18 unique edges (Euler V-E+F=2: 8-E+12=2); \
+         extract_edges must return one sub-handle per edge",
+    );
+
+    assert_handles_valid_and_distinct(&edges, "edge");
+}
