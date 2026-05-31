@@ -12471,4 +12471,66 @@ mod tests {
             diag.message
         );
     }
+
+    // -------------------------------------------------------------------------
+    // eval_sub_pose tests (T4: sub placement pose evaluation)
+    // -------------------------------------------------------------------------
+
+    /// `eval_sub_pose(None, ...)` must return an identity child→parent Transform
+    /// (Orientation(1,0,0,0) rotation; Vector[length(0), length(0), length(0)] translation)
+    /// and push no diagnostics.
+    ///
+    /// RED: fails to compile until `eval_sub_pose` is defined (step-2).
+    #[test]
+    fn eval_sub_pose_none_returns_identity_transform() {
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = super::eval_sub_pose(
+            None,
+            &ValueMap::new(),
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            diagnostics.is_empty(),
+            "None pose must not push any diagnostics; got: {:?}",
+            diagnostics
+        );
+
+        match result {
+            reify_ir::Value::Transform { rotation, translation } => {
+                assert_eq!(
+                    *rotation,
+                    reify_ir::Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+                    "identity rotation must be Orientation(1,0,0,0); got {:?}",
+                    rotation
+                );
+                match *translation {
+                    reify_ir::Value::Vector(ref components) => {
+                        assert_eq!(
+                            components.len(),
+                            3,
+                            "identity translation must have 3 components; got {}",
+                            components.len()
+                        );
+                        for (i, c) in components.iter().enumerate() {
+                            assert_eq!(
+                                c,
+                                &reify_ir::Value::length(0.0),
+                                "identity translation component {} must be length(0.0); got {:?}",
+                                i,
+                                c
+                            );
+                        }
+                    }
+                    ref other => panic!(
+                        "identity translation must be a Vector; got {:?}",
+                        other
+                    ),
+                }
+            }
+            other => panic!("expected Value::Transform for None pose; got {:?}", other),
+        }
+    }
 }
