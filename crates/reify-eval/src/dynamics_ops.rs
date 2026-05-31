@@ -13,9 +13,11 @@
 //!     geometric-query closure, runs the density ladder, emits
 //!     `W_DynamicsDefaultDensity` on default-water fallback, and builds the
 //!     `MassProperties` instance. Kernel-free and unit-testable.
-//!   * `try_eval_body_mass_props` (added in step-8) — dispatch recognition for
-//!     a `body_mass_props(...)` call cell, wiring the (currently unwired) KGQ
-//!     kernel seam (task 3620) before delegating to the core.
+//!   * [`try_eval_body_mass_props`] — dispatch recognition for a
+//!     `body_mass_props(...)` call cell: resolves the body + optional density
+//!     args, runs the density ladder (emitting `W_DynamicsDefaultDensity`), and
+//!     assembles a `MassProperties` whose geometric fields stay the deferred
+//!     `Value::Undef` sentinel until the KGQ kernel seam (task 3620) is wired.
 
 use reify_core::dimension::DimensionVector;
 use reify_core::{Diagnostic, DiagnosticCode};
@@ -180,11 +182,102 @@ pub fn eval_body_mass_props_core(
     assemble_mass_properties(mass_value(mass), com_value(com), inertia_value(inertia))
 }
 
+/// Resolve a call-argument `CompiledExpr` to the `Value` it denotes: a
+/// `ValueRef` is looked up in `values`; an inline `Literal` yields its baked
+/// value. Any other expr shape (or a `ValueRef` to an absent cell) yields
+/// `None` — mirroring the "unsupported arg shape → fall through" contract of
+/// `geometry_ops::resolve_real_scalar_arg` / `resolve_int_value_ref`.
+fn resolve_arg_value<'a>(
+    expr: &'a reify_ir::CompiledExpr,
+    values: &'a reify_ir::ValueMap,
+) -> Option<&'a Value> {
+    match &expr.kind {
+        reify_ir::CompiledExprKind::ValueRef(id) => values.get(id),
+        reify_ir::CompiledExprKind::Literal(v) => Some(v),
+        _ => None,
+    }
+}
+
+/// Dispatch recognition for a `body_mass_props(body, density?)` call cell,
+/// mirroring `geometry_ops::try_eval_*`.
+///
+/// Returns `Some(MassProperties)` when `default_expr` is a `FunctionCall` named
+/// `body_mass_props` whose body argument resolves (against `values`) to a
+/// `Value`; returns `None` for any other expr — a non-call shape, a different
+/// function name, a missing/unresolvable body arg — so the caller leaves the
+/// cell's existing value untouched (the geometry_ops `None`-means-skip contract).
+///
+/// The density ladder still runs on the recognised path: the optional second
+/// argument (explicit `density`) and the body's `Material.density` feed
+/// [`resolve_body_density`], which emits `W_DynamicsDefaultDensity` when neither
+/// is present.
+///
+/// ## Deferred kernel seam — TODO(3620 / KGQ-λ)
+/// The density-aware geometric mass/center-of-mass/inertia query
+/// (`moment_of_inertia(Solid, Density)`, KGQ Phase 4, task 3620) is **not wired
+/// by this batch** — the task description marks this as a cross-PRD edge the
+/// supervisor connects later. So the geometric fields of the assembled
+/// `MassProperties` are the deferred [`Value::Undef`] sentinel. The single
+/// wiring point is marked below: once 3620 lands, build a `geom_query` closure
+/// over `kernel` + `body.geometry` and route it through
+/// [`eval_body_mass_props_core`] so the concrete tensor replaces the `Undef`s
+/// (and is then validated by the existing engine MassProperties PSD hook,
+/// against [`uniform_box_inertia`](reify_stdlib::dynamics::mass_props::uniform_box_inertia)
+/// as ground truth).
+pub fn try_eval_body_mass_props(
+    default_expr: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
+    kernel: &dyn reify_ir::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Value> {
+    // (1) Must be a FunctionCall — anything else (e.g. a bare ValueRef) is not
+    // a body_mass_props call site; leave the cell untouched.
+    let (function, args) = match &default_expr.kind {
+        reify_ir::CompiledExprKind::FunctionCall { function, args } => (function, args),
+        _ => return None,
+    };
+
+    // (2) Must be the `body_mass_props` helper. Checked BEFORE any arg
+    // resolution or diagnostic emission so unrelated calls (e.g. `volume`) are
+    // silently skipped.
+    if function.name != "body_mass_props" {
+        return None;
+    }
+
+    // (3) Resolve the body argument (args[0]). A missing or unresolvable body
+    // arg returns None (cell left untouched) rather than a malformed instance.
+    let body = resolve_arg_value(args.first()?, values)?;
+
+    // (4) Optional explicit density argument (args[1]); an absent or
+    // unresolvable second arg simply lets the ladder fall through to the
+    // Material / default-water rungs.
+    let density_arg = args.get(1).and_then(|e| resolve_arg_value(e, values));
+
+    // (5) Run the fn-level density ladder for its `W_DynamicsDefaultDensity`
+    // side effect. The resolved magnitude is unused on this deferred path (no
+    // geometric query consumes it yet); once the kernel seam below is wired it
+    // will feed `geom_query`.
+    let _density = resolve_body_density(body, density_arg, diagnostics);
+
+    // (6) Kernel seam — TODO(3620 / KGQ-λ moment_of_inertia(Solid, Density)):
+    // this is the single wiring point. When the density-aware KGQ geometry
+    // query lands, replace the `Undef` geometric fields below by routing
+    //   geom_query = |rho| <kernel query over body.geometry at density rho>
+    // through `eval_body_mass_props_core(body, density_arg, geom_query,
+    // diagnostics)`. Until then the kernel is unused and the geometric fields
+    // are the deferred sentinel.
+    let _ = kernel;
+    Some(assemble_mass_properties(
+        Value::Undef,
+        Value::Undef,
+        Value::Undef,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use reify_core::{DiagnosticCode, Severity};
-    use reify_core::dimension::DimensionVector;
     use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
     use reify_stdlib::dynamics::mass_props::uniform_box_inertia;
 
