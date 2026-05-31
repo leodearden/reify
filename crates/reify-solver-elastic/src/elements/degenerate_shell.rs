@@ -357,6 +357,9 @@ pub fn degenerate_membrane_bending_b(
             }
         }
         // Rotation DOFs (cc = 0,1,2 → θ_x,θ_y,θ_z): H[a][j] = C_i[a][cc]·g_phi[j].
+        // `cc` is the COLUMN index of `c_i` (and drives `col`); enumerate-over-rows
+        // would read `c_i[cc]` (a row) and transpose the kinematics.
+        #[allow(clippy::needless_range_loop)]
         for cc in 0..3 {
             let mut h = [[0.0_f64; 3]; 3];
             for a in 0..3 {
@@ -1100,6 +1103,7 @@ mod tests {
             assert_eq!(b[0].len(), 18, "B must have 18 DOF columns");
             for i in 0..3 {
                 let drill = 6 * i + 5;
+                #[allow(clippy::needless_range_loop)] // `r` is used in the assertion message
                 for r in 0..3 {
                     assert!(
                         b[r][drill].abs() < 1e-12,
@@ -1119,6 +1123,7 @@ mod tests {
         );
         for i in 0..3 {
             let uz = 6 * i + 2;
+            #[allow(clippy::needless_range_loop)] // `r` is used in the assertion message
             for r in 0..3 {
                 assert!(
                     b0[r][uz].abs() < 1e-12,
