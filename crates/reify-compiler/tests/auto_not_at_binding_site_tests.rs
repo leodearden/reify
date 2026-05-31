@@ -191,10 +191,9 @@ fn non_auto_function_call_produces_no_gate_error() {
 /// source string.
 #[test]
 fn function_call_multi_auto_reports_only_first_arg() {
-    let source = format!(
-        "fn two_auto(a: Length, b: Length) -> Length = a  \
-         structure S {{ let y = two_auto(a: auto, b: auto) }}"
-    );
+    let source = "fn two_auto(a: Length, b: Length) -> Length = a  \
+         structure S { let y = two_auto(a: auto, b: auto) }"
+        .to_string();
     let module = compile_source_with_stdlib(&source);
 
     let errors = errors_only(&module);
