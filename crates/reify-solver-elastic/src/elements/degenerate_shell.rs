@@ -194,6 +194,163 @@ pub fn mat3_inverse(m: &[[f64; 3]; 3]) -> ([[f64; 3]; 3], f64) {
     (inv, det)
 }
 
+/// Push a reference gradient `g_ref = [∂/∂ξ, ∂/∂η, ∂/∂ζ]ᵀ` into the physical
+/// gradient `Jᵀ⁻¹ · g_ref`, given `j_inv = J⁻¹`. `(Jᵀ⁻¹)[i][k] = J⁻¹[k][i]`.
+#[inline]
+fn jinv_t_mul(j_inv: &[[f64; 3]; 3], g_ref: &[f64; 3]) -> [f64; 3] {
+    let mut g = [0.0_f64; 3];
+    for i in 0..3 {
+        for k in 0..3 {
+            g[i] += j_inv[k][i] * g_ref[k];
+        }
+    }
+    g
+}
+
+/// Per-point local **lamina frame** (rows `e1, e2, e3`) for the degenerate
+/// element, built from the interpolated director and the Jacobian's first
+/// in-plane column.
+///
+/// - `e3 = normalize(Σ N_i V_i)` — the interpolated director (lamina normal).
+/// - `e1 = normalize(g1 − (g1·e3) e3)` — `g1 = ∂X/∂ξ` (J column 0), projected
+///   into the plane ⊥ e3.
+/// - `e2 = e3 × e1`.
+///
+/// On a flat facet (directors ∥ facet normal, `g1` in-plane) this reduces
+/// exactly to [`crate::shell_assembly::build_shell_frame`], so `plane_stress_d`
+/// — expressed in this lamina frame — applies and the flat reduction is exact.
+fn lamina_frame(j: &[[f64; 3]; 3], n: &[f64; 3], directors: &[Director; 3]) -> [[f64; 3]; 3] {
+    // e3 = normalized interpolated director.
+    let mut e3 = [0.0_f64; 3];
+    for i in 0..Mitc3Plus::N_NODES {
+        for k in 0..3 {
+            e3[k] += n[i] * directors[i][k];
+        }
+    }
+    let l3 = (e3[0] * e3[0] + e3[1] * e3[1] + e3[2] * e3[2]).sqrt();
+    for c in e3.iter_mut() {
+        *c /= l3;
+    }
+    // g1 = J column 0 = ∂X/∂ξ.
+    let g1 = [j[0][0], j[1][0], j[2][0]];
+    let dot = g1[0] * e3[0] + g1[1] * e3[1] + g1[2] * e3[2];
+    let mut e1 = [g1[0] - dot * e3[0], g1[1] - dot * e3[1], g1[2] - dot * e3[2]];
+    let l1 = (e1[0] * e1[0] + e1[1] * e1[1] + e1[2] * e1[2]).sqrt();
+    for c in e1.iter_mut() {
+        *c /= l1;
+    }
+    // e2 = e3 × e1.
+    let e2 = [
+        e3[1] * e1[2] - e3[2] * e1[1],
+        e3[2] * e1[0] - e3[0] * e1[2],
+        e3[0] * e1[1] - e3[1] * e1[0],
+    ];
+    [e1, e2, e3]
+}
+
+/// In-plane lamina Voigt strain `[ε'₁₁, ε'₂₂, 2ε'₁₂]` from a physical velocity
+/// gradient `h = ∂u/∂x` and the lamina frame `q` (rows `e1, e2, e3`).
+///
+/// Symmetrises `h` into the small strain `ε = ½(h + hᵀ)`, rotates into the
+/// lamina frame (`ε'_pq = e_pᵀ ε e_q`), and returns the two in-plane normal
+/// components plus the engineering in-plane shear.
+fn inplane_lamina_strain(h: &[[f64; 3]; 3], q: &[[f64; 3]; 3]) -> [f64; 3] {
+    let mut eps = [[0.0_f64; 3]; 3];
+    for a in 0..3 {
+        for b in 0..3 {
+            eps[a][b] = 0.5 * (h[a][b] + h[b][a]);
+        }
+    }
+    let strain_pq = |p: usize, qq: usize| -> f64 {
+        let mut s = 0.0;
+        for a in 0..3 {
+            for b in 0..3 {
+                s += q[p][a] * eps[a][b] * q[qq][b];
+            }
+        }
+        s
+    };
+    [strain_pq(0, 0), strain_pq(1, 1), 2.0 * strain_pq(0, 1)]
+}
+
+/// Membrane+bending strain–displacement matrix `B` (3 in-plane lamina strain
+/// rows `[ε'₁₁, ε'₂₂, 2ε'₁₂]` × 18 DOF columns) at `coord`.
+///
+/// # Kinematics
+///
+/// The degenerate displacement field is
+///
+/// ```text
+/// u(ξ,η,ζ) = Σ_i N_i u_i  +  (ζ t_i/2) Σ_i N_i (θ_i × V_i)
+/// ```
+///
+/// so the physical velocity gradient `H = ∂u/∂x` has, per node `i`:
+/// - a translation part `H[a][j] += (∇ₓN_i)[j] · u_{i,a}` with
+///   `∇ₓN_i = Jᵀ⁻¹ · [∂N_i/∂ξ, ∂N_i/∂η, 0]ᵀ`;
+/// - a rotation part `H[a][j] += (∇ₓφ_i)[j] · (θ_i × V_i)_a` with
+///   `φ_i = N_i (ζ t_i/2)`, `∇ₓφ_i = Jᵀ⁻¹ · [∂N_i/∂ξ·(ζt_i/2), ∂N_i/∂η·(ζt_i/2),
+///   N_i·(t_i/2)]ᵀ`, and `(θ_i × V_i) = −skew(V_i)·θ_i`.
+///
+/// `H` is symmetrised and projected into the per-point lamina frame
+/// ([`lamina_frame`]) so the plane-stress constitutive law applies. DOF
+/// ordering is identical to [`crate::elements::mitc3_plus::Mitc3Plus`]:
+/// `6·node + {u_x,u_y,u_z,θ_x,θ_y,θ_z}`.
+pub fn degenerate_membrane_bending_b(
+    nodes: &[[f64; 3]; 3],
+    directors: &[Director; 3],
+    thicknesses: &[f64; 3],
+    coord: ShellRefCoord3,
+) -> [[f64; 18]; 3] {
+    let (j, _det) = degenerate_jacobian(nodes, directors, thicknesses, coord);
+    let (j_inv, _) = mat3_inverse(&j);
+    let n = Mitc3Plus.shape_at(coord.in_plane());
+    let dn = Mitc3Plus.shape_grad_at(coord.in_plane());
+    let q = lamina_frame(&j, &n, directors);
+
+    let half_zeta = 0.5 * coord.zeta;
+    let mut b = [[0.0_f64; 18]; 3];
+    for i in 0..Mitc3Plus::N_NODES {
+        let half_t = 0.5 * thicknesses[i];
+        let zt = half_zeta * thicknesses[i];
+        // Physical gradient of N_i (ζ-independent) and of φ_i = N_i·(ζ t_i/2).
+        let g_n = jinv_t_mul(&j_inv, &[dn[i][0], dn[i][1], 0.0]);
+        let g_phi = jinv_t_mul(&j_inv, &[dn[i][0] * zt, dn[i][1] * zt, n[i] * half_t]);
+        // C_i = −skew(V_i): (θ × V) = C_i · θ.
+        let v = directors[i];
+        let c_i = [
+            [0.0, v[2], -v[1]],
+            [-v[2], 0.0, v[0]],
+            [v[1], -v[0], 0.0],
+        ];
+
+        // Translation DOFs (a = 0,1,2): H has row `a` equal to g_n.
+        for a in 0..3 {
+            let mut h = [[0.0_f64; 3]; 3];
+            h[a] = g_n;
+            let e = inplane_lamina_strain(&h, &q);
+            let col = 6 * i + a;
+            for r in 0..3 {
+                b[r][col] = e[r];
+            }
+        }
+        // Rotation DOFs (cc = 0,1,2 → θ_x,θ_y,θ_z): H[a][j] = C_i[a][cc]·g_phi[j].
+        for cc in 0..3 {
+            let mut h = [[0.0_f64; 3]; 3];
+            for a in 0..3 {
+                for jj in 0..3 {
+                    h[a][jj] = c_i[a][cc] * g_phi[jj];
+                }
+            }
+            let e = inplane_lamina_strain(&h, &q);
+            let col = 6 * i + 3 + cc;
+            for r in 0..3 {
+                b[r][col] = e[r];
+            }
+        }
+    }
+    b
+}
+
 /// A per-node shell **director**: the unit vector along the through-thickness
 /// fibre at a mesh vertex (the `V_i` of the degenerate-shell geometry map
 /// `X = Σ N_i x_i + (ζ/2) Σ N_i t_i V_i`).
