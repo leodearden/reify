@@ -517,12 +517,14 @@ impl<'a> Lowering<'a> {
         // Detect 'pub' keyword by checking anonymous children
         let is_pub = self.has_pub_keyword(node);
 
-        // Collect variant identifiers — skip 'enum', name, '{', '}', ','
+        // Collect variants — wrap each bare identifier in EnumVariantDecl::unit().
+        // (The grammar still emits bare identifiers for now; the enum_variant rewrite
+        // is step-4 where named-field support lands.)
         let mut variants = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "identifier" && child.id() != name_node.id() {
-                variants.push(self.node_text(child).to_string());
+                variants.push(EnumVariantDecl::unit(self.node_text(child)));
             }
         }
 
@@ -4364,7 +4366,9 @@ mod tests {
         match &module.declarations[0] {
             Declaration::Enum(e) => {
                 assert_eq!(e.name, "Direction");
-                assert_eq!(e.variants, vec!["In", "Out", "Bidi"]);
+                let variant_names: Vec<&str> =
+                    e.variants.iter().map(|v| v.name.as_str()).collect();
+                assert_eq!(variant_names, vec!["In", "Out", "Bidi"]);
             }
             other => panic!("expected Enum, got {:?}", other),
         }

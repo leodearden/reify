@@ -3220,6 +3220,16 @@ pub(crate) fn compile_expr_guarded(
                 "not yet supported",
             )),
         ),
+        reify_ast::ExprKind::VariantConstruct { .. } => make_poison_literal(
+            diagnostics,
+            Diagnostic::error(
+                "named-field variant construction is not yet supported (task δ)".to_string(),
+            )
+            .with_label(DiagnosticLabel::new(
+                expr.span,
+                "not yet supported",
+            )),
+        ),
     }
 }
 

@@ -642,13 +642,62 @@ pub struct ImportDecl {
     pub annotations: Vec<Annotation>,
 }
 
+/// A single variant inside an `enum` declaration.
+///
+/// Bare variants (e.g. `Point`) carry `payload: VariantPayload::Unit`.
+/// Named-field variants (e.g. `Circle { radius: Length }`) carry
+/// `payload: VariantPayload::Named(vec![("radius", <TypeExpr>)])`.
+///
+/// Helpers:
+/// - `EnumVariantDecl::unit(name)` — construct a unit variant by name.
+/// - `From<&str>` / `From<String>` — shorthand for `unit(name)`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumVariantDecl {
+    pub name: String,
+    pub payload: VariantPayload,
+    pub span: SourceSpan,
+}
+
+impl EnumVariantDecl {
+    /// Construct a unit (bare) variant with an empty span.
+    pub fn unit(name: impl Into<String>) -> Self {
+        EnumVariantDecl {
+            name: name.into(),
+            payload: VariantPayload::Unit,
+            span: SourceSpan::empty(0),
+        }
+    }
+}
+
+impl From<&str> for EnumVariantDecl {
+    fn from(name: &str) -> Self {
+        EnumVariantDecl::unit(name)
+    }
+}
+
+impl From<String> for EnumVariantDecl {
+    fn from(name: String) -> Self {
+        EnumVariantDecl::unit(name)
+    }
+}
+
+/// The optional payload of an [`EnumVariantDecl`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum VariantPayload {
+    /// Bare variant with no fields: `Point`.
+    Unit,
+    /// Named-field variant: `Circle { radius: Length }`.
+    /// Fields are stored in source-declaration order.
+    Named(Vec<(String, TypeExpr)>),
+}
+
 /// `enum Direction { In, Out, Bidi }`
 #[derive(Debug, Clone)]
 pub struct EnumDecl {
     pub name: String,
     pub doc: Option<String>,
     pub is_pub: bool,
-    pub variants: Vec<String>,
+    pub variants: Vec<EnumVariantDecl>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
     /// Annotations preceding this declaration.

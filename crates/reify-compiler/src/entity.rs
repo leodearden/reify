@@ -252,6 +252,13 @@ pub(crate) fn substitute_expr(
             method: method.clone(),
             args: args.iter().map(|a| substitute_expr(a, bindings)).collect(),
         },
+        ExprKind::VariantConstruct { name, fields } => ExprKind::VariantConstruct {
+            name: name.clone(),
+            fields: fields
+                .iter()
+                .map(|(f, v)| (f.clone(), substitute_expr(v, bindings)))
+                .collect(),
+        },
     };
     Expr {
         kind: new_kind,

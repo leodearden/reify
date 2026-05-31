@@ -407,7 +407,7 @@ fn match_arm_sub_pose_is_lowered() {
                 name: "ShapeKind".to_string(),
                 doc: None,
                 is_pub: false,
-                variants: vec!["A".to_string(), "B".to_string()],
+                variants: vec!["A".into(), "B".into()],
                 span: zero_span(),
                 content_hash: ContentHash(0),
                 annotations: vec![],

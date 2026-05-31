@@ -645,6 +645,13 @@ fn walk_expr_depth(
                 walk_expr_depth(a, frames, diagnostics, next);
             }
         }
+        // VariantConstruct — recurse into field value exprs.
+        // α binds no new names (no binders), so no shadow-frame is opened.
+        ExprKind::VariantConstruct { fields, .. } => {
+            for (_, v) in fields {
+                walk_expr_depth(v, frames, diagnostics, next);
+            }
+        }
         // Leaf expressions — no children.
         ExprKind::NumberLiteral { .. }
         | ExprKind::QuantityLiteral { .. }

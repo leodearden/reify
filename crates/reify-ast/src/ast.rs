@@ -122,6 +122,15 @@ pub enum ExprKind {
         method: String,
         args: Vec<Expr>,
     },
+    /// Named-field variant construction: `Circle { radius: 5mm }`.
+    /// Produced by a `variant_construction` CST node (grammar task α).
+    /// Resolution (is `name` a known enum variant? do fields match the decl?)
+    /// and `Value::Enum` construction are deferred to task δ (3942).
+    /// Fields are in source-declaration order.
+    VariantConstruct {
+        name: String,
+        fields: Vec<(String, Expr)>,
+    },
 }
 
 /// A unit expression attached to a [`ExprKind::QuantityLiteral`] — the
