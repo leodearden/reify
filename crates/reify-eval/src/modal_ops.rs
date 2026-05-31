@@ -3481,4 +3481,96 @@ mod tests {
             other => panic!("modal_result must echo a ModalResult StructureInstance; got {other:?}"),
         }
     }
+
+    /// step-13 (RED → GREEN in step-14): the `transient_response` trampoline's
+    /// empty-forcing guard fires `E_TransientForcingMissing`.
+    ///
+    /// A `ForcingTimeHistory` whose `sources` list is empty is built directly
+    /// (bypassing the `.ri` ctor's `sources.count > 0` constraint, which would
+    /// otherwise reject it at construction). Even with a well-formed 2-mode
+    /// ModalResult and a valid (non-empty) time grid, an empty forcing carries no
+    /// load to project, so the trampoline must short-circuit to a *flagged*
+    /// degenerate result rather than silently integrate a zero forcing.
+    ///
+    /// Assert the returned `Completed` outcome carries:
+    ///   - an `Error`-severity diagnostic whose message contains
+    ///     `"E_TransientForcingMissing"`, and
+    ///   - a degenerate `DisplacementTimeHistory` with empty `t_samples` and
+    ///     empty `mode_coords` (no transient was integrated).
+    ///
+    /// RED: step-12 integrates the zero forcing over the valid grid and returns a
+    /// non-empty, un-flagged history (n_times `t_samples`, n_modes `mode_coords`),
+    /// so both the diagnostic and the emptiness assertions fail.
+    #[test]
+    fn transient_response_empty_forcing_emits_forcing_missing() {
+        // A well-formed 2-mode ModalResult — only the forcing is degenerate, so the
+        // guard (not a missing modal result) must be what fires.
+        let mode0 = mode_struct(40.0, 0.01, &[0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 1.0]);
+        let mode1 = mode_struct(250.0, 0.02, &[0.0, 0.0, 0.0, 0.0, 0.0, -0.7, 0.0, 0.0, 0.4]);
+        let modal_result = modal_result_with_modes(vec![mode0, mode1]);
+
+        // Empty sources, built directly — bypasses the ForcingTimeHistory ctor's
+        // `sources.count > 0` constraint (an e2e cannot reach the trampoline here).
+        let forcing = forcing_history(vec![]);
+
+        // A valid, non-empty grid: the empty-grid floor must NOT be what fires, so
+        // this test isolates the forcing guard specifically.
+        let (t_start, t_end, dt) = (0.0_f64, 0.1_f64, 0.005_f64);
+        assert!(
+            uniform_time_grid(t_start, t_end, dt).len() > 1,
+            "fixture grid must be non-empty so the empty-grid floor does not mask the forcing guard",
+        );
+
+        let value_inputs = vec![
+            modal_result,
+            forcing,
+            time_scalar(t_start),
+            time_scalar(t_end),
+            time_scalar(dt),
+        ];
+
+        let outcome = solve_transient_response_trampoline(
+            &value_inputs,
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+        let ComputeOutcome::Completed { result, diagnostics, .. } = outcome else {
+            panic!("expected a Completed outcome");
+        };
+
+        // (a) an Error diagnostic identifies the missing-forcing condition.
+        let has_err = diagnostics.iter().any(|d| {
+            d.severity == Severity::Error && d.message.contains("E_TransientForcingMissing")
+        });
+        assert!(
+            has_err,
+            "expected an Error containing \"E_TransientForcingMissing\"; got {diagnostics:?}",
+        );
+
+        // (b) the result is a degenerate DisplacementTimeHistory: empty t_samples
+        //     and empty mode_coords (no transient was integrated).
+        let data = match &result {
+            Value::StructureInstance(d) => d,
+            other => panic!("expected a DisplacementTimeHistory StructureInstance; got {other:?}"),
+        };
+        assert_eq!(data.type_name, "DisplacementTimeHistory");
+        match data.fields.get(&"t_samples".to_string()) {
+            Some(Value::List(ts)) => assert!(
+                ts.is_empty(),
+                "degenerate t_samples must be empty; got {} samples",
+                ts.len(),
+            ),
+            other => panic!("t_samples must be a Value::List; got {other:?}"),
+        }
+        match data.fields.get(&"mode_coords".to_string()) {
+            Some(Value::List(mc)) => assert!(
+                mc.is_empty(),
+                "degenerate mode_coords must be empty; got {} modes",
+                mc.len(),
+            ),
+            other => panic!("mode_coords must be a Value::List; got {other:?}"),
+        }
+    }
 }
