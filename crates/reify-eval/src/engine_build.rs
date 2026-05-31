@@ -41,6 +41,37 @@ use crate::{BuildResult, Engine, TessellateResult};
 /// tagged on that path exists only for step-index alignment / metadata and is
 /// never re-routed by `.kernel` (per-kernel trait calls project `.id` and use
 /// the resolved per-op kernel directly), so the tag is informational only.
+///
+/// # Why this tolerates non-canonical names while `dispatch()` panics
+///
+/// The sibling registry-name → `KernelId` bridge in
+/// [`crate::dispatcher::dispatch`] `.expect()`s the lookup and panics on an
+/// unknown name. That is sound *there* because the dispatcher's registry is
+/// built from the inventory and so only ever holds canonical kernel names — a
+/// miss is a genuine programming error. This helper deliberately takes the
+/// opposite policy: it runs on the build path, where the resolved kernel name
+/// legitimately includes non-canonical strings — [`Engine::DEFAULT_KERNEL_NAME`]
+/// in production, and mock kernels registered under arbitrary names (e.g.
+/// `"aaa"` / `"default"`) by the dispatch-routing unit tests further down this
+/// file (`execute_realization_ops_routes_to_dispatcher_picked_kernel` and
+/// peers). Because the `.kernel` tag is informational only, silently coercing
+/// those to [`KernelId::Occt`] is correct, and a panic here would wrongly break
+/// those tests. The divergence between the two bridges is therefore
+/// intentional, not an oversight — picking the policy that fits each call
+/// site's invariants (canonical-only registry → panic; informational tag over a
+/// hot path that sees mock names → silent fallback).
+///
+/// # Revisit trigger
+///
+/// If `.kernel` ever becomes load-bearing (consulted to re-route dispatch /
+/// export instead of being pure metadata), this silent coercion turns into a
+/// mis-attribution hazard: a handle produced by manifold/fidget/gmsh under a
+/// non-canonical name would be tagged `Occt` with no signal. At that point this
+/// fallback must harden into a hard error so a stray name fails loudly — and the
+/// mock kernels in the routing tests must be renamed to canonical names (the
+/// same rename the dispatcher tests already took when `dispatch()` started
+/// rejecting non-canonical names). Tracked as a follow-up alongside the
+/// reify-ir / reify-config `KernelId` consolidation.
 fn kernel_id_for_registry_name(name: &str) -> KernelId {
     KernelId::from_registry_name(name).unwrap_or(KernelId::Occt)
 }

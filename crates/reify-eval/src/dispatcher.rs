@@ -675,10 +675,15 @@ pub fn dispatch(
                     visited.insert(decl_to);
                     let mut new_chain = chain.clone();
                     // Bridge the registry name to its typed KernelId. Sound by
-                    // construction: conversion-emitting kernels come from the
-                    // inventory-built registry whose names are canonical
-                    // KernelIds, so a missing mapping is a programming error
-                    // that should fail loudly.
+                    // construction: this registry is built from the inventory,
+                    // so it only ever contains canonical kernel names; a missing
+                    // mapping is a programming error that should fail loudly.
+                    // (The sibling bridge `engine_build::kernel_id_for_registry_name`
+                    // takes the OPPOSITE policy — a silent `KernelId::Occt`
+                    // fallback rather than a panic — because it runs on the build
+                    // path where non-canonical names are legitimate and its
+                    // `.kernel` tag is informational only. See that fn's docs for
+                    // why the two policies intentionally differ.)
                     new_chain.push((
                         KernelId::from_registry_name(kernel_name)
                             .expect("registered conversion kernel must have a KernelId"),
