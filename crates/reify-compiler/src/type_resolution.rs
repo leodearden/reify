@@ -1814,16 +1814,18 @@ pub(crate) fn convert_type_params(
                 .collect();
             // Resolve defaults: try builtin types first, then preserve
             // structure names as StructureRef (concrete names, not type variables).
-            // DimensionalOp cannot appear as a type-parameter default — the grammar
-            // only allows Named nodes in that position, so this arm is unreachable.
-            let default = d.default.as_ref().map(|te| match &te.kind {
+            // DimensionalOp/IntegerLiteral/Auto cannot appear as type-parameter defaults —
+            // the grammar restricts those to type_arg_list slots, so those arms are unreachable.
+            // QualifiedAssoc defaults (e.g. `T = Beam::Material`) are valid grammar but
+            // resolution to a concrete Type is deferred to task ιₑ; they produce None here.
+            let default = d.default.as_ref().and_then(|te| match &te.kind {
                 reify_ast::TypeExprKind::Named { name, .. } => {
-                    resolve_type_name(name).unwrap_or_else(|| Type::StructureRef(name.clone()))
+                    Some(resolve_type_name(name).unwrap_or_else(|| Type::StructureRef(name.clone())))
                 }
                 reify_ast::TypeExprKind::DimensionalOp { .. } => {
                     unreachable!(
                         "dimensional operator cannot appear as a type-parameter default; \
-                             the parser only emits Named nodes for type-param defaults"
+                             the grammar restricts dimensional operators to type_arg_list slots"
                     )
                 }
                 reify_ast::TypeExprKind::IntegerLiteral(_) => {
@@ -1838,14 +1840,9 @@ pub(crate) fn convert_type_params(
                              the grammar restricts auto_type_arg to type_arg_list slots"
                     )
                 }
-                // Qualified assoc-type refs cannot appear as a type-parameter default
-                // in current grammar; resolution deferred to task ιₑ.
-                reify_ast::TypeExprKind::QualifiedAssoc { .. } => {
-                    unreachable!(
-                        "qualified assoc-type ref cannot appear as a type-parameter default; \
-                             the grammar restricts type-param defaults to Named nodes"
-                    )
-                }
+                // QualifiedAssoc defaults (e.g. `structure def Foo<T = Beam::Material>`) are
+                // valid grammar; resolution to a concrete Type is deferred to task ιₑ.
+                reify_ast::TypeExprKind::QualifiedAssoc { .. } => None,
             });
             reify_ir::TypeParam {
                 name: d.name.clone(),
