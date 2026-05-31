@@ -192,4 +192,24 @@ mod tests {
             }
         }
     }
+
+    // step-5 RED: contract guards — fail because no guards exist yet.
+    // Without guards, NaN flows silently and out-of-range dof may not produce
+    // a panic with the expected message substring.
+
+    // (a) Out-of-range dof must panic with a message containing "dof".
+    #[test]
+    #[should_panic(expected = "dof")]
+    fn panics_on_out_of_range_dof() {
+        let k = small_2x2(); // n = 2; dof=5 is out of range
+        add_joint_stiffness(&k, &[JointStiffness { dof: 5, stiffness: 1.0 }]);
+    }
+
+    // (b) Non-finite stiffness must panic with a message containing "finite".
+    #[test]
+    #[should_panic(expected = "finite")]
+    fn panics_on_nan_stiffness() {
+        let k = small_2x2();
+        add_joint_stiffness(&k, &[JointStiffness { dof: 0, stiffness: f64::NAN }]);
+    }
 }
