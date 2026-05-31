@@ -46,7 +46,9 @@ use std::collections::{BTreeMap, HashSet};
 
 use reify_eval::{dispatcher, kernel_registry};
 use reify_kernel_fidget::FidgetKernel;
-use reify_ir::{CapabilityDescriptor, GeometryKernel, GeometryOp, Operation, ReprKind, Value};
+use reify_ir::{
+    CapabilityDescriptor, GeometryKernel, GeometryOp, KernelId, Operation, ReprKind, Value,
+};
 
 /// Proves that `reify_eval::kernel_registry::registry()` contains `"fidget"`
 /// when the fidget adapter is linked in (i.e. the `inventory::submit!` in
@@ -312,7 +314,7 @@ fn fidget_dispatches_for_sdf_to_mesh_conversion() {
     // 5. One-stage Convert path: input repr (Sdf) is meshed to Mesh via Fidget.
     assert_eq!(
         plan.conversions,
-        vec![("fidget".to_string(), ReprKind::Sdf, ReprKind::Mesh,)],
+        vec![(KernelId::Fidget, ReprKind::Sdf, ReprKind::Mesh)],
         "dispatch must produce a single (\"fidget\", Sdf, Mesh) conversion stage; \
          got conversions = {:?}",
         plan.conversions,

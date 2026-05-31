@@ -24,7 +24,9 @@ use reify_test_support::{
 };
 #[allow(unused_imports)]
 use reify_core::{ContentHash, DiagnosticCode, ModulePath, Severity, Type, ValueCellId};
-use reify_ir::{CapabilityDescriptor, CompiledExpr, ExportFormat, Operation, ReprKind, Value};
+use reify_ir::{
+    CapabilityDescriptor, CompiledExpr, ExportFormat, KernelId, Operation, ReprKind, Value,
+};
 #[allow(unused_imports)]
 use std::collections::{BTreeMap, HashSet};
 
@@ -622,8 +624,8 @@ fn per_stage_tolerance_for_plan_governs_tolerance_budget_for_two_stage_dispatch_
     let plan_two = DispatchPlan {
         kernel: "manifold".to_string(),
         conversions: vec![
-            ("alpha".to_string(), ReprKind::BRep, ReprKind::Sdf),
-            ("beta".to_string(), ReprKind::Sdf, ReprKind::Mesh),
+            (KernelId::Fidget, ReprKind::BRep, ReprKind::Sdf),
+            (KernelId::Gmsh, ReprKind::Sdf, ReprKind::Mesh),
         ],
     };
     assert_eq!(

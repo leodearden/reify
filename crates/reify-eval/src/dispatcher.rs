@@ -685,7 +685,7 @@ pub fn dispatch(
 mod tests {
     use std::collections::{BTreeMap, HashSet};
 
-    use reify_ir::{CapabilityDescriptor, Operation, ReprKind};
+    use reify_ir::{CapabilityDescriptor, KernelId, Operation, ReprKind};
 
     use super::{
         DispatchPlan, LONG_CHAIN_DEFAULT_THRESHOLD_MS, LONG_CHAIN_MIN_STAGES,
@@ -738,8 +738,8 @@ mod tests {
         let plan_two = DispatchPlan {
             kernel: "manifold".to_string(),
             conversions: vec![
-                ("occt".to_string(), ReprKind::BRep, ReprKind::Mesh),
-                ("manifold".to_string(), ReprKind::Mesh, ReprKind::Sdf),
+                (KernelId::Occt, ReprKind::BRep, ReprKind::Mesh),
+                (KernelId::Manifold, ReprKind::Mesh, ReprKind::Sdf),
             ],
         };
         assert!(
@@ -751,9 +751,9 @@ mod tests {
         let plan_three = DispatchPlan {
             kernel: "kernel_d".to_string(),
             conversions: vec![
-                ("kernel_a".to_string(), ReprKind::BRep, ReprKind::Mesh),
-                ("kernel_b".to_string(), ReprKind::Mesh, ReprKind::Sdf),
-                ("kernel_c".to_string(), ReprKind::Sdf, ReprKind::Voxel),
+                (KernelId::Fidget, ReprKind::BRep, ReprKind::Mesh),
+                (KernelId::Gmsh, ReprKind::Mesh, ReprKind::Sdf),
+                (KernelId::Manifold, ReprKind::Sdf, ReprKind::Voxel),
             ],
         };
         assert!(
@@ -783,9 +783,9 @@ mod tests {
         let plan_three = DispatchPlan {
             kernel: "kernel_d".to_string(),
             conversions: vec![
-                ("kernel_a".to_string(), ReprKind::BRep, ReprKind::Mesh),
-                ("kernel_b".to_string(), ReprKind::Mesh, ReprKind::Sdf),
-                ("kernel_c".to_string(), ReprKind::Sdf, ReprKind::Voxel),
+                (KernelId::Fidget, ReprKind::BRep, ReprKind::Mesh),
+                (KernelId::Gmsh, ReprKind::Mesh, ReprKind::Sdf),
+                (KernelId::Manifold, ReprKind::Sdf, ReprKind::Voxel),
             ],
         };
         assert!(
@@ -797,10 +797,10 @@ mod tests {
         let plan_four = DispatchPlan {
             kernel: "kernel_e".to_string(),
             conversions: vec![
-                ("kernel_a".to_string(), ReprKind::BRep, ReprKind::Mesh),
-                ("kernel_b".to_string(), ReprKind::Mesh, ReprKind::Sdf),
-                ("kernel_c".to_string(), ReprKind::Sdf, ReprKind::Voxel),
-                ("kernel_d".to_string(), ReprKind::Voxel, ReprKind::Mesh),
+                (KernelId::Fidget, ReprKind::BRep, ReprKind::Mesh),
+                (KernelId::Gmsh, ReprKind::Mesh, ReprKind::Sdf),
+                (KernelId::Manifold, ReprKind::Sdf, ReprKind::Voxel),
+                (KernelId::Occt, ReprKind::Voxel, ReprKind::Mesh),
             ],
         };
         assert!(
@@ -823,8 +823,8 @@ mod tests {
         let plan_two = DispatchPlan {
             kernel: "manifold".to_string(),
             conversions: vec![
-                ("occt".to_string(), ReprKind::BRep, ReprKind::Mesh),
-                ("manifold".to_string(), ReprKind::Mesh, ReprKind::Sdf),
+                (KernelId::Occt, ReprKind::BRep, ReprKind::Mesh),
+                (KernelId::Manifold, ReprKind::Mesh, ReprKind::Sdf),
             ],
         };
         assert!(
@@ -836,9 +836,9 @@ mod tests {
         let plan_three = DispatchPlan {
             kernel: "kernel_d".to_string(),
             conversions: vec![
-                ("kernel_a".to_string(), ReprKind::BRep, ReprKind::Mesh),
-                ("kernel_b".to_string(), ReprKind::Mesh, ReprKind::Sdf),
-                ("kernel_c".to_string(), ReprKind::Sdf, ReprKind::Voxel),
+                (KernelId::Fidget, ReprKind::BRep, ReprKind::Mesh),
+                (KernelId::Gmsh, ReprKind::Mesh, ReprKind::Sdf),
+                (KernelId::Manifold, ReprKind::Sdf, ReprKind::Voxel),
             ],
         };
         assert!(
@@ -861,9 +861,9 @@ mod tests {
         let plan_three = DispatchPlan {
             kernel: "kernel_d".to_string(),
             conversions: vec![
-                ("kernel_a".to_string(), ReprKind::BRep, ReprKind::Mesh),
-                ("kernel_b".to_string(), ReprKind::Mesh, ReprKind::Sdf),
-                ("kernel_c".to_string(), ReprKind::Sdf, ReprKind::Voxel),
+                (KernelId::Fidget, ReprKind::BRep, ReprKind::Mesh),
+                (KernelId::Gmsh, ReprKind::Mesh, ReprKind::Sdf),
+                (KernelId::Manifold, ReprKind::Sdf, ReprKind::Voxel),
             ],
         };
         let threshold = Duration::from_millis(500);
@@ -901,9 +901,9 @@ mod tests {
         let plan = DispatchPlan {
             kernel: "manifold".to_string(),
             conversions: vec![
-                ("alpha".to_string(), ReprKind::BRep, ReprKind::Mesh),
-                ("beta".to_string(), ReprKind::Mesh, ReprKind::Sdf),
-                ("gamma".to_string(), ReprKind::Sdf, ReprKind::Voxel),
+                (KernelId::Fidget, ReprKind::BRep, ReprKind::Mesh),
+                (KernelId::Gmsh, ReprKind::Mesh, ReprKind::Sdf),
+                (KernelId::Occt, ReprKind::Sdf, ReprKind::Voxel),
             ],
         };
         let threshold = Duration::from_millis(500);
@@ -912,7 +912,7 @@ mod tests {
         let diag = long_chain_diagnostic(&plan, elapsed, threshold)
             .expect("3 stages + elapsed > threshold must emit a diagnostic");
 
-        for kernel in ["alpha", "beta", "gamma", "manifold"] {
+        for kernel in ["fidget", "gmsh", "occt", "manifold"] {
             assert!(
                 diag.message.contains(kernel),
                 "diagnostic message must name kernel {:?} so users can see budget pressure (got: {:?})",
@@ -932,9 +932,9 @@ mod tests {
         let plan = DispatchPlan {
             kernel: "manifold".to_string(),
             conversions: vec![
-                ("kappa".to_string(), ReprKind::BRep, ReprKind::Sdf),
-                ("lambda".to_string(), ReprKind::Sdf, ReprKind::Mesh),
-                ("mu".to_string(), ReprKind::Mesh, ReprKind::Voxel),
+                (KernelId::Fidget, ReprKind::BRep, ReprKind::Sdf),
+                (KernelId::Gmsh, ReprKind::Sdf, ReprKind::Mesh),
+                (KernelId::Manifold, ReprKind::Mesh, ReprKind::Voxel),
             ],
         };
         let threshold = Duration::from_millis(500);
@@ -1095,7 +1095,7 @@ mod tests {
         );
         assert_eq!(
             plan.conversions[0],
-            ("occt".to_string(), ReprKind::BRep, ReprKind::Mesh),
+            (KernelId::Occt, ReprKind::BRep, ReprKind::Mesh),
             "the conversion stage must be (occt, BRep, Mesh), got {:?}",
             plan.conversions[0],
         );
@@ -1136,8 +1136,8 @@ mod tests {
             ],
         };
         let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
-        registry.insert("alpha".to_string(), &alpha);
-        registry.insert("beta".to_string(), &beta);
+        registry.insert("fidget".to_string(), &alpha);
+        registry.insert("gmsh".to_string(), &beta);
 
         let mut available: HashSet<ReprKind> = HashSet::new();
         available.insert(ReprKind::BRep);
@@ -1164,13 +1164,13 @@ mod tests {
         // "alpha" is also the BTreeMap-first kernel that names the
         // conversion edge.
         assert_eq!(
-            plan.kernel, "alpha",
-            "lexicographic tie-break must pick 'alpha' over 'beta', got {plan:?}",
+            plan.kernel, "fidget",
+            "lexicographic tie-break must pick 'fidget' over 'gmsh', got {plan:?}",
         );
         assert_eq!(
             plan.conversions[0],
-            ("alpha".to_string(), ReprKind::BRep, ReprKind::Mesh),
-            "the 1-stage conversion must be (alpha, BRep, Mesh), got {:?}",
+            (KernelId::Fidget, ReprKind::BRep, ReprKind::Mesh),
+            "the 1-stage conversion must be (fidget, BRep, Mesh), got {:?}",
             plan.conversions[0],
         );
     }
@@ -1205,8 +1205,8 @@ mod tests {
             supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
         };
         let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
-        registry.insert("alpha".to_string(), &alpha);
-        registry.insert("beta".to_string(), &beta);
+        registry.insert("fidget".to_string(), &alpha);
+        registry.insert("gmsh".to_string(), &beta);
         registry.insert("manifold".to_string(), &manifold);
 
         let mut available: HashSet<ReprKind> = HashSet::new();
@@ -1231,14 +1231,14 @@ mod tests {
         );
         assert_eq!(
             plan.conversions[0],
-            ("alpha".to_string(), ReprKind::BRep, ReprKind::Sdf),
-            "first conversion stage must be (alpha, BRep, Sdf), got {:?}",
+            (KernelId::Fidget, ReprKind::BRep, ReprKind::Sdf),
+            "first conversion stage must be (fidget, BRep, Sdf), got {:?}",
             plan.conversions[0],
         );
         assert_eq!(
             plan.conversions[1],
-            ("beta".to_string(), ReprKind::Sdf, ReprKind::Mesh),
-            "second conversion stage must be (beta, Sdf, Mesh), got {:?}",
+            (KernelId::Gmsh, ReprKind::Sdf, ReprKind::Mesh),
+            "second conversion stage must be (gmsh, Sdf, Mesh), got {:?}",
             plan.conversions[1],
         );
     }
@@ -1279,8 +1279,8 @@ mod tests {
             supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
         };
         let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
-        registry.insert("kappa".to_string(), &kappa);
-        registry.insert("lambda".to_string(), &lambda);
+        registry.insert("fidget".to_string(), &kappa);
+        registry.insert("gmsh".to_string(), &lambda);
         registry.insert("manifold".to_string(), &manifold);
 
         // Both reprs available. The `seeds: BTreeSet<ReprKind>` seeding step
@@ -1309,8 +1309,8 @@ mod tests {
         );
         assert_eq!(
             plan.conversions[0],
-            ("kappa".to_string(), ReprKind::BRep, ReprKind::Mesh),
-            "conversion stage must be (kappa, BRep, Mesh) — BRep < Sdf in BTreeSet order, got {:?}",
+            (KernelId::Fidget, ReprKind::BRep, ReprKind::Mesh),
+            "conversion stage must be (fidget, BRep, Mesh) — BRep < Sdf in BTreeSet order, got {:?}",
             plan.conversions[0],
         );
     }
@@ -1491,7 +1491,7 @@ mod tests {
         );
         assert_eq!(
             plan_union.conversions[0],
-            ("occt".to_string(), ReprKind::BRep, ReprKind::Mesh),
+            (KernelId::Occt, ReprKind::BRep, ReprKind::Mesh),
             "the conversion stage must be (occt, BRep, Mesh), got {:?}",
             plan_union.conversions[0],
         );
@@ -1587,8 +1587,8 @@ mod tests {
         let plan_two = DispatchPlan {
             kernel: "manifold".to_string(),
             conversions: vec![
-                ("alpha".to_string(), ReprKind::BRep, ReprKind::Sdf),
-                ("beta".to_string(), ReprKind::Sdf, ReprKind::Mesh),
+                (KernelId::Fidget, ReprKind::BRep, ReprKind::Sdf),
+                (KernelId::Gmsh, ReprKind::Sdf, ReprKind::Mesh),
             ],
         };
         let req = 1e-3_f64;
@@ -1611,9 +1611,9 @@ mod tests {
         let plan_three = DispatchPlan {
             kernel: "fidget".to_string(),
             conversions: vec![
-                ("alpha".to_string(), ReprKind::BRep, ReprKind::Mesh),
-                ("beta".to_string(), ReprKind::Mesh, ReprKind::Sdf),
-                ("gamma".to_string(), ReprKind::Sdf, ReprKind::Voxel),
+                (KernelId::Fidget, ReprKind::BRep, ReprKind::Mesh),
+                (KernelId::Gmsh, ReprKind::Mesh, ReprKind::Sdf),
+                (KernelId::Manifold, ReprKind::Sdf, ReprKind::Voxel),
             ],
         };
         assert_eq!(
@@ -1642,7 +1642,7 @@ mod tests {
     fn per_stage_tolerance_for_plan_single_conversion_applies_safety_factor() {
         let plan = DispatchPlan {
             kernel: "occt".to_string(),
-            conversions: vec![("occt".to_string(), ReprKind::BRep, ReprKind::Mesh)],
+            conversions: vec![(KernelId::Occt, ReprKind::BRep, ReprKind::Mesh)],
         };
         let req = 1e-3_f64;
         // N=1: no powf, so bit-exact multiply.

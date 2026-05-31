@@ -21,7 +21,7 @@ use reify_eval::{
     long_chain_threshold_from_env, long_chain_threshold_from_env_value,
 };
 use reify_core::{DiagnosticCode, Severity};
-use reify_ir::ReprKind;
+use reify_ir::{KernelId, ReprKind};
 
 /// Smoke-test every long-chain item re-exported through the crate root.
 ///
@@ -46,9 +46,9 @@ fn lib_re_exports_long_chain_api() {
     let plan = DispatchPlan {
         kernel: "manifold".to_string(),
         conversions: vec![
-            ("alpha".to_string(), ReprKind::BRep, ReprKind::Mesh),
-            ("beta".to_string(), ReprKind::Mesh, ReprKind::Sdf),
-            ("gamma".to_string(), ReprKind::Sdf, ReprKind::Voxel),
+            (KernelId::Fidget, ReprKind::BRep, ReprKind::Mesh),
+            (KernelId::Gmsh, ReprKind::Mesh, ReprKind::Sdf),
+            (KernelId::Manifold, ReprKind::Sdf, ReprKind::Voxel),
         ],
     };
     let threshold = Duration::from_millis(500);

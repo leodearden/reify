@@ -36,7 +36,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use reify_eval::{dispatcher, kernel_registry};
-use reify_ir::{CapabilityDescriptor, Operation, ReprKind};
+use reify_ir::{CapabilityDescriptor, KernelId, Operation, ReprKind};
 
 /// Proves that `reify_eval::kernel_registry::registry()` contains `"occt"`
 /// when the OCCT adapter is linked in (i.e. the `inventory::submit!` in
@@ -140,7 +140,7 @@ fn occt_dispatches_for_brep_to_mesh_tessellation_conversion() {
     //    Mesh via OCCT.
     assert_eq!(
         plan.conversions,
-        vec![("occt".to_string(), ReprKind::BRep, ReprKind::Mesh,)],
+        vec![(KernelId::Occt, ReprKind::BRep, ReprKind::Mesh)],
         "dispatch must produce a single (\"occt\", BRep, Mesh) conversion stage; \
          got conversions = {:?}",
         plan.conversions,

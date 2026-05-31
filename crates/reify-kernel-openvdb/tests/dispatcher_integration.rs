@@ -31,7 +31,10 @@
 use std::collections::{BTreeMap, HashSet};
 
 use reify_eval::{DispatchPlan, dispatcher, kernel_registry};
-use reify_ir::{CapabilityDescriptor, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, Operation, ReprKind};
+use reify_ir::{
+    CapabilityDescriptor, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, KernelId,
+    Operation, ReprKind,
+};
 use reify_kernel_openvdb::register::openvdb_capability_descriptor;
 use reify_kernel_openvdb::OpenVdbKernel;
 
@@ -168,8 +171,8 @@ fn assert_two_stage_brep_to_voxel_plan() -> DispatchPlan {
     assert_eq!(
         plan.conversions,
         vec![
-            ("occt".to_string(), ReprKind::BRep, ReprKind::Mesh),
-            ("openvdb".to_string(), ReprKind::Mesh, ReprKind::Voxel),
+            (KernelId::Occt, ReprKind::BRep, ReprKind::Mesh),
+            (KernelId::OpenVdb, ReprKind::Mesh, ReprKind::Voxel),
         ],
         "two-stage chain must produce conversions [(occt,BRep,Mesh),(openvdb,Mesh,Voxel)]",
     );

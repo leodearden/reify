@@ -36,7 +36,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use reify_eval::{dispatcher, kernel_registry};
-use reify_ir::{CapabilityDescriptor, Operation, ReprKind};
+use reify_ir::{CapabilityDescriptor, KernelId, Operation, ReprKind};
 
 /// Proves that `reify_eval::kernel_registry::registry()` contains `"gmsh"`
 /// when the gmsh adapter is linked in (i.e. the `inventory::submit!` in
@@ -123,7 +123,7 @@ fn gmsh_dispatches_for_mesh_to_volume_mesh_conversion() {
     //    VolumeMesh via gmsh.
     assert_eq!(
         plan.conversions,
-        vec![("gmsh".to_string(), ReprKind::Mesh, ReprKind::VolumeMesh,)],
+        vec![(KernelId::Gmsh, ReprKind::Mesh, ReprKind::VolumeMesh)],
         "dispatch must produce a single (\"gmsh\", Mesh, VolumeMesh) conversion stage; \
          got conversions = {:?}",
         plan.conversions,
