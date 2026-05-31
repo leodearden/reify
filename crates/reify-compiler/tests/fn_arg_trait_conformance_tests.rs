@@ -189,3 +189,112 @@ structure TOk {{
         conformance_errors
     );
 }
+
+// ── Step-9: overload-collapse robustness ─────────────────────────────────────
+
+/// Two same-name overloads (trait-first, concrete-second) — the name-keyed
+/// HashMap in `phase_fn_arg_conformance` collapses both to the last-inserted
+/// `couple(Real)` entry, so the conformance check is skipped and the
+/// non-conforming call is missed.
+///
+/// This test is deterministically RED on the step-8 implementation because:
+/// - `merge_prelude_functions` preserves declaration order, so
+///   `resolution_functions == [couple(DrivingJoint), couple(Real), ...]`.
+/// - A name-keyed `HashMap` collapses both to the LAST-inserted `couple(Real)`.
+/// - `Real` is not trait-carrying → conformance check is skipped → error missed
+///   (got 0, expected 1).
+///
+/// RED until step-10.
+#[test]
+fn overload_collapse_bad_arg_emits_type_not_conforming_to_trait() {
+    let source = r#"
+trait DrivingJoint {}
+
+structure RevoluteJoint : DrivingJoint {
+    param x : Real = 0.0
+}
+
+structure FixedThing {
+    param y : Real = 0.0
+}
+
+fn couple(joint : DrivingJoint) -> Real { 0.0 }
+fn couple(n : Real) -> Real { n }
+
+structure Test {
+    let bad = couple(FixedThing())
+}
+
+structure TOk {
+    let ok = couple(RevoluteJoint())
+}
+"#;
+    let module = compile_source(source);
+
+    let conformance_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
+        .collect();
+
+    assert_eq!(
+        conformance_errors.len(),
+        1,
+        "expected exactly 1 TypeNotConformingToTrait diagnostic for couple(FixedThing()), \
+         got {}: {:?}",
+        conformance_errors.len(),
+        module.diagnostics
+    );
+    let msg = &conformance_errors[0].message;
+    assert!(
+        msg.contains("FixedThing"),
+        "diagnostic should mention 'FixedThing'; got: {}",
+        msg
+    );
+    assert!(
+        msg.contains("DrivingJoint"),
+        "diagnostic should mention 'DrivingJoint'; got: {}",
+        msg
+    );
+}
+
+/// Companion positive guard for the overload-collapse scenario:
+/// `couple(RevoluteJoint())` in `TOk` must NOT produce any
+/// `TypeNotConformingToTrait` diagnostic.
+///
+/// This uses the same two-overload source as the RED test above but asserts
+/// the conforming entity is clean.
+#[test]
+fn overload_collapse_good_arg_emits_no_conformance_error() {
+    let source = r#"
+trait DrivingJoint {}
+
+structure RevoluteJoint : DrivingJoint {
+    param x : Real = 0.0
+}
+
+structure FixedThing {
+    param y : Real = 0.0
+}
+
+fn couple(joint : DrivingJoint) -> Real { 0.0 }
+fn couple(n : Real) -> Real { n }
+
+structure TOk {
+    let ok = couple(RevoluteJoint())
+}
+"#;
+    let module = compile_source(source);
+
+    let conformance_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
+        .collect();
+
+    assert!(
+        conformance_errors.is_empty(),
+        "conforming overloaded call must produce no TypeNotConformingToTrait errors; got: {:?}",
+        conformance_errors
+    );
+}
