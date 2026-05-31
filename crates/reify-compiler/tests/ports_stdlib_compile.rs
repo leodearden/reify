@@ -609,6 +609,119 @@ fn std_ports_electrical_module_cardinality_locked() {
     );
 }
 
+// ─── step-3 (thermal): std/ports/thermal surface ─────────────────────────────
+
+/// std/ports/thermal must load with zero Severity::Error diagnostics.
+/// ThermalPort refines exactly [Port] with required members [temperature,
+/// heat_flow] in order, resolving to Scalar<TEMPERATURE> and Scalar<POWER>.
+///
+/// Implements the Modelica HeatPort convention: temperature (potential across
+/// variable) + heat_flow (through variable Q̇).  Resolves PRD open Q3.
+/// See design decision in plan.json: deviation from PRD's heat-transfer-
+/// coefficient suggestion — both params are named dims, no alias needed.
+#[test]
+fn std_ports_thermal_loads_with_no_errors_and_thermal_port_trait() {
+    let module = load_module("std/ports/thermal");
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "unexpected error diagnostics in ports_thermal.ri: {:?}",
+        errors
+    );
+
+    let thermal_port = find_trait("std/ports/thermal", "ThermalPort");
+    assert_eq!(
+        thermal_port.refinements.as_slice(),
+        ["Port".to_string()].as_slice(),
+        "ThermalPort should refine exactly [Port], got: {:?}",
+        thermal_port.refinements
+    );
+
+    assert_eq!(
+        thermal_port.required_members.len(),
+        2,
+        "ThermalPort should have exactly 2 required members; got: {:?}",
+        thermal_port
+            .required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        thermal_port.required_members[0].name,
+        "temperature",
+        "ThermalPort required_members[0] should be 'temperature'"
+    );
+    assert_eq!(
+        thermal_port.required_members[1].name,
+        "heat_flow",
+        "ThermalPort required_members[1] should be 'heat_flow'"
+    );
+
+    assert_eq!(
+        param_type("std/ports/thermal", "ThermalPort", "temperature"),
+        Type::Scalar {
+            dimension: DimensionVector::TEMPERATURE
+        },
+        "ThermalPort.temperature must be Scalar<TEMPERATURE>"
+    );
+    assert_eq!(
+        param_type("std/ports/thermal", "ThermalPort", "heat_flow"),
+        Type::Scalar {
+            dimension: DimensionVector::POWER
+        },
+        "ThermalPort.heat_flow must be Scalar<POWER>"
+    );
+}
+
+/// std/ports/thermal cardinality lock: exactly 1 trait (ThermalPort),
+/// 0 enums, 0 structures.
+#[test]
+fn std_ports_thermal_module_cardinality_locked() {
+    let module = load_module("std/ports/thermal");
+
+    assert_eq!(
+        module.enum_defs.len(),
+        0,
+        "std/ports/thermal should declare 0 enums, got: {:?}",
+        module
+            .enum_defs
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    let trait_names: Vec<&str> = module
+        .trait_defs
+        .iter()
+        .map(|t| t.name.as_str())
+        .collect();
+    assert_eq!(
+        module.trait_defs.len(),
+        1,
+        "std/ports/thermal should declare exactly 1 trait (ThermalPort), got: {:?}",
+        trait_names
+    );
+
+    let structure_names: Vec<&str> = module
+        .templates
+        .iter()
+        .filter(|t| t.entity_kind == EntityKind::Structure)
+        .map(|t| t.name.as_str())
+        .collect();
+    assert_eq!(
+        structure_names.len(),
+        0,
+        "std/ports/thermal should declare 0 structures, got: {:?}",
+        structure_names
+    );
+}
+
 // ─── step-9: capstone example compile ─────────────────────────────────────────
 
 /// examples/stdlib/ports_mechanical.ri must compile without errors and
