@@ -274,19 +274,17 @@ fn check_index(idx: i64, n: usize, ctx: &str) -> Result<usize, String> {
 // ── result construction ──────────────────────────────────────────────────────
 
 /// Build the `FormFindResult` `Value::StructureInstance` from the kernel solve.
+///
+/// The Scalar/Point/List encoding is routed through the shared
+/// `compute_targets` builders (`super::point3_length`, `super::scalar_list`) so
+/// a future dimension/encoding change is a single-point edit — the same
+/// discipline the elastic-static / buckling trampolines use for their field
+/// helpers.
 fn build_result(solve: &FormFindSolve) -> Value {
-    let nodes: Vec<Value> = solve
-        .nodes
-        .iter()
-        .map(|p| Value::Point(vec![length(p[0]), length(p[1]), length(p[2])]))
-        .collect();
+    let nodes: Vec<Value> = solve.nodes.iter().map(|&p| super::point3_length(p)).collect();
     // member_forces Nᵢ = qᵢ·Lᵢ are forces (N/m · m), so FORCE-dimensioned.
-    let member_forces: Vec<Value> = solve
-        .member_forces
-        .iter()
-        .map(|f| Value::Scalar { si_value: *f, dimension: DimensionVector::FORCE })
-        .collect();
-    let force_densities: Vec<Value> = solve.force_densities.iter().map(|q| Value::Real(*q)).collect();
+    let member_forces = super::scalar_list(&solve.member_forces, DimensionVector::FORCE);
+    let force_densities: Vec<Value> = solve.force_densities.iter().map(|&q| Value::Real(q)).collect();
 
     let fields: PersistentMap<String, Value> = [
         ("nodes".to_string(), Value::List(nodes)),
@@ -303,11 +301,6 @@ fn build_result(solve: &FormFindSolve) -> Value {
         version: 1,
         fields,
     }))
-}
-
-/// A Length-dimensioned coordinate Scalar (SI metres).
-fn length(m: f64) -> Value {
-    Value::Scalar { si_value: m, dimension: DimensionVector::LENGTH }
 }
 
 /// Human-readable cause for a kernel [`FormFindError`] (appended after the

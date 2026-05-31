@@ -80,6 +80,37 @@ pub(crate) fn sampled_stress_field(sf: SampledField) -> Value {
     }
 }
 
+// ── Scalar / point / list builders (form-find result encoding) ──────────────
+//
+// The form-find trampoline emits its result as plain dimensioned `Value::Scalar`
+// coordinates and forces wrapped in `Value::Point` / `Value::List`.  Centralising
+// these builders here — rather than hand-rolling the `Value::Scalar { .. }`
+// literal and the map-collect idiom inside the trampoline — keeps the
+// dimension/encoding choice a single-point edit, the same rationale as the field
+// helpers above.
+
+/// A dimensioned quantity `Value::Scalar` (SI value + dimension). The single
+/// definition site for the `Value::Scalar { .. }` encoding used by the builders
+/// below.
+fn scalar(si_value: f64, dimension: DimensionVector) -> Value {
+    Value::Scalar { si_value, dimension }
+}
+
+/// A Length-dimensioned coordinate Scalar (SI metres).
+pub(crate) fn length(m: f64) -> Value {
+    scalar(m, DimensionVector::LENGTH)
+}
+
+/// A 3-component `Value::Point` of Length-dimensioned coordinate Scalars.
+pub(crate) fn point3_length(p: [f64; 3]) -> Value {
+    Value::Point(vec![length(p[0]), length(p[1]), length(p[2])])
+}
+
+/// One `dimension`-typed `Value::Scalar` per SI value, in input order.
+pub(crate) fn scalar_list(values: &[f64], dimension: DimensionVector) -> Vec<Value> {
+    values.iter().map(|&v| scalar(v, dimension)).collect()
+}
+
 /// Register all compute trampolines shipped in this slice.
 ///
 /// Must be called once at engine startup — typically in the same initialisation
