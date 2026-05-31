@@ -2208,11 +2208,13 @@ pub(crate) fn try_eval_topology_selector(
             )
         }
         TopologySelectorHelper::SharedEdges => {
-            // args[0]: face_a ValueRef → named_steps map → GeometryHandleId.
-            let face_a = resolve_geometry_handle_arg(&args[0], named_steps)?;
-            // args[1]: face_b ValueRef → named_steps map → GeometryHandleId.
-            let face_b = resolve_geometry_handle_arg(&args[1], named_steps)?;
-            dispatch_shared_edges(kernel, face_a, face_b, &function.name, diagnostics)
+            // args[0]: face_a ValueRef → values map → kernel_handle only.
+            // Face sub-handles live in `values` as Value::GeometryHandle.
+            // Falls through to None when not hydrated (PRD invariant #2).
+            let (_, _, face_a) = resolve_parent_geometry_handle_arg(&args[0], values)?;
+            // args[1]: face_b ValueRef → values map → kernel_handle only.
+            let (_, _, face_b) = resolve_parent_geometry_handle_arg(&args[1], values)?;
+            dispatch_shared_edges(kernel, face_a, face_b, &function.name, diagnostics, values)
         }
     }
 }
@@ -2236,13 +2238,17 @@ pub(crate) fn try_eval_topology_selector(
 ///      `extract_edges(parent)`. Skip indices that fall outside the edge
 ///      enumeration (defensive against a kernel bug rather than a hard
 ///      failure mode — see design-doc §4.3 for the rationale).
-///   6. Return `Value::List(Vec<Value::Int>)` of edge handle ids.
+///   6. Recover the parent solid's `(realization_ref, upstream_values_hash)` via
+///      `resolve_owner_solid_handle(values, parent_a)`. Falls through to `None`
+///      when the parent solid is not hydrated in `values` (PRD invariant #2).
+///   7. Return `Value::List(Vec<Value::GeometryHandle>)` edge sub-handles per PRD §4 (KGQ-κ).
 fn dispatch_shared_edges(
     kernel: &mut dyn reify_ir::GeometryKernel,
     face_a: GeometryHandleId,
     face_b: GeometryHandleId,
     helper_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
+    values: &reify_ir::ValueMap,
 ) -> Option<reify_ir::Value> {
     // (1) Derive parents via OwnerBody.
     let parent_a = match crate::selector_vocabulary_v2::owner_body_of(kernel, face_a) {
@@ -2375,8 +2381,26 @@ fn dispatch_shared_edges(
         }
     }
 
-    // (6) Wrap as Value::List of Int handle ids.
-    Some(handle_list_value(out))
+    // (6) Recover the parent solid's realization_ref + upstream_values_hash from
+    //     `values`. Edge sub-handles must compose from the parent solid's hash
+    //     (PRD §4 cache coherence), not from a face sub-handle hash.
+    //     Falls through to None when the parent solid cell is absent (e.g. unnamed
+    //     inline solid), per PRD invariant #2 (never partial-construct sub-handles).
+    let (parent_rr, parent_hash) = resolve_owner_solid_handle(values, parent_a)?;
+
+    // (7) Emit List<Value::GeometryHandle> edge sub-handles via dispatch_filtered_subhandles,
+    //     which re-extracts extract_edges(parent) to map retained ids → TopExp indices and
+    //     builds make_sub_handle entries per PRD §4 iii/iv.
+    dispatch_filtered_subhandles(
+        kernel,
+        parent_a,
+        crate::topology_selectors::SubKind::Edge,
+        &parent_rr,
+        &parent_hash,
+        Ok(out),
+        helper_name,
+        diagnostics,
+    )
 }
 
 /// Map a filtered-selector helper `Result<Vec<GeometryHandleId>, QueryError>`
@@ -2926,6 +2950,37 @@ fn resolve_range_dim_arg(
         )),
         _ => None,
     }
+}
+
+/// Scan `values` for the `Value::GeometryHandle` whose `kernel_handle ==
+/// parent_body_kh` and return its `(realization_ref, upstream_values_hash)`.
+///
+/// Used by `dispatch_shared_edges` to recover the parent solid's hash for edge
+/// sub-handle construction (PRD §4 cache coherence): edge sub-handles must
+/// compose from the parent solid's `upstream_values_hash`, not from a face
+/// sub-handle's hash. The parent solid cell is hydrated into `values` by
+/// `post_process_geometry_handle_cells` (engine_build.rs:3693-3700).
+///
+/// Returns `None` when no matching cell is found (e.g. unnamed inline solid),
+/// causing the caller to fall through per PRD invariant #2 (never
+/// partial-construct sub-handles from a non-hydrated geometry cell).
+fn resolve_owner_solid_handle(
+    values: &reify_ir::ValueMap,
+    parent_body_kh: GeometryHandleId,
+) -> Option<(reify_core::identity::RealizationNodeId, [u8; 32])> {
+    for (_, value) in values.iter() {
+        if let reify_ir::Value::GeometryHandle {
+            realization_ref,
+            upstream_values_hash,
+            kernel_handle,
+        } = value
+        {
+            if *kernel_handle == parent_body_kh {
+                return Some((realization_ref.clone(), *upstream_values_hash));
+            }
+        }
+    }
+    None
 }
 
 /// Resolve a `CompiledExprKind::ValueRef` geometry-arg to a `GeometryHandleId`
