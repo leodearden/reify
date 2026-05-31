@@ -8,7 +8,7 @@ use tracing::warn;
 
 use reify_compiler::{CompiledModule, ValueCellKind, Visibility};
 use reify_eval::cache::NodeId;
-use reify_eval::{CheckResult, Engine};
+use reify_eval::{CancellationHandle, CheckResult, Engine};
 use reify_core::{ContentHash, DimensionVector, ModulePath, Severity, ValueCellId};
 use reify_ir::{ConstraintChecker, DeterminacyState, ExportFormat, GeometryKernel, Satisfaction, Value};
 
@@ -502,6 +502,14 @@ pub struct EngineSession {
     /// reference frame (one undeformed base + one peak per mode).
     /// When `None` (the default), all emit paths are no-ops.
     mode_shape_frame_emitter: Option<Arc<dyn ModeShapeFrameEmitter>>,
+    /// Optional solve-cancellation sink installed by the GUI layer.
+    ///
+    /// When `Some`, `check_with_solve_slot` fires `solve_started(handle)` before
+    /// `engine.check()` and `solve_finished()` after.  The production sink
+    /// (`PendingSolveCancelSink` in `commands.rs`) writes the handle into
+    /// `AppState.pending_solve_cancel` so `cancel_solve_impl` can read it.
+    /// When `None` (the default), all lifecycle calls are no-ops.
+    solve_cancel_sink: Option<Arc<dyn SolveCancellationSink>>,
 }
 
 /// Trait for sinking auto-resolve loop events to the GUI transport layer.
@@ -547,6 +555,50 @@ pub trait FeaCaseEmitter: Send + Sync {
 pub trait ModeShapeFrameEmitter: Send + Sync {
     /// Deliver a single reference frame for the mode-shape animator.
     fn frame(&self, payload: crate::types::ModeShapeFrame);
+}
+
+/// Trait for sinking solve-cancellation slot lifecycle events (task γ/4086).
+///
+/// Implemented by `PendingSolveCancelSink` in `commands.rs` for the production
+/// path (writes the handle into `AppState.pending_solve_cancel`) and by
+/// `RecordingSolveCancelSink` in engine tests.
+///
+/// **Slot lifecycle only — not mid-solve interruption.**
+/// `solve_started` is called with a fresh `CancellationHandle` *before*
+/// `engine.check()` runs; `solve_finished` is called *after* `check()`
+/// returns.  Because the elastic_static trampoline ignores its `_cancellation`
+/// handle and `solve_cantilever_fea` is a single blocking call, the handle
+/// does *not* interrupt the in-flight solve.  True interruption requires
+/// cross-cutting `reify-eval` handle-injection and is future work outside
+/// task γ's scope.
+///
+/// Publishing is serialized under the session mutex (`with_engine_lock`), so
+/// the `AppState`-doc invariant "at most one Some at a time" holds.
+/// `cancel_solve_impl` locks only the slot, never the session mutex — no
+/// lock-order inversion.
+///
+/// The trait is object-safe: no method takes or returns `Self`.
+pub trait SolveCancellationSink: Send + Sync {
+    /// Called with a fresh handle immediately before `engine.check()` starts.
+    fn solve_started(&self, handle: CancellationHandle);
+    /// Called immediately after `engine.check()` returns (or on any early
+    /// return / unwind via [`SolveFinishedGuard`]).
+    fn solve_finished(&self);
+}
+
+/// RAII guard that fires `sink.solve_finished()` on drop.
+///
+/// Ensures `solve_finished` is called even if the surrounding block exits
+/// via a `?` early-return (e.g., the `edit_check` path in `set_parameter`).
+/// When the sink is `None`, `drop` is a no-op.
+struct SolveFinishedGuard(Option<Arc<dyn SolveCancellationSink>>);
+
+impl Drop for SolveFinishedGuard {
+    fn drop(&mut self) {
+        if let Some(ref sink) = self.0 {
+            sink.solve_finished();
+        }
+    }
 }
 
 /// Build the normalized source-map key for a module name: `"{name}.ri"`.
@@ -916,6 +968,7 @@ impl EngineSession {
             warm_pool_event_emitter: None,
             fea_case_emitter: None,
             mode_shape_frame_emitter: None,
+            solve_cancel_sink: None,
         }
     }
 
@@ -955,6 +1008,45 @@ impl EngineSession {
     /// in `CheckResult.values`. Replaces any previously installed emitter.
     pub fn set_mode_shape_frame_emitter(&mut self, emitter: Arc<dyn ModeShapeFrameEmitter>) {
         self.mode_shape_frame_emitter = Some(emitter);
+    }
+
+    /// Install a solve-cancellation sink on this session (task γ/4086).
+    ///
+    /// After installation, every call to the `check_with_solve_slot` private
+    /// helper (which wraps `engine.check()` at all 4 mutating entry points)
+    /// fires `solve_started(handle)` immediately before the check and
+    /// `solve_finished()` immediately after.  Replaces any previously installed
+    /// sink.
+    pub fn set_solve_cancel_sink(&mut self, sink: Arc<dyn SolveCancellationSink>) {
+        self.solve_cancel_sink = Some(sink);
+    }
+
+    /// Run `engine.check(compiled)` wrapped in solve-cancellation slot lifecycle.
+    ///
+    /// If a `SolveCancellationSink` is installed, fires:
+    /// 1. `solve_started(handle.clone())` — BEFORE `engine.check()`.
+    /// 2. `solve_finished()` — AFTER `engine.check()` returns (guaranteed by
+    ///    `SolveFinishedGuard` even on future panics / early returns).
+    ///
+    /// **Limitation:** the handle does NOT interrupt the in-flight solve.
+    /// The elastic_static trampoline ignores its `_cancellation` handle and
+    /// `solve_cantilever_fea` is a single blocking call.  True interruption
+    /// requires cross-cutting `reify-eval` handle-injection and cooperative
+    /// polling in the trampoline / solver — future work outside task γ's scope.
+    ///
+    /// The Arc clone (cheap) releases the borrow on `self.solve_cancel_sink`
+    /// before the `self.core.engine_mut()` mutable borrow — required to
+    /// satisfy the borrow checker.
+    fn check_with_solve_slot(&mut self, compiled: &CompiledModule) -> CheckResult {
+        let handle = CancellationHandle::new();
+        let sink_arc = self.solve_cancel_sink.clone(); // cheap Arc clone; releases borrow on self
+        if let Some(ref sink) = sink_arc {
+            sink.solve_started(handle.clone());
+        }
+        // Guard fires solve_finished() on drop — handles any future early-return path.
+        let _guard = SolveFinishedGuard(sink_arc);
+        self.core.engine_mut().check(compiled)
+        // _guard drops here → solve_finished() called
     }
 
     /// Install a constraint solver into the underlying Engine for testing.
@@ -1459,7 +1551,9 @@ impl EngineSession {
 
         // Evaluate + check constraints (borrows compiled by shared ref, so all
         // field mutations can safely be deferred until after check() returns).
-        let check_result = self.core.engine_mut().check(&compiled);
+        // check_with_solve_slot fires the SolveCancellationSink lifecycle around
+        // engine.check() — publish handle before, clear after (task γ/4086).
+        let check_result = self.check_with_solve_slot(&compiled);
 
         // Atomically commit all state after check() succeeds.
         // Preserve file_path: load_from_source has no file on disk; keep any
@@ -1512,11 +1606,23 @@ impl EngineSession {
             return Err(format!("Unknown parameter '{}'", cell_id_str));
         }
 
+        // Publish solve handle before edit_check (task γ/4086, slot lifecycle).
+        // SolveFinishedGuard ensures solve_finished() fires even if edit_check
+        // returns Err and the `?` short-circuits before we reach the explicit drop.
+        let handle = CancellationHandle::new();
+        let sink_arc = self.solve_cancel_sink.clone();
+        if let Some(ref sink) = sink_arc {
+            sink.solve_started(handle.clone());
+        }
+        let _solve_guard = SolveFinishedGuard(sink_arc);
+
         let check_result = self
             .core
             .engine_mut()
             .edit_check(cell_id, value)
             .map_err(|e| format!("Engine error: {}", e))?;
+        // _solve_guard drops here (explicit drop not needed; ? would also drop it)
+        drop(_solve_guard);
 
         // Commit state first; emit_auto_resolve_if_any reads back via last_check()
         // so it fires AFTER all mutations are complete — cross-cutting ordering invariant.
@@ -1556,7 +1662,8 @@ impl EngineSession {
                 self.record_compile_failure(diags);
                 msg
             })?;
-        let check_result = self.core.engine_mut().check(&compiled);
+        // check_with_solve_slot fires the SolveCancellationSink lifecycle (task γ/4086).
+        let check_result = self.check_with_solve_slot(&compiled);
         // Atomically commit all five core fields in a single call.
         // `path.to_path_buf()` is evaluated as a call argument — before the callee body
         // runs — so a panic in `to_path_buf()` lands in the pre-commit window: none of
@@ -1634,7 +1741,8 @@ impl EngineSession {
 
         // Parse+compile succeeded — run check() before mutating any state, so
         // that a panic in check() leaves the session completely unchanged.
-        let check_result = self.core.engine_mut().check(&compiled);
+        // check_with_solve_slot fires the SolveCancellationSink lifecycle (task γ/4086).
+        let check_result = self.check_with_solve_slot(&compiled);
 
         // Atomically commit all state after check() succeeds.
         // Preserve file_path: update_source does not change which file is loaded;
