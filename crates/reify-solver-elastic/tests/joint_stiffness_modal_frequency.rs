@@ -66,9 +66,8 @@ fn howell_cantilever_first_mode_frequency() {
     // For the uncoupled block-diagonal system, λ₀ = k/m_load and λ₁ = k_anchor/m_anchor.
     // eigenvalues are returned ascending by |λ|; since f_cantilever << f_anchor, λ₀ < λ₁.
     assert!(
-        result.eigenvalues.len() >= 1,
-        "expected at least 1 eigenvalue, got {}",
-        result.eigenvalues.len()
+        !result.eigenvalues.is_empty(),
+        "expected at least 1 eigenvalue, got 0"
     );
     let lambda = result.eigenvalues[0];
     let f_computed = lambda.sqrt() / (2.0 * PI);
