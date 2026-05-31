@@ -259,10 +259,39 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
         // types declared in earlier modules (e.g. std.materials.mechanical).
         let mut modules = Vec::with_capacity(sources.len());
         for (module_name, source) in &sources {
-            let parsed = reify_syntax::parse(
+            // Collect enum names from every module compiled so far (the growing
+            // prelude) to seed the parser's EnumAccess-disambiguation set.  This
+            // mirrors `flatten_prelude_enum_defs` (enums_phase.rs:19), which builds
+            // the type-resolver's `resolution_enums`, so value-lowering sees the
+            // same prelude enum set as the type resolver.
+            //
+            // SCOPE: This seeding applies to EVERY stdlib module in `sources`, not
+            // only to `std.modal.analysis`.  The change is safe because any stdlib
+            // module that already references a prelude enum in value position WITHOUT
+            // a local copy would lower to MemberAccess→unresolved-name and trip the
+            // Error-severity `assert!` below — meaning `load_stdlib` already panics
+            // for such cases.  The seeding only changes lowering for cases that
+            // currently error; it cannot silently alter a module that compiles today.
+            // `all_stdlib_modules_have_no_errors` (stdlib_loader_tests.rs) is the
+            // regression guard for any accidental EnumAccess collision introduced by
+            // future stdlib modules whose X.Y value-positions collide with a prelude
+            // enum name.
+            //
+            // We seed from the LOCAL growing `modules` Vec — NOT from
+            // `load_stdlib_context()` — to avoid re-entering the `STDLIB_CACHE`
+            // OnceLock (which would deadlock: `load_stdlib_context` calls
+            // `load_stdlib`, and we are inside `STDLIB_CACHE.get_or_init`).
+            // The `prelude_enum_names` borrow ends at the parse call (NLL), so
+            // the subsequent `modules.push(compiled)` is unaffected.
+            let prelude_enum_names: Vec<&str> = modules
+                .iter()
+                .flat_map(|m: &CompiledModule| m.enum_defs.iter().map(|e| e.name.as_str()))
+                .collect();
+            let parsed = reify_syntax::parse_with_prelude_enums(
                 source,
                 ModulePath::from_dotted(module_name)
                     .expect("stdlib module name must be a valid dotted path"),
+                &prelude_enum_names,
             );
 
             // Fail fast: parse errors in embedded stdlib are always programming errors.

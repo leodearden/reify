@@ -1648,3 +1648,108 @@ fn forcing_time_history_constrains_sources_nonempty() {
             .collect::<Vec<_>>()
     );
 }
+
+// ─── task-4108: modal uses shared stdlib ElementOrder (no local copy) ─────────
+
+/// Pins three invariants after the task-4108 prelude-enum value-lowering fix:
+///
+/// (a) `std/modal/analysis` does NOT own a local `enum ElementOrder` — the
+///     type is now fully resolved from `std/solver/elastic`'s prelude copy.
+/// (b) `ModalOptions.element_order`'s compiled default is
+///     `Literal(Value::Enum { type_name: "ElementOrder", variant: "P1" })` —
+///     identical to `ElasticOptions.element_order`'s default (solver_elastic_tests
+///     `elastic_options_param_defaults_match_spec`), confirming the enum-access
+///     lowered correctly through the prelude seeding path.
+/// (c) The shared `ElementOrder` enum in `std/solver/elastic` carries variants
+///     `["P1", "P2"]` in canonical order — the set modal's runtime trampoline
+///     (`variant == "P2"`) reads. This is a cross-module drift anchor: it re-
+///     anchors the `[P1, P2]` pin once modal's local copy has been dropped, so
+///     the trampoline's dependency on solver_elastic's copy is explicit.
+///
+/// RED until step-4:
+///   - assertion (a) fails: modal_analysis.ri still declares `enum ElementOrder`
+///     (line ~290), so modal's `enum_defs` DOES contain an `ElementOrder` entry.
+///   - assertions (b) and (c) pass (modal already compiled OK via its local copy,
+///     and solver_elastic's ElementOrder is unaffected).
+#[test]
+fn modal_options_element_order_resolves_to_shared_stdlib_enum() {
+    let modal_module = load_stdlib_module();
+
+    // ── (a) modal has NO local ElementOrder enum_def ──────────────────────────
+    assert!(
+        modal_module.enum_defs.iter().all(|e| e.name != "ElementOrder"),
+        "std/modal/analysis should NOT declare a local `enum ElementOrder` after \
+         task-4108 drops the duplicate; got enum_defs: {:?}",
+        modal_module
+            .enum_defs
+            .iter()
+            .map(|e| &e.name)
+            .collect::<Vec<_>>()
+    );
+
+    // ── (b) ModalOptions.element_order default == Literal(Value::Enum{ElementOrder, P1}) ──
+    let modal_options = find_structure("ModalOptions");
+    let element_order_default = require_default(modal_options, "element_order");
+    match &element_order_default.kind {
+        CompiledExprKind::Literal(Value::Enum { type_name, variant }) => {
+            assert_eq!(
+                type_name, "ElementOrder",
+                "element_order default type_name should be \"ElementOrder\", got: {:?}",
+                type_name
+            );
+            assert_eq!(
+                variant, "P1",
+                "element_order default variant should be \"P1\", got: {:?}",
+                variant
+            );
+        }
+        other => panic!(
+            "ModalOptions.element_order default should be \
+             Literal(Value::Enum {{ ElementOrder, P1 }}), got: {:?}",
+            other
+        ),
+    }
+
+    // ── (c) The shared solver_elastic ElementOrder carries [P1, P2] ───────────
+    // Cross-module drift anchor: modal's runtime trampoline reads `variant == "P2"`
+    // from the shared enum. Re-anchor the [P1, P2] canonical order here so the
+    // solver_elastic dependency is explicit even after modal drops its local copy.
+    //
+    // The primary pin lives in solver_elastic_tests.rs:
+    //   `element_order_enum_has_p1_and_p2_variants_in_canonical_order`
+    // This assertion adds the cross-module link: it confirms the enum reachable
+    // from modal's compiled perspective is that same solver_elastic definition.
+    let elastic_module = stdlib_loader::load_stdlib()
+        .iter()
+        .find(|m| m.path.to_string() == "std/solver/elastic")
+        .unwrap_or_else(|| {
+            panic!(
+                "stdlib should contain std/solver/elastic; available: {:?}",
+                stdlib_loader::load_stdlib()
+                    .iter()
+                    .map(|m| m.path.to_string())
+                    .collect::<Vec<_>>()
+            )
+        });
+    let enum_def = elastic_module
+        .enum_defs
+        .iter()
+        .find(|e| e.name == "ElementOrder")
+        .unwrap_or_else(|| {
+            panic!(
+                "std/solver/elastic should contain `enum ElementOrder`; got: {:?}",
+                elastic_module
+                    .enum_defs
+                    .iter()
+                    .map(|e| &e.name)
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        enum_def.variants,
+        vec!["P1".to_string(), "P2".to_string()],
+        "std/solver/elastic ElementOrder variants should be [P1, P2] in canonical order; \
+         modal trampoline reads `variant == \"P2\"` against this set. Got: {:?}",
+        enum_def.variants
+    );
+}
