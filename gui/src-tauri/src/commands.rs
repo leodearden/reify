@@ -340,10 +340,24 @@ impl PendingSolveCancelSink {
 impl crate::engine::SolveCancellationSink for PendingSolveCancelSink {
     fn solve_started(&self, handle: CancellationHandle) {
         let mut guard = self.slot.lock().expect("pending_solve_cancel mutex poisoned");
+        // Invariant: slot must be empty because publishing is serialized under the
+        // session mutex (at most one solve at a time).  Panics in debug builds.
         debug_assert!(
             guard.is_none(),
             "solve_started called while a handle is already in the slot — stale handle invariant violated"
         );
+        // In release builds the debug_assert! above is compiled out.  If the
+        // invariant is ever violated (stale handle still present), `*guard = Some(handle)`
+        // silently overwrites and drops the prior handle, making the earlier solve
+        // permanently uncancellable.  Emit a warn! so invariant breaches remain
+        // observable in production logs without needing a debug build.
+        if guard.is_some() {
+            tracing::warn!(
+                "PendingSolveCancelSink::solve_started: slot already occupied — \
+                 stale handle overwritten; prior in-flight solve permanently uncancellable. \
+                 Invariant breach: expected at most one solve at a time (serialized by session mutex)."
+            );
+        }
         *guard = Some(handle);
     }
 

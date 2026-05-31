@@ -9965,3 +9965,109 @@ fn solve_publishes_then_clears_cancel_handle() {
     // synchronous and blocking).  Drop it to avoid unused-variable warning.
     let _ = handle;
 }
+
+/// set_parameter success path fires the solve-cancel slot lifecycle.
+///
+/// Exercises the `with_solve_slot` wrapper inside `set_parameter` on the happy
+/// path — edit_check succeeds, so [Started, Finished] must be recorded in
+/// order.  Complements `solve_publishes_then_clears_cancel_handle` (which
+/// exercises `load_from_source` → `check_with_solve_slot` path).
+#[test]
+fn set_parameter_success_fires_solve_lifecycle() {
+    use std::sync::Arc;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let sink = RecordingSolveCancelSink::new();
+    let captured_events = Arc::clone(&sink.events);
+    session.set_solve_cancel_sink(Arc::new(sink));
+
+    // load_from_source also fires the lifecycle; clear before set_parameter.
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load");
+    captured_events.lock().unwrap().clear();
+
+    session
+        .set_parameter("Bracket.width", "120mm")
+        .expect("set_parameter should succeed");
+
+    let events = captured_events.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        2,
+        "expected exactly [Started, Finished] from set_parameter success path; got {} events",
+        events.len()
+    );
+    assert!(
+        matches!(events[0], SolveLifecycleEvent::Started(_)),
+        "first event must be Started"
+    );
+    assert!(
+        matches!(events[1], SolveLifecycleEvent::Finished),
+        "second event must be Finished"
+    );
+}
+
+/// set_parameter edit_check Err path still fires solve_finished.
+///
+/// Passing a `Bool` value for a `Length` cell causes `edit_check` to return
+/// `EngineError::TypeKindMismatch`, which is mapped to `Err(String)` and
+/// propagated via `?` inside `with_solve_slot`.  The `SolveFinishedGuard`
+/// inside `with_solve_slot` must drop — firing `solve_finished()` — even
+/// though the closure short-circuits before returning `Ok`.
+///
+/// This is the specific failure mode the guard was introduced to handle.
+#[test]
+fn set_parameter_edit_check_err_still_fires_solve_finished() {
+    use std::sync::Arc;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // Establish the eval snapshot via load_from_source so edit_check runs
+    // (without a snapshot edit_check returns NotInitialized before the lifecycle).
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load");
+
+    // Install sink AFTER load so only set_parameter events are captured.
+    let sink = RecordingSolveCancelSink::new();
+    let captured_events = Arc::clone(&sink.events);
+    session.set_solve_cancel_sink(Arc::new(sink));
+
+    // "true" parses to Value::Bool(true).  Bracket.width expects a Length →
+    // validate_param_override returns TypeKindMismatch → edit_check returns Err
+    // → the `?` inside with_solve_slot short-circuits.
+    let result = session.set_parameter("Bracket.width", "true");
+    assert!(
+        result.is_err(),
+        "type-mismatched value must produce Err from set_parameter"
+    );
+
+    let events = captured_events.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        2,
+        "expected [Started, Finished] even when edit_check returns Err; got {} events: {:?}",
+        events.len(),
+        events
+            .iter()
+            .map(|e| match e {
+                SolveLifecycleEvent::Started(_) => "Started",
+                SolveLifecycleEvent::Finished => "Finished",
+            })
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        matches!(events[0], SolveLifecycleEvent::Started(_)),
+        "first event must be Started"
+    );
+    assert!(
+        matches!(events[1], SolveLifecycleEvent::Finished),
+        "Finished must fire even on edit_check Err (SolveFinishedGuard covers ? early-return)"
+    );
+}

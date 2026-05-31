@@ -1021,12 +1021,12 @@ impl EngineSession {
         self.solve_cancel_sink = Some(sink);
     }
 
-    /// Run `engine.check(compiled)` wrapped in solve-cancellation slot lifecycle.
+    /// Wrap any engine operation in the solve-cancellation slot lifecycle.
     ///
     /// If a `SolveCancellationSink` is installed, fires:
-    /// 1. `solve_started(handle.clone())` — BEFORE `engine.check()`.
-    /// 2. `solve_finished()` — AFTER `engine.check()` returns (guaranteed by
-    ///    `SolveFinishedGuard` even on future panics / early returns).
+    /// 1. `solve_started(handle.clone())` — BEFORE calling `f(self)`.
+    /// 2. `solve_finished()` — AFTER `f` returns, guaranteed by
+    ///    [`SolveFinishedGuard`] even if `f` short-circuits via `?` or panics.
     ///
     /// **Limitation:** the handle does NOT interrupt the in-flight solve.
     /// The elastic_static trampoline ignores its `_cancellation` handle and
@@ -1035,18 +1035,26 @@ impl EngineSession {
     /// polling in the trampoline / solver — future work outside task γ's scope.
     ///
     /// The Arc clone (cheap) releases the borrow on `self.solve_cancel_sink`
-    /// before the `self.core.engine_mut()` mutable borrow — required to
+    /// before the mutable borrow of `self` is forwarded to `f` — required to
     /// satisfy the borrow checker.
-    fn check_with_solve_slot(&mut self, compiled: &CompiledModule) -> CheckResult {
+    fn with_solve_slot<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
         let handle = CancellationHandle::new();
         let sink_arc = self.solve_cancel_sink.clone(); // cheap Arc clone; releases borrow on self
         if let Some(ref sink) = sink_arc {
             sink.solve_started(handle.clone());
         }
-        // Guard fires solve_finished() on drop — handles any future early-return path.
+        // Guard fires solve_finished() on drop — covers ? early-returns and panics.
         let _guard = SolveFinishedGuard(sink_arc);
-        self.core.engine_mut().check(compiled)
+        f(self)
         // _guard drops here → solve_finished() called
+    }
+
+    /// Run `engine.check(compiled)` wrapped in the solve-cancellation slot lifecycle.
+    ///
+    /// Delegates to [`Self::with_solve_slot`]; see there for lifecycle details
+    /// and the no-interruption limitation.
+    fn check_with_solve_slot(&mut self, compiled: &CompiledModule) -> CheckResult {
+        self.with_solve_slot(|s| s.core.engine_mut().check(compiled))
     }
 
     /// Install a constraint solver into the underlying Engine for testing.
@@ -1606,23 +1614,16 @@ impl EngineSession {
             return Err(format!("Unknown parameter '{}'", cell_id_str));
         }
 
-        // Publish solve handle before edit_check (task γ/4086, slot lifecycle).
-        // SolveFinishedGuard ensures solve_finished() fires even if edit_check
-        // returns Err and the `?` short-circuits before we reach the explicit drop.
-        let handle = CancellationHandle::new();
-        let sink_arc = self.solve_cancel_sink.clone();
-        if let Some(ref sink) = sink_arc {
-            sink.solve_started(handle.clone());
-        }
-        let _solve_guard = SolveFinishedGuard(sink_arc);
-
-        let check_result = self
-            .core
-            .engine_mut()
-            .edit_check(cell_id, value)
-            .map_err(|e| format!("Engine error: {}", e))?;
-        // _solve_guard drops here (explicit drop not needed; ? would also drop it)
-        drop(_solve_guard);
+        // with_solve_slot fires the SolveCancellationSink lifecycle around
+        // edit_check (task γ/4086): solve_started before, solve_finished after.
+        // SolveFinishedGuard inside with_solve_slot ensures solve_finished fires
+        // even when edit_check returns Err and the `?` short-circuits.
+        let check_result = self.with_solve_slot(|s| {
+            s.core
+                .engine_mut()
+                .edit_check(cell_id, value)
+                .map_err(|e| format!("Engine error: {}", e))
+        })?;
 
         // Commit state first; emit_auto_resolve_if_any reads back via last_check()
         // so it fires AFTER all mutations are complete — cross-cutting ordering invariant.
