@@ -1,0 +1,28 @@
+// Fixture: distance(Geometry, Point3<Length>) -> Scalar<Length> for a 10×20×30 mm box
+// (task 3610, KGQ-α)
+// PRD: docs/prds/v0_3/kernel-geometry-queries.md §9 KGQ-α
+//
+// User-observable signal:
+//   distance(box(10mm, 20mm, 30mm), point3(20mm, 0mm, 0mm))  == 15 mm
+//
+// Geometry: box(10,20,30) is centred at origin (X-half-extent 5mm), so the
+// closest surface point to (20mm, 0, 0) is (5mm, 0, 0)  →  distance = 15mm.
+//
+// Arg-shape contract (§4 invariant):
+//   Both args to distance() must be ValueRefs (let-bound cells), NOT inline
+//   calls.  Inline calls fall through to None → Value::Undef.
+//
+// Unit-qualification contract:
+//   resolve_point3_length_arg requires every point component to carry a
+//   LENGTH dimension.  Use unit-qualified literals (0mm, 20mm) — bare
+//   dimensionless 0 would fail the check and yield Value::Undef.
+//
+// Pinning test:
+//   crates/reify-eval/tests/kernel_queries_distance_smoke.rs::
+//     distance_box_point_evals_to_15mm
+
+structure def DistanceBoxPoint {
+    let b = box(10mm, 20mm, 30mm)
+    let p = point3(20mm, 0mm, 0mm)
+    let d = distance(b, p)
+}
