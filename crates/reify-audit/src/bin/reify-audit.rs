@@ -54,17 +54,22 @@ use reify_audit::{
     AuditContext, ChangedSymbol, DeadSymbol, Finding, JCodemunchOps, LayerViolation, RealGitOps,
     Severity, SymbolReference, TaskMetadata, TimeWindow, UntestedSymbol,
     fused_memory_client::FusedMemoryClient,
+    jcodemunch_client::RealJCodemunchOps,
 };
 
 // -----------------------------------------------------------------------
-// NoopJCodemunchOps — slice-1 stub per design §11 (D-1)
+// NoopJCodemunchOps — inert stub for non-P1 runs and --no-jcodemunch
 // -----------------------------------------------------------------------
 
-/// Slice-1 no-op implementation of [`JCodemunchOps`].
+/// Inert no-op implementation of [`JCodemunchOps`].
 ///
-/// The real jcodemunch-MCP-backed impl is D-1's concern. This stub keeps P1
-/// quiet on production runs until D-1 lands. Per design §11 ("hookless slice
-/// 1"). Never escapes this bin file; the library's `MockJCodemunchOps` remains
+/// Used in two cases:
+/// 1. `--no-jcodemunch` explicit escape hatch (offline/test mode — P1
+///    runs but produces zero findings without opening any socket).
+/// 2. Detector runs that don't need jcodemunch (P5/pre-done, P2-only) —
+///    `needs_jcodemunch` returns false, so no connection is ever attempted.
+///
+/// Never escapes this bin file; the library's `MockJCodemunchOps` remains
 /// test-only via the `test-support` feature.
 struct NoopJCodemunchOps;
 
@@ -102,6 +107,9 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  --fused-memory-url <url> MCP endpoint (default: $FUSED_MEMORY_URL or http://localhost:8002/mcp)");
     let _ = writeln!(out, "  --runs-db <path>         SQLite runs.db path (default: data/orchestrator/runs.db)");
     let _ = writeln!(out, "  --project-root <path>    Repo root for git ops + fused-memory project key (default: .)");
+    let _ = writeln!(out, "  --jcodemunch-url <url>   jcodemunch MCP endpoint for P1 (default: $JCODEMUNCH_URL or http://127.0.0.1:8901/mcp)");
+    let _ = writeln!(out, "  --jcodemunch-repo <id>   jcodemunch repo identifier (default: leodearden/reify)");
+    let _ = writeln!(out, "  --no-jcodemunch          Use inert stub (offline/test); P1 yields nothing, no connection");
     let _ = writeln!(out, "  --help, -h               Show this help");
     let _ = writeln!(out, "  --version, -V            Print version");
     let _ = writeln!(out);
@@ -486,7 +494,29 @@ fn main() -> ExitCode {
 
     // Construct seam impls.
     let git = RealGitOps::new(PathBuf::from(&args.project_root));
-    let jcodemunch = NoopJCodemunchOps;
+
+    // Construct jcodemunch seam: Noop for --no-jcodemunch, P5/pre-done,
+    // and P2-only runs (never connects); Real for P1 runs (connects in
+    // constructor — fail-fast to 125 if the serve is unreachable).
+    let jcodemunch: Box<dyn JCodemunchOps> =
+        if args.no_jcodemunch || !needs_jcodemunch(&args) {
+            Box::new(NoopJCodemunchOps)
+        } else {
+            match RealJCodemunchOps::new(
+                args.jcodemunch_url.clone(),
+                args.jcodemunch_repo.clone(),
+                PathBuf::from(&args.project_root),
+            ) {
+                Ok(r) => Box::new(r),
+                Err(e) => {
+                    eprintln!(
+                        "reify-audit: error connecting to jcodemunch at '{}': {}",
+                        args.jcodemunch_url, e
+                    );
+                    return ExitCode::from(ERROR_EXIT);
+                }
+            }
+        };
 
     // Build window (for --since).
     let window = args.since.as_ref().map(|s| TimeWindow {
@@ -494,12 +524,13 @@ fn main() -> ExitCode {
         until: None,
     });
 
-    // Build context.
+    // Build context.  Box<dyn JCodemunchOps>::as_ref() coerces to
+    // &dyn JCodemunchOps, satisfying the borrowed seam; the Box outlives ctx.
     let ctx = AuditContext {
         project_root: PathBuf::from(&args.project_root),
         conn: &conn,
         git: &git,
-        jcodemunch: &jcodemunch,
+        jcodemunch: jcodemunch.as_ref(),
         task_metadata,
         target_task_id: args.task_id.clone(),
         window,
